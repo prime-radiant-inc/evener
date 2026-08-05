@@ -2,10 +2,34 @@ package plugin
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestMergeCommands(t *testing.T) {
+	t.Parallel()
+	instances := []Instance{
+		{Commands: map[string]Command{
+			"p:review": {Name: "review", PluginName: "p", Source: "plugin"},
+		}},
+	}
+	serfwide := map[string]Command{
+		"review": {Name: "review", Source: "user"},
+	}
+	got := MergeCommands(instances, serfwide)
+	if len(got) != 2 {
+		t.Fatalf("got %d entries, want 2: %v", len(got), maps.Keys(got))
+	}
+	if got["review"].Source != "user" || got["p:review"].Source != "plugin" {
+		t.Errorf("got %+v, want bare key = user command, namespaced key = plugin command", got)
+	}
+	// Nil inputs are safe.
+	if merged := MergeCommands(nil, nil); len(merged) != 0 {
+		t.Errorf("MergeCommands(nil, nil) = %v, want empty", merged)
+	}
+}
 
 func TestDiscoverPluginCommands_SetsSourceAndFile(t *testing.T) {
 	t.Parallel()

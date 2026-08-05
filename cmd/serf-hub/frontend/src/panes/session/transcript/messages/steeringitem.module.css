@@ -1,0 +1,94 @@
+/* Quiet, collapsed-by-default divider for daemon-originated steering
+ * (mockup #3: "neutral (not amber) steer tick" - steering is routine
+ * bookkeeping, never an attention-worthy event on its own). The quietness
+ * now comes from structure - collapsed-by-default disclosure, --ink-mid -
+ * not from size: per Jesse ("system Steering should probably be the same
+ * font size as other messages"), summary and body both sit at
+ * --font-size-body (slack-lean spec decision 6). */
+.details {
+  padding: var(--space-1) 0;
+}
+
+/* One 12px gutter column, one ink for the whole row (design-system.md §7).
+ * --ink-mid, not --ink-low: --ink-low measures 2.97:1 dark / 3.64:1 light
+ * against --surface-1, under the 4.5:1 AA floor, and the kind is the payload a
+ * reader auditing steering came for. */
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  color: var(--ink-mid);
+}
+
+.summary::-webkit-details-marker {
+  display: none;
+}
+
+.label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* The steering diamond rails with the thought/tool kind icons (Jesse's
+ * unification call: a run row with an empty rail reads as "weirdly
+ * indented"). Same geometry as toolcallitem.module.css's .rowIcon: an
+ * --speaker-avatar-size slot centred on the avatar column at 50% opacity,
+ * with the margin-right eating the row's own gap so slot (24) + margin (2)
+ * + row gap (8) = one speaker-gutter (34) and the label lands exactly on
+ * the content edge. */
+.railIcon {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--speaker-avatar-size);
+  margin-right: calc(var(--speaker-gap) - var(--space-2));
+  opacity: 0.5;
+}
+
+/* Above the breakpoint the item sits inside runContent's reserved gutter
+ * padding: the pull goes on the summary (the row's container - same
+ * container-pull mechanism as thinkblock's, though nothing here clips like
+ * .summary does there), seating the diamond in the rail while the label
+ * stays at the content edge. Below the breakpoint the diamond simply leads
+ * the line inline, at the same 50%. */
+@media (min-width: 700px) {
+  .summary {
+    margin-left: calc(-1 * var(--speaker-gutter));
+  }
+}
+
+/* Trailing, and on the row's own colour rather than a step down: it reads as
+ * the end of the label line, not as a leading affordance. */
+.chevron {
+  display: inline-flex;
+  flex: none;
+  font-size: 9px;
+}
+
+.chevron[data-open="true"] {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .chevron {
+    transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
+  }
+}
+
+.body {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2);
+  border-left: 2px solid var(--edge);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  color: var(--ink-mid);
+}

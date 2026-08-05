@@ -1,0 +1,207 @@
+/* Shared across MarketplacesSection/BrowseSection/InstalledSection/index -
+ * one CSS Modules file, imported by each (CSS Modules classnames are keyed
+ * by this file's own identity, not by which .tsx imports it, so this is
+ * safe and avoids duplicating the same "settings-collection" visual
+ * language 3-4 times). */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.pageTitle {
+  margin: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-pane-title);
+  font-weight: var(--font-weight-semibold);
+}
+
+.pageHelp {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.title {
+  margin: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-semibold);
+}
+
+.count {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-1);
+}
+
+.rowMain {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.rowText {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+}
+
+.rowKind {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.rowMeta {
+  overflow: hidden;
+  color: var(--ink-mid);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowActions {
+  display: flex;
+  flex: none;
+  gap: var(--space-2);
+}
+
+.empty {
+  padding: var(--space-2) var(--space-3);
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}
+
+.addForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-1);
+}
+
+.formActions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.filterRow {
+  display: flex;
+}
+
+.tree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.treeNode {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.treeToggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  text-align: left;
+  cursor: pointer;
+}
+
+.treeToggle:hover {
+  background: var(--surface-2);
+}
+
+.treeToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Turns the shared widgets/chevron icon on expand/collapse - same
+ * rotates-90°-when-open idiom as widgets/disclosure and toolcallitem's own
+ * .chevron (see either for why a rotating chevron needs a square icon: the
+ * text triangle this replaced had a non-square line box, and turning that 90°
+ * overhung its own layout box). One line tall, pinned to the top, so a
+ * marketplace name long enough to wrap keeps the chevron beside its FIRST
+ * line instead of centred into the block. */
+.treeChevron {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  height: 1lh;
+  color: var(--ink-mid);
+  transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
+}
+
+.treeToggle[aria-expanded="true"] .treeChevron {
+  transform: rotate(90deg);
+}
+
+.treeCount {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.treeChildren {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0 0 0 var(--space-5);
+  padding: 0;
+  list-style: none;
+}
+
+.installedBadge {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}

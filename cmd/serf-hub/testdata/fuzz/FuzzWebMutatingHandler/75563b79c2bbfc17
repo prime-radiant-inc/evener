@@ -1,0 +1,4 @@
+go test fuzz v1
+byte('\x00')
+string("\xc4\x12\xea\xb5\x1f\x9ar\x19")
+[]byte("{\"hArness\":\"0\"}")

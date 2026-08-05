@@ -1,0 +1,225 @@
+/* The quietest layer in the transcript (mockup #5): never out-shouts the
+ * agent's own prose — quiet through INK, not size. Thinking is body text
+ * like the turns around it (Jesse's review call: caption-sized thoughts
+ * read as footnotes, and they are not footnotes). The body is italic in
+ * both states at reduced contrast (Jesse, 2026-08-03: always italic, with
+ * marked-up emphasis inverted to roman), at whatever height its own text
+ * needs; settled collapses to a single ink-low summary line with a trailing
+ * chevron.
+ *
+ * Both live and expanded-settled are STACKED ROWS, never a label-beside-
+ * body column (Jesse, second review pass: the gutter layout squeezed the
+ * thought into a narrow column offset right of its own label - a thought
+ * gets the full reading measure like every other row). */
+.block {
+  padding: var(--space-1) 0;
+}
+
+/* Live: a quiet eyebrow row above the streaming text - the same stacked
+ * eyebrow idiom the exchange boundaries use ("You" / "Agent · model"),
+ * not a left gutter. */
+.live {
+  display: block;
+}
+
+.label {
+  /* flex, not block: the row now leads with the kind icon (see .icon), and
+   * only a flex row centres the glyph against the label text. Body-sized like
+   * the settled summary (the draft restyle, mockup #4): a caption-sized
+   * eyebrow was quiet through SIZE, and the design law demotes through ink
+   * only - --ink-low already carries the whole recession. */
+  display: flex;
+  align-items: center;
+  margin-bottom: var(--space-1);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  color: var(--ink-low);
+}
+
+/* The kind glyph leading the thought row - in the RAIL beside the line, at
+ * 50% opacity (Jesse's review call: tool-use and thought icons out of the
+ * text, into the gutter; the kind is ambient context, not content). The slot
+ * is --speaker-avatar-size wide so the glyph centres on the same column the
+ * speaker avatars occupy; the widget strokes currentColor, and both .label
+ * and .summary set --ink-low, so no colour is declared here. align-self:
+ * center because .summary's baseline alignment would seat the icon's box on
+ * its bottom edge instead of centring the glyph on the text. */
+.icon {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--speaker-avatar-size);
+  margin-right: var(--speaker-gap);
+  opacity: 0.5;
+}
+
+/* Above the breakpoint the block sits inside runContent's --speaker-gutter
+ * of reserved padding. The gutter pull goes on the CONTAINERS, not on
+ * .icon: .summary's overflow: hidden (qrv1 - the ellipsizing guard below)
+ * clips at its own border box, so a negatively-margined icon INSIDE it
+ * would be clipped away entirely; pulling the whole summary instead seats
+ * the icon (its first child, inside the box) in the rail while the label
+ * text lands exactly at the content edge, 24px + 10px in. Same mechanism
+ * for the live eyebrow's block-level flex row. */
+@media (min-width: 700px) {
+  .label,
+  .summary {
+    margin-left: calc(-1 * var(--speaker-gutter));
+  }
+}
+
+/* The thinking body is ALWAYS italic (Jesse, 2026-08-03): a thought reads
+ * as the agent's internal monologue in both states - in flight and inside
+ * the settled disclosure. The ONE inversion: content the agent itself marked
+ * up as italic renders roman (the :where(em) rule below), so deliberate
+ * emphasis stands out against the italic field instead of vanishing into it.
+ *
+ * The body renders through the Markdown widget, which sets its own body
+ * color; --markdown-ink is the widget's hook for overriding it so a
+ * thought stays quieter than the agent message below it - the same
+ * override the settled .body below applies, so the ink never shifts at
+ * settle. Font SIZE is deliberately not declared here: the widget's root
+ * already defaults to --font-size-body, and quiet comes from ink alone.
+ *
+ * NO height bound of any kind here (Jesse, bh8h): a thought that is still
+ * running shows in full, so the reader can follow the whole block as it
+ * streams. Nothing is cut off, so nothing needs a fade, a scroller, or a
+ * tail window - the transcript's own scroll is the only viewport. */
+.liveBody {
+  min-width: 0;
+  font-style: italic;
+  --markdown-ink: var(--ink-mid);
+}
+
+.details {
+  padding: 0;
+}
+
+/* qrv1: a bare <summary> is block-level (the UA default is display:
+ * list-item) and stretches to the full turn width, so its short "Thought
+ * for Ns" text left a wide strip of empty box to the right - and a focus
+ * ring drawn around that whole empty strip read as a blank text input,
+ * not a collapsed disclosure. inline-flex shrinks the box to its own
+ * content, so hover/focus decoration only ever wraps the words actually on
+ * screen. Since the chevron landed, every child is a flex item - icon,
+ * .summaryText, chevron - so the width guard for the rare too-long label
+ * lives on .summaryText (its own overflow/ellipsis below); max-width and
+ * overflow here just bound the box and clip hard if everything else
+ * fails. nowrap is load-bearing: .summaryText inherits it. */
+.summary {
+  display: inline-flex;
+  align-items: baseline;
+  max-width: 100%;
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  border-radius: var(--radius-control);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  color: var(--ink-low);
+}
+
+/* The label text as its own flex item so it - not the chevron after it - is
+ * what gives way under width pressure: overflow + ellipsis let the span
+ * shrink (a flex item with overflow set has an automatic minimum of zero),
+ * keeping the trailing chevron on screen at the end of whatever text
+ * survives. The JS-side 120-char preview clamp remains the primary bound;
+ * this is the same rare-case guard .summary's own ellipsis used to be. */
+.summaryText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Mockup #4's trailing disclosure affordance: the shared widgets/chevron at
+ * the tail of the collapsed line, in the same ink-mid ToolRow's chevron uses
+ * so it reads a step firmer than the ink-low words it opens. flex: none - the
+ * summaryText span ahead of it absorbs all shrink; align-self: center because
+ * .summary aligns items to baseline, which would seat the svg's box on its
+ * bottom edge (the same fix .icon documents). The turn rotates the SQUARE svg
+ * itself, never this wrapper - toolcallitem.module.css's own comment records
+ * why a non-square box must not be the thing that rotates. */
+.chevron {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  margin-left: var(--space-2);
+  color: var(--ink-mid);
+}
+
+/* Same ink-wash idiom as ToolCallItem's own summary.row:hover - a tint of
+ * the ink reads as "clickable" against whatever surface it sits on. */
+.summary:hover {
+  background: color-mix(in oklab, var(--ink-mid) 8%, transparent);
+}
+
+/* Same token, same shape as every other focus ring in the app (see
+ * widgets/textarea's :focus-visible and ToolCallItem's summary.row - qrv1's
+ * ring was loud not because a focus indicator is wrong here, but because
+ * this element had never been given the app's OWN semantic ring; it drew
+ * whatever the browser's bare default was instead, at full row width. */
+.summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* A settled thought renders through the Markdown widget, which sets its own
+ * body color; --markdown-ink is the widget's hook for overriding it so a
+ * thought stays quieter than the agent message below it. .liveBody applies
+ * the same override for the live streaming path. The body is italic for the
+ * same always-italic rule .liveBody documents above.
+ *
+ * The body is a full-width ROW below the summary line - no left border, no
+ * inset, no label column (the second review pass: beside-the-label it read
+ * as a narrow offset column, not a thought). Markdown owns its own block
+ * layout inside. */
+.body {
+  margin-top: var(--space-1);
+  font-style: italic;
+  --markdown-ink: var(--ink-mid);
+}
+
+/* The one inversion of the always-italic body (Jesse, 2026-08-03): spans the
+ * agent marked up as italic render roman, so emphasis still reads AS
+ * emphasis against the italic field. Bare-tag descendant selectors are
+ * untouched by CSS Modules (see widgets/markdown's own comment), so this
+ * reaches the <em> inside the Markdown widget's innerHTML output. */
+.liveBody :where(em),
+.body :where(em) {
+  font-style: normal;
+}
+
+/* Same subtle open as every other disclosure in the app (A6): an opacity fade
+ * at --motion-duration-overlay, gated behind prefers-reduced-motion the way
+ * widgets/cadence/cadence.module.css does it. The <details> body here is always
+ * mounted (unlike widgets/disclosure's), so the animation is scoped to the open
+ * state via the parent's [open] attribute - otherwise a collapsed block would
+ * "animate" invisibly on every render. */
+@media (prefers-reduced-motion: no-preference) {
+  .details[open] > .body {
+    animation: thinkblock-body-in var(--motion-duration-overlay) var(--motion-easing-standard);
+  }
+
+  /* The chevron's turn eases on the same tokens (ToolRow's idiom); under
+   * reduced motion it snaps instead. */
+  .chevron > svg {
+    transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
+  }
+}
+
+/* Down here, not beside .chevron: this selector outranks the transition
+ * selector above, and biome's noDescendingSpecificity wants the lower-
+ * specificity rule first in source order. */
+.chevron[data-open="true"] > svg {
+  transform: rotate(90deg);
+}
+
+@keyframes thinkblock-body-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

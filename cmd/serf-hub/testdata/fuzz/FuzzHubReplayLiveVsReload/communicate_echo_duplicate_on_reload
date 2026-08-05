@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"kind\":\"entry\",\"turn\":{\"kind\":\"ASSISTANT\",\"message\":{\"role\":\"assistant\",\"content\":[{\"kind\":\"text\",\"text\":\"X\"},{\"kind\":\"tool_call\",\"tool_call\":{\"id\":\"c1\",\"name\":\"communicate\",\"arguments\":{\"message\":\"X\"}}}]},\"timestamp\":\"2026-06-01T10:00:00Z\"}}")

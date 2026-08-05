@@ -1,0 +1,48 @@
+// Package httpsec provides HTTP security middleware for the serf-hub web
+// server.
+package httpsec
+
+import "net/http"
+
+// CSPMiddleware sets a Content-Security-Policy that limits resource origins to
+// same-origin. Inline scripts are allowed because several templates (app.html,
+// settings partials, credentials) use inline IIFEs for page initialisation;
+// migrating them all to asset files is tracked separately.
+//
+// `img-src` allows `https:` for remote AppWire replay images, and `blob:` so
+// the composer's attachment encoder
+// (cmd/serf-hub/frontend/src/panes/session/composer/attachments/encodePng.ts)
+// can decode a pasted / dropped / picked image by loading a
+// `URL.createObjectURL(blob)` reference into an `Image` element before
+// re-encoding to PNG (kata 1pgw — without `blob:` here the Image element
+// refuses the blob URL, so every image attachment surface rejects a
+// perfectly valid PNG and toasts "Couldn't attach <name> (image decode
+// failed)").
+//
+// `style-src` allows `https://fonts.googleapis.com` so app.html can load the
+// Google Fonts CSS that pulls in Hanken Grotesk + JetBrains Mono. The CSS
+// itself references WOFF2 files on `fonts.gstatic.com`, which is allowed via
+// the `font-src` directive below. See design language §1.2.
+//
+// Also sets X-Content-Type-Options: nosniff (defense-in-depth): it stops a
+// browser from re-sniffing a response's bytes past its declared Content-Type.
+// /doc/file's raw-content variant (?format=raw) already chooses a safe
+// declared Content-Type itself rather than reflecting a sniffed one; this
+// header hardens every response the hub serves against the same class of
+// MIME-sniffing reinterpretation, not just that one route.
+func CSPMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy",
+			"default-src 'self'; "+
+				"script-src 'self' 'unsafe-inline'; "+
+				"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "+
+				"font-src 'self' https://fonts.gstatic.com; "+
+				"img-src 'self' data: blob: https:; "+
+				"connect-src 'self'; "+
+				"base-uri 'self'; "+
+				"form-action 'self'; "+
+				"frame-ancestors 'self'")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}

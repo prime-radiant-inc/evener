@@ -1,8 +1,0 @@
-/* Inherits currentColor from the steering row (--ink-mid), so this stylesheet
- * references no colour token at all and needs no token-contract allowlist
- * entry - the allowlist gates the three attention hues, and this uses none. */
-.glyph {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-}

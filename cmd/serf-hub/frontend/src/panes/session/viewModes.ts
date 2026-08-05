@@ -1,0 +1,128 @@
+import type { ItemModel, TurnModel } from "../../protocol/model";
+
+export type SessionViewMode = "everything" | "conversation" | "intent";
+
+export const SESSION_VIEW_MODES = [
+  { value: "everything", label: "Everything" },
+  { value: "conversation", label: "Conversation" },
+  { value: "intent", label: "Intent" },
+] as const satisfies readonly {
+  value: SessionViewMode;
+  label: "Everything" | "Conversation" | "Intent";
+}[];
+
+export type FocusedEntry =
+  | {
+      kind: "message";
+      id: string;
+      turnId: string;
+      sourceIndex: number;
+      role: "user" | "agent";
+      message: ItemModel;
+    }
+  | {
+      kind: "tool-count";
+      id: string;
+      turnId: string;
+      sourceIndex: number;
+      count: number;
+      label: string;
+    }
+  | {
+      kind: "intent";
+      id: string;
+      turnId: string;
+      sourceIndex: number;
+      rationale: string;
+    };
+
+type FocusedViewMode = Exclude<SessionViewMode, "everything">;
+
+function messageRole(item: ItemModel): "user" | "agent" | undefined {
+  if (item.type === "userMessage") return "user";
+  if (item.type === "agentMessage") return "agent";
+  return undefined;
+}
+
+function toolCountLabel(count: number): string {
+  return `${count} tool call${count === 1 ? "" : "s"}`;
+}
+
+export function focusedEntries(turns: readonly TurnModel[], mode: FocusedViewMode): FocusedEntry[] {
+  const entries: FocusedEntry[] = [];
+  let firstToolId: string | undefined;
+  let lastToolId: string | undefined;
+  let firstToolTurnId: string | undefined;
+  let firstToolSourceIndex: number | undefined;
+  let toolCount = 0;
+  let sourceIndex = 0;
+
+  const flushToolCount = () => {
+    if (
+      toolCount === 0 ||
+      firstToolId === undefined ||
+      lastToolId === undefined ||
+      firstToolTurnId === undefined ||
+      firstToolSourceIndex === undefined
+    )
+      return;
+    entries.push({
+      kind: "tool-count",
+      id: `tools:${firstToolId}:${lastToolId}`,
+      turnId: firstToolTurnId,
+      sourceIndex: firstToolSourceIndex,
+      count: toolCount,
+      label: toolCountLabel(toolCount),
+    });
+    firstToolId = undefined;
+    lastToolId = undefined;
+    firstToolTurnId = undefined;
+    firstToolSourceIndex = undefined;
+    toolCount = 0;
+  };
+
+  for (const turn of turns) {
+    for (const item of turn.items) {
+      const itemSourceIndex = sourceIndex;
+      sourceIndex += 1;
+      if (item.type === "commandExecution") {
+        if (mode === "conversation") {
+          firstToolId ??= item.id;
+          firstToolTurnId ??= turn.id;
+          firstToolSourceIndex ??= itemSourceIndex;
+          lastToolId = item.id;
+          toolCount += 1;
+        } else {
+          const rationale = item.description?.trim();
+          if (rationale) {
+            entries.push({
+              kind: "intent",
+              id: `intent:${item.id}`,
+              turnId: turn.id,
+              sourceIndex: itemSourceIndex,
+              rationale,
+            });
+          }
+        }
+        continue;
+      }
+
+      const role = messageRole(item);
+      if (role) {
+        if (mode === "conversation") flushToolCount();
+        entries.push({
+          kind: "message",
+          id: item.id,
+          turnId: turn.id,
+          sourceIndex: itemSourceIndex,
+          role,
+          message: item,
+        });
+      }
+    }
+  }
+
+  if (mode === "conversation") flushToolCount();
+
+  return entries;
+}

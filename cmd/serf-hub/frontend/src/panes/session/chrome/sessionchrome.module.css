@@ -1,0 +1,68 @@
+/* One quiet status-bar row with exactly two direct children:
+ *
+ *   .body  - cadence slot + StatusRow + GoalControl's chip. Owns compression
+ *            through inline-size container queries when the pane narrows.
+ *   .right - Details/Tasks/Jobs triggers + the session "⋯" menu. A
+ *            flex:none sibling of a row that never wraps.
+ *
+ * The split exists because the flat-sibling layout it replaced let the
+ * menu overflow onto a line of its own: with StatusRow, the goal chip and
+ * .right as direct items of a flex-wrap:wrap row, .right was the item the
+ * wrap pushed down whole whenever the status facts plus the triggers
+ * exceeded the chrome width - growing the footer by a full row just to
+ * hold the "⋯" (and reflowing the pane every time a long model name, a
+ * failure count or a queue chip crossed the threshold). Now the menu
+ * always shares the one line while the status content compresses. */
+.chrome {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: var(--space-3);
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  flex: none;
+}
+
+.body {
+  container-type: inline-size;
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: var(--space-3);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.right {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: var(--space-2);
+  flex: none;
+}
+
+/* Every trailing trigger lives inside .chrome's final overflow boundary. An
+ * outside outline would be cut off when the actions menu sits flush with that
+ * boundary, so the complete trailing group uses the same inset focus recipe as
+ * the model and effort controls. */
+.right button:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* The relocated header cadence (2026-07-30-mobile-session-layout-design.md,
+ * decision 3): desktop shows liveness in the pane header, which is hidden
+ * below the breakpoint - so this slot is desktop-hidden and mobile-shown. */
+.cadenceSlot {
+  display: none;
+}
+
+@media (max-width: 899px) {
+  .cadenceSlot {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+  }
+}

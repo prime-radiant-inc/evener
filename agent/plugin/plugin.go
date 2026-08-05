@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -337,6 +338,22 @@ func LoadAllFailSoft(dirs []string) ([]Instance, []SkippedPlugin) {
 		plugins = append(plugins, lp)
 	}
 	return plugins, skipped
+}
+
+// MergeCommands flattens plugin instances' commands (namespaced keys) and
+// overlays serf-wide commands (bare keys), returning the unified command
+// map a session or the hub catalog resolves against. Bare keys can never
+// collide with "plugin:name" keys (serf-wide discovery rejects colons), so
+// the overlay cannot shadow a plugin's qualified key; precedence between a
+// bare serf-wide command and a plugin's bare-name fallback is decided by
+// ResolveCommand's exact-match-first rule.
+func MergeCommands(instances []Instance, serfwide map[string]Command) map[string]Command {
+	out := make(map[string]Command, len(serfwide))
+	for _, inst := range instances {
+		maps.Copy(out, inst.Commands)
+	}
+	maps.Copy(out, serfwide)
+	return out
 }
 
 // resolveComponentDirs returns a list of absolute directory paths to scan for

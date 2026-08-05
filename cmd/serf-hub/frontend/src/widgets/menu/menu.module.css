@@ -1,0 +1,117 @@
+/* No position: relative here - the popup is a portal (see widgets/menu's
+ * own index.tsx), position: fixed off the trigger's own measured rect, not
+ * an absolutely-positioned child anchored to this box. */
+.root {
+  display: inline-block;
+}
+
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 32px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--edge);
+  background: transparent;
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  cursor: pointer;
+}
+
+.trigger:hover {
+  background: var(--surface-2);
+}
+
+.trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* "quiet" variant (index.tsx's own MenuProps.variant doc comment): no
+ * border at rest - border-color: transparent (not `border: none`) keeps
+ * this pixel-identical in size to the default variant, the same convention
+ * Button's own .quiet uses (widgets/button/button.module.css). Hover comes
+ * for free from .trigger:hover above, which applies regardless of variant;
+ * this adds the same surface-2 wash while OPEN, since a borderless trigger
+ * otherwise has no persistent affordance left to show which one currently
+ * owns an open popup. */
+.triggerQuiet {
+  border-color: transparent;
+}
+
+.triggerQuiet[aria-expanded="true"] {
+  background: var(--surface-2);
+}
+
+/* position: fixed (not absolute): the popup portals to document.body (see
+ * index.tsx) and gets its top/left as an inline style, computed off the
+ * trigger's own getBoundingClientRect() - never these two static values,
+ * which is what used to clip the popup at a scrolling ancestor's edge or
+ * overflow the viewport's own, with no way for a mere descendant to escape
+ * either via CSS alone. */
+.popup {
+  position: fixed;
+  z-index: 1020;
+  min-width: 180px;
+  margin: 0;
+  padding: var(--space-1) 0;
+  list-style: none;
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  animation: menuFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
+}
+
+@keyframes menuFadeScale {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .popup {
+    animation: none;
+  }
+}
+
+/* squircle-proto: continuous (Apple-style) corner curvature where the engine
+ * supports corner-shape; border-radius stays the fallback and supplies the
+ * corner area this shapes. */
+@supports (corner-shape: squircle) {
+  .popup {
+    corner-shape: squircle;
+  }
+}
+
+.item {
+  padding: var(--space-2) var(--space-4);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.item:hover {
+  background: var(--surface-1);
+}
+
+.item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--surface-1);
+}
+
+.itemDisabled {
+  color: var(--ink-low);
+  cursor: not-allowed;
+  pointer-events: none;
+}

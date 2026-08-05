@@ -1,0 +1,5 @@
+.row {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-3) 0;
+}

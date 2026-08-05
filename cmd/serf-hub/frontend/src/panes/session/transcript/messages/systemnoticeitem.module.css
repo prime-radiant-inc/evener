@@ -1,0 +1,87 @@
+/* Quiet one-liners (mockup #7 alt A: "quiet --ink-3 one-liner"); a run of
+ * 3+ coalesces into one collapsed toggle so a burst of lifecycle churn
+ * never reads as a wall of dividers. */
+.line {
+  padding: var(--space-1) 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
+/* A turn failure is the one system notice that is not churn, so it wears the
+ * failed tool row's grammar rather than the quiet line's: glyph, then text at
+ * reading contrast. The hue is entirely the FailureGlyph widget's - a
+ * non-widget stylesheet may not reference --danger (token-contract.test.ts) -
+ * and the text stays off --ink-low, which is under the AA floor in both
+ * themes. Same flex/baseline/gap as toolcallitem's .row, so the two failure
+ * marks in a transcript sit on one grammar. */
+.failure {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+}
+
+.failureText {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+}
+
+.group {
+  padding: var(--space-1) 0;
+}
+
+.summary {
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
+.groupBody {
+  margin-top: var(--space-1);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--edge);
+}
+
+/* Scaffolding disclosure (the system prompt or a compaction summary) gets a
+ * hairline-bordered box, with its summary and expanded Markdown body stacked
+ * as full-width rows. This layout is scoped here because this disclosure has
+ * a different semantic contract from the raw job-notification payload. */
+.scaffold {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin: var(--space-1) 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+}
+
+/* The collapsed character count stays visible as the summary's compact
+ * affordance. A full-width block lets a future longer label wrap without
+ * stealing width from the expanded body. */
+.scaffoldSummary {
+  display: list-item;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
+.scaffoldBody {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin-top: var(--space-2);
+}

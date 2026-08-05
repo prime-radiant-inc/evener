@@ -1,0 +1,58 @@
+.host {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--surface-0);
+  /* Requirement 4 (wave-3 plan, Task 4): keeps the stack's own bottom edge
+   * clear of a device's home-indicator/gesture-bar cutout. The composer a
+   * session pane grows in wave 5 will need its OWN safe-area accommodation
+   * where it actually docks (typically as its own fixed/sticky bottom bar,
+   * not this container's padding) - noted here, not built, since no
+   * composer exists yet this wave. */
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.topBar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: calc(var(--space-2) + env(safe-area-inset-top)) var(--space-3) var(--space-2);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--edge);
+}
+
+.title {
+  flex: 1 1 auto;
+  /* min-width: 0 is required for ellipsis truncation inside a flex row -
+   * the same rule PaneScaffold's own .title records. */
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: center;
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-pane-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-title);
+  letter-spacing: var(--tracking-display);
+}
+
+.leading {
+  /* Always rendered, even empty (welcome - see StackHost.tsx's showBack) -
+   * a single empty flex item still anchors at the row's start under
+   * justify-content: space-between, keeping the drawer trigger pinned to
+   * the trailing edge regardless of whether the back button is present. */
+  display: flex;
+  align-items: center;
+}
+
+.body {
+  flex: 1 1 auto;
+  /* min-height: 0 is required for a flex child to size correctly instead
+   * of stretching this column to fit its content - same reasoning as
+   * AppShell.module.css's own .content and PaneScaffold's own .body. */
+  min-height: 0;
+}

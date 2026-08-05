@@ -1,0 +1,48 @@
+{
+  "name": "serf-hub-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit --incremental false && vite build",
+    "typecheck": "tsc --noEmit --incremental false",
+    "typecheck:fast": "tsc --noEmit",
+    "test": "vitest run --exclude scripts/browserGuardProcess.test.mjs && node --test scripts/browserGuardProcess.test.mjs",
+    "lint": "biome ci src",
+    "format": "biome format --write src",
+    "check": "biome check --write src",
+    "layoutguard": "node scripts/layoutguard/run.mjs",
+    "overflowguard": "node scripts/overflowguard/run.mjs",
+    "spawnguard": "node scripts/spawnguard/run.mjs"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "@tanstack/react-virtual": "^3.14.7",
+    "anser": "^2.3.5",
+    "dockview": "^7.0.2",
+    "dockview-react": "^7.0.2",
+    "dompurify": "^3.4.12",
+    "marked": "^18.0.6",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-router": "^8.3.0",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.5",
+    "@ibm/plex-mono": "^2.5.0",
+    "@ibm/plex-sans": "^1.1.0",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/dompurify": "^3.0.5",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "fake-indexeddb": "6.2.5",
+    "jsdom": "^29.1.1",
+    "typescript": "^6.0.3",
+    "vite": "^8.1.5",
+    "vitest": "^4.1.10"
+  }
+}

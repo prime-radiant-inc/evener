@@ -1,0 +1,285 @@
+// UI-ready thread/turn/item model. reducer.ts folds wire shapes (Thread,
+// Turn, ThreadItem, AnyNotification, ...) from ./types.gen.ts into this
+// shape; components should only ever read this model, never the wire types
+// directly.
+
+import type {
+  GoalState,
+  PendingMutation,
+  QueueState,
+  SandboxEscalationRequested,
+  SerfUsage,
+  ThreadCapabilities,
+  ThreadStatus,
+} from "./types.gen";
+
+// A single image handle on an item: `src` is the already-resolved fetch URL
+// (reducer.ts keeps the wire's url ?? path ?? name ?? source precedence for
+// it), while name/path/source are the wire's own separate fields carried
+// through UNRESOLVED alongside it — restoring the provenance a renderer
+// needs to caption an image (or, later, group it by where it came from)
+// instead of the reducer collapsing every image down to whichever field won
+// that fallback and discarding the rest (kata byq2). source only ever comes
+// from an OutputImage (a tool result); an InputItem (a user-sent or steered
+// image) has no such field and never populates it.
+export interface ItemImage {
+  src: string;
+  name?: string;
+  path?: string;
+  source?: string;
+}
+
+export interface ItemModel {
+  id: string;
+  turnId: string;
+  // The item's 1-based position in the parent transcript's ENTRY list (wire
+  // ThreadItem.transcriptEntryIndex), counting every entry - user, assistant,
+  // checkpoint - not just the ones that opened a turn. This is the only field
+  // that names a thread/fork divergence position: the hub reads
+  // ThreadForkParams.sourceTurnId as exactly this index
+  // (cmd/serf-hub/app_threadlifecycle.go's parseSourceTurnID, feeding
+  // agent.ForkSessionAtUserTurn). turnId is NOT interchangeable with it - a
+  // replayed transcript numbers turn_N off the entry index and makes the two
+  // look equal, but every live minter numbers turns off its own counter.
+  // Undefined when the wire carried none, which means "no persisted transcript
+  // position" and never entry 0; a fork affordance must refuse rather than
+  // guess (see UserMessageItem.tsx).
+  transcriptEntryIndex?: number;
+  clientMutationId?: string;
+  type: string; // wire ThreadItem.type verbatim
+  text: string; // settled text
+  pendingText?: string[]; // in-flight delta chunks (join on complete)
+  toolName?: string;
+  callId?: string;
+  argumentsJSON?: string;
+  // Tool-call purpose — the wire ThreadItem.description, surfaced for the
+  // subagent Activity feed. Dropped historically by wireItemToModel; now carried.
+  description?: string;
+  // The wire ThreadItem.eventKind: a stable typed discriminator naming what a
+  // systemMessage item is ("system_prompt", "compaction", "skill_activated",
+  // …; appwire.ThreadItemEventKind* on the Go side). The transcript renderer
+  // classifies scaffold/system items off this typed field instead of guessing
+  // from the item's char count (kata ckgw). Empty/undefined for non-system
+  // items and for a system item projected by a daemon predating a given kind.
+  eventKind?: string;
+  // The wire's steering kind (events.SteeringKind* on the Go side): what the
+  // daemon injected, named at the injection site. The transcript labels a
+  // steer from this rather than pattern-matching its prose. Undefined for
+  // non-steering items, for user-sourced steering, and for a steer projected
+  // by a daemon predating the field — in which case the UI shows no kind.
+  steeringKind?: string;
+  // Structured detail behind a system item's prose text (wire ThreadItem.raw),
+  // e.g. `{roundTimings: {...}}` for a round_timings item - lets a renderer
+  // read real numbers instead of re-parsing the human-readable text.
+  // Undefined for every item type that doesn't attach one.
+  raw?: unknown;
+  output?: string;
+  // Tool-result error text (wire ThreadItem.error): populated instead of
+  // output when a tool call failed or was denied. The wire projects item
+  // status "completed" even for an errored call (internal/appprojector and
+  // internal/apptranscript both hardcode it - a Go follow-up), so error
+  // PRESENCE, not status, is what distinguishes a failed/denied call (e.g. a
+  // denied ask_user) from a clean completion. Carried on both the live
+  // item/completed and the snapshot/reload paths (both fold through
+  // reducer's wireItemToModel).
+  error?: string;
+  // Wire ThreadItem.prevalOnly (kata hgm1): true when `error` came from the
+  // daemon rejecting the call before it ever reached the tool's real
+  // execution (an unknown tool name, or arguments still failing schema
+  // validation after repair) - a malformed request the model made, not a
+  // real tool run that failed or was denied. Meaningless when `error` is
+  // undefined. Renderers use this, together with whether a later call to
+  // the same tool succeeded, to tell a self-corrected bounce apart from a
+  // genuine failure worth staying open forever.
+  prevalOnly?: boolean;
+  // A shell tool call's process exit code, promoted onto the settled item as a
+  // typed wire field (ThreadItem.exitCode, wire-honesty spec Part A). undefined
+  // for a still-running/backgrounded call, for any non-shell tool, and for an
+  // old daemon that doesn't populate it (the shell descriptor then falls back
+  // to parsing the output footer text). A real 0 is a clean exit, distinct from
+  // undefined — never conflate the two.
+  exitCode?: number;
+  images?: ItemImage[];
+  outputImages?: ItemImage[];
+  status?: string;
+  source?: string;
+  reasoningSummaries?: string[][]; // per summaryIndex chunk lists
+  startedAt?: string;
+  completedAt?: string;
+  // Client-observed arrival times stamped by the reducer from its `now`
+  // parameter (never a clock read) — NOT wire truth: the wire never carries
+  // reasoning timestamps at all (reasoning ThreadItems get no StartedAt/
+  // CompletedAt on either the live projector or the historical reader; see
+  // reducer.ts's appendReasoningDelta comment for the file:line receipts).
+  // Consumers should prefer the wire startedAt/completedAt pair above when
+  // present and fall back to these only when it is absent. Hydrated/
+  // historical items never carry these — only a reducer that has actually
+  // observed the item live stamps them.
+  observedStartedAt?: string;
+  observedCompletedAt?: string;
+  // Populated only by the reducer's `case "warning"` fold (see reducer.ts);
+  // undefined for every other item.
+  warning?: { source?: string; title?: string; hint?: string };
+}
+
+export interface TurnModel {
+  id: string;
+  status: string;
+  items: ItemModel[];
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  usage?: unknown;
+  cost?: unknown;
+  error?: unknown;
+}
+
+// SYSTEM_PRELUDE_TURN_ID is the synthetic turn id for content that belongs
+// before the session's first real turn - appwire.SystemPreludeTurnID on the
+// wire. apptranscript.PreludeTurn's system-prompt scaffold and appprojector's
+// bundled SESSION_START-time announcements (plugin loads, prompt-loaded
+// notices) both use it, so a transcript whose only turn is this one has never
+// had a real turn: the session is dormant (kata bz2z). It is also the one turn
+// id that fixes its own POSITION - reducer.ts and the hub's snapshot reduction
+// (server/appwire_turns.go) both place it at the front of the transcript
+// however late its first frame arrives. Real turns always use "turn_N"
+// (N >= 1), so this can never collide with one.
+//
+// It lives here, in the protocol layer's model home, because both the reducer
+// that places the turn and the panes that classify it need the same literal;
+// model.ts is the one module both already import, and it is free of side
+// effects, so reaching for the id never drags in a renderer registration.
+export const SYSTEM_PRELUDE_TURN_ID = "turn_system";
+
+// A model call that failed with a retryable error and is waiting to be tried
+// again. Attempt counts retries (the first retry is 1); maxAttempts is the whole
+// budget including the initial try, so "attempt 9 of 11" renders without the
+// client knowing the daemon's retry policy.
+export interface ModelRetryState {
+  attempt: number;
+  maxAttempts: number;
+  delayMs: number;
+  errorClass?: string;
+  statusCode?: number;
+  turnId?: string;
+}
+
+export interface ThreadModel {
+  ref: string;
+  threadId: string;
+  name: string;
+  status: ThreadStatus;
+  modelProvider: string;
+  model: string;
+  reasoningEffort?: string;
+  askPending: boolean;
+  // Surface-on-entry snapshot of blocked sandbox-exemption approval cards
+  // (M7) — appwire/types.go's ThreadSerf.PendingEscalations doc comment: "a
+  // HUMAN-CLIENT field only ... never part of the model's transcript or any
+  // model-visible projection." THREAD-level, never a turn item; always an
+  // array (hydrateThread defaults an absent wire value to []).
+  pendingEscalations: SandboxEscalationRequested[];
+  turns: TurnModel[];
+  activeTurnId?: string;
+  queue: QueueState | null;
+  pendingMutations?: PendingMutation[];
+  tasks: { total: number; done: number } | null;
+  // Bumped (to the reducer's frame time) by every serf/job/started and
+  // serf/job/finished for this thread; the jobs panel re-fetches its list when
+  // this changes. null until the first push arrives.
+  jobsUpdatedAt: number | null;
+  // The root activity tree's monotonic lifecycle revision. Null until a
+  // serf/jobs/treeUpdated notification names this thread as the root whose tree
+  // changed.
+  jobsTreeRevision: number | null;
+  olderCursor?: string;
+  lastFrameAt: number; // liveness input
+  // The in-flight model-call retry, when one is pending (serf/thread/modelRetry).
+  // Liveness input, and deliberately NOT a lastFrameAt restamp: the model has
+  // produced nothing, so the quiet/stall clock must keep running. This only
+  // explains the silence it is already measuring. Cleared the moment the model
+  // produces a real frame or the turn settles.
+  modelRetry?: ModelRetryState;
+  // Wave 5 T1: the following are all sourced from thread.serf
+  // (appwire/types.go's SerfThread, lines 223-274) and are SNAPSHOT-ONLY -
+  // hydrateThread populates them, and applyNotification updates them ONLY
+  // where a real notification actually carries the field (see each field's
+  // own note below); everything else here is stale until the next
+  // thread/read (e.g. a reconnect re-hydrate) and there is no live-push
+  // wire-candidate yet.
+  // Not snapshot-only, unlike its neighbours here: thread/status/changed
+  // carries the set that goes with the status it announces, and the reducer
+  // applies it (kata 06t8). It has to, because the hub derives send/steer/
+  // queue FROM whether a turn is in flight - a set cut before the turn
+  // describes a session that no longer exists by the time the composer reads
+  // it back. Absent on a status frame still means "no update".
+  capabilities: ThreadCapabilities;
+  // Goal is null when no /goal objective is set (wire: SerfThread.Goal
+  // *GoalState, omitempty). No live push exists (goal/set's response
+  // carries only {started}, and appwire/protocol.go's Notifications catalog
+  // has no goal-changed entry) - a future wave's wire-candidate.
+  goal: GoalState | null;
+  contextUsed: number;
+  contextWindow: number;
+  contextPressure: number;
+  // Usage is null (not a zero-valued object) when the daemon has no token
+  // data at all (old daemon, or a Codex-bridged thread) - SerfThread.Usage's
+  // own doc comment: "nil is how a fresh/old-daemon/codex thread signals 'no
+  // token data' rather than rendering ↑0 ↓0." No live push.
+  usage: SerfUsage | null;
+  // Cost is the session-level estimated dollar total (wire: SerfThread.Cost) -
+  // the "~$X.XX" string EstimateCost derives SERVER-SIDE from the cumulative
+  // usage at the thread's model price (the pricing table never crosses the
+  // wire), the session-scope sibling of TurnModel.cost. undefined/null (never
+  // "") when the daemon omits it: no token data, or an uncataloged model - an
+  // honest "unknown" the status row renders as NO cost chip, never a
+  // misleading "~$0.00". Snapshot-only like usage/workMillis: hydrateThread
+  // sets it and the reducer's ...model spread preserves it; no live push, so
+  // it refreshes on the next thread/read (e.g. a reconnect re-hydrate).
+  cost?: string | null;
+  // failedToolCalls is how many of this session's tool calls failed, counted
+  // SERVER-SIDE over the whole transcript (wire: SerfThread.FailedToolCalls).
+  // It is not derivable here: thread/read windows turns, so a count over
+  // model.turns covers only the loaded suffix, and a "0 failed" from a partial
+  // window is the very misreading the figure exists to prevent.
+  //
+  // Both a live and a cold session carry it, from different producers: the
+  // daemon counts a running session's failures as it writes them to the
+  // transcript, and the hub counts a finished one by reading that transcript
+  // back. Same rule (agent/transcript's FailedToolResult), same whole-session
+  // scope, so the figure does not jump when a session goes cold.
+  //
+  // undefined means nobody counted — an unreadable transcript, a session with
+  // no transcript at all, or a producer that does not derive it (an old daemon,
+  // a Codex-sourced thread). A real 0 means the whole session was counted and
+  // nothing failed. Consumers must render BOTH as nothing: absent is unknown,
+  // and zero is not news.
+  // Snapshot-only like usage/cost/workMillis; no live push.
+  failedToolCalls?: number;
+  workMillis: number;
+  // activeTurnStartedAt is undefined when no turn is active (an ISO string,
+  // like every other timestamp on this model, converted from the wire's
+  // epoch-ms SerfThread.ActiveTurnStartedAt). No live push.
+  activeTurnStartedAt?: string;
+  // reasoningEffortLevels/supportsReasoning DO get a live update, but only
+  // via thread/model/changed (a model switch describes the new model's full
+  // profile - see reducer.ts's own case) - never independently pushed.
+  reasoningEffortLevels: string[];
+  supportsReasoning: boolean;
+  // Location facts from the wire Thread snapshot: cwd is always present;
+  // gitBranch/projectPath only when known. Consumed by the session chrome's
+  // location cluster and doc-pane cwd-relativization. Snapshot-only - a
+  // reconnect re-hydrates them; nothing pushes them live.
+  cwd: string;
+  gitBranch?: string;
+  projectPath?: string;
+  // When the session began and when its state was last written, as ISO
+  // strings (the model's timestamp convention) converted from the wire's
+  // top-level Thread.createdAt/updatedAt, which are Unix SECONDS - a
+  // different unit from the millisecond stamps on serf.activeTurnStartedAt
+  // and on turns (see detailsAccounting.ts's epochSecondsToISO). undefined
+  // when the source did not know the instant (Go's zero value). Snapshot-only
+  // like the fields above; the session-details panel reads them.
+  createdAt?: string;
+  updatedAt?: string;
+}

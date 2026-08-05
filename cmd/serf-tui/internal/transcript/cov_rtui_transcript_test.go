@@ -1,0 +1,321 @@
+package transcript
+
+import (
+	"testing"
+
+	"primeradiant.com/serf/appwire"
+)
+
+func TestParseJobNotificationHeadline(t *testing.T) {
+	t.Run("not a job notification", func(t *testing.T) {
+		if _, _, _, ok := ParseJobNotificationHeadline("just some text"); ok {
+			t.Fatal("ok = true, want false for non-notification text")
+		}
+	})
+
+	t.Run("failure via status attribute", func(t *testing.T) {
+		text := `<job-notification job_id="j1" status="failed"></job-notification>`
+		jobID, headline, isErr, ok := ParseJobNotificationHeadline(text)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if jobID != "j1" {
+			t.Fatalf("jobID = %q, want j1", jobID)
+		}
+		if !isErr {
+			t.Fatal("isError = false, want true for failed status")
+		}
+		if headline != "failed" {
+			t.Fatalf("headline = %q, want failed (status fallback)", headline)
+		}
+	})
+
+	t.Run("failure via nonzero exit code", func(t *testing.T) {
+		text := `<job-notification job_id="j2" event="done" exit_code="2"></job-notification>`
+		_, headline, isErr, ok := ParseJobNotificationHeadline(text)
+		if !ok || !isErr {
+			t.Fatalf("ok=%v isError=%v, want true true", ok, isErr)
+		}
+		if headline != "done" {
+			t.Fatalf("headline = %q, want done (event fallback)", headline)
+		}
+	})
+
+	t.Run("delegate success with communicate excerpt", func(t *testing.T) {
+		// job_type="delegate" is what the real producer stamps on a delegate's
+		// terminal block (agent/job_notify.go emits job_type unconditionally);
+		// it is also what admits the excerpt to envelope parsing (kata sdvc).
+		text := `<job-notification job_id="j3" job_type="delegate" status="completed" exit_code="0">` +
+			`excerpt: {"data":{"test_summary":"12 passed","commit_hashes":["abcdef1234567890"],"concerns":["c1","c2"]}}` +
+			`</job-notification>`
+		_, headline, isErr, ok := ParseJobNotificationHeadline(text)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if isErr {
+			t.Fatal("isError = true, want false for exit 0 completed")
+		}
+		want := "12 passed · abcdef12 · 2 concerns"
+		if headline != want {
+			t.Fatalf("headline = %q, want %q", headline, want)
+		}
+	})
+
+	t.Run("kata sdvc: shell stdout that happens to be envelope-shaped JSON stays literal", func(t *testing.T) {
+		// The exact bug 9cnq fixed on the web side: only sources that can
+		// legitimately carry a communicate envelope get envelope parsing.
+		// A shell job whose stdout coincidentally matches the envelope's
+		// shape must fall back to the status headline, never surface the
+		// stdout's own test_summary/concerns as if a delegate reported them.
+		text := `<job-notification job_id="j4" job_type="shell" status="completed" exit_code="0">` +
+			`excerpt: {"data":{"test_summary":"12 passed","commit_hashes":["abcdef1234567890"],"concerns":["c1","c2"]}}` +
+			`</job-notification>`
+		_, headline, isErr, ok := ParseJobNotificationHeadline(text)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if isErr {
+			t.Fatal("isError = true, want false for exit 0 completed")
+		}
+		if headline != "completed" {
+			t.Fatalf("headline = %q, want %q (status fallback, not the stdout's fake envelope)", headline, "completed")
+		}
+	})
+}
+
+// agent/job_notify.go's escapeNotificationText HTML-entity-escapes &, <, >,
+// and " before interpolating job/watch-derived text into a
+// <job-notification> wrapper (kata 77sf), so this parser's regex-extracted
+// attribute values and body text now carry entities and need the paired
+// decode - otherwise the reader sees literal &amp;/&lt; text, and a
+// delegate's JSON communicate envelope (which is escaped the same way,
+// since its own quotes are just body content to the wrapper) never parses:
+// &quot; in place of every " is not valid JSON.
+func TestParseJobNotificationHeadlineDecodesProducerEscapedEntities(t *testing.T) {
+	t.Run("an escaped attribute value decodes for its headline fallback", func(t *testing.T) {
+		text := `<job-notification job_id="j6" status="ok &amp; done &lt;fast&gt;"></job-notification>`
+		_, headline, _, ok := ParseJobNotificationHeadline(text)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if want := "ok & done <fast>"; headline != want {
+			t.Fatalf("headline = %q, want %q (attribute value must decode)", headline, want)
+		}
+	})
+
+	t.Run("an escaped communicate envelope in the body decodes before headline extraction", func(t *testing.T) {
+		text := `<job-notification job_id="j7" job_type="delegate" status="completed" exit_code="0">` +
+			"Job j7 completed.\nexcerpt:\n" +
+			`{&quot;data&quot;:{&quot;test_summary&quot;:&quot;R &amp; D: 12 &lt;passed&gt;&quot;,&quot;concerns&quot;:[&quot;edge &amp; case&quot;]}}` +
+			`</job-notification>`
+		_, headline, isErr, ok := ParseJobNotificationHeadline(text)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if isErr {
+			t.Fatal("isError = true, want false for exit 0 completed")
+		}
+		if want := "R & D: 12 <passed> · 1 concern"; headline != want {
+			t.Fatalf("headline = %q, want %q (escaped JSON body must decode before json.Unmarshal, or the envelope never parses)", headline, want)
+		}
+	})
+
+	// The incidental fix: since the producer now escapes attribute values,
+	// a delimiter-bearing reason can no longer shift where this parser's
+	// naive (\w+)="([^"]*)" match believes that attribute ends, so the
+	// attribute after it (exit_code, here) is still found correctly.
+	t.Run("a delimiter-bearing (producer-escaped) attribute value no longer breaks extraction of attributes after it", func(t *testing.T) {
+		text := `<job-notification job_id="j8" status="completed" reason="bad &quot;reason&gt; with &lt;delimiters" exit_code="2"></job-notification>`
+		jobID, _, isErr, ok := ParseJobNotificationHeadline(text)
+		if !ok {
+			t.Fatal("ok = false, want true (delimiter-bearing attribute value must not break extraction)")
+		}
+		if jobID != "j8" {
+			t.Fatalf("jobID = %q, want j8", jobID)
+		}
+		if !isErr {
+			t.Fatal("isError = false, want true (exit_code=2 must still be recognized after a delimiter-bearing reason attribute)")
+		}
+	})
+}
+
+func TestCommunicateHeadline(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"no excerpt marker", "nothing here", ""},
+		{"malformed json after excerpt", "excerpt: {not json", ""},
+		{"status only", `excerpt: {"data":{"status":"running"}}`, "running"},
+		{"single concern is singular", `excerpt: {"data":{"status":"ok","concerns":["only"]}}`, "ok · 1 concern"},
+		{"test summary preferred over status", `excerpt: {"data":{"status":"ok","test_summary":"all green"}}`, "all green"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := communicateHeadline(tc.body); got != tc.want {
+				t.Fatalf("communicateHeadline(%q) = %q, want %q", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClipStrAndShortHash(t *testing.T) {
+	if got := clipStr("short", 60); got != "short" {
+		t.Fatalf("clipStr(short) = %q, want short", got)
+	}
+	if got := clipStr("abcdefghij", 5); got != "abcd…" {
+		t.Fatalf("clipStr truncation = %q, want abcd…", got)
+	}
+	if got := shortHash("abc123"); got != "abc123" {
+		t.Fatalf("shortHash(short) = %q, want abc123", got)
+	}
+	if got := shortHash("0123456789abcdef"); got != "01234567" {
+		t.Fatalf("shortHash(long) = %q, want 01234567", got)
+	}
+}
+
+func TestFirstNonEmptyStr(t *testing.T) {
+	if got := firstNonEmptyStr("", "  ", "hit", "later"); got != "hit" {
+		t.Fatalf("firstNonEmptyStr = %q, want hit", got)
+	}
+	if got := firstNonEmptyStr("", "   "); got != "" {
+		t.Fatalf("firstNonEmptyStr(all empty) = %q, want empty", got)
+	}
+}
+
+func TestItemDuration(t *testing.T) {
+	ms := func(v int64) *int64 { return &v }
+	if d := ItemDuration(appwire.ThreadItem{}); d != 0 {
+		t.Fatalf("nil timestamps duration = %v, want 0", d)
+	}
+	if d := ItemDuration(appwire.ThreadItem{StartedAt: ms(100)}); d != 0 {
+		t.Fatalf("nil CompletedAt duration = %v, want 0", d)
+	}
+	if d := ItemDuration(appwire.ThreadItem{StartedAt: ms(200), CompletedAt: ms(100)}); d != 0 {
+		t.Fatalf("completed<started duration = %v, want 0", d)
+	}
+	if d := ItemDuration(appwire.ThreadItem{StartedAt: ms(100), CompletedAt: ms(1100)}); d.Milliseconds() != 1000 {
+		t.Fatalf("duration = %v, want 1s", d)
+	}
+}
+
+func TestImageItemsPlaceholder(t *testing.T) {
+	if got := ImageItemsPlaceholder(nil); got != "" {
+		t.Fatalf("empty = %q, want empty", got)
+	}
+	one := []appwire.InputItem{{Type: "image"}}
+	if got := ImageItemsPlaceholder(one); got != "[image]" {
+		t.Fatalf("single = %q, want [image]", got)
+	}
+	many := []appwire.InputItem{{Type: "image"}, {Type: "image"}, {Type: "image"}}
+	if got := ImageItemsPlaceholder(many); got != "[3 images]" {
+		t.Fatalf("multi = %q, want [3 images]", got)
+	}
+}
+
+// toolMsgWithSubagent builds a delegate tool message carrying a subagent run,
+// the shape ApplyTieHeadline / ApplyChildActivity match against.
+func toolMsgWithSubagent(run SubagentRunInfo) ChatMessage {
+	return ChatMessage{Kind: MsgTool, Tool: &ToolCallInfo{Name: "delegate", Subagent: &run}}
+}
+
+func TestApplyTieHeadline(t *testing.T) {
+	r := NewTranscriptReducer([]ChatMessage{
+		toolMsgWithSubagent(SubagentRunInfo{JobID: "job-1"}),
+	}, nil, nil)
+
+	if r.ApplyTieHeadline("", "hi", false) {
+		t.Fatal("empty jobID returned true, want false")
+	}
+	if r.ApplyTieHeadline("job-1", "", false) {
+		t.Fatal("empty headline returned true, want false")
+	}
+	if r.ApplyTieHeadline("no-such-job", "hi", false) {
+		t.Fatal("unmatched jobID returned true, want false")
+	}
+	if !r.ApplyTieHeadline("job-1", "tests failed", true) {
+		t.Fatal("matching tie returned false, want true")
+	}
+	got := r.Messages()[0].Tool.Subagent
+	if got.Headline != "tests failed" || !got.HeadlineError {
+		t.Fatalf("tie result = %+v, want headline+error set", got)
+	}
+}
+
+func TestApplyChildActivity(t *testing.T) {
+	r := NewTranscriptReducer([]ChatMessage{
+		toolMsgWithSubagent(SubagentRunInfo{TranscriptRef: "ref-1", Status: "running"}),
+	}, nil, nil)
+
+	if r.ApplyChildActivity("", "step") {
+		t.Fatal("empty ref returned true, want false")
+	}
+	if r.ApplyChildActivity("nope", "step") {
+		t.Fatal("unmatched ref returned true, want false")
+	}
+	if !r.ApplyChildActivity("ref-1", "reading file") {
+		t.Fatal("matched activity returned false, want true")
+	}
+	run := r.Messages()[0].Tool.Subagent
+	if run.Steps != 1 || run.Activity != "reading file" {
+		t.Fatalf("after first activity: steps=%d activity=%q, want 1 'reading file'", run.Steps, run.Activity)
+	}
+	// Same activity again does not advance the honest step counter.
+	if !r.ApplyChildActivity("ref-1", "reading file") {
+		t.Fatal("repeat activity returned false, want true")
+	}
+	if run = r.Messages()[0].Tool.Subagent; run.Steps != 1 {
+		t.Fatalf("steps advanced on unchanged activity: %d, want 1", run.Steps)
+	}
+}
+
+func TestApplyUserMessageEcho_Empty(t *testing.T) {
+	r := NewTranscriptReducer(nil, nil, nil)
+	r.ApplyUserMessageEcho("   ")
+	if len(r.Messages()) != 0 {
+		t.Fatalf("blank echo appended a message: %+v", r.Messages())
+	}
+	r.ApplyUserMessageEcho("  hello  ")
+	if len(r.Messages()) != 1 || r.Messages()[0].Text != "hello" {
+		t.Fatalf("echo = %+v, want single trimmed 'hello'", r.Messages())
+	}
+	r.RemoveUserMessageEcho("   ")
+	if len(r.Messages()) != 1 {
+		t.Fatalf("blank remove changed messages: %+v", r.Messages())
+	}
+	r.RemoveUserMessageEcho("hello")
+	if len(r.Messages()) != 0 {
+		t.Fatalf("remove did not drop the echo: %+v", r.Messages())
+	}
+}
+
+func TestResetAgentMessage_ShiftsActiveIndices(t *testing.T) {
+	r := NewTranscriptReducer(nil, nil, nil)
+	r.ApplyAgentMessageDelta("turn_1", "item_a", "first")
+	r.ApplyAgentMessageDelta("turn_2", "item_b", "second")
+	if len(r.Messages()) != 2 {
+		t.Fatalf("setup messages = %d, want 2", len(r.Messages()))
+	}
+
+	// Reset the first message; the second must shift down and stay reachable.
+	r.ResetAgentMessage("turn_1", "item_a")
+	if len(r.Messages()) != 1 {
+		t.Fatalf("after reset messages = %d, want 1", len(r.Messages()))
+	}
+	if idx, ok := r.ActiveMessages()["item_b"]; !ok || idx != 0 {
+		t.Fatalf("item_b active index = %d ok=%v, want 0 true", idx, ok)
+	}
+	// The surviving message keeps streaming into the shifted index.
+	r.ApplyAgentMessageDelta("turn_2", "item_b", " more")
+	if got := r.Messages()[0].Text; got != "second more" {
+		t.Fatalf("shifted message text = %q, want 'second more'", got)
+	}
+
+	// Unknown / empty item ids are no-ops.
+	r.ResetAgentMessage("turn_2", "")
+	r.ResetAgentMessage("turn_2", "missing")
+	if len(r.Messages()) != 1 {
+		t.Fatalf("no-op reset changed messages: %d, want 1", len(r.Messages()))
+	}
+}

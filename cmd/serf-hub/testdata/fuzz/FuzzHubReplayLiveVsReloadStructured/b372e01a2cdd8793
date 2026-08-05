@@ -1,8 +1,0 @@
-go test fuzz v1
-byte('\x0f')
-byte('ù')
-string("")
-string("")
-string("")
-string("")
-string("0")

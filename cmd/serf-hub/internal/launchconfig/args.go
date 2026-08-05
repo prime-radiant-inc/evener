@@ -1,0 +1,121 @@
+package launchconfig
+
+import (
+	"strconv"
+	"strings"
+)
+
+// ToArgs renders the Effective layer of Resolved into the argv slice
+// `serf serve` understands. Order is deterministic and matches the order
+// serf's flag parser sees them: scalars first, then list fields in the
+// order they appear in the Layer struct.
+func ToArgs(r Resolved) []string {
+	var out []string
+	add := func(flag, value string) {
+		out = append(out, flag, value)
+	}
+	e := r.Effective
+	if e.Model != "" {
+		add("--model", e.Model)
+	}
+	if e.FastCheapModel != "" {
+		add("--fast-cheap-model", e.FastCheapModel)
+	}
+	if e.Agent != "" {
+		add("--agent", e.Agent)
+	}
+	if e.ReasoningEffort != "" {
+		add("--reasoning-effort", e.ReasoningEffort)
+	}
+	if e.ContextStrategy != "" {
+		add("--context-strategy", e.ContextStrategy)
+	}
+	if e.OpenAIResponsesContinuation != "" {
+		add("--openai-responses-continuation", e.OpenAIResponsesContinuation)
+	}
+	if e.MaxRounds != nil {
+		add("--max-rounds", strconv.Itoa(*e.MaxRounds))
+	}
+	if e.MaxSubagentDepth != nil {
+		add("--max-subagent-depth", strconv.Itoa(*e.MaxSubagentDepth))
+	}
+	if e.MaxConcurrentDelegateTurns != nil {
+		add("--max-concurrent-delegates", strconv.Itoa(*e.MaxConcurrentDelegateTurns))
+	}
+	if e.MaxRetainedTerminal != nil {
+		add("--max-retained-terminal", strconv.Itoa(*e.MaxRetainedTerminal))
+	}
+	if e.NoProjectPrompts != nil && *e.NoProjectPrompts {
+		out = append(out, "--no-project-prompts")
+	}
+	if e.NonInteractive != nil && *e.NonInteractive {
+		out = append(out, "--non-interactive")
+	}
+	if e.AppReplaySize != nil {
+		add("--app-replay-size", strconv.Itoa(*e.AppReplaySize))
+	}
+	if e.SystemPromptMode == "file" && e.SystemPromptFile != "" {
+		add("--system-prompt", e.SystemPromptFile)
+	}
+	if e.SystemPromptAppendMode == "file" && e.SystemPromptAppendFile != "" {
+		add("--system-prompt-append", e.SystemPromptAppendFile)
+	}
+	if e.Verbose != nil && *e.Verbose {
+		out = append(out, "--verbose")
+	}
+	if e.TraceFile != "" {
+		add("--trace", e.TraceFile)
+	}
+	if e.CPUProfile != "" {
+		add("--cpu-profile", e.CPUProfile)
+	}
+	if e.ExportATIFPath != "" {
+		add("--export-atif", e.ExportATIFPath)
+	}
+	if e.ExportATIFProviderHandles != "" {
+		add("--export-atif-provider-handles", e.ExportATIFProviderHandles)
+	}
+	// An explicit off mode is emitted so a launch layer can override a global
+	// default back to off; an unset mode emits nothing (serf's own default).
+	if e.Sandbox != "" {
+		add("--sandbox", e.Sandbox)
+	}
+	// Emit --sandbox-net only alongside a non-off mode: serf ignores the flag without
+	// a sandbox, so passing it alone would be a silent no-op.
+	if e.SandboxNet != nil && !sandboxModeIsOff(e.Sandbox) {
+		add("--sandbox-net", onOff(*e.SandboxNet))
+	}
+	for _, d := range e.SkillsDirs {
+		add("--skills-dir", d)
+	}
+	for _, d := range e.PluginDirs {
+		add("--plugin-dir", d)
+	}
+	for _, d := range e.MCPConfigs {
+		add("--mcp-config", d)
+	}
+	for _, d := range e.SystemPromptAppend {
+		add("--system-prompt-append", d)
+	}
+	if e.ModelFallbacks != nil {
+		for _, m := range *e.ModelFallbacks {
+			add("--model-fallback", m)
+		}
+	}
+	for _, m := range e.MCPs {
+		spec := m.Name + ":" + m.Command
+		if len(m.Args) > 0 {
+			spec += " " + strings.Join(m.Args, " ")
+		}
+		add("--mcp", spec)
+	}
+	return out
+}
+
+// onOff renders a boolean as the on|off token serf's --sandbox-net flag accepts.
+func onOff(v bool) string {
+	if v {
+		return "on"
+	}
+	return "off"
+}
