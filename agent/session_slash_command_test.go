@@ -183,6 +183,51 @@ func TestExpandSlashCommand_ExpandsKnownCommand(t *testing.T) {
 	}
 }
 
+// execRecordingEnv wraps a local execution environment and records
+// ExecCommand calls, so tests can assert a !` span never executed.
+type execRecordingEnv struct {
+	execenv.ExecutionEnvironment
+	calls int
+}
+
+func (e *execRecordingEnv) ExecCommand(ctx context.Context, command string, timeoutMs int, dir string, env map[string]string) (execenv.ExecResult, error) {
+	e.calls++
+	return e.ExecutionEnvironment.ExecCommand(ctx, command, timeoutMs, dir, env)
+}
+
+func TestExpandSlashCommand_SerfwideDoesNotExecute(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("ok") },
+	}})
+	workDir := t.TempDir()
+	writeSerfwideCommandFile(t, workDir, "deploy", "Deploying !`touch SHOULD_NOT_EXIST` for $1")
+	env := &execRecordingEnv{ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(workDir)}
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	// NewSession may inspect the workspace through ExecCommand; only calls
+	// made while expanding the slash command are relevant to this assertion.
+	env.calls = 0
+
+	got, ok := sess.expandSlashCommand(context.Background(), "/deploy v2")
+	if !ok {
+		t.Fatal("expected ok=true for a serf-wide command")
+	}
+	if env.calls != 0 {
+		t.Errorf("ExecCommand called %d times; serf-wide expansion must never execute", env.calls)
+	}
+	if !strings.Contains(got, "!`touch SHOULD_NOT_EXIST`") || !strings.Contains(got, "for v2") {
+		t.Errorf("expanded %q, want the !` span kept as text with $1 substituted", got)
+	}
+	if _, statErr := os.Stat(filepath.Join(workDir, "SHOULD_NOT_EXIST")); !os.IsNotExist(statErr) {
+		t.Error("the !` span executed: SHOULD_NOT_EXIST exists")
+	}
+}
+
 // TestExpandSlashCommand_ExpandErrorEmitsWarning proves an Expand failure is
 // surfaced to the user instead of being silently swallowed. command.Expand's
 // only error path is ctx already being done at entry (every per-token
