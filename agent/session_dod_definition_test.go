@@ -1473,7 +1473,7 @@ func TestSession_CustomToolRegistration_OverridesExistingTool(t *testing.T) {
 	sess.Close()
 }
 
-func TestSession_AuthenticationError_ClosesSession(t *testing.T) {
+func TestSession_AuthenticationError_LeavesSessionIdle(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -1491,15 +1491,15 @@ func TestSession_AuthenticationError_ClosesSession(t *testing.T) {
 		t.Fatalf("expected error")
 	}
 
-	sess.mu.Lock()
-	closed := sess.state == SessionClosed
-	sess.mu.Unlock()
-	if !closed {
-		t.Fatalf("expected session to be closed on authentication error")
+	// Terminal provider errors settle the session at idle, still open, so the
+	// operator can fix credentials and continue in place.
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after authentication error = %q, want %q", got, SessionIdle)
 	}
 	if a.calls != 1 {
 		t.Fatalf("adapter calls: got %d want 1", a.calls)
 	}
+	sess.Close()
 
 	gotEnd := false
 	for ev := range sess.Events() {
@@ -1512,7 +1512,7 @@ func TestSession_AuthenticationError_ClosesSession(t *testing.T) {
 	}
 }
 
-func TestSession_ContextLengthError_EmitsWarningAndClosesSession(t *testing.T) {
+func TestSession_ContextLengthError_EmitsWarningAndLeavesSessionIdle(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -1529,6 +1529,12 @@ func TestSession_ContextLengthError_EmitsWarningAndClosesSession(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
+
+	// Terminal provider errors settle the session at idle, still open.
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after context length error = %q, want %q", got, SessionIdle)
+	}
+	sess.Close()
 
 	warn := false
 	end := false
