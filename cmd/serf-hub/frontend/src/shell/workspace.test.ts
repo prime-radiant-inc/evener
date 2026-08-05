@@ -4,7 +4,16 @@ import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { type PaneDescriptor, type PaneProps, registerPane } from "./paneRegistry";
-import { type OpenPaneRecord, registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
+import {
+  cancelPaneFocus,
+  consumePaneFocus,
+  isPaneOpen,
+  type OpenPaneRecord,
+  registerDockviewApi,
+  requestPaneFocus,
+  resetWorkspaceStoreForTests,
+  workspaceStore,
+} from "./workspace";
 
 // Fixture pane types, registered once for the whole file. "settings" is the
 // file's singleton fixture, "doc" its non-singleton fixture - both are real
@@ -225,6 +234,39 @@ describe("openPane", () => {
 
   test("throws for an unregistered pane type (mirrors paneFor's own contract)", () => {
     expect(() => workspaceStore.getState().openPane("transcript", {})).toThrow(/transcript/);
+  });
+});
+
+describe("togglePane and pending focus", () => {
+  test("opens secondary panes, closes them, and distinguishes refs", () => {
+    const first = workspaceStore.getState().togglePane("session", { ref: "ref_a" });
+    expect(first.opened).toBe(true);
+    expect(workspaceStore.getState().panes).toMatchObject([{ type: "session", slot: "secondary" }]);
+    expect(workspaceStore.getState().focusedPaneId).toBe(first.paneId);
+    expect(workspaceStore.getState().togglePane("session", { ref: "ref_a" })).toEqual({
+      paneId: first.paneId,
+      opened: false,
+    });
+    expect(workspaceStore.getState().focusedPaneId).toBeNull();
+
+    const third = workspaceStore.getState().togglePane("session", { ref: "ref_a" });
+    expect(third.paneId).not.toBe(first.paneId);
+    expect(workspaceStore.getState().panes).toMatchObject([{ type: "session", slot: "secondary" }]);
+    expect(isPaneOpen(workspaceStore.getState(), "session", { ref: "ref_a" })).toBe(true);
+    expect(isPaneOpen(workspaceStore.getState(), "session", { ref: "ref_b" })).toBe(false);
+  });
+
+  test("consumes pending focus once and supports cancellation", () => {
+    requestPaneFocus("pane_session_1");
+    expect(consumePaneFocus("pane_session_1")).toBe(true);
+    expect(consumePaneFocus("pane_session_1")).toBe(false);
+
+    requestPaneFocus("pane_session_2");
+    cancelPaneFocus("pane_session_2");
+    expect(consumePaneFocus("pane_session_2")).toBe(false);
+
+    const id = workspaceStore.getState().openPane("session", { ref: "ordinary" });
+    expect(consumePaneFocus(id)).toBe(false);
   });
 });
 

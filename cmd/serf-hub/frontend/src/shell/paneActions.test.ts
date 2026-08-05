@@ -2,7 +2,7 @@ import type { DockviewApi } from "dockview-core";
 import { type ComponentType, lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
-import { inheritOpenerTheme, openBeside, popOutPane } from "./paneActions";
+import { inheritOpenerTheme, openBeside, popOutPane, togglePane } from "./paneActions";
 import { type PaneDescriptor, type PaneProps, registerPane } from "./paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
@@ -76,6 +76,15 @@ test("openBeside opens the pane in the secondary group, leaving the main pane in
   expect(second?.slot).toBe("secondary"); // beside the main pane, not stacked on it
   expect(workspaceStore.getState().mainPane()?.id).toBe(first); // main pane untouched
   expect(workspaceStore.getState().focusedPaneId).toBe(second?.id); // and focused
+});
+
+test("togglePane closes the same logical pane after it has moved outside the grid", () => {
+  const pane = workspaceStore.getState().openPane("doc", { ref: "a" });
+  const api = fakeApi({ getPanel: ((id: string) => (id === pane ? { id } : undefined)) as DockviewApi["getPanel"] });
+  registerDockviewApi(api);
+
+  expect(togglePane({ type: "doc", params: { ref: "a" } })).toEqual({ paneId: pane, opened: false });
+  expect(workspaceStore.getState().panes).toEqual([]);
 });
 
 test("openBeside dedups an already-open pane, focusing it instead of opening a duplicate split", () => {

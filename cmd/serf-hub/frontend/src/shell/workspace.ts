@@ -62,6 +62,7 @@ export interface WorkspaceStoreState {
   // affects a pane being CREATED: slot is assign-once, so reopening an
   // already-open pane resolves to that pane wherever it already sits.
   openPane(type: PaneTypeId, params?: unknown, opts?: { keepExistingFocus?: boolean; slot?: PaneSlot }): string;
+  togglePane(type: PaneTypeId, params?: unknown): { paneId: string; opened: boolean };
   // Makes (type, params) the one pane in the main slot, keeping that pane (and
   // its id, and everything mounted under it) only when it is already the same
   // primary - which for a session means the same ref. See primaryMatches for
@@ -95,6 +96,25 @@ export interface PanePanelParams {
 // deep-equal dependency would be more machinery than this actually needs.
 function sameParams(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+const pendingPaneFocus = new Set<string>();
+
+export function isPaneOpen(state: WorkspaceStoreState, type: PaneTypeId, params: unknown): boolean {
+  return state.panes.some((pane) => pane.type === type && sameParams(pane.params, params));
+}
+
+export function requestPaneFocus(paneId: string): void {
+  pendingPaneFocus.add(paneId);
+}
+
+export function consumePaneFocus(paneId: string): boolean {
+  if (!pendingPaneFocus.delete(paneId)) return false;
+  return true;
+}
+
+export function cancelPaneFocus(paneId: string): void {
+  pendingPaneFocus.delete(paneId);
 }
 
 // Is `pane` the same primary as the (type, params) being requested? The
@@ -270,6 +290,19 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     return id;
   },
 
+  togglePane(type, params = {}) {
+    const state = get();
+    const existing = state.panes.find((pane) => pane.type === type && sameParams(pane.params, params));
+    if (existing) {
+      get().closePane(existing.id);
+      cancelPaneFocus(existing.id);
+      return { paneId: existing.id, opened: false };
+    }
+    const paneId = get().openPane(type, params, { slot: "secondary" });
+    requestPaneFocus(paneId);
+    return { paneId, opened: true };
+  },
+
   replacePrimary(type, params) {
     paneFor(type);
     const state = get();
@@ -370,5 +403,6 @@ export function useWorkspaceStore<T>(selector?: (state: WorkspaceStoreState) => 
 export function resetWorkspaceStoreForTests(): void {
   dockviewApi = null;
   nextPaneSeq = 0;
+  pendingPaneFocus.clear();
   workspaceStore.setState({ panes: [], focusedPaneId: null });
 }
