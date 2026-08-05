@@ -29,3 +29,17 @@ Implemented Task 7 and completed review fix round 1.
 ## Concerns
 - The report update and review fix commit are the remaining finalization steps.
 - Pre-existing untracked Task 1–6 reports/reviews remain untouched.
+
+## Review fix round 2
+
+### Status
+Closed the remaining Important acceptance gap from rereview: added a deterministic collapsed-overflow regression that pre-opens all three session panes for one ref and asserts `Details ✓`, `Tasks ✓`, and `Activity ✓`.
+
+### Verification
+- `npx biome check --write src/panes/session/chrome/ActivityPanel.tsx src/panes/session/chrome/ActivityPanel.test.tsx src/panes/session/chrome/SessionChrome.tsx src/panes/session/chrome/SessionChrome.test.tsx src/shell/palette src/shell/useIsMobile.ts src/shell/useIsMobile.test.ts` — passed; no fixes required.
+- `npx tsc --noEmit` — passed.
+- `npx vitest run src/panes/session/chrome/SessionChrome.test.tsx src/shell/palette/paletteContext.test.ts src/shell/palette/commands.test.ts src/shell/useIsMobile.test.ts src/panes/session/chrome/ActivityPanel.test.tsx` — passed: 5 files, 90 tests.
+- `git diff --check` — passed.
+
+### Commit
+- Pending until this report and regression are committed.

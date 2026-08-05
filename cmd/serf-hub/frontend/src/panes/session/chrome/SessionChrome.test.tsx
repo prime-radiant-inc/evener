@@ -412,6 +412,29 @@ test("selecting the Activity menu item opens the desktop Activity pane", async (
   }
 });
 
+test("collapsed overflow marks every pre-opened session pane as checked", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_checked_overflow"));
+  fake.on("serf/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_checked_overflow");
+  workspaceStore.getState().openPane("sessionDetails", { ref: "ref_checked_overflow" });
+  workspaceStore.getState().openPane("sessionTasks", { ref: "ref_checked_overflow" });
+  workspaceStore.getState().openPane("sessionActivity", { ref: "ref_checked_overflow" });
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref="ref_checked_overflow" />);
+    ro.fire(300);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    expect(screen.getByRole("menuitem", { name: "Details ✓" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Tasks ✓" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
+  } finally {
+    ro.restore();
+  }
+});
+
 test.each([
   ["Details", "sessionDetails"],
   ["Tasks", "sessionTasks"],
