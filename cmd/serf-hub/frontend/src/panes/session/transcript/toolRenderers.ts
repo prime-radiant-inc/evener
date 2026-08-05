@@ -75,9 +75,9 @@ export interface ToolRendererDescriptor {
   // to and including the anchor (e.g. "Read " + the path) - ToolRow verifies
   // this with summary.startsWith(...), never searches for it, because a bare
   // substring (the path alone) is ambiguous whenever it also recurs
-  // elsewhere in the summary (kata ledger #97's review follow-up: a file
-  // bare-named "lines" collides with readLineRange's own literal "lines"
-  // meta text). Undefined means no inline anchor; a value that isn't a
+  // elsewhere in the summary (kata ledger #97: a file bare-named "lines"
+  // collides with readLineRange's own literal "lines" meta text). Undefined
+  // means no inline anchor; a value that isn't a
   // literal prefix of summary() falls back to the end placement (same
   // "never a dead anchor" contract as summaryLink).
   openBesideInline?(item: ItemModel): string | undefined;

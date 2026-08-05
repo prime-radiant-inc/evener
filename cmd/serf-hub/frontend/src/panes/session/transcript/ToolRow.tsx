@@ -208,17 +208,14 @@ export function ToolRow({
   // ride BETWEEN them. Undefined when there is no trailing control, no
   // anchor, or the anchor is not a literal PREFIX of summary.
   //
-  // This is a prefix check (startsWith), never a substring search
-  // (indexOf/lastIndexOf tried and rejected, kata ledger #97 and its review
-  // follow-up): searching for the anchor anywhere in summary is ambiguous
-  // whenever the anchor text recurs elsewhere, and that ambiguity exists in
-  // BOTH directions - indexOf can anchor on an earlier coincidental match,
-  // lastIndexOf can just as easily anchor on a later one (e.g. read_file's
-  // own summary format always contains the literal word "lines" in its meta
-  // suffix, so a file bare-named "lines" defeats lastIndexOf the same way
-  // the ledger's original repro defeated indexOf). A from-the-start prefix
-  // has no direction left to be ambiguous in: the caller supplies the
-  // complete prefix it means, not a fragment ToolRow has to go find.
+  // This is a prefix check (startsWith), never a substring search: searching
+  // for the anchor anywhere in summary is ambiguous whenever the anchor text
+  // recurs elsewhere, in EITHER direction - an earlier coincidental match can
+  // win just as easily as a later one (e.g. read_file's own summary always
+  // contains the literal word "lines" in its meta suffix, so a file named
+  // "lines" collides with it). A from-the-start prefix has no direction left
+  // to be ambiguous in: the caller supplies the complete prefix it means, not
+  // a fragment ToolRow has to go find (kata ledger #97).
   const anchorSplit = ((): [before: string, after: string] | undefined => {
     if (trailing === undefined || trailing === null || trailingAfter === undefined) return undefined;
     if (!summary.startsWith(trailingAfter)) return undefined;
@@ -392,9 +389,14 @@ export function ToolRow({
       // A descriptor can suppress BOTH the purpose (none stated) and the
       // summary (summaryHiddenWhenExpanded, open) at once, leaving nothing but
       // the aria-hidden chevron inside this <summary> - an unnamed disclosure.
-      // The label is a stable fallback, not a restoration of the hidden
+      // aria-label REPLACES the computed accessible name entirely, including
+      // any descendant name (FailureGlyph's "Failed", a status glyph's state
+      // label), so the fallback applies ONLY when the row would otherwise
+      // have no accessible name at all - not merely no purpose/summary. When
+      // failed or status is set, their own accessible name stands instead.
+      // The fallback is a stable label, not a restoration of the hidden
       // summary text (that suppression, ToolCallItem.tsx:259, is deliberate).
-      aria-label={!hasPurpose && !hasSummary ? "Tool call" : undefined}
+      aria-label={!hasPurpose && !hasSummary && !failed && status === undefined ? "Tool call" : undefined}
       onClick={(e) => {
         // Fully controlled: preventDefault stops the browser flipping
         // <details open> itself, so the caller's store stays the single source

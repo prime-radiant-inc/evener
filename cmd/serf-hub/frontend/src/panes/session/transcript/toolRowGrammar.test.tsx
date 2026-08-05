@@ -542,13 +542,12 @@ test("with a purpose, a trailing affordance rides the tool-call line, not the ra
 // "open beside" lands between the file name and the line range). The caller
 // supplies the COMPLETE PREFIX of `summary` up to and including the anchor
 // (never a bare substring) and ToolRow verifies it with summary.startsWith -
-// never searches for it. A substring search (indexOf or lastIndexOf) is
-// ambiguous whenever the anchor text recurs elsewhere in the summary, no
-// matter which direction it searches from (kata ledger #97 and its
-// follow-up review); requiring a literal, from-the-start prefix has no
-// direction to be ambiguous in. A value that is not a literal prefix of
-// `summary` keeps the default end-of-line placement (same "never a dead
-// anchor" contract as summaryLink). ---------------------------------------
+// never searches for it. A substring search is ambiguous whenever the
+// anchor text recurs elsewhere in the summary, no matter which direction it
+// searches from; requiring a literal, from-the-start prefix has no
+// direction to be ambiguous in (kata ledger #97). A value that is not a
+// literal prefix of `summary` keeps the default end-of-line placement (same
+// "never a dead anchor" contract as summaryLink). ---------------------------------------
 
 test("trailingAfter places the control between the anchor text and the meta on a collapsed purpose-bearing row", () => {
   const summary = "Read cmd/serf-hub/frontend/src/widgets/sheet/sheet.test.tsx · lines 1-260";
@@ -678,20 +677,19 @@ test("a trailingAfter anchor that is present but NOT a prefix of the summary als
   expect(summaryEl.lastElementChild?.contains(screen.getByRole("button", { name: "Open beside" }))).toBe(true);
 });
 
-// --- kata ledger #97 review follow-up: a substring search is ambiguous from
-// EITHER direction, so switching indexOf -> lastIndexOf (the rejected first
-// attempt) only relocated the bug rather than fixing it. Both scenarios below
-// use the bare, ambiguous target text a broken caller might still pass (the
-// shape the OLD contract accepted) and prove the row no longer lands the
-// control in the WRONG place for either - it safely falls back to the end
-// placement instead, exactly like any other anchor that isn't a real prefix.
-// ---------------------------------------------------------------------------
+// --- kata ledger #97: a substring search is ambiguous from EITHER
+// direction - the real target can be the FIRST occurrence of the anchor
+// text with a coincidental match later, or the LAST occurrence with a
+// coincidental match earlier. Both scenarios below use the bare, ambiguous
+// target text a caller might pass and prove the row does not land the
+// control on the WRONG occurrence for either - it safely falls back to the
+// end placement instead, exactly like any other anchor that isn't a real
+// prefix. ---------------------------------------------------------------
 
-// The reviewer's counterexample: read_file's own summary format always
-// contains the literal word "lines" in its meta suffix (readLineRange,
-// fsTools.tsx). A file bare-named "lines" makes the anchor text recur LATER
-// in the string than the real target - lastIndexOf anchors on the meta's
-// "lines", not the file name right after "Read ".
+// read_file's own summary format always contains the literal word "lines"
+// in its meta suffix (readLineRange, fsTools.tsx). A file bare-named
+// "lines" makes the anchor text recur LATER in the string than the real
+// target, right after "Read ".
 test("an ambiguous bare anchor that also recurs LATER in the summary (the meta-suffix collision) does not land on the later, wrong occurrence", () => {
   const summary = "Read lines · lines 1-25";
   render(
@@ -706,18 +704,18 @@ test("an ambiguous bare anchor that also recurs LATER in the summary (the meta-s
       trailingAfter="lines"
     />,
   );
-  // Must NOT split mid-meta (control landing between the meta's "lines" and
-  // "1-25") - the wrong placement lastIndexOf produces.
+  // Must NOT split mid-meta: the control must not land between the meta's
+  // "lines" and "1-25".
   expect(screen.queryByTestId("tool-row-summary-meta")).toBe(null);
   expect(screen.queryByTestId("tool-row-trailing")).toBe(null);
   const summaryEl = screen.getByTestId("tool-row-summary");
   expect(summaryEl.lastElementChild?.contains(screen.getByRole("button", { name: "Open beside" }))).toBe(true);
 });
 
-// The ledger's own shape, from the opposite direction: the real target is
-// the EARLIER occurrence, and a coincidental match (a backup filename that
-// happens to start with the same text) recurs later. lastIndexOf anchors on
-// the later, coincidental match instead of the real, earlier target.
+// From the opposite direction: the real target is the EARLIER occurrence,
+// and a coincidental match (a backup filename that happens to start with
+// the same text) recurs later. The split must not anchor on the later,
+// coincidental match instead of the real, earlier target.
 test("an ambiguous bare anchor whose real target is the EARLIER occurrence does not land on a later coincidental match", () => {
   const summary = "Read a.ts and backed up a.ts.bak · lines 1-3";
   render(
@@ -741,7 +739,7 @@ test("an ambiguous bare anchor whose real target is the EARLIER occurrence does 
 
 // The affirmative case for both collisions above: when the caller supplies
 // the CORRECT, unambiguous full prefix (what fsTools.tsx's openBesideInline
-// now returns) instead of the bare target, the control lands exactly right
+// supplies) instead of the bare target, the control lands exactly right
 // even though the bare target text recurs elsewhere in the summary.
 test("the complete prefix anchors correctly even when the bare target text recurs elsewhere in the summary", () => {
   const summary = "Read lines · lines 1-25";
@@ -950,6 +948,41 @@ test("an expanded summary-less, purpose-less row's native disclosure still has a
   const row = screen.getByTestId("tool-row");
   expect(row.tagName).toBe("SUMMARY");
   expect((row.getAttribute("aria-label") ?? "").trim()).not.toBe("");
+});
+
+// aria-label on an element REPLACES its computed accessible name entirely -
+// it does not merge with descendant content. FailureGlyph and StatusDot each
+// carry their own accessible name (role="img", aria-label="Failed" / the
+// state label) that would normally contribute to the summary's computed
+// name; stamping a fixed "Tool call" label over them would erase that
+// signal. The fallback must therefore only apply when the row would
+// otherwise carry no accessible name at all, leaving the glyph's own name to
+// stand when failure or status is present.
+test("a failed summary-less, purpose-less row's disclosure does not stamp over the failure glyph's accessible name", () => {
+  render(<ToolRow summary="" failed expandable expanded onToggle={() => {}} />);
+  const row = screen.getByTestId("tool-row");
+  expect(row.getAttribute("aria-label")).toBe(null);
+  expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+});
+
+test("a status-bearing summary-less, purpose-less row's disclosure does not stamp over the status's accessible name", () => {
+  render(
+    <ToolRow
+      summary=""
+      failed={false}
+      status={
+        <span role="img" aria-label="Working">
+          ●
+        </span>
+      }
+      expandable
+      expanded
+      onToggle={() => {}}
+    />,
+  );
+  const row = screen.getByTestId("tool-row");
+  expect(row.getAttribute("aria-label")).toBe(null);
+  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
 });
 
 // The mechanism-level ToolRow tests above prove the row CAN linkify a

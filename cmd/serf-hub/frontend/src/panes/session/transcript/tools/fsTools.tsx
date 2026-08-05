@@ -52,10 +52,10 @@ function ReadFileOutputBody({ item, live }: ToolRenderProps) {
 // The bare file-path text, shared between summary() and openBesideInline()
 // so the two stay byte-for-byte consistent: openBesideInline hands ToolRow
 // the exact "Read <target>" prefix summary() itself emits, not a fragment
-// ToolRow would have to go search for (kata ledger #97's review follow-up -
-// a bare substring search is ambiguous whenever the target text recurs
-// elsewhere in the summary, e.g. a file literally named "lines" colliding
-// with readLineRange's own "lines N-M" meta text below).
+// ToolRow would have to go search for. A bare substring search is ambiguous
+// whenever the target text recurs elsewhere in the summary, e.g. a file
+// literally named "lines" colliding with readLineRange's own "lines N-M"
+// meta text below (kata ledger #97).
 function readFileTarget(item: ItemModel): string {
   const args = parseArgs(item.argumentsJSON);
   return str(args, "file_path") ?? str(args, "path") ?? "";
