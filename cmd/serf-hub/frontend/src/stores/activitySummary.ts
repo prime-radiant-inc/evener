@@ -128,8 +128,7 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
         if (!force && bump === entry.lastFetchedBump) return state;
         const incoming: PendingRootFetch = { bump, force, fetch, onFailure };
         const previous = entry.pendingBump;
-        const incomingWins =
-          !previous || previous.bump === null || (bump !== null && bump >= previous.bump);
+        const incomingWins = !previous || previous.bump === null || (bump !== null && bump >= previous.bump);
         const winner = incomingWins ? incoming : previous;
         const pendingBump = { ...winner, force: force || (previous?.force ?? false) };
         const entries = new Map(state.entries);
