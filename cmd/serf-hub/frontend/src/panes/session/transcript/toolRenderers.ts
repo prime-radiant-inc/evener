@@ -68,13 +68,19 @@ export interface ToolRendererDescriptor {
   // (relativized against the session cwd, out-of-cwd gated - fileOpenBeside.tsx).
   openBesidePath?(item: ItemModel): string | undefined;
   // openBesideInline moves the "open beside" control from the END of the
-  // summary to INLINE, right after the openBesidePath text inside it - the
-  // one case today is read_file, whose summary quotes the path verbatim
-  // ("Read <path> · lines N-M"), so the control lands between the file name
-  // and the line range it opens. The path must literally appear inside
-  // summary()'s own text (same "never a dead anchor" contract as
-  // summaryLink); when it does not, ToolRow falls back to the end placement.
-  openBesideInline?: boolean;
+  // summary to INLINE, right after the target text inside it - the one case
+  // today is read_file, whose summary quotes the path verbatim ("Read <path>
+  // · lines N-M"), so the control lands between the file name and the line
+  // range it opens. Returns the COMPLETE PREFIX of summary()'s own text up
+  // to and including the anchor (e.g. "Read " + the path) - ToolRow verifies
+  // this with summary.startsWith(...), never searches for it, because a bare
+  // substring (the path alone) is ambiguous whenever it also recurs
+  // elsewhere in the summary (kata ledger #97's review follow-up: a file
+  // bare-named "lines" collides with readLineRange's own literal "lines"
+  // meta text). Undefined means no inline anchor; a value that isn't a
+  // literal prefix of summary() falls back to the end placement (same
+  // "never a dead anchor" contract as summaryLink).
+  openBesideInline?(item: ItemModel): string | undefined;
   // summarySuffix appends extra text to the collapsed row's summary, computed
   // from the FULL thread model rather than just this item - the one case
   // today is ask_user's "— answered: ..." recap (kata h70z), which lives in

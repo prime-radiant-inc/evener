@@ -105,12 +105,18 @@ export interface ToolRowProps {
   onToggle?: () => void;
   /** Trailing controls (e.g. the "Open beside" button). */
   trailing?: ReactNode;
-  /** A substring of `summary` after whose end `trailing` rides INLINE (the
-   * one case today: read_file's "open beside" control lands between the file
-   * name and the "· lines N-M" meta - descriptor openBesideInline). The
-   * substring must literally appear inside `summary` (same "never a dead
-   * anchor" contract as summaryLink); absent or not found, `trailing` keeps
-   * its default end-of-line placement. */
+  /** The COMPLETE PREFIX of `summary` after which `trailing` rides INLINE
+   * (the one case today: read_file's "open beside" control lands between the
+   * file name and the "· lines N-M" meta - descriptor openBesideInline).
+   * Verified with `summary.startsWith(trailingAfter)`, never searched: a
+   * bare substring search (indexOf or lastIndexOf) is ambiguous whenever the
+   * anchor text also occurs elsewhere in `summary`, in EITHER direction
+   * (kata ledger #97 - a file literally named the same word `readLineRange`
+   * puts in the meta suffix collides one way, a coincidental match later in
+   * the string collides the other way). A from-the-start prefix has no such
+   * direction to be ambiguous in. Absent, or not a literal prefix of
+   * `summary`, keeps the default end-of-line placement (same "never a dead
+   * anchor" contract as summaryLink). */
   trailingAfter?: string;
   /** Optional status rail content for tools that need a one-glance
    * progression/health signal before human-facing purpose text. */
@@ -200,18 +206,23 @@ export function ToolRow({
   // The inline-affordance anchor (trailingAfter): split the summary into the
   // text up to the anchor's end and the rest, so the trailing control can
   // ride BETWEEN them. Undefined when there is no trailing control, no
-  // anchor, or the anchor is not literally present (the fallback keeps the
-  // default end-of-line placement).
+  // anchor, or the anchor is not a literal PREFIX of summary.
+  //
+  // This is a prefix check (startsWith), never a substring search
+  // (indexOf/lastIndexOf tried and rejected, kata ledger #97 and its review
+  // follow-up): searching for the anchor anywhere in summary is ambiguous
+  // whenever the anchor text recurs elsewhere, and that ambiguity exists in
+  // BOTH directions - indexOf can anchor on an earlier coincidental match,
+  // lastIndexOf can just as easily anchor on a later one (e.g. read_file's
+  // own summary format always contains the literal word "lines" in its meta
+  // suffix, so a file bare-named "lines" defeats lastIndexOf the same way
+  // the ledger's original repro defeated indexOf). A from-the-start prefix
+  // has no direction left to be ambiguous in: the caller supplies the
+  // complete prefix it means, not a fragment ToolRow has to go find.
   const anchorSplit = ((): [before: string, after: string] | undefined => {
     if (trailing === undefined || trailing === null || trailingAfter === undefined) return undefined;
-    // lastIndexOf, not indexOf: when the anchor text occurs more than once in
-    // the summary, the caller means the LATER, complete occurrence (kata
-    // ledger #97) - an earlier coincidental substring match (e.g. the anchor
-    // text also appearing as part of an earlier word) must not win the split.
-    const at = summary.lastIndexOf(trailingAfter);
-    if (at === -1) return undefined;
-    const end = at + trailingAfter.length;
-    return [summary.slice(0, end), summary.slice(end)];
+    if (!summary.startsWith(trailingAfter)) return undefined;
+    return [trailingAfter, summary.slice(trailingAfter.length)];
   })();
   // The chevron rides INLINE at the end of the headline text (see the grammar
   // above): inside the purpose when there is one, otherwise inside the
