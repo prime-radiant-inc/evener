@@ -112,9 +112,12 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
     ) : null;
   // read_file (openBesideInline) quotes its path verbatim inside the summary,
   // so the control rides INLINE between the file name and the line range
-  // rather than at the end of the line; ToolRow falls back to the end
-  // placement when the anchor is not literally present.
-  const trailingAfter = descriptor.openBesideInline ? openBesidePath : undefined;
+  // rather than at the end of the line; openBesideInline hands ToolRow the
+  // complete summary prefix through the anchor (not a bare path fragment -
+  // ToolRow verifies it with startsWith, never searches, kata ledger #97).
+  // ToolRow falls back to the end placement when the value isn't a literal
+  // prefix of the summary.
+  const trailingAfter = descriptor.openBesideInline?.(item);
   // outputImages is a generic ItemModel field any tool call can carry (the
   // wire's ToolCallEndData.OutputImages, agent/events/payloads.go), not
   // owned by any one descriptor - rendered here, once, so every current and

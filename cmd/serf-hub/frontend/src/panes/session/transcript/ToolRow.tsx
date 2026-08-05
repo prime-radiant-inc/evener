@@ -105,12 +105,18 @@ export interface ToolRowProps {
   onToggle?: () => void;
   /** Trailing controls (e.g. the "Open beside" button). */
   trailing?: ReactNode;
-  /** A substring of `summary` after whose end `trailing` rides INLINE (the
-   * one case today: read_file's "open beside" control lands between the file
-   * name and the "· lines N-M" meta - descriptor openBesideInline). The
-   * substring must literally appear inside `summary` (same "never a dead
-   * anchor" contract as summaryLink); absent or not found, `trailing` keeps
-   * its default end-of-line placement. */
+  /** The COMPLETE PREFIX of `summary` after which `trailing` rides INLINE
+   * (the one case today: read_file's "open beside" control lands between the
+   * file name and the "· lines N-M" meta - descriptor openBesideInline).
+   * Verified with `summary.startsWith(trailingAfter)`, never searched: a
+   * bare substring search (indexOf or lastIndexOf) is ambiguous whenever the
+   * anchor text also occurs elsewhere in `summary`, in EITHER direction
+   * (kata ledger #97 - a file literally named the same word `readLineRange`
+   * puts in the meta suffix collides one way, a coincidental match later in
+   * the string collides the other way). A from-the-start prefix has no such
+   * direction to be ambiguous in. Absent, or not a literal prefix of
+   * `summary`, keeps the default end-of-line placement (same "never a dead
+   * anchor" contract as summaryLink). */
   trailingAfter?: string;
   /** Optional status rail content for tools that need a one-glance
    * progression/health signal before human-facing purpose text. */
@@ -197,17 +203,31 @@ export function ToolRow({
   const statedPurpose = statedPurposeOf({ description: purpose });
   const hasPurpose = statedPurpose !== undefined;
   const hasSummary = summary.trim() !== "";
+  // `status` is typed ReactNode, so it admits values that render nothing and
+  // carry no accessible name - null, undefined, false (the common
+  // `condition && <Node/>` idiom) - alongside a real status node. Only a
+  // value that can actually render counts as "status present" for both the
+  // wrapping span below and the aria-label fallback gate: treating null or
+  // false as present would render an empty span and, on the expandable
+  // branch, suppress the fallback label with nothing left to name the row.
+  const hasStatus = status !== undefined && status !== null && status !== false;
   // The inline-affordance anchor (trailingAfter): split the summary into the
   // text up to the anchor's end and the rest, so the trailing control can
   // ride BETWEEN them. Undefined when there is no trailing control, no
-  // anchor, or the anchor is not literally present (the fallback keeps the
-  // default end-of-line placement).
+  // anchor, or the anchor is not a literal PREFIX of summary.
+  //
+  // This is a prefix check (startsWith), never a substring search: searching
+  // for the anchor anywhere in summary is ambiguous whenever the anchor text
+  // recurs elsewhere, in EITHER direction - an earlier coincidental match can
+  // win just as easily as a later one (e.g. read_file's own summary always
+  // contains the literal word "lines" in its meta suffix, so a file named
+  // "lines" collides with it). A from-the-start prefix has no direction left
+  // to be ambiguous in: the caller supplies the complete prefix it means, not
+  // a fragment ToolRow has to go find (kata ledger #97).
   const anchorSplit = ((): [before: string, after: string] | undefined => {
     if (trailing === undefined || trailing === null || trailingAfter === undefined) return undefined;
-    const at = summary.indexOf(trailingAfter);
-    if (at === -1) return undefined;
-    const end = at + trailingAfter.length;
-    return [summary.slice(0, end), summary.slice(end)];
+    if (!summary.startsWith(trailingAfter)) return undefined;
+    return [trailingAfter, summary.slice(trailingAfter.length)];
   })();
   // The chevron rides INLINE at the end of the headline text (see the grammar
   // above): inside the purpose when there is one, otherwise inside the
@@ -301,7 +321,7 @@ export function ToolRow({
           inside flowing prose, where a blank reserved column reads as a stray
           indent. Different context, different answer. */}
       {failed && <FailureGlyph />}
-      {status !== undefined && (
+      {hasStatus && (
         <span className={CLASS.status} data-testid="tool-row-status">
           {status}
         </span>
@@ -374,6 +394,20 @@ export function ToolRow({
       data-purpose={hasPurpose ? "true" : undefined}
       title={title}
       aria-expanded={expanded}
+      // A descriptor can suppress BOTH the purpose (none stated) and the
+      // summary (summaryHiddenWhenExpanded, open) at once, leaving nothing but
+      // the aria-hidden chevron inside this <summary> - an unnamed disclosure.
+      // aria-label REPLACES the computed accessible name entirely, including
+      // any descendant name (FailureGlyph's "Failed", a status glyph's state
+      // label), so the fallback applies ONLY when the row would otherwise
+      // have no accessible name at all - not merely no purpose/summary, and
+      // not merely no FAILED/hasStatus flag (a nameless status value like
+      // null or false must not suppress it either, see hasStatus above).
+      // When failed or hasStatus is true, their own accessible name stands
+      // instead. The fallback is a stable label, not a restoration of the
+      // hidden summary text (that suppression, ToolCallItem.tsx:259, is
+      // deliberate).
+      aria-label={!hasPurpose && !hasSummary && !failed && !hasStatus ? "Tool call" : undefined}
       onClick={(e) => {
         // Fully controlled: preventDefault stops the browser flipping
         // <details open> itself, so the caller's store stays the single source

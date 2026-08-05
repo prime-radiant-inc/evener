@@ -49,13 +49,24 @@ function ReadFileOutputBody({ item, live }: ToolRenderProps) {
   return <CodeBlock text={match[0].replace(", base64 data follows]", "]")} copyLabel="Copy output" />;
 }
 
+// The bare file-path text, shared between summary() and openBesideInline()
+// so the two stay byte-for-byte consistent: openBesideInline hands ToolRow
+// the exact "Read <target>" prefix summary() itself emits, not a fragment
+// ToolRow would have to go search for. A bare substring search is ambiguous
+// whenever the target text recurs elsewhere in the summary, e.g. a file
+// literally named "lines" colliding with readLineRange's own "lines N-M"
+// meta text below (kata ledger #97).
+function readFileTarget(item: ItemModel): string {
+  const args = parseArgs(item.argumentsJSON);
+  return str(args, "file_path") ?? str(args, "path") ?? "";
+}
+
 registerToolRenderer({
   match: "read_file",
   icon: "file",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
-    const target = str(args, "file_path") ?? str(args, "path") ?? "";
-    return `Read ${target} · ${readLineRange(args, item.output ?? "")}`;
+    return `Read ${readFileTarget(item)} · ${readLineRange(args, item.output ?? "")}`;
   },
   body: ReadFileOutputBody,
   // read_file references a single file (floor §3.7): expose it for the "open
@@ -68,8 +79,10 @@ registerToolRenderer({
   // The summary quotes the path verbatim between the verb and the line range
   // ("Read <path> · lines N-M"), so the "open beside" control rides INLINE
   // between the file name and the range it opens (toolRenderers.ts's
-  // openBesideInline contract), not off at the end of the line.
-  openBesideInline: true,
+  // openBesideInline contract) - the complete "Read <path>" prefix, matching
+  // summary()'s own text exactly, so ToolRow can verify it with startsWith
+  // rather than search for it.
+  openBesideInline: (item) => `Read ${readFileTarget(item)}`,
 });
 
 function grepTarget(args: Record<string, unknown>): string {

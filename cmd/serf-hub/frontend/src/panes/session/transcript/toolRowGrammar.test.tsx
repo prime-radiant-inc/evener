@@ -539,9 +539,15 @@ test("with a purpose, a trailing affordance rides the tool-call line, not the ra
 });
 
 // --- trailingAfter: the affordance rides INLINE mid-summary (read_file's
-// "open beside" lands between the file name and the line range). The anchor
-// must literally appear in the summary (same "never a dead anchor" contract
-// as summaryLink); otherwise the end-of-line placement is unchanged. ------
+// "open beside" lands between the file name and the line range). The caller
+// supplies the COMPLETE PREFIX of `summary` up to and including the anchor
+// (never a bare substring) and ToolRow verifies it with summary.startsWith -
+// never searches for it. A substring search is ambiguous whenever the
+// anchor text recurs elsewhere in the summary, no matter which direction it
+// searches from; requiring a literal, from-the-start prefix has no
+// direction to be ambiguous in (kata ledger #97). A value that is not a
+// literal prefix of `summary` keeps the default end-of-line placement (same
+// "never a dead anchor" contract as summaryLink). ---------------------------------------
 
 test("trailingAfter places the control between the anchor text and the meta on a collapsed purpose-bearing row", () => {
   const summary = "Read cmd/serf-hub/frontend/src/widgets/sheet/sheet.test.tsx · lines 1-260";
@@ -554,7 +560,7 @@ test("trailingAfter places the control between the anchor text and the meta on a
       expanded={false}
       onToggle={() => {}}
       trailing={<button type="button">Open beside</button>}
-      trailingAfter="cmd/serf-hub/frontend/src/widgets/sheet/sheet.test.tsx"
+      trailingAfter="Read cmd/serf-hub/frontend/src/widgets/sheet/sheet.test.tsx"
     />,
   );
   // A long path spans the truncation cut: head clamps, the path's visible
@@ -587,7 +593,7 @@ test("trailingAfter with a short path (anchor inside the clamped head) keeps the
       expanded={false}
       onToggle={() => {}}
       trailing={<button type="button">Open beside</button>}
-      trailingAfter="a.ts"
+      trailingAfter="Read a.ts"
     />,
   );
   const head = screen.getByTestId("tool-row-summary-head").textContent ?? "";
@@ -614,7 +620,7 @@ test("trailingAfter on an expanded row splits the full summary around the contro
       expanded
       onToggle={() => {}}
       trailing={<button type="button">Open beside</button>}
-      trailingAfter="src/a.ts"
+      trailingAfter="Read src/a.ts"
     />,
   );
   // The control splits the text exactly at the anchor: the words are all
@@ -626,7 +632,7 @@ test("trailingAfter on an expanded row splits the full summary around the contro
   expect((trailingEl.previousSibling?.textContent ?? "") + (trailingEl.nextSibling?.textContent ?? "")).toBe(summary);
 });
 
-test("a trailingAfter anchor NOT literally present in the summary falls back to the end placement", () => {
+test("a trailingAfter anchor NOT present at all in the summary falls back to the end placement", () => {
   render(
     <ToolRow
       summary="Read a.ts · lines 1-3"
@@ -645,6 +651,113 @@ test("a trailingAfter anchor NOT literally present in the summary falls back to 
   const summaryEl = screen.getByTestId("tool-row-summary");
   expect(summaryEl.contains(screen.getByRole("button", { name: "Open beside" }))).toBe(true);
   expect(summaryEl.lastElementChild?.contains(screen.getByRole("button", { name: "Open beside" }))).toBe(true);
+});
+
+// The contract is startsWith, not "appears somewhere" - an anchor that IS
+// literally present in the summary but NOT as a from-the-start prefix (e.g.
+// the caller passes only the bare target, mid-string) must fall back too,
+// exactly like an absent anchor. Accepting "present anywhere" is what made
+// indexOf/lastIndexOf substring search ambiguous in the first place.
+test("a trailingAfter anchor that is present but NOT a prefix of the summary also falls back to the end placement", () => {
+  render(
+    <ToolRow
+      summary="Read a.ts · lines 1-3"
+      purpose="Check the source"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      trailing={<button type="button">Open beside</button>}
+      trailingAfter="a.ts"
+    />,
+  );
+  expect(screen.queryByTestId("tool-row-trailing")).toBe(null);
+  expect(screen.queryByTestId("tool-row-summary-meta")).toBe(null);
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  expect(summaryEl.lastElementChild?.contains(screen.getByRole("button", { name: "Open beside" }))).toBe(true);
+});
+
+// --- kata ledger #97: a substring search is ambiguous from EITHER
+// direction - the real target can be the FIRST occurrence of the anchor
+// text with a coincidental match later, or the LAST occurrence with a
+// coincidental match earlier. Both scenarios below use the bare, ambiguous
+// target text a caller might pass and prove the row does not land the
+// control on the WRONG occurrence for either - it safely falls back to the
+// end placement instead, exactly like any other anchor that isn't a real
+// prefix. ---------------------------------------------------------------
+
+// read_file's own summary format always contains the literal word "lines"
+// in its meta suffix (readLineRange, fsTools.tsx). A file bare-named
+// "lines" makes the anchor text recur LATER in the string than the real
+// target, right after "Read ".
+test("an ambiguous bare anchor that also recurs LATER in the summary (the meta-suffix collision) does not land on the later, wrong occurrence", () => {
+  const summary = "Read lines · lines 1-25";
+  render(
+    <ToolRow
+      summary={summary}
+      purpose="Check the source"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      trailing={<button type="button">Open beside</button>}
+      trailingAfter="lines"
+    />,
+  );
+  // Must NOT split mid-meta: the control must not land between the meta's
+  // "lines" and "1-25".
+  expect(screen.queryByTestId("tool-row-summary-meta")).toBe(null);
+  expect(screen.queryByTestId("tool-row-trailing")).toBe(null);
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  expect(summaryEl.lastElementChild?.contains(screen.getByRole("button", { name: "Open beside" }))).toBe(true);
+});
+
+// From the opposite direction: the real target is the EARLIER occurrence,
+// and a coincidental match (a backup filename that happens to start with
+// the same text) recurs later. The split must not anchor on the later,
+// coincidental match instead of the real, earlier target.
+test("an ambiguous bare anchor whose real target is the EARLIER occurrence does not land on a later coincidental match", () => {
+  const summary = "Read a.ts and backed up a.ts.bak · lines 1-3";
+  render(
+    <ToolRow
+      summary={summary}
+      purpose="Check the source"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      trailing={<button type="button">Open beside</button>}
+      trailingAfter="a.ts"
+    />,
+  );
+  // Must NOT split after the coincidental "a.ts" inside "a.ts.bak".
+  expect(screen.queryByTestId("tool-row-summary-meta")).toBe(null);
+  expect(screen.queryByTestId("tool-row-trailing")).toBe(null);
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  expect(summaryEl.lastElementChild?.contains(screen.getByRole("button", { name: "Open beside" }))).toBe(true);
+});
+
+// The affirmative case for both collisions above: when the caller supplies
+// the CORRECT, unambiguous full prefix (what fsTools.tsx's openBesideInline
+// supplies) instead of the bare target, the control lands exactly right
+// even though the bare target text recurs elsewhere in the summary.
+test("the complete prefix anchors correctly even when the bare target text recurs elsewhere in the summary", () => {
+  const summary = "Read lines · lines 1-25";
+  render(
+    <ToolRow
+      summary={summary}
+      purpose="Check the source"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      trailing={<button type="button">Open beside</button>}
+      trailingAfter="Read lines"
+    />,
+  );
+  const trailingEl = screen.getByTestId("tool-row-trailing");
+  expect(trailingEl.previousSibling?.textContent).toBe("Read lines");
+  expect(trailingEl.nextSibling?.textContent).toBe(" · lines 1-25");
 });
 
 // Associativity rhythm (Jesse's review call): the gap between a rationale
@@ -822,6 +935,72 @@ test("clicking the linkified URL opens it, not toggles the row - the click must 
   // Clicking anywhere else on the row still toggles, unaffected.
   fireEvent.click(screen.getByTestId("tool-row"));
   expect(onToggle).toHaveBeenCalledTimes(1);
+});
+
+// #93: an expanded row whose descriptor hides the summary while open (shell's
+// summaryHiddenWhenExpanded) and carries no purpose either renders NOTHING but
+// the aria-hidden chevron inside the native <summary> - the disclosure has no
+// accessible name at all. The fix must not resurrect the hidden summary text
+// (that suppression is deliberate, ToolCallItem.tsx:259); it needs a stable
+// label of its own.
+test("an expanded summary-less, purpose-less row's native disclosure still has a nonempty accessible name", () => {
+  render(<ToolRow summary="" failed={false} expandable expanded onToggle={() => {}} />);
+  const row = screen.getByTestId("tool-row");
+  expect(row.tagName).toBe("SUMMARY");
+  expect((row.getAttribute("aria-label") ?? "").trim()).not.toBe("");
+});
+
+// aria-label on an element REPLACES its computed accessible name entirely -
+// it does not merge with descendant content. FailureGlyph and StatusDot each
+// carry their own accessible name (role="img", aria-label="Failed" / the
+// state label) that would normally contribute to the summary's computed
+// name; stamping a fixed "Tool call" label over them would erase that
+// signal. The fallback must therefore only apply when the row would
+// otherwise carry no accessible name at all, leaving the glyph's own name to
+// stand when failure or status is present.
+test("a failed summary-less, purpose-less row's disclosure does not stamp over the failure glyph's accessible name", () => {
+  render(<ToolRow summary="" failed expandable expanded onToggle={() => {}} />);
+  const row = screen.getByTestId("tool-row");
+  expect(row.getAttribute("aria-label")).toBe(null);
+  expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+});
+
+test("a status-bearing summary-less, purpose-less row's disclosure does not stamp over the status's accessible name", () => {
+  render(
+    <ToolRow
+      summary=""
+      failed={false}
+      status={
+        <span role="img" aria-label="Working">
+          ●
+        </span>
+      }
+      expandable
+      expanded
+      onToggle={() => {}}
+    />,
+  );
+  const row = screen.getByTestId("tool-row");
+  expect(row.getAttribute("aria-label")).toBe(null);
+  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+});
+
+// `status` is typed ReactNode, which admits values that carry no accessible
+// name at all - null, false, an empty string - not just a real status node.
+// Suppressing the fallback on `status !== undefined` alone treats any of
+// those as "status present" and leaves the disclosure with no accessible
+// name: no aria-label (suppressed) and no descendant name (nothing renders
+// one). The gate must reject nameless status values, not just absent ones.
+test("a null status does not suppress the fallback label - the disclosure is never left unnamed", () => {
+  render(<ToolRow summary="" failed={false} status={null} expandable expanded onToggle={() => {}} />);
+  const row = screen.getByTestId("tool-row");
+  expect((row.getAttribute("aria-label") ?? "").trim()).not.toBe("");
+});
+
+test("a false status does not suppress the fallback label - the disclosure is never left unnamed", () => {
+  render(<ToolRow summary="" failed={false} status={false} expandable expanded onToggle={() => {}} />);
+  const row = screen.getByTestId("tool-row");
+  expect((row.getAttribute("aria-label") ?? "").trim()).not.toBe("");
 });
 
 // The mechanism-level ToolRow tests above prove the row CAN linkify a
