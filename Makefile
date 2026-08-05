@@ -197,11 +197,25 @@ SELFTEST_SCRIPTS := run-module-lint run-module-tests make-selftest reclaim-test-
 # selftests are fixture-contained (seam-driven stubs, mktemp worlds) and never
 # touch this repo, so they are safe in the same wave.
 # The worker wrapper owns the actual suite PID so an interrupted recipe can
-# forward a signal and wait before removing the diagnostic directory.
+# forward a signal and wait before removing the diagnostic directory. Each
+# worker's suite process gets its own process group (via a perl setpgrp
+# wrapper, not shell job control -- job control needs a controlling terminal
+# and fails outright under dash without one, which is how this recipe
+# actually runs in CI) so a TERM to that group reaches descendants the suite
+# forked rather than exec'd, which a signal aimed at a single PID cannot.
+# stop_children's single-PID kill is only a last-resort fallback for when no
+# group exists to target (the worker's pid file is missing or stale), not a
+# routine path.
 selftest:
 	@set -u; fail=0; normal=0; pids=""; \
 	dir="$$(mktemp -d -t serf-selftest.XXXXXX)" || exit 1; \
-	stop_children() { for pid in $$pids; do kill -TERM -- "-$$pid" 2>/dev/null || kill -TERM "$$pid" 2>/dev/null || :; done; }; \
+	stop_children() { \
+		for s in $(SELFTEST_SCRIPTS); do \
+			cpid="$$(cat "$$dir/$$s.pid" 2>/dev/null || :)"; \
+			[ -n "$$cpid" ] || continue; \
+			kill -TERM "-$$cpid" 2>/dev/null || kill -TERM "$$cpid" 2>/dev/null || :; \
+		done; \
+	}; \
 	cleanup() { \
 		if [ "$$normal" -eq 0 ]; then stop_children; fi; \
 		for pid in $$pids; do wait "$$pid" 2>/dev/null || :; done; \
@@ -211,18 +225,17 @@ selftest:
 	trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
 	run_worker() { \
 		s="$$1"; start="$$(date +%s)"; \
-		scripts/$$s-selftest.sh >"$$dir/$$s.log" 2>&1 & child="$$!"; \
-		trap 'kill -TERM "$$child" 2>/dev/null || :; wait "$$child" 2>/dev/null || :; exit 143' HUP INT TERM; \
+		perl -e 'setpgrp(0,0); exec @ARGV or die "exec: $$!"' -- scripts/$$s-selftest.sh >"$$dir/$$s.log" 2>&1 & child="$$!"; \
+		echo "$$child" >"$$dir/$$s.pid"; \
+		trap 'kill -TERM "-$$child" 2>/dev/null || kill -TERM "$$child" 2>/dev/null || :; wait "$$child" 2>/dev/null || :; exit 143' HUP INT TERM; \
 		wait "$$child"; status="$$?"; trap - HUP INT TERM; end="$$(date +%s)"; \
 		printf 'real %s\n' "$$((end - start))" >>"$$dir/$$s.log"; \
 		echo "$$status" >"$$dir/$$s.status"; \
 	}; \
-	set -m; \
 	for s in $(SELFTEST_SCRIPTS); do \
 		run_worker "$$s" & \
 		pids="$$pids $$!"; \
 	done; \
-	set +m; \
 	wait; \
 	pids=""; \
 	for s in $(SELFTEST_SCRIPTS); do \
