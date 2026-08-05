@@ -288,24 +288,18 @@ function TaskRowView({ task, sessionRef }: { task: TaskRow; sessionRef: string }
   );
 }
 
-export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function TasksPanel(
-  { sessionRef, model, hideTrigger = false },
-  ref,
-) {
+export interface TasksPanelBodyProps {
+  sessionRef: string;
+  model: ThreadModel;
+}
+
+/** Shared task-list body used by both the mobile Sheet and desktop pane. */
+export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
   const toasts = useToasts();
-  const [open, setOpen] = useState(false);
-  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
   const entry = useTasksPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_TASKS_PANEL_ENTRY;
-  const openRef = useRef(open);
   const mountedRef = useRef(true);
   const currentSessionRef = useRef(sessionRef);
-  const bodyTokenRef = useRef({ ref: sessionRef });
   currentSessionRef.current = sessionRef;
-  useEffect(() => {
-    openRef.current = open;
-  }, [open]);
-
-  if (bodyTokenRef.current.ref !== sessionRef) bodyTokenRef.current = { ref: sessionRef };
 
   useEffect(
     () => () => {
@@ -318,8 +312,8 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
   // to someone looking at a failed fetch in an open panel on a quiet session.
   const [reloads, setReloads] = useState(0);
 
-  // Re-fetches on every open, on every Try again, and again whenever
-  // model.tasks changes while still open (a live serf/task/updated push while
+  // Fetches on mount, on every Try again, and again whenever model.tasks
+  // changes while the body is mounted (a live serf/task/updated push while
   // the user is looking) - see this file's own header comment. `toasts` is
   // deliberately not a dependency: useToasts() returns a fresh wrapper object
   // every render (see widgets/toast/index.tsx), so depending on it would
@@ -327,8 +321,6 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
   // stable, module-level function underneath.
   // biome-ignore lint/correctness/useExhaustiveDependencies: toasts is a fresh wrapper object every render (see above) - toasts.push itself is stable
   useEffect(() => {
-    if (!open) return;
-    const bodyToken = bodyTokenRef.current;
     const fetchID = tasksPanelStore.getState().beginFetch(sessionRef);
     threadsStore
       .getState()
@@ -367,27 +359,14 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
         // its own, and that is exactly the `rows === null` case below.
         const failure = loadFailure(err);
         tasksPanelStore.getState().publishFetch(sessionRef, fetchID, { kind: "failure", failure });
-        if (
-          mountedRef.current &&
-          currentSessionRef.current === sessionRef &&
-          bodyTokenRef.current === bodyToken &&
-          openRef.current
-        ) {
+        if (mountedRef.current && currentSessionRef.current === sessionRef) {
           toasts.push("error", failure.sentence);
         }
       });
-  }, [open, model.tasks, sessionRef, reloads]);
+  }, [model.tasks, sessionRef, reloads]);
 
   function reload() {
     setReloads((n) => n + 1);
-  }
-
-  function openPanel() {
-    setOpen(true);
-  }
-
-  function closePanel() {
-    setOpen(false);
   }
 
   const retry = (
@@ -455,6 +434,16 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
     );
   }
 
+  return renderBody();
+}
+
+export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function TasksPanel(
+  { sessionRef, model, hideTrigger = false },
+  ref,
+) {
+  const [open, setOpen] = useState(false);
+  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
+
   return (
     <>
       {/* data-tasks-trigger lets the command palette's "Toggle tasks panel"
@@ -464,12 +453,12 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
           hideTrigger comment for why /tasks going quiet while collapsed is
           the accepted trade-off here (kata vybn's report). */}
       {!hideTrigger && (
-        <Button variant="quiet" size="sm" onClick={openPanel} data-tasks-trigger="">
+        <Button variant="quiet" size="sm" onClick={() => setOpen(true)} data-tasks-trigger="">
           {triggerLabel(model.tasks)}
         </Button>
       )}
-      <Sheet open={open} onClose={closePanel} title="Tasks">
-        {renderBody()}
+      <Sheet open={open} onClose={() => setOpen(false)} title="Tasks">
+        {open ? <TasksPanelBody sessionRef={sessionRef} model={model} /> : null}
       </Sheet>
     </>
   );

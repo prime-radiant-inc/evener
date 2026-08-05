@@ -52,6 +52,12 @@ export interface DetailsPanelProps {
   hideTrigger?: boolean;
 }
 
+export interface DetailsPanelBodyProps {
+  sessionRef: string;
+  model: ThreadModel;
+  now: number;
+}
+
 /** Lets SessionChrome open this panel's Sheet from a collapsed menu item,
  * without lifting `open` out of this component (which would touch every
  * existing render site in DetailsPanel.test.tsx for no behavioral gain -
@@ -106,13 +112,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-export const DetailsPanel = forwardRef<DetailsPanelHandle, DetailsPanelProps>(function DetailsPanel(
-  { model, now, hideTrigger = false },
-  ref,
-) {
-  const [open, setOpen] = useState(false);
-  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
-
+/** Shared stateless details body used by the mobile Sheet and desktop pane. */
+export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
   const showContext = model.contextWindow > 0 && !isEndedStatus(model.status.type);
   // Remaining is the context window minus what is used, floored at zero - the
   // daemon's own definition of the figure (agent/schema/context_metrics.go's
@@ -135,6 +136,92 @@ export const DetailsPanel = forwardRef<DetailsPanelHandle, DetailsPanelProps>(fu
 
   return (
     <>
+      <Section title="Session">
+        <DetailRow label="model" testId="session-details-model">
+          {modelLabel(model.modelProvider, model.model)}
+        </DetailRow>
+        <DetailRow label="state" testId="session-details-status">
+          {model.status.type}
+        </DetailRow>
+        <DetailRow label="session id" testId="session-details-session-id">
+          {model.threadId}
+        </DetailRow>
+      </Section>
+      <Section title="Usage">
+        {showContext && (
+          <DetailRow label="context" testId="session-details-context">
+            <span className={CLASS.meter}>
+              <Meter
+                label={`Context: ${formatTokenCount(model.contextUsed)} of ${formatTokenCount(model.contextWindow)} tokens used, ${percent} percent`}
+                value={model.contextUsed}
+                max={model.contextWindow}
+                tone={contextTone(model.contextPressure)}
+              />
+            </span>
+            <span>{percent}% used</span>
+            <span className={CLASS.dim}>
+              {formatTokenCount(model.contextUsed)} / {formatTokenCount(model.contextWindow)}
+            </span>
+            <span className={CLASS.dim}>{formatTokenCount(remaining)} left</span>
+          </DetailRow>
+        )}
+        {workMs > 0 && (
+          <DetailRow label="work time" testId="session-details-work-time">
+            {formatWorkDuration(workMs)}
+          </DetailRow>
+        )}
+        {tokens && (
+          <DetailRow label={tokensLabel} testId="session-details-tokens">
+            <span>↑{formatTokenCount(tokens.inputTokens)}</span>
+            <span>↓{formatTokenCount(tokens.outputTokens)}</span>
+          </DetailRow>
+        )}
+        {model.cost && (
+          <DetailRow label="cost" testId="session-details-cost">
+            {model.cost}
+          </DetailRow>
+        )}
+      </Section>
+      <Section title="Location">
+        {model.cwd && (
+          <DetailRow label="working dir" testId="session-details-cwd">
+            <span className={CLASS.path}>{model.cwd}</span>
+          </DetailRow>
+        )}
+        {projectPath && (
+          <DetailRow label="project" testId="session-details-project">
+            <span className={CLASS.path}>{projectPath}</span>
+          </DetailRow>
+        )}
+        {model.gitBranch && (
+          <DetailRow label="branch" testId="session-details-branch">
+            {model.gitBranch}
+          </DetailRow>
+        )}
+        {createdAt && (
+          <DetailRow label="started" testId="session-details-created">
+            {createdAt}
+          </DetailRow>
+        )}
+        {updatedAt && (
+          <DetailRow label="last activity" testId="session-details-updated">
+            {updatedAt}
+          </DetailRow>
+        )}
+      </Section>
+    </>
+  );
+}
+
+export const DetailsPanel = forwardRef<DetailsPanelHandle, DetailsPanelProps>(function DetailsPanel(
+  { model, now, hideTrigger = false },
+  ref,
+) {
+  const [open, setOpen] = useState(false);
+  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
+
+  return (
+    <>
       {/* data-details-trigger lets the command palette's "Toggle session
           details" (/status) synthesize a click here (shell/palette/commands.ts)
           - without it that command is inert. Button forwards data-* through.
@@ -150,79 +237,7 @@ export const DetailsPanel = forwardRef<DetailsPanelHandle, DetailsPanelProps>(fu
         </Button>
       )}
       <Sheet open={open} onClose={() => setOpen(false)} title="Session details">
-        <Section title="Session">
-          <DetailRow label="model" testId="session-details-model">
-            {modelLabel(model.modelProvider, model.model)}
-          </DetailRow>
-          <DetailRow label="state" testId="session-details-status">
-            {model.status.type}
-          </DetailRow>
-          <DetailRow label="session id" testId="session-details-session-id">
-            {model.threadId}
-          </DetailRow>
-        </Section>
-        <Section title="Usage">
-          {showContext && (
-            <DetailRow label="context" testId="session-details-context">
-              <span className={CLASS.meter}>
-                <Meter
-                  label={`Context: ${formatTokenCount(model.contextUsed)} of ${formatTokenCount(model.contextWindow)} tokens used, ${percent} percent`}
-                  value={model.contextUsed}
-                  max={model.contextWindow}
-                  tone={contextTone(model.contextPressure)}
-                />
-              </span>
-              <span>{percent}% used</span>
-              <span className={CLASS.dim}>
-                {formatTokenCount(model.contextUsed)} / {formatTokenCount(model.contextWindow)}
-              </span>
-              <span className={CLASS.dim}>{formatTokenCount(remaining)} left</span>
-            </DetailRow>
-          )}
-          {workMs > 0 && (
-            <DetailRow label="work time" testId="session-details-work-time">
-              {formatWorkDuration(workMs)}
-            </DetailRow>
-          )}
-          {tokens && (
-            <DetailRow label={tokensLabel} testId="session-details-tokens">
-              <span>↑{formatTokenCount(tokens.inputTokens)}</span>
-              <span>↓{formatTokenCount(tokens.outputTokens)}</span>
-            </DetailRow>
-          )}
-          {model.cost && (
-            <DetailRow label="cost" testId="session-details-cost">
-              {model.cost}
-            </DetailRow>
-          )}
-        </Section>
-        <Section title="Location">
-          {model.cwd && (
-            <DetailRow label="working dir" testId="session-details-cwd">
-              <span className={CLASS.path}>{model.cwd}</span>
-            </DetailRow>
-          )}
-          {projectPath && (
-            <DetailRow label="project" testId="session-details-project">
-              <span className={CLASS.path}>{projectPath}</span>
-            </DetailRow>
-          )}
-          {model.gitBranch && (
-            <DetailRow label="branch" testId="session-details-branch">
-              {model.gitBranch}
-            </DetailRow>
-          )}
-          {createdAt && (
-            <DetailRow label="started" testId="session-details-created">
-              {createdAt}
-            </DetailRow>
-          )}
-          {updatedAt && (
-            <DetailRow label="last activity" testId="session-details-updated">
-              {updatedAt}
-            </DetailRow>
-          )}
-        </Section>
+        {open ? <DetailsPanelBody sessionRef={model.ref} model={model} now={now} /> : null}
       </Sheet>
     </>
   );

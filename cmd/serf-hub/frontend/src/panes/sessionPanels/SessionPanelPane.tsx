@@ -4,9 +4,10 @@ import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { EmptyState, PaneScaffold } from "../../widgets";
 import { BackToParentAction } from "../backToParentAction";
-import { ActivityPanel } from "../session/chrome/ActivityPanel";
-import { DetailsPanel } from "../session/chrome/DetailsPanel";
-import { TasksPanel } from "../session/chrome/TasksPanel";
+import { ActivityPanelBody } from "../session/chrome/ActivityPanel";
+import { DetailsPanelBody } from "../session/chrome/DetailsPanel";
+import { TasksPanelBody } from "../session/chrome/TasksPanel";
+import { NOW_TICK_MS, useNowTick } from "../session/liveness";
 import type { SessionPanelKind, SessionPanelParams } from "./index";
 
 export interface SessionPanelPaneProps extends PaneProps<SessionPanelParams> {
@@ -17,12 +18,18 @@ function isSessionPanelParams(value: SessionPanelParams): value is SessionPanelP
   return typeof value?.ref === "string" && value.ref.length > 0;
 }
 
+function panelTitle(kind: SessionPanelKind, refOrName: string): string {
+  const label = kind === "tasks" ? "Tasks" : kind === "activity" ? "Activity" : "Details";
+  return `${label} · ${refOrName}`;
+}
+
 export function SessionPanelPane({ params, paneId, focused: _focused, kind }: SessionPanelPaneProps) {
   if (!isSessionPanelParams(params)) {
     throw new Error("SessionPanelPane: params.ref must be a non-empty string");
   }
   const { ref } = params;
   const model = useThreadsStore((state) => state.threads.get(ref));
+  const now = useNowTick(NOW_TICK_MS);
 
   useEffect(() => {
     let started = false;
@@ -42,9 +49,11 @@ export function SessionPanelPane({ params, paneId, focused: _focused, kind }: Se
     };
   }, [ref]);
 
+  const title = panelTitle(kind, model?.name || ref);
+
   if (!model) {
     return (
-      <PaneScaffold title={ref} actions={<BackToParentAction parentRef={ref} />}>
+      <PaneScaffold title={title} actions={<BackToParentAction parentRef={ref} />}>
         <EmptyState title="Loading session panel…" />
       </PaneScaffold>
     );
@@ -52,14 +61,13 @@ export function SessionPanelPane({ params, paneId, focused: _focused, kind }: Se
 
   const body =
     kind === "tasks" ? (
-      <TasksPanel sessionRef={ref} model={model} hideTrigger />
+      <TasksPanelBody sessionRef={ref} model={model} />
     ) : kind === "activity" ? (
-      <ActivityPanel sessionRef={ref} model={model} now={Date.now()} hideTrigger />
+      <ActivityPanelBody sessionRef={ref} model={model} />
     ) : (
-      <DetailsPanel model={model} now={Date.now()} hideTrigger />
+      <DetailsPanelBody sessionRef={ref} model={model} now={now} />
     );
 
-  const title = kind === "tasks" ? "Tasks" : kind === "activity" ? "Activity" : "Details";
   return (
     <PaneScaffold title={title} actions={<BackToParentAction parentRef={ref} />}>
       <div data-pane-id={paneId}>{body}</div>

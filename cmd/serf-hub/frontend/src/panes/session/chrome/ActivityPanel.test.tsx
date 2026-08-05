@@ -409,6 +409,7 @@ describe("ActivityPanel", () => {
     expect(await screen.findByText("No retained activity yet")).toBeTruthy();
 
     cleanup();
+    resetThreadsStoreForTests();
     const unsupported = connectFakeClient();
     unsupported.on("serf/jobs/list", () => ({ data: null }));
     render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
@@ -416,6 +417,7 @@ describe("ActivityPanel", () => {
     expect(await screen.findByText(/activity isn't available/i)).toBeTruthy();
 
     cleanup();
+    resetThreadsStoreForTests();
     const ended = connectFakeClient();
     ended.on("serf/jobs/list", () => {
       throw new WireError("thread not found: thr_root", -32014, { serfErrorInfo: "sessionUnavailable" });

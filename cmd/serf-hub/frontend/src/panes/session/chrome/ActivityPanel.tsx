@@ -32,6 +32,11 @@ export interface ActivityPanelProps {
   hideTrigger?: boolean;
 }
 
+export interface ActivityPanelBodyProps {
+  sessionRef: string;
+  model: ThreadModel;
+}
+
 export interface ActivityPanelHandle {
   open: () => void;
 }
@@ -65,56 +70,42 @@ function triggerLabel(counts: ActivityTreeData["root"]["counts"] | undefined): s
   return `Activity · ${counts.active}`;
 }
 
-export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>(function ActivityPanel(
-  { sessionRef, model, now: _now, hideTrigger = false },
-  ref,
-) {
+function refreshRoot(
+  sessionRef: string,
+  bump: number | null,
+  onFailure?: (sentence: string) => void,
+  force = false,
+): number | null {
+  return activitySummaryStore
+    .getState()
+    .refreshRoot(sessionRef, bump, (ref) => threadsStore.getState().listJobs(ref), onFailure, force);
+}
+
+/** Shared activity reader body used by the mobile Sheet and desktop pane. */
+export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps) {
   const toasts = useToasts();
   const isMobile = useIsMobile();
   const treeRef = useRef<ActivityTreeHandle>(null);
-  const requestIDRef = useRef(0);
-  const fetchedBumpRef = useRef<number | null | undefined>(undefined);
   const mountedRef = useRef(true);
-  const openRef = useRef(false);
   const focusRestoreIDRef = useRef<string | null>(null);
-  const openedRef = useRef(false);
   const currentSessionRef = useRef(sessionRef);
-  const bodyTokenRef = useRef({ ref: sessionRef });
-  const [open, setOpen] = useState(false);
   const [showMobileTree, setShowMobileTree] = useState(true);
   const entry = useActivityPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_PANEL_ENTRY;
   const summary = useActivitySummaryStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_SUMMARY_ENTRY;
   currentSessionRef.current = sessionRef;
 
-  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
-
+  // biome-ignore lint/correctness/useExhaustiveDependencies: this effect resets transient mobile navigation when the ref changes
   useEffect(() => {
-    openRef.current = open;
-    if (!open) openedRef.current = false;
-  }, [open]);
-
-  if (bodyTokenRef.current.ref !== sessionRef) bodyTokenRef.current = { ref: sessionRef };
-
-  useEffect(() => {
-    if (!open) return;
-    activitySummaryStore.getState().mountBody(sessionRef);
-    return () => activitySummaryStore.getState().unmountBody(sessionRef);
-  }, [open, sessionRef]);
-
-  useEffect(
-    () => () => {
-      mountedRef.current = false;
-      requestIDRef.current += 1;
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (sessionRef === "") return;
-    requestIDRef.current += 1;
-    fetchedBumpRef.current = undefined;
-    setOpen(false);
     setShowMobileTree(true);
+  }, [sessionRef]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    activitySummaryStore.getState().mountBody(sessionRef);
+    return () => {
+      mountedRef.current = false;
+      activitySummaryStore.getState().unmountBody(sessionRef);
+    };
   }, [sessionRef]);
 
   useLayoutEffect(() => {
@@ -132,82 +123,62 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
   );
 
   const fetchRoot = useCallback(
-    (continuation?: { nodeID: string; token: string }) => {
+    (continuation?: { nodeID: string; token: string }, forceRoot = false) => {
       if (!continuation) {
-        const summaryRequestID = activitySummaryStore.getState().refreshRoot(
+        refreshRoot(
           sessionRef,
           model.jobsUpdatedAt,
-          (ref) => threadsStore.getState().listJobs(ref),
           (sentence) => {
-            if (
-              mountedRef.current &&
-              currentSessionRef.current === sessionRef &&
-              bodyTokenRef.current.ref === sessionRef &&
-              openRef.current
-            ) {
+            if (mountedRef.current && currentSessionRef.current === sessionRef) {
               toasts.push("error", sentence);
             }
           },
-          true,
+          forceRoot,
         );
-        if (summaryRequestID !== null) fetchedBumpRef.current = model.jobsUpdatedAt;
         return;
       }
-      const requestID = activityPanelStore
-        .getState()
-        .beginFetch(sessionRef, continuation ? { nodeID: continuation.nodeID } : undefined);
-      if (!continuation) fetchedBumpRef.current = model.jobsUpdatedAt;
+      const requestID = activityPanelStore.getState().beginFetch(sessionRef, { nodeID: continuation.nodeID });
       void threadsStore
         .getState()
-        .listJobs(sessionRef, continuation?.token)
+        .listJobs(sessionRef, continuation.token)
         .then((data) => {
           const parsed = parseActivityTree(data);
           if (parsed === null) {
-            if (continuation) {
-              activityPanelStore.getState().publishFetch(sessionRef, requestID, {
-                kind: "continuation-failed",
-                nodeID: continuation.nodeID,
-                message: continuationFailureMessage(),
-              });
-            }
+            activityPanelStore.getState().publishFetch(sessionRef, requestID, {
+              kind: "continuation-failed",
+              nodeID: continuation.nodeID,
+              message: continuationFailureMessage(),
+            });
             return;
           }
           activityPanelStore.getState().publishFetch(sessionRef, requestID, { kind: "ready", tree: parsed });
         })
         .catch((err) => {
-          if (continuation) {
-            activityPanelStore.getState().publishFetch(sessionRef, requestID, {
-              kind: "continuation-failed",
-              nodeID: continuation.nodeID,
-              message: continuationFailureMessage(err),
-            });
-            return;
-          }
+          activityPanelStore.getState().publishFetch(sessionRef, requestID, {
+            kind: "continuation-failed",
+            nodeID: continuation.nodeID,
+            message: continuationFailureMessage(err),
+          });
         });
     },
     [model.jobsUpdatedAt, sessionRef, toasts],
   );
 
+  // The mount fetch preserves the old visible-fetch contract exactly: a
+  // changed jobs bump is fresh, while idle/failed/unsupported/ended retained
+  // states are retried even when the bump has not changed. Store completions
+  // stay live after this body unmounts, so this effect intentionally does not
+  // depend on completion state and cannot loop after a failed request.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the gate is sampled on mount and jobsUpdatedAt pushes; store completion changes must not turn a retained failure into a retry loop
   useEffect(() => {
-    if (open) {
-      const firstRenderWhileOpen = !openedRef.current;
-      openedRef.current = true;
-      const needsVisibleFetch = firstRenderWhileOpen || fetchedBumpRef.current !== model.jobsUpdatedAt;
-      if (needsVisibleFetch) fetchRoot();
-      return;
-    }
-    if (hideTrigger || summary.mountedBodies > 0 || !summary.established) return;
-    if (summary.lastFetchedBump === model.jobsUpdatedAt) return;
-    fetchRoot();
-  }, [
-    fetchRoot,
-    hideTrigger,
-    model.jobsUpdatedAt,
-    open,
-    summary.established,
-    summary.lastFetchedBump,
-    summary.mountedBodies,
-  ]);
+    const bumpMismatch = summary.lastFetchedBump !== model.jobsUpdatedAt;
+    const retainedNonReady =
+      entry.load.kind === "idle" ||
+      entry.load.kind === "failed" ||
+      entry.load.kind === "unsupported" ||
+      entry.load.kind === "ended";
+    if (bumpMismatch || retainedNonReady) fetchRoot(undefined, retainedNonReady);
+  }, [fetchRoot, model.jobsUpdatedAt, sessionRef]);
 
   useEffect(() => {
     if (!isMobile) setShowMobileTree(true);
@@ -238,7 +209,7 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
           title={entry.load.error.headline}
           hint={entry.load.error.detail}
           action={
-            <Button variant="quiet" size="sm" onClick={() => fetchRoot()}>
+            <Button variant="quiet" size="sm" onClick={() => fetchRoot(undefined, true)}>
               Try again
             </Button>
           }
@@ -273,7 +244,7 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
               {staleError.sentence}
             </p>
             <p className={CLASS.staleMessage}>Showing the last activity that loaded.</p>
-            <Button variant="quiet" size="sm" onClick={() => fetchRoot()}>
+            <Button variant="quiet" size="sm" onClick={() => fetchRoot(undefined, true)}>
               Try again
             </Button>
           </div>
@@ -330,6 +301,41 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
     );
   }
 
+  return renderBody();
+}
+
+export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>(function ActivityPanel(
+  { sessionRef, model, now: _now, hideTrigger = false },
+  ref,
+) {
+  const [open, setOpen] = useState(false);
+  const summary = useActivitySummaryStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_SUMMARY_ENTRY;
+  const entry = useActivityPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_PANEL_ENTRY;
+  const tree = retainedTree(entry.load);
+
+  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: this effect resets the Sheet's transient open state when the ref changes
+  useEffect(() => {
+    setOpen(false);
+  }, [sessionRef]);
+
+  // A closed Sheet has no mounted body, so its trigger owns the established
+  // background refresh. The root result also reconciles the panel store.
+  useEffect(() => {
+    if (open || hideTrigger || summary.mountedBodies > 0 || !summary.established) return;
+    if (summary.lastFetchedBump === model.jobsUpdatedAt) return;
+    refreshRoot(sessionRef, model.jobsUpdatedAt);
+  }, [
+    hideTrigger,
+    model.jobsUpdatedAt,
+    open,
+    sessionRef,
+    summary.established,
+    summary.lastFetchedBump,
+    summary.mountedBodies,
+  ]);
+
   return (
     <>
       {!hideTrigger && (
@@ -338,7 +344,7 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
         </Button>
       )}
       <Sheet open={open} onClose={() => setOpen(false)} title="Activity" size="wide">
-        {renderBody()}
+        {open ? <ActivityPanelBody sessionRef={sessionRef} model={model} /> : null}
       </Sheet>
     </>
   );
