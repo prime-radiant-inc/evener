@@ -384,11 +384,11 @@ test("a generic fetch failure surfaces an error toast AND an inline error state"
 // failure banner over a list that is on screen and current.
 test("a stale overlapping failure does not toast after a newer fetch succeeded", async () => {
   const fake = connectFakeClient();
-  const calls: Array<{ resolve: (value: unknown) => void; reject: (err: unknown) => void }> = [];
+  const calls: Array<{ resolve: (value: { data: unknown }) => void; reject: (err: unknown) => void }> = [];
   fake.on(
     "serf/tasks/list",
     () =>
-      new Promise((resolve, reject) => {
+      new Promise<{ data: unknown }>((resolve, reject) => {
         calls.push({ resolve, reject });
       }),
   );
