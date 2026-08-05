@@ -185,6 +185,102 @@ describe("activitySummaryStore", () => {
     expect(activitySummaryStore.getState().entries.get("ref_a")?.counts?.active).toBe(7);
   });
 
+  test("the newest queued bump wins when calls arrive out of order during one fetch", async () => {
+    resetActivitySummaryStoreForTests();
+    const pendingFetches: Array<(value: unknown) => void> = [];
+    const fetch = () =>
+      new Promise<unknown>((resolve) => {
+        pendingFetches.push(resolve);
+      });
+    const rootWith = (active: number) => ({
+      revision: 1,
+      root: {
+        kind: "session",
+        sessionId: "sess_a",
+        ref: "ref_a",
+        label: "A",
+        aggregate: "running",
+        counts: { active, failed: 0, completed: 0, complete: true },
+        entries: [],
+        branch: {},
+      },
+    });
+
+    expect(activitySummaryStore.getState().refreshRoot("ref_a", 1, fetch)).toBe(1);
+    // Bumps are timestamps: 3 is newer than 2. A late caller still holding
+    // bump 2 must not overwrite the queued bump 3.
+    expect(activitySummaryStore.getState().refreshRoot("ref_a", 3, fetch)).toBeNull();
+    expect(activitySummaryStore.getState().refreshRoot("ref_a", 2, fetch)).toBeNull();
+
+    pendingFetches[0]?.(rootWith(1));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(pendingFetches.length).toBe(2);
+    pendingFetches[1]?.(rootWith(9));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(activitySummaryStore.getState().entries.get("ref_a")).toMatchObject({
+      loading: false,
+      lastFetchedBump: 3,
+    });
+  });
+
+  test("a queued refresh fails through its own caller's onFailure, not the superseded one's", async () => {
+    resetActivitySummaryStoreForTests();
+    let resolveFirst!: (value: unknown) => void;
+    const firstFailure: string[] = [];
+    const queuedFailure: string[] = [];
+    let rejectQueued!: (err: unknown) => void;
+
+    activitySummaryStore.getState().refreshRoot(
+      "ref_a",
+      1,
+      () =>
+        new Promise<unknown>((resolve) => {
+          resolveFirst = resolve;
+        }),
+      (sentence) => firstFailure.push(sentence),
+    );
+    activitySummaryStore.getState().refreshRoot(
+      "ref_a",
+      2,
+      () =>
+        new Promise<unknown>((_resolve, reject) => {
+          rejectQueued = reject;
+        }),
+      (sentence) => queuedFailure.push(sentence),
+    );
+
+    resolveFirst({
+      revision: 1,
+      root: {
+        kind: "session",
+        sessionId: "sess_a",
+        ref: "ref_a",
+        label: "A",
+        aggregate: "running",
+        counts: { active: 1, failed: 0, completed: 0, complete: true },
+        entries: [],
+        branch: {},
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    rejectQueued(new Error("broken pipe"));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(firstFailure).toEqual([]);
+    expect(queuedFailure).toHaveLength(1);
+  });
+
   test("a completion from before eviction cannot publish into a recreated entry", async () => {
     resetActivitySummaryStoreForTests();
     resetWorkspaceStoreForTests();

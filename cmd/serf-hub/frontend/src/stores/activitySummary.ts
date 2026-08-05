@@ -7,6 +7,18 @@ import { errorText, sessionActionError, sessionActionHeadline } from "../protoco
 import { type ActivityFetchResult, activityPanelStore } from "./activityPanel";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
 
+// A refresh that arrived while a root fetch was in flight. Nothing re-runs
+// the component effects when `loading` clears, so refreshRoot re-issues this
+// once the active request completes - with the queued caller's own fetch and
+// onFailure, since the superseded caller's failure guard (mount generation)
+// may no longer describe who is on screen.
+interface PendingRootFetch {
+  bump: number | null;
+  force: boolean;
+  fetch: (ref: string) => Promise<unknown>;
+  onFailure?: (sentence: string) => void;
+}
+
 export interface ActivitySummaryEntry {
   counts?: ActivityCounts;
   established: boolean;
@@ -14,10 +26,7 @@ export interface ActivitySummaryEntry {
   loading: boolean;
   lastFetchedBump?: number | null;
   requestID: number;
-  // The newest bump (or forced retry) that arrived while a root fetch was
-  // in flight. Nothing re-runs the component effects when `loading` clears,
-  // so refreshRoot itself re-issues this once the active request completes.
-  pendingBump?: { bump: number | null; force: boolean };
+  pendingBump?: PendingRootFetch;
 }
 
 export interface ActivitySummaryStoreState {
@@ -88,16 +97,7 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
     let requestID: number | null = null;
     set((state) => {
       const entry = entryFor(state.entries, ref);
-      if (entry.loading) {
-        // Don't lose a NEWER bump behind the in-flight request: queue it for
-        // refreshRoot to re-issue on completion. A duplicate of the bump
-        // already being fetched queues nothing.
-        if (!force && bump === entry.lastFetchedBump) return state;
-        const entries = new Map(state.entries);
-        entries.set(ref, { ...entry, pendingBump: { bump, force } });
-        return { entries };
-      }
-      if (!force && entry.established && entry.lastFetchedBump === bump) return state;
+      if (entry.loading || (!force && entry.established && entry.lastFetchedBump === bump)) return state;
       requestID = ++nextRequestID;
       const entries = new Map(state.entries);
       entries.set(ref, {
@@ -115,14 +115,34 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
 
   refreshRoot(ref, bump, fetch, onFailure, force = false) {
     const requestID = get().beginRootFetch(ref, bump, force);
-    if (requestID === null) return null;
+    if (requestID === null) {
+      // Refused because a fetch is in flight? Queue this call - with its own
+      // fetch/onFailure - for re-issue on completion. Newest bump wins when
+      // several queue (bumps are reducer-side Date.now() stamps, so larger is
+      // newer; a null bump carries no ordering claim and yields to a number);
+      // force survives whichever record wins. A duplicate of the bump already
+      // being fetched, or a plain dedupe refusal, queues nothing.
+      set((state) => {
+        const entry = state.entries.get(ref);
+        if (!entry?.loading) return state;
+        if (!force && bump === entry.lastFetchedBump) return state;
+        const incoming: PendingRootFetch = { bump, force, fetch, onFailure };
+        const previous = entry.pendingBump;
+        const incomingWins =
+          !previous || previous.bump === null || (bump !== null && bump >= previous.bump);
+        const winner = incomingWins ? incoming : previous;
+        const pendingBump = { ...winner, force: force || (previous?.force ?? false) };
+        const entries = new Map(state.entries);
+        entries.set(ref, { ...entry, pendingBump });
+        return { entries };
+      });
+      return null;
+    }
     const panelRequestID = activityPanelStore.getState().beginFetch(ref);
-    // Re-issues a bump queued while this request was in flight. The queued
-    // caller's own fetch/onFailure were dropped at queue time; every
-    // production caller passes the same listJobs fetch and an equivalent
-    // mount-guarded toast, so this completion's pair stands in for them.
+    // Re-issues whatever refresh was queued while this request was in flight,
+    // through the queued caller's own fetch/onFailure.
     const issuePendingBump = () => {
-      let pending: ActivitySummaryEntry["pendingBump"];
+      let pending: PendingRootFetch | undefined;
       set((state) => {
         const entry = state.entries.get(ref);
         if (!entry?.pendingBump) return state;
@@ -131,7 +151,7 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
         entries.set(ref, { ...entry, pendingBump: undefined });
         return { entries };
       });
-      if (pending) get().refreshRoot(ref, pending.bump, fetch, onFailure, pending.force);
+      if (pending) get().refreshRoot(ref, pending.bump, pending.fetch, pending.onFailure, pending.force);
     };
     void fetch(ref)
       .then((data) => {
