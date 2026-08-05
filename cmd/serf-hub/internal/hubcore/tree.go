@@ -775,6 +775,18 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			projects[groupKey] = acc
 			projectOrder = append(projectOrder, groupKey)
 		}
+		// A carried fallback identity can know the project's ID without its
+		// canonical path (the recorded working directory no longer resolves —
+		// e.g. a deleted worktree). When a sibling session's identity for the
+		// same project does carry the canonical path, adopt it: the group takes
+		// the resolved checkout's name and working directory, not the dead
+		// directory's leaf.
+		if project.ID != "" && project.CanonicalPath != "" &&
+			(acc.project.ID == "" || (acc.project.ID == project.ID && acc.project.CanonicalPath == "")) {
+			acc.project = project
+			acc.name = filepath.Base(project.CanonicalPath)
+			acc.workingDir = project.CanonicalPath
+		}
 		if acc.project.ID == "" && project.ID != "" {
 			acc.project = project
 		}

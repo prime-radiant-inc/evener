@@ -601,8 +601,13 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		live = s.cfg.Roster.List()
 	}
 	var metas []schema.SessionMeta
+	var pastEntries []hubcore.PastEntry
 	if s.cfg.Past != nil {
-		metas = s.cfg.Past.AllMetas()
+		pastEntries = s.cfg.Past.All()
+		metas = make([]schema.SessionMeta, 0, len(pastEntries))
+		for _, entry := range pastEntries {
+			metas = append(metas, entry.Meta)
+		}
 	}
 	fetch := s.remoteThreadFetch(ctx)
 	carriedProjectCandidates := make(map[string]map[string]identifier.Project)
@@ -626,6 +631,29 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 	projectCandidates := make(map[string]map[string]identifier.Project, len(resolvedProjects)+len(carriedProjectCandidates))
 	for path, project := range resolvedProjects {
 		addNavigationProjectCandidate(projectCandidates, path, project)
+	}
+	// A session whose recorded working directory no longer resolves (its
+	// worktree or checkout was deleted after the session ended) would
+	// otherwise group under the dead path with an empty identity: named after
+	// the dead directory's leaf and collapsing onto the shared "no-project"
+	// key with every other unresolved path. The past index already knows the
+	// canonical project — the state dir it loaded the meta from is named by
+	// it — so carry that identity as a fallback for exactly the paths fresh
+	// resolution failed on. A path that did resolve keeps its resolved
+	// identity; the fallback never overrides it.
+	for _, entry := range pastEntries {
+		path := hubcore.EffectiveWorkingDir(entry.Meta)
+		if path == "" {
+			continue
+		}
+		if _, ok := resolvedProjects[path]; ok {
+			continue
+		}
+		id := filepath.Base(entry.StateDir)
+		if identifier.ValidateProjectID(id) != nil {
+			continue
+		}
+		addNavigationProjectCandidate(projectCandidates, path, identifier.Project{ID: id})
 	}
 	for path, candidates := range carriedProjectCandidates {
 		for _, project := range candidates {
