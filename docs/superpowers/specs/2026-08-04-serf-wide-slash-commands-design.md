@@ -156,10 +156,11 @@ func DiscoverSerfWideCommands(env execenv.ExecutionEnvironment) (map[string]Comm
 - Per-file rejections, each producing a warning, never fatal:
   - a basename containing `:` — a bare key with a colon could forge the
     `plugin:name` namespace and shadow a plugin's exact key;
-  - a basename containing whitespace — `expandSlashCommand` cuts the name
-    at the first space (session_slash_command.go:26), so such a command
-    can never be invoked; skip it and warn (the same defect exists for
-    plugin commands today; this guard covers the new discovery path only);
+  - a basename containing whitespace — name/args parsing splits at the
+    first space (session_slash_command.go:26), so a space-containing name
+    can never be invoked; other whitespace is rejected as defense-in-depth.
+    Skip the file and warn (the same defect exists for plugin commands
+    today; this guard covers the new discovery path only);
   - malformed frontmatter — `ParseCommand`'s only error path; skip the
     file, warn, continue.
 - Per-file advisory warning: a serf-wide body containing a `!`` span is
@@ -301,18 +302,32 @@ documenting it:
    no registry command, Enter sends the raw text (`/name args`) as session
    input on session pages — the web equivalent of the TUI forward.
    Expansion stays server-side; the web client needs no template logic.
+   "No registry command" includes the web palette's own built-ins (26 ids
+   including `status`, `model`, `help`, `steer`, `queue`: commands.ts), so
+   a serf-wide command whose name collides with a *web* built-in is
+   intercepted exactly as TUI built-in collisions are — both clients
+   intercept their own built-in sets, and only headless input is
+   interception-free.
 2. **Palette command listing.** The palette consumes `serf/command/list`
    and lists plugin and user-global commands alongside built-ins, badged by
    `source`, showing `description`/`argument-hint`. Selecting one enters
-   the palette's existing args flow where applicable, and submits
-   `/name args` as session input. Project commands are not in the hub
-   catalog (§Catalog boundary); they invoke via the fallthrough.
+   the palette's existing args flow where applicable, and submits the
+   invocation as session input. **Plugin-source entries submit the
+   qualified `/plugin:name` form**, never the bare name: the catalog
+   deliberately lists a shadowed plugin command alongside its serf-wide
+   shadow (§Catalog boundary), and a bare submission would resolve to the
+   serf-wide command regardless of which entry the user picked. User-source
+   entries submit the bare form. Project commands are not in the hub
+   catalog (§Catalog boundary); they invoke via the fallthrough, and a
+   project command shadows any same-named catalog entry submitted bare —
+   the same resolution rule the TUI and headless input already live with.
 
 The TUI's built-in interception stays: a serf-wide command named `status`
 or `model` remains unreachable in the TUI (identical for plugin commands
-today). `docs/skills.md` documents this. A reserved-name warning at
-discovery is a possible follow-up; it requires sharing the clients'
-built-in name lists and is out of scope here.
+today), and the equivalent holds for web built-ins in the web UI.
+`docs/skills.md` documents this. A reserved-name warning at discovery is a
+possible follow-up; it requires sharing the clients' built-in name lists
+and is out of scope here.
 
 ### Lifecycle and persistence
 
@@ -340,7 +355,7 @@ Fail-soft everywhere; loud warnings; never block spawn.
 | Serf-wide body contains `!`` spans | Advisory warning at discovery; spans stay literal in expansion |
 | Serf-wide vs serf-wide name collision | Silent deterministic shadowing (deepest project dir > user-global) |
 | Serf-wide shadows plugin command | Silent; plugin reachable via `/plugin:name`; catalog lists both only when the shadowing command is user-global (§Catalog boundary) |
-| Command name matches a TUI built-in | Works headless and (via the palette fallthrough, §Web invocation) in web; unreachable in the TUI; documented |
+| Command name matches a client built-in (TUI registry or web palette) | Unreachable in that client's typed input; works headless; documented (§Web invocation) |
 | Expansion failure (plugin commands) | Unchanged: warning + literal-text fallback in `expandSlashCommand` |
 | `model`/`allowed-tools` declared | Unenforced-field warning naming source and file, generated at discovery |
 
@@ -383,10 +398,13 @@ no live requests.
   the fuzz registry (`make fuzz-registry-check`).
 - **Frontend**: palette command-filter fallthrough — Enter on an unmatched
   `/name args` query on a session page sends the raw text as session input;
-  palette lists `serf/command/list` entries with source badges, and
-  selecting one submits `/name args`; fetch failure degrades to built-ins
-  only (fallthrough still works). Biome + `make test-web` gates;
-  `make test-web-browser` on Chrome-capable hosts.
+  a query matching a web built-in still runs the built-in. The palette
+  lists `serf/command/list` entries with source badges; selecting a
+  **plugin-source entry submits the qualified `/plugin:name` form**
+  (a shadowed plugin entry must not run its serf-wide shadow), and
+  selecting a user-source entry submits the bare form; fetch failure
+  degrades to built-ins only (fallthrough still works). Biome +
+  `make test-web` gates; `make test-web-browser` on Chrome-capable hosts.
 
 ## File-by-file change list
 
@@ -398,7 +416,7 @@ no live requests.
 | `agent/command/expand.go` | New: `ExpandArgs` (argument substitution only) |
 | `agent/session_slash_command.go` | Branch expansion on `Command.Source` |
 | `agent/session_init.go` | `initPlugins` stops merging `p.Commands`; after it returns, discover serf-wide commands and set `s.pluginCommands = MergeCommands(s.plugins, serfwide)`; queue discovery warnings |
-| `appwire/types.go` | `CommandDescriptor.Source` |
+| `appwire/types.go` | `CommandDescriptor.Source`; update the type's doc comment (currently says "plugin-provided") |
 | `appwire/protocol.go` | `serf/command/list` description mentions source |
 | `cmd/serf-hub/app_rpc.go` | `hubCommandList` uses `MergeCommands`; remove the empty-dirs early return |
 | `cmd/serf-hub/frontend` palette (`CommandPalette.tsx`, command registry) | Command-filter fallthrough sends unmatched `/name args` as session input; palette lists `serf/command/list` commands badged by source |

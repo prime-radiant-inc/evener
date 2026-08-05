@@ -69,10 +69,11 @@ Invoke it by typing `/name args` in a session. Optional frontmatter:
 parsed but not enforced; serf warns when they appear).
 
 Expansion substitutes `$ARGUMENTS` and `$1..$9` as inert text. `!`cmd``
-spans and `@file` references in a serf-wide command body are passed through
-literally — they do not execute or read anything — and serf warns at load
-time if a serf-wide command contains `!`` spans. If you want an executable
-template, package it as a plugin command instead.
+spans and `@file` references in a serf-wide command body never execute or
+read anything — they remain in the expanded text verbatim except that
+argument substitution still applies inside them as inert text — and serf
+warns at load time if a serf-wide command contains `!`` spans. If you want
+an executable template, package it as a plugin command instead.
 
 **Precedence:** project > user-global > plugin. A serf-wide command shadows
 a plugin command of the same bare name; the plugin command stays reachable
@@ -81,10 +82,12 @@ cwd wins.
 
 ### Client caveats
 
-- The TUI intercepts its own built-in slash commands (`/status`, `/model`,
-  `/help`, ...) before your input reaches the session. A serf-wide command
-  with one of those names works in headless and web input but is
-  unreachable in the TUI.
+- Both desktop surfaces intercept their own built-in slash commands before
+  your input reaches the session: the TUI has its registry (`/status`,
+  `/model`, `/help`, ...) and the web palette has its own, partly different
+  set (`/status`, `/model`, `/help`, `/steer`, `/queue`, ...). A command
+  whose name collides with a client's built-ins is unreachable in that
+  client's typed input — pick another name. Headless input always works.
 - The web UI opens its command palette when you type `/` into an empty
   composer. The palette lists plugin and user-global commands (badged by
   source) alongside the built-ins, and if your typed `/name` matches
@@ -103,7 +106,7 @@ same permissions as the session.
 
 Plugin commands are namespaced: `/plugin:name`. The bare `/name` form
 resolves to the plugin command when no serf-wide command shadows it and no
-TUI built-in intercepts it (the client caveats above apply to plugin
+client built-in intercepts it (the client caveats above apply to plugin
 commands too).
 
 ## Security checklist for command authors
