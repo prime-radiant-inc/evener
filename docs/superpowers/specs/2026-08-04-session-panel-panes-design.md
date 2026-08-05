@@ -1,6 +1,6 @@
 # Session panels as togglable panes — design
 
-Date: 2026-08-04 (v6, revised after adversarial review round 5)
+Date: 2026-08-04 (v7, revised after adversarial review round 6)
 Status: approved direction, under revision review
 
 ## Goal
@@ -169,6 +169,42 @@ v6 addresses the six verified findings from adversarial review round 5
 6. **§5's eviction rule explicitly covers all three stores** — tasks,
    activity, and the §6 summary store (A5#4).
 
+v7 addresses the eight verified findings from adversarial review round 6
+(reviewer A: 4, reviewer B: 5 — B took the round):
+
+1. **In-flight fetches publish into the store regardless of mountedness**
+   (A6#3, B6#1) — the `mountedRef` completion-drop pattern must NOT be
+   carried into the store-backed bodies; combined with the attempt-based
+   bump and the exact `needsVisibleFetch` gate, a dropped completion wedges
+   the entry in "loading" with a matching bump and no refetch path.
+2. **§4's guard-run write is qualified** (A6#1): the guard records the
+   pathname it was armed for, and a guard run only writes `placedPathname`
+   when it clears for that same pathname — a guard surviving into an
+   unrelated navigation (reachable via nested routes' focus-only
+   placements) confirms nothing about the new route.
+3. **§9 names the BackToParentAction path-selection signal** (A6#2): a DOM
+   query for the parent's scaffold region — present means mounted
+   (imperative focus), absent means unmounted (marker for mount
+   consumption). A store-openness check would misfire on mobile, where the
+   parent is open-in-store but unmounted.
+4. **§9's close-focus claims are corrected** (B6#2, B6#3): the route
+   effect's refocus is a STORE-focus fallback that doesn't move DOM focus;
+   tab-x close of a focused panel strands DOM focus on `<body>` (accepted,
+   same class as the palette-close drop); the "never strands" sentence is
+   scoped to the non-orphan paths.
+5. **Pending-focus markers are cancelled on pre-mount deactivation**
+   (B6#5) — a marker recorded at toggle-open must not survive the pane
+   losing its tab activation before the lazy chunk's first mount, or it
+   would fire on an ordinary later re-activation, violating the
+   only-on-toggle-open rule.
+6. **§9's crossing sentence is fixed** (B6#4): a crossed-over panel can be
+   CLOSED after crossing back to desktop — nothing auto-closes it; §11's
+   "crossing back returns it" stands.
+7. **§5 eviction evaluates quiescent state** (A6#4): the check runs
+   settled (microtask-debounced), so the multi-set restore/re-apply
+   sequence during a host swap can't evict a ref whose panes continuously
+   exist.
+
 ## Current state (verified against the code)
 
 - `panes/session/chrome/SessionChrome.tsx` renders `DetailsPanel`,
@@ -320,11 +356,15 @@ placement. The placement signal is NEW bookkeeping this change adds: a
 `placedPathname` ref written at BOTH points where placement is observed
 complete — when `routePlacementIsApplied` evaluates true AND on the
 `routePlacementInProgressRef` guard run that swallows the re-render an
-effect-driven placement just caused (that guard run IS the placement
-confirmation; a signal written only on the predicate-true path would never
-be set after a deferred deep link or an in-app navigation, and a signal
-written only at `openRouteAsPane` would never be set when placement was
-already applied). The existing `openedForPathnameRef` is never read in the
+effect-driven placement just caused — with one qualification: the guard
+records the pathname it was armed FOR, and a guard run writes
+`placedPathname` only when it clears for that same pathname. (A nested-
+route placement can end in a focus-only `openPane` that never re-runs the
+effect, leaving the guard armed into an unrelated later run — including a
+navigation. Such a run confirms nothing about the new route; treating it as
+a confirmation would enable the relaxation where placement never ran. The
+swallowed navigation itself is a pre-existing AppShell hazard, untouched
+here.) The existing `openedForPathnameRef` is never read in the
 session branch and cannot serve, and the tree landing is not a usable
 discriminator either — a deferred deep link's placement run is triggered by
 the tree arriving, with no pathname change. With the placement-state rule,
@@ -361,8 +401,12 @@ activity summary store — subscribes to the workspace store and evicts its
 entry for a ref when NO open pane references that ref (no session pane, no
 panel pane of any kind) — retention is bounded by what's actually on
 screen, and a backgrounded panel's state survives exactly as long as its
-pane exists. Rail-driven session deletion already closes every pane for a
-deleted ref generically, so the cascade still reaches these stores.
+pane exists. The check evaluates QUIESCENT state (settled via a microtask,
+not synchronously inside each `set`): host-swap restore/re-apply sequences
+rewrite the pane list in several consecutive sets, and a synchronous check
+would evict a ref whose panes exist before and after the sequence but
+vanish inside it. Rail-driven session deletion already closes every pane
+for a deleted ref generically, so the cascade still reaches these stores.
 
 Sheet hosts read the same stores. One honest mobile divergence: StackHost
 keeps panes in the workspace store across Back navigation, so store-backed
@@ -406,7 +450,13 @@ mount fetch follows today's `needsVisibleFetch` semantics exactly: it fires
 when the entry's last-fetched bump doesn't match `model.jobsUpdatedAt` OR
 the retained load state is non-ready (idle / failed / unsupported / ended —
 today refetches those on reopen even with no bump), and is skipped
-otherwise. Publishing happens only
+otherwise. **In-flight fetches are store-owned:** a started fetch always
+publishes its result into the store, whether or not the body that started
+it is still mounted. Today's `mountedRef` completion-drop exists only to
+avoid setState-after-unmount, which a store makes moot — carrying it over
+would wedge an entry in a loading state with an already-advanced
+(attempt-based) bump and no refetch path, since neither gate fires for
+`loading` with a matching bump. Publishing happens only
 from ROOT fetches — continuation patches carry partial-window counts
 (`mergeSession` adopts `patch.counts`), so grafts never overwrite the badge
 summary — and the stored summary keeps the `counts.complete` flag the label
@@ -480,22 +530,32 @@ over, now backed by the §5 stores.
   id; the pane host consumes it on mount and focuses its scaffold region.
   This is required because dockview remounts a pane on every tab
   re-activation, so a naive focus-on-mount would yank focus on every tab
-  switch back to the panel and on boot restore. `PaneScaffold` gains a
+  switch back to the panel and on boot restore. A marker is CANCELLED if
+  the pane loses its tab activation before its first mount completes (the
+  lazy chunk may still be resolving), so a stale marker can never fire on
+  an ordinary later re-activation. `PaneScaffold` gains a
   focusable region (`tabIndex={-1}` on its content wrapper) for this — it
   has none today. `aria-pressed` announces the state change from the
   button. There is deliberately no Escape-to-close (dockview panes are
   persistent surfaces, not dialogs; keyboard close paths are the toggle
-  button again and the tab's close affordance). Focus on close falls back
-  with the route effect's refocus of the main pane. `BackToParentAction`
-  (below) moves DOM focus into the parent pane's scaffold region, by two
-  complementary paths: it records a pending-focus marker for the parent
-  pane id (consumed on mount — the orphan case, where the parent must be
-  created), and when the parent is already mounted it focuses the existing
-  scaffold region imperatively after activation (a mount-consumed marker
-  alone never fires there — dockview doesn't remount an already-active
-  panel — and an unconsumed lingering marker would yank focus at some
-  unrelated later remount). The keyboard round trip therefore never strands
-  focus on `<body>` when the activating button unmounts.
+  button again and the tab's close affordance). The route effect's
+  refocus-on-close is a STORE-focus fallback only — it does not move DOM
+  focus (§7), so a tab-x close of a focused panel strands DOM focus on
+  `<body>`: accepted, the same class as the palette-close drop (§7);
+  button-initiated close keeps DOM focus on the button.
+  `BackToParentAction` (below) moves DOM focus into the parent pane's
+  scaffold region, by two paths selected by a DOM query for the parent's
+  scaffold region — the one signal that means "mounted": present (the
+  common desktop case, parent in main) → focus it imperatively after
+  activation; absent (parent unmounted, or not yet created — the orphan
+  case, and ALWAYS the case on mobile, where StackHost mounts only the
+  focused pane) → record a pending-focus marker for the parent pane id,
+  consumed on mount. (A store-openness check would misfire here: the
+  workspace store knows open, not mounted.) In the §11 orphan case the
+  route effect's revert can unmount the newly focused parent before or
+  after the marker fires, and DOM focus can still land on `<body>` there —
+  accepted, matching the transcript/doc precedent; the "never strands"
+  guarantee covers the non-orphan paths.
 - **Breakpoint crossing:** the workspace store survives the
   DockHost↔StackHost swap, so a panel pane open at a desktop→mobile
   crossing renders full-screen in StackHost (it reads the same §5 stores,
@@ -509,9 +569,10 @@ over, now backed by the §5 stores.
   re-focuses/reopens the parent session regardless of host or back-stack
   state. A crossed-over panel has no close
   affordance on mobile (StackHost has no tab-x, the mobile buttons operate
-  sheets, and BackToParentAction only navigates); it closes on the next
-  desktop crossing or on session deletion — accepted. The locked mobile
-  decision governs the toggle AFFORDANCE (mobile chrome buttons open
+  sheets, and BackToParentAction only navigates); it can be closed after
+  crossing back to desktop — §11's "crossing back returns it" stands;
+  nothing auto-closes it — or on session deletion. Accepted. The locked
+  mobile decision governs the toggle AFFORDANCE (mobile chrome buttons open
   sheets); an already-open pane crossing the breakpoint degrades to a
   readable full-screen pane rather than being destroyed.
 
