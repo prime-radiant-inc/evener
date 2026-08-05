@@ -161,6 +161,9 @@ func DiscoverSerfWideCommands(env execenv.ExecutionEnvironment) (map[string]Comm
     can never be invoked; other whitespace is rejected as defense-in-depth.
     Skip the file and warn (the same defect exists for plugin commands
     today; this guard covers the new discovery path only);
+  - an empty basename (a file named exactly `.md`) — the name would be the
+    empty string, which `expandSlashCommand` never resolves
+    (session_slash_command.go:27-29). Skip the file and warn;
   - malformed frontmatter — `ParseCommand`'s only error path; skip the
     file, warn, continue.
 - Per-file advisory warning: a serf-wide body containing a `!`` span is
@@ -351,7 +354,8 @@ Fail-soft everywhere; loud warnings; never block spawn.
 | Command file unreadable after a successful dir scan | Skip file, warning naming file, continue (plugin discovery fails hard here, commands.go:97-100; serf-wide discovery follows the fail-soft rule instead) |
 | Malformed frontmatter in a `.md` | Skip file, warning naming file and error, continue |
 | Filename containing `:` | Skip file, warning (namespace forgery guard) |
-| Filename containing whitespace | Skip file, warning (uninvokable-name guard) |
+| Filename containing whitespace | Skip file, warning (space names are uninvokable; other whitespace is defense-in-depth) |
+| Empty filename (`.md` exactly) | Skip file, warning (empty name never resolves) |
 | Serf-wide body contains `!`` spans | Advisory warning at discovery; spans stay literal in expansion |
 | Serf-wide vs serf-wide name collision | Silent deterministic shadowing (deepest project dir > user-global) |
 | Serf-wide shadows plugin command | Silent; plugin reachable via `/plugin:name`; catalog lists both only when the shadowing command is user-global (§Catalog boundary) |
@@ -368,8 +372,9 @@ no live requests.
   project walk only; ordering (user-global scanned first, deepest project
   dir shadows); symlinked cwd; non-`.md` files ignored; subdirectories not
   descended; malformed frontmatter skipped with warning; colon filenames
-  skipped with warning; whitespace filenames skipped with warning; `!``
-  advisory warning fires; nil env scans user-global only.
+  skipped with warning; whitespace filenames skipped with warning; an empty
+  name (`.md`) skipped with warning; `!`` advisory warning fires; nil env
+  scans user-global only.
 - **Unit — precedence**: `ResolveCommand` exact-matches a bare serf-wide key
   before plugin suffix fallback; `/plugin:name` still resolves explicitly;
   when two plugins share a command name with no serf-wide shadow, assert the
@@ -417,6 +422,7 @@ no live requests.
 | `agent/session_slash_command.go` | Branch expansion on `Command.Source` |
 | `agent/session_init.go` | `initPlugins` stops merging `p.Commands`; after it returns, discover serf-wide commands and set `s.pluginCommands = MergeCommands(s.plugins, serfwide)`; queue discovery warnings |
 | `appwire/types.go` | `CommandDescriptor.Source`; update the type's doc comment (currently says "plugin-provided") |
+| generated AppWire outputs | Run `make generate` (`types.gen.ts`, protocol doc); `make lint-generated` must pass |
 | `appwire/protocol.go` | `serf/command/list` description mentions source |
 | `cmd/serf-hub/app_rpc.go` | `hubCommandList` uses `MergeCommands`; remove the empty-dirs early return |
 | `cmd/serf-hub/frontend` palette (`CommandPalette.tsx`, command registry) | Command-filter fallthrough sends unmatched `/name args` as session input; palette lists `serf/command/list` commands badged by source |

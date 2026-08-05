@@ -62,11 +62,12 @@ of two places:
 - `$XDG_CONFIG_HOME/serf/commands/name.md` or `~/.config/serf/commands/name.md`
   (user-global commands)
 
-The filename is the command name — choose a name without spaces (invocation
-parses the name up to the first space, so a spaced name can never run).
-Invoke it by typing `/name args` in a session. Optional frontmatter:
-`description`, `argument-hint`, `model`, `allowed-tools` (the last two are
-parsed but not enforced; serf warns when they appear).
+The filename is the command name. Names cannot contain spaces (invocation
+parses the name up to the first space, so a spaced name can never run) or
+colons (`:` is the plugin-namespace separator; serf skips such files with a
+warning). Invoke it by typing `/name args` in a session. Optional
+frontmatter: `description`, `argument-hint`, `model`, `allowed-tools` (the
+last two are parsed but not enforced; serf warns when they appear).
 
 Expansion substitutes `$ARGUMENTS` and `$1..$9` as inert text. `!`cmd``
 spans and `@file` references in a serf-wide command body never execute or
@@ -107,7 +108,9 @@ same permissions as the session.
 Plugin commands are namespaced: `/plugin:name`. The bare `/name` form
 resolves to the plugin command when no serf-wide command shadows it and no
 client built-in intercepts it (the client caveats above apply to plugin
-commands too).
+commands too). If two plugins define the same command name, the bare form
+resolves to one of them — which one is not guaranteed; use the qualified
+form to be sure.
 
 ## Security checklist for command authors
 
