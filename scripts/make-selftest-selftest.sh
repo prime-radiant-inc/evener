@@ -174,46 +174,54 @@ run_make_with_readiness_events() {
 	make_pid="$!"
 }
 
+# Give the wrapper one bounded chance to report Make's exit and be reaped normally.
+# The report may legitimately never come (a worker that ignores TERM stalls Make
+# indefinitely), so this event -- and only this kind of event -- gets a timeout;
+# a caller that gets nonzero back must escalate rather than assume reaping happened.
+await_wrapper_stop() {
+	local pid="$1" stop_event=""
+	IFS= read -r -t 1 -u 8 stop_event || return 1
+	if wait "$pid"; then make_status=0; else make_status=$?; fi
+}
+
+# The ladder's last tier: SIGKILL the recorded Make child, then wait -- with no timeout --
+# for the wrapper, Make's real parent, to reap it and exit.
+# This wait needs no bound because the event is guaranteed. Once Make is SIGKILLed the
+# wrapper's own `wait` must return, and the terminal FIFO write that follows cannot block:
+# every fixture FIFO is held open read/write both here and through the wrapper's inherited
+# fds, so the open always finds a reader and a one-line write always fits the pipe buffer.
+# Racing a bounded window here instead would let us SIGKILL the wrapper mid-reap and leave
+# Make briefly observable as an unreaped zombie. With no child pid recorded there is no
+# such guarantee to lean on, so we SIGKILL the wrapper itself -- equally certain to end
+# the wait -- rather than wait unbounded on an event that may never arrive.
+kill_make_child_and_reap_wrapper() {
+	local pid="$1" child_pid=""
+	child_pid="$(cat "$case_state/make-child.pid" 2>/dev/null || :)"
+	: >"$case_state/make-child-killed"
+	if [ -n "$child_pid" ]; then
+		kill -KILL "$child_pid" 2>/dev/null || :
+	else
+		kill -KILL "$pid" 2>/dev/null || :
+	fi
+	wait "$pid" 2>/dev/null || :
+	make_status=137
+}
+
 stop_make_with_readiness_events() {
-	local pid="$make_pid" child_pid="" stop_event=""
+	local pid="$make_pid"
 	[ -n "$pid" ] || return 0
 	kill -TERM "$pid" 2>/dev/null || :
-	if IFS= read -r -t 1 -u 8 stop_event; then
-		if wait "$pid"; then make_status=0; else make_status=$?; fi
-	else
+	if ! await_wrapper_stop "$pid"; then
 		# Keep Make alive while fixture wrappers reap their recorded workers.
 		kill_fixture_workers
 		if ! wait_for_fixture_reapers; then
-			# The reap-ack deadline was exhausted: don't keep trusting the graceful ladder as
-			# if reaping had been confirmed. Force the whole recorded hierarchy down directly --
-			# but still give the wrapper the same one bounded chance the tier below this one
-			# gets to notice the killed child via its own `wait` and reap it normally, rather
-			# than skipping straight to force-killing the wrapper (which cannot reap a pid
-			# that isn't its own direct child, and could observe it as a zombie in between).
+			# The reap-ack deadline was exhausted: stop trusting the graceful ladder as if
+			# reaping had been confirmed, and take the recorded hierarchy down through its
+			# own ownership chain instead.
 			kill_fixture_workers
-			child_pid="$(cat "$case_state/make-child.pid" 2>/dev/null || :)"
-			: >"$case_state/make-child-killed"
-			[ -n "$child_pid" ] && kill -KILL "$child_pid" 2>/dev/null || :
-			if IFS= read -r -t 1 -u 8 stop_event; then
-				if wait "$pid"; then make_status=0; else make_status=$?; fi
-			else
-				kill -KILL "$pid" 2>/dev/null || :
-				wait "$pid" 2>/dev/null || :
-				make_status=137
-			fi
-		elif IFS= read -r -t 1 -u 8 stop_event; then
-			if wait "$pid"; then make_status=0; else make_status=$?; fi
-		else
-			child_pid="$(cat "$case_state/make-child.pid" 2>/dev/null || :)"
-			: >"$case_state/make-child-killed"
-			[ -n "$child_pid" ] && kill -KILL "$child_pid" 2>/dev/null || :
-			if IFS= read -r -t 1 -u 8 stop_event; then
-				if wait "$pid"; then make_status=0; else make_status=$?; fi
-			else
-				kill -KILL "$pid" 2>/dev/null || :
-				wait "$pid" 2>/dev/null || :
-				make_status=137
-			fi
+			kill_make_child_and_reap_wrapper "$pid"
+		elif ! await_wrapper_stop "$pid"; then
+			kill_make_child_and_reap_wrapper "$pid"
 		fi
 	fi
 	make_pid=""
@@ -416,6 +424,15 @@ release_fixture_reapers
 exec 7>&-
 exec 6>&-
 assert_eq "$make_pid" "" "the TERM-ignoring wave reaps its Make wrapper"
+# `kill -0` succeeds for a zombie too, so this also catches a Make child that was killed
+# but left unreaped by the wrapper that owns it.
+term_ignore_child_pid="$(cat "$case_state/make-child.pid" 2>/dev/null || :)"
+if [ -n "$term_ignore_child_pid" ] && kill -0 "$term_ignore_child_pid" 2>/dev/null; then
+	bad "a TERM-ignoring wave reaps its Make child"
+	kill -KILL "$term_ignore_child_pid" 2>/dev/null || :
+else
+	ok "a TERM-ignoring wave reaps its Make child"
+fi
 for name in probe-one probe-two; do
 	pid="$(cat "$case_state/$name.pid" 2>/dev/null || :)"
 	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
@@ -449,6 +466,13 @@ unrelated_pid="$!"
 stop_make_with_readiness_events
 exec 8>&-
 [ "$make_status" -ne 0 ] && ok "an interrupted wave exits nonzero" || bad "an interrupted wave exits zero"
+interrupted_child_pid="$(cat "$case_state/make-child.pid" 2>/dev/null || :)"
+if [ -n "$interrupted_child_pid" ] && kill -0 "$interrupted_child_pid" 2>/dev/null; then
+	bad "an interrupted wave reaps its Make child"
+	kill -KILL "$interrupted_child_pid" 2>/dev/null || :
+else
+	ok "an interrupted wave reaps its Make child"
+fi
 interrupted_logdir="$(cat "$case_state/logdir" 2>/dev/null || :)"
 [ -n "$interrupted_logdir" ] && [ ! -e "$interrupted_logdir" ] && ok "an interrupted wave removes its temporary logs" || bad "an interrupted wave leaves its temporary logs"
 for name in probe-one probe-two; do
