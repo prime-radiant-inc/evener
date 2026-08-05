@@ -204,7 +204,11 @@ export function ToolRow({
   // default end-of-line placement).
   const anchorSplit = ((): [before: string, after: string] | undefined => {
     if (trailing === undefined || trailing === null || trailingAfter === undefined) return undefined;
-    const at = summary.indexOf(trailingAfter);
+    // lastIndexOf, not indexOf: when the anchor text occurs more than once in
+    // the summary, the caller means the LATER, complete occurrence (kata
+    // ledger #97) - an earlier coincidental substring match (e.g. the anchor
+    // text also appearing as part of an earlier word) must not win the split.
+    const at = summary.lastIndexOf(trailingAfter);
     if (at === -1) return undefined;
     const end = at + trailingAfter.length;
     return [summary.slice(0, end), summary.slice(end)];
@@ -374,6 +378,12 @@ export function ToolRow({
       data-purpose={hasPurpose ? "true" : undefined}
       title={title}
       aria-expanded={expanded}
+      // A descriptor can suppress BOTH the purpose (none stated) and the
+      // summary (summaryHiddenWhenExpanded, open) at once, leaving nothing but
+      // the aria-hidden chevron inside this <summary> - an unnamed disclosure.
+      // The label is a stable fallback, not a restoration of the hidden
+      // summary text (that suppression, ToolCallItem.tsx:259, is deliberate).
+      aria-label={!hasPurpose && !hasSummary ? "Tool call" : undefined}
       onClick={(e) => {
         // Fully controlled: preventDefault stops the browser flipping
         // <details open> itself, so the caller's store stays the single source

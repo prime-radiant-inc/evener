@@ -824,6 +824,42 @@ test("clicking the linkified URL opens it, not toggles the row - the click must 
   expect(onToggle).toHaveBeenCalledTimes(1);
 });
 
+// #93: an expanded row whose descriptor hides the summary while open (shell's
+// summaryHiddenWhenExpanded) and carries no purpose either renders NOTHING but
+// the aria-hidden chevron inside the native <summary> - the disclosure has no
+// accessible name at all. The fix must not resurrect the hidden summary text
+// (that suppression is deliberate, ToolCallItem.tsx:259); it needs a stable
+// label of its own.
+test("an expanded summary-less, purpose-less row's native disclosure still has a nonempty accessible name", () => {
+  render(<ToolRow summary="" failed={false} expandable expanded onToggle={() => {}} />);
+  const row = screen.getByTestId("tool-row");
+  expect(row.tagName).toBe("SUMMARY");
+  expect((row.getAttribute("aria-label") ?? "").trim()).not.toBe("");
+});
+
+// #97: trailingAfter anchors on summary.indexOf, which finds the FIRST
+// occurrence of the anchor text. When the same anchor text occurs more than
+// once in the summary, the intended occurrence is the LATER one (the actual
+// target the caller means), not an earlier coincidental match.
+test("trailingAfter with an anchor that occurs twice in the summary splits after the later occurrence", () => {
+  const summary = "Read a.ts, then read a.ts again · lines 1-3";
+  render(
+    <ToolRow
+      summary={summary}
+      purpose="Check the source"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      trailing={<button type="button">Open beside</button>}
+      trailingAfter="a.ts"
+    />,
+  );
+  const trailingEl = screen.getByTestId("tool-row-trailing");
+  expect(trailingEl.previousSibling?.textContent).toBe("Read a.ts, then read a.ts");
+  expect(trailingEl.nextSibling?.textContent).toBe(" again · lines 1-3");
+});
+
 // The mechanism-level ToolRow tests above prove the row CAN linkify a
 // summaryLink; this proves ToolCallItem actually THREADS a descriptor's
 // summaryLink through to it - a wiring bug (the prop never passed) would
