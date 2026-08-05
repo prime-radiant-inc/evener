@@ -42,4 +42,4 @@ Closed the remaining Important acceptance gap from rereview: added a determinist
 - `git diff --check` — passed.
 
 ### Commit
-- Pending until this report and regression are committed.
+- `2dcd3cb49649166a3c6102451f6851388542127d` — `test(web): cover collapsed session pane checks`
