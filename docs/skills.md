@@ -40,10 +40,13 @@ in plugin commands.
 
 A skill is a directory containing a `SKILL.md` with YAML frontmatter
 (`name` and `description` required, `allowed-tools` optional). Serf
-discovers skills from `skills/` directories walking the git root down to
-your cwd, from any `skills_dirs` launch-config entries, and from plugins —
-layered on top of the skills bundled with serf itself, which form the base
-layer everything else shadows. Later sources shadow earlier ones by name.
+discovers skills from the set bundled with serf itself (the base layer),
+from `skills/` directories walking the git root down to your cwd, from any
+`skills_dirs` launch-config entries, and from plugins. Among the bare-named
+sources, later ones shadow earlier ones by name: a project or `skills_dirs`
+skill overrides a bundled skill of the same name. Plugin skills are
+namespaced (`plugin:skill`) and never shadow a bare-named skill — invoke
+them by qualified name, or by bare name when no bare-named skill has it.
 
 Skill bodies are loaded as text and injected for the model to follow. Serf
 performs no expansion on them: no shell execution, no file inclusion, no
@@ -94,9 +97,10 @@ cwd wins.
   client's typed input — pick another name. Headless input always works.
 - The web UI opens its command palette when you type `/` into an empty
   composer. The palette lists plugin and user-global commands (badged by
-  source) alongside the built-ins, and if your typed `/name` matches
-  nothing, Enter sends it to the session as-is. Project commands invoke
-  through that fallthrough.
+  source) alongside the built-ins. If the name you typed isn't exactly one
+  of the palette's commands, Enter sends it to the session as-is — a fuzzy
+  near-miss (say `/stat` for `status`) still reaches your command. Project
+  commands invoke through that fallthrough.
 
 ## Plugin commands
 
