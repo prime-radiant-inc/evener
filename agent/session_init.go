@@ -908,6 +908,15 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	if err := s.restoreSideEffect("init_plugins", func() error { return s.initPlugins(sessionStartKind, runSessionStartHooks) }); err != nil {
 		return nil, fmt.Errorf("plugin initialization: %w", err)
 	}
+	// Serf-wide commands (project .serf/commands + user-global config dir)
+	// merge with plugin commands in one place. This runs for every session,
+	// including PluginDirs == nil, so it must not live inside initPlugins
+	// (which early-returns on empty PluginDirs). Discovery is fail-soft;
+	// warnings join the same session-start queue as command frontmatter
+	// warnings.
+	serfwide, cmdWarnings := plugin.DiscoverSerfWideCommands(s.currentEnv())
+	s.pluginCommands = plugin.MergeCommands(s.plugins, serfwide)
+	s.pendingHookWarnings = append(s.pendingHookWarnings, cmdWarnings...)
 	s.applyAgentRolePromptOverride()
 
 	if err := s.validateModelFallbacks(); err != nil {
@@ -1136,7 +1145,6 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 		for rawKey, agent := range p.Agents {
 			allAgents[exposedAgentCatalogKey(p, rawKey, agent)] = agent
 		}
-		maps.Copy(s.pluginCommands, p.Commands)
 		s.pendingHookWarnings = append(s.pendingHookWarnings, commandUnenforcedFieldWarnings(p)...)
 		for event, eventHooks := range p.Hooks {
 			runner.Add(event, eventHooks...)
