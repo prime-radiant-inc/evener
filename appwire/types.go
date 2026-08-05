@@ -1224,6 +1224,10 @@ type JobActivityJob struct {
 	EndedAt        string `json:"endedAt,omitempty"`
 	ExitCode       *int   `json:"exitCode,omitempty"`
 	OutputBytes    int64  `json:"outputBytes"`
+	// LastOutputAt is the RFC3339 timestamp of the job's most recent
+	// parent-observable output/activity. Live-only: retained jobs omit it, and
+	// clients fall back to startedAt (or hide quiet time for terminal rows).
+	LastOutputAt string `json:"lastOutputAt,omitempty"`
 }
 
 type JobActivityDelegate struct {
@@ -1234,6 +1238,9 @@ type JobActivityDelegate struct {
 	Turns          []JobActivityJob       `json:"turns"`
 	Child          *JobActivitySession    `json:"child,omitempty"`
 	Branch         JobActivityBranchState `json:"branch"`
+	// Usage is the child session's cumulative self-only token totals. Nil when
+	// the child has no token data (fresh session, old daemon, shell-only work).
+	Usage *SerfUsage `json:"usage,omitempty"`
 }
 
 type JobActivityEntry struct {

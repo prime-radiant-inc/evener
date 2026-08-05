@@ -745,6 +745,78 @@ func TestJobActivityTree_ContinuationResponseRetainsRootRevision(t *testing.T) {
 	}
 }
 
+func TestProjectActivityJobStampsLastOutputAt(t *testing.T) {
+	last := time.Date(2026, 8, 5, 15, 2, 11, 0, time.UTC)
+	rec := &jobstore.JobRecord{
+		JobID:        "job_live",
+		Type:         jobstore.JobShell,
+		Status:       jobstore.StatusRunning,
+		Description:  "make test-web",
+		StartedAt:    last.Add(-4 * time.Minute),
+		LastActivity: &last,
+	}
+	job := projectActivityJob(rec, "ref_root")
+	if job.LastOutputAt != "2026-08-05T15:02:11Z" {
+		t.Errorf("LastOutputAt = %q, want %q", job.LastOutputAt, "2026-08-05T15:02:11Z")
+	}
+}
+
+func TestProjectActivityJobOmitsLastOutputAtWithoutActivity(t *testing.T) {
+	rec := &jobstore.JobRecord{
+		JobID:       "job_done",
+		Type:        jobstore.JobShell,
+		Status:      jobstore.StatusCompleted,
+		StartedAt:   time.Date(2026, 8, 5, 15, 0, 0, 0, time.UTC),
+		Description: "done work",
+	}
+	job := projectActivityJob(rec, "ref_root")
+	if job.LastOutputAt != "" {
+		t.Errorf("LastOutputAt = %q, want empty", job.LastOutputAt)
+	}
+}
+
+func TestProjectActivityDelegateCopiesChildUsage(t *testing.T) {
+	build := func(usage *appwire.SerfUsage) (activitySessionSnapshot, *activityDelegateGroup) {
+		child := &activitySessionSnapshot{
+			SessionID: "child", Ref: "local:child", Label: "Child",
+			Usage: usage,
+		}
+		snap := activitySessionSnapshot{
+			SessionID: "root", Ref: "local:root",
+			Delegates: map[string]*jobstore.DelegateRecord{"dlg_1": {DelegateID: "dlg_1", ChildSessionID: "child", TranscriptRef: "local:child"}},
+			Children:  map[string]*activitySessionSnapshot{"child": child},
+		}
+		anchor := &jobstore.JobRecord{
+			JobID: "job_anchor", Type: jobstore.JobDelegate, DelegateID: "dlg_1",
+			OwnerSessionID: "root", Status: jobstore.StatusRunning, Task: "inspect child",
+		}
+		return snap, &activityDelegateGroup{anchor: anchor, turns: []*jobstore.JobRecord{anchor}}
+	}
+
+	t.Run("usage set", func(t *testing.T) {
+		want := &appwire.SerfUsage{InputTokens: 41200, OutputTokens: 6100}
+		snap, group := build(want)
+		delegate := projectActivityDelegate(snap, group, nil, 0, nil)
+		if delegate.Usage == nil {
+			t.Fatalf("delegate.Usage is nil, want %+v", want)
+		}
+		if *delegate.Usage != *want {
+			t.Fatalf("delegate.Usage = %+v, want %+v", *delegate.Usage, *want)
+		}
+		if delegate.Usage == want {
+			t.Fatal("delegate.Usage shares the child snapshot's pointer, want a value copy")
+		}
+	})
+
+	t.Run("usage nil", func(t *testing.T) {
+		snap, group := build(nil)
+		delegate := projectActivityDelegate(snap, group, nil, 0, nil)
+		if delegate.Usage != nil {
+			t.Fatalf("delegate.Usage = %+v, want nil when child usage unknown", delegate.Usage)
+		}
+	})
+}
+
 func ptrActivityJob(job appwire.JobActivityJob) *appwire.JobActivityJob { return &job }
 
 func activityRecordIDs(records []*jobstore.JobRecord) []string {
