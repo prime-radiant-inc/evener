@@ -479,11 +479,12 @@ spec is still open.
 
 It prototyped a recursive navigator where each parent partitions its children
 into an always-visible current set and a collapsed "Inactive subagents (N)"
-disclosure, recursively, with lineage preserved. Verdict **partially shipped**:
-recursive nesting is real in `shell/rail/railNodes.ts`, but the prototype's
-centrepiece — the inactive-children disclosure — has no trace. Its production-fix
-plan existed but targeted the deleted vanilla-JS files and was never re-aimed at
-React.
+disclosure, recursively, with lineage preserved. Verdict **shipped**: recursive
+nesting and the inactive-children disclosure are both real in
+`shell/rail/railNodes.ts` (`splitChildren` / `CURRENT_SUBAGENT_STATES`).
+Settled 2026-08-05 (Jesse): "idle" folds as inactive too — since sessions
+stopped closing on provider failure (ff859dbbe), a finished child rests open
+at idle indefinitely, so idle children are settled work, not current.
 
 ## The rule that explains most of the drift
 
@@ -512,7 +513,6 @@ worktrees own those files:
 - Worst-state rollup for nested subagents (mockup 09, held constant across all
   four alternatives) shipped in `789c3927b` and was lost when the Go hub was
   deleted. A parent row's colour reflects only its own status today.
-- The inactive-subagents disclosure from mockup 23.
 
 ## 2026-07-31 re-theme: Fjord + Ledger
 

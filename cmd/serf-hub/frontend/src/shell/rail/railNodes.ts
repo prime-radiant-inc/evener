@@ -113,8 +113,8 @@ export function overrideLookup(overrides: ReadonlyMap<string, boolean>): IsExpan
 }
 
 // The states that make a subagent CURRENT - something you might still be
-// supervising. Everything else (ended, closed, errored, and any future
-// terminal state) is finished and folds away. Written as the positive list
+// supervising. Everything else (idle, ended, closed, errored, and any future
+// terminal state) is settled and folds away. Written as the positive list
 // because that is the side worth being conservative about: an unrecognized
 // state folding is a row one click away, while an unrecognized state
 // rendering inline forever is the clutter this exists to remove.
@@ -122,7 +122,13 @@ export function overrideLookup(overrides: ReadonlyMap<string, boolean>): IsExpan
 // "errored" folds with the rest, deliberately, even though the rail treats
 // `failed` as a signal state elsewhere: terminal is terminal, matching the
 // htmx UI this replaced (parity-m3-sidebar-tree.md §3).
-const CURRENT_SUBAGENT_STATES: ReadonlySet<string> = new Set(["active", "awaiting", "idle", "warning", "notLoaded"]);
+//
+// "idle" folds too: since sessions stopped closing on provider failure
+// (ff859dbbe), a finished child rests open at idle indefinitely, so an idle
+// child is settled work - it would otherwise sit in the current list forever.
+// A child that picks work back up (a drive turn, job_send) reports active and
+// surfaces again.
+const CURRENT_SUBAGENT_STATES: ReadonlySet<string> = new Set(["active", "awaiting", "warning", "notLoaded"]);
 
 // Namespaced the same way projectNodeId is, and off the PARENT's row_id, so
 // every parent's fold is its own key at every nesting depth - expanding one

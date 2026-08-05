@@ -90,7 +90,7 @@ describe("sessionNodes", () => {
 
   test("a session's nested children (subagent clusters) recurse into session rail nodes", () => {
     const [rail] = sessionNodes(
-      [node({ row_id: "parent", children: [node({ row_id: "child", title: "Subagent" })] })],
+      [node({ row_id: "parent", children: [node({ row_id: "child", title: "Subagent", state: "active" })] })],
       NEVER_EXPANDED,
     );
     expect(rail?.children).toHaveLength(1);
@@ -114,8 +114,11 @@ describe("sessionNodes", () => {
 // live children under the wreckage. Current children stay inline; terminal ones
 // fold behind the parent's own disclosure, collapsed until asked for.
 describe("inactive-subagent fold", () => {
-  const CURRENT_STATES = ["active", "awaiting", "idle", "warning", "notLoaded"];
-  const INACTIVE_STATES = ["ended", "closed", "errored"];
+  // "idle" folds with the terminal states: since sessions stopped closing on
+  // provider failure (ff859dbbe), a finished child rests open at idle forever,
+  // so an idle child is settled work, not something being supervised.
+  const CURRENT_STATES = ["active", "awaiting", "warning", "notLoaded"];
+  const INACTIVE_STATES = ["idle", "ended", "closed", "errored"];
 
   function parentWith(...childStates: string[]) {
     return node({
@@ -167,7 +170,7 @@ describe("inactive-subagent fold", () => {
   });
 
   test("a parent whose children are all current gets no fold node at all", () => {
-    const [rail] = sessionNodes([parentWith("active", "idle")], NEVER_EXPANDED);
+    const [rail] = sessionNodes([parentWith("active", "awaiting")], NEVER_EXPANDED);
     expect(rail?.children.every((c) => c.kind === "session")).toBe(true);
   });
 
