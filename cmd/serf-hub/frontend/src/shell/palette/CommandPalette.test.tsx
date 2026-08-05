@@ -388,6 +388,87 @@ test("ArrowDown moves the active row (aria-selected) with wraparound", async () 
   expect(screen.getAllByRole("option")[0]?.getAttribute("aria-selected")).toBe("false");
 });
 
+test("Enter on an exact built-in name runs the built-in", async () => {
+  const user = userEvent.setup();
+  const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
+  const trigger = document.createElement("button");
+  trigger.setAttribute("data-details-trigger", "true");
+  document.body.appendChild(trigger);
+  const click = vi.spyOn(trigger, "click");
+  focusSession("ref_a");
+  render(<CommandPalette />);
+  act(() => openPalette("/status"));
+
+  await user.keyboard("{Enter}");
+
+  expect(click).toHaveBeenCalled();
+  expect(send).not.toHaveBeenCalled();
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("Enter on a fuzzy near-miss falls through to the session", async () => {
+  const user = userEvent.setup();
+  const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
+  focusSession("ref_a");
+  render(<CommandPalette />);
+  act(() => openPalette("/stat"));
+
+  await user.keyboard("{Enter}");
+
+  expect(send).toHaveBeenCalledWith("ref_a", "/stat");
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("Enter on an unknown slash command sends the raw query", async () => {
+  const user = userEvent.setup();
+  const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
+  focusSession("ref_a");
+  render(<CommandPalette />);
+  act(() => openPalette("/review main"));
+
+  await user.keyboard("{Enter}");
+
+  expect(send).toHaveBeenCalledWith("ref_a", "/review main");
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("selecting a plugin catalog entry submits the qualified form", async () => {
+  const user = userEvent.setup();
+  const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
+  useCommandCatalog.setState({
+    commands: [{ name: "review", pluginName: "p", source: "plugin" }],
+    loaded: true,
+  });
+  focusSession("ref_a");
+  render(<CommandPalette />);
+  act(() => openPalette("/review"));
+
+  await user.click(screen.getByRole("option", { name: /review \[plugin\]/ }));
+
+  expect(send).toHaveBeenCalledWith("ref_a", "/p:review");
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("Arrow-selected catalog entry activates instead of the first result", async () => {
+  const user = userEvent.setup();
+  const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
+  useCommandCatalog.setState({
+    commands: [
+      { name: "review", pluginName: "p", source: "plugin" },
+      { name: "review", pluginName: "q", source: "plugin" },
+    ],
+    loaded: true,
+  });
+  focusSession("ref_a");
+  render(<CommandPalette />);
+  act(() => openPalette("/review"));
+
+  await user.keyboard("{ArrowDown}{Enter}");
+
+  expect(send).toHaveBeenCalledWith("ref_a", "/q:review");
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
 // Mount the Toast region so any command toast has somewhere to render (not
 // asserted here - just ensures no unmounted-region warnings).
 test("mounting alongside a Toast region does not throw", () => {

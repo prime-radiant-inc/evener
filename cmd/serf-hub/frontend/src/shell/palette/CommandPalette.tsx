@@ -10,6 +10,7 @@ import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react"
 import { errorText, isHubLaunchError } from "../../protocol/errors";
 import type { CommandDescriptor } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
+import { threadsStore } from "../../stores/threads";
 import { type CadenceState, Chip, Dialog, StatusDot, useToasts } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { navigate } from "../routing";
@@ -352,6 +353,13 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       setError(`/${command.id} is ${command.unavailableReason}`);
       return;
     }
+    if (command.slashCommandInvocation && ctx.sessionRef) {
+      const args = query.replace(/^\//, "").trim().slice(command.id.length).trim();
+      const text = args ? `${command.slashCommandInvocation} ${args}` : command.slashCommandInvocation;
+      void threadsStore.getState().send(ctx.sessionRef, text);
+      closePalette();
+      return;
+    }
     if (command.args) enterArgsMode(command);
     else runArgless(command);
   }
@@ -410,8 +418,22 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       return;
     }
     if (mode === "command-filter") {
-      if (item?.kind !== "command") return;
-      activateCommand(item.command);
+      // An explicitly arrow-navigated selection wins.
+      if (activeIndex !== 0 && item?.kind === "command") {
+        activateCommand(item.command);
+        return;
+      }
+      const firstToken = query.replace(/^\//, "").trim().split(/\s+/)[0] ?? "";
+      const exact = view.items.find((it) => it.kind === "command" && it.command.id === firstToken);
+      if (exact?.kind === "command") {
+        activateCommand(exact.command);
+        return;
+      }
+      // Slash fallthrough: forward the raw text to the session (TUI parity).
+      if (firstToken !== "" && ctx.sessionRef) {
+        void threadsStore.getState().send(ctx.sessionRef, query);
+        closePalette();
+      }
       return;
     }
     // command-args
