@@ -13,7 +13,7 @@ import { resetTreeStoreForTests, treeStore } from "../stores/tree";
 import { AppShell } from "./AppShell";
 import { DockHost } from "./DockHost";
 import { paletteStore } from "./palette/paletteController";
-import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
+import { getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // Matches DockHost.tsx's own LAYOUT_STORAGE_KEY exactly (not exported - a
 // deliberately internal implementation detail; duplicated here the same
@@ -1386,6 +1386,32 @@ function installMobileViewport(): void {
   );
 }
 
+function installSwitchableViewport(): (mobile: boolean) => void {
+  let mobile = false;
+  const listeners = new Set<(event: MediaQueryListEvent) => void>();
+  const mediaQuery = {
+    media: "(max-width: 899px)",
+    get matches() {
+      return mobile;
+    },
+    addEventListener: (_type: string, listener: EventListenerOrEventListenerObject) => {
+      listeners.add(listener as (event: MediaQueryListEvent) => void);
+    },
+    removeEventListener: (_type: string, listener: EventListenerOrEventListenerObject) => {
+      listeners.delete(listener as (event: MediaQueryListEvent) => void);
+    },
+  } as MediaQueryList;
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => mediaQuery),
+  );
+  return (nextMobile: boolean) => {
+    mobile = nextMobile;
+    const event = { matches: mobile, media: mediaQuery.media } as MediaQueryListEvent;
+    for (const listener of listeners) listener(event);
+  };
+}
+
 // A /s/{ref} route cannot be placed until /api/tree says whether the ref is
 // nested (openRouteAsPane defers it), and no fetch can resolve inside the
 // first commit - so on mobile the shell always spends a beat with the deep
@@ -1418,6 +1444,41 @@ test("mobile: a /s/{ref} deep link still opens once the tree lands, instead of b
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
   // And the address bar now names it in paneToURL's own canonical form.
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3As1"));
+});
+
+test("crossing desktop → mobile → desktop preserves a focused panel and its return path", async () => {
+  const setMobile = installSwitchableViewport();
+  window.history.pushState({}, "", "/s/local:s1");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+
+  let panelId!: string;
+  act(() => {
+    panelId = workspaceStore.getState().openPane("sessionDetails", { ref: "local:s1" }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(panelId);
+  });
+  await screen.findByText("Loading session panel…");
+  await waitFor(() => expect(getDockviewApi()?.panels.some((panel) => panel.id === panelId)).toBe(true));
+
+  setMobile(true);
+  expect(await screen.findByText("Loading session panel…")).toBeTruthy();
+  expect(workspaceStore.getState().focusedPaneId).toBe(panelId);
+  expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  expect(screen.getByRole("button", { name: /back to local:s1/i })).toBeTruthy();
+
+  setMobile(false);
+  await waitFor(() => expect(getDockviewApi()).toBeNull());
+  await waitFor(() => expect(getDockviewApi()?.panels.some((panel) => panel.id === panelId)).toBe(true));
+  expect(workspaceStore.getState().focusedPaneId).toBe(panelId);
+  expect(getDockviewApi()).not.toBeNull();
+
+  setMobile(true);
+  await screen.findByText("Loading session panel…");
+  await userEvent.setup().click(screen.getByRole("button", { name: /back to local:s1/i }));
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).not.toBe(panelId));
+  expect(
+    workspaceStore.getState().panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId)?.type,
+  ).toBe("session");
 });
 
 // --- kata 098n: a /thread share link is not rewritten into /s ------------

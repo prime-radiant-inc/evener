@@ -42,6 +42,9 @@ export function BackToParentAction({ parentRef }: { parentRef: string }) {
     if (parentScaffold) {
       parentScaffold.focus();
     } else {
+      // An orphan return has no mounted parent body to focus yet. Leave the
+      // browser's current focus alone; PaneScaffold consumes this marker and
+      // focuses the restored parent scaffold once its lazy tree mounts.
       requestPaneFocus(parentPaneId);
     }
   };
