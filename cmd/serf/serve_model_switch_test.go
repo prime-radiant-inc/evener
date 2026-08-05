@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/llm"
 )
 
 // TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn pins G2
@@ -110,6 +113,180 @@ func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *tes
 	}
 	resp.Body.Close()
 
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runServe: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runServe did not exit after /shutdown")
+	}
+}
+
+func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
+	kimi := &scriptedProvider{
+		name: "kimi-anthropic",
+		errorSteps: []func(llm.Request) (llm.Response, error){
+			func(llm.Request) (llm.Response, error) {
+				return llm.Response{}, llm.ErrorFromHTTPStatus(
+					"kimi-anthropic", http.StatusForbidden,
+					"billing-cycle quota exhausted", nil, nil,
+				)
+			},
+		},
+	}
+	openai := &scriptedProvider{
+		name: "openai",
+		errorSteps: []func(llm.Request) (llm.Response, error){
+			func(llm.Request) (llm.Response, error) {
+				return scriptedCommunicate("switched provider recovered"), nil
+			},
+		},
+	}
+	installServeScriptedProviders(t, kimi, openai)
+
+	workDir := t.TempDir()
+	stateDir := t.TempDir()
+	runDir := t.TempDir()
+	done := make(chan error, 1)
+	go func() {
+		done <- runServe([]string{
+			"--model", "kimi-anthropic/k3",
+			"--addr", "127.0.0.1:0",
+			"--dir", workDir,
+			"--state-dir", stateDir,
+			"--run-dir", runDir,
+			"--no-project-prompts",
+		})
+	}()
+
+	entry := waitForServeTestRendezvous(t, runDir)
+	t.Cleanup(func() {
+		select {
+		case <-done:
+		default:
+			resp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
+			if err == nil {
+				resp.Body.Close()
+			}
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
+	if err != nil {
+		t.Fatalf("DialWebSocket: %v", err)
+	}
+	client := appwire.NewClient(transport)
+	client.Start(context.WithoutCancel(ctx))
+	defer client.Close()
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{
+		ClientInfo: appwire.ClientInfo{Name: "serve-provider-failure-test", Version: "test"},
+	}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead subscribe: %v", err)
+	}
+
+	milestones := make(chan string, 8)
+	var onceMu sync.Mutex
+	seen := make(map[string]bool)
+	record := func(name string) {
+		onceMu.Lock()
+		defer onceMu.Unlock()
+		if !seen[name] {
+			seen[name] = true
+			milestones <- name
+		}
+	}
+	go func() {
+		for notification := range client.Notifications() {
+			switch notification.Method {
+			case appwire.NotifyTurnCompleted:
+				var params appwire.TurnCompletedParams
+				if json.Unmarshal(notification.Params, &params) != nil || params.Ref != ref {
+					continue
+				}
+				switch params.Turn.Status {
+				case appwire.TurnStatusFailed:
+					record("failed turn")
+				case appwire.TurnStatusCompleted:
+					record("successful turn")
+				}
+			case appwire.NotifyThreadStatusChanged:
+				var params appwire.ThreadStatusChangedParams
+				if json.Unmarshal(notification.Params, &params) != nil || params.Ref != ref {
+					continue
+				}
+				if params.Status.Type == appwire.ThreadStatusIdle &&
+					params.Capabilities != nil && params.Capabilities.ChangeModel {
+					record("idle with model capability")
+				}
+			}
+		}
+	}()
+
+	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
+		ClientMutationID: "provider-failure-turn",
+		Ref:              ref,
+		Input:            []appwire.InputItem{{Type: "text", Text: "make the first request"}},
+	}); err != nil {
+		t.Fatalf("TurnStart (failed provider): %v", err)
+	}
+
+	if got := <-milestones; got != "failed turn" {
+		t.Fatalf("first structured milestone = %q, want failed turn", got)
+	}
+	if got := <-milestones; got != "idle with model capability" {
+		t.Fatalf("second structured milestone = %q, want idle with model capability", got)
+	}
+
+	read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
+	if err != nil {
+		t.Fatalf("ThreadRead after provider failure: %v", err)
+	}
+	if read.Thread.Status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("thread/read status = %q, want idle", read.Thread.Status.Type)
+	}
+	if !read.Thread.Serf.Capabilities.ChangeModel {
+		t.Fatal("thread/read ChangeModel = false, want true after provider failure")
+	}
+
+	if err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
+		Ref: ref, ModelProvider: "openai", Model: "gpt-5.6-sol",
+	}); err != nil {
+		t.Fatalf("ThreadModelSet after provider failure: %v", err)
+	}
+	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
+		ClientMutationID: "provider-recovery-turn",
+		Ref:              ref,
+		Input:            []appwire.InputItem{{Type: "text", Text: "recover on the selected provider"}},
+	}); err != nil {
+		t.Fatalf("TurnStart (recovered provider): %v", err)
+	}
+	if got := <-milestones; got != "successful turn" {
+		t.Fatalf("third structured milestone = %q, want successful turn", got)
+	}
+
+	kimiRequests := kimi.Requests()
+	openaiRequests := openai.Requests()
+	if len(kimiRequests) != 1 || len(openaiRequests) != 1 {
+		t.Fatalf("scripted provider requests = kimi %d, openai %d; want one each", len(kimiRequests), len(openaiRequests))
+	}
+	if openaiRequests[0].Provider != "openai" || openaiRequests[0].Model != "gpt-5.6-sol" {
+		t.Fatalf("recovery request = provider %q model %q, want provider %q model %q",
+			openaiRequests[0].Provider, openaiRequests[0].Model, "openai", "gpt-5.6-sol")
+	}
+
+	resp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
+	if err != nil {
+		t.Fatalf("post /shutdown: %v", err)
+	}
+	resp.Body.Close()
 	select {
 	case err := <-done:
 		if err != nil {

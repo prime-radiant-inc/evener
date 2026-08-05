@@ -26,10 +26,11 @@ func requireLiveOpenAI(t *testing.T) {
 type scriptedProvider struct {
 	name string
 
-	mu       sync.Mutex
-	requests []llm.Request
-	steps    []func(llm.Request) llm.Response
-	i        int
+	mu         sync.Mutex
+	requests   []llm.Request
+	steps      []func(llm.Request) llm.Response
+	errorSteps []func(llm.Request) (llm.Response, error)
+	i          int
 }
 
 func (p *scriptedProvider) Name() string { return p.name }
@@ -40,6 +41,26 @@ func (p *scriptedProvider) Complete(ctx context.Context, req llm.Request) (llm.R
 	defer p.mu.Unlock()
 
 	p.requests = append(p.requests, req)
+	if len(p.errorSteps) > 0 {
+		if p.i >= len(p.errorSteps) {
+			return scriptedCommunicate("done"), nil
+		}
+		resp, err := p.errorSteps[p.i](req)
+		p.i++
+		if err != nil {
+			return resp, err
+		}
+		if resp.Provider == "" {
+			resp.Provider = p.name
+		}
+		if resp.Model == "" {
+			resp.Model = req.Model
+		}
+		if resp.Finish.Reason == "" {
+			resp.Finish = llm.FinishReason{Reason: llm.FinishReasonStop}
+		}
+		return resp, nil
+	}
 	if p.i >= len(p.steps) {
 		return scriptedCommunicate("done"), nil
 	}
@@ -81,12 +102,25 @@ func installRunScriptedProvider(t *testing.T, adapter *scriptedProvider) {
 }
 
 func installServeScriptedProvider(t *testing.T, adapter *scriptedProvider) {
+	installServeScriptedProviders(t, adapter)
+}
+
+func installServeScriptedProviders(t *testing.T, adapters ...*scriptedProvider) {
 	t.Helper()
 	oldLoadClient := serveLoadClient
 	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
 		client := llm.NewClient()
-		client.Register(adapter)
-		return client, scriptedProviderConfig(adapter.Name()), true, nil
+		for _, adapter := range adapters {
+			client.Register(adapter)
+		}
+		instances := make([]providercfg.InstanceConfig, len(adapters))
+		for i, adapter := range adapters {
+			instances[i] = providercfg.InstanceConfig{Name: adapter.Name(), Type: "openai"}
+		}
+		return client, providercfg.Config{
+			Default:   adapters[0].Name(),
+			Instances: instances,
+		}, true, nil
 	}
 	t.Cleanup(func() {
 		serveLoadClient = oldLoadClient
