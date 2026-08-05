@@ -6,8 +6,10 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import "../../sessionPanels";
 import { resetGoalOverridesForTests } from "./GoalControl";
 import { SessionChrome } from "./SessionChrome";
 
@@ -73,12 +75,29 @@ function connectFakeClient(): FakeClient {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
   resetGoalOverridesForTests();
 });
 
 afterEach(() => {
   cleanup();
+  // @ts-expect-error jsdom has no matchMedia by default; individual mobile
+  // tests install the narrow viewport explicitly.
+  delete window.matchMedia;
 });
+
+function installMobileViewport(): () => void {
+  const original = window.matchMedia;
+  window.matchMedia = (() => ({
+    matches: true,
+    media: "(max-width: 899px)",
+    addEventListener() {},
+    removeEventListener() {},
+  })) as unknown as typeof window.matchMedia;
+  return () => {
+    window.matchMedia = original;
+  };
+}
 
 // Wave 5 T1 carved this slot as an empty placeholder ("renders nothing (T1
 // placeholder - T5 fills this in)"); this file supersedes that pin now that
@@ -127,6 +146,7 @@ test("composes the status row, session actions, goal control, details panel, and
 });
 
 test("the details panel reads the work time of the SAME ref passed to SessionChrome", async () => {
+  const restoreViewport = installMobileViewport();
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
@@ -140,6 +160,7 @@ test("the details panel reads the work time of the SAME ref passed to SessionChr
   await user.click(screen.getByRole("button", { name: "Details" }));
 
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("2m");
+  restoreViewport();
 });
 
 test("every composed piece acts on the SAME ref passed to SessionChrome", async () => {
@@ -168,6 +189,7 @@ test("every composed piece acts on the SAME ref passed to SessionChrome", async 
 });
 
 test("the tasks panel fetches for the SAME ref passed to SessionChrome", async () => {
+  const restoreViewport = installMobileViewport();
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_c"));
@@ -182,6 +204,7 @@ test("the tasks panel fetches for the SAME ref passed to SessionChrome", async (
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
   await waitFor(() => expect(calledRef).toBe("ref_c"));
+  restoreViewport();
 });
 
 // The tasks half of this pair (above) and the activity half join the same two
@@ -191,6 +214,7 @@ test("the tasks panel fetches for the SAME ref passed to SessionChrome", async (
 // or stale ref - both files stay green while the sheet quietly reports
 // another session's activity.
 test("the activity panel fetches for the SAME ref passed to SessionChrome", async () => {
+  const restoreViewport = installMobileViewport();
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_e"));
@@ -205,6 +229,7 @@ test("the activity panel fetches for the SAME ref passed to SessionChrome", asyn
   await user.click(screen.getByRole("button", { name: "Activity" }));
 
   await waitFor(() => expect(calledRef).toBe("ref_e"));
+  restoreViewport();
 });
 
 // --- footer overflow (kata vybn) ---------------------------------------------
@@ -261,10 +286,12 @@ test("collapses Details and Tasks into the ... menu once the chrome measures nar
     const menuItems = screen.getAllByRole("menuitem").map((el) => el.textContent);
     expect(menuItems.slice(0, 2)).toEqual(["Details", "Tasks"]);
 
-    // Selecting the "Details" item does the SAME thing the inline trigger
-    // did: opens the session-details sheet.
+    // Selecting the "Details" item opens the same desktop pane as the inline
+    // trigger would; the Sheet is mobile-only.
     await user.click(screen.getByRole("menuitem", { name: "Details" }));
-    expect(screen.getByText("Session details")).toBeTruthy();
+    expect(workspaceStore.getState().panes).toContainEqual(
+      expect.objectContaining({ type: "sessionDetails", params: { ref: "ref_narrow" } }),
+    );
   } finally {
     ro.restore();
   }
@@ -360,7 +387,7 @@ test("narrow chrome hides the inline Activity trigger and puts an Activity item 
   }
 });
 
-test("selecting the Activity menu item opens the Activity sheet", async () => {
+test("selecting the Activity menu item opens the desktop Activity pane", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_activity_open"));
@@ -375,16 +402,9 @@ test("selecting the Activity menu item opens the Activity sheet", async () => {
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     await user.click(screen.getByRole("menuitem", { name: "Activity" }));
 
-    // The sheet's title is an <h2> (OverlayPanel), so the heading role
-    // disambiguates it from the menu item that opened it.
-    expect(await screen.findByRole("heading", { name: "Activity" })).toBeTruthy();
-    // ...and its on-open fetch ran and resolved. WHICH ref it asked for is not
-    // checked here (the fake answers serf/jobs/list for any ref) - that the
-    // panel asks for the ref it is handed is ActivityPanel.test.tsx's own
-    // "opening fetches and renders one row per activity" case, and that this chrome
-    // hands it its OWN ref is "the activity panel fetches for the SAME ref passed
-    // to SessionChrome" above.
-    expect(await screen.findByText("No retained activity yet")).toBeTruthy();
+    expect(workspaceStore.getState().panes).toContainEqual(
+      expect.objectContaining({ type: "sessionActivity", params: { ref: "ref_activity_open" } }),
+    );
   } finally {
     ro.restore();
   }

@@ -14,7 +14,10 @@ const MOBILE_QUERY = "(max-width: 899px)";
 // "not mobile" is the same safe default every consumer already gets from
 // AppShell rendering DockHost unconditionally today (see that component's
 // own comment on the seam this hook fills).
-function isMobileViewport(): boolean {
+// Plain command handlers use the same viewport branch as React callers. Keep
+// this synchronous predicate exportable without making command code depend on
+// a mounted hook instance.
+export function isMobileViewport(): boolean {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
   return window.matchMedia(MOBILE_QUERY).matches;
 }

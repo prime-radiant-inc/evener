@@ -15,8 +15,11 @@
 // "Set goal…" menu item is the only way to OPEN it now that the row itself
 // carries no permanent goal button.
 import { useEffect, useRef, useState } from "react";
+import { useIsMobile } from "../../../shell/useIsMobile";
+import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
+import { useActivitySummaryStore } from "../../../stores/activitySummary";
 import { useThreadsStore } from "../../../stores/threads";
-import { Cadence, type MenuItem } from "../../../widgets";
+import { Button, Cadence, type MenuItem } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
 import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
@@ -26,6 +29,7 @@ import { SessionActionsMenu } from "./SessionActionsMenu";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
 import { TasksPanel, type TasksPanelHandle } from "./TasksPanel";
+import "../../sessionPanels";
 
 export interface SessionChromeProps {
   ref: string;
@@ -88,6 +92,11 @@ function useNarrowerThan(thresholdPx: number): [(el: HTMLDivElement | null) => v
 
 export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
+  const isMobile = useIsMobile();
+  const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref: sessionRef }));
+  const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
+  const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref: sessionRef }));
+  const activitySummary = useActivitySummaryStore((s) => s.entries.get(sessionRef));
   // The cadence that used to live in the pane header's cadence slot: the
   // header is hidden on mobile (2026-07-30-mobile-session-layout-design.md,
   // decision 3), so the liveness marker relocates here. Rendered always,
@@ -109,16 +118,32 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
   const activityRef = useRef<ActivityPanelHandle>(null);
   if (!model) return null;
 
+  const openDetails = () => {
+    if (isMobile) detailsRef.current?.open();
+    else workspaceStore.getState().togglePane("sessionDetails", { ref: sessionRef });
+  };
+  const openTasks = () => {
+    if (isMobile) tasksRef.current?.open();
+    else workspaceStore.getState().togglePane("sessionTasks", { ref: sessionRef });
+  };
+  const openActivity = () => {
+    if (isMobile) activityRef.current?.open();
+    else workspaceStore.getState().togglePane("sessionActivity", { ref: sessionRef });
+  };
+  const activityLabel = activitySummary?.counts?.complete ? `Activity · ${activitySummary.counts.active}` : "Activity";
+  const checkedLabel = (label: string, open: boolean) => (open ? `${label} ✓` : label);
+
   // Details/Tasks/Activity lead the "..." menu's own list when collapsed - see
   // SessionActionsMenu's extraItems doc comment for why that order, not
   // this one, is what actually matters (this array is just the three items).
-  const overflowItems: MenuItem[] = collapsed
-    ? [
-        { id: "details", label: "Details", onSelect: () => detailsRef.current?.open() },
-        { id: "tasks", label: "Tasks", onSelect: () => tasksRef.current?.open() },
-        { id: "activity", label: "Activity", onSelect: () => activityRef.current?.open() },
-      ]
-    : [];
+  const overflowItems: MenuItem[] =
+    !isMobile && collapsed
+      ? [
+          { id: "details", label: checkedLabel("Details", detailsOpen), onSelect: openDetails },
+          { id: "tasks", label: checkedLabel("Tasks", tasksOpen), onSelect: openTasks },
+          { id: "activity", label: checkedLabel("Activity", activityOpen), onSelect: openActivity },
+        ]
+      : [];
 
   return (
     <div ref={chromeRef} className={CLASS.chrome} data-testid="session-chrome">
@@ -138,9 +163,22 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
         />
       </div>
       <div className={CLASS.right}>
-        <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger={collapsed} />
-        <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger={collapsed} />
-        <ActivityPanel ref={activityRef} sessionRef={sessionRef} model={model} now={now} hideTrigger={collapsed} />
+        <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger={!isMobile} />
+        <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger={!isMobile} />
+        <ActivityPanel ref={activityRef} sessionRef={sessionRef} model={model} now={now} hideTrigger={!isMobile} />
+        {!isMobile && !collapsed && (
+          <>
+            <Button variant="quiet" size="sm" onClick={openDetails} aria-pressed={detailsOpen} data-details-trigger="">
+              Details
+            </Button>
+            <Button variant="quiet" size="sm" onClick={openTasks} aria-pressed={tasksOpen} data-tasks-trigger="">
+              {model.tasks ? `Tasks ${model.tasks.done}/${model.tasks.total}` : "Tasks"}
+            </Button>
+            <Button variant="quiet" size="sm" onClick={openActivity} aria-pressed={activityOpen}>
+              {activityLabel}
+            </Button>
+          </>
+        )}
         <SessionActionsMenu
           sessionRef={sessionRef}
           model={model}

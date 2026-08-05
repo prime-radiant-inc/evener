@@ -4,6 +4,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import type { ThreadModel } from "../../protocol/model";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities } from "../../protocol/types.gen";
+import "../../panes/sessionPanels";
 import { connectionStore } from "../../stores/connection";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
@@ -178,6 +179,9 @@ beforeEach(() => {
   localStorage.clear();
   window.history.pushState({}, "", "/");
   pushes.length = 0;
+  // Keep viewport tests isolated from direct matchMedia assignments.
+  // @ts-expect-error jsdom baseline has no matchMedia.
+  delete window.matchMedia;
   vi.mocked(revealSessionInRail).mockClear();
 });
 
@@ -510,6 +514,11 @@ test("copyToClipboard prefers the async Clipboard API", async () => {
 });
 
 test("/tasks and /status click their chrome triggers when present (no-op-safe when absent)", () => {
+  window.matchMedia = vi.fn(() => ({
+    matches: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  })) as unknown as typeof window.matchMedia;
   const tasksBtn = document.createElement("button");
   tasksBtn.setAttribute("data-tasks-trigger", "");
   const tasksClick = vi.fn();
@@ -534,4 +543,62 @@ test("/tasks and /status click their chrome triggers when present (no-op-safe wh
   // state, and the palette's own scope gating is by ref, not by chrome.
   expect(() => cmd("tasks").run?.(runContext())).not.toThrow();
   expect(() => cmd("status").run?.(runContext())).not.toThrow();
+});
+
+test("/tasks and /status directly toggle the focused session panes on desktop", () => {
+  const matchMedia = vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+  window.matchMedia = matchMedia as unknown as typeof window.matchMedia;
+  focusSession("ref_a");
+  seedModel("ref_a");
+
+  cmd("tasks").run?.(runContext());
+  cmd("status").run?.(runContext());
+  expect(workspaceStore.getState().panes).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ type: "sessionTasks", params: { ref: "ref_a" } }),
+      expect.objectContaining({ type: "sessionDetails", params: { ref: "ref_a" } }),
+    ]),
+  );
+});
+
+test("/tasks and /status toggle-close desktop panes without a mounted chrome", () => {
+  window.matchMedia = vi.fn(() => ({
+    matches: false,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  })) as unknown as typeof window.matchMedia;
+  focusSession("ref_a");
+  seedModel("ref_a");
+  workspaceStore.getState().openPane("sessionTasks", { ref: "ref_a" });
+  workspaceStore.getState().openPane("sessionDetails", { ref: "ref_a" });
+
+  cmd("tasks").run?.(runContext());
+  cmd("status").run?.(runContext());
+  expect(workspaceStore.getState().panes.some((p) => p.type === "sessionTasks")).toBe(false);
+  expect(workspaceStore.getState().panes.some((p) => p.type === "sessionDetails")).toBe(false);
+});
+
+test("/tasks and /status retain legacy DOM clicks on mobile", () => {
+  window.matchMedia = vi.fn(() => ({
+    matches: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  })) as unknown as typeof window.matchMedia;
+  const tasks = document.createElement("button");
+  tasks.setAttribute("data-tasks-trigger", "");
+  const status = document.createElement("button");
+  status.setAttribute("data-details-trigger", "");
+  const tasksClick = vi.fn();
+  const statusClick = vi.fn();
+  tasks.addEventListener("click", tasksClick);
+  status.addEventListener("click", statusClick);
+  document.body.append(tasks, status);
+  focusSession("ref_a");
+  seedModel("ref_a");
+
+  cmd("tasks").run?.(runContext());
+  cmd("status").run?.(runContext());
+  expect(tasksClick).toHaveBeenCalledTimes(1);
+  expect(statusClick).toHaveBeenCalledTimes(1);
+  expect(workspaceStore.getState().panes).toHaveLength(1);
 });
