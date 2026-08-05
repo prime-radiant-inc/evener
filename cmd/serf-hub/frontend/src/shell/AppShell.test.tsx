@@ -1463,8 +1463,10 @@ test("crossing desktop → mobile → desktop preserves a focused panel and its 
   setMobile(true);
   expect(await screen.findByText("Loading session panel…")).toBeTruthy();
   expect(workspaceStore.getState().focusedPaneId).toBe(panelId);
-  expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
-  expect(screen.getByRole("button", { name: /back to local:s1/i })).toBeTruthy();
+  // The pane's own BackToParentAction sits in the scaffold header, which is
+  // display:none below 900px - StackHost's top-bar Back is the VISIBLE
+  // mobile return path, wired to the parent session for panel panes.
+  expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
 
   setMobile(false);
   await waitFor(() => expect(getDockviewApi()).toBeNull());
@@ -1474,7 +1476,7 @@ test("crossing desktop → mobile → desktop preserves a focused panel and its 
 
   setMobile(true);
   await screen.findByText("Loading session panel…");
-  await userEvent.setup().click(screen.getByRole("button", { name: /back to local:s1/i }));
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
   await waitFor(() => expect(workspaceStore.getState().focusedPaneId).not.toBe(panelId));
   expect(
     workspaceStore.getState().panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId)?.type,
