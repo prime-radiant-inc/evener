@@ -27,7 +27,10 @@ ready_failure_event=""
 
 kill_if_alive() {
 	local pid="${1:-}"
-	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || :
+	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+		kill -KILL "$pid" 2>/dev/null || :
+		wait "$pid" 2>/dev/null || :
+	fi
 }
 
 cleanup() {
@@ -180,8 +183,18 @@ stop_make_with_readiness_events() {
 	else
 		# Keep Make alive while fixture wrappers reap their recorded workers.
 		kill_fixture_workers
-		wait_for_fixture_reapers || :
-		if IFS= read -r -t 1 -u 8 stop_event; then
+		if ! wait_for_fixture_reapers; then
+			# The reap-ack deadline was exhausted: don't keep trusting the graceful ladder as
+			# if reaping had been confirmed. Force the whole recorded hierarchy down directly,
+			# still through a real `wait`, not a further guess.
+			kill_fixture_workers
+			child_pid="$(cat "$case_state/make-child.pid" 2>/dev/null || :)"
+			: >"$case_state/make-child-killed"
+			[ -n "$child_pid" ] && kill -KILL "$child_pid" 2>/dev/null || :
+			kill -KILL "$pid" 2>/dev/null || :
+			wait "$pid" 2>/dev/null || :
+			make_status=137
+		elif IFS= read -r -t 1 -u 8 stop_event; then
 			if wait "$pid"; then make_status=0; else make_status=$?; fi
 		else
 			child_pid="$(cat "$case_state/make-child.pid" 2>/dev/null || :)"
@@ -213,12 +226,15 @@ release_fixture_reapers() {
 }
 
 wait_for_fixture_reapers() {
-	local reaped="" probe_one_reaped=0 probe_two_reaped=0
+	local reaped="" probe_one_reaped=0 probe_two_reaped=0 deadline_elapsed=0
 	[ -n "$reaped_fifo" ] || return 0
 	release_fixture_reapers
-	while [ "$((probe_one_reaped + probe_two_reaped))" -lt 2 ]; do
+	# 10 * 1s reads = 10s total, the same contention-tolerant allowance as the readiness wait:
+	# one slow scheduler tick on a loaded host must not be mistaken for a stuck reaper.
+	while [ "$((probe_one_reaped + probe_two_reaped))" -lt 2 ] && [ "$deadline_elapsed" -lt 10 ]; do
 		if ! IFS= read -r -t 1 -u 7 reaped; then
-			return 1
+			deadline_elapsed=$((deadline_elapsed + 1))
+			continue
 		fi
 		case "$reaped" in
 			worker-reaped-before:probe-one)
@@ -232,6 +248,7 @@ wait_for_fixture_reapers() {
 			*) return 1 ;;
 		esac
 	done
+	[ "$((probe_one_reaped + probe_two_reaped))" -eq 2 ] || return 1
 	fixture_reapers_before_make_kill=1
 }
 
