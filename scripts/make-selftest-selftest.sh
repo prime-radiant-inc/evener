@@ -19,6 +19,7 @@ fails=0
 make_pid=""
 make_status=""
 unrelated_pid=""
+interrupt_child_pid=""
 reaped_fifo=""
 reap_release_fifo=""
 fixture_reapers_before_make_kill=0
@@ -30,15 +31,17 @@ kill_if_alive() {
 }
 
 cleanup() {
-	local name pid
+	# Terminate Make through its owning wrapper and wait on it (a real child of this
+	# process) instead of signalling the make-child pid directly: that way the wrapper's
+	# own `wait` reaps it, so a later `kill -0` from a caller can't observe a zombie.
+	stop_make_with_readiness_events
 	if [ -n "${case_state:-}" ]; then
-		# The wrapper's own pid isn't the real Make child; read the recorded pids before rm -rf.
-		kill_if_alive "$(cat "$case_state/make-child.pid" 2>/dev/null || :)"
-		for name in probe-one probe-two; do
-			kill_if_alive "$(cat "$case_state/$name.pid" 2>/dev/null || :)"
-		done
+		kill_fixture_workers
 	fi
-	kill_if_alive "$make_pid"
+	if [ -n "$interrupt_child_pid" ]; then
+		kill -TERM "$interrupt_child_pid" 2>/dev/null || :
+		wait "$interrupt_child_pid" 2>/dev/null || :
+	fi
 	kill_if_alive "$unrelated_pid"
 	rm -rf "$work"
 }
@@ -62,6 +65,7 @@ new_case() {
 	reaped_fifo=""
 	reap_release_fifo=""
 	fixture_reapers_before_make_kill=0
+	interrupt_child_pid=""
 	mkdir -p "$case_state" "$case_tmp" "$case_bin" "$work/scripts"
 	mkfifo "$case_state/ready" "$case_state/stopped" "$case_state/reaped" "$case_state/reap-release"
 	cat >"$case_bin/mktemp" <<'STUB'
@@ -439,10 +443,11 @@ new_case
 child_work="$case_dir/interrupt-child"
 mkdir -p "$child_work"
 MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD=1 MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD_WORK="$child_work" bash "$0" >"$case_dir/interrupt-child.out" 2>&1 &
-child_pid="$!"
+interrupt_child_pid="$!"
 child_case_state=""
 attempt=0
-while [ "$attempt" -lt 100 ]; do
+# 200 * 0.05s = 10s, matching the readiness wait's own full-gate-contention startup allowance.
+while [ "$attempt" -lt 200 ]; do
 	child_case_state="$(ls -d "$child_work"/case.*/state 2>/dev/null | head -n1 || :)"
 	if [ -n "$child_case_state" ] && [ -f "$child_case_state/make-child.pid" ] \
 		&& [ -f "$child_case_state/probe-one.pid" ] && [ -f "$child_case_state/probe-two.pid" ]; then
@@ -456,8 +461,16 @@ if [ -n "$child_case_state" ] && [ -f "$child_case_state/make-child.pid" ] \
 	make_child_pid="$(cat "$child_case_state/make-child.pid")"
 	probe_one_pid="$(cat "$child_case_state/probe-one.pid")"
 	probe_two_pid="$(cat "$child_case_state/probe-two.pid")"
-	kill -TERM "$child_pid" 2>/dev/null || :
-	wait "$child_pid" 2>/dev/null || :
+	kill -TERM "$interrupt_child_pid" 2>/dev/null || :
+	# The child's own cleanup() reaps Make through its wrapper via a real `wait`, so once this
+	# returns make_child_pid is truly gone, not a zombie. The probes are orphaned (not our
+	# children) and can't be `wait`ed on directly, so give their reap a small bounded poll.
+	wait "$interrupt_child_pid" 2>/dev/null || :
+	reap_attempt=0
+	while [ "$reap_attempt" -lt 20 ] && { kill -0 "$probe_one_pid" 2>/dev/null || kill -0 "$probe_two_pid" 2>/dev/null; }; do
+		reap_attempt=$((reap_attempt + 1))
+		sleep 0.05
+	done
 	if kill -0 "$make_child_pid" 2>/dev/null || kill -0 "$probe_one_pid" 2>/dev/null || kill -0 "$probe_two_pid" 2>/dev/null; then
 		bad "interrupting the selftest during a readiness wait reaps the Make child and probe descendants"
 		kill -KILL "$make_child_pid" "$probe_one_pid" "$probe_two_pid" 2>/dev/null || :
@@ -466,10 +479,12 @@ if [ -n "$child_case_state" ] && [ -f "$child_case_state/make-child.pid" ] \
 	fi
 else
 	bad "interrupting the selftest during a readiness wait reaps the Make child and probe descendants (fixture did not start)"
-	kill -KILL "$child_pid" 2>/dev/null || :
-	wait "$child_pid" 2>/dev/null || :
+	# TERM, not KILL: let the child's own EXIT cleanup reap whatever it managed to start.
+	kill -TERM "$interrupt_child_pid" 2>/dev/null || :
+	wait "$interrupt_child_pid" 2>/dev/null || :
 fi
 rm -rf "$child_work"
+interrupt_child_pid=""
 
 echo "----"
 echo "make-selftest-selftest: $checks checks, $fails failed"
