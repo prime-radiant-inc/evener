@@ -110,6 +110,14 @@ export interface ThreadsStoreState {
   // hydrate/re-hydrate never seeds or resets it (see handleReady/rewireClient
   // below, which touch `threads` but not this map).
   frameTimes: Map<string, number[]>;
+  // Per-ref count of full-snapshot publishes (initial hydration and every
+  // rehydration - reconnect handleReady, targeted resync). A consumer that
+  // retains derived state (ActivityPanel's freshness effect) watches this to
+  // notice a WHOLESALE model replacement whose visible fields happen not to
+  // change - e.g. jobsUpdatedAt is null on both sides of a resync, yet
+  // activity retained across the gap may be stale. Like frameTimes, this is
+  // store bookkeeping, not wire-derived thread state.
+  hydrations: Map<string, number>;
   // watchedThreads/watchedFrameTimes: the transcript/tools stream's own
   // sanctioned extension (watched-child subagent-module rows - a leaner,
   // additive subscription alongside a real ensureThread'd pane, never
@@ -349,12 +357,14 @@ function dropUnpinnedModel(ref: string): void {
   // Nothing owns this ref any more, so no scheduled retry may outlive it.
   retireOwnedHydration("thread", ref);
   threadsStore.setState((state) => {
-    if (!state.threads.has(ref) && !state.frameTimes.has(ref)) return state;
+    if (!state.threads.has(ref) && !state.frameTimes.has(ref) && !state.hydrations.has(ref)) return state;
     const threads = new Map(state.threads);
     threads.delete(ref);
     const frameTimes = new Map(state.frameTimes);
     frameTimes.delete(ref);
-    return { threads, frameTimes };
+    const hydrations = new Map(state.hydrations);
+    hydrations.delete(ref);
+    return { threads, frameTimes, hydrations };
   });
 }
 
@@ -943,12 +953,14 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
   threadsStore.setState((s) => {
     const nextThreads = new Map(s.threads);
     nextThreads.set(ref, hydrated);
-    if (appliedAt.length === 0) return { threads: nextThreads };
+    const hydrations = new Map(s.hydrations);
+    hydrations.set(ref, (hydrations.get(ref) ?? 0) + 1);
+    if (appliedAt.length === 0) return { threads: nextThreads, hydrations };
     const nextFrameTimes = new Map(s.frameTimes);
     let times = nextFrameTimes.get(ref) ?? [];
     for (const now of appliedAt) times = appendFrameTime(times, now);
     nextFrameTimes.set(ref, times);
-    return { threads: nextThreads, frameTimes: nextFrameTimes };
+    return { threads: nextThreads, frameTimes: nextFrameTimes, hydrations };
   });
   settleOwnedHydration("thread", ref, hydrated);
   return hydrated;
@@ -1537,6 +1549,7 @@ function requireClient(): AppwireClientLike {
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
   frameTimes: new Map(),
+  hydrations: new Map(),
   watchedThreads: new Map(),
   watchedFrameTimes: new Map(),
 
@@ -2148,6 +2161,7 @@ export function resetThreadsStoreForTests(): void {
   threadsStore.setState({
     threads: new Map(),
     frameTimes: new Map(),
+    hydrations: new Map(),
     watchedThreads: new Map(),
     watchedFrameTimes: new Map(),
   });

@@ -17,7 +17,7 @@ import {
   EMPTY_ACTIVITY_SUMMARY_ENTRY,
   useActivitySummaryStore,
 } from "../../../stores/activitySummary";
-import { threadsStore } from "../../../stores/threads";
+import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ActivityInspector } from "./ActivityInspector";
@@ -97,6 +97,10 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
   const [showMobileTree, setShowMobileTree] = useState(true);
   const entry = useActivityPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_PANEL_ENTRY;
   const summary = useActivitySummaryStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_SUMMARY_ENTRY;
+  // Bumped on every full-snapshot publish (reconnect, targeted resync). It is
+  // the freshness effect's only way to notice a wholesale model replacement
+  // whose jobsUpdatedAt is null on both sides - see threads.ts's own comment.
+  const hydrationGeneration = useThreadsStore((state) => state.hydrations.get(sessionRef) ?? 0);
   currentSessionRef.current = sessionRef;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: this effect resets transient mobile navigation when the ref changes
@@ -197,7 +201,9 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
     if (bumpMismatch || retainedNonReady || unprovenFreshness) {
       fetchRoot(undefined, retainedNonReady || unprovenFreshness);
     }
-  }, [fetchRoot, model.jobsUpdatedAt, sessionRef]);
+    // hydrationGeneration is a dependency precisely so a mounted body re-runs
+    // this check after a wholesale rehydration that changed nothing visible.
+  }, [fetchRoot, hydrationGeneration, model.jobsUpdatedAt, sessionRef]);
 
   useEffect(() => {
     if (!isMobile) setShowMobileTree(true);

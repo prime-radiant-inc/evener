@@ -843,6 +843,26 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().frameTimes.get("ref_a")).toBeUndefined();
   });
 
+  // The generation is how a mounted consumer notices a WHOLESALE model
+  // replacement whose visible fields didn't change - e.g. jobsUpdatedAt is
+  // null both before and after a resync, yet activity retained through the
+  // gap may be stale (ActivityPanel's freshness effect keys on this).
+  test("a thread resync bumps the ref's hydration generation", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    const initial = threadsStore.getState().hydrations.get("ref_a");
+    expect(initial).toBeGreaterThanOrEqual(1);
+
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => (threadsStore.getState().hydrations.get("ref_a") ?? 0) > (initial ?? 0));
+
+    expect(threadsStore.getState().hydrations.get("ref_a")).toBe((initial ?? 0) + 1);
+  });
+
   test("a targeted resync preserves identical ordered streaming deltas and their frame times", async () => {
     const fake = connectFakeClient();
     const snapshot = readResponse("ref_a", {

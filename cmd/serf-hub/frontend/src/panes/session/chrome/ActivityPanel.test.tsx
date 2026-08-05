@@ -7,7 +7,7 @@ import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
-import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { ActivityPanel, ActivityPanelBody, type ActivityPanelHandle } from "./ActivityPanel";
@@ -594,6 +594,25 @@ describe("ActivityPanel", () => {
     first.unmount();
 
     render(<ActivityPanelBody sessionRef="ref_null_bump" model={testModel()} />);
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
+  });
+
+  // A MOUNTED body has the same blind spot across a wholesale model
+  // rehydration (reconnect/resync): jobsUpdatedAt can be null before and
+  // after, so no effect dependency changes even though activity missed in
+  // the gap may be stale. The threads store's per-ref hydration generation
+  // is the signal that the model was replaced underneath.
+  test("a mounted body re-fetches when its model rehydrates without a provable bump", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
+
+    render(<ActivityPanelBody sessionRef="ref_rehydrated" model={testModel()} />);
+    await screen.findByRole("tree");
+    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
+
+    act(() => {
+      threadsStore.setState({ hydrations: new Map([["ref_rehydrated", 2]]) });
+    });
     await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
   });
 
