@@ -203,9 +203,14 @@ SELFTEST_SCRIPTS := run-module-lint run-module-tests make-selftest reclaim-test-
 # and fails outright under dash without one, which is how this recipe
 # actually runs in CI) so a TERM to that group reaches descendants the suite
 # forked rather than exec'd, which a signal aimed at a single PID cannot.
-# stop_children's single-PID kill is only a last-resort fallback for when no
-# group exists to target (the worker's pid file is missing or stale), not a
-# routine path.
+# stop_children's single-PID kill is only a last-resort fallback for when the
+# group-kill itself fails (e.g. the group is already gone), not a routine
+# path. Each worker removes its own pid file the instant run_worker reaps it,
+# before any bookkeeping -- the same instant its forwarding trap is disarmed
+# -- so a signal arriving after that point (during PASS/FAIL reporting, or
+# for any worker that finished early while others are still running) finds
+# no file to read and skips that worker rather than kill -TERMing a pid the
+# kernel may since have reused for an unrelated process.
 selftest:
 	@set -u; fail=0; normal=0; pids=""; \
 	dir="$$(mktemp -d -t serf-selftest.XXXXXX)" || exit 1; \
@@ -228,7 +233,7 @@ selftest:
 		perl -e 'setpgrp(0,0); exec @ARGV or die "exec: $$!"' -- scripts/$$s-selftest.sh >"$$dir/$$s.log" 2>&1 & child="$$!"; \
 		echo "$$child" >"$$dir/$$s.pid"; \
 		trap 'kill -TERM "-$$child" 2>/dev/null || kill -TERM "$$child" 2>/dev/null || :; wait "$$child" 2>/dev/null || :; exit 143' HUP INT TERM; \
-		wait "$$child"; status="$$?"; trap - HUP INT TERM; end="$$(date +%s)"; \
+		wait "$$child"; status="$$?"; trap - HUP INT TERM; rm -f "$$dir/$$s.pid"; end="$$(date +%s)"; \
 		printf 'real %s\n' "$$((end - start))" >>"$$dir/$$s.log"; \
 		echo "$$status" >"$$dir/$$s.status"; \
 	}; \

@@ -125,6 +125,15 @@ if [ "${PROBE_MODE:-pass}" = hold ] && [ "${PROBE_SPAWN_DESCENDANT:-}" = "$name"
 fi
 case "${PROBE_MODE:-pass}" in
 	hold)
+		if [ "${PROBE_EXIT_FAST:-}" = "$name" ]; then
+			# Exits (not held) once released, so the harness can control exactly when this
+			# worker is reaped while the other one stays up -- the window the recipe's
+			# per-worker pid-file removal must close before any interrupt can read it.
+			if [ -n "${PROBE_REAP_RELEASE_FIFO:-}" ]; then
+				IFS= read -r <"$PROBE_REAP_RELEASE_FIFO" || :
+			fi
+			exit 0
+		fi
 		if [ -n "${PROBE_REAP_FIFO:-}" ]; then
 			wait "$worker_pid" 2>/dev/null || :
 			IFS= read -r <"$PROBE_REAP_RELEASE_FIFO" || exit 1
@@ -154,17 +163,17 @@ STUB
 
 run_make() {
 	local mode="$1" output="$2" fail_name="${3:-}"
-	PROBE_STATE="$case_state" PROBE_MODE="$mode" PROBE_FAIL="$fail_name" PROBE_READY_FIFO= PROBE_SKIP_READY= PROBE_READY_DELAY= PROBE_MAKE_RECORD_DELAY= PROBE_MAKE_PUBLISH_DELAY= PROBE_SPAWN_DESCENDANT= TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin" \
+	PROBE_STATE="$case_state" PROBE_MODE="$mode" PROBE_FAIL="$fail_name" PROBE_READY_FIFO= PROBE_SKIP_READY= PROBE_READY_DELAY= PROBE_MAKE_RECORD_DELAY= PROBE_MAKE_PUBLISH_DELAY= PROBE_SPAWN_DESCENDANT= PROBE_EXIT_FAST= TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin" \
 		"$real_make" "${make_args[@]}" >"$output" 2>&1
 }
 
 run_make_with_readiness_events() {
-	local mode="$1" output="$2" skip_ready="${3:-}" ignore_term="${4:-}" fail_name="${5:-}" ready_delay="${6:-}" spawn_descendant="${7:-}"
+	local mode="$1" output="$2" skip_ready="${3:-}" ignore_term="${4:-}" fail_name="${5:-}" ready_delay="${6:-}" spawn_descendant="${7:-}" exit_fast="${8:-}"
 	(
 		# The wrapper converts Make exit into a terminal FIFO event and forwards interrupts.
 		export PROBE_STATE="$case_state" PROBE_MODE="$mode" PROBE_FAIL="$fail_name" \
 			PROBE_SKIP_READY="$skip_ready" PROBE_IGNORE_TERM="$ignore_term" PROBE_READY_FIFO="$ready_fifo" PROBE_STOP_FIFO="$stop_fifo" \
-			PROBE_READY_DELAY="$ready_delay" PROBE_SPAWN_DESCENDANT="$spawn_descendant" TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin"
+			PROBE_READY_DELAY="$ready_delay" PROBE_SPAWN_DESCENDANT="$spawn_descendant" PROBE_EXIT_FAST="$exit_fast" TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin"
 		export PROBE_REAP_FIFO="$reaped_fifo" PROBE_REAP_RELEASE_FIFO="$reap_release_fifo" \
 			PROBE_MAKE_KILLED_MARKER="$case_state/make-child-killed" PROBE_MAKE_RECORD_DELAY="$make_record_delay" \
 			PROBE_MAKE_PUBLISH_DELAY="$make_publish_delay"
@@ -564,6 +573,81 @@ if [ -n "$descendant_pid" ] && kill -0 "$descendant_pid" 2>/dev/null; then
 else
 	ok "an interrupted wave reaches a probe's forked (not exec'd) descendant"
 fi
+
+new_case
+stale_pid_out="$case_dir/stale-pid.out"
+ready_fifo="$case_state/ready"
+stop_fifo="$case_state/stopped"
+reap_release_fifo="$case_state/reap-release"
+exec 9<>"$ready_fifo"
+exec 8<>"$stop_fifo"
+exec 6<>"$reap_release_fifo"
+sleep 30 &
+sentinel_pid="$!"
+run_make_with_readiness_events hold "$stale_pid_out" "" "" "" "" "" probe-one
+if wait_for_ready_workers; then
+	ok "the stale-pid fixture receives both worker readiness events"
+else
+	bad "the stale-pid fixture receives both worker readiness events"
+fi
+logdir=""
+attempt=0
+while [ "$attempt" -lt 200 ]; do
+	logdir="$(cat "$case_state/logdir" 2>/dev/null || :)"
+	[ -n "$logdir" ] && [ -f "$logdir/probe-one.pid" ] && break
+	attempt=$((attempt + 1))
+	sleep 0.05
+done
+real_probe_one_pid="$(cat "$logdir/probe-one.pid" 2>/dev/null || :)"
+if [ -n "$logdir" ] && [ -n "$real_probe_one_pid" ]; then
+	ok "the stale-pid fixture discovers the recipe's own recorded worker pid"
+else
+	bad "the stale-pid fixture discovers the recipe's own recorded worker pid"
+fi
+# probe-one is blocked on the reap-release FIFO (PROBE_EXIT_FAST) rather than exiting on its own,
+# so this overwrite lands strictly before run_worker reaps it -- a causal order, not a race the
+# harness has to win. A fixed recipe's rm -f removes the file by name once it reaps probe-one,
+# regardless of the value currently inside; that is what this case exercises.
+printf '%s\n' "$sentinel_pid" >"$logdir/probe-one.pid"
+printf 'release\n' >&6
+exited_event=""
+IFS= read -r -t 10 -u 9 exited_event || :
+assert_eq "$exited_event" "worker-exited:probe-one" "the stale-pid fixture's released worker actually exits"
+exec 9>&-
+exec 6>&-
+# The worker's own process exiting and run_worker (a different process) removing its pid file
+# are two separate events; proving the first happened does not prove the second already has.
+# Poll for the file's actual disappearance -- the observable this case exists to check -- before
+# sending the interrupt, so the sentinel assertion below is not itself racing that removal.
+attempt=0
+pid_file_removed=0
+while [ "$attempt" -lt 100 ]; do
+	[ -e "$logdir/probe-one.pid" ] || { pid_file_removed=1; break; }
+	attempt=$((attempt + 1))
+	sleep 0.05
+done
+if [ "$pid_file_removed" -eq 1 ]; then
+	ok "the recipe removes a reaped worker's pid file promptly"
+else
+	bad "the recipe removes a reaped worker's pid file promptly"
+fi
+stop_make_with_readiness_events
+exec 8>&-
+[ "$make_status" -ne 0 ] && ok "an interrupted wave during a stale pid file exits nonzero" || bad "an interrupted wave during a stale pid file exits nonzero"
+if kill -0 "$sentinel_pid" 2>/dev/null; then
+	ok "an interrupted wave never signals a sentinel behind a reaped worker's stale pid file"
+else
+	bad "an interrupted wave never signals a sentinel behind a reaped worker's stale pid file"
+fi
+pid="$(cat "$case_state/probe-two.pid" 2>/dev/null || :)"
+if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+	bad "an interrupted wave during a stale pid file leaves probe-two alive"
+	kill -KILL "$pid" 2>/dev/null || :
+else
+	ok "an interrupted wave during a stale pid file reaps probe-two"
+fi
+kill -TERM "$sentinel_pid" 2>/dev/null || :
+wait "$sentinel_pid" 2>/dev/null || :
 
 new_case
 child_work="$case_dir/interrupt-child"
