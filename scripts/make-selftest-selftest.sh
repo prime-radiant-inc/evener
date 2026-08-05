@@ -24,6 +24,7 @@ reaped_fifo=""
 reap_release_fifo=""
 fixture_reapers_before_make_kill=0
 ready_failure_event=""
+make_record_delay=""
 
 kill_if_alive() {
 	local pid="${1:-}"
@@ -68,6 +69,7 @@ new_case() {
 	reaped_fifo=""
 	reap_release_fifo=""
 	fixture_reapers_before_make_kill=0
+	make_record_delay=""
 	interrupt_child_pid=""
 	mkdir -p "$case_state" "$case_tmp" "$case_bin" "$work/scripts"
 	mkfifo "$case_state/ready" "$case_state/stopped" "$case_state/reaped" "$case_state/reap-release"
@@ -143,7 +145,7 @@ STUB
 
 run_make() {
 	local mode="$1" output="$2" fail_name="${3:-}"
-	PROBE_STATE="$case_state" PROBE_MODE="$mode" PROBE_FAIL="$fail_name" PROBE_READY_FIFO= PROBE_SKIP_READY= PROBE_READY_DELAY= TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin" \
+	PROBE_STATE="$case_state" PROBE_MODE="$mode" PROBE_FAIL="$fail_name" PROBE_READY_FIFO= PROBE_SKIP_READY= PROBE_READY_DELAY= PROBE_MAKE_RECORD_DELAY= TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin" \
 		"$real_make" "${make_args[@]}" >"$output" 2>&1
 }
 
@@ -155,18 +157,29 @@ run_make_with_readiness_events() {
 			PROBE_SKIP_READY="$skip_ready" PROBE_IGNORE_TERM="$ignore_term" PROBE_READY_FIFO="$ready_fifo" PROBE_STOP_FIFO="$stop_fifo" \
 			PROBE_READY_DELAY="$ready_delay" TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin"
 		export PROBE_REAP_FIFO="$reaped_fifo" PROBE_REAP_RELEASE_FIFO="$reap_release_fifo" \
-			PROBE_MAKE_KILLED_MARKER="$case_state/make-child-killed"
+			PROBE_MAKE_KILLED_MARKER="$case_state/make-child-killed" PROBE_MAKE_RECORD_DELAY="$make_record_delay"
 		child_pid=""
+		interrupted_at_startup=0
 		forward_interrupt() {
 			kill -TERM "$child_pid" 2>/dev/null || :
 			if wait "$child_pid" 2>/dev/null; then rc=0; else rc=$?; fi
 			printf 'make-stopped:%s\n' "$rc" >"$PROBE_STOP_FIFO"
 			exit 143
 		}
-		trap forward_interrupt HUP INT TERM
-		"$real_make" "${make_args[@]}" >"$output" 2>&1 &
+		# Until Make's pid is in hand there is nothing to forward an interrupt to, so a signal
+		# arriving in that window is recorded and acted on below rather than running the
+		# handler empty-handed, which would report a stop the wrapper never performed.
+		trap 'interrupted_at_startup=1' HUP INT TERM
+		# Make records its own pid before exec'ing itself, so the pid file exists before Make
+		# can run for even an instant: a missing pid file therefore proves Make never started,
+		# which is what lets the stop ladder treat "nothing recorded" as "nothing to kill".
+		bash -c 'printf "%s\n" "$$" >"$1"; shift; exec "$@"' _ "$PROBE_STATE/make-child.pid" \
+			"$real_make" "${make_args[@]}" >"$output" 2>&1 &
+		# Fixture knob: widen the wrapper's own spawn-to-record window for the startup-boundary check.
+		[ -n "$PROBE_MAKE_RECORD_DELAY" ] && sleep "$PROBE_MAKE_RECORD_DELAY"
 		child_pid="$!"
-		printf '%s\n' "$child_pid" >"$PROBE_STATE/make-child.pid"
+		trap forward_interrupt HUP INT TERM
+		[ "$interrupted_at_startup" -eq 1 ] && forward_interrupt
 		if wait "$child_pid"; then rc=0; else rc=$?; fi
 		printf 'make-exited:%s\n' "$rc" >"$PROBE_READY_FIFO"
 		exit "$rc"
@@ -191,9 +204,10 @@ await_wrapper_stop() {
 # every fixture FIFO is held open read/write both here and through the wrapper's inherited
 # fds, so the open always finds a reader and a one-line write always fits the pipe buffer.
 # Racing a bounded window here instead would let us SIGKILL the wrapper mid-reap and leave
-# Make briefly observable as an unreaped zombie. With no child pid recorded there is no
-# such guarantee to lean on, so we SIGKILL the wrapper itself -- equally certain to end
-# the wait -- rather than wait unbounded on an event that may never arrive.
+# Make briefly observable as an unreaped zombie. No recorded child pid means Make never
+# started -- it records its own pid before exec'ing -- so there is nothing to orphan and
+# nothing whose death would release the wrapper; SIGKILLing the wrapper itself is then
+# both safe and equally certain to end the wait.
 kill_make_child_and_reap_wrapper() {
 	local pid="$1" child_pid=""
 	child_pid="$(cat "$case_state/make-child.pid" 2>/dev/null || :)"
@@ -306,6 +320,9 @@ if [ "${MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD:-}" = 1 ]; then
 	# Reap-fifo plumbing (the same handshake the TERM-ignoring case uses) makes this instance's
 	# own cleanup() wait for an actual probe-reaped event instead of leaving it to be inferred.
 	new_case
+	# The parent sets this to hold the wrapper inside its spawn-to-record window while the
+	# interrupt lands, so the startup boundary is exercised rather than raced.
+	make_record_delay="${MAKE_SELFTEST_SELFTEST_MAKE_RECORD_DELAY:-}"
 	ready_fifo="$case_state/ready"
 	stop_fifo="$case_state/stopped"
 	reaped_fifo="$case_state/reaped"
@@ -537,6 +554,77 @@ else
 	interrupt_child_pid=""
 fi
 rm -rf "$child_work"
+
+new_case
+startup_work="$case_dir/startup-child"
+mkdir -p "$startup_work"
+# Interrupt a child instance while its wrapper still has Make spawned but unrecorded: the
+# record delay holds the wrapper in that window, and waiting for both probes to report
+# started proves Make is genuinely running inside it.
+MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD=1 MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD_WORK="$startup_work" \
+	MAKE_SELFTEST_SELFTEST_MAKE_RECORD_DELAY=5 bash "$0" >"$case_dir/startup-child.out" 2>&1 &
+interrupt_child_pid="$!"
+startup_case_state=""
+attempt=0
+while [ "$attempt" -lt 200 ]; do
+	startup_case_state="$(ls -d "$startup_work"/case.*/state 2>/dev/null | head -n1 || :)"
+	if [ -n "$startup_case_state" ] && [ -f "$startup_case_state/probe-one.started" ] \
+		&& [ -f "$startup_case_state/probe-two.started" ]; then
+		break
+	fi
+	attempt=$((attempt + 1))
+	sleep 0.05
+done
+if [ -n "$startup_case_state" ] && [ -f "$startup_case_state/probe-one.started" ] \
+	&& [ -f "$startup_case_state/probe-two.started" ]; then
+	# Read the pids while the wave is still up: the child's cleanup removes its own tree, and
+	# reading them here is the stronger claim anyway -- Make is recorded from the instant it
+	# can run, even though the wrapper has not reached its own recording step yet.
+	startup_make_pid="$(cat "$startup_case_state/make-child.pid" 2>/dev/null || :)"
+	startup_probe_one="$(cat "$startup_case_state/probe-one.pid" 2>/dev/null || :)"
+	startup_probe_two="$(cat "$startup_case_state/probe-two.pid" 2>/dev/null || :)"
+	# Non-vacuity first: an absent pid file would make every liveness check below pass for
+	# the wrong reason, which is exactly what an unrecorded Make child looks like.
+	if [ -n "$startup_make_pid" ] && [ -n "$startup_probe_one" ] && [ -n "$startup_probe_two" ]; then
+		ok "interrupting the wrapper's startup window still records the Make child and probe pids"
+	else
+		bad "interrupting the wrapper's startup window still records the Make child and probe pids"
+	fi
+	kill -TERM "$interrupt_child_pid" 2>/dev/null || :
+	wait "$interrupt_child_pid" 2>/dev/null || :
+	interrupt_child_pid=""
+	if [ -n "$startup_make_pid" ] && kill -0 "$startup_make_pid" 2>/dev/null; then
+		bad "interrupting the wrapper's startup window reaps the Make child"
+		kill -KILL "$startup_make_pid" 2>/dev/null || :
+	else
+		ok "interrupting the wrapper's startup window reaps the Make child"
+	fi
+	if { [ -n "$startup_probe_one" ] && kill -0 "$startup_probe_one" 2>/dev/null; } \
+		|| { [ -n "$startup_probe_two" ] && kill -0 "$startup_probe_two" 2>/dev/null; }; then
+		bad "interrupting the wrapper's startup window reaps both probe workers"
+		kill -KILL "$startup_probe_one" "$startup_probe_two" 2>/dev/null || :
+	else
+		ok "interrupting the wrapper's startup window reaps both probe workers"
+	fi
+	# Independent of what was recorded: no process may still be running against the child's tree.
+	startup_survivors="$(pgrep -f "$startup_work" 2>/dev/null || :)"
+	if [ -n "$startup_survivors" ]; then
+		bad "interrupting the wrapper's startup window leaves nothing running against the child's tree"
+		kill -KILL $startup_survivors 2>/dev/null || :
+	else
+		ok "interrupting the wrapper's startup window leaves nothing running against the child's tree"
+	fi
+else
+	for contract in "still records the Make child and probe pids" "reaps the Make child" \
+		"reaps both probe workers" "leaves nothing running against the child's tree"; do
+		bad "interrupting the wrapper's startup window $contract (fixture did not start)"
+	done
+	# TERM, not KILL: let the child's own EXIT cleanup reap whatever it managed to start.
+	kill -TERM "$interrupt_child_pid" 2>/dev/null || :
+	wait "$interrupt_child_pid" 2>/dev/null || :
+	interrupt_child_pid=""
+fi
+rm -rf "$startup_work"
 
 echo "----"
 echo "make-selftest-selftest: $checks checks, $fails failed"
