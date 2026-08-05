@@ -185,15 +185,22 @@ stop_make_with_readiness_events() {
 		kill_fixture_workers
 		if ! wait_for_fixture_reapers; then
 			# The reap-ack deadline was exhausted: don't keep trusting the graceful ladder as
-			# if reaping had been confirmed. Force the whole recorded hierarchy down directly,
-			# still through a real `wait`, not a further guess.
+			# if reaping had been confirmed. Force the whole recorded hierarchy down directly --
+			# but still give the wrapper the same one bounded chance the tier below this one
+			# gets to notice the killed child via its own `wait` and reap it normally, rather
+			# than skipping straight to force-killing the wrapper (which cannot reap a pid
+			# that isn't its own direct child, and could observe it as a zombie in between).
 			kill_fixture_workers
 			child_pid="$(cat "$case_state/make-child.pid" 2>/dev/null || :)"
 			: >"$case_state/make-child-killed"
 			[ -n "$child_pid" ] && kill -KILL "$child_pid" 2>/dev/null || :
-			kill -KILL "$pid" 2>/dev/null || :
-			wait "$pid" 2>/dev/null || :
-			make_status=137
+			if IFS= read -r -t 1 -u 8 stop_event; then
+				if wait "$pid"; then make_status=0; else make_status=$?; fi
+			else
+				kill -KILL "$pid" 2>/dev/null || :
+				wait "$pid" 2>/dev/null || :
+				make_status=137
+			fi
 		elif IFS= read -r -t 1 -u 8 stop_event; then
 			if wait "$pid"; then make_status=0; else make_status=$?; fi
 		else
