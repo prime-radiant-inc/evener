@@ -54,6 +54,19 @@ Self-review: the fix is test-only and minimal; the one-provider helper still pro
 
 The real daemon regression could not execute in this environment because network socket binding is denied by the sandbox. Compilation and non-network focused verification passed. Re-run `go test ./cmd/serf -run '^TestServeModelSwitch_' -count=1` in an environment permitting loopback binds before treating the integration proof as fully runtime-verified.
 
+## Follow-up Verification: Completion Identity Race
+
+The first loopback-capable full test run reached the recovery assertion but reported `kimi 1, openai 0`. Notification tracing showed that the test's generic `successful turn` milestone consumed the persisted `thread/model/changed` marker turn (`turn_2`), which is emitted as a completed turn before the second client turn. The second `turn/start` was accepted as `turn_m2`, but the test asserted provider requests before waiting for that specific completion.
+
+The test now records completed-turn IDs and waits for the `TurnStart` response's exact recovery turn ID. This preserves structured, bounded waiting and makes the provider-count assertion occur after the actual recovery turn.
+
+- `gofmt -w cmd/serf/serve_model_switch_test.go` — PASS.
+- `GOCACHE=/tmp/serf-gocache go test ./cmd/serf -run '^TestServeModelSwitch_ProviderFailureRestoresCapability$' -count=1 -v` — PASS (`ok primeradiant.com/serf/cmd/serf 0.622s`).
+- `GOCACHE=/tmp/serf-gocache go test ./cmd/serf -run '^TestServeModelSwitch_' -count=1` — PASS (`ok primeradiant.com/serf/cmd/serf 0.475s`).
+- `git diff --check` — PASS.
+
+Self-review: the change is test-only, removes temporary logging, does not weaken any milestone or provider/model assertion, and filters only by the server-assigned recovery turn ID returned by `turn/start`.
+
 ## Fix review findings
 
 - Added `waitServeMilestone`, selecting between each structured milestone channel and `ctx.Done()`; replaced failed-turn, idle-capability, and successful-turn unbounded receives. No sleeps or polling were added.

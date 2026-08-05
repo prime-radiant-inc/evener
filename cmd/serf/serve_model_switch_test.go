@@ -25,6 +25,19 @@ func waitServeMilestone(ctx context.Context, milestones <-chan string, want stri
 	}
 }
 
+func waitServeTurn(ctx context.Context, turns <-chan string, want string) error {
+	for {
+		select {
+		case got := <-turns:
+			if got == want {
+				return nil
+			}
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for turn %q: %w", want, ctx.Err())
+		}
+	}
+}
+
 // TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn pins G2
 // against the REAL cmd/serf/serve.go wiring (not a hand-built hook). It boots
 // the real `serve` daemon with a scripted provider, connects an appwire
@@ -206,6 +219,7 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 	}
 
 	milestones := make(chan string, 8)
+	completedTurns := make(chan string, 8)
 	var onceMu sync.Mutex
 	seen := make(map[string]bool)
 	record := func(name string) {
@@ -228,7 +242,7 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 				case appwire.TurnStatusFailed:
 					record("failed turn")
 				case appwire.TurnStatusCompleted:
-					record("successful turn")
+					completedTurns <- params.Turn.ID
 				}
 			case appwire.NotifyThreadStatusChanged:
 				var params appwire.ThreadStatusChangedParams
@@ -243,11 +257,12 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 		}
 	}()
 
-	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
+	_, err = client.TurnStart(ctx, appwire.TurnStartParams{
 		ClientMutationID: "provider-failure-turn",
 		Ref:              ref,
 		Input:            []appwire.InputItem{{Type: "text", Text: "make the first request"}},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("TurnStart (failed provider): %v", err)
 	}
 
@@ -274,14 +289,15 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ThreadModelSet after provider failure: %v", err)
 	}
-	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
+	recovery, err := client.TurnStart(ctx, appwire.TurnStartParams{
 		ClientMutationID: "provider-recovery-turn",
 		Ref:              ref,
 		Input:            []appwire.InputItem{{Type: "text", Text: "recover on the selected provider"}},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("TurnStart (recovered provider): %v", err)
 	}
-	if err := waitServeMilestone(ctx, milestones, "successful turn"); err != nil {
+	if err := waitServeTurn(ctx, completedTurns, recovery.Turn.ID); err != nil {
 		t.Fatalf("wait successful turn: %v", err)
 	}
 
