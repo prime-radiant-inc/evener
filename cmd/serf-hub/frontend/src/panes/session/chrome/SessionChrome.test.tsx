@@ -436,6 +436,33 @@ test("collapsed overflow marks every pre-opened session pane as checked", async 
   }
 });
 
+// The checked adornment is a live toggle, not a label: selecting a checked
+// item must CLOSE its pane (the collapsed menu is the only control left).
+test.each([
+  ["Details", "sessionDetails"],
+  ["Tasks", "sessionTasks"],
+  ["Activity", "sessionActivity"],
+] as const)("selecting the checked %s overflow item closes its pane", async (label, type) => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_checked_close"));
+  fake.on("serf/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_checked_close");
+  workspaceStore.getState().openPane(type, { ref: "ref_checked_close" });
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref="ref_checked_close" />);
+    ro.fire(300);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: `${label} ✓` }));
+
+    expect(workspaceStore.getState().panes.some((pane) => pane.type === type)).toBe(false);
+  } finally {
+    ro.restore();
+  }
+});
+
 test.each([
   ["Details", "sessionDetails"],
   ["Tasks", "sessionTasks"],
