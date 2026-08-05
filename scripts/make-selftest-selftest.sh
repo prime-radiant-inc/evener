@@ -177,8 +177,11 @@ run_make_with_readiness_events() {
 		# can run for even an instant: a missing pid file therefore proves Make never started,
 		# which is what lets the stop ladder treat "nothing recorded" as "nothing to kill".
 		# Fixture knob: hold the trampoline before it publishes, and mark that it is holding, so
-		# the pre-publication interval can be interrupted deliberately instead of raced.
-		bash -c '[ -n "$1" ] && { : >"$2.publishing"; sleep "$1"; }; printf "%s\n" "$$" >"$2"; shift 2; exec "$@"' \
+		# the pre-publication interval can be interrupted deliberately instead of raced. The hold
+		# is an in-process read against a FIFO nobody ever writes: a `sleep` helper would be a
+		# second process to orphan when the trampoline is terminated, and one no survivor check
+		# could see, since its command line names neither the case nor the work dir.
+		bash -c '[ -n "$1" ] && { mkfifo "$2.publishing"; exec 5<>"$2.publishing"; read -t "$1" -u 5 || :; }; printf "%s\n" "$$" >"$2"; shift 2; exec "$@"' \
 			_ "$PROBE_MAKE_PUBLISH_DELAY" "$PROBE_STATE/make-child.pid" \
 			"$real_make" "${make_args[@]}" >"$output" 2>&1 &
 		# Fixture knob: widen the wrapper's own spawn-to-record window for the startup-boundary check.
@@ -646,13 +649,13 @@ publish_case_state=""
 attempt=0
 while [ "$attempt" -lt 200 ]; do
 	publish_case_state="$(ls -d "$publish_work"/case.*/state 2>/dev/null | head -n1 || :)"
-	if [ -n "$publish_case_state" ] && [ -f "$publish_case_state/make-child.pid.publishing" ]; then
+	if [ -n "$publish_case_state" ] && [ -e "$publish_case_state/make-child.pid.publishing" ]; then
 		break
 	fi
 	attempt=$((attempt + 1))
 	sleep 0.05
 done
-if [ -n "$publish_case_state" ] && [ -f "$publish_case_state/make-child.pid.publishing" ]; then
+if [ -n "$publish_case_state" ] && [ -e "$publish_case_state/make-child.pid.publishing" ]; then
 	# The trampoline already carries Make's argv, so it is findable by the child's work dir while
 	# still unpublished -- which is what makes the assertions below non-vacuous.
 	pre_publish_pids="$(pgrep -f "$publish_work" 2>/dev/null || :)"
