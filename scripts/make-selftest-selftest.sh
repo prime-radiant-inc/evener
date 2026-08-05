@@ -6,6 +6,12 @@ set -uo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
 real_make="$(command -v make)"
 work="$(mktemp -d -t serf-make-selftest-selftest.XXXXXX)"
+if [ "${MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD:-}" = 1 ] && [ -n "${MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD_WORK:-}" ]; then
+	# Child-mode instance: use the parent's case dir instead of a fresh mktemp, so nothing leaks.
+	rmdir "$work" 2>/dev/null || :
+	work="$MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD_WORK"
+	mkdir -p "$work"
+fi
 makefile="$repo_root/Makefile"
 make_args=(-f "$makefile" -C "$work" --no-print-directory "SELFTEST_SCRIPTS=probe-one probe-two" selftest)
 checks=0
@@ -16,6 +22,7 @@ unrelated_pid=""
 reaped_fifo=""
 reap_release_fifo=""
 fixture_reapers_before_make_kill=0
+ready_failure_event=""
 
 kill_if_alive() {
 	local pid="${1:-}"
@@ -23,6 +30,14 @@ kill_if_alive() {
 }
 
 cleanup() {
+	local name pid
+	if [ -n "${case_state:-}" ]; then
+		# The wrapper's own pid isn't the real Make child; read the recorded pids before rm -rf.
+		kill_if_alive "$(cat "$case_state/make-child.pid" 2>/dev/null || :)"
+		for name in probe-one probe-two; do
+			kill_if_alive "$(cat "$case_state/$name.pid" 2>/dev/null || :)"
+		done
+	fi
 	kill_if_alive "$make_pid"
 	kill_if_alive "$unrelated_pid"
 	rm -rf "$work"
@@ -84,7 +99,10 @@ if [ -n "${PROBE_READY_FIFO:-}" ]; then
 	trap 'printf "worker-exited:%s\n" "$name" >"$PROBE_READY_FIFO"' EXIT
 	case " ${PROBE_SKIP_READY:-} " in
 		*" $name "*) ;;
-		*) printf '%s\n' "$name" >"$PROBE_READY_FIFO" ;;
+		*)
+			[ -n "${PROBE_READY_DELAY:-}" ] && sleep "$PROBE_READY_DELAY"
+			printf '%s\n' "$name" >"$PROBE_READY_FIFO"
+			;;
 	esac
 fi
 case "${PROBE_MODE:-pass}" in
@@ -118,16 +136,17 @@ STUB
 
 run_make() {
 	local mode="$1" output="$2" fail_name="${3:-}"
-	PROBE_STATE="$case_state" PROBE_MODE="$mode" PROBE_FAIL="$fail_name" PROBE_READY_FIFO= PROBE_SKIP_READY= TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin" \
+	PROBE_STATE="$case_state" PROBE_MODE="$mode" PROBE_FAIL="$fail_name" PROBE_READY_FIFO= PROBE_SKIP_READY= PROBE_READY_DELAY= TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin" \
 		"$real_make" "${make_args[@]}" >"$output" 2>&1
 }
 
 run_make_with_readiness_events() {
-	local mode="$1" output="$2" skip_ready="${3:-}" ignore_term="${4:-}" fail_name="${5:-}"
+	local mode="$1" output="$2" skip_ready="${3:-}" ignore_term="${4:-}" fail_name="${5:-}" ready_delay="${6:-}"
 	(
 		# The wrapper converts Make exit into a terminal FIFO event and forwards interrupts.
 		export PROBE_STATE="$case_state" PROBE_MODE="$mode" PROBE_FAIL="$fail_name" \
-			PROBE_SKIP_READY="$skip_ready" PROBE_IGNORE_TERM="$ignore_term" PROBE_READY_FIFO="$ready_fifo" PROBE_STOP_FIFO="$stop_fifo" TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin"
+			PROBE_SKIP_READY="$skip_ready" PROBE_IGNORE_TERM="$ignore_term" PROBE_READY_FIFO="$ready_fifo" PROBE_STOP_FIFO="$stop_fifo" \
+			PROBE_READY_DELAY="$ready_delay" TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin"
 		export PROBE_REAP_FIFO="$reaped_fifo" PROBE_REAP_RELEASE_FIFO="$reap_release_fifo" \
 			PROBE_MAKE_KILLED_MARKER="$case_state/make-child-killed"
 		child_pid=""
@@ -214,26 +233,49 @@ wait_for_fixture_reapers() {
 
 wait_for_ready_workers() {
 	local ready="" probe_one_ready=0 probe_two_ready=0
+	ready_failure_event=""
 	while [ "$((probe_one_ready + probe_two_ready))" -lt 2 ]; do
 		# Bound a hung worker without polling; readiness and terminal events still drive progress.
-		if ! IFS= read -r -t 5 -u 9 ready; then
+		# 10s covers full-gate contention startup delay; shorter timeouts regressed a healthy-but-slow worker to "hung".
+		if ! IFS= read -r -t 10 -u 9 ready; then
+			ready_failure_event=timeout
 			stop_make_with_readiness_events
 			return 1
 		fi
 		case "$ready" in
 			probe-one)
-				[ "$probe_one_ready" -eq 0 ] || { stop_make_with_readiness_events; return 1; }
+				[ "$probe_one_ready" -eq 0 ] || { ready_failure_event="$ready"; stop_make_with_readiness_events; return 1; }
 				probe_one_ready=1
 				;;
 			probe-two)
-				[ "$probe_two_ready" -eq 0 ] || { stop_make_with_readiness_events; return 1; }
+				[ "$probe_two_ready" -eq 0 ] || { ready_failure_event="$ready"; stop_make_with_readiness_events; return 1; }
 				probe_two_ready=1
 				;;
-			worker-exited:*|make-exited:*) stop_make_with_readiness_events; return 1 ;;
-			*) stop_make_with_readiness_events; return 1 ;;
+			worker-exited:probe-one)
+				# A ready worker's own exit isn't a readiness failure for anyone.
+				[ "$probe_one_ready" -eq 1 ] || { ready_failure_event="$ready"; stop_make_with_readiness_events; return 1; }
+				;;
+			worker-exited:probe-two)
+				[ "$probe_two_ready" -eq 1 ] || { ready_failure_event="$ready"; stop_make_with_readiness_events; return 1; }
+				;;
+			worker-exited:*|make-exited:*) ready_failure_event="$ready"; stop_make_with_readiness_events; return 1 ;;
+			*) ready_failure_event="$ready"; stop_make_with_readiness_events; return 1 ;;
 		esac
 	done
 }
+
+if [ "${MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD:-}" = 1 ]; then
+	# Child-mode instance for the interruption-reaping check below: set up one hung-readiness
+	# wave and block in the readiness wait until the parent sends TERM. Never spawns a child itself.
+	new_case
+	ready_fifo="$case_state/ready"
+	stop_fifo="$case_state/stopped"
+	exec 9<>"$ready_fifo"
+	exec 8<>"$stop_fifo"
+	run_make_with_readiness_events hold "$case_dir/child.out" probe-two
+	wait_for_ready_workers || :
+	exit 0
+fi
 
 new_case
 normal_out="$case_dir/normal.out"
@@ -270,6 +312,7 @@ if wait_for_ready_workers; then
 else
 	ok "the readiness fixture rejects a worker that exits before readiness"
 fi
+assert_eq "$ready_failure_event" "worker-exited:probe-two" "the missing-readiness rejection is caused by probe-two's own exit"
 exec 9>&-
 exec 8>&-
 assert_eq "$make_pid" "" "the missing-readiness wave reaps its Make wrapper"
@@ -286,9 +329,30 @@ if wait_for_ready_workers; then
 else
 	ok "the readiness fixture rejects a hung worker before readiness"
 fi
+assert_eq "$ready_failure_event" "timeout" "the hung-readiness rejection is a timeout"
 exec 9>&-
 exec 8>&-
 assert_eq "$make_pid" "" "the hung-readiness wave reaps its Make wrapper"
+
+new_case
+delayed_ready_out="$case_dir/delayed-ready.out"
+ready_fifo="$case_state/ready"
+stop_fifo="$case_state/stopped"
+exec 9<>"$ready_fifo"
+exec 8<>"$stop_fifo"
+run_make_with_readiness_events hold "$delayed_ready_out" "" "" "" 6
+if wait_for_ready_workers; then
+	ok "the readiness wait tolerates workers that take 6s to signal readiness"
+else
+	bad "the readiness wait tolerates workers that take 6s to signal readiness"
+fi
+exec 9>&-
+stop_make_with_readiness_events
+exec 8>&-
+for name in probe-one probe-two; do
+	pid="$(cat "$case_state/$name.pid" 2>/dev/null || :)"
+	[ -n "$pid" ] && kill -KILL "$pid" 2>/dev/null || :
+done
 
 new_case
 term_ignore_out="$case_dir/term-ignore.out"
@@ -306,6 +370,7 @@ if wait_for_ready_workers; then
 else
 	ok "the readiness fixture rejects a TERM-ignoring worker before readiness"
 fi
+assert_eq "$ready_failure_event" "timeout" "the TERM-ignoring rejection is a timeout"
 exec 9>&-
 exec 8>&-
 if [ "$fixture_reapers_before_make_kill" -eq 1 ]; then
@@ -369,6 +434,42 @@ fi
 kill -TERM "$unrelated_pid" 2>/dev/null || :
 wait "$unrelated_pid" 2>/dev/null || :
 unrelated_pid=""
+
+new_case
+child_work="$case_dir/interrupt-child"
+mkdir -p "$child_work"
+MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD=1 MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD_WORK="$child_work" bash "$0" >"$case_dir/interrupt-child.out" 2>&1 &
+child_pid="$!"
+child_case_state=""
+attempt=0
+while [ "$attempt" -lt 100 ]; do
+	child_case_state="$(ls -d "$child_work"/case.*/state 2>/dev/null | head -n1 || :)"
+	if [ -n "$child_case_state" ] && [ -f "$child_case_state/make-child.pid" ] \
+		&& [ -f "$child_case_state/probe-one.pid" ] && [ -f "$child_case_state/probe-two.pid" ]; then
+		break
+	fi
+	attempt=$((attempt + 1))
+	sleep 0.05
+done
+if [ -n "$child_case_state" ] && [ -f "$child_case_state/make-child.pid" ] \
+	&& [ -f "$child_case_state/probe-one.pid" ] && [ -f "$child_case_state/probe-two.pid" ]; then
+	make_child_pid="$(cat "$child_case_state/make-child.pid")"
+	probe_one_pid="$(cat "$child_case_state/probe-one.pid")"
+	probe_two_pid="$(cat "$child_case_state/probe-two.pid")"
+	kill -TERM "$child_pid" 2>/dev/null || :
+	wait "$child_pid" 2>/dev/null || :
+	if kill -0 "$make_child_pid" 2>/dev/null || kill -0 "$probe_one_pid" 2>/dev/null || kill -0 "$probe_two_pid" 2>/dev/null; then
+		bad "interrupting the selftest during a readiness wait reaps the Make child and probe descendants"
+		kill -KILL "$make_child_pid" "$probe_one_pid" "$probe_two_pid" 2>/dev/null || :
+	else
+		ok "interrupting the selftest during a readiness wait reaps the Make child and probe descendants"
+	fi
+else
+	bad "interrupting the selftest during a readiness wait reaps the Make child and probe descendants (fixture did not start)"
+	kill -KILL "$child_pid" 2>/dev/null || :
+	wait "$child_pid" 2>/dev/null || :
+fi
+rm -rf "$child_work"
 
 echo "----"
 echo "make-selftest-selftest: $checks checks, $fails failed"
