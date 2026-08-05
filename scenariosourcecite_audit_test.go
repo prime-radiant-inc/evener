@@ -86,9 +86,10 @@ func TestScenarioSourceCitationsResolve(t *testing.T) {
 //
 // A symbol is anything a card legitimately anchors to: a func or method, a
 // type, a package-level or grouped const or var, a struct field, an interface
-// method. Receiver-qualified names such as `Type.Method` are preserved; an
-// unqualified alias remains available only when that name is unique in the
-// file, so a collision cannot make a citation appear to resolve by accident.
+// method. Receiver-, type-, and package-qualified names such as `Type.Method`
+// and `openai.IssuerBaseURL` are preserved; an unqualified alias remains
+// available only when that name is unique in the file, so a collision cannot
+// make a citation appear to resolve by accident.
 func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
 	byBase := scenarioGoFilesByBase(t)
 	declared := map[string]map[string]bool{}
@@ -143,15 +144,46 @@ func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
 	}
 }
 
+func TestScenarioDeviceFlowCitationCitesPackageDefault(t *testing.T) {
+	const (
+		cardPath = "test/scenarios/cli-device-code-flow.md"
+		cited    = "auth/openai/config.go"
+		symbol   = "openai.IssuerBaseURL"
+	)
+	raw, err := os.ReadFile(cardPath)
+	if err != nil {
+		t.Fatalf("reading %s: %v", cardPath, err)
+	}
+	for _, m := range scenarioGoCitation.FindAllStringSubmatch(string(raw), -1) {
+		if m[1] != cited || m[2] != symbol {
+			continue
+		}
+		names, err := scenarioDeclarationsIn(map[string]map[string]bool{}, cited)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", cited, err)
+		}
+		if !names[symbol] {
+			t.Fatalf("%s package default %q does not resolve", cited, symbol)
+		}
+		return
+	}
+	t.Fatalf("%s must cite the package default `%s#%s`", cardPath, cited, symbol)
+}
+
 func TestScenarioDeclarationsPreserveReceiverQualification(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "methods.go")
 	const source = `package fixture
+
+const IssuerBaseURL = "https://auth.example.test"
 
 type Alpha struct {
 	Field int
 }
 type Beta struct {
 	Field int
+}
+type Config struct {
+	IssuerBaseURL string
 }
 type Contract interface {
 	Do()
@@ -168,12 +200,12 @@ func (*Beta) Run() {}
 	if err != nil {
 		t.Fatalf("scenarioDeclarationsIn: %v", err)
 	}
-	for _, want := range []string{"Alpha.Run", "Beta.Run", "Alpha.Field", "Contract.Do"} {
+	for _, want := range []string{"fixture.IssuerBaseURL", "Alpha.Run", "Beta.Run", "Alpha.Field", "Config.IssuerBaseURL", "Contract.Do"} {
 		if !names[want] {
 			t.Fatalf("declarations missing qualified method %q: %v", want, names)
 		}
 	}
-	for _, ambiguous := range []string{"Run", "Field"} {
+	for _, ambiguous := range []string{"IssuerBaseURL", "Run", "Field"} {
 		if names[ambiguous] {
 			t.Fatalf("ambiguous unqualified declaration %q was accepted: %v", ambiguous, names)
 		}
@@ -244,6 +276,7 @@ func scenarioDeclarationsIn(cache map[string]map[string]bool, path string) (map[
 				case *ast.ValueSpec:
 					for _, name := range spec.Names {
 						unqualifiedCounts[name.Name]++
+						names[parsed.Name.Name+"."+name.Name] = true
 					}
 				}
 			}
