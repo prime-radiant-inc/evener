@@ -683,14 +683,16 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					}
 				}
 			}
-			// The drain-loop gate below is unreachable on an error return, so a
-			// goal that is still active when the turn fails must be terminated
-			// here (spec §2/C11). Budget exhaustion is an expected terminal
-			// boundary and leaves the unrelated active goal unchanged.
-			if _, exhausted := budgetExhaustionFromError(err); !exhausted {
-				s.terminateGoalOnError(processCtx, err)
+			// handleModelError owns terminal provider recovery: it emits the
+			// failed turn, blocks the active goal, and settles the session idle.
+			// Keep this generic tail for non-provider failures (and budget
+			// exhaustion), but do not duplicate provider goal/provenance effects.
+			if !isProviderTerminalError(err) {
+				if _, exhausted := budgetExhaustionFromError(err); !exhausted {
+					s.terminateGoalOnError(processCtx, err)
+				}
+				s.finishProcessingAtBoundary(processCtx, SessionIdle)
 			}
-			s.finishProcessingAtBoundary(processCtx, SessionIdle)
 			// Every OTHER terminal boundary in this loop tells a live subscriber
 			// the corrected status: the cancellation branch above emits
 			// EventSessionEnd(Reason=interrupted), and the successful-settle tail

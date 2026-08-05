@@ -471,10 +471,11 @@ func responsesContinuationRegistryHasEnabledSupport(registry map[llm.ResponsesEn
 // offending content (the next request often succeeds) and records that it has
 // tried once via *contentFilterRetried. Provider retryability governs request
 // retries elsewhere; every remaining provider failure is terminal for this turn.
-// The terminal path emits the failure and returns a "provider error"-wrapped value
-// (so callers can distinguish a provider failure from agent quiescence; the
-// original error is preserved via errors.Unwrap, kata 3xbh). The outer lifecycle
-// error boundary blocks any active goal and returns the open session to idle.
+// The terminal path emits the failure, terminates any active goal, and settles the
+// open session at idle before returning a "provider error"-wrapped value (so
+// callers can distinguish a provider failure from agent quiescence; the original
+// error is preserved via errors.Unwrap, kata 3xbh). The outer lifecycle error
+// boundary remains an idempotent compatibility tail for this provider-owned path.
 func (s *Session) handleModelError(ctx context.Context, err error, req llm.Request, contentFilterRetried *bool) (retry bool, ferr error) {
 	dec := classifyModelError(
 		isTurnCancellation(ctx, err),
@@ -511,7 +512,17 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	if dec.EmitContextLenWarn {
 		s.emit(events.EventWarning, warningDataFromError("Context length exceeded", err))
 	}
+	s.terminateGoalOnError(ctx, err)
+	s.finishProcessingAtBoundary(ctx, SessionIdle)
 	return false, fmt.Errorf("provider error: %w", err)
+}
+
+// isProviderTerminalError identifies the wrapper returned by handleModelError
+// (and any underlying provider error it carries) so the outer drain loop does
+// not repeat goal termination or the idle-boundary provenance transition.
+func isProviderTerminalError(err error) bool {
+	var providerErr llm.Error
+	return strings.HasPrefix(err.Error(), "provider error: ") && errors.As(err, &providerErr)
 }
 
 // modelErrorAction names the branch handleModelError takes on a failed model call.

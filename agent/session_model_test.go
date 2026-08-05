@@ -1668,13 +1668,19 @@ func TestSession_NonRetryableProviderErrorLeavesSessionIdle(t *testing.T) {
 	sess.Close()
 	<-done
 
-	var errorEvents, turnEndedEvents int
+	var errorEvents, turnEndedEvents, goalEndedEvents int
+	var blockedGoalEnded int
 	for _, ev := range evs {
 		switch ev.Kind {
 		case events.EventError:
 			errorEvents++
 		case events.EventTurnEnded:
 			turnEndedEvents++
+		case events.EventGoalEnded:
+			goalEndedEvents++
+			if data, ok := ev.Data.(events.GoalEndedData); ok && data.Status == string(goal.StatusBlocked) {
+				blockedGoalEnded++
+			}
 		}
 	}
 	if errorEvents == 0 {
@@ -1682,6 +1688,9 @@ func TestSession_NonRetryableProviderErrorLeavesSessionIdle(t *testing.T) {
 	}
 	if turnEndedEvents == 0 {
 		t.Fatal("events contain no turn-ended event")
+	}
+	if goalEndedEvents != 1 || blockedGoalEnded != 1 {
+		t.Fatalf("provider failure emitted goal-ended events = %d (blocked = %d), want exactly one blocked report", goalEndedEvents, blockedGoalEnded)
 	}
 }
 
@@ -2063,6 +2072,7 @@ func TestNonProviderErrorOmitsCause(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	sess.getOrCreateGoalStore().Set("preserve generic failure behavior", sess.sclock().Now())
 
 	var evs []events.SessionEvent
 	done := make(chan struct{})
@@ -2077,6 +2087,12 @@ func TestNonProviderErrorOmitsCause(t *testing.T) {
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
 		t.Fatal("expected non-nil error from ProcessInput")
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after non-provider failure = %q, want %q", got, SessionIdle)
+	}
+	if snap, ok := sess.getOrCreateGoalStore().Snapshot(); !ok || snap.Status != goal.StatusBlocked {
+		t.Fatalf("goal after non-provider failure = %+v, want blocked", snap)
 	}
 	sess.Close()
 	<-done
