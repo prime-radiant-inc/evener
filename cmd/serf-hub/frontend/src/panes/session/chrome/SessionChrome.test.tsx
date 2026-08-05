@@ -6,8 +6,12 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import "../../sessionPanels";
+import { ActivityPanelBody } from "./ActivityPanel";
 import { resetGoalOverridesForTests } from "./GoalControl";
 import { SessionChrome } from "./SessionChrome";
 
@@ -73,12 +77,30 @@ function connectFakeClient(): FakeClient {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
+  resetActivitySummaryStoreForTests();
   resetGoalOverridesForTests();
 });
 
 afterEach(() => {
   cleanup();
+  // @ts-expect-error jsdom has no matchMedia by default; individual mobile
+  // tests install the narrow viewport explicitly.
+  delete window.matchMedia;
 });
+
+function installMobileViewport(): () => void {
+  const original = window.matchMedia;
+  window.matchMedia = (() => ({
+    matches: true,
+    media: "(max-width: 899px)",
+    addEventListener() {},
+    removeEventListener() {},
+  })) as unknown as typeof window.matchMedia;
+  return () => {
+    window.matchMedia = original;
+  };
+}
 
 // Wave 5 T1 carved this slot as an empty placeholder ("renders nothing (T1
 // placeholder - T5 fills this in)"); this file supersedes that pin now that
@@ -127,6 +149,7 @@ test("composes the status row, session actions, goal control, details panel, and
 });
 
 test("the details panel reads the work time of the SAME ref passed to SessionChrome", async () => {
+  const restoreViewport = installMobileViewport();
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
@@ -140,6 +163,7 @@ test("the details panel reads the work time of the SAME ref passed to SessionChr
   await user.click(screen.getByRole("button", { name: "Details" }));
 
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("2m");
+  restoreViewport();
 });
 
 test("every composed piece acts on the SAME ref passed to SessionChrome", async () => {
@@ -168,6 +192,7 @@ test("every composed piece acts on the SAME ref passed to SessionChrome", async 
 });
 
 test("the tasks panel fetches for the SAME ref passed to SessionChrome", async () => {
+  const restoreViewport = installMobileViewport();
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_c"));
@@ -182,6 +207,7 @@ test("the tasks panel fetches for the SAME ref passed to SessionChrome", async (
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
   await waitFor(() => expect(calledRef).toBe("ref_c"));
+  restoreViewport();
 });
 
 // The tasks half of this pair (above) and the activity half join the same two
@@ -191,6 +217,7 @@ test("the tasks panel fetches for the SAME ref passed to SessionChrome", async (
 // or stale ref - both files stay green while the sheet quietly reports
 // another session's activity.
 test("the activity panel fetches for the SAME ref passed to SessionChrome", async () => {
+  const restoreViewport = installMobileViewport();
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_e"));
@@ -205,6 +232,7 @@ test("the activity panel fetches for the SAME ref passed to SessionChrome", asyn
   await user.click(screen.getByRole("button", { name: "Activity" }));
 
   await waitFor(() => expect(calledRef).toBe("ref_e"));
+  restoreViewport();
 });
 
 // --- footer overflow (kata vybn) ---------------------------------------------
@@ -261,10 +289,12 @@ test("collapses Details and Tasks into the ... menu once the chrome measures nar
     const menuItems = screen.getAllByRole("menuitem").map((el) => el.textContent);
     expect(menuItems.slice(0, 2)).toEqual(["Details", "Tasks"]);
 
-    // Selecting the "Details" item does the SAME thing the inline trigger
-    // did: opens the session-details sheet.
+    // Selecting the "Details" item opens the same desktop pane as the inline
+    // trigger would; the Sheet is mobile-only.
     await user.click(screen.getByRole("menuitem", { name: "Details" }));
-    expect(screen.getByText("Session details")).toBeTruthy();
+    expect(workspaceStore.getState().panes).toContainEqual(
+      expect.objectContaining({ type: "sessionDetails", params: { ref: "ref_narrow" } }),
+    );
   } finally {
     ro.restore();
   }
@@ -360,7 +390,7 @@ test("narrow chrome hides the inline Activity trigger and puts an Activity item 
   }
 });
 
-test("selecting the Activity menu item opens the Activity sheet", async () => {
+test("selecting the Activity menu item opens the desktop Activity pane", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_activity_open"));
@@ -375,16 +405,256 @@ test("selecting the Activity menu item opens the Activity sheet", async () => {
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     await user.click(screen.getByRole("menuitem", { name: "Activity" }));
 
-    // The sheet's title is an <h2> (OverlayPanel), so the heading role
-    // disambiguates it from the menu item that opened it.
-    expect(await screen.findByRole("heading", { name: "Activity" })).toBeTruthy();
-    // ...and its on-open fetch ran and resolved. WHICH ref it asked for is not
-    // checked here (the fake answers serf/jobs/list for any ref) - that the
-    // panel asks for the ref it is handed is ActivityPanel.test.tsx's own
-    // "opening fetches and renders one row per activity" case, and that this chrome
-    // hands it its OWN ref is "the activity panel fetches for the SAME ref passed
-    // to SessionChrome" above.
-    expect(await screen.findByText("No retained activity yet")).toBeTruthy();
+    expect(workspaceStore.getState().panes).toContainEqual(
+      expect.objectContaining({ type: "sessionActivity", params: { ref: "ref_activity_open" } }),
+    );
+  } finally {
+    ro.restore();
+  }
+});
+
+test("collapsed overflow marks every pre-opened session pane as checked", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_checked_overflow"));
+  fake.on("serf/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_checked_overflow");
+  workspaceStore.getState().openPane("sessionDetails", { ref: "ref_checked_overflow" });
+  workspaceStore.getState().openPane("sessionTasks", { ref: "ref_checked_overflow" });
+  workspaceStore.getState().openPane("sessionActivity", { ref: "ref_checked_overflow" });
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref="ref_checked_overflow" />);
+    ro.fire(300);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    expect(screen.getByRole("menuitem", { name: "Details ✓" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Tasks ✓" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
+  } finally {
+    ro.restore();
+  }
+});
+
+// The checked adornment is a live toggle, not a label: selecting a checked
+// item must CLOSE its pane (the collapsed menu is the only control left).
+test.each([
+  ["Details", "sessionDetails"],
+  ["Tasks", "sessionTasks"],
+  ["Activity", "sessionActivity"],
+] as const)("selecting the checked %s overflow item closes its pane", async (label, type) => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_checked_close"));
+  fake.on("serf/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_checked_close");
+  workspaceStore.getState().openPane(type, { ref: "ref_checked_close" });
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref="ref_checked_close" />);
+    ro.fire(300);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: `${label} ✓` }));
+
+    expect(workspaceStore.getState().panes.some((pane) => pane.type === type)).toBe(false);
+  } finally {
+    ro.restore();
+  }
+});
+
+test.each([
+  ["Details", "sessionDetails"],
+  ["Tasks", "sessionTasks"],
+  ["Activity", "sessionActivity"],
+] as const)("desktop %s trigger opens and closes its pane for the SessionChrome ref", async (label, type) => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_inline"));
+  fake.on("serf/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_inline");
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref="ref_inline" />);
+    ro.fire(1000);
+    const trigger = screen.getByRole("button", { name: label });
+    expect(trigger.getAttribute("aria-pressed")).toBe("false");
+    await user.click(trigger);
+    expect(workspaceStore.getState().panes).toContainEqual(
+      expect.objectContaining({ type, params: { ref: "ref_inline" } }),
+    );
+    expect(trigger.getAttribute("aria-pressed")).toBe("true");
+    await user.click(trigger);
+    expect(workspaceStore.getState().panes.some((pane) => pane.type === type)).toBe(false);
+    expect(trigger.getAttribute("aria-pressed")).toBe("false");
+  } finally {
+    ro.restore();
+  }
+});
+
+test("mobile chrome opens Sheets without changing workspace panes", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_mobile"));
+  await threadsStore.getState().ensureThread("ref_mobile");
+
+  try {
+    render(<SessionChrome ref="ref_mobile" />);
+    expect(workspaceStore.getState().panes).toEqual([]);
+    await user.click(screen.getByRole("button", { name: "Details" }));
+    expect(await screen.findByRole("heading", { name: "Session details" })).toBeTruthy();
+    expect(workspaceStore.getState().panes).toEqual([]);
+  } finally {
+    restoreViewport();
+  }
+});
+
+// The collapsed-overflow behavior is not desktop-only (it shipped for both
+// hosts before panel panes existed): a phone-width pane collapses too, and
+// its three Sheet triggers must fold into the "..." menu instead of squeezing
+// the status row - still opening Sheets, never workspace panes.
+test("mobile collapsed chrome moves panel triggers into the overflow menu, still opening Sheets", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_mobile_collapsed"));
+  await threadsStore.getState().ensureThread("ref_mobile_collapsed");
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref="ref_mobile_collapsed" />);
+    ro.fire(300); // well under NARROW_CHROME_WIDTH_PX
+
+    expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Tasks" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Activity" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Details" }));
+    expect(await screen.findByRole("heading", { name: "Session details" })).toBeTruthy();
+    expect(workspaceStore.getState().panes).toEqual([]);
+  } finally {
+    ro.restore();
+    restoreViewport();
+  }
+});
+
+// Before the first ResizeObserver report the chrome's width is unknown - it
+// may well BE collapsed. The hidden badge refresh must not fire off an
+// established stale summary in that gap, or a narrow pane gets exactly the
+// refresh collapse is meant to suppress.
+test("hidden Activity refresh waits for the first width measurement", async () => {
+  const fake = connectFakeClient();
+  let fetches = 0;
+  fake.on("thread/read", () => readResponse("ref_activity_unmeasured"));
+  fake.on("serf/jobs/list", () => {
+    fetches += 1;
+    return { data: emptyActivityTree() };
+  });
+  await threadsStore.getState().ensureThread("ref_activity_unmeasured");
+  const initial = threadsStore.getState().threads.get("ref_activity_unmeasured");
+  if (!initial) throw new Error("missing unmeasured activity model");
+  const model = { ...initial, jobsUpdatedAt: 1 };
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  activitySummaryStore.setState({
+    entries: new Map([
+      [
+        model.ref,
+        { counts: undefined, established: true, mountedBodies: 0, loading: false, lastFetchedBump: 0, requestID: 1 },
+      ],
+    ]),
+  });
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref={model.ref} />);
+    await act(async () => Promise.resolve());
+    expect(fetches).toBe(0);
+
+    ro.fire(1_000);
+    await waitFor(() => expect(fetches).toBe(1));
+  } finally {
+    ro.restore();
+  }
+});
+
+test("desktop Activity waits for the body's first root attempt before owning later refreshes", async () => {
+  const fake = connectFakeClient();
+  let fetches = 0;
+  fake.on("thread/read", () => readResponse("ref_activity_fresh"));
+  fake.on("serf/jobs/list", () => {
+    fetches += 1;
+    const tree = emptyActivityTree();
+    tree.root.counts.active = fetches;
+    return { data: tree };
+  });
+  await threadsStore.getState().ensureThread("ref_activity_fresh");
+  const initial = threadsStore.getState().threads.get("ref_activity_fresh");
+  if (!initial) throw new Error("missing initial activity freshness model");
+  threadsStore.setState({ threads: new Map([[initial.ref, { ...initial, jobsUpdatedAt: 1 }]]) });
+  const ro = stubResizeObserver();
+
+  try {
+    const chrome = render(<SessionChrome ref="ref_activity_fresh" />);
+    ro.fire(1_000); // measured wide: the hidden refresh owner is armed
+    await act(async () => Promise.resolve());
+    expect(fetches).toBe(0);
+    expect(activitySummaryStore.getState().entries.get(initial.ref)?.established).not.toBe(true);
+
+    const body = render(<ActivityPanelBody sessionRef={initial.ref} model={initial} />);
+    await waitFor(() => expect(fetches).toBe(1));
+    expect(screen.getByRole("button", { name: "Activity · 1" })).toBeTruthy();
+    body.unmount();
+
+    const current = threadsStore.getState().threads.get("ref_activity_fresh");
+    if (!current) throw new Error("missing activity freshness model");
+    threadsStore.setState({ threads: new Map([[current.ref, { ...current, jobsUpdatedAt: 2 }]]) });
+    // Two more fetches, not one: the unmount hands refresh ownership back to
+    // the chrome, which first catches up on bump 1 (the body's attempt ran at
+    // a null bump), and bump 2 - arriving while that catch-up is in flight -
+    // is queued and re-issued rather than dropped (the old drop was the
+    // stale-badge bug: the UI would never have fetched bump 2's jobs at all).
+    await waitFor(() => expect(fetches).toBe(3));
+    expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
+    await Promise.resolve();
+    expect(fetches).toBe(3);
+    chrome.unmount();
+  } finally {
+    ro.restore();
+  }
+});
+
+test("collapsed desktop chrome suppresses established Activity refresh until the trigger row returns", async () => {
+  const fake = connectFakeClient();
+  let fetches = 0;
+  fake.on("thread/read", () => readResponse("ref_activity_collapsed"));
+  fake.on("serf/jobs/list", () => {
+    fetches += 1;
+    return { data: emptyActivityTree() };
+  });
+  await threadsStore.getState().ensureThread("ref_activity_collapsed");
+  const initial = threadsStore.getState().threads.get("ref_activity_collapsed");
+  if (!initial) throw new Error("missing collapsed activity model");
+  const model = { ...initial, jobsUpdatedAt: 1 };
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref={model.ref} />);
+    const body = render(<ActivityPanelBody sessionRef={model.ref} model={model} />);
+    await waitFor(() => expect(fetches).toBe(1));
+    body.unmount();
+
+    ro.fire(300);
+    const bumped = { ...model, jobsUpdatedAt: 2 };
+    act(() => threadsStore.setState({ threads: new Map([[bumped.ref, bumped]]) }));
+    await act(async () => Promise.resolve());
+    expect(fetches).toBe(1);
+
+    ro.fire(1_000);
+    await waitFor(() => expect(fetches).toBe(2));
   } finally {
     ro.restore();
   }

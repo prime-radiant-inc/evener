@@ -6,10 +6,11 @@ import type { ThreadModel } from "../protocol/model";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { ThreadCapabilities } from "../protocol/types.gen";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
+import { PaneScaffold } from "../widgets/panescaffold";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
 import { type PaneDescriptor, type PaneProps, paneFor, registerPane } from "./paneRegistry";
-import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
+import { consumePaneFocus, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // jsdom has no ResizeObserver (dockview-core dials one on mount to drive its
 // auto-resizing - see this task's report for the live probe that found
@@ -70,6 +71,14 @@ function SettingsFixture({ params }: PaneProps<{ section?: string }>) {
   return <div>settings pane: {params.section ?? "none"}</div>;
 }
 
+function FocusFixture({ paneId, focused }: PaneProps<{ ref: string }>) {
+  return (
+    <PaneScaffold title="Delayed details" paneId={paneId} focused={focused} scaffoldMarker="delayed-details">
+      delayed details body
+    </PaneScaffold>
+  );
+}
+
 beforeAll(async () => {
   globalThis.ResizeObserver = StubResizeObserver;
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
@@ -91,6 +100,7 @@ beforeAll(async () => {
   await import("../panes/session/Session");
   await import("../panes/welcome"); // registerPane("welcome") side effect
   await import("../panes/session"); // registerPane("session") side effect
+  await import("../panes/sessionPanels"); // register the three session panel pane types
 
   // Then RENDER the two panes whose Suspense reveal a test would otherwise
   // wait out. Importing a module is only half a React.lazy's cost: lazy keeps
@@ -226,6 +236,70 @@ test("shows a loading placeholder instead of a blank pane while a newly-opened p
   expect(await screen.findByText(/doc pane: ref_slow \(focused=true\)/)).toBeTruthy();
 
   registerPane(originalDoc); // restore the fast fixture for every later test
+});
+
+test("cancels toggle-open focus when a panel deactivates before its lazy pane mounts", async () => {
+  const originalDetails = paneFor("sessionDetails") as PaneDescriptor<{ ref: string }>;
+  let resolveChunk!: () => void;
+  const pendingChunk = new Promise<{ default: typeof FocusFixture }>((resolve) => {
+    resolveChunk = () => resolve({ default: FocusFixture });
+  });
+  registerPane({ ...originalDetails, component: lazy(() => pendingChunk) });
+
+  try {
+    const main = workspaceStore.getState().openPane("doc", { ref: "ref_main" });
+    render(<DockHost />);
+    await screen.findByText(/doc pane: ref_main/);
+
+    const delayed = workspaceStore.getState().togglePane("sessionDetails", { ref: "ref_delayed" }).paneId;
+    expect(await screen.findByText("Loading…")).toBeTruthy();
+    expect(screen.queryByText("delayed details body")).toBeNull();
+
+    workspaceStore.getState().focusPane(main);
+    await vi.waitFor(() => expect(tabIsActive("Doc ref_main")).toBe(true));
+
+    const previousFocus = document.createElement("button");
+    document.body.append(previousFocus);
+    previousFocus.focus();
+    workspaceStore.getState().focusPane(delayed);
+    expect(await screen.findByText("Loading…")).toBeTruthy();
+    await act(async () => {
+      resolveChunk();
+      await pendingChunk;
+    });
+    expect(await screen.findByText("delayed details body")).toBeTruthy();
+
+    expect(document.activeElement).toBe(previousFocus);
+    expect(document.activeElement).not.toBe(document.querySelector('[data-pane-scaffold="delayed-details"]'));
+    previousFocus.remove();
+  } finally {
+    registerPane(originalDetails);
+  }
+});
+
+// A breakpoint crossing unmounts DockHost while the workspace still considers
+// the toggle-opened pane focused. Its pending focus marker must survive the
+// teardown so StackHost's PaneScaffold can consume it once the pane's lazy
+// content finally mounts on the other side of the swap.
+test("a host teardown preserves the still-focused pane's pending focus marker", async () => {
+  const originalDetails = paneFor("sessionDetails") as PaneDescriptor<{ ref: string }>;
+  const pendingChunk = new Promise<{ default: typeof FocusFixture }>(() => {});
+  registerPane({ ...originalDetails, component: lazy(() => pendingChunk) });
+
+  try {
+    workspaceStore.getState().openPane("doc", { ref: "ref_main" });
+    const view = render(<DockHost />);
+    await screen.findByText(/doc pane: ref_main/);
+
+    const delayed = workspaceStore.getState().togglePane("sessionDetails", { ref: "ref_swap" }).paneId;
+    expect(await screen.findByText("Loading…")).toBeTruthy();
+    expect(workspaceStore.getState().focusedPaneId).toBe(delayed);
+
+    view.unmount();
+    expect(consumePaneFocus(delayed)).toBe(true);
+  } finally {
+    registerPane(originalDetails);
+  }
 });
 
 // --- the two-slot layout: one main pane, everything else to its right ----

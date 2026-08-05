@@ -15,8 +15,11 @@
 // "Set goal…" menu item is the only way to OPEN it now that the row itself
 // carries no permanent goal button.
 import { useEffect, useRef, useState } from "react";
+import { useIsMobile } from "../../../shell/useIsMobile";
+import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
+import { useActivitySummaryStore } from "../../../stores/activitySummary";
 import { useThreadsStore } from "../../../stores/threads";
-import { Cadence, type MenuItem } from "../../../widgets";
+import { Button, Cadence, type MenuItem } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
 import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
@@ -26,6 +29,7 @@ import { SessionActionsMenu } from "./SessionActionsMenu";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
 import { TasksPanel, type TasksPanelHandle } from "./TasksPanel";
+import "../../sessionPanels";
 
 export interface SessionChromeProps {
   ref: string;
@@ -70,9 +74,13 @@ const NARROW_CHROME_WIDTH_PX = 640;
 // the node in state instead makes React invoke the callback (and this hook
 // re-render) at the moment the div actually mounts, however many renders
 // that takes.
-function useNarrowerThan(thresholdPx: number): [(el: HTMLDivElement | null) => void, boolean] {
+// `narrow` is null until the observer's FIRST report: before that the width
+// is unknown, not known-wide, and behavior that collapse must suppress (the
+// hidden Activity badge refresh below) has to wait for the measurement
+// rather than assume "not collapsed".
+function useNarrowerThan(thresholdPx: number): [(el: HTMLDivElement | null) => void, boolean | null] {
   const [node, setNode] = useState<HTMLDivElement | null>(null);
-  const [narrow, setNarrow] = useState(false);
+  const [narrow, setNarrow] = useState<boolean | null>(null);
   useEffect(() => {
     if (!node) return;
     if (typeof ResizeObserver === "undefined") return;
@@ -88,6 +96,11 @@ function useNarrowerThan(thresholdPx: number): [(el: HTMLDivElement | null) => v
 
 export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
+  const isMobile = useIsMobile();
+  const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref: sessionRef }));
+  const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
+  const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref: sessionRef }));
+  const activitySummary = useActivitySummaryStore((s) => s.entries.get(sessionRef));
   // The cadence that used to live in the pane header's cadence slot: the
   // header is hidden on mobile (2026-07-30-mobile-session-layout-design.md,
   // decision 3), so the liveness marker relocates here. Rendered always,
@@ -103,20 +116,41 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
   // liveness.ts's own useNowTick doc comment: "transient by design").
   const now = useNowTick(NOW_TICK_MS);
   const [goalDialogOpen, setGoalDialogOpen] = useState(false);
-  const [chromeRef, collapsed] = useNarrowerThan(NARROW_CHROME_WIDTH_PX);
+  const [chromeRef, narrow] = useNarrowerThan(NARROW_CHROME_WIDTH_PX);
+  // Unmeasured (null) renders like not-collapsed - the triggers show until
+  // the first observation lands, avoiding a mount flash - but is NOT treated
+  // as measured-wide where that matters (see refreshWhenHidden below).
+  const collapsed = narrow === true;
   const detailsRef = useRef<DetailsPanelHandle>(null);
   const tasksRef = useRef<TasksPanelHandle>(null);
   const activityRef = useRef<ActivityPanelHandle>(null);
   if (!model) return null;
 
+  const openDetails = () => {
+    if (isMobile) detailsRef.current?.open();
+    else workspaceStore.getState().togglePane("sessionDetails", { ref: sessionRef });
+  };
+  const openTasks = () => {
+    if (isMobile) tasksRef.current?.open();
+    else workspaceStore.getState().togglePane("sessionTasks", { ref: sessionRef });
+  };
+  const openActivity = () => {
+    if (isMobile) activityRef.current?.open();
+    else workspaceStore.getState().togglePane("sessionActivity", { ref: sessionRef });
+  };
+  const activityLabel = activitySummary?.counts?.complete ? `Activity · ${activitySummary.counts.active}` : "Activity";
+  const checkedLabel = (label: string, open: boolean) => (open ? `${label} ✓` : label);
+
   // Details/Tasks/Activity lead the "..." menu's own list when collapsed - see
   // SessionActionsMenu's extraItems doc comment for why that order, not
   // this one, is what actually matters (this array is just the three items).
+  // Collapse is not desktop-only: a phone-width pane collapses too, and its
+  // items open the Sheets (openX branches on isMobile), never workspace panes.
   const overflowItems: MenuItem[] = collapsed
     ? [
-        { id: "details", label: "Details", onSelect: () => detailsRef.current?.open() },
-        { id: "tasks", label: "Tasks", onSelect: () => tasksRef.current?.open() },
-        { id: "activity", label: "Activity", onSelect: () => activityRef.current?.open() },
+        { id: "details", label: checkedLabel("Details", detailsOpen), onSelect: openDetails },
+        { id: "tasks", label: checkedLabel("Tasks", tasksOpen), onSelect: openTasks },
+        { id: "activity", label: checkedLabel("Activity", activityOpen), onSelect: openActivity },
       ]
     : [];
 
@@ -138,9 +172,29 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
         />
       </div>
       <div className={CLASS.right}>
-        <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger={collapsed} />
-        <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger={collapsed} />
-        <ActivityPanel ref={activityRef} sessionRef={sessionRef} model={model} now={now} hideTrigger={collapsed} />
+        <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger={!isMobile || collapsed} />
+        <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger={!isMobile || collapsed} />
+        <ActivityPanel
+          ref={activityRef}
+          sessionRef={sessionRef}
+          model={model}
+          now={now}
+          hideTrigger={!isMobile || collapsed}
+          refreshWhenHidden={!isMobile && narrow === false}
+        />
+        {!isMobile && !collapsed && (
+          <>
+            <Button variant="quiet" size="sm" onClick={openDetails} aria-pressed={detailsOpen} data-details-trigger="">
+              Details
+            </Button>
+            <Button variant="quiet" size="sm" onClick={openTasks} aria-pressed={tasksOpen} data-tasks-trigger="">
+              {model.tasks ? `Tasks ${model.tasks.done}/${model.tasks.total}` : "Tasks"}
+            </Button>
+            <Button variant="quiet" size="sm" onClick={openActivity} aria-pressed={activityOpen}>
+              {activityLabel}
+            </Button>
+          </>
+        )}
         <SessionActionsMenu
           sessionRef={sessionRef}
           model={model}

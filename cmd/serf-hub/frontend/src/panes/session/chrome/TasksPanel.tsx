@@ -68,9 +68,10 @@
 // neither a live daemon nor a past-index record exists for the thread, so
 // nothing - not Try again, not closing and re-opening, not reloading the
 // whole app - can make the next attempt succeed.
-import { forwardRef, type ReactNode, useEffect, useImperativeHandle, useState } from "react";
+import { forwardRef, type ReactNode, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { errorText, sessionActionError, sessionActionHeadline } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
+import { EMPTY_TASKS_PANEL_ENTRY, tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
 import { threadsStore } from "../../../stores/threads";
 import { Button, Chip, type ChipTone, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { Disclosure } from "../../../widgets/disclosure";
@@ -287,29 +288,32 @@ function TaskRowView({ task, sessionRef }: { task: TaskRow; sessionRef: string }
   );
 }
 
-export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function TasksPanel(
-  { sessionRef, model, hideTrigger = false },
-  ref,
-) {
+export interface TasksPanelBodyProps {
+  sessionRef: string;
+  model: ThreadModel;
+}
+
+/** Shared task-list body used by both the mobile Sheet and desktop pane. */
+export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
   const toasts = useToasts();
-  const [open, setOpen] = useState(false);
-  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
-  const [rows, setRows] = useState<TaskRow[] | null>(null);
-  const [unsupported, setUnsupported] = useState(false);
-  const [error, setError] = useState<LoadFailure | null>(null);
-  // Set instead of setRows([]) when isThreadNotFound fires with model.tasks
-  // already non-null - see isThreadNotFound's own comment for why this is
-  // terminal rather than a blip. rows is left exactly as it was (whatever
-  // the last successful fetch put there, including nothing at all), so this
-  // can never wipe a retained list the way setRows([]) would.
-  const [daemonGone, setDaemonGone] = useState(false);
+  const entry = useTasksPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_TASKS_PANEL_ENTRY;
+  const mountedRef = useRef(true);
+  const currentSessionRef = useRef(sessionRef);
+  currentSessionRef.current = sessionRef;
+
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
   // Bumped by Try again. The only fetch trigger a reader controls: the other
   // two are opening the panel and a push arriving, and neither is available
   // to someone looking at a failed fetch in an open panel on a quiet session.
   const [reloads, setReloads] = useState(0);
 
-  // Re-fetches on every open, on every Try again, and again whenever
-  // model.tasks changes while still open (a live serf/task/updated push while
+  // Fetches on mount, on every Try again, and again whenever model.tasks
+  // changes while the body is mounted (a live serf/task/updated push while
   // the user is looking) - see this file's own header comment. `toasts` is
   // deliberately not a dependency: useToasts() returns a fresh wrapper object
   // every render (see widgets/toast/index.tsx), so depending on it would
@@ -317,41 +321,35 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
   // stable, module-level function underneath.
   // biome-ignore lint/correctness/useExhaustiveDependencies: toasts is a fresh wrapper object every render (see above) - toasts.push itself is stable
   useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    setError(null);
-    setUnsupported(false);
-    setDaemonGone(false);
+    const fetchID = tasksPanelStore.getState().beginFetch(sessionRef);
     threadsStore
       .getState()
       .listTasks(sessionRef)
       .then((data) => {
-        if (cancelled) return;
         const parsed = parseTaskListData(data);
-        if (parsed === null) {
-          setUnsupported(true);
-          setRows(null);
-        } else {
-          setRows(parsed);
-        }
+        tasksPanelStore
+          .getState()
+          .publishFetch(
+            sessionRef,
+            fetchID,
+            parsed === null ? { kind: "unsupported" } : { kind: "rows", rows: parsed },
+          );
       })
       .catch((err) => {
-        if (cancelled) return;
         if (isActionUnavailable(err)) {
-          setUnsupported(true);
-          setRows(null);
+          tasksPanelStore.getState().publishFetch(sessionRef, fetchID, { kind: "unsupported" });
           return;
         }
         if (isThreadNotFound(err)) {
           if (model.tasks === null) {
             // Never had a live aggregate pushed - genuinely "no tasks", not
             // merely "can't ask any more" (see the header comment above).
-            setRows([]);
+            tasksPanelStore.getState().publishFetch(sessionRef, fetchID, { kind: "empty" });
           } else {
             // The trigger is already on screen claiming tasks exist; rows
             // is left untouched so a retained list survives this rejection
             // instead of being replaced by "No tasks yet".
-            setDaemonGone(true);
+            tasksPanelStore.getState().publishFetch(sessionRef, fetchID, { kind: "daemon-gone" });
           }
           return;
         }
@@ -360,24 +358,17 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
         // Only a panel that has never had a list renders the error state on
         // its own, and that is exactly the `rows === null` case below.
         const failure = loadFailure(err);
-        setError(failure);
-        toasts.push("error", failure.sentence);
+        const accepted = tasksPanelStore.getState().publishFetch(sessionRef, fetchID, { kind: "failure", failure });
+        // A rejected (obsolete) failure must not toast either: a newer fetch
+        // already superseded this one, possibly with rows now on screen.
+        if (accepted && mountedRef.current && currentSessionRef.current === sessionRef) {
+          toasts.push("error", failure.sentence);
+        }
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, model.tasks, sessionRef, reloads]);
+  }, [model.tasks, sessionRef, reloads]);
 
   function reload() {
     setReloads((n) => n + 1);
-  }
-
-  function openPanel() {
-    setOpen(true);
-  }
-
-  function closePanel() {
-    setOpen(false);
   }
 
   const retry = (
@@ -387,6 +378,7 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
   );
 
   function renderBody() {
+    const { rows, unsupported, daemonGone, failure: error } = entry;
     if (unsupported) {
       // No Try again here: the source cannot answer this call at all, so
       // asking again would only fail again.
@@ -444,6 +436,16 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
     );
   }
 
+  return renderBody();
+}
+
+export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function TasksPanel(
+  { sessionRef, model, hideTrigger = false },
+  ref,
+) {
+  const [open, setOpen] = useState(false);
+  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
+
   return (
     <>
       {/* data-tasks-trigger lets the command palette's "Toggle tasks panel"
@@ -453,12 +455,12 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
           hideTrigger comment for why /tasks going quiet while collapsed is
           the accepted trade-off here (kata vybn's report). */}
       {!hideTrigger && (
-        <Button variant="quiet" size="sm" onClick={openPanel} data-tasks-trigger="">
+        <Button variant="quiet" size="sm" onClick={() => setOpen(true)} data-tasks-trigger="">
           {triggerLabel(model.tasks)}
         </Button>
       )}
-      <Sheet open={open} onClose={closePanel} title="Tasks">
-        {renderBody()}
+      <Sheet open={open} onClose={() => setOpen(false)} title="Tasks">
+        {open ? <TasksPanelBody sessionRef={sessionRef} model={model} /> : null}
       </Sheet>
     </>
   );

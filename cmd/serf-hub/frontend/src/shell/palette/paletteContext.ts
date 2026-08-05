@@ -28,6 +28,9 @@ function refFromParams(params: unknown): string | null {
 function onPageForType(type: string): OnPage {
   switch (type) {
     case "session":
+    case "sessionTasks":
+    case "sessionActivity":
+    case "sessionDetails":
       return "session";
     case "spawn":
       return "spawn";
@@ -47,9 +50,16 @@ export function buildPaletteContext(): PaletteContext {
   const ws = workspaceStore.getState();
   const focused = ws.panes.find((p) => p.id === ws.focusedPaneId);
   if (!focused) return { sessionRef: null, onPage: "other" };
+  const sessionRef =
+    focused.type === "session" ||
+    focused.type === "sessionTasks" ||
+    focused.type === "sessionActivity" ||
+    focused.type === "sessionDetails"
+      ? refFromParams(focused.params)
+      : null;
   return {
     onPage: onPageForType(focused.type),
-    sessionRef: focused.type === "session" ? refFromParams(focused.params) : null,
+    sessionRef,
   };
 }
 

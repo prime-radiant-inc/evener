@@ -5,79 +5,45 @@ import {
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
-  useReducer,
   useRef,
   useState,
 } from "react";
-import { errorText, sessionActionError, sessionActionHeadline } from "../../../protocol/errors";
+import { errorText } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { useIsMobile } from "../../../shell/useIsMobile";
-import { threadsStore } from "../../../stores/threads";
+import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
+import {
+  activitySummaryStore,
+  EMPTY_ACTIVITY_SUMMARY_ENTRY,
+  useActivitySummaryStore,
+} from "../../../stores/activitySummary";
+import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ActivityInspector } from "./ActivityInspector";
 import { ActivityTree, type ActivityTreeHandle, findActivitySelection } from "./ActivityTree";
-import {
-  type ActivityDelegate,
-  type ActivityDisclosureState,
-  type ActivityEntry,
-  type ActivitySessionNode,
-  type ActivityTree as ActivityTreeData,
-  activityNodeID,
-  defaultExpandedIDs,
-  parseActivityTree,
-  reconcileActivityState,
-} from "./activityData";
+import { type ActivityCounts, type ActivityTree as ActivityTreeData, parseActivityTree } from "./activityData";
 import styles from "./activitypanel.module.css";
-import { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 
 export interface ActivityPanelProps {
   sessionRef: string;
   model: ThreadModel;
   now: number;
   hideTrigger?: boolean;
+  // SessionChrome's desktop replacement button hides this panel's own
+  // trigger, but still needs the trigger-owned background summary refresh.
+  // The store's loading/bump gate keeps this second owner duplicate-free.
+  refreshWhenHidden?: boolean;
+}
+
+export interface ActivityPanelBodyProps {
+  sessionRef: string;
+  model: ThreadModel;
 }
 
 export interface ActivityPanelHandle {
   open: () => void;
 }
-
-interface LoadFailure {
-  headline: string;
-  detail?: string;
-  sentence: string;
-}
-
-type ActivityLoadState =
-  | { kind: "idle" }
-  | { kind: "loading" }
-  | { kind: "ready"; tree: ActivityTreeData; staleError?: LoadFailure }
-  | { kind: "unsupported" }
-  | { kind: "failed"; error: LoadFailure }
-  | { kind: "ended"; tree?: ActivityTreeData };
-
-interface PanelState {
-  load: ActivityLoadState;
-  disclosure: ActivityDisclosureState;
-  established: boolean;
-  continuationLoadingID?: string;
-  continuationFailures: Record<string, string | undefined>;
-}
-
-type PanelAction =
-  | { type: "reset" }
-  | { type: "fetch/start"; keepTree: boolean }
-  | { type: "fetch/ready"; tree: ActivityTreeData; disclosure: ActivityDisclosureState }
-  | { type: "fetch/unsupported" }
-  | { type: "fetch/failed"; error: LoadFailure }
-  | { type: "fetch/ended" }
-  | { type: "continuation/start"; nodeID: string }
-  | { type: "continuation/ready"; tree: ActivityTreeData; disclosure: ActivityDisclosureState }
-  | { type: "continuation/failed"; nodeID: string; message: string }
-  | { type: "disclosure/expanded"; expandedIDs: string[] }
-  | { type: "disclosure/selected"; selectedID?: string };
-
-const LOAD_FAILURE = "Couldn't load activity";
 
 const CLASS = {
   state: requireClass(styles.state, "activitypanel.module.css", "state"),
@@ -90,13 +56,6 @@ const CLASS = {
   mobileBack: requireClass(styles.mobileBack, "activitypanel.module.css", "mobileBack"),
 };
 
-const INITIAL_STATE: PanelState = {
-  load: { kind: "idle" },
-  disclosure: { expandedIDs: [], selectedID: undefined, selectionPruned: false },
-  established: false,
-  continuationFailures: {},
-};
-
 function continuationFailureMessage(err?: unknown): string {
   const detail = err ? errorText(err).trim() : "";
   return detail
@@ -104,253 +63,60 @@ function continuationFailureMessage(err?: unknown): string {
     : "Couldn't load more retained activity for this branch.";
 }
 
-function loadFailure(err: unknown): LoadFailure {
-  const headline = sessionActionHeadline(LOAD_FAILURE, err);
-  const sentence = sessionActionError(LOAD_FAILURE, err);
-  const detail = errorText(err).trim();
-  return detail ? { headline, detail, sentence } : { headline, sentence };
-}
-
-function retainedTree(load: ActivityLoadState): ActivityTreeData | undefined {
+function retainedTree(load: (typeof EMPTY_ACTIVITY_PANEL_ENTRY)["load"]): ActivityTreeData | undefined {
   if (load.kind === "ready") return load.tree;
   if (load.kind === "ended") return load.tree;
   return undefined;
 }
 
-function triggerLabel(tree: ActivityTreeData | undefined): string {
-  if (!tree?.root.counts.complete) return "Activity";
-  return `Activity · ${tree.root.counts.active}`;
+function triggerLabel(counts: ActivityCounts | undefined): string {
+  if (!counts?.complete) return "Activity";
+  return `Activity · ${counts.active}`;
 }
 
-function initialDisclosure(tree: ActivityTreeData): ActivityDisclosureState {
-  return {
-    expandedIDs: defaultExpandedIDs(tree),
-    selectedID: undefined,
-    selectionPruned: false,
-    tree,
-  };
+function refreshRoot(
+  sessionRef: string,
+  bump: number | null,
+  onFailure?: (sentence: string) => void,
+  force = false,
+): number | null {
+  return activitySummaryStore
+    .getState()
+    .refreshRoot(sessionRef, bump, (ref) => threadsStore.getState().listJobs(ref), onFailure, force);
 }
 
-function cloneEntry(entry: ActivityEntry): ActivityEntry {
-  return entry.kind === "shell"
-    ? { kind: "shell", job: { ...entry.job } }
-    : { kind: "delegate", delegate: cloneDelegate(entry.delegate) };
-}
-
-function cloneSession(session: ActivitySessionNode): ActivitySessionNode {
-  return {
-    ...session,
-    counts: { ...session.counts },
-    branch: { ...session.branch },
-    entries: session.entries.map(cloneEntry),
-  };
-}
-
-function cloneDelegate(delegate: ActivityDelegate): ActivityDelegate {
-  return {
-    ...delegate,
-    turns: delegate.turns.map((turn) => ({ ...turn })),
-    branch: { ...delegate.branch },
-    child: delegate.child ? cloneSession(delegate.child) : undefined,
-  };
-}
-
-function mergeDelegate(current: ActivityDelegate, patch: ActivityDelegate, targetID: string): ActivityDelegate {
-  const delegateID = activityNodeID({ kind: "delegate", delegateId: current.delegateId });
-  if (delegateID === targetID) return cloneDelegate(patch);
-  return {
-    ...current,
-    childSessionId: patch.childSessionId,
-    childRef: patch.childRef,
-    mandate: patch.mandate,
-    turns: patch.turns.map((turn) => ({ ...turn })),
-    branch: { ...patch.branch },
-    child:
-      current.child && patch.child && current.child.sessionId === patch.child.sessionId
-        ? mergeSession(current.child, patch.child, targetID)
-        : patch.child
-          ? cloneSession(patch.child)
-          : current.child
-            ? cloneSession(current.child)
-            : undefined,
-  };
-}
-
-function mergeSession(current: ActivitySessionNode, patch: ActivitySessionNode, targetID: string): ActivitySessionNode {
-  if (activityNodeID(current) === targetID) return cloneSession(patch);
-  const patchByID = new Map<string, ActivityEntry>();
-  for (const entry of patch.entries) {
-    patchByID.set(entry.kind === "shell" ? activityNodeID(entry) : activityNodeID(entry), entry);
-  }
-  const mergedEntries = current.entries.map((entry) => {
-    const id = entry.kind === "shell" ? activityNodeID(entry) : activityNodeID(entry);
-    const patchEntry = patchByID.get(id);
-    if (!patchEntry) return cloneEntry(entry);
-    if (entry.kind === "delegate" && patchEntry.kind === "delegate") {
-      return { kind: "delegate", delegate: mergeDelegate(entry.delegate, patchEntry.delegate, targetID) };
-    }
-    return cloneEntry(patchEntry);
-  }) as ActivityEntry[];
-  for (const patchEntry of patch.entries) {
-    const id = patchEntry.kind === "shell" ? activityNodeID(patchEntry) : activityNodeID(patchEntry);
-    if (
-      !current.entries.some((entry) => (entry.kind === "shell" ? activityNodeID(entry) : activityNodeID(entry)) === id)
-    ) {
-      mergedEntries.push(cloneEntry(patchEntry));
-    }
-  }
-  return {
-    ...current,
-    ref: patch.ref,
-    label: patch.label,
-    aggregate: patch.aggregate,
-    counts: { ...patch.counts },
-    branch: { ...patch.branch },
-    entries: mergedEntries,
-  };
-}
-
-function graftContinuationTree(current: ActivityTreeData, targetID: string, patch: ActivityTreeData): ActivityTreeData {
-  return {
-    revision: Math.max(current.revision, patch.revision),
-    root: mergeSession(current.root, patch.root, targetID),
-  };
-}
-
-function reducer(state: PanelState, action: PanelAction): PanelState {
-  switch (action.type) {
-    case "reset":
-      return INITIAL_STATE;
-    case "fetch/start": {
-      const tree = retainedTree(state.load);
-      if (action.keepTree && tree) {
-        return {
-          ...state,
-          load: { kind: "ready", tree },
-          continuationLoadingID: undefined,
-          continuationFailures: state.continuationFailures,
-        };
-      }
-      return {
-        ...state,
-        load: { kind: "loading" },
-        continuationLoadingID: undefined,
-        continuationFailures: state.continuationFailures,
-      };
-    }
-    case "fetch/ready":
-      return {
-        load: { kind: "ready", tree: action.tree },
-        disclosure: { ...action.disclosure, tree: action.tree },
-        established: true,
-        continuationLoadingID: undefined,
-        continuationFailures: state.continuationFailures,
-      };
-    case "fetch/unsupported":
-      return { ...state, load: { kind: "unsupported" }, continuationLoadingID: undefined, continuationFailures: {} };
-    case "fetch/failed": {
-      const tree = retainedTree(state.load);
-      if (tree) {
-        return {
-          ...state,
-          load: { kind: "ready", tree, staleError: action.error },
-          continuationLoadingID: undefined,
-          continuationFailures: state.continuationFailures,
-        };
-      }
-      return {
-        ...state,
-        load: { kind: "failed", error: action.error },
-        continuationLoadingID: undefined,
-        continuationFailures: {},
-      };
-    }
-    case "fetch/ended": {
-      const tree = retainedTree(state.load);
-      return {
-        ...state,
-        load: { kind: "ended", tree },
-        continuationLoadingID: undefined,
-        continuationFailures: state.continuationFailures,
-      };
-    }
-    case "continuation/start": {
-      const continuationFailures = { ...state.continuationFailures };
-      delete continuationFailures[action.nodeID];
-      return { ...state, continuationLoadingID: action.nodeID, continuationFailures };
-    }
-    case "continuation/ready": {
-      const continuationFailures = { ...state.continuationFailures };
-      delete continuationFailures[state.continuationLoadingID ?? ""];
-      return {
-        ...state,
-        load: { kind: "ready", tree: action.tree },
-        disclosure: { ...action.disclosure, tree: action.tree },
-        continuationLoadingID: undefined,
-        continuationFailures,
-      };
-    }
-    case "continuation/failed": {
-      const continuationFailures = { ...state.continuationFailures, [action.nodeID]: action.message };
-      return { ...state, continuationLoadingID: undefined, continuationFailures };
-    }
-    case "disclosure/expanded":
-      return {
-        ...state,
-        disclosure: { ...state.disclosure, expandedIDs: action.expandedIDs, selectionPruned: false },
-      };
-    case "disclosure/selected":
-      return {
-        ...state,
-        disclosure: { ...state.disclosure, selectedID: action.selectedID, selectionPruned: false },
-      };
-    default:
-      return state;
-  }
-}
-
-export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>(function ActivityPanel(
-  { sessionRef, model, now: _now, hideTrigger = false },
-  ref,
-) {
+/** Shared activity reader body used by the mobile Sheet and desktop pane. */
+export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps) {
   const toasts = useToasts();
   const isMobile = useIsMobile();
   const treeRef = useRef<ActivityTreeHandle>(null);
-  const stateRef = useRef<PanelState>(INITIAL_STATE);
-  const requestIDRef = useRef(0);
-  const fetchedBumpRef = useRef<number | null | undefined>(undefined);
-  const mountedRef = useRef(true);
-  const openRef = useRef(false);
+  const mountedRef = useRef(false);
+  const bodyGenerationRef = useRef(0);
   const focusRestoreIDRef = useRef<string | null>(null);
-  const [open, setOpen] = useState(false);
+  const currentSessionRef = useRef(sessionRef);
   const [showMobileTree, setShowMobileTree] = useState(true);
-  const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
+  const entry = useActivityPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_PANEL_ENTRY;
+  const summary = useActivitySummaryStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_SUMMARY_ENTRY;
+  // Bumped on every full-snapshot publish (reconnect, targeted resync). It is
+  // the freshness effect's only way to notice a wholesale model replacement
+  // whose jobsUpdatedAt is null on both sides - see threads.ts's own comment.
+  const hydrationGeneration = useThreadsStore((state) => state.hydrations.get(sessionRef) ?? 0);
+  currentSessionRef.current = sessionRef;
 
-  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
-
+  // biome-ignore lint/correctness/useExhaustiveDependencies: this effect resets transient mobile navigation when the ref changes
   useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
-
-  useEffect(() => {
-    openRef.current = open;
-  }, [open]);
-
-  useEffect(
-    () => () => {
-      mountedRef.current = false;
-      requestIDRef.current += 1;
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (sessionRef === "") return;
-    requestIDRef.current += 1;
-    fetchedBumpRef.current = undefined;
-    dispatch({ type: "reset" });
-    setOpen(false);
     setShowMobileTree(true);
+  }, [sessionRef]);
+
+  useEffect(() => {
+    const bodyGeneration = bodyGenerationRef.current + 1;
+    bodyGenerationRef.current = bodyGeneration;
+    mountedRef.current = true;
+    activitySummaryStore.getState().mountBody(sessionRef);
+    return () => {
+      mountedRef.current = false;
+      activitySummaryStore.getState().unmountBody(sessionRef);
+    };
   }, [sessionRef]);
 
   useLayoutEffect(() => {
@@ -361,138 +127,126 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
     treeRef.current?.focusRow(id);
   }, [showMobileTree]);
 
-  const tree = retainedTree(state.load);
+  const tree = retainedTree(entry.load);
   const selection = useMemo(
-    () => findActivitySelection(tree, state.disclosure.selectedID),
-    [tree, state.disclosure.selectedID],
+    () => findActivitySelection(tree, entry.disclosure.selectedID),
+    [tree, entry.disclosure.selectedID],
   );
 
   const fetchRoot = useCallback(
-    (continuation?: { nodeID: string; token: string }) => {
-      const requestID = requestIDRef.current + 1;
-      requestIDRef.current = requestID;
-      const currentState = stateRef.current;
-      const previousTree = retainedTree(currentState.load);
+    (continuation?: { nodeID: string; token: string }, forceRoot = false) => {
       if (!continuation) {
-        fetchedBumpRef.current = model.jobsUpdatedAt;
-        dispatch({ type: "fetch/start", keepTree: previousTree !== undefined });
-      } else {
-        dispatch({ type: "continuation/start", nodeID: continuation.nodeID });
+        const bodyGeneration = bodyGenerationRef.current;
+        refreshRoot(
+          sessionRef,
+          model.jobsUpdatedAt,
+          (sentence) => {
+            if (
+              mountedRef.current &&
+              currentSessionRef.current === sessionRef &&
+              bodyGenerationRef.current === bodyGeneration
+            ) {
+              toasts.push("error", sentence);
+            }
+          },
+          forceRoot,
+        );
+        return;
       }
+      const requestID = activityPanelStore.getState().beginFetch(sessionRef, { nodeID: continuation.nodeID });
       void threadsStore
         .getState()
-        .listJobs(sessionRef, continuation?.token)
+        .listJobs(sessionRef, continuation.token)
         .then((data) => {
-          if (!mountedRef.current || requestID !== requestIDRef.current) return;
           const parsed = parseActivityTree(data);
           if (parsed === null) {
-            if (continuation) {
-              dispatch({
-                type: "continuation/failed",
-                nodeID: continuation.nodeID,
-                message: continuationFailureMessage(),
-              });
-              return;
-            }
-            dispatch({ type: "fetch/unsupported" });
-            return;
-          }
-          if (continuation && previousTree) {
-            const grafted = graftContinuationTree(previousTree, continuation.nodeID, parsed);
-            const disclosure = reconcileActivityState({ ...currentState.disclosure, tree: previousTree }, grafted);
-            dispatch({ type: "continuation/ready", tree: grafted, disclosure });
-            return;
-          }
-          const disclosure = previousTree
-            ? reconcileActivityState({ ...currentState.disclosure, tree: previousTree }, parsed)
-            : initialDisclosure(parsed);
-          dispatch({ type: "fetch/ready", tree: parsed, disclosure });
-        })
-        .catch((err) => {
-          if (!mountedRef.current || requestID !== requestIDRef.current) return;
-          if (continuation) {
-            dispatch({
-              type: "continuation/failed",
+            activityPanelStore.getState().publishFetch(sessionRef, requestID, {
+              kind: "continuation-failed",
               nodeID: continuation.nodeID,
-              message: continuationFailureMessage(err),
+              message: continuationFailureMessage(),
             });
             return;
           }
-          if (isActionUnavailable(err)) {
-            dispatch({ type: "fetch/unsupported" });
-            return;
-          }
-          if (isThreadNotFound(err)) {
-            dispatch({ type: "fetch/ended" });
-            return;
-          }
-          const failure = loadFailure(err);
-          dispatch({ type: "fetch/failed", error: failure });
-          if (openRef.current) toasts.push("error", failure.sentence);
+          activityPanelStore.getState().publishFetch(sessionRef, requestID, { kind: "ready", tree: parsed });
+        })
+        .catch((err) => {
+          activityPanelStore.getState().publishFetch(sessionRef, requestID, {
+            kind: "continuation-failed",
+            nodeID: continuation.nodeID,
+            message: continuationFailureMessage(err),
+          });
         });
     },
     [model.jobsUpdatedAt, sessionRef, toasts],
   );
 
+  // The mount fetch preserves the old visible-fetch contract exactly: a
+  // changed jobs bump is fresh, while idle/failed/unsupported/ended retained
+  // states are retried even when the bump has not changed. Store completions
+  // stay live after this body unmounts, so this effect intentionally does not
+  // depend on completion state and cannot loop after a failed request.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the gate is sampled on mount and jobsUpdatedAt pushes; store completion changes must not turn a retained failure into a retry loop
   useEffect(() => {
-    if (open) {
-      const needsVisibleFetch =
-        state.load.kind === "idle" ||
-        state.load.kind === "unsupported" ||
-        state.load.kind === "failed" ||
-        state.load.kind === "ended" ||
-        fetchedBumpRef.current !== model.jobsUpdatedAt;
-      if (needsVisibleFetch) fetchRoot();
-      return;
+    const bumpMismatch = summary.lastFetchedBump !== model.jobsUpdatedAt;
+    const retainedNonReady =
+      entry.load.kind === "idle" ||
+      entry.load.kind === "failed" ||
+      entry.load.kind === "unsupported" ||
+      entry.load.kind === "ended";
+    // A null bump can't prove retained data is current: jobsUpdatedAt only
+    // ever comes from live pushes and re-hydrates to null after a thread-model
+    // eviction, so bumps seen while nothing held the model are gone. Force the
+    // fetch past the store's established/bump dedupe in that case.
+    const unprovenFreshness = model.jobsUpdatedAt === null;
+    if (bumpMismatch || retainedNonReady || unprovenFreshness) {
+      fetchRoot(undefined, retainedNonReady || unprovenFreshness);
     }
-    if (hideTrigger) return;
-    if (fetchedBumpRef.current === undefined) return;
-    if (fetchedBumpRef.current === model.jobsUpdatedAt) return;
-    fetchRoot();
-  }, [fetchRoot, hideTrigger, model.jobsUpdatedAt, open, state.load.kind]);
+    // hydrationGeneration is a dependency precisely so a mounted body re-runs
+    // this check after a wholesale rehydration that changed nothing visible.
+  }, [fetchRoot, hydrationGeneration, model.jobsUpdatedAt, sessionRef]);
 
   useEffect(() => {
     if (!isMobile) setShowMobileTree(true);
   }, [isMobile]);
 
   useEffect(() => {
-    if (isMobile && state.disclosure.selectedID) setShowMobileTree(false);
-  }, [isMobile, state.disclosure.selectedID]);
+    if (isMobile && entry.disclosure.selectedID) setShowMobileTree(false);
+  }, [entry.disclosure.selectedID, isMobile]);
 
   function handleContinue(nodeID: string, token: string) {
     fetchRoot({ nodeID, token });
   }
 
   function handleBackToActivity() {
-    focusRestoreIDRef.current = state.disclosure.selectedID ?? null;
+    focusRestoreIDRef.current = entry.disclosure.selectedID ?? null;
     setShowMobileTree(true);
   }
 
   function renderBody() {
-    if (state.load.kind === "unsupported") {
+    if (entry.load.kind === "unsupported") {
       return (
         <EmptyState title="Activity isn't available" hint="This session's source doesn't support retained activity." />
       );
     }
-    if (state.load.kind === "failed") {
+    if (entry.load.kind === "failed") {
       return (
         <EmptyState
-          title={state.load.error.headline}
-          hint={state.load.error.detail}
+          title={entry.load.error.headline}
+          hint={entry.load.error.detail}
           action={
-            <Button variant="quiet" size="sm" onClick={() => fetchRoot()}>
+            <Button variant="quiet" size="sm" onClick={() => fetchRoot(undefined, true)}>
               Try again
             </Button>
           }
         />
       );
     }
-    if (state.load.kind === "idle" || state.load.kind === "loading") {
+    if (entry.load.kind === "idle" || entry.load.kind === "loading") {
       return <p className={CLASS.state}>Loading activity…</p>;
     }
-    const currentTree = retainedTree(state.load);
-    const staleError = state.load.kind === "ready" ? state.load.staleError : undefined;
-    const ended = state.load.kind === "ended";
+    const currentTree = retainedTree(entry.load);
+    const staleError = entry.load.kind === "ready" ? entry.load.staleError : undefined;
+    const ended = entry.load.kind === "ended";
     return (
       <div className={CLASS.panel}>
         {ended && !currentTree && (
@@ -515,7 +269,7 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
               {staleError.sentence}
             </p>
             <p className={CLASS.staleMessage}>Showing the last activity that loaded.</p>
-            <Button variant="quiet" size="sm" onClick={() => fetchRoot()}>
+            <Button variant="quiet" size="sm" onClick={() => fetchRoot(undefined, true)}>
               Try again
             </Button>
           </div>
@@ -536,7 +290,7 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
               <div className={CLASS.panelColumn}>
                 <ActivityInspector
                   selection={selection}
-                  removedSelectionNotice={state.disclosure.selectionPruned}
+                  removedSelectionNotice={entry.disclosure.selectionPruned}
                   sessionRef={sessionRef}
                 />
               </div>
@@ -547,20 +301,20 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
                 <ActivityTree
                   ref={treeRef}
                   tree={currentTree}
-                  expandedIDs={state.disclosure.expandedIDs}
-                  selectedID={state.disclosure.selectedID}
-                  continuationFailures={state.continuationFailures}
-                  onExpandedChange={(expandedIDs) => dispatch({ type: "disclosure/expanded", expandedIDs })}
-                  onSelect={(selectedID) => dispatch({ type: "disclosure/selected", selectedID })}
+                  expandedIDs={entry.disclosure.expandedIDs}
+                  selectedID={entry.disclosure.selectedID}
+                  continuationFailures={entry.continuationFailures}
+                  onExpandedChange={(expandedIDs) => activityPanelStore.getState().setExpanded(sessionRef, expandedIDs)}
+                  onSelect={(selectedID) => activityPanelStore.getState().setSelected(sessionRef, selectedID)}
                   onContinue={handleContinue}
-                  loadingContinuationID={state.continuationLoadingID}
+                  loadingContinuationID={entry.continuationLoadingID}
                 />
               </div>
               {!isMobile && (
                 <div className={CLASS.panelColumn}>
                   <ActivityInspector
                     selection={selection}
-                    removedSelectionNotice={state.disclosure.selectionPruned}
+                    removedSelectionNotice={entry.disclosure.selectionPruned}
                     sessionRef={sessionRef}
                   />
                 </div>
@@ -572,15 +326,70 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
     );
   }
 
+  return renderBody();
+}
+
+export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>(function ActivityPanel(
+  { sessionRef, model, now: _now, hideTrigger = false, refreshWhenHidden = false },
+  ref,
+) {
+  const [open, setOpen] = useState(false);
+  const summary = useActivitySummaryStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_SUMMARY_ENTRY;
+  // Same rehydration signal the body watches (see ActivityPanelBody): while
+  // the trigger owns background refresh, a wholesale model replacement with a
+  // null bump on both sides changes no other dependency of the effect below.
+  const hydrationGeneration = useThreadsStore((state) => state.hydrations.get(sessionRef) ?? 0);
+  // The generation this owner last considered handled. Initialized to the
+  // current value so mounting never manufactures a refresh by itself.
+  const handledGenerationRef = useRef(hydrationGeneration);
+
+  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: this effect resets the Sheet's transient open state when the ref changes
+  useEffect(() => {
+    setOpen(false);
+  }, [sessionRef]);
+
+  // A closed Sheet has no mounted body, so its trigger owns the established
+  // background refresh. The desktop chrome keeps this owner mounted behind
+  // its replacement trigger, but refreshWhenHidden is false while that
+  // trigger row is collapsed. The root result also reconciles the panel store.
+  useEffect(() => {
+    if (open || summary.mountedBodies > 0) {
+      // A mounted body owns freshness (including the rehydration check), so
+      // any generation seen while it owns is handled by it, not queued here.
+      handledGenerationRef.current = hydrationGeneration;
+      return;
+    }
+    if (hideTrigger && !refreshWhenHidden) return;
+    if (!summary.established) return;
+    const generationChanged = hydrationGeneration !== handledGenerationRef.current;
+    if (!generationChanged && summary.lastFetchedBump === model.jobsUpdatedAt) return;
+    handledGenerationRef.current = hydrationGeneration;
+    // force pushes past the store's established/bump dedupe for the
+    // null-to-null rehydration case the bump comparison cannot see.
+    refreshRoot(sessionRef, model.jobsUpdatedAt, undefined, generationChanged);
+  }, [
+    hideTrigger,
+    hydrationGeneration,
+    model.jobsUpdatedAt,
+    open,
+    refreshWhenHidden,
+    sessionRef,
+    summary.established,
+    summary.lastFetchedBump,
+    summary.mountedBodies,
+  ]);
+
   return (
     <>
       {!hideTrigger && (
         <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
-          {triggerLabel(tree)}
+          {triggerLabel(summary.counts)}
         </Button>
       )}
       <Sheet open={open} onClose={() => setOpen(false)} title="Activity" size="wide">
-        {renderBody()}
+        {open ? <ActivityPanelBody sessionRef={sessionRef} model={model} /> : null}
       </Sheet>
     </>
   );

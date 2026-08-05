@@ -10,7 +10,7 @@ import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { STATUS_TONE, TasksPanel } from "./TasksPanel";
+import { STATUS_TONE, TasksPanel, TasksPanelBody } from "./TasksPanel";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -376,6 +376,44 @@ test("a generic fetch failure surfaces an error toast AND an inline error state"
   // the inline one separately from the toast region so this doesn't just
   // pass because the toast's own text happened to match.
   expect(screen.getAllByText(/couldn.t load tasks/i).length).toBeGreaterThanOrEqual(2);
+});
+
+// The store already rejects an obsolete completion (fetchID mismatch), so the
+// stale request's failure must not toast either: an A-then-B overlap where the
+// OLDER request fails after the newer one succeeded would otherwise show a
+// failure banner over a list that is on screen and current.
+test("a stale overlapping failure does not toast after a newer fetch succeeded", async () => {
+  const fake = connectFakeClient();
+  const calls: Array<{ resolve: (value: { data: unknown }) => void; reject: (err: unknown) => void }> = [];
+  fake.on(
+    "serf/tasks/list",
+    () =>
+      new Promise<{ data: unknown }>((resolve, reject) => {
+        calls.push({ resolve, reject });
+      }),
+  );
+
+  const { rerender } = render(
+    <>
+      <TasksPanelBody sessionRef="ref_stale" model={testModel({ ref: "ref_stale" })} />
+      <Toast />
+    </>,
+  );
+  // A tasks push refires the fetch effect, starting a second overlapping fetch.
+  rerender(
+    <>
+      <TasksPanelBody sessionRef="ref_stale" model={testModel({ ref: "ref_stale", tasks: { total: 3, done: 1 } })} />
+      <Toast />
+    </>,
+  );
+  await waitFor(() => expect(calls).toHaveLength(2));
+
+  await act(async () => calls[1]?.resolve({ data: TASKS_DATA }));
+  await screen.findByText("Wire up the status row");
+  await act(async () => calls[0]?.reject(new Error("tasks boom")));
+
+  expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
+  expect(screen.getByText("Wire up the status row")).toBeTruthy();
 });
 
 // The hub resumes a cold session before it can list anything

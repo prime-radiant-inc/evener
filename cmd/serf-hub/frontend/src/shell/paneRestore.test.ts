@@ -24,6 +24,7 @@
 // fail. (Verified both ways during the wave-8 fix round.)
 import type { DockviewApi } from "dockview-core";
 import { beforeEach, describe, expect, test } from "vitest";
+import { paneFor } from "./paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 import "./AppShell"; // side effect: the boot-time pane-type registrations under test
 
@@ -36,10 +37,11 @@ class FakeDockviewApi {
   panels: Array<{ id: string; params: unknown }> = [];
   activePanel: { id: string } | undefined = undefined;
   cleared = false;
+  serialized: unknown = { fake: "layout" };
   fromJSONBehavior: (data: unknown) => void = () => {};
 
   toJSON(): unknown {
-    return { fake: "layout" };
+    return this.serialized;
   }
 
   fromJSON(data: unknown): void {
@@ -62,27 +64,75 @@ beforeEach(() => {
 });
 
 describe("boot-time registration lets a persisted layout with lazy panes restore", () => {
-  test("a saved layout containing a doc pane and a transcript pane survives restore intact", () => {
+  // doc and transcript are the original wave-8 lazy registrations this file
+  // exists to protect (see the header's mutation net); the session panels are
+  // the later additions. One fixture carries all of them so dropping ANY
+  // boot-time registration from AppShell discards the layout and fails here.
+  test("session panels, doc, and transcript all round-trip through layoutJSON and restore with raw-ref titles before hydration", () => {
     const fake = new FakeDockviewApi();
+    const saved = {
+      grid: { root: { type: "branch", data: [] } },
+      panels: {
+        p1: { id: "p1", contentComponent: "default", params: { paneType: "session", paneParams: { ref: "ref_a" } } },
+        p2: {
+          id: "p2",
+          contentComponent: "default",
+          params: { paneType: "sessionTasks", paneParams: { ref: "ref_a" } },
+        },
+        p3: {
+          id: "p3",
+          contentComponent: "default",
+          params: { paneType: "sessionActivity", paneParams: { ref: "ref_a" } },
+        },
+        p4: {
+          id: "p4",
+          contentComponent: "default",
+          params: { paneType: "sessionDetails", paneParams: { ref: "ref_a" } },
+        },
+        p5: {
+          id: "p5",
+          contentComponent: "default",
+          params: { paneType: "doc", paneParams: { session: "ref_a", path: "notes.md", kind: "file" } },
+        },
+        p6: { id: "p6", contentComponent: "default", params: { paneType: "transcript", paneParams: { ref: "ref_b" } } },
+      },
+      activeGroup: "group-2",
+    };
+    fake.serialized = saved;
     fake.fromJSONBehavior = () => {
       fake.panels = [
-        { id: "p1", params: { paneType: "doc", paneParams: { ref: "a", path: "notes.md" } } },
-        { id: "p2", params: { paneType: "transcript", paneParams: { ref: "b" } } },
+        { id: "p1", params: { paneType: "session", paneParams: { ref: "ref_a" } } },
+        { id: "p2", params: { paneType: "sessionTasks", paneParams: { ref: "ref_a" } } },
+        { id: "p3", params: { paneType: "sessionActivity", paneParams: { ref: "ref_a" } } },
+        { id: "p4", params: { paneType: "sessionDetails", paneParams: { ref: "ref_a" } } },
+        { id: "p5", params: { paneType: "doc", paneParams: { session: "ref_a", path: "notes.md", kind: "file" } } },
+        { id: "p6", params: { paneType: "transcript", paneParams: { ref: "ref_b" } } },
       ];
-      fake.activePanel = { id: "p2" };
+      fake.activePanel = { id: "p4" };
     };
     registerDockviewApi(asDockviewApi(fake));
 
-    const ok = workspaceStore.getState().restoreLayout({ real: "saved layout" });
+    expect(workspaceStore.getState().layoutJSON()).toBe(saved);
+    const ok = workspaceStore.getState().restoreLayout(workspaceStore.getState().layoutJSON());
 
     expect(ok).toBe(true);
     expect(fake.cleared).toBe(false);
     expect(workspaceStore.getState().panes).toEqual([
       // slot is re-derived from the restored grid order (workspace.ts's
       // restoreLayout): the first panel is the top-left/main one.
-      { id: "p1", type: "doc", params: { ref: "a", path: "notes.md" }, slot: "main" },
-      { id: "p2", type: "transcript", params: { ref: "b" }, slot: "secondary" },
+      { id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main" },
+      { id: "p2", type: "sessionTasks", params: { ref: "ref_a" }, slot: "secondary" },
+      { id: "p3", type: "sessionActivity", params: { ref: "ref_a" }, slot: "secondary" },
+      { id: "p4", type: "sessionDetails", params: { ref: "ref_a" }, slot: "secondary" },
+      { id: "p5", type: "doc", params: { session: "ref_a", path: "notes.md", kind: "file" }, slot: "secondary" },
+      { id: "p6", type: "transcript", params: { ref: "ref_b" }, slot: "secondary" },
     ]);
-    expect(workspaceStore.getState().focusedPaneId).toBe("p2");
+    expect(workspaceStore.getState().focusedPaneId).toBe("p4");
+    expect(
+      workspaceStore
+        .getState()
+        .panes.slice(1, 4)
+        .map((pane) => paneFor(pane.type).title(pane.params, {})),
+    ).toEqual(["Tasks · ref_a", "Activity · ref_a", "Details · ref_a"]);
   });
 });

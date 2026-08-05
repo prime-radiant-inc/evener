@@ -17,6 +17,7 @@ import styles from "./DockHost.module.css";
 import { PopoutHeaderAction } from "./PopoutHeaderAction";
 import { type PaneTitleCtx, paneFor } from "./paneRegistry";
 import {
+  cancelPaneFocus,
   type OpenPaneRecord,
   type PanePanelParams,
   registerDockviewApi,
@@ -61,8 +62,23 @@ const LAYOUT_SAVE_DEBOUNCE_MS = 400;
 function PaneHost({ api, params }: IDockviewPanelProps<PanePanelParams>) {
   const [focused, setFocused] = useState(api.isActive);
   useEffect(() => {
-    const disposable = api.onDidActiveChange((e) => setFocused(e.isActive));
-    return () => disposable.dispose();
+    // This boundary is deliberately above the lazy pane component. A panel can
+    // lose activation (or be unmounted) while Suspense is still showing its
+    // fallback, before PaneScaffold exists to cancel a toggle-open marker.
+    if (!api.isActive) cancelPaneFocus(api.id);
+    const disposable = api.onDidActiveChange((e) => {
+      if (!e.isActive) cancelPaneFocus(api.id);
+      setFocused(e.isActive);
+    });
+    return () => {
+      disposable.dispose();
+      // A host teardown (the desktop-to-mobile breakpoint swap) unmounts every
+      // panel while the workspace still considers this pane focused - its
+      // pending marker must survive for the next host's scaffold to consume.
+      // Any other unmount means the pane deactivated or closed, where a
+      // pending marker is stale and must not focus a later remount.
+      if (workspaceStore.getState().focusedPaneId !== api.id) cancelPaneFocus(api.id);
+    };
   }, [api]);
 
   // kata fmtz: fallback={null} used to mean a newly-opened pane's content

@@ -161,6 +161,75 @@ async function measureAt(cdpPort, url) {
   }
 }
 
+async function verifyPanelCollapse(cdpPort, url) {
+  const targets = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
+  const target = targets.find((t) => t.type === "page");
+  if (!target) throw new Error("chrome exposed no page target");
+  const { ws, ready, send } = connect(target.webSocketDebuggerUrl);
+  await ready;
+  try {
+    await send("Page.enable");
+    const loaded = new Promise((resolve) => {
+      const handler = (ev) => {
+        if (JSON.parse(ev.data).method === "Page.loadEventFired") {
+          ws.removeEventListener("message", handler);
+          resolve();
+        }
+      };
+      ws.addEventListener("message", handler);
+    });
+    await send("Page.navigate", { url });
+    await loaded;
+    const runtimeState = await send("Runtime.evaluate", {
+      expression: `({ body: document.body.innerText, html: document.body.innerHTML.slice(0, 1000), errors: window.__panelGuardErrors ?? [] })`,
+      returnByValue: true,
+    });
+    const out = await send("Runtime.evaluate", {
+      expression: `(async () => {
+        const until = async (read, label) => {
+          for (let i = 0; i < 180; i++) {
+            const value = read();
+            if (value) return value;
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+          }
+          throw new Error('panel collapse fixture did not settle: ' + label + '; body=' + document.body.innerText.slice(0, 500));
+        };
+        const tasks = await until(() => document.querySelector('[data-tasks-trigger]'), 'tasks trigger');
+        tasks.click();
+        const panel = await until(() => document.querySelector('[data-pane-scaffold="session-panel:tasks:overflowharness"]'), 'tasks pane');
+        const chrome = await until(() => document.querySelector('[data-testid="session-chrome"]'), 'session chrome');
+        await until(() => chrome.clientWidth > 0 && chrome.clientWidth < 640 && !document.querySelector('[data-tasks-trigger]'), 'collapsed chrome');
+        const actions = [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('Session actions'));
+        if (!actions) throw new Error('collapsed session actions trigger missing');
+        actions.click();
+        const checked = await until(() => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent?.includes('Tasks ✓')), 'checked menu item');
+        const pane = document.getElementById('oh-pane');
+        const horizontallyOverflowing = [...pane.querySelectorAll('*')].filter((element) => {
+          const style = getComputedStyle(element);
+          return element.clientWidth > 1 && element.scrollWidth > element.clientWidth + 1 &&
+            (style.overflowX === 'auto' || style.overflowX === 'scroll');
+        });
+        return {
+          mainWidth: chrome.clientWidth,
+          panelVisible: panel.getBoundingClientRect().width > 0,
+          checkedText: checked.textContent,
+          horizontalOverflowCount: horizontallyOverflowing.length,
+        };
+      })()`,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    if (out.result.exceptionDetails) {
+      throw new Error(
+        `panel-collapse eval threw: ${JSON.stringify(out.result.exceptionDetails)} runtime=${JSON.stringify(runtimeState.result.result.value)}`,
+      );
+    }
+    return out.result.result.value;
+  } finally {
+    ws.close();
+  }
+}
+
 async function main() {
   const widths = process.argv.slice(2).map(Number).filter(Boolean);
   const sweep = widths.length > 0 ? widths : DEFAULT_WIDTHS;
@@ -180,6 +249,24 @@ async function main() {
       throw new Error(`${err.message}\nvite stderr:\n${guard.getViteError()}`);
     }
     await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
+
+    const panelCollapse = await verifyPanelCollapse(
+      cdpPort,
+      `http://127.0.0.1:${vitePort}/overflowharness.html?w=1024&panels=1`,
+    );
+    if (
+      panelCollapse.mainWidth >= 640 ||
+      !panelCollapse.panelVisible ||
+      panelCollapse.checkedText !== "Tasks ✓" ||
+      panelCollapse.horizontalOverflowCount !== 0
+    ) {
+      failed++;
+      console.log(`panel collapse ... FAIL - ${JSON.stringify(panelCollapse)}`);
+    } else {
+      console.log(
+        `panel collapse ... PASS - ${panelCollapse.mainWidth}px main pane, checked Tasks adornment visible, no horizontal overflow`,
+      );
+    }
 
     for (const width of sweep) {
       const result = await measureAt(cdpPort, `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`);

@@ -117,7 +117,7 @@ function normalizeViewMode(value: string): SessionViewMode {
 // actions) follows that shape. Automatic older-turn paging is the deliberate
 // exception: nobody pressed anything, so its failure reports inline at the top
 // of the transcript instead (useTranscript's olderError -> LoadOlderRow).
-export default function Session({ params }: PaneProps<SessionPaneParams>) {
+export default function Session({ params, paneId, focused: paneFocused }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
   const [viewMode, setViewMode] = useState<SessionViewMode>("everything");
 
@@ -262,7 +262,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
 
   if (!model) {
     return (
-      <PaneScaffold title={ref}>
+      <PaneScaffold paneId={paneId} focused={paneFocused} scaffoldMarker={`session:${ref}`} title={ref}>
         <EmptyState title="Loading transcript…" />
       </PaneScaffold>
     );
@@ -392,6 +392,9 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
 
   return (
     <PaneScaffold
+      paneId={paneId}
+      focused={paneFocused}
+      scaffoldMarker={`session:${ref}`}
       title={model.name || ref}
       cadence={cadence}
       actions={

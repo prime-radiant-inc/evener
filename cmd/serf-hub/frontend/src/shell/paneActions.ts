@@ -27,6 +27,10 @@ export interface PaneRef {
   params: unknown;
 }
 
+export function togglePane(pane: PaneRef): { paneId: string; opened: boolean } {
+  return workspaceStore.getState().togglePane(pane.type, pane.params);
+}
+
 // openBeside opens `pane` in the secondary group, to the right of the main
 // pane. It is now a plain openPane() call: placement is workspace.ts's own
 // single rule (the main slot holds one pane, everything else stacks to its

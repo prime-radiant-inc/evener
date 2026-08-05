@@ -17,6 +17,7 @@ import { threadsStore } from "../../stores/threads";
 import type { ToastKind } from "../../widgets";
 import { revealSessionInRail } from "../rail/railController";
 import { navigate } from "../routing";
+import { isMobileViewport } from "../useIsMobile";
 import { workspaceStore } from "../workspace";
 import { blocked } from "./blocked";
 import { commandScore } from "./commandScore";
@@ -120,6 +121,14 @@ export function splitModelId(id: string): { provider: string; model: string } {
 function clickTrigger(selector: string): void {
   const el = document.querySelector<HTMLElement>(selector);
   if (el) el.click();
+}
+
+function toggleSessionPane(ctx: PaletteRunContext, type: "sessionTasks" | "sessionDetails", selector: string): void {
+  if (isMobileViewport()) {
+    clickTrigger(selector);
+    return;
+  }
+  if (ctx.sessionRef) workspaceStore.getState().togglePane(type, { ref: ctx.sessionRef });
 }
 
 // copyToClipboard prefers the async Clipboard API, falling back to a hidden-
@@ -507,7 +516,7 @@ export function buildCommands(): Command[] {
       hint: "",
       keywords: [],
       scope: "session",
-      run: () => clickTrigger("[data-tasks-trigger]"),
+      run: (ctx) => toggleSessionPane(ctx, "sessionTasks", "[data-tasks-trigger]"),
     },
     {
       id: "status",
@@ -515,7 +524,7 @@ export function buildCommands(): Command[] {
       hint: "",
       keywords: ["details", "info"],
       scope: "session",
-      run: () => clickTrigger("[data-details-trigger]"),
+      run: (ctx) => toggleSessionPane(ctx, "sessionDetails", "[data-details-trigger]"),
     },
     {
       id: "project",

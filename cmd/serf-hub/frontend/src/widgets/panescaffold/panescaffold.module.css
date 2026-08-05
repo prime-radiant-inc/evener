@@ -60,6 +60,7 @@
 }
 
 .body {
+  outline: none;
   /* A zero basis makes the body consume the pane's remaining allocation,
    * independent of the transcript's (potentially enormous) content height.
    * The body itself owns that overflow below. */

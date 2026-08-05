@@ -6,11 +6,12 @@ import { WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { ThreadCapabilities } from "../../../protocol/types.gen";
+import { activitySummaryStore } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
-import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
+import { ActivityPanel, ActivityPanelBody, type ActivityPanelHandle } from "./ActivityPanel";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -399,6 +400,42 @@ describe("ActivityPanel", () => {
     expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
   });
 
+  test("establishes a failed first attempt and does not retry the same bump while closed", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", () => {
+      throw new Error("first activity failure");
+    });
+
+    render(
+      <>
+        <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 1 })} now={0} />
+        <Toast />
+      </>,
+    );
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    expect(await screen.findByRole("button", { name: "Try again" })).toBeTruthy();
+    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
+  });
+
+  test("keeps the badge bare when the root counts are incomplete", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    const incomplete = activityTree();
+    incomplete.root.counts.complete = false;
+    fake.on("serf/jobs/list", () => ({ data: incomplete }));
+
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+
+    expect(screen.getByRole("button", { name: "Activity" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Activity · 3" })).toBeNull();
+  });
+
   test("renders empty, unsupported, and exited states", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
@@ -409,6 +446,7 @@ describe("ActivityPanel", () => {
     expect(await screen.findByText("No retained activity yet")).toBeTruthy();
 
     cleanup();
+    resetThreadsStoreForTests();
     const unsupported = connectFakeClient();
     unsupported.on("serf/jobs/list", () => ({ data: null }));
     render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
@@ -416,6 +454,7 @@ describe("ActivityPanel", () => {
     expect(await screen.findByText(/activity isn't available/i)).toBeTruthy();
 
     cleanup();
+    resetThreadsStoreForTests();
     const ended = connectFakeClient();
     ended.on("serf/jobs/list", () => {
       throw new WireError("thread not found: thr_root", -32014, { serfErrorInfo: "sessionUnavailable" });
@@ -510,12 +549,125 @@ describe("ActivityPanel", () => {
     );
     cleanup();
     const hiddenRender = render(hidden(3));
+    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2);
     act(() => handle.current?.open());
     await screen.findByRole("tree");
     expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(3);
     await user.click(screen.getByRole("button", { name: "Close" }));
     hiddenRender.rerender(hidden(4));
     expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(3);
+  });
+
+  test("refreshes the visible badge when an open panel body is backgrounded", async () => {
+    const fake = connectFakeClient();
+    let calls = 0;
+    const refreshed = cloneFixture(activityTree(2));
+    refreshed.root.counts.active = 8;
+    fake.on("serf/jobs/list", () => ({ data: calls++ === 0 ? activityTree() : refreshed }));
+
+    const model = testModel({ jobsUpdatedAt: 1 });
+    const { rerender } = render(
+      <>
+        <ActivityPanel sessionRef="ref_root" model={model} now={0} />
+        <ActivityPanelBody sessionRef="ref_root" model={model} />
+      </>,
+    );
+    await screen.findByRole("tree");
+    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
+
+    rerender(<ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 2 })} now={0} />);
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
+    expect(screen.getByRole("button", { name: "Activity · 8" })).toBeTruthy();
+  });
+
+  // jobsUpdatedAt only ever comes from live pushes and re-hydrates to null
+  // after a thread-model eviction (protocol/reducer.ts), so a null bump can
+  // never prove retained data is current: bumps that happened while nothing
+  // held the model are simply gone. A remounting body must fetch in that case
+  // instead of trusting null === null.
+  test("remounting the body re-fetches when the model cannot prove freshness (null jobs bump)", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
+
+    const first = render(<ActivityPanelBody sessionRef="ref_null_bump" model={testModel()} />);
+    await screen.findByRole("tree");
+    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
+    first.unmount();
+
+    render(<ActivityPanelBody sessionRef="ref_null_bump" model={testModel()} />);
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
+  });
+
+  // A MOUNTED body has the same blind spot across a wholesale model
+  // rehydration (reconnect/resync): jobsUpdatedAt can be null before and
+  // after, so no effect dependency changes even though activity missed in
+  // the gap may be stale. The threads store's per-ref hydration generation
+  // is the signal that the model was replaced underneath.
+  test("a mounted body re-fetches when its model rehydrates without a provable bump", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
+
+    render(<ActivityPanelBody sessionRef="ref_rehydrated" model={testModel()} />);
+    await screen.findByRole("tree");
+    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
+
+    act(() => {
+      threadsStore.setState({ hydrations: new Map([["ref_rehydrated", 2]]) });
+    });
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
+  });
+
+  // The closed Sheet's trigger owns background badge refresh; it has the same
+  // null-to-null rehydration blind spot as a mounted body and watches the same
+  // hydration generation.
+  test("a closed panel's badge refresh notices rehydration when the bump stays null", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
+    activitySummaryStore.setState({
+      entries: new Map([
+        [
+          "ref_gen",
+          {
+            counts: undefined,
+            established: true,
+            mountedBodies: 0,
+            loading: false,
+            lastFetchedBump: null,
+            requestID: 1,
+          },
+        ],
+      ]),
+    });
+
+    render(<ActivityPanel sessionRef="ref_gen" model={testModel({ ref: "ref_gen" })} now={0} />);
+    await act(async () => Promise.resolve());
+    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(0);
+
+    act(() => {
+      threadsStore.setState({ hydrations: new Map([["ref_gen", 1]]) });
+    });
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1));
+  });
+
+  test("does not let a continuation patch change the root badge summary", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", ({ continuation }) => {
+      if (!continuation) return { data: activityTree() };
+      const patch = cloneFixture(continuedPartialTree());
+      patch.root.counts.active = 99;
+      return { data: patch };
+    });
+
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+    expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
+    await user.click(screen.getByRole("treeitem", { name: /compile root shell/i }));
+    await user.click(screen.getByRole("button", { name: /load more/i }));
+
+    await screen.findByRole("treeitem", { name: /continued shell/i });
+    expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
   });
 
   test("continuation grafts only the targeted branch and preserves selection", async () => {

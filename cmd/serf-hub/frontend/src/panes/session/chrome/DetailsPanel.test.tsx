@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import type { ThreadModel, TurnModel } from "../../../protocol/model";
 import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { buildCommands, type PaletteRunContext } from "../../../shell/palette/commands";
@@ -70,6 +70,7 @@ function panelText(): string {
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
 });
 
 test("the trigger opens the details sheet", async () => {
@@ -353,6 +354,10 @@ test("the trigger carries data-details-trigger so the palette's /status command 
 });
 
 test("running the palette's 'Toggle session details' command opens the panel", () => {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })),
+  );
   render(<DetailsPanel model={testModel()} now={0} />);
   const command = buildCommands().find((c) => c.title === "Toggle session details");
   if (!command) throw new Error("no 'Toggle session details' command in the palette registry");

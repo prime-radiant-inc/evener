@@ -843,6 +843,26 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().frameTimes.get("ref_a")).toBeUndefined();
   });
 
+  // The generation is how a mounted consumer notices a WHOLESALE model
+  // replacement whose visible fields didn't change - e.g. jobsUpdatedAt is
+  // null both before and after a resync, yet activity retained through the
+  // gap may be stale (ActivityPanel's freshness effect keys on this).
+  test("a thread resync bumps the ref's hydration generation", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    const initial = threadsStore.getState().hydrations.get("ref_a");
+    expect(initial).toBeGreaterThanOrEqual(1);
+
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => (threadsStore.getState().hydrations.get("ref_a") ?? 0) > (initial ?? 0));
+
+    expect(threadsStore.getState().hydrations.get("ref_a")).toBe((initial ?? 0) + 1);
+  });
+
   test("a targeted resync preserves identical ordered streaming deltas and their frame times", async () => {
     const fake = connectFakeClient();
     const snapshot = readResponse("ref_a", {
@@ -2436,6 +2456,27 @@ describe("useThreadsStore.releaseThread", () => {
     expect(threadsStore.getState().threads.has("ref_a")).toBe(true); // pane 2 still open
 
     threadsStore.getState().releaseThread("ref_a"); // pane 2 leaves
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  test("session and panel lifecycle claims survive close and remount reordering until the final reference releases", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+
+    await threadsStore.getState().ensureThread("ref_a"); // session pane mounts
+    await threadsStore.getState().ensureThread("ref_a"); // panel pane mounts
+    threadsStore.getState().releaseThread("ref_a"); // session pane closes first
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+
+    // A dockview reorder can remount the session before it unmounts the panel.
+    // The hand-off must remain refcounted instead of transiently evicting the
+    // hydrated model or issuing another read.
+    await threadsStore.getState().ensureThread("ref_a");
+    threadsStore.getState().releaseThread("ref_a"); // panel pane unmounts
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+
+    threadsStore.getState().releaseThread("ref_a"); // remounted session is the last reference
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
