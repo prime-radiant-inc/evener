@@ -29,7 +29,7 @@ export interface ActivityPanelEntry {
   continuationFailures: Record<string, string | undefined>;
   requestID: number;
   pending?: { kind: "root" } | { kind: "continuation"; nodeID: string };
-  collapsedFoldIDs: string[];
+  expandedFoldIDs: string[];
 }
 
 export type ActivityFetchResult =
@@ -61,7 +61,7 @@ export const EMPTY_ACTIVITY_PANEL_ENTRY: ActivityPanelEntry = {
   established: false,
   continuationFailures: {},
   requestID: 0,
-  collapsedFoldIDs: [],
+  expandedFoldIDs: [],
 };
 
 const INITIAL_LOAD: ActivityLoadState = { kind: "idle" };
@@ -73,7 +73,7 @@ function newEntry(): ActivityPanelEntry {
     established: false,
     continuationFailures: {},
     requestID: 0,
-    collapsedFoldIDs: [],
+    expandedFoldIDs: [],
   };
 }
 
@@ -362,9 +362,9 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
   toggleFold(ref, foldID) {
     updateEntry(set, ref, (entry) => ({
       ...entry,
-      collapsedFoldIDs: entry.collapsedFoldIDs.includes(foldID)
-        ? entry.collapsedFoldIDs.filter((id) => id !== foldID)
-        : [...entry.collapsedFoldIDs, foldID],
+      expandedFoldIDs: entry.expandedFoldIDs.includes(foldID)
+        ? entry.expandedFoldIDs.filter((id) => id !== foldID)
+        : [...entry.expandedFoldIDs, foldID],
     }));
   },
 

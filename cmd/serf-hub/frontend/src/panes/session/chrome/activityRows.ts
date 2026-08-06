@@ -70,7 +70,7 @@ function entryIsFailed(entry: ActivityEntry): boolean {
   return delegate.turns.some((turn) => isFailedStatus(turn.status)) || (delegate.child?.counts.failed ?? 0) > 0;
 }
 
-export function buildActivityRows(tree: ActivityTree, collapsedFolds: ReadonlySet<string>): ActivityRow[] {
+export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet<string>): ActivityRow[] {
   const rows: ActivityRow[] = [];
 
   function appendEntry(entry: ActivityEntry, session: ActivitySessionNode, level: number, parentID: string): void {
@@ -121,7 +121,7 @@ export function buildActivityRows(tree: ActivityTree, collapsedFolds: ReadonlySe
       inactiveCount: inactive.length,
       failedCount: inactive.filter(entryIsFailed).length,
     });
-    if (collapsedFolds.has(id)) return;
+    if (!expandedFolds.has(id)) return;
     for (const entry of inactive) appendEntry(entry, session, level, entriesParentID);
   }
 

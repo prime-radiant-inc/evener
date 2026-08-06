@@ -122,8 +122,7 @@ new instrumentation plumbing.
   propagate to the row click). Strip contents: full command (shell) or mandate
   snippet (delegate) in mono, runtime or duration, `outputBytes`, started-at
   time, and a "Open in tab ↗" button for parity.
-- **Hover** → row background `--surface-2`; a `↗` hint fades in at the right
-  edge to communicate click-opens-tab.
+- **Hover** → row background `--surface-2` only.
 - **Keyboard** — rows are focusable (`tabIndex=0`, `role="treeitem"` inside
   `role="tree"`): Enter/Space opens the tab, → expands detail, ← collapses,
   ↑/↓ move focus. The fold row participates as a treeitem whose expand/collapse
@@ -135,9 +134,9 @@ new instrumentation plumbing.
 
 - The tree already refreshes through `activitySummary`'s revisioned fetch; new
   fields ride along with no new subscription channel.
-- Quiet time is derived client-side: `now − lastOutputAt`, rendered by a shared
-  1s ticker hook while any live rows are visible (pause the ticker when the tab
-  is hidden). Rows re-render only their meta text on tick.
+- Quiet time is derived client-side: `now − lastOutputAt`. A 1s interval
+  re-renders the tree while any live row is visible; browser timer throttling
+  covers hidden tabs.
 - While a job has produced no output yet (`hasOutput === false`), quiet time is
   measured from `startedAt`.
 
@@ -174,8 +173,9 @@ new instrumentation plumbing.
 
 - **Fetch states** (`activitySummary`'s `unsupported` / `ended` / `failed`)
   keep their current panel-level rendering; the tree only renders for `ready`.
-- **Deep nesting** — indentation caps at 6 levels; beyond that, rows indent to
-  the cap and rely on the guide lines.
+- **Deep nesting** — nesting is unbounded; rows indent one level per nesting
+  depth and containment is guarded by the `activity-tree-responsive`
+  layoutguard case.
 - **Long names/commands** — ellipsis everywhere; full text available in the
   detail strip and via `title` tooltips.
 - **Old daemon** — missing `usage`/`lastOutputAt` degrades as described above;

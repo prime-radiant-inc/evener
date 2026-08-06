@@ -465,7 +465,7 @@ describe("ActivityPanel", () => {
     expect(await screen.findByText("This session has ended")).toBeTruthy();
   });
 
-  test("renders live rows plus a fold row for inactive entries, and a collapsed fold survives refresh", async () => {
+  test("renders live rows plus a fold row for inactive entries, and an expanded fold survives refresh", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
     fake.on("serf/jobs/list", ({ continuation }) => ({
@@ -482,30 +482,30 @@ describe("ActivityPanel", () => {
     expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
     expect(screen.getByRole("treeitem", { name: /inspect the repo/i })).toBeTruthy();
     expect(screen.getByRole("treeitem", { name: /child shell/i })).toBeTruthy();
-    // Inactive delegates sit behind the root session's fold row, expanded by default.
+    // Inactive delegates sit behind the root session's fold row, folded by default.
     const fold = screen.getByRole("treeitem", { name: "2 inactive" });
-    expect(fold.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByRole("treeitem", { name: /done session/i })).toBeTruthy();
+    expect(fold.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("treeitem", { name: /done session/i })).toBeNull();
     expect(screen.queryByTestId("activity-inspector")).toBeNull();
 
     await user.click(fold);
-    expect(activityPanelStore.getState().entries.get("ref_root")?.collapsedFoldIDs).toEqual([
+    expect(activityPanelStore.getState().entries.get("ref_root")?.expandedFoldIDs).toEqual([
       "session:sess_root:inactive-fold",
     ]);
-    expect(screen.queryByRole("treeitem", { name: /done session/i })).toBeNull();
+    expect(screen.getByRole("treeitem", { name: /done session/i })).toBeTruthy();
 
     rerender(panel(2));
     await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
 
-    expect(activityPanelStore.getState().entries.get("ref_root")?.collapsedFoldIDs).toEqual([
+    expect(activityPanelStore.getState().entries.get("ref_root")?.expandedFoldIDs).toEqual([
       "session:sess_root:inactive-fold",
     ]);
-    expect(screen.queryByRole("treeitem", { name: /done session/i })).toBeNull();
+    expect(screen.getByRole("treeitem", { name: /done session/i })).toBeTruthy();
     expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
 
     await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
-    expect(activityPanelStore.getState().entries.get("ref_root")?.collapsedFoldIDs).toEqual([]);
-    expect(screen.getByRole("treeitem", { name: /done session/i })).toBeTruthy();
+    expect(activityPanelStore.getState().entries.get("ref_root")?.expandedFoldIDs).toEqual([]);
+    expect(screen.queryByRole("treeitem", { name: /done session/i })).toBeNull();
   });
 
   test("a stale refresh failure keeps the last good tree and shows a stale notice", async () => {
@@ -679,6 +679,9 @@ describe("ActivityPanel", () => {
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
     expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
+    // The partial branch's continuation strip follows its row, which sits
+    // behind the folded-by-default inactive fold.
+    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
     await user.click(screen.getByRole("button", { name: /load more/i }));
 
     await screen.findByRole("treeitem", { name: /continued shell/i });
@@ -694,6 +697,7 @@ describe("ActivityPanel", () => {
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
 
+    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
     await user.click(screen.getByRole("button", { name: /load more/i }));
 
     expect(await screen.findByRole("treeitem", { name: /continued shell/i })).toBeTruthy();
@@ -717,6 +721,7 @@ describe("ActivityPanel", () => {
     );
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
+    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
     await user.click(screen.getByRole("button", { name: /load more/i }));
 
     expect(await screen.findByText("Couldn't load more retained activity for this branch.")).toBeTruthy();
@@ -744,6 +749,7 @@ describe("ActivityPanel", () => {
     );
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
+    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
     await user.click(screen.getByRole("button", { name: /load more/i }));
 
     expect(await screen.findByText("Couldn't load more retained activity for this branch: branch boom")).toBeTruthy();

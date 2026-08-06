@@ -235,7 +235,7 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
             <ActivityTree
               ref={treeRef}
               tree={currentTree}
-              collapsedFoldIDs={entry.collapsedFoldIDs}
+              expandedFoldIDs={entry.expandedFoldIDs}
               onToggleFold={(foldID) => activityPanelStore.getState().toggleFold(sessionRef, foldID)}
               continuationFailures={entry.continuationFailures}
               onContinue={handleContinue}

@@ -39,7 +39,7 @@ import {
 
 export interface ActivityTreeProps {
   tree: ActivityTreeData;
-  collapsedFoldIDs: string[];
+  expandedFoldIDs: string[];
   onToggleFold: (foldID: string) => void;
   continuationFailures?: Record<string, string | undefined>;
   onContinue?: (targetID: string, continuation: string) => void;
@@ -222,13 +222,13 @@ function collectContinuations(
 }
 
 export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(function ActivityTree(
-  { tree, collapsedFoldIDs, onToggleFold, continuationFailures = {}, onContinue, loadingContinuationID },
+  { tree, expandedFoldIDs, onToggleFold, continuationFailures = {}, onContinue, loadingContinuationID },
   ref,
 ) {
   const [detailID, setDetailID] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const rows = useMemo(() => buildActivityRows(tree, new Set(collapsedFoldIDs)), [tree, collapsedFoldIDs]);
-  const collapsedFolds = useMemo(() => new Set(collapsedFoldIDs), [collapsedFoldIDs]);
+  const rows = useMemo(() => buildActivityRows(tree, new Set(expandedFoldIDs)), [tree, expandedFoldIDs]);
+  const expandedFolds = useMemo(() => new Set(expandedFoldIDs), [expandedFoldIDs]);
   const hasLive = rows.some((row) => row.kind !== "fold" && row.live);
   useEffect(() => {
     if (!hasLive) return;
@@ -294,9 +294,6 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>, row: ActivityRow): void {
-    // Keys from nested controls (the chevron button, the Load more button)
-    // are that control's own business; the row only answers for itself.
-    if (event.target !== event.currentTarget) return;
     const index = indexByID.get(row.id);
     if (index === undefined) return;
     switch (event.key) {
@@ -315,7 +312,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
       case "ArrowRight": {
         event.preventDefault();
         if (row.kind === "fold") {
-          if (collapsedFolds.has(row.id)) onToggleFold(row.id);
+          if (!expandedFolds.has(row.id)) onToggleFold(row.id);
         } else {
           setDetailID(row.id);
         }
@@ -324,7 +321,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
       case "ArrowLeft": {
         event.preventDefault();
         if (row.kind === "fold") {
-          if (!collapsedFolds.has(row.id)) onToggleFold(row.id);
+          if (expandedFolds.has(row.id)) onToggleFold(row.id);
         } else if (row.id === detailID) {
           setDetailID(null);
         } else if (row.parentID && indexByID.has(row.parentID)) {
@@ -339,6 +336,12 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
       case " ":
       case "Spacebar":
       case "Space": {
+        // Enter/Space from a nested control (the chevron button, the Load
+        // more button) is that control's own activation; the row must not
+        // fire a second activation for it. Arrows, by contrast, always mean
+        // row navigation even when focus sits on a nested control (Firefox
+        // and Safari focus buttons on click).
+        if (event.target !== event.currentTarget) return;
         event.preventDefault();
         activateRow(row);
         break;
@@ -394,8 +397,9 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   }
 
   function renderFoldRow(row: ActivityFoldRow): ReactNode {
-    const expanded = !collapsedFolds.has(row.id);
+    const expanded = expandedFolds.has(row.id);
     const label = `${row.inactiveCount} inactive`;
+    const accessibleLabel = row.failedCount > 0 ? `${label} · ${row.failedCount} failed` : label;
     return (
       <div
         key={row.id}
@@ -404,7 +408,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
           else rowRefs.current.delete(row.id);
         }}
         role="treeitem"
-        aria-label={label}
+        aria-label={accessibleLabel}
         aria-level={row.level}
         aria-expanded={expanded}
         tabIndex={row.id === effectiveFocusedID ? 0 : -1}

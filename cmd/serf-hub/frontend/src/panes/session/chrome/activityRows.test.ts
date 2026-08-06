@@ -70,7 +70,7 @@ function tree(entries: unknown[]): ActivityTree {
 test("live entries render in order; terminal entries fold behind one row", () => {
   const rows = buildActivityRows(
     tree([shell("a", false), shell("b", true), shell("c", true), shell("d", false)]),
-    new Set([foldRowID("session:sess_root")]),
+    new Set(),
   );
   expect(rows.map((r) => r.id)).toEqual(["job:a", "job:d", "session:sess_root:inactive-fold"]);
   const fold = rows[2];
@@ -83,8 +83,11 @@ test("fold row counts failures separately", () => {
   expect(fold?.kind === "fold" && fold.failedCount).toBe(1);
 });
 
-test("expanded fold reveals terminal rows after the fold row", () => {
-  const rows = buildActivityRows(tree([shell("a", false), shell("b", true)]), new Set());
+test("set membership expands the fold and reveals terminal rows after the fold row", () => {
+  const rows = buildActivityRows(
+    tree([shell("a", false), shell("b", true)]),
+    new Set([foldRowID("session:sess_root")]),
+  );
   expect(rows.map((r) => r.id)).toEqual(["job:a", "session:sess_root:inactive-fold", "job:b"]);
 });
 
@@ -98,7 +101,7 @@ test("delegate children nest one level deeper under the delegate row", () => {
 });
 
 test("all-terminal delegate folds as one inactive entry", () => {
-  const rows = buildActivityRows(tree([delegate("dlg_1", {})]), new Set([foldRowID("session:sess_root")]));
+  const rows = buildActivityRows(tree([delegate("dlg_1", {})]), new Set());
   expect(rows.map((r) => r.id)).toEqual(["session:sess_root:inactive-fold"]);
 });
 

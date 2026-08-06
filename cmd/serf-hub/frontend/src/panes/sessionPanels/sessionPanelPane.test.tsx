@@ -352,7 +352,7 @@ test("retains Tasks rows and disclosure state across a pane remount", async () =
   expect(screen.getByTestId("task-detail-prompt")).toBeTruthy();
 });
 
-test("renders retained Activity rows and collapsed fold state after a pane remount", () => {
+test("renders retained Activity rows and expanded fold state after a pane remount", () => {
   const model = testModel({ jobsUpdatedAt: 1 });
   const tree = retainedActivity();
   const entry: ActivityPanelEntry = {
@@ -361,7 +361,7 @@ test("renders retained Activity rows and collapsed fold state after a pane remou
     established: true,
     continuationFailures: {},
     requestID: 0,
-    collapsedFoldIDs: ["session:session_a:inactive-fold"],
+    expandedFoldIDs: ["session:session_a:inactive-fold"],
   };
   activityPanelStore.setState({ entries: new Map([[model.ref, entry]]) });
   activitySummaryStore.setState({
@@ -385,15 +385,15 @@ test("renders retained Activity rows and collapsed fold state after a pane remou
     <SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity" focused kind="activity" />,
   );
   expect(screen.getByRole("treeitem", { name: /compile retained shell/i })).toBeTruthy();
-  expect(screen.getByRole("treeitem", { name: "1 inactive" }).getAttribute("aria-expanded")).toBe("false");
-  expect(screen.queryByRole("treeitem", { name: /retained done shell/i })).toBeNull();
+  expect(screen.getByRole("treeitem", { name: "1 inactive" }).getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByRole("treeitem", { name: /retained done shell/i })).toBeTruthy();
   first.unmount();
 
   seedModel(model);
   render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-2" focused kind="activity" />);
   expect(screen.getByRole("treeitem", { name: /compile retained shell/i })).toBeTruthy();
-  expect(screen.getByRole("treeitem", { name: "1 inactive" }).getAttribute("aria-expanded")).toBe("false");
-  expect(screen.queryByRole("treeitem", { name: /retained done shell/i })).toBeNull();
+  expect(screen.getByRole("treeitem", { name: "1 inactive" }).getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByRole("treeitem", { name: /retained done shell/i })).toBeTruthy();
 });
 
 test("renders daemon-gone state from the retained Tasks store result", async () => {
@@ -492,10 +492,10 @@ test("retains deferred Activity root completion after unmount and remount", asyn
   expect(row).toBeTruthy();
 
   await userEvent.click(screen.getByRole("treeitem", { name: "1 inactive" }));
-  expect(activityPanelStore.getState().entries.get(model.ref)?.collapsedFoldIDs).toEqual([
+  expect(activityPanelStore.getState().entries.get(model.ref)?.expandedFoldIDs).toEqual([
     "session:session_a:inactive-fold",
   ]);
-  expect(screen.queryByRole("treeitem", { name: /retained done shell/i })).toBeNull();
+  expect(screen.getByRole("treeitem", { name: /retained done shell/i })).toBeTruthy();
 });
 
 test("retains Activity continuation failure, retry, and graft across remounts", async () => {

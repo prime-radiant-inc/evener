@@ -108,18 +108,22 @@ const TREE: ActivityTreeData = {
 
 const FOLD_ID = "session:sess_root:inactive-fold";
 
+// The fold row's accessible name matches its visible text: the failed count
+// is part of the aria-label whenever failedCount > 0.
+const FOLD_NAME = "2 inactive · 1 failed";
+
 function setupUser() {
   return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 }
 
-function Host({ initialCollapsed = [FOLD_ID] }: { initialCollapsed?: string[] }) {
-  const [collapsedFoldIDs, setCollapsedFoldIDs] = useState<string[]>(initialCollapsed);
+function Host({ initialExpanded = [] }: { initialExpanded?: string[] }) {
+  const [expandedFoldIDs, setExpandedFoldIDs] = useState<string[]>(initialExpanded);
   return (
     <ActivityTree
       tree={TREE}
-      collapsedFoldIDs={collapsedFoldIDs}
+      expandedFoldIDs={expandedFoldIDs}
       onToggleFold={(foldID) =>
-        setCollapsedFoldIDs((current) =>
+        setExpandedFoldIDs((current) =>
           current.includes(foldID) ? current.filter((id) => id !== foldID) : [...current, foldID],
         )
       }
@@ -137,7 +141,7 @@ describe("ActivityTree", () => {
   test("renders one dense row per live entry with kind glyph and meta", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
-    render(<ActivityTree tree={TREE} collapsedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+    render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
     const shellRow = screen.getByRole("treeitem", { name: "run tests" });
     expect(within(shellRow).getByText("$")).toBeTruthy();
@@ -156,9 +160,11 @@ describe("ActivityTree", () => {
     vi.setSystemTime(NOW);
     const user = setupUser();
     const onToggleFold = vi.fn();
-    render(<ActivityTree tree={TREE} collapsedFoldIDs={[FOLD_ID]} onToggleFold={onToggleFold} />);
+    render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={onToggleFold} />);
 
-    const foldRow = screen.getByRole("treeitem", { name: "2 inactive" });
+    const foldRow = screen.getByRole("treeitem", { name: FOLD_NAME });
+    // The accessible name carries the failure count, matching the visible text.
+    expect(foldRow.getAttribute("aria-label")).toBe("2 inactive · 1 failed");
     expect(foldRow.getAttribute("aria-expanded")).toBe("false");
     expect(foldRow.textContent).toContain("1 failed");
     expect(screen.queryByRole("treeitem", { name: "finished build" })).toBeNull();
@@ -171,9 +177,9 @@ describe("ActivityTree", () => {
   test("expanded fold reveals terminal rows with duration and failed meta", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
-    render(<ActivityTree tree={TREE} collapsedFoldIDs={[]} onToggleFold={vi.fn()} />);
+    render(<ActivityTree tree={TREE} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
 
-    const foldRow = screen.getByRole("treeitem", { name: "2 inactive" });
+    const foldRow = screen.getByRole("treeitem", { name: FOLD_NAME });
     expect(foldRow.getAttribute("aria-expanded")).toBe("true");
 
     const doneRow = screen.getByRole("treeitem", { name: "finished build" });
@@ -188,7 +194,7 @@ describe("ActivityTree", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
     const user = setupUser();
-    render(<ActivityTree tree={TREE} collapsedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+    render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
     await user.click(screen.getByRole("treeitem", { name: "run tests" }));
     expect(openTranscript).toHaveBeenNthCalledWith(1, "job:job_shell_live", "ref_root");
@@ -201,7 +207,7 @@ describe("ActivityTree", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
     const user = setupUser();
-    render(<ActivityTree tree={TREE} collapsedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+    render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
     const shellRow = screen.getByRole("treeitem", { name: "run tests" });
     await user.click(within(shellRow).getByRole("button", { name: /show details for run tests/i }));
@@ -223,11 +229,11 @@ describe("ActivityTree", () => {
     vi.setSystemTime(NOW);
     const user = setupUser();
     const onToggleFold = vi.fn();
-    render(<ActivityTree tree={TREE} collapsedFoldIDs={[FOLD_ID]} onToggleFold={onToggleFold} />);
+    render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={onToggleFold} />);
 
     const shellRow = screen.getByRole("treeitem", { name: "run tests" });
     const delegateRow = screen.getByRole("treeitem", { name: "Inspect the repo" });
-    const foldRow = screen.getByRole("treeitem", { name: "2 inactive" });
+    const foldRow = screen.getByRole("treeitem", { name: FOLD_NAME });
 
     shellRow.focus();
     await user.keyboard("{ArrowDown}");
@@ -256,6 +262,30 @@ describe("ActivityTree", () => {
     expect(openTranscript).toHaveBeenCalledTimes(1);
   });
 
+  test("keyboard: arrows still navigate rows when focus sits on a row chevron button", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    const user = setupUser();
+    render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+
+    const shellRow = screen.getByRole("treeitem", { name: "run tests" });
+    const delegateRow = screen.getByRole("treeitem", { name: "Inspect the repo" });
+
+    // Firefox and Safari focus a button when it is clicked; ArrowDown from
+    // that focus must still move to the next row, not be swallowed.
+    const chevron = within(shellRow).getByRole("button", { name: /show details for run tests/i });
+    await user.click(chevron);
+    expect(document.activeElement).toBe(chevron);
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(delegateRow);
+
+    // Enter on the chevron remains the chevron's own activation (the detail
+    // strip), never the row's transcript activation.
+    chevron.focus();
+    await user.keyboard("{Enter}");
+    expect(openTranscript).not.toHaveBeenCalled();
+  });
+
   test("host-driven fold toggle reveals and re-hides terminal rows", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
@@ -263,9 +293,9 @@ describe("ActivityTree", () => {
     render(<Host />);
 
     expect(screen.queryByRole("treeitem", { name: "finished build" })).toBeNull();
-    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
+    await user.click(screen.getByRole("treeitem", { name: FOLD_NAME }));
     expect(screen.getByRole("treeitem", { name: "finished build" })).toBeTruthy();
-    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
+    await user.click(screen.getByRole("treeitem", { name: FOLD_NAME }));
     expect(screen.queryByRole("treeitem", { name: "finished build" })).toBeNull();
   });
 
@@ -297,7 +327,7 @@ describe("ActivityTree", () => {
         ],
       },
     };
-    render(<ActivityTree tree={oldDaemonTree} collapsedFoldIDs={[]} onToggleFold={vi.fn()} />);
+    render(<ActivityTree tree={oldDaemonTree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
     const row = screen.getByRole("treeitem", { name: "sess_old_child" });
     expect(row.textContent).toContain("— · 12s");
@@ -314,9 +344,7 @@ describe("ActivityTree", () => {
       revision: 1,
       root: { ...TREE.root, branch: { continuation: "tok_root" } },
     };
-    render(
-      <ActivityTree tree={continuedTree} collapsedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} onContinue={onContinue} />,
-    );
+    render(<ActivityTree tree={continuedTree} expandedFoldIDs={[]} onToggleFold={vi.fn()} onContinue={onContinue} />);
 
     await user.click(screen.getByRole("button", { name: "Load more" }));
     expect(onContinue).toHaveBeenCalledWith("session:sess_root", "tok_root");
@@ -333,7 +361,7 @@ describe("ActivityTree", () => {
     render(
       <ActivityTree
         tree={continuedTree}
-        collapsedFoldIDs={[FOLD_ID]}
+        expandedFoldIDs={[]}
         onToggleFold={vi.fn()}
         onContinue={vi.fn()}
         continuationFailures={{ "session:sess_root": "Couldn't load more." }}
