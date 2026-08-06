@@ -74,31 +74,40 @@ func TestRun_SessionsHuman(t *testing.T) {
 	}
 }
 
+type sessionsJSONRow struct {
+	SessionID       string `json:"session_id"`
+	IsSubagent      bool   `json:"is_subagent"`
+	ParentSessionID string `json:"parent_session_id"`
+	Outcome         string `json:"outcome"`
+}
+
+type sessionsJSONResult struct {
+	Sessions   []sessionsJSONRow `json:"sessions"`
+	Unreadable []struct {
+		SessionID     string `json:"session_id"`
+		TranscriptRef string `json:"transcript_ref"`
+		Error         string `json:"error"`
+	} `json:"unreadable"`
+}
+
 func TestRun_SessionsJSON(t *testing.T) {
 	base, root, child := sessionsFixture(t)
 	var out, errb bytes.Buffer
 	if code := run([]string{"sessions", "--json", "--state-dir", base}, &out, &errb); code != 0 {
 		t.Fatalf("exit %d, stderr=%s", code, errb.String())
 	}
-	var rows []struct {
-		SessionID       string `json:"session_id"`
-		IsSubagent      bool   `json:"is_subagent"`
-		ParentSessionID string `json:"parent_session_id"`
-		Outcome         string `json:"outcome"`
-	}
-	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+	var res sessionsJSONResult
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, out.String())
 	}
-	if len(rows) != 2 {
-		t.Fatalf("rows = %d, want 2:\n%s", len(rows), out.String())
+	if len(res.Sessions) != 2 {
+		t.Fatalf("sessions = %d, want 2:\n%s", len(res.Sessions), out.String())
 	}
-	byID := map[string]struct {
-		SessionID       string `json:"session_id"`
-		IsSubagent      bool   `json:"is_subagent"`
-		ParentSessionID string `json:"parent_session_id"`
-		Outcome         string `json:"outcome"`
-	}{}
-	for _, r := range rows {
+	if len(res.Unreadable) != 0 {
+		t.Fatalf("unreadable = %+v, want none", res.Unreadable)
+	}
+	byID := map[string]sessionsJSONRow{}
+	for _, r := range res.Sessions {
 		byID[r.SessionID] = r
 	}
 	if !byID[child].IsSubagent || byID[child].ParentSessionID != root {
@@ -106,6 +115,48 @@ func TestRun_SessionsJSON(t *testing.T) {
 	}
 	if byID[root].Outcome != "end_turn=true" {
 		t.Errorf("root outcome = %q, want end_turn=true", byID[root].Outcome)
+	}
+}
+
+// TestRun_SessionsUnreadableSessionListedNotFatal is the CLI-layer half of
+// Finding 3: one corrupt session's transcript must not abort the sweep or
+// exit nonzero — it's listed by name, in both the human table and --json,
+// alongside every session that did read cleanly.
+func TestRun_SessionsUnreadableSessionListedNotFatal(t *testing.T) {
+	base, root, child := sessionsFixture(t)
+	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	corrupt := "02wLIRxqmq3AUo6vl2OW39"
+	mustWrite(t, filepath.Join(bucket, "sessions", corrupt+".transcript.jsonl"), "not valid json\n")
+	mustWrite(t, filepath.Join(bucket, "sessions", corrupt+".meta.json"), `{"id":"`+corrupt+`"}`)
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions", corrupt), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(bucket, "sessions", corrupt, "jobs.jsonl"), "")
+
+	var out, errb bytes.Buffer
+	if code := run([]string{"sessions", "--state-dir", base}, &out, &errb); code != 0 {
+		t.Fatalf("one corrupt session should not fail the command; exit %d, stderr=%s", code, errb.String())
+	}
+	got := out.String()
+	for _, want := range []string{root, child, corrupt, "could not be read"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("human output missing %q:\n%s", want, got)
+		}
+	}
+
+	var jsonOut, jsonErr bytes.Buffer
+	if code := run([]string{"sessions", "--json", "--state-dir", base}, &jsonOut, &jsonErr); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, jsonErr.String())
+	}
+	var res sessionsJSONResult
+	if err := json.Unmarshal(jsonOut.Bytes(), &res); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, jsonOut.String())
+	}
+	if len(res.Sessions) != 2 {
+		t.Errorf("sessions = %d, want 2 (root+child, corrupt excluded): %+v", len(res.Sessions), res.Sessions)
+	}
+	if len(res.Unreadable) != 1 || res.Unreadable[0].SessionID != corrupt {
+		t.Errorf("unreadable = %+v, want one entry naming %s", res.Unreadable, corrupt)
 	}
 }
 

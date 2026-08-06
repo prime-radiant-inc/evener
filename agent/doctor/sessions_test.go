@@ -67,9 +67,33 @@ func writeSessionsFixtureSession(t *testing.T, bucketDir, sid string, header tra
 	}
 }
 
+// communicateCall builds a schema-valid communicate tool call: end_turn plus
+// the full output envelope DefCommunicateNamed requires (message, data,
+// artifacts) — additionalProperties:false at both the top level and inside
+// output means no other shape is one the runtime could ever have produced.
+// decision, when non-empty, is nested at output.decision — the shape
+// provider.WithAllowedDecisions actually injects (addDecisionToSchema mutates
+// output.properties, not the top-level schema).
+func communicateCall(endTurn bool, decision string) llm.ContentPart {
+	output := map[string]any{"message": "done", "data": map[string]any{}, "artifacts": []string{}}
+	if decision != "" {
+		output["decision"] = decision
+	}
+	args, err := json.Marshal(map[string]any{
+		"message":  "done",
+		"end_turn": endTurn,
+		"output":   output,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return toolCall("communicate", string(args))
+}
+
 // sessionsFixture builds three sessions in one bucket:
 //   - root: recent last activity, delegates to child, has one observer, ends
-//     with communicate(end_turn=true) — the outcome hint.
+//     with a communicate(end_turn=true, output.decision="approve") call — the
+//     outcome hint.
 //   - child (subagent): recent last activity (slightly after root's, for
 //     ordering), spawned by root (transcript header ParentSessionID),
 //     meta.IsSubagent=true, last ASSISTANT turn has no result-tool call —
@@ -91,13 +115,13 @@ func sessionsFixture(t *testing.T) (base, root, child, oldSID string) {
 	old := now.Add(-1000 * time.Hour)
 
 	// root: delegates to the child, observed by one observer, ends its last
-	// assistant turn with a communicate(end_turn=true) call.
+	// assistant turn with a communicate(end_turn=true, output.decision) call.
 	writeSessionsFixtureSession(t, bucket, root,
 		transcript.Header{CreatedAt: now.Add(-2 * time.Hour), Model: "anthropic/claude-a"},
 		[]schema.Turn{
 			schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("go")}}),
 			schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-				toolCall("communicate", `{"message":"done","end_turn":true,"status":"success"}`),
+				communicateCall(true, "approve"),
 			}}),
 		},
 		schema.SessionMeta{Model: "anthropic/claude-a", TurnCount: 2, ObservedBy: []string{observer}},
@@ -139,25 +163,28 @@ func sessionsFixture(t *testing.T) (base, root, child, oldSID string) {
 
 func TestListSessions_EnumeratesAllByDefault(t *testing.T) {
 	base, _, _, _ := sessionsFixture(t)
-	rows, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 3 {
-		t.Fatalf("rows = %d, want 3 (no --since filter): %+v", len(rows), rows)
+	if len(res.Sessions) != 3 {
+		t.Fatalf("sessions = %d, want 3 (no --since filter): %+v", len(res.Sessions), res.Sessions)
+	}
+	if len(res.Unreadable) != 0 {
+		t.Fatalf("unreadable = %+v, want none", res.Unreadable)
 	}
 }
 
 func TestListSessions_SinceFiltersOldSessions(t *testing.T) {
 	base, _, _, oldSID := sessionsFixture(t)
-	rows, err := ListSessions(base, SessionsOpts{Since: 24 * time.Hour})
+	res, err := ListSessions(base, SessionsOpts{Since: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("rows = %d, want 2 (oldSID is outside the 24h window): %+v", len(rows), rows)
+	if len(res.Sessions) != 2 {
+		t.Fatalf("sessions = %d, want 2 (oldSID is outside the 24h window): %+v", len(res.Sessions), res.Sessions)
 	}
-	for _, r := range rows {
+	for _, r := range res.Sessions {
 		if r.SessionID == oldSID {
 			t.Errorf("oldSID should have been filtered by --since 24h, got it in rows: %+v", r)
 		}
@@ -166,10 +193,11 @@ func TestListSessions_SinceFiltersOldSessions(t *testing.T) {
 
 func TestListSessions_SortedByLastActivityDescending(t *testing.T) {
 	base, _, child, _ := sessionsFixture(t)
-	rows, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	rows := res.Sessions
 	if len(rows) < 2 {
 		t.Fatalf("need at least 2 rows to check order, got %d", len(rows))
 	}
@@ -186,18 +214,18 @@ func TestListSessions_SortedByLastActivityDescending(t *testing.T) {
 
 func TestListSessions_ParentLinkageAndSubagentFlag(t *testing.T) {
 	base, root, child, _ := sessionsFixture(t)
-	rows, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var childRow *SessionRow
-	for i := range rows {
-		if rows[i].SessionID == child {
-			childRow = &rows[i]
+	for i := range res.Sessions {
+		if res.Sessions[i].SessionID == child {
+			childRow = &res.Sessions[i]
 		}
 	}
 	if childRow == nil {
-		t.Fatalf("child session %s missing from rows: %+v", child, rows)
+		t.Fatalf("child session %s missing from rows: %+v", child, res.Sessions)
 	}
 	if !childRow.IsSubagent {
 		t.Error("child.IsSubagent = false, want true")
@@ -209,30 +237,62 @@ func TestListSessions_ParentLinkageAndSubagentFlag(t *testing.T) {
 
 func TestListSessions_OutcomeHint(t *testing.T) {
 	base, root, child, _ := sessionsFixture(t)
-	rows, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	byID := map[string]SessionRow{}
-	for _, r := range rows {
+	for _, r := range res.Sessions {
 		byID[r.SessionID] = r
 	}
-	if got := byID[root].Outcome; got != "end_turn=true status=success" {
-		t.Errorf("root outcome = %q, want end_turn=true status=success", got)
+	if got := byID[root].Outcome; got != "end_turn=true decision=approve" {
+		t.Errorf("root outcome = %q, want end_turn=true decision=approve", got)
 	}
 	if got := byID[child].Outcome; got != "none" {
 		t.Errorf("child outcome = %q, want none (last assistant turn has no result-tool call)", got)
 	}
 }
 
+// TestListSessions_OutcomeHint_TopLevelStatusIsNotDecision guards against
+// regressing to reading a schema-invalid top-level "status" field: no
+// schema-valid communicate call can carry one (DefCommunicateNamed sets
+// additionalProperties:false at the top level), so a call that only has one
+// must report the same as a call with no decision at all.
+func TestListSessions_OutcomeHint_TopLevelStatusIsNotDecision(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := newSessionsTestSID(t)
+	writeSessionsFixtureSession(t, bucket, sid,
+		transcript.Header{CreatedAt: time.Now(), Model: "m"},
+		[]schema.Turn{
+			schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				toolCall("communicate", `{"message":"done","end_turn":true,"status":"success"}`),
+			}}),
+		},
+		schema.SessionMeta{Model: "m", TurnCount: 1},
+		nil,
+		time.Now(),
+	)
+	res, err := ListSessions(base, SessionsOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(res.Sessions))
+	}
+	if got := res.Sessions[0].Outcome; got != "end_turn=true" {
+		t.Errorf("outcome = %q, want end_turn=true (a top-level status field is not schema-valid and must not surface)", got)
+	}
+}
+
 func TestListSessions_DelegateAndObserverCounts(t *testing.T) {
 	base, root, _, _ := sessionsFixture(t)
-	rows, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var rootRow SessionRow
-	for _, r := range rows {
+	for _, r := range res.Sessions {
 		if r.SessionID == root {
 			rootRow = r
 		}
@@ -255,16 +315,16 @@ func TestListSessions_ModelsFromHeaderAndMeta(t *testing.T) {
 		nil,
 		time.Now(),
 	)
-	rows, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 {
-		t.Fatalf("rows = %d, want 1", len(rows))
+	if len(res.Sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(res.Sessions))
 	}
 	want := []string{"anthropic/claude-old", "anthropic/claude-new"}
-	if len(rows[0].Models) != 2 || rows[0].Models[0] != want[0] || rows[0].Models[1] != want[1] {
-		t.Errorf("Models = %v, want %v (header start model, then meta's current model — the mid-session switch trace)", rows[0].Models, want)
+	if len(res.Sessions[0].Models) != 2 || res.Sessions[0].Models[0] != want[0] || res.Sessions[0].Models[1] != want[1] {
+		t.Errorf("Models = %v, want %v (header start model, then meta's current model — the mid-session switch trace)", res.Sessions[0].Models, want)
 	}
 }
 
@@ -276,40 +336,63 @@ func TestListSessions_BucketFilter(t *testing.T) {
 	writeSessionsFixtureSession(t, bucketA, sidA, transcript.Header{CreatedAt: now, Model: "m"}, nil, schema.SessionMeta{Model: "m"}, nil, now)
 	writeSessionsFixtureSession(t, bucketB, sidB, transcript.Header{CreatedAt: now, Model: "m"}, nil, schema.SessionMeta{Model: "m"}, nil, now)
 
-	rows, err := ListSessions(base, SessionsOpts{Bucket: hash1})
+	res, err := ListSessions(base, SessionsOpts{Bucket: hash1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].SessionID != sidA {
-		t.Fatalf("--bucket %s rows = %+v, want just sidA", hash1, rows)
+	if len(res.Sessions) != 1 || res.Sessions[0].SessionID != sidA {
+		t.Fatalf("--bucket %s sessions = %+v, want just sidA", hash1, res.Sessions)
 	}
 }
 
-func TestListSessions_UnreadableTranscriptIsLoudError(t *testing.T) {
+// TestListSessions_UnreadableSessionIsListedNotFatal is Finding 3's core
+// assertion: one corrupt session must not abort the whole sweep. It's listed
+// in Unreadable, by name, with its error — and every other session in the
+// same bucket still comes back in Sessions.
+func TestListSessions_UnreadableSessionIsListedNotFatal(t *testing.T) {
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)
+
+	// A healthy sibling session that must survive the corrupt one.
+	writeSessionsFixtureSession(t, bucket, sidB,
+		transcript.Header{CreatedAt: time.Now(), Model: "m"}, nil, schema.SessionMeta{Model: "m", TurnCount: 0}, nil, time.Now())
+
+	// The corrupt session: an unparseable transcript.
 	path := filepath.Join(bucket, "sessions", sidA+".transcript.jsonl")
 	writeFile(t, path, "not valid json\n")
 	if err := schema.SaveSessionMeta(bucket, schema.SessionMeta{ID: sidA}); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := ListSessions(base, SessionsOpts{})
-	if err == nil {
-		t.Fatal("want a loud error for the unparseable transcript, got nil")
+	res, err := ListSessions(base, SessionsOpts{})
+	if err != nil {
+		t.Fatalf("ListSessions should not fail the whole sweep on one corrupt session, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), sidA) && !strings.Contains(err.Error(), path) {
-		t.Errorf("error should name the unreadable file/session, got: %v", err)
+	if len(res.Sessions) != 1 || res.Sessions[0].SessionID != sidB {
+		t.Fatalf("sidB should still be enumerated despite sidA's corruption, got sessions: %+v", res.Sessions)
+	}
+	if len(res.Unreadable) != 1 {
+		t.Fatalf("unreadable = %d, want 1: %+v", len(res.Unreadable), res.Unreadable)
+	}
+	u := res.Unreadable[0]
+	if u.SessionID != sidA {
+		t.Errorf("unreadable session id = %q, want %q", u.SessionID, sidA)
+	}
+	if u.Error == "" {
+		t.Error("unreadable entry should carry a non-empty error")
+	}
+	if !strings.Contains(u.Error, sidA) && !strings.Contains(u.Error, path) {
+		t.Errorf("unreadable error should name the file/session, got: %v", u.Error)
 	}
 }
 
 func TestListSessions_TranscriptBytes(t *testing.T) {
 	base, _, _, _ := sessionsFixture(t)
-	rows, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, r := range rows {
+	for _, r := range res.Sessions {
 		if r.TranscriptBytes <= 0 {
 			t.Errorf("session %s TranscriptBytes = %d, want > 0", r.SessionID, r.TranscriptBytes)
 		}
@@ -318,11 +401,11 @@ func TestListSessions_TranscriptBytes(t *testing.T) {
 
 func TestRenderSessions_HumanTable(t *testing.T) {
 	base, root, child, oldSID := sessionsFixture(t)
-	rows, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := RenderSessions(rows)
+	out := RenderSessions(res)
 	for _, want := range []string{root, child, oldSID, "sessions=3"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered table missing %q:\n%s", want, out)
@@ -330,22 +413,40 @@ func TestRenderSessions_HumanTable(t *testing.T) {
 	}
 }
 
+func TestRenderSessions_ListsUnreadable(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	path := filepath.Join(bucket, "sessions", sidA+".transcript.jsonl")
+	writeFile(t, path, "not valid json\n")
+	if err := schema.SaveSessionMeta(bucket, schema.SessionMeta{ID: sidA}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := ListSessions(base, SessionsOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := RenderSessions(res)
+	if !strings.Contains(out, sidA) || !strings.Contains(out, "could not be read") {
+		t.Errorf("rendered table should list the unreadable session:\n%s", out)
+	}
+}
+
 func TestRenderSessions_Empty(t *testing.T) {
-	out := RenderSessions(nil)
+	out := RenderSessions(SessionsResult{})
 	if !strings.Contains(out, "no sessions") {
 		t.Errorf("empty render should say so, got: %q", out)
 	}
 }
 
-// TestListSessions_JSONFields is a smoke test that SessionRow's JSON shape is
-// stable and carries the fields a batch study script would parse.
+// TestListSessions_JSONFields is a smoke test that SessionsResult's JSON shape
+// is stable and carries the fields a batch study script would parse.
 func TestListSessions_JSONFields(t *testing.T) {
 	base, _, _, _ := sessionsFixture(t)
-	rows, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := json.Marshal(rows[0])
+	b, err := json.Marshal(res)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,8 +454,18 @@ func TestListSessions_JSONFields(t *testing.T) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"session_id", "bucket", "started_at", "last_activity", "models", "turn_count", "transcript_bytes", "is_subagent", "delegate_count", "observer_count", "outcome"} {
+	for _, key := range []string{"sessions", "unreadable"} {
 		if _, ok := m[key]; !ok {
+			t.Errorf("SessionsResult JSON missing field %q: %s", key, string(b))
+		}
+	}
+	sessions, _ := m["sessions"].([]any)
+	if len(sessions) == 0 {
+		t.Fatalf("no sessions in JSON: %s", string(b))
+	}
+	row, _ := sessions[0].(map[string]any)
+	for _, key := range []string{"session_id", "bucket", "started_at", "last_activity", "models", "turn_count", "transcript_bytes", "is_subagent", "delegate_count", "observer_count", "outcome"} {
+		if _, ok := row[key]; !ok {
 			t.Errorf("SessionRow JSON missing field %q: %s", key, string(b))
 		}
 	}
