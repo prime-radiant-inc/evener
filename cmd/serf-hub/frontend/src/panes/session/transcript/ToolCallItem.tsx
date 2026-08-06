@@ -10,7 +10,7 @@ import { useThreadsStore } from "../../../stores/threads";
 import { type CadenceState, StatusDot } from "../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { FileOpenBesideButton } from "./fileOpenBeside";
+import { FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";
 import { statedPurposeOf, ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
@@ -103,12 +103,18 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
 
   // A file-referencing tool (read_file/edit_file/write_file) exposes the file it
   // touches via descriptor.openBesidePath; ToolCallItem turns that into an "open
-  // beside" control in the row's summary (floor §3.7). The control itself gates
-  // out-of-cwd paths (renders nothing), so this only needs the path + the ref.
+  // beside" control in the row's summary (floor §3.7). fileDocParams (the same
+  // presence check FileOpenBesideButton applies internally, kept there too as
+  // defense-in-depth) is hoisted HERE: ToolRow must never see a truthy
+  // trailing/trailingAfter for a path the button will end up rendering nothing
+  // for, or it builds a dead anchor-split wrapper for every out-of-cwd row
+  // (kata ledger #96).
   const openBesidePath = descriptor.openBesidePath?.(item);
+  const openBesideCwd = useThreadsStore((s) => (sessionRef !== undefined ? s.threads.get(sessionRef)?.cwd : undefined));
+  const canOpenBeside = fileDocParams(openBesidePath, sessionRef, openBesideCwd) !== undefined;
   const openBesideButton =
-    openBesidePath !== undefined && sessionRef !== undefined ? (
-      <FileOpenBesideButton absPath={openBesidePath} sessionRef={sessionRef} />
+    canOpenBeside && sessionRef !== undefined ? (
+      <FileOpenBesideButton absPath={openBesidePath as string} sessionRef={sessionRef} />
     ) : null;
   // read_file (openBesideInline) quotes its path verbatim inside the summary,
   // so the control rides INLINE between the file name and the line range
@@ -117,7 +123,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // ToolRow verifies it with startsWith, never searches, kata ledger #97).
   // ToolRow falls back to the end placement when the value isn't a literal
   // prefix of the summary.
-  const trailingAfter = descriptor.openBesideInline?.(item);
+  const trailingAfter = canOpenBeside ? descriptor.openBesideInline?.(item) : undefined;
   // outputImages is a generic ItemModel field any tool call can carry (the
   // wire's ToolCallEndData.OutputImages, agent/events/payloads.go), not
   // owned by any one descriptor - rendered here, once, so every current and
