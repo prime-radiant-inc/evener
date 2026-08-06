@@ -1274,7 +1274,7 @@ func TestAdapter_UsageCacheTokens_Mapped(t *testing.T) {
 	}
 }
 
-func TestAdapter_Complete_DefaultMaxTokens_Is4096(t *testing.T) {
+func TestAdapter_Complete_DefaultMaxTokens_FallsBackTo32000(t *testing.T) {
 	var gotBody map[string]any
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1300,7 +1300,8 @@ func TestAdapter_Complete_DefaultMaxTokens_Is4096(t *testing.T) {
 	_, err := a.Complete(ctx, llm.Request{
 		Model:    "claude-test",
 		Messages: []llm.Message{llm.User("hi")},
-		// No MaxTokens set - should default to 4096.
+		// No MaxTokens set, and "claude-test" is unknown to the catalog -
+		// should fall back to the liberal 32000 default.
 	})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
@@ -1312,8 +1313,8 @@ func TestAdapter_Complete_DefaultMaxTokens_Is4096(t *testing.T) {
 	if !ok {
 		t.Fatalf("max_tokens not found or not a number: %#v", gotBody["max_tokens"])
 	}
-	if int(mt) != 4096 {
-		t.Fatalf("max_tokens: got %d want 4096", int(mt))
+	if int(mt) != 32000 {
+		t.Fatalf("max_tokens: got %d want 32000", int(mt))
 	}
 }
 
@@ -2758,14 +2759,15 @@ func TestComplete_ReasoningEffort_AdjustsMaxTokens(t *testing.T) {
 		maxTokens     *int
 		wantMaxTokens float64
 	}{
-		// Default maxTokens (4096) < medium budget (8192): adjusted to budget + default.
-		{"medium", nil, 8192 + 4096},
+		// Default maxTokens ("test" is catalog-unknown, so the 32000 fallback)
+		// > medium budget (8192): no adjustment.
+		{"medium", nil, 32000},
 		// Explicit maxTokens (1024) < medium budget (8192): adjusted to budget + explicit.
 		{"medium", ptrInt(1024), 8192 + 1024},
 		// Explicit maxTokens (10000) > medium budget (8192): no adjustment.
 		{"medium", ptrInt(10000), 10000},
-		// Low budget (1024) < default maxTokens (4096): no adjustment.
-		{"low", nil, 4096},
+		// Low budget (1024) < default maxTokens (32000 fallback): no adjustment.
+		{"low", nil, 32000},
 	}
 	for _, tc := range cases {
 		name := tc.effort

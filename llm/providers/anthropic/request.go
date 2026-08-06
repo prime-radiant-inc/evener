@@ -13,6 +13,11 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// fallbackMaxTokens is the output cap requested for models the catalog does
+// not cover. Liberal on purpose: a model that can't honor it fails loudly
+// with a 400 (a catalog gap to fix) instead of silently truncating output.
+const fallbackMaxTokens = 32000
+
 // buildRequestBody constructs the Anthropic Messages API request body from a
 // unified llm.Request.
 func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
@@ -25,14 +30,22 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		return nil, err
 	}
 
-	maxTokens := 4096
-	if req.MaxTokens != nil && *req.MaxTokens > 0 {
-		maxTokens = *req.MaxTokens
-	}
-
 	// Strip the [1m] suffix — it's a client-side convention, not an API model ID.
 	apiModel := strings.TrimSuffix(req.Model, "[1m]")
 	claude5 := isClaude5OrNewer(apiModel)
+
+	// Output cap: explicit request value, else the model's real maximum from
+	// the catalog, else a liberal fallback. An arbitrary small default silently
+	// truncates large tool calls mid-stream (stop_reason max_tokens), which
+	// surfaces downstream as unparseable tool JSON.
+	catalogMax := llm.EmbeddedModelCatalog().MaxOutputTokensFor(apiModel)
+	maxTokens := catalogMax
+	if maxTokens == 0 {
+		maxTokens = fallbackMaxTokens
+	}
+	if req.MaxTokens != nil && *req.MaxTokens > 0 {
+		maxTokens = *req.MaxTokens
+	}
 
 	body := map[string]any{
 		"model":         apiModel,
@@ -198,7 +211,14 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 			out = maxTokens
 		}
 		if out <= thinkingBudget {
-			body["max_tokens"] = thinkingBudget + out
+			raised := thinkingBudget + out
+			// With max_tokens now defaulting to the model's real maximum,
+			// budget + max can exceed the model ceiling and 400. Clamp to the
+			// catalog cap when that still satisfies max_tokens > budget.
+			if catalogMax > thinkingBudget && raised > catalogMax {
+				raised = catalogMax
+			}
+			body["max_tokens"] = raised
 		}
 	}
 	if invariant.Enabled {
