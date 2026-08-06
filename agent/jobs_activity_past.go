@@ -9,7 +9,26 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/internal/apptranscript"
 )
+
+// activityUsageCache memoizes per-transcript cumulative usage totals (keyed by
+// file identity) so repeat activity-tree fetches don't rescan every retained
+// child transcript.
+var activityUsageCache = apptranscript.NewTurnCache()
+
+// historicalActivityUsage sums a retained session's own token usage from its
+// transcript. nil (not zero) when the transcript carries no usage, so the wire
+// omits the field and the UI hides the token cluster rather than rendering
+// ↑0 ↓0.
+func historicalActivityUsage(stateDir, sessionID string, meta schema.SessionMeta) *appwire.SerfUsage {
+	path := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
+	total, err := activityUsageCache.UsageTotalFromFile(path, transcriptJSONLMaxLineBytes, meta.DivergenceTurn)
+	if err != nil {
+		return nil
+	}
+	return total
+}
 
 // LoadSessionJobActivityTree loads and projects a session's persisted job activity tree.
 func LoadSessionJobActivityTree(stateDir, sessionID string, params appwire.JobsListParams) (appwire.JobActivityTree, error) {
@@ -53,6 +72,7 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (acti
 				Jobs:      []*jobstore.JobRecord{},
 				LiveJobs:  map[string]*jobstore.JobRecord{},
 				Delegates: map[string]*jobstore.DelegateRecord{},
+				Usage:     historicalActivityUsage(stateDir, sessionID, meta),
 			}}, nil
 		}
 		return activityLoadedBase{}, err
@@ -79,6 +99,7 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (acti
 		Jobs:      ordered,
 		LiveJobs:  map[string]*jobstore.JobRecord{},
 		Delegates: delegates,
+		Usage:     historicalActivityUsage(stateDir, sessionID, meta),
 	}}, nil
 }
 

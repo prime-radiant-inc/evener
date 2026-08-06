@@ -515,6 +515,7 @@ _(no fields)_
 | `turns` | `[]appwire.JobActivityJob` |  |  |
 | `child` | `*appwire.JobActivitySession` | yes |  |
 | `branch` | `appwire.JobActivityBranchState` |  |  |
+| `usage` | `*appwire.SerfUsage` | yes |  |
 
 
 ### `JobActivityEntry`
@@ -548,6 +549,7 @@ _(no fields)_
 | `endedAt` | `string` | yes |  |
 | `exitCode` | `*int` | yes |  |
 | `outputBytes` | `int64` |  |  |
+| `lastOutputAt` | `string` | yes |  |
 
 
 ### `JobActivitySession`
