@@ -15,6 +15,7 @@
 //	serf-doctor watches    <selector> [--watch <id>] [--self-loops]
 //	serf-doctor tree       <selector> [--depth N] [--observers]
 //	serf-doctor turnids    (no selector — sweeps every session under the state root)
+//	serf-doctor sessions   [--since DUR] [--bucket B | --all] [--json]  (no selector — enumerates every session, or one --bucket's, under the state root)
 //
 // A selector is "", local:<id>, proj:<project-id>:<id>, or a bare <id>. Common flags:
 // --state-dir <path> (overrides SERF_STATE_DIR / XDG default) and --json.
@@ -27,6 +28,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"primeradiant.com/serf/agent/doctor"
 	"primeradiant.com/serf/envvars"
@@ -63,6 +65,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdTree(rest, stdout, stderr)
 	case "turnids":
 		return cmdTurnIDs(rest, stdout, stderr)
+	case "sessions":
+		return cmdSessions(rest, stdout, stderr)
 	case "plugins":
 		return cmdPlugins(rest, stdout, stderr)
 	case "-h", "--help", "help":
@@ -93,6 +97,7 @@ SUBCOMMANDS:
   watches     watch/delivery inspector: distinct deliveries, provenance, breaker telemetry (self-influence depth, runaway drops)
   tree        parent ↔ delegate/observer session tree across buckets
   turnids     sweep every session for reserved turn ids minted inside the transcript's entry-index namespace (no selector — the whole state root is the question)
+  sessions    enumerate every session (or one --bucket's), sorted by last activity, for batch forensic studies (no selector)
   plugins     plugin-store health check: registry/disk drift, marketplace health, component validity, auto-upgrade sanity (no selector — see "serf-doctor plugins -h")
 
 SELECTOR:
@@ -383,6 +388,46 @@ func cmdTurnIDs(args []string, stdout, stderr io.Writer) int {
 		return emitJSON(stdout, scan)
 	}
 	return writeText(stdout, doctor.RenderTurnIDScan(scan))
+}
+
+// cmdSessions enumerates sessions for batch forensic studies. Like turnids and
+// plugins it takes no selector — it is a bucket/state-root-wide question, not
+// a single-session one — so a stray positional argument is refused rather than
+// silently swept past.
+func cmdSessions(args []string, stdout, stderr io.Writer) int {
+	fs, stateDir, asJSON := stateFlags("sessions", stderr)
+	since := fs.String("since", "", "only sessions with last activity within this duration ago (e.g. 120h); default: no filter")
+	bucketFlag := fs.String("bucket", "", "scope to one bucket (project id); default is every bucket under the state root")
+	all := fs.Bool("all", false, "explicit: enumerate every bucket (already the default; mutually exclusive with --bucket)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		if code := writef(stderr, "serf-doctor sessions: takes no selector; it enumerates every session (or one --bucket's) under the state root (got %q)\n", fs.Arg(0)); code != 0 {
+			return code
+		}
+		return 2
+	}
+	if *bucketFlag != "" && *all {
+		return fail(stderr, "sessions", fmt.Errorf("--bucket and --all are mutually exclusive"))
+	}
+	var sinceDur time.Duration
+	if *since != "" {
+		d, err := time.ParseDuration(*since)
+		if err != nil {
+			return fail(stderr, "sessions", fmt.Errorf("invalid --since duration %q: %w", *since, err))
+		}
+		sinceDur = d
+	}
+	base := doctor.ResolveStateBase(*stateDir)
+	res, err := doctor.ListSessions(base, doctor.SessionsOpts{Since: sinceDur, Bucket: *bucketFlag})
+	if err != nil {
+		return fail(stderr, "sessions", err)
+	}
+	if *asJSON {
+		return emitJSON(stdout, res)
+	}
+	return writeText(stdout, doctor.RenderSessions(res))
 }
 
 // cmdPlugins runs the plugin-store health check (internal/plugins.Doctor,
