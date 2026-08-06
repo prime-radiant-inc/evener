@@ -95,13 +95,39 @@ type Runbook struct {
 	ManualSteps []string
 }
 
-// needsAPILog reports whether any check references an apilog.* metric, so
-// RunAudit only pays for decoding a session's API log when a check actually
-// needs it.
+// apiHealthMetricNames names the apilog.* metric paths metricSource.resolve
+// answers from an APIHealthResult rather than an APILogTotals summary --
+// needsAPIHealth keys on exactly this set so a runbook using only the older
+// apilog.calls/.empties/.errors/.avg_latency_ms totals never pays for the
+// separate --health decode pass.
+var apiHealthMetricNames = map[string]bool{
+	"apilog.recorded_empty":     true,
+	"apilog.retry_storm_groups": true,
+	"apilog.unsettled_groups":   true,
+}
+
+// needsAPILog reports whether any check references one of APILogTotals'
+// apilog.* metrics (calls/empties/errors/avg_latency_ms), so RunAudit only
+// pays for that summary decode when a check actually needs it.
 func (rb Runbook) needsAPILog() bool {
 	for _, c := range rb.Checks {
 		for _, cond := range c.Conditions {
-			if strings.HasPrefix(cond.Metric, "apilog.") {
+			if strings.HasPrefix(cond.Metric, "apilog.") && !apiHealthMetricNames[cond.Metric] && !strings.HasPrefix(cond.Metric, "apilog.errors_by_class.") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// needsAPIHealth reports whether any check references one of APIHealthResult's
+// apilog.* metrics (recorded_empty/retry_storm_groups/unsettled_groups/
+// errors_by_class.<class>), so RunAudit only pays for the --health decode
+// pass when a check actually needs it.
+func (rb Runbook) needsAPIHealth() bool {
+	for _, c := range rb.Checks {
+		for _, cond := range c.Conditions {
+			if apiHealthMetricNames[cond.Metric] || strings.HasPrefix(cond.Metric, "apilog.errors_by_class.") {
 				return true
 			}
 		}
@@ -271,12 +297,15 @@ func (c AuditCheck) evaluate(source metricSource) (bool, error) {
 }
 
 // metricSource is one session's resolved metric values: Task 2's health
-// result always, plus apilog totals when a check needs them (see
-// Runbook.needsAPILog — decoding the API log is skipped otherwise).
+// result always, plus apilog totals (Runbook.needsAPILog) and/or apilog
+// health (Runbook.needsAPIHealth) when a check needs them — each decode is
+// skipped otherwise.
 type metricSource struct {
-	health     HealthResult
-	apilog     APILogTotals
-	haveAPILog bool
+	health        HealthResult
+	apilog        APILogTotals
+	haveAPILog    bool
+	apiHealth     APIHealthResult
+	haveAPIHealth bool
 }
 
 // resolve maps a runbook's dotted metric path to its current value, per the
@@ -286,9 +315,11 @@ type metricSource struct {
 // `truncation_warnings`, `stale_notifications`, `user_corrections` are
 // top-level HealthResult ints; `steering.<kind>`, `tool_calls.<tool>`, and
 // `tool_errors.<tool>.<class>` read the corresponding maps; `apilog.calls` /
-// `.empties` / `.errors` / `.avg_latency_ms` read APILogTotals. An absent map
-// key reads as zero (a metric that never occurred is legitimately zero, not
-// an error) — only an unknown namespace or malformed path is a loud error.
+// `.empties` / `.errors` / `.avg_latency_ms` read APILogTotals; `apilog.
+// recorded_empty` / `.retry_storm_groups` / `.unsettled_groups` /
+// `.errors_by_class.<class>` read APIHealthResult. An absent map key reads
+// as zero (a metric that never occurred is legitimately zero, not an error)
+// — only an unknown namespace or malformed path is a loud error.
 func (m metricSource) resolve(path string) (any, error) {
 	namespace, rest, _ := strings.Cut(path, ".")
 	switch namespace {
@@ -335,6 +366,27 @@ func (m metricSource) resolve(path string) (any, error) {
 		}
 		return m.health.ToolErrors[tool][class], nil
 	case "apilog":
+		if apiHealthMetricNames[path] || strings.HasPrefix(rest, "errors_by_class.") {
+			if !m.haveAPIHealth {
+				return nil, fmt.Errorf("metric %q: apilog health was not loaded for this check", path)
+			}
+			switch {
+			case rest == "recorded_empty":
+				return m.apiHealth.RecordedEmpty, nil
+			case rest == "retry_storm_groups":
+				return m.apiHealth.RetryStormGroups, nil
+			case rest == "unsettled_groups":
+				return m.apiHealth.UnsettledGroups, nil
+			case strings.HasPrefix(rest, "errors_by_class."):
+				class := strings.TrimPrefix(rest, "errors_by_class.")
+				if class == "" {
+					return nil, fmt.Errorf("metric %q: expected apilog.errors_by_class.<class>", path)
+				}
+				return m.apiHealth.ErrorsByClass[class], nil
+			default:
+				return nil, fmt.Errorf("unknown metric %q", path)
+			}
+		}
 		if !m.haveAPILog {
 			return nil, fmt.Errorf("metric %q: apilog totals were not loaded for this check", path)
 		}
@@ -495,6 +547,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 	}
 
 	needsAPILog := runbook.needsAPILog()
+	needsAPIHealth := runbook.needsAPIHealth()
 	now := time.Now()
 	findingsBySignature := map[string]*Finding{}
 	checkBySignature := map[string]AuditCheck{}
@@ -520,6 +573,15 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			}
 			source.apilog = apiRes.Totals
 			source.haveAPILog = true
+		}
+		if needsAPIHealth {
+			apiHealthRes, err := APIHealth(stateBase, paths.TranscriptRef)
+			if err != nil {
+				res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
+				continue
+			}
+			source.apiHealth = apiHealthRes
+			source.haveAPIHealth = true
 		}
 		res.SessionsChecked++
 

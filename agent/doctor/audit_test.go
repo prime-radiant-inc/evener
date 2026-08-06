@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/apilog"
 )
 
 // fixtureRunbookMD is the Task 3 Step 1 fixture runbook: two mechanical
@@ -407,6 +408,109 @@ func TestRunAudit_DedupAcrossMultipleSessions(t *testing.T) {
 	}
 	if len(identicalRun.Evidence.SessionRefs) != 1 {
 		t.Errorf("identical-run finding sessionRefs = %v, want 1 (only tripSID)", identicalRun.Evidence.SessionRefs)
+	}
+}
+
+// apiHealthAuditRunbookMD checks every WS9 Task 4 apilog.* health metric
+// added to the audit metric namespace: retry_storm_groups, unsettled_groups,
+// and errors_by_class.<class>.
+const apiHealthAuditRunbookMD = `# Runbook: api-health-fixture
+
+**Question:** does this session show provider retry-storm, unsettled-group,
+or permanent-error strain?
+
+## HEALTHY
+- No attempt group has 3+ attempts, every attempt group settled, no
+  permanent-class provider error.
+
+## INSPECT
+` + "```" + `
+serf-doctor apilog <selector> --health --json
+` + "```" + `
+
+## CLASSIFY
+` + "```" + `yaml
+audit:
+  - title: "Retry storm"
+    severity: medium
+    category: provider_error
+    metric: apilog.retry_storm_groups
+    op: ">="
+    value: 1
+  - title: "Unsettled attempt group"
+    severity: medium
+    category: provider_error
+    metric: apilog.unsettled_groups
+    op: ">="
+    value: 1
+  - title: "Permanent provider error"
+    severity: high
+    category: provider_error
+    metric: apilog.errors_by_class.permanent
+    op: ">="
+    value: 1
+` + "```" + `
+`
+
+// TestRunAudit_APIHealthMetricsAreAddressable builds one session tripping
+// all three apilog.* health checks: a 4-attempt group (retry storm), an
+// unsettled tail (no settlement record), and a settled 403 (permanent).
+func TestRunAudit_APIHealthMetricsAreAddressable(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	var records []apilog.APILogRecord
+
+	var stormFinal apilog.APIAttemptRecord
+	for i := 1; i <= 4; i++ {
+		outcome := apilog.AttemptProviderTimeout
+		if i == 4 {
+			outcome = apilog.AttemptSuccess
+		}
+		attempt := apiHealthAttempt("ag_storm", i, outcome)
+		if outcome == apilog.AttemptSuccess {
+			attempt.Response = &apilog.APIAttemptResponse{StatusCode: intp(200), Body: apilog.EncodeBody([]byte("{}")), TextLength: intp(1), ToolCallCount: intp(0)}
+			stormFinal = attempt
+		} else {
+			attempt.ErrorClass = "timeout"
+		}
+		records = append(records, attempt)
+	}
+	records = append(records, doctorSettlement(stormFinal, 4))
+
+	tail := apiHealthAttempt("ag_tail", 1, apilog.AttemptSuccess)
+	tail.Response = &apilog.APIAttemptResponse{StatusCode: intp(200), Body: apilog.EncodeBody([]byte("{}")), TextLength: intp(1), ToolCallCount: intp(0)}
+	records = append(records, tail)
+
+	forbidden := apiHealthAttempt("ag_403", 1, apilog.AttemptProviderReject)
+	forbidden.ErrorClass = "access_denied"
+	forbidden.Response = &apilog.APIAttemptResponse{StatusCode: intp(403), Body: apilog.EncodeBody([]byte("{}"))}
+	records = append(records, forbidden, doctorSettlement(forbidden, 1))
+
+	writeRichSession(t, bucket, sidA, nil, records, schema.SessionMeta{})
+
+	rb, err := ParseRunbook("api-health-fixture", []byte(apiHealthAuditRunbookMD))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sidA}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 1 {
+		t.Fatalf("SessionsChecked = %d, want 1", res.SessionsChecked)
+	}
+	wantTitles := map[string]bool{"Retry storm": false, "Unsettled attempt group": false, "Permanent provider error": false}
+	for _, f := range res.Findings {
+		if _, ok := wantTitles[f.Title]; !ok {
+			t.Errorf("unexpected finding %q", f.Title)
+			continue
+		}
+		wantTitles[f.Title] = true
+	}
+	for title, tripped := range wantTitles {
+		if !tripped {
+			t.Errorf("check %q did not trip: %+v", title, res.Findings)
+		}
 	}
 }
 

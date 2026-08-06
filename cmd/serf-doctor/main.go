@@ -9,7 +9,7 @@
 //
 //	serf-doctor locate     <selector>
 //	serf-doctor transcript <selector> [--count <tool>] [--health] [--format outline|markdown] [--range last:N|start:N|A-B]
-//	serf-doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary] [--validate]
+//	serf-doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary] [--validate] [--health]
 //	serf-doctor jobs       <selector> [--job <id>]
 //	serf-doctor mutations  <selector>
 //	serf-doctor watches    <selector> [--watch <id>] [--self-loops]
@@ -97,7 +97,7 @@ USAGE:
 SUBCOMMANDS:
   locate      resolve a selector to its transcript/API-log/meta/jobs/mutations paths
   transcript  render a session's turns; --count <tool> prints the structural call count; --health prints mechanical per-session health metrics
-  apilog      API-call diagnostics: per-call tokens/latency, empties, errors, cache spikes
+  apilog      API-call diagnostics: per-call tokens/latency, empties, errors, cache spikes; --health prints a one-line API-health verdict
   jobs        job inspector: every job the session ran, with status, reason, exit code, output bytes, and timings
   mutations   client-mutation store: the journal of every client mutation the daemon accepted or rejected, plus the durable input queue
   watches     watch/delivery inspector: distinct deliveries, provenance, breaker telemetry (self-influence depth, runaway drops)
@@ -261,6 +261,7 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 	summary := fs.Bool("summary", false, "render only the per-session aggregate")
 	recompute := fs.Bool("recompute", false, "re-extract text/tool-call counts from stored response bodies for rows recorded as empty (TextLength=0, ToolCalls=0) but with a stored body -- historical records from before the accumulated-item settlement fix; adds recomputed_txt/recomputed_tools columns and a recomputed_nonempty total")
 	validate := fs.Bool("validate", false, "whole-history integrity scan: strictly decode every record offset zero..EOF via apilog.Decoder and report every corrupt/malformed/oversized/unsupported record with its offset (explicit diagnostics, proportional to file size; ignores --empty/--errors/--cache-spikes/--threshold/--summary; exits nonzero if any problem is found)")
+	health := fs.Bool("health", false, "one-line API-health verdict: attempts, recorded_empty (see its caveat), retry_storm_groups (attempt groups with >=3 attempts), unsettled_groups, errors_by_class (quota/permanent/retryable) and exit")
 	sel, code := parseSelectorAndFlags(fs, args)
 	if code != 0 {
 		return code
@@ -284,6 +285,17 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	}
+
+	if *health {
+		res, err := doctor.APIHealth(base, sel)
+		if err != nil {
+			return fail(stderr, "apilog", err)
+		}
+		if *asJSON {
+			return emitJSON(stdout, res)
+		}
+		return writeText(stdout, doctor.RenderAPIHealth(res))
 	}
 
 	opts := doctor.APILogOpts{

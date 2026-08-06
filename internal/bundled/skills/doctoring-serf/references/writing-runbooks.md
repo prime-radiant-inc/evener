@@ -135,8 +135,10 @@ reproduces it, scoped to exactly the affected sessions.
 
 Metrics are dotted paths resolved against Task 2's `transcript --health`
 result (`agent/doctor/health.go`'s `HealthResult`) and, only when a check
-references one, the session's `apilog` summary totals (decoding the API log
-is skipped entirely for a runbook that never needs it):
+references one, the session's `apilog` summary totals and/or its Task 4
+`apilog --health` verdict (`agent/doctor/apilog.go`'s `APILogTotals` and
+`APIHealthResult` — each decode is skipped entirely for a runbook that never
+needs it):
 
 | Metric path | Reads |
 |---|---|
@@ -152,6 +154,8 @@ is skipped entirely for a runbook that never needs it):
 | `tool_calls.<tool>` | `HealthResult.ToolCalls[<tool>]` |
 | `tool_errors.<tool>.<class>` | `HealthResult.ToolErrors[<tool>][<class>]` |
 | `apilog.calls` / `.empties` / `.errors` / `.avg_latency_ms` | the session's `APILogTotals` (`serf-doctor apilog --summary`'s fields) |
+| `apilog.recorded_empty` / `.retry_storm_groups` / `.unsettled_groups` | the session's `APIHealthResult` (`serf-doctor apilog --health`'s fields) — `retry_storm_groups` counts attempt groups with 3+ recorded attempts, `unsettled_groups` counts groups with no settlement record |
+| `apilog.errors_by_class.<class>` | `APIHealthResult.ErrorsByClass[<class>]` — `<class>` is one of `quota`, `permanent`, `retryable` (see `agent/doctor/apilog.go`'s `classifyAPIErrorClass` for the recorded-field mapping) |
 
 An unknown namespace, or a malformed path (e.g. `jobs` with no reason), is a
 loud parse/eval error — never a silent zero.
