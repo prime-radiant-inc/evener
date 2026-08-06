@@ -260,69 +260,74 @@ load-bearing piece; its tests are the majority of the work, deliberately.
 
 ## WS4 — Environment and sandbox provisioning
 
-1. **PATH** (kata 31gh, confirmed unimplemented): the exec env inherits the
-   serf *process* PATH — `agent/execenv/local.go:257-263`, shell is plain
-   `/bin/bash`, never login (`local.go:1563-1575`) — so daemons launched
-   outside a dev shell strip Homebrew. **Fix per the kata:** capture the
-   developer PATH at daemon/session launch (resolve the user's login-shell
-   PATH once, `$SHELL -lc 'echo $PATH'`, cached) and seed it through
-   `filteredEnvWithSource`; secret-name filtering unchanged.
-2. **SERF_SCRATCH_DIR/TMPDIR only set when a sandbox scratch was
-   provisioned** (`agent/sandbox/env_floor.go:83-99` gated on
-   `sessionScratch != ""`). **Fix:** provision a session scratch dir
-   unconditionally and always export both vars.
-3. **Go telemetry dir missing from cache roots**: `defaultCacheRoots`
-   (`agent/sandbox/resolve.go:347`) covers `.cache, go/pkg, .npm, .cargo`
-   but not `os.UserConfigDir()/go/telemetry`, which `go` writes on every
-   invocation. **Fix (decided 2026-08-06):** set `GOTELEMETRY=off` in
-   `ApplyEnvFloor`; keep the sandbox narrow. (A per-session `$HOME` for
-   sandboxed sessions — seeded git identity, shared cache mounts — was
-   considered and declined; per-path grants stay the model. Revisit only if
-   HOME-relative denials keep accumulating.) Also verify `GOMODCACHE` under
-   custom GOPATH resolves inside a granted root; extend
-   `isRedirectedCacheVar` (`env_floor.go:116-118`) if not.
-4. **Shared GOCACHE wedges** (5.7h hang, 033zIWu0M97TPEmlte5j45; ~50min in
-   0341OD339bdFXqO2JkqNyK): investigate-then-fix task — reproduce
-   concurrent-session GOCACHE contention, then either per-session GOCACHE
-   under the session scratch (cold-build cost) or a shared cache with the
-   contention fixed; decision needs the reproduction data.
-5. **packed-refs.lock denial on successful commits**: `GitLayout.WritablePaths`
-   intends `packed-refs` writable (`agent/sandbox/gitdir.go:64-67`); the
-   denial suggests the seatbelt/bwrap grant is file-exact and misses the
-   `.lock` sibling created by rename-into-place. Verify grant granularity in
-   `agent/sandbox/seatbelt_darwin.go` / `bwrap.go`; grant the pattern or the
-   directory.
-6. **SessionStart hook exit 126** (~35 sessions): reproduce under a sandboxed
-   session; the candidates are exec-bit/quarantine on the plugin cache's
-   `run-hook.cmd` vs. a sandbox exec-policy denial of that path. Fix
-   whichever reproduces; additionally, hook failures should surface as one
-   summarized warning line, not raw shell stderr as the session's first
-   steering.
-7. **xcrun/broken-CLT git** (~14 sessions, agents hand-rolled git in
-   Python): investigation task — determine whether the sandbox masks
-   `/Applications/Xcode.app`/`DEVELOPER_DIR` (making host git's xcrun shim
-   fail only under serf) or the host CLT was genuinely broken during those
-   sessions. If sandbox-caused: grant/passthrough. Either way the capability
-   preamble (item 8) reports a failed `git --version` probe at session start
-   so no agent diagnoses it from scratch again.
-8. **Capability preamble**: extend `sandboxPromptLine`
-   (`agent/session_prompts.go:223-244`) — `ResolvedPolicy`
-   (`agent/sandbox/resolve.go:117-143`) already carries everything needed.
-   Render: sandbox mode + network, writable roots (`Spawned.WriteRoots`,
-   `Git.WritablePaths`), masked paths, scratch dir vars, cache redirects,
-   and probe results for the session's toolchain (git works?; go/node/rg on
-   PATH?). One paragraph, values not prose. This converts patterns
-   1–7 from per-session discovery into stated facts even before their
-   individual fixes land.
+**Audited against `docs/sandboxing.md` and `docs/environment.md` 2026-08-06;
+two open questions ruled by Jesse the same day.**
+
+1. **PATH** (kata 31gh, recorded intent): resolve the user's login-shell
+   PATH once at daemon/session launch (`$SHELL -lc 'echo $PATH'`, cached)
+   and seed it through `filteredEnvWithSource`
+   (`agent/execenv/local.go:257-263,1684-1743`); secret-name filtering and
+   the sandbox env floor unchanged. Rejected: hardcoding /opt/homebrew/bin
+   (host-specific), per-command login shells (slow, side-effectful).
+2. **Scratch dir**: `SERF_SCRATCH_DIR` is documented
+   (`docs/environment.md`) as per-session with no sandbox-only caveat; the
+   unset cases were unsandboxed sessions. Provision a session scratch dir
+   and export `SERF_SCRATCH_DIR`/`TMPDIR` unconditionally — reality up to
+   the documented contract.
+3. **Go telemetry**: `GOTELEMETRY=off` in `ApplyEnvFloor` (decided
+   2026-08-06; per-session HOME considered and declined). Structurally
+   consistent with the sandbox cache design: telemetry lives in config,
+   which was never meant to be writable. Verify `GOMODCACHE` under custom
+   GOPATH resolves inside a granted root; extend `isRedirectedCacheVar`
+   (`agent/sandbox/env_floor.go:116-118`) if not.
+4. **GOCACHE wedge — investigation reframed by the audit.** Sandboxed
+   sessions already get contained caches by design (`docs/sandboxing.md`:
+   "a sandboxed session can never poison a cache that a later build
+   consumes" — overlay or private). So the wedged sessions
+   (033zIWu0M97TPEmlte5j45's 5.7h hang cited GOCACHE on an external
+   volume) were likely unsandboxed or host-config issues. Investigate
+   first: classify each wedged session's sandbox mode and resolved cache
+   strategy; only then decide whether serf changes anything. Any change
+   preserves the never-poison invariant.
+5. **packed-refs.lock**: the sandbox contract explicitly promises
+   packed-refs is writable (commit/add/checkout succeed) while git config
+   and hooks stay read-only (load-bearing: no hook planting). The `.lock`
+   denial is grant granularity — verify in
+   `agent/sandbox/seatbelt_darwin.go`/`bwrap.go` and grant exactly the
+   rename-into-place `.lock` sibling. Nothing wider; config/hooks
+   protection untouchable.
+6. **Hooks and MCP servers work in every sandbox mode (ruled 2026-08-06).**
+   Exit-126 was plausibly restricted mode working as designed — the plugin
+   cache under `~/.claude/plugins` is outside restricted-mode read roots.
+   Ruling: hooks and MCP servers are session infrastructure; the sandbox
+   read/exec surface includes the hook and MCP-server paths in all modes.
+   Independently: a hook that still fails surfaces as one summarized
+   warning line, never raw shell stderr as the session's first steering.
+7. **Developer toolchain readable in restricted mode (ruled 2026-08-06).**
+   macOS `git` is an xcrun shim needing the Xcode CLT under
+   `/Library/Developer` (or Xcode.app); absent from restricted read roots,
+   git cannot work at all — the verified shape behind sessions hand-rolling
+   git in Python. Ruling: add the developer-tools directories, read-only,
+   to restricted mode's system read roots. The investigation shrinks to
+   confirming this mechanism against those sessions before the grant
+   lands.
+8. **Capability preamble — extends the existing designed banner.**
+   `sandboxPromptLine` (`agent/session_prompts.go:223-244`) already renders
+   a deliberately honest one-liner from resolved policy ("never
+   overstates"). Extend it with writable roots
+   (`Spawned.WriteRoots`, `Git.WritablePaths`), masked paths, scratch
+   vars, cache mode, and session-start toolchain probe results (git
+   works?; go/node/rg on PATH?) — every line from resolved facts or real
+   probes, never intentions.
 
 **Tests:** env-construction unit tests (PATH seeding, scratch vars always
-present, telemetry root granted); a sandboxed integration test running
-`go test` on a trivial module and `git commit` in a scratch repo asserting
-pristine stderr; preamble snapshot test rendering a ResolvedPolicy.
+present); sandboxed integration tests running `go test` on a trivial module
+and `git commit` in a scratch repo asserting pristine stderr, in both
+workspace-write and restricted modes; a restricted-mode test executing a
+hook script from the plugin-cache path; preamble snapshot test rendering a
+ResolvedPolicy with probe results.
 
-**Size:** ~500 loc plus two investigation tasks (4, 7) sized ~100 loc each
-once diagnosed.
-
+**Size:** ~500 loc plus the (shrunken) investigations in items 4 and 7.
 ## WS5 — Search, read, and edit tools
 
 1. **The alias collision is the root cause of "unscoped list_dir"** —
