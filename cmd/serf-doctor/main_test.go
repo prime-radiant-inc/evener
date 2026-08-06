@@ -634,7 +634,7 @@ func TestRun_APILogHealthHuman(t *testing.T) {
 		t.Fatalf("exit %d, stderr=%s", code, errb.String())
 	}
 	outStr := out.String()
-	for _, want := range []string{"session " + sid, "attempts=4", "recorded_empty=1", "retry_storm_groups=0", "unsettled_groups=0", "quota=0", "permanent=0", "retryable=1"} {
+	for _, want := range []string{"session " + sid, "attempts=4", "recorded_empty=1", "retry_storm_groups=0", "unsettled_groups=0", "quota=0*", "permanent=0", "retryable=1", "always reads 0"} {
 		if !strings.Contains(outStr, want) {
 			t.Errorf("apilog --health output missing %q; got:\n%s", want, outStr)
 		}
@@ -648,13 +648,14 @@ func TestRun_APILogHealthJSON(t *testing.T) {
 		t.Fatalf("exit %d, stderr=%s", code, errb.String())
 	}
 	var res struct {
-		SessionID           string         `json:"session_id"`
-		Attempts            int            `json:"attempts"`
-		RecordedEmpty       int            `json:"recorded_empty"`
-		RecordedEmptyCaveat string         `json:"recorded_empty_caveat"`
-		RetryStormGroups    int            `json:"retry_storm_groups"`
-		UnsettledGroups     int            `json:"unsettled_groups"`
-		ErrorsByClass       map[string]int `json:"errors_by_class"`
+		SessionID                string         `json:"session_id"`
+		Attempts                 int            `json:"attempts"`
+		RecordedEmpty            int            `json:"recorded_empty"`
+		RecordedEmptyCaveat      string         `json:"recorded_empty_caveat"`
+		RetryStormGroups         int            `json:"retry_storm_groups"`
+		UnsettledGroups          int            `json:"unsettled_groups"`
+		ErrorsByClass            map[string]int `json:"errors_by_class"`
+		ErrorsByClassQuotaCaveat string         `json:"errors_by_class_quota_caveat"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, out.String())
@@ -667,6 +668,9 @@ func TestRun_APILogHealthJSON(t *testing.T) {
 	}
 	if res.RecordedEmptyCaveat == "" {
 		t.Errorf("recorded_empty_caveat must be present")
+	}
+	if res.ErrorsByClassQuotaCaveat == "" || !strings.Contains(res.ErrorsByClassQuotaCaveat, "quota") {
+		t.Errorf("errors_by_class_quota_caveat must be present and explain the quota confident-zero trap; got %q", res.ErrorsByClassQuotaCaveat)
 	}
 	if strings.Contains(out.String(), "provider-body-sentinel") || strings.Contains(out.String(), "quota detail") {
 		t.Errorf("apilog --health JSON exposed provider body-derived error text:\n%s", out.String())

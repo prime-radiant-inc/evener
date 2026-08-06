@@ -155,7 +155,7 @@ needs it):
 | `tool_errors.<tool>.<class>` | `HealthResult.ToolErrors[<tool>][<class>]` |
 | `apilog.calls` / `.empties` / `.errors` / `.avg_latency_ms` | the session's `APILogTotals` (`serf-doctor apilog --summary`'s fields) |
 | `apilog.recorded_empty` / `.retry_storm_groups` / `.unsettled_groups` | the session's `APIHealthResult` (`serf-doctor apilog --health`'s fields) — `retry_storm_groups` counts attempt groups with 3+ recorded attempts, `unsettled_groups` counts groups with no settlement record |
-| `apilog.errors_by_class.<class>` | `APIHealthResult.ErrorsByClass[<class>]` — `<class>` is one of `quota`, `permanent`, `retryable` (see `agent/doctor/apilog.go`'s `classifyAPIErrorClass` for the recorded-field mapping) |
+| `apilog.errors_by_class.<class>` | `APIHealthResult.ErrorsByClass[<class>]` — `<class>` is one of `quota`, `permanent`, `retryable` (see `agent/doctor/apilog.go`'s `classifyAPIErrorClass` for the recorded-field mapping). **`quota` always reads 0 against today's real logs**: a quota-exhausted 429 and an ordinary rate-limit 429 are recorded identically, so a check on `apilog.errors_by_class.quota` can never trip until the transport layer records the distinction (`APIHealthResult.ErrorsByClassQuotaCaveat` carries this same warning in the tool's own output) |
 
 An unknown namespace, or a malformed path (e.g. `jobs` with no reason), is a
 loud parse/eval error — never a silent zero.

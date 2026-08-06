@@ -412,16 +412,16 @@ func TestRunAudit_DedupAcrossMultipleSessions(t *testing.T) {
 }
 
 // apiHealthAuditRunbookMD checks every WS9 Task 4 apilog.* health metric
-// added to the audit metric namespace: retry_storm_groups, unsettled_groups,
-// and errors_by_class.<class>.
+// added to the audit metric namespace: recorded_empty, retry_storm_groups,
+// unsettled_groups, and errors_by_class.<class>.
 const apiHealthAuditRunbookMD = `# Runbook: api-health-fixture
 
 **Question:** does this session show provider retry-storm, unsettled-group,
-or permanent-error strain?
+recorded-empty, or permanent-error strain?
 
 ## HEALTHY
-- No attempt group has 3+ attempts, every attempt group settled, no
-  permanent-class provider error.
+- No recorded-empty responses, no attempt group has 3+ attempts, every
+  attempt group settled, no permanent-class provider error.
 
 ## INSPECT
 ` + "```" + `
@@ -431,6 +431,12 @@ serf-doctor apilog <selector> --health --json
 ## CLASSIFY
 ` + "```" + `yaml
 audit:
+  - title: "Recorded-empty response"
+    severity: low
+    category: provider_error
+    metric: apilog.recorded_empty
+    op: ">="
+    value: 1
   - title: "Retry storm"
     severity: medium
     category: provider_error
@@ -453,8 +459,9 @@ audit:
 `
 
 // TestRunAudit_APIHealthMetricsAreAddressable builds one session tripping
-// all three apilog.* health checks: a 4-attempt group (retry storm), an
-// unsettled tail (no settlement record), and a settled 403 (permanent).
+// all four apilog.* health checks: an empty response, a 4-attempt group
+// (retry storm), an unsettled tail (no settlement record), and a settled
+// 403 (permanent).
 func TestRunAudit_APIHealthMetricsAreAddressable(t *testing.T) {
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)
@@ -486,6 +493,10 @@ func TestRunAudit_APIHealthMetricsAreAddressable(t *testing.T) {
 	forbidden.Response = &apilog.APIAttemptResponse{StatusCode: intp(403), Body: apilog.EncodeBody([]byte("{}"))}
 	records = append(records, forbidden, doctorSettlement(forbidden, 1))
 
+	empty := apiHealthAttempt("ag_empty", 1, apilog.AttemptSuccess)
+	empty.Response = &apilog.APIAttemptResponse{StatusCode: intp(200), Body: apilog.EncodeBody([]byte("{}")), TextLength: intp(0), ToolCallCount: intp(0)}
+	records = append(records, empty, doctorSettlement(empty, 1))
+
 	writeRichSession(t, bucket, sidA, nil, records, schema.SessionMeta{})
 
 	rb, err := ParseRunbook("api-health-fixture", []byte(apiHealthAuditRunbookMD))
@@ -499,7 +510,7 @@ func TestRunAudit_APIHealthMetricsAreAddressable(t *testing.T) {
 	if res.SessionsChecked != 1 {
 		t.Fatalf("SessionsChecked = %d, want 1", res.SessionsChecked)
 	}
-	wantTitles := map[string]bool{"Retry storm": false, "Unsettled attempt group": false, "Permanent provider error": false}
+	wantTitles := map[string]bool{"Recorded-empty response": false, "Retry storm": false, "Unsettled attempt group": false, "Permanent provider error": false}
 	for _, f := range res.Findings {
 		if _, ok := wantTitles[f.Title]; !ok {
 			t.Errorf("unexpected finding %q", f.Title)

@@ -248,6 +248,17 @@ const (
 // the caveat is always visible next to the count it qualifies.
 const apiHealthRecordedEmptyCaveat = "recorded_empty reflects the compact counts (text_length/tool_call_count) recorded at call time, not a re-decode of the response body; WS1's --recompute (docs/superpowers/plans/2026-08-06-ws1-responses-recording.md, not yet merged) will add a recomputed_nonempty figure alongside this one"
 
+// apiHealthErrorsByClassQuotaCaveat documents the errors_by_class "quota"
+// bucket's confident-zero trap for anyone reading only the tool's output
+// (not classifyAPIErrorClass's doc comment): today's recorded fields cannot
+// tell a quota-exhausted 429 apart from an ordinary rate-limit 429 (both are
+// logged as status_code=429, error_class="rate_limit"), so this bucket reads
+// 0 on every real session until the transport layer records the
+// distinction -- a runbook check on errors_by_class.quota can never trip.
+// Emitted unconditionally, like RecordedEmptyCaveat, so the caveat travels
+// with the count it qualifies rather than living only in source comments.
+const apiHealthErrorsByClassQuotaCaveat = "errors_by_class.quota always reads 0 against today's real logs: a quota-exhausted 429 and an ordinary rate-limit 429 are both recorded as status_code=429, error_class=\"rate_limit\" -- the distinction lives only in the response body, which apilog does not persist. A runbook check on apilog.errors_by_class.quota cannot trip until the transport layer records that distinction."
+
 // APIHealthResult is apilog --health's one-line verdict: every attempt group
 // in a session's whole API log (never truncated the way APILog's row/
 // settlement caps are -- there is nothing here to page through) reduced to
@@ -282,6 +293,9 @@ type APIHealthResult struct {
 	// consumer never has to guess whether an absent key means zero or
 	// "not computed."
 	ErrorsByClass map[string]int `json:"errors_by_class"`
+	// ErrorsByClassQuotaCaveat documents ErrorsByClass["quota"]'s
+	// confident-zero trap -- see apiHealthErrorsByClassQuotaCaveat.
+	ErrorsByClassQuotaCaveat string `json:"errors_by_class_quota_caveat"`
 }
 
 // apiHealthGroup is one attempt group's running tally while APIHealth scans
@@ -307,8 +321,9 @@ func APIHealth(stateBase, selector string) (APIHealthResult, error) {
 	defer func() { _ = f.Close() }()
 
 	res := APIHealthResult{
-		SessionID:           paths.SessionID,
-		RecordedEmptyCaveat: apiHealthRecordedEmptyCaveat,
+		SessionID:                paths.SessionID,
+		RecordedEmptyCaveat:      apiHealthRecordedEmptyCaveat,
+		ErrorsByClassQuotaCaveat: apiHealthErrorsByClassQuotaCaveat,
 		ErrorsByClass: map[string]int{
 			apiErrorClassQuota:     0,
 			apiErrorClassPermanent: 0,
@@ -420,12 +435,18 @@ func classifyAPIErrorClass(outcome apilog.AttemptOutcomeClass, statusCode *int, 
 	return apiErrorClassRetryable
 }
 
-// RenderAPIHealth renders an APIHealthResult as a single line: the compact
-// verdict a batch study scans across many sessions at once.
+// RenderAPIHealth renders an APIHealthResult as a one-line verdict a batch
+// study scans across many sessions at once, plus a `*`-marked footnote on
+// quota's confident-zero trap (ErrorsByClassQuotaCaveat) -- the verdict line
+// alone would let a reader mistake "quota=0" for "no quota errors occurred"
+// rather than "this bucket cannot be reached from today's recorded fields."
 func RenderAPIHealth(r APIHealthResult) string {
-	return fmt.Sprintf("session %s: attempts=%d recorded_empty=%d retry_storm_groups=%d unsettled_groups=%d errors_by_class(quota=%d permanent=%d retryable=%d)\n",
+	var b strings.Builder
+	fmt.Fprintf(&b, "session %s: attempts=%d recorded_empty=%d retry_storm_groups=%d unsettled_groups=%d errors_by_class(quota=%d* permanent=%d retryable=%d)\n",
 		r.SessionID, r.Attempts, r.RecordedEmpty, r.RetryStormGroups, r.UnsettledGroups,
 		r.ErrorsByClass[apiErrorClassQuota], r.ErrorsByClass[apiErrorClassPermanent], r.ErrorsByClass[apiErrorClassRetryable])
+	fmt.Fprintf(&b, "* %s\n", r.ErrorsByClassQuotaCaveat)
+	return b.String()
 }
 
 // doctorAPILogValidationMaxProblems bounds retained validation problems, like

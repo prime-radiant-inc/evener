@@ -1032,15 +1032,20 @@ func TestAPIHealthVerdict(t *testing.T) {
 	if res.RecordedEmptyCaveat == "" || !strings.Contains(res.RecordedEmptyCaveat, "ws1-responses-recording") {
 		t.Fatalf("recorded_empty_caveat must name the WS1 plan; got %q", res.RecordedEmptyCaveat)
 	}
+	if res.ErrorsByClassQuotaCaveat == "" || !strings.Contains(res.ErrorsByClassQuotaCaveat, "quota") || !strings.Contains(res.ErrorsByClassQuotaCaveat, "rate-limit") {
+		t.Fatalf("errors_by_class_quota_caveat must explain the quota/rate-limit confident-zero trap; got %q", res.ErrorsByClassQuotaCaveat)
+	}
 
 	human := RenderAPIHealth(res)
-	for _, want := range []string{"session " + sidA, "attempts=6", "recorded_empty=0", "retry_storm_groups=1", "unsettled_groups=1", "quota=0", "permanent=1", "retryable=3"} {
+	for _, want := range []string{"session " + sidA, "attempts=6", "recorded_empty=0", "retry_storm_groups=1", "unsettled_groups=1", "quota=0*", "permanent=1", "retryable=3", res.ErrorsByClassQuotaCaveat} {
 		if !strings.Contains(human, want) {
-			t.Fatalf("one-line verdict missing %q:\n%s", want, human)
+			t.Fatalf("verdict missing %q:\n%s", want, human)
 		}
 	}
-	if strings.Count(human, "\n") > 1 {
-		t.Fatalf("verdict must be one line, got:\n%s", human)
+	// The verdict is a one-line summary plus a `*`-marked footnote on
+	// quota's confident-zero trap -- never more than that.
+	if strings.Count(human, "\n") != 2 {
+		t.Fatalf("verdict must be a summary line plus one footnote line, got:\n%s", human)
 	}
 }
 

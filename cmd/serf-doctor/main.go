@@ -261,7 +261,7 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 	summary := fs.Bool("summary", false, "render only the per-session aggregate")
 	recompute := fs.Bool("recompute", false, "re-extract text/tool-call counts from stored response bodies for rows recorded as empty (TextLength=0, ToolCalls=0) but with a stored body -- historical records from before the accumulated-item settlement fix; adds recomputed_txt/recomputed_tools columns and a recomputed_nonempty total")
 	validate := fs.Bool("validate", false, "whole-history integrity scan: strictly decode every record offset zero..EOF via apilog.Decoder and report every corrupt/malformed/oversized/unsupported record with its offset (explicit diagnostics, proportional to file size; ignores --empty/--errors/--cache-spikes/--threshold/--summary; exits nonzero if any problem is found)")
-	health := fs.Bool("health", false, "one-line API-health verdict: attempts, recorded_empty (see its caveat), retry_storm_groups (attempt groups with >=3 attempts), unsettled_groups, errors_by_class (quota/permanent/retryable) and exit")
+	health := fs.Bool("health", false, "one-line API-health verdict: attempts, recorded_empty (see its caveat), retry_storm_groups (attempt groups with >=3 attempts), unsettled_groups, errors_by_class (quota/permanent/retryable — quota always reads 0 against today's real logs, see its caveat) and exit")
 	sel, code := parseSelectorAndFlags(fs, args)
 	if code != 0 {
 		return code
