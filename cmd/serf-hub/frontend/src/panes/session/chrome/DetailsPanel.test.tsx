@@ -1,9 +1,12 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { lazy } from "react";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import type { ThreadModel, TurnModel } from "../../../protocol/model";
 import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { buildCommands, type PaletteRunContext } from "../../../shell/palette/commands";
+import { registerPane } from "../../../shell/paneRegistry";
+import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
 import { DetailsPanel } from "./DetailsPanel";
@@ -67,6 +70,25 @@ async function openPanel(model: ThreadModel) {
 function panelText(): string {
   return screen.getByRole("dialog", { name: "Session details" }).textContent ?? "";
 }
+
+function PaneFixture() {
+  return <div>pane</div>;
+}
+
+beforeAll(() => {
+  // Test-only pane registration (RailRow.test.tsx's pattern): the workspace
+  // store's togglePane refuses an unregistered type, and the palette's
+  // "Toggle session details" command opens a sessionDetails pane.
+  registerPane<{ ref: string }>({
+    id: "sessionDetails",
+    title: () => "Session details",
+    component: lazy(() => Promise.resolve({ default: PaneFixture })),
+  });
+});
+
+beforeEach(() => {
+  resetWorkspaceStoreForTests();
+});
 
 afterEach(() => {
   cleanup();
@@ -345,20 +367,11 @@ test("an ended session shows work time, tokens, and cost but no context row", as
 
 // --- palette wiring ---------------------------------------------------------
 
-// The command palette's "Toggle session details" (/status) synthesizes a click
-// on [data-details-trigger] (shell/palette/commands.ts clickTrigger), so pin
-// that the palette's own selector resolves to exactly this trigger.
-test("the trigger carries data-details-trigger so the palette's /status command can reach it", () => {
-  render(<DetailsPanel model={testModel()} now={0} />);
-  expect(document.querySelector("[data-details-trigger]")).toBe(screen.getByRole("button", { name: "Details" }));
-});
-
-test("running the palette's 'Toggle session details' command opens the panel", () => {
-  vi.stubGlobal(
-    "matchMedia",
-    vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })),
-  );
-  render(<DetailsPanel model={testModel()} now={0} />);
+// The command palette's "Toggle session details" (/status) no longer reaches
+// into this panel's DOM: it toggles the sessionDetails workspace pane on every
+// viewport (shell/palette/commands.ts toggleSessionPane). Pin that contract
+// here instead of the retired [data-details-trigger] click path.
+test("running the palette's 'Toggle session details' command toggles the sessionDetails workspace pane", () => {
   const command = buildCommands().find((c) => c.title === "Toggle session details");
   if (!command) throw new Error("no 'Toggle session details' command in the palette registry");
   const ctx: PaletteRunContext = {
@@ -367,10 +380,15 @@ test("running the palette's 'Toggle session details' command opens the panel", (
     toasts: { push: () => {} },
     ui: { clearToSearch: () => {}, showHelp: () => {} },
   };
-  // clickTrigger dispatches a real native click, so the resulting React state
-  // update has to be flushed here rather than by userEvent's own act wrapper.
+  const params = { ref: "ref_a" };
+  expect(isPaneOpen(workspaceStore.getState(), "sessionDetails", params)).toBe(false);
   act(() => {
     command.run?.(ctx);
   });
-  expect(screen.getByRole("dialog", { name: "Session details" })).toBeTruthy();
+  expect(isPaneOpen(workspaceStore.getState(), "sessionDetails", params)).toBe(true);
+  // A second run must close it again - the command is a toggle, not an open.
+  act(() => {
+    command.run?.(ctx);
+  });
+  expect(isPaneOpen(workspaceStore.getState(), "sessionDetails", params)).toBe(false);
 });

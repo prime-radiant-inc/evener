@@ -96,6 +96,33 @@ func TestPrepareToolCall_TruncatedByLength(t *testing.T) {
 	}
 }
 
+// A length cut can land before any argument byte streams. Empty args on a
+// tool with required parameters would otherwise fail schema validation with
+// "missing required field" — the same misdiagnosis the truncation message
+// exists to prevent.
+func TestPrepareToolCall_TruncatedBeforeAnyArgs(t *testing.T) {
+	et := editTool(t)
+	res := prepareToolCall(llm.ToolCallData{ID: "c1", Name: "edit_file",
+		Arguments: json.RawMessage(``)},
+		et, []string{"edit_file"}, "edit_file", llm.FinishReasonLength)
+	if res.PrevalErr == "" || !strings.Contains(res.PrevalErr, "truncated") {
+		t.Fatalf("want truncation error, got: %q", res.PrevalErr)
+	}
+}
+
+// Empty args on a length-stopped turn still execute when the tool requires
+// nothing — an intentionally argument-free call is not evidence of truncation.
+func TestPrepareToolCall_LengthStopEmptyArgsNoRequired(t *testing.T) {
+	reg := tool.NewRegistry()
+	_ = reg.Register(regTool(tool.DefListDir()))
+	res := prepareToolCall(
+		llm.ToolCallData{ID: "c1", Name: "list_dir", Arguments: json.RawMessage(``)},
+		reg.Get("list_dir"), []string{"list_dir"}, "list_dir", llm.FinishReasonLength)
+	if res.PrevalErr != "" {
+		t.Fatalf("empty args rejected: %s", res.PrevalErr)
+	}
+}
+
 // Valid JSON on a length-stopped turn executes normally — the truncation may
 // have landed after this tool call closed.
 func TestPrepareToolCall_LengthStopWithValidArgs(t *testing.T) {

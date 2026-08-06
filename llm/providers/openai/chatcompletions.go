@@ -311,7 +311,10 @@ func buildChatCompletionsBody(req llm.Request, stream bool) (map[string]any, err
 		body["top_p"] = *req.TopP
 	}
 	if req.MaxTokens != nil {
-		body["max_tokens"] = *req.MaxTokens
+		// max_completion_tokens, not the legacy max_tokens: reasoning models
+		// (which reach this fallback — reasoning_effort is set below) reject
+		// max_tokens with a 400, and current models all accept the new field.
+		body["max_completion_tokens"] = *req.MaxTokens
 	}
 	if len(req.StopSequences) > 0 {
 		body["stop"] = req.StopSequences

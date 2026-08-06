@@ -161,6 +161,12 @@ async function measureAt(cdpPort, url) {
   }
 }
 
+// Unified session menu (2026-08-05-unified-session-context-menu): the chrome
+// no longer has inline Details/Tasks/Activity triggers or a narrow-collapse -
+// the shared SessionMenu ("Session actions") lists the panes at EVERY width
+// with a check adornment for open ones. This fixture therefore drives the
+// menu directly: open Tasks, wait for the dock split to squeeze the main
+// chrome below 640px, then re-open the menu and confirm "Tasks ✓".
 async function verifyPanelCollapse(cdpPort, url) {
   const targets = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
   const target = targets.find((t) => t.type === "page");
@@ -194,14 +200,21 @@ async function verifyPanelCollapse(cdpPort, url) {
           }
           throw new Error('panel collapse fixture did not settle: ' + label + '; body=' + document.body.innerText.slice(0, 500));
         };
-        const tasks = await until(() => document.querySelector('[data-tasks-trigger]'), 'tasks trigger');
-        tasks.click();
+        const actionsTrigger = () =>
+          [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('Session actions'));
+        const actions = await until(actionsTrigger, 'session actions trigger');
+        actions.click();
+        const tasksItem = await until(
+          () => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === 'Tasks'),
+          'tasks menu item',
+        );
+        tasksItem.click();
         const panel = await until(() => document.querySelector('[data-pane-scaffold="session-panel:tasks:overflowharness"]'), 'tasks pane');
         const chrome = await until(() => document.querySelector('[data-testid="session-chrome"]'), 'session chrome');
-        await until(() => chrome.clientWidth > 0 && chrome.clientWidth < 640 && !document.querySelector('[data-tasks-trigger]'), 'collapsed chrome');
-        const actions = [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('Session actions'));
-        if (!actions) throw new Error('collapsed session actions trigger missing');
-        actions.click();
+        await until(() => chrome.clientWidth > 0 && chrome.clientWidth < 640, 'narrowed chrome');
+        const actionsAgain = actionsTrigger();
+        if (!actionsAgain) throw new Error('session actions trigger missing');
+        actionsAgain.click();
         const checked = await until(() => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent?.includes('Tasks ✓')), 'checked menu item');
         const pane = document.getElementById('oh-pane');
         const horizontallyOverflowing = [...pane.querySelectorAll('*')].filter((element) => {

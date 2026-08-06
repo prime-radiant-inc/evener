@@ -6,10 +6,11 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
-import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { resetTreeStoreForTests, type TreeResponse, treeStore } from "../../../stores/tree";
 import "../../sessionPanels";
 import { ActivityPanelBody } from "./ActivityPanel";
 import { resetGoalOverridesForTests } from "./GoalControl";
@@ -68,6 +69,38 @@ function emptyActivityTree() {
   };
 }
 
+// A minimal normalized TreeResponse carrying exactly one top-level local
+// session node for `ref` (the shape normalizeTree produces - see
+// stores/tree.ts's TreeResponse): enough for findSessionNode to resolve the
+// node and for SessionMenu's Pin/Archive/Delete gating to see a top-level,
+// local-host session.
+function treeWithSession(ref: string): TreeResponse {
+  return {
+    generated_at: "2026-08-06T00:00:00Z",
+    sources: [],
+    live: [
+      {
+        row_id: `row_${ref}`,
+        ref,
+        host_id: "local",
+        session_id: `sess_${ref}`,
+        title: `Session ${ref}`,
+        project: "",
+        state: "idle",
+        kind: "session",
+        live: true,
+        children: [],
+      },
+    ],
+    needs_you: [],
+    pin_sections: [],
+    projects: [],
+    archived_projects: [],
+    test_runs: [],
+    attentionSummary: { needsYou: 0, error: 0, working: 0 },
+  };
+}
+
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
@@ -80,6 +113,7 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetActivitySummaryStoreForTests();
   resetGoalOverridesForTests();
+  resetTreeStoreForTests();
 });
 
 afterEach(() => {
@@ -115,11 +149,12 @@ test("renders nothing for a ref with no tracked model yet (defensive - Session.t
   expect(container.firstChild).toBeNull();
 });
 
-test("composes the status row, session actions, goal control, details panel, and tasks panel once the ref's thread is tracked", async () => {
+test("composes the status row, the session menu, and the goal control once the ref's thread is tracked", async () => {
   const fake = connectFakeClient();
   // Seed a goal so GoalControl has something to render: with no goal it
-  // renders nothing at all now (the "Set goal…" entry point moved into the ⋯
-  // menu), so a goal is what proves GoalControl is actually composed here.
+  // renders nothing at all (setting a goal lives in the command palette's
+  // /goal builtin), so a goal is what proves GoalControl is actually
+  // composed here.
   fake.on("thread/read", () =>
     readResponse("ref_a", {
       serf: {
@@ -136,16 +171,80 @@ test("composes the status row, session actions, goal control, details panel, and
 
   // Status row: model chip.
   expect(screen.getByText("anthropic/claude-sonnet-4-5")).toBeTruthy();
-  // Session actions menu trigger.
+  // Session menu trigger.
   expect(screen.getByRole("button", { name: /session actions/i })).toBeTruthy();
   // Goal control: the goal chip, once a goal is set.
   expect(screen.getByRole("button", { name: /goal: active/i })).toBeTruthy();
-  // Tasks panel trigger.
-  expect(screen.getByRole("button", { name: "Tasks" })).toBeTruthy();
-  // Details panel trigger - also the [data-details-trigger] hook the palette's
-  // "Toggle session details" command reaches for, so this is what makes that
-  // command live in the assembled chrome.
-  expect(document.querySelector("[data-details-trigger]")).toBe(screen.getByRole("button", { name: "Details" }));
+});
+
+test("status row has no inline Details/Tasks/Activity buttons; they live in the menu", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+
+  render(<SessionChrome ref="ref_a" />);
+
+  expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
+  expect(screen.queryByRole("button", { name: /Tasks/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: /Activity/ })).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Details" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: /Tasks/ })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: /Activity/ })).toBeTruthy();
+});
+
+test("menu Tasks item toggles the sessionTasks workspace pane on desktop", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+
+  render(<SessionChrome ref="ref_a" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: /Tasks/ }));
+
+  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(true);
+});
+
+test("menu offers Pin/Archive/Delete when the session is in the tree; omits them otherwise", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  treeStore.setState({ tree: treeWithSession("ref_a") });
+
+  render(<SessionChrome ref="ref_a" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Pin this session…" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Archive" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Delete…" })).toBeTruthy();
+  await user.keyboard("{Escape}");
+
+  // No tree node for the ref (tree empty/unloaded): the organization and
+  // delete items are absent - they are decisions about a rail row.
+  act(() => treeStore.setState({ tree: null }));
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.queryByRole("menuitem", { name: "Pin this session…" })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: "Archive" })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
+});
+
+test("menu Shut down is gated on capabilities.shutdown", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, shutdown: false }, queue: { revision: 0 } },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_a");
+
+  render(<SessionChrome ref="ref_a" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+
+  expect(screen.getByRole("menuitem", { name: "Shut down" }).getAttribute("aria-disabled")).toBe("true");
 });
 
 test("the details panel reads the work time of the SAME ref passed to SessionChrome", async () => {
@@ -160,7 +259,8 @@ test("the details panel reads the work time of the SAME ref passed to SessionChr
   await threadsStore.getState().ensureThread("ref_d");
 
   render(<SessionChrome ref="ref_d" />);
-  await user.click(screen.getByRole("button", { name: "Details" }));
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Details" }));
 
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("2m");
   restoreViewport();
@@ -186,7 +286,7 @@ test("every composed piece acts on the SAME ref passed to SessionChrome", async 
   if (!input) throw new Error("rename dialog missing its input");
   await user.clear(input);
   await user.type(input, "New name");
-  await user.click(screen.getByRole("button", { name: /save/i }));
+  await user.click(screen.getByRole("button", { name: "Rename" }));
 
   await waitFor(() => expect(renamedTo).toEqual({ ref: "ref_b", name: "New name" }));
 });
@@ -204,7 +304,8 @@ test("the tasks panel fetches for the SAME ref passed to SessionChrome", async (
   });
 
   render(<SessionChrome ref="ref_c" />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Tasks" }));
 
   await waitFor(() => expect(calledRef).toBe("ref_c"));
   restoreViewport();
@@ -229,268 +330,59 @@ test("the activity panel fetches for the SAME ref passed to SessionChrome", asyn
   });
 
   render(<SessionChrome ref="ref_e" />);
-  await user.click(screen.getByRole("button", { name: "Activity" }));
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Activity" }));
 
   await waitFor(() => expect(calledRef).toBe("ref_e"));
   restoreViewport();
 });
 
-// --- footer overflow (kata vybn) ---------------------------------------------
+// --- panes through the menu (2026-08-05-unified-session-context-menu) --------
 //
-// jsdom ships no ResizeObserver, so a stub drives SessionChrome's own
-// useNarrowerThan the same way popover.test.tsx's "re-measures placement"
-// test drives Popover's - a fabricated contentRect.width, fed straight to
-// the observer callback, never a real DOM measurement (jsdom reports zero
-// for those regardless). That whole-row wrap actually stops at the chosen
-// breakpoint is a browser-verified, not a unit-tested, claim - see this
-// task's report.
-function stubResizeObserver(): { fire: (widthPx: number) => void; restore: () => void } {
-  const callbacks: ResizeObserverCallback[] = [];
-  class StubResizeObserver {
-    constructor(cb: ResizeObserverCallback) {
-      callbacks.push(cb);
-    }
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  }
-  const original = globalThis.ResizeObserver;
-  globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
-  return {
-    fire(widthPx: number) {
-      const entry = { contentRect: { width: widthPx } } as ResizeObserverEntry;
-      act(() => {
-        for (const cb of callbacks) cb([entry], {} as ResizeObserver);
-      });
-    },
-    restore() {
-      globalThis.ResizeObserver = original;
-    },
-  };
-}
-
-test("collapses Details and Tasks into the ... menu once the chrome measures narrower than the breakpoint", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_narrow"));
-  await threadsStore.getState().ensureThread("ref_narrow");
-  const ro = stubResizeObserver();
-
-  try {
-    render(<SessionChrome ref="ref_narrow" />);
-    ro.fire(300); // well under NARROW_CHROME_WIDTH_PX
-
-    // Neither trigger renders inline on the row any more...
-    expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Tasks" })).toBeNull();
-
-    // ...they're in the "..." menu instead, SAME labels, leading the list.
-    await user.click(screen.getByRole("button", { name: /session actions/i }));
-    const menuItems = screen.getAllByRole("menuitem").map((el) => el.textContent);
-    expect(menuItems.slice(0, 2)).toEqual(["Details", "Tasks"]);
-
-    // Selecting the "Details" item opens the same desktop pane as the inline
-    // trigger would; the Sheet is mobile-only.
-    await user.click(screen.getByRole("menuitem", { name: "Details" }));
-    expect(workspaceStore.getState().panes).toContainEqual(
-      expect.objectContaining({ type: "sessionDetails", params: { ref: "ref_narrow" } }),
-    );
-  } finally {
-    ro.restore();
-  }
-});
-
-test("keeps Details and Tasks inline (and out of the ... menu) once the chrome measures at or above the breakpoint", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_wide"));
-  await threadsStore.getState().ensureThread("ref_wide");
-  const ro = stubResizeObserver();
-
-  try {
-    render(<SessionChrome ref="ref_wide" />);
-    ro.fire(1000); // well above NARROW_CHROME_WIDTH_PX
-
-    expect(screen.getByRole("button", { name: "Details" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Tasks" })).toBeTruthy();
-
-    await user.click(screen.getByRole("button", { name: /session actions/i }));
-    expect(screen.queryByRole("menuitem", { name: "Details" })).toBeNull();
-    expect(screen.queryByRole("menuitem", { name: "Tasks" })).toBeNull();
-  } finally {
-    ro.restore();
-  }
-});
-
-test("re-expands Details and Tasks back onto the row when the chrome widens past the breakpoint again", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_reflow"));
-  await threadsStore.getState().ensureThread("ref_reflow");
-  const ro = stubResizeObserver();
-
-  try {
-    render(<SessionChrome ref="ref_reflow" />);
-    ro.fire(300);
-    expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
-
-    ro.fire(1000);
-    expect(screen.getByRole("button", { name: "Details" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Tasks" })).toBeTruthy();
-  } finally {
-    ro.restore();
-  }
-});
-
-// --- activity panel mounting (2026-07-31-webui-activity-panel, task 7) -------
-//
-// Activity mirrors the Details/Tasks mounting exactly: an inline trigger on the
-// wide row, an overflow menu item (after Details and Tasks) leading the "..."
-// menu's own list once the chrome collapses, opened through the panel's
-// imperative handle either way.
-// Details and Tasks being inline at this width is the neighbouring
-// "keeps Details and Tasks inline (and out of the ... menu)" test's job; this
-// one adds only what is new — that Activity joins them on the row.
-test("wide chrome renders an inline Activity trigger", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_activity_wide"));
-  await threadsStore.getState().ensureThread("ref_activity_wide");
-  const ro = stubResizeObserver();
-
-  try {
-    render(<SessionChrome ref="ref_activity_wide" />);
-    ro.fire(1000); // well above NARROW_CHROME_WIDTH_PX
-
-    expect(screen.getByRole("button", { name: "Activity" })).toBeTruthy();
-  } finally {
-    ro.restore();
-  }
-});
-
-test("narrow chrome hides the inline Activity trigger and puts an Activity item in the ... menu after Details and Tasks", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_activity_narrow"));
-  await threadsStore.getState().ensureThread("ref_activity_narrow");
-  const ro = stubResizeObserver();
-
-  try {
-    render(<SessionChrome ref="ref_activity_narrow" />);
-    ro.fire(300); // well under NARROW_CHROME_WIDTH_PX
-
-    // No inline trigger on the row any more...
-    expect(screen.queryByRole("button", { name: "Activity" })).toBeNull();
-
-    // ...it's in the "..." menu instead, after Details and Tasks, leading
-    // the menu's own list.
-    await user.click(screen.getByRole("button", { name: /session actions/i }));
-    const menuItems = screen.getAllByRole("menuitem").map((el) => el.textContent);
-    expect(menuItems.slice(0, 3)).toEqual(["Details", "Tasks", "Activity"]);
-  } finally {
-    ro.restore();
-  }
-});
-
-test("selecting the Activity menu item opens the desktop Activity pane", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_activity_open"));
-  fake.on("serf/jobs/list", () => ({ data: emptyActivityTree() }));
-  await threadsStore.getState().ensureThread("ref_activity_open");
-  const ro = stubResizeObserver();
-
-  try {
-    render(<SessionChrome ref="ref_activity_open" />);
-    ro.fire(300); // collapsed: the menu item is the only way in
-
-    await user.click(screen.getByRole("button", { name: /session actions/i }));
-    await user.click(screen.getByRole("menuitem", { name: "Activity" }));
-
-    expect(workspaceStore.getState().panes).toContainEqual(
-      expect.objectContaining({ type: "sessionActivity", params: { ref: "ref_activity_open" } }),
-    );
-  } finally {
-    ro.restore();
-  }
-});
-
-test("collapsed overflow marks every pre-opened session pane as checked", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_checked_overflow"));
-  fake.on("serf/jobs/list", () => ({ data: emptyActivityTree() }));
-  await threadsStore.getState().ensureThread("ref_checked_overflow");
-  workspaceStore.getState().openPane("sessionDetails", { ref: "ref_checked_overflow" });
-  workspaceStore.getState().openPane("sessionTasks", { ref: "ref_checked_overflow" });
-  workspaceStore.getState().openPane("sessionActivity", { ref: "ref_checked_overflow" });
-  const ro = stubResizeObserver();
-
-  try {
-    render(<SessionChrome ref="ref_checked_overflow" />);
-    ro.fire(300);
-    await user.click(screen.getByRole("button", { name: /session actions/i }));
-    expect(screen.getByRole("menuitem", { name: "Details ✓" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Tasks ✓" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
-  } finally {
-    ro.restore();
-  }
-});
-
-// The checked adornment is a live toggle, not a label: selecting a checked
-// item must CLOSE its pane (the collapsed menu is the only control left).
-test.each([
-  ["Details", "sessionDetails"],
-  ["Tasks", "sessionTasks"],
-  ["Activity", "sessionActivity"],
-] as const)("selecting the checked %s overflow item closes its pane", async (label, type) => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_checked_close"));
-  fake.on("serf/jobs/list", () => ({ data: emptyActivityTree() }));
-  await threadsStore.getState().ensureThread("ref_checked_close");
-  workspaceStore.getState().openPane(type, { ref: "ref_checked_close" });
-  const ro = stubResizeObserver();
-
-  try {
-    render(<SessionChrome ref="ref_checked_close" />);
-    ro.fire(300);
-    await user.click(screen.getByRole("button", { name: /session actions/i }));
-    await user.click(screen.getByRole("menuitem", { name: `${label} ✓` }));
-
-    expect(workspaceStore.getState().panes.some((pane) => pane.type === type)).toBe(false);
-  } finally {
-    ro.restore();
-  }
-});
+// Details/Tasks/Activity are the menu's leading group at every width and on
+// every host: desktop items toggle the workspace panes, mobile items open the
+// Sheets through the panels' imperative handles (openX branches on isMobile).
 
 test.each([
   ["Details", "sessionDetails"],
   ["Tasks", "sessionTasks"],
   ["Activity", "sessionActivity"],
-] as const)("desktop %s trigger opens and closes its pane for the SessionChrome ref", async (label, type) => {
+] as const)("desktop %s menu item opens and closes its pane for the SessionChrome ref", async (label, type) => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_inline"));
   fake.on("serf/jobs/list", () => ({ data: emptyActivityTree() }));
   await threadsStore.getState().ensureThread("ref_inline");
-  const ro = stubResizeObserver();
 
-  try {
-    render(<SessionChrome ref="ref_inline" />);
-    ro.fire(1000);
-    const trigger = screen.getByRole("button", { name: label });
-    expect(trigger.getAttribute("aria-pressed")).toBe("false");
-    await user.click(trigger);
-    expect(workspaceStore.getState().panes).toContainEqual(
-      expect.objectContaining({ type, params: { ref: "ref_inline" } }),
-    );
-    expect(trigger.getAttribute("aria-pressed")).toBe("true");
-    await user.click(trigger);
-    expect(workspaceStore.getState().panes.some((pane) => pane.type === type)).toBe(false);
-    expect(trigger.getAttribute("aria-pressed")).toBe("false");
-  } finally {
-    ro.restore();
-  }
+  render(<SessionChrome ref="ref_inline" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: label }));
+  expect(workspaceStore.getState().panes).toContainEqual(
+    expect.objectContaining({ type, params: { ref: "ref_inline" } }),
+  );
+
+  // The checked adornment is a live toggle, not a label: selecting a checked
+  // item must CLOSE its pane.
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: `${label} ✓` }));
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === type)).toBe(false);
+});
+
+test("the menu marks every pre-opened session pane as checked", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_checked"));
+  fake.on("serf/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_checked");
+  workspaceStore.getState().openPane("sessionDetails", { ref: "ref_checked" });
+  workspaceStore.getState().openPane("sessionTasks", { ref: "ref_checked" });
+  workspaceStore.getState().openPane("sessionActivity", { ref: "ref_checked" });
+
+  render(<SessionChrome ref="ref_checked" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Details ✓" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Tasks ✓" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
 });
 
 test("mobile chrome opens Sheets without changing workspace panes", async () => {
@@ -503,59 +395,33 @@ test("mobile chrome opens Sheets without changing workspace panes", async () => 
   try {
     render(<SessionChrome ref="ref_mobile" />);
     expect(workspaceStore.getState().panes).toEqual([]);
-    await user.click(screen.getByRole("button", { name: "Details" }));
-    expect(await screen.findByRole("heading", { name: "Session details" })).toBeTruthy();
-    expect(workspaceStore.getState().panes).toEqual([]);
-  } finally {
-    restoreViewport();
-  }
-});
-
-// The collapsed-overflow behavior is not desktop-only (it shipped for both
-// hosts before panel panes existed): a phone-width pane collapses too, and
-// its three Sheet triggers must fold into the "..." menu instead of squeezing
-// the status row - still opening Sheets, never workspace panes.
-test("mobile collapsed chrome moves panel triggers into the overflow menu, still opening Sheets", async () => {
-  const restoreViewport = installMobileViewport();
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_mobile_collapsed"));
-  await threadsStore.getState().ensureThread("ref_mobile_collapsed");
-  const ro = stubResizeObserver();
-
-  try {
-    render(<SessionChrome ref="ref_mobile_collapsed" />);
-    ro.fire(300); // well under NARROW_CHROME_WIDTH_PX
-
-    expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Tasks" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Activity" })).toBeNull();
-
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     await user.click(screen.getByRole("menuitem", { name: "Details" }));
     expect(await screen.findByRole("heading", { name: "Session details" })).toBeTruthy();
     expect(workspaceStore.getState().panes).toEqual([]);
   } finally {
-    ro.restore();
     restoreViewport();
   }
 });
 
-// Before the first ResizeObserver report the chrome's width is unknown - it
-// may well BE collapsed. The hidden badge refresh must not fire off an
-// established stale summary in that gap, or a narrow pane gets exactly the
-// refresh collapse is meant to suppress.
-test("hidden Activity refresh waits for the first width measurement", async () => {
+// --- activity panel background refresh ---------------------------------------
+//
+// The panels stay mounted triggerless, and ActivityPanel's refreshWhenHidden
+// is unconditional: the menu's "Activity · N" label reads the same summary
+// the hidden panel refreshes, so background refresh must run without any
+// trigger on the row.
+
+test("triggerless chrome refreshes an established Activity summary in the background", async () => {
   const fake = connectFakeClient();
   let fetches = 0;
-  fake.on("thread/read", () => readResponse("ref_activity_unmeasured"));
+  fake.on("thread/read", () => readResponse("ref_activity_bg"));
   fake.on("serf/jobs/list", () => {
     fetches += 1;
     return { data: emptyActivityTree() };
   });
-  await threadsStore.getState().ensureThread("ref_activity_unmeasured");
-  const initial = threadsStore.getState().threads.get("ref_activity_unmeasured");
-  if (!initial) throw new Error("missing unmeasured activity model");
+  await threadsStore.getState().ensureThread("ref_activity_bg");
+  const initial = threadsStore.getState().threads.get("ref_activity_bg");
+  if (!initial) throw new Error("missing background activity model");
   const model = { ...initial, jobsUpdatedAt: 1 };
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
   activitySummaryStore.setState({
@@ -566,21 +432,16 @@ test("hidden Activity refresh waits for the first width measurement", async () =
       ],
     ]),
   });
-  const ro = stubResizeObserver();
 
-  try {
-    render(<SessionChrome ref={model.ref} />);
-    await act(async () => Promise.resolve());
-    expect(fetches).toBe(0);
+  render(<SessionChrome ref={model.ref} />);
 
-    ro.fire(1_000);
-    await waitFor(() => expect(fetches).toBe(1));
-  } finally {
-    ro.restore();
-  }
+  // No trigger ever renders, yet the established summary refreshes against
+  // the newer bump - the menu's badge depends on exactly this.
+  await waitFor(() => expect(fetches).toBe(1));
 });
 
 test("desktop Activity waits for the body's first root attempt before owning later refreshes", async () => {
+  const user = userEvent.setup();
   const fake = connectFakeClient();
   let fetches = 0;
   fake.on("thread/read", () => readResponse("ref_activity_fresh"));
@@ -594,104 +455,33 @@ test("desktop Activity waits for the body's first root attempt before owning lat
   const initial = threadsStore.getState().threads.get("ref_activity_fresh");
   if (!initial) throw new Error("missing initial activity freshness model");
   threadsStore.setState({ threads: new Map([[initial.ref, { ...initial, jobsUpdatedAt: 1 }]]) });
-  const ro = stubResizeObserver();
 
-  try {
-    const chrome = render(<SessionChrome ref="ref_activity_fresh" />);
-    ro.fire(1_000); // measured wide: the hidden refresh owner is armed
-    await act(async () => Promise.resolve());
-    expect(fetches).toBe(0);
-    expect(activitySummaryStore.getState().entries.get(initial.ref)?.established).not.toBe(true);
+  const chrome = render(<SessionChrome ref="ref_activity_fresh" />);
+  await act(async () => Promise.resolve());
+  expect(fetches).toBe(0);
+  expect(activitySummaryStore.getState().entries.get(initial.ref)?.established).not.toBe(true);
 
-    const body = render(<ActivityPanelBody sessionRef={initial.ref} model={initial} />);
-    await waitFor(() => expect(fetches).toBe(1));
-    expect(screen.getByRole("button", { name: "Activity · 1" })).toBeTruthy();
-    body.unmount();
+  const body = render(<ActivityPanelBody sessionRef={initial.ref} model={initial} />);
+  await waitFor(() => expect(fetches).toBe(1));
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Activity · 1" })).toBeTruthy();
+  await user.keyboard("{Escape}");
+  body.unmount();
 
-    const current = threadsStore.getState().threads.get("ref_activity_fresh");
-    if (!current) throw new Error("missing activity freshness model");
-    threadsStore.setState({ threads: new Map([[current.ref, { ...current, jobsUpdatedAt: 2 }]]) });
-    // Two more fetches, not one: the unmount hands refresh ownership back to
-    // the chrome, which first catches up on bump 1 (the body's attempt ran at
-    // a null bump), and bump 2 - arriving while that catch-up is in flight -
-    // is queued and re-issued rather than dropped (the old drop was the
-    // stale-badge bug: the UI would never have fetched bump 2's jobs at all).
-    await waitFor(() => expect(fetches).toBe(3));
-    expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
-    await Promise.resolve();
-    expect(fetches).toBe(3);
-    chrome.unmount();
-  } finally {
-    ro.restore();
-  }
-});
-
-test("collapsed desktop chrome suppresses established Activity refresh until the trigger row returns", async () => {
-  const fake = connectFakeClient();
-  let fetches = 0;
-  fake.on("thread/read", () => readResponse("ref_activity_collapsed"));
-  fake.on("serf/jobs/list", () => {
-    fetches += 1;
-    return { data: emptyActivityTree() };
-  });
-  await threadsStore.getState().ensureThread("ref_activity_collapsed");
-  const initial = threadsStore.getState().threads.get("ref_activity_collapsed");
-  if (!initial) throw new Error("missing collapsed activity model");
-  const model = { ...initial, jobsUpdatedAt: 1 };
-  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
-  const ro = stubResizeObserver();
-
-  try {
-    render(<SessionChrome ref={model.ref} />);
-    const body = render(<ActivityPanelBody sessionRef={model.ref} model={model} />);
-    await waitFor(() => expect(fetches).toBe(1));
-    body.unmount();
-
-    ro.fire(300);
-    const bumped = { ...model, jobsUpdatedAt: 2 };
-    act(() => threadsStore.setState({ threads: new Map([[bumped.ref, bumped]]) }));
-    await act(async () => Promise.resolve());
-    expect(fetches).toBe(1);
-
-    ro.fire(1_000);
-    await waitFor(() => expect(fetches).toBe(2));
-  } finally {
-    ro.restore();
-  }
-});
-
-// Every test above awaits ensureThread BEFORE the first render, so the
-// chrome div already exists on SessionChrome's very first commit. The real
-// app (Session.tsx, and this kata's own k7harness.html) instead mounts
-// SessionChrome immediately and loads the thread asynchronously afterward -
-// SessionChrome renders null (`if (!model) return null`) until that
-// resolves. A useNarrowerThan built on a plain useRef + an effect keyed only
-// on the (constant) threshold runs its setup exactly once, against whatever
-// the ref holds at THAT first commit - null, since there's no div yet - and
-// never re-runs once the div actually mounts a render later, so the
-// observer silently never attaches for the rest of the session (found live
-// in the browser harness; no unit test caught it because every other test
-// here front-loads the model). This test reproduces that real ordering.
-test("still measures the chrome once the thread model loads after the initial mount", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_late_model"));
-  const ro = stubResizeObserver();
-
-  try {
-    render(<SessionChrome ref="ref_late_model" />);
-    expect(screen.queryByTestId("session-chrome")).toBeNull(); // model not loaded yet
-
-    await act(async () => {
-      await threadsStore.getState().ensureThread("ref_late_model");
-    });
-    await waitFor(() => expect(screen.queryByTestId("session-chrome")).toBeTruthy());
-
-    ro.fire(300); // well under NARROW_CHROME_WIDTH_PX
-    expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Tasks" })).toBeNull();
-  } finally {
-    ro.restore();
-  }
+  const current = threadsStore.getState().threads.get("ref_activity_fresh");
+  if (!current) throw new Error("missing activity freshness model");
+  threadsStore.setState({ threads: new Map([[current.ref, { ...current, jobsUpdatedAt: 2 }]]) });
+  // Two more fetches, not one: the unmount hands refresh ownership back to
+  // the chrome, which first catches up on bump 1 (the body's attempt ran at
+  // a null bump), and bump 2 - arriving while that catch-up is in flight -
+  // is queued and re-issued rather than dropped (the old drop was the
+  // stale-badge bug: the UI would never have fetched bump 2's jobs at all).
+  await waitFor(() => expect(fetches).toBe(3));
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Activity · 3" })).toBeTruthy();
+  await Promise.resolve();
+  expect(fetches).toBe(3);
+  chrome.unmount();
 });
 
 // Mobile cadence relocation (2026-07-30-mobile-session-layout-design.md,

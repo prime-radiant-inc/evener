@@ -125,14 +125,11 @@ export function ActivityRowDetail({
   const ref = row.transcriptRef?.trim();
   return (
     <div className={CLASS.detailStrip}>
-      {/* delegate && mandate: the mandate truthiness alone cannot narrow the
-          row union for the Disclosure id below - the local keeps one code path
-          and gives the compiler a real narrowing. */}
       {delegate && mandate ? (
         <div className={CLASS.detailCommand}>
           <Markdown source={firstParagraph} />
           {remainingMandate && (
-            <Disclosure id={`delegate-mandate-${delegate.delegateId}`} summary="Show more">
+            <Disclosure id={`delegate-mandate-${delegate?.delegateId ?? "unknown"}`} summary="Show more">
               <Markdown source={remainingMandate} />
             </Disclosure>
           )}

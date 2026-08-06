@@ -588,6 +588,28 @@ connectionStore.subscribe((state) => {
 const initialClient = connectionStore.getState().client;
 if (initialClient) attachNotifications(initialClient);
 
+// findSessionNode is the by-ref lookup over every collection a session can
+// appear in (live, needs_you, pin sections, projects, archived projects,
+// test runs) recursing through subagent children. First match wins; refs
+// are unique across the response, so order only costs, never lies.
+export function findSessionNode(tree: TreeResponse, ref: string): TreeNode | undefined {
+  const visit = (nodes: TreeNode[]): TreeNode | undefined => {
+    for (const node of nodes) {
+      if (node.ref === ref) return node;
+      const found = visit(node.children);
+      if (found) return found;
+    }
+    return undefined;
+  };
+  const projectLists = [...tree.projects, ...tree.archived_projects, ...tree.test_runs].map((p) => p.sessions);
+  const lists = [tree.live, tree.needs_you, ...tree.pin_sections.map((s) => s.sessions), ...projectLists];
+  for (const list of lists) {
+    const found = visit(list);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 // resetTreeStoreForTests resets every module-private/store field to its
 // initial state, including the pending debounce timer - tree.ts is a
 // singleton store (one cached tree, one wired-client marker, at most one

@@ -18,7 +18,6 @@ import { threadsStore } from "../../stores/threads";
 import type { ToastKind } from "../../widgets";
 import { revealSessionInRail } from "../rail/railController";
 import { navigate } from "../routing";
-import { isMobileViewport } from "../useIsMobile";
 import { workspaceStore } from "../workspace";
 import { blocked } from "./blocked";
 import { commandScore } from "./commandScore";
@@ -120,19 +119,13 @@ export function splitModelId(id: string): { provider: string; model: string } {
   return { provider: id.slice(0, slash), model: id.slice(slash + 1) };
 }
 
-// clickTrigger ports the legacy /tasks and /status "synthesize a click on the
-// chrome trigger" behavior (search.js:511-514), no-op-safe when the trigger
-// is absent - exactly as the legacy `if (btn) btn.click()` was.
-function clickTrigger(selector: string): void {
-  const el = document.querySelector<HTMLElement>(selector);
-  if (el) el.click();
-}
-
-function toggleSessionPane(ctx: PaletteRunContext, type: "sessionTasks" | "sessionDetails", selector: string): void {
-  if (isMobileViewport()) {
-    clickTrigger(selector);
-    return;
-  }
+// /tasks and /status used to branch on isMobileViewport(): desktop toggled the
+// workspace pane, mobile synthesized a click on the session chrome's trigger
+// button (search.js:511-514's `if (btn) btn.click()`). The unified SessionMenu
+// now owns Details/Tasks/Activity at every width, so those triggers never
+// render and the mobile path was a guaranteed no-op. Like the rail adapter,
+// both commands now toggle the workspace pane on ALL viewports.
+function toggleSessionPane(ctx: PaletteRunContext, type: "sessionTasks" | "sessionDetails"): void {
   if (ctx.sessionRef) workspaceStore.getState().togglePane(type, { ref: ctx.sessionRef });
 }
 
@@ -521,7 +514,7 @@ export function buildCommands(): Command[] {
       hint: "",
       keywords: [],
       scope: "session",
-      run: (ctx) => toggleSessionPane(ctx, "sessionTasks", "[data-tasks-trigger]"),
+      run: (ctx) => toggleSessionPane(ctx, "sessionTasks"),
     },
     {
       id: "status",
@@ -529,7 +522,7 @@ export function buildCommands(): Command[] {
       hint: "",
       keywords: ["details", "info"],
       scope: "session",
-      run: (ctx) => toggleSessionPane(ctx, "sessionDetails", "[data-details-trigger]"),
+      run: (ctx) => toggleSessionPane(ctx, "sessionDetails"),
     },
     {
       id: "project",
