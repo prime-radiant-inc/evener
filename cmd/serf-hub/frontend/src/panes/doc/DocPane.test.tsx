@@ -4,10 +4,9 @@ import { lazy } from "react";
 import { afterAll, afterEach, beforeEach, expect, type MockInstance, test, vi } from "vitest";
 import * as docContentModule from "../../protocol/docContent";
 import { DOC_FILE_MAX_BYTES, type DocFileContent, DocFileError, docImageURL } from "../../protocol/docContent";
-import type { ThreadModel } from "../../protocol/model";
 import { registerPaneForTests } from "../../shell/paneRegistry";
-import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
-import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { registerDockviewApi, resetWorkspaceStoreForTests } from "../../shell/workspace";
+import { resetThreadsStoreForTests } from "../../stores/threads";
 import DocPane from "./DocPane";
 // Side-effect import: registers the real "doc" pane type (index.tsx), needed
 // below so workspaceStore.openPane("doc", ...) can seed an already-open doc
@@ -168,62 +167,4 @@ test("an image that fails to load shows an unavailable notice instead of a broke
   render(<DocPane params={{ session: "s1", path: "out/missing.png", kind: "image" }} paneId="doc-4" focused={true} />);
   fireEvent.error(screen.getByTestId("doc-image"));
   expect(screen.getByText("Image not available")).toBeTruthy();
-});
-
-// --- kata 9br8: "Back to parent" — same no-way-back gap as the subagent
-// transcript pane (kata 0pzz), same fix shape. Unlike the transcript pane's
-// optional parentRef, DocParams.session is ALREADY the parent session ref
-// and is never optional (openDocBeside's only producer, FileOpenBesideButton,
-// always has a real sessionRef) - so the back action renders unconditionally,
-// for both file and image panes. ---------------------------------------------
-
-test("shows a 'Back to <parent name>' action naming the live session, for a file pane", async () => {
-  mockRead.mockResolvedValue(textContent({ text: "body" }));
-  threadsStore.setState((s) => {
-    const threads = new Map(s.threads);
-    threads.set("s1", { ref: "s1", name: "fix the flaky test", turns: [] } as unknown as ThreadModel);
-    return { ...s, threads };
-  });
-  renderFile("notes.txt");
-  expect(await screen.findByRole("button", { name: /back to fix the flaky test/i })).toBeTruthy();
-});
-
-test("falls back to the raw session ref when no cached name is available yet", async () => {
-  mockRead.mockResolvedValue(textContent({ text: "body" }));
-  renderFile("notes.txt");
-  expect(await screen.findByRole("button", { name: /back to s1/i })).toBeTruthy();
-});
-
-test("shows the back action on an image pane too", () => {
-  render(<DocPane params={{ session: "s1", path: "out/pic.png", kind: "image" }} paneId="doc-back" focused={true} />);
-  expect(screen.getByRole("button", { name: /back to s1/i })).toBeTruthy();
-});
-
-test("clicking 'Back to parent' focuses (or reopens) the parent session pane", async () => {
-  mockRead.mockResolvedValue(textContent({ text: "body" }));
-  renderFile("notes.txt");
-
-  const back = await screen.findByRole("button", { name: /back to/i });
-  fireEvent.click(back);
-
-  const panes = workspaceStore.getState().panes;
-  const parentPane = panes.find((p) => p.type === "session");
-  expect(parentPane?.params).toEqual({ ref: "s1" });
-  expect(workspaceStore.getState().focusedPaneId).toBe(parentPane?.id);
-});
-
-test("clicking 'Back to parent' re-focuses an ALREADY-OPEN parent pane rather than opening a duplicate", async () => {
-  mockRead.mockResolvedValue(textContent({ text: "body" }));
-  const existingId = workspaceStore.getState().openPane("session", { ref: "s1" });
-  // Focus something else first (the doc pane itself), so clicking Back has
-  // to move focus back.
-  workspaceStore.getState().openPane("doc", { session: "s1", path: "notes.txt", kind: "file" });
-
-  renderFile("notes.txt");
-  const back = await screen.findByRole("button", { name: /back to/i });
-  fireEvent.click(back);
-
-  const panes = workspaceStore.getState().panes;
-  expect(panes.filter((p) => p.type === "session")).toHaveLength(1);
-  expect(workspaceStore.getState().focusedPaneId).toBe(existingId);
 });

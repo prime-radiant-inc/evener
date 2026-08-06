@@ -10,7 +10,6 @@ import {
 import type { PaneProps } from "../../shell/paneRegistry";
 import { Chip, Dialog, EmptyState, Markdown, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { BackToParentAction } from "../backToParentAction";
 import { filenameOf, formatDocBytes, isMarkdownPath } from "./docFile";
 import styles from "./docpane.module.css";
 import type { DocParams } from "./openDoc";
@@ -121,16 +120,12 @@ function DocImageView({ session, path }: { session: string; path: string }) {
 // click-to-zoom lightbox) or a file (raw bytes via /doc/file?format=raw,
 // rendered as sanitized markdown, escaped text, or a binary notice). It
 // replaces the legacy iframe-to-HTML-page boundary the rewrite removes.
-//
-// Same no-way-back gap as the read-only transcript pane (kata 0pzz), same
-// fix (kata 9br8): a doc pane is opened beside a specific session (a file/
-// image tool card's "Open beside" button, the ONLY producer - see
-// fileOpenBeside.tsx), so params.session already IS the parent session ref -
-// unlike Transcript's parentRef, never optional here. The action is always
-// shown, for both a file and an image pane.
+// Opened beside a specific session (a file/image tool card's "Open beside"
+// button, the ONLY producer - see fileOpenBeside.tsx), so params.session
+// already IS the parent session ref.
 export default function DocPane({ params }: PaneProps<DocParams>) {
   return (
-    <PaneScaffold title={filenameOf(params.path)} actions={<BackToParentAction parentRef={params.session} />}>
+    <PaneScaffold title={filenameOf(params.path)}>
       {params.kind === "image" ? (
         <DocImageView session={params.session} path={params.path} />
       ) : (

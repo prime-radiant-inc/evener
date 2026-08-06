@@ -24,7 +24,6 @@ import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
 import { EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { BackToParentAction } from "../backToParentAction";
 import { exchangeOpenersFor } from "../session/transcript/exchangeOpeners";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
 import { TurnBlock } from "../session/transcript/TurnBlock";
@@ -40,13 +39,13 @@ import styles from "./transcript.module.css";
 
 export interface TranscriptParams {
   ref: string;
-  // kata 0pzz: the enclosing session's ref, when this pane was opened from a
-  // subagent row (subagentModule.tsx's openTranscript - the only producer
-  // today). Carried in the pane's OWN params - not passed around as a
-  // one-off argument - so it survives a layout restore/reload and so the
-  // pane can answer "whose child am I" and offer a way back entirely on its
-  // own, regardless of where dockview/StackHost happened to place it.
-  // Undefined for a hypothetical future producer with no enclosing session.
+  // The enclosing session's ref, when this pane was opened from a subagent
+  // row (subagentModule.tsx's openTranscript - the only producer today).
+  // Carried in the pane's OWN params - not passed around as a one-off
+  // argument - so it survives a layout restore/reload. A "job:<id>" ref
+  // resolves its owning session from it (JobLog fetches output through the
+  // owner, never through thread/read). Undefined for a hypothetical future
+  // producer with no enclosing session.
   parentRef?: string;
 }
 
@@ -72,8 +71,7 @@ export default function Transcript({ params }: PaneProps<TranscriptParams>) {
 }
 
 function ThreadTranscript({ params }: { params: TranscriptParams }) {
-  const { ref, parentRef } = params;
-  const backAction = parentRef !== undefined ? <BackToParentAction parentRef={parentRef} /> : undefined;
+  const { ref } = params;
 
   // ensureThread on mount / releaseThread on unmount, deferred until the one
   // client is actually ready - a deep-linked open can reach this effect before
@@ -124,7 +122,7 @@ function ThreadTranscript({ params }: { params: TranscriptParams }) {
 
   if (!model) {
     return (
-      <PaneScaffold title={ref} actions={backAction}>
+      <PaneScaffold title={ref}>
         <EmptyState title="Loading transcript…" />
       </PaneScaffold>
     );
@@ -141,7 +139,7 @@ function ThreadTranscript({ params }: { params: TranscriptParams }) {
   };
 
   return (
-    <PaneScaffold title={model.name || ref} actions={backAction}>
+    <PaneScaffold title={model.name || ref}>
       {model.turns.length === 0 ? (
         <EmptyState title="No turns yet" hint="This thread hasn't sent or received anything yet." />
       ) : (

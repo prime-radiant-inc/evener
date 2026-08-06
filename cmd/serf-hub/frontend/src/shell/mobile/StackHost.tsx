@@ -292,13 +292,12 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
   // component's own backStackRef happens to hold, so it gets no back
   // affordance at all rather than one that would just loop back to itself.
   //
-  // Session panel panes get a DIFFERENT Back, not none: their own
-  // BackToParentAction lives in the scaffold header, which mobile hides
-  // (panescaffold.module.css's max-width block), so this top bar is the only
-  // visible chrome. Their Back targets the parent session directly - the
-  // generic stack stays suppressed for them (it resets across the host swap
-  // that typically lands a panel pane here, and would walk somewhere
-  // unrelated).
+  // Session panel panes get a DIFFERENT Back, not none: this top bar is the
+  // only visible chrome for them on mobile (the scaffold header is hidden,
+  // panescaffold.module.css's max-width block). Their Back targets the parent
+  // session directly - the generic stack stays suppressed for them (it resets
+  // across the host swap that typically lands a panel pane here, and would
+  // walk somewhere unrelated).
   const panelPaneTypes = new Set(["sessionTasks", "sessionActivity", "sessionDetails"]);
   const isPanelPane = focusedPane !== null && panelPaneTypes.has(focusedPane.type);
   const showBack = focusedPane !== null && focusedPane.type !== "welcome";

@@ -9,12 +9,13 @@
 // "Load earlier output" button pages backwards (beforeBytes = the earliest
 // offset on screen) and prepends, so the whole log is reachable. Refresh
 // re-reads the tail and drops the paged prefix.
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
 import { Button, EmptyState, PaneScaffold } from "../../widgets";
+import { parseAnsiLines } from "../../widgets/codeblock/ansi";
+import { AnsiLineContent } from "../../widgets/codeblock/ansiLine";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { BackToParentAction } from "../backToParentAction";
 import styles from "./transcript.module.css";
 
 const CLASS = {
@@ -152,13 +153,20 @@ export function JobLog({ jobRef, parentRef }: { jobRef: string; parentRef?: stri
       );
   }
 
+  // Job output is terminal text: parse it through the codeblock ANSI
+  // pipeline so escape sequences become styled runs instead of literal
+  // "[2m" noise - the same treatment ActivityRowDetail's output preview and
+  // CodeBlock's ansi mode give every other job-output surface. The whole
+  // concatenated log (the tail plus any paged-earlier prefix) is re-parsed
+  // from the top on each change, so SGR state spanning a page boundary
+  // flows into the newer content exactly as the terminal emitted it.
+  const content = state.status === "ready" ? state.content : "";
+  const lines = useMemo(() => parseAnsiLines(content), [content]);
+
   const actions = (
-    <>
-      <Button variant="quiet" size="sm" onClick={() => setRefreshIndex((index) => index + 1)}>
-        Refresh
-      </Button>
-      {parentRef !== undefined && <BackToParentAction parentRef={parentRef} />}
-    </>
+    <Button variant="quiet" size="sm" onClick={() => setRefreshIndex((index) => index + 1)}>
+      Refresh
+    </Button>
   );
 
   return (
@@ -184,7 +192,13 @@ export function JobLog({ jobRef, parentRef }: { jobRef: string; parentRef?: stri
             </span>
           )}
           <pre className={CLASS.joblog} data-testid="joblog-content">
-            {state.content}
+            {lines.map((line, index) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: the parsed lines are a static split of the fetched log, never reordered
+              <Fragment key={index}>
+                {index > 0 ? "\n" : null}
+                <AnsiLineContent line={line} />
+              </Fragment>
+            ))}
           </pre>
         </div>
       )}

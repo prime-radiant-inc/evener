@@ -1521,9 +1521,9 @@ test("crossing desktop → mobile → desktop preserves a focused panel and its 
   setMobile(true);
   expect(await screen.findByText("Loading session panel…")).toBeTruthy();
   expect(workspaceStore.getState().focusedPaneId).toBe(panelId);
-  // The pane's own BackToParentAction sits in the scaffold header, which is
-  // display:none below 900px - StackHost's top-bar Back is the VISIBLE
-  // mobile return path, wired to the parent session for panel panes.
+  // The scaffold header is display:none below 900px - StackHost's top-bar
+  // Back is the VISIBLE mobile return path, wired to the parent session for
+  // panel panes.
   expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
 
   setMobile(false);

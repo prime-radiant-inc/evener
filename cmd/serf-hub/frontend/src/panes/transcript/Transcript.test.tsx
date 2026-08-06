@@ -1,14 +1,13 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { ThreadModel } from "../../protocol/model";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
 import { registerPaneForTests } from "../../shell/paneRegistry";
-import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
+import { registerDockviewApi, resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
-import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { resetThreadsStoreForTests } from "../../stores/threads";
 import Transcript from "./Transcript";
 
 // A minimal, test-only "session" pane registration - mirrors
@@ -224,6 +223,23 @@ test("a job: ref renders the shell job's output log via serf/jobs/output, never 
   expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
 });
 
+test("job output renders ANSI SGR sequences as styled runs, not literal escape text", async () => {
+  const fake = connectFakeClient();
+  fake.on("serf/jobs/output", () => ({
+    data: { tail: "plain \u001b[32m283 passed\u001b[39m done", totalBytes: 40, retainedStart: 0, truncated: false },
+  }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "job:job_x", parentRef: "ref_parent" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByText("283 passed").closest('[data-ansi-fg="green"]')).toBeTruthy());
+  // The escape sequences themselves are consumed, never shown as text.
+  expect(screen.getByTestId("joblog-content").textContent).toBe("plain 283 passed done");
+});
+
 test("a truncated job log says how much of the output is shown", async () => {
   const fake = connectFakeClient();
   fake.on("serf/jobs/output", () => ({
@@ -358,129 +374,4 @@ test("a failed job-output read surfaces the error, not a spinner forever", async
   );
 
   await waitFor(() => expect(screen.getByText(/job not found: job_x/i)).toBeTruthy());
-});
-
-// --- kata 0pzz: "Back to parent" — a subagent transcript is a child of a
-// specific parent session; the pane must say so and offer an explicit,
-// durable way back, regardless of where dockview/StackHost happened to
-// place it (a plain openPane() call on the parent ref works identically on
-// every layout: refocuses an already-open parent tab, or reopens it fresh
-// if the reader closed it - see workspace.ts's own same-params dedup). -----
-
-test("with no parentRef, no back-to-parent action renders at all", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_a"));
-
-  render(
-    <ClientProvider client={fake}>
-      <Transcript params={{ ref: "ref_a" }} paneId="p1" focused={false} />
-    </ClientProvider>,
-  );
-
-  await waitFor(() => expect(screen.getByText("ref_a")).toBeTruthy());
-  expect(screen.queryByRole("button", { name: /back to/i })).toBeNull();
-  // Stronger than the label check above: PaneScaffold only renders its
-  // actions wrapper at all when passed a defined `actions` prop, so this
-  // catches a mutation that renders BackToParentAction unconditionally with
-  // an empty/placeholder ref (which would still produce a "Back to " button
-  // whose label loosely matches /back to/i).
-  expect(screen.queryByTestId("pane-actions")).toBeNull();
-});
-
-test("with a parentRef, shows a 'Back to <parent name>' action naming the live parent thread", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_child"));
-  // Seed the parent's cached name the same way an already-open parent
-  // session pane would have (ensureThread's own hydration) - this test
-  // asserts the label reads it, not how it got there.
-  threadsStore.setState((s) => {
-    const threads = new Map(s.threads);
-    threads.set("ref_parent", { ref: "ref_parent", name: "fix the flaky test", turns: [] } as unknown as ThreadModel);
-    return { ...s, threads };
-  });
-
-  render(
-    <ClientProvider client={fake}>
-      <Transcript params={{ ref: "ref_child", parentRef: "ref_parent" }} paneId="p1" focused={false} />
-    </ClientProvider>,
-  );
-
-  await waitFor(() => expect(screen.getByRole("button", { name: /back to fix the flaky test/i })).toBeTruthy());
-});
-
-test("with a parentRef but no cached name yet, falls back to the raw parent ref", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_child"));
-
-  render(
-    <ClientProvider client={fake}>
-      <Transcript params={{ ref: "ref_child", parentRef: "ref_parent_unknown" }} paneId="p1" focused={false} />
-    </ClientProvider>,
-  );
-
-  await waitFor(() => expect(screen.getByRole("button", { name: /back to ref_parent_unknown/i })).toBeTruthy());
-});
-
-test("with a parentRef cached but its name is still the empty-string un-hydrated state, falls back to the raw ref (not a blank label)", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_child"));
-  // A ThreadModel's `name` is a plain (non-optional) string that starts as ""
-  // before the wire ever supplies one - the SAME un-hydrated state the "falls
-  // back to the raw ref as the pane title" test above covers for the pane's
-  // own title. The label must degrade the same way here, not render a blank
-  // "Back to " button.
-  threadsStore.setState((s) => {
-    const threads = new Map(s.threads);
-    threads.set("ref_parent_empty", { ref: "ref_parent_empty", name: "", turns: [] } as unknown as ThreadModel);
-    return { ...s, threads };
-  });
-
-  render(
-    <ClientProvider client={fake}>
-      <Transcript params={{ ref: "ref_child", parentRef: "ref_parent_empty" }} paneId="p1" focused={false} />
-    </ClientProvider>,
-  );
-
-  await waitFor(() => expect(screen.getByRole("button", { name: /back to ref_parent_empty/i })).toBeTruthy());
-});
-
-test("clicking 'Back to parent' focuses (or reopens) the parent session pane", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_child"));
-
-  render(
-    <ClientProvider client={fake}>
-      <Transcript params={{ ref: "ref_child", parentRef: "ref_parent" }} paneId="p1" focused={false} />
-    </ClientProvider>,
-  );
-
-  const back = await waitFor(() => screen.getByRole("button", { name: /back to/i }));
-  fireEvent.click(back);
-
-  const panes = workspaceStore.getState().panes;
-  const parentPane = panes.find((p) => p.type === "session");
-  expect(parentPane?.params).toEqual({ ref: "ref_parent" });
-  expect(workspaceStore.getState().focusedPaneId).toBe(parentPane?.id);
-});
-
-test("clicking 'Back to parent' re-focuses an ALREADY-OPEN parent pane rather than opening a duplicate", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_child"));
-
-  const existingId = workspaceStore.getState().openPane("session", { ref: "ref_parent" });
-  // Focus something else first, so clicking Back has to move focus back.
-  workspaceStore.getState().openPane("transcript", { ref: "ref_child" });
-
-  render(
-    <ClientProvider client={fake}>
-      <Transcript params={{ ref: "ref_child", parentRef: "ref_parent" }} paneId="p1" focused={false} />
-    </ClientProvider>,
-  );
-
-  const back = await waitFor(() => screen.getByRole("button", { name: /back to/i }));
-  fireEvent.click(back);
-
-  const panes = workspaceStore.getState().panes;
-  expect(panes.filter((p) => p.type === "session")).toHaveLength(1);
-  expect(workspaceStore.getState().focusedPaneId).toBe(existingId);
 });

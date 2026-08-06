@@ -4,7 +4,6 @@ import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { EmptyState, PaneScaffold } from "../../widgets";
-import { BackToParentAction } from "../backToParentAction";
 import { ActivityPanelBody } from "../session/chrome/ActivityPanel";
 import { DetailsPanelBody } from "../session/chrome/DetailsPanel";
 import { TasksPanelBody } from "../session/chrome/TasksPanel";
@@ -53,13 +52,7 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
 
   if (!model) {
     return (
-      <PaneScaffold
-        title={title}
-        paneId={paneId}
-        focused={focused}
-        scaffoldMarker={`session-panel:${kind}:${ref}`}
-        actions={<BackToParentAction parentRef={ref} />}
-      >
+      <PaneScaffold title={title} paneId={paneId} focused={focused} scaffoldMarker={`session-panel:${kind}:${ref}`}>
         <EmptyState title="Loading session panel…" />
       </PaneScaffold>
     );
@@ -75,13 +68,7 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
     );
 
   return (
-    <PaneScaffold
-      title={title}
-      paneId={paneId}
-      focused={focused}
-      scaffoldMarker={`session-panel:${kind}:${ref}`}
-      actions={<BackToParentAction parentRef={ref} />}
-    >
+    <PaneScaffold title={title} paneId={paneId} focused={focused} scaffoldMarker={`session-panel:${kind}:${ref}`}>
       <div data-pane-id={paneId}>{body}</div>
     </PaneScaffold>
   );

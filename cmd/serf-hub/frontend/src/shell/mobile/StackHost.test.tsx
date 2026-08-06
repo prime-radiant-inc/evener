@@ -234,11 +234,10 @@ test("the back affordance is shown once a non-welcome pane is focused", async ()
   expect(await screen.findByRole("button", { name: "Back" })).toBeTruthy();
 });
 
-// The scaffold header holding the pane's own BackToParentAction is
-// display:none below 900px (panescaffold.module.css), so the top bar is the
-// ONLY visible chrome a phone user has. A panel pane's Back there must return
-// to the parent session - never pop the generic stack, which would walk to
-// whatever happened to be focused before.
+// The scaffold header is display:none below 900px (panescaffold.module.css),
+// so the top bar is the ONLY visible chrome a phone user has. A panel pane's
+// Back there must return to the parent session - never pop the generic stack,
+// which would walk to whatever happened to be focused before.
 test("a session panel pane's top-bar Back returns to the parent session, not the back stack", async () => {
   const user = userEvent.setup();
   await import("../../panes/sessionPanels");
