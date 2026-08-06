@@ -1098,6 +1098,10 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			} else {
 				history = append(history, t.Message)
 			}
+		case schema.TurnEnvironment:
+			// Environment context only ever lands at a turn boundary, so no
+			// mid-tool-round deferral: pass the message straight through.
+			history = append(history, t.Message)
 		case schema.TurnToolResults:
 			// Expand aggregated tool results into individual messages.
 			for _, p := range t.Message.Content {
