@@ -217,7 +217,10 @@ export interface ThreadsStoreState {
   listJobs(ref: string, continuation?: string): Promise<unknown>;
   // beforeBytes > 0 pages backwards: the window ending at that lifetime
   // output offset instead of the tail (appwire.JobsOutputParams.BeforeBytes).
-  jobOutput(ref: string, jobId: string, beforeBytes?: number): Promise<unknown>;
+  // maxBytes > 0 bounds the window (appwire.JobsOutputParams.MaxBytes) - the
+  // activity strip's preview uses it to fetch a couple hundred bytes instead
+  // of the daemon's default tail.
+  jobOutput(ref: string, jobId: string, beforeBytes?: number, maxBytes?: number): Promise<unknown>;
   // Answers one serf/sandbox/escalation/requested via serf/sandbox/
   // escalation/resolve. On success, removes the escalation from whichever
   // of threads/watchedThreads currently track `ref` (both, if both do -
@@ -2048,12 +2051,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     return resp.data;
   },
 
-  async jobOutput(ref, jobId, beforeBytes) {
+  async jobOutput(ref, jobId, beforeBytes, maxBytes) {
     const client = requireClient();
     const resp = await client.request("serf/jobs/output", {
       ref,
       jobId,
       ...(beforeBytes !== undefined && beforeBytes > 0 ? { beforeBytes } : {}),
+      ...(maxBytes !== undefined && maxBytes > 0 ? { maxBytes } : {}),
     });
     return resp.data;
   },

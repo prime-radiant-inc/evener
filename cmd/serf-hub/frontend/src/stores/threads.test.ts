@@ -3891,6 +3891,19 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
     expect(result).toEqual(OUTPUT_DATA);
   });
 
+  test("jobOutput passes beforeBytes and maxBytes through only when positive", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/output", () => ({ data: OUTPUT_DATA }));
+
+    await threadsStore.getState().jobOutput("ref_a", "job_1", 64, 256);
+    await threadsStore.getState().jobOutput("ref_a", "job_1", 0, 0);
+
+    const calls = fake.calls.filter((c) => c.method === "serf/jobs/output");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.params).toEqual({ ref: "ref_a", jobId: "job_1", beforeBytes: 64, maxBytes: 256 });
+    expect(calls[1]?.params).toEqual({ ref: "ref_a", jobId: "job_1" });
+  });
+
   test("both throw when no client has been connected yet", async () => {
     await expect(threadsStore.getState().listJobs("ref_a")).rejects.toThrow(/no client connected/i);
     await expect(threadsStore.getState().jobOutput("ref_a", "job_1")).rejects.toThrow(/no client connected/i);

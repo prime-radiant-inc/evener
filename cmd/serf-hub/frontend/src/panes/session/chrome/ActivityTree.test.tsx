@@ -1,6 +1,6 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { createElement, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import * as openTranscriptModule from "../transcript/openTranscript";
 import { ActivityTree } from "./ActivityTree";
@@ -15,13 +15,32 @@ import type { ActivityTree as ActivityTreeData } from "./activityData";
 // ActivityTree.tsx calls internally. Spying on the real module's own export
 // patches the one binding every importer (this file's assertions AND
 // ActivityTree.tsx's internal calls) actually shares, regardless of import
-// order. OpenTranscriptButton itself (rendered by the detail strips the
-// expanded-by-default rows below now show) is left real: it is a plain
-// Button that calls the spied openTranscript on click, so no test needs a
-// stub for it.
+// order. OpenTranscriptButton is stubbed: it lives in the SAME module as
+// openTranscript, so its internal call uses the module-local binding and the
+// spy above would never observe it. The stub records the props the tree
+// passes (iconOnly included) and routes its click to the spied openTranscript;
+// the real button's icon-only rendering and click behavior are covered in
+// openTranscript.test.tsx, where the workspace harness exists.
 let openTranscript: typeof openTranscriptModule.openTranscript;
+let openButtonProps: Array<{
+  transcriptRef: string;
+  parentRef?: string;
+  iconOnly?: boolean;
+}>;
 beforeEach(() => {
   openTranscript = vi.spyOn(openTranscriptModule, "openTranscript").mockImplementation(() => {});
+  openButtonProps = [];
+  vi.spyOn(openTranscriptModule, "OpenTranscriptButton").mockImplementation((props) => {
+    openButtonProps.push(props);
+    return createElement("button", {
+      type: "button",
+      "aria-label": props.label ?? "Open transcript",
+      onClick: (event: { stopPropagation: () => void }) => {
+        event.stopPropagation();
+        openTranscript(props.transcriptRef, props.parentRef);
+      },
+    });
+  });
 });
 
 // Pinned clock: every quiet-time assertion below measures against this instant.
@@ -179,7 +198,7 @@ describe("ActivityTree", () => {
     expect(openTranscript).not.toHaveBeenCalled();
   });
 
-  test("expanded fold reveals terminal rows with duration and failed meta", () => {
+  test("expanded fold reveals terminal rows with duration meta; the kind glyph carries the failure", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
     render(<ActivityTree tree={TREE} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
@@ -192,7 +211,77 @@ describe("ActivityTree", () => {
 
     const failedRow = screen.getByRole("treeitem", { name: "broken lint" });
     expect(failedRow.textContent).toContain("2m");
-    expect(failedRow.textContent).toContain("failed");
+    // No "failed" text in the meta: the colored kind glyph says it instead.
+    expect(failedRow.textContent).not.toContain("failed");
+    const kindGlyph = within(failedRow).getByText("$");
+    expect(kindGlyph.getAttribute("aria-label")).toBe("Failed");
+  });
+
+  test("the kind glyph carries the row's status hue and accessible name", () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    render(<ActivityTree tree={TREE} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+
+    // Working rows color the glyph with the alive hue.
+    const liveGlyph = within(screen.getByRole("treeitem", { name: "run tests" })).getByText("$");
+    expect(liveGlyph.getAttribute("aria-label")).toBe("Working");
+    expect(liveGlyph.className).toContain("kindAlive");
+
+    // Failed rows color it danger; ended rows keep the default low ink.
+    const failedGlyph = within(screen.getByRole("treeitem", { name: "broken lint" })).getByText("$");
+    expect(failedGlyph.getAttribute("aria-label")).toBe("Failed");
+    expect(failedGlyph.className).toContain("kindDanger");
+    const endedGlyph = within(screen.getByRole("treeitem", { name: "finished build" })).getByText("$");
+    expect(endedGlyph.getAttribute("aria-label")).toBe("Ended");
+    expect(endedGlyph.className).not.toContain("kindDanger");
+    expect(endedGlyph.className).not.toContain("kindAlive");
+  });
+
+  test("opening the fold reveals rows with their detail strips collapsed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    const user = setupUser();
+    render(<Host initialExpanded={[FOLD_ID]} />);
+
+    // The fold click means "show the list", not "expand every child": the
+    // revealed rows' strips stay closed. The live top-level rows' strips are
+    // open by default, so the probe is the terminal strip's exact meta text.
+    const doneRow = screen.getByRole("treeitem", { name: "finished build" });
+    const chevron = within(doneRow).getByRole("button", { name: /show details for finished build/i });
+    expect(chevron.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("0b")).toBeNull();
+
+    // Expanding one child reveals just that row's strip.
+    await user.click(chevron);
+    expect(chevron.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("0b")).toBeTruthy();
+  });
+
+  test("rows with a transcript ref carry an icon-only open button between the title and the meta", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    const user = setupUser();
+    render(<ActivityTree tree={TREE} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+
+    const shellRow = screen.getByRole("treeitem", { name: "run tests" });
+    const openButton = within(shellRow).getByRole("button", { name: "Open transcript" });
+    // The tree asks for the icon-only form; the real component's glyph-only
+    // rendering is covered in openTranscript.test.tsx.
+    expect(openButtonProps.every((props) => props.iconOnly === true)).toBe(true);
+    // The button ends the title: after the name text, before the meta cluster.
+    const nameText = within(shellRow).getByText("run tests");
+    const metaText = within(shellRow).getByText("12s");
+    expect(nameText.compareDocumentPosition(openButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(openButton.compareDocumentPosition(metaText) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // The button opens the row's transcript without also activating the row.
+    await user.click(openButton);
+    expect(openTranscript).toHaveBeenCalledTimes(1);
+    expect(openTranscript).toHaveBeenCalledWith("job:job_shell_live", "ref_root");
+
+    // A row with no transcript ref (broken lint) gets no open button at all.
+    const failedRow = screen.getByRole("treeitem", { name: "broken lint" });
+    expect(within(failedRow).queryByRole("button", { name: "Open transcript" })).toBeNull();
   });
 
   test("clicking rows opens their transcripts with the row's parent ref", async () => {
@@ -223,7 +312,7 @@ describe("ActivityTree", () => {
     // live strips render the same meta line, hence the pair of matches).
     const delegateRow = screen.getByRole("treeitem", { name: "Inspect the repo" });
     expect(within(delegateRow).getByRole("button", { name: /hide details for inspect the repo/i })).toBeTruthy();
-    expect(screen.getAllByText(/running 12s · 0 output bytes · started \d{2}:\d{2}/)).toHaveLength(2);
+    expect(screen.getAllByText(/running 12s · 0b · started \d{2}:\d{2}/)).toHaveLength(2);
   });
 
   test("nested rows stay collapsed by default", () => {
@@ -299,7 +388,7 @@ describe("ActivityTree", () => {
     const shellRow = screen.getByRole("treeitem", { name: "run tests" });
     await user.click(within(shellRow).getByRole("button", { name: /hide details for run tests/i }));
     expect(screen.queryByText("npm test")).toBeNull();
-    expect(screen.getByText(/running 12s · 0 output bytes · started \d{2}:\d{2}/)).toBeTruthy();
+    expect(screen.getByText(/running 12s · 0b · started \d{2}:\d{2}/)).toBeTruthy();
     expect(openTranscript).not.toHaveBeenCalled();
 
     // Clicking again reopens exactly that row's strip.

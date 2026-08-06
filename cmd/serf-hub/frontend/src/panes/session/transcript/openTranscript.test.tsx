@@ -1,6 +1,7 @@
-import { beforeAll, beforeEach, expect, test } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
-import { openTranscript } from "./openTranscript";
+import { OpenTranscriptButton, openTranscript } from "./openTranscript";
 
 beforeAll(async () => {
   await import("../");
@@ -8,6 +9,10 @@ beforeAll(async () => {
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+});
+
+afterEach(() => {
+  cleanup();
 });
 
 function transcriptPanes(ref: string) {
@@ -81,4 +86,23 @@ test("keeps no-parent opening deduped and usable without a desktop host", () => 
   expect(transcriptPanes("remote:child")[0]?.id).toBe(first?.id);
   expect(transcriptPanes("remote:child")[0]?.slot).toBe("main");
   expect(workspaceStore.getState().focusedPaneId).toBe(first?.id);
+});
+
+test("OpenTranscriptButton iconOnly renders the glyph with no visible label and opens on click", () => {
+  render(<OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" iconOnly />);
+
+  const button = screen.getByRole("button", { name: "Open transcript" });
+  // Icon-only: the accessible name comes from aria-label, not visible text.
+  expect(button.textContent).toBe("");
+
+  fireEvent.click(button);
+  expect(transcriptPanes("local:child")).toHaveLength(1);
+  expect(transcriptPanes("local:child")[0]?.params).toEqual({ ref: "local:child", parentRef: "local:owner" });
+});
+
+test("OpenTranscriptButton's default form keeps the visible 'open' label", () => {
+  render(<OpenTranscriptButton transcriptRef="local:child" />);
+
+  const button = screen.getByRole("button", { name: "Open transcript" });
+  expect(button.textContent).toContain("open");
 });
