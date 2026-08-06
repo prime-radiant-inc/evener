@@ -97,14 +97,12 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 // parseLoad1 extracts the 1-minute load average from either darwin
 // sysctl output ("{ 2.16 3.57 4.34 }") or /proc/loadavg ("2.16 3.57 ...").
 func parseLoad1(s string) (float64, bool) {
-	for _, f := range strings.Fields(strings.Trim(strings.TrimSpace(s), "{}")) {
-		v, err := strconv.ParseFloat(f, 64)
-		if err != nil {
-			return 0, false
-		}
-		return v, true
+	fields := strings.Fields(strings.Trim(strings.TrimSpace(s), "{}"))
+	if len(fields) == 0 {
+		return 0, false
 	}
-	return 0, false
+	v, err := strconv.ParseFloat(fields[0], 64)
+	return v, err == nil
 }
 
 func loadWarning(load1 float64, cores int) string {
