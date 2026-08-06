@@ -74,18 +74,22 @@ func TestSelectSubagentModel_PluginAvailabilityPrecedence(t *testing.T) {
 			wantListCalls:      1,
 		},
 		{
+			// The explicit fallback model must itself be live-enumerable
+			// (Task 3: unwiring the explicit-override call site through
+			// resolveModelSwitchTarget), so gpt-5.3 is included alongside
+			// gpt-5.2 here.
 			name:               "unavailable plugin model uses explicit fallback",
 			parentModel:        "gpt-5.2",
 			pluginModel:        "gpt-4.1-nano",
 			explicitModel:      "gpt-5.3",
-			liveModels:         []llm.ModelInfo{{ID: "gpt-5.2"}},
+			liveModels:         []llm.ModelInfo{{ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
 			wantRequestedModel: "gpt-5.3",
 			wantProfileID:      "openai",
 			wantModel:          "gpt-5.3",
 			wantWarning:        true,
 			wantReason:         "unavailable",
 			wantResolverCalls:  0,
-			wantListCalls:      1,
+			wantListCalls:      2,
 		},
 		{
 			name:               "unenumerable plugin model inherits parent",
@@ -101,20 +105,25 @@ func TestSelectSubagentModel_PluginAvailabilityPrecedence(t *testing.T) {
 			wantListCalls:      1,
 		},
 		{
+			// Both the launch profile's own model (validated at NewSession)
+			// and the explicit override (validated by the Task 3 call site)
+			// must be live-enumerable here.
 			name:               "inherit uses explicit model",
 			parentModel:        "gpt-5.2",
 			pluginModel:        "inherit",
 			explicitModel:      "gpt-5.3",
+			liveModels:         []llm.ModelInfo{{ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
 			wantRequestedModel: "gpt-5.3",
 			wantProfileID:      "openai",
 			wantModel:          "gpt-5.3",
 			wantResolverCalls:  0,
-			wantListCalls:      0,
+			wantListCalls:      1,
 		},
 		{
 			name:               "inherit without explicit model uses parent",
 			parentModel:        "gpt-5.2",
 			pluginModel:        "inherit",
+			liveModels:         []llm.ModelInfo{{ID: "gpt-5.2"}},
 			wantRequestedModel: "",
 			wantProfileID:      "openai",
 			wantModel:          "gpt-5.2",
@@ -125,6 +134,7 @@ func TestSelectSubagentModel_PluginAvailabilityPrecedence(t *testing.T) {
 			name:               "plugin model identical to parent skips enumeration",
 			parentModel:        "gpt-5.2",
 			pluginModel:        "gpt-5.2",
+			liveModels:         []llm.ModelInfo{{ID: "gpt-5.2"}},
 			wantRequestedModel: "gpt-5.2",
 			wantProfileID:      "openai",
 			wantModel:          "gpt-5.2",
@@ -209,12 +219,17 @@ func TestSelectSubagentModel_RenamedAnthropicAliasStaysOnInstance(t *testing.T) 
 	base := WithProviderID(newAnthropicProfile("claude-opus-4-6"), "work")
 	adapter := &pluginModelListAdapter{
 		fakeAdapter: fakeAdapter{name: "work"},
-		models: []llm.ModelInfo{{
-			ID:                    "claude-sonnet-4-6",
-			ContextWindow:         764_002,
-			SupportsReasoning:     true,
-			ReasoningEffortLevels: []string{"low", "high"},
-		}},
+		models: []llm.ModelInfo{
+			// The launch profile's own model must be live-enumerable too:
+			// NewSession now validates it (Task 3).
+			{ID: "claude-opus-4-6"},
+			{
+				ID:                    "claude-sonnet-4-6",
+				ContextWindow:         764_002,
+				SupportsReasoning:     true,
+				ReasoningEffortLevels: []string{"low", "high"},
+			},
+		},
 	}
 	sess := newPluginModelSelectionSession(t, base, adapter, "sonnet", nil)
 
@@ -236,7 +251,10 @@ func TestSelectSubagentModel_KimiRejectsAnthropicAliasWithoutEnumeration(t *test
 
 	adapter := &pluginModelListAdapter{
 		fakeAdapter: fakeAdapter{name: "kimi-anthropic"},
-		models:      []llm.ModelInfo{{ID: "claude-sonnet-4-6"}},
+		// "k3" (the launch profile's own model, and here also the explicit
+		// override) must be live-enumerable: NewSession validates it, and so
+		// does the explicit-override call site (Task 3).
+		models: []llm.ModelInfo{{ID: "claude-sonnet-4-6"}, {ID: "k3"}},
 	}
 	sess := newPluginModelSelectionSession(t, newKimiAnthropicProfile("k3"), adapter, "sonnet", nil)
 
@@ -245,8 +263,11 @@ func TestSelectSubagentModel_KimiRejectsAnthropicAliasWithoutEnumeration(t *test
 		t.Fatalf("selectSubagentModel: %v", err)
 	}
 	assertPluginFallback(t, got, "k3", "kimi-anthropic", "k3", "cross-provider")
-	if adapter.listCalls() != 0 {
-		t.Errorf("ListModels calls = %d, want 0", adapter.listCalls())
+	// The plugin model ("sonnet") is rejected as cross-provider without any
+	// enumeration; the one call here is the explicit override "k3"'s
+	// membership validation (resolveModelSwitchTarget).
+	if adapter.listCalls() != 1 {
+		t.Errorf("ListModels calls = %d, want 1", adapter.listCalls())
 	}
 }
 
@@ -256,7 +277,10 @@ func TestSelectSubagentModel_QualifiedPluginRefNeverUsesSessionResolver(t *testi
 	resolverCalls := 0
 	adapter := &pluginModelListAdapter{
 		fakeAdapter: fakeAdapter{name: "kimi-anthropic"},
-		models:      []llm.ModelInfo{{ID: "anthropic/claude-sonnet-4-6"}},
+		// "k3" (the launch profile's own model, and here also the explicit
+		// override) must be live-enumerable: NewSession validates it, and so
+		// does the explicit-override call site (Task 3).
+		models: []llm.ModelInfo{{ID: "anthropic/claude-sonnet-4-6"}, {ID: "k3"}},
 	}
 	sess := newPluginModelSelectionSession(
 		t,
@@ -277,8 +301,11 @@ func TestSelectSubagentModel_QualifiedPluginRefNeverUsesSessionResolver(t *testi
 	if resolverCalls != 0 {
 		t.Errorf("resolver calls = %d, want 0", resolverCalls)
 	}
-	if adapter.listCalls() != 0 {
-		t.Errorf("ListModels calls = %d, want 0", adapter.listCalls())
+	// The plugin model is rejected as cross-provider without any
+	// enumeration; the one call here is the explicit override "k3"'s
+	// membership validation (resolveModelSwitchTarget).
+	if adapter.listCalls() != 1 {
+		t.Errorf("ListModels calls = %d, want 1", adapter.listCalls())
 	}
 }
 
@@ -323,14 +350,16 @@ func TestResolvePluginAgentModel_CustomAndExactMembership(t *testing.T) {
 		{
 			name:      "unknown exact custom ID is accepted when advertised",
 			requested: "company-special-v9",
-			models:    []llm.ModelInfo{{ID: "company-special-v9", ContextWindow: 786_004}},
+			// The launch profile's own model (claude-opus-4-6) must also be
+			// live-enumerable: NewSession validates it (Task 3).
+			models:    []llm.ModelInfo{{ID: "claude-opus-4-6"}, {ID: "company-special-v9", ContextWindow: 786_004}},
 			wantModel: "company-special-v9",
 			wantCtx:   786_004,
 		},
 		{
 			name:       "dated exact ID does not match undated family",
 			requested:  "claude-sonnet-4-6-20260729",
-			models:     []llm.ModelInfo{{ID: "claude-sonnet-4-6", ContextWindow: 797_005}},
+			models:     []llm.ModelInfo{{ID: "claude-opus-4-6"}, {ID: "claude-sonnet-4-6", ContextWindow: 797_005}},
 			wantReason: "unavailable",
 		},
 	}
@@ -393,12 +422,17 @@ func TestResolvePluginAgentModel_NormalizedMatchFreezesAdvertisedWireID(t *testi
 	wantCommunicate := subagentModelCommunicateDefinition(t, base)
 	adapter := &pluginModelListAdapter{
 		fakeAdapter: fakeAdapter{name: "work"},
-		models: []llm.ModelInfo{{
-			ID:                    "GpT-5.3",
-			ContextWindow:         808_006,
-			SupportsReasoning:     true,
-			ReasoningEffortLevels: []string{"low", "high"},
-		}},
+		models: []llm.ModelInfo{
+			// The launch profile's own model (gpt-5.2) must also be
+			// live-enumerable: NewSession validates it (Task 3).
+			{ID: "gpt-5.2"},
+			{
+				ID:                    "GpT-5.3",
+				ContextWindow:         808_006,
+				SupportsReasoning:     true,
+				ReasoningEffortLevels: []string{"low", "high"},
+			},
+		},
 	}
 	sess := newPluginModelSelectionSession(
 		t,
@@ -459,7 +493,9 @@ func TestSelectSubagentModel_AllowanceGuardPrecedesEnumeration(t *testing.T) {
 
 	adapter := &pluginModelListAdapter{
 		fakeAdapter: fakeAdapter{name: "openai"},
-		models:      []llm.ModelInfo{{ID: "gpt-5.3"}},
+		// The launch profile's own model (gpt-5.2) must also be
+		// live-enumerable: NewSession validates it (Task 3).
+		models: []llm.ModelInfo{{ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
 	}
 	sess := newPluginModelSelectionSession(t, NewOpenAIProfile("gpt-5.2"), adapter, "gpt-5.3", nil)
 	sess.mu.Lock()
@@ -472,6 +508,72 @@ func TestSelectSubagentModel_AllowanceGuardPrecedesEnumeration(t *testing.T) {
 	}
 	if adapter.listCalls() != 0 {
 		t.Errorf("ListModels calls = %d, want 0", adapter.listCalls())
+	}
+}
+
+// TestSelectSubagentModel_ExplicitModelRejectedWhenAbsentFromLiveList verifies
+// Task 3's delegate-dispatch wiring: an explicit delegate model override that
+// a successfully-enumerated live list doesn't contain fails the model
+// selection (not just a warn-and-fallback), naming the requested model and a
+// live alternative.
+func TestSelectSubagentModel_ExplicitModelRejectedWhenAbsentFromLiveList(t *testing.T) {
+	t.Parallel()
+
+	adapter := &pluginModelListAdapter{
+		fakeAdapter: fakeAdapter{name: "openai"},
+		// The launch profile's own model (gpt-5.2) must be live-enumerable;
+		// the requested override (gpt-9.9-does-not-exist) is deliberately
+		// absent.
+		models: []llm.ModelInfo{{ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
+	}
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.2")),
+		withAdapter(adapter),
+		withConfig(SessionConfig{
+			MaxSubagentDepth: 1,
+			testOnly:         testConfig{skipGitSnapshot: true},
+		}),
+	)
+
+	_, err := sess.selectSubagentModel(context.Background(), "gpt-9.9-does-not-exist", "")
+	if err == nil {
+		t.Fatal("selectSubagentModel with an unavailable explicit model = nil error, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "gpt-9.9-does-not-exist") {
+		t.Fatalf("error = %q, want it to name the requested model", err.Error())
+	}
+	if !strings.Contains(err.Error(), "gpt-5.3") {
+		t.Fatalf("error = %q, want it to name a live alternative %q", err.Error(), "gpt-5.3")
+	}
+}
+
+// TestSelectSubagentModel_ExplicitModelEnumerationFailure_FailsOpen verifies
+// that an explicit delegate model override still succeeds unvalidated when the
+// live list can't be enumerated (fail-open, matching resolveModelSwitchTarget's
+// existing SetModel behavior).
+func TestSelectSubagentModel_ExplicitModelEnumerationFailure_FailsOpen(t *testing.T) {
+	t.Parallel()
+
+	adapter := &pluginModelListAdapter{
+		fakeAdapter: fakeAdapter{name: "openai"},
+		models:      []llm.ModelInfo{{ID: "gpt-5.2"}},
+	}
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.2")),
+		withAdapter(adapter),
+		withConfig(SessionConfig{
+			MaxSubagentDepth: 1,
+			testOnly:         testConfig{skipGitSnapshot: true},
+		}),
+	)
+	adapter.err = errors.New("models endpoint disabled")
+
+	got, err := sess.selectSubagentModel(context.Background(), "gpt-9.9-unverifiable", "")
+	if err != nil {
+		t.Fatalf("selectSubagentModel with unenumerable instance should fail open, got error: %v", err)
+	}
+	if got.profile.Model() != "gpt-9.9-unverifiable" {
+		t.Fatalf("profile model = %q, want unverified override %q", got.profile.Model(), "gpt-9.9-unverifiable")
 	}
 }
 

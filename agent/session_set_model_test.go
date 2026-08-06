@@ -190,7 +190,8 @@ func (a *fakeUnenumerableAdapter) ListModels(ctx context.Context) ([]llm.ModelIn
 
 // TestSetModel_UnknownModelOnEnumerableInstance_Rejected verifies (a): a
 // switch to a model absent from an enumerable instance's live model set is
-// rejected, and the error names the instance.
+// rejected, the error names the instance, and it names a live alternative
+// model ID drawn from the enumerated list (Task 3: formatModelAlternatives).
 func TestSetModel_UnknownModelOnEnumerableInstance_Rejected(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t,
@@ -213,6 +214,9 @@ func TestSetModel_UnknownModelOnEnumerableInstance_Rejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "anthropic") {
 		t.Fatalf("error = %q, want it to name the instance %q", err.Error(), "anthropic")
+	}
+	if !strings.Contains(err.Error(), "claude-opus-4-6") {
+		t.Fatalf("error = %q, want it to name a live alternative %q", err.Error(), "claude-opus-4-6")
 	}
 }
 
