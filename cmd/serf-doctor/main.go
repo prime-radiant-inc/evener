@@ -8,7 +8,7 @@
 // Usage:
 //
 //	serf-doctor locate     <selector>
-//	serf-doctor transcript <selector> [--count <tool>] [--format outline|markdown] [--range last:N|start:N|A-B]
+//	serf-doctor transcript <selector> [--count <tool>] [--health] [--format outline|markdown] [--range last:N|start:N|A-B]
 //	serf-doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary] [--validate]
 //	serf-doctor jobs       <selector> [--job <id>]
 //	serf-doctor mutations  <selector>
@@ -90,7 +90,7 @@ USAGE:
 
 SUBCOMMANDS:
   locate      resolve a selector to its transcript/API-log/meta/jobs/mutations paths
-  transcript  render a session's turns; --count <tool> prints the structural call count
+  transcript  render a session's turns; --count <tool> prints the structural call count; --health prints mechanical per-session health metrics
   apilog      API-call diagnostics: per-call tokens/latency, empties, errors, cache spikes
   jobs        job inspector: every job the session ran, with status, reason, exit code, output bytes, and timings
   mutations   client-mutation store: the journal of every client mutation the daemon accepted or rejected, plus the durable input queue
@@ -204,6 +204,7 @@ func cmdLocate(args []string, stdout, stderr io.Writer) int {
 func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 	fs, stateDir, asJSON := stateFlags("transcript", stderr)
 	count := fs.String("count", "", "print the structural invocation count of this tool name and exit")
+	health := fs.Bool("health", false, "print mechanical per-session health metrics (tool errors, identical-run loops, truncation, steering, jobs, stale notifications) and exit")
 	format := fs.String("format", "markdown", "render format: outline | markdown")
 	rangeArg := fs.String("range", "", "turn window: last:N | start:N | A-B")
 	sel, code := parseSelectorAndFlags(fs, args)
@@ -221,6 +222,17 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 			return emitJSON(stdout, res)
 		}
 		return writeln(stdout, doctor.RenderCount(res))
+	}
+
+	if *health {
+		res, err := doctor.TranscriptHealth(base, sel)
+		if err != nil {
+			return fail(stderr, "transcript", err)
+		}
+		if *asJSON {
+			return emitJSON(stdout, res)
+		}
+		return writeText(stdout, doctor.RenderHealth(res))
 	}
 
 	res, err := doctor.Transcript(base, sel, doctor.TranscriptOpts{Format: *format, Range: *rangeArg})

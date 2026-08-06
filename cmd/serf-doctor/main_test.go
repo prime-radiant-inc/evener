@@ -123,6 +123,39 @@ func TestRun_WatchesRunawayFuse(t *testing.T) {
 	}
 }
 
+func TestRun_TranscriptHealthHuman(t *testing.T) {
+	base, sid := fixture(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"transcript", sid, "--state-dir", base, "--health"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	for _, want := range []string{sid, "longest_identical_run:", "truncation_warnings:", "stale_notifications:", "user_corrections (proxy):"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("--health output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRun_TranscriptHealthJSON(t *testing.T) {
+	base, sid := fixture(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"transcript", sid, "--state-dir", base, "--health", "--json"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	var res struct {
+		SessionID string `json:"session_id"`
+		Jobs      struct {
+			ByTerminalReason map[string]int `json:"by_terminal_reason"`
+		} `json:"jobs"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if res.SessionID != sid {
+		t.Errorf("session_id = %q, want %q", res.SessionID, sid)
+	}
+}
+
 // Flags must parse when they follow the selector — the documented
 // `serf-doctor <cmd> <selector> [flags]` form. Go's flag package stops at the
 // first non-flag arg, so without the leading-selector peel these are dropped.
