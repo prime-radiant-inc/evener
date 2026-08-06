@@ -179,63 +179,66 @@ impossible by construction.
 **Size:** ~400 loc. **Priority: second** — this is the guardrail that
 contains every other tool's future bugs.
 
-## WS3 — Job ergonomics: wait primitive, timeout attribution, watch and notification delivery
+## WS3 — Job ergonomics: promotion legibility, watch scanning, notification delivery
 
-Verified root causes, one fix each:
+**Rewritten 2026-08-06 after a decision-record audit with Jesse.** The
+original draft was specced from code exploration without reading
+`docs/job-control.md` (the normative contract) and proposed two things that
+contradicted it. Corrected scope:
 
-1. **No blocking wait exists** (confirmed: only job_status/job_list/job_stop/
-   job_watch; `delegate.max_wait_ms` is the only bounded wait,
-   `agent/internal/tool/definitions.go:129`). Sessions hand-rolled sleep+poll
-   loops — 394 polls in 03413eQFCoJXQsB5SnIsBk. **Fix:** new `job_wait` tool:
-   `job_id` (or list), `max_wait_ms` (required, clamped like delegate's),
-   returns on terminal state or timeout with the job's status + output tail +
-   durable-output pointer. Implementation reuses the existing terminal
-   notification hooks (`armFinalizedJob`) rather than polling internally.
-2. **`max_runtime_ms` already exists but is undiscoverable** — parsed at
-   `agent/session_tools_shell.go:256-264` but absent from `DefShell`'s schema
-   (`agent/internal/tool/definitions.go:78-93`). **Fix:** add it to the
-   schema with prose ("per-call runtime cap; default 120s"), and document the
-   auto-background behavior in the same paragraph.
-3. **Watchdog kills are unattributed and the durable output is invisible.**
-   The kill maps to `status=stopped, reason=run_timeout`
-   (`agent/job_shell.go:620-634`); the model-facing footer says only
-   "timed out · running in background as job_X"
-   (`agent/session_tools_shell.go:443-473`), and full output *is* durable at
-   the job OutputPath (`agent/jobs.go:1570-1637`) readable via
-   `read_transcript(transcript_ref="job:<id>")` — agents never learn either
-   fact. **Fix:** rewrite the footer for the timeout/kill cases:
-   "serf's runtime cap (Xs) stopped this command — the command did not fail
-   on its own. N bytes of output are preserved; read them with
-   read_transcript job:<id>. Raise max_runtime_ms or run with
-   background:true." Zero-output kills add "the process produced no output
-   before the cap (a Go build may still have been compiling)."
-4. **output_match silently skips lines over 4KB** —
-   `maxOutputMatcherLineBytes=4096`; `appendLineFragment`
-   (`agent/internal/jobstore/output.go:202-215`) latches `overlong` and
-   drops the line from matching with no signal. This — not a registration
-   race (registration is correctly locked, `agent/job_watch.go:670-719`) —
-   explains 0/18 fired watches (03410Qj0SmX9L46Iv1Gb41). **Fix:** match
-   within overlong lines by scanning bounded overlapping chunks of the
-   oversized line (window 4096, overlap = maxima of expected match length,
-   proposed 512); if that's rejected as too clever, minimum viable: mark the
-   watch `degraded=overlong-lines` in job_watch list/inspect output and emit
-   a one-time notification, so silence is never unexplained. Same for the
-   `run.output == nil` quiet no-scan (`agent/job_watch.go:2549-2551`).
-5. **Stale/duplicate/undead notifications.** Verified: an idle session's
-   pending notifications wait for an external kick on a droppable 1-slot
-   channel (`server/server.go:667-676`), the watch event and terminal owner
-   event are enqueued separately with I/O between them
-   (`agent/jobs.go:1807-1810` vs `1857-1870`, no coalescing), and
-   `job_status` never marks anything consumed
-   (`agent/session_tools_jobs.go:391-412`). **Fixes, smallest first:**
-   (a) when `projectJobStatus` returns a terminal state, mark that job's
-   pending owner notification consumed so it is never re-announced;
-   (b) coalesce in `armFinalizedJob`: build both the watch-expiry and
-   terminal notices, enqueue once;
-   (c) idle-wake correctness: when `s.pendingJobNotifs` transitions
-   non-empty and the notify kick fails to land (channel full), arm a
-   retry (resend on next channel availability) instead of relying on an
-   unrelated future wake. This is await-the-behavior, not a timer cadence.
+1. **No `job_wait` tool — decision reversed.** `docs/job-control.md`
+   explicitly rejects a separate wait tool ("Waiting, when needed, is
+   bounded ... not a separate wait tool"; "Notifications replace waiting");
+   delegates follow the same notification contract as jobs (no
+   synchronous-parent case). The 394-poll sessions are agents rationally
+   distrusting a notification channel that was late/duplicated/stale —
+   fix the channel (item 4), don't add the tool the design already
+   rejected. If poll storms persist after delivery is fixed, reopen the
+   contract question with data.
+2. **No `max_runtime_ms` exposure — decision reversed.** The parameter was
+   deliberately removed from the shell schema on 2026-08-05 because agents
+   set it constantly and inappropriately, killing jobs. The server-side
+   parse remnant stays as-is; nothing re-exposes it. (The study window
+   predates the removal, so its "watchdog killed my test" incidents were
+   largely that abuse — already fixed by the removal.)
+3. **Promotion legibility and stop attribution.** The 120s foreground wait
+   does not kill anything — it promotes to a durable background job
+   (`agent/job_shell.go:214-244`) — but the footer
+   (`agent/session_tools_shell.go:443-473`) buries that in a bracket, so
+   agents read promotion as failure and relaunch duplicates. **Fix:**
+   rewrite the promotion footer to state plainly: the command is STILL
+   RUNNING as job_X; output accumulates durably and is readable with
+   `read_transcript(transcript_ref="job:<id>")`; completion arrives by
+   notification — do not relaunch or poll. For jobs that genuinely end
+   `stopped/run_timeout` through remaining paths, `job_status` output
+   attributes the stop to serf's limit, not the command; zero-output cases
+   note the process may still have been compiling.
+4. **Byte-window watch scanner (replaces the line scanner).** Today
+   `output_match` scans line-by-line and silently never scans any line over
+   4KB (`maxOutputMatcherLineBytes`, `agent/internal/jobstore/output.go:202-215`)
+   — the verified cause of 0/18 fired watches in 03410Qj0SmX9L46Iv1Gb41
+   (registration is correctly locked; not a race). **Fix (Jesse's design):**
+   scan a rolling byte window over the raw stream — carry the last 4KB plus
+   each new chunk, run the pattern per window, no line semantics at all.
+   Details that must be pinned by tests: multiline anchor mode with
+   documented `^`/`$` semantics at window edges; the documented match-length
+   bound (a match longer than the window cannot fire — a stated limit, not
+   a silent class); offset-based dedup (only matches ending past the
+   previously scanned offset fire); a match spanning a window seam fires
+   exactly once. Also fix the `run.output == nil` quiet no-scan
+   (`agent/job_watch.go:2549-2551`) to be loud.
+5. **Notification delivery — all three fixes approved 2026-08-06:**
+   (a) terminal state returned by `job_status` marks that job's pending
+   owner notification consumed — with its own recorded state ("caller
+   learned via status read") so the jobstore's told-the-caller invariant
+   and serf-doctor's diagnostics stay truthful;
+   (b) coalesce in `armFinalizedJob`: build the watch-expiry and terminal
+   notices together, enqueue once (today they enqueue at two moments with
+   I/O between — the two-turns-per-completion bug);
+   (c) guaranteed idle-wake: when `pendingJobNotifs` goes non-empty and
+   the 1-slot notify kick is dropped (`server/server.go:667-676`), arm a
+   resend on channel availability — delivery becomes guaranteed, not
+   best-effort. No timers, no polling cadence.
 6. **end_turn while verification jobs run** (premature "Merged to main",
    APPROVE-then-retract — 0340osTAgpA4JuYE9yqZgk, 0341mmmMOCHlpyXK483ZRX,
    03419TS38Dz1lp8qEbCps4). **Fix (warn-first, confirmed 2026-08-06):**
@@ -245,14 +248,15 @@ Verified root causes, one fix each:
    end-turn ignorant. Hard refusal only if the warning proves insufficient
    in practice.
 
-**Tests:** job_wait integration test against a real short-lived job (no
-mocked job store); footer-text unit tests; an overlong-line fixture proving
-a match inside a 10KB line fires (or flags degraded); notification tests
-asserting single coalesced delivery and no re-announce after job_status
-consumption; communicate warning test with a live background job.
+**Tests:** promotion-footer unit tests; byte-window scanner suite (seam
+match fires once, long-line match fires, anchor semantics pinned,
+match-length bound documented and asserted, offset dedup); notification
+tests asserting single coalesced delivery, no re-announce after job_status
+consumption, and guaranteed idle delivery under a saturated kick channel;
+communicate warning test with a live background job. No mocked job store.
 
-**Size:** ~600 loc across `agent/`. Item 4's chunk-matching variant is the
-only algorithmically risky piece; its fallback is 30 loc.
+**Size:** ~500 loc across `agent/`. The byte-window scanner is the
+load-bearing piece; its tests are the majority of the work, deliberately.
 
 ## WS4 — Environment and sandbox provisioning
 
@@ -583,7 +587,7 @@ reference.
 | 1 | WS1 recording fix | everything below gets verified with apilog; unblocks trust | ~300 loc |
 | 1 (parallel) | WS9 doctor batch tooling | independent; makes verifying the rest cheap | ~700 loc |
 | 2 | WS2 dispatch breaker | contains every future tool bug; thresholds decided (nudge@2, park@3, no fencing) | ~400 loc |
-| 3 | WS3 job ergonomics | biggest turn-waste cluster | ~600 loc |
+| 3 | WS3 job ergonomics | biggest turn-waste cluster; rescoped 2026-08-06 per job-control contract | ~500 loc |
 | 4 | WS4 environment | biggest wall-clock cluster; two investigation subtasks | ~500 loc |
 | 5 | WS6 validation errors | cheapest, high per-session affection | ~250 loc |
 | 6 | WS5 search/read/edit | naming decided (glob aliases to find_files) | ~520 loc |
