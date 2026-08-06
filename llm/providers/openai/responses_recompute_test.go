@@ -58,20 +58,28 @@ func TestExtractRecordedResponse_ResponsesJSON(t *testing.T) {
 	}
 }
 
-func TestExtractRecordedResponse_ChatCompletionsJSON(t *testing.T) {
+func TestExtractRecordedResponse_RejectsChatCompletionsJSON(t *testing.T) {
 	body := []byte(`{"id":"chatcmpl_1","model":"gpt-5.2","choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"call_1","function":{"name":"write_file","arguments":"{\"path\":\"x\"}"}}]}}]}`)
 
-	resp, err := ExtractRecordedResponse(body, "gpt-5.2")
-	if err != nil {
-		t.Fatalf("ExtractRecordedResponse: %v", err)
-	}
-	calls := resp.ToolCalls()
-	if len(calls) != 1 || calls[0].Name != "write_file" {
-		t.Fatalf("ToolCalls() = %+v, want one write_file call", calls)
+	if _, err := ExtractRecordedResponse(body, "gpt-5.2"); err == nil {
+		t.Fatal("ExtractRecordedResponse accepted a Chat Completions JSON body; want an error directing callers elsewhere")
 	}
 }
 
-func TestExtractRecordedResponse_ChatCompletionsSSE(t *testing.T) {
+func TestExtractRecordedResponse_RejectsChatCompletionsSSE(t *testing.T) {
+	var b strings.Builder
+	write := func(data string) {
+		b.WriteString("data: " + data + "\n\n")
+	}
+	write(`{"model":"gpt-5.2","choices":[{"delta":{"content":"Hello"}}]}`)
+	write(`[DONE]`)
+
+	if _, err := ExtractRecordedResponse([]byte(b.String()), "gpt-5.2"); err == nil {
+		t.Fatal("ExtractRecordedResponse accepted a Chat Completions SSE body; want an error directing callers elsewhere")
+	}
+}
+
+func TestExtractRecordedChatCompletionsResponse_SSE(t *testing.T) {
 	var b strings.Builder
 	write := func(data string) {
 		b.WriteString("data: " + data + "\n\n")
@@ -81,12 +89,20 @@ func TestExtractRecordedResponse_ChatCompletionsSSE(t *testing.T) {
 	write(`{"model":"gpt-5.2","choices":[{"finish_reason":"stop","delta":{}}]}`)
 	write(`[DONE]`)
 
-	resp, err := ExtractRecordedResponse([]byte(b.String()), "gpt-5.2")
+	resp, err := ExtractRecordedChatCompletionsResponse([]byte(b.String()), "gpt-5.2")
 	if err != nil {
-		t.Fatalf("ExtractRecordedResponse: %v", err)
+		t.Fatalf("ExtractRecordedChatCompletionsResponse: %v", err)
 	}
 	if resp.Text() != "Hello" {
 		t.Fatalf("Text() = %q, want %q", resp.Text(), "Hello")
+	}
+}
+
+func TestExtractRecordedChatCompletionsResponse_RejectsJSON(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl_1","model":"gpt-5.2","choices":[{"finish_reason":"stop","message":{"content":"hi"}}]}`)
+
+	if _, err := ExtractRecordedChatCompletionsResponse(body, "gpt-5.2"); err == nil {
+		t.Fatal("ExtractRecordedChatCompletionsResponse accepted a JSON body; want an error (this family has no non-streamed live parser)")
 	}
 }
 

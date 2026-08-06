@@ -301,6 +301,242 @@ func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Str
 	return s, nil
 }
 
+// responsesToolState accumulates one function-call tool call's identity and
+// streamed arguments, addressable by either call_id or item_id (the wire
+// shape's later events may reference either -- see
+// responsesOutputAccumulator's itemToCallID). started tracks whether a
+// tool-call-start stream event has been emitted for it yet; only the live
+// decoder reads this field, but it's stored here because it's per-call
+// state that already lives on this struct.
+type responsesToolState struct {
+	id, itemID, name string
+	started          bool
+	args             strings.Builder
+}
+
+// responsesOutputAccumulator tracks response.output_item.added/done and
+// response.function_call_arguments.delta/done events to reconstruct the
+// output array a response.completed payload should have carried, for
+// sessions where the terminal payload's own "output" arrives empty (see
+// settleResponsesTerminalOutput). It is the single implementation of that
+// accumulation state machine -- including its tool-state lookups keyed by
+// either call_id or item_id -- shared by the live streaming decoder
+// (decodeResponsesStream) and offline recomputation
+// (extractResponsesFromSSE in responses_recompute.go), so the two can't
+// silently drift apart.
+type responsesOutputAccumulator struct {
+	toolStates   map[string]*responsesToolState
+	itemToCallID map[string]string
+	output       []any
+}
+
+func newResponsesOutputAccumulator() *responsesOutputAccumulator {
+	return &responsesOutputAccumulator{
+		toolStates:   map[string]*responsesToolState{},
+		itemToCallID: map[string]string{},
+	}
+}
+
+// Output returns the accumulated output array, in the wire shape a
+// response.completed payload's "output" field carries.
+func (acc *responsesOutputAccumulator) Output() []any { return acc.output }
+
+// HandleOutputItemAdded pre-registers a function_call tool state from a
+// response.output_item.added event's item, keyed by whichever of
+// call_id/item_id are present. Non-function_call items are a no-op (the
+// wire shape carries no other item type worth pre-registering here).
+func (acc *responsesOutputAccumulator) HandleOutputItemAdded(item map[string]any) {
+	if itemType, _ := item["type"].(string); itemType != "function_call" {
+		return
+	}
+	callID, _ := item["call_id"].(string)
+	itemID, _ := item["id"].(string)
+	name, _ := item["name"].(string)
+	stateID := callID
+	if stateID == "" {
+		stateID = itemID
+	}
+	if stateID == "" {
+		return
+	}
+	st := acc.toolStates[stateID]
+	if st == nil {
+		st = &responsesToolState{id: stateID}
+	}
+	if callID != "" {
+		st.id = callID
+		acc.toolStates[callID] = st
+	}
+	if itemID != "" {
+		st.itemID = itemID
+		acc.itemToCallID[itemID] = st.id
+		acc.toolStates[itemID] = st
+	}
+	if st.name == "" && name != "" {
+		st.name = name
+	}
+	acc.toolStates[stateID] = st
+}
+
+// HandleFunctionCallArgumentsDelta merges one
+// response.function_call_arguments.delta event's argument fragment into
+// tool state, resolving call_id via item_id when call_id is absent. ok is
+// false when the event can't be mapped to a tool call at all -- the caller
+// should pass the raw payload through unmodified in that case.
+func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload map[string]any) (state *responsesToolState, delta string, ok bool) {
+	delta, _ = payload["delta"].(string)
+	if delta == "" {
+		delta, _ = payload["arguments"].(string)
+	}
+	callID, _ := payload["call_id"].(string)
+	itemID, _ := payload["item_id"].(string)
+	if callID == "" && itemID != "" {
+		callID = acc.itemToCallID[itemID]
+	}
+	if callID == "" {
+		callID = itemID
+	}
+	if callID == "" {
+		callID, _ = payload["id"].(string)
+	}
+	name, _ := payload["name"].(string)
+	if callID == "" || (delta == "" && name == "") {
+		return nil, "", false
+	}
+	st := acc.toolStates[callID]
+	if st == nil && itemID != "" {
+		st = acc.toolStates[itemID]
+		if st != nil {
+			callID = st.id
+		}
+	}
+	if st == nil {
+		st = &responsesToolState{id: callID, name: name}
+		acc.toolStates[callID] = st
+	}
+	if st.name == "" && name != "" {
+		st.name = name
+	}
+	if delta != "" {
+		st.args.WriteString(delta)
+	}
+	return st, delta, true
+}
+
+// HandleFunctionCallArgumentsDone applies a
+// response.function_call_arguments.done event's authoritative full-arguments
+// string, overriding whatever deltas were accumulated so far, resolving
+// call_id via item_id when needed. ok is false when the event carried no
+// resolvable call_id -- the caller should pass the raw payload through.
+func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload map[string]any) (state *responsesToolState, ok bool) {
+	argsStr, _ := payload["arguments"].(string)
+	callID, _ := payload["call_id"].(string)
+	itemID, _ := payload["item_id"].(string)
+	if callID == "" && itemID != "" {
+		callID = acc.itemToCallID[itemID]
+	}
+	if callID == "" {
+		callID = itemID
+	}
+	if callID == "" {
+		return nil, false
+	}
+	st := acc.toolStates[callID]
+	if st == nil && itemID != "" {
+		st = acc.toolStates[itemID]
+		if st != nil {
+			callID = st.id
+		}
+	}
+	if st == nil {
+		st = &responsesToolState{id: callID}
+		acc.toolStates[callID] = st
+	}
+	if itemID != "" {
+		st.itemID = itemID
+		acc.itemToCallID[itemID] = st.id
+	}
+	if argsStr != "" {
+		st.args.Reset()
+		st.args.WriteString(argsStr)
+	}
+	return st, true
+}
+
+// HandleOutputItemDone processes a response.output_item.done event's item,
+// appending it to the accumulated output (mirroring the terminal payload's
+// "output" array shape). For function_call items it also resolves/updates
+// tool state, using the item's own "arguments" when present or falling back
+// to whatever deltas were accumulated.
+//
+// It returns the raw item (nil if the payload carried none -- e.g. the
+// event was malformed), and, only for a function_call item whose call_id
+// resolved, the tool state and its full arguments string with ok=true.
+// ok=false covers both "not a function_call" (rawItem is non-nil; already
+// appended to Output()) and "function_call with no resolvable call_id"
+// (rawItem is non-nil, not appended) -- callers distinguish the two by
+// checking rawItem's own "type" field, matching the two different
+// live-stream fallbacks (best-effort end-of-text vs. raw passthrough).
+func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]any) (rawItem map[string]any, state *responsesToolState, argsStr string, ok bool) {
+	itemAny := payload["item"]
+	if itemAny == nil {
+		itemAny = payload["output_item"]
+	}
+	item, mapOK := itemAny.(map[string]any)
+	if !mapOK {
+		return nil, nil, "", false
+	}
+	it, _ := item["type"].(string)
+	if it != "function_call" {
+		acc.output = append(acc.output, item)
+		return item, nil, "", false
+	}
+	callID, _ := item["call_id"].(string)
+	itemID, _ := item["id"].(string)
+	name, _ := item["name"].(string)
+	argsStr, _ = item["arguments"].(string)
+	if callID == "" && itemID != "" {
+		callID = acc.itemToCallID[itemID]
+	}
+	if callID == "" {
+		return item, nil, "", false
+	}
+	st := acc.toolStates[callID]
+	if st == nil && itemID != "" {
+		st = acc.toolStates[itemID]
+		if st != nil {
+			callID = st.id
+		}
+	}
+	if st == nil {
+		st = &responsesToolState{id: callID, name: name}
+		acc.toolStates[callID] = st
+	}
+	if itemID != "" {
+		st.itemID = itemID
+		acc.itemToCallID[itemID] = st.id
+		acc.toolStates[itemID] = st
+	}
+	if st.name == "" && name != "" {
+		st.name = name
+	}
+	if argsStr != "" {
+		st.args.Reset()
+		st.args.WriteString(argsStr)
+	}
+	if argsStr == "" {
+		argsStr = st.args.String()
+	}
+	acc.output = append(acc.output, map[string]any{
+		"type":      "function_call",
+		"call_id":   st.id,
+		"id":        st.itemID,
+		"name":      st.name,
+		"arguments": argsStr,
+	})
+	return item, st, argsStr, true
+}
+
 // decodeResponsesStream consumes the Responses API SSE stream in its own
 // goroutine: it translates each event into llm stream events and emits the final
 // accumulated Response on response.completed. It emits errEmptyResponsesStream if
@@ -320,22 +556,7 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 	// sentContent tracks whether any meaningful content event was emitted.
 	// If the stream closes without content, we emit errEmptyResponsesStream.
 	sentContent := false
-	type toolState struct {
-		id      string
-		itemID  string
-		name    string
-		started bool
-		args    strings.Builder
-	}
-	toolStates := map[string]*toolState{}
-	itemToCallID := map[string]string{}
-	// accumulatedOutput mirrors the wire shape of a response.completed
-	// payload's "output" array, built from response.output_item.done events
-	// as they arrive. Some Responses-API terminal payloads carry an empty
-	// output array even though the stream carried real content — this lets
-	// the terminal-settlement path synthesize the settled Response from what
-	// the stream actually sent.
-	var accumulatedOutput []any
+	acc := newResponsesOutputAccumulator()
 
 	parseErr := llm.ParseSSE(sctx, resp.Body, func(ev llm.SSEEvent) error {
 		if len(ev.Data) == 0 {
@@ -357,36 +578,8 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 
 		switch typ {
 		case "response.output_item.added":
-			itemAny := payload["item"]
-			if item, ok := itemAny.(map[string]any); ok {
-				if itemType, _ := item["type"].(string); itemType == "function_call" {
-					callID, _ := item["call_id"].(string)
-					itemID, _ := item["id"].(string)
-					name, _ := item["name"].(string)
-					stateID := callID
-					if stateID == "" {
-						stateID = itemID
-					}
-					if stateID != "" {
-						st := toolStates[stateID]
-						if st == nil {
-							st = &toolState{id: stateID}
-						}
-						if callID != "" {
-							st.id = callID
-							toolStates[callID] = st
-						}
-						if itemID != "" {
-							st.itemID = itemID
-							itemToCallID[itemID] = st.id
-							toolStates[itemID] = st
-						}
-						if st.name == "" && name != "" {
-							st.name = name
-						}
-						toolStates[stateID] = st
-					}
-				}
+			if item, ok := payload["item"].(map[string]any); ok {
+				acc.HandleOutputItemAdded(item)
 			}
 		case "response.output_text.delta":
 			delta, _ := payload["delta"].(string)
@@ -417,44 +610,11 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 			}
 			reasoningStarted = true
 		case "response.function_call_arguments.delta":
-			delta, _ := payload["delta"].(string)
-			if delta == "" {
-				delta, _ = payload["arguments"].(string)
-			}
-			callID, _ := payload["call_id"].(string)
-			itemID, _ := payload["item_id"].(string)
-			if callID == "" && itemID != "" {
-				callID = itemToCallID[itemID]
-			}
-			if callID == "" {
-				callID = itemID
-			}
-			if callID == "" {
-				callID, _ = payload["id"].(string)
-			}
-			name, _ := payload["name"].(string)
-			if callID == "" || (delta == "" && name == "") {
+			st, delta, ok := acc.HandleFunctionCallArgumentsDelta(payload)
+			if !ok {
 				// Can't map reliably; pass through.
 				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 				return nil
-			}
-
-			st := toolStates[callID]
-			if st == nil && itemID != "" {
-				st = toolStates[itemID]
-				if st != nil {
-					callID = st.id
-				}
-			}
-			if st == nil {
-				st = &toolState{id: callID, name: name}
-				toolStates[callID] = st
-			}
-			if st.name == "" && name != "" {
-				st.name = name
-			}
-			if delta != "" {
-				st.args.WriteString(delta)
 			}
 			if !st.started {
 				sentContent = true
@@ -465,111 +625,36 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 			tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: []byte(delta), Type: "function"}
 			s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
 		case "response.function_call_arguments.done":
-			argsStr, _ := payload["arguments"].(string)
-			callID, _ := payload["call_id"].(string)
-			itemID, _ := payload["item_id"].(string)
-			if callID == "" && itemID != "" {
-				callID = itemToCallID[itemID]
-			}
-			if callID == "" {
-				callID = itemID
-			}
-			if callID == "" {
+			if _, ok := acc.HandleFunctionCallArgumentsDone(payload); !ok {
 				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
-				return nil
-			}
-			st := toolStates[callID]
-			if st == nil && itemID != "" {
-				st = toolStates[itemID]
-				if st != nil {
-					callID = st.id
-				}
-			}
-			if st == nil {
-				st = &toolState{id: callID}
-				toolStates[callID] = st
-			}
-			if itemID != "" {
-				st.itemID = itemID
-				itemToCallID[itemID] = st.id
-			}
-			if argsStr != "" {
-				st.args.Reset()
-				st.args.WriteString(argsStr)
 			}
 		case "response.output_item.done":
-			itemAny := payload["item"]
-			if itemAny == nil {
-				itemAny = payload["output_item"]
-			}
-			if item, ok := itemAny.(map[string]any); ok {
-				it, _ := item["type"].(string)
-				switch it {
-				case "function_call":
-					callID, _ := item["call_id"].(string)
-					itemID, _ := item["id"].(string)
-					name, _ := item["name"].(string)
-					argsStr, _ := item["arguments"].(string)
-					if callID == "" && itemID != "" {
-						callID = itemToCallID[itemID]
-					}
-					if callID != "" {
-						st := toolStates[callID]
-						if st == nil && itemID != "" {
-							st = toolStates[itemID]
-							if st != nil {
-								callID = st.id
-							}
-						}
-						if st == nil {
-							st = &toolState{id: callID, name: name}
-							toolStates[callID] = st
-						}
-						if itemID != "" {
-							st.itemID = itemID
-							itemToCallID[itemID] = st.id
-							toolStates[itemID] = st
-						}
-						if st.name == "" && name != "" {
-							st.name = name
-						}
-						if argsStr != "" {
-							st.args.Reset()
-							st.args.WriteString(argsStr)
-						}
-						if argsStr == "" {
-							argsStr = st.args.String()
-						}
-						if !st.started {
-							sentContent = true
-							st.started = true
-							tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function"}
-							s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
-						}
-						tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: json.RawMessage(argsStr), Type: "function"}
-						s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
-						accumulatedOutput = append(accumulatedOutput, map[string]any{
-							"type":      "function_call",
-							"call_id":   st.id,
-							"id":        st.itemID,
-							"name":      st.name,
-							"arguments": argsStr,
-						})
-					} else {
-						s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
-					}
-				default:
-					// Best-effort: treat as end-of-text.
-					if textStarted {
-						s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
-						textStarted = false
-					}
-					accumulatedOutput = append(accumulatedOutput, item)
+			rawItem, st, argsStr, ok := acc.HandleOutputItemDone(payload)
+			switch {
+			case ok:
+				if !st.started {
+					sentContent = true
+					st.started = true
+					tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function"}
+					s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
 				}
-			} else if textStarted {
+				tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: json.RawMessage(argsStr), Type: "function"}
+				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
+			case rawItem == nil:
 				// Best-effort: treat as end-of-text.
-				s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
-				textStarted = false
+				if textStarted {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
+					textStarted = false
+				}
+			default:
+				if it, _ := rawItem["type"].(string); it == "function_call" {
+					// function_call with no resolvable call_id.
+					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
+				} else if textStarted {
+					// Best-effort: treat as end-of-text.
+					s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
+					textStarted = false
+				}
 			}
 		case "response.completed":
 			// Response object may be nested under "response" or be the payload itself.
@@ -578,7 +663,7 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 				rawResp = payload
 			}
 			r := fromResponses(rawResp, req.Model)
-			settleResponsesTerminalOutput(&r, rawResp, accumulatedOutput)
+			settleResponsesTerminalOutput(&r, rawResp, acc.Output())
 			a.stampResponseIDHash(&r)
 			llm.StampEndpointURL(&r, llm.FinalResponseEndpointURL(resp, a.responsesURL()), a.apiLogCredentialMaterial(nil))
 			// Ensure text segment is closed.

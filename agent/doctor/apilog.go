@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/apilog"
 	"primeradiant.com/serf/llm/providers/openai"
+	"primeradiant.com/serf/llm/providers/openaicompat"
 )
 
 // APILogOpts selects which calls to display. Filters narrow the rows shown; the
@@ -531,19 +532,28 @@ func rowFromAttempt(attempt apilog.APIAttemptRecord) APICallRow {
 	return row
 }
 
-// recomputableEndpointFamilies are the EndpointFamily values whose stored
-// response bodies are one of the wire shapes openai.ExtractRecordedResponse
-// knows how to re-parse: the Responses API (openai_public, openai_codex --
-// openaicompat's codex-continuation family delegates to the same OpenAI
-// Responses adapter, so its records carry these same values too) and Chat
-// Completions (openai_chat_completions, openai_compatible_chat_completions).
+// recomputeExtractors maps an EndpointFamily to the provider-package
+// function that re-extracts a settled llm.Response from a stored body of
+// that family's own wire shape -- each reusing that family's real live
+// parser (see the referenced functions' docs for which live decoder each
+// one shares state or logic with), never a second hand-rolled one:
+//   - openai_public / openai_codex: the Responses API. openaicompat's
+//     codex-continuation family delegates to the same OpenAI Responses
+//     adapter (openairesponses.Adapter, called via responsesAdapter()), so
+//     its records carry these same EndpointFamily values too -- one
+//     extractor covers both origins.
+//   - openai_chat_completions: this adapter's own Chat Completions
+//     fallback (always streamed in this codebase).
+//   - openai_compatible_chat_completions: openaicompat's Chat Completions
+//     adapter (JSON only -- see openaicompat.ExtractRecordedResponse).
+//
 // Other providers' bodies are a different wire shape entirely and are left
 // alone.
-var recomputableEndpointFamilies = map[string]bool{
-	"openai_public":                      true,
-	"openai_codex":                       true,
-	"openai_chat_completions":            true,
-	"openai_compatible_chat_completions": true,
+var recomputeExtractors = map[string]func(body []byte, requestedModel string) (llm.Response, error){
+	"openai_public":                      openai.ExtractRecordedResponse,
+	"openai_codex":                       openai.ExtractRecordedResponse,
+	"openai_chat_completions":            openai.ExtractRecordedChatCompletionsResponse,
+	"openai_compatible_chat_completions": openaicompat.ExtractRecordedResponse,
 }
 
 // recomputeRow re-extracts TextLength/ToolCalls from record's stored
@@ -560,14 +570,15 @@ func recomputeRow(row *APICallRow, record apilog.APIAttemptRecord) bool {
 	if row.TextLength == nil || *row.TextLength != 0 || row.ToolCalls == nil || *row.ToolCalls != 0 {
 		return false
 	}
-	if !recomputableEndpointFamilies[record.Request.EndpointFamily] {
+	extract, ok := recomputeExtractors[record.Request.EndpointFamily]
+	if !ok {
 		return false
 	}
 	body, err := apilog.DecodeBody(record.Response.Body)
 	if err != nil || len(body) == 0 {
 		return false
 	}
-	resp, err := openai.ExtractRecordedResponse(body, record.RequestModel)
+	resp, err := extract(body, record.RequestModel)
 	if err != nil {
 		return false
 	}
