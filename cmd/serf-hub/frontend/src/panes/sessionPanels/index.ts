@@ -17,6 +17,11 @@ export function sessionPanelTitle(kind: SessionPanelKind, ref: string, name?: st
   return `${label} · ${name || ref}`;
 }
 
+/** The workspace pane type each panel kind opens (SessionMenu, rail rows). */
+export function sessionPanelPaneType(kind: SessionPanelKind): "sessionTasks" | "sessionActivity" | "sessionDetails" {
+  return kind === "tasks" ? "sessionTasks" : kind === "activity" ? "sessionActivity" : "sessionDetails";
+}
+
 const pane = (kind: SessionPanelKind) =>
   lazy(() =>
     import("./SessionPanelPane").then(({ SessionPanelPane }) => ({

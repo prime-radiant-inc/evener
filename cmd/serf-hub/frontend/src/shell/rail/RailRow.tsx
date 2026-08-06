@@ -30,7 +30,8 @@
 // hover, treeitem focus, open-menu, and the <900px touch fallback that
 // keeps it visible - in flow, not overlaid - with no hover to reveal it).
 import type { ReactNode } from "react";
-import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
+import type { SessionPanelKind } from "../../panes/sessionPanels";
+import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject, PinSectionSummary } from "../../stores/tree";
 import {
   Badge,
   Cadence,
@@ -43,6 +44,8 @@ import {
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { navigate } from "../routing";
+import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
+import { isPaneOpen, useWorkspaceStore } from "../workspace";
 import styles from "./Rail.module.css";
 import {
   type InactiveFoldRailNode,
@@ -53,6 +56,9 @@ import {
   type SessionRailNode,
   workingDescendantCount,
 } from "./railNodes";
+import { isTopLevelSession } from "./sessionKind";
+
+export { isTopLevelSession } from "./sessionKind";
 
 const CLASS = {
   row: requireClass(styles.row, "Rail.module.css", "row"),
@@ -258,14 +264,20 @@ function secondLine(session: ApiTreeNode, showsGloss: boolean, showsProject: boo
 }
 
 export interface RailRowActions {
-  onPinSectionRequest: (session: ApiTreeNode) => void;
-  onUnpinRequest: (session: ApiTreeNode) => void;
-  onToggleArchiveSession: (session: ApiTreeNode) => void;
-  onRenameRequest: (session: ApiTreeNode) => void;
-  onDeleteSessionRequest: (session: ApiTreeNode) => void;
-  onToggleFavoriteProject: (project: ApiTreeProject) => void;
-  onToggleArchiveProject: (project: ApiTreeProject) => void;
-  onDeleteProjectRequest: (project: ApiTreeProject) => void;
+  onOpenSessionPane(session: ApiTreeNode, pane: SessionPanelKind): void;
+  onRenameSession(session: ApiTreeNode, name: string): Promise<void>;
+  onShutdownSession(session: ApiTreeNode): Promise<void>;
+  onPinSession(session: ApiTreeNode, target: PinTarget, section?: PinSectionSummary): Promise<void>;
+  // Unpin/archive/delete return the mutation's promise so a rejection
+  // reaches SessionMenu's confirm helper (the failure convention in
+  // SessionMenu.tsx's header comment): Rail's runAction already toasts,
+  // and the propagated rejection keeps the menu's dialog open.
+  onUnpinRequest(session: ApiTreeNode): Promise<void>;
+  onToggleArchiveSession(session: ApiTreeNode): Promise<void>;
+  onDeleteSession(session: ApiTreeNode): Promise<void>;
+  onToggleFavoriteProject(project: ApiTreeProject): void;
+  onToggleArchiveProject(project: ApiTreeProject): void;
+  onDeleteProjectRequest(project: ApiTreeProject): void;
 }
 
 export interface RailRowProps {
@@ -332,76 +344,6 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
       items={items}
     />
   );
-}
-
-// Archive is a decision about a TOP-LEVEL row, so only a top-level row
-// offers it. hubcore's nodeKind (internal/hubcore/tree.go) names the kinds
-// that are never top-level: "subagent" (nested under its parent) and "fork"
-// (a snapshotted original nested under the branch that superseded it) - the
-// same two nestedSessionIDs computes - plus the synthetic "cluster" fold row,
-// which stands for a group of sessions rather than being one. Everything else
-// is a real top-level session. Written as an exclusion list rather than
-// `=== "session"` so an unrecognized future kind still gets the action rather
-// than silently losing it.
-const NESTED_KINDS: ReadonlySet<string> = new Set(["subagent", "fork", "cluster"]);
-
-export function isTopLevelSession(session: ApiTreeNode): boolean {
-  return !NESTED_KINDS.has(session.kind);
-}
-
-function sessionMenuItems(session: ApiTreeNode, actions: RailRowActions): MenuItem[] {
-  const items: MenuItem[] = [];
-  // Pinning, like archiving, is a decision about a top-level row. The Pinned
-  // tier is built only from a project's top-level Current+Recent sessions
-  // (web_api_tree.go), so pinning a nested row writes a decision that never
-  // surfaces anywhere; pinning a synthetic cluster row writes one keyed to an
-  // id that names no session at all. Both confirmed against a live hub.
-  //
-  // Rename needs no check here: the server already withholds its `rename`
-  // flag from every nested and synthetic node, and the item below is gated on
-  // it - the request 404s for those ids, and the menu never offers it.
-  if (isTopLevelSession(session)) {
-    // A pinned session gets a direct Unpin, not a "move" flow: moving between
-    // sections is unpin + pin, and the one-gesture action is what the row
-    // menu owes. Only an unpinned session opens the section picker.
-    if (session.pin_section_id) {
-      items.push({
-        id: "unpin",
-        label: "Unpin",
-        onSelect: () => actions.onUnpinRequest(session),
-      });
-    } else {
-      items.push({
-        id: "pin-section",
-        label: "Pin this session…",
-        onSelect: () => actions.onPinSectionRequest(session),
-      });
-    }
-  }
-  if (session.rename) {
-    items.push({ id: "rename", label: "Rename", onSelect: () => actions.onRenameRequest(session) });
-  }
-  if (isTopLevelSession(session)) {
-    items.push({
-      id: "archive",
-      // The wire has no direct "is this session archived" boolean - tier is
-      // the closest available signal, and is itself decision-driven when an
-      // explicit archive decision exists (see hubcore.classifySession).
-      label: session.tier === "archived" ? "Unarchive" : "Archive",
-      onSelect: () => actions.onToggleArchiveSession(session),
-    });
-  }
-  // Delete (kata n15j) targets a stable LOCAL session ref
-  // (identifier.ValidateSessionID via web_api_session_delete.go) - offering
-  // it for a remote-source session would only ever 400. No client-side
-  // liveness check: a live session is offered the same as an ended one, and
-  // the server refuses via the same skipped/toast path deleteProject already
-  // uses for a session that raced back to live, rather than this menu
-  // duplicating the server's own crash-vs-live predicate (kata 8at6).
-  if (isTopLevelSession(session) && session.host_id === "local") {
-    items.push({ id: "delete", label: "Delete…", onSelect: () => actions.onDeleteSessionRequest(session) });
-  }
-  return items;
 }
 
 // "no-project" is a synthetic bucket handleAPITree synthesizes for orphan
@@ -491,6 +433,44 @@ function rowTooltip(session: ApiTreeNode, showsGloss: boolean, saysNotStarted: b
 // nothing to say before.
 function saysNotStarted(session: ApiTreeNode, showsGloss: boolean): boolean {
   return session.dormant === true && !showsGloss;
+}
+
+// The rail-row use of the shared session menu: same component the session
+// pane's chrome renders, fed from the ApiTreeNode instead of a ThreadModel.
+// panesOpen drives the ✓ markers via the workspace store; triggerTabIndex
+// -1 keeps the Tree widget's single-roving-Tab-stop contract (see
+// ActionsMenu's own comment, which this replaces for session rows).
+function SessionMenuRow({ session, actions }: { session: ApiTreeNode; actions: RailRowActions }) {
+  const ref = session.ref;
+  // Three separate boolean selectors, NOT one object-literal selector: a
+  // fresh { details, tasks, activity } object every call would fail the
+  // store's reference-equality check and re-render the row on every
+  // workspace change (SessionChrome selects the same three booleans the
+  // same way).
+  const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref }));
+  const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref }));
+  const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref }));
+  return (
+    <SessionMenu
+      sessionRef={ref}
+      title={session.title}
+      triggerLabel={`Actions for ${session.title}`}
+      canRename={session.rename === true}
+      canShutdown={session.live}
+      treeNode={session}
+      panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
+      actions={{
+        onOpenPane: (pane) => actions.onOpenSessionPane(session, pane),
+        onRename: (name) => actions.onRenameSession(session, name),
+        onShutdown: () => actions.onShutdownSession(session),
+        onPin: (target, section) => actions.onPinSession(session, target, section),
+        onUnpin: () => actions.onUnpinRequest(session),
+        onToggleArchive: () => actions.onToggleArchiveSession(session),
+        onDelete: () => actions.onDeleteSession(session),
+      }}
+      triggerTabIndex={-1}
+    />
+  );
 }
 
 function SessionRow({ node, info, actions }: { node: SessionRailNode; info: TreeRowInfo; actions: RailRowActions }) {
@@ -596,7 +576,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
         )
       )}
       <span className={CLASS.actions}>
-        <ActionsMenu label={session.title} items={sessionMenuItems(session, actions)} />
+        <SessionMenuRow session={session} actions={actions} />
       </span>
     </span>
   );

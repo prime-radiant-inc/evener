@@ -1,12 +1,16 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { lazy } from "react";
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
 import { Tree, type TreeRowInfo } from "../../widgets";
-import { requireClass } from "../../widgets/internal/requireClass";
+import { registerPane } from "../paneRegistry";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
+import { listPinSections } from "./actions";
 import railStyles from "./Rail.module.css";
 import { activityGloss, cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
 import type {
@@ -16,6 +20,43 @@ import type {
   ProjectRailNode,
   SessionRailNode,
 } from "./railNodes";
+
+// "Pin this session…" mounts the real PinSectionPicker, which fetches its
+// section list on mount - stub that fetch exactly the way
+// shell/sessionMenu/SessionMenu.test.tsx does.
+vi.mock("./actions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./actions")>();
+  return { ...actual, listPinSections: vi.fn() };
+});
+
+const mockedListPinSections = vi.mocked(listPinSections);
+
+function PaneFixture() {
+  return <div>pane</div>;
+}
+
+beforeAll(() => {
+  // Minimal, test-only pane registrations (TreeDrawer.test.tsx's precedent):
+  // the workspace store's openPane refuses an unregistered type, and the
+  // unified menu's Details/Tasks/Activity items open real panes now.
+  registerPane<{ ref: string }>({
+    id: "session",
+    title: () => "Session",
+    component: lazy(() => Promise.resolve({ default: PaneFixture })),
+  });
+  for (const id of ["sessionTasks", "sessionActivity", "sessionDetails"] as const) {
+    registerPane<{ ref: string }>({
+      id,
+      title: () => id,
+      component: lazy(() => Promise.resolve({ default: PaneFixture })),
+    });
+  }
+});
+
+beforeEach(() => {
+  resetWorkspaceStoreForTests();
+  mockedListPinSections.mockResolvedValue([{ id: "sec_1", name: "Client", member_count: 0 }]);
+});
 
 afterEach(cleanup);
 
@@ -65,16 +106,27 @@ function info(overrides: Partial<TreeRowInfo> = {}): TreeRowInfo {
 
 function actions(overrides: Partial<RailRowActions> = {}): RailRowActions {
   return {
-    onPinSectionRequest: vi.fn(),
-    onUnpinRequest: vi.fn(),
-    onToggleArchiveSession: vi.fn(),
-    onRenameRequest: vi.fn(),
-    onDeleteSessionRequest: vi.fn(),
+    onOpenSessionPane: vi.fn(),
+    onRenameSession: vi.fn().mockResolvedValue(undefined),
+    onShutdownSession: vi.fn().mockResolvedValue(undefined),
+    onPinSession: vi.fn().mockResolvedValue(undefined),
+    onUnpinRequest: vi.fn().mockResolvedValue(undefined),
+    onToggleArchiveSession: vi.fn().mockResolvedValue(undefined),
+    onDeleteSession: vi.fn().mockResolvedValue(undefined),
     onToggleFavoriteProject: vi.fn(),
     onToggleArchiveProject: vi.fn(),
     onDeleteProjectRequest: vi.fn(),
     ...overrides,
   };
+}
+
+// renderRow mounts a top-level local session row with the menu fully
+// populated (renameable, live, deletable), the way the rail's own tiers
+// would render it.
+function renderRow(sessionOverrides: Partial<ApiTreeNode> = {}, acts: RailRowActions = actions()) {
+  const session = apiNode({ rename: true, ...sessionOverrides });
+  render(<RailRow node={sessionRailNode(session)} info={info()} actions={acts} />);
+  return session;
 }
 
 async function openMenu(name: RegExp | string) {
@@ -280,12 +332,10 @@ describe("inactive-subagent fold row", () => {
   // chevron gutter at the parent session's label x, rather than leaving it one
   // raw nesting level in from the parent's own row edge.
   test("carries the alignment class on its root", () => {
+    const inactiveFoldClass = railStyles.inactiveFold;
+    if (inactiveFoldClass === undefined) throw new Error('Rail.module.css is missing the "inactiveFold" class');
     render(<RailRow node={inactiveFoldRailNode(2)} info={info({ hasChildren: true })} actions={actions()} />);
-    expect(
-      screen
-        .getByTestId("rail-row-inactive-fold")
-        .classList.contains(requireClass(railStyles.inactiveFold, "Rail.module.css", "inactiveFold")),
-    ).toBe(true);
+    expect(screen.getByTestId("rail-row-inactive-fold").classList.contains(inactiveFoldClass)).toBe(true);
   });
 
   // Quiet parent (no signal dot): parent label x = chevron (--space-4) + gap
@@ -814,13 +864,22 @@ describe("session row", () => {
     expect(screen.queryByTestId("rail-row-time")).toBeNull();
   });
 
-  test("menu offers 'Pin this session…' for an unassigned top-level session", async () => {
+  test("menu offers 'Pin this session…' for an unassigned top-level session, assigning through onPinSession", async () => {
     const acts = actions();
-    const session = apiNode({ pin_section_id: undefined, ref: "local:a" });
-    render(<RailRow node={sessionRailNode(session)} info={info()} actions={acts} />);
+    const session = renderRow({ pin_section_id: undefined, ref: "local:a" }, acts);
     const user = await openMenu(/actions for/i);
     await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
-    expect(acts.onPinSectionRequest).toHaveBeenCalledWith(session);
+    // The shared SessionMenu owns the picker now (one owner per dialog) -
+    // the row's duty stops at feeding the picked target out through
+    // onPinSession.
+    await user.click(await screen.findByRole("button", { name: "Client" }));
+    await waitFor(() =>
+      expect(acts.onPinSession).toHaveBeenCalledWith(
+        session,
+        { section_id: "sec_1" },
+        { id: "sec_1", name: "Client", member_count: 0 },
+      ),
+    );
   });
 
   test("menu offers 'Unpin' for an assigned top-level session", async () => {
@@ -833,19 +892,27 @@ describe("session row", () => {
     expect(acts.onUnpinRequest).toHaveBeenCalledWith(session);
   });
 
-  test("menu omits Rename when the session does not support it", async () => {
-    render(<RailRow node={sessionRailNode(apiNode({ rename: false }))} info={info()} actions={actions()} />);
+  // The unified menu keeps one stable item list, so Rename is always LISTED -
+  // a session whose wire `rename` flag is absent gets it disabled instead of
+  // dropped.
+  test("menu disables Rename when the session does not support it", async () => {
+    renderRow({ rename: false });
     await openMenu(/actions for/i);
-    expect(screen.queryByRole("menuitem", { name: "Rename" })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Rename" }).getAttribute("aria-disabled")).toBe("true");
   });
 
-  test("menu offers Rename when the session supports it, and calls onRenameRequest on select", async () => {
+  test("menu offers Rename when the session supports it, saving through onRenameSession", async () => {
     const acts = actions();
-    const session = apiNode({ rename: true });
-    render(<RailRow node={sessionRailNode(session)} info={info()} actions={acts} />);
+    const session = renderRow({ rename: true }, acts);
     const user = await openMenu(/actions for/i);
     await user.click(screen.getByRole("menuitem", { name: "Rename" }));
-    expect(acts.onRenameRequest).toHaveBeenCalledWith(session);
+    const dialog = screen.getByRole("dialog", { name: "Rename session" });
+    const input = within(dialog).getByLabelText("Name");
+    await user.clear(input);
+    await user.type(input, "New name");
+    await user.click(within(dialog).getByRole("button", { name: "Rename" }));
+    await waitFor(() => expect(acts.onRenameSession).toHaveBeenCalledWith(session, "New name"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
   test("menu offers 'Archive' for a session outside the archived tier, and calls onToggleArchiveSession", async () => {
@@ -874,10 +941,10 @@ describe("session row", () => {
   for (const kind of ["subagent", "fork", "cluster"]) {
     test(`menu omits Archive on a ${kind} row - only top-level sessions are archivable`, async () => {
       render(<RailRow node={sessionRailNode(apiNode({ kind, tier: "current" }))} info={info()} actions={actions()} />);
-      // Such a row may now have no menu trigger at all (nothing left to put in
-      // it); either way, what matters is that neither verb is reachable.
-      const trigger = screen.queryByRole("button", { name: /actions for/i });
-      if (trigger) await openMenu(/actions for/i);
+      // The unified menu is on every session row (the pane items are always
+      // meaningful), so the trigger is always there - what the row loses is
+      // the organization group.
+      await openMenu(/actions for/i);
       expect(screen.queryByRole("menuitem", { name: "Archive" })).toBeNull();
       expect(screen.queryByRole("menuitem", { name: "Unarchive" })).toBeNull();
     });
@@ -890,13 +957,14 @@ describe("session row", () => {
   // refuses via the same skipped/toast path deleteProject already uses for a
   // session that raced back to live (no client-side liveness gate to
   // duplicate the server's own crash-vs-live predicate).
-  test("menu offers 'Delete…' for a top-level local session and calls onDeleteSessionRequest on select", async () => {
+  test("menu offers 'Delete…' for a top-level local session, confirming through onDeleteSession", async () => {
     const acts = actions();
-    const session = apiNode({ host_id: "local" });
-    render(<RailRow node={sessionRailNode(session)} info={info()} actions={acts} />);
+    const session = renderRow({ host_id: "local" }, acts);
     const user = await openMenu(/actions for/i);
     await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
-    expect(acts.onDeleteSessionRequest).toHaveBeenCalledWith(session);
+    const dialog = screen.getByRole("dialog", { name: "Delete session?" });
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(acts.onDeleteSession).toHaveBeenCalledWith(session));
   });
 
   // "do not offer this capability for remote-source threads" (kata n15j) -
@@ -914,8 +982,7 @@ describe("session row", () => {
   for (const kind of ["subagent", "fork", "cluster"]) {
     test(`menu omits Delete on a ${kind} row - only top-level sessions are deletable`, async () => {
       render(<RailRow node={sessionRailNode(apiNode({ kind, host_id: "local" }))} info={info()} actions={actions()} />);
-      const trigger = screen.queryByRole("button", { name: /actions for/i });
-      if (trigger) await openMenu(/actions for/i);
+      await openMenu(/actions for/i);
       expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
     });
   }
@@ -931,38 +998,68 @@ describe("session row", () => {
   for (const kind of ["subagent", "fork", "cluster"]) {
     test(`menu omits pin and unpin on a ${kind} row`, async () => {
       render(<RailRow node={sessionRailNode(apiNode({ kind }))} info={info()} actions={actions()} />);
-      const trigger = screen.queryByRole("button", { name: /actions for/i });
-      if (trigger) {
-        await openMenu(/actions for/i);
-        expect(screen.queryByRole("menuitem", { name: "Pin this session…" })).toBeNull();
-        expect(screen.queryByRole("menuitem", { name: "Unpin" })).toBeNull();
-      }
+      await openMenu(/actions for/i);
+      expect(screen.queryByRole("menuitem", { name: "Pin this session…" })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: "Unpin" })).toBeNull();
     });
   }
 
-  // With favorite, rename (already withheld server-side - `rename` is absent on
-  // every nested/synthetic node) and archive all gone, there is nothing left to
-  // put in a subagent's menu, and ActionsMenu renders no trigger for an empty
-  // item list. The row stays clickable to open the session; it just carries no
-  // "..." button.
-  test("a subagent row offers no actions menu at all", () => {
-    render(<RailRow node={sessionRailNode(apiNode({ kind: "subagent" }))} info={info()} actions={actions()} />);
-    expect(screen.queryByRole("button", { name: /actions for/i })).toBeNull();
+  // With pin, archive and delete gone, a subagent's unified menu is down to
+  // the items that are always meaningful: the pane group, Rename (disabled -
+  // the wire withholds `rename` from every nested/synthetic node), and
+  // Shut down.
+  test("a subagent row's menu is panes + rename + shut down only", async () => {
+    renderRow({ kind: "subagent", rename: false });
+    await openMenu(/actions for/i);
+    const items = screen.getAllByRole("menuitem").map((el) => el.textContent);
+    expect(items).toEqual(["Details", "Tasks", "Activity", "Rename", "Shut down"]);
   });
 
-  test("a top-level local session still offers all four actions", async () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ kind: "session", rename: true, host_id: "local" }))}
-        info={info()}
-        actions={actions()}
-      />,
-    );
+  // The row's menu is THE shared SessionMenu now - the same item list, in the
+  // same order, the session pane's chrome shows (SessionMenu.test.tsx pins
+  // the component's own copy of this contract).
+  test("session row menu is the unified menu: panes group first, shut down present", async () => {
+    renderRow({ kind: "session", host_id: "local" });
     await openMenu(/actions for/i);
-    expect(screen.getByRole("menuitem", { name: "Pin this session…" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Rename" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Archive" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Delete…" })).toBeTruthy();
+    const items = screen.getAllByRole("menuitem").map((el) => el.textContent);
+    expect(items).toEqual([
+      "Details",
+      "Tasks",
+      "Activity",
+      "Rename",
+      "Pin this session…",
+      "Archive",
+      "Shut down",
+      "Delete…",
+    ]);
+  });
+
+  test("Details opens the session pane, then the sessionDetails pane", async () => {
+    const acts = actions({
+      // The same wiring Rail's rowActions gives this callback: the session
+      // pane itself, plus the selected panel beside it.
+      onOpenSessionPane: (target, pane) => {
+        const workspace = workspaceStore.getState();
+        workspace.openPane("session", { ref: target.ref });
+        workspace.openPane(sessionPanelPaneType(pane), { ref: target.ref });
+      },
+    });
+    renderRow({}, acts);
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: "Details" }));
+    const panes = workspaceStore.getState().panes.map((p) => p.type);
+    expect(panes).toContain("session");
+    expect(panes).toContain("sessionDetails");
+  });
+
+  test("shut down confirms through onShutdownSession", async () => {
+    const acts = actions();
+    const session = renderRow({}, acts);
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: "Shut down" }));
+    const dialog = screen.getByRole("dialog", { name: "Shut down this session?" });
+    await user.click(within(dialog).getByRole("button", { name: "Shut down" }));
+    await waitFor(() => expect(acts.onShutdownSession).toHaveBeenCalledWith(session));
   });
 
   // Title-first row (rail truncation round): the branch is secondary metadata
@@ -1039,7 +1136,11 @@ describe("session row", () => {
     const user = await openMenu(/actions for/i);
     expect(screen.getByRole("menuitem", { name: "Unpin" })).toBeTruthy();
     await user.click(screen.getByRole("menuitem", { name: "Rename" }));
-    expect(acts.onRenameRequest).toHaveBeenCalledWith(session);
+    // The dialog opens prefilled with the current title; saving unchanged
+    // still round-trips through onRenameSession.
+    const dialog = screen.getByRole("dialog", { name: "Rename session" });
+    await user.click(within(dialog).getByRole("button", { name: "Rename" }));
+    await waitFor(() => expect(acts.onRenameSession).toHaveBeenCalledWith(session, session.title));
   });
 });
 

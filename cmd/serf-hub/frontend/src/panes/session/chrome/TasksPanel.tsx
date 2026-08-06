@@ -448,14 +448,12 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
 
   return (
     <>
-      {/* data-tasks-trigger lets the command palette's "Toggle tasks panel"
-          (/tasks) synthesize a click here (shell/palette/commands.ts) - without
-          it that command is inert. Button forwards data-* to the real <button>.
-          Omitted while hideTrigger is set - see DetailsPanel's identical
-          hideTrigger comment for why /tasks going quiet while collapsed is
-          the accepted trade-off here (kata vybn's report). */}
+      {/* Omitted while hideTrigger is set (the row collapsed this into the
+          "..." menu instead - see SessionChrome). The palette's /tasks no
+          longer clicks this trigger; it toggles the sessionTasks workspace
+          pane (shell/palette/commands.ts toggleSessionPane). */}
       {!hideTrigger && (
-        <Button variant="quiet" size="sm" onClick={() => setOpen(true)} data-tasks-trigger="">
+        <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
           {triggerLabel(model.tasks)}
         </Button>
       )}

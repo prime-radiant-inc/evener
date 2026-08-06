@@ -279,3 +279,44 @@ test("Escape closes only the menu when nested in a Dialog; a second Escape then 
   await user.keyboard("{Escape}");
   expect(onDialogClose).toHaveBeenCalledOnce();
 });
+
+test("renders a separator between groups and skips it in arrow navigation", async () => {
+  const user = userEvent.setup();
+  const onA = vi.fn();
+  const onB = vi.fn();
+  render(
+    <Menu
+      trigger="open"
+      items={[
+        { id: "a", label: "A", onSelect: onA },
+        { kind: "separator", id: "sep-1" },
+        { id: "b", label: "B", onSelect: onB },
+      ]}
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: "open" }));
+  expect(screen.getByRole("separator")).toBeTruthy();
+  // First enabled item is A; one ArrowDown must land on B, never the separator.
+  await user.keyboard("{ArrowDown}");
+  await user.keyboard("{Enter}");
+  expect(onB).toHaveBeenCalledTimes(1);
+  expect(onA).not.toHaveBeenCalled();
+});
+
+test("End/Home skip separators at the edges", async () => {
+  const user = userEvent.setup();
+  render(
+    <Menu
+      trigger="open"
+      items={[
+        { kind: "separator", id: "sep-top" },
+        { id: "a", label: "A", onSelect: () => {} },
+        { kind: "separator", id: "sep-bottom" },
+      ]}
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: "open" }));
+  // A is the ONLY actionable item: Home, End, and ArrowDown all land on it.
+  await user.keyboard("{End}");
+  expect(screen.getByRole("menuitem", { name: "A" }).tabIndex).toBe(0);
+});

@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import "../../panes/sessionPanels";
 import { WireError } from "../../protocol/errors";
 import "../../panes/sessionPanels";
 import type { ItemModel, ThreadModel, TurnModel } from "../../protocol/model";
@@ -10,7 +11,7 @@ import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { Toast } from "../../widgets";
-import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
+import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
 import { openPalette, paletteStore } from "./paletteController";
 import type { SearchResult } from "./search";
@@ -108,6 +109,9 @@ beforeEach(() => {
   window.history.pushState({}, "", "/");
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
+  // Keep viewport tests isolated from direct matchMedia assignments.
+  // @ts-expect-error jsdom baseline has no matchMedia.
+  delete window.matchMedia;
 });
 afterEach(() => {
   cleanup();
@@ -392,22 +396,16 @@ test("ArrowDown moves the active row (aria-selected) with wraparound", async () 
 test("Enter on an exact built-in name runs the built-in", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
-  // Keep the branch deterministic in jsdom: this test exercises desktop behavior.
-  vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
   focusSession("ref_a");
   render(<CommandPalette />);
   act(() => openPalette("/status"));
 
   await user.keyboard("{Enter}");
 
-  // jsdom has no window.matchMedia, so isMobileViewport() is false and
-  // /status takes the desktop branch: toggleSessionPane (commands.ts)
-  // toggles the sessionDetails pane in the workspace store instead of
-  // synthesizing a DOM click on the chrome trigger (that click path is
-  // mobile-only since 1a4287d5e).
-  expect(workspaceStore.getState().panes).toEqual(
-    expect.arrayContaining([expect.objectContaining({ type: "sessionDetails", params: { ref: "ref_a" } })]),
-  );
+  // /status toggles the sessionDetails workspace pane directly at every
+  // viewport - the chrome trigger button it used to click no longer renders
+  // (the unified SessionMenu owns Details/Tasks).
+  expect(isPaneOpen(workspaceStore.getState(), "sessionDetails", { ref: "ref_a" })).toBe(true);
   expect(send).not.toHaveBeenCalled();
   expect(screen.queryByRole("dialog")).toBeNull();
 });

@@ -30,6 +30,24 @@ export interface MenuItem {
   disabled?: boolean;
 }
 
+export interface MenuSeparator {
+  kind: "separator";
+  id: string;
+}
+
+export type MenuEntry = MenuItem | MenuSeparator;
+
+export function isSeparator(entry: MenuEntry): entry is MenuSeparator {
+  return "kind" in entry && entry.kind === "separator";
+}
+
+// Actionable = keyboard-reachable: separators and disabled items are both
+// skipped by roving navigation, so every index helper below uses this one
+// predicate instead of reading .disabled directly.
+function isActionable(entry: MenuEntry): boolean {
+  return !isSeparator(entry) && !entry.disabled;
+}
+
 export type MenuVariant = "default" | "quiet";
 
 export interface MenuProps {
@@ -37,7 +55,7 @@ export interface MenuProps {
    * open/close wiring - see this task's report for why the trigger isn't
    * the imported Button widget). */
   trigger: ReactNode;
-  items: MenuItem[];
+  items: MenuEntry[];
   /** Forwarded to the trigger button's own tabIndex. Omitted (the default)
    * leaves the button's native tabIndex (0) untouched - every existing
    * consumer of this widget is unaffected. Pass -1 when Menu is nested
@@ -72,34 +90,35 @@ const CLASS = {
   popup: requireClass(styles.popup, "menu.module.css", "popup"),
   item: requireClass(styles.item, "menu.module.css", "item"),
   itemDisabled: requireClass(styles.itemDisabled, "menu.module.css", "itemDisabled"),
+  separator: requireClass(styles.separator, "menu.module.css", "separator"),
 };
 
-function firstEnabledIndex(items: MenuItem[]): number {
-  return items.findIndex((item) => !item.disabled);
+function firstEnabledIndex(items: MenuEntry[]): number {
+  return items.findIndex(isActionable);
 }
 
-function itemAt(items: MenuItem[], i: number): MenuItem {
+function itemAt(items: MenuEntry[], i: number): MenuEntry {
   const item = items[i];
   if (!item) throw new Error(`menu item index ${i} out of range for ${items.length} items`);
   return item;
 }
 
-function lastEnabledIndex(items: MenuItem[]): number {
+function lastEnabledIndex(items: MenuEntry[]): number {
   for (let i = items.length - 1; i >= 0; i--) {
-    if (!itemAt(items, i).disabled) return i;
+    if (isActionable(itemAt(items, i))) return i;
   }
   return -1;
 }
 
 // Next enabled index stepping by `delta` (+1/-1) from `from`, wrapping
 // around the ends. Returns `from` unchanged if every item is disabled.
-function stepEnabledIndex(items: MenuItem[], from: number, delta: 1 | -1): number {
+function stepEnabledIndex(items: MenuEntry[], from: number, delta: 1 | -1): number {
   const n = items.length;
   if (n === 0) return -1;
   let i = from;
   for (let step = 0; step < n; step++) {
     i = (i + delta + n) % n;
-    if (!itemAt(items, i).disabled) return i;
+    if (isActionable(itemAt(items, i))) return i;
   }
   return from;
 }
@@ -196,7 +215,8 @@ export function Menu({ trigger, items, triggerTabIndex, variant = "default" }: M
     itemRefs.current[index]?.focus();
   }
 
-  function selectItem(item: MenuItem) {
+  function selectItem(item: MenuEntry) {
+    if (isSeparator(item)) return;
     if (item.disabled) return;
     item.onSelect();
     closeMenu();
@@ -341,29 +361,40 @@ export function Menu({ trigger, items, triggerTabIndex, variant = "default" }: M
               style={{ top: position.top, left: position.left }}
               onKeyDown={handleMenuKeyDown}
             >
-              {items.map((item, index) => (
-                // Roving tabindex + delegated keydown: exactly one item has
-                // tabIndex 0 at a time (real focus lives here, not via
-                // aria-activedescendant), and handleMenuKeyDown on the ul
-                // above already selects the active item on Enter/Space -
-                // that handler sees every key bubbled up from whichever <li>
-                // is actually focused, so it doesn't need its own onKeyDown.
-                // biome-ignore lint/a11y/useKeyWithClickEvents: keydown is delegated to the ul's handleMenuKeyDown via bubbling, see above
-                <li
-                  key={item.id}
-                  // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: ARIA APG menu markup, see the ul above
-                  role="menuitem"
-                  tabIndex={!item.disabled && index === activeIndex ? 0 : -1}
-                  aria-disabled={item.disabled === true ? true : undefined}
-                  className={`${CLASS.item} ${item.disabled ? CLASS.itemDisabled : ""}`}
-                  ref={(node) => {
-                    itemRefs.current[index] = node;
-                  }}
-                  onClick={() => selectItem(item)}
-                >
-                  {item.label}
-                </li>
-              ))}
+              {items.map((item, index) =>
+                isSeparator(item) ? (
+                  // A menu separator is deliberately NOT focusable (roving
+                  // navigation skips it, exactly like a disabled item), so
+                  // the focusable-separator ARIA attributes (aria-valuenow
+                  // et al.) don't apply; <li role="separator"> inside the
+                  // same <ul role="menu"> is the APG's own menu markup, not
+                  // an <hr> (which isn't valid as a ul child).
+                  // biome-ignore lint/a11y/useFocusableInteractive lint/a11y/useSemanticElements lint/a11y/useAriaPropsForRole lint/a11y/noNoninteractiveElementToInteractiveRole: unfocusable APG menu separator, see above
+                  <li key={item.id} role="separator" className={CLASS.separator} />
+                ) : (
+                  // Roving tabindex + delegated keydown: exactly one item has
+                  // tabIndex 0 at a time (real focus lives here, not via
+                  // aria-activedescendant), and handleMenuKeyDown on the ul
+                  // above already selects the active item on Enter/Space -
+                  // that handler sees every key bubbled up from whichever <li>
+                  // is actually focused, so it doesn't need its own onKeyDown.
+                  // biome-ignore lint/a11y/useKeyWithClickEvents: keydown is delegated to the ul's handleMenuKeyDown via bubbling, see above
+                  <li
+                    key={item.id}
+                    // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: ARIA APG menu markup, see the ul above
+                    role="menuitem"
+                    tabIndex={!item.disabled && index === activeIndex ? 0 : -1}
+                    aria-disabled={item.disabled === true ? true : undefined}
+                    className={`${CLASS.item} ${item.disabled ? CLASS.itemDisabled : ""}`}
+                    ref={(node) => {
+                      itemRefs.current[index] = node;
+                    }}
+                    onClick={() => selectItem(item)}
+                  >
+                    {item.label}
+                  </li>
+                ),
+              )}
             </ul>
           </FocusScope>,
           document.body,

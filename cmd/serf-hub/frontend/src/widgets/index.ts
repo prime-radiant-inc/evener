@@ -44,8 +44,8 @@ export type { KeyHintProps } from "./keyhint";
 export { chordLabel, KeyHint } from "./keyhint";
 export type { MarkdownProps } from "./markdown";
 export { Markdown } from "./markdown";
-export type { MenuItem, MenuProps } from "./menu";
-export { Menu } from "./menu";
+export type { MenuEntry, MenuItem, MenuProps, MenuSeparator } from "./menu";
+export { isSeparator, Menu } from "./menu";
 export type { MeterProps, MeterTone } from "./meter";
 export { Meter } from "./meter";
 // ModelCatalog is both the component and the /api/models envelope type. The

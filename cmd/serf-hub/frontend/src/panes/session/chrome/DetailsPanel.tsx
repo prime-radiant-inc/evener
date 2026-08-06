@@ -222,17 +222,12 @@ export const DetailsPanel = forwardRef<DetailsPanelHandle, DetailsPanelProps>(fu
 
   return (
     <>
-      {/* data-details-trigger lets the command palette's "Toggle session
-          details" (/status) synthesize a click here (shell/palette/commands.ts)
-          - without it that command is inert. Button forwards data-* through.
-          Omitted while hideTrigger is set (the row collapsed this into the
-          "..." menu instead - see SessionChrome): clickTrigger is already
-          documented no-op-safe when its selector finds nothing, so /status
-          goes quiet rather than throwing while collapsed (kata vybn's report
-          - a follow-up kata tracks reaching this trigger through the menu
-          too). */}
+      {/* Omitted while hideTrigger is set (the row collapsed this into the
+          "..." menu instead - see SessionChrome). The palette's /status no
+          longer clicks this trigger; it toggles the sessionDetails workspace
+          pane (shell/palette/commands.ts toggleSessionPane). */}
       {!hideTrigger && (
-        <Button variant="quiet" size="sm" onClick={() => setOpen(true)} data-details-trigger="">
+        <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
           Details
         </Button>
       )}

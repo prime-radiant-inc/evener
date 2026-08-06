@@ -5,16 +5,25 @@
 // (always; collapsed mode was removed 2026-07-24 at Jesse's direction) and
 // inside StackHost's mobile TreeDrawer sheet (which passes it as children).
 // Rail owns per-branch expand state, the reveal (railController /project),
-// and the rename/delete-project confirmation dialogs. Every mutation goes
-// through actions.ts, showing optimistically (railPending) while the request
-// is in flight, refetching the tree on success and toasting on failure.
+// and the pin-section rename/delete + delete-project confirmation dialogs
+// (the session-level dialogs - rename / pin / delete - are owned by the
+// shared SessionMenu each row renders; Rail supplies only the mutation
+// callbacks behind rowActions). Every mutation goes through actions.ts,
+// showing optimistically (railPending) while the request is in flight,
+// refetching the tree on success and toasting on failure.
 import { type ChangeEvent, type CSSProperties, useCallback, useEffect, useId, useRef, useState } from "react";
+// Importing sessionPanelPaneType from this module also runs its registerPane
+// side effects for the three session panel pane types - required, since the
+// rail can now be the FIRST place a sessionDetails/sessionTasks/
+// sessionActivity pane is opened (the unified menu's pane items), before any
+// session pane's own chrome has mounted.
+import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { errorText } from "../../protocol/errors";
 import { useConnectionStore } from "../../stores/connection";
+import { threadsStore } from "../../stores/threads";
 import {
   type TreeNode as ApiTreeNode,
   type TreeProject as ApiTreeProject,
-  type PinSectionSummary,
   type PinSectionTree,
   type TreeResponse,
   treeStore,
@@ -35,7 +44,8 @@ import {
   useToasts,
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { navigate, paneToURL, urlToPane } from "../routing";
+import { closePanesForDeletedSessions } from "../deletedSessionPanes";
+import { navigate, paneToURL } from "../routing";
 import { workspaceStore } from "../workspace";
 import {
   assignSessionPin,
@@ -49,7 +59,6 @@ import {
   setFavorite,
   unpinSession,
 } from "./actions";
-import { PinSectionPicker } from "./PinSectionPicker";
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
@@ -103,54 +112,6 @@ function isEmptyTree(tree: TreeResponse): boolean {
     tree.archived_projects.length === 0 &&
     tree.test_runs.length === 0
   );
-}
-
-// n15j's safety contract for any delete that actually happened: "if the
-// deleted session is open in the WebUI, navigate to a surviving
-// workspace/session rather than leaving a dead route." Closing every pane
-// still showing a session whose files are gone is the whole of what this
-// layer owes - workspace.ts's own invariant (DockHost's relaunchWelcome)
-// refills an emptied main slot from there, so this never picks a
-// replacement. Shared by BOTH delete paths: one deleted session and a whole
-// deleted project leave the workspace in the same dead-route state, so they
-// clean it up the same way.
-//
-// Both endpoints report what they actually removed as bare thread ids
-// (web_api_project_delete.go's result.Deleted carries target.ThreadID;
-// web_api_session_delete.go ships the same shape for one target), and both
-// only ever delete LOCAL sessions - so a bare id names the "local:<id>" ref
-// a pane carries. An id that already carries a source prefix passes through
-// unchanged, the same both-forms tolerance stores/tree.ts's sessionIDMatches
-// applies to this very field.
-function closePanesForDeletedSessions(deletedIDs: string[]): void {
-  const goneRefs = new Set(deletedIDs.map((id) => (id.includes(":") ? id : `local:${id}`)));
-  const workspace = workspaceStore.getState();
-  for (const pane of workspace.panes) {
-    const paneRef = (pane.params as { ref?: unknown }).ref;
-    if (typeof paneRef === "string" && goneRefs.has(paneRef)) workspace.closePane(pane.id);
-  }
-  leaveDeadRoute(goneRefs);
-}
-
-// Closing the pane is not enough for the pane the ADDRESS BAR names (kata
-// 1hdc): AppShell re-applies the current route on every workspace change, and
-// a URL naming a session re-opens a pane for it whether or not the tree still
-// has that session - so closing the routed pane just makes the shell open it
-// again, on "Loading transcript…" forever. Landing on welcome removes the dead
-// route the re-application would keep acting on, and is where the emptied main
-// slot already goes on its own (DockHost's relaunch-welcome invariant).
-//
-// Only a URL naming a ref we JUST deleted is rewritten. Every other route -
-// another session, settings, anything - is left exactly where it is: deleting
-// one session from the rail is not a reason to move the user off whatever they
-// were looking at.
-function leaveDeadRoute(goneRefs: ReadonlySet<string>): void {
-  const route = urlToPane(window.location.pathname);
-  if (route?.type !== "session") return;
-  const routedRef = (route.params as { ref?: unknown }).ref;
-  if (typeof routedRef !== "string" || !goneRefs.has(routedRef)) return;
-  const welcome = paneToURL("welcome", {});
-  if (welcome !== null) navigate(welcome);
 }
 
 interface RailSectionProps {
@@ -288,13 +249,6 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   // arranged comes back arranged. The lazy initializer means the read happens
   // once per mount, not on every render.
   const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(loadExpansion);
-  const [renameTarget, setRenameTarget] = useState<ApiTreeNode | null>(null);
-  const [renameValue, setRenameValue] = useState("");
-  const [pickerTarget, setPickerTarget] = useState<{
-    session: ApiTreeNode;
-    token: number;
-  } | null>(null);
-  const pickerToken = useRef(0);
   const [sectionRenameTarget, setSectionRenameTarget] = useState<PinSectionTree | null>(null);
   const [sectionRenameValue, setSectionRenameValue] = useState("");
   const [sectionRenameError, setSectionRenameError] = useState("");
@@ -312,7 +266,6 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     memberCount: number;
   } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ApiTreeProject | null>(null);
-  const [deleteSessionTarget, setDeleteSessionTarget] = useState<ApiTreeNode | null>(null);
   // Mutations currently in flight. Everything below renders from the tree with
   // these projected on (railPending), so a click shows before its round trip
   // resolves; runAction adds and removes them.
@@ -356,7 +309,6 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     () => () => {
       sectionRenameToken.current += 1;
       sectionRenameSubmission.current = null;
-      pickerToken.current += 1;
       sectionDeleteRequestToken.current += 1;
     },
     [],
@@ -540,34 +492,85 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   }
 
   const rowActions: RailRowActions = {
-    onPinSectionRequest: (session) => {
-      const token = pickerToken.current + 1;
-      pickerToken.current = token;
-      setPickerTarget({ session, token });
+    onOpenSessionPane: (session, pane) => {
+      const workspace = workspaceStore.getState();
+      workspace.openPane("session", { ref: session.ref });
+      workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
     },
-    onUnpinRequest: (session) => {
-      void runAction(() => unpinSession(session.ref), "Couldn't unpin session", {
-        kind: "sessionUnpin",
-        ref: session.ref,
-      });
+    // Every session-mutation callback below passes propagateFailure=true:
+    // runAction toasts the failure AND rethrows, so the rejection reaches
+    // SessionMenu's confirm helper and its dialog stays open (the failure
+    // convention in SessionMenu.tsx's header comment - one owner per
+    // dialog, and SessionMenu owns these now).
+    onRenameSession: async (session, name) => {
+      await runAction(
+        () => renameSession(session.ref, name),
+        "Couldn't rename session",
+        { kind: "sessionTitle", ref: session.ref, title: name },
+        true,
+      );
     },
+    onShutdownSession: async (session) => {
+      await runAction(
+        () => threadsStore.getState().shutdown(session.ref),
+        "Couldn't shut down session",
+        undefined,
+        true,
+      );
+    },
+    onPinSession: async (session, target, section) => {
+      const optimistic = section
+        ? ({ kind: "sessionPin", ref: session.ref, source: session, section } as const)
+        : (result: Awaited<ReturnType<typeof assignSessionPin>>): PendingOp => ({
+            kind: "sessionPin",
+            ref: session.ref,
+            source: session,
+            section: result.assignment.section,
+          });
+      await runAction(() => assignSessionPin(session.ref, target), "Couldn't assign pinned session", optimistic, true);
+    },
+    onUnpinRequest: (session) =>
+      runAction(
+        () => unpinSession(session.ref),
+        "Couldn't unpin session",
+        { kind: "sessionUnpin", ref: session.ref },
+        true,
+      ),
     onToggleArchiveSession: (session) => {
       const archiving = session.tier !== "archived";
-      void runAction(
+      return runAction(
         () => setArchived("session", session.session_id, archiving),
         "Couldn't update archive state",
         // Only the archiving direction hides anything: unarchiving lands the
         // row in whichever tier the server classifies it into, which this
         // layer cannot predict (railPending's own comment).
         archiving ? { kind: "hideSession", ref: session.ref } : undefined,
+        true,
       );
     },
-    onRenameRequest: (session) => {
-      setRenameTarget(session);
-      setRenameValue(session.title);
-    },
-    onDeleteSessionRequest: (session) => {
-      setDeleteSessionTarget(session);
+    onDeleteSession: async (session) => {
+      const optimistic: PendingOp = { kind: "hideSession", ref: session.ref };
+      setPending((ops) => [...ops, optimistic]);
+      try {
+        const result = await deleteSession(session.ref);
+        await treeStore.getState().refresh();
+        // The session is actually gone: close every open pane still showing
+        // it instead of leaving a phantom tab open (see
+        // closePanesForDeletedSessions).
+        closePanesForDeletedSessions(result.deleted);
+        if (result.skipped.length > 0) {
+          const reason = result.skipped[0]?.reason ?? "still in use";
+          toasts.push("warning", `Couldn't delete "${session.title}": ${reason}`);
+        }
+      } catch (err) {
+        // Toast here, then rethrow so SessionMenu's delete dialog stays open
+        // (same propagateFailure convention as runAction above; this path
+        // can't use runAction because it owns its own pending op).
+        toasts.push("error", `Couldn't delete "${session.title}": ${errorText(err)}`);
+        throw err;
+      } finally {
+        setPending((ops) => ops.filter((op) => op !== optimistic));
+      }
     },
     onToggleFavoriteProject: (project) => {
       const value = !project.favorite;
@@ -589,23 +592,6 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       setDeleteTarget(project);
     },
   };
-
-  function closeRenameDialog() {
-    setRenameTarget(null);
-    setRenameValue("");
-  }
-
-  async function confirmRename() {
-    const target = renameTarget;
-    const name = renameValue.trim();
-    if (!target || !name) return;
-    closeRenameDialog();
-    await runAction(() => renameSession(target.ref, name), "Couldn't rename session", {
-      kind: "sessionTitle",
-      ref: target.ref,
-      title: name,
-    });
-  }
 
   function closeDeleteDialog() {
     setDeleteTarget(null);
@@ -646,57 +632,6 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     } finally {
       setPending((ops) => ops.filter((op) => op !== optimistic));
     }
-  }
-
-  function closeDeleteSessionDialog() {
-    setDeleteSessionTarget(null);
-  }
-
-  async function confirmDeleteSession() {
-    const target = deleteSessionTarget;
-    if (!target) return;
-    closeDeleteSessionDialog();
-    const optimistic: PendingOp = { kind: "hideSession", ref: target.ref };
-    setPending((ops) => [...ops, optimistic]);
-    try {
-      const result = await deleteSession(target.ref);
-      await treeStore.getState().refresh();
-      // The session is actually gone: close every open pane still showing it
-      // instead of leaving a phantom tab open (see
-      // closePanesForDeletedSessions).
-      closePanesForDeletedSessions(result.deleted);
-      if (result.skipped.length > 0) {
-        const reason = result.skipped[0]?.reason ?? "still in use";
-        toasts.push("warning", `Couldn't delete "${target.title}": ${reason}`);
-      }
-    } catch (err) {
-      toasts.push("error", `Couldn't delete "${target.title}": ${errorText(err)}`);
-    } finally {
-      setPending((ops) => ops.filter((op) => op !== optimistic));
-    }
-  }
-
-  async function assignPickerTarget(
-    target: { section_id: string } | { section_name: string },
-    selectedSection?: PinSectionSummary,
-  ): Promise<void> {
-    const picker = pickerTarget;
-    if (!picker) return;
-    const optimistic = selectedSection
-      ? ({ kind: "sessionPin", ref: picker.session.ref, source: picker.session, section: selectedSection } as const)
-      : (result: Awaited<ReturnType<typeof assignSessionPin>>): PendingOp => ({
-          kind: "sessionPin",
-          ref: picker.session.ref,
-          source: picker.session,
-          section: result.assignment.section,
-        });
-    await runAction(
-      () => assignSessionPin(picker.session.ref, target),
-      "Couldn't assign pinned session",
-      optimistic,
-      true,
-    );
-    if (pickerToken.current === picker.token) setPickerTarget(null);
   }
 
   function openSectionRename(section: PinSectionTree): void {
@@ -956,43 +891,6 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
         />
       </div>
 
-      {renameTarget && (
-        <Dialog
-          open
-          onClose={closeRenameDialog}
-          title="Rename session"
-          footer={
-            <div className={CLASS.dialogActions}>
-              <Button variant="quiet" onClick={closeRenameDialog}>
-                Cancel
-              </Button>
-              <Button onClick={() => void confirmRename()} disabled={renameValue.trim() === ""}>
-                Rename
-              </Button>
-            </div>
-          }
-        >
-          <label className={CLASS.dialogField}>
-            Name
-            <Input
-              value={renameValue}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setRenameValue(e.target.value)}
-            />
-          </label>
-        </Dialog>
-      )}
-
-      {pickerTarget && (
-        <PinSectionPicker
-          session={pickerTarget.session}
-          onAssign={assignPickerTarget}
-          onClose={() => {
-            pickerToken.current += 1;
-            setPickerTarget(null);
-          }}
-        />
-      )}
-
       {sectionRenameTarget && (
         <Dialog
           open
@@ -1070,26 +968,6 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
             Permanently delete every session in "{deleteTarget.name}"? This removes their transcripts and cannot be
             undone.
           </p>
-        </Dialog>
-      )}
-
-      {deleteSessionTarget && (
-        <Dialog
-          open
-          onClose={closeDeleteSessionDialog}
-          title="Delete session?"
-          footer={
-            <div className={CLASS.dialogActions}>
-              <Button variant="quiet" onClick={closeDeleteSessionDialog}>
-                Cancel
-              </Button>
-              <Button variant="danger" onClick={() => void confirmDeleteSession()}>
-                Delete
-              </Button>
-            </div>
-          }
-        >
-          <p>Permanently delete "{deleteSessionTarget.title}"? This removes its transcript and cannot be undone.</p>
         </Dialog>
       )}
     </div>

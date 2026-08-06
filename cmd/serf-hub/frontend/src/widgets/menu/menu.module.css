@@ -115,3 +115,12 @@
   cursor: not-allowed;
   pointer-events: none;
 }
+
+/* Group rule between item clusters (SessionMenu's panes/organize/
+ * destructive groups). --edge matches .popup's own border so the rule
+ * reads as the popup's own hairline, not a new color. */
+.separator {
+  margin: var(--space-1) 0;
+  border-top: 1px solid var(--edge);
+  list-style: none;
+}

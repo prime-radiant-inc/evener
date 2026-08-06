@@ -6,7 +6,14 @@ import {
   threadStartedNotification,
 } from "../protocol/testing/notifications";
 import { connectionStore } from "./connection";
-import { REFRESH_NOTIFICATIONS, resetTreeStoreForTests, type TreeNode, type TreeResponse, treeStore } from "./tree";
+import {
+  findSessionNode,
+  REFRESH_NOTIFICATIONS,
+  resetTreeStoreForTests,
+  type TreeNode,
+  type TreeResponse,
+  treeStore,
+} from "./tree";
 
 // A minimal, well-formed Response stand-in - only what refresh()/
 // loadProjectDetail() actually touch (ok/status/statusText/json()).
@@ -776,6 +783,51 @@ describe("loadProjectPage", () => {
 
     expect(treeStore.getState().tree?.projects[0]).toEqual(generationBProject);
     expect(treeStore.getState().projectDetails.get("p1")).toEqual(generationBProject);
+  });
+});
+
+describe("findSessionNode", () => {
+  const baseNode: TreeNode = {
+    row_id: "row",
+    ref: "local:base",
+    host_id: "local",
+    session_id: "base",
+    title: "Base",
+    project: "Proj",
+    state: "idle",
+    kind: "session",
+    live: false,
+    children: [],
+  };
+  const baseTree: TreeResponse = { ...NORMALIZED_EMPTY_TREE };
+
+  test("finds a session nested in a project's children", () => {
+    const child = { ...baseNode, row_id: "child-row", ref: "local:child", children: [] };
+    const parent = { ...baseNode, row_id: "parent-row", ref: "local:parent", children: [child] };
+    const tree = { ...baseTree, projects: [{ key: "p1", name: "Proj", sessions: [parent] }] };
+    expect(findSessionNode(tree, "local:child")?.ref).toBe("local:child");
+  });
+
+  test("searches live, pin sections, archived projects, and test runs", () => {
+    const inLive = { ...baseNode, row_id: "live-row", ref: "local:live" };
+    const inPin = { ...baseNode, row_id: "pin-row", ref: "local:pin" };
+    const inArchived = { ...baseNode, row_id: "archived-row", ref: "local:archived" };
+    const inTestRun = { ...baseNode, row_id: "test-run-row", ref: "local:test-run" };
+    const tree: TreeResponse = {
+      ...baseTree,
+      live: [inLive],
+      pin_sections: [{ id: "s1", name: "Pinned", sessions: [inPin] }],
+      archived_projects: [{ key: "p1", name: "Archived", sessions: [inArchived] }],
+      test_runs: [{ key: "t1", name: "Test runs", sessions: [inTestRun] }],
+    };
+    expect(findSessionNode(tree, "local:live")?.ref).toBe("local:live");
+    expect(findSessionNode(tree, "local:pin")?.ref).toBe("local:pin");
+    expect(findSessionNode(tree, "local:archived")?.ref).toBe("local:archived");
+    expect(findSessionNode(tree, "local:test-run")?.ref).toBe("local:test-run");
+  });
+
+  test("returns undefined for an unknown ref", () => {
+    expect(findSessionNode(baseTree, "local:nope")).toBeUndefined();
   });
 });
 
