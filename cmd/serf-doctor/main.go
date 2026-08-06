@@ -235,6 +235,7 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 	cacheSpikes := fs.Bool("cache-spikes", false, "only calls whose uncached input >= --threshold")
 	threshold := fs.Int("threshold", 0, "uncached-input-token floor for --cache-spikes (default 50000)")
 	summary := fs.Bool("summary", false, "render only the per-session aggregate")
+	recompute := fs.Bool("recompute", false, "re-extract text/tool-call counts from stored response bodies for rows recorded as empty (TextLength=0, ToolCalls=0) but with a stored body -- historical records from before the accumulated-item settlement fix; adds recomputed_txt/recomputed_tools columns and a recomputed_nonempty total")
 	validate := fs.Bool("validate", false, "whole-history integrity scan: strictly decode every record offset zero..EOF via apilog.Decoder and report every corrupt/malformed/oversized/unsupported record with its offset (explicit diagnostics, proportional to file size; ignores --empty/--errors/--cache-spikes/--threshold/--summary; exits nonzero if any problem is found)")
 	sel, code := parseSelectorAndFlags(fs, args)
 	if code != 0 {
@@ -267,6 +268,7 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 		CacheSpikes:    *cacheSpikes,
 		SpikeThreshold: *threshold,
 		SummaryOnly:    *summary,
+		Recompute:      *recompute,
 	}
 	res, err := doctor.APILog(base, sel, opts)
 	if err != nil {

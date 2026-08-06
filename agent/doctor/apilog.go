@@ -11,6 +11,8 @@ import (
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/serf/llm/providers/openai"
+	"primeradiant.com/serf/llm/providers/openaicompat"
 )
 
 // APILogOpts selects which calls to display. Filters narrow the rows shown; the
@@ -23,6 +25,13 @@ type APILogOpts struct {
 	// means use the default (defaultSpikeThreshold).
 	SpikeThreshold int
 	SummaryOnly    bool
+	// Recompute re-extracts text/tool-call counts from stored response
+	// bodies for rows whose recorded TextLength and ToolCalls are both zero
+	// (historical records from before the accumulated-item settlement fix
+	// -- see llm/providers/openai.ExtractRecordedResponse). It reads bodies
+	// on demand for those rows only; it does not change the decoder mode
+	// APILog otherwise uses for the whole log.
+	Recompute bool
 }
 
 const defaultSpikeThreshold = 50000
@@ -61,6 +70,14 @@ type APICallRow struct {
 	SettlementState    string                     `json:"settlement_state"`
 	FinalAttemptCount  *int                       `json:"final_attempt_count,omitempty"`
 	ForensicIncomplete bool                       `json:"forensic_incomplete"`
+	// RecomputedTextLength/RecomputedToolCalls hold --recompute's
+	// re-extracted counts for a row whose recorded TextLength and ToolCalls
+	// were both zero. They are set only when recomputation ran and produced
+	// a value for this row (regardless of whether that value is itself
+	// zero) -- their presence, not their value, is what distinguishes
+	// "recomputed and still empty" from "not attempted".
+	RecomputedTextLength *int `json:"recomputed_text_length,omitempty"`
+	RecomputedToolCalls  *int `json:"recomputed_tool_calls,omitempty"`
 }
 
 // APIGroupSettlementRow is one outer model-call settlement. It remains
@@ -94,6 +111,11 @@ type APILogTotals struct {
 	TotalTokens                  *int                                     `json:"total_tokens,omitempty"`
 	AvgLatencyMs                 int64                                    `json:"avg_latency_ms"`
 	ContinuationByEndpointFamily map[string]ContinuationHistoryModeCounts `json:"continuation_by_endpoint_family,omitempty"`
+	// RecomputedNonEmpty counts --recompute rows (across the whole session,
+	// not just retained/displayed rows) whose re-extraction found nonzero
+	// text or tool calls where the recorded counts were both zero. Zero
+	// when --recompute was not requested.
+	RecomputedNonEmpty int `json:"recomputed_nonempty,omitempty"`
 }
 
 type ContinuationHistoryModeCounts struct {
@@ -113,7 +135,19 @@ type APILogResult struct {
 
 // APILog decodes the private canonical API log and owns only its diagnostic
 // projection. Provider bodies and headers never enter the result.
+//
+// Summarization only reads scalar fields (model, tokens, TextLength, ...),
+// never provider body content, so it decodes metadata-only to avoid paying
+// for base64 body decode/revalidation on large logs. ValidateAPILog (the
+// --validate path) keeps the strict default.
 func APILog(stateBase, selector string, opts APILogOpts) (APILogResult, error) {
+	return apiLog(stateBase, selector, opts, apilog.DecodeMetadataOnly)
+}
+
+// apiLog is APILog's implementation, parameterized on decode mode so tests
+// can pin that metadata-only summarization is identical to strict
+// summarization over the same log.
+func apiLog(stateBase, selector string, opts APILogOpts, mode apilog.DecodeMode) (APILogResult, error) {
 	paths, err := Locate(stateBase, selector)
 	if err != nil {
 		return APILogResult{}, err
@@ -125,7 +159,11 @@ func APILog(stateBase, selector string, opts APILogOpts) (APILogResult, error) {
 	defer func() { _ = f.Close() }()
 
 	res := APILogResult{SessionID: paths.SessionID}
-	decoder := apilog.NewDecoder(f, doctorAPILogMaxLineBytes)
+	var decoderOpts []apilog.DecoderOption
+	if mode == apilog.DecodeMetadataOnly {
+		decoderOpts = append(decoderOpts, apilog.WithMetadataOnly())
+	}
+	decoder := apilog.NewDecoder(f, doctorAPILogMaxLineBytes, decoderOpts...)
 	threshold := opts.SpikeThreshold
 	if threshold <= 0 {
 		threshold = defaultSpikeThreshold
@@ -163,6 +201,9 @@ func APILog(stateBase, selector string, opts APILogOpts) (APILogResult, error) {
 			}
 			if row.Empty {
 				res.Totals.Empties++
+			}
+			if opts.Recompute && recomputeRow(&row, record) {
+				res.Totals.RecomputedNonEmpty++
 			}
 			recordContinuationHistoryMode(&res.Totals, record.Request.EndpointFamily, llm.HistoryMode(record.Request.HistoryMode))
 			if rowMatchesFilter(row, opts, threshold) {
@@ -491,6 +532,63 @@ func rowFromAttempt(attempt apilog.APIAttemptRecord) APICallRow {
 	return row
 }
 
+// recomputeExtractors maps an EndpointFamily to the provider-package
+// function that re-extracts a settled llm.Response from a stored body of
+// that family's own wire shape -- each reusing that family's real live
+// parser (see the referenced functions' docs for which live decoder each
+// one shares state or logic with), never a second hand-rolled one:
+//   - openai_public / openai_codex: the Responses API. openaicompat's
+//     codex-continuation family delegates to the same OpenAI Responses
+//     adapter (openairesponses.Adapter, called via responsesAdapter()), so
+//     its records carry these same EndpointFamily values too -- one
+//     extractor covers both origins.
+//   - openai_chat_completions: this adapter's own Chat Completions
+//     fallback (always streamed in this codebase).
+//   - openai_compatible_chat_completions: openaicompat's Chat Completions
+//     adapter (JSON only -- see openaicompat.ExtractRecordedResponse).
+//
+// Other providers' bodies are a different wire shape entirely and are left
+// alone.
+var recomputeExtractors = map[string]func(body []byte, requestedModel string) (llm.Response, error){
+	"openai_public":                      openai.ExtractRecordedResponse,
+	"openai_codex":                       openai.ExtractRecordedResponse,
+	"openai_chat_completions":            openai.ExtractRecordedChatCompletionsResponse,
+	"openai_compatible_chat_completions": openaicompat.ExtractRecordedResponse,
+}
+
+// recomputeRow re-extracts TextLength/ToolCalls from record's stored
+// response body for a row whose recorded counts are both zero, setting
+// row.RecomputedTextLength/RecomputedToolCalls when it succeeds. It reports
+// whether recomputation found nonzero text or tool calls, for the caller's
+// recomputed_nonempty tally; it leaves the row's recorded fields untouched
+// either way -- "recorded" and "recomputed" are reported side by side; see
+// APICallRow.
+func recomputeRow(row *APICallRow, record apilog.APIAttemptRecord) bool {
+	if record.Response == nil {
+		return false
+	}
+	if row.TextLength == nil || *row.TextLength != 0 || row.ToolCalls == nil || *row.ToolCalls != 0 {
+		return false
+	}
+	extract, ok := recomputeExtractors[record.Request.EndpointFamily]
+	if !ok {
+		return false
+	}
+	body, err := apilog.DecodeBody(record.Response.Body)
+	if err != nil || len(body) == 0 {
+		return false
+	}
+	resp, err := extract(body, record.RequestModel)
+	if err != nil {
+		return false
+	}
+	textLen := len(resp.Text())
+	toolCalls := len(resp.ToolCalls())
+	row.RecomputedTextLength = &textLen
+	row.RecomputedToolCalls = &toolCalls
+	return textLen > 0 || toolCalls > 0
+}
+
 func rowMatchesFilter(row APICallRow, opts APILogOpts, threshold int) bool {
 	if opts.EmptyOnly && !row.Empty {
 		return false
@@ -511,14 +609,28 @@ func RenderAPILog(r APILogResult, opts APILogOpts) string {
 	fmt.Fprintf(&b, "calls=%d empties=%d errors=%d  tokens in=%s out=%s cache_read=%s total=%s  avg_latency=%dms\n",
 		t.Calls, t.Empties, t.Errors, optionalIntString(t.InputTokens), optionalIntString(t.OutputTokens),
 		optionalIntString(t.CacheReadTokens), optionalIntString(t.TotalTokens), t.AvgLatencyMs)
+	if opts.Recompute {
+		fmt.Fprintf(&b, "recomputed_nonempty=%d\n", t.RecomputedNonEmpty)
+	}
 	if opts.SummaryOnly {
 		return b.String()
 	}
 	if len(r.Calls) == 0 {
 		fmt.Fprintln(&b, "(no calls match)")
 	} else {
-		fmt.Fprintf(&b, "%-26s %-26s %-8s %-18s %-18s %-25s %6s %-24s %-7s %-24s %-19s %-19s %8s %8s %8s %9s %6s %-5s\n",
-			"attempt_id", "attempt_group_id", "index", "provider", "model", "outcome", "status", "error_class", "empty", "settlement", "final_attempt_count", "forensic_incomplete", "latency", "in_tok", "out_tok", "uncached", "txt", "tools")
+		header := "%-26s %-26s %-8s %-18s %-18s %-25s %6s %-24s %-7s %-24s %-19s %-19s %8s %8s %8s %9s %6s %-5s"
+		row := "%-26s %-26s %-8d %-18s %-18s %-25s %6s %-24s %-7t %-24s %-19s %-19t %7dms %8s %8s %9s %6s %-5s"
+		if opts.Recompute {
+			header += " %-15s %-16s"
+			row += " %-15s %-16s"
+		}
+		headerArgs := []any{
+			"attempt_id", "attempt_group_id", "index", "provider", "model", "outcome", "status", "error_class", "empty", "settlement", "final_attempt_count", "forensic_incomplete", "latency", "in_tok", "out_tok", "uncached", "txt", "tools",
+		}
+		if opts.Recompute {
+			headerArgs = append(headerArgs, "recomputed_txt", "recomputed_tools")
+		}
+		fmt.Fprintf(&b, header+"\n", headerArgs...)
 		for _, c := range r.Calls {
 			settlement := c.SettlementState
 			if c.Final {
@@ -533,11 +645,16 @@ func RenderAPILog(r APILogResult, opts APILogOpts) string {
 			if errorClass == "" {
 				errorClass = "-"
 			}
-			fmt.Fprintf(&b, "%-26s %-26s %-8d %-18s %-18s %-25s %6s %-24s %-7t %-24s %-19s %-19t %7dms %8s %8s %9s %6s %-5s\n",
+			rowArgs := []any{
 				truncate(c.AttemptID, 26), truncate(c.AttemptGroupID, 26), c.AttemptIndex, truncate(c.ProviderInstance, 18),
 				truncate(c.Model, 18), c.Outcome, status, truncate(errorClass, 24), c.Empty, truncate(settlement, 24), finalAttemptCount,
 				c.ForensicIncomplete, c.LatencyMs, optionalIntString(c.InputTokens), optionalIntString(c.OutputTokens),
-				optionalIntString(c.UncachedInput), optionalIntString(c.TextLength), optionalIntString(c.ToolCalls))
+				optionalIntString(c.UncachedInput), optionalIntString(c.TextLength), optionalIntString(c.ToolCalls),
+			}
+			if opts.Recompute {
+				rowArgs = append(rowArgs, optionalIntString(c.RecomputedTextLength), optionalIntString(c.RecomputedToolCalls))
+			}
+			fmt.Fprintf(&b, row+"\n", rowArgs...)
 		}
 	}
 	fmt.Fprintf(&b, "call_rows=%d/%d", len(r.Calls), r.MatchingCalls)

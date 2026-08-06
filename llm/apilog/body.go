@@ -95,8 +95,10 @@ func (body *EncodedBody) UnmarshalJSON(data []byte) error {
 		Exact:                    *decoded.Exact,
 		CredentialValuesExcluded: *decoded.CredentialValuesExcluded,
 	}
-	if _, err := DecodeBody(*body); err != nil {
-		return err
-	}
+	// Content validation (DecodeBody) is deferred to validateRecord, which
+	// runs once after the whole record has been structurally decoded. That
+	// keeps the encoded form untouched here so a metadata-only decode can
+	// skip content validation entirely instead of paying for a decode this
+	// method would otherwise discard immediately.
 	return nil
 }

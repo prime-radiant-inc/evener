@@ -100,6 +100,147 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 	return s, nil
 }
 
+// chatCompletionsChunk is the wire shape of one Chat Completions SSE data
+// payload (a "chat.completion.chunk"). Shared by the live streaming decoder
+// (decodeChatCompletionsStream) and offline recomputation
+// (extractChatCompletionsFromSSE in responses_recompute.go) so both decode
+// the identical wire struct.
+type chatCompletionsChunk struct {
+	ID      string `json:"id"`
+	Model   string `json:"model"`
+	Choices []struct {
+		Index        int    `json:"index"`
+		FinishReason string `json:"finish_reason"`
+		Delta        struct {
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Index    int    `json:"index"`
+				ID       string `json:"id,omitempty"`
+				Type     string `json:"type,omitempty"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"delta"`
+	} `json:"choices"`
+	Usage map[string]any `json:"usage"`
+}
+
+// chatCompletionsToolCallState accumulates one tool call's streamed
+// arguments, keyed by its wire delta index (see
+// chatCompletionsChunkAccumulator).
+type chatCompletionsToolCallState struct {
+	id   string
+	name string
+	args strings.Builder
+}
+
+// chatCompletionsChunkAccumulator merges a Chat Completions SSE chunk
+// stream's deltas -- text content, tool-call argument fragments keyed by
+// wire index, and the trailing model/usage/finish_reason fields -- into the
+// settled Response both the live stream decoder
+// (decodeChatCompletionsStream) and offline recomputation
+// (extractChatCompletionsFromSSE) derive once the stream ends. One
+// implementation shared by both so they can't silently drift.
+type chatCompletionsChunkAccumulator struct {
+	toolCalls    map[int]*chatCompletionsToolCallState
+	textBuf      strings.Builder
+	finishReason string
+	model        string
+	usage        *llm.Usage
+}
+
+func newChatCompletionsChunkAccumulator() *chatCompletionsChunkAccumulator {
+	return &chatCompletionsChunkAccumulator{toolCalls: map[int]*chatCompletionsToolCallState{}}
+}
+
+// HandleChunkMeta merges a chunk's model/usage fields: last non-empty model
+// wins, most recent usage wins (matches the wire stream's convention of
+// repeating these on later chunks).
+func (acc *chatCompletionsChunkAccumulator) HandleChunkMeta(model string, usage map[string]any) {
+	if model != "" {
+		acc.model = model
+	}
+	if usage != nil {
+		u := openaichat.ParseChatUsage(usage)
+		acc.usage = &u
+	}
+}
+
+// HandleFinishReason merges a choice's finish_reason; empty is a no-op
+// (intermediate chunks in a tool-call stream carry it empty).
+func (acc *chatCompletionsChunkAccumulator) HandleFinishReason(reason string) {
+	if reason != "" {
+		acc.finishReason = reason
+	}
+}
+
+// HandleContentDelta appends one choice's content delta to the accumulated
+// text.
+func (acc *chatCompletionsChunkAccumulator) HandleContentDelta(content string) {
+	acc.textBuf.WriteString(content)
+}
+
+// HandleToolCallDelta merges one delta chunk's tool-call fragment (keyed by
+// its wire index) into accumulated state. isNew reports whether this index
+// was seen for the first time -- the live decoder's cue to emit a
+// tool-call-start event.
+func (acc *chatCompletionsChunkAccumulator) HandleToolCallDelta(index int, id, name, argumentsDelta string) (state *chatCompletionsToolCallState, isNew bool) {
+	state, exists := acc.toolCalls[index]
+	if !exists {
+		state = &chatCompletionsToolCallState{id: id, name: name}
+		acc.toolCalls[index] = state
+		isNew = true
+	}
+	if argumentsDelta != "" {
+		state.args.WriteString(argumentsDelta)
+	}
+	return state, isNew
+}
+
+// SortedToolCalls returns accumulated tool calls in wire (delta-index)
+// order -- the map's own iteration order is randomized, so ordering by
+// index is the deterministic parallel-tool-call assembly rule both callers
+// share.
+func (acc *chatCompletionsChunkAccumulator) SortedToolCalls() []llm.ToolCallData {
+	order := slices.Sorted(maps.Keys(acc.toolCalls))
+	out := make([]llm.ToolCallData, 0, len(order))
+	for _, idx := range order {
+		tc := acc.toolCalls[idx]
+		out = append(out, llm.ToolCallData{
+			ID:        tc.id,
+			Name:      tc.name,
+			Arguments: json.RawMessage(tc.args.String()),
+			Type:      "function",
+		})
+	}
+	return out
+}
+
+// Settle builds the settled Response once the chunk stream ends: the
+// assembled message (text, then tool calls, matching
+// decodeChatCompletionsStream's wire-order convention), the normalized
+// finish reason, and usage. Model is whatever the chunks themselves
+// carried -- possibly empty; callers apply their own fallback (or none,
+// matching the live decoder, which never falls back to the requested
+// model).
+func (acc *chatCompletionsChunkAccumulator) Settle() llm.Response {
+	msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}}
+	if acc.textBuf.Len() > 0 {
+		msg.Content = append(msg.Content, llm.ContentPart{Kind: llm.ContentText, Text: acc.textBuf.String()})
+	}
+	toolCalls := acc.SortedToolCalls()
+	for i := range toolCalls {
+		msg.Content = append(msg.Content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &toolCalls[i]})
+	}
+	r := llm.Response{Provider: "openai", Model: acc.model, Message: msg, Finish: llm.NormalizeFinishReason("", acc.finishReason)}
+	if acc.usage != nil {
+		r.Usage = *acc.usage
+	}
+	return r
+}
+
 // decodeChatCompletionsStream consumes the Chat Completions SSE stream in its own
 // goroutine: it translates each chunk into llm stream events and emits the final
 // accumulated Response on [DONE]. It owns closing the response body and the
@@ -110,17 +251,8 @@ func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel conte
 		s.CloseSend()
 	}()
 
-	type toolCallState struct {
-		id   string
-		name string
-		args strings.Builder
-	}
-	toolCalls := map[int]*toolCallState{}
+	acc := newChatCompletionsChunkAccumulator()
 	var textStarted bool
-	var textBuf strings.Builder
-	var finishReason string
-	var model string
-	var usage *llm.Usage
 	finished := false
 	var finalEvent *llm.StreamEvent
 
@@ -141,52 +273,22 @@ func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel conte
 			if data == "[DONE]" {
 				finished = true
 
-				// Emit tool call end events in wire (delta-index) order. The
-				// state is keyed in a map, whose iteration order is randomized;
-				// sort by index so parallel tool calls assemble deterministically.
-				var completedToolCalls []llm.ToolCallData
-				for _, idx := range slices.Sorted(maps.Keys(toolCalls)) {
-					tc := toolCalls[idx]
-					tcd := llm.ToolCallData{
-						ID:        tc.id,
-						Name:      tc.name,
-						Arguments: json.RawMessage(tc.args.String()),
-						Type:      "function",
-					}
-					completedToolCalls = append(completedToolCalls, tcd)
-					s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tcd})
+				// Emit tool call end events in wire (delta-index) order.
+				toolCalls := acc.SortedToolCalls()
+				for i := range toolCalls {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &toolCalls[i]})
 				}
 				if textStarted {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: "text_0"})
 				}
 
-				msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}}
-				if textBuf.Len() > 0 {
-					msg.Content = append(msg.Content, llm.ContentPart{Kind: llm.ContentText, Text: textBuf.String()})
-				}
-				for i := range completedToolCalls {
-					msg.Content = append(msg.Content, llm.ContentPart{
-						Kind:     llm.ContentToolCall,
-						ToolCall: &completedToolCalls[i],
-					})
-				}
-
-				finish := llm.NormalizeFinishReason("", finishReason)
-				finalResp := &llm.Response{
-					Provider: "openai",
-					Model:    model,
-					Message:  msg,
-					Finish:   finish,
-				}
-				if usage != nil {
-					finalResp.Usage = *usage
-				}
-				llm.StampEndpointURL(finalResp, llm.FinalResponseEndpointURL(resp, a.chatCompletionsURL()), a.apiLogCredentialMaterial(nil))
+				finalResp := acc.Settle()
+				llm.StampEndpointURL(&finalResp, llm.FinalResponseEndpointURL(resp, a.chatCompletionsURL()), a.apiLogCredentialMaterial(nil))
 				event := llm.StreamEvent{
 					Type:         llm.StreamEventFinish,
-					FinishReason: &finish,
-					Usage:        usage,
-					Response:     finalResp,
+					FinishReason: &finalResp.Finish,
+					Usage:        acc.usage,
+					Response:     &finalResp,
 				}
 				if attempt.Active() {
 					finalEvent = &event
@@ -197,70 +299,39 @@ func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel conte
 				return nil
 			}
 
-			var chunk struct {
-				ID      string `json:"id"`
-				Model   string `json:"model"`
-				Choices []struct {
-					Index        int    `json:"index"`
-					FinishReason string `json:"finish_reason"`
-					Delta        struct {
-						Content   string `json:"content"`
-						ToolCalls []struct {
-							Index    int    `json:"index"`
-							ID       string `json:"id,omitempty"`
-							Type     string `json:"type,omitempty"`
-							Function struct {
-								Name      string `json:"name"`
-								Arguments string `json:"arguments"`
-							} `json:"function"`
-						} `json:"tool_calls"`
-					} `json:"delta"`
-				} `json:"choices"`
-				Usage map[string]any `json:"usage"`
-			}
+			var chunk chatCompletionsChunk
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 				// Skip a single malformed chunk and keep the stream alive;
 				// returning the error would abort the whole stream.
 				return nil //nolint:nilerr // unparseable chunk is intentionally skipped, not fatal
 			}
-			if chunk.Model != "" {
-				model = chunk.Model
-			}
-			if chunk.Usage != nil {
-				u := openaichat.ParseChatUsage(chunk.Usage)
-				usage = &u
-			}
+			acc.HandleChunkMeta(chunk.Model, chunk.Usage)
 			if len(chunk.Choices) == 0 {
 				return nil
 			}
 			choice := chunk.Choices[0]
-			if choice.FinishReason != "" {
-				finishReason = choice.FinishReason
-			}
+			acc.HandleFinishReason(choice.FinishReason)
 			if choice.Delta.Content != "" {
 				if !textStarted {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "text_0"})
 					textStarted = true
 				}
-				textBuf.WriteString(choice.Delta.Content)
+				acc.HandleContentDelta(choice.Delta.Content)
 				s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: "text_0", Delta: choice.Delta.Content})
 			}
 			for _, tc := range choice.Delta.ToolCalls {
-				state, exists := toolCalls[tc.Index]
-				if !exists {
-					state = &toolCallState{id: tc.ID, name: tc.Function.Name}
-					toolCalls[tc.Index] = state
+				state, isNew := acc.HandleToolCallDelta(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments)
+				if isNew {
 					s.Send(llm.StreamEvent{
 						Type: llm.StreamEventToolCallStart,
 						ToolCall: &llm.ToolCallData{
-							ID:   tc.ID,
-							Name: tc.Function.Name,
+							ID:   state.id,
+							Name: state.name,
 							Type: "function",
 						},
 					})
 				}
 				if tc.Function.Arguments != "" {
-					state.args.WriteString(tc.Function.Arguments)
 					s.Send(llm.StreamEvent{
 						Type: llm.StreamEventToolCallDelta,
 						ToolCall: &llm.ToolCallData{
