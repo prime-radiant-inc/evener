@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub cache-preflight web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install selftest test test-short test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
+.PHONY: build build-runtime build-go build-hub cache-preflight web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install selftest test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -308,6 +308,20 @@ test:
 test-short:
 	@$(MAKE) test
 
+# test-fuzz runs the seqfuzz/schemafuzz stateful rapid.Check family (delegate,
+# watch, lifecycle, jobs descendant-merge, tool-args schema, jobstore, context
+# compaction x2, appserver router, appserver multi-session) at FULL depth:
+# SERF_FUZZ_TESTS=1 opts each t.Skip()-gated test back in, and the absence of
+# -short lets rapid.Check run its full default check count instead of the
+# reduced one it uses under -short. These tests never run inside `make test`
+# (Jesse ruling: no fuzz-family test, including smoke iterations, belongs in
+# the default suite). This is distinct from `make fuzz`, which replays native
+# FuzzXxx corpora and this SAME rapid family against a fixed coverage seed
+# bank (scripts/run-fuzz.sh) for deterministic CI coverage, not a search.
+test-fuzz:
+	@cd agent && SERF_FUZZ_TESTS=1 go test . ./internal/contextmgr ./internal/jobstore -run 'SeqFuzz|ToolArgsSchemaFuzz' -count=1 -v
+	@SERF_FUZZ_TESTS=1 go test ./internal/appserver -run 'SeqFuzz' -count=1 -v
+
 # merge-approval-gate is the canonical serial post-merge gate. Keep the
 # explicit expansion in docs/testing.md for diagnosis and evidence.
 merge-approval-gate:
@@ -365,7 +379,7 @@ fuzz:
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd fuzz && go test -tags serffuzz ./...'
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'go test ./cmd/serf-fuzzcov ./cmd/serf-fuzz-harvest'
 	@$(FUZZ_SEED_REPLAY)
-	@set -eu; cap="$(MEMCAP)"; if [ -n "$$cap" ]; then cap="$$(pwd)/$$cap"; fi; go_work="$(FUZZ_GOWORK)"; for target in $$(scripts/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && GOENV=off GOFLAGS= GOWORK="$$go_work" env -u RAPID_FAILFILE RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s $${cap:+"$$cap"} go test -tags serffuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
+	@set -eu; cap="$(MEMCAP)"; if [ -n "$$cap" ]; then cap="$$(pwd)/$$cap"; fi; go_work="$(FUZZ_GOWORK)"; for target in $$(scripts/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && GOENV=off GOFLAGS= GOWORK="$$go_work" env -u RAPID_FAILFILE SERF_FUZZ_TESTS=1 RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s $${cap:+"$$cap"} go test -tags serffuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
 
 # fuzz-goldens regenerates the decode SNAPSHOT goldens — serf's differential

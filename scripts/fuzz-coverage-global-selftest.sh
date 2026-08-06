@@ -88,6 +88,37 @@ assert_uncached_make_native_replays() {
 	fi
 }
 
+# rapid_replays_opt_in_to_fuzz_tests reports (exit status only, no ok/bad side
+# effect) whether SERF_FUZZ_TESTS=1 propagated to every Rapid ($15 ends in
+# -run ^TestRapid$) go-test invocation ($16, appended after the command field
+# so this never shifts existing column-indexed checks). Without it, the
+# seqfuzz/schemafuzz gate this selftest is guarding t.Skip()s and the replay
+# silently accepts a zero-count profile as coverage (Roborev 4819). Split from
+# assert_rapid_replays_opt_in_to_fuzz_tests below so the regression-proof
+# scenario can check the outcome without the assertion's own ok/bad polluting
+# the tally with an intentionally-failing probe.
+rapid_replays_opt_in_to_fuzz_tests() {
+	local log_file="$1"
+	awk -F '\t' '
+		$15 ~ /-run \^TestRapid\$/ {
+			seen = 1
+			if ($16 != "serf_fuzz_tests=1") {
+				bad = 1
+			}
+		}
+		END { exit !seen || bad }
+	' "$log_file"
+}
+
+assert_rapid_replays_opt_in_to_fuzz_tests() {
+	local log_file="$1" label="$2"
+	if rapid_replays_opt_in_to_fuzz_tests "$log_file"; then
+		ok "$label"
+	else
+		bad "$label (a Rapid replay ran without SERF_FUZZ_TESTS=1: $(awk -F '\t' '$15 ~ /-run \^TestRapid\$/ { print $16 }' "$log_file" | tr '\n' ';'))"
+	fi
+}
+
 repo="$work/repo"
 mkdir -p "$repo/scripts"
 cp "$runner" "$repo/scripts/fuzz-coverage-global.sh"
@@ -161,8 +192,11 @@ env_value() {
 		printf '<unset>'
 	fi
 }
-printf '%s\t%s\tgoenv=%s\tgoflags=%s\tseed=%s\tchecks=%s\tsteps=%s\tfailfile=%s\tnofailfile=%s\tlog=%s\tv=%s\tdebug=%s\tdebugvis=%s\tshrinktime=%s\t%s\n' \
-	"$PWD" "${GOWORK:-}" "$(env_value GOENV)" "$(env_value GOFLAGS)" "$(env_value RAPID_SEED)" "$(env_value RAPID_CHECKS)" "$(env_value RAPID_STEPS)" "$(env_value RAPID_FAILFILE)" "$(env_value RAPID_NOFAILFILE)" "$(env_value RAPID_LOG)" "$(env_value RAPID_V)" "$(env_value RAPID_DEBUG)" "$(env_value RAPID_DEBUGVIS)" "$(env_value RAPID_SHRINKTIME)" "$*" >>"$FAKE_GO_LOG"
+# serf_fuzz_tests is appended AFTER the command field ($15) rather than
+# inserted before it, so every existing column-indexed assertion below ($3,
+# $4, $15) keeps its field number.
+printf '%s\t%s\tgoenv=%s\tgoflags=%s\tseed=%s\tchecks=%s\tsteps=%s\tfailfile=%s\tnofailfile=%s\tlog=%s\tv=%s\tdebug=%s\tdebugvis=%s\tshrinktime=%s\t%s\tserf_fuzz_tests=%s\n' \
+	"$PWD" "${GOWORK:-}" "$(env_value GOENV)" "$(env_value GOFLAGS)" "$(env_value RAPID_SEED)" "$(env_value RAPID_CHECKS)" "$(env_value RAPID_STEPS)" "$(env_value RAPID_FAILFILE)" "$(env_value RAPID_NOFAILFILE)" "$(env_value RAPID_LOG)" "$(env_value RAPID_V)" "$(env_value RAPID_DEBUG)" "$(env_value RAPID_DEBUGVIS)" "$(env_value RAPID_SHRINKTIME)" "$*" "$(env_value SERF_FUZZ_TESTS)" >>"$FAKE_GO_LOG"
 command="$1"
 shift
 case "$command" in
@@ -300,7 +334,17 @@ JSON
 			else
 				# Merge must retain this native-positive count and add the Rapid block.
 				echo 'example.test/root.go:1.1,2.1 1 0'
-				echo 'example.test/rapid.go:3.1,4.1 2 1'
+				# Mirrors the real seqfuzz gate: without SERF_FUZZ_TESTS=1 the rapid
+				# body t.Skip()s before rapid.Check ever runs, so its statements
+				# execute zero times — a real `go test -coverprofile` still writes a
+				# profile for a skipped test, just with every count at 0. This is the
+				# exact shape of the bug Roborev 4819 found: a skip accepted as a
+				# passing, zero-count profile.
+				if [ "${SERF_FUZZ_TESTS:-}" = "1" ]; then
+					echo 'example.test/rapid.go:3.1,4.1 2 1'
+				else
+					echo 'example.test/rapid.go:3.1,4.1 2 0'
+				fi
 				if [ "${FAKE_GO_EXACT_COUNT_UNION:-}" = "1" ]; then
 					echo 'example.test/large-count.go:5.1,6.1 1 9007199254740993'
 				fi
@@ -465,6 +509,7 @@ count_has "$log" $'\ttest -tags serffuzz -run ^TestRapid$ -count=1 -coverprofile
 for seed in 1 2 3 5 8; do
 	has "$log" $'\tseed='"$seed"$'\tchecks=100\tsteps=30\tfailfile=<unset>\tnofailfile=true\tlog=false\tv=false\tdebug=false\tdebugvis=false\tshrinktime=30s\ttest -tags serffuzz -run ^TestRapid$ -count=1 -coverprofile=' "rapid seed $seed pins every behavior control"
 done
+assert_rapid_replays_opt_in_to_fuzz_tests "$go_log" 'every Rapid replay sets SERF_FUZZ_TESTS=1 (else the seqfuzz/schemafuzz gate skips it)'
 lacks "$log" '-coverpkg' 'replay never uses coverpkg'
 lacks "$log" '-shuffle=on' 'replay ignores ambient shuffle flags'
 lacks "$log" '-mod=mod' 'replay ignores ambient module flags'
@@ -477,10 +522,51 @@ count_has "$manifest" $'.\t./other\t' 1 'global manifest has a separate profile 
 merged="$(cat "$cov_profile")"
 has "$merged" 'mode: set' 'merged profile preserves set mode'
 has "$merged" 'example.test/root.go:1.1,2.1 1 1' 'merge retains coverage from native replay'
-has "$merged" 'example.test/rapid.go:3.1,4.1 2 1' 'merge adds Rapid-only coverage block'
+# The fake go emits this exact block ONLY when it observes SERF_FUZZ_TESTS=1
+# (mirroring the real gate's t.Skip()); the sibling zero-count assertion right
+# below is the fake's "skipped" shape, so this pair is a live tripwire for the
+# opt-in actually propagating, not just its presence in the source.
+has "$merged" 'example.test/rapid.go:3.1,4.1 2 1' 'Rapid replay actually RAN (nonzero execution count), proving SERF_FUZZ_TESTS=1 propagated'
+lacks "$merged" 'example.test/rapid.go:3.1,4.1 2 0' 'Rapid replay did not fall back to the skipped/zero-count shape'
 other_merged="$(cat "$cov_other_profile")"
 has "$other_merged" 'example.test/other.go:5.1,6.1 3 1' 'other package profile keeps its own blocks'
 lacks "$other_merged" 'example.test/root.go' 'profiles never merge blocks across packages'
+
+echo '== regression proof: dropping the opt-in reproduces the exact Roborev 4819 bug =='
+# Mutation-tests the two assertions above: strip SERF_FUZZ_TESTS=1 from the
+# runner (simulating the bug this round fixes) and confirm the merged profile
+# reverts to the skipped/zero-count shape instead of silently staying green.
+mutated_runner="$work/fuzz-coverage-global.no-optin.sh"
+sed 's/env -u RAPID_FAILFILE SERF_FUZZ_TESTS=1 /env -u RAPID_FAILFILE /' "$runner" >"$mutated_runner"
+if ! diff -q "$runner" "$mutated_runner" >/dev/null 2>&1; then
+	ok 'mutation fixture actually strips SERF_FUZZ_TESTS=1 from the runner source'
+else
+	bad 'mutation fixture failed to strip the opt-in — sed pattern no longer matches the runner source'
+fi
+cp "$mutated_runner" "$repo/scripts/fuzz-coverage-global.sh"
+reset_logs
+set +e
+last_output="$(run_runner 2>&1)"
+last_status=$?
+set -e
+if [ "$last_status" -eq 0 ]; then
+	ok 'mutated (no-opt-in) runner still exits zero — it accepts the skip without complaint, which is exactly the bug'
+else
+	bad "mutated runner unexpectedly failed, so it cannot demonstrate the silent-acceptance bug: $last_output"
+fi
+if [ -s "$cov_profile" ]; then
+	mutated_merged="$(cat "$cov_profile")"
+	has "$mutated_merged" 'example.test/rapid.go:3.1,4.1 2 0' 'REGRESSION PROOF: without the opt-in, Rapid coverage reverts to the skipped/zero-count block'
+	lacks "$mutated_merged" 'example.test/rapid.go:3.1,4.1 2 1' 'REGRESSION PROOF: without the opt-in, the nonzero Rapid block never appears'
+else
+	bad 'mutated runner produced no merged profile to inspect for the regression proof'
+fi
+if ! rapid_replays_opt_in_to_fuzz_tests "$go_log"; then
+	ok 'REGRESSION PROOF: the propagation check itself fails against the mutated (no-opt-in) runner'
+else
+	bad 'the propagation check should fail against the mutated (no-opt-in) runner but did not'
+fi
+cp "$runner" "$repo/scripts/fuzz-coverage-global.sh" # restore the real, fixed runner for every scenario below
 
 reset_logs
 set +e
@@ -786,6 +872,7 @@ count_has "$log" $'\ttest -tags serffuzz -run ^TestRapid$ -count=1 .' 5 'make fu
 for seed in 1 2 3 5 8; do
 	has "$log" $'\tseed='"$seed"$'\tchecks=100\tsteps=30\tfailfile=<unset>\tnofailfile=true\tlog=false\tv=false\tdebug=false\tdebugvis=false\tshrinktime=30s\ttest -tags serffuzz -run ^TestRapid$ -count=1 .' "make fuzz rapid seed $seed pins every behavior control"
 done
+assert_rapid_replays_opt_in_to_fuzz_tests "$make_test_log" 'make fuzz sets SERF_FUZZ_TESTS=1 on every Rapid replay (else the seqfuzz/schemafuzz gate skips it)'
 
 echo '== missing local surface stops before replays =='
 reset_logs

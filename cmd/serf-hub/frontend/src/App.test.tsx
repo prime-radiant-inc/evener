@@ -6,6 +6,7 @@ import { resetWorkspaceStoreForTests } from "./shell/workspace";
 import { connectionStore } from "./stores/connection";
 import { resetThreadsStoreForTests } from "./stores/threads";
 import { resetTreeStoreForTests } from "./stores/tree";
+import { resetToastStoreForTests } from "./widgets/toast/store";
 
 // AppShell's default createClient constructs a REAL AppwireClient (no test
 // client is injected anywhere in this file), which dials a real jsdom
@@ -197,6 +198,16 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // "renders the dev widget gallery" below mounts the real ToastGallerySection,
+  // whose mount effect pushes real toasts through the module-singleton toast
+  // store (widgets/toast/store.ts) - the same store /dev/widgets' warmRoute
+  // render in beforeAll above already pushed into once. cleanup()'s unmount
+  // cancels each toast's auto-dismiss timer without dismissing it, so those
+  // pushes outlive both cleanup() and this file, leaking into whichever later
+  // file in this isolate:false worker next mounts <Toast/> without its own
+  // reset (see resetToastStoreForTests's own comment; GoalControl.test.tsx's
+  // identical reset for the fuller writeup).
+  resetToastStoreForTests();
   resetTreeStoreForTests();
   // Each test above renders <App/> with no test client injected, so every
   // one constructs a fresh real AppwireClient and wires it into

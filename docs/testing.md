@@ -46,13 +46,14 @@ capacity, browser availability, and CI tool setup are explicit prerequisites.
 | <code>make build</code> (same runtime target as <code>make build-runtime</code>) | Runtime Go binaries plus embedded frontend | build-web completes before the serf/serf-hub pair is built, so the runtime pair contains the fresh SPA | Local pre-merge; required CI together with <code>make build-go</code> | Needs Go, Node/npm, the frontend install, and enough disk. Build metadata includes the current SHA, dirty state, time, and channel | Frontend preflight, build, or pair-script failure is nonzero; stale/failed embedding is not a pass | Serf CI/build; release wiring follows make dist |
 | <code>make build-go</code> | Every non-fuzz Go workspace module | Compiles all packages in the seven modules listed by <code>GO_MODULES</code>, including packages that root-level <code>go build ./...</code> does not visit under <code>go.work</code> | Required CI build job; local compile diagnostic | Deterministic Go compilation; no provider calls or frontend/browser requirements | Any module or package compilation failure is nonzero; the loop stops at the first failing module | Serf CI/build; no new follow-up currently |
 | <code>make build-web</code> | Frontend build | TypeScript typecheck and Vite production build complete and refresh frontend/dist for Go embedding | Frontend CI; prerequisite of runtime/release builds | Needs Node/npm and may run npm ci when the install is absent or stale; no provider credentials | npm, typecheck, or Vite failure is nonzero | Frontend CI; no new follow-up currently |
-| <code>make test</code> | Non-fuzz Go modules, frontend, and script self-tests | Root short-mode tests, other module tests, frontend typecheck/Vitest/Biome, and repository tooling self-tests | Local quick check; included by the merge gate | Uses scripted/fake external boundaries for default tests. web-preflight may install dependencies; disk-reclaim --check can reject a low-capacity host | Any module, frontend stream, self-test, disk check, or setup failure is nonzero. A live opt-in in the environment intentionally changes the scope | Serf CI/tooling and frontend; no new follow-up currently |
+| <code>make test</code> | Non-fuzz Go modules, frontend, and script self-tests | Root short-mode tests, other module tests, frontend typecheck/Vitest/Biome, and repository tooling self-tests | Local quick check; included by the merge gate | Uses scripted/fake external boundaries for default tests. web-preflight may install dependencies; disk-reclaim --check can reject a low-capacity host. Runs ZERO fuzz-family tests, even at reduced depth — see <code>make test-fuzz</code> | Any module, frontend stream, self-test, disk check, or setup failure is nonzero. A live opt-in in the environment intentionally changes the scope | Serf CI/tooling and frontend; no new follow-up currently |
 | <code>ROOT_FULL=1 make test</code> | Full intended non-fuzz root suite plus all non-root modules, frontend, and self-tests | Removes root -short mode while retaining the non-fuzz Test/Example name filter and explicit fuzz-owned exclusions; preserves the complete non-fuzz post-merge surface | Local pre-merge/post-merge; required CI equivalent is <code>ROOT_FULL=1 WEB=0 make test</code> because the web job owns test-web | Same requirements as make test; ROOT_FULL=1 does not enable providers or fuzz search | Any root/module/tooling failure is nonzero; skipped live tests remain explicitly skipped unless opted in | Serf CI/tooling; no new follow-up currently |
+| <code>make test-fuzz</code> | The seqfuzz/schemafuzz stateful <code>rapid.Check</code> family (delegate, watch, lifecycle, jobs descendant-merge, tool-args schema, jobstore, two context-compaction surfaces, appserver router, appserver multi-session) | Each surface's rapid state machine runs its full default check count (no <code>-short</code> reduction), catching sequence bugs the focused unit suites cannot | Local pre-merge/post-merge for these surfaces; not run in CI's default `make test` job | <code>SERF_FUZZ_TESTS=1</code> opts each test back in from its default <code>t.Skip</code>; no network, no provider calls; fully offline (deny exec env, fake clock, scripted adapters) | Any surface's oracle/invariant failure or panic is nonzero | Serf agent/fuzz tooling; no new follow-up currently |
 | <code>make test-web</code> | Frontend typecheck, Vitest, and Biome lint | jsdom/unit-level frontend behavior, type safety, and source lint | Local pre-merge; required CI web job | Deterministic after Node dependencies are installed; no real browser, provider, or network service | Any of the three streams is nonzero; missing/unhealthy frontend install fails preflight | Frontend CI; no new follow-up currently |
 | <code>make test-web-browser</code> | Frontend layout, overflow, and Spawn browser guards | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, and the real Spawn staging/breakpoint path | Required CI web job; local pre-merge on a Chrome-capable host | Uses the three existing npm scripts and private Vite/Chrome profiles with OS-selected local ports; Chrome/Chromium is required; no WebKit/Safari runner exists | Every guard runs. Any guard error, Vite failure, or missing Chrome/Chromium is nonzero; WebKit/Safari is an explicit unsupported/manual gap, never a pass | Frontend/Serf CI; WebKit/Safari runner remains a follow-up gap |
 | <code>make test-race</code> | Go non-fuzz modules under the race detector | Data races in the same non-fuzz module surface; frontend is intentionally not duplicated | Required CI; local diagnostic | Needs a race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0 | Any race report, test failure, or setup failure is nonzero; a slow or unavailable toolchain is a limitation/failure | Serf CI/tooling; no new follow-up currently |
 | <code>make vet</code> | Go vet across all non-fuzz workspace modules | Go vet diagnostics for every module, independent of the tagged lint floors | Required CI; local diagnostic | Deterministic Go analysis; no provider calls | Any module vet failure is nonzero | Serf CI/tooling; no new follow-up currently |
-| <code>make fuzz</code> | Tagged fuzz contracts, committed seed/crasher replay, Rapid replay, golden replay, and fuzz-tool packages | Fuzz invariants compile and execute, committed fuzz inputs remain safe, Rapid properties replay under fixed seeds, and decode goldens remain stable | Required CI deterministic corpus gate; local pre-merge when warranted | No fuzz search or provider calls; uses committed inputs and serffuzz tags; memory caps are best-effort by platform | Any compile, replay, invariant, Rapid, or golden failure is nonzero. Search campaigns belong to make fuzz-nightly, not this gate | Serf fuzz/tooling; no new follow-up currently |
+| <code>make fuzz</code> | Tagged fuzz contracts, committed seed/crasher replay, Rapid replay, golden replay, and fuzz-tool packages | Fuzz invariants compile and execute, committed fuzz inputs remain safe, Rapid properties (including the seqfuzz/schemafuzz family that <code>make test-fuzz</code> also owns) replay under a fixed coverage seed bank, and decode goldens remain stable | Required CI deterministic corpus gate; local pre-merge when warranted | No fuzz search or provider calls; uses committed inputs and serffuzz tags; sets <code>SERF_FUZZ_TESTS=1</code> so the seqfuzz/schemafuzz family's default skip does not swallow the replay; memory caps are best-effort by platform | Any compile, replay, invariant, Rapid, or golden failure is nonzero. Search campaigns belong to make fuzz-nightly, not this gate | Serf fuzz/tooling; no new follow-up currently |
 | <code>make fuzz-gap-check</code> | Static decode/parse fuzz-target coverage | Every discovered decode/parse package has a registered fuzz target or an explicit ignore | Required CI; local quick check | Seconds, deterministic, no network or corpus replay | An uncovered package or registry/tool failure is nonzero | Serf fuzz/tooling; no new follow-up currently |
 | <code>make fuzz-corpus-scan</code> | Gitleaks over committed fuzz corpora | Fuzz seeds do not contain secrets | Required CI; local harvester feedback | Needs gitleaks for a meaningful scan; local absence warns and returns zero unless SERF_GITLEAKS_REQUIRED=1 | A finding or required-tool absence is nonzero; a local warning is an explicit limitation, not evidence of a scan | Serf security/tooling; no new follow-up currently |
 | <code>make merge-approval-gate</code> | Serial local composition of lint, runtime build, and full deterministic test | The canonical local/post-merge contract: make lint, make build, then ROOT_FULL=1 make test | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs | Serf CI/tooling; no new follow-up currently |
@@ -102,6 +103,87 @@ frontend dependencies are installed. Establishing that install may require
 npm/network access or an existing compatible worktree install, so an
 unavailable setup is a reported prerequisite failure rather than a
 deterministic test pass.
+
+## The seqfuzz/schemafuzz Family Lives Only in `make test-fuzz`
+
+A Jesse ruling: no fuzz-family test — including a smoke-depth iteration —
+belongs in `make test`, `go test ./...`, or any of their variants. This is a
+different exclusion from the `serffuzz`-tagged native `FuzzXxx` targets and
+`seed100`-style edge suites, which never compile into a default build because
+of their build tag. The tests this ruling targets are ordinary
+`func TestXxx(t *testing.T)` functions that call `rapid.Check` to run a
+stateful/sequence property fuzzer — no build tag hides them, so a plain
+`go test ./agent` used to run them, at whatever depth `rapid.Check`'s own
+`testing.Short()` awareness picked.
+
+Each test in the family is now individually gated at the top of its body:
+
+```go
+func TestDelegateSeqFuzz(t *testing.T) {
+	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
+		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent -run TestDelegateSeqFuzz -count=1 -v")
+	}
+	...
+```
+
+The gate is an env-var check rather than reusing `-short`, precisely so that
+`go test ./agent` with no flags stays fuzz-free too — matching the ruling's
+spirit rather than only its `-short` letter. The gate is the first statement
+in every one of these functions, including the two (`TestDelegateSeqFuzz`,
+`TestLifecycleSeqFuzz`) that resolve `fuzz/promoter.PersistPaths` before
+deciding whether to call `t.Parallel()`: the skip must fire before any of that
+path resolution or parallelism decision runs.
+
+The family, by file and function:
+
+| File | Function |
+| --- | --- |
+| `agent/delegate_seqfuzz_test.go` | `TestDelegateSeqFuzz` |
+| `agent/watch_seqfuzz_test.go` | `TestWatchSeqFuzz` |
+| `agent/lifecycle_seqfuzz_test.go` | `TestLifecycleSeqFuzz` |
+| `agent/jobs_fc2_seqfuzz_test.go` | `TestJobsFc2DescendantMergeSeqFuzz` |
+| `agent/registry_schemafuzz_test.go` | `TestToolArgsSchemaFuzz` |
+| `agent/internal/contextmgr/compaction_seqfuzz_test.go` | `TestCompactionSeqFuzz` |
+| `agent/internal/contextmgr/maybecompact_fc1_seqfuzz_test.go` | `TestFc1MaybeCompactSeqFuzz` |
+| `agent/internal/jobstore/seqfuzz_test.go` | `TestJobstoreSeqFuzz` |
+| `internal/appserver/router_seqfuzz_test.go` | `TestRouterSeqFuzz` |
+| `internal/appserver/hub_multisession_seqfuzz_test.go` | `TestHubMultiSessionSeqFuzz` |
+
+A test that merely has "fuzz" in its name is not automatically in this family
+— `TestDelegateSeqFuzzReplayClean`, `TestToolArgsAdapter_PromotesDeterministicFailure`,
+and the other promoter-adapter tests alongside these files replay one fixed,
+deterministic artifact (or a synthetic failure) rather than running a
+`rapid.Check` search; they stay in the default suite because they are fast and
+their coverage is otherwise lost. The `job_delegate_seed100_fuzz_test.go` file
+and its siblings named for the same "seed100" convention are native `FuzzXxx`
+targets under the `serffuzz` build tag — already excluded from every default
+build, not part of this change.
+
+Three other entry points drive this same rapid family and needed
+`SERF_FUZZ_TESTS=1` threaded through so this ruling would not silently blind
+them: `make fuzz`'s fixed-seed rapid replay loop (`scripts/run-fuzz.sh`'s
+`rapid` case, used by `fuzz-nightly`/`fuzz-triage`/`fuzz-continuous` too),
+`scripts/fuzz-oracle-audit.sh`'s `run_seeds`, which replays a mutation against
+`TestJobstoreSeqFuzz` and must never read that test's now-default skip as the
+oracle failing to catch the mutation, and `scripts/fuzz-coverage-global.sh`'s
+Rapid replay branch (`fuzz-coverage-global-selftest.sh` now asserts the
+opt-in actually propagates — not just that it's in the source — by proving a
+gated replay's coverage profile carries a nonzero execution count, and by
+mutation-testing that assertion itself: stripping the opt-in from a copy of
+the runner reproduces a zero-count profile and makes the assertion fail).
+
+Fuzz-family coverage and the default gate's coverage number are tracked on
+two separate tracks, not one. `go test ./agent -short`'s `-cover` output (and
+the coverage floor it feeds) measures only the imperative test suite — the
+seqfuzz/schemafuzz family t.Skip()s there by design. Coverage contributed by
+this family is instead `make fuzz-coverage-global`'s job: it is the ONLY
+coverage target that replays Rapid surfaces (with `SERF_FUZZ_TESTS=1`, as
+above), against its own ratchet. `make fuzz-coverage`
+(`scripts/fuzz-coverage.sh`) does not participate in this track at all — its
+target loop is `[ "$tag" = native ] || continue`, so it replays only native
+`FuzzXxx` corpora and never touches a Rapid target, gated or not. Do not read
+a default-gate coverage number as "whole-repo coverage including fuzz" — it
+never was, and now it's explicit.
 
 ## Proving a Type Survives a Round Trip
 
