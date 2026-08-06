@@ -92,7 +92,6 @@ import (
 // emitted to a temp dir as a regression test; a flaky one is quarantined.
 // serf:fuzz rapid
 func TestLifecycleSeqFuzz(t *testing.T) {
-	t.Parallel()
 	// Default-off: PersistPaths returns the temp fallbacks (no tree writes) for
 	// every gate run; the local triage tool sets SERF_FUZZ_PERSIST to capture a
 	// live-found crasher durably (see fuzz/promoter/persist.go).
@@ -100,7 +99,10 @@ func TestLifecycleSeqFuzz(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	emitDir, bucketsPath, _ := promoter.PersistPaths(pkgDir, t.TempDir(), filepath.Join(t.TempDir(), "buckets.json"))
+	emitDir, bucketsPath, persist := promoter.PersistPaths(pkgDir, t.TempDir(), filepath.Join(t.TempDir(), "buckets.json"))
+	if !persist {
+		t.Parallel()
+	}
 	adapter := &lifecycleAdapter{emitDir: emitDir}
 	store, err := promoter.OpenBucketStore(bucketsPath)
 	if err != nil {

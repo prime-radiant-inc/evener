@@ -447,14 +447,12 @@ func TestJobActivityTree_TruncatesAtDepth33(t *testing.T) {
 	for i := range activityMaxNewDepth + 1 {
 		child := newActivityTestSession(t, stateDir)
 		_, run := linkActivityChild(t, current, child, fmt.Sprintf("child-%02d", i))
-		// Finalize the delegate job immediately: JobActivityTree's structural
-		// walk (Delegates/Children) doesn't care whether a job is running or
-		// terminal, but leaving it "running" forever means every session below
-		// this one in the chain never has an outstanding-delegate count of zero,
-		// so each Close() at test cleanup blocks a full drainRecheckInterval
-		// (250ms) waiting for a completion that will never arrive — flat ~200ms
-		// x 33 nodes of pure fixture teardown cost, not part of what this test
-		// proves.
+		// Finalize the delegate job immediately to avoid teardown overhead.
+		// Finalize marks the job terminal and leaves it with NotifyPending status.
+		// This removes the job from jobManager.running, so Session.Close() avoids
+		// closeRuntimeState's closeGrace wait (250ms drainRecheckInterval) that would
+		// block on a completion that will never arrive — ~200ms × 33 nodes of pure
+		// fixture cost, not part of what this test proves.
 		if err := current.jobManager.finalize(run.rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); err != nil {
 			t.Fatalf("finalize delegate job %d: %v", i, err)
 		}
