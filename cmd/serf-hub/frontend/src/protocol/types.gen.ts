@@ -307,6 +307,7 @@ export interface JobActivityDelegate {
   turns: JobActivityJob[];
   child?: JobActivitySession;
   branch: JobActivityBranchState;
+  usage?: SerfUsage;
 }
 
 export interface JobActivityEntry {
@@ -334,6 +335,7 @@ export interface JobActivityJob {
   endedAt?: string;
   exitCode?: number;
   outputBytes: number;
+  lastOutputAt?: string;
 }
 
 export interface JobActivitySession {

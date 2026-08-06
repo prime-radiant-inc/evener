@@ -194,6 +194,75 @@ func fuzzScenarioBuildTree_ProjectsRunningSubagentOnChild(t *testing.T) {
 	}
 }
 
+// A live parent's RunningSubagentIDs is a liveness set: every non-closed
+// in-process descendant is listed, working or settled. When the daemon
+// carries the descendant's own projected status (RunningSubagentStates), the
+// tree must render THAT state — an idle delegate folds into the rail's
+// inactive list — instead of blanket "active". An ID with no carried state
+// (old daemon, legacy job discovery) keeps the active fallback.
+func fuzzScenarioBuildTree_RunningSubagentUsesCarriedState(t *testing.T) {
+	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "01PARENT", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01IDLE", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01BUSY", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01NOSTATE", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+	live := []LiveEntry{{
+		Entry:                 rendezvous.Entry{PID: 1},
+		SessionID:             "01PARENT",
+		Status:                appwire.ThreadStatusIdle,
+		RunningSubagentIDs:    []string{"01IDLE", "01BUSY", "01NOSTATE"},
+		RunningSubagentStates: map[string]string{"01IDLE": "idle", "01BUSY": "active"},
+	}}
+
+	tree := BuildTreeAt(metas, live, nil, now)
+	if len(tree.Projects) != 1 {
+		t.Fatalf("projects = %d, want 1", len(tree.Projects))
+	}
+	project := tree.Projects[0]
+	sessions := allSessions(project)
+	if len(sessions) != 1 || len(sessions[0].Children) != 3 {
+		t.Fatalf("sessions = %+v, want one parent with three children", sessions)
+	}
+	states := map[string]string{}
+	for _, child := range sessions[0].Children {
+		states[child.ID] = child.State
+	}
+	if states["01IDLE"] != "idle" {
+		t.Errorf("idle-carried child state = %q, want idle", states["01IDLE"])
+	}
+	if states["01BUSY"] != "active" {
+		t.Errorf("active-carried child state = %q, want active", states["01BUSY"])
+	}
+	if states["01NOSTATE"] != "active" {
+		t.Errorf("no-state child state = %q, want active (old-daemon fallback)", states["01NOSTATE"])
+	}
+	// One genuinely working child keeps the project live; the idle one must
+	// not inflate the working count.
+	if project.RollupState != "active" || project.RollupLive != 1 {
+		t.Errorf("project rollup = state %q live %d, want active/1", project.RollupState, project.RollupLive)
+	}
+
+	// With every child idle, nothing is working: the project goes quiet.
+	live[0].RunningSubagentStates = map[string]string{"01IDLE": "idle", "01BUSY": "idle", "01NOSTATE": "idle"}
+	tree = BuildTreeAt(metas, live, nil, now)
+	project = tree.Projects[0]
+	sessions = allSessions(project)
+	for _, child := range sessions[0].Children {
+		if child.State != "idle" {
+			t.Errorf("all-idle child %s state = %q, want idle", child.ID, child.State)
+		}
+	}
+	if project.RollupState != "idle" || project.RollupLive != 0 || project.Expanded {
+		t.Errorf("all-idle rollup = state %q live %d expanded %v, want idle/0/false", project.RollupState, project.RollupLive, project.Expanded)
+	}
+}
+
+func TestBuildTree_RunningSubagentUsesCarriedState(t *testing.T) {
+	fuzzScenarioBuildTree_RunningSubagentUsesCarriedState(t)
+}
+
 func fuzzScenarioBuildTree_UsesGeneratedNameForSessionTitle(t *testing.T) {
 	tree := buildTree([]schema.SessionMeta{{
 		ID:             "01NAMED",

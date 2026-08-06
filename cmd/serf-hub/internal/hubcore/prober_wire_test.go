@@ -93,6 +93,13 @@ func TestStatusProberAgreesWithServerStatusInfoAcrossTheWire(t *testing.T) {
 		SessionID: "grandchild-1",
 		Data:      events.UserInputData{Text: "nested child"},
 	})
+	// A settled descendant ends its turn idle; its liveness (it stays in
+	// descendant_session_ids, resumable) must not read as activity.
+	srv.RecordDescendantAppEvent("th_wire_1", events.SessionEvent{
+		Kind:      events.EventSessionEnd,
+		SessionID: "child-2",
+		Data:      events.SessionEndData{Reason: "input_complete", State: "idle"},
+	})
 	srv.RecordDescendantAppEvent("th_wire_1", events.SessionEvent{
 		Kind:      events.EventSessionEnd,
 		SessionID: "closed-child",
@@ -121,5 +128,9 @@ func TestStatusProberAgreesWithServerStatusInfoAcrossTheWire(t *testing.T) {
 	}
 	if want := []string{"child-1", "child-2", "grandchild-1"}; !reflect.DeepEqual(got.RunningSubagentIDs, want) {
 		t.Errorf("running subagent ids = %v, want %v: the daemon must expose every projected descendant while retaining legacy Detailed.Jobs discovery", got.RunningSubagentIDs, want)
+	}
+	wantStates := map[string]string{"child-1": "active", "child-2": "idle", "grandchild-1": "active"}
+	if !reflect.DeepEqual(got.RunningSubagentStates, wantStates) {
+		t.Errorf("running subagent states = %v, want %v: server.StatusInfo.DescendantStates and the prober's descendant_states tag no longer agree", got.RunningSubagentStates, wantStates)
 	}
 }

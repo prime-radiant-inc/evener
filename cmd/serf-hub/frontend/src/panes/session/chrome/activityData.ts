@@ -32,6 +32,7 @@ export interface ActivityJob {
   reason?: string;
   startedAt: string;
   endedAt?: string;
+  lastOutputAt?: string;
   exitCode?: number;
   outputBytes: number;
 }
@@ -57,9 +58,17 @@ export interface ActivityDelegate {
   childSessionId: string;
   childRef: string;
   mandate?: string;
+  usage?: ActivityUsage;
   turns: ActivityJob[];
   child?: ActivitySessionNode;
   branch: ActivityBranchState;
+}
+
+export interface ActivityUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number;
+  totalTokens?: number;
 }
 
 export interface ActivityDelegateEntry {
@@ -158,6 +167,22 @@ function parseCounts(raw: unknown): ActivityCounts | null {
   return { active, failed, completed, complete };
 }
 
+function parseUsage(raw: unknown): ActivityUsage | null | undefined {
+  if (typeof raw === "undefined") return undefined;
+  if (!isPlainObject(raw)) return null;
+  const inputTokens = readNonNegativeInteger(raw, "inputTokens");
+  const outputTokens = readNonNegativeInteger(raw, "outputTokens");
+  if (inputTokens === null || outputTokens === null) return null;
+  const usage: ActivityUsage = { inputTokens, outputTokens };
+  const cacheReadTokens = readNonNegativeInteger(raw, "cacheReadTokens");
+  const totalTokens = readNonNegativeInteger(raw, "totalTokens");
+  if (typeof raw.cacheReadTokens !== "undefined" && cacheReadTokens === null) return null;
+  if (typeof raw.totalTokens !== "undefined" && totalTokens === null) return null;
+  if (cacheReadTokens !== null) usage.cacheReadTokens = cacheReadTokens;
+  if (totalTokens !== null) usage.totalTokens = totalTokens;
+  return usage;
+}
+
 function parseJob(raw: unknown): ActivityJob | null {
   if (!isPlainObject(raw)) return null;
   const jobId = readString(raw, "jobId");
@@ -205,6 +230,7 @@ function parseJob(raw: unknown): ActivityJob | null {
   const task = readOptionalString(raw, "task");
   const reason = readOptionalString(raw, "reason");
   const endedAt = readOptionalString(raw, "endedAt");
+  const lastOutputAt = readOptionalString(raw, "lastOutputAt");
   const exitCode = raw.exitCode;
   if (typeof raw.outcome !== "undefined" && typeof raw.outcome !== "string") return null;
   if (typeof raw.transcriptRef !== "undefined" && typeof raw.transcriptRef !== "string") return null;
@@ -212,6 +238,7 @@ function parseJob(raw: unknown): ActivityJob | null {
   if (typeof raw.task !== "undefined" && typeof raw.task !== "string") return null;
   if (typeof raw.reason !== "undefined" && typeof raw.reason !== "string") return null;
   if (typeof raw.endedAt !== "undefined" && typeof raw.endedAt !== "string") return null;
+  if (typeof raw.lastOutputAt !== "undefined" && typeof raw.lastOutputAt !== "string") return null;
   if (typeof exitCode !== "undefined" && !Number.isInteger(exitCode)) return null;
   if (outcome) job.outcome = outcome;
   if (transcriptRef) job.transcriptRef = transcriptRef;
@@ -219,6 +246,7 @@ function parseJob(raw: unknown): ActivityJob | null {
   if (task) job.task = task;
   if (reason) job.reason = reason;
   if (endedAt) job.endedAt = endedAt;
+  if (lastOutputAt) job.lastOutputAt = lastOutputAt;
   if (typeof exitCode === "number") job.exitCode = exitCode;
   return job;
 }
@@ -286,6 +314,10 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
     return { value: null, incomplete: true };
   }
   if (mandate) delegate.mandate = mandate;
+
+  const usage = parseUsage(raw.usage);
+  if (usage === null) return { value: null, incomplete: true };
+  if (usage) delegate.usage = usage;
 
   if (typeof raw.child !== "undefined") {
     if (depth >= MAX_RECURSION_DEPTH) {

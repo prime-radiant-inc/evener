@@ -114,6 +114,13 @@ type StatusInfo struct {
 	// nested descendant's delegate job is owned by its immediate parent and does
 	// not appear in the root session's job store.
 	DescendantSessionIDs []string `json:"descendant_session_ids,omitempty"`
+	// DescendantStates carries each listed descendant's own projected thread
+	// status ("active", "idle", "awaiting", ...). The IDs list alone is a
+	// liveness set — a settled-but-resumable delegate stays on it — so without
+	// the per-descendant state a consumer can only guess, and "listed" guessed
+	// wrong as "working" for every idle delegate. Absent on old daemons;
+	// consumers treat a missing entry as unknown, never as idle.
+	DescendantStates map[string]string `json:"descendant_states,omitempty"`
 	// Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
 	// working-state/token metrics (WS2 A7), served from the materialized thread
 	// envelope. Usage is a pointer (unlike the other

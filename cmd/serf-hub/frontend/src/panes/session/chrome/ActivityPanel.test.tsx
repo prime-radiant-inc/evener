@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -6,6 +6,7 @@ import { WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { ThreadCapabilities } from "../../../protocol/types.gen";
+import { activityPanelStore } from "../../../stores/activityPanel";
 import { activitySummaryStore } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
@@ -464,7 +465,7 @@ describe("ActivityPanel", () => {
     expect(await screen.findByText("This session has ended")).toBeTruthy();
   });
 
-  test("opens active paths by default, keeps completed branches collapsed, and preserves disclosure and selection across refresh", async () => {
+  test("renders live rows plus a fold row for inactive entries, and an expanded fold survives refresh", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
     fake.on("serf/jobs/list", ({ continuation }) => ({
@@ -478,18 +479,33 @@ describe("ActivityPanel", () => {
     await user.click(screen.getByRole("button", { name: "Activity" }));
 
     expect(await screen.findByRole("tree")).toBeTruthy();
-    expect(screen.getByRole("treeitem", { name: /child session/i })).toBeTruthy();
-    expect(screen.getByRole("treeitem", { name: /done session/i }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
+    expect(screen.getByRole("treeitem", { name: /inspect the repo/i })).toBeTruthy();
+    expect(screen.getByRole("treeitem", { name: /child shell/i })).toBeTruthy();
+    // Inactive delegates sit behind the root session's fold row, folded by default.
+    const fold = screen.getByRole("treeitem", { name: "2 inactive" });
+    expect(fold.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("treeitem", { name: /done session/i })).toBeNull();
+    expect(screen.queryByTestId("activity-inspector")).toBeNull();
 
-    await user.click(screen.getByRole("treeitem", { name: /compile root shell/i }));
-    const activeDelegate = screen.getByRole("treeitem", { name: /inspect the repo/i });
-    expect(within(activeDelegate).getByRole("button", { name: "Open transcript beside" })).toBeTruthy();
-    await user.click(within(activeDelegate).getByRole("button", { name: /collapse inspect the repo/i }));
+    await user.click(fold);
+    expect(activityPanelStore.getState().entries.get("ref_root")?.expandedFoldIDs).toEqual([
+      "session:sess_root:inactive-fold",
+    ]);
+    expect(screen.getByRole("treeitem", { name: /done session/i })).toBeTruthy();
+
     rerender(panel(2));
     await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
 
-    expect(screen.getByRole("treeitem", { name: /compile root shell/i }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.queryByRole("treeitem", { name: /child session/i })).toBeNull();
+    expect(activityPanelStore.getState().entries.get("ref_root")?.expandedFoldIDs).toEqual([
+      "session:sess_root:inactive-fold",
+    ]);
+    expect(screen.getByRole("treeitem", { name: /done session/i })).toBeTruthy();
+    expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
+
+    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
+    expect(activityPanelStore.getState().entries.get("ref_root")?.expandedFoldIDs).toEqual([]);
+    expect(screen.queryByRole("treeitem", { name: /done session/i })).toBeNull();
   });
 
   test("a stale refresh failure keeps the last good tree and shows a stale notice", async () => {
@@ -663,14 +679,16 @@ describe("ActivityPanel", () => {
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
     expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
-    await user.click(screen.getByRole("treeitem", { name: /compile root shell/i }));
+    // The partial branch's continuation strip follows its row, which sits
+    // behind the folded-by-default inactive fold.
+    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
     await user.click(screen.getByRole("button", { name: /load more/i }));
 
     await screen.findByRole("treeitem", { name: /continued shell/i });
     expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
   });
 
-  test("continuation grafts only the targeted branch and preserves selection", async () => {
+  test("continuation grafts only the targeted branch", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
     fake.on("serf/jobs/list", ({ continuation }) => ({ data: continuation ? continuedPartialTree() : activityTree() }));
@@ -679,11 +697,11 @@ describe("ActivityPanel", () => {
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
 
-    await user.click(screen.getByRole("treeitem", { name: /compile root shell/i }));
+    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
     await user.click(screen.getByRole("button", { name: /load more/i }));
 
     expect(await screen.findByRole("treeitem", { name: /continued shell/i })).toBeTruthy();
-    expect(screen.getByRole("treeitem", { name: /compile root shell/i }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
     expect(fake.calls.filter((call) => call.method === "serf/jobs/list").at(-1)?.params).toEqual({
       ref: "ref_root",
       continuation: "partial-page-2",
@@ -703,12 +721,12 @@ describe("ActivityPanel", () => {
     );
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
-    await user.click(screen.getByRole("treeitem", { name: /compile root shell/i }));
+    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
     await user.click(screen.getByRole("button", { name: /load more/i }));
 
     expect(await screen.findByText("Couldn't load more retained activity for this branch.")).toBeTruthy();
     expect(screen.getByRole("tree")).toBeTruthy();
-    expect(screen.getByRole("treeitem", { name: /compile root shell/i }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /load more/i })).toBeTruthy();
     expect(screen.queryByText(/activity isn't available/i)).toBeNull();
     expect(screen.queryByText(/showing the last activity that loaded/i)).toBeNull();
@@ -731,17 +749,17 @@ describe("ActivityPanel", () => {
     );
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
-    await user.click(screen.getByRole("treeitem", { name: /compile root shell/i }));
+    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
     await user.click(screen.getByRole("button", { name: /load more/i }));
 
     expect(await screen.findByText("Couldn't load more retained activity for this branch: branch boom")).toBeTruthy();
-    expect(screen.getByRole("treeitem", { name: /compile root shell/i }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /load more/i })).toBeTruthy();
     expect(screen.queryByText(/showing the last activity that loaded/i)).toBeNull();
     expect(screen.queryByText(/couldn't load activity/i)).toBeNull();
   });
 
-  test("falls a removed selection back to the nearest surviving owner and reports exact retained-copy message", async () => {
+  test("a refresh that drops a retained row keeps rendering the surviving tree", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
     let calls = 0;
@@ -761,138 +779,43 @@ describe("ActivityPanel", () => {
     const { rerender } = render(panel(1));
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
-    await user.click(screen.getByRole("treeitem", { name: /compile root shell/i }));
+    expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
 
     rerender(panel(2));
-    expect(await screen.findByText("This activity is no longer retained.")).toBeTruthy();
-    expect(screen.getByRole("treeitem", { name: /root session/i }).getAttribute("aria-selected")).toBe("true");
-  });
-
-  test("shell inspector renders metadata immediately, fetches output only after selection, retries, and refreshes without collapsing the tree", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    let outputCalls = 0;
-    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
-    fake.on("serf/jobs/output", () => {
-      outputCalls += 1;
-      if (outputCalls === 1) throw new Error("output boom");
-      return { data: { tail: "ok\n", totalBytes: 3, retainedStart: 0, truncated: false } };
-    });
-
-    render(
-      <>
-        <ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />
-        <Toast />
-      </>,
-    );
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-    expect(fake.calls.filter((call) => call.method === "serf/jobs/output")).toHaveLength(0);
-
-    await user.click(screen.getByRole("treeitem", { name: /compile root shell/i }));
-    const inspector = screen.getByTestId("activity-inspector");
-    expect(within(inspector).getByText("npm test")).toBeTruthy();
-    expect(within(inspector).getByText(/11 bytes/i)).toBeTruthy();
-    expect(await screen.findByText(/couldn't load job output: output boom/i)).toBeTruthy();
-
-    await user.click(screen.getByRole("button", { name: "Try again" }));
-    expect(await screen.findByText("ok")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Refresh output" }));
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/output")).toHaveLength(3));
-    expect(screen.getByRole("treeitem", { name: /compile root shell/i }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByRole("treeitem", { name: /child session/i })).toBeTruthy();
-  });
-
-  test("delegate inspector shows mandate, ordered turns, latest report availability, child aggregate, branch error, and Open transcript", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
-    fake.on("serf/jobs/output", () => ({
-      data: { tail: "delegate report\n", totalBytes: 16, retainedStart: 0, truncated: false },
-    }));
-
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-    await user.click(screen.getByRole("treeitem", { name: /inspect the repo/i }));
-
-    const inspector = screen.getByTestId("activity-inspector");
-    expect(within(inspector).getByText("Inspect the repo")).toBeTruthy();
-    expect(within(inspector).getByText(/delegate started/)).toBeTruthy();
-    expect(within(inspector).getAllByText(/delegate report/).length).toBeGreaterThan(0);
-    expect(within(inspector).getByText(/latest output available/i)).toBeTruthy();
-    expect(within(inspector).getByText(/child aggregate: running/i)).toBeTruthy();
-    expect(within(inspector).getByRole("button", { name: "Open transcript" })).toBeTruthy();
-    expect(fake.calls.find((call) => call.method === "serf/jobs/output")?.params).toEqual({
-      ref: "ref_root",
-      jobId: "job_delegate_turn_2",
-    });
-
-    await user.click(screen.getByRole("treeitem", { name: /partial session/i }));
-    expect(within(screen.getByTestId("activity-inspector")).getByText(/child unavailable/i)).toBeTruthy();
-  });
-
-  test("delegate inspector ignores older output when the latest turn has none", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    const tree = cloneFixture(activityTree());
-    const delegate = tree.root.entries[1];
-    if (delegate?.kind !== "delegate") throw new Error("expected delegate fixture");
-    const delegateEntry = delegate.delegate;
-    if (!delegateEntry) throw new Error("expected delegate payload fixture");
-    const firstTurn = delegateEntry.turns[0];
-    const secondTurn = delegateEntry.turns[1];
-    if (!firstTurn || !secondTurn) throw new Error("expected delegate turns fixture");
-    delegateEntry.turns = [
-      {
-        ...firstTurn,
-        hasOutput: true,
-        ownerRef: "ref_old_output",
-        jobId: "job_old_output",
-      },
-      {
-        ...secondTurn,
-        hasOutput: false,
-        ownerRef: "ref_latest_no_output",
-        jobId: "job_latest_no_output",
-      },
-    ];
-    fake.on("serf/jobs/list", () => ({ data: tree }));
-    fake.on("serf/jobs/output", () => ({
-      data: { tail: "older output\n", totalBytes: 13, retainedStart: 0, truncated: false },
-    }));
-
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-    await user.click(screen.getByRole("treeitem", { name: /inspect the repo/i }));
-
-    const inspector = screen.getByTestId("activity-inspector");
-    expect(within(inspector).getByText(/no retained output/i)).toBeTruthy();
-    expect(screen.queryByText(/older output/i)).toBeNull();
-    expect(fake.calls.filter((call) => call.method === "serf/jobs/output")).toHaveLength(0);
-  });
-
-  test("mobile selection switches to inspector-only and Back to activity restores focus to the selected row", async () => {
-    const user = userEvent.setup();
-    const lists = installMatchMediaStub(true);
-    const fake = connectFakeClient();
-    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
-
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-    await user.click(screen.getByRole("treeitem", { name: /compile root shell/i }));
-
-    expect(screen.queryByRole("tree")).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Back to activity" }));
-    const row = await screen.findByRole("treeitem", { name: /compile root shell/i });
-    expect(document.activeElement).toBe(row);
-
-    act(() => {
-      (lists.get("(max-width: 899px)") as unknown as { emit: (matches: boolean) => void }).emit(false);
-    });
+    await waitFor(() => expect(screen.queryByRole("treeitem", { name: /compile root shell/i })).toBeNull());
     expect(screen.getByRole("tree")).toBeTruthy();
+    expect(screen.getByRole("treeitem", { name: /inspect the repo/i })).toBeTruthy();
+  });
+
+  test("renders dense tree rows with no inspector element", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
+
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+
+    expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
+    expect(screen.getByRole("treeitem", { name: /inspect the repo/i })).toBeTruthy();
+    expect(screen.queryByTestId("activity-inspector")).toBeNull();
+    expect(screen.queryByText(/select activity/i)).toBeNull();
+  });
+
+  test("mobile renders the tree directly with no inspector swap or back button", async () => {
+    const user = userEvent.setup();
+    installMatchMediaStub(true);
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
+
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+
+    expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
+    expect(screen.getByRole("treeitem", { name: "2 inactive" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Back to activity" })).toBeNull();
+    expect(screen.queryByTestId("activity-inspector")).toBeNull();
   });
 
   test("ignores stale fetch results after the session ref changes", async () => {
