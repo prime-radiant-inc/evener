@@ -131,12 +131,13 @@ only those derived labels. `--format json` reserves stdout for the final
 Any registry, listing, replay, profile, or accounting failure is fatal; the
 command never turns a failed target into an omitted or synthetic zero profile.
 
-Current implementation status: the registry audit intentionally reports the
-fourteen known unregistered agent native targets until the local-surface work
-lands. Therefore `make fuzz-coverage-global` currently stops at the registry
-gate before running Go tests. Once those registrations are complete, the next
-expected actionable failures are the exact packages still lacking local fuzz
-surfaces; they must be added rather than excluded.
+Current implementation status: the registry audit is clean. `make
+fuzz-coverage-global --modules agent` now clears the registry gate and stops
+at the local-surface preflight, reporting the packages still lacking a
+registered native or Rapid target (currently `agent/internal/globpattern`,
+`agent/internal/liveeval`, and `agent/internal/runetrim`). Per the design
+above, a package failing this preflight needs a fuzz target added; it must
+not be excluded.
 
 Interpreting a **low focus %**: use `go tool cover -func` on the profile to see
 which blocks are uncovered. A block with a `0` count that a crafted input *could*
