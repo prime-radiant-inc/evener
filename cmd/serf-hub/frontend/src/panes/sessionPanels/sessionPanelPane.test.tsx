@@ -349,6 +349,7 @@ test("renders retained Activity selection and expansion after a pane remount", (
     established: true,
     continuationFailures: {},
     requestID: 0,
+    collapsedFoldIDs: [],
   };
   activityPanelStore.setState({ entries: new Map([[model.ref, entry]]) });
   activitySummaryStore.setState({

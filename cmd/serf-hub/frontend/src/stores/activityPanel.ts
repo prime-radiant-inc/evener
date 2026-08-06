@@ -29,6 +29,7 @@ export interface ActivityPanelEntry {
   continuationFailures: Record<string, string | undefined>;
   requestID: number;
   pending?: { kind: "root" } | { kind: "continuation"; nodeID: string };
+  collapsedFoldIDs: string[];
 }
 
 export type ActivityFetchResult =
@@ -44,6 +45,7 @@ export interface ActivityPanelStoreState {
   publishFetch(ref: string, requestID: number, result: ActivityFetchResult): void;
   setExpanded(ref: string, expandedIDs: string[]): void;
   setSelected(ref: string, selectedID?: string): void;
+  toggleFold(ref: string, foldID: string): void;
   resetForTests(): void;
 }
 
@@ -59,6 +61,7 @@ export const EMPTY_ACTIVITY_PANEL_ENTRY: ActivityPanelEntry = {
   established: false,
   continuationFailures: {},
   requestID: 0,
+  collapsedFoldIDs: [],
 };
 
 const INITIAL_LOAD: ActivityLoadState = { kind: "idle" };
@@ -70,6 +73,7 @@ function newEntry(): ActivityPanelEntry {
     established: false,
     continuationFailures: {},
     requestID: 0,
+    collapsedFoldIDs: [],
   };
 }
 
@@ -352,6 +356,15 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
     updateEntry(set, ref, (entry) => ({
       ...entry,
       disclosure: { ...entry.disclosure, selectedID, selectionPruned: false },
+    }));
+  },
+
+  toggleFold(ref, foldID) {
+    updateEntry(set, ref, (entry) => ({
+      ...entry,
+      collapsedFoldIDs: entry.collapsedFoldIDs.includes(foldID)
+        ? entry.collapsedFoldIDs.filter((id) => id !== foldID)
+        : [...entry.collapsedFoldIDs, foldID],
     }));
   },
 

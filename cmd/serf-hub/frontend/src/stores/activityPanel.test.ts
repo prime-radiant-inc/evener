@@ -87,6 +87,19 @@ describe("activityPanelStore", () => {
     expect(activityPanelStore.getState().entries.get("ref_a")?.load.kind).toBe("ready");
   });
 
+  test("toggleFold flips fold membership per session ref", () => {
+    resetActivityPanelStoreForTests();
+    activityPanelStore.getState().toggleFold("ref_a", "session:s1:inactive-fold");
+    expect(activityPanelStore.getState().entries.get("ref_a")?.collapsedFoldIDs).toEqual(["session:s1:inactive-fold"]);
+    activityPanelStore.getState().toggleFold("ref_a", "session:s1:inactive-fold");
+    expect(activityPanelStore.getState().entries.get("ref_a")?.collapsedFoldIDs).toEqual([]);
+    // Independent per ref:
+    activityPanelStore.getState().toggleFold("ref_a", "fold:1");
+    activityPanelStore.getState().toggleFold("ref_b", "fold:2");
+    expect(activityPanelStore.getState().entries.get("ref_a")?.collapsedFoldIDs).toEqual(["fold:1"]);
+    expect(activityPanelStore.getState().entries.get("ref_b")?.collapsedFoldIDs).toEqual(["fold:2"]);
+  });
+
   test("a completion from before eviction cannot publish into a recreated entry", async () => {
     resetActivityPanelStoreForTests();
     resetWorkspaceStoreForTests();
