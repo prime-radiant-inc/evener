@@ -193,6 +193,13 @@ exec 8<>"$stop_fifo"
 # dedicated stop_fifo instead, so the escalation ladder's confirmation read
 # below can never be satisfied by a stray leftover readiness event.
 (
+	child_pid=""
+	spawn_interrupted=0
+	# Until child_pid is in hand there is nothing to forward a signal to, so a
+	# TERM arriving in that window is recorded rather than run through a handler
+	# that would report a stop the wrapper never actually performed (the same
+	# spawn-window cover make-selftest-selftest.sh's wrapper carries).
+	trap 'spawn_interrupted=1' TERM
 	FAKE_MODE=hold FAKE_READY_FIFO="$ready_fifo" run_case_async >"$out" 2>&1 &
 	child_pid="$!"
 	printf '%s\n' "$child_pid" >"$runner_pid_file"
@@ -206,6 +213,7 @@ exec 8<>"$stop_fifo"
 		exit "$rc"
 	}
 	trap forward_term TERM
+	[ "$spawn_interrupted" -eq 1 ] && forward_term
 	if wait "$child_pid"; then rc=0; else rc=$?; fi
 	printf 'runner-exited:%s\n' "$rc" >"$ready_fifo"
 	exit "$rc"
