@@ -3,6 +3,7 @@ package jobstore
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"strconv"
 	"testing"
 
@@ -56,6 +57,9 @@ import (
 // surface as a panic.
 // serf:fuzz rapid
 func TestJobstoreSeqFuzz(t *testing.T) {
+	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
+		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent/internal/jobstore -run TestJobstoreSeqFuzz -count=1 -v")
+	}
 	rapid.Check(t, func(rt *rapid.T) {
 		m := newSeqModel()
 		steps := rapid.IntRange(1, 40).Draw(rt, "steps")

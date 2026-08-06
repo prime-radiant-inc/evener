@@ -92,6 +92,9 @@ import (
 // emitted to a temp dir as a regression test; a flaky one is quarantined.
 // serf:fuzz rapid
 func TestLifecycleSeqFuzz(t *testing.T) {
+	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
+		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent -run TestLifecycleSeqFuzz -count=1 -v")
+	}
 	// Default-off: PersistPaths returns the temp fallbacks (no tree writes) for
 	// every gate run; the local triage tool sets SERF_FUZZ_PERSIST to capture a
 	// live-found crasher durably (see fuzz/promoter/persist.go).

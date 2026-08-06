@@ -82,6 +82,9 @@ import (
 // regression test; a flaky one is quarantined.
 // serf:fuzz rapid
 func TestDelegateSeqFuzz(t *testing.T) {
+	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
+		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent -run TestDelegateSeqFuzz -count=1 -v")
+	}
 	pkgDir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)

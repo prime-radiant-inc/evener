@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"os"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -33,6 +34,9 @@ import (
 // DEPTH may differ with order, never the authority).
 // serf:fuzz rapid
 func TestJobsFc2DescendantMergeSeqFuzz(t *testing.T) {
+	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
+		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent -run TestJobsFc2DescendantMergeSeqFuzz -count=1 -v")
+	}
 	rapid.Check(t, func(rt *rapid.T) {
 		n := rapid.IntRange(1, 30).Draw(rt, "nrecs")
 		type present struct {

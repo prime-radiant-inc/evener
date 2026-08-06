@@ -2,6 +2,7 @@ package appserver
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"testing"
 
@@ -80,6 +81,9 @@ import (
 // exercised by the thread pool here (the keys are opaque strings to the fabric).
 // serf:fuzz rapid
 func TestHubMultiSessionSeqFuzz(t *testing.T) {
+	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
+		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./internal/appserver -run TestHubMultiSessionSeqFuzz -count=1 -v")
+	}
 	rapid.Check(t, func(rt *rapid.T) {
 		ops := rapid.SliceOfN(drawMSOp, 1, 64).Draw(rt, "ops")
 		h := newMSHarness()

@@ -56,6 +56,9 @@ type schemaValidator interface {
 // failing case before the cleanup promotes it.
 // serf:fuzz rapid
 func TestToolArgsSchemaFuzz(t *testing.T) {
+	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
+		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent -run TestToolArgsSchemaFuzz -count=1 -v")
+	}
 	tools := coreToolSchemaDefs(t)
 	if len(tools) == 0 {
 		t.Fatal("no core tools registered")

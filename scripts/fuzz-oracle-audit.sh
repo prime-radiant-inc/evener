@@ -91,7 +91,10 @@ pkg_for() {
 # not compile — a mutation that fails to BUILD must score ERROR, never "caught",
 # or the audit would credit the oracle for a crash it never saw.
 run_seeds() {
-	REPRO_OUT="$(cd "$wt/$1" && "$go_bin" test ${tags:+-tags "$tags"} -run "^$3\$" -count=1 "$2" 2>&1)"
+	# SERF_FUZZ_TESTS=1: the seqfuzz/schemafuzz rapid family t.Skip()s under a
+	# plain `go test` (moved out of `make test` per the fuzz-family ruling); a
+	# skip must never be misread as an oracle failing to catch the mutation.
+	REPRO_OUT="$(cd "$wt/$1" && SERF_FUZZ_TESTS=1 "$go_bin" test ${tags:+-tags "$tags"} -run "^$3\$" -count=1 "$2" 2>&1)"
 	REPRO_RC=$?
 }
 build_failed() { printf '%s' "$REPRO_OUT" | grep -qE '\[build failed\]|\[setup failed\]'; }

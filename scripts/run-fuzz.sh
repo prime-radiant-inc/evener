@@ -787,7 +787,10 @@ for t in "${TARGETS[@]}"; do
 				# --time budget does not apply to them. Keep the campaign depth at
 				# rapid's historical default unless the caller intentionally narrows it.
 				echo "=== rapid $module:$name ==="
-				( cd "$repo_root/$module" && RAPID_CHECKS="${RAPID_CHECKS:-100}" "$repo_root/scripts/run-capped.sh" go test -tags serffuzz -run "^${name}\$" -count=1 "$pkg" ) || fail=1
+				# SERF_FUZZ_TESTS=1: the seqfuzz/schemafuzz family t.Skip()s under a
+				# plain `go test` (moved out of `make test` per the fuzz-family
+				# ruling); this campaign must still drive them.
+				( cd "$repo_root/$module" && SERF_FUZZ_TESTS=1 RAPID_CHECKS="${RAPID_CHECKS:-100}" "$repo_root/scripts/run-capped.sh" go test -tags serffuzz -run "^${name}\$" -count=1 "$pkg" ) || fail=1
 				;;
 
 			*)
