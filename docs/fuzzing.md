@@ -132,7 +132,7 @@ Any registry, listing, replay, profile, or accounting failure is fatal; the
 command never turns a failed target into an omitted or synthetic zero profile.
 
 Current implementation status: the registry audit is clean, and `make
-fuzz-coverage-global --modules agent` now clears the local-surface preflight
+fuzz-coverage-global FUZZ_ARGS='--modules agent'` now clears the local-surface preflight
 too — every production package in `agent` has a registered native or Rapid
 target. The runner proceeds into the real per-target replay, which is where
 `make fuzz-coverage-global` actually spends its time; per the design above, a
