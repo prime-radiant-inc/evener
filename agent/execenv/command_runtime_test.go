@@ -47,12 +47,15 @@ func TestCommandRuntimeFactoryDrivesExecArgvWithoutForking(t *testing.T) {
 // TestSystemCommandRuntimeConfigurationMatchesDirectCommandSetup locks the
 // production adapter to the direct *exec.Cmd configuration it replaced. It does
 // not start a command: argv, cwd, environment, process-group, and fd hygiene are
-// all inspectable before exec, which keeps this regression deterministic.
+// all inspectable before exec, which keeps this regression deterministic. The
+// comparison target is exec.Command, not exec.CommandContext: Argv must not
+// carry its own ctx-triggered kill (see Argv's doc comment) — this pins that
+// exec.Command, not exec.CommandContext, is what actually gets built.
 func TestSystemCommandRuntimeConfigurationMatchesDirectCommandSetup(t *testing.T) {
 	root := t.TempDir()
 	command := "printf runtime"
-	configured := systemCommandRuntimeFactory{}.Argv(context.Background(), "/fixture/shell", "-c", command).(*systemCommandRuntime)
-	direct := exec.CommandContext(context.Background(), "/fixture/shell", "-c", command)
+	configured := systemCommandRuntimeFactory{}.Argv("/fixture/shell", "-c", command).(*systemCommandRuntime)
+	direct := exec.Command("/fixture/shell", "-c", command)
 
 	config := commandRuntimeConfig{
 		Dir:            root,
@@ -104,7 +107,7 @@ type scriptedCommandFactory struct {
 
 func (f scriptedCommandFactory) Shell(string) commandRuntime { return f.argv }
 
-func (f scriptedCommandFactory) Argv(context.Context, string, ...string) commandRuntime {
+func (f scriptedCommandFactory) Argv(string, ...string) commandRuntime {
 	return f.argv
 }
 

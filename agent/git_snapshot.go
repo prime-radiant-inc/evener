@@ -37,7 +37,7 @@ func gitOriginURL(env execenv.ExecutionEnvironment, cwd string) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
 	defer cancel()
-	res, err := env.ExecCommand(ctx, "git remote get-url origin", gitExecTimeoutMS(), cwd, nil)
+	res, err := execenv.RunGit(ctx, env, cwd, gitExecTimeoutMS(), "remote", "get-url", "origin")
 	if err != nil || res.ExitCode != 0 {
 		return ""
 	}
@@ -56,23 +56,23 @@ func snapshotGit(env execenv.ExecutionEnvironment, cwd string) (inRepo bool, bra
 		return false, "", 0, 0, nil
 	}
 
-	run := func(cmd string) (execenv.ExecResult, error) {
+	run := func(args ...string) (execenv.ExecResult, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
 		defer cancel()
-		return env.ExecCommand(ctx, cmd, gitExecTimeoutMS(), cwd, nil)
+		return execenv.RunGit(ctx, env, cwd, gitExecTimeoutMS(), args...)
 	}
 
-	inside, err := run("git rev-parse --is-inside-work-tree")
+	inside, err := run("rev-parse", "--is-inside-work-tree")
 	if err != nil || inside.ExitCode != 0 || strings.TrimSpace(inside.Stdout) != "true" {
 		return false, "", 0, 0, nil
 	}
 	inRepo = true
 
-	if br, err := run("git rev-parse --abbrev-ref HEAD"); err == nil && br.ExitCode == 0 {
+	if br, err := run("rev-parse", "--abbrev-ref", "HEAD"); err == nil && br.ExitCode == 0 {
 		branch = strings.TrimSpace(br.Stdout)
 	}
 
-	if st, err := run("git status --porcelain"); err == nil && st.ExitCode == 0 {
+	if st, err := run("status", "--porcelain"); err == nil && st.ExitCode == 0 {
 		for line := range strings.SplitSeq(strings.ReplaceAll(st.Stdout, "\r\n", "\n"), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
@@ -86,8 +86,14 @@ func snapshotGit(env execenv.ExecutionEnvironment, cwd string) (inRepo bool, bra
 		}
 	}
 
-	// Use %x20 for a literal space so the shell doesn't split the format across args.
-	if lg, err := run("git log -n 5 --pretty=format:%h%x20%s"); err == nil && lg.ExitCode == 0 {
+	// %x20 for a literal space is no longer needed to survive shell
+	// word-splitting (this runs via direct argv exec now), but it's kept
+	// anyway: git parses %x20 and a literal space identically, and keeping it
+	// matches the fixed string the serffuzz workspace-prompt fixture
+	// (workspace_prompt_program_fuzz_test.go) and git_snapshot_test.go key
+	// their scripted responses on — switching it would be pure fixture churn
+	// for no behavior change.
+	if lg, err := run("log", "-n", "5", "--pretty=format:%h%x20%s"); err == nil && lg.ExitCode == 0 {
 		for line := range strings.SplitSeq(strings.ReplaceAll(lg.Stdout, "\r\n", "\n"), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {

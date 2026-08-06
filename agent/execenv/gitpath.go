@@ -63,7 +63,7 @@ func gitRootUncached(env ExecutionEnvironment, cwd string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
 	defer cancel()
 
-	res, err := env.ExecCommand(ctx, "git rev-parse --show-toplevel", gitExecTimeoutMS(), cwd, nil)
+	res, err := RunGit(ctx, env, cwd, gitExecTimeoutMS(), "rev-parse", "--show-toplevel")
 	if err != nil || res.ExitCode != 0 {
 		return ""
 	}
