@@ -66,6 +66,7 @@ case "${FAKE_MODE:-green}" in
 		sleep 1000 &
 		child="$!"
 		printf '%s\n' "$child" >"$FAKE_STATE/$label.child.pid"
+		[ -n "${FAKE_READY_FIFO:-}" ] && printf 'ready:%s\n' "$label" >"$FAKE_READY_FIFO"
 		wait "$child"
 		exit "$?"
 		;;
@@ -114,16 +115,6 @@ run_case_async() {
 
 full_logs_path() {
 	awk '/^full logs: / { print substr($0, 12); exit }' "$1"
-}
-
-wait_for_file() {
-	local path="$1" attempts=300
-	while [ "$attempts" -gt 0 ]; do
-		[ -f "$path" ] && return 0
-		sleep 0.01
-		attempts=$((attempts - 1))
-	done
-	return 1
 }
 
 descendants() {
@@ -186,17 +177,103 @@ fi
 
 new_case
 out="$case_root/interrupt.out"
-FAKE_MODE=hold run_case_async >"$out" 2>&1 &
+runner_pid_file="$state/runner.pid"
+ready_fifo="$state/ready"
+stop_fifo="$state/stopped"
+mkfifo "$ready_fifo" "$stop_fifo"
+exec 9<>"$ready_fifo"
+exec 8<>"$stop_fifo"
+
+# Wrap the runner so its own death is also a FIFO event: the readiness read below
+# always receives *something* (a ready:<shard> per held child, or a terminal
+# event), so it never has to guess "still starting" from "never coming".
+# Unsolicited death (before anyone signaled it) is reported on ready_fifo, the
+# same channel readiness comes in on, since the startup loop must recognize it
+# without a separate wait; a TERM-forwarded, confirmed stop is reported on the
+# dedicated stop_fifo instead, so the escalation ladder's confirmation read
+# below can never be satisfied by a stray leftover readiness event.
+(
+	child_pid=""
+	spawn_interrupted=0
+	# Until child_pid is in hand there is nothing to forward a signal to, so a
+	# TERM arriving in that window is recorded rather than run through a handler
+	# that would report a stop the wrapper never actually performed (the same
+	# spawn-window cover make-selftest-selftest.sh's wrapper carries).
+	trap 'spawn_interrupted=1' TERM
+	FAKE_MODE=hold FAKE_READY_FIFO="$ready_fifo" run_case_async >"$out" 2>&1 &
+	child_pid="$!"
+	printf '%s\n' "$child_pid" >"$runner_pid_file"
+	# A trapped signal makes bash's own `wait` return early without the real exit
+	# status, so the forward-then-reap-for-real must happen inside the handler
+	# itself (which then exits directly) rather than after a bare `trap ... TERM`.
+	forward_term() {
+		kill -TERM "$child_pid" 2>/dev/null || :
+		if wait "$child_pid" 2>/dev/null; then rc=0; else rc=$?; fi
+		printf 'runner-stopped:%s\n' "$rc" >"$stop_fifo"
+		exit "$rc"
+	}
+	trap forward_term TERM
+	[ "$spawn_interrupted" -eq 1 ] && forward_term
+	if wait "$child_pid"; then rc=0; else rc=$?; fi
+	printf 'runner-exited:%s\n' "$rc" >"$ready_fifo"
+	exit "$rc"
+) &
 runner_pid="$!"
-if wait_for_file "$state/alpha.child.pid" && wait_for_file "$state/beta.child.pid"; then
-	tracked="$(descendants "$runner_pid")"
-	if kill -TERM "$runner_pid" 2>/dev/null; then ok "an active shard run accepts SIGTERM"; else bad "an active shard run cannot be signaled"; fi
-else
-	bad "the interruption fixture starts both held shard children"
-	tracked="$(descendants "$runner_pid")"
-	kill -KILL "$runner_pid" 2>/dev/null || :
-fi
+
+alpha_ready=0
+beta_ready=0
+fixture_state=ok
+died_event=""
+while [ "$((alpha_ready + beta_ready))" -lt 2 ]; do
+	# 10s covers go test -c + -test.list under real contention (the diagnosed flake:
+	# a fixed 3s poll budget for this same event, timing out under load and taking a
+	# destructive SIGKILL fallback). This ceiling only distinguishes "hung" from
+	# "still starting" -- readiness and the runner's own terminal event still drive
+	# progress and can satisfy the loop well before it.
+	if ! IFS= read -r -t 10 -u 9 event; then
+		fixture_state=wedged
+		break
+	fi
+	case "$event" in
+		ready:alpha) alpha_ready=1 ;;
+		ready:beta) beta_ready=1 ;;
+		runner-exited:*)
+			fixture_state=died
+			died_event="$event"
+			break
+			;;
+	esac
+done
+
+tracked="$(descendants "$runner_pid")"
+case "$fixture_state" in
+	ok)
+		if kill -TERM "$runner_pid" 2>/dev/null; then ok "an active shard run accepts SIGTERM"; else bad "an active shard run cannot be signaled"; fi
+		;;
+	died)
+		bad "the interruption fixture starts both held shard children (runner died before shards held: $died_event)"
+		;;
+	wedged)
+		bad "the interruption fixture starts both held shard children (timed out waiting for shard readiness)"
+		# TERM-first with reaping -- the runner has its own SIGTERM cleanup (agent-test-shards.sh's
+		# own trap), so give it a generous bounded chance to confirm through the dedicated stop_fifo
+		# before escalating. KILL is the last tier, not the only one, and it targets the recorded
+		# real runner pid, not the wrapper -- a wrapper stuck in its own `wait` would otherwise be
+		# reaped without ever touching the process this fixture exists to check for leaks.
+		kill -TERM "$runner_pid" 2>/dev/null || :
+		if ! IFS= read -r -t 5 -u 8 stop_event; then
+			real_runner_pid="$(cat "$runner_pid_file" 2>/dev/null || :)"
+			if [ -n "$real_runner_pid" ]; then
+				kill -KILL "$real_runner_pid" 2>/dev/null || :
+			else
+				kill -KILL "$runner_pid" 2>/dev/null || :
+			fi
+		fi
+		;;
+esac
 if wait "$runner_pid"; then rc=0; else rc=$?; fi
+exec 9>&-
+exec 8>&-
 assert_eq "$rc" "143" "an interrupted shard run exits with signal status"
 assert_has "$out" "interrupted by SIGTERM" "an interrupted shard run explains its exit"
 logs="$(full_logs_path "$out")"
