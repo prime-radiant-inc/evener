@@ -608,13 +608,18 @@ func (e *LocalExecutionEnvironment) OSVersion() string {
 	return osVersionValue
 }
 
-// execLookPath and execCommandContext are the exec entry points execenv shells
-// out through. Production binds them to the real os/exec functions; a test swaps
-// them to force the ripgrep-present/absent branch or an OS-probe failure without
-// depending on the host's tools. Byte-identical to calling exec.* directly.
+// execLookPath, execCommandContext, and execCommand are the exec entry points
+// execenv shells out through. Production binds them to the real os/exec
+// functions; a test swaps them to force the ripgrep-present/absent branch or
+// an OS-probe failure without depending on the host's tools. Byte-identical
+// to calling exec.* directly. execCommand (not execCommandContext) backs the
+// Argv command-runtime factory specifically: it must not carry its own
+// ctx-triggered kill, which would race execPreparedCommand's process-group
+// termination — see systemCommandRuntimeFactory.Argv's doc comment.
 var (
 	execLookPath       = exec.LookPath
 	execCommandContext = exec.CommandContext
+	execCommand        = exec.Command
 	runtimeGOOS        = runtime.GOOS
 	osVersionOutput    = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		return execCommandContext(ctx, name, args...).Output()
@@ -1210,7 +1215,7 @@ func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command str
 // working-directory, environment, process-group, timeout, and result semantics
 // as ExecCommand. Use it when the caller already has structured argv.
 func (e *LocalExecutionEnvironment) ExecArgv(ctx context.Context, name string, args []string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
-	cmd := e.commands().Argv(ctx, name, args...)
+	cmd := e.commands().Argv(name, args...)
 	return e.execPreparedCommand(ctx, cmd, timeoutMS, workingDir, envVars)
 }
 

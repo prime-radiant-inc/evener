@@ -132,7 +132,7 @@ func (f *processRuntimeFactory) Shell(command string) commandRuntime {
 	return f.nextCommand("shell", command, []string{"/scripted/shell", "-c", command})
 }
 
-func (f *processRuntimeFactory) Argv(_ context.Context, name string, args ...string) commandRuntime {
+func (f *processRuntimeFactory) Argv(name string, args ...string) commandRuntime {
 	return f.nextCommand("argv", name, append([]string{name}, args...))
 }
 
@@ -638,7 +638,7 @@ func (c *processRuntimeDetachedContext) DetachAfterStart() { c.detached = true }
 func processRuntimeCheckSystemAdapter(t *testing.T) {
 	t.Helper()
 	missing := filepath.Join(t.TempDir(), "missing-command")
-	runtime := systemCommandRuntimeFactory{}.Argv(context.Background(), missing, "--never")
+	runtime := systemCommandRuntimeFactory{}.Argv(missing, "--never")
 	if got, want := runtime.Args(), []string{missing, "--never"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("system runtime args = %v, want %v", got, want)
 	}

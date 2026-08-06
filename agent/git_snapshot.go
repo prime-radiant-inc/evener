@@ -86,10 +86,14 @@ func snapshotGit(env execenv.ExecutionEnvironment, cwd string) (inRepo bool, bra
 		}
 	}
 
-	// A literal space in the format is safe now: this runs via direct argv
-	// exec, not a shell command line, so there's no word-splitting to dodge
-	// (the %x20 trick this replaced existed solely to survive that splitting).
-	if lg, err := run("log", "-n", "5", "--pretty=format:%h %s"); err == nil && lg.ExitCode == 0 {
+	// %x20 for a literal space is no longer needed to survive shell
+	// word-splitting (this runs via direct argv exec now), but it's kept
+	// anyway: git parses %x20 and a literal space identically, and keeping it
+	// matches the fixed string the serffuzz workspace-prompt fixture
+	// (workspace_prompt_program_fuzz_test.go) and git_snapshot_test.go key
+	// their scripted responses on — switching it would be pure fixture churn
+	// for no behavior change.
+	if lg, err := run("log", "-n", "5", "--pretty=format:%h%x20%s"); err == nil && lg.ExitCode == 0 {
 		for line := range strings.SplitSeq(strings.ReplaceAll(lg.Stdout, "\r\n", "\n"), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {

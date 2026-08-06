@@ -71,7 +71,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 			t.Fatalf("scripted exit code = %d, %v", code, ok)
 		}
 		processExitCode = exitCodeOrig
-		argv := factory.Argv(context.Background(), "missing-fuzz-command", token)
+		argv := factory.Argv("missing-fuzz-command", token)
 		argv.Configure(commandRuntimeConfig{Dir: t.TempDir(), ExecutablePath: filepath.Join(t.TempDir(), "missing")})
 		if argv.PID() != 0 {
 			t.Fatal("unstarted argv runtime has a pid")
@@ -424,7 +424,7 @@ func (i runtimeEdgeFileInfo) IsDir() bool        { return i.mode.IsDir() }
 func (i runtimeEdgeFileInfo) Sys() any           { return nil }
 
 func (f oneRuntimeFactory) Shell(string) commandRuntime                            { return f.command }
-func (f oneRuntimeFactory) Argv(context.Context, string, ...string) commandRuntime { return f.command }
+func (f oneRuntimeFactory) Argv(string, ...string) commandRuntime { return f.command }
 
 func openDirFD(t *testing.T, path string) int {
 	t.Helper()

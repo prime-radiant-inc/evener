@@ -1,7 +1,6 @@
 package execenv
 
 import (
-	"context"
 	"errors"
 	"io"
 	"os/exec"
@@ -36,7 +35,7 @@ type commandRuntimeConfig struct {
 
 type commandRuntimeFactory interface {
 	Shell(command string) commandRuntime
-	Argv(ctx context.Context, name string, args ...string) commandRuntime
+	Argv(name string, args ...string) commandRuntime
 }
 
 type systemCommandRuntimeFactory struct{}
@@ -45,8 +44,16 @@ func (systemCommandRuntimeFactory) Shell(command string) commandRuntime {
 	return &systemCommandRuntime{cmd: shellCommand(command)}
 }
 
-func (systemCommandRuntimeFactory) Argv(ctx context.Context, name string, args ...string) commandRuntime {
-	return &systemCommandRuntime{cmd: execCommandContext(ctx, name, args...)}
+// Argv deliberately builds with plain exec.Command, not exec.CommandContext:
+// CommandContext installs its own ctx-triggered kill (a single-process
+// os.Process.Kill, not a process-group signal) that would race
+// execPreparedCommand's SIGTERM->SIGKILL process-group escalation on the same
+// ctx.Done(). Two independent killers on one process tree is how a git hook
+// or helper child survives cancellation — execPreparedCommand must be the
+// sole owner of cancellation and termination, exactly like shellCommand's
+// existing (and already-documented) rationale for the shell path.
+func (systemCommandRuntimeFactory) Argv(name string, args ...string) commandRuntime {
+	return &systemCommandRuntime{cmd: execCommand(name, args...)} //nolint:noctx // lifecycle managed by execPreparedCommand's process-group kill
 }
 
 type systemCommandRuntime struct {
