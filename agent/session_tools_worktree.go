@@ -529,13 +529,16 @@ func (e *gitCmdError) Error() string {
 func (e *gitCmdError) ExitCode() int { return e.code }
 
 // gitRunner builds a worktree.GitRunner that executes git through env (the
-// control env, rooted at the main repo root). Every arg is shell-escaped, so a
-// worktree name or path can never inject shell syntax (spec §2). A non-zero
-// exit is reported as a *gitCmdError carrying the code and stderr.
+// control env, rooted at the main repo root). RunGit execs git directly from
+// this argv when env supports it (production always does), so a worktree
+// name or path can never inject shell syntax (spec §2) — there is no shell
+// command line for it to inject into. Environments without that capability
+// fall back to RunGit's shell-escaped wrapper, which preserves the same
+// guarantee the old escaping did. A non-zero exit is reported as a
+// *gitCmdError carrying the code and stderr.
 func gitRunner(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
 	return func(args ...string) (string, error) {
-		cmd := "git " + execenv.ShellEscapeArgs(args...)
-		res, err := env.ExecCommand(ctx, cmd, worktreeGitTimeoutMS, "", nil)
+		res, err := execenv.RunGit(ctx, env, "", worktreeGitTimeoutMS, args...)
 		if res.ExitCode != 0 {
 			return res.Stdout, &gitCmdError{code: res.ExitCode, args: args, stderr: strings.TrimSpace(res.Stderr)}
 		}

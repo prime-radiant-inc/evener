@@ -32,6 +32,19 @@ type StreamingExecutor interface {
 	StreamCommand(ctx context.Context, command, workingDir string, envVars map[string]string, out io.Writer) (*StreamHandle, error)
 }
 
+// ArgvExecutor is an optional capability: running a program directly from
+// explicit argv, without the platform shell ExecCommand forks through. Callers
+// that already have structured argv (RunGit, mainly) use it to skip the shell
+// fork/exec ExecCommand pays for every call and to avoid building a shell
+// command line — which would otherwise be a string-interpolation injection
+// surface — out of caller-supplied arguments. It is separate from
+// ExecutionEnvironment, like StreamingExecutor, so existing implementers
+// (test fakes, remote environments) are unaffected; RunGit type-asserts for it
+// and falls back to ExecCommand's shell wrapper when it is absent.
+type ArgvExecutor interface {
+	ExecArgv(ctx context.Context, name string, args []string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error)
+}
+
 // FileMutator is an optional execution-environment capability: raw,
 // policy-checked file mutations used by apply_patch, which needs to read, write,
 // remove, and rename files directly rather than through the formatted read/write

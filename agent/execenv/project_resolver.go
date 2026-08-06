@@ -216,7 +216,7 @@ func isSubmoduleGitDirShape(target string) bool {
 }
 
 func gitBinaryMainRootStrict(env ExecutionEnvironment, cwd string) (string, bool, error) {
-	common, err := execGitOutput(env, cwd, "git rev-parse --git-common-dir")
+	common, err := execGitOutput(env, cwd, "rev-parse", "--git-common-dir")
 	if err != nil {
 		if !isLocalEnv(env) && !envHasGitEntryAncestor(env, cwd) {
 			return "", false, nil
@@ -233,7 +233,7 @@ func gitBinaryMainRootStrict(env ExecutionEnvironment, cwd string) (string, bool
 	}
 	commonPath = filepath.Clean(commonPath)
 
-	top, err := execGitOutput(env, cwd, "git rev-parse --show-toplevel")
+	top, err := execGitOutput(env, cwd, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", true, fmt.Errorf("resolve Git checkout root: %w", err)
 	}
@@ -258,10 +258,10 @@ func gitBinaryMainRootStrict(env ExecutionEnvironment, cwd string) (string, bool
 	return resolveCleanForEnv(env, candidate), true, nil
 }
 
-func execGitOutput(env ExecutionEnvironment, cwd, command string) (string, error) {
+func execGitOutput(env ExecutionEnvironment, cwd string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
 	defer cancel()
-	result, err := env.ExecCommand(ctx, command, gitExecTimeoutMS(), cwd, nil)
+	result, err := RunGit(ctx, env, cwd, gitExecTimeoutMS(), args...)
 	if err != nil {
 		return "", err
 	}
