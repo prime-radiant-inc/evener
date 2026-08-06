@@ -2,9 +2,62 @@ package llm
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestValidateReasoningEffort(t *testing.T) {
+	cases := []struct {
+		name    string
+		effort  string
+		wantErr bool
+	}{
+		{name: "empty", effort: "", wantErr: false},
+		{name: "minimal", effort: "minimal", wantErr: false},
+		{name: "low", effort: "low", wantErr: false},
+		{name: "medium", effort: "medium", wantErr: false},
+		{name: "high", effort: "high", wantErr: false},
+		{name: "xhigh", effort: "xhigh", wantErr: false},
+		{name: "max", effort: "max", wantErr: false},
+		{name: "uppercase", effort: "HIGH", wantErr: false},
+		{name: "whitespace", effort: "  medium  ", wantErr: false},
+		{name: "unknown", effort: "ultra", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateReasoningEffort(tc.effort)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("ValidateReasoningEffort(%q) = nil, want error", tc.effort)
+				}
+				if !strings.Contains(err.Error(), tc.effort) {
+					t.Errorf("error %q does not mention invalid value %q", err.Error(), tc.effort)
+				}
+				for _, lvl := range ReasoningEffortVocabulary() {
+					if !strings.Contains(err.Error(), lvl) {
+						t.Errorf("error %q does not mention vocabulary level %q", err.Error(), lvl)
+					}
+				}
+			} else if err != nil {
+				t.Errorf("ValidateReasoningEffort(%q) = %v, want nil", tc.effort, err)
+			}
+		})
+	}
+}
+
+func TestReasoningEffortVocabulary(t *testing.T) {
+	want := []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+	got := ReasoningEffortVocabulary()
+	if len(got) != len(want) {
+		t.Fatalf("ReasoningEffortVocabulary() = %v, want %v", got, want)
+	}
+	for i, lvl := range want {
+		if got[i] != lvl {
+			t.Fatalf("ReasoningEffortVocabulary()[%d] = %q, want %q", i, got[i], lvl)
+		}
+	}
+}
 
 func TestNormalizeFinishReason(t *testing.T) {
 	cases := []struct {

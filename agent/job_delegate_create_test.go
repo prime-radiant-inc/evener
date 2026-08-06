@@ -343,6 +343,36 @@ func TestDelegateRejectsAllowanceGEOwn(t *testing.T) {
 	}
 }
 
+// TestDelegateRejectsInvalidReasoningEffort pins the reasoning_effort
+// vocabulary guard at delegate dispatch: an unknown level fails the delegate
+// call immediately, naming the bad value and the vocabulary, instead of
+// reaching a spawned child session on its first turn.
+func TestDelegateRejectsInvalidReasoningEffort(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess := newDelegateTestSession(t, c)
+
+	rejected := sess.createDelegate(context.Background(), delegateArgs{
+		Task:            "bad effort",
+		ReasoningEffort: "ultra",
+	})
+	if rejected.Err == nil {
+		t.Fatalf("delegate(reasoning_effort=ultra) should be rejected, got result %+v", rejected)
+	}
+	if !strings.Contains(rejected.Err.Error(), "ultra") {
+		t.Fatalf("err = %v, want it to name the invalid value %q", rejected.Err, "ultra")
+	}
+	for _, lvl := range llm.ReasoningEffortVocabulary() {
+		if !strings.Contains(rejected.Err.Error(), lvl) {
+			t.Fatalf("err = %v, want it to name vocabulary level %q", rejected.Err, lvl)
+		}
+	}
+	if rejected.JobID != "" {
+		t.Fatalf("rejected delegate has non-empty job_id: %+v", rejected)
+	}
+}
+
 func TestCreateDelegateBackgroundReturnsRunningJob(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})

@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -632,6 +633,34 @@ var effortRank = map[string]int{
 	"high":    4,
 	"xhigh":   5,
 	"max":     6,
+}
+
+// ReasoningEffortVocabulary returns the six recognized reasoning-effort
+// levels in rank order (least to most), derived from effortRank so callers
+// that need to display or validate against the vocabulary cannot drift from
+// it.
+func ReasoningEffortVocabulary() []string {
+	return []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+}
+
+// ValidateReasoningEffort reports whether effort is a value NewSession, a
+// delegate dispatch, or a plugin-agent task config may safely accept. The
+// empty string (unset) is always valid. Any of the six known levels is valid,
+// case-insensitive and trimmed. Anything else — including the CLI's
+// disable-alias sugar (none/off/0/etc, already normalized to "" by
+// NormalizeReasoningEffort before reaching this function) — is rejected with
+// an error naming the bad value and the full vocabulary, so a typo or a
+// stale/historical level (e.g. "ultra") fails loudly at config load instead
+// of silently reaching a provider on a session's first turn.
+func ValidateReasoningEffort(effort string) error {
+	v := strings.ToLower(strings.TrimSpace(effort))
+	if v == "" {
+		return nil
+	}
+	if _, ok := effortRank[v]; ok {
+		return nil
+	}
+	return fmt.Errorf("invalid reasoning_effort %q (expected one of: %s)", effort, strings.Join(ReasoningEffortVocabulary(), ", "))
 }
 
 // NormalizeReasoningEffort lowercases and trims a reasoning-effort value and maps
