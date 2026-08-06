@@ -21,7 +21,7 @@ import { IconButton, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 // Direct widget path, NOT the widgets barrel: the barrel is controller-owned
 // and does not re-export SpeakerAvatar yet.
-import { SpeakerAvatar } from "../../../../widgets/speakeravatar";
+import { SpeakerAvatar, type SpeakerAvatarSpeaker } from "../../../../widgets/speakeravatar";
 import { writeDraft } from "../../composer/draft";
 import { ImageGallery } from "../flow/ImageGallery";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
@@ -100,15 +100,25 @@ export function UserMessageView({
   item,
   actions,
   opensExchange = true,
+  speaker = "user",
+  name = "You",
+  timeIso,
 }: {
   item: ItemModel;
   actions?: ReactNode;
   opensExchange?: boolean;
+  // speaker/name/timeIso generalize the view beyond the human user's own
+  // messages (delegate_send renders the agent's outgoing message and the
+  // delegate's reply through this same slack-lean structure). Defaults
+  // preserve the exact rendering a real userMessage gets.
+  speaker?: SpeakerAvatarSpeaker;
+  name?: string;
+  timeIso?: string;
 }) {
   // No placeholder when the wire carries no startedAt: a header with no time
   // shows no time rather than a guess (formatClockTime returns undefined for
   // a missing or unparseable timestamp).
-  const time = formatClockTime(item.startedAt);
+  const time = formatClockTime(timeIso ?? item.startedAt);
   return (
     <div
       className={CLASS.message}
@@ -116,11 +126,11 @@ export function UserMessageView({
       data-opens-exchange={opensExchange ? "true" : undefined}
     >
       <span className={CLASS.avatar}>
-        <SpeakerAvatar speaker="user" />
+        <SpeakerAvatar speaker={speaker} />
       </span>
       <div className={CLASS.content}>
         <div className={CLASS.header}>
-          <span className={CLASS.name}>You</span>
+          <span className={CLASS.name}>{name}</span>
           {time !== undefined && <span className={CLASS.time}>{time}</span>}
           {actions !== undefined && <div className={CLASS.actions}>{actions}</div>}
         </div>
