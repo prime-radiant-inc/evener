@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -717,7 +718,7 @@ func countRequestMessagesContaining(req llm.Request, text string) int {
 }
 
 func lastUserMessageText(req llm.Request) string {
-	for i := len(req.Messages) - 1; i >= 0; i-- {
+	for i := range slices.Backward(req.Messages) {
 		if req.Messages[i].Role == llm.RoleUser {
 			return strings.TrimSpace(req.Messages[i].Text())
 		}

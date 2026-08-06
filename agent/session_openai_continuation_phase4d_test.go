@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -359,7 +360,7 @@ func latestAssistantTurn(t *testing.T, sess *Session) schema.Turn {
 	t.Helper()
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	for i := len(sess.history) - 1; i >= 0; i-- {
+	for i := range slices.Backward(sess.history) {
 		if sess.history[i].Kind == schema.TurnAssistant {
 			return sess.history[i]
 		}

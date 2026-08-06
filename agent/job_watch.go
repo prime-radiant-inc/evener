@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -910,7 +911,7 @@ func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error 
 // It is the install-time twin of the restore-time classifyWatchSendDeliveryTarget
 // and shares its dlg_ branch shape. Every target yields nil or a non-empty typed
 // error.
-func validateWatchSendDeliveryTarget(target string, a watchArgs, r watchSendTargetResolver) error {
+func validateWatchSendDeliveryTarget(target string, _ watchArgs, r watchSendTargetResolver) error {
 	if target == "" {
 		return errors.New("invalid_request: internal watch delivery target is required")
 	}
@@ -1851,7 +1852,7 @@ func (jm *jobManager) recentWatchSummaries() []recentWatchEntry {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	out := make([]recentWatchEntry, 0, len(jm.watchHistory))
-	for i := len(jm.watchHistory) - 1; i >= 0; i-- {
+	for i := range slices.Backward(jm.watchHistory) {
 		h := jm.watchHistory[i]
 		if !watchHistoryVisibleToSession(h, jm.sessionID) {
 			continue
@@ -1898,7 +1899,7 @@ func (jm *jobManager) watchListToolResult() jobWatchListToolResult {
 		return watches[i].WatchID < watches[j].WatchID
 	})
 	recent := make([]jobWatchInspectToolResult, 0, len(jm.watchHistory))
-	for i := len(jm.watchHistory) - 1; i >= 0; i-- {
+	for i := range slices.Backward(jm.watchHistory) {
 		if !watchHistoryVisibleToSession(jm.watchHistory[i], jm.sessionID) {
 			continue
 		}
@@ -1942,7 +1943,7 @@ func (jm *jobManager) watchListToolResultForReceiver(receiverSessionID, receiver
 		return watches[i].WatchID < watches[j].WatchID
 	})
 	recent := make([]jobWatchInspectToolResult, 0, len(jm.watchHistory))
-	for i := len(jm.watchHistory) - 1; i >= 0; i-- {
+	for i := range slices.Backward(jm.watchHistory) {
 		if !watchHistoryMatchesReceiver(jm.watchHistory[i], receiverSessionID, receiverDelegateID) {
 			continue
 		}
@@ -1964,7 +1965,7 @@ func (jm *jobManager) inspectWatchByID(watchID string) jobWatchInspectToolResult
 			return inspectResultFromDetachedWatchConfig(cfg)
 		}
 	}
-	for i := len(jm.watchHistory) - 1; i >= 0; i-- {
+	for i := range slices.Backward(jm.watchHistory) {
 		if jm.watchHistory[i].id == watchID && watchHistoryVisibleToSession(jm.watchHistory[i], jm.sessionID) {
 			return inspectResultFromWatchHistory(jm.watchHistory[i])
 		}
@@ -1990,7 +1991,7 @@ func (jm *jobManager) inspectReceiverWatchByID(watchID, receiverSessionID, recei
 			return inspectResultFromDetachedWatchConfig(cfg), true
 		}
 	}
-	for i := len(jm.watchHistory) - 1; i >= 0; i-- {
+	for i := range slices.Backward(jm.watchHistory) {
 		if jm.watchHistory[i].id == watchID && watchHistoryMatchesReceiver(jm.watchHistory[i], receiverSessionID, receiverDelegateID) {
 			return inspectResultFromWatchHistory(jm.watchHistory[i]), true
 		}
@@ -4589,7 +4590,7 @@ func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager,
 	return result, errors.Join(errs...)
 }
 
-func (s *Session) retryRestoredPendingWatchSends(ctx context.Context) error {
+func (s *Session) retryRestoredPendingWatchSends(_ context.Context) error {
 	if s == nil || s.jobManager == nil {
 		return nil
 	}
