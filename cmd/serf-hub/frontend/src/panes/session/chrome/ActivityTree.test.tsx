@@ -210,10 +210,11 @@ describe("ActivityTree", () => {
 
     const delegateRow = screen.getByRole("treeitem", { name: "Inspect the repo" });
     await user.click(within(delegateRow).getByRole("button", { name: /show details for inspect the repo/i }));
-    // The strip moved: the shell command is gone, the delegate mandate strip remains.
+    // The strip moved: the shell command is gone, the delegate strip shows
+    // the mandate plus the Task 8 live meta (quiet age, bytes, started time).
     expect(screen.queryByText("npm test")).toBeNull();
     expect(screen.getAllByText("Inspect the repo").length).toBeGreaterThan(0);
-    expect(screen.getByText(/dlg_live/)).toBeTruthy();
+    expect(screen.getByText(/running 12s · 0 output bytes · started \d{2}:\d{2}/)).toBeTruthy();
     expect(openTranscript).not.toHaveBeenCalled();
   });
 

@@ -13,7 +13,8 @@ import {
 } from "react";
 import { Button, Chevron, StatusDot } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { OpenTranscriptButton, openTranscript } from "../transcript/openTranscript";
+import { openTranscript } from "../transcript/openTranscript";
+import { ActivityRowDetail } from "./ActivityRowDetail";
 import {
   type ActivityDelegate,
   type ActivitySessionNode,
@@ -62,10 +63,6 @@ const CLASS = {
   rowToggle: requireClass(styles.rowToggle, "activitypanel.module.css", "rowToggle"),
   rowActions: requireClass(styles.rowActions, "activitypanel.module.css", "rowActions"),
   rowContinuation: requireClass(styles.rowContinuation, "activitypanel.module.css", "rowContinuation"),
-  detailStrip: requireClass(styles.detailStrip, "activitypanel.module.css", "detailStrip"),
-  detailCommand: requireClass(styles.detailCommand, "activitypanel.module.css", "detailCommand"),
-  detailMeta: requireClass(styles.detailMeta, "activitypanel.module.css", "detailMeta"),
-  detailActions: requireClass(styles.detailActions, "activitypanel.module.css", "detailActions"),
   indentGuide: requireClass(styles.indentGuide, "activitypanel.module.css", "indentGuide"),
 };
 
@@ -370,28 +367,6 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
     );
   }
 
-  function renderDetailStrip(row: ActivityJobRow | ActivityDelegateRow, target: string | undefined): ReactNode {
-    const command =
-      row.kind === "job"
-        ? (row.job.command ?? row.job.task ?? row.job.description)
-        : (row.delegate.mandate ?? row.delegate.childRef);
-    const meta =
-      row.kind === "job"
-        ? `${row.job.status} · ${row.job.jobId}`
-        : `${delegateStatusText(row.delegate)} · ${row.delegate.delegateId}`;
-    return (
-      <div className={CLASS.detailStrip}>
-        <span className={CLASS.detailCommand}>{command}</span>
-        <span className={CLASS.detailMeta}>{meta}</span>
-        {target && (
-          <div className={CLASS.detailActions}>
-            <OpenTranscriptButton transcriptRef={target} parentRef={row.parentRef} />
-          </div>
-        )}
-      </div>
-    );
-  }
-
   function renderContinuationStrip(strip: ContinuationStrip): ReactNode {
     if (!onContinue) return null;
     const failure = continuationFailures[strip.targetID];
@@ -500,7 +475,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
           <span className={row.live ? `${CLASS.denseName} ${CLASS.denseNameLive}` : CLASS.denseName}>{name}</span>
           {renderSegments(segments)}
         </div>
-        {detailOpen && renderDetailStrip(row, target)}
+        {detailOpen && <ActivityRowDetail row={row} now={now} />}
       </Fragment>
     );
   }
