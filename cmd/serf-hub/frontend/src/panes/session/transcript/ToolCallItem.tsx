@@ -12,6 +12,7 @@ import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";
+import { OpenTranscriptButton } from "./openTranscript";
 import { statedPurposeOf, ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
 import { toolCallFailed, toolRendererFor } from "./toolRenderers";
@@ -124,6 +125,23 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // ToolRow falls back to the end placement when the value isn't a literal
   // prefix of the summary.
   const trailingAfter = canOpenBeside ? descriptor.openBesideInline?.(item) : undefined;
+  // A child-targeting tool (delegate_send today) exposes its target's
+  // transcript ref via descriptor.openTranscriptRef; ToolCallItem turns that
+  // into the same "open ⤢" control the subagent module rows use, riding the
+  // row's trailing slot beside any file open-beside button. parentRef is the
+  // enclosing session so the opened pane keeps its way back (kata 0pzz).
+  const openTranscriptRef = descriptor.openTranscriptRef?.(item);
+  const openTranscriptButton =
+    openTranscriptRef !== undefined ? (
+      <OpenTranscriptButton transcriptRef={openTranscriptRef} parentRef={sessionRef} />
+    ) : null;
+  const trailingControls =
+    openBesideButton !== null || openTranscriptButton !== null ? (
+      <>
+        {openBesideButton}
+        {openTranscriptButton}
+      </>
+    ) : null;
   // outputImages is a generic ItemModel field any tool call can carry (the
   // wire's ToolCallEndData.OutputImages, agent/events/payloads.go), not
   // owned by any one descriptor - rendered here, once, so every current and
@@ -239,7 +257,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
           status={delegateStatus}
           expandable={false}
           expanded={false}
-          trailing={openBesideButton}
+          trailing={trailingControls}
           trailingAfter={trailingAfter}
           title={detail}
         />
@@ -278,7 +296,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
         // session-scoped item key, so the user's own choice wins over
         // autoDefault (the fallback) from here on and survives a remount.
         onToggle={() => toggleDisclosure(disclosureKey, autoDefault && !superseded)}
-        trailing={openBesideButton}
+        trailing={trailingControls}
         trailingAfter={trailingAfter}
         title={detail}
       />

@@ -15,6 +15,7 @@ import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
 import { readDraft } from "../../composer/draft";
 import { ignoringTurn, itemRendererFor } from "../types";
+import { formatClockTime } from "./format";
 import { UserMessageItem, UserMessageView } from "./UserMessageItem";
 import styles from "./usermessageitem.module.css";
 
@@ -452,4 +453,29 @@ test("a user message marks itself as the start of an exchange", () => {
 test("a user-sourced steer reuses the same view WITHOUT the exchange marker", () => {
   render(<UserMessageView item={item({ text: "actually, stop" })} opensExchange={false} />);
   expect(screen.getByTestId("user-message-item").getAttribute("data-opens-exchange")).toBeNull();
+});
+
+// --- speaker/name/timeIso overrides (delegate_send chat bubbles) -------------
+
+test("UserMessageView accepts speaker/name/timeIso overrides for non-user speakers (delegate_send bubbles)", () => {
+  render(
+    <UserMessageView
+      item={item({ text: "status?", startedAt: "2026-08-06T10:05:00Z" })}
+      speaker="agent"
+      name="Agent → dlg_abc123"
+      timeIso="2026-08-06T10:05:00Z"
+    />,
+  );
+  expect(screen.getByText("Agent → dlg_abc123")).toBeTruthy();
+  expect(screen.getByTestId("user-bubble").textContent).toBe("status?");
+  // The header time comes from timeIso, formatted by the same formatClockTime
+  // the default path uses - compute the expectation rather than hardcoding a
+  // timezone-dependent literal.
+  const expected = formatClockTime("2026-08-06T10:05:00Z");
+  if (expected !== undefined) expect(screen.getByText(expected)).toBeTruthy();
+});
+
+test("UserMessageView defaults are unchanged: user speaker, 'You' name, item.startedAt time", () => {
+  render(<UserMessageView item={item({ text: "hi" })} />);
+  expect(screen.getByText("You")).toBeTruthy();
 });

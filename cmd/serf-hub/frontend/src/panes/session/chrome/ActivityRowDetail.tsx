@@ -125,7 +125,7 @@ export function ActivityRowDetail({
   const ref = row.transcriptRef?.trim();
   return (
     <div className={CLASS.detailStrip}>
-      {mandate ? (
+      {delegate && mandate ? (
         <div className={CLASS.detailCommand}>
           <Markdown source={firstParagraph} />
           {remainingMandate && (

@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "./ToolCallItem";
 import { statedPurposeOf, ToolRow } from "./ToolRow";
@@ -1018,4 +1019,37 @@ test("ToolCallItem threads a descriptor's summaryLink through to the row, not on
   const link = screen.getByRole("link", { name: "https://example.com/page" }) as HTMLAnchorElement;
   expect(link.getAttribute("target")).toBe("_blank");
   expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+});
+
+// Mirrors the summaryLink threading test above: the descriptor declares DATA,
+// ToolCallItem owns the control - a wiring bug (ref read but never rendered,
+// or rendered without the parent ref) must fail here, not in production.
+test("ToolCallItem threads a descriptor's openTranscriptRef to a working OpenTranscriptButton", async () => {
+  await import("../"); // pane registrations, same harness as openTranscript.test.tsx's beforeAll
+  resetWorkspaceStoreForTests();
+  registerToolRenderer({
+    match: "trg_opentranscript",
+    summary: () => "Sent a message to delegate dlg_x",
+    openTranscriptRef: () => "local:child",
+    body: () => <div>b</div>,
+  });
+  render(
+    <ToolCallItem item={item({ toolName: "trg_opentranscript" })} turn={turn} live={false} sessionRef="local:owner" />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Open transcript" }));
+  const panes = workspaceStore
+    .getState()
+    .panes.filter((pane) => pane.type === "transcript" && (pane.params as { ref?: unknown }).ref === "local:child");
+  expect(panes).toHaveLength(1);
+  expect(panes[0]?.params).toEqual({ ref: "local:child", parentRef: "local:owner" });
+});
+
+test("ToolCallItem renders no transcript button when the descriptor has no openTranscriptRef", () => {
+  registerToolRenderer({
+    match: "trg_no_opentranscript",
+    summary: () => "plain",
+    body: () => <div>b</div>,
+  });
+  render(<ToolCallItem item={item({ toolName: "trg_no_opentranscript" })} turn={turn} live={false} />);
+  expect(screen.queryByRole("button", { name: "Open transcript" })).toBeNull();
 });

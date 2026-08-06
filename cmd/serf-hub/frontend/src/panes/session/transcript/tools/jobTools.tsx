@@ -15,9 +15,10 @@
 // prefers validated raw state and otherwise falls back to its historical
 // formatted output. job_send_message is a retired/banned tool name kept only
 // as a defensive alias reading its legacy target arg.
-import { useLayoutEffect } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import type { ItemModel } from "../../../../protocol/model";
-import { CodeBlock } from "../../../../widgets";
+import { IconButton } from "../../../../widgets";
+import { UserMessageView } from "../messages/UserMessageItem";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
@@ -73,6 +74,52 @@ type JsonObject = Record<string, unknown>;
 
 function asJsonObject(value: unknown): JsonObject | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as JsonObject) : undefined;
+}
+
+const COPIED_RESET_MS = 2_000;
+
+function CopyGlyph() {
+  return (
+    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
+      <rect x="4.5" y="1.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M9.5 12.5H3A1.5 1.5 0 0 1 1.5 11V4.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
+function CopiedGlyph() {
+  return (
+    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
+      <path d="M2 7.5 L5.5 11 L12 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// CopyTextButton is the CodeBlock copy control's idiom (clipboard guard,
+// "Copied" feedback with a timed reset) as a standalone header action: the
+// chat bubbles carry prose, not a code block, so the affordance moves into
+// the bubble header's actions slot.
+function CopyTextButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), COPIED_RESET_MS);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  return (
+    <IconButton
+      label={copied ? "Copied" : label}
+      icon={copied ? <CopiedGlyph /> : <CopyGlyph />}
+      variant="quiet"
+      size="xs"
+      onClick={() => {
+        // Clipboard access requires a secure context and isn't implemented by
+        // every test/embed environment - degrade to a no-op rather than throw.
+        if (!navigator.clipboard?.writeText) return;
+        void navigator.clipboard.writeText(text).then(() => setCopied(true));
+      }}
+    />
+  );
 }
 
 interface JobListState {
@@ -218,6 +265,7 @@ type DelegateSendRawState = {
   action: string;
   running_in_background: boolean;
   output?: string;
+  transcript_ref?: string;
 };
 
 function delegateSendResult(raw: unknown): raw is DelegateSendRawState {
@@ -227,7 +275,8 @@ function delegateSendResult(raw: unknown): raw is DelegateSendRawState {
     typeof state.action === "string" &&
     state.action.trim() !== "" &&
     typeof state.running_in_background === "boolean" &&
-    (state.output === undefined || typeof state.output === "string")
+    (state.output === undefined || typeof state.output === "string") &&
+    (state.transcript_ref === undefined || typeof state.transcript_ref === "string")
   );
 }
 
@@ -321,10 +370,43 @@ function delegateSendResponse(item: ItemModel): string | undefined {
   return response.trim() === "" ? undefined : response;
 }
 
+// The target's transcript ref rides the tool call's raw state
+// (agent/session_tools_jobs.go's delegateSendResult.TranscriptRef), so the
+// collapsed row can offer the same open-in-pane link the subagent module rows
+// have. Runtime-message results and pre-field transcripts carry no ref - no
+// button, never a dead link.
+function delegateSendTranscriptRef(item: ItemModel): string | undefined {
+  if (!delegateSendResult(item.raw)) return undefined;
+  const ref = item.raw.transcript_ref;
+  return ref !== undefined && ref.trim() !== "" ? ref : undefined;
+}
+
+// The collapsed summary names the target and, once the call settles, one
+// status word recovered from the footer's own text (statusWordFromText -
+// field order/presence in the footer is not fixed). The footer's remaining
+// metadata (delegate_id echo, started_job_id, "running in background") is
+// noise on a one-line summary and stays out of it.
+function delegateSendSummary(item: ItemModel): string {
+  const args = parseArgs(item.argumentsJSON);
+  const target = clip(delegateSendTarget(args), ID_CLIP);
+  const base = target === "" ? "Sent a message to a delegate" : `Sent a message to delegate ${target}`;
+  const footer = delegateSendFooter(item.output ?? "");
+  const status = footer ? statusWordFromText(footer.text) : undefined;
+  return status ? `${base} · ${status}` : base;
+}
+
+// DelegateSendBody renders the exchange as a two-party conversation through
+// the transcript's own slack-lean message view: the sent message as an
+// outgoing bubble from the agent to the delegate, and - when the call waited
+// for one - the delegate's reply as an incoming bubble below it. The
+// section testids (delegate-send-message/-response) are the longstanding
+// contract of this body and are unchanged.
 function DelegateSendBody(props: ToolRenderProps) {
   const { item } = props;
-  const message = str(parseArgs(item.argumentsJSON), "message");
+  const args = parseArgs(item.argumentsJSON);
+  const message = str(args, "message");
   const response = delegateSendResponse(item);
+  const target = clip(delegateSendTarget(args), ID_CLIP);
 
   useCorrelateSubagentRow(props, {
     resolveKey: (item) =>
@@ -340,19 +422,27 @@ function DelegateSendBody(props: ToolRenderProps) {
   return (
     <div data-testid="delegate-send-body">
       {message ? (
-        <section>
-          <strong>Message</strong>
-          <div data-testid="delegate-send-message">
-            <CodeBlock text={message} copyLabel="Copy message" />
-          </div>
+        <section data-testid="delegate-send-message">
+          <UserMessageView
+            item={{ ...item, text: message }}
+            speaker="agent"
+            name={target === "" ? "Agent → delegate" : `Agent → ${target}`}
+            timeIso={item.startedAt}
+            opensExchange={false}
+            actions={<CopyTextButton text={message} label="Copy message" />}
+          />
         </section>
       ) : null}
       {response ? (
-        <section>
-          <strong>Response</strong>
-          <div data-testid="delegate-send-response">
-            <CodeBlock text={response} copyLabel="Copy response" />
-          </div>
+        <section data-testid="delegate-send-response">
+          <UserMessageView
+            item={{ ...item, text: response }}
+            speaker="agent"
+            name={target === "" ? "Delegate" : `${target} (delegate)`}
+            timeIso={item.completedAt ?? item.startedAt}
+            opensExchange={false}
+            actions={<CopyTextButton text={response} label="Copy response" />}
+          />
         </section>
       ) : null}
     </div>
@@ -362,12 +452,8 @@ function DelegateSendBody(props: ToolRenderProps) {
 registerToolRenderer({
   match: (name) => name === "delegate_send" || name === "job_send_message",
   icon: "send",
-  summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
-    const target = clip(delegateSendTarget(args), ID_CLIP);
-    const footer = delegateSendFooter(item.output ?? "");
-    return footer ? `Messaged ${target} · ${footer.text}` : `Messaged ${target}`;
-  },
+  summary: delegateSendSummary,
+  openTranscriptRef: delegateSendTranscriptRef,
   body: DelegateSendBody,
 });
 
