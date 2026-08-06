@@ -159,7 +159,8 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 func DefDelegateSend() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "delegate_send",
-		Description: "Send a message to one of your durable delegates by delegate_id. " +
+		Description: "Sends a message to a child delegate you created — this is not how you deliver your own results; use communicate for that. " +
+			"Send a message to one of your durable delegates by delegate_id. " +
 			"`to` accepts a `dlg_...` delegate_id; it rejects job/turn handles and unrelated runtime aliases. " +
 			"If the delegate is running or being driven, the message is steered and returns on delivery. " +
 			"Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag.",
@@ -495,7 +496,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 	}
 	return llm.ToolDefinition{
 		Name:        "task_list",
-		Description: "Manage your task list. Use view to inspect tasks and reasoning effort levels, append to add new tasks, and update to change status, notes, dependencies, or reasoning_effort. When you mark a task done, the next eligible task auto-starts and its prompt is injected. Use depends_on to express ordering and notes to record what happened.",
+		Description: "Manage your task list. Use view to inspect tasks and reasoning effort levels, append to add new tasks, and update to change status, notes, dependencies, or reasoning_effort. When you mark a task done, the next eligible task auto-starts and its prompt is injected. Use depends_on to express ordering and notes to record what happened. Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same updates array.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -785,6 +786,29 @@ func DefAskUser() llm.ToolDefinition {
 				},
 			},
 			"required": []string{"questions"},
+		},
+	}
+}
+
+// DefUpdateGoal returns the tool definition for update_goal.
+// The model calls this to declare the active goal complete or blocked.
+func DefUpdateGoal() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name: "update_goal",
+		Description: `Mark the active session goal complete or blocked. ` +
+			`"complete" only when the objective is genuinely achieved and verified ` +
+			`per the goal guidance; "blocked" only when truly stuck per that guidance. ` +
+			`(Criteria live in the continuation guidance, not repeated here.)`,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"status": map[string]any{
+					"type": "string",
+					"enum": []string{"complete", "blocked"},
+				},
+			},
+			"required": []string{"status"},
 		},
 	}
 }

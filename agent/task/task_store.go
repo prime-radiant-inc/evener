@@ -428,6 +428,12 @@ func (s *TaskStore) NextEligible() []Task {
 func (s *TaskStore) CurrentInProgress() (Task, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.currentInProgressLocked()
+}
+
+// currentInProgressLocked returns the first task with status in_progress, if
+// any. Callers must hold s.mu.
+func (s *TaskStore) currentInProgressLocked() (Task, bool) {
 	for _, t := range s.tasks {
 		if t.Status == TaskInProgress {
 			return t, true
@@ -543,6 +549,9 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 		}
 	}
 	if inProgressCount > 1 {
+		if blocker, ok := s.currentInProgressLocked(); ok {
+			return fmt.Errorf("only one task may be in_progress; %d %q is currently in_progress — complete or defer it in the same updates array.", blocker.ID, blocker.Description)
+		}
 		return fmt.Errorf("only one task may be in_progress at a time; update would result in %d", inProgressCount)
 	}
 

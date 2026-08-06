@@ -1,6 +1,7 @@
 package task
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -251,6 +252,24 @@ func TestUpdate_RejectsInvalidStatusUnknownIDAndDoubleInProgress(t *testing.T) {
 		if tk.Status != TaskOpen {
 			t.Fatalf("task %d = %q after rejected batch, want open", tk.ID, tk.Status)
 		}
+	}
+}
+
+func TestUpdate_DoubleInProgress_NamesTheBlockingTask(t *testing.T) {
+	s := newTestStore(t)
+	added, _ := s.Append([]TaskInput{{Description: "first task"}, {Description: "second task"}})
+	first, second := added[0].ID, added[1].ID
+
+	if err := s.Update([]TaskUpdate{{ID: first, Status: TaskInProgress}}); err != nil {
+		t.Fatalf("starting first task: %v", err)
+	}
+	err := s.Update([]TaskUpdate{{ID: second, Status: TaskInProgress}})
+	if err == nil {
+		t.Fatal("second task in_progress while first still in_progress: want error")
+	}
+	want := fmt.Sprintf("only one task may be in_progress; %d %q is currently in_progress — complete or defer it in the same updates array.", first, "first task")
+	if err.Error() != want {
+		t.Errorf("err = %q, want %q", err.Error(), want)
 	}
 }
 
