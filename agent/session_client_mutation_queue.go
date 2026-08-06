@@ -994,6 +994,7 @@ func (s *Session) recordClientMutationFailure(
 		if err := s.clientMutationFailureFault("before_user"); err != nil {
 			return err
 		}
+		s.maybeAppendEnvironmentContext()
 		turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(queued.Text, queued.Images))
 		turn.ClientMutationID = clientMutationID
 		turn.StableTurnID = pending.TurnID

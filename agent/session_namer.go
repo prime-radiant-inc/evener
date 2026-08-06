@@ -272,6 +272,15 @@ func isSessionNameCompactionTurn(turn schema.Turn) bool {
 func (s *Session) handleCompactionTurn(t schema.Turn) {
 	s.reportCompactionTranscriptAppend(s.writeTranscript(t))
 	if isSessionNameCompactionTurn(t) {
+		// A CHECKPOINT/SUMMARY turn replaces history: any ENVIRONMENT turns
+		// folded away with it are gone from what the model sees, so the
+		// environment-context tracker must forget what it last reported (see
+		// resetEnvContextTrackerAfterCompaction's doc comment). This is the
+		// single choke point every compaction completion path (Compact,
+		// applyPendingForceCompact, and the automatic per-request
+		// ManageContext) funnels through via contextMgr.OnCompactionTurn /
+		// WithCompactionTurnCallback.
+		s.resetEnvContextTrackerAfterCompaction()
 		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
 	}
 	s.launchCompactionNamer(s.sessionCtx, t)

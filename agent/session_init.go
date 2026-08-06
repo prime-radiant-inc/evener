@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/clock"
 	"primeradiant.com/serf/agent/internal/contextmgr"
+	"primeradiant.com/serf/agent/internal/envctx"
 	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/internal/installid"
@@ -42,6 +43,33 @@ import (
 // a package-level setting because it is a per-process constant — the same value
 // for every session in a run — mirroring openai.ClientVersion in the llm module.
 var BuildVersion = "dev"
+
+// initEnvContext constructs the session's environment-context collector and
+// tracker (agent/internal/envctx), seeding the tracker from persisted (nil on
+// a fresh session; meta.EnvContext on resume, itself possibly nil for a
+// session that predates this feature or never emitted a block). Requires s.cfg
+// and s.env to already be set. Called once, before any turn is processed:
+// NewSession right after its struct literal, RestoreSessionFromMetaWithConfig
+// the same.
+func (s *Session) initEnvContext(persisted *envctx.State) {
+	probes := envctx.DefaultProbes()
+	if s.cfg.testOnly.envProbes != nil {
+		probes = *s.cfg.testOnly.envProbes
+	} else {
+		probes.GitBranch = func(cwd string) string {
+			_, branch, _, _, _ := snapshotGit(s.currentEnv(), cwd)
+			return branch
+		}
+	}
+	s.envCollector = envctx.NewCollector(probes)
+	st := envctx.State{}
+	if persisted != nil {
+		st = *persisted
+		seeded := st
+		s.envContextState = &seeded
+	}
+	s.envTracker = envctx.NewTracker(st)
+}
 
 // selectStrategy creates the appropriate contextmgr.Strategy from config.
 func selectStrategy(cfg SessionConfig, cm *contextmgr.Manager, sess *Session) (contextmgr.Strategy, error) {
@@ -177,6 +205,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		clientMutations:               clientMutations,
 	}
 	s.createdAt = s.sclock().Now().UTC()
+	s.initEnvContext(nil)
 	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
 	newJM := newJobManager
 	if cfg.testOnly.noSyncJobStore {
@@ -573,6 +602,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		restoredClientMutationTurns: restoredClientMutationTurns,
 		restoredClientMutationItems: restoredClientMutationItems,
 	}
+	s.initEnvContext(meta.EnvContext)
 	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
 	newJM := newJobManager
 	if cfg.testOnly.noSyncJobStore {

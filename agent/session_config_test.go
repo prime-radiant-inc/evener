@@ -1973,7 +1973,12 @@ func TestSession_SystemPromptAsUser_CombinesIntoOneMessage(t *testing.T) {
 	}
 	msgs := reqs[0].Messages
 
-	// Should be exactly one message (combined), not two separate ones.
+	// maybeAppendEnvironmentContext's harness-injected ENVIRONMENT turn is now
+	// the first user-role message, so SystemPromptAsUser combines the system
+	// prompt into IT (not into the actual task message that follows) — still
+	// satisfying the "instructions in a leading user message" intent. Expect
+	// two user messages: the combined system+environment-context one, then
+	// the task.
 	userMsgs := 0
 	for _, m := range msgs {
 		if m.Role == llm.RoleSystem {
@@ -1983,8 +1988,8 @@ func TestSession_SystemPromptAsUser_CombinesIntoOneMessage(t *testing.T) {
 			userMsgs++
 		}
 	}
-	if userMsgs != 1 {
-		t.Fatalf("expected 1 user message (combined), got %d", userMsgs)
+	if userMsgs != 2 {
+		t.Fatalf("expected 2 user messages (combined system+environment-context, then task), got %d", userMsgs)
 	}
 
 	combined := msgs[0].Text()
@@ -1994,16 +1999,13 @@ func TestSession_SystemPromptAsUser_CombinesIntoOneMessage(t *testing.T) {
 		t.Fatal("combined message missing system prompt content")
 	}
 
-	// Task input should be present.
-	if !strings.Contains(combined, task) {
-		t.Fatal("combined message missing task input")
+	// Task input is a separate, later message — not folded into the combined one.
+	if strings.Contains(combined, task) {
+		t.Fatal("combined message should not contain the task input")
 	}
-
-	// System prompt should come FIRST, task after.
-	sysIdx := strings.Index(combined, "<environment>")
-	taskIdx := strings.Index(combined, task)
-	if taskIdx < sysIdx {
-		t.Fatalf("system prompt should precede task in combined message (sysIdx=%d taskIdx=%d)", sysIdx, taskIdx)
+	taskMsg := msgs[len(msgs)-1].Text()
+	if !strings.Contains(taskMsg, task) {
+		t.Fatalf("last message missing task input: %q", taskMsg)
 	}
 }
 
@@ -2042,17 +2044,30 @@ func TestSession_SystemPromptAsUserPreservesImageParts(t *testing.T) {
 	if len(reqs) != 1 {
 		t.Fatalf("requests: got %d want 1", len(reqs))
 	}
-	msg := reqs[0].Messages[0]
-	if msg.Role != llm.RoleUser {
-		t.Fatalf("first message role=%q, want user", msg.Role)
+	// The harness-injected ENVIRONMENT turn is now the first user-role
+	// message, so SystemPromptAsUser combines the system prompt into it; the
+	// task (with its attached image) is the second, separate message.
+	msgs := reqs[0].Messages
+	if len(msgs) < 2 {
+		t.Fatalf("expected at least 2 messages (combined system+environment-context, then task), got %d: %+v", len(msgs), msgs)
+	}
+	envMsg := msgs[0]
+	if envMsg.Role != llm.RoleUser {
+		t.Fatalf("first message role=%q, want user", envMsg.Role)
+	}
+	taskMsg := msgs[1]
+	if taskMsg.Role != llm.RoleUser {
+		t.Fatalf("second message role=%q, want user", taskMsg.Role)
 	}
 	var sawSystem, sawTask, sawImage bool
-	for _, part := range msg.Content {
+	for _, part := range envMsg.Content {
+		if part.Kind == llm.ContentText && strings.Contains(part.Text, "<environment>") {
+			sawSystem = true
+		}
+	}
+	for _, part := range taskMsg.Content {
 		switch part.Kind {
 		case llm.ContentText:
-			if strings.Contains(part.Text, "<environment>") {
-				sawSystem = true
-			}
 			if strings.Contains(part.Text, "caption this") {
 				sawTask = true
 			}
@@ -2063,7 +2078,7 @@ func TestSession_SystemPromptAsUserPreservesImageParts(t *testing.T) {
 		}
 	}
 	if !sawSystem || !sawTask || !sawImage {
-		t.Fatalf("combined user message missing parts: system=%v task=%v image=%v content=%+v", sawSystem, sawTask, sawImage, msg.Content)
+		t.Fatalf("missing parts: system=%v (env msg=%+v) task=%v image=%v (task msg=%+v)", sawSystem, envMsg.Content, sawTask, sawImage, taskMsg.Content)
 	}
 }
 

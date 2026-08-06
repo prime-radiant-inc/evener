@@ -1051,31 +1051,38 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 		t.Errorf("header session_id mismatch")
 	}
 
-	// Expect at least a user input turn and an assistant turn.
-	if len(entries) < 2 {
-		t.Fatalf("expected at least 2 transcript entries, got %d", len(entries))
+	// Expect at least an environment-context turn, a user input turn, and an
+	// assistant turn.
+	if len(entries) < 3 {
+		t.Fatalf("expected at least 3 transcript entries, got %d", len(entries))
 	}
 
-	// First entry should be user input.
-	if entries[0].Turn.Kind != schema.TurnUserInput {
-		t.Errorf("first entry kind: got %q want %q", entries[0].Turn.Kind, schema.TurnUserInput)
-	}
-	if entries[0].Turn.Message.Text() != "hello" {
-		t.Errorf("first entry text: got %q want %q", entries[0].Turn.Message.Text(), "hello")
+	// First entry should be the harness-injected environment context that
+	// precedes every first user turn.
+	if entries[0].Turn.Kind != schema.TurnEnvironment {
+		t.Errorf("first entry kind: got %q want %q", entries[0].Turn.Kind, schema.TurnEnvironment)
 	}
 
-	// Second entry should be the assistant's communicate tool call.
-	if entries[1].Turn.Kind != schema.TurnAssistant {
-		t.Errorf("second entry kind: got %q want %q", entries[1].Turn.Kind, schema.TurnAssistant)
+	// Second entry should be user input.
+	if entries[1].Turn.Kind != schema.TurnUserInput {
+		t.Errorf("second entry kind: got %q want %q", entries[1].Turn.Kind, schema.TurnUserInput)
+	}
+	if entries[1].Turn.Message.Text() != "hello" {
+		t.Errorf("second entry text: got %q want %q", entries[1].Turn.Message.Text(), "hello")
+	}
+
+	// Third entry should be the assistant's communicate tool call.
+	if entries[2].Turn.Kind != schema.TurnAssistant {
+		t.Errorf("third entry kind: got %q want %q", entries[2].Turn.Kind, schema.TurnAssistant)
 	}
 	var communicateCalls int
-	for _, part := range entries[1].Turn.Message.Content {
+	for _, part := range entries[2].Turn.Message.Content {
 		if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.Name == "communicate" {
 			communicateCalls++
 		}
 	}
 	if communicateCalls != 1 {
-		t.Errorf("second entry should record communicate tool call, got %+v", entries[1].Turn.Message.Content)
+		t.Errorf("third entry should record communicate tool call, got %+v", entries[2].Turn.Message.Content)
 	}
 
 	// Sequence numbers should be monotonically increasing.

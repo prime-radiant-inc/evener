@@ -1263,7 +1263,6 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 
 	s.mu.Lock()
 	s.turns++
-	userInputTurn := len(s.history) + 1
 	s.mu.Unlock()
 
 	if drainResumeSessionStart {
@@ -1275,6 +1274,15 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 		// prompt it applies to in the first resumed model request.
 		s.drainPendingSessionStartHooksForUserTurn(ctx)
 	}
+
+	s.maybeAppendEnvironmentContext()
+
+	// userInputTurn is computed AFTER any SessionStart-hook and environment-context
+	// turns above so it reports the USER_INPUT turn's actual history position,
+	// not a position stale by however many turns those inserted ahead of it.
+	s.mu.Lock()
+	userInputTurn := len(s.history) + 1
+	s.mu.Unlock()
 
 	if queuedIdentity.ClientMutationID == "" {
 		s.appendTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
