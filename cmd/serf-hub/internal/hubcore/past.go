@@ -468,7 +468,7 @@ func (i *PastIndex) rebuildFTS(entries []PastEntry) error {
 	if err := i.fs.MkdirAll(dbDir, 0o700); err != nil {
 		return err
 	}
-	db, err := i.openDB("sqlite", i.dbPath)
+	db, err := i.openDB("sqlite", sqliteDSN(i.dbPath))
 	if err != nil {
 		return err
 	}
@@ -541,7 +541,7 @@ func (i *PastIndex) searchFTS(q string) ([]PastEntry, bool) {
 	if !available || i.dbPath == "" {
 		return nil, false
 	}
-	db, err := i.openDB("sqlite", i.dbPath)
+	db, err := i.openDB("sqlite", sqliteDSN(i.dbPath))
 	if err != nil {
 		return nil, false
 	}

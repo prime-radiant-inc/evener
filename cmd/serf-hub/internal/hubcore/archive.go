@@ -73,7 +73,7 @@ func (s *ArchiveStore) open() (*sql.DB, error) {
 	if err := s.fs.MkdirAll(filepath.Dir(s.dbPath), 0o700); err != nil {
 		return nil, err
 	}
-	db, err := s.openDB("sqlite", s.dbPath)
+	db, err := s.openDB("sqlite", sqliteDSN(s.dbPath))
 	if err != nil {
 		return nil, err
 	}
