@@ -2805,8 +2805,12 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 	if len(jm.watchesLostAtRestore) == 0 {
 		return nil
 	}
-	if err := jm.notifyRestartCancelledCallbackWatches(); err != nil {
-		return err
+	// A receiver that can't be routed to — its Session not yet reconstructed,
+	// or gone for good — must not hold every OTHER lost watch's end notice
+	// hostage. Log the aggregate and keep going; restore itself never fails on
+	// a notification-delivery miss.
+	if err := jm.notifyRestartCancelledCallbackWatches(); err != nil && jm.emit != nil {
+		jm.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("restart callback cancellation: %v", err)}, nil)
 	}
 	recs, err := jm.store.Load()
 	if err != nil {
@@ -2876,10 +2880,15 @@ func (jm *jobManager) notifyRestartCancelledCallbackWatches() error {
 		ids = append(ids, receiver)
 	}
 	sort.Strings(ids)
+	// One receiver's route being unavailable must not stop the rest from being
+	// told: collect every failure and keep notifying the remaining receivers,
+	// so a single unroutable session can never suppress a legitimate notice to
+	// another.
+	var errs []error
 	for _, receiver := range ids {
 		if jm.notifySystem != nil {
 			if !jm.notifySystem(receiver, callbackWatchesCancelledAtRestartMessage) {
-				return fmt.Errorf("route callback cancellation notification to session %q: session unavailable", receiver)
+				errs = append(errs, fmt.Errorf("route callback cancellation notification to session %q: session unavailable", receiver))
 			}
 			continue
 		}
@@ -2887,11 +2896,12 @@ func (jm *jobManager) notifyRestartCancelledCallbackWatches() error {
 		// tree to route through. Keep their local notification behavior on the
 		// standard queue; production managers always install notifySystem.
 		if receiver != jm.sessionID || jm.enqueue == nil {
-			return fmt.Errorf("route callback cancellation notification to session %q: no system-notification route", receiver)
+			errs = append(errs, fmt.Errorf("route callback cancellation notification to session %q: no system-notification route", receiver))
+			continue
 		}
 		jm.enqueue(jobNotification{Status: jobNotificationEventWatch, Reason: callbackWatchesCancelledAtRestartMessage})
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // watchFrameOrigin identifies the watch config a durable watch-send frame came

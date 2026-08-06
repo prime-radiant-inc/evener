@@ -111,15 +111,23 @@ func (s *Session) SteerKind(msg, kind string) {
 	_ = s.trySteerEnqueue(msg, nil, nil, "", kind)
 }
 
-// routeSystemNotification delivers a daemon-authored system notification to an
-// ancestor session in the live session tree. Callback receivers are always the
-// session that installed the watch, so routing only moves upward from the owner.
+// routeSystemNotification delivers a daemon-authored system notification to
+// another session in the live session tree. Most callback receivers are the
+// session that installed the watch, so routing moves upward toward an
+// ancestor; a source:"parent" (or other descendant-receiver) watch installs on
+// an ANCESTOR's job manager with a descendant recorded as receiver instead
+// (40ea153b9), so routing also checks the live subtree before giving up.
 func (s *Session) routeSystemNotification(receiverSessionID, message string) bool {
 	if s == nil || strings.TrimSpace(receiverSessionID) == "" {
 		return false
 	}
 	if s.id == receiverSessionID {
 		return s.enqueueSystemNotification(message)
+	}
+	for _, descendant := range s.liveDescendantSessions() {
+		if descendant.id == receiverSessionID {
+			return descendant.enqueueSystemNotification(message)
+		}
 	}
 	if parent := s.cfg.spawn.parentSystemNotification; parent != nil {
 		return parent(receiverSessionID, message)
