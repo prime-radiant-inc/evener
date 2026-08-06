@@ -81,6 +81,15 @@ export interface ToolRendererDescriptor {
   // literal prefix of summary() falls back to the end placement (same
   // "never a dead anchor" contract as summaryLink).
   openBesideInline?(item: ItemModel): string | undefined;
+  // openTranscriptRef returns the transcript ref of the child session this
+  // tool call targets, or undefined when it targets none - the one case today
+  // is delegate_send, whose raw state carries the messaged delegate's
+  // transcript_ref. ToolCallItem turns a non-undefined ref into an
+  // OpenTranscriptButton in the row's trailing slot (the same control the
+  // subagent module rows use). A data field, not a ReactNode, for the same
+  // reason as openBesidePath: the descriptor declares WHAT it targets,
+  // ToolCallItem owns the control that opens it.
+  openTranscriptRef?(item: ItemModel): string | undefined;
   // summarySuffix appends extra text to the collapsed row's summary, computed
   // from the FULL thread model rather than just this item - the one case
   // today is ask_user's "— answered: ..." recap (kata h70z), which lives in
