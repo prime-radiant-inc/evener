@@ -335,7 +335,7 @@ func TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesFullHisto
 	}
 }
 
-func phase4DIContinuationPlan(req llm.Request) llm.ResponsesContinuationPlan {
+func phase4DIContinuationPlan(_ llm.Request) llm.ResponsesContinuationPlan {
 	return llm.ResponsesContinuationPlan{
 		EndpointFamily:             llm.ResponsesEndpointFamilyOpenAIPublic,
 		RequestFingerprint:         "cont-req-v1:phase4d",

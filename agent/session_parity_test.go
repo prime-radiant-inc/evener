@@ -865,8 +865,8 @@ func TestParity_WorkingDirRemovedFromSchema(t *testing.T) {
 
 // canonicalXxx returns the wire-name for a tool given the provider name.
 // This mirrors the ToolNameMap applied by each profile.
-func canonicalWriteFile(provider string) string { return "write_file" }
-func canonicalReadFile(provider string) string  { return "read_file" }
+func canonicalWriteFile(_ string) string { return "write_file" }
+func canonicalReadFile(_ string) string  { return "read_file" }
 func canonicalShell(provider string) string {
 	switch provider {
 	case "openai":

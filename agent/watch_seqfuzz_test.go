@@ -521,7 +521,7 @@ type ws_watchSnap struct {
 	live       bool
 }
 
-func (m *ws_model) check(rt *rapid.T, h *ws_harness, op ws_op, out ws_opOutcome, step int) {
+func (m *ws_model) check(rt *rapid.T, h *ws_harness, _ ws_op, out ws_opOutcome, step int) {
 	// Fold op outcomes into the model up front so the invariant pass sees the
 	// post-op installed/cleared sets.
 	if out.installedID != "" {

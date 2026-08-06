@@ -1374,7 +1374,7 @@ const goalContinuationMarker = "Continuing toward the goal."
 // MaxTurns check, and the s.turns++ accounting (goal turns are bounded by the
 // no-progress breaker, not the session's user-input ceiling; SESSION_END.Turns
 // reads the separate modelResponses counter, so skipping s.turns++ is safe).
-func (s *Session) acceptContinuationInput(ctx context.Context, input string) {
+func (s *Session) acceptContinuationInput(_ context.Context, input string) {
 	// A goal continuation is a fresh top-level input: reset active provenance so
 	// the continuation turn's events do not inherit a prior watch origin.
 	s.replaceActiveProvenance(nil)

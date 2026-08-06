@@ -421,7 +421,7 @@ func shellResultDisposition(rawOutputBytes, renderedRuneLen, maxChars, rideWhole
 // transcript_ref), and "evicted" when the oldest bytes were permanently dropped
 // past the retention cap. It describes the WINDOW, not the job lifecycle — a
 // running job whose window covers everything-so-far still reports "all_retained".
-func outputWindowStatus(total, dropped int64, truncated bool) string {
+func outputWindowStatus(_, dropped int64, truncated bool) string {
 	if dropped > 0 {
 		return "evicted"
 	}

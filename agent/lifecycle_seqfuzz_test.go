@@ -953,7 +953,7 @@ func lifecycleFailure(oracle promoter.OracleTag, art lifecycleArtifact, step int
 	}
 }
 
-func lifecyclePanicFailure(art lifecycleArtifact, step int, op opRecord, res lifecycleOpResult) *promoter.Failure {
+func lifecyclePanicFailure(art lifecycleArtifact, _ int, op opRecord, res lifecycleOpResult) *promoter.Failure {
 	return &promoter.Failure{
 		Surface:  lifecycleSurface,
 		Oracle:   promoter.Panic,

@@ -41,7 +41,7 @@ func newDelegateRestorePreflightSession(t *testing.T, c *llm.Client) *Session {
 	}))
 }
 
-func newLeanDelegateRestorePreflightSession(t *testing.T, c *llm.Client) *Session {
+func newLeanDelegateRestorePreflightSession(t *testing.T, _ *llm.Client) *Session {
 	t.Helper()
 	stateDir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
