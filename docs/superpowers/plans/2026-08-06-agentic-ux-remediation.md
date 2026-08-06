@@ -117,40 +117,41 @@ application-level error (`result.IsError`, `manager.go:423-437`) passes
 straight through as a tool result with zero cross-call bookkeeping — the only
 MCP circuit breaker is transport-level reconnect, never application errors.
 
-**Fix (design sketch for the brainstorm):**
+**Fix (decided with Jesse, 2026-08-06):**
 1. Session-level failure ledger keyed by tool name + args hash + error class:
    consecutive identical *failures* only (successes reset; distinct errors
    reset). Read-only polling patterns (job_status returning success) never
    trip it by construction.
-2. At threshold K1 (proposed 3): the dispatch result is replaced with a
-   structural intervention — the error digest of all K1 failures plus "this
-   exact call has now failed K1 times with the same error; it will not be
+2. At **2** consecutive identical failures, the second failure's tool result
+   gains a system notification line: "You just ran the same tool twice with
+   the same arguments and got the same failure. Consider an alternate
+   approach."
+3. At **3**, the call is parked: the dispatch result is replaced with a
+   structural intervention — the error digest of all 3 failures plus "this
+   exact call has now failed 3 times with the same error; it will not be
    executed again until you change the arguments or the approach" — and the
    call is **not executed**. A changed args-hash or a different tool clears
    the parked state.
-3. At threshold K2 (proposed 8 failures of the same tool regardless of args):
-   the tool is fenced for the session with a message to report the blocker
-   via communicate; unfencing requires user steering. (This is what would
-   have stopped the 300-call session at call 8.)
-4. Loop-detector integration: when `detectLoop` fires and the looping
+4. **No session-level tool fencing** (considered, declined): the
+   per-signature park is the only enforcement tier. An agent varying args
+   against a broken tool is left to the loop detector plus WS9's health
+   metrics.
+5. Loop-detector integration: when `detectLoop` fires and the looping
    signatures are *failures*, skip straight to the structural intervention
    instead of tier-1 advice. Content-only loops of successes keep today's
    steering-only behavior (legitimate repetition exists).
-5. Applies uniformly at the registry/dispatch layer so native, MCP, and
+6. Applies uniformly at the registry/dispatch layer so native, MCP, and
    future tools are all covered. MCP `IsError` results count as failures.
-
-**Design questions for Jesse:** K1/K2 values; whether K2 fencing is
-per-tool or per-(tool,action) for multiplexed tools like use_browser (the
-set_viewport loop argues per-action); whether parked calls appear in the
-transcript as distinct turn kinds for forensics.
+   Parked calls are recorded as ordinary error tool results (no new turn
+   kind); WS9's `--health` counts them.
 
 **Tests:** unit tests on the ledger (reset semantics, error-class equality);
 an integration test driving a fake tool that always fails identically and
-asserting execution stops at K1 with the intervention text; an MCP-path test
-using a stub server returning IsError.
+asserting the nudge at 2 and the park at 3 with the intervention text; an
+MCP-path test using a stub server returning IsError.
 
 **Acceptance:** no tool call with identical args and identical error class
-executes more than K1 times in a session; the 300-call pattern becomes
+executes more than 3 times in a session; the 300-call pattern becomes
 impossible by construction.
 
 **Size:** ~400 loc. **Priority: second** — this is the guardrail that
@@ -215,11 +216,12 @@ Verified root causes, one fix each:
    unrelated future wake. This is await-the-behavior, not a timer cadence.
 6. **end_turn while verification jobs run** (premature "Merged to main",
    APPROVE-then-retract — 0340osTAgpA4JuYE9yqZgk, 0341mmmMOCHlpyXK483ZRX,
-   03419TS38Dz1lp8qEbCps4). **Fix (soft first):** `communicate` with
-   `end_turn=true` while session-launched jobs are still running returns a
-   structured warning line in the tool result naming the running job ids —
-   the agent may proceed deliberately but can no longer end-turn ignorant.
-   Hard refusal is a later decision if the warning proves insufficient.
+   03419TS38Dz1lp8qEbCps4). **Fix (warn-first, confirmed 2026-08-06):**
+   `communicate` with `end_turn=true` while session-launched jobs are still
+   running returns a structured warning line in the tool result naming the
+   running job ids — the agent may proceed deliberately but can no longer
+   end-turn ignorant. Hard refusal only if the warning proves insufficient
+   in practice.
 
 **Tests:** job_wait integration test against a real short-lived job (no
 mocked job store); footer-text unit tests; an overlong-line fixture proving
@@ -246,11 +248,13 @@ only algorithmically risky piece; its fallback is 30 loc.
 3. **Go telemetry dir missing from cache roots**: `defaultCacheRoots`
    (`agent/sandbox/resolve.go:347`) covers `.cache, go/pkg, .npm, .cargo`
    but not `os.UserConfigDir()/go/telemetry`, which `go` writes on every
-   invocation. **Fix:** add the telemetry dir to the granted roots (or set
-   `GOTELEMETRY=off` in `ApplyEnvFloor` — decide with Jesse: granting keeps
-   go defaults, off is smaller). Also verify `GOMODCACHE` under custom
-   GOPATH resolves inside a granted root; extend `isRedirectedCacheVar`
-   (`env_floor.go:116-118`) if not.
+   invocation. **Fix (decided 2026-08-06):** set `GOTELEMETRY=off` in
+   `ApplyEnvFloor`; keep the sandbox narrow. (A per-session `$HOME` for
+   sandboxed sessions — seeded git identity, shared cache mounts — was
+   considered and declined; per-path grants stay the model. Revisit only if
+   HOME-relative denials keep accumulating.) Also verify `GOMODCACHE` under
+   custom GOPATH resolves inside a granted root; extend
+   `isRedirectedCacheVar` (`env_floor.go:116-118`) if not.
 4. **Shared GOCACHE wedges** (5.7h hang, 033zIWu0M97TPEmlte5j45; ~50min in
    0341OD339bdFXqO2JkqNyK): investigate-then-fix task — reproduce
    concurrent-session GOCACHE contention, then either per-session GOCACHE
@@ -300,12 +304,10 @@ once diagnosed.
    `grep`→`grep_files` (`agent/provider/profile.go:831-835`), shadowing the
    real `list_dir` (`agent/session_tools.go:844-858` documents the
    collision). OpenAI-family agents believe they are listing a directory and
-   are actually globbing. **Fix [design gate — naming is a product call]:**
-   stop shadowing: alias glob to a non-colliding name (`find_files`) and let
-   the real `list_dir` keep its name, or make the aliased tool's description
-   state plainly "this is a recursive glob; prefer a scoped pattern, results
-   exclude ignored dirs." Rename preferred; models' priors for `list_dir`
-   are exactly what caused the unscoped calls.
+   are actually globbing. **Fix (decided 2026-08-06):** stop shadowing —
+   alias glob to `find_files`; the real `list_dir` keeps its name and
+   behavior. Models' priors for `list_dir` were exactly what caused the
+   unscoped calls.
 2. **Glob has no excludes at all** — `doublestar.Glob` over `os.DirFS`
    (`agent/execenv/local.go:1008-1043`), no gitignore, no dot-dir skip; grep
    already skips dot-dirs (`local.go:1159-1168`) and rg honors gitignore.
@@ -558,19 +560,20 @@ reference.
 |---|---|---|---|
 | 1 | WS1 recording fix | everything below gets verified with apilog; unblocks trust | ~300 loc |
 | 1 (parallel) | WS9 doctor batch tooling | independent; makes verifying the rest cheap | ~700 loc |
-| 2 | WS2 dispatch breaker **[design gate]** | contains every future tool bug; needs Jesse's thresholds | ~400 loc |
+| 2 | WS2 dispatch breaker | contains every future tool bug; thresholds decided (nudge@2, park@3, no fencing) | ~400 loc |
 | 3 | WS3 job ergonomics | biggest turn-waste cluster | ~600 loc |
 | 4 | WS4 environment | biggest wall-clock cluster; two investigation subtasks | ~500 loc |
 | 5 | WS6 validation errors | cheapest, high per-session affection | ~250 loc |
-| 6 | WS5 search/read/edit **[naming design gate]** | items 2–10 independent of the rename call | ~520 loc |
+| 6 | WS5 search/read/edit | naming decided (glob aliases to find_files) | ~520 loc |
 | 7 | WS7 launch validation | kills the config-death failure class | ~300 loc |
 | 8 | WS8 worktree lifecycle | lowest frequency of the code workstreams | ~450 loc |
 | 9 | WS10 prompt nudges | rides along with the features it references | ~80 loc |
 
-Each workstream: own worktree, own SDD run, spec-level design doc first only
-where marked [design gate] (WS2 thresholds/fencing scope; WS5 tool naming;
-WS4.3 telemetry grant-vs-off and WS4.4 GOCACHE strategy decided from the
-investigation data). Everything else is specified above at
+Each workstream: own worktree, own SDD run. All design gates were resolved
+with Jesse on 2026-08-06 (WS2 nudge@2/park@3/no-fencing; WS5 find_files
+alias; WS4.3 GOTELEMETRY=off, per-session HOME declined; WS3.6 warn-first).
+The one remaining data-driven decision is WS4.4's GOCACHE strategy, taken
+after its reproduction task. Everything else is specified above at
 implementation-ready precision.
 
 Out of scope, tracked elsewhere: the use_browser MCP server's own
