@@ -10,6 +10,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
 import textareaStyles from "../../widgets/textarea/textarea.module.css";
+import { resetToastStoreForTests } from "../../widgets/toast/store";
 import Spawn from "./Spawn";
 
 class MemoryStorage {
@@ -170,6 +171,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   window.history.pushState({}, "", "/");
+  resetToastStoreForTests();
 });
 
 // --- the page's shape ------------------------------------------------------

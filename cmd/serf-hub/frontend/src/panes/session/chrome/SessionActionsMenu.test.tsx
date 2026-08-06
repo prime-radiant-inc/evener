@@ -1,12 +1,12 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, test } from "vitest";
 import { WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities } from "../../../protocol/types.gen";
-import { registerPane } from "../../../shell/paneRegistry";
+import { registerPaneForTests } from "../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
@@ -20,11 +20,13 @@ import { SessionActionsMenu } from "./SessionActionsMenu";
 // only asserts openPane was called correctly for fork/aside's child-pane
 // hop, never that a real SessionPane renders) - mirrors transcript/tools/
 // subagentModule.test.tsx's identical setup for the exact same reason.
-registerPane({
-  id: "session",
-  title: () => "test session",
-  component: lazy(() => Promise.resolve({ default: () => null })),
-});
+afterAll(
+  registerPaneForTests({
+    id: "session",
+    title: () => "test session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  }),
+);
 
 const FULL_CAPABILITIES: ThreadCapabilities = {
   send: true,

@@ -6,7 +6,8 @@ import { connectionStore } from "../stores/connection";
 import { resetTreeStoreForTests } from "../stores/tree";
 import { AppShell } from "./AppShell";
 import { DockRegion, resetDockChunkForTests } from "./DockRegion";
-import { loadDockHost } from "./dockHostChunk";
+import * as dockHostChunk from "./dockHostChunk";
+import { resetDockHostLoaderForTests } from "./dockHostChunk";
 import { resetWorkspaceStoreForTests } from "./workspace";
 
 // The DockHost chunk is a separate network request from index.html (345kB of
@@ -16,10 +17,25 @@ import { resetWorkspaceStoreForTests } from "./workspace";
 // loader is that failure with no network involved; the real dockview module
 // never loads here, which also keeps these tests off dockview's ResizeObserver
 // (kata 1s47, reproduced live against the built bundle at 771b016ea).
-vi.mock("./dockHostChunk", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./dockHostChunk")>();
-  return { ...actual, loadDockHost: vi.fn() };
-});
+//
+// A hoisted vi.mock("./dockHostChunk", ...) here would swap the module in the
+// shared registry - under isolate:false that registry is shared by every file
+// in the worker, and whichever file (this one, or AppShell.test.tsx via
+// AppShell.tsx -> DockRegion.tsx -> dockHostChunk) happens to instantiate
+// DockRegion.tsx FIRST in the whole worker's lifetime permanently fixes its
+// closure over loadDockHost to whatever was in effect at that moment - a
+// vi.mock registered afterward cannot retroactively change an
+// already-instantiated module's own binding, so the leak direction flips
+// unpredictably depending on unrelated ordering (confirmed empirically:
+// swapping which file ran first flipped which one failed). vi.spyOn on the
+// namespace import below instead MUTATES the shared dockHostChunk module
+// object's own `loadDockHost` property in place - Vite's module-runner gives
+// named imports a live getter into that same object, so DockRegion.tsx's
+// calls see the spy's current implementation regardless of when it was
+// instantiated, and mockRestore() in afterEach cleanly hands the real
+// function back for whatever file runs next.
+const realLoadDockHost = dockHostChunk.loadDockHost;
+const loadDockHost = vi.spyOn(dockHostChunk, "loadDockHost");
 
 const CHUNK_ERROR = "Failed to fetch dynamically imported module: /webassets/DockHost-a1b2c3.js";
 
@@ -52,11 +68,13 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
   resetTreeStoreForTests();
-  vi.mocked(loadDockHost).mockReset();
+  loadDockHost.mockReset();
+  loadDockHost.mockImplementation(realLoadDockHost);
   // The chunk is one shared lazy() payload per page load, so each test needs
   // its own - a payload that resolved (or rejected) in the last test would
   // never call this test's loader at all.
   resetDockChunkForTests();
+  resetDockHostLoaderForTests();
   vi.stubGlobal("fetch", (url: string) => Promise.resolve(jsonResponse(url === "/api/tree" ? EMPTY_TREE : {})));
 });
 
@@ -64,6 +82,12 @@ afterEach(() => {
   cleanup();
   window.history.pushState({}, "", "/");
   vi.unstubAllGlobals();
+  // Whichever override the LAST test set (mockRejectedValue/mockResolvedValue/
+  // mockResolvedValueOnce...) would otherwise still be armed on this shared
+  // spy for the next file in the worker that calls the real loadDockHost -
+  // see this file's own comment on the vi.spyOn call above.
+  loadDockHost.mockReset();
+  loadDockHost.mockImplementation(realLoadDockHost);
 });
 
 test("a rejected DockHost chunk degrades the dock region, never the whole shell", async () => {

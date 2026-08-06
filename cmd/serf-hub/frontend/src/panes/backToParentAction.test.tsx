@@ -1,8 +1,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { lazy } from "react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, test } from "vitest";
 import type { ThreadModel } from "../protocol/model";
-import { registerPane } from "../shell/paneRegistry";
+import { registerPaneForTests } from "../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { BackToParentAction } from "./backToParentAction";
@@ -14,11 +14,13 @@ import "./doc";
 // A minimal, test-only "session" pane registration - mirrors
 // Transcript.test.tsx's own precedent: real registerPane/paneFor/openPane
 // machinery, without pulling in the actual (heavier) panes/session module.
-registerPane({
-  id: "session",
-  title: () => "test session",
-  component: lazy(() => Promise.resolve({ default: () => null })),
-});
+afterAll(
+  registerPaneForTests({
+    id: "session",
+    title: () => "test session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  }),
+);
 
 beforeEach(() => {
   resetThreadsStoreForTests();
@@ -28,6 +30,12 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   registerDockviewApi(null); // never leak a fake dockview host to another test
+  // The beforeEach above only resets threadsStore/workspaceStore BEFORE each
+  // test - nothing restores them after the LAST test, so a pane this file
+  // opened (pointing at a tracked "ref_parent"/"ref_parent_unknown" ref)
+  // stays open and focused for whichever file runs next under isolate:false.
+  resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
 });
 
 test("falls back to the raw parent ref when no cached name is available", () => {

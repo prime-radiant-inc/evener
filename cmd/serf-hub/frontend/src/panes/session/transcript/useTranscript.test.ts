@@ -59,6 +59,14 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // The beforeEach above only resets threadsStore BEFORE each test. Every
+  // test here calls ensureThread("ref_a") directly via renderHook, which
+  // cleanup() unmounts (releasing the ref) - but a test whose own assertions
+  // run before that release settles, or whose hydration retry/pending state
+  // outlives the hook, can still leave "ref_a" refcounted after the LAST
+  // test. Under isolate:false that is what a later file's own
+  // connectionStore.connect() re-triggers via rewireClient.
+  resetThreadsStoreForTests();
 });
 
 test("model is undefined before the ref is tracked", () => {

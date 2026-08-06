@@ -78,6 +78,13 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // The beforeEach above only resets threadsStore BEFORE each test. Every
+  // test here calls ensureThread(ref) directly for setup - SessionChrome
+  // takes its model as a prop and never calls ensureThread/releaseThread
+  // itself, so cleanup()'s unmount leaves that ref refcounted after the LAST
+  // test. Under isolate:false that is what a later file's own
+  // connectionStore.connect() re-triggers via rewireClient.
+  resetThreadsStoreForTests();
 });
 
 // Wave 5 T1 carved this slot as an empty placeholder ("renders nothing (T1

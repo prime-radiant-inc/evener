@@ -1,14 +1,14 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import type { ThreadModel } from "../protocol/model";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { ThreadCapabilities } from "../protocol/types.gen";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
-import { type PaneDescriptor, type PaneProps, paneFor, registerPane } from "./paneRegistry";
+import { type PaneDescriptor, type PaneProps, paneFor, registerPane, registerPaneForTests } from "./paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // jsdom has no ResizeObserver (dockview-core dials one on mount to drive its
@@ -57,8 +57,10 @@ class MemoryStorage {
 
 // Fixture pane components, simple enough to assert on directly - "doc" is
 // this file's non-singleton fixture, "settings" its singleton one (same
-// scheme workspace.test.ts uses; a fresh paneRegistry module per test file
-// means no collision either way).
+// scheme workspace.test.ts uses). paneRegistry.ts is a shared module
+// singleton, not fresh per file - the afterAll below restores whatever was
+// registered for these ids before this file ran, so a later file sharing
+// the same module registry never inherits these fixtures.
 function DocFixture({ params, focused }: PaneProps<{ ref: string }>) {
   return (
     <div>
@@ -70,17 +72,20 @@ function SettingsFixture({ params }: PaneProps<{ section?: string }>) {
   return <div>settings pane: {params.section ?? "none"}</div>;
 }
 
+let restoreDocPane: (() => void) | undefined;
+let restoreSettingsPane: (() => void) | undefined;
+
 beforeAll(async () => {
   globalThis.ResizeObserver = StubResizeObserver;
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
   globalThis.localStorage = new MemoryStorage();
 
-  registerPane({
+  restoreDocPane = registerPaneForTests({
     id: "doc",
     title: (params: { ref: string }) => `Doc ${params.ref}`,
     component: lazy(() => Promise.resolve({ default: DocFixture })),
   });
-  registerPane({
+  restoreSettingsPane = registerPaneForTests({
     id: "settings",
     singleton: true,
     title: (params: { section?: string }) => `Settings${params.section ? `: ${params.section}` : ""}`,
@@ -119,6 +124,15 @@ beforeAll(async () => {
     () => {},
     () => screen.findByText("No session open"),
   );
+});
+
+// paneRegistry.ts is a shared module singleton (see registerPaneForTests's
+// own comment) - restore whatever "doc"/"settings" registered before this
+// file ran so a later file sharing the same module registry never inherits
+// these fixtures instead of the real panes.
+afterAll(() => {
+  restoreDocPane?.();
+  restoreSettingsPane?.();
 });
 
 // Renders DockHost once with `open`'s pane in it and awaits its landmark, so

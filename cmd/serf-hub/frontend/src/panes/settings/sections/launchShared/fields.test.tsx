@@ -5,12 +5,20 @@ import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { LaunchOption } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
-import { fetchModelCatalog } from "../../../../widgets/modelCatalog/catalogClient";
+import * as catalogClientModule from "../../../../widgets/modelCatalog/catalogClient";
 import { PromptCompositeField, ScalarField } from "./fields";
 
 // The modelPicker kind renders the rich ModelCatalog widget, which calls the
 // REST /api/models loader on open; mock it so these render tests stay hermetic.
-vi.mock("../../../../widgets/modelCatalog/catalogClient", () => ({ fetchModelCatalog: vi.fn() }));
+//
+// vi.spyOn, not vi.mock: see ModelField.test.tsx's own comment on this exact
+// pattern - under a shared module registry (isolate:false), a vi.mock()
+// factory registered here only replaces what THIS file's own import
+// resolves to, not what an already-loaded importer (e.g. ModelField.tsx,
+// ScalarField's own catalog picker, if loaded by an earlier file) calls
+// internally. Spying on the real module's own export patches the one
+// binding every importer actually shares, regardless of import order.
+let fetchModelCatalog: typeof catalogClientModule.fetchModelCatalog;
 
 // The path kinds render PathField, whose completion loader is the extensions
 // store's own completePaths - so a test that OPENS a picker panel needs a
@@ -25,10 +33,14 @@ function connectFakeClient(): FakeClient {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetExtensionsStoreForTests();
-  vi.mocked(fetchModelCatalog).mockReset();
-  vi.mocked(fetchModelCatalog).mockResolvedValue({ models: [], recent: [], diagnostics: [] });
+  fetchModelCatalog = vi
+    .spyOn(catalogClientModule, "fetchModelCatalog")
+    .mockResolvedValue({ models: [], recent: [], diagnostics: [] });
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 function modelPickerOption(overrides: Partial<LaunchOption> = {}): LaunchOption {
   return {

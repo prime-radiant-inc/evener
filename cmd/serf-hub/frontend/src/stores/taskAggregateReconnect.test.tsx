@@ -52,7 +52,18 @@ beforeEach(() => {
   resetThreadsStoreForTests();
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // The beforeEach above only resets threadsStore BEFORE each test. The test
+  // below calls ensureThread("ref_tasks") directly (not through a mounted
+  // pane's own lifecycle), so nothing ever calls releaseThread for it -
+  // without this, "ref_tasks" stays refcounted after the LAST test, and
+  // under isolate:false every later file's own connectionStore.connect()
+  // re-triggers threads.ts's rewireClient, which re-issues a stray
+  // thread/read for "ref_tasks" against whatever client that later file just
+  // connected.
+  resetThreadsStoreForTests();
+});
 
 test("store reconnect preserves task aggregate and Tasks badge across notification and fresh thread/read", async () => {
   const fake = new FakeClient("ready");

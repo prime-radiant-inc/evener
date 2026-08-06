@@ -1,13 +1,14 @@
 import { IDBFactory } from "fake-indexeddb";
 import { lazy } from "react";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import type { ThreadModel } from "../../protocol/model";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities } from "../../protocol/types.gen";
 import { connectionStore } from "../../stores/connection";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
-import { registerPane } from "../paneRegistry";
+import { registerPaneForTests } from "../paneRegistry";
+import * as railController from "../rail/railController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { blockedMessage, isBlocked } from "./blocked";
 import {
@@ -24,18 +25,39 @@ import { buildPaletteContext } from "./paletteContext";
 import { RECENT_COMMANDS_KEY } from "./recentCommands";
 
 // /project calls the rail's imperative reveal seam (PIN-A); T5 produces the
-// real body, so this stream tests against a mock of the SEAM only.
-vi.mock("../rail/railController", () => ({ revealSessionInRail: vi.fn() }));
-
-import { revealSessionInRail } from "../rail/railController";
+// real body, so this stream tests against a stub of the SEAM only.
+//
+// A hoisted vi.mock("../rail/railController", () => ({ revealSessionInRail:
+// vi.fn() })) used to sit here, replacing the WHOLE module (dropping
+// setRailRevealHandler entirely) in the shared module registry - under
+// isolate:false that registry is shared by every file in the worker, so this
+// would poison every other file that imports railController.ts (Rail.test.tsx,
+// RailHost.test.tsx, railController.test.ts) for the rest of the worker's
+// life, not just while this file's own tests run. vi.spyOn mutates only the
+// one property this file cares about, on the SAME shared module object every
+// other file also reads from, and mockRestore() in afterAll hands the real
+// revealSessionInRail back for whatever file runs next.
+//
+// Re-spied in beforeEach below, not just once here: this file's own afterEach
+// (like several sibling rail test files) calls vi.restoreAllMocks(), which is
+// a GLOBAL operation - it un-does this spy (handing the real
+// revealSessionInRail back onto the shared module object) the moment ANY
+// test anywhere in the worker restores mocks, not just this file's own. A
+// one-time spy at module scope would silently stop taking effect after that.
+let revealSessionInRail = vi.spyOn(railController, "revealSessionInRail").mockImplementation(() => {});
+afterAll(() => {
+  revealSessionInRail.mockRestore();
+});
 
 // Minimal test-only "session" pane registration so /aside's openPane hop has
 // a real registry entry - mirrors SessionActionsMenu.test.tsx's setup.
-registerPane({
-  id: "session",
-  title: () => "test session",
-  component: lazy(() => Promise.resolve({ default: () => null })),
-});
+afterAll(
+  registerPaneForTests({
+    id: "session",
+    title: () => "test session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  }),
+);
 
 // See stores/prefs.test.ts: Node 26 shadows jsdom's localStorage with a
 // non-functional global, so every localStorage-touching test file needs this.
@@ -178,11 +200,22 @@ beforeEach(() => {
   localStorage.clear();
   window.history.pushState({}, "", "/");
   pushes.length = 0;
-  vi.mocked(revealSessionInRail).mockClear();
+  // vi.restoreAllMocks() in this file's own afterEach (or any other test
+  // file's, sharing this worker) strips the spy - see this file's own
+  // comment on the vi.spyOn call above.
+  revealSessionInRail = vi.spyOn(railController, "revealSessionInRail").mockImplementation(() => {});
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  // Every test here writes real durable outbox records into this file's own
+  // globalThis.indexedDB instance - the beforeEach above only replaces it
+  // BEFORE each test, so whatever the LAST test wrote stays installed as the
+  // global indexedDB after this file finishes. Under isolate:false that
+  // leftover, populated database is what a later file's own default
+  // getMutationRuntime() (no setMutationStorageForTests override) discovers
+  // and re-pins.
+  globalThis.indexedDB = new IDBFactory();
 });
 
 // --- scope gating (search.js:581-588) ---

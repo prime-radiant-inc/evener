@@ -13,7 +13,15 @@ import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { Toast } from "../../../../widgets";
 import { LaunchConfigForm } from "./LaunchConfigForm";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // The "status self-clear" describe block below calls vi.useFakeTimers()
+  // with no per-test afterEach of its own; this file's own beforeEach calls
+  // useRealTimers() before every test, but nothing restored real timers
+  // after the LAST test in the file - under isolate:false that leaves fake
+  // timers installed for whichever file runs next in this worker.
+  vi.useRealTimers();
+});
 
 // The path-kind rows render PathField, whose completion loader is the
 // extensions store's own completePaths - so opening one needs a connected

@@ -5,18 +5,24 @@ import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { LaunchOption } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
-import { fetchModelCatalog } from "../../../../widgets/modelCatalog/catalogClient";
+import * as catalogClientModule from "../../../../widgets/modelCatalog/catalogClient";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
 
 // modelList adds come from the shared searchable ModelCatalog picker, which
 // fetches /api/models; the wire loader is mocked so these stay hermetic.
-vi.mock("../../../../widgets/modelCatalog/catalogClient", () => ({ fetchModelCatalog: vi.fn() }));
-
+//
+// vi.spyOn, not vi.mock: see ModelField.test.tsx's own comment on this exact
+// pattern - under a shared module registry (isolate:false), a vi.mock()
+// factory registered here only replaces what THIS file's own import
+// resolves to, not what an already-loaded importer calls internally.
+// Spying on the real module's own export patches the one binding every
+// importer actually shares, regardless of import order. No test in this
+// file overrides the resolved value afterward, so the spy is installed
+// fresh each time without keeping a reference to it.
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetExtensionsStoreForTests();
-  vi.mocked(fetchModelCatalog).mockReset();
-  vi.mocked(fetchModelCatalog).mockResolvedValue({
+  vi.spyOn(catalogClientModule, "fetchModelCatalog").mockResolvedValue({
     models: [
       { provider: "openai", model: "gpt-5-mini", displayName: "GPT-5 Mini" },
       { provider: "anthropic", model: "claude-haiku-4-5", displayName: "Claude Haiku 4.5" },
@@ -26,7 +32,10 @@ beforeEach(() => {
   });
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 /** Scripts serf/paths/complete off a prefix -> entries table, the way the
  * pathList add row's picker asks for it (the store passes the prefix through

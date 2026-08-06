@@ -362,6 +362,21 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.useRealTimers();
+  // Every test here calls ensureThread(ref) directly for setup - Composer
+  // takes its ref as a prop and never calls ensureThread/releaseThread
+  // itself, so cleanup()'s unmount leaves that ref refcounted after the LAST
+  // test. Under isolate:false that is what a later file's own
+  // connectionStore.connect() re-triggers via rewireClient.
+  resetThreadsStoreForTests();
+  // Every test here writes real durable outbox records into this file's own
+  // globalThis.indexedDB instance (one exercises the unavailable-storage
+  // boundary by setting it to undefined) - the beforeEach above only
+  // replaces it BEFORE each test, so whatever the LAST test left in place
+  // (populated, or undefined) stays installed as the global indexedDB after
+  // this file finishes. Under isolate:false that is what a later file's own
+  // default getMutationRuntime() (no setMutationStorageForTests override)
+  // discovers - either a stale re-pinned record, or a hard throw.
+  globalThis.indexedDB = new IDBFactory();
 });
 
 function textarea(): HTMLTextAreaElement {

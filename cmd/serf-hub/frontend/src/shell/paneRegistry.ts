@@ -51,3 +51,22 @@ export function paneFor(id: PaneTypeId): PaneDescriptor<unknown> {
   }
   return descriptor;
 }
+
+// registerPaneForTests installs a stub descriptor and returns a restorer
+// that reinstates whatever was registered for that id beforehand. registry
+// is a module singleton with no per-file reset - real pane modules only
+// self-register once, the first time anything imports them, so a test file
+// that overwrites an id with a lighter stub (rather than importing the real,
+// heavier pane module) must put the real registration back afterward, or
+// every later test file sharing this module's registry (no production code
+// ever calls this) inherits the stub instead. No production code should
+// call this - use registerPane, whose registration is meant to be
+// permanent.
+export function registerPaneForTests<P>(descriptor: PaneDescriptor<P>): () => void {
+  const previous = registry.get(descriptor.id);
+  registerPane(descriptor);
+  return () => {
+    if (previous) registry.set(descriptor.id, previous);
+    else registry.delete(descriptor.id);
+  };
+}

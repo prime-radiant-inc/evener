@@ -102,6 +102,12 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // The beforeEach above only resets threadsStore BEFORE each test. Several
+  // tests here call ensureThread("ref_a") directly for setup - useSandboxEscalations
+  // doesn't itself release it, so cleanup()'s unmount leaves "ref_a"
+  // refcounted after the LAST test. Under isolate:false that is what a
+  // later file's own connectionStore.connect() re-triggers via rewireClient.
+  resetThreadsStoreForTests();
 });
 
 // --- SandboxEscalationCard (presentational) -------------------------------

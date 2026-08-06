@@ -1,8 +1,8 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
-import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
-import { registerPane } from "../paneRegistry";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { TreeDrawer } from "./TreeDrawer";
 
@@ -10,14 +10,24 @@ function DocFixture() {
   return <div>doc</div>;
 }
 
+// paneRegistry.ts is a shared module singleton - registerPaneForTests's
+// restorer (called in afterAll below) puts back whatever "doc" resolved to
+// before this file ran, so a later file sharing the same registry never
+// inherits this fixture.
+let restoreDocPane: () => void;
+
 beforeAll(async () => {
-  registerPane<{ ref: string }>({
+  restoreDocPane = registerPaneForTests<{ ref: string }>({
     id: "doc",
     title: () => "Doc",
     component: lazy(() => Promise.resolve({ default: DocFixture })),
   });
   await import("../../panes/welcome/Welcome");
   await import("../../panes/welcome");
+});
+
+afterAll(() => {
+  restoreDocPane();
 });
 
 beforeEach(() => {

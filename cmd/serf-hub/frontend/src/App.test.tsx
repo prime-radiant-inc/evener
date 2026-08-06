@@ -1,7 +1,61 @@
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { resetNotificationsForTests } from "./notifications";
+import { AppwireClient } from "./protocol/client";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
+import { connectionStore } from "./stores/connection";
+import { resetThreadsStoreForTests } from "./stores/threads";
 import { resetTreeStoreForTests } from "./stores/tree";
+
+// AppShell's default createClient constructs a REAL AppwireClient (no test
+// client is injected anywhere in this file), which dials a real jsdom
+// WebSocket and, once "closed", runs its own real setTimeout-based
+// exponential-backoff reconnect loop (protocol/client.ts) that close() is
+// the only thing that cancels. Every route render in this file (including
+// beforeAll's own warmRoute calls, which mount <App/> multiple times with
+// no close() in between) constructs its own such client; connectionStore
+// only ever mirrors the MOST RECENT one, so closing just "whatever's
+// current" leaves every earlier route's client orphaned with a still-armed
+// reconnect timer for the rest of the worker's life under isolate:false.
+// This subscription records every distinct real client this file ever
+// sees, so allCreatedClients (closed in the afterAll below) can close them
+// all, not just the last.
+const allCreatedClients = new Set<AppwireClient>();
+const unsubscribeClientTracker = connectionStore.subscribe((state) => {
+  if (state.client instanceof AppwireClient) allCreatedClients.add(state.client);
+});
+
+// closeStaleClient closes whatever's currently wired into connectionStore -
+// for the one call below that runs before this file's own client tracker
+// (allCreatedClients) has seen anything, i.e. a client left over from an
+// earlier file in the shared isolate:false worker. Nulls connectionStore's
+// own reference to it FIRST: connection.ts's client->store state mirror
+// only republishes while `connectionStore.getState().client === client`
+// still holds (its own guard), and close() synchronously fires that
+// client's "closed" state change. Closing while the reference is still
+// current lets that mirror republish state through it, re-triggering
+// threads.ts's connectionStore.subscribe -> rewireClient(client) and
+// re-wiring notification/ready handlers onto a client this store is about
+// to discard - clearing the reference first makes the mirror's own guard
+// skip republishing, so close() cannot re-arm rewireClient.
+function closeStaleClient(): void {
+  const client = connectionStore.getState().client;
+  if (!(client instanceof AppwireClient)) return;
+  connectionStore.setState({ client: null });
+  client.close();
+}
+
+// closeAllCreatedClients closes every real client THIS file's own routes
+// ever constructed (see allCreatedClients above), not just whichever one
+// connectionStore currently mirrors - same null-before-close ordering as
+// closeStaleClient, for the same reason.
+function closeAllCreatedClients(): void {
+  if (connectionStore.getState().client instanceof AppwireClient) {
+    connectionStore.setState({ client: null });
+  }
+  for (const client of allCreatedClients) client.close();
+  allCreatedClients.clear();
+}
 
 let App: typeof import("./App").App;
 
@@ -105,6 +159,14 @@ beforeAll(async () => {
   // methods DockHost.tsx actually calls (getItem/setItem/removeItem/clear),
   // not length/key() - see DockHost.test.tsx's own MemoryStorage comment.
   globalThis.localStorage = new MemoryStorage();
+  // connectionStore has no resetXForTests helper (see this file's other
+  // stores) - every other file that touches it resets it inline in its own
+  // beforeEach/beforeAll instead; this warm-up render needs a clean slate too,
+  // or a client left "ready"/"closed" by an earlier file in the shared
+  // isolate:false worker renders something other than the welcome pane's
+  // "No session open" the warmRoute below asserts on.
+  closeStaleClient();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   stubTreeFetch();
   await import("./dev/WidgetGallery");
   await import("./dev/DevHarness");
@@ -127,6 +189,8 @@ beforeAll(async () => {
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetTreeStoreForTests();
+  closeAllCreatedClients();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   localStorage.clear();
   stubTreeFetch();
 });
@@ -134,8 +198,36 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetTreeStoreForTests();
+  // AppShell.tsx calls initNotifications() at MODULE SCOPE (guarded by its
+  // own `if (initialized) return`), so the FIRST render anywhere in this
+  // worker that imports AppShell - unavoidably, every test in this file -
+  // installs notifications/index.ts's own connectionStore.subscribe (its
+  // "reconnect" detector, `sawReady`) for the rest of the worker's life.
+  // Left un-reset, a LATER file's own client connecting straight to "ready"
+  // (e.g. `new FakeClient("ready")`) reads as a "reconnect" against this
+  // leftover `sawReady=true`, firing an extra, unexpected
+  // treeStore.refresh() into that file's own fetch-call assertions.
+  resetNotificationsForTests();
+  // Each test above renders <App/> with no test client injected, so every
+  // one constructs a fresh real AppwireClient and wires it into
+  // connectionStore - which threads.ts's module-scope
+  // connectionStore.subscribe (rewireClient) reacts to. closeAllCreatedClients
+  // nulls connectionStore's client reference before closing each one (see its
+  // own comment on why the order matters - closing first would let
+  // connection.ts's still-guarded state mirror republish through the
+  // about-to-be-discarded client and re-arm threads.ts's wiredClient).
+  // resetThreadsStoreForTests runs last so nothing re-arms wiredClient
+  // afterward.
+  closeAllCreatedClients();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetThreadsStoreForTests();
   vi.unstubAllGlobals();
   window.history.pushState({}, "", "/");
+});
+
+afterAll(() => {
+  closeAllCreatedClients();
+  unsubscribeClientTracker();
 });
 
 test("renders the app shell (welcome pane) at the default route", async () => {

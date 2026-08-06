@@ -13,7 +13,23 @@ import { readMutationPersistence, resetThreadsStoreForTests, threadsStore } from
 import { AskDock } from "./AskDock";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // Every test here calls ensureThread(ref) directly for setup - AskDock
+  // takes its ref as a prop and never calls ensureThread/releaseThread
+  // itself, so cleanup()'s unmount leaves that ref refcounted after the LAST
+  // test. Under isolate:false that is what a later file's own
+  // connectionStore.connect() re-triggers via rewireClient.
+  resetThreadsStoreForTests();
+  // Every test here writes real durable outbox records into this file's own
+  // globalThis.indexedDB instance - the beforeEach below only replaces it
+  // BEFORE each test, so whatever the LAST test wrote stays installed as the
+  // global indexedDB after this file finishes. Under isolate:false that
+  // leftover, populated database is what a later file's own default
+  // getMutationRuntime() (no setMutationStorageForTests override) discovers
+  // and re-pins.
+  globalThis.indexedDB = new IDBFactory();
+});
 
 // --- fixtures (mirrors askDockStore.test.ts's own harness) ---------------
 

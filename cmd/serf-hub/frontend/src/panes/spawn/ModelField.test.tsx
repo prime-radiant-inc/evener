@@ -2,20 +2,33 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ModelDescriptor } from "../../protocol/types.gen";
-import { fetchModelCatalog } from "../../widgets/modelCatalog/catalogClient";
+import * as catalogClientModule from "../../widgets/modelCatalog/catalogClient";
 import { ModelField } from "./ModelField";
 
 // ModelField now renders the rich ModelCatalog widget, enriching the injected
 // scoped model/list with the /api/models catalog. The wire loader is mocked so
 // these render tests stay hermetic; the default is an empty enrichment, so the
 // picker degrades to the label-only scoped list the interim tests expect.
-vi.mock("../../widgets/modelCatalog/catalogClient", () => ({ fetchModelCatalog: vi.fn() }));
-
+//
+// vi.spyOn, not vi.mock: LaunchConfigForm.test.tsx renders ScalarField/
+// ModelListField (fields.tsx/collectionFields.tsx) without ever mocking this
+// module, so under a shared module registry those production modules' own
+// `import { fetchModelCatalog }` binding is already resolved to the real
+// function by the time this file's tests run - a vi.mock() factory
+// registered this late replaces what THIS file's own import resolves to, but
+// not what an already-loaded importer calls internally. Spying on the real
+// module's own export patches the one binding every importer actually
+// shares, regardless of import order.
+let fetchModelCatalog: typeof catalogClientModule.fetchModelCatalog;
 beforeEach(() => {
-  vi.mocked(fetchModelCatalog).mockReset();
-  vi.mocked(fetchModelCatalog).mockResolvedValue({ models: [], recent: [], diagnostics: [] });
+  fetchModelCatalog = vi
+    .spyOn(catalogClientModule, "fetchModelCatalog")
+    .mockResolvedValue({ models: [], recent: [], diagnostics: [] });
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 const MODELS: ModelDescriptor[] = [
   { provider: "anthropic", model: "claude-sonnet-4-5" },

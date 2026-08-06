@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy, StrictMode } from "react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, test } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { ToolCallItem } from "../ToolCallItem";
@@ -15,7 +15,7 @@ import "./subagentModule";
 import type { DockviewApi } from "dockview-core";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import { registerPane } from "../../../../shell/paneRegistry";
+import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
@@ -26,11 +26,13 @@ import rawCssModule from "./subagentmodule.module.css";
 // panes/session module (a heavier, T1-owned dependency this test doesn't
 // need: it only asserts openPane was called correctly, never that a real
 // SessionPane renders).
-registerPane({
-  id: "session",
-  title: () => "test session",
-  component: lazy(() => Promise.resolve({ default: () => null })),
-});
+afterAll(
+  registerPaneForTests({
+    id: "session",
+    title: () => "test session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  }),
+);
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });

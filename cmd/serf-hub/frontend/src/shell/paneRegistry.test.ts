@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { lazy } from "react";
-import { expect, test } from "vitest";
-import { type PaneDescriptor, type PaneProps, paneFor, registerPane } from "./paneRegistry";
+import { afterEach, expect, test } from "vitest";
+import { type PaneDescriptor, type PaneProps, paneFor, registerPaneForTests } from "./paneRegistry";
 
 // A minimal descriptor fixture. `component` must be a LazyExoticComponent
 // per the locked PaneDescriptor shape (see the wave-3 plan's Locked
@@ -19,10 +19,21 @@ function fixtureDescriptor<P>(
   };
 }
 
+// paneRegistry.ts is a shared module singleton, not fresh per test - each
+// test below registers over a real PaneTypeId (doc/spawn/session), so this
+// restores whatever was there before that test ran, keeping the leak from
+// reaching whichever file runs next in the same worker.
+let restorePane: (() => void) | undefined;
+
+afterEach(() => {
+  restorePane?.();
+  restorePane = undefined;
+});
+
 test("registerPane makes a descriptor retrievable by paneFor via its id", () => {
   const descriptor = fixtureDescriptor("doc");
 
-  registerPane(descriptor);
+  restorePane = registerPaneForTests(descriptor);
 
   expect(paneFor("doc")).toBe(descriptor);
 });
@@ -35,7 +46,7 @@ test("paneFor throws a clear error for an id that was never registered", () => {
 test("paneFor preserves singleton: true as registered", () => {
   const descriptor = fixtureDescriptor("spawn", { singleton: true });
 
-  registerPane(descriptor);
+  restorePane = registerPaneForTests(descriptor);
 
   expect(paneFor("spawn").singleton).toBe(true);
 });
@@ -43,7 +54,7 @@ test("paneFor preserves singleton: true as registered", () => {
 test("paneFor preserves an omitted singleton as undefined", () => {
   const descriptor = fixtureDescriptor("session");
 
-  registerPane(descriptor);
+  restorePane = registerPaneForTests(descriptor);
 
   expect(paneFor("session").singleton).toBeUndefined();
 });

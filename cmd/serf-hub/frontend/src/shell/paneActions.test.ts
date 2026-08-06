@@ -1,9 +1,9 @@
 import type { DockviewApi } from "dockview-core";
 import { type ComponentType, lazy } from "react";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
 import { inheritOpenerTheme, openBeside, popOutPane } from "./paneActions";
-import { type PaneDescriptor, type PaneProps, registerPane } from "./paneRegistry";
+import { type PaneDescriptor, type PaneProps, registerPaneForTests } from "./paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // A never-resolving lazy component: openBeside/popOutPane never render a pane,
@@ -26,8 +26,18 @@ function fixtureDescriptor<P>(
 // open-beside fixture must be drawn from it. The read-only "transcript" pane
 // this stream registers for real is left out here so these tests exercise
 // openBeside's store/split wiring, not that pane's own registration.
+// paneRegistry.ts is a shared module singleton - registerPaneForTests's
+// restorer (called in afterAll below) puts back whatever "doc" resolved to
+// before this file ran, so a later file sharing the same registry never
+// inherits this never-resolving fixture.
+let restoreDocPane: () => void;
+
 beforeAll(() => {
-  registerPane(fixtureDescriptor("doc"));
+  restoreDocPane = registerPaneForTests(fixtureDescriptor("doc"));
+});
+
+afterAll(() => {
+  restoreDocPane();
 });
 
 beforeEach(() => {

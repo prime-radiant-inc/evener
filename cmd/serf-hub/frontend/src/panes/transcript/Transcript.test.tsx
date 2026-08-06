@@ -1,11 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { lazy } from "react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ThreadModel } from "../../protocol/model";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
-import { registerPane } from "../../shell/paneRegistry";
+import { registerPaneForTests } from "../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
@@ -14,11 +14,13 @@ import Transcript from "./Transcript";
 // A minimal, test-only "session" pane registration - mirrors
 // subagentModule.test.tsx's own precedent: real registerPane/paneFor/openPane
 // machinery, without pulling in the actual (heavier) panes/session module.
-registerPane({
-  id: "session",
-  title: () => "test session",
-  component: lazy(() => Promise.resolve({ default: () => null })),
-});
+afterAll(
+  registerPaneForTests({
+    id: "session",
+    title: () => "test session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  }),
+);
 
 // Full capability set: the read-only pane must ignore all of it (no composer/
 // controls), so the fixture is deliberately permissive - a read-only render
@@ -86,6 +88,12 @@ afterEach(() => {
   if (offsetHeightDescriptor) {
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
   }
+  // The beforeEach above only resets threadsStore/workspaceStore BEFORE each
+  // test - nothing restores them after the LAST test, so a pane this file
+  // opened (pointing at a tracked "ref_parent" ref) stays open and focused
+  // for whichever file runs next under isolate:false.
+  resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
 });
 
 test("shows a loading placeholder before the thread hydrates", async () => {
