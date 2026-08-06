@@ -13,7 +13,7 @@ import {
 } from "react";
 import { Button, Chevron } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { OpenTranscriptButton, openTranscript } from "../transcript/openTranscript";
+import { OpenTranscriptButton } from "../transcript/openTranscript";
 import { ActivityRowDetail } from "./ActivityRowDetail";
 import {
   type ActivityDelegate,
@@ -323,8 +323,9 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
       onToggleFold(row.id);
       return;
     }
-    const target = transcriptTarget(row);
-    if (target) openTranscript(target, row.parentRef);
+    // Row activation is the disclosure, same as the chevron: the transcript
+    // opens only from the row's own open button, never from the title.
+    setDetailOpen(row, !isDetailOpen(row));
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>, row: ActivityRow): void {
@@ -489,11 +490,14 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
           role="treeitem"
           aria-label={name}
           aria-level={row.level}
+          aria-expanded={detailOpen}
           tabIndex={row.id === effectiveFocusedID ? 0 : -1}
           className={CLASS.denseRow}
           onFocus={() => setFocusedID(row.id)}
           onKeyDown={(event) => handleKeyDown(event, row)}
-          onClick={target ? () => openTranscript(target, row.parentRef) : undefined}
+          // Clicking the title toggles the disclosure, same as the chevron;
+          // the transcript opens only from the row's open button.
+          onClick={() => setDetailOpen(row, !detailOpen)}
         >
           <button
             type="button"

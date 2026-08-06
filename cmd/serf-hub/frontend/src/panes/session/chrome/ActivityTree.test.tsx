@@ -284,17 +284,25 @@ describe("ActivityTree", () => {
     expect(within(failedRow).queryByRole("button", { name: "Open transcript" })).toBeNull();
   });
 
-  test("clicking rows opens their transcripts with the row's parent ref", async () => {
+  test("clicking a row's title toggles its disclosure, never opens the transcript", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
     const user = setupUser();
     render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
-    await user.click(screen.getByRole("treeitem", { name: "run tests" }));
-    expect(openTranscript).toHaveBeenNthCalledWith(1, "job:job_shell_live", "ref_root");
+    // The shell row's strip starts open; clicking the title closes it…
+    const shellRow = screen.getByRole("treeitem", { name: "run tests" });
+    expect(screen.getByText("npm test")).toBeTruthy();
+    await user.click(shellRow);
+    expect(screen.queryByText("npm test")).toBeNull();
+    expect(shellRow.getAttribute("aria-expanded")).toBe("false");
 
-    await user.click(screen.getByRole("treeitem", { name: "Inspect the repo" }));
-    expect(openTranscript).toHaveBeenNthCalledWith(2, "ref_child", "ref_root");
+    // …and clicking again reopens it. No click ever opens a transcript -
+    // that is the open button's job alone.
+    await user.click(shellRow);
+    expect(screen.getByText("npm test")).toBeTruthy();
+    expect(shellRow.getAttribute("aria-expanded")).toBe("true");
+    expect(openTranscript).not.toHaveBeenCalled();
   });
 
   test("top-level rows render their detail strips expanded by default", () => {
@@ -418,11 +426,14 @@ describe("ActivityTree", () => {
     await user.keyboard("{ArrowUp}");
     expect(document.activeElement).toBe(shellRow);
 
-    // Enter on a job row opens its transcript.
+    // Enter on a job row toggles its disclosure (the title's own activation);
+    // the strip starts open, so this closes it.
     await user.keyboard("{Enter}");
-    expect(openTranscript).toHaveBeenCalledWith("job:job_shell_live", "ref_root");
+    expect(screen.queryByText("npm test")).toBeNull();
+    expect(openTranscript).not.toHaveBeenCalled();
 
-    // Top-level rows start expanded: ArrowLeft closes the strip, ArrowRight reopens it.
+    // ArrowRight reopens the strip, ArrowLeft closes it again.
+    await user.keyboard("{ArrowRight}");
     expect(screen.getByText("npm test")).toBeTruthy();
     await user.keyboard("{ArrowLeft}");
     expect(screen.queryByText("npm test")).toBeNull();
@@ -433,7 +444,7 @@ describe("ActivityTree", () => {
     foldRow.focus();
     await user.keyboard("{Enter}");
     expect(onToggleFold).toHaveBeenCalledWith(FOLD_ID);
-    expect(openTranscript).toHaveBeenCalledTimes(1);
+    expect(openTranscript).not.toHaveBeenCalled();
   });
 
   test("keyboard: arrows still navigate rows when focus sits on a row chevron button", async () => {

@@ -31,10 +31,14 @@ export default function assert(measurements) {
       return;
     }
     if (expectedOverflowX !== undefined && box.overflowX !== expectedOverflowX) {
-      failures.push(`${fixture}: ${ownerName} overflow-x is ${JSON.stringify(box.overflowX)}, expected ${JSON.stringify(expectedOverflowX)}`);
+      failures.push(
+        `${fixture}: ${ownerName} overflow-x is ${JSON.stringify(box.overflowX)}, expected ${JSON.stringify(expectedOverflowX)}`,
+      );
     }
     if (expectedOverflowX === undefined && /auto|scroll/.test(box.overflowX)) {
-      failures.push(`${fixture}: ${ownerName} overflow-x is ${JSON.stringify(box.overflowX)} - non-output owners must not be horizontal scrollers`);
+      failures.push(
+        `${fixture}: ${ownerName} overflow-x is ${JSON.stringify(box.overflowX)} - non-output owners must not be horizontal scrollers`,
+      );
     }
     if (box.scrollWidth > box.clientWidth + tolerance) {
       failures.push(
@@ -55,10 +59,14 @@ export default function assert(measurements) {
     if (!measurement.structure?.sheetBodyPresent) failures.push(`${fixture}: missing sheet body wrapper`);
     if (!measurement.structure?.activityPanelPresent) failures.push(`${fixture}: missing inner Activity panel wrapper`);
     if (!measurement.structure?.treePanePresent) failures.push(`${fixture}: missing tree pane`);
-    if (measurement.structure?.sheetContainsBody === false) failures.push(`${fixture}: sheet wrapper does not contain the sheet body wrapper`);
-    if (measurement.structure?.bodyContainsActivity === false) failures.push(`${fixture}: sheet body wrapper does not contain the inner Activity panel wrapper`);
-    if (measurement.structure?.activityContainsTreePane === false) failures.push(`${fixture}: inner Activity panel wrapper does not contain the tree pane`);
-    if (measurement.structure?.treePaneContainsTree === false) failures.push(`${fixture}: tree pane does not contain the tree element`);
+    if (measurement.structure?.sheetContainsBody === false)
+      failures.push(`${fixture}: sheet wrapper does not contain the sheet body wrapper`);
+    if (measurement.structure?.bodyContainsActivity === false)
+      failures.push(`${fixture}: sheet body wrapper does not contain the inner Activity panel wrapper`);
+    if (measurement.structure?.activityContainsTreePane === false)
+      failures.push(`${fixture}: inner Activity panel wrapper does not contain the tree pane`);
+    if (measurement.structure?.treePaneContainsTree === false)
+      failures.push(`${fixture}: tree pane does not contain the tree element`);
     if (measurement.mode === "desktop" && !isWideSheetInlineSize(measurement.sizing?.sheetInlineSizeVar)) {
       failures.push(
         `${fixture}: sheet wrapper --sheet-inline-size is ${JSON.stringify(measurement.sizing?.sheetInlineSizeVar ?? null)}, expected the real wide Sheet value`,
@@ -74,31 +82,55 @@ export default function assert(measurements) {
     }
     // The tree pane is the one sanctioned scroller in this view: it scrolls
     // vertically, never horizontally.
-    assertNoHorizontalOverflow(fixture, "tree pane", measurement.treePane, diagnostics, { expectedOverflowX: "hidden" });
+    assertNoHorizontalOverflow(fixture, "tree pane", measurement.treePane, diagnostics, {
+      expectedOverflowX: "hidden",
+    });
 
     // The dense tree is a single column in every form factor since the
     // 2026-08-05 redesign removed the master-detail inspector pane.
     if (measurement.visiblePaneCount !== 1) {
-      failures.push(`${fixture}: dense tree shows ${measurement.visiblePaneCount} visible panes (${paneRoles}), expected exactly 1 pane`);
+      failures.push(
+        `${fixture}: dense tree shows ${measurement.visiblePaneCount} visible panes (${paneRoles}), expected exactly 1 pane`,
+      );
     }
 
-    for (const [name, textBox] of [
-      ["deep label", measurement.deepLabel],
-      ["deep detail", measurement.deepDetail],
-    ]) {
-      if (!textBox) {
-        failures.push(`${fixture}: missing ${name} probe`);
-        continue;
-      }
-      if (textBox.whiteSpace !== "nowrap") {
-        failures.push(`${fixture}: ${name} white-space is ${JSON.stringify(textBox.whiteSpace)}, expected "nowrap" for single-line clipping`);
-      }
-      if (textBox.textOverflow !== "ellipsis") {
-        failures.push(`${fixture}: ${name} text-overflow is ${JSON.stringify(textBox.textOverflow)}, expected "ellipsis"`);
-      }
-      if (textBox.scrollWidth <= textBox.clientWidth + tolerance) {
+    // The dense row's label is the collapsed form: it clips to one line
+    // with an ellipsis no matter the form factor.
+    const labelBox = measurement.deepLabel;
+    if (!labelBox) {
+      failures.push(`${fixture}: missing deep label probe`);
+    } else {
+      if (labelBox.whiteSpace !== "nowrap") {
         failures.push(
-          `${fixture}: ${name} scrollWidth ${textBox.scrollWidth}px does not exceed clientWidth ${textBox.clientWidth}px - the probe text is not actually clipped`,
+          `${fixture}: deep label white-space is ${JSON.stringify(labelBox.whiteSpace)}, expected "nowrap" for single-line clipping`,
+        );
+      }
+      if (labelBox.textOverflow !== "ellipsis") {
+        failures.push(
+          `${fixture}: deep label text-overflow is ${JSON.stringify(labelBox.textOverflow)}, expected "ellipsis"`,
+        );
+      }
+      if (labelBox.scrollWidth <= labelBox.clientWidth + tolerance) {
+        failures.push(
+          `${fixture}: deep label scrollWidth ${labelBox.scrollWidth}px does not exceed clientWidth ${labelBox.clientWidth}px - the probe text is not actually clipped`,
+        );
+      }
+    }
+    // The detail strip is the label's unabridged counterpart: it WRAPS the
+    // whole command instead of clipping it, so it must never overflow
+    // sideways either.
+    const detailBox = measurement.deepDetail;
+    if (!detailBox) {
+      failures.push(`${fixture}: missing deep detail probe`);
+    } else {
+      if (detailBox.whiteSpace !== "pre-wrap") {
+        failures.push(
+          `${fixture}: deep detail white-space is ${JSON.stringify(detailBox.whiteSpace)}, expected "pre-wrap" so the whole command shows`,
+        );
+      }
+      if (detailBox.scrollWidth > detailBox.clientWidth + tolerance) {
+        failures.push(
+          `${fixture}: deep detail scrollWidth ${detailBox.scrollWidth}px exceeds clientWidth ${detailBox.clientWidth}px - the wrapped command must not scroll sideways`,
         );
       }
     }
@@ -108,7 +140,7 @@ export default function assert(measurements) {
     ? {
         pass: true,
         reason:
-          "the dense activity tree keeps exactly one visible pane at desktop and mobile widths, the sheet/body/pane owners stay free of horizontal scrolling, deep row labels and detail-strip commands clip with ellipsis, and the continuation strip wraps instead of scrolling sideways",
+          "the dense activity tree keeps exactly one visible pane at desktop and mobile widths, the sheet/body/pane owners stay free of horizontal scrolling, deep row labels clip with ellipsis while the detail strip wraps the whole command, and the continuation strip wraps instead of scrolling sideways",
       }
     : {
         pass: false,
