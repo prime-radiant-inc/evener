@@ -151,6 +151,8 @@ TARGETS=(
 	"native:agent:./internal/goal:FuzzGoalLifecycleProgram::goal.go;prompt.go"
 	"native:agent:./internal/installid:FuzzLoadOrCreateInstallationIDWithFS::"
 	"native:agent:./internal/promptpath:FuzzPromptPaths::"
+	"native:agent:./internal/globpattern:FuzzExpand::expand.go"
+	"native:agent:./internal/runetrim:FuzzRuneTrim::"
 	"native:agent:./internal/tool/repair:FuzzRepairJSON::"
 	"native:agent:./internal/tool/repair:FuzzRepairArgs::"
 	"native:agent:./internal/tool/repair:FuzzRepairDiagnostics::"
