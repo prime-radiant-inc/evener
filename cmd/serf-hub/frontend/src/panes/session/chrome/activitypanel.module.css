@@ -147,9 +147,10 @@
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--ink-hi);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* The expanded strip shows the WHOLE command, wrapped - the dense row's
+   * ellipsis is the collapsed form, this is its unabridged counterpart. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .detailMeta {
   display: block;
@@ -158,8 +159,9 @@
   font-size: 11px;
   color: var(--ink-low);
 }
-/* The output tail preview inside the detail strip: bounded height so a
- * chatty job never turns the strip into a log dump. */
+/* The output tail preview inside the detail strip. No max-height/scroll:
+ * the fetch is already bounded to a couple hundred bytes, so the strip
+ * simply shows all of it. */
 .detailOutput {
   margin: var(--space-1) 0 0;
   padding: var(--space-1) var(--space-2);
@@ -171,8 +173,6 @@
   color: var(--ink-mid);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  max-height: 8em;
-  overflow-y: auto;
 }
 .indentGuide {
   border-left: 1px solid var(--edge);
