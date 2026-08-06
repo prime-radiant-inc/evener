@@ -176,10 +176,14 @@ Fuzz-family coverage and the default gate's coverage number are tracked on
 two separate tracks, not one. `go test ./agent -short`'s `-cover` output (and
 the coverage floor it feeds) measures only the imperative test suite — the
 seqfuzz/schemafuzz family t.Skip()s there by design. Coverage contributed by
-this family is instead the fuzz coverage pipeline's job: `make fuzz-coverage`
-and `make fuzz-coverage-global` replay it (with `SERF_FUZZ_TESTS=1`, as above)
-against their own ratchets. Do not read a default-gate coverage number as
-"whole-repo coverage including fuzz" — it never was, and now it's explicit.
+this family is instead `make fuzz-coverage-global`'s job: it is the ONLY
+coverage target that replays Rapid surfaces (with `SERF_FUZZ_TESTS=1`, as
+above), against its own ratchet. `make fuzz-coverage`
+(`scripts/fuzz-coverage.sh`) does not participate in this track at all — its
+target loop is `[ "$tag" = native ] || continue`, so it replays only native
+`FuzzXxx` corpora and never touches a Rapid target, gated or not. Do not read
+a default-gate coverage number as "whole-repo coverage including fuzz" — it
+never was, and now it's explicit.
 
 ## Proving a Type Survives a Round Trip
 
