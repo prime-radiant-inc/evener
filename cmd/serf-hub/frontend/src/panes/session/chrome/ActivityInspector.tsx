@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import { threadsStore } from "../../../stores/threads";
-import { Button, Chip, CodeBlock, EmptyState } from "../../../widgets";
+import { Button, Chip, CodeBlock, EmptyState, Markdown } from "../../../widgets";
+import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { openTranscript } from "../transcript/openTranscript";
 import type { ActivitySelectionNode } from "./ActivityTree";
@@ -38,6 +39,22 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
 function outputOwnerForDelegate(delegate: ActivityDelegate): ActivityJob | undefined {
   const latest = delegate.turns.at(-1);
   return latest?.hasOutput ? latest : undefined;
+}
+
+function Mandate({ mandate, id }: { mandate: string; id: string }) {
+  const paragraphs = mandate.split(/\n\s*\n/);
+  const firstParagraph = paragraphs[0] ?? "";
+  const remaining = paragraphs.slice(1).join("\n\n");
+  return (
+    <>
+      <Markdown source={firstParagraph} />
+      {remaining && (
+        <Disclosure id={`delegate-mandate-${id}`} summary="Show more">
+          <Markdown source={remaining} />
+        </Disclosure>
+      )}
+    </>
+  );
 }
 
 function outputCaption(totalBytes: number, retainedStart: number, truncated: boolean): string | null {
@@ -171,7 +188,7 @@ function DelegateInspector({ delegate, sessionRef }: { delegate: ActivityDelegat
       {delegate.mandate && (
         <div className={CLASS.inspectorSection}>
           <h3>Mandate</h3>
-          <p>{delegate.mandate}</p>
+          <Mandate mandate={delegate.mandate} id={delegate.delegateId} />
         </div>
       )}
       <div className={CLASS.toolbar}>

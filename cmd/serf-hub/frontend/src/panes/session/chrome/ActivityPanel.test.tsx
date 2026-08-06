@@ -97,7 +97,7 @@ function activityTree(revision = 1) {
             delegateId: "dlg_active",
             childSessionId: "sess_child",
             childRef: "ref_child",
-            mandate: "Inspect the repo",
+            mandate: "Inspect the repo.\n\n**Additional instructions:** keep the report concise.",
             turns: [
               {
                 jobId: "job_delegate_turn_1",
@@ -803,7 +803,7 @@ describe("ActivityPanel", () => {
     expect(screen.getByRole("treeitem", { name: /child session/i })).toBeTruthy();
   });
 
-  test("delegate inspector shows mandate, ordered turns, latest report availability, child aggregate, branch error, and Open transcript", async () => {
+  test("delegate inspector renders the mandate as markdown with later paragraphs behind Show more", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
     fake.on("serf/jobs/list", () => ({ data: activityTree() }));
@@ -817,7 +817,10 @@ describe("ActivityPanel", () => {
     await user.click(screen.getByRole("treeitem", { name: /inspect the repo/i }));
 
     const inspector = screen.getByTestId("activity-inspector");
-    expect(within(inspector).getByText("Inspect the repo")).toBeTruthy();
+    expect(within(inspector).getByText("Inspect the repo.")).toBeTruthy();
+    expect(within(inspector).queryByText("Additional instructions:")).toBeNull();
+    await user.click(within(inspector).getByText("Show more"));
+    expect(within(inspector).getByText("Additional instructions:")).toBeTruthy();
     expect(within(inspector).getByText(/delegate started/)).toBeTruthy();
     expect(within(inspector).getAllByText(/delegate report/).length).toBeGreaterThan(0);
     expect(within(inspector).getByText(/latest output available/i)).toBeTruthy();

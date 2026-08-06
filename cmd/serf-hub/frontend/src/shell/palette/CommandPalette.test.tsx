@@ -394,6 +394,7 @@ test("Enter on an exact built-in name runs the built-in", async () => {
   const trigger = document.createElement("button");
   trigger.setAttribute("data-details-trigger", "true");
   document.body.appendChild(trigger);
+  vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: true }));
   const click = vi.spyOn(trigger, "click");
   focusSession("ref_a");
   render(<CommandPalette />);
