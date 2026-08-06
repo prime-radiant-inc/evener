@@ -308,6 +308,9 @@ func (p *Profile) ContextWindowSize() int { return p.contextWindow }
 // MaxOutputTokens is the model's output-token cap: the instance's
 // providers.toml max_output_tokens when configured, else the embedded
 // catalog's, else 0 (unknown — the provider adapter's own default governs).
+// An instance-configured cap is taken verbatim, deliberately skipping the
+// catalog's junk-data sanity guard: explicit operator config wins, and a
+// bad value fails loudly at the provider instead of being silently ignored.
 func (p *Profile) MaxOutputTokens() int {
 	if mc, ok := p.instModels[p.model]; ok && mc.MaxOutputTokens > 0 {
 		return mc.MaxOutputTokens
