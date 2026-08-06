@@ -61,6 +61,14 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	}
 
 	if err := t.Schema.Validate(args); err != nil {
+		// A length stop that cut the stream before any argument byte leaves
+		// empty args; on a tool with required parameters that reads as a
+		// "missing required field" schema error — the same misdiagnosis the
+		// truncation message exists to prevent.
+		if finishReason == llm.FinishReasonLength && len(res.Call.Arguments) == 0 {
+			res.PrevalErr = repair.ExplainTruncatedCall(requestedVisible)
+			return res
+		}
 		healed, c := repair.RepairArgs(t.Definition.Parameters, args)
 		if err2 := t.Schema.Validate(healed); err2 != nil {
 			res.PrevalErr = repair.ExplainSchemaError(requestedVisible, t.Definition.Parameters, healed, offendingField(err2))
