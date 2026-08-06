@@ -32,9 +32,6 @@
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
-  background: var(--surface-1);
 }
 
 .tree {
@@ -43,7 +40,6 @@
   gap: var(--space-1);
   min-width: 0;
   overflow-x: hidden;
-  padding: var(--space-2);
 }
 
 .rowToggle {
@@ -92,6 +88,18 @@
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--ink-low);
+}
+/* The kind glyph carries the row's status hue (it replaced the status dot):
+ * alive for working, attention for needs-you, danger for failed. Idle/ended
+ * rows keep denseKind's default low ink. */
+.kindAlive {
+  color: var(--alive);
+}
+.kindAttention {
+  color: var(--attention);
+}
+.kindDanger {
+  color: var(--danger);
 }
 .denseMeta {
   flex: none;
@@ -150,10 +158,21 @@
   font-size: 11px;
   color: var(--ink-low);
 }
-.detailActions {
-  margin-top: var(--space-2);
-  display: flex;
-  gap: var(--space-2);
+/* The output tail preview inside the detail strip: bounded height so a
+ * chatty job never turns the strip into a log dump. */
+.detailOutput {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-mid);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 8em;
+  overflow-y: auto;
 }
 .indentGuide {
   border-left: 1px solid var(--edge);

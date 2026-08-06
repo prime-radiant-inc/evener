@@ -75,6 +75,9 @@ test("live entries render in order; terminal entries fold behind one row", () =>
   expect(rows.map((r) => r.id)).toEqual(["job:a", "job:d", "session:sess_root:inactive-fold"]);
   const fold = rows[2];
   expect(fold?.kind === "fold" && fold.inactiveCount).toBe(2);
+  // Top-level live rows open their detail strips by default.
+  expect(rows[0]).toMatchObject({ defaultDetailOpen: true });
+  expect(rows[1]).toMatchObject({ defaultDetailOpen: true });
 });
 
 test("fold row counts failures separately", () => {
@@ -89,6 +92,9 @@ test("set membership expands the fold and reveals terminal rows after the fold r
     new Set([foldRowID("session:sess_root")]),
   );
   expect(rows.map((r) => r.id)).toEqual(["job:a", "session:sess_root:inactive-fold", "job:b"]);
+  // A row revealed by opening the fold stays collapsed: the fold click means
+  // "show the list", not "expand every child".
+  expect(rows[2]).toMatchObject({ defaultDetailOpen: false });
 });
 
 test("delegate children nest one level deeper under the delegate row", () => {
@@ -97,7 +103,7 @@ test("delegate children nest one level deeper under the delegate row", () => {
   const drow = rows[0];
   const crow = rows[1];
   expect(drow?.kind).toBe("delegate");
-  expect(crow).toMatchObject({ kind: "job", level: 2, parentID: "delegate:dlg_1" });
+  expect(crow).toMatchObject({ kind: "job", level: 2, parentID: "delegate:dlg_1", defaultDetailOpen: false });
 });
 
 test("all-terminal delegate folds as one inactive entry", () => {

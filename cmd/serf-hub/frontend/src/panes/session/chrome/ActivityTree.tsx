@@ -11,9 +11,9 @@ import {
   useRef,
   useState,
 } from "react";
-import { Button, Chevron, StatusDot } from "../../../widgets";
+import { Button, Chevron } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { openTranscript } from "../transcript/openTranscript";
+import { OpenTranscriptButton, openTranscript } from "../transcript/openTranscript";
 import { ActivityRowDetail } from "./ActivityRowDetail";
 import {
   type ActivityDelegate,
@@ -56,6 +56,9 @@ const CLASS = {
   denseName: requireClass(styles.denseName, "activitypanel.module.css", "denseName"),
   denseNameLive: requireClass(styles.denseNameLive, "activitypanel.module.css", "denseNameLive"),
   denseKind: requireClass(styles.denseKind, "activitypanel.module.css", "denseKind"),
+  kindAlive: requireClass(styles.kindAlive, "activitypanel.module.css", "kindAlive"),
+  kindAttention: requireClass(styles.kindAttention, "activitypanel.module.css", "kindAttention"),
+  kindDanger: requireClass(styles.kindDanger, "activitypanel.module.css", "kindDanger"),
   denseMeta: requireClass(styles.denseMeta, "activitypanel.module.css", "denseMeta"),
   denseQuiet: requireClass(styles.denseQuiet, "activitypanel.module.css", "denseQuiet"),
   denseFailed: requireClass(styles.denseFailed, "activitypanel.module.css", "denseFailed"),
@@ -74,6 +77,30 @@ function delegateStatusText(delegate: ActivityDelegate): string {
 
 function delegateName(delegate: ActivityDelegate): string {
   return delegate.mandate ?? delegate.child?.label ?? delegate.childSessionId;
+}
+
+// The kind glyph ($/⌘) carries the status hue the StatusDot used to: working
+// is alive, failed is danger, needs-you is attention, and idle/ended keep the
+// glyph's default low ink. The label preserves the dot's accessible name.
+const KIND_STATE_LABEL: Record<string, string> = {
+  idle: "Idle",
+  working: "Working",
+  "needs-you": "Needs you",
+  failed: "Failed",
+  ended: "Ended",
+};
+
+function kindStateClass(state: string): string | undefined {
+  switch (state) {
+    case "working":
+      return CLASS.kindAlive;
+    case "needs-you":
+      return CLASS.kindAttention;
+    case "failed":
+      return CLASS.kindDanger;
+    default:
+      return undefined;
+  }
 }
 
 // transcriptTarget mirrors ActivityTranscriptAction exactly: the ref is
@@ -113,13 +140,6 @@ function terminalSegment(job: { startedAt: string; endedAt?: string } | undefine
   return { key: "status", text: statusText, tone: isFailedStatus(statusText) ? "failed" : undefined };
 }
 
-function failedSuffix(segments: MetaSegment[], statusText: string): MetaSegment[] {
-  if (!isFailedStatus(statusText)) return segments;
-  const last = segments.at(-1);
-  if (last?.key !== "duration") return segments;
-  return [...segments, { key: "failed", text: "failed", tone: "failed" }];
-}
-
 function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
   const { job } = row;
   if (row.live) {
@@ -128,7 +148,8 @@ function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
       { key: "quiet", text: formatQuietAge(now - quietAnchorMillis(job)), tone: "quiet" },
     ];
   }
-  return failedSuffix([terminalSegment(job, job.status)], job.status);
+  // No "failed" suffix: the colored kind glyph already carries the outcome.
+  return [terminalSegment(job, job.status)];
 }
 
 function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegment[] {
@@ -148,7 +169,7 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
   const segments: MetaSegment[] = [];
   if (tokens) segments.push({ key: "tokens", text: tokens });
   segments.push(terminalSegment(lastTurn, statusText));
-  return failedSuffix(segments, statusText);
+  return segments;
 }
 
 interface ContinuationStrip {
@@ -225,17 +246,18 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   { tree, expandedFoldIDs, onToggleFold, continuationFailures = {}, onContinue, loadingContinuationID },
   ref,
 ) {
-  // Detail strips are per-row, not an accordion: top-level rows start
-  // expanded so the command/mandate is visible without a click, nested rows
-  // start collapsed, and every chevron/arrow toggle overrides its row's
-  // default independently. Overrides keyed by vanished rows stay inert - they
-  // are only ever read for rows the current tree actually renders.
+  // Detail strips are per-row, not an accordion: each row carries its own
+  // default (buildActivityRows' defaultDetailOpen - top-level rows open,
+  // nested and fold-revealed rows collapsed), and every chevron/arrow toggle
+  // overrides its row's default independently. Overrides keyed by vanished
+  // rows stay inert - they are only ever read for rows the current tree
+  // actually renders.
   const [detailOverrides, setDetailOverrides] = useState<ReadonlyMap<string, boolean>>(new Map());
   const [now, setNow] = useState(() => Date.now());
   const rows = useMemo(() => buildActivityRows(tree, new Set(expandedFoldIDs)), [tree, expandedFoldIDs]);
 
   function isDetailOpen(row: ActivityJobRow | ActivityDelegateRow): boolean {
-    return detailOverrides.get(row.id) ?? row.level === 1;
+    return detailOverrides.get(row.id) ?? row.defaultDetailOpen;
   }
 
   function setDetailOpen(row: ActivityJobRow | ActivityDelegateRow, open: boolean): void {
@@ -455,6 +477,8 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
     const target = transcriptTarget(row);
     const detailOpen = isDetailOpen(row);
     const segments = row.kind === "job" ? jobMetaSegments(row, now) : delegateMetaSegments(row, now);
+    const kindState = jobStatusDotState(statusText, row.live ? undefined : true);
+    const kindClass = kindStateClass(kindState);
     return (
       <Fragment key={row.id}>
         <div
@@ -484,11 +508,15 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
           >
             <Chevron direction={detailOpen ? "down" : "right"} size={12} />
           </button>
-          <StatusDot state={jobStatusDotState(statusText, row.live ? undefined : true)} />
-          <span className={CLASS.denseKind} aria-hidden="true">
+          <span
+            role="img"
+            aria-label={KIND_STATE_LABEL[kindState] ?? kindState}
+            className={kindClass ? `${CLASS.denseKind} ${kindClass}` : CLASS.denseKind}
+          >
             {row.kind === "delegate" ? "⌘" : "$"}
           </span>
           <span className={row.live ? `${CLASS.denseName} ${CLASS.denseNameLive}` : CLASS.denseName}>{name}</span>
+          {target && <OpenTranscriptButton transcriptRef={target} parentRef={row.parentRef} iconOnly tabIndex={-1} />}
           {renderSegments(segments)}
         </div>
         {detailOpen && <ActivityRowDetail row={row} now={now} />}

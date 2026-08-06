@@ -1,31 +1,11 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import * as openTranscriptModule from "../transcript/openTranscript";
+import { connectionStore } from "../../../stores/connection";
+import { threadsStore } from "../../../stores/threads";
 import { ActivityRowDetail } from "./ActivityRowDetail";
 import type { ActivityDelegate, ActivityJob, ActivitySessionNode } from "./activityData";
 import type { ActivityDelegateRow, ActivityJobRow } from "./activityRows";
-
-// vi.spyOn, not vi.mock: ActivityTree.test.tsx statically imports ActivityTree
-// (which renders this file's own subject, ActivityRowDetail, through its
-// detail strips), and other files import ActivityRowDetail/ActivityTree too
-// without ever mocking this module - so under a shared module registry
-// ActivityRowDetail.tsx's own `import { OpenTranscriptButton }` binding can
-// already be resolved to the real component by the time this file's tests
-// run. A vi.mock() factory registered this late replaces what THIS file's
-// own import resolves to, but not what an already-loaded ActivityRowDetail.tsx
-// renders internally. Spying on the real module's own export patches the one
-// binding every importer actually shares, regardless of import order.
-beforeEach(() => {
-  vi.spyOn(openTranscriptModule, "OpenTranscriptButton").mockImplementation((props) =>
-    createElement(
-      "button",
-      { type: "button", "data-transcript-ref": props.transcriptRef, "data-parent-ref": props.parentRef },
-      "open",
-    ),
-  );
-});
 
 // Pinned clock: every quiet-age assertion below measures against this instant.
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
@@ -61,6 +41,7 @@ function jobRow(overrides: Record<string, unknown>, rowOverrides: Partial<Activi
     level: 1,
     job: shellJob(overrides),
     live: false,
+    defaultDetailOpen: true,
     transcriptRef: "job:job_x",
     parentRef: "ref_root",
     ...rowOverrides,
@@ -98,14 +79,34 @@ function delegateRow(
     level: 1,
     delegate,
     live: true,
+    defaultDetailOpen: true,
     transcriptRef: "ref_child",
     parentRef: "ref_root",
     ...rowOverrides,
   };
 }
 
+// setupJobOutput spies the store method (not the module) so the preview's
+// fetch stays in-process; the default resolve is an empty tail, and tests
+// override it with mockResolvedValue/mockRejectedValue on the returned spy.
+function setupJobOutput() {
+  return vi
+    .spyOn(threadsStore.getState(), "jobOutput")
+    .mockResolvedValue({ tail: "", totalBytes: 0, retainedStart: 0 });
+}
+
+let jobOutput: ReturnType<typeof setupJobOutput>;
+
+beforeEach(() => {
+  // The output preview only fetches once the connection store reports ready;
+  // the stub keeps the wire out of the unit test entirely.
+  connectionStore.setState({ state: "ready" });
+  jobOutput = setupJobOutput();
+});
+
 afterEach(() => {
   cleanup();
+  connectionStore.setState({ state: "idle", client: null });
   vi.restoreAllMocks();
 });
 
@@ -171,9 +172,7 @@ describe("ActivityRowDetail", () => {
       />,
     );
     // 12s of quiet measured from lastOutputAt, not from startedAt.
-    expect(
-      screen.getByText(`running 12s · 512 output bytes · started ${localHHMM("2026-08-05T14:58:00Z")}`),
-    ).toBeTruthy();
+    expect(screen.getByText(`running 12s · 512b · started ${localHHMM("2026-08-05T14:58:00Z")}`)).toBeTruthy();
   });
 
   test("live delegate row meta measures quiet from the latest turn and sums turn output bytes", () => {
@@ -202,12 +201,10 @@ describe("ActivityRowDetail", () => {
         now={NOW}
       />,
     );
-    expect(
-      screen.getByText(`running 12s · 512 output bytes · started ${localHHMM("2026-08-05T14:59:00Z")}`),
-    ).toBeTruthy();
+    expect(screen.getByText(`running 12s · 512b · started ${localHHMM("2026-08-05T14:59:00Z")}`)).toBeTruthy();
   });
 
-  test("terminal row meta shows duration, exit code, and output bytes", () => {
+  test("terminal row meta drops the duplicated runtime and a successful exit code", () => {
     render(
       <ActivityRowDetail
         row={jobRow({
@@ -221,26 +218,73 @@ describe("ActivityRowDetail", () => {
         now={NOW}
       />,
     );
-    expect(screen.getByText("duration 2m · exit 0 · 2048 output bytes")).toBeTruthy();
+    // The dense row already shows the 2m runtime, and exit 0 is the expected
+    // case: the meta line is down to just the output size ("Nb", not
+    // "N output bytes").
+    expect(screen.getByText("2048b")).toBeTruthy();
+    expect(screen.queryByText(/duration/)).toBeNull();
+    expect(screen.queryByText(/exit/)).toBeNull();
   });
 
-  test("OpenTranscriptButton receives the row's transcriptRef and parentRef", () => {
+  test("terminal row meta keeps a non-zero exit code", () => {
+    render(
+      <ActivityRowDetail
+        row={jobRow({
+          status: "completed",
+          terminal: true,
+          exitCode: 1,
+          outputBytes: 41,
+          startedAt: "2026-08-05T14:00:00Z",
+          endedAt: "2026-08-05T14:02:30Z",
+        })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByText("exit 1 · 41b")).toBeTruthy();
+  });
+
+  test("a terminal row with no parseable span falls back to its status text", () => {
+    render(
+      <ActivityRowDetail
+        row={jobRow({ status: "failed", terminal: true, outputBytes: 7, startedAt: "", endedAt: undefined })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByText("failed · 7b")).toBeTruthy();
+  });
+
+  test("a shell job row with output fetches a bounded tail and renders its ANSI escapes as styled runs", async () => {
+    jobOutput.mockResolvedValue({ tail: "[32mok[39m\n[2mPASS[22m\n", totalBytes: 8, retainedStart: 0 });
     render(
       <ActivityRowDetail
         row={jobRow(
-          { transcriptRef: "job:job_y" },
-          { live: true, transcriptRef: "job:job_y", parentRef: "ref_parent" },
+          { command: "go test ./...", hasOutput: true },
+          { live: true, transcriptRef: "job:job_x", parentRef: "ref_root" },
         )}
         now={NOW}
       />,
     );
-    const button = screen.getByRole("button", { name: "open" });
-    expect(button.getAttribute("data-transcript-ref")).toBe("job:job_y");
-    expect(button.getAttribute("data-parent-ref")).toBe("ref_parent");
+    // The escapes resolve to styled text: no literal "[32m" noise survives.
+    expect(await screen.findByText("ok")).toBeTruthy();
+    expect(await screen.findByText("PASS")).toBeTruthy();
+    expect(screen.queryByText(/\[32m|\[2m/)).toBeNull();
+    // The preview asks for a bounded tail: the latest couple hundred bytes,
+    // not the daemon's default window.
+    expect(jobOutput).toHaveBeenCalledWith("ref_root", "job_x", undefined, 256);
   });
 
-  test("a row with no transcript ref renders no transcript action", () => {
-    render(<ActivityRowDetail row={jobRow({}, { live: true, transcriptRef: undefined })} now={NOW} />);
-    expect(screen.queryByRole("button", { name: "open" })).toBeNull();
+  test("a job row without output, and delegate rows, fetch no preview", () => {
+    const { rerender } = render(<ActivityRowDetail row={jobRow({ hasOutput: false }, { live: true })} now={NOW} />);
+    rerender(<ActivityRowDetail row={delegateRow({ mandate: "Inspect the repo" })} now={NOW} />);
+    expect(jobOutput).not.toHaveBeenCalled();
+  });
+
+  test("a failed or empty preview fetch renders nothing", async () => {
+    jobOutput.mockRejectedValue(new Error("job not found"));
+    render(<ActivityRowDetail row={jobRow({ command: "npm test", hasOutput: true }, { live: true })} now={NOW} />);
+    // The command and meta still render; no error surface appears for the preview.
+    expect(screen.getByText("npm test")).toBeTruthy();
+    await vi.waitFor(() => expect(jobOutput).toHaveBeenCalled());
+    expect(document.querySelector("pre")).toBeNull();
   });
 });

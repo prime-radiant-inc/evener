@@ -24,6 +24,10 @@ export interface ActivityJobRow extends ActivityRowBase {
   kind: "job";
   job: ActivityJob;
   live: boolean;
+  // The detail strip's default before any chevron override: top-level rows
+  // open, rows revealed by expanding the inactive fold stay collapsed (the
+  // fold click means "show the list", not "expand every child").
+  defaultDetailOpen: boolean;
   transcriptRef?: string;
   parentRef: string;
 }
@@ -32,6 +36,7 @@ export interface ActivityDelegateRow extends ActivityRowBase {
   kind: "delegate";
   delegate: ActivityDelegate;
   live: boolean;
+  defaultDetailOpen: boolean;
   transcriptRef: string;
   parentRef: string;
 }
@@ -73,7 +78,13 @@ function entryIsFailed(entry: ActivityEntry): boolean {
 export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet<string>): ActivityRow[] {
   const rows: ActivityRow[] = [];
 
-  function appendEntry(entry: ActivityEntry, session: ActivitySessionNode, level: number, parentID: string): void {
+  function appendEntry(
+    entry: ActivityEntry,
+    session: ActivitySessionNode,
+    level: number,
+    parentID: string,
+    fromFold: boolean,
+  ): void {
     if (entry.kind === "shell") {
       rows.push({
         kind: "job",
@@ -82,6 +93,7 @@ export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet
         level,
         job: entry.job,
         live: jobIsActive(entry.job),
+        defaultDetailOpen: level === 1 && !fromFold,
         transcriptRef: entry.job.transcriptRef,
         parentRef: session.ref,
       });
@@ -96,6 +108,7 @@ export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet
       level,
       delegate,
       live: entryIsActive(entry),
+      defaultDetailOpen: level === 1 && !fromFold,
       transcriptRef: delegate.childRef,
       parentRef: session.ref,
     });
@@ -109,7 +122,7 @@ export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet
     for (const entry of session.entries) {
       (entryIsActive(entry) ? live : inactive).push(entry);
     }
-    for (const entry of live) appendEntry(entry, session, level, entriesParentID);
+    for (const entry of live) appendEntry(entry, session, level, entriesParentID, false);
     if (inactive.length === 0) return;
     const id = foldRowID(activityNodeID(session));
     rows.push({
@@ -122,7 +135,7 @@ export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet
       failedCount: inactive.filter(entryIsFailed).length,
     });
     if (!expandedFolds.has(id)) return;
-    for (const entry of inactive) appendEntry(entry, session, level, entriesParentID);
+    for (const entry of inactive) appendEntry(entry, session, level, entriesParentID, true);
   }
 
   visitSession(tree.root, 1);
