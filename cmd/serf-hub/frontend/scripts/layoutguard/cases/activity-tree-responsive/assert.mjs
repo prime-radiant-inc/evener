@@ -1,7 +1,6 @@
 export default function assert(measurements) {
   const failures = [];
   const tolerance = 1;
-  const treeModes = new Set(["desktop", "mobile-tree"]);
 
   function isWideSheetInlineSize(value) {
     if (typeof value !== "string") return false;
@@ -19,20 +18,14 @@ export default function assert(measurements) {
       `sheet=${sizing.sheetPanelWidth}px`,
       `body=${sizing.sheetBodyWidth}px`,
       `activity=${sizing.activityPanelWidth}px`,
-      `layout=${sizing.primaryLayoutWidth}px`,
       `tree=${sizing.treePaneWidth}px`,
-      `inspector=${sizing.inspectorPaneWidth}px`,
-      `display=${JSON.stringify(sizing.masterDetailDisplay)}`,
-      `grid=${JSON.stringify(sizing.masterDetailGridColumns)}`,
-      `treeMinWidth=${JSON.stringify(sizing.treePaneMinWidth)}`,
-      `treeFlexBasis=${JSON.stringify(sizing.treePaneFlexBasis)}`,
-      `groupPadding=${JSON.stringify(sizing.firstGroupPaddingLeft)}`,
       `rowActionsWrap=${JSON.stringify(sizing.rowActionsFlexWrap)}`,
+      `rowActionsPadding=${JSON.stringify(sizing.rowActionsPaddingLeft)}`,
       widest,
     ].join(", ");
   }
 
-  function assertNoHorizontalOverflow(fixture, ownerName, box, diagnostics, { expectedOverflowX, allowAutoWhenNotScrollable = false } = {}) {
+  function assertNoHorizontalOverflow(fixture, ownerName, box, diagnostics, { expectedOverflowX } = {}) {
     if (!box) {
       failures.push(`${fixture}: missing ${ownerName}`);
       return;
@@ -40,7 +33,7 @@ export default function assert(measurements) {
     if (expectedOverflowX !== undefined && box.overflowX !== expectedOverflowX) {
       failures.push(`${fixture}: ${ownerName} overflow-x is ${JSON.stringify(box.overflowX)}, expected ${JSON.stringify(expectedOverflowX)}`);
     }
-    if (!allowAutoWhenNotScrollable && /auto|scroll/.test(box.overflowX)) {
+    if (expectedOverflowX === undefined && /auto|scroll/.test(box.overflowX)) {
       failures.push(`${fixture}: ${ownerName} overflow-x is ${JSON.stringify(box.overflowX)} - non-output owners must not be horizontal scrollers`);
     }
     if (box.scrollWidth > box.clientWidth + tolerance) {
@@ -61,16 +54,11 @@ export default function assert(measurements) {
     }
     if (!measurement.structure?.sheetBodyPresent) failures.push(`${fixture}: missing sheet body wrapper`);
     if (!measurement.structure?.activityPanelPresent) failures.push(`${fixture}: missing inner Activity panel wrapper`);
-    if (!measurement.structure?.primaryLayoutPresent) failures.push(`${fixture}: missing primary layout wrapper (master-detail or mobile pane)`);
-    if ((measurement.mode === "desktop" || measurement.mode === "mobile-inspector") && !measurement.structure?.outputCodeBlockPresent) {
-      failures.push(`${fixture}: missing output CodeBlock wrapper`);
-    }
-    if ((measurement.mode === "desktop" || measurement.mode === "mobile-inspector") && !measurement.structure?.outputCodePrePresent) {
-      failures.push(`${fixture}: missing output CodeBlock pre`);
-    }
+    if (!measurement.structure?.treePanePresent) failures.push(`${fixture}: missing tree pane`);
     if (measurement.structure?.sheetContainsBody === false) failures.push(`${fixture}: sheet wrapper does not contain the sheet body wrapper`);
     if (measurement.structure?.bodyContainsActivity === false) failures.push(`${fixture}: sheet body wrapper does not contain the inner Activity panel wrapper`);
-    if (measurement.structure?.activityContainsPrimaryLayout === false) failures.push(`${fixture}: inner Activity panel wrapper does not contain the primary layout wrapper`);
+    if (measurement.structure?.activityContainsTreePane === false) failures.push(`${fixture}: inner Activity panel wrapper does not contain the tree pane`);
+    if (measurement.structure?.treePaneContainsTree === false) failures.push(`${fixture}: tree pane does not contain the tree element`);
     if (measurement.mode === "desktop" && !isWideSheetInlineSize(measurement.sizing?.sheetInlineSizeVar)) {
       failures.push(
         `${fixture}: sheet wrapper --sheet-inline-size is ${JSON.stringify(measurement.sizing?.sheetInlineSizeVar ?? null)}, expected the real wide Sheet value`,
@@ -81,73 +69,36 @@ export default function assert(measurements) {
       ["sheet wrapper", measurement.sheet],
       ["sheet body", measurement.sheetBody],
       ["Activity panel wrapper", measurement.activityPanel],
-      ["primary layout wrapper", measurement.primaryLayout],
-      ["inspector pane", measurement.inspectorPane],
-      ["output CodeBlock wrapper", measurement.outputCodeBlock],
-      ["output CodeBlock pre", measurement.outputCodePre],
     ]) {
-      if ((ownerName === "inspector pane" || ownerName === "output CodeBlock wrapper" || ownerName === "output CodeBlock pre") && !box) continue;
       assertNoHorizontalOverflow(fixture, ownerName, box, diagnostics);
     }
+    // The tree pane is the one sanctioned scroller in this view: it scrolls
+    // vertically, never horizontally.
+    assertNoHorizontalOverflow(fixture, "tree pane", measurement.treePane, diagnostics, { expectedOverflowX: "hidden" });
 
-    if (measurement.mode === "desktop") {
-      if (measurement.visiblePaneCount !== 2) {
-        failures.push(`${fixture}: desktop master-detail shows ${measurement.visiblePaneCount} visible panes (${paneRoles}), expected exactly 2 panes`);
+    // The dense tree is a single column in every form factor since the
+    // 2026-08-05 redesign removed the master-detail inspector pane.
+    if (measurement.visiblePaneCount !== 1) {
+      failures.push(`${fixture}: dense tree shows ${measurement.visiblePaneCount} visible panes (${paneRoles}), expected exactly 1 pane`);
+    }
+
+    for (const [name, textBox] of [
+      ["deep label", measurement.deepLabel],
+      ["deep detail", measurement.deepDetail],
+    ]) {
+      if (!textBox) {
+        failures.push(`${fixture}: missing ${name} probe`);
+        continue;
       }
-      if (!measurement.treePane) failures.push(`${fixture}: missing tree pane`);
-      if (!measurement.inspectorPane) failures.push(`${fixture}: missing inspector pane`);
-    }
-
-    if (measurement.mode === "mobile-tree" || measurement.mode === "mobile-inspector") {
-      if (measurement.visiblePaneCount !== 1) {
-        failures.push(`${fixture}: mobile layout shows ${measurement.visiblePaneCount} visible panes (${paneRoles}), expected exactly 1 readable pane`);
+      if (textBox.whiteSpace !== "nowrap") {
+        failures.push(`${fixture}: ${name} white-space is ${JSON.stringify(textBox.whiteSpace)}, expected "nowrap" for single-line clipping`);
       }
-    }
-
-    if (treeModes.has(measurement.mode)) {
-      assertNoHorizontalOverflow(fixture, "tree pane", measurement.treePane, diagnostics, { expectedOverflowX: "hidden" });
-    }
-
-    if (measurement.outputCodePre) {
-      if (measurement.outputCodePre.whiteSpace !== "pre-wrap") {
-        failures.push(`${fixture}: output CodeBlock pre white-space is ${JSON.stringify(measurement.outputCodePre.whiteSpace)}, expected "pre-wrap"`);
+      if (textBox.textOverflow !== "ellipsis") {
+        failures.push(`${fixture}: ${name} text-overflow is ${JSON.stringify(textBox.textOverflow)}, expected "ellipsis"`);
       }
-    } else if (measurement.mode === "desktop" || measurement.mode === "mobile-inspector") {
-      failures.push(`${fixture}: missing output CodeBlock pre`);
-    }
-
-    if (treeModes.has(measurement.mode)) {
-      for (const [name, textBox] of [
-        ["deep label", measurement.deepLabel],
-        ["deep detail", measurement.deepDetail],
-      ]) {
-        if (!textBox) {
-          failures.push(`${fixture}: missing ${name} probe`);
-          continue;
-        }
-        if (textBox.whiteSpace !== "nowrap") {
-          failures.push(`${fixture}: ${name} white-space is ${JSON.stringify(textBox.whiteSpace)}, expected "nowrap" for single-line clipping`);
-        }
-        if (textBox.textOverflow !== "ellipsis") {
-          failures.push(`${fixture}: ${name} text-overflow is ${JSON.stringify(textBox.textOverflow)}, expected "ellipsis"`);
-        }
-        if (textBox.scrollWidth <= textBox.clientWidth + tolerance) {
-          failures.push(
-            `${fixture}: ${name} scrollWidth ${textBox.scrollWidth}px does not exceed clientWidth ${textBox.clientWidth}px - the probe text is not actually clipped`,
-          );
-        }
-      }
-    }
-
-    if (measurement.mobileBack) {
-      if (measurement.mobileBack.left < -tolerance || measurement.mobileBack.right > measurement.viewport.width + tolerance) {
+      if (textBox.scrollWidth <= textBox.clientWidth + tolerance) {
         failures.push(
-          `${fixture}: mobile Back control escapes viewport horizontally (${measurement.mobileBack.left.toFixed(1)}..${measurement.mobileBack.right.toFixed(1)} in ${measurement.viewport.width}px viewport)`,
-        );
-      }
-      if (measurement.mobileBack.top < -tolerance || measurement.mobileBack.bottom > measurement.viewport.height + tolerance) {
-        failures.push(
-          `${fixture}: mobile Back control escapes viewport vertically (${measurement.mobileBack.top.toFixed(1)}..${measurement.mobileBack.bottom.toFixed(1)} in ${measurement.viewport.height}px viewport)`,
+          `${fixture}: ${name} scrollWidth ${textBox.scrollWidth}px does not exceed clientWidth ${textBox.clientWidth}px - the probe text is not actually clipped`,
         );
       }
     }
@@ -157,7 +108,7 @@ export default function assert(measurements) {
     ? {
         pass: true,
         reason:
-          "desktop keeps exactly two visible panes, mobile variants keep exactly one readable pane, the sheet/body/pane owners stay free of horizontal scrolling, production CodeBlock output wraps instead of scrolling sideways, deep labels clip with ellipsis, and the mobile Back control stays inside the viewport",
+          "the dense activity tree keeps exactly one visible pane at desktop and mobile widths, the sheet/body/pane owners stay free of horizontal scrolling, deep row labels and detail-strip commands clip with ellipsis, and the continuation strip wraps instead of scrolling sideways",
       }
     : {
         pass: false,

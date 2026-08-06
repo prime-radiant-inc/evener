@@ -34,27 +34,23 @@
 <body>
 <main class="fixtures" data-role="fixtures"></main>
 <script>
+// 2026-08-05 activity-view redesign: the card-based master-detail tree plus
+// inspector pane is gone. The Activity sheet is now a single dense tree
+// column (.panelColumn > .tree) of .denseRow / .foldRow items nested under
+// .indentGuide groups, with inline .detailStrip and continuation .rowActions
+// strips. This harness mirrors THAT markup; the clipping contracts it guards
+// are .denseName (row label) and .detailCommand (detail strip command), both
+// nowrap + ellipsis, and the continuation strip's wrap-without-scrolling.
 const LONG_COMMAND = "SERF_SESSION_MODE=retained /usr/bin/env bash -lc 'python3 tools/trace_activity.py --session 02wMz5Txv1C3Hut0M8GCeB --delegate 8 --emit jsonl --follow --with-ancestor-chain --full-command-width --explain-overflow-contract'";
-const LONG_OUTPUT = "TRACE 2026-08-03T18:44:21Z delegate-8 retained-output path=/Users/jesse/.local/state/serf/projects/activity-tree-sidebar/logs/delegate-8/output tail=retained bytes wrap through CodeBlock exactly as production does, so this output line is intentionally long enough to wrap across multiple visual lines without ever creating a horizontal scroller in the inspector pane.";
 
 function chevron(direction) {
   const pathByDirection = {
     right: "M6 3.5 L10.5 8 L6 12.5",
     down: "M3.5 6 L8 10.5 L12.5 6",
-    left: "M10 3.5 L5.5 8 L10 12.5",
-    up: "M3.5 10 L8 5.5 L12.5 10",
   };
   return `
-    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block">
+    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false" style="display:block">
       <path d="${pathByDirection[direction]}" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path>
-    </svg>`;
-}
-
-function copyIcon() {
-  return `
-    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true" focusable="false" style="display:block">
-      <rect x="4.5" y="1.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"></rect>
-      <path d="M9.5 12.5H3A1.5 1.5 0 0 1 1.5 11V4.5" fill="none" stroke="currentColor" stroke-width="1.2"></path>
     </svg>`;
 }
 
@@ -62,181 +58,66 @@ function statusDot(family, label) {
   return `<span role="img" aria-label="${label}" class="dot ${family}"></span>`;
 }
 
-function rowMarkup({
-  label,
-  detail,
-  status,
-  statusFamily,
-  hasChildren = false,
-  expanded = false,
-  selected = false,
-  branchError = "",
-  continuation = "",
-  continuationLabel = "Continue retained branch",
-  labelRole = "",
-  detailRole = "",
-}) {
+function denseRowMarkup({ label, meta, status, statusFamily, kind = "$", live = false, labelRole = "", withDetail = false, continuation = "" }) {
   return `
-    <div role="treeitem" aria-label="${escapeHtml(label)}" aria-expanded="${hasChildren ? String(expanded) : "false"}" aria-selected="${selected ? "true" : "false"}" tabIndex="0" class="row${selected ? " rowSelected" : ""}">
-      <div class="rowContent">
-        ${hasChildren ? `
-          <button type="button" tabIndex="-1" class="rowToggle" aria-label="Toggle branch">
-            ${chevron(expanded ? "down" : "right")}
-          </button>` : '<span class="rowToggle" aria-hidden="true"></span>'}
-        ${statusDot(statusFamily, status)}
-        <div class="rowMain">
-          <span class="rowLabel"${labelRole ? ` data-role="${labelRole}"` : ""}>${escapeHtml(label)}</span>
-          ${detail ? `<span class="rowDetail"${detailRole ? ` data-role="${detailRole}"` : ""}>${escapeHtml(detail)}</span>` : ""}
-          ${branchError ? `<span class="rowDetail">${escapeHtml(branchError)}</span>` : ""}
-        </div>
-        <div class="rowMeta">
-          <span class="rowStatusText">${escapeHtml(status)}</span>
-        </div>
-      </div>
-      ${continuation ? `
-        <div class="rowActions">
-          <span class="rowContinuation">${escapeHtml(continuation)}</span>
-          <button type="button" tabIndex="-1" class="button quiet buttonSizeXsHarness">${escapeHtml(continuationLabel)}</button>
-        </div>` : ""}
+    <div role="treeitem" aria-label="${escapeHtml(label)}" aria-expanded="false" tabIndex="0" class="denseRow">
+      <button type="button" tabIndex="-1" class="rowToggle" aria-label="Toggle details">
+        ${chevron("right")}
+      </button>
+      ${statusDot(statusFamily, status)}
+      <span class="denseKind" aria-hidden="true">${kind}</span>
+      <span class="${live ? "denseName denseNameLive" : "denseName"}"${labelRole ? ` data-role="${labelRole}"` : ""}>${escapeHtml(label)}</span>
+      <span class="denseMeta">${escapeHtml(meta)}</span>
+    </div>
+    ${withDetail ? `
+      <div class="detailStrip">
+        <code class="detailCommand" data-role="deep-detail-probe">${escapeHtml(LONG_COMMAND)}</code>
+        <span class="detailMeta">${escapeHtml(status)} 12s · 512 output bytes</span>
+      </div>` : ""}
+    ${continuation ? `
+      <div class="rowActions">
+        <span class="rowContinuation">${escapeHtml(continuation)}</span>
+        <button type="button" tabIndex="-1" class="button quiet buttonSizeXsHarness">Load more</button>
+      </div>` : ""}`;
+}
+
+function foldRowMarkup(count) {
+  return `
+    <div role="treeitem" aria-label="${count} inactive" aria-expanded="false" tabIndex="-1" class="foldRow">
+      <button type="button" tabIndex="-1" class="rowToggle" aria-label="Expand inactive entries">
+        ${chevron("right")}
+      </button>
+      <span class="denseName">${count} inactive</span>
     </div>`;
 }
 
+// deepTreeMarkup nests .indentGuide groups eight levels deep, matching how
+// ActivityTree's renderRowBlock wraps each row's deeper-level block.
 function deepTreeMarkup(kind) {
-  let markup = rowMarkup({
+  let markup = denseRowMarkup({
     label: "activity-tree-sidebar session /Users/jesse/prime-radiant-toil-suite-serf/activity-tree-sidebar",
-    detail: "4 active · 1 failed · 18 completed",
+    meta: "4 active · 1 failed · 18 completed",
     status: "running",
     statusFamily: "alive",
-    hasChildren: true,
-    expanded: true,
+    live: true,
   });
-  markup += '<div class="group">';
   for (let depth = 1; depth <= 8; depth += 1) {
-    const labelRole = depth === 8 ? `${kind}-deep-label` : "";
-    markup += rowMarkup({
+    markup += '<div role="group" class="indentGuide">';
+    markup += denseRowMarkup({
       label: `Delegate ${depth}: retained activity branch with an intentionally long mandate proving clipped deep labels at depth ${depth}`,
-      detail: `child-session-${depth}-retained-activity-sidebar-branch-reference-that-cannot-fit-without-ellipsis`,
+      meta: depth < 8 ? "running 12s · 512b" : "needs-you · 2 failed",
       status: depth < 8 ? "running" : "needs-you",
       statusFamily: depth < 8 ? "alive" : "attention",
-      hasChildren: true,
-      expanded: true,
-      labelRole,
-      continuation: depth === 6 ? "This branch is partially retained." : "",
+      kind: "⌘",
+      live: depth < 8,
+      labelRole: depth === 8 ? `${kind}-deep-label` : "",
+      withDetail: depth === 8,
+      continuation: depth === 6 ? "This branch is partially retained. The continuation strip wraps its explanation instead of scrolling the tree sideways." : "",
     });
-    markup += '<div class="group">';
-    markup += rowMarkup({
-      label: `session/${depth}/subtree/with/a/very/long/retained/path/segment/${depth}`,
-      detail: `${Math.max(1, 9 - depth)} active · ${depth % 2} failed · ${depth + 3} completed`,
-      status: depth < 8 ? "running" : "blocked",
-      statusFamily: depth < 8 ? "alive" : "attention",
-      hasChildren: true,
-      expanded: true,
-    });
-    markup += '<div class="group">';
   }
-  markup += rowMarkup({
-    label: "shell command",
-    detail: LONG_COMMAND,
-    status: "running",
-    statusFamily: "alive",
-    selected: true,
-    detailRole: `${kind}-deep-detail`,
-  });
-  markup += "</div>".repeat(17);
+  markup += foldRowMarkup(12);
+  markup += "</div>".repeat(8);
   return markup;
-}
-
-function codeBlockMarkup() {
-  return `
-    <div class="codeBlockRootHarness" data-role="output-codeblock">
-      <div class="codeBlockAreaHarness">
-        <div class="codeBlockHeaderHarness">
-          <span class="codeBlockCopyHarness">
-            <button type="button" class="button quiet codeBlockIconButtonHarness" aria-label="Copy output">
-              <span class="icon">${copyIcon()}</span>
-            </button>
-          </span>
-        </div>
-        <pre class="codeBlockPreHarness" data-role="output-code-pre"><code class="codeBlockCodeHarness"><span>${escapeHtml(LONG_OUTPUT)}</span></code></pre>
-      </div>
-    </div>`;
-}
-
-function desktopInspectorMarkup() {
-  return `
-    <div class="inspector" data-testid="activity-inspector">
-      <div class="inspectorHeader">
-        <div>
-          <h2 class="inspectorTitle">shell command</h2>
-          <p class="inspectorMeta">job</p>
-        </div>
-      </div>
-      <div class="inspectorSection">
-        <dl class="detailList">
-          <div class="detailRow">
-            <dt class="detailLabel">status</dt>
-            <dd class="detailValue">running</dd>
-          </div>
-          <div class="detailRow">
-            <dt class="detailLabel">type</dt>
-            <dd class="detailValue">shell</dd>
-          </div>
-          <div class="detailRow">
-            <dt class="detailLabel">command</dt>
-            <dd class="detailValue"><pre class="prompt">${escapeHtml(LONG_COMMAND)}</pre></dd>
-          </div>
-          <div class="detailRow">
-            <dt class="detailLabel">output size</dt>
-            <dd class="detailValue">16384 bytes</dd>
-          </div>
-        </dl>
-      </div>
-      <div class="inspectorSection outputSection">
-        <div class="toolbar">
-          <button type="button" class="button quiet buttonSizeSmHarness">Refresh output</button>
-        </div>
-        <p class="muted">Showing last 8192 of 16384 bytes</p>
-        ${codeBlockMarkup()}
-      </div>
-    </div>`;
-}
-
-function mobileInspectorMarkup() {
-  return `
-    <div class="mobilePane" data-role="mobile-pane">
-      <div class="mobileBack">
-        <button type="button" class="button quiet buttonSizeSmHarness" data-role="back-control">Back to activity</button>
-      </div>
-      <div class="panelColumn" data-role="inspector-pane">
-        <div class="inspector" data-testid="activity-inspector">
-          <div class="inspectorHeader">
-            <div>
-              <h2 class="inspectorTitle">shell command</h2>
-              <p class="inspectorMeta">job</p>
-            </div>
-          </div>
-          <div class="inspectorSection">
-            <dl class="detailList">
-              <div class="detailRow">
-                <dt class="detailLabel">status</dt>
-                <dd class="detailValue">running</dd>
-              </div>
-              <div class="detailRow">
-                <dt class="detailLabel">command</dt>
-                <dd class="detailValue"><pre class="prompt">${escapeHtml(LONG_COMMAND)}</pre></dd>
-              </div>
-            </dl>
-          </div>
-          <div class="inspectorSection outputSection">
-            <div class="toolbar">
-              <button type="button" class="button quiet buttonSizeSmHarness">Refresh output</button>
-            </div>
-            <p class="muted">Showing last 8192 of 16384 bytes</p>
-            ${codeBlockMarkup()}
-          </div>
-        </div>
-      </div>
-    </div>`;
 }
 
 function frameDocument({ bodyMarkup, width }) {
@@ -261,8 +142,7 @@ function frameDocument({ bodyMarkup, width }) {
   /* layoutguard flattens module CSS into one resolved.css file, so several
      cross-module class names collide here. Keep the real loaded CSS files and
      alias only the collided contracts the harness must distinguish: sheet
-     chassis/body/activity wrapper and CodeBlock's root/header/pre/code/copy
-     layout. */
+     chassis/body/activity wrapper. */
   .sheetPanelHarness {
     position: relative;
     display: flex;
@@ -318,61 +198,10 @@ function frameDocument({ bodyMarkup, width }) {
     min-width: 0;
     overflow-x: hidden;
   }
-  .outputSection { min-width: 0; }
   .buttonSizeXsHarness {
     height: 24px;
     padding: 0 var(--space-2);
     font-size: var(--font-size-ui);
-  }
-  .buttonSizeSmHarness {
-    height: 28px;
-    padding: 0 var(--space-3);
-    font-size: var(--font-size-ui);
-  }
-  .codeBlockRootHarness {
-    position: relative;
-    border: 1px solid var(--edge);
-    border-radius: var(--radius-pane);
-    background: var(--surface-1);
-    overflow-x: hidden;
-  }
-  .codeBlockAreaHarness {
-    position: relative;
-  }
-  .codeBlockHeaderHarness {
-    position: absolute;
-    top: var(--space-1);
-    right: var(--space-1);
-    z-index: 1;
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-  }
-  .codeBlockCopyHarness {
-    flex: none;
-    opacity: 0.35;
-  }
-  .codeBlockRootHarness:hover .codeBlockCopyHarness,
-  .codeBlockCopyHarness:focus-within {
-    opacity: 1;
-  }
-  .codeBlockIconButtonHarness {
-    width: 24px;
-    height: 24px;
-    padding: 0;
-  }
-  .codeBlockPreHarness {
-    margin: 0;
-    padding: var(--space-2) var(--space-3);
-    padding-right: var(--space-6);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-  .codeBlockCodeHarness {
-    color: var(--ink-hi);
-    font-family: var(--font-mono);
-    font-size: var(--font-size-caption);
-    line-height: var(--line-height-body);
   }
 </style>
 </head>
@@ -403,43 +232,29 @@ function escapeHtml(text) {
     .replaceAll("'", "&#39;");
 }
 
+function treeBodyMarkup(kind) {
+  return `
+    <div class="panelColumn" data-role="tree-pane">
+      <div class="tree" role="tree">${deepTreeMarkup(kind)}</div>
+    </div>`;
+}
+
 const fixtures = [
   {
-    name: "desktop-master-detail-1440",
+    name: "desktop-tree-1440",
     mode: "desktop",
     width: 1440,
     height: 900,
-    label: "desktop 1440×900 — tree + inspector",
-    bodyMarkup: `
-      <div class="masterDetail" data-role="master-detail">
-        <div class="panelColumn" data-role="tree-pane">
-          <div class="tree" role="tree">${deepTreeMarkup("desktop")}</div>
-        </div>
-        <div class="panelColumn" data-role="inspector-pane">
-          ${desktopInspectorMarkup()}
-        </div>
-      </div>`,
+    label: "desktop 1440×900 — dense tree",
+    bodyMarkup: treeBodyMarkup("desktop"),
   },
   {
     name: "mobile-tree-390",
     mode: "mobile-tree",
     width: 390,
     height: 844,
-    label: "mobile 390×844 — tree only",
-    bodyMarkup: `
-      <div class="masterDetail" data-role="master-detail">
-        <div class="panelColumn" data-role="tree-pane">
-          <div class="tree" role="tree">${deepTreeMarkup("mobile-tree")}</div>
-        </div>
-      </div>`,
-  },
-  {
-    name: "mobile-inspector-390",
-    mode: "mobile-inspector",
-    width: 390,
-    height: 844,
-    label: "mobile 390×844 — inspector only",
-    bodyMarkup: mobileInspectorMarkup(),
+    label: "mobile 390×844 — dense tree",
+    bodyMarkup: treeBodyMarkup("mobile-tree"),
   },
 ];
 
@@ -479,19 +294,8 @@ function waitForFrameReady(frame, fixture) {
         return;
       }
       const checkReady = () => {
-        const primaryLayout = doc.querySelector('[data-role="master-detail"], [data-role="mobile-pane"]');
         const treePane = doc.querySelector('[data-role="tree-pane"]');
-        const inspectorPane = doc.querySelector('[data-role="inspector-pane"]');
-        const display = primaryLayout ? win.getComputedStyle(primaryLayout).display : null;
-        const primaryWidth = primaryLayout?.getBoundingClientRect().width ?? 0;
-        const treeWidth = treePane?.clientWidth ?? 0;
-        const inspectorWidth = inspectorPane?.clientWidth ?? 0;
-        const ready =
-          fixture.mode === "desktop"
-            ? display === "grid" && primaryWidth > 0 && treeWidth > 0 && inspectorWidth > 0
-            : fixture.mode === "mobile-tree"
-              ? display === "flex" && primaryWidth > 0 && treeWidth > 0
-              : primaryWidth > 0 && inspectorWidth > 0;
+        const ready = treePane !== null && treePane.clientWidth > 0;
         if (ready || performance.now() - start > deadlineMs) {
           resolve();
           return;
@@ -576,17 +380,11 @@ function measureFrame({ fixture, frame }) {
   const sheet = doc.querySelector('[data-role="sheet"]');
   const sheetBody = doc.querySelector('[data-role="sheet-body"]');
   const activityPanel = doc.querySelector('[data-role="activity-panel"]');
-  const masterDetail = doc.querySelector('[data-role="master-detail"]');
-  const mobilePane = doc.querySelector('[data-role="mobile-pane"]');
   const treePane = doc.querySelector('[data-role="tree-pane"]');
-  const inspectorPane = doc.querySelector('[data-role="inspector-pane"]');
-  const outputCodeBlock = doc.querySelector('[data-role="output-codeblock"]');
-  const outputCodePre = doc.querySelector('[data-role="output-code-pre"]');
+  const tree = doc.querySelector('[role="tree"]');
   const deepLabel = doc.querySelector('[data-role$="deep-label"]');
-  const deepDetail = doc.querySelector('[data-role$="deep-detail"]');
-  const backControl = doc.querySelector('[data-role="back-control"]');
-  const visiblePanes = [...doc.querySelectorAll('[data-role="tree-pane"], [data-role="inspector-pane"]')].filter((pane) => isVisible(doc, pane));
-  const primaryLayout = masterDetail || mobilePane;
+  const deepDetail = doc.querySelector('[data-role="deep-detail-probe"]');
+  const visiblePanes = [...doc.querySelectorAll('[data-role="tree-pane"]')].filter((pane) => isVisible(doc, pane));
 
   return {
     fixture: fixture.name,
@@ -597,42 +395,30 @@ function measureFrame({ fixture, frame }) {
       sheetWideClassPresent: Boolean(sheet?.classList.contains('wide')),
       sheetBodyPresent: Boolean(sheetBody),
       activityPanelPresent: Boolean(activityPanel),
-      primaryLayoutPresent: Boolean(primaryLayout),
+      treePanePresent: Boolean(treePane),
       sheetContainsBody: Boolean(sheet && sheetBody && sheet.contains(sheetBody)),
       bodyContainsActivity: Boolean(sheetBody && activityPanel && sheetBody.contains(activityPanel)),
-      activityContainsPrimaryLayout: Boolean(activityPanel && primaryLayout && activityPanel.contains(primaryLayout)),
-      outputCodeBlockPresent: Boolean(outputCodeBlock),
-      outputCodePrePresent: Boolean(outputCodePre),
+      activityContainsTreePane: Boolean(activityPanel && treePane && activityPanel.contains(treePane)),
+      treePaneContainsTree: Boolean(treePane && tree && treePane.contains(tree)),
     },
     visiblePaneCount: visiblePanes.length,
     visiblePaneRoles: visiblePanes.map((pane) => pane.getAttribute("data-role")),
     sheet: metrics(doc, sheet),
     sheetBody: metrics(doc, sheetBody),
     activityPanel: metrics(doc, activityPanel),
-    primaryLayout: metrics(doc, primaryLayout),
     treePane: metrics(doc, treePane),
-    inspectorPane: metrics(doc, inspectorPane),
     sizing: {
       sheetPanelWidth: sheet ? rect(sheet).width : null,
       sheetInlineSizeVar: sheet ? win.getComputedStyle(sheet).getPropertyValue('--sheet-inline-size').trim() : null,
       sheetBodyWidth: sheetBody ? rect(sheetBody).width : null,
       activityPanelWidth: activityPanel ? rect(activityPanel).width : null,
-      primaryLayoutWidth: primaryLayout ? rect(primaryLayout).width : null,
       treePaneWidth: treePane ? rect(treePane).width : null,
-      inspectorPaneWidth: inspectorPane ? rect(inspectorPane).width : null,
-      masterDetailDisplay: primaryLayout ? win.getComputedStyle(primaryLayout).display : null,
-      masterDetailGridColumns: primaryLayout ? win.getComputedStyle(primaryLayout).gridTemplateColumns : null,
-      treePaneMinWidth: treePane ? win.getComputedStyle(treePane).minWidth : null,
-      treePaneFlexBasis: treePane ? win.getComputedStyle(treePane).flexBasis : null,
-      firstGroupPaddingLeft: doc.querySelector('.group') ? win.getComputedStyle(doc.querySelector('.group')).paddingLeft : null,
       rowActionsFlexWrap: doc.querySelector('.rowActions') ? win.getComputedStyle(doc.querySelector('.rowActions')).flexWrap : null,
+      rowActionsPaddingLeft: doc.querySelector('.rowActions') ? win.getComputedStyle(doc.querySelector('.rowActions')).paddingLeft : null,
       treeWidestDescendant: widestDescendant(doc, treePane),
     },
-    outputCodeBlock: metrics(doc, outputCodeBlock),
-    outputCodePre: metrics(doc, outputCodePre),
     deepLabel: metrics(doc, deepLabel),
     deepDetail: metrics(doc, deepDetail),
-    mobileBack: metrics(doc, backControl),
   };
 }
 
