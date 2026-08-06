@@ -23,22 +23,26 @@ import (
 // function loops or recurses, so "never panics" is effectively the whole
 // floor, and the precedence oracle below is the real, semantic invariant.
 func FuzzLiveEvalPaths(f *testing.F) {
-	f.Add("", "", "", "")
-	f.Add("1", "/state", "/home/serf", "")
-	f.Add("0", "", "/home/serf", "")
-	f.Add("true", "  /state  ", "  /home/serf  ", "")
-	f.Add("1", "", "/home/serf", "/config/providers.toml")
-	f.Add("1", "", "/home/serf", "")
-	f.Add("", "", "", "  ")
+	f.Add("", "", "", "", "")
+	f.Add("1", "/state", "/home/serf", "", "")
+	f.Add("0", "", "/home/serf", "", "")
+	f.Add("true", "  /state  ", "  /home/serf  ", "", "")
+	// All three provider-config precedence arms, and combinations of
+	// empty/nonempty, so every arm has its own seed:
+	f.Add("1", "", "/home/serf", "/config/providers.toml", "")                       // SERF_PROVIDERS_CONFIG wins outright
+	f.Add("1", "", "/home/serf", "/config/providers.toml", "/statedir")              //   ...even with SERF_STATE_DIR also set
+	f.Add("1", "", "/home/serf", "", "/statedir")                                    // SERF_STATE_DIR wins when config env is empty
+	f.Add("1", "", "/home/serf", "", "")                                             // falls all the way through to userHome/.serf
+	f.Add("", "", "", "", "  ")
 
-	f.Fuzz(func(t *testing.T, enabledValue, stateHome, userHome, providersConfigEnv string) {
-		if len(enabledValue) > 64 || len(stateHome) > 4096 || len(userHome) > 4096 || len(providersConfigEnv) > 4096 {
+	f.Fuzz(func(t *testing.T, enabledValue, stateHome, userHome, providersConfigEnv, stateDirEnv string) {
+		if len(enabledValue) > 64 || len(stateHome) > 4096 || len(userHome) > 4096 || len(providersConfigEnv) > 4096 || len(stateDirEnv) > 4096 {
 			return
 		}
 		// os.Setenv rejects a NUL byte (returns an error, which t.Setenv
 		// turns into a fatal failure); that is an os/exec-level restriction
 		// on environment values, not a Paths/Enabled contract to enforce.
-		if strings.ContainsRune(providersConfigEnv, 0) {
+		if strings.ContainsRune(providersConfigEnv, 0) || strings.ContainsRune(stateDirEnv, 0) {
 			return
 		}
 
@@ -51,20 +55,14 @@ func FuzzLiveEvalPaths(f *testing.F) {
 		}
 
 		t.Setenv(envvars.SERFProvidersConfig.Name, providersConfigEnv)
-		// SERF_STATE_DIR is exercised by the package's own table tests
-		// (TestPathsProviderConfigUsesStateDirBeforeHome); pin it empty here
-		// so this target's oracle only has to reason about the two
-		// variables it varies, without losing that env-precedence coverage
-		// (SERF_PROVIDERS_CONFIG alone already exercises the "env wins over
-		// both params" arm; the unvaried SERF_STATE_DIR arm is covered by
-		// the seed-replayed table tests, which run in the same `go test`).
-		t.Setenv(envvars.SERFStateDir.Name, "")
+		t.Setenv(envvars.SERFStateDir.Name, stateDirEnv)
 
 		gotStateHome, gotProviders := Paths(stateHome, userHome)
 
 		trimmedStateHome := strings.TrimSpace(stateHome)
 		trimmedUserHome := strings.TrimSpace(userHome)
 		trimmedProvidersConfigEnv := strings.TrimSpace(providersConfigEnv)
+		trimmedStateDirEnv := strings.TrimSpace(stateDirEnv)
 
 		wantStateHome := trimmedStateHome
 		if wantStateHome == "" {
@@ -74,12 +72,21 @@ func FuzzLiveEvalPaths(f *testing.F) {
 			t.Fatalf("Paths(%q, %q) state home = %q, want %q", stateHome, userHome, gotStateHome, wantStateHome)
 		}
 
-		wantProviders := trimmedProvidersConfigEnv
-		if wantProviders == "" {
+		// Three-level precedence, per the doc comment: SERF_PROVIDERS_CONFIG
+		// wins outright; else SERF_STATE_DIR/providers.toml; else
+		// userHome/.serf/providers.toml.
+		var wantProviders string
+		switch {
+		case trimmedProvidersConfigEnv != "":
+			wantProviders = trimmedProvidersConfigEnv
+		case trimmedStateDirEnv != "":
+			wantProviders = filepath.Join(trimmedStateDirEnv, "providers.toml")
+		default:
 			wantProviders = filepath.Join(trimmedUserHome, ".serf", "providers.toml")
 		}
 		if gotProviders != wantProviders {
-			t.Fatalf("Paths(%q, %q) with SERF_PROVIDERS_CONFIG=%q providers = %q, want %q", stateHome, userHome, providersConfigEnv, gotProviders, wantProviders)
+			t.Fatalf("Paths(%q, %q) with SERF_PROVIDERS_CONFIG=%q SERF_STATE_DIR=%q providers = %q, want %q",
+				stateHome, userHome, providersConfigEnv, stateDirEnv, gotProviders, wantProviders)
 		}
 	})
 }
