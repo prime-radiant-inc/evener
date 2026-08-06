@@ -38,7 +38,7 @@ test("falls back to the raw parent ref when no cached name is available", () => 
 test("shows the live parent thread name once hydrated", () => {
   threadsStore.setState((s) => {
     const threads = new Map(s.threads);
-    threads.set("ref_parent", { ref: "ref_parent", name: "fix the flaky test" } as unknown as ThreadModel);
+    threads.set("ref_parent", { ref: "ref_parent", name: "fix the flaky test", turns: [] } as unknown as ThreadModel);
     return { ...s, threads };
   });
   render(<BackToParentAction parentRef="ref_parent" />);

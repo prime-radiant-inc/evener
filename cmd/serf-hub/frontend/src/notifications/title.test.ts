@@ -64,7 +64,9 @@ describe("baseTitle", () => {
   });
 
   test("a session pane resolves its live name via the threadName ctx", () => {
-    threadsStore.setState({ threads: new Map([["local:r1", { name: "Fix the parser" } as unknown as ThreadModel]]) });
+    threadsStore.setState({
+      threads: new Map([["local:r1", { name: "Fix the parser", turns: [] } as unknown as ThreadModel]]),
+    });
     workspaceStore.getState().openPane("doc", { ref: "local:r1" });
     expect(baseTitle()).toBe("Fix the parser · serf hub");
   });

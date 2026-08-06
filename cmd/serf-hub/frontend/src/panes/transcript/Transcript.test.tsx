@@ -228,7 +228,7 @@ test("with a parentRef, shows a 'Back to <parent name>' action naming the live p
   // asserts the label reads it, not how it got there.
   threadsStore.setState((s) => {
     const threads = new Map(s.threads);
-    threads.set("ref_parent", { ref: "ref_parent", name: "fix the flaky test" } as unknown as ThreadModel);
+    threads.set("ref_parent", { ref: "ref_parent", name: "fix the flaky test", turns: [] } as unknown as ThreadModel);
     return { ...s, threads };
   });
 
@@ -264,7 +264,7 @@ test("with a parentRef cached but its name is still the empty-string un-hydrated
   // "Back to " button.
   threadsStore.setState((s) => {
     const threads = new Map(s.threads);
-    threads.set("ref_parent_empty", { ref: "ref_parent_empty", name: "" } as unknown as ThreadModel);
+    threads.set("ref_parent_empty", { ref: "ref_parent_empty", name: "", turns: [] } as unknown as ThreadModel);
     return { ...s, threads };
   });
 

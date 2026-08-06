@@ -178,7 +178,7 @@ test("shows a 'Back to <parent name>' action naming the live session, for a file
   mockRead.mockResolvedValue(textContent({ text: "body" }));
   threadsStore.setState((s) => {
     const threads = new Map(s.threads);
-    threads.set("s1", { ref: "s1", name: "fix the flaky test" } as unknown as ThreadModel);
+    threads.set("s1", { ref: "s1", name: "fix the flaky test", turns: [] } as unknown as ThreadModel);
     return { ...s, threads };
   });
   renderFile("notes.txt");
