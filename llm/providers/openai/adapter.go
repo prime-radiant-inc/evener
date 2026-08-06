@@ -1025,6 +1025,30 @@ func (a *Adapter) usesCodexBackend() bool {
 	return a.ChatGPTAccountID != "" || strings.TrimSpace(a.ResponsesPath) == defaultCodexResponses
 }
 
+// ValidateModel implements llm.ModelCompatibilityValidator: on the Codex
+// backend, model must be a codexModelVariants key (the ChatGPT-account model
+// set is narrower than the platform API and isn't reliably distinguished by
+// a live models list). No-op off the Codex backend — the platform API's own
+// live model list is authoritative there.
+func (a *Adapter) ValidateModel(model string) error {
+	if !a.usesCodexBackend() {
+		return nil
+	}
+	if _, ok := codexModelVariants[model]; ok {
+		return nil
+	}
+	supported := make(map[string]struct{}, len(codexModelVariants))
+	for _, wire := range codexModelVariants {
+		supported[wire] = struct{}{}
+	}
+	names := make([]string, 0, len(supported))
+	for wire := range supported {
+		names = append(names, wire)
+	}
+	slices.Sort(names)
+	return fmt.Errorf("model %s is not supported on the Codex backend (supported: %s)", model, strings.Join(names, ", "))
+}
+
 func (a *Adapter) codexBackendURL(path string) string {
 	base := strings.TrimRight(a.BaseURL, "/")
 	if strings.HasSuffix(base, "/backend-api/codex") {

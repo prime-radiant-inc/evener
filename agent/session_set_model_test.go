@@ -269,6 +269,67 @@ func TestSetModel_EnumerationFailure_FailsOpenUnconditionally(t *testing.T) {
 	}
 }
 
+// fakeCompatValidatingAdapter is a fakeEnumerableAdapter that also
+// implements llm.ModelCompatibilityValidator, standing in for a
+// Codex-backend-flavored instance whose static model-support table rejects
+// a model independent of what its (scripted, for test purposes) live list
+// reports.
+type fakeCompatValidatingAdapter struct {
+	fakeEnumerableAdapter
+	rejectModel string
+	err         error
+}
+
+func (a *fakeCompatValidatingAdapter) ValidateModel(model string) error {
+	if model == a.rejectModel {
+		return a.err
+	}
+	return nil
+}
+
+// TestSetModel_StaticCompatibilityRejection_RunsBeforeLiveEnumeration
+// verifies that validateModelSwitchMembership's ModelCompatibilityValidator
+// check runs first and independently of live-list enumeration: even when
+// the scripted live list (incorrectly, for test purposes) includes the
+// requested model, a static rejection still blocks the switch and names the
+// supported slugs.
+func TestSetModel_StaticCompatibilityRejection_RunsBeforeLiveEnumeration(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withAdapter(&fakeCompatValidatingAdapter{
+			fakeEnumerableAdapter: fakeEnumerableAdapter{
+				fakeAdapter: fakeAdapter{name: "anthropic"},
+				// The live list includes the model that will be statically
+				// rejected below, proving the static check isn't merely
+				// redundant with a correctly-scripted live list.
+				models: []llm.ModelInfo{{ID: "gpt-5.6-mini", Provider: "anthropic"}},
+			},
+			rejectModel: "gpt-5.6-mini",
+			err:         fmt.Errorf("model gpt-5.6-mini is not supported (supported: gpt-5.6-luna, gpt-5.6-sol, gpt-5.6-terra)"),
+		}),
+		withConfig(SessionConfig{
+			NoProjectPrompts: true,
+			ResolveProfile:   testResolver,
+			testOnly:         testConfig{skipGitSnapshot: true},
+		}),
+	)
+
+	err := sess.SetModel("anthropic/gpt-5.6-mini")
+	if err == nil {
+		t.Fatal("SetModel with statically-rejected model = nil error, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "gpt-5.6-mini") {
+		t.Fatalf("error = %q, want it to name gpt-5.6-mini", err.Error())
+	}
+	for _, want := range []string{"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to name supported slug %q", err.Error(), want)
+		}
+	}
+}
+
 // documentTurn and audioTurn build a user-role Turn carrying a document (or
 // audio) ContentPart directly, so unrepresentable-history tests don't depend
 // on the tool path that produces these parts in production.

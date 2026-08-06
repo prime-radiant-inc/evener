@@ -113,6 +113,9 @@ func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile
 	if client == nil || profile == nil {
 		return nil
 	}
+	if err := client.ValidateModelCompatibility(profile.ID(), profile.Model()); err != nil {
+		return err
+	}
 	tag := client.BehaviorTagOf(profile.ID())
 	cat := llm.EmbeddedModelCatalog()
 	for _, m := range models {
