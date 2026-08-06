@@ -223,7 +223,7 @@ func miscStatusAndPersistenceProgram(t *testing.T, token string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	store, err := jobstore.Open(path)
+	store, err := jobstore.OpenNoSync(path)
 	if err != nil {
 		t.Fatal(err)
 	}

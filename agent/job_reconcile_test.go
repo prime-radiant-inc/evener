@@ -18,7 +18,7 @@ func TestReconcileOnRestoreFinalizesLostJob(t *testing.T) {
 	if err := os.MkdirAll(dir+"/sessions/S1/jobs", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	st, err := jobstore.Open(dir + "/sessions/S1/jobs.jsonl")
+	st, err := jobstore.OpenNoSync(dir + "/sessions/S1/jobs.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestNewJobManagerClearsUnrestoredActiveWatches(t *testing.T) {
 	if err := os.MkdirAll(dir+"/sessions/S1/jobs", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	st, err := jobstore.Open(dir + "/sessions/S1/jobs.jsonl")
+	st, err := jobstore.OpenNoSync(dir + "/sessions/S1/jobs.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestReconcileOnRestoreSkipsForwardedChildOwnedJob(t *testing.T) {
 	if err := os.MkdirAll(dir+"/sessions/PARENT/jobs", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	st, err := jobstore.Open(dir + "/sessions/PARENT/jobs.jsonl")
+	st, err := jobstore.OpenNoSync(dir + "/sessions/PARENT/jobs.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestReconcileOnRestoreUsesPrunedOutputLifetimeBytes(t *testing.T) {
 	if err := os.MkdirAll(dir+"/sessions/S1/jobs", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	st, err := jobstore.Open(dir + "/sessions/S1/jobs.jsonl")
+	st, err := jobstore.OpenNoSync(dir + "/sessions/S1/jobs.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestReconcileOnRestoreRequeuesTerminalNotifications(t *testing.T) {
 			if err := os.MkdirAll(dir+"/sessions/"+sessionID+"/jobs", 0o755); err != nil {
 				t.Fatal(err)
 			}
-			st, err := jobstore.Open(dir + "/sessions/" + sessionID + "/jobs.jsonl")
+			st, err := jobstore.OpenNoSync(dir + "/sessions/" + sessionID + "/jobs.jsonl")
 			if err != nil {
 				t.Fatal(err)
 			}

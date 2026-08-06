@@ -320,7 +320,7 @@ func branchExistsAt(t *testing.T, mainRoot, name string) bool {
 // Disposed mark in the session's own jobs.jsonl.
 func disposedRawStoreMentions(t *testing.T, s *Session, delegateID string) bool {
 	t.Helper()
-	store, err := jobstore.Open(filepath.Join(s.jobManager.dir, "jobs.jsonl"))
+	store, err := jobstore.OpenNoSync(filepath.Join(s.jobManager.dir, "jobs.jsonl"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

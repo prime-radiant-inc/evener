@@ -13,7 +13,7 @@ import (
 // so the on-disk bytes are exactly what serf writes.
 func writeJobsEvents(t *testing.T, jobsPath string, events []jobstore.Event) {
 	t.Helper()
-	st, err := jobstore.Open(jobsPath)
+	st, err := jobstore.OpenNoSync(jobsPath)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1036,7 +1036,7 @@ func TestCreateDelegateDropsOversizedStructuredResultBeforePersistence(t *testin
 	}
 	waitForShellDone(t, sess.jobManager, res.JobID)
 
-	reopened, err := jobstore.Open(sess.jobManager.dir + "/jobs.jsonl")
+	reopened, err := jobstore.OpenNoSync(sess.jobManager.dir + "/jobs.jsonl")
 	if err != nil {
 		t.Fatalf("reopen job store: %v", err)
 	}

@@ -761,7 +761,7 @@ func TestJobManagerCloseMarksRunningJobsCancelled(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	st, err := jobstore.Open(filepath.Join(jm.dir, "jobs.jsonl"))
+	st, err := jobstore.OpenNoSync(filepath.Join(jm.dir, "jobs.jsonl"))
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}
@@ -838,7 +838,7 @@ func TestJobManagerCloseContinuesAfterWatchSendCleanupFailure(t *testing.T) {
 		t.Fatalf("close error = %v, want watch cleanup error", err)
 	}
 
-	st, err := jobstore.Open(filepath.Join(jm.dir, "jobs.jsonl"))
+	st, err := jobstore.OpenNoSync(filepath.Join(jm.dir, "jobs.jsonl"))
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}

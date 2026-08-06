@@ -366,7 +366,7 @@ func TestRunShellBackgroundCloseDuringStartDoesNotCommitJob(t *testing.T) {
 		t.Fatal("job manager close did not finish")
 	}
 
-	store, err := jobstore.Open(filepath.Join(jm.dir, "jobs.jsonl"))
+	store, err := jobstore.OpenNoSync(filepath.Join(jm.dir, "jobs.jsonl"))
 	if err != nil {
 		t.Fatalf("reopen job store: %v", err)
 	}
