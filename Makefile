@@ -203,24 +203,27 @@ SELFTEST_SCRIPTS := run-module-lint run-module-tests make-selftest reclaim-test-
 # and fails outright under dash without one, which is how this recipe
 # actually runs in CI) so a TERM to that group reaches descendants the suite
 # forked rather than exec'd, which a signal aimed at a single PID cannot.
-# stop_children's single-PID kill is only a last-resort fallback for when the
-# group-kill itself fails (e.g. the group is already gone), not a routine
-# path. Each worker removes its own pid file the instant run_worker reaps it,
-# before any bookkeeping -- the same instant its forwarding trap is disarmed
-# -- so a signal arriving after that point (during PASS/FAIL reporting, or
-# for any worker that finished early while others are still running) finds
-# no file to read and skips that worker rather than kill -TERMing a pid the
-# kernel may since have reused for an unrelated process.
+# Every kill target in this recipe is owned in-process, never read from a
+# file: stop_children signals only $pids, the run_worker wrapper subshells,
+# which are this shell's own direct children and therefore reuse-safe kill
+# targets for exactly as long as $pids lists them (cleared the instant this
+# shell's own wait reaps them, below). Each wrapper is the only thing that
+# ever signals its own suite's process group, using $child from its own
+# memory -- never published anywhere for another process to read, so there
+# is no window where a signal could be sent to a pid some other process last
+# saw associated with this worker. The wrapper's trap is installed before
+# the suite is even spawned and defers to an "interrupted" flag if $child
+# doesn't exist yet, checked immediately after spawning, so a signal in that
+# instant is neither dropped nor forwarded empty-handed; the trap is disarmed
+# the moment its own wait returns, before any bookkeeping, so nothing can act
+# on the child's pid once it may have been reused. $dir/$s.pid is written and
+# removed only for fixture observability (discovering and confirming a
+# worker's pid from outside the recipe); no production signal path in this
+# recipe ever reads it.
 selftest:
 	@set -u; fail=0; normal=0; pids=""; \
 	dir="$$(mktemp -d -t serf-selftest.XXXXXX)" || exit 1; \
-	stop_children() { \
-		for s in $(SELFTEST_SCRIPTS); do \
-			cpid="$$(cat "$$dir/$$s.pid" 2>/dev/null || :)"; \
-			[ -n "$$cpid" ] || continue; \
-			kill -TERM "-$$cpid" 2>/dev/null || kill -TERM "$$cpid" 2>/dev/null || :; \
-		done; \
-	}; \
+	stop_children() { for pid in $$pids; do kill -TERM "$$pid" 2>/dev/null || :; done; }; \
 	cleanup() { \
 		if [ "$$normal" -eq 0 ]; then stop_children; fi; \
 		for pid in $$pids; do wait "$$pid" 2>/dev/null || :; done; \
@@ -229,10 +232,11 @@ selftest:
 	trap 'status=$$?; cleanup; exit "$$status"' 0; \
 	trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
 	run_worker() { \
-		s="$$1"; start="$$(date +%s)"; \
+		s="$$1"; start="$$(date +%s)"; child=""; interrupted=0; \
+		trap 'if [ -n "$$child" ]; then kill -TERM "-$$child" 2>/dev/null || kill -TERM "$$child" 2>/dev/null || :; wait "$$child" 2>/dev/null || :; exit 143; else interrupted=1; fi' HUP INT TERM; \
 		perl -e 'setpgrp(0,0); exec @ARGV or die "exec: $$!"' -- scripts/$$s-selftest.sh >"$$dir/$$s.log" 2>&1 & child="$$!"; \
 		echo "$$child" >"$$dir/$$s.pid"; \
-		trap 'kill -TERM "-$$child" 2>/dev/null || kill -TERM "$$child" 2>/dev/null || :; wait "$$child" 2>/dev/null || :; exit 143' HUP INT TERM; \
+		if [ "$$interrupted" -eq 1 ]; then kill -TERM "-$$child" 2>/dev/null || kill -TERM "$$child" 2>/dev/null || :; wait "$$child" 2>/dev/null || :; exit 143; fi; \
 		wait "$$child"; status="$$?"; trap - HUP INT TERM; rm -f "$$dir/$$s.pid"; end="$$(date +%s)"; \
 		printf 'real %s\n' "$$((end - start))" >>"$$dir/$$s.log"; \
 		echo "$$status" >"$$dir/$$s.status"; \

@@ -598,53 +598,73 @@ while [ "$attempt" -lt 200 ]; do
 	attempt=$((attempt + 1))
 	sleep 0.05
 done
-real_probe_one_pid="$(cat "$logdir/probe-one.pid" 2>/dev/null || :)"
+real_probe_one_pid=""
+if [ -n "$logdir" ] && [ -f "$logdir/probe-one.pid" ]; then
+	real_probe_one_pid="$(cat "$logdir/probe-one.pid" 2>/dev/null || :)"
+fi
 if [ -n "$logdir" ] && [ -n "$real_probe_one_pid" ]; then
 	ok "the stale-pid fixture discovers the recipe's own recorded worker pid"
 else
 	bad "the stale-pid fixture discovers the recipe's own recorded worker pid"
 fi
-# probe-one is blocked on the reap-release FIFO (PROBE_EXIT_FAST) rather than exiting on its own,
-# so this overwrite lands strictly before run_worker reaps it -- a causal order, not a race the
-# harness has to win. A fixed recipe's rm -f removes the file by name once it reaps probe-one,
-# regardless of the value currently inside; that is what this case exercises.
-printf '%s\n' "$sentinel_pid" >"$logdir/probe-one.pid"
-printf 'release\n' >&6
-exited_event=""
-IFS= read -r -t 10 -u 9 exited_event || :
-assert_eq "$exited_event" "worker-exited:probe-one" "the stale-pid fixture's released worker actually exits"
-exec 9>&-
-exec 6>&-
-# The worker's own process exiting and run_worker (a different process) removing its pid file
-# are two separate events; proving the first happened does not prove the second already has.
-# Poll for the file's actual disappearance -- the observable this case exists to check -- before
-# sending the interrupt, so the sentinel assertion below is not itself racing that removal.
-attempt=0
-pid_file_removed=0
-while [ "$attempt" -lt 100 ]; do
-	[ -e "$logdir/probe-one.pid" ] || { pid_file_removed=1; break; }
-	attempt=$((attempt + 1))
-	sleep 0.05
-done
-if [ "$pid_file_removed" -eq 1 ]; then
-	ok "the recipe removes a reaped worker's pid file promptly"
+if [ -z "$logdir" ] || [ -z "$real_probe_one_pid" ]; then
+	# Discovery failed: abort rather than let an empty logdir turn the overwrite below into a
+	# write against "/probe-one.pid" at the filesystem root instead of the worker's real dir.
+	for contract in "the stale-pid fixture's released worker actually exits" \
+		"the recipe removes a reaped worker's pid file promptly" \
+		"an interrupted wave during a stale pid file exits nonzero" \
+		"an interrupted wave never signals a sentinel behind a reaped worker's stale pid file" \
+		"an interrupted wave during a stale pid file reaps probe-two"; do
+		bad "$contract (logdir discovery failed)"
+	done
+	printf 'release\n' >&6
+	exec 9>&-
+	exec 6>&-
+	stop_make_with_readiness_events
+	exec 8>&-
 else
-	bad "the recipe removes a reaped worker's pid file promptly"
-fi
-stop_make_with_readiness_events
-exec 8>&-
-[ "$make_status" -ne 0 ] && ok "an interrupted wave during a stale pid file exits nonzero" || bad "an interrupted wave during a stale pid file exits nonzero"
-if kill -0 "$sentinel_pid" 2>/dev/null; then
-	ok "an interrupted wave never signals a sentinel behind a reaped worker's stale pid file"
-else
-	bad "an interrupted wave never signals a sentinel behind a reaped worker's stale pid file"
-fi
-pid="$(cat "$case_state/probe-two.pid" 2>/dev/null || :)"
-if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-	bad "an interrupted wave during a stale pid file leaves probe-two alive"
-	kill -KILL "$pid" 2>/dev/null || :
-else
-	ok "an interrupted wave during a stale pid file reaps probe-two"
+	# probe-one is blocked on the reap-release FIFO (PROBE_EXIT_FAST) rather than exiting on its
+	# own, so this overwrite lands strictly before run_worker reaps it -- a causal order, not a
+	# race the harness has to win. The recipe's own rm -f removes the file by name once it reaps
+	# probe-one, regardless of the value currently inside; that is what this case exercises.
+	printf '%s\n' "$sentinel_pid" >"$logdir/probe-one.pid"
+	printf 'release\n' >&6
+	exited_event=""
+	IFS= read -r -t 10 -u 9 exited_event || :
+	assert_eq "$exited_event" "worker-exited:probe-one" "the stale-pid fixture's released worker actually exits"
+	exec 9>&-
+	exec 6>&-
+	# The worker's own process exiting and run_worker (a different process) removing its pid file
+	# are two separate events; proving the first happened does not prove the second already has.
+	# Poll for the file's actual disappearance -- the observable this case exists to check -- before
+	# sending the interrupt, so the sentinel assertion below is not itself racing that removal.
+	attempt=0
+	pid_file_removed=0
+	while [ "$attempt" -lt 100 ]; do
+		[ -e "$logdir/probe-one.pid" ] || { pid_file_removed=1; break; }
+		attempt=$((attempt + 1))
+		sleep 0.05
+	done
+	if [ "$pid_file_removed" -eq 1 ]; then
+		ok "the recipe removes a reaped worker's pid file promptly"
+	else
+		bad "the recipe removes a reaped worker's pid file promptly"
+	fi
+	stop_make_with_readiness_events
+	exec 8>&-
+	[ "$make_status" -ne 0 ] && ok "an interrupted wave during a stale pid file exits nonzero" || bad "an interrupted wave during a stale pid file exits nonzero"
+	if kill -0 "$sentinel_pid" 2>/dev/null; then
+		ok "an interrupted wave never signals a sentinel behind a reaped worker's stale pid file"
+	else
+		bad "an interrupted wave never signals a sentinel behind a reaped worker's stale pid file"
+	fi
+	pid="$(cat "$case_state/probe-two.pid" 2>/dev/null || :)"
+	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+		bad "an interrupted wave during a stale pid file leaves probe-two alive"
+		kill -KILL "$pid" 2>/dev/null || :
+	else
+		ok "an interrupted wave during a stale pid file reaps probe-two"
+	fi
 fi
 kill -TERM "$sentinel_pid" 2>/dev/null || :
 wait "$sentinel_pid" 2>/dev/null || :
