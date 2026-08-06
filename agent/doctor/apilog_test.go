@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -141,6 +142,35 @@ func TestAPILogCanonicalTotalsFiltersAndSettlementIdentity(t *testing.T) {
 	low, err := APILog(base, sid, APILogOpts{CacheSpikes: true, SpikeThreshold: 500})
 	if err != nil || len(low.Calls) != 3 {
 		t.Fatalf("low spike filter rows = %d, err %v", len(low.Calls), err)
+	}
+}
+
+// TestAPILogMetadataOnlyDecodeMatchesStrictDecode pins the Task 2 perf
+// switch: APILog now decodes metadata-only (kata ws1/task-2), but its
+// summary over a fixture log must be byte-for-byte identical to what strict
+// decoding would have produced, across every opts filter combination the
+// other APILog tests exercise.
+func TestAPILogMetadataOnlyDecodeMatchesStrictDecode(t *testing.T) {
+	base, sid, _ := apilogFixture(t)
+	for _, opts := range []APILogOpts{
+		{},
+		{EmptyOnly: true},
+		{ErrorsOnly: true},
+		{CacheSpikes: true},
+		{CacheSpikes: true, SpikeThreshold: 500},
+		{SummaryOnly: true},
+	} {
+		strict, err := apiLog(base, sid, opts, apilog.DecodeStrict)
+		if err != nil {
+			t.Fatalf("apiLog(strict, %+v): %v", opts, err)
+		}
+		metadataOnly, err := apiLog(base, sid, opts, apilog.DecodeMetadataOnly)
+		if err != nil {
+			t.Fatalf("apiLog(metadata-only, %+v): %v", opts, err)
+		}
+		if !reflect.DeepEqual(strict, metadataOnly) {
+			t.Fatalf("opts %+v: metadata-only result diverges from strict\nstrict:        %+v\nmetadata-only: %+v", opts, strict, metadataOnly)
+		}
 	}
 }
 

@@ -12,9 +12,22 @@ import (
 
 var ErrPartialTail = errors.New("partial API-log tail")
 
+// DecodeMode selects how much of a record's body content a decode
+// validates. DecodeStrict (the default) decodes and revalidates every body's
+// bytes; DecodeMetadataOnly leaves EncodedBody fields in their encoded form
+// and skips body byte-count/UTF-8 revalidation, for callers that only need
+// scalar fields (model, tokens, TextLength, ...).
+type DecodeMode int
+
+const (
+	DecodeStrict DecodeMode = iota
+	DecodeMetadataOnly
+)
+
 type Decoder struct {
 	reader       *bufio.Reader
 	maxLineBytes int
+	mode         DecodeMode
 	line         int
 	offset       int64
 	done         bool
@@ -22,11 +35,25 @@ type Decoder struct {
 	recordOffset int64
 }
 
-func NewDecoder(r io.Reader, maxLineBytes int) *Decoder {
-	return &Decoder{
+// DecoderOption configures a Decoder at construction.
+type DecoderOption func(*Decoder)
+
+// WithMetadataOnly decodes records without materializing or validating body
+// bytes (see DecodeMetadataOnly). Full-decode (DecodeStrict) remains the
+// default.
+func WithMetadataOnly() DecoderOption {
+	return func(d *Decoder) { d.mode = DecodeMetadataOnly }
+}
+
+func NewDecoder(r io.Reader, maxLineBytes int, opts ...DecoderOption) *Decoder {
+	d := &Decoder{
 		reader:       bufio.NewReader(r),
 		maxLineBytes: maxLineBytes,
 	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
 }
 
 func (d *Decoder) Next() (APILogRecord, error) {
@@ -52,7 +79,7 @@ func (d *Decoder) Next() (APILogRecord, error) {
 	if tooLong {
 		return nil, fmt.Errorf("API log line %d at offset %d exceeds %d bytes", lineNumber, lineOffset, d.maxLineBytes)
 	}
-	record, err := DecodeRecord(line)
+	record, err := decodeRecord(line, d.mode)
 	if err != nil {
 		return nil, fmt.Errorf("API log line %d at offset %d: %w", lineNumber, lineOffset, err)
 	}
@@ -208,6 +235,10 @@ func readRecoveryRangeInto(r io.ReadSeeker, offset int64, data []byte) error {
 }
 
 func DecodeRecord(line []byte) (APILogRecord, error) {
+	return decodeRecord(line, DecodeStrict)
+}
+
+func decodeRecord(line []byte, mode DecodeMode) (APILogRecord, error) {
 	if !utf8.Valid(line) {
 		return nil, errors.New("API-log record is not valid UTF-8")
 	}
@@ -235,7 +266,7 @@ func DecodeRecord(line []byte) (APILogRecord, error) {
 	default:
 		return nil, fmt.Errorf("unknown API-log record kind %q", kind.Kind)
 	}
-	if err := record.validateRecord(); err != nil {
+	if err := record.validateRecord(mode); err != nil {
 		return nil, fmt.Errorf("invalid %s record: %w", record.RecordKind(), err)
 	}
 	return record, nil
@@ -252,7 +283,7 @@ func MarshalRecord(record APILogRecord) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("unsupported API-log record type %T", record)
 	}
-	if err := record.validateRecord(); err != nil {
+	if err := record.validateRecord(DecodeStrict); err != nil {
 		return nil, fmt.Errorf("invalid %s record: %w", record.RecordKind(), err)
 	}
 	line, err := json.Marshal(record)

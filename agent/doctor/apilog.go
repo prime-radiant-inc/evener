@@ -113,7 +113,19 @@ type APILogResult struct {
 
 // APILog decodes the private canonical API log and owns only its diagnostic
 // projection. Provider bodies and headers never enter the result.
+//
+// Summarization only reads scalar fields (model, tokens, TextLength, ...),
+// never provider body content, so it decodes metadata-only to avoid paying
+// for base64 body decode/revalidation on large logs. ValidateAPILog (the
+// --validate path) keeps the strict default.
 func APILog(stateBase, selector string, opts APILogOpts) (APILogResult, error) {
+	return apiLog(stateBase, selector, opts, apilog.DecodeMetadataOnly)
+}
+
+// apiLog is APILog's implementation, parameterized on decode mode so tests
+// can pin that metadata-only summarization is identical to strict
+// summarization over the same log.
+func apiLog(stateBase, selector string, opts APILogOpts, mode apilog.DecodeMode) (APILogResult, error) {
 	paths, err := Locate(stateBase, selector)
 	if err != nil {
 		return APILogResult{}, err
@@ -125,7 +137,11 @@ func APILog(stateBase, selector string, opts APILogOpts) (APILogResult, error) {
 	defer func() { _ = f.Close() }()
 
 	res := APILogResult{SessionID: paths.SessionID}
-	decoder := apilog.NewDecoder(f, doctorAPILogMaxLineBytes)
+	var decoderOpts []apilog.DecoderOption
+	if mode == apilog.DecodeMetadataOnly {
+		decoderOpts = append(decoderOpts, apilog.WithMetadataOnly())
+	}
+	decoder := apilog.NewDecoder(f, doctorAPILogMaxLineBytes, decoderOpts...)
 	threshold := opts.SpikeThreshold
 	if threshold <= 0 {
 		threshold = defaultSpikeThreshold

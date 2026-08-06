@@ -87,7 +87,7 @@ type APIAttemptGroupSettlement struct {
 
 type APILogRecord interface {
 	RecordKind() string
-	validateRecord() error
+	validateRecord(mode DecodeMode) error
 }
 
 func (APIAttemptRecord) RecordKind() string {
@@ -106,7 +106,7 @@ func (r APIAttemptRecord) WithForbiddenProviderEvidence(patterns, credentialName
 	return r
 }
 
-func (r APIAttemptRecord) validateRecord() error {
+func (r APIAttemptRecord) validateRecord(mode DecodeMode) error {
 	if r.Kind != attemptRecordKind {
 		return fmt.Errorf("kind must be %q", attemptRecordKind)
 	}
@@ -140,8 +140,10 @@ func (r APIAttemptRecord) validateRecord() error {
 	if r.Request.Endpoint == "" {
 		return errors.New("request endpoint is required")
 	}
-	if _, err := DecodeBody(r.Request.Body); err != nil {
-		return fmt.Errorf("invalid request body: %w", err)
+	if mode == DecodeStrict {
+		if _, err := DecodeBody(r.Request.Body); err != nil {
+			return fmt.Errorf("invalid request body: %w", err)
+		}
 	}
 	if !validAttemptOutcome(r.Outcome) {
 		return fmt.Errorf("unknown attempt outcome %q", r.Outcome)
@@ -150,14 +152,14 @@ func (r APIAttemptRecord) validateRecord() error {
 		return errors.New("successful attempt requires a response")
 	}
 	if r.Response != nil {
-		if err := r.Response.validate(); err != nil {
+		if err := r.Response.validate(mode); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (r APIAttemptGroupSettlement) validateRecord() error {
+func (r APIAttemptGroupSettlement) validateRecord(DecodeMode) error {
 	if r.Kind != settlementRecordKind {
 		return fmt.Errorf("kind must be %q", settlementRecordKind)
 	}
@@ -187,15 +189,17 @@ func (r APIAttemptGroupSettlement) validateRecord() error {
 	return nil
 }
 
-func (r APIAttemptResponse) validate() error {
+func (r APIAttemptResponse) validate(mode DecodeMode) error {
 	if r.StatusCode != nil && *r.StatusCode < 0 {
 		return errors.New("response status code must be non-negative")
 	}
 	if r.TextLength != nil && *r.TextLength < 0 || r.ToolCallCount != nil && *r.ToolCallCount < 0 {
 		return errors.New("response compact counts must be non-negative")
 	}
-	if _, err := DecodeBody(r.Body); err != nil {
-		return fmt.Errorf("invalid response body: %w", err)
+	if mode == DecodeStrict {
+		if _, err := DecodeBody(r.Body); err != nil {
+			return fmt.Errorf("invalid response body: %w", err)
+		}
 	}
 	if err := r.Usage.validate(); err != nil {
 		return err
