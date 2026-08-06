@@ -431,7 +431,18 @@ func TestJobActivityTree_TruncatesAtDepth33(t *testing.T) {
 	current := root
 	for i := range activityMaxNewDepth + 1 {
 		child := newActivityTestSession(t, stateDir)
-		_, _ = linkActivityChild(t, current, child, fmt.Sprintf("child-%02d", i))
+		_, run := linkActivityChild(t, current, child, fmt.Sprintf("child-%02d", i))
+		// Finalize the delegate job immediately: JobActivityTree's structural
+		// walk (Delegates/Children) doesn't care whether a job is running or
+		// terminal, but leaving it "running" forever means every session below
+		// this one in the chain never has an outstanding-delegate count of zero,
+		// so each Close() at test cleanup blocks a full drainRecheckInterval
+		// (250ms) waiting for a completion that will never arrive — flat ~200ms
+		// x 33 nodes of pure fixture teardown cost, not part of what this test
+		// proves.
+		if err := current.jobManager.finalize(run.rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); err != nil {
+			t.Fatalf("finalize delegate job %d: %v", i, err)
+		}
 		saveActivityMeta(t, stateDir, current)
 		saveActivityMeta(t, stateDir, child)
 		current = child
