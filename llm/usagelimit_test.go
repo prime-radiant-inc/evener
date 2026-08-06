@@ -25,6 +25,36 @@ func rawBody(t *testing.T, body string) map[string]any {
 // exhausted. A multi-day wall must not be retried as a transient rate limit.
 const chatGPTUsageLimitBody = `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"pro","resets_at":1785258150,"eligible_promo":null,"resets_in_seconds":320387}}`
 
+// The exact body captured from session 0341i3MDP7PKYfPqGhqPWO, provider
+// instance kimi-anthropic-api, attempt at 2026-08-05T05:48:28Z, HTTP 403.
+// error.type is "permission_error" — a generic Anthropic-API error type, not
+// one of usageLimitCodes — and there is no resets_at/resets_in_seconds; only
+// the message text names the billing-cycle limit.
+const kimiBillingCycle403Body = `{"error":{"type":"permission_error","message":"You've reached your usage limit for this billing cycle. Your quota will be refreshed in the next cycle. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/code/#pricing"},"type":"error"}`
+
+func TestParseUsageLimit_MessageOnlyFallback(t *testing.T) {
+	raw := rawBody(t, kimiBillingCycle403Body)
+	limit, ok := parseUsageLimit(raw, time.Unix(1785000000, 0))
+	if !ok {
+		t.Fatal("parseUsageLimit reported no usage limit, want a message-only match")
+	}
+	if !limit.resetsAt.IsZero() {
+		t.Fatalf("resetsAt = %v, want zero: the body carries no reset fields", limit.resetsAt)
+	}
+	if !strings.Contains(limit.message, "usage limit for this billing cycle") {
+		t.Fatalf("message = %q, want it to contain %q", limit.message, "usage limit for this billing cycle")
+	}
+}
+
+// Same error.type ("permission_error") but an unrelated message must not
+// match — proves the substring match keys on the phrase, not the error type.
+func TestParseUsageLimit_PermissionErrorWithoutUsageLimitPhraseDoesNotMatch(t *testing.T) {
+	raw := rawBody(t, `{"error":{"type":"permission_error","message":"you do not have access to this resource"}}`)
+	if _, ok := parseUsageLimit(raw, time.Unix(1785000000, 0)); ok {
+		t.Fatal("parseUsageLimit matched an unrelated permission_error, want no match")
+	}
+}
+
 func TestUsageLimit429IsQuotaExceededAndNotRetryable(t *testing.T) {
 	raw := rawBody(t, chatGPTUsageLimitBody)
 	err := ErrorFromHTTPStatus("openai", 429, "responses.create(stream) failed", raw, nil)

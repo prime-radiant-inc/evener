@@ -293,6 +293,18 @@ func errorFromHTTPStatus(base httpBaseError) error {
 				d := 60 * time.Second
 				base.retryAfter = &d
 			}
+			return &accessDeniedError{base}
+		}
+		// Some providers (e.g. Kimi's Anthropic-compatible API) report a
+		// billing-cycle allowance exhaustion as a 403 rather than a 429, with
+		// no distinguishing error code — only the body's message names it.
+		// Without this check the failure surfaces as generic access-denied,
+		// and an orchestrator keeps re-dispatching delegate waves into a spent
+		// quota instead of stopping.
+		now := time.Now()
+		if limit, ok := parseUsageLimit(base.rawResponse, now); ok {
+			base.message = usageLimitMessage(limit, now)
+			return &quotaExceededError{httpBaseError: base, usageLimitResetsAt: limit.resetsAt}
 		}
 		return &accessDeniedError{base}
 	case 404:
