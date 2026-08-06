@@ -1109,3 +1109,32 @@ func TestParseLiteLLMCatalog_SkipsNonModelObjects(t *testing.T) {
 		t.Error("real model dropped")
 	}
 }
+
+func TestMaxOutputTokensFor(t *testing.T) {
+	cat, err := parseLiteLLMCatalog([]byte(`{
+		"capped":   {"litellm_provider": "x", "max_input_tokens": 200000, "max_output_tokens": 64000},
+		"junk-cap": {"litellm_provider": "x", "max_input_tokens": 8192, "max_output_tokens": 8192},
+		"no-cap":   {"litellm_provider": "x", "max_input_tokens": 200000}
+	}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cases := []struct {
+		model string
+		want  int
+	}{
+		{"capped", 64000},
+		{"junk-cap", 0}, // cap >= context window is junk data
+		{"no-cap", 0},
+		{"unknown-model", 0},
+	}
+	for _, tc := range cases {
+		if got := cat.MaxOutputTokensFor(tc.model); got != tc.want {
+			t.Errorf("MaxOutputTokensFor(%q) = %d, want %d", tc.model, got, tc.want)
+		}
+	}
+	var nilCat *ModelCatalog
+	if got := nilCat.MaxOutputTokensFor("capped"); got != 0 {
+		t.Errorf("nil catalog: got %d, want 0", got)
+	}
+}

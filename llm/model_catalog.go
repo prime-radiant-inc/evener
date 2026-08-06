@@ -142,6 +142,26 @@ func (c *ModelCatalog) LookupModelInfo(modelID string) *ModelInfo {
 	return mi
 }
 
+// MaxOutputTokensFor returns the model's output-token cap from the catalog,
+// or 0 when unknown. A claimed cap that equals or exceeds the context window
+// is junk data — input and output share the window, so the cap can't coexist
+// with any prompt — and reports 0 (mirrors openaicompat's fillFromCatalog
+// guard). Nil-receiver safe so callers can use EmbeddedModelCatalog()
+// directly without a nil check.
+func (c *ModelCatalog) MaxOutputTokensFor(model string) int {
+	if c == nil {
+		return 0
+	}
+	mi := c.LookupModelInfo(model)
+	if mi == nil || mi.MaxOutputTokens == nil || *mi.MaxOutputTokens <= 0 {
+		return 0
+	}
+	if mi.ContextWindow > 0 && *mi.MaxOutputTokens >= mi.ContextWindow {
+		return 0
+	}
+	return *mi.MaxOutputTokens
+}
+
 // ListModels returns the catalog's models, optionally filtered by provider
 // (case-insensitive, whitespace-trimmed). An empty provider returns a copy of
 // all models; a nil catalog returns nil.
