@@ -34,8 +34,9 @@ func TestCollectFillsAllFields(t *testing.T) {
 	if got.Cwd != "/w" || got.Sandbox != "off" || got.GitBranch != "main" {
 		t.Fatalf("collect: %+v", got)
 	}
-	if got.LocalDateHour != "2026-08-06 14:00 PDT" {
-		t.Fatalf("hour truncation: %q", got.LocalDateHour)
+	want := f.now.Local().Format("2006-01-02 15:00 MST")
+	if got.LocalDateHour != want {
+		t.Fatalf("hour truncation: got %q, want %q", got.LocalDateHour, want)
 	}
 	if got.Pressure.Load != "load pressure: 9.1 (8 cores)" {
 		t.Fatalf("pressure: %+v", got.Pressure)
