@@ -49,6 +49,13 @@ const (
 	// toggles had nothing to act on for any session a reader came back to
 	// (kata qm9y).
 	TurnHookCompleted TurnKind = "HOOK_COMPLETED"
+	// TurnEnvironment is a harness-injected environment-context update (cwd,
+	// date, sandbox, git branch, resource pressure) rendered as a diff by
+	// agent/internal/envctx. Unlike the presentational kinds above it IS
+	// model-bound: expandHistory passes its user-role message through, and
+	// because it is only ever appended (never edited) it preserves
+	// provider prompt caches. UIs render it as harness chrome, not user speech.
+	TurnEnvironment TurnKind = "ENVIRONMENT"
 )
 
 // HookInfo is the persisted detail of one completed hook: the same fields the

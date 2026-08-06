@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/serf/agent/internal/envctx"
 	"primeradiant.com/serf/identifier"
 )
 
@@ -73,6 +74,9 @@ type SessionMeta struct {
 	// PinnedNote is the agent's self-compaction note_to_self, persisted so it
 	// survives daemon restart and serf resume (mirrors Goal).
 	PinnedNote string `json:"pinned_note,omitempty"`
+	// EnvContext is the environment-context tracker state (last emitted
+	// snapshot), persisted so resume stays silent when nothing changed.
+	EnvContext *envctx.State `json:"env_context,omitempty"`
 	// ObservedBy records append-only observer UI relationships. It grants no
 	// access and lets the hub auto-open an observer beside this worker.
 	ObservedBy []string `json:"observed_by,omitempty"`
