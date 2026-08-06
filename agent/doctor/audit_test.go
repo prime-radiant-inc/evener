@@ -102,6 +102,43 @@ func TestParseRunbook_AuditBlockAndManualSteps(t *testing.T) {
 	}
 }
 
+// TestParseRunbook_WrappedBulletJoinsContinuationLines is the final-review
+// I2 fix: a CLASSIFY bullet wrapped across several physical lines (every
+// standing runbook's prose bullets are written this way) must survive whole
+// as one ManualStep, not get truncated to its first line.
+func TestParseRunbook_WrappedBulletJoinsContinuationLines(t *testing.T) {
+	md := `# Runbook: wrapped
+
+## HEALTHY
+- fine
+
+## INSPECT
+` + "```" + `
+serf-doctor transcript <selector> --health --json
+` + "```" + `
+
+## CLASSIFY
+- Read the flagged session's transcript around the identical run
+  (` + "`serf-doctor transcript <sel> --format outline`" + `) to confirm the
+  calls really are identical retries, not a legitimate scripted retry.
+- A run below the threshold is not a Finding.
+`
+	rb, err := ParseRunbook("wrapped", []byte(md))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rb.ManualSteps) != 2 {
+		t.Fatalf("ManualSteps = %v, want exactly 2", rb.ManualSteps)
+	}
+	want := "Read the flagged session's transcript around the identical run (`serf-doctor transcript <sel> --format outline`) to confirm the calls really are identical retries, not a legitimate scripted retry."
+	if rb.ManualSteps[0] != want {
+		t.Errorf("ManualSteps[0] = %q, want %q", rb.ManualSteps[0], want)
+	}
+	if rb.ManualSteps[1] != "A run below the threshold is not a Finding." {
+		t.Errorf("ManualSteps[1] = %q", rb.ManualSteps[1])
+	}
+}
+
 func TestParseRunbook_MissingCategoryErrors(t *testing.T) {
 	bad := "## CLASSIFY\n```yaml\naudit:\n  - title: x\n    severity: high\n    metric: jobs.run_timeout\n    op: \">=\"\n    value: 5\n```\n"
 	if _, err := ParseRunbook("bad", []byte(bad)); err == nil {
@@ -234,6 +271,31 @@ func TestParseRunbook_AuditBlockWithNoHeadingErrors(t *testing.T) {
 	_, err := ParseRunbook("no-heading", []byte(bad))
 	if err == nil {
 		t.Fatal("want error: audit: block with no CLASSIFY heading in scope")
+	}
+}
+
+// TestMetricSourceResolve_TrailingJunkIsLoudError is the final-review minor
+// fix: writing-runbooks.md promises a malformed metric path is a loud
+// parse/eval error, never a silent zero. Trailing junk on a scalar metric
+// (no sub-path of its own) and on jobs.zero_output_terminal (a scalar
+// wrapped inside the jobs.* namespace) both used to resolve silently via
+// the jobs map's zero-value-on-miss behavior; both must now error.
+func TestMetricSourceResolve_TrailingJunkIsLoudError(t *testing.T) {
+	src := metricSource{health: HealthResult{Jobs: JobsHealth{ByTerminalReason: map[string]int{}}}}
+	for _, path := range []string{
+		"truncation_warnings.junk",
+		"stale_notifications.x",
+		"user_corrections.x",
+		"jobs.zero_output_terminal.x",
+	} {
+		if _, err := src.resolve(path); err == nil {
+			t.Errorf("resolve(%q): want error, got nil", path)
+		}
+	}
+	// A legitimate jobs.<reason> path (a reason name is just a bare string,
+	// never dotted) still resolves, silently zero when absent.
+	if v, err := src.resolve("jobs.run_timeout"); err != nil || v != 0 {
+		t.Errorf("resolve(\"jobs.run_timeout\") = %v, %v; want 0, nil", v, err)
 	}
 }
 

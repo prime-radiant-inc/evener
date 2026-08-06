@@ -431,6 +431,30 @@ func TestRenderSessions_ListsUnreadable(t *testing.T) {
 	}
 }
 
+// TestRenderSessions_TimesRenderedInUTC is the final-review minor fix:
+// StartedAt (doc.Header.CreatedAt) and LastActivity (a file mtime, which
+// time.Stat returns local-zoned on most platforms) come from different
+// clocks -- RenderSessions must normalize both to UTC rather than mixing
+// zones across the two time columns.
+func TestRenderSessions_TimesRenderedInUTC(t *testing.T) {
+	loc := time.FixedZone("UTC-7", -7*60*60)
+	started := time.Date(2026, 8, 5, 10, 0, 0, 0, time.UTC)
+	lastActivity := time.Date(2026, 8, 5, 5, 0, 0, 0, loc) // == 12:00:00Z
+	res := SessionsResult{Sessions: []SessionRow{{
+		SessionID: sidA, StartedAt: started, LastActivity: lastActivity,
+	}}}
+	out := RenderSessions(res)
+	if !strings.Contains(out, "2026-08-05T10:00:00Z") {
+		t.Errorf("started column not rendered in UTC:\n%s", out)
+	}
+	if !strings.Contains(out, "2026-08-05T12:00:00Z") {
+		t.Errorf("last_activity column not rendered in UTC:\n%s", out)
+	}
+	if strings.Contains(out, "-07:00") {
+		t.Errorf("last_activity column still carries a non-UTC offset:\n%s", out)
+	}
+}
+
 func TestRenderSessions_Empty(t *testing.T) {
 	out := RenderSessions(SessionsResult{})
 	if !strings.Contains(out, "no sessions") {

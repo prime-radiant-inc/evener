@@ -255,9 +255,14 @@ func RenderSessions(res SessionsResult) string {
 			if bucket == "" {
 				bucket = "(override root)"
 			}
+			// StartedAt (doc.Header.CreatedAt) and LastActivity (the
+			// transcript file's mtime, local-zoned on most platforms) come
+			// from different clocks with different zones -- render both in
+			// UTC so the table's two time columns are directly comparable
+			// rather than silently mixing zones.
 			fmt.Fprintf(&b, "%-24s %-24s %-20s %-20s %-30s %6d %10d %-6t %-24s %5d %5d %-24s\n",
 				truncate(r.SessionID, 24), truncate(bucket, 24),
-				r.StartedAt.Format(time.RFC3339), r.LastActivity.Format(time.RFC3339),
+				r.StartedAt.UTC().Format(time.RFC3339), r.LastActivity.UTC().Format(time.RFC3339),
 				truncate(strings.Join(r.Models, ","), 30), r.TurnCount, r.TranscriptBytes, r.IsSubagent,
 				dash(truncate(r.ParentSessionID, 24)), r.DelegateCount, r.ObserverCount, r.Outcome)
 		}

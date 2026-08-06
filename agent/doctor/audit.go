@@ -159,14 +159,22 @@ func (rb *Runbook) addCheck(check AuditCheck) error {
 // be inside CLASSIFY, or ParseRunbook fails loudly rather than silently
 // accepting a misplaced block — and every top-level `- ` bullet in the
 // CLASSIFY section outside any fence — the prose an LLM operator must
-// judge, not a mechanical check — becomes a ManualStep. A runbook with
-// neither is not audit-executable, so that's a loud error rather than a
+// judge, not a mechanical check — becomes a ManualStep. A bullet's wrapped
+// continuation lines (indented follow-on text, up to the next bullet,
+// blank line, heading, or fence) are joined onto that same step with a
+// space rather than dropped, so a bullet's sentence never gets silently
+// truncated at its first physical line. A runbook with neither a check nor
+// a step is not audit-executable, so that's a loud error rather than a
 // silent no-op.
 func ParseRunbook(name string, content []byte) (Runbook, error) {
 	rb := Runbook{Name: name}
 	inFence := false
 	var fenceLines []string
 	inClassify := false
+	// openStep indexes the ManualStep currently accepting indented
+	// continuation lines, or -1 when no bullet is open (just started, or
+	// closed by a blank line/heading/fence/new bullet).
+	openStep := -1
 
 	for _, line := range strings.Split(string(content), "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -190,6 +198,7 @@ func ParseRunbook(name string, content []byte) (Runbook, error) {
 				fenceLines = nil
 			}
 			inFence = !inFence
+			openStep = -1
 			continue
 		}
 		if inFence {
@@ -198,10 +207,24 @@ func ParseRunbook(name string, content []byte) (Runbook, error) {
 		}
 		if strings.HasPrefix(trimmed, "## ") {
 			inClassify = strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(trimmed, "##")), "CLASSIFY")
+			openStep = -1
 			continue
 		}
-		if inClassify && strings.HasPrefix(trimmed, "- ") {
+		if !inClassify {
+			continue
+		}
+		switch {
+		case trimmed == "":
+			openStep = -1
+		case strings.HasPrefix(trimmed, "- "):
 			rb.ManualSteps = append(rb.ManualSteps, strings.TrimSpace(strings.TrimPrefix(trimmed, "-")))
+			openStep = len(rb.ManualSteps) - 1
+		case line != trimmed && openStep >= 0:
+			// An indented, non-bullet line while a bullet is open is that
+			// bullet's wrapped continuation.
+			rb.ManualSteps[openStep] += " " + trimmed
+		default:
+			openStep = -1
 		}
 	}
 
@@ -329,6 +352,8 @@ func (m metricSource) resolve(path string) (any, error) {
 			return nil, fmt.Errorf("metric %q: expected jobs.<reason> or jobs.zero_output_terminal", path)
 		case rest == "zero_output_terminal":
 			return m.health.Jobs.ZeroOutputTerminal, nil
+		case strings.HasPrefix(rest, "zero_output_terminal."):
+			return nil, fmt.Errorf("metric %q: jobs.zero_output_terminal takes no further path segments", path)
 		default:
 			return m.health.Jobs.ByTerminalReason[rest], nil
 		}
@@ -344,10 +369,19 @@ func (m metricSource) resolve(path string) (any, error) {
 			return nil, fmt.Errorf("unknown metric %q", path)
 		}
 	case "truncation_warnings":
+		if rest != "" {
+			return nil, fmt.Errorf("metric %q: truncation_warnings takes no further path segments", path)
+		}
 		return m.health.TruncationWarnings, nil
 	case "stale_notifications":
+		if rest != "" {
+			return nil, fmt.Errorf("metric %q: stale_notifications takes no further path segments", path)
+		}
 		return m.health.StaleNotifications, nil
 	case "user_corrections":
+		if rest != "" {
+			return nil, fmt.Errorf("metric %q: user_corrections takes no further path segments", path)
+		}
 		return m.health.UserCorrections, nil
 	case "steering":
 		if rest == "" {

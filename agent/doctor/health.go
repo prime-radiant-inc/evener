@@ -59,12 +59,15 @@ func classifyToolError(text string) string {
 }
 
 // IdenticalRun describes the longest run of consecutive, identically
-// signatured structural tool calls in the transcript. The signature matches
-// the runtime's own loop detector (agent/session_tool_round.go's
+// signatured structural tool calls in the transcript. The signature formula
+// matches the runtime's own loop detector's (agent/session_tool_round.go's
 // injectPostToolSteering: tool name + SHA256[:8]-hex of arguments —
 // agent/runtime_dir.go's shortHash and agent/internal/tool/registry.go's
-// shortHash are the identical formula under two names), so this reports the
-// same run the live loop-detection steering would have fired on.
+// shortHash are the identical formula under two names) — but this is only
+// the formula, not the detector: it reports period-1 (immediate) repeats
+// only, while detectLoop also fires on period-2/3 cycles and never checks
+// error status, so a session can trip the live loop-detector steering
+// without this run being long, or without AllErrors being true.
 type IdenticalRun struct {
 	Tool string `json:"tool,omitempty"`
 	// Length is the run's call count; zero means no tool calls at all.
