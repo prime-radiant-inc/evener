@@ -268,7 +268,7 @@ func TestSession_PersistsImageToolResultFromExecResult(t *testing.T) {
 		Arguments: json.RawMessage(`{}`),
 		Type:      "function",
 	}
-	res := sess.execTool(context.Background(), call)
+	res := sess.execTool(context.Background(), call, "")
 	if len(res.ImageData) == 0 || res.ImageMediaType != "image/png" {
 		t.Fatalf("execTool image data/media=%q/%q, want image/png with bytes", res.ImageMediaType, res.ImageData)
 	}

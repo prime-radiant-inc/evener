@@ -575,7 +575,7 @@ func TestSession_PreToolUseUpdatedInputRewritesToolCall(t *testing.T) {
 		Name:      "write_file",
 		Arguments: json.RawMessage(`{"file_path":"hook.txt","content":"original"}`),
 		Type:      "function",
-	})
+	}, "")
 	if res.IsError {
 		t.Fatalf("write_file error: %s", res.FullOutput)
 	}

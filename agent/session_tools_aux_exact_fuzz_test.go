@@ -98,7 +98,7 @@ func auxWebFetchExact(t *testing.T) {
 
 func auxRepairExact(t *testing.T) {
 	call := llm.ToolCallData{Arguments: json.RawMessage(`{"x":1}`)}
-	if got := prepareToolCall(call, nil, []string{"known"}, "missing"); got.Call.ID == "" || got.PrevalErr == "" {
+	if got := prepareToolCall(call, nil, []string{"known"}, "missing", ""); got.Call.ID == "" || got.PrevalErr == "" {
 		t.Fatalf("unknown repair = %#v", got)
 	}
 	if got := offendingField(errors.New("plain")); got != "" {

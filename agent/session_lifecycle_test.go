@@ -546,7 +546,7 @@ func TestSession_ExecToolRefusesClosedSession(t *testing.T) {
 		Name:      "late_tool",
 		Arguments: json.RawMessage(`{}`),
 		Type:      "function",
-	})
+	}, "")
 	if ran {
 		t.Fatal("tool executed after session close")
 	}
@@ -594,7 +594,7 @@ func TestSession_ExecToolEmitsEndWhenCloseBeginsAfterStart(t *testing.T) {
 			Name:      "slow_tool",
 			Arguments: json.RawMessage(`{}`),
 			Type:      "function",
-		})
+		}, "")
 	}()
 
 	select {

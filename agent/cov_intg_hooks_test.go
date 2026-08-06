@@ -69,7 +69,7 @@ func TestIntg_ExecTool_PreToolUseDeniesTool(t *testing.T) {
 	}`)
 	collect := drainEvents(sess)
 
-	res := sess.execTool(context.Background(), intg_probeCall(`{"path":"original"}`))
+	res := sess.execTool(context.Background(), intg_probeCall(`{"path":"original"}`), "")
 
 	if !res.IsError {
 		t.Fatalf("denied tool call should be an error result; got %+v", res)
@@ -95,7 +95,7 @@ func TestIntg_ExecTool_PreToolUseRewritesInput(t *testing.T) {
 	}`)
 	collect := drainEvents(sess)
 
-	res := sess.execTool(context.Background(), intg_probeCall(`{"path":"original"}`))
+	res := sess.execTool(context.Background(), intg_probeCall(`{"path":"original"}`), "")
 
 	if res.IsError {
 		t.Fatalf("allowed tool call should not error; got %+v", res)
@@ -125,7 +125,7 @@ func TestIntg_ExecTool_PreToolUseInvalidUpdatedInputErrors(t *testing.T) {
 
 	// Existing arguments are malformed JSON, so merging the hook's updatedInput
 	// into them fails and the tool call is rejected before it runs.
-	res := sess.execTool(context.Background(), intg_probeCall(`{"path":"original"`))
+	res := sess.execTool(context.Background(), intg_probeCall(`{"path":"original"`), "")
 
 	if !res.IsError {
 		t.Fatalf("malformed-args + updatedInput should error; got %+v", res)
@@ -151,7 +151,7 @@ func TestIntg_ExecTool_PreToolUseDeliversModelContext(t *testing.T) {
 	}`)
 	collect := drainEvents(sess)
 
-	res := sess.execTool(context.Background(), intg_probeCall(`{"path":"original"}`))
+	res := sess.execTool(context.Background(), intg_probeCall(`{"path":"original"}`), "")
 	if res.IsError {
 		t.Fatalf("tool should run; got %+v", res)
 	}
@@ -178,7 +178,7 @@ func TestIntg_ExecTool_PreToolUseDeliversUserMessage(t *testing.T) {
 	}`)
 	collect := drainEvents(sess)
 
-	sess.execTool(context.Background(), intg_probeCall(`{"path":"original"}`))
+	sess.execTool(context.Background(), intg_probeCall(`{"path":"original"}`), "")
 	sess.Close()
 	evs := collect()
 
@@ -199,7 +199,7 @@ func TestIntg_ExecTool_PostToolUseDeliversContextAndUserMessage(t *testing.T) {
 	}`)
 	collect := drainEvents(sess)
 
-	res := sess.execTool(context.Background(), intg_probeCall(`{"path":"original"}`))
+	res := sess.execTool(context.Background(), intg_probeCall(`{"path":"original"}`), "")
 	if res.IsError {
 		t.Fatalf("tool should run; got %+v", res)
 	}

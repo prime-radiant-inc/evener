@@ -44,7 +44,7 @@ func fixtureCall(id, name string) llm.ToolCallData {
 // (session_lifecycle.go: execToolBatch, then persistToolResults).
 func runFixtureRound(t *testing.T, sess *Session, calls []llm.ToolCallData) {
 	t.Helper()
-	results, err := sess.execToolBatch(context.Background(), calls, sess.currentProfile())
+	results, err := sess.execToolBatch(context.Background(), calls, sess.currentProfile(), "")
 	if err != nil {
 		t.Fatalf("execToolBatch: %v", err)
 	}

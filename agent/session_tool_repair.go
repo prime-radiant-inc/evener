@@ -24,7 +24,10 @@ type prepareResult struct {
 // prepareToolCall heals a tool call before dispatch. t is the resolved tool
 // (nil if the name is unknown). visibleNames and requestedVisible are already
 // provider-visible names (the caller snapshots the name-map outside s.mu).
-func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames []string, requestedVisible string) prepareResult {
+// finishReason is the round's stop reason ("" when no model response is in
+// play); llm.FinishReasonLength disables JSON repair, since closing a
+// truncated string would execute a silently truncated call.
+func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames []string, requestedVisible, finishReason string) prepareResult {
 	res := prepareResult{Call: call}
 	if strings.TrimSpace(res.Call.ID) == "" {
 		res.Call.ID = "call_" + shortHash(res.Call.Arguments)
@@ -37,6 +40,14 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	args := map[string]any{}
 	if len(res.Call.Arguments) > 0 { // raw len, mirroring ExecuteCall (no TrimSpace)
 		if err := json.Unmarshal(res.Call.Arguments, &args); err != nil {
+			// A length-stopped turn cut the argument stream mid-JSON. Never
+			// repair that: closing the open string would execute a silently
+			// truncated call (e.g. write half a file). Fail with the real
+			// diagnosis instead.
+			if finishReason == llm.FinishReasonLength {
+				res.PrevalErr = repair.ExplainTruncatedCall(requestedVisible)
+				return res
+			}
 			repaired, c := repair.RepairJSON(res.Call.Arguments)
 			res.Changes = append(res.Changes, c...)
 			args = map[string]any{}

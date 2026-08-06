@@ -157,7 +157,7 @@ func stmRunRoundContracts(t *testing.T, program []byte) {
 		stmCall(t, "glob", "glob", map[string]any{"pattern": "*." + value, "path": "."}),
 		stmCall(t, "task", "task_list", map[string]any{"action": "append", "tasks": []any{map[string]any{"type": "implement", "description": value, "prompt": "do " + value}}}),
 	}
-	results, err := s.execToolBatch(ctx, calls, s.currentProfile())
+	results, err := s.execToolBatch(ctx, calls, s.currentProfile(), "")
 	if err != nil {
 		t.Fatalf("safe registry batch returned error: %v", err)
 	}
@@ -509,7 +509,7 @@ func stmCall(t *testing.T, id, name string, args map[string]any) llm.ToolCallDat
 
 func stmExec(t *testing.T, s *Session, ctx context.Context, id, name string, args map[string]any) tool.ExecResult {
 	t.Helper()
-	result := s.execTool(ctx, stmCall(t, id, name, args))
+	result := s.execTool(ctx, stmCall(t, id, name, args), "")
 	stmAssertResult(t, llm.ToolCallData{ID: id, Name: name}, result)
 	return result
 }

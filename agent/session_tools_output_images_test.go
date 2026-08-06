@@ -112,7 +112,7 @@ func TestToolCallEndCarriesTheToolResultImage(t *testing.T) {
 
 	sess.execTool(context.Background(), llm.ToolCallData{
 		ID: "call_shot", Name: "screenshot", Arguments: json.RawMessage(`{}`), Type: "function",
-	})
+	}, "")
 	data := toolCallEndData(t, stop(), "call_shot")
 
 	if len(data.OutputImages) != 1 {
@@ -140,7 +140,7 @@ func TestToolCallEndCarriesNoImageForAByteLessResult(t *testing.T) {
 
 	sess.execTool(context.Background(), llm.ToolCallData{
 		ID: "call_shell", Name: "shell", Arguments: json.RawMessage(`{}`), Type: "function",
-	})
+	}, "")
 	if data := toolCallEndData(t, stop(), "call_shell"); len(data.OutputImages) != 0 {
 		t.Fatalf("OutputImages=%+v, want none for a result with no bytes", data.OutputImages)
 	}
@@ -158,7 +158,7 @@ func TestLiveToolResultImageMatchesItsReloadedProjection(t *testing.T) {
 	})
 
 	call := llm.ToolCallData{ID: "call_shot", Name: "screenshot", Arguments: json.RawMessage(`{}`), Type: "function"}
-	res := sess.execTool(context.Background(), call)
+	res := sess.execTool(context.Background(), call, "")
 	if err := sess.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tool.ExecResult{res}); err != nil {
 		t.Fatalf("persistToolResults: %v", err)
 	}

@@ -91,7 +91,7 @@ func FuzzSessionToolRoundTailCoverage(f *testing.F) {
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 			calls := []llm.ToolCallData{{ID: "r1", Name: "tail_read", Arguments: []byte(`{}`)}, {ID: "r2", Name: "tail_read", Arguments: []byte(`{}`)}}
-			if _, err := s.execToolBatch(ctx, calls, NewOpenAIProfile("gpt-5")); !errors.Is(err, context.Canceled) {
+			if _, err := s.execToolBatch(ctx, calls, NewOpenAIProfile("gpt-5"), ""); !errors.Is(err, context.Canceled) {
 				t.Fatalf("parallel cancellation = %v", err)
 			}
 		})
@@ -103,7 +103,7 @@ func FuzzSessionToolRoundTailCoverage(f *testing.F) {
 				return "done", nil
 			})
 			calls := []llm.ToolCallData{{ID: "w1", Name: "tail_cancel", Arguments: []byte(`{}`)}}
-			if _, err := s.execToolBatch(ctx, calls, NewOpenAIProfile("gpt-5")); !errors.Is(err, context.Canceled) {
+			if _, err := s.execToolBatch(ctx, calls, NewOpenAIProfile("gpt-5"), ""); !errors.Is(err, context.Canceled) {
 				t.Fatalf("serial tail cancellation = %v", err)
 			}
 		})

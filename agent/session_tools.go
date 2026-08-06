@@ -304,7 +304,7 @@ func providerVisibleToolNames(names []string, nameMap map[string]string) []strin
 	return out
 }
 
-func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.ExecResult {
+func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishReason string) tool.ExecResult {
 	if err := s.abortIfClosing(ctx); err != nil {
 		return skippedToolResult(call, err)
 	}
@@ -315,7 +315,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	nameMap := s.currentProfile().ToolNameMap()
 	visibleNames := providerVisibleToolNames(s.reg.Names(), nameMap)
 	requestedVisible := providerToolName(call.Name, nameMap)
-	prep := prepareToolCall(call, s.reg.Get(call.Name), visibleNames, requestedVisible)
+	prep := prepareToolCall(call, s.reg.Get(call.Name), visibleNames, requestedVisible, finishReason)
 	call = prep.Call
 	if len(prep.Changes) > 0 {
 		s.emit(events.EventToolCallRepaired, events.ToolCallRepairedData{

@@ -127,7 +127,7 @@ func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) no
 // serializes everything else; otherwise it runs them in order. On cancellation it
 // records canceled results for the outstanding calls — keeping history well-formed —
 // and returns the abort error alongside the partial results.
-func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, profile *provider.Profile) ([]tool.ExecResult, error) {
+func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, profile *provider.Profile, finishReason string) ([]tool.ExecResult, error) {
 	results := make([]tool.ExecResult, len(calls))
 	if profile.SupportsParallelToolCalls() && len(calls) > 1 {
 		// Ordered-group algorithm: batch consecutive read-only calls for
@@ -140,7 +140,7 @@ func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, p
 				if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
 					return abortErr
 				}
-				results[batch[0]] = s.execTool(ctx, calls[batch[0]])
+				results[batch[0]] = s.execTool(ctx, calls[batch[0]], finishReason)
 			default:
 				var wg sync.WaitGroup
 				var panicValue any
@@ -161,7 +161,7 @@ func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, p
 						if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
 							panic(abortErr)
 						}
-						results[i] = s.execTool(ctx, calls[i])
+						results[i] = s.execTool(ctx, calls[i], finishReason)
 					}()
 				}
 				wg.Wait()
@@ -191,7 +191,7 @@ func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, p
 					}
 					return results, abortErr
 				}
-				results[i] = s.execTool(ctx, call)
+				results[i] = s.execTool(ctx, call, finishReason)
 			}
 		}
 		if err := flushReadBatch(readBatch); err != nil {
@@ -208,7 +208,7 @@ func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, p
 				}
 				return results, abortErr
 			}
-			results[i] = s.execTool(ctx, calls[i])
+			results[i] = s.execTool(ctx, calls[i], finishReason)
 		}
 	}
 

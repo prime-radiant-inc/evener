@@ -128,8 +128,8 @@ func FuzzStoolDispatch(f *testing.F) {
 			Arguments: json.RawMessage(stool_argsFor(r, "")),
 			Type:      "function",
 		}
-		d1 := sess.execTool(ctx, detCall)
-		d2 := sess.execTool(ctx, detCall)
+		d1 := sess.execTool(ctx, detCall, "")
+		d2 := sess.execTool(ctx, detCall, "")
 		if d1.FullOutput != d2.FullOutput || d1.IsError != d2.IsError {
 			t.Fatalf("dispatch nondeterministic for unknown tool: %#v vs %#v", d1, d2)
 		}
@@ -156,7 +156,7 @@ func FuzzStoolDispatch(f *testing.F) {
 		// (never a panic) when handed an already-canceled context.
 		cctx, ccancel := context.WithCancel(ctx)
 		ccancel()
-		if skipped := sess.execTool(cctx, llm.ToolCallData{ID: "stool-skip", Name: "job_list"}); !skipped.IsError {
+		if skipped := sess.execTool(cctx, llm.ToolCallData{ID: "stool-skip", Name: "job_list"}, ""); !skipped.IsError {
 			t.Fatalf("execTool under canceled context did not report an error: %#v", skipped)
 		}
 
@@ -189,7 +189,7 @@ func FuzzStoolDispatch(f *testing.F) {
 			batchCtx = c
 		}
 
-		results, err := sess.execToolBatch(batchCtx, calls, sess.currentProfile())
+		results, err := sess.execToolBatch(batchCtx, calls, sess.currentProfile(), "")
 		if err != nil {
 			// execToolBatch errors ONLY on cancellation/abort — never on ordinary
 			// adversarial tool input. Confirm the context is what stopped it.
@@ -235,7 +235,7 @@ func stool_execOne(ctx context.Context, t *testing.T, sess *Session, name string
 		Name:      name,
 		Arguments: json.RawMessage(args),
 		Type:      "function",
-	})
+	}, "")
 	if res.ToolName != name {
 		t.Fatalf("execTool(%s): ToolName = %q", name, res.ToolName)
 	}

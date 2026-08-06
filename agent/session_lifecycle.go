@@ -1148,7 +1148,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// Execute tool calls (possibly in parallel) and send results back.
 		s.noteParentJobActivity(jobPhaseToolRunning)
-		results, execErr := s.execToolBatch(ctx, calls, profile)
+		results, execErr := s.execToolBatch(ctx, calls, profile, resp.Finish.Reason)
 		execErr = errors.Join(execErr, sessionLifecycleFault(ctx, "exec_tools"))
 		if execErr != nil {
 			return "", progressed, execErr

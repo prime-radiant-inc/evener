@@ -123,6 +123,15 @@ func realJSONError(t *testing.T, raw []byte) error {
 	return err
 }
 
+func TestExplainTruncatedCall(t *testing.T) {
+	msg := ExplainTruncatedCall("write_file")
+	for _, want := range []string{"write_file", "truncated", "output-token limit", "NOT executed"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message missing %q: %s", want, msg)
+		}
+	}
+}
+
 func TestExplainSchemaError_DoesNotMutateStringRequired(t *testing.T) {
 	required := []string{"new_string", "file_path", "old_string"}
 	params := editParamsForExplain()

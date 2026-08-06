@@ -44,6 +44,18 @@ func ExplainJSONError(toolName string, params map[string]any, parseErr error, ra
 		toolName, parseErr, excerpt, minimalExample(params))
 }
 
+// ExplainTruncatedCall renders the prevalidation error for a tool call whose
+// argument stream was cut off because the response hit the output-token
+// limit. Distinct from ExplainJSONError on purpose: the JSON is incomplete,
+// not malformed, and coaching the model about syntax sends it debugging a
+// problem it doesn't have.
+func ExplainTruncatedCall(toolName string) string {
+	return toolName + ": tool call truncated — the response hit the output-token limit " +
+		"before the arguments finished streaming. The call was NOT executed and the lost " +
+		"content cannot be recovered. Re-issue the work in smaller pieces (e.g. write the " +
+		"file in sections across multiple calls)."
+}
+
 // parseExcerpt renders the region of raw that failed parsing. A decoder syntax
 // error shows a window around its one-based byte offset; an error that only
 // carries EOF shows the tail, which is where the parser stopped. Returns ""

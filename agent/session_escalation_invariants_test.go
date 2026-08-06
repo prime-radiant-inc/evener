@@ -184,7 +184,7 @@ func TestEscalation_NonInteractiveDenialUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	args, _ := json.Marshal(map[string]string{"file_path": outside})
-	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "c1", Name: "read_file", Arguments: args})
+	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "c1", Name: "read_file", Arguments: args}, "")
 
 	if !res.IsError {
 		t.Fatal("a non-interactive out-of-root read must be denied")

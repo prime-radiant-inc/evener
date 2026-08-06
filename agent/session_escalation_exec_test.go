@@ -50,7 +50,7 @@ func TestExecTool_SandboxWriteEscalatesApproveReruns(t *testing.T) {
 	call := writeFileCall("c1", target, "approved via escalation")
 
 	done := make(chan tool.ExecResult, 1)
-	go func() { done <- sess.execTool(context.Background(), call) }()
+	go func() { done <- sess.execTool(context.Background(), call, "") }()
 
 	ids := awaitPending(t, sess, 1)
 	if err := sess.ResolveSandboxEscalation(ids[0], true); err != nil {
@@ -74,7 +74,7 @@ func TestExecTool_SandboxWriteEscalatesApproveReruns(t *testing.T) {
 		t.Fatal(err)
 	}
 	done2 := make(chan tool.ExecResult, 1)
-	go func() { done2 <- sess.execTool(context.Background(), writeFileCall("c2", target, "again")) }()
+	go func() { done2 <- sess.execTool(context.Background(), writeFileCall("c2", target, "again"), "") }()
 	ids2 := awaitPending(t, sess, 1)
 	_ = sess.ResolveSandboxEscalation(ids2[0], false) // deny this one
 	res2 := <-done2
@@ -89,7 +89,7 @@ func TestExecTool_SandboxWriteDenyReturnsTypedError(t *testing.T) {
 	call := writeFileCall("c1", target, "should not be written")
 
 	done := make(chan tool.ExecResult, 1)
-	go func() { done <- sess.execTool(context.Background(), call) }()
+	go func() { done <- sess.execTool(context.Background(), call, "") }()
 
 	ids := awaitPending(t, sess, 1)
 	if err := sess.ResolveSandboxEscalation(ids[0], false); err != nil {
@@ -111,7 +111,7 @@ func TestExecTool_ApplyPatchDenialStaysFinal(t *testing.T) {
 	call := llm.ToolCallData{ID: "c1", Name: "apply_patch", Arguments: args}
 
 	// Must return synchronously (no escalation) with the typed denial.
-	res := sess.execTool(context.Background(), call)
+	res := sess.execTool(context.Background(), call, "")
 	if !res.IsError {
 		t.Fatalf("an apply_patch write in read-only mode must be denied, got: %s", res.FullOutput)
 	}

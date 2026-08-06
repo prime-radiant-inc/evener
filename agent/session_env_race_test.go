@@ -78,7 +78,7 @@ func TestSession_CurrentEnv_NoRaceWithConcurrentSwap(t *testing.T) {
 				ID:        fmt.Sprintf("c%d", i),
 				Name:      "shell",
 				Arguments: json.RawMessage(`{"command":"true"}`),
-			})
+			}, "")
 		}
 	})
 
