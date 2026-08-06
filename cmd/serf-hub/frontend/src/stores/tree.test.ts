@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import {
   attentionChangedNotification,
@@ -63,6 +64,30 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  // Whichever earlier test file in this isolate:false worker first imported
+  // AppShell.tsx armed notifications/index.ts's connectionStore subscriber
+  // (its "reconnect" detector, sawReady) for the rest of the worker's life -
+  // "notification-triggered refetch" above connects several FRESH clients
+  // straight to "ready" in sequence, the exact transition that detector
+  // watches for. Left unreset, the first such connect arms sawReady and
+  // every later one reads as a spurious reconnect, firing an extra,
+  // unscripted treeStore.refresh() -> fetch("/api/tree") that inflates this
+  // describe block's own fetchMock call-count assertions (see
+  // AppShell.test.tsx's and ConnectionBanner.test.tsx's identical reset for
+  // the fuller writeup). Reset+reinit (not just reset) for the same reason
+  // as there: initNotifications() only ever fires once per worker, so
+  // leaving it merely reset would starve every later file's own
+  // attention/title wiring for the rest of the run. connectionStore/
+  // treeStore are forced back to their neutral pre-test values FIRST -
+  // seeding from this test's own still-"ready" connectionStore would
+  // wrongly arm the "reconnect" detector this reset exists to neutralize.
+  // Run before vi.unstubAllGlobals() below so initNotifications()'s
+  // baseline ensureLoaded() fetch still hits this file's own fetchMock stub
+  // instead of a real network call.
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetTreeStoreForTests();
+  resetNotificationsForTests();
+  initNotifications();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });

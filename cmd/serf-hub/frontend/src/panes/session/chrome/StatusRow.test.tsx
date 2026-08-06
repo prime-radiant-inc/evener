@@ -13,6 +13,7 @@ import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { StatusRow } from "./StatusRow";
 import rawStatusStyles from "./statusrow.module.css";
 
@@ -90,6 +91,11 @@ function connectFakeClient(): FakeClient {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  // Toasts are module state and outlive cleanup(); without this a toast from
+  // an earlier file in this isolate:false worker (or an earlier test here) is
+  // still on screen when "a failed setReasoningEffort call surfaces an error
+  // toast" below renders its own <Toast/> and looks for its own text.
+  resetToastStoreForTests();
 });
 
 afterEach(() => {
