@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
@@ -223,13 +223,20 @@ function renderDelegateSendBody({
   );
 }
 
-test("delegate_send: expanded body shows the complete sent message and response without repeated status metadata", () => {
+test("delegate_send: expanded body renders the sent message as an outgoing chat bubble and the reply as an incoming one", () => {
   renderDelegateSendBody();
 
-  expect(screen.getByText("Message")).toBeTruthy();
-  expect(screen.getByTestId("delegate-send-message").textContent).toBe("Inspect the parser.\nReport exact findings.");
-  expect(screen.getByText("Response")).toBeTruthy();
-  expect(screen.getByTestId("delegate-send-response").textContent).toBe("Found two call sites.\nBoth need coverage.");
+  const outgoing = screen.getByTestId("delegate-send-message");
+  expect(within(outgoing).getByText("Agent → dlg_abc123")).toBeTruthy();
+  expect(within(outgoing).getByTestId("speaker-avatar")).toBeTruthy();
+  expect(within(outgoing).getByTestId("user-bubble").textContent).toBe("Inspect the parser.\nReport exact findings.");
+  expect(within(outgoing).getByRole("button", { name: "Copy message" })).toBeTruthy();
+
+  const reply = screen.getByTestId("delegate-send-response");
+  expect(within(reply).getByText("dlg_abc123 (delegate)")).toBeTruthy();
+  expect(within(reply).getByTestId("user-bubble").textContent).toBe("Found two call sites.\nBoth need coverage.");
+  expect(within(reply).getByRole("button", { name: "Copy response" })).toBeTruthy();
+
   expect(screen.queryByText(/delegate_id dlg_abc123 · delivered · completed/)).toBeNull();
 });
 
@@ -240,7 +247,9 @@ test("delegate_send: canonical raw output preserves the delegate response when f
     raw: { output: "Exact response", status: "completed", action: "delivered" },
   });
 
-  expect(screen.getByTestId("delegate-send-response").textContent).toBe("Exact response");
+  expect(within(screen.getByTestId("delegate-send-response")).getByTestId("user-bubble").textContent).toBe(
+    "Exact response",
+  );
   expect(screen.queryByText(/structured_result/)).toBeNull();
 });
 
@@ -250,7 +259,9 @@ test("delegate_send: malformed raw output falls back to the formatted response",
     raw: { output: "raw response" },
   });
 
-  expect(screen.getByTestId("delegate-send-response").textContent).toBe("formatted response");
+  expect(within(screen.getByTestId("delegate-send-response")).getByTestId("user-bubble").textContent).toBe(
+    "formatted response",
+  );
 });
 
 test("delegate_send: whitespace-only canonical output is treated as absent", () => {
@@ -259,7 +270,9 @@ test("delegate_send: whitespace-only canonical output is treated as absent", () 
     raw: { action: "delivered", running_in_background: false, output: " \n\t" },
   });
 
-  expect(screen.getByTestId("delegate-send-response").textContent).toBe("formatted response");
+  expect(within(screen.getByTestId("delegate-send-response")).getByTestId("user-bubble").textContent).toBe(
+    "formatted response",
+  );
 });
 
 test("delegate_send: raw whitespace-only output is omitted when there is no formatted response", () => {
@@ -268,7 +281,6 @@ test("delegate_send: raw whitespace-only output is omitted when there is no form
     raw: { action: "delivered", running_in_background: false, output: " \n\t" },
   });
 
-  expect(screen.queryByText("Response")).toBeNull();
   expect(screen.queryByTestId("delegate-send-response")).toBeNull();
 });
 
@@ -285,7 +297,7 @@ test("delegate_send: footer-only and in-flight calls omit the Response section",
       live={false}
     />,
   );
-  expect(screen.queryByText("Response")).toBeNull();
+  expect(screen.queryByTestId("delegate-send-response")).toBeNull();
 
   rerender(
     <Body
@@ -297,30 +309,36 @@ test("delegate_send: footer-only and in-flight calls omit the Response section",
       live={true}
     />,
   );
-  expect(screen.queryByText("Response")).toBeNull();
+  expect(screen.queryByTestId("delegate-send-response")).toBeNull();
 });
 
 test("delegate_send: unrecognized output remains visible as the response", () => {
   renderDelegateSendBody({ output: "historical result without a recognized footer" });
-  expect(screen.getByTestId("delegate-send-response").textContent).toBe(
+  expect(within(screen.getByTestId("delegate-send-response")).getByTestId("user-bubble").textContent).toBe(
     "historical result without a recognized footer",
   );
 });
 
 test("delegate_send: footer-like response content without separator-delimited fields is preserved", () => {
   renderDelegateSendBody({ output: "[delegate_id this is response text]" });
-  expect(screen.getByTestId("delegate-send-response").textContent).toBe("[delegate_id this is response text]");
+  expect(within(screen.getByTestId("delegate-send-response")).getByTestId("user-bubble").textContent).toBe(
+    "[delegate_id this is response text]",
+  );
 });
 
 test("delegate_send: a complete delegate footer is stripped from the response text", () => {
   renderDelegateSendBody({ output: "reply from historical data\n[delegate_id dlg_abc123 · delivered · completed]" });
-  expect(screen.getByTestId("delegate-send-response").textContent).toBe("reply from historical data");
+  expect(within(screen.getByTestId("delegate-send-response")).getByTestId("user-bubble").textContent).toBe(
+    "reply from historical data",
+  );
 });
 
 test("delegate_send: malformed or missing message arguments omit Message without hiding a response", () => {
   renderDelegateSendBody({ argumentsJSON: "not json", output: "reply from historical data" });
-  expect(screen.queryByText("Message")).toBeNull();
-  expect(screen.getByTestId("delegate-send-response").textContent).toBe("reply from historical data");
+  expect(screen.queryByTestId("delegate-send-message")).toBeNull();
+  expect(within(screen.getByTestId("delegate-send-response")).getByTestId("user-bubble").textContent).toBe(
+    "reply from historical data",
+  );
 });
 
 test("job_send_message: expanded body reads the legacy target shape and shows message and response", () => {
@@ -330,8 +348,10 @@ test("job_send_message: expanded body reads the legacy target shape and shows me
     output: "continuing\n[delegate_id dlg_legacy · delivered · running]",
   });
 
-  expect(screen.getByTestId("delegate-send-message").textContent).toBe("continue");
-  expect(screen.getByTestId("delegate-send-response").textContent).toBe("continuing");
+  expect(within(screen.getByTestId("delegate-send-message")).getByTestId("user-bubble").textContent).toBe("continue");
+  expect(within(screen.getByTestId("delegate-send-response")).getByTestId("user-bubble").textContent).toBe(
+    "continuing",
+  );
 });
 
 test("job_send_message aliases to the same descriptor as delegate_send, reading its legacy `target` arg", () => {
@@ -468,8 +488,8 @@ test("delegate_send checking on a delegate (by delegate_id) updates its existing
   );
 
   expect(screen.getByTestId("subagent-row").dataset.kind).toBe("done");
-  expect(screen.getByTestId("delegate-send-message").textContent).toBe("status?");
-  expect(screen.getByTestId("delegate-send-response").textContent).toBe("on it");
+  expect(within(screen.getByTestId("delegate-send-message")).getByTestId("user-bubble").textContent).toBe("status?");
+  expect(within(screen.getByTestId("delegate-send-response")).getByTestId("user-bubble").textContent).toBe("on it");
 });
 
 test("a follow-up call for a job_id that was never spawned this turn creates no row at all", () => {

@@ -15,9 +15,10 @@
 // prefers validated raw state and otherwise falls back to its historical
 // formatted output. job_send_message is a retired/banned tool name kept only
 // as a defensive alias reading its legacy target arg.
-import { useLayoutEffect } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import type { ItemModel } from "../../../../protocol/model";
-import { CodeBlock } from "../../../../widgets";
+import { IconButton } from "../../../../widgets";
+import { UserMessageView } from "../messages/UserMessageItem";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
@@ -73,6 +74,52 @@ type JsonObject = Record<string, unknown>;
 
 function asJsonObject(value: unknown): JsonObject | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as JsonObject) : undefined;
+}
+
+const COPIED_RESET_MS = 2_000;
+
+function CopyGlyph() {
+  return (
+    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
+      <rect x="4.5" y="1.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M9.5 12.5H3A1.5 1.5 0 0 1 1.5 11V4.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
+function CopiedGlyph() {
+  return (
+    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
+      <path d="M2 7.5 L5.5 11 L12 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// CopyTextButton is the CodeBlock copy control's idiom (clipboard guard,
+// "Copied" feedback with a timed reset) as a standalone header action: the
+// chat bubbles carry prose, not a code block, so the affordance moves into
+// the bubble header's actions slot.
+function CopyTextButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), COPIED_RESET_MS);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  return (
+    <IconButton
+      label={copied ? "Copied" : label}
+      icon={copied ? <CopiedGlyph /> : <CopyGlyph />}
+      variant="quiet"
+      size="xs"
+      onClick={() => {
+        // Clipboard access requires a secure context and isn't implemented by
+        // every test/embed environment - degrade to a no-op rather than throw.
+        if (!navigator.clipboard?.writeText) return;
+        void navigator.clipboard.writeText(text).then(() => setCopied(true));
+      }}
+    />
+  );
 }
 
 interface JobListState {
@@ -348,10 +395,18 @@ function delegateSendSummary(item: ItemModel): string {
   return status ? `${base} · ${status}` : base;
 }
 
+// DelegateSendBody renders the exchange as a two-party conversation through
+// the transcript's own slack-lean message view: the sent message as an
+// outgoing bubble from the agent to the delegate, and - when the call waited
+// for one - the delegate's reply as an incoming bubble below it. The
+// section testids (delegate-send-message/-response) are the longstanding
+// contract of this body and are unchanged.
 function DelegateSendBody(props: ToolRenderProps) {
   const { item } = props;
-  const message = str(parseArgs(item.argumentsJSON), "message");
+  const args = parseArgs(item.argumentsJSON);
+  const message = str(args, "message");
   const response = delegateSendResponse(item);
+  const target = clip(delegateSendTarget(args), ID_CLIP);
 
   useCorrelateSubagentRow(props, {
     resolveKey: (item) =>
@@ -367,19 +422,27 @@ function DelegateSendBody(props: ToolRenderProps) {
   return (
     <div data-testid="delegate-send-body">
       {message ? (
-        <section>
-          <strong>Message</strong>
-          <div data-testid="delegate-send-message">
-            <CodeBlock text={message} copyLabel="Copy message" />
-          </div>
+        <section data-testid="delegate-send-message">
+          <UserMessageView
+            item={{ ...item, text: message }}
+            speaker="agent"
+            name={target === "" ? "Agent → delegate" : `Agent → ${target}`}
+            timeIso={item.startedAt}
+            opensExchange={false}
+            actions={<CopyTextButton text={message} label="Copy message" />}
+          />
         </section>
       ) : null}
       {response ? (
-        <section>
-          <strong>Response</strong>
-          <div data-testid="delegate-send-response">
-            <CodeBlock text={response} copyLabel="Copy response" />
-          </div>
+        <section data-testid="delegate-send-response">
+          <UserMessageView
+            item={{ ...item, text: response }}
+            speaker="agent"
+            name={target === "" ? "Delegate" : `${target} (delegate)`}
+            timeIso={item.completedAt ?? item.startedAt}
+            opensExchange={false}
+            actions={<CopyTextButton text={response} label="Copy response" />}
+          />
         </section>
       ) : null}
     </div>
