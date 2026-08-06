@@ -229,12 +229,16 @@ SELFTEST_SCRIPTS := run-module-lint run-module-tests make-selftest reclaim-test-
 # can be reaped by the kernel while its entry is still sitting further down
 # this list, unpruned, until this loop's iteration reaches it. Each $pids
 # entry is therefore "$s:$pid", and stop_children skips a pid whose script
-# has already written $dir/$s.status -- the wrapper's last act before it
-# exits, on every exit path, normal or interrupted. This is a file used to
-# SUPPRESS a signal (fail-safe: skipping a worker that's already done or
-# about to be), never to derive one -- the kill target is still $pid from
-# $pids, read from memory, exactly as before; no production path signals
-# a pid it only knows from a file. The spawn loop uses the same
+# has already written $dir/$s.status -- published immediately after the
+# forwarding trap is disarmed, before any further bookkeeping (removing the
+# pid file, timing the run, appending the log), on every exit path, normal
+# or interrupted, so the window where the trap is down but no status marker
+# exists yet is a single disarm-then-publish command pair, not the whole
+# tail of the normal path. This is a file used to SUPPRESS a signal
+# (fail-safe: skipping a worker that's already done or about to be), never
+# to derive one -- the kill target is still $pid from $pids, read from
+# memory, exactly as before; no production path signals a pid it only knows
+# from a file. The spawn loop uses the same
 # deferred-flag idiom as the wrapper: HUP/INT/TERM record which signal fired
 # instead of exiting immediately while pids may be incomplete, and once the
 # loop finishes (pids complete) the real exit-traps are restored and any
@@ -262,9 +266,9 @@ selftest:
 		perl -e 'setpgrp(0,0); exec @ARGV or die "exec: $$!"' -- scripts/$$s-selftest.sh >"$$dir/$$s.log" 2>&1 & child="$$!"; \
 		echo "$$child" >"$$dir/$$s.pid"; \
 		if [ "$$interrupted" -eq 1 ]; then kill -TERM "-$$child" 2>/dev/null || kill -TERM "$$child" 2>/dev/null || :; wait "$$child" 2>/dev/null || :; echo 143 >"$$dir/$$s.status"; exit 143; fi; \
-		wait "$$child"; status="$$?"; trap - HUP INT TERM; rm -f "$$dir/$$s.pid"; end="$$(date +%s)"; \
+		wait "$$child"; status="$$?"; trap - HUP INT TERM; echo "$$status" >"$$dir/$$s.status"; \
+		rm -f "$$dir/$$s.pid"; end="$$(date +%s)"; \
 		printf 'real %s\n' "$$((end - start))" >>"$$dir/$$s.log"; \
-		echo "$$status" >"$$dir/$$s.status"; \
 	}; \
 	spawn_interrupted=""; \
 	trap 'spawn_interrupted=HUP' HUP; trap 'spawn_interrupted=INT' INT; trap 'spawn_interrupted=TERM' TERM; \

@@ -760,6 +760,108 @@ fi
 # irreducibility analysis.
 
 new_case
+boundary_out="$case_dir/status-boundary.out"
+ready_fifo="$case_state/ready"
+stop_fifo="$case_state/stopped"
+reap_release_fifo="$case_state/reap-release"
+exec 9<>"$ready_fifo"
+exec 8<>"$stop_fifo"
+exec 6<>"$reap_release_fifo"
+run_make_with_readiness_events hold "$boundary_out" "" "" "" "" "" probe-two
+if wait_for_ready_workers; then
+	ok "the status-boundary fixture receives both worker readiness events"
+else
+	bad "the status-boundary fixture receives both worker readiness events"
+fi
+logdir=""
+attempt=0
+while [ "$attempt" -lt 200 ]; do
+	logdir="$(cat "$case_state/logdir" 2>/dev/null || :)"
+	[ -n "$logdir" ] && [ -f "$logdir/probe-two.pid" ] && break
+	attempt=$((attempt + 1))
+	sleep 0.05
+done
+child_pid=""
+wrapper_pid=""
+if [ -n "$logdir" ] && [ -f "$logdir/probe-two.pid" ]; then
+	child_pid="$(cat "$logdir/probe-two.pid" 2>/dev/null || :)"
+	[ -n "$child_pid" ] && wrapper_pid="$(ps -o ppid= -p "$child_pid" 2>/dev/null | tr -d ' ')"
+fi
+if [ -n "$wrapper_pid" ] && kill -0 "$wrapper_pid" 2>/dev/null && [ -n "$logdir" ] && [ -f "$logdir/probe-two.log" ]; then
+	ok "the status-boundary fixture discovers the wrapper pid and its log file before release"
+else
+	bad "the status-boundary fixture discovers the wrapper pid and its log file before release"
+fi
+# Swap the wrapper's own log path for a FIFO while it's still blocked on the reap-release FIFO,
+# i.e. strictly before the swap could race the wrapper's own later, fresh open() of that same
+# path. The spawn-time redirect for the suite process already holds its own fd against the old
+# (now unlinked) inode, unaffected by the swap; the wrapper's post-wait timing append is a new
+# open by name and is what will actually block here. This is a production-code boundary the
+# fixture controls by owning $dir's creation (its own mktemp interposition), not a debug hook.
+if [ -n "$logdir" ]; then
+	rm -f "$logdir/probe-two.log"
+	mkfifo "$logdir/probe-two.log"
+fi
+printf 'release\n' >&6
+exited_event=""
+IFS= read -r -t 10 -u 9 exited_event || :
+assert_eq "$exited_event" "worker-exited:probe-two" "the status-boundary fixture's released worker actually exits"
+exec 9>&-
+exec 6>&-
+# With the reorder, the wrapper writes $dir/probe-two.status immediately after disarming its
+# trap, then only touches the (now-FIFO) log path afterward -- so "status file present and the
+# wrapper still alive" is exactly "paused after publication, before exit", the boundary finding 2
+# asked this case to reach.
+attempt=0
+status_published=0
+while [ "$attempt" -lt 100 ]; do
+	if [ -n "$logdir" ] && [ -f "$logdir/probe-two.status" ] && [ -n "$wrapper_pid" ] && kill -0 "$wrapper_pid" 2>/dev/null; then
+		status_published=1
+		break
+	fi
+	attempt=$((attempt + 1))
+	sleep 0.05
+done
+if [ "$status_published" -eq 1 ]; then
+	ok "the status-boundary fixture's wrapper publishes status and pauses before exit"
+else
+	bad "the status-boundary fixture's wrapper publishes status and pauses before exit"
+fi
+stop_make_with_readiness_events
+exec 8>&-
+if [ -n "$wrapper_pid" ] && kill -0 "$wrapper_pid" 2>/dev/null; then
+	ok "an interrupted wave never signals a completed wrapper paused before exit"
+else
+	bad "an interrupted wave never signals a completed wrapper paused before exit"
+fi
+pid="$(cat "$case_state/probe-one.pid" 2>/dev/null || :)"
+if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+	bad "an interrupted wave with a paused completed wrapper leaves the straggler alive"
+	kill -KILL "$pid" 2>/dev/null || :
+else
+	ok "an interrupted wave with a paused completed wrapper reaps the straggler"
+fi
+# Release the paused wrapper (open a reader on its swapped log fifo) so it can finish exiting --
+# this is cleanup, not part of the assertion above, which is already settled by this point.
+log_reader_pid=""
+if [ -n "$logdir" ] && [ -e "$logdir/probe-two.log" ]; then
+	cat "$logdir/probe-two.log" >/dev/null 2>&1 &
+	log_reader_pid="$!"
+fi
+attempt=0
+while [ "$attempt" -lt 200 ] && [ -n "$wrapper_pid" ] && kill -0 "$wrapper_pid" 2>/dev/null; do
+	attempt=$((attempt + 1))
+	sleep 0.05
+done
+if [ -n "$wrapper_pid" ] && kill -0 "$wrapper_pid" 2>/dev/null; then
+	bad "releasing the paused wrapper's log fifo lets it finish exiting"
+	kill -KILL "$wrapper_pid" 2>/dev/null || :
+else
+	ok "releasing the paused wrapper's log fifo lets it finish exiting"
+fi
+[ -n "$log_reader_pid" ] && wait "$log_reader_pid" 2>/dev/null
+
+new_case
 child_work="$case_dir/interrupt-child"
 mkdir -p "$child_work"
 MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD=1 MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD_WORK="$child_work" bash "$0" >"$case_dir/interrupt-child.out" 2>&1 &
