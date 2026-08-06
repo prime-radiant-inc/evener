@@ -135,6 +135,44 @@ func TestPrepareToolCall_LengthStopWithValidArgs(t *testing.T) {
 	}
 }
 
+// Regression guard: drives the REAL DefTaskList/DefAskUser definitions
+// end-to-end through prepareToolCall so a future schema edit that drifts the
+// repair package's hand-built fixtures out of sync fails loudly here, not
+// silently in the leaf package's tests.
+func TestPrepareToolCall_NestedSchemaErrors_NameRealFieldAndContainer(t *testing.T) {
+	reg := tool.NewRegistry()
+	if err := reg.Register(regTool(tool.DefTaskList(nil))); err != nil {
+		t.Fatalf("register task_list: %v", err)
+	}
+	if err := reg.Register(regTool(tool.DefAskUser())); err != nil {
+		t.Fatalf("register ask_user: %v", err)
+	}
+
+	t.Run("task_list update missing status", func(t *testing.T) {
+		call := llm.ToolCallData{ID: "c1", Name: "task_list",
+			Arguments: json.RawMessage(`{"action":"update","updates":[{"id":1,"notes":"x"}]}`)}
+		res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "")
+		want := "task_list: missing required argument \"status\" in updates[0].\n" +
+			"Required arguments in updates[0]: id (integer), status (string).\n" +
+			"Example: {\"action\": \"...\"}"
+		if res.PrevalErr != want {
+			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)
+		}
+	})
+
+	t.Run("ask_user question header too long", func(t *testing.T) {
+		call := llm.ToolCallData{ID: "c2", Name: "ask_user",
+			Arguments: json.RawMessage(`{"questions":[{"header":"way too long for a chip label","question":"q","options":[{"label":"a","detail":"a"},{"label":"b","detail":"b"}]}]}`)}
+		res := prepareToolCall(call, reg.Get("ask_user"), []string{"ask_user"}, "ask_user", "")
+		want := "ask_user: argument \"questions[0].header\" has the wrong type or value.\n" +
+			"Required arguments in questions[0]: question (string), options (array).\n" +
+			"Example: {\"questions\": []}"
+		if res.PrevalErr != want {
+			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)
+		}
+	})
+}
+
 // A non-length stop keeps the existing invalid-JSON coaching path.
 func TestPrepareToolCall_BrokenJSONNonLengthStop(t *testing.T) {
 	et := editTool(t)
