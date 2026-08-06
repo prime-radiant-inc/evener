@@ -4,9 +4,9 @@ import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
-import { afterEach, expect, test } from "vitest";
+import { afterAll, afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
-import { registerPane } from "../../../../shell/paneRegistry";
+import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { ignoringTurn, itemRendererFor } from "../types";
@@ -18,11 +18,13 @@ afterEach(() => {
   resetWorkspaceStoreForTests();
 });
 
-registerPane({
-  id: "session",
-  title: () => "test session",
-  component: lazy(() => Promise.resolve({ default: () => null })),
-});
+afterAll(
+  registerPaneForTests({
+    id: "session",
+    title: () => "test session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  }),
+);
 
 const turn: TurnModel = { id: "turn_1", status: "completed", items: [] };
 

@@ -683,7 +683,7 @@ test("live -> settled transition applies autoExpand exactly once", () => {
 // opt out; out-of-cwd paths and a missing ref get no control. -------------
 
 function seedThreadCwd(ref: string, cwd: string): void {
-  threadsStore.setState({ threads: new Map([[ref, { ref, cwd } as unknown as ThreadModel]]) });
+  threadsStore.setState({ threads: new Map([[ref, { ref, cwd, turns: [] } as unknown as ThreadModel]]) });
 }
 
 test("a read_file card in the session cwd shows an Open beside control that opens the doc pane", () => {
@@ -847,12 +847,14 @@ test("appends descriptor.summarySuffix to the row's summary, reactively, off the
     summary: () => "base summary",
     summarySuffix: (_item, model) => (model?.name === "answered" ? " — answered" : undefined),
   });
-  threadsStore.setState({ threads: new Map([["ref_a", { name: "" } as unknown as ThreadModel]]) });
+  threadsStore.setState({ threads: new Map([["ref_a", { name: "", turns: [] } as unknown as ThreadModel]]) });
   render(<ToolCallItem item={item({ toolName: "tci_suffix" })} turn={turn} live={false} sessionRef="ref_a" />);
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("base summary");
 
   act(() => {
-    threadsStore.setState({ threads: new Map([["ref_a", { name: "answered" } as unknown as ThreadModel]]) });
+    threadsStore.setState({
+      threads: new Map([["ref_a", { name: "answered", turns: [] } as unknown as ThreadModel]]),
+    });
   });
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("base summary — answered");
 });

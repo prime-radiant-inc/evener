@@ -822,7 +822,7 @@ func TestJobManagerCloseMarksRunningJobsCancelled(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	st, err := jobstore.Open(filepath.Join(jm.dir, "jobs.jsonl"))
+	st, err := jobstore.OpenNoSync(filepath.Join(jm.dir, "jobs.jsonl"))
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}
@@ -899,7 +899,7 @@ func TestJobManagerCloseContinuesAfterWatchSendCleanupFailure(t *testing.T) {
 		t.Fatalf("close error = %v, want watch cleanup error", err)
 	}
 
-	st, err := jobstore.Open(filepath.Join(jm.dir, "jobs.jsonl"))
+	st, err := jobstore.OpenNoSync(filepath.Join(jm.dir, "jobs.jsonl"))
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}
@@ -1160,9 +1160,9 @@ func TestJobManagerFinalizePendingAppendFailureCanRetryWithSameGeneration(t *tes
 
 func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
 	t.Parallel()
-	var queued int32
+	var queued atomic.Int32
 	jm, err := newJobManager(t.TempDir(), testOwnerSessionID, func(jobNotification) {
-		atomic.AddInt32(&queued, 1)
+		queued.Add(1)
 	})
 	if err != nil {
 		t.Fatalf("newJobManager: %v", err)
@@ -1176,11 +1176,11 @@ func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
 
 	pendingStarted := make(chan struct{})
 	releasePending := make(chan struct{})
-	var pendingAppends int32
+	var pendingAppends atomic.Int32
 	origAppend := jm.appendEvent
 	jm.appendEvent = func(e jobstore.Event) error {
 		if e.Kind == jobstore.EventJobNotificationPending {
-			if atomic.AddInt32(&pendingAppends, 1) == 1 {
+			if pendingAppends.Add(1) == 1 {
 				close(pendingStarted)
 				<-releasePending
 			}
@@ -1207,7 +1207,7 @@ func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
 		t.Fatalf("concurrent finalize returned before pending append completed: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
-	if got := atomic.LoadInt32(&pendingAppends); got != 1 {
+	if got := pendingAppends.Load(); got != 1 {
 		t.Fatalf("pending appends before release = %d, want 1", got)
 	}
 
@@ -1236,10 +1236,10 @@ func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
 	if _, ok := jm.running[rec.JobID]; ok {
 		t.Fatal("job still running")
 	}
-	if got := atomic.LoadInt32(&pendingAppends); got != 1 {
+	if got := pendingAppends.Load(); got != 1 {
 		t.Fatalf("pending appends = %d, want 1", got)
 	}
-	if got := atomic.LoadInt32(&queued); got != 1 {
+	if got := queued.Load(); got != 1 {
 		t.Fatalf("queued = %d, want 1", got)
 	}
 	recs, err := jm.store.Load()
@@ -1253,9 +1253,9 @@ func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
 
 func TestJobManagerFinalizeConcurrentArmWaitsForPendingFailure(t *testing.T) {
 	t.Parallel()
-	var queued int32
+	var queued atomic.Int32
 	jm, err := newJobManager(t.TempDir(), testOwnerSessionID, func(jobNotification) {
-		atomic.AddInt32(&queued, 1)
+		queued.Add(1)
 	})
 	if err != nil {
 		t.Fatalf("newJobManager: %v", err)
@@ -1270,11 +1270,11 @@ func TestJobManagerFinalizeConcurrentArmWaitsForPendingFailure(t *testing.T) {
 	appendErr := errors.New("pending append failed")
 	pendingStarted := make(chan struct{})
 	releasePending := make(chan struct{})
-	var pendingAppends int32
+	var pendingAppends atomic.Int32
 	origAppend := jm.appendEvent
 	jm.appendEvent = func(e jobstore.Event) error {
 		if e.Kind == jobstore.EventJobNotificationPending {
-			if atomic.AddInt32(&pendingAppends, 1) == 1 {
+			if pendingAppends.Add(1) == 1 {
 				close(pendingStarted)
 				<-releasePending
 				return appendErr
@@ -1328,10 +1328,10 @@ func TestJobManagerFinalizeConcurrentArmWaitsForPendingFailure(t *testing.T) {
 	if _, ok := jm.running[rec.JobID]; !ok {
 		t.Fatal("job removed after failed notification-pending append")
 	}
-	if got := atomic.LoadInt32(&pendingAppends); got != 1 {
+	if got := pendingAppends.Load(); got != 1 {
 		t.Fatalf("pending appends = %d, want 1", got)
 	}
-	if got := atomic.LoadInt32(&queued); got != 0 {
+	if got := queued.Load(); got != 0 {
 		t.Fatalf("queued = %d, want 0", got)
 	}
 }

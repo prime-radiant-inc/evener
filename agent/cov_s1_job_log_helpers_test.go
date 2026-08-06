@@ -16,7 +16,7 @@ func s1cov_writeJobLog(t *testing.T, stateDir, sessID string, events ...jobstore
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "jobs.jsonl")
-	store, err := jobstore.Open(path)
+	store, err := jobstore.OpenNoSync(path)
 	if err != nil {
 		t.Fatalf("open jobstore: %v", err)
 	}

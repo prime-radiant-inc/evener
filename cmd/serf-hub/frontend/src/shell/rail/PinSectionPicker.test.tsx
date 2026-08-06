@@ -1,17 +1,29 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { PinSectionSummary, TreeNode } from "../../stores/tree";
 import sheetStyles from "../../widgets/sheet/sheet.module.css";
-import { listPinSections, RailRequestError } from "./actions";
+import * as railActions from "./actions";
+import { RailRequestError } from "./actions";
 import { PinSectionPicker, type PinSectionPickerProps } from "./PinSectionPicker";
 
-vi.mock("./actions", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./actions")>();
-  return { ...actual, listPinSections: vi.fn() };
-});
-
-const mockedListPinSections = vi.mocked(listPinSections);
+// A hoisted vi.mock("./actions", ...) used to sit here, swapping the module
+// in the shared module registry - under isolate:false that registry is
+// shared by every file in the worker, so whichever file (this one, or
+// actions.test.ts's own real listPinSections calls) happens to instantiate
+// this module graph FIRST in the worker's lifetime permanently wins, and a
+// vi.mock registered afterward cannot retroactively change an
+// already-instantiated consumer's binding (see shell/DockRegion.test.tsx's
+// own comment on the same class of bug). vi.spyOn mutates only the one
+// property this file cares about, on the SAME shared module object every
+// other file also reads from, and mockRestore() in afterAll hands the real
+// listPinSections back for whatever file runs next.
+//
+// Re-spied in beforeEach below, not just once here: some other file sharing
+// this worker calling the GLOBAL vi.restoreAllMocks() would silently hand the
+// real listPinSections back before this file's own tests run (see
+// shell/palette/commands.test.ts's own comment on the same hazard).
+let mockedListPinSections = vi.spyOn(railActions, "listPinSections");
 
 function session(overrides: Partial<TreeNode> = {}): TreeNode {
   return {
@@ -46,7 +58,12 @@ afterEach(cleanup);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockedListPinSections = vi.spyOn(railActions, "listPinSections");
   mockedListPinSections.mockResolvedValue([RESEARCH, CLIENT, PERSONAL]);
+});
+
+afterAll(() => {
+  mockedListPinSections.mockRestore();
 });
 
 describe("PinSectionPicker", () => {

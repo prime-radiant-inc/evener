@@ -1,8 +1,8 @@
 import type { ComponentType } from "react";
 import { lazy } from "react";
-import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { ThreadModel } from "../protocol/model";
-import { type PaneProps, registerPane } from "../shell/paneRegistry";
+import { type PaneProps, registerPaneForTests } from "../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import type { AttentionSummary } from "../stores/tree";
@@ -14,13 +14,24 @@ function summary(needsYou: number, error: number): AttentionSummary {
 
 // A real PaneTypeId ("doc"), fixture component, title driven off the same
 // threadName ctx DockHost builds (DockHost.tsx:210) so baseTitle's own ctx
-// wiring is exercised, not stubbed.
+// wiring is exercised, not stubbed. paneRegistry.ts is a shared module
+// singleton - the restorer (called in the afterAll below) puts back
+// whatever "doc" resolved to before this file ran, so a later file sharing
+// the same registry never inherits this fixture (whose own fallback title
+// literally reads "New session", which corrupted panes/doc/register.test.ts's
+// assertion on the REAL doc pane's title before this fix).
+let restoreDocPane: () => void;
+
 beforeAll(() => {
-  registerPane<{ ref?: string }>({
+  restoreDocPane = registerPaneForTests<{ ref?: string }>({
     id: "doc",
     title: (params, ctx) => ctx.threadName?.(params.ref ?? "") ?? "New session",
     component: lazy(() => new Promise<{ default: ComponentType<PaneProps<{ ref?: string }>> }>(() => {})),
   });
+});
+
+afterAll(() => {
+  restoreDocPane();
 });
 
 beforeEach(() => {
@@ -64,7 +75,9 @@ describe("baseTitle", () => {
   });
 
   test("a session pane resolves its live name via the threadName ctx", () => {
-    threadsStore.setState({ threads: new Map([["local:r1", { name: "Fix the parser" } as unknown as ThreadModel]]) });
+    threadsStore.setState({
+      threads: new Map([["local:r1", { name: "Fix the parser", turns: [] } as unknown as ThreadModel]]),
+    });
     workspaceStore.getState().openPane("doc", { ref: "local:r1" });
     expect(baseTitle()).toBe("Fix the parser · serf hub");
   });

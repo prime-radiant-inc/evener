@@ -9,6 +9,7 @@ import { AppwireClient } from "../protocol/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { InitializeResponse, ThreadStartResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
+import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { resetTreeStoreForTests, treeStore } from "../stores/tree";
 import { AppShell } from "./AppShell";
 import { DockHost } from "./DockHost";
@@ -230,6 +231,14 @@ async function warmRoute(
   // effect cleanup), so no warm render leaks a write into a later test.
   cleanup();
   resetWorkspaceStoreForTests();
+  // The /settings/general warm route mounts the real GeneralSection, whose
+  // mount effect calls settingsOverviewStore.getState().fetch() for real
+  // against this warm-up's own FakeClient (no handler scripted for
+  // "serf/settings/overview", so it settles into a scripted-looking
+  // "no handler" error) - settingsOverviewStore is a module singleton, so
+  // that leftover error/inflight bookkeeping must not survive into this
+  // file's own tests or the next file in the worker.
+  resetSettingsOverviewStoreForTests();
   localStorage.clear();
   window.history.pushState({}, "", "/");
 }
@@ -288,6 +297,10 @@ afterEach(() => {
   // The command palette store is a module singleton; reset it so one test's
   // open palette never leaks into the next.
   paletteStore.setState({ open: false, query: "" });
+  // Several tests below navigate to /settings/* and mount the real
+  // GeneralSection, whose mount effect touches settingsOverviewStore for
+  // real - same module-singleton reasoning as warmRoute's own reset above.
+  resetSettingsOverviewStoreForTests();
   vi.unstubAllGlobals();
 });
 

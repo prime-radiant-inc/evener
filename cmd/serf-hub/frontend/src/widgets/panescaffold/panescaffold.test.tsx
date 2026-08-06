@@ -43,6 +43,12 @@ test("makes the content region focusable and consumes a toggle-open focus marker
     </PaneScaffold>,
   );
   expect(document.activeElement).toBe(previousFocus);
+  // A raw DOM node appended straight to document.body, outside any React
+  // tree - cleanup() only unmounts React roots, so under isolate:false this
+  // would otherwise outlive the file and false-positive a later file's own
+  // plain getByRole("button")/queryByRole("button") query against the
+  // shared jsdom document.
+  previousFocus.remove();
 });
 
 test("does not focus after a scaffold mounts inactive or on an ordinary remount", () => {

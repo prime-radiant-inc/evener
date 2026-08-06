@@ -2,8 +2,8 @@
 
 import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
-import { beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { type PaneDescriptor, type PaneProps, registerPane } from "./paneRegistry";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { type PaneDescriptor, type PaneProps, registerPaneForTests } from "./paneRegistry";
 import {
   cancelPaneFocus,
   consumePaneFocus,
@@ -34,16 +34,26 @@ function fixtureDescriptor<P>(
   };
 }
 
+// paneRegistry.ts is a shared module singleton, not fresh per test file -
+// the afterAll below restores whatever each of these ids resolved to before
+// this file ran, so a later file sharing the same module registry never
+// inherits these never-resolving fixtures in place of the real panes.
+const restorePaneFixtures: Array<() => void> = [];
+
 beforeAll(() => {
-  registerPane(fixtureDescriptor("settings", { singleton: true }));
-  registerPane(fixtureDescriptor("doc"));
-  registerPane(fixtureDescriptor("session"));
-  registerPane(fixtureDescriptor("spawn", { singleton: true }));
+  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("settings", { singleton: true })));
+  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("doc")));
+  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("session")));
+  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("spawn", { singleton: true })));
   // "welcome" is a real PaneTypeId and the main slot's empty state, so the
   // placement tests below open one. openPane has ALWAYS resolved its type
   // through paneFor (that is where an unregistered type throws), so this is a
   // missing fixture registration, not the store reaching somewhere new.
-  registerPane(fixtureDescriptor("welcome", { singleton: true }));
+  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("welcome", { singleton: true })));
+});
+
+afterAll(() => {
+  for (const restore of restorePaneFixtures) restore();
 });
 
 beforeEach(() => {

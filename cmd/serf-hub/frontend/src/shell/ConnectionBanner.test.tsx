@@ -9,6 +9,32 @@ import { connectionStore } from "../stores/connection";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { NOT_BUILT_MESSAGE } from "./chrome/webNotBuilt";
 
+// The "defaults to constructing a real AppwireClient..." test below (and any
+// other in this file that lets handleRetry's default createClient run) dials
+// a REAL AppwireClient - no test client is injected there. Once "closed", it
+// runs its own real setTimeout-based exponential-backoff reconnect loop
+// (protocol/client.ts) that close() is the only thing that cancels - setting
+// connectionStore's client to null in afterEach below detaches THIS store's
+// reference but leaves that client object's own live timer running for the
+// rest of the worker's life under isolate:false (same hazard App.test.tsx's
+// own closeStaleClient guards against).
+//
+// Nulls connectionStore's client reference BEFORE closing it: connection.ts's
+// own client->store state mirror only republishes while
+// `connectionStore.getState().client === client` still holds (its own
+// guard), and close() synchronously fires that client's "closed" state
+// change. Closing while the reference is still current lets that mirror
+// republish state through it, re-running THIS component's own [state,
+// client]-keyed effect with a stale client reference mid-test (see
+// App.test.tsx's identical fix for the same hazard against threads.ts's
+// wiring).
+function closeStaleClient(): void {
+  const client = connectionStore.getState().client;
+  if (!(client instanceof AppwireClient)) return;
+  connectionStore.setState({ client: null });
+  client.close();
+}
+
 const ALL_FEATURES_OFF = {
   threadList: false,
   threadTurnsList: false,
@@ -38,6 +64,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  closeStaleClient();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
 });
 

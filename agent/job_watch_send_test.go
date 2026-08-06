@@ -425,7 +425,7 @@ func TestWatchSendRestoreRetokensPendingAndArmsTerminalNotification(t *testing.T
 	if err := os.MkdirAll(jobsDir(stateDir, sessionID), 0o755); err != nil {
 		t.Fatalf("mkdir jobs dir: %v", err)
 	}
-	st, err := jobstore.Open(jobsDir(stateDir, sessionID) + "/jobs.jsonl")
+	st, err := jobstore.OpenNoSync(jobsDir(stateDir, sessionID) + "/jobs.jsonl")
 	if err != nil {
 		t.Fatalf("open job store: %v", err)
 	}
@@ -637,7 +637,7 @@ func TestWatchSendRestoreKeepsConcreteDelegateProductionSendPending(t *testing.T
 	sess.Close()
 
 	now := time.Unix(2000, 0).UTC()
-	st, err := jobstore.Open(jobsDir(stateDir, sess.ID()) + "/jobs.jsonl")
+	st, err := jobstore.OpenNoSync(jobsDir(stateDir, sess.ID()) + "/jobs.jsonl")
 	if err != nil {
 		t.Fatalf("open job store: %v", err)
 	}
@@ -2932,7 +2932,7 @@ func TestWatchSendAppendFailureDuringCloseReturnsErrorAndClosesStore(t *testing.
 	if progressArmed {
 		t.Fatal("progress timer still armed after failed close append")
 	}
-	st, err := jobstore.Open(storePath)
+	st, err := jobstore.OpenNoSync(storePath)
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}

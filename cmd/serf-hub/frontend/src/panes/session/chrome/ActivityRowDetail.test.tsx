@@ -1,20 +1,30 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { createElement } from "react";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import * as openTranscriptModule from "../transcript/openTranscript";
 import { ActivityRowDetail } from "./ActivityRowDetail";
 import type { ActivityDelegate, ActivityJob, ActivitySessionNode } from "./activityData";
 import type { ActivityDelegateRow, ActivityJobRow } from "./activityRows";
 
-vi.mock("../transcript/openTranscript", async () => {
-  const { createElement } = await import("react");
-  return {
-    OpenTranscriptButton: (props: { transcriptRef: string; parentRef?: string }) =>
-      createElement(
-        "button",
-        { type: "button", "data-transcript-ref": props.transcriptRef, "data-parent-ref": props.parentRef },
-        "open",
-      ),
-  };
+// vi.spyOn, not vi.mock: ActivityTree.test.tsx statically imports ActivityTree
+// (which renders this file's own subject, ActivityRowDetail, through its
+// detail strips), and other files import ActivityRowDetail/ActivityTree too
+// without ever mocking this module - so under a shared module registry
+// ActivityRowDetail.tsx's own `import { OpenTranscriptButton }` binding can
+// already be resolved to the real component by the time this file's tests
+// run. A vi.mock() factory registered this late replaces what THIS file's
+// own import resolves to, but not what an already-loaded ActivityRowDetail.tsx
+// renders internally. Spying on the real module's own export patches the one
+// binding every importer actually shares, regardless of import order.
+beforeEach(() => {
+  vi.spyOn(openTranscriptModule, "OpenTranscriptButton").mockImplementation((props) =>
+    createElement(
+      "button",
+      { type: "button", "data-transcript-ref": props.transcriptRef, "data-parent-ref": props.parentRef },
+      "open",
+    ),
+  );
 });
 
 // Pinned clock: every quiet-age assertion below measures against this instant.
@@ -96,7 +106,7 @@ function delegateRow(
 
 afterEach(() => {
   cleanup();
-  vi.clearAllMocks();
+  vi.restoreAllMocks();
 });
 
 describe("ActivityRowDetail", () => {

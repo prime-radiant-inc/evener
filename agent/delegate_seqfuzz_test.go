@@ -86,7 +86,10 @@ func TestDelegateSeqFuzz(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	emitDir, bucketsPath, _ := promoter.PersistPaths(pkgDir, t.TempDir(), filepath.Join(t.TempDir(), "buckets.json"))
+	emitDir, bucketsPath, persist := promoter.PersistPaths(pkgDir, t.TempDir(), filepath.Join(t.TempDir(), "buckets.json"))
+	if !persist {
+		t.Parallel()
+	}
 	adapter := &ds_promoAdapter{emitDir: emitDir}
 	store, err := promoter.OpenBucketStore(bucketsPath)
 	if err != nil {

@@ -1,16 +1,24 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, test, vi } from "vitest";
-import { openTranscript } from "../transcript/openTranscript";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import * as openTranscriptModule from "../transcript/openTranscript";
 import { ActivityTranscriptAction } from "./ActivityTranscriptAction";
 
-vi.mock("../transcript/openTranscript", () => ({
-  openTranscript: vi.fn(),
-}));
+// vi.spyOn, not vi.mock: ActivityPanel.test.tsx statically imports this
+// component's sibling (ActivityTree.tsx, via ActivityInspector.tsx) without
+// ever mocking this module, so under a shared module registry the real
+// openTranscript binding is already resolved by the time this file's tests
+// run - see ActivityTree.test.tsx's identical comment for the full story.
+// Spying on the real module's own export patches the one binding every
+// importer actually shares, regardless of import order.
+let openTranscript: typeof openTranscriptModule.openTranscript;
+beforeEach(() => {
+  openTranscript = vi.spyOn(openTranscriptModule, "openTranscript").mockImplementation(() => {});
+});
 
 afterEach(() => {
   cleanup();
-  vi.clearAllMocks();
+  vi.restoreAllMocks();
 });
 
 describe("ActivityTranscriptAction", () => {

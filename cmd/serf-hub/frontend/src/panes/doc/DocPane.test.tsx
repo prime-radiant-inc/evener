@@ -1,16 +1,11 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import {
-  DOC_FILE_MAX_BYTES,
-  type DocFileContent,
-  DocFileError,
-  docImageURL,
-  readDocFile,
-} from "../../protocol/docContent";
+import { afterAll, afterEach, beforeEach, expect, type MockInstance, test, vi } from "vitest";
+import * as docContentModule from "../../protocol/docContent";
+import { DOC_FILE_MAX_BYTES, type DocFileContent, DocFileError, docImageURL } from "../../protocol/docContent";
 import type { ThreadModel } from "../../protocol/model";
-import { registerPane } from "../../shell/paneRegistry";
+import { registerPaneForTests } from "../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import DocPane from "./DocPane";
@@ -21,30 +16,38 @@ import "./index";
 
 // Only readDocFile is mocked; docImageURL / DocFileError / DOC_FILE_MAX_BYTES
 // stay real so the pane's URL building and error-kind switch run for real.
-vi.mock("../../protocol/docContent", async (importActual) => {
-  const actual = await importActual<typeof import("../../protocol/docContent")>();
-  return { ...actual, readDocFile: vi.fn() };
-});
-
-const mockRead = vi.mocked(readDocFile);
+//
+// vi.spyOn, not vi.mock: see ModelField.test.tsx's own comment on this exact
+// pattern - under a shared module registry (isolate:false), a vi.mock()
+// factory registered here only replaces what THIS file's own import
+// resolves to. If docContent.ts's module instance was already evaluated by
+// an earlier file (e.g. register.test.ts's "./openDoc" import, or any other
+// file that renders DocPane), DocPane.tsx's own `readDocFile` binding is
+// already resolved to the real function by the time this mock registers -
+// spying on the real module's own export patches the one binding every
+// importer actually shares, regardless of import order.
+let mockRead: MockInstance<typeof docContentModule.readDocFile>;
 
 // A minimal, test-only "session" pane registration - mirrors
 // Transcript.test.tsx's own precedent: real registerPane/paneFor/openPane
 // machinery, without pulling in the actual (heavier) panes/session module.
-registerPane({
-  id: "session",
-  title: () => "test session",
-  component: lazy(() => Promise.resolve({ default: () => null })),
-});
+afterAll(
+  registerPaneForTests({
+    id: "session",
+    title: () => "test session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  }),
+);
 
 beforeEach(() => {
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
+  mockRead = vi.spyOn(docContentModule, "readDocFile");
 });
 
 afterEach(() => {
   cleanup();
-  vi.clearAllMocks();
+  vi.restoreAllMocks();
   registerDockviewApi(null); // never leak a fake dockview host to another test
 });
 
@@ -178,7 +181,7 @@ test("shows a 'Back to <parent name>' action naming the live session, for a file
   mockRead.mockResolvedValue(textContent({ text: "body" }));
   threadsStore.setState((s) => {
     const threads = new Map(s.threads);
-    threads.set("s1", { ref: "s1", name: "fix the flaky test" } as unknown as ThreadModel);
+    threads.set("s1", { ref: "s1", name: "fix the flaky test", turns: [] } as unknown as ThreadModel);
     return { ...s, threads };
   });
   renderFile("notes.txt");

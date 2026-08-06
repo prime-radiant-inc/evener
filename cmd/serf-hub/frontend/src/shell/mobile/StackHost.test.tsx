@@ -4,9 +4,9 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy, useState } from "react";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
-import { type PaneProps, registerPane } from "../paneRegistry";
+import { type PaneProps, registerPaneForTests } from "../paneRegistry";
 import { openTopLevelSession } from "../sessionPlacement";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { StackHost, setLastPopstateWasTrustedForTests } from "./StackHost";
@@ -36,13 +36,20 @@ function SettingsFixture({ params }: PaneProps<{ section?: string }>) {
   return <div>settings pane: {params.section ?? "none"}</div>;
 }
 
+// paneRegistry.ts is a shared module singleton - the restorers below (called
+// in the afterAll further down) put back whatever "doc"/"settings" resolved
+// to before this file ran, so a later file sharing the same registry never
+// inherits these fixtures.
+let restoreDocPane: () => void;
+let restoreSettingsPane: () => void;
+
 beforeAll(async () => {
-  registerPane<{ ref: string }>({
+  restoreDocPane = registerPaneForTests<{ ref: string }>({
     id: "doc",
     title: (params) => `Doc ${params.ref}`,
     component: lazy(() => Promise.resolve({ default: DocFixture })),
   });
-  registerPane<{ section?: string }>({
+  restoreSettingsPane = registerPaneForTests<{ section?: string }>({
     id: "settings",
     singleton: true,
     title: (params) => `Settings${params.section ? `: ${params.section}` : ""}`,
@@ -84,6 +91,11 @@ beforeAll(async () => {
     () => workspaceStore.getState().openPane("session", { ref: "local:ref_warm" }),
     () => screen.findByRole("heading", { name: "local:ref_warm" }),
   );
+});
+
+afterAll(() => {
+  restoreDocPane();
+  restoreSettingsPane();
 });
 
 // Renders StackHost once with `open`'s pane focused and awaits its landmark,

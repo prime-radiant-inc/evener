@@ -1,20 +1,26 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { TreeNode as ApiTreeNode } from "../../stores/tree";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
-import { listPinSections } from "../rail/actions";
+import * as railActions from "../rail/actions";
 import { SessionMenu, type SessionMenuActions, type SessionMenuProps } from "./SessionMenu";
 
 // Task 4's "Pin this session…" mounts the real PinSectionPicker, which
-// fetches its section list on mount - stub that fetch exactly the way
-// shell/rail/PinSectionPicker.test.tsx does.
-vi.mock("../rail/actions", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../rail/actions")>();
-  return { ...actual, listPinSections: vi.fn() };
-});
+// fetches its section list on mount - stub that fetch. vi.spyOn, not
+// vi.mock: under a shared module registry (isolate:false) some other file
+// (e.g. shell/rail/PinSectionPicker.test.tsx or Rail.test.tsx) may already
+// have loaded "../rail/actions" for real before this file's vi.mock()
+// factory registers, in which case PinSectionPicker.tsx's own
+// `import { listPinSections }` binding is fixed forever and a vi.mock()
+// here can't retroactively change what it calls internally - see
+// PinSectionPicker.test.tsx's own comment on the identical hazard.
+// vi.spyOn patches the one property every importer actually shares.
+let mockedListPinSections = vi.spyOn(railActions, "listPinSections");
 
-const mockedListPinSections = vi.mocked(listPinSections);
+afterAll(() => {
+  mockedListPinSections.mockRestore();
+});
 
 function renderMenu(overrides: Partial<SessionMenuProps> = {}) {
   const actions: SessionMenuActions = {
@@ -47,6 +53,11 @@ async function openMenu(user: ReturnType<typeof userEvent.setup>) {
 
 beforeEach(() => {
   resetToastStoreForTests();
+  // Re-spied here, not just once above: shell/rail/Rail.test.tsx's own
+  // afterEach calls vi.restoreAllMocks(), which is a GLOBAL operation - it
+  // un-does this spy the moment ANY test anywhere in the worker restores
+  // mocks, not just that file's own.
+  mockedListPinSections = vi.spyOn(railActions, "listPinSections");
   mockedListPinSections.mockResolvedValue([{ id: "sec_1", name: "Client", member_count: 0 }]);
 });
 

@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { StrictMode } from "react";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
@@ -15,6 +15,8 @@ import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } f
 import { Toast } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
+import * as SessionChromeModule from "./chrome/SessionChrome";
+import * as ComposerModule from "./composer/Composer";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import Session from "./Session";
 import { writeSeenWatermark } from "./transcript/flow/seenWatermark";
@@ -44,16 +46,37 @@ class MemoryStorage {
 // Session.tsx actually mounts them with the right ref prop - their own
 // placeholder behavior (renders nothing) is covered by
 // composer/Composer.test.tsx and chrome/SessionChrome.test.tsx directly.
-// This mock is file-scoped (vi.mock hoists), so every test below renders
-// these inert stub divs instead of the real (currently null-returning)
-// components - harmless to every other assertion in this file, which all
-// query for their own specific text/testid.
-vi.mock("./composer/Composer", () => ({
-  Composer: ({ ref }: { ref: string }) => <div data-testid="composer-slot">{ref}</div>,
-}));
-vi.mock("./chrome/SessionChrome", () => ({
-  SessionChrome: ({ ref }: { ref: string }) => <div data-testid="session-chrome-slot">{ref}</div>,
-}));
+//
+// A pair of hoisted vi.mock(...) calls used to sit here, swapping each whole
+// module in the shared module registry - under isolate:false that registry
+// is shared by every file in the worker, so whichever file (this one, or any
+// other file that renders the real Composer/SessionChrome through Session.tsx
+// or directly) happens to instantiate that module graph FIRST in the worker's
+// lifetime permanently wins; a vi.mock registered afterward cannot
+// retroactively change an already-instantiated consumer's binding (see
+// shell/DockRegion.test.tsx's own comment on the same class of bug). vi.spyOn
+// mutates only the one property this file cares about, on the SAME shared
+// module object every other file also reads from, and mockRestore() in
+// afterAll hands the real components back for whatever file runs next.
+//
+// Re-spied in beforeEach below too, not just once here: some other file
+// sharing this worker calling the GLOBAL vi.restoreAllMocks() would silently
+// hand the real Composer/SessionChrome back before this file's own tests run
+// (see shell/palette/commands.test.ts's own comment on the same hazard).
+function stubSessionSlots(): void {
+  vi.spyOn(ComposerModule, "Composer").mockImplementation(({ ref }: { ref: string }) => (
+    <div data-testid="composer-slot">{ref}</div>
+  ));
+  vi.spyOn(SessionChromeModule, "SessionChrome").mockImplementation(({ ref }: { ref: string }) => (
+    <div data-testid="session-chrome-slot">{ref}</div>
+  ));
+}
+stubSessionSlots();
+
+afterAll(() => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+});
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -138,6 +161,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  stubSessionSlots();
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
@@ -158,6 +182,14 @@ afterEach(() => {
   if (offsetHeightDescriptor) {
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
   }
+  // Every test here writes real durable outbox records into this file's own
+  // globalThis.indexedDB instance - the beforeEach above only replaces it
+  // BEFORE each test, so whatever the LAST test wrote stays installed as the
+  // global indexedDB after this file finishes. Under isolate:false that
+  // leftover, populated database is what a later file's own default
+  // getMutationRuntime() (no setMutationStorageForTests override) discovers
+  // and re-pins.
+  globalThis.indexedDB = new IDBFactory();
 });
 
 test("shows a loading placeholder before the thread hydrates", async () => {

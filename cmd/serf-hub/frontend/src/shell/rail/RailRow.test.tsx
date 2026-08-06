@@ -4,13 +4,13 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
-import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
 import { Tree, type TreeRowInfo } from "../../widgets";
-import { registerPane } from "../paneRegistry";
+import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { listPinSections } from "./actions";
+import * as railActions from "./actions";
 import railStyles from "./Rail.module.css";
 import { activityGloss, cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
 import type {
@@ -22,39 +22,61 @@ import type {
 } from "./railNodes";
 
 // "Pin this session…" mounts the real PinSectionPicker, which fetches its
-// section list on mount - stub that fetch exactly the way
-// shell/sessionMenu/SessionMenu.test.tsx does.
-vi.mock("./actions", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./actions")>();
-  return { ...actual, listPinSections: vi.fn() };
-});
-
-const mockedListPinSections = vi.mocked(listPinSections);
+// section list on mount - stub that fetch. vi.spyOn, not vi.mock: under a
+// shared module registry (isolate:false) some other file (e.g.
+// shell/rail/PinSectionPicker.test.tsx or Rail.test.tsx) may already have
+// loaded "./actions" for real before this file's vi.mock() factory
+// registers, in which case PinSectionPicker.tsx's own
+// `import { listPinSections }` binding is fixed forever and a vi.mock()
+// here can't retroactively change what it calls internally - see
+// PinSectionPicker.test.tsx's own comment on the identical hazard.
+let mockedListPinSections = vi.spyOn(railActions, "listPinSections");
 
 function PaneFixture() {
   return <div>pane</div>;
 }
 
+// paneRegistry.ts is a shared module singleton, not fresh per file - the
+// afterAll below restores whatever each of these ids resolved to before
+// this file ran, so a later file sharing the same module registry never
+// inherits these fixtures in place of the real session/sessionTasks/
+// sessionActivity/sessionDetails panes.
+const restorePaneFixtures: Array<() => void> = [];
+
 beforeAll(() => {
   // Minimal, test-only pane registrations (TreeDrawer.test.tsx's precedent):
   // the workspace store's openPane refuses an unregistered type, and the
   // unified menu's Details/Tasks/Activity items open real panes now.
-  registerPane<{ ref: string }>({
-    id: "session",
-    title: () => "Session",
-    component: lazy(() => Promise.resolve({ default: PaneFixture })),
-  });
-  for (const id of ["sessionTasks", "sessionActivity", "sessionDetails"] as const) {
-    registerPane<{ ref: string }>({
-      id,
-      title: () => id,
+  restorePaneFixtures.push(
+    registerPaneForTests<{ ref: string }>({
+      id: "session",
+      title: () => "Session",
       component: lazy(() => Promise.resolve({ default: PaneFixture })),
-    });
+    }),
+  );
+  for (const id of ["sessionTasks", "sessionActivity", "sessionDetails"] as const) {
+    restorePaneFixtures.push(
+      registerPaneForTests<{ ref: string }>({
+        id,
+        title: () => id,
+        component: lazy(() => Promise.resolve({ default: PaneFixture })),
+      }),
+    );
   }
+});
+
+afterAll(() => {
+  for (const restore of restorePaneFixtures) restore();
+  mockedListPinSections.mockRestore();
 });
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+  // Re-spied here, not just once above: shell/rail/Rail.test.tsx's own
+  // afterEach calls vi.restoreAllMocks(), which is a GLOBAL operation - it
+  // un-does this spy the moment ANY test anywhere in the worker restores
+  // mocks, not just that file's own.
+  mockedListPinSections = vi.spyOn(railActions, "listPinSections");
   mockedListPinSections.mockResolvedValue([{ id: "sec_1", name: "Client", member_count: 0 }]);
 });
 

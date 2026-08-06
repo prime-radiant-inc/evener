@@ -310,7 +310,7 @@ func appendChildTranscriptTurn(t *testing.T, s *Session, rec *jobstore.JobRecord
 
 func appendSessionJobEvents(t *testing.T, stateDir, sessionID string, events ...jobstore.Event) {
 	t.Helper()
-	store, err := jobstore.Open(filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl"))
+	store, err := jobstore.OpenNoSync(filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl"))
 	if err != nil {
 		t.Fatalf("open session job store: %v", err)
 	}

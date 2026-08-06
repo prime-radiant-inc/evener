@@ -43,7 +43,7 @@ func (f *zeroProgressFile) Write(p []byte) (int, error) {
 
 func TestWriterZeroProgressReturnsErrShortWrite(t *testing.T) {
 	fs := &zeroProgressFS{Fs: afero.NewMemMapFs()}
-	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader())
+	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader(), true)
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestWriterAppendRechecksClosedStateAfterLock(t *testing.T) {
 	t.Cleanup(func() { runtime.GOMAXPROCS(previousProcs) })
 
 	fs := afero.NewMemMapFs()
-	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader())
+	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader(), true)
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}

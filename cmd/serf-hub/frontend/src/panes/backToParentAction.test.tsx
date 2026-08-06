@@ -1,8 +1,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { lazy } from "react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, test } from "vitest";
 import type { ThreadModel } from "../protocol/model";
-import { registerPane } from "../shell/paneRegistry";
+import { registerPaneForTests } from "../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { PaneScaffold } from "../widgets";
@@ -15,11 +15,13 @@ import "./doc";
 // A minimal, test-only "session" pane registration - mirrors
 // Transcript.test.tsx's own precedent: real registerPane/paneFor/openPane
 // machinery, without pulling in the actual (heavier) panes/session module.
-registerPane({
-  id: "session",
-  title: () => "test session",
-  component: lazy(() => Promise.resolve({ default: () => null })),
-});
+afterAll(
+  registerPaneForTests({
+    id: "session",
+    title: () => "test session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  }),
+);
 
 beforeEach(() => {
   resetThreadsStoreForTests();
@@ -29,6 +31,21 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   registerDockviewApi(null); // never leak a fake dockview host to another test
+  // The beforeEach above only resets threadsStore/workspaceStore BEFORE each
+  // test - nothing restores them after the LAST test, so a pane this file
+  // opened (pointing at a tracked "ref_parent"/"ref_parent_unknown" ref)
+  // stays open and focused for whichever file runs next under isolate:false.
+  resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
+  // The orphan-restore test below appends a raw <button> straight to
+  // document.body (outside any React tree, to stand in for "whatever else
+  // had focus") - cleanup() only unmounts React roots, so under isolate:false
+  // that stray node would otherwise outlive this file and false-positive
+  // any later file's plain getByRole("button")/queryByRole("button") query
+  // against the shared jsdom document.
+  document.querySelectorAll("body > button").forEach((node) => {
+    node.remove();
+  });
 });
 
 test("falls back to the raw parent ref when no cached name is available", () => {
@@ -39,7 +56,7 @@ test("falls back to the raw parent ref when no cached name is available", () => 
 test("shows the live parent thread name once hydrated", () => {
   threadsStore.setState((s) => {
     const threads = new Map(s.threads);
-    threads.set("ref_parent", { ref: "ref_parent", name: "fix the flaky test" } as unknown as ThreadModel);
+    threads.set("ref_parent", { ref: "ref_parent", name: "fix the flaky test", turns: [] } as unknown as ThreadModel);
     return { ...s, threads };
   });
   render(<BackToParentAction parentRef="ref_parent" />);

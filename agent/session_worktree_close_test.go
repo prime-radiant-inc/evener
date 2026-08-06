@@ -97,7 +97,7 @@ func (r *wtRepo) branchExists(t *testing.T, name string) bool {
 
 func (r *wtRepo) disposedEventPresent(t *testing.T, delegateID string) bool {
 	t.Helper()
-	store, err := jobstore.Open(filepath.Join(r.s.jobManager.dir, "jobs.jsonl"))
+	store, err := jobstore.OpenNoSync(filepath.Join(r.s.jobManager.dir, "jobs.jsonl"))
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}

@@ -58,7 +58,7 @@ func TestNewWriterFS_ErrorArms(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fs := fault.FS(afero.NewMemMapFs(), fault.FromBytes(faultPlan(tc.faultOp)))
-			w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader())
+			w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader(), true)
 			if err == nil {
 				t.Fatalf("expected error faulting op %d", tc.faultOp)
 			}
@@ -79,7 +79,7 @@ func TestNewWriterFS_ErrorArms(t *testing.T) {
 
 func TestAppend_HappyReadBack(t *testing.T) {
 	base := afero.NewMemMapFs()
-	w, err := newWriterFS(base, faultTranscriptPath, faultTestHeader())
+	w, err := newWriterFS(base, faultTranscriptPath, faultTestHeader(), true)
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestAppend_HappyReadBack(t *testing.T) {
 
 func TestAppendDurable_Success(t *testing.T) {
 	base := afero.NewMemMapFs()
-	w, err := newWriterFS(base, faultTranscriptPath, faultTestHeader())
+	w, err := newWriterFS(base, faultTranscriptPath, faultTestHeader(), true)
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestAppendDurable_Success(t *testing.T) {
 // the wrapped write failure with no "rollback failed" suffix.
 func TestAppendDurable_WriteFailsRollback(t *testing.T) {
 	fs := fault.FS(afero.NewMemMapFs(), fault.FromBytes(faultPlan(5)))
-	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader())
+	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader(), true)
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestAppendDurable_WriteFailsRollback(t *testing.T) {
 // succeeds, so the returned error is the wrapped sync failure.
 func TestAppendDurable_SyncFailsRollback(t *testing.T) {
 	fs := fault.FS(afero.NewMemMapFs(), fault.FromBytes(faultPlan(6)))
-	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader())
+	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader(), true)
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestAppendDurable_SyncFailsRollback(t *testing.T) {
 // any write, surfacing "seek transcript append start".
 func TestAppendDurable_SeekStartFails(t *testing.T) {
 	fs := fault.FS(afero.NewMemMapFs(), fault.FromBytes(faultPlan(4)))
-	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader())
+	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader(), true)
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestAppendDurable_SeekStartFails(t *testing.T) {
 // rollback only runs on the durable path.
 func TestAppend_SyncFailsNoRollback(t *testing.T) {
 	fs := fault.FS(afero.NewMemMapFs(), fault.FromBytes(faultPlan(5)))
-	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader())
+	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader(), true)
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestAppendDurable_WriteFailsRollbackAlsoFails(t *testing.T) {
 	plan[5] = 0x00 // entry Write
 	plan[6] = 0x00 // rollback Truncate
 	fs := fault.FS(afero.NewMemMapFs(), fault.FromBytes(plan))
-	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader())
+	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader(), true)
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestAppendDurable_SyncFailsRollbackAlsoFails(t *testing.T) {
 				plan[op] = 0x00
 			}
 			fs := fault.FS(afero.NewMemMapFs(), fault.FromBytes(plan))
-			w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader())
+			w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader(), true)
 			if err != nil {
 				t.Fatalf("newWriterFS: %v", err)
 			}
@@ -338,7 +338,7 @@ func TestWriter_NilAndClosedNoOps(t *testing.T) {
 	}
 
 	base := afero.NewMemMapFs()
-	w, err := newWriterFS(base, faultTranscriptPath, faultTestHeader())
+	w, err := newWriterFS(base, faultTranscriptPath, faultTestHeader(), true)
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
@@ -369,7 +369,7 @@ func TestClose_FlushesAndIdempotent(t *testing.T) {
 	}
 
 	base := afero.NewMemMapFs()
-	w, err := newWriterFS(base, faultTranscriptPath, faultTestHeader())
+	w, err := newWriterFS(base, faultTranscriptPath, faultTestHeader(), true)
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestClose_FlushesAndIdempotent(t *testing.T) {
 // index 4) leaves the writer dirty; Close's Sync at index 5 fails.
 func TestClose_SyncFails(t *testing.T) {
 	fs := fault.FS(afero.NewMemMapFs(), fault.FromBytes(faultPlan(5)))
-	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader())
+	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader(), true)
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
@@ -469,7 +469,7 @@ func TestClose_FileCloseFails(t *testing.T) {
 func makeValidTranscript(t *testing.T) (afero.Fs, []byte) {
 	t.Helper()
 	base := afero.NewMemMapFs()
-	w, err := newWriterFS(base, faultTranscriptPath, faultTestHeader())
+	w, err := newWriterFS(base, faultTranscriptPath, faultTestHeader(), true)
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}

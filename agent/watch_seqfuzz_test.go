@@ -57,6 +57,7 @@ import (
 // delegate-sequence fuzzer a parallel effort adds to package agent.
 // serf:fuzz rapid
 func TestWatchSeqFuzz(t *testing.T) {
+	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		h := ws_newHarness(t, rt)
 		defer h.teardown()

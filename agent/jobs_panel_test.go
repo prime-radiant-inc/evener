@@ -59,7 +59,7 @@ func TestLoadSessionJobOutputTail(t *testing.T) {
 	if err := os.WriteFile(outPath, []byte("0123456789"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	st, err := jobstore.Open(filepath.Join(jobsDir(dir, sessionID), "jobs.jsonl"))
+	st, err := jobstore.OpenNoSync(filepath.Join(jobsDir(dir, sessionID), "jobs.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestLoadSessionJobOutputTailAlignsMultiByteWindow(t *testing.T) {
 	if err := os.WriteFile(outPath, []byte("😀😀😀"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	st, err := jobstore.Open(filepath.Join(jobsDir(dir, sessionID), "jobs.jsonl"))
+	st, err := jobstore.OpenNoSync(filepath.Join(jobsDir(dir, sessionID), "jobs.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestLoadSessionJobOutputTailMissingOutputFile(t *testing.T) {
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	st, err := jobstore.Open(filepath.Join(jobsDir(dir, sessionID), "jobs.jsonl"))
+	st, err := jobstore.OpenNoSync(filepath.Join(jobsDir(dir, sessionID), "jobs.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}

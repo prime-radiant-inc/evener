@@ -74,6 +74,19 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  // Every test here calls ensureThread(ref)/connect(fake) directly for
+  // setup, so the ref stays refcounted after the LAST test unless this file
+  // itself releases it. Under isolate:false that is what a later file's own
+  // connectionStore.connect() re-triggers via rewireClient.
+  resetThreadsStoreForTests();
+  // Every test here writes real durable outbox records into this file's own
+  // globalThis.indexedDB instance - the beforeEach above only replaces it
+  // BEFORE each test, so whatever the LAST test wrote stays installed as the
+  // global indexedDB after this file finishes. Under isolate:false that
+  // leftover, populated database is what a later file's own default
+  // getMutationRuntime() (no setMutationStorageForTests override) discovers
+  // and re-pins.
+  globalThis.indexedDB = new IDBFactory();
 });
 
 test("an action becomes pending only after its durable enqueue commits", async () => {

@@ -16,6 +16,7 @@ import (
 )
 
 func TestProjectActivitySession_GroupsDelegateTurnsOnce(t *testing.T) {
+	t.Parallel()
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", Label: "Root",
 		Jobs: []*jobstore.JobRecord{
@@ -41,6 +42,7 @@ func TestProjectActivitySession_GroupsDelegateTurnsOnce(t *testing.T) {
 }
 
 func TestProjectActivitySession_AnchorsDelegateAtEarliestTurn(t *testing.T) {
+	t.Parallel()
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", Label: "Root",
 		Jobs: []*jobstore.JobRecord{
@@ -61,6 +63,7 @@ func TestProjectActivitySession_AnchorsDelegateAtEarliestTurn(t *testing.T) {
 }
 
 func TestActivityOutcome(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		status   jobstore.Status
@@ -86,6 +89,7 @@ func TestActivityOutcome(t *testing.T) {
 }
 
 func TestAggregateActivity_CountsWorkUnitsRecursively(t *testing.T) {
+	t.Parallel()
 	job := func(id, status, outcome string, terminal bool) appwire.JobActivityJob {
 		return appwire.JobActivityJob{JobID: id, Status: status, Outcome: outcome, Terminal: terminal}
 	}
@@ -113,6 +117,7 @@ func TestAggregateActivity_CountsWorkUnitsRecursively(t *testing.T) {
 }
 
 func TestAggregateActivity_Precedence(t *testing.T) {
+	t.Parallel()
 	terminal := func(outcome string) []appwire.JobActivityEntry {
 		return []appwire.JobActivityEntry{{Kind: "shell", Job: &appwire.JobActivityJob{Terminal: true, Outcome: outcome}}}
 	}
@@ -143,6 +148,7 @@ func TestAggregateActivity_Precedence(t *testing.T) {
 }
 
 func TestProjectActivitySession_ProjectsOwnerRefsAndChildren(t *testing.T) {
+	t.Parallel()
 	child := &activitySessionSnapshot{
 		SessionID: "child", Ref: "local:child", Label: "Child",
 		Jobs: []*jobstore.JobRecord{{JobID: "job_child", Type: jobstore.JobShell, OwnerSessionID: "child", Status: jobstore.StatusCompleted}},
@@ -200,6 +206,7 @@ func TestProjectActivitySession_ShellJobFallsBackToJobTranscriptRef(t *testing.T
 }
 
 func TestProjectActivitySession_UnavailableChildPreservesDelegate(t *testing.T) {
+	t.Parallel()
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root",
 		Jobs:      []*jobstore.JobRecord{{JobID: "job_delegate", Type: jobstore.JobDelegate, DelegateID: "dlg_1", OwnerSessionID: "root", Status: jobstore.StatusCompleted}},
@@ -220,6 +227,7 @@ func TestProjectActivitySession_UnavailableChildPreservesDelegate(t *testing.T) 
 }
 
 func TestProjectActivitySession_RejectsMalformedDelegateLinks(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		job       *jobstore.JobRecord
@@ -250,6 +258,7 @@ func TestProjectActivitySession_RejectsMalformedDelegateLinks(t *testing.T) {
 }
 
 func TestMergeActivityRecords_LiveOnlyInsertion(t *testing.T) {
+	t.Parallel()
 	durable := []*jobstore.JobRecord{
 		{JobID: "job_a", Status: jobstore.StatusCompleted, StartedAt: time.Unix(1, 0)},
 		{JobID: "job_d", Status: jobstore.StatusCompleted, StartedAt: time.Unix(4, 0)},
@@ -273,6 +282,7 @@ func TestMergeActivityRecords_LiveOnlyInsertion(t *testing.T) {
 }
 
 func TestMergeActivityRecords_DurableReconciliationHasNoDuplicate(t *testing.T) {
+	t.Parallel()
 	durable := []*jobstore.JobRecord{
 		{JobID: "job_b", Status: jobstore.StatusRunning, StartedAt: time.Unix(2, 0)},
 		{JobID: "job_a", Status: jobstore.StatusCompleted, StartedAt: time.Unix(1, 0)},
@@ -290,6 +300,7 @@ func TestMergeActivityRecords_DurableReconciliationHasNoDuplicate(t *testing.T) 
 }
 
 func TestJobActivityTree_LiveTraversalIncludesClosedDurableGrandchildAndGroupsTurnsOnce(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	root := newActivityTestSession(t, stateDir)
 	child := newActivityTestSession(t, stateDir)
@@ -371,6 +382,7 @@ func TestJobActivityTree_LiveTraversalIncludesClosedDurableGrandchildAndGroupsTu
 }
 
 func TestJobActivityTree_LiveResponseRevisionMatchesRootClock(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	root := newActivityTestSession(t, stateDir)
 	child := newActivityTestSession(t, stateDir)
@@ -406,6 +418,7 @@ func TestJobActivityTree_LiveResponseRevisionMatchesRootClock(t *testing.T) {
 }
 
 func TestProjectStableLiveActivityTree_RejectsSnapshotAfterBoundedRevisionChurn(t *testing.T) {
+	t.Parallel()
 	clock := newJobTreeClock("root")
 	loads := 0
 	load := func() (*activitySessionSnapshot, int, error) {
@@ -427,6 +440,7 @@ func TestProjectStableLiveActivityTree_RejectsSnapshotAfterBoundedRevisionChurn(
 }
 
 func TestJobActivityTree_TruncatesWithScopedContinuation(t *testing.T) {
+	t.Parallel()
 	s := buildActivityTreeWithJobs(t, activityMaxWorkUnits+1)
 	got, err := s.JobActivityTree(appwire.JobsListParams{})
 	if err != nil {
@@ -442,12 +456,24 @@ func TestJobActivityTree_TruncatesWithScopedContinuation(t *testing.T) {
 }
 
 func TestJobActivityTree_TruncatesAtDepth33(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	root := newActivityTestSession(t, stateDir)
 	current := root
 	for i := range activityMaxNewDepth + 1 {
 		child := newActivityTestSession(t, stateDir)
-		_, _ = linkActivityChild(t, current, child, fmt.Sprintf("child-%02d", i))
+		_, run := linkActivityChild(t, current, child, fmt.Sprintf("child-%02d", i))
+		// Finalize the delegate job immediately to avoid teardown overhead.
+		// Finalize marks the job terminal and leaves it with NotifyPending status.
+		// This removes the job from jobManager.running, so Session.Close() avoids
+		// closeRuntimeState's closeGrace wait (the test-configured closeGrace:
+		// 200ms normally, 3s under -race — see closegrace_{norace,race}_test.go;
+		// closeRuntimeState uses closeGrace directly, not the unrelated 250ms
+		// drainRecheckInterval) that would block on a completion that will never
+		// arrive — pure fixture cost × 33 nodes, not part of what this test proves.
+		if err := current.jobManager.finalize(run.rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); err != nil {
+			t.Fatalf("finalize delegate job %d: %v", i, err)
+		}
 		saveActivityMeta(t, stateDir, current)
 		saveActivityMeta(t, stateDir, child)
 		current = child
@@ -466,6 +492,7 @@ func TestJobActivityTree_TruncatesAtDepth33(t *testing.T) {
 }
 
 func TestJobActivityTree_TruncatesUnderEncodedBytePressure(t *testing.T) {
+	t.Parallel()
 	s := buildActivityTreeWithJobs(t, 64)
 	for i := range 64 {
 		rec := &jobstore.JobRecord{
@@ -501,6 +528,7 @@ func TestJobActivityTree_TruncatesUnderEncodedBytePressure(t *testing.T) {
 }
 
 func TestJobActivityTree_CycleDetected(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	root := newActivityTestSession(t, stateDir)
 	child := newActivityTestSession(t, stateDir)
@@ -526,6 +554,7 @@ func TestJobActivityTree_CycleDetected(t *testing.T) {
 }
 
 func TestJobActivityTree_MalformedRefRetainsUnavailableDelegate(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newActivityTestSession(t, stateDir)
 	now := time.Unix(100, 0).UTC()
@@ -570,6 +599,7 @@ func TestJobActivityTree_MalformedRefRetainsUnavailableDelegate(t *testing.T) {
 }
 
 func TestJobActivityTree_UnavailableDescendantRetainsDelegate(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newActivityTestSession(t, stateDir)
 	now := time.Unix(100, 0).UTC()
@@ -612,6 +642,7 @@ func TestJobActivityTree_UnavailableDescendantRetainsDelegate(t *testing.T) {
 }
 
 func TestJobActivityTree_LiveChildOutsideStateDirIsUnavailable(t *testing.T) {
+	t.Parallel()
 	parentStateDir := t.TempDir()
 	childStateDir := t.TempDir()
 	parent := newActivityTestSession(t, parentStateDir)
@@ -651,6 +682,7 @@ func TestJobActivityTree_LiveChildOutsideStateDirIsUnavailable(t *testing.T) {
 }
 
 func TestDecodeActivityContinuation_Validation(t *testing.T) {
+	t.Parallel()
 	valid := encodeActivityContinuation(activityContinuation{Version: 1, RootID: "root", SessionID: "root", Path: []string{"dlg_1"}})
 	if got, err := decodeActivityContinuation(valid, "root"); err != nil || got.SessionID != "root" || !reflect.DeepEqual(got.Path, []string{"dlg_1"}) {
 		t.Fatalf("decode valid=(%+v,%v)", got, err)
@@ -675,6 +707,7 @@ func TestDecodeActivityContinuation_Validation(t *testing.T) {
 }
 
 func TestJobActivityTree_ContinuationGraftEnvelope(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	root := newActivityTestSession(t, stateDir)
 	child := newActivityTestSession(t, stateDir)
@@ -715,6 +748,7 @@ func TestJobActivityTree_ContinuationGraftEnvelope(t *testing.T) {
 }
 
 func TestJobActivityTree_ContinuationResponseRetainsRootRevision(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	root := newActivityTestSession(t, stateDir)
 	child := newActivityTestSession(t, stateDir)

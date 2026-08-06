@@ -11,24 +11,46 @@ import { connectionStore } from "../../stores/connection";
 import { tasksPanelStore } from "../../stores/tasksPanel";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
+import * as backToParentActionModule from "../backToParentAction";
 import type { ActivityTree } from "../session/chrome/activityData";
 import { NOW_TICK_MS } from "../session/liveness";
 import { sessionPanelTitle } from "./index";
 import { SessionPanelPane } from "./SessionPanelPane";
 
-vi.mock("../backToParentAction", () => ({
-  BackToParentAction: () => <span data-testid="back-to-parent" />,
-}));
-
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetDisclosureStoreForTests();
+  // vi.spyOn, not vi.mock: under a shared module registry (isolate:false)
+  // some other file may already have loaded "../backToParentAction" for
+  // real before this file's vi.mock() factory registers, in which case
+  // SessionPanelPane.tsx's own `import { BackToParentAction }` binding is
+  // fixed forever and a vi.mock() here can't retroactively change what it
+  // renders internally - see shell/sessionMenu/SessionMenu.test.tsx's own
+  // comment on the identical hazard. Re-spied every test (not just once at
+  // module scope) since some other file's own vi.restoreAllMocks() is a
+  // GLOBAL operation that would silently hand the real component back.
+  vi.spyOn(backToParentActionModule, "BackToParentAction").mockImplementation(() => (
+    <span data-testid="back-to-parent" />
+  ));
 });
 
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  // Restores the real BackToParentAction before the next test re-spies it -
+  // vi.spyOn on an already-spied export would otherwise stack wrappers.
+  vi.restoreAllMocks();
+  // The beforeEach above only resets threadsStore BEFORE each test. Several
+  // tests here render SessionPanelPane against a real connected FakeClient,
+  // which calls ensureThread()/the mutation runtime for real - without this,
+  // the LAST test's tracked refs, pinned mutation refs, and open
+  // MutationOutboxIndexedDB connection stay live after this file finishes,
+  // and under isolate:false a later file's own beforeEach (e.g.
+  // stores/threads.test.ts's deleteMutationDatabase()) can find that
+  // connection still open, or a later file's own connectionStore.connect()
+  // re-triggers rewireClient against state this file never tore down.
+  resetThreadsStoreForTests();
 });
 
 const CAPABILITIES: ThreadCapabilities = {

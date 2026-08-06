@@ -1,22 +1,27 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { afterEach, describe, expect, test, vi } from "vitest";
-import { openTranscript } from "../transcript/openTranscript";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import * as openTranscriptModule from "../transcript/openTranscript";
 import { ActivityTree } from "./ActivityTree";
 import type { ActivityTree as ActivityTreeData } from "./activityData";
 
-vi.mock("../transcript/openTranscript", async () => {
-  const { createElement } = await import("react");
-  return {
-    openTranscript: vi.fn(),
-    OpenTranscriptButton: (props: { transcriptRef: string; parentRef?: string }) =>
-      createElement(
-        "button",
-        { type: "button", "data-transcript-ref": props.transcriptRef, "data-parent-ref": props.parentRef },
-        "open",
-      ),
-  };
+// vi.spyOn, not vi.mock: ActivityPanel.test.tsx statically imports ActivityTree
+// (this file's own subject) without ever mocking this module, so under a
+// shared module registry ActivityTree.tsx's own `import { openTranscript }`
+// binding is already resolved to the real function by the time this file's
+// tests run - a vi.mock() factory registered this late replaces what THIS
+// file's test-level import resolves to, but not what the already-loaded
+// ActivityTree.tsx calls internally. Spying on the real module's own export
+// patches the one binding every importer (this file's assertions AND
+// ActivityTree.tsx's internal calls) actually shares, regardless of import
+// order. OpenTranscriptButton itself (rendered by the detail strips the
+// expanded-by-default rows below now show) is left real: it is a plain
+// Button that calls the spied openTranscript on click, so no test needs a
+// stub for it.
+let openTranscript: typeof openTranscriptModule.openTranscript;
+beforeEach(() => {
+  openTranscript = vi.spyOn(openTranscriptModule, "openTranscript").mockImplementation(() => {});
 });
 
 // Pinned clock: every quiet-time assertion below measures against this instant.
@@ -133,7 +138,7 @@ function Host({ initialExpanded = [] }: { initialExpanded?: string[] }) {
 
 afterEach(() => {
   cleanup();
-  vi.clearAllMocks();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 

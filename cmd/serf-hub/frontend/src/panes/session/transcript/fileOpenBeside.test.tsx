@@ -74,7 +74,7 @@ test("fileDocParams picks kind:image for an image-extension path (DECISION C), k
 // affordance) for an out-of-cwd path. --------------------------------------
 
 function seedThreadCwd(ref: string, cwd: string): void {
-  const model = { ref, cwd } as unknown as ThreadModel;
+  const model = { ref, cwd, turns: [] } as unknown as ThreadModel;
   threadsStore.setState({ threads: new Map([[ref, model]]) });
 }
 

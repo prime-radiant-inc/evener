@@ -216,6 +216,21 @@ type SessionConfig struct {
 	// testOnly holds injection points used only by package-internal tests. It is
 	// never set by app callers and never persisted (json:"-").
 	testOnly testConfig `json:"-"`
+
+	// ForceRealIO opts a session construction back into the real,
+	// fsync-bearing I/O paths (jobstore append fsync, transcript header
+	// fsync, on-disk installation-ID persistence) that testSpeedIO
+	// (session_init.go) otherwise skips by default whenever running under
+	// `go test` (testing.Testing() is true for every test binary, including
+	// black-box and live/E2E ones outside this package). Package-agent's own
+	// tests reach that default through the unexported testOnly.forceRealIO
+	// field; this exported twin is the supported escape valve for a test in
+	// another package - which cannot reach an unexported field - whose own
+	// contract IS that I/O cost or its on-disk durability (e.g. asserting a
+	// stable installation ID across a restore, or that a transcript survives
+	// an unclean process exit). False in production, where it is inert
+	// because testing.Testing() is always false there.
+	ForceRealIO bool `json:"-"`
 }
 
 // testConfig holds injection points used ONLY by package-internal (package
@@ -327,6 +342,16 @@ type testConfig struct {
 	// noSyncJobStore skips jobstore fsyncs for tests whose contract is not crash
 	// durability. The event bytes and append/load behavior stay the same.
 	noSyncJobStore bool
+
+	// forceRealIO disables the test-binary-wide default (see testSpeedIO in
+	// session_init.go) that skips jobstore fsyncs, the transcript header fsync,
+	// and on-disk installation-ID persistence whenever running under `go test`.
+	// Known setters: BenchmarkNewSession, whose subject IS real
+	// session-construction I/O cost (the test-speed default would make it
+	// measure something other than what it claims); and
+	// TestSession_PopulatesModelRequestMetadata, which asserts the
+	// installation_id file exists on the real filesystem.
+	forceRealIO bool
 
 	// sandboxProber, when non-nil, supplies the host facts used to RE-RESOLVE a
 	// resumed delegate's persisted sandbox policy against its lane. Production

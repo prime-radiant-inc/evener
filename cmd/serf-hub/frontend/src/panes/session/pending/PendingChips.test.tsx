@@ -17,7 +17,17 @@ beforeEach(() => {
   resetPendingTurnsStoreForTests();
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  // Every test here writes real durable outbox records into this file's own
+  // globalThis.indexedDB instance - the beforeEach above only replaces it
+  // BEFORE each test, so whatever the LAST test wrote stays installed as the
+  // global indexedDB after this file finishes. Under isolate:false that
+  // leftover, populated database is what a later file's own default
+  // getMutationRuntime() (no setMutationStorageForTests override) discovers
+  // and re-pins.
+  globalThis.indexedDB = new IDBFactory();
+});
 
 // A successful perform() deliberately does NOT reconcile the entry (see
 // pendingTurnsStore's own contract), so a resolving perform leaves the chip

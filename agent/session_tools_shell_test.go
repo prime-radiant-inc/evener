@@ -387,7 +387,7 @@ func TestSessionCloseMarksBackgroundShellCancelledBeforeEnvCleanup(t *testing.T)
 
 	s.Close()
 
-	st, err := jobstore.Open(filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl"))
+	st, err := jobstore.OpenNoSync(filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl"))
 	if err != nil {
 		t.Fatalf("reopen job store: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(
 
 	parent.Close()
 
-	st, err := jobstore.Open(filepath.Join(jobsDir(stateDir, childID), "jobs.jsonl"))
+	st, err := jobstore.OpenNoSync(filepath.Join(jobsDir(stateDir, childID), "jobs.jsonl"))
 	if err != nil {
 		t.Fatalf("reopen child job store: %v", err)
 	}
@@ -574,7 +574,7 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 		t.Fatal("child turn did not finish")
 	}
 
-	st, err := jobstore.Open(filepath.Join(jobsDir(stateDir, childID), "jobs.jsonl"))
+	st, err := jobstore.OpenNoSync(filepath.Join(jobsDir(stateDir, childID), "jobs.jsonl"))
 	if err != nil {
 		t.Fatalf("reopen child job store: %v", err)
 	}

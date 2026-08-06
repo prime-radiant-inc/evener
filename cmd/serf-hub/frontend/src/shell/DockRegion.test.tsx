@@ -1,12 +1,14 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import { connectionStore } from "../stores/connection";
 import { resetTreeStoreForTests } from "../stores/tree";
 import { AppShell } from "./AppShell";
 import { DockRegion, resetDockChunkForTests } from "./DockRegion";
-import { loadDockHost } from "./dockHostChunk";
+import * as dockHostChunk from "./dockHostChunk";
+import { resetDockHostLoaderForTests } from "./dockHostChunk";
 import { resetWorkspaceStoreForTests } from "./workspace";
 
 // The DockHost chunk is a separate network request from index.html (345kB of
@@ -16,10 +18,25 @@ import { resetWorkspaceStoreForTests } from "./workspace";
 // loader is that failure with no network involved; the real dockview module
 // never loads here, which also keeps these tests off dockview's ResizeObserver
 // (kata 1s47, reproduced live against the built bundle at 771b016ea).
-vi.mock("./dockHostChunk", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./dockHostChunk")>();
-  return { ...actual, loadDockHost: vi.fn() };
-});
+//
+// A hoisted vi.mock("./dockHostChunk", ...) here would swap the module in the
+// shared registry - under isolate:false that registry is shared by every file
+// in the worker, and whichever file (this one, or AppShell.test.tsx via
+// AppShell.tsx -> DockRegion.tsx -> dockHostChunk) happens to instantiate
+// DockRegion.tsx FIRST in the whole worker's lifetime permanently fixes its
+// closure over loadDockHost to whatever was in effect at that moment - a
+// vi.mock registered afterward cannot retroactively change an
+// already-instantiated module's own binding, so the leak direction flips
+// unpredictably depending on unrelated ordering (confirmed empirically:
+// swapping which file ran first flipped which one failed). vi.spyOn on the
+// namespace import below instead MUTATES the shared dockHostChunk module
+// object's own `loadDockHost` property in place - Vite's module-runner gives
+// named imports a live getter into that same object, so DockRegion.tsx's
+// calls see the spy's current implementation regardless of when it was
+// instantiated, and mockRestore() in afterEach cleanly hands the real
+// function back for whatever file runs next.
+const realLoadDockHost = dockHostChunk.loadDockHost;
+const loadDockHost = vi.spyOn(dockHostChunk, "loadDockHost");
 
 const CHUNK_ERROR = "Failed to fetch dynamically imported module: /webassets/DockHost-a1b2c3.js";
 
@@ -52,17 +69,54 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
   resetTreeStoreForTests();
-  vi.mocked(loadDockHost).mockReset();
+  loadDockHost.mockReset();
+  loadDockHost.mockImplementation(realLoadDockHost);
   // The chunk is one shared lazy() payload per page load, so each test needs
   // its own - a payload that resolved (or rejected) in the last test would
   // never call this test's loader at all.
   resetDockChunkForTests();
+  resetDockHostLoaderForTests();
   vi.stubGlobal("fetch", (url: string) => Promise.resolve(jsonResponse(url === "/api/tree" ? EMPTY_TREE : {})));
 });
 
 afterEach(() => {
   cleanup();
   window.history.pushState({}, "", "/");
+  // Whichever override the LAST test set (mockRejectedValue/mockResolvedValue/
+  // mockResolvedValueOnce...) would otherwise still be armed on this shared
+  // spy for the next file in the worker that calls the real loadDockHost -
+  // see this file's own comment on the vi.spyOn call above.
+  loadDockHost.mockReset();
+  loadDockHost.mockImplementation(realLoadDockHost);
+  // Rendering <AppShell/> above calls notifications/index.ts's
+  // initNotifications() at module scope (guarded by its own "only once"
+  // flag), wiring its reconnect detector to whichever FakeClient this file
+  // connected. Left unreset, that detector's stale "sawReady" flag makes a
+  // later file's own fresh ready-client connect read as a spurious
+  // reconnect - see App.test.tsx's identical reset and its own comment on
+  // stores/tree.test.ts's dependent assertion.
+  //
+  // AppShell.tsx's module-scope initNotifications() call only ever fires
+  // once per worker (its own "only once" guard), so leaving it reset would
+  // leave the engine permanently uninitialized for the rest of this
+  // isolate:false worker - so it is re-run immediately below, restoring the
+  // same state a fresh module evaluation would have left (kata p5w9's
+  // identical pattern in AppShell.test.tsx). initNotifications() seeds its
+  // `sawReady`/baseline snapshot from whatever connectionStore/treeStore
+  // hold AT THIS MOMENT, so both are forced back to their neutral
+  // pre-render values FIRST (this file's own beforeEach does the same for
+  // the NEXT test in this file; nothing else does it for the NEXT FILE) -
+  // seeding from a still-"ready" connectionStore (as this test's own render
+  // left it moments ago) would wrongly arm the "reconnect" detector this
+  // reset exists to neutralize, exactly the failure mode App.test.tsx's own
+  // comment above describes. Run before vi.unstubAllGlobals() below so
+  // initNotifications()'s baseline ensureLoaded() fetch (treeStore's tree is
+  // null again below) still hits this file's own beforeEach fetch stub
+  // instead of a real network call.
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetTreeStoreForTests();
+  resetNotificationsForTests();
+  initNotifications();
   vi.unstubAllGlobals();
 });
 
