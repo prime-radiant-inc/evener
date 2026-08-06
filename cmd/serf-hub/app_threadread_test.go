@@ -504,6 +504,13 @@ func TestPastEntryThread_UnnamedSessionKeepsTheShortForm(t *testing.T) {
 
 func runningSubagentProjectionConfig(t *testing.T) (hubcore.WebConfig, string) {
 	t.Helper()
+	return runningSubagentProjectionConfigWithState(t, "")
+}
+
+// childState, when non-empty, is the status the parent's daemon carries for
+// the child ("" models an old daemon that carries no per-descendant states).
+func runningSubagentProjectionConfigWithState(t *testing.T, childState string) (hubcore.WebConfig, string) {
+	t.Helper()
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-running-subagent-0000000000")
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
@@ -521,11 +528,16 @@ func runningSubagentProjectionConfig(t *testing.T) (hubcore.WebConfig, string) {
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
+	var states map[string]string
+	if childState != "" {
+		states = map[string]string{childID: childState}
+	}
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
-		Entry:              rendezvous.Entry{PID: 1, SessionID: parentID},
-		SessionID:          parentID,
-		Status:             appwire.ThreadStatusIdle,
-		RunningSubagentIDs: []string{childID},
+		Entry:                 rendezvous.Entry{PID: 1, SessionID: parentID},
+		SessionID:             parentID,
+		Status:                appwire.ThreadStatusIdle,
+		RunningSubagentIDs:    []string{childID},
+		RunningSubagentStates: states,
 	})
 	return hubcore.WebConfig{Past: past, Roster: roster}, childID
 }
@@ -538,6 +550,19 @@ func TestPastThreadReadProjectsRunningSubagentActive(t *testing.T) {
 	}
 	if thread.Status.Type != appwire.ThreadStatusActive {
 		t.Fatalf("running subagent status = %q, want %q", thread.Status.Type, appwire.ThreadStatusActive)
+	}
+}
+
+// A live (non-closed, resumable) in-process subagent whose daemon reports it
+// settled must read as idle, not working: liveness is not activity.
+func TestPastThreadReadProjectsIdleSubagentIdle(t *testing.T) {
+	cfg, childID := runningSubagentProjectionConfigWithState(t, appwire.ThreadStatusIdle)
+	thread, ok := requirePastThreadForRead(t, cfg, appwire.ThreadReadParams{Ref: "local:" + childID})
+	if !ok {
+		t.Fatal("idle subagent not found in past index")
+	}
+	if thread.Status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("idle subagent status = %q, want %q", thread.Status.Type, appwire.ThreadStatusIdle)
 	}
 }
 

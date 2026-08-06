@@ -39,7 +39,10 @@ type statusInfo struct {
 	PendingAsk           bool     `json:"pending_ask"`
 	PendingEscalation    bool     `json:"pending_escalation"`
 	DescendantSessionIDs []string `json:"descendant_session_ids"`
-	Detailed             *struct {
+	// DescendantStates is absent on old daemons; a listed descendant with no
+	// entry here has an UNKNOWN state, not an idle one.
+	DescendantStates map[string]string `json:"descendant_states"`
+	Detailed         *struct {
 		Jobs []struct {
 			JobType       string `json:"job_type"`
 			Type          string `json:"type"`
@@ -105,12 +108,23 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		}
 	}
 	sort.Strings(runningSubagentIDs)
+	var runningSubagentStates map[string]string
+	for id, state := range s.DescendantStates {
+		if id == "" || state == "" || !seen[id] {
+			continue
+		}
+		if runningSubagentStates == nil {
+			runningSubagentStates = make(map[string]string, len(s.DescendantStates))
+		}
+		runningSubagentStates[id] = state
+	}
 	return ProbeResult{
-		SessionID:          s.SessionID,
-		Status:             s.State,
-		PendingAsk:         s.PendingAsk,
-		PendingEscalation:  s.PendingEscalation,
-		RunningSubagentIDs: runningSubagentIDs,
-		OK:                 true,
+		SessionID:             s.SessionID,
+		Status:                s.State,
+		PendingAsk:            s.PendingAsk,
+		PendingEscalation:     s.PendingEscalation,
+		RunningSubagentIDs:    runningSubagentIDs,
+		RunningSubagentStates: runningSubagentStates,
+		OK:                    true,
 	}
 }

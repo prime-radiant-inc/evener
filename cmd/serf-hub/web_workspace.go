@@ -166,8 +166,16 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 	if s.cfg.Past != nil {
 		if pe, ok := s.cfg.Past.Find(id); ok {
 			state := "ended"
-			if s.cfg.Roster != nil && s.cfg.Roster.IsSubagentActive(id) {
-				state = "active"
+			if s.cfg.Roster != nil {
+				if subState, live := s.cfg.Roster.SubagentState(id); live {
+					// "" means the daemon carried no per-descendant state (old
+					// daemon): keep the historical listed-means-working
+					// fallback rather than misreading liveness as settled.
+					state = "active"
+					if strings.TrimSpace(subState) != "" {
+						state = hubcore.NormalizeState(subState)
+					}
+				}
 			}
 			data := WorkspaceData{
 				ID:           id,

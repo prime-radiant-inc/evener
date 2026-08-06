@@ -410,6 +410,59 @@ func TestRosterRunningSubagent(t *testing.T) {
 	fuzzScenarioRoster_CarriesRunningSubagentsWithoutRoutingThem(t)
 }
 
+// The roster carries each in-process child's own projected status beside its
+// ID, so consumers can render a settled (idle) delegate without treating
+// liveness as activity. SubagentState reports ("", true) for a live child
+// whose daemon carried no state (old daemon), and ("", false) for a child no
+// live parent owns. List/Find hand out defensive copies, like the IDs slice.
+func fuzzScenarioRoster_CarriesRunningSubagentStates(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
+	prober := &runningSubagentProber{result: ProbeResult{
+		SessionID:             "01PARENT",
+		Status:                "idle",
+		RunningSubagentIDs:    []string{"01IDLE", "01BUSY", "01NOSTATE"},
+		RunningSubagentStates: map[string]string{"01IDLE": "idle", "01BUSY": "active"},
+		OK:                    true,
+	}}
+	r := NewRoster(dir, prober)
+	r.Refresh()
+
+	if got, live := r.SubagentState("01IDLE"); !live || got != "idle" {
+		t.Fatalf("SubagentState(01IDLE) = %q, %v, want idle, true", got, live)
+	}
+	if got, live := r.SubagentState("01BUSY"); !live || got != "active" {
+		t.Fatalf("SubagentState(01BUSY) = %q, %v, want active, true", got, live)
+	}
+	if got, live := r.SubagentState("01NOSTATE"); !live || got != "" {
+		t.Fatalf("SubagentState(01NOSTATE) = %q, %v, want empty, true (old-daemon fallback)", got, live)
+	}
+	if _, live := r.SubagentState("01GONE"); live {
+		t.Fatal("SubagentState(01GONE) reported live for a child no parent owns")
+	}
+
+	entries := r.List()
+	if entries[0].RunningSubagentStates["01IDLE"] != "idle" {
+		t.Fatalf("List entry states = %v, want 01IDLE idle", entries[0].RunningSubagentStates)
+	}
+	entries[0].RunningSubagentStates["01IDLE"] = "mutated"
+	if r.List()[0].RunningSubagentStates["01IDLE"] != "idle" {
+		t.Fatal("List must return a defensive copy of running subagent states")
+	}
+	entry, ok := r.Find("01PARENT")
+	if !ok || entry.RunningSubagentStates["01BUSY"] != "active" {
+		t.Fatalf("Find entry states = %v, ok %v, want 01BUSY active", entry.RunningSubagentStates, ok)
+	}
+	entry.RunningSubagentStates["01BUSY"] = "mutated"
+	if again, _ := r.Find("01PARENT"); again.RunningSubagentStates["01BUSY"] != "active" {
+		t.Fatal("Find must return a defensive copy of running subagent states")
+	}
+}
+
+func TestRosterRunningSubagentStates(t *testing.T) {
+	fuzzScenarioRoster_CarriesRunningSubagentStates(t)
+}
+
 func TestRosterSubagentUnresolvedOwner(t *testing.T) {
 	r := NewRosterWithEntries(LiveEntry{
 		RunningSubagentIDs: []string{"child-unresolved-owner"},

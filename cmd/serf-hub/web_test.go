@@ -1763,6 +1763,43 @@ func TestWorkspaceDataProjectsRunningInProcessSubagentActive(t *testing.T) {
 	}
 }
 
+// A non-closed in-process subagent whose owner daemon carries its settled
+// (idle) status renders idle, not active: RunningSubagentIDs is a liveness
+// set, and the carried per-descendant state is what says whether it works.
+func TestWorkspaceDataProjectsIdleInProcessSubagentIdle(t *testing.T) {
+	childID := hubtest.SessionID(t)
+	past := hubcore.NewPastIndex("")
+	past.SeedForTest([]schema.SessionMeta{{
+		ID:              childID,
+		IsSubagent:      true,
+		ParentSessionID: "02wMz5TxvEMoJEDTDGOTil",
+	}})
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:                 rendezvous.Entry{PID: 41},
+		SessionID:             "02wMz5TxvEMoJEDTDGOTil",
+		Status:                appwire.ThreadStatusIdle,
+		RunningSubagentIDs:    []string{childID},
+		RunningSubagentStates: map[string]string{childID: "idle"},
+	})
+	web := NewWebServer(hubcore.WebConfig{Roster: roster, Past: past})
+
+	data := web.workspaceData(childID)
+	if data.State != "idle" {
+		t.Fatalf("workspace State = %q, want idle", data.State)
+	}
+
+	detail, ok := web.apiSessionState(childID)
+	if !ok {
+		t.Fatal("apiSessionState did not find persisted in-process child")
+	}
+	if detail.State != "idle" {
+		t.Fatalf("apiSessionState State = %q, want idle", detail.State)
+	}
+	if detail.Live {
+		t.Fatal("idle in-process child became independently routable")
+	}
+}
+
 func TestSessionStateProjectsRunningInProcessSubagentActiveButNotLive(t *testing.T) {
 	const childID = "02wMz5TxvHIJQPOuIBJQct"
 	web := webWithPersistedInProcessSubagent(t, childID, childID)
