@@ -7,6 +7,7 @@ package envctx
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -91,4 +92,31 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	}
 	t.st = State{Last: cur, HasSent: true}
 	return "<environment_context>\n" + strings.Join(lines, "\n") + "\n</environment_context>"
+}
+
+// parseLoad1 extracts the 1-minute load average from either darwin
+// sysctl output ("{ 2.16 3.57 4.34 }") or /proc/loadavg ("2.16 3.57 ...").
+func parseLoad1(s string) (float64, bool) {
+	for _, f := range strings.Fields(strings.Trim(strings.TrimSpace(s), "{}")) {
+		v, err := strconv.ParseFloat(f, 64)
+		if err != nil {
+			return 0, false
+		}
+		return v, true
+	}
+	return 0, false
+}
+
+func loadWarning(load1 float64, cores int) string {
+	if cores <= 0 || load1 <= float64(2*cores) {
+		return ""
+	}
+	return fmt.Sprintf("load pressure: %.1f (%d cores)", load1, cores)
+}
+
+func diskWarning(frac float64) string {
+	if frac <= 0.90 {
+		return ""
+	}
+	return fmt.Sprintf("disk pressure: volume %d%% full", int(frac*100+0.5))
 }
