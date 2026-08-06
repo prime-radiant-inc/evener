@@ -476,7 +476,7 @@ func ds_applyRestoreSeed(root *Session, op ds_op, model *ds_model, seed *[]*Sess
 
 // --- oracle checks ---
 
-func ds_checkOracles(root *Session, m *ds_model, op ds_op, art ds_artifact, step int) *promoter.Failure {
+func ds_checkOracles(root *Session, m *ds_model, _ ds_op, art ds_artifact, step int) *promoter.Failure {
 	st := root.State()
 
 	// O2: boundary status is idle or closed; once closed, stays closed.
@@ -878,7 +878,7 @@ func ds_failure(oracle promoter.OracleTag, art ds_artifact, step int, detail str
 	}
 }
 
-func ds_panicFailure(art ds_artifact, step int, op ds_op, res ds_opResult) *promoter.Failure {
+func ds_panicFailure(art ds_artifact, _ int, op ds_op, res ds_opResult) *promoter.Failure {
 	return &promoter.Failure{
 		Surface:  dsSurface,
 		Oracle:   promoter.Panic,

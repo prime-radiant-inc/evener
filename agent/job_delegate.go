@@ -715,13 +715,11 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	}
 	var restorePreflight *delegateRestorePreflight
 	if sub == nil || sub.sess == nil {
-		if restorePreflight == nil {
-			assessment := s.assessDelegateResumability(rec, delegateResumabilityPreflight)
-			if !assessment.Resumable {
-				return sendMessageFailed(target, notResumableSendError(assessment.Reason))
-			}
-			restorePreflight = assessment.Preflight
+		assessment := s.assessDelegateResumability(rec, delegateResumabilityPreflight)
+		if !assessment.Resumable {
+			return sendMessageFailed(target, notResumableSendError(assessment.Reason))
 		}
+		restorePreflight = assessment.Preflight
 		sub, err = s.restoreTerminalDelegateChild(rec, childID, restorePreflight)
 		if err != nil {
 			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is not retained: %w", childID, err))
@@ -950,7 +948,7 @@ func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode deleg
 	return result
 }
 
-func (s *Session) resolveDelegateRestoreProfile(meta schema.SessionMeta, desc *jobstore.DelegateRestoreDescriptor) (*provider.Profile, error) {
+func (s *Session) resolveDelegateRestoreProfile(_ schema.SessionMeta, desc *jobstore.DelegateRestoreDescriptor) (*provider.Profile, error) {
 	if s == nil {
 		return nil, errors.New("profile unavailable")
 	}

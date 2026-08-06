@@ -398,6 +398,118 @@ func TestWatchOriginCommunicateEndTurnResumesParentOnce(t *testing.T) {
 	}
 }
 
+// TestRestartCancellationRoutesToDescendantWatchReceiver is the descendant-
+// receiver counterpart to TestRestartCancellationRoutesThroughParentSystemNotificationQueue:
+// a no-send callback watch (the process-local, ReceiverNotify-style contract
+// 344a532be treats as ephemeral runtime state) installs on the PARENT's job
+// manager with a live CHILD session recorded as receiver — the same
+// ReceiverSessionID shape 40ea153b9 gives source:"parent" watches. Two such
+// watches are lost at once: one whose receiver is the live tracked child
+// (fixable once routing can walk downward) and one whose receiver is a
+// session nobody can reach (the real-world case: the receiver's Session has
+// not been reconstructed yet, or never will be again). Today
+// routeSystemNotification only walks toward an ancestor, so
+// jm.notifySystem(receiver, …) comes back false for BOTH; the first failure
+// in notifyRestartCancelledCallbackWatches returns immediately, so
+// noticeUnrestoredWatchEnds bails out with "session unavailable" before it
+// ever reaches the send-watch end-notice loop below — failing the entire
+// parent session restore over one unroutable receiver among several.
+//
+// The fix must do two things at once: route the reachable receiver downward
+// (Layer A) AND never let one unroutable receiver abort the rest of teardown
+// (Layer B) — proven here by asserting the co-lost send watch's end notice
+// still lands.
+func TestRestartCancellationRoutesToDescendantWatchReceiver(t *testing.T) {
+	t.Parallel()
+	parent := newTestSession(t)
+	// A plain, non-driven child tracked as a live subagent: no delegate turn
+	// runs against it, so its steering queue reflects exactly what routing
+	// delivers rather than whatever a live drive loop happens to have
+	// consumed in the background.
+	child := newTestSession(t)
+	child.cfg.spawn.parentSessionID = parent.ID()
+	child.cfg.spawn.parentSystemNotification = parent.routeSystemNotification
+	parent.subagents.track(&subagent{id: child.ID(), sess: child})
+
+	callbackTarget, err := parent.jobManager.createShell(createShellOpts{Command: "npm run build"})
+	if err != nil {
+		t.Fatalf("create shell for callback watch: %v", err)
+	}
+	if _, err := parent.jobManager.configureWatch(watchArgs{
+		Target:            callbackTarget.JobID,
+		OutputMatch:       "built",
+		ReceiverSessionID: child.ID(),
+		ReceiverNotify:    func(jobNotification) {},
+	}); err != nil {
+		t.Fatalf("install child-receiver callback watch: %v", err)
+	}
+	ghostTarget, err := parent.jobManager.createShell(createShellOpts{Command: "npm run lint"})
+	if err != nil {
+		t.Fatalf("create shell for ghost callback watch: %v", err)
+	}
+	const ghostReceiver = "S-unreachable-ghost"
+	if _, err := parent.jobManager.configureWatch(watchArgs{
+		Target:            ghostTarget.JobID,
+		OutputMatch:       "clean",
+		ReceiverSessionID: ghostReceiver,
+		ReceiverNotify:    func(jobNotification) {},
+	}); err != nil {
+		t.Fatalf("install ghost-receiver callback watch: %v", err)
+	}
+
+	seedCommonWatchSendTargets(t, parent.jobManager)
+	sendTarget, err := parent.jobManager.createShell(createShellOpts{Command: "npm run dev"})
+	if err != nil {
+		t.Fatalf("create shell for send watch: %v", err)
+	}
+	if _, err := parent.jobManager.configureWatch(watchArgs{
+		Target:      sendTarget.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "dlg_obs", Message: "tell me when ready"},
+	}); err != nil {
+		t.Fatalf("install send watch: %v", err)
+	}
+
+	crashJobManager(t, parent.jobManager)
+	restarted, err := newJobManagerNoSync(parent.stateDir, parent.ID(), parent.enqueueJobNotificationAndNotify)
+	if err != nil {
+		t.Fatalf("restart job manager: %v", err)
+	}
+	freezeClock(restarted)
+	t.Cleanup(func() { _ = restarted.close() })
+	restarted.notifySystem = parent.routeSystemNotification
+	parent.jobManager = restarted
+
+	if err := restarted.reconcileLostJobs(); err != nil {
+		t.Fatalf("reconcile lost jobs: %v", err)
+	}
+	if err := restarted.noticeUnrestoredWatchEnds(); err != nil {
+		t.Fatalf("watch end notices: %v", err)
+	}
+
+	child.mu.Lock()
+	steeringLen := len(child.steeringQueue)
+	var steeringText, steeringKind string
+	if steeringLen > 0 {
+		steeringText = child.steeringQueue[0].Text
+		steeringKind = child.steeringQueue[0].Kind
+	}
+	child.mu.Unlock()
+	if steeringLen != 1 {
+		t.Fatalf("child steering queue = %d entries, want one callback-cancelled notice", steeringLen)
+	}
+	if steeringText != callbackWatchesCancelledAtRestartMessage {
+		t.Errorf("child notice text = %q, want %q", steeringText, callbackWatchesCancelledAtRestartMessage)
+	}
+	if steeringKind != events.SteeringKindNotification {
+		t.Errorf("child notice kind = %q, want %q", steeringKind, events.SteeringKindNotification)
+	}
+
+	if pending := loadWatchSendRecord(t, restarted).Pending; len(pending) != 1 {
+		t.Fatalf("pending watch sends after restart = %d, want exactly one end notice for the co-lost send watch", len(pending))
+	}
+}
+
 func createParentWatchChild(t *testing.T, parent *Session, task string) (*subagent, string) {
 	t.Helper()
 	res := parent.createDelegate(context.Background(), delegateArgs{

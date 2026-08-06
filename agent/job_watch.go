@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -114,6 +115,17 @@ func watchLostAtRestartMessage(target string, status jobstore.Status) string {
 }
 
 const callbackWatchesCancelledAtRestartMessage = "<system-notification>All your callback watches were cancelled because the agent restarted. No further deliveries will occur. If you still want a callback, re-register it with the job_watch tool.</system-notification>"
+
+// watchLostAtRestartSessionMessage is the restart end-notice text for a
+// session-target watch (source "self" or "parent"): its target is this
+// session's own live event stream, not a job with a terminal outcome to
+// report. The session itself keeps running past restart — only the watch's
+// condition-tracking runtime is gone — so this is watchLostAtRestartMessage's
+// claim (the target may still occur; nothing is watching for it), never
+// watchEndedUnfiredMessage's (there is no terminal outcome to name).
+func watchLostAtRestartSessionMessage() string {
+	return "watch ended: this session restarted and the watch did not survive it; the observed session is still running, so its condition may still occur with nothing watching — re-arm the watch if you still care"
+}
 
 // watchBudgetClearedMessage is the single final notification text emitted when a
 // watch trips the delivery budget (spec §4 F1). The count is the budget itself.
@@ -899,7 +911,7 @@ func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error 
 // It is the install-time twin of the restore-time classifyWatchSendDeliveryTarget
 // and shares its dlg_ branch shape. Every target yields nil or a non-empty typed
 // error.
-func validateWatchSendDeliveryTarget(target string, a watchArgs, r watchSendTargetResolver) error {
+func validateWatchSendDeliveryTarget(target string, _ watchArgs, r watchSendTargetResolver) error {
 	if target == "" {
 		return errors.New("invalid_request: internal watch delivery target is required")
 	}
@@ -1840,7 +1852,7 @@ func (jm *jobManager) recentWatchSummaries() []recentWatchEntry {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	out := make([]recentWatchEntry, 0, len(jm.watchHistory))
-	for i := len(jm.watchHistory) - 1; i >= 0; i-- {
+	for i := range slices.Backward(jm.watchHistory) {
 		h := jm.watchHistory[i]
 		if !watchHistoryVisibleToSession(h, jm.sessionID) {
 			continue
@@ -1887,7 +1899,7 @@ func (jm *jobManager) watchListToolResult() jobWatchListToolResult {
 		return watches[i].WatchID < watches[j].WatchID
 	})
 	recent := make([]jobWatchInspectToolResult, 0, len(jm.watchHistory))
-	for i := len(jm.watchHistory) - 1; i >= 0; i-- {
+	for i := range slices.Backward(jm.watchHistory) {
 		if !watchHistoryVisibleToSession(jm.watchHistory[i], jm.sessionID) {
 			continue
 		}
@@ -1931,7 +1943,7 @@ func (jm *jobManager) watchListToolResultForReceiver(receiverSessionID, receiver
 		return watches[i].WatchID < watches[j].WatchID
 	})
 	recent := make([]jobWatchInspectToolResult, 0, len(jm.watchHistory))
-	for i := len(jm.watchHistory) - 1; i >= 0; i-- {
+	for i := range slices.Backward(jm.watchHistory) {
 		if !watchHistoryMatchesReceiver(jm.watchHistory[i], receiverSessionID, receiverDelegateID) {
 			continue
 		}
@@ -1953,7 +1965,7 @@ func (jm *jobManager) inspectWatchByID(watchID string) jobWatchInspectToolResult
 			return inspectResultFromDetachedWatchConfig(cfg)
 		}
 	}
-	for i := len(jm.watchHistory) - 1; i >= 0; i-- {
+	for i := range slices.Backward(jm.watchHistory) {
 		if jm.watchHistory[i].id == watchID && watchHistoryVisibleToSession(jm.watchHistory[i], jm.sessionID) {
 			return inspectResultFromWatchHistory(jm.watchHistory[i])
 		}
@@ -1979,7 +1991,7 @@ func (jm *jobManager) inspectReceiverWatchByID(watchID, receiverSessionID, recei
 			return inspectResultFromDetachedWatchConfig(cfg), true
 		}
 	}
-	for i := len(jm.watchHistory) - 1; i >= 0; i-- {
+	for i := range slices.Backward(jm.watchHistory) {
 		if jm.watchHistory[i].id == watchID && watchHistoryMatchesReceiver(jm.watchHistory[i], receiverSessionID, receiverDelegateID) {
 			return inspectResultFromWatchHistory(jm.watchHistory[i]), true
 		}
@@ -2805,8 +2817,12 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 	if len(jm.watchesLostAtRestore) == 0 {
 		return nil
 	}
-	if err := jm.notifyRestartCancelledCallbackWatches(); err != nil {
-		return err
+	// A receiver that can't be routed to — its Session not yet reconstructed,
+	// or gone for good — must not hold every OTHER lost watch's end notice
+	// hostage. Log the aggregate and keep going; restore itself never fails on
+	// a notification-delivery miss.
+	if err := jm.notifyRestartCancelledCallbackWatches(); err != nil && jm.emit != nil {
+		jm.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("restart callback cancellation: %v", err)}, nil)
 	}
 	recs, err := jm.store.Load()
 	if err != nil {
@@ -2821,13 +2837,24 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 		if watch.SendTo == "" || spoke[watchFrameOrigin{watchID: watch.WatchID, generation: watch.Generation}] {
 			continue
 		}
-		rec := recs[watch.Target]
-		if rec == nil {
-			continue
-		}
-		trigger := watchLostAtRestartMessage(watch.Target, rec.Status)
-		if rec.Status.IsTerminal() {
-			trigger = watchEndedUnfiredMessage(watch.Target, rec.Status, rec.Reason, rec.OutputBytes)
+		var trigger string
+		if isWatchSessionTarget(watch.Target) {
+			// A session-target watch (source "self" or "parent") has no job
+			// record: its target is this session's own live event stream, not a
+			// job with a terminal outcome. recs[watch.Target] would never match
+			// (watch.Target is the "caller" alias), silently dropping the notice.
+			// The session itself keeps running past restart, so this is
+			// watchLostAtRestartMessage's claim, not watchEndedUnfiredMessage's.
+			trigger = watchLostAtRestartSessionMessage()
+		} else {
+			rec := recs[watch.Target]
+			if rec == nil {
+				continue
+			}
+			trigger = watchLostAtRestartMessage(watch.Target, rec.Status)
+			if rec.Status.IsTerminal() {
+				trigger = watchEndedUnfiredMessage(watch.Target, rec.Status, rec.Reason, rec.OutputBytes)
+			}
 		}
 		// A detached config, like the one restoreWatchSendPendingFrom rebuilds for
 		// a pending frame: enough identity for the send rail to route and settle
@@ -2876,10 +2903,15 @@ func (jm *jobManager) notifyRestartCancelledCallbackWatches() error {
 		ids = append(ids, receiver)
 	}
 	sort.Strings(ids)
+	// One receiver's route being unavailable must not stop the rest from being
+	// told: collect every failure and keep notifying the remaining receivers,
+	// so a single unroutable session can never suppress a legitimate notice to
+	// another.
+	var errs []error
 	for _, receiver := range ids {
 		if jm.notifySystem != nil {
 			if !jm.notifySystem(receiver, callbackWatchesCancelledAtRestartMessage) {
-				return fmt.Errorf("route callback cancellation notification to session %q: session unavailable", receiver)
+				errs = append(errs, fmt.Errorf("route callback cancellation notification to session %q: session unavailable", receiver))
 			}
 			continue
 		}
@@ -2887,11 +2919,12 @@ func (jm *jobManager) notifyRestartCancelledCallbackWatches() error {
 		// tree to route through. Keep their local notification behavior on the
 		// standard queue; production managers always install notifySystem.
 		if receiver != jm.sessionID || jm.enqueue == nil {
-			return fmt.Errorf("route callback cancellation notification to session %q: no system-notification route", receiver)
+			errs = append(errs, fmt.Errorf("route callback cancellation notification to session %q: no system-notification route", receiver))
+			continue
 		}
 		jm.enqueue(jobNotification{Status: jobNotificationEventWatch, Reason: callbackWatchesCancelledAtRestartMessage})
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // watchFrameOrigin identifies the watch config a durable watch-send frame came
@@ -4557,7 +4590,7 @@ func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager,
 	return result, errors.Join(errs...)
 }
 
-func (s *Session) retryRestoredPendingWatchSends(ctx context.Context) error {
+func (s *Session) retryRestoredPendingWatchSends(_ context.Context) error {
 	if s == nil || s.jobManager == nil {
 		return nil
 	}

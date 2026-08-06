@@ -471,7 +471,6 @@ func TestJobActivityTree_TruncatesUnderEncodedBytePressure(t *testing.T) {
 		rec := &jobstore.JobRecord{
 			JobID:          fmt.Sprintf("payload_%02d", i),
 			Type:           jobstore.JobShell,
-			Status:         jobstore.StatusCompleted,
 			OwnerSessionID: s.ID(),
 			StartedAt:      time.Unix(int64(2000+i), 0).UTC(),
 			Description:    strings.Repeat("x", 96*1024),

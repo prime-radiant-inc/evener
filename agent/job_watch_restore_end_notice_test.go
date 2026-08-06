@@ -116,6 +116,62 @@ func TestWatchEndNoticeSurvivesRestartForNeverFiredSendWatch(t *testing.T) {
 	}
 }
 
+// TestRestartDeliversEndNoticeForSessionTargetWatch is the session-target
+// counterpart to TestWatchEndNoticeSurvivesRestartForNeverFiredSendWatch: a
+// source:"parent" watch's Target is the session alias "caller" (40ea153b9 +
+// applyReceiverWatchSend, ab279e255), never a job ID, so
+// noticeUnrestoredWatchEnds' recs[watch.Target] lookup could never match it —
+// the watch was silently dropped at restart: no error, no pending frame, no
+// evidence, and the observer never learns its watch died.
+func TestRestartDeliversEndNoticeForSessionTargetWatch(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	original, err := newJobManagerNoSync(stateDir, testOwnerSessionID, func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new job manager: %v", err)
+	}
+	freezeClock(original)
+	seedCommonWatchSendTargets(t, original)
+	// The real job_watch(source:"parent") shape (40ea153b9's
+	// installParentSourceWatchForChild): Target is the session alias, not a job
+	// id, and ReceiverDelegateID makes applyReceiverWatchSend auto-fill Send —
+	// every real source:"parent" watch has SendTo set, so it reaches this loop,
+	// not notifyRestartCancelledCallbackWatches's no-send branch.
+	if _, err := original.configureWatch(watchArgs{
+		Target:             runtimeMessageAliasCaller,
+		Events:             []string{"*"},
+		ReceiverSessionID:  "S-observer-child",
+		ReceiverDelegateID: "dlg_obs",
+	}); err != nil {
+		t.Fatalf("install session-target watch: %v", err)
+	}
+	crashJobManager(t, original)
+
+	restarted := restartJobManager(t, stateDir, testOwnerSessionID, func(jobNotification) {})
+
+	if pending := loadWatchSendRecord(t, restarted).Pending; len(pending) != 1 {
+		t.Fatalf("pending watch sends after restart = %d (%+v), want exactly one session-target end notice", len(pending), pending)
+	}
+	var sent []sendMessageArgs
+	if err := drainWatchSendsVia(t, restarted, func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if len(sent) != 1 {
+		t.Fatalf("deliveries to the observer child = %d (%+v), want exactly one end notice", len(sent), sent)
+	}
+	if sent[0].Target != "dlg_obs" {
+		t.Errorf("end notice target = %q, want dlg_obs", sent[0].Target)
+	}
+	for _, want := range []string{"watch ended", "this session restarted", "still running", "re-arm the watch"} {
+		if !strings.Contains(sent[0].Message, want) {
+			t.Errorf("end notice frame missing %q; got:\n%s", want, sent[0].Message)
+		}
+	}
+}
+
 // The end notice is for watches that ended unheard. A send watch that fired
 // before the crash already spoke — and its frame is still durably pending — so
 // the restart owes it nothing.
