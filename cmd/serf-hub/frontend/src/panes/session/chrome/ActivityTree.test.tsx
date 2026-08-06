@@ -203,24 +203,103 @@ describe("ActivityTree", () => {
     expect(openTranscript).toHaveBeenNthCalledWith(2, "ref_child", "ref_root");
   });
 
-  test("chevron toggles one inline detail strip at a time without opening transcripts", async () => {
+  test("top-level rows render their detail strips expanded by default", () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+
+    // The shell row's strip shows its command; its chevron reads "hide".
+    expect(screen.getByText("npm test")).toBeTruthy();
+    const shellRow = screen.getByRole("treeitem", { name: "run tests" });
+    const shellChevron = within(shellRow).getByRole("button", { name: /hide details for run tests/i });
+    expect(shellChevron.getAttribute("aria-expanded")).toBe("true");
+
+    // The delegate row's strip is open too: several strips coexist (both
+    // live strips render the same meta line, hence the pair of matches).
+    const delegateRow = screen.getByRole("treeitem", { name: "Inspect the repo" });
+    expect(within(delegateRow).getByRole("button", { name: /hide details for inspect the repo/i })).toBeTruthy();
+    expect(screen.getAllByText(/running 12s · 0 output bytes · started \d{2}:\d{2}/)).toHaveLength(2);
+  });
+
+  test("nested rows stay collapsed by default", () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    const nestedTree: ActivityTreeData = {
+      revision: 1,
+      root: {
+        ...TREE.root,
+        entries: [
+          {
+            kind: "delegate",
+            delegate: {
+              delegateId: "dlg_parent",
+              childSessionId: "sess_child",
+              childRef: "ref_child",
+              mandate: "Parent agent",
+              turns: [
+                shellJob({
+                  jobId: "job_parent_turn",
+                  type: "delegate",
+                  description: "delegate turn",
+                  lastOutputAt: "2026-08-05T15:00:00Z",
+                }),
+              ],
+              branch: {},
+              child: {
+                kind: "session",
+                sessionId: "sess_child",
+                ref: "ref_child",
+                label: "Child session",
+                aggregate: "working",
+                counts: { active: 1, failed: 0, completed: 0, complete: false },
+                entries: [
+                  {
+                    kind: "shell",
+                    job: shellJob({
+                      jobId: "job_nested",
+                      description: "nested work",
+                      command: "make nested",
+                      transcriptRef: "job:job_nested",
+                      lastOutputAt: "2026-08-05T15:00:00Z",
+                    }),
+                  },
+                ],
+                branch: {},
+              },
+            },
+          },
+        ],
+      },
+    };
+    render(<ActivityTree tree={nestedTree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+
+    // The top-level delegate row is expanded by default…
+    const delegateRow = screen.getByRole("treeitem", { name: "Parent agent" });
+    expect(within(delegateRow).getByRole("button", { name: /hide details for parent agent/i })).toBeTruthy();
+
+    // …but the nested shell row is not: collapsed chevron, no command strip.
+    const nestedRow = screen.getByRole("treeitem", { name: "nested work" });
+    const nestedChevron = within(nestedRow).getByRole("button", { name: /show details for nested work/i });
+    expect(nestedChevron.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("make nested")).toBeNull();
+  });
+
+  test("chevrons toggle each row's detail strip independently without opening transcripts", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
     const user = setupUser();
     render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
+    // Both top-level strips start open; closing one leaves the other open.
     const shellRow = screen.getByRole("treeitem", { name: "run tests" });
-    await user.click(within(shellRow).getByRole("button", { name: /show details for run tests/i }));
-    expect(screen.getByText("npm test")).toBeTruthy();
+    await user.click(within(shellRow).getByRole("button", { name: /hide details for run tests/i }));
+    expect(screen.queryByText("npm test")).toBeNull();
+    expect(screen.getByText(/running 12s · 0 output bytes · started \d{2}:\d{2}/)).toBeTruthy();
     expect(openTranscript).not.toHaveBeenCalled();
 
-    const delegateRow = screen.getByRole("treeitem", { name: "Inspect the repo" });
-    await user.click(within(delegateRow).getByRole("button", { name: /show details for inspect the repo/i }));
-    // The strip moved: the shell command is gone, the delegate strip shows
-    // the mandate plus the Task 8 live meta (quiet age, bytes, started time).
-    expect(screen.queryByText("npm test")).toBeNull();
-    expect(screen.getAllByText("Inspect the repo").length).toBeGreaterThan(0);
-    expect(screen.getByText(/running 12s · 0 output bytes · started \d{2}:\d{2}/)).toBeTruthy();
+    // Clicking again reopens exactly that row's strip.
+    await user.click(within(shellRow).getByRole("button", { name: /show details for run tests/i }));
+    expect(screen.getByText("npm test")).toBeTruthy();
     expect(openTranscript).not.toHaveBeenCalled();
   });
 
@@ -249,11 +328,12 @@ describe("ActivityTree", () => {
     await user.keyboard("{Enter}");
     expect(openTranscript).toHaveBeenCalledWith("job:job_shell_live", "ref_root");
 
-    // ArrowRight opens the detail strip, ArrowLeft closes it.
-    await user.keyboard("{ArrowRight}");
+    // Top-level rows start expanded: ArrowLeft closes the strip, ArrowRight reopens it.
     expect(screen.getByText("npm test")).toBeTruthy();
     await user.keyboard("{ArrowLeft}");
     expect(screen.queryByText("npm test")).toBeNull();
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByText("npm test")).toBeTruthy();
 
     // Enter on the fold row toggles the fold.
     foldRow.focus();
@@ -273,7 +353,7 @@ describe("ActivityTree", () => {
 
     // Firefox and Safari focus a button when it is clicked; ArrowDown from
     // that focus must still move to the next row, not be swallowed.
-    const chevron = within(shellRow).getByRole("button", { name: /show details for run tests/i });
+    const chevron = within(shellRow).getByRole("button", { name: /hide details for run tests/i });
     await user.click(chevron);
     expect(document.activeElement).toBe(chevron);
     await user.keyboard("{ArrowDown}");

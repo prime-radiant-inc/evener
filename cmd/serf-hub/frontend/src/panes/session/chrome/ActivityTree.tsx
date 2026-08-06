@@ -225,9 +225,26 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   { tree, expandedFoldIDs, onToggleFold, continuationFailures = {}, onContinue, loadingContinuationID },
   ref,
 ) {
-  const [detailID, setDetailID] = useState<string | null>(null);
+  // Detail strips are per-row, not an accordion: top-level rows start
+  // expanded so the command/mandate is visible without a click, nested rows
+  // start collapsed, and every chevron/arrow toggle overrides its row's
+  // default independently. Overrides keyed by vanished rows stay inert - they
+  // are only ever read for rows the current tree actually renders.
+  const [detailOverrides, setDetailOverrides] = useState<ReadonlyMap<string, boolean>>(new Map());
   const [now, setNow] = useState(() => Date.now());
   const rows = useMemo(() => buildActivityRows(tree, new Set(expandedFoldIDs)), [tree, expandedFoldIDs]);
+
+  function isDetailOpen(row: ActivityJobRow | ActivityDelegateRow): boolean {
+    return detailOverrides.get(row.id) ?? row.level === 1;
+  }
+
+  function setDetailOpen(row: ActivityJobRow | ActivityDelegateRow, open: boolean): void {
+    setDetailOverrides((current) => {
+      const next = new Map(current);
+      next.set(row.id, open);
+      return next;
+    });
+  }
   const expandedFolds = useMemo(() => new Set(expandedFoldIDs), [expandedFoldIDs]);
   const hasLive = rows.some((row) => row.kind !== "fold" && row.live);
   useEffect(() => {
@@ -279,11 +296,6 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
     rowRefs.current.get(id)?.focus();
   });
 
-  // A fold collapse can hide the row whose detail strip is open.
-  useEffect(() => {
-    if (detailID !== null && !indexByID.has(detailID)) setDetailID(null);
-  }, [detailID, indexByID]);
-
   function activateRow(row: ActivityRow): void {
     if (row.kind === "fold") {
       onToggleFold(row.id);
@@ -314,7 +326,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
         if (row.kind === "fold") {
           if (!expandedFolds.has(row.id)) onToggleFold(row.id);
         } else {
-          setDetailID(row.id);
+          setDetailOpen(row, true);
         }
         break;
       }
@@ -322,8 +334,8 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
         event.preventDefault();
         if (row.kind === "fold") {
           if (expandedFolds.has(row.id)) onToggleFold(row.id);
-        } else if (row.id === detailID) {
-          setDetailID(null);
+        } else if (isDetailOpen(row)) {
+          setDetailOpen(row, false);
         } else if (row.parentID && indexByID.has(row.parentID)) {
           // parentID is the delegate ROW's id for child-session rows (Task 5
           // contract), so it resolves through the row index directly; root
@@ -441,7 +453,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
     const name = row.kind === "job" ? row.job.description : delegateName(row.delegate);
     const statusText = row.kind === "job" ? row.job.status : delegateStatusText(row.delegate);
     const target = transcriptTarget(row);
-    const detailOpen = row.id === detailID;
+    const detailOpen = isDetailOpen(row);
     const segments = row.kind === "job" ? jobMetaSegments(row, now) : delegateMetaSegments(row, now);
     return (
       <Fragment key={row.id}>
@@ -467,7 +479,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
             className={CLASS.rowToggle}
             onClick={(event) => {
               event.stopPropagation();
-              setDetailID(detailOpen ? null : row.id);
+              setDetailOpen(row, !detailOpen);
             }}
           >
             <Chevron direction={detailOpen ? "down" : "right"} size={12} />

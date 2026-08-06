@@ -18,3 +18,23 @@
   flex: 1 1 auto;
   min-height: 0;
 }
+
+/* JobLog ("job:<id>" refs): the shell transcript is one bounded tail, not a
+ * virtualized turn list, so a scrolling mono <pre> replaces .list. */
+.joblog {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.joblogNote {
+  padding: 4px 12px;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}

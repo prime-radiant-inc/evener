@@ -193,6 +193,104 @@ test("falls back to the raw ref as the pane title when the thread has no name", 
   await waitFor(() => expect(screen.getByText("ref_a")).toBeTruthy());
 });
 
+// --- "Open this shell transcript in a pane": a "job:<id>" ref is a shell
+// job's output log, not a thread. The pane serves it through serf/jobs/output
+// against the owning session (parentRef), never through thread/read. --------
+
+test("a job: ref renders the shell job's output log via serf/jobs/output, never thread/read", async () => {
+  const fake = connectFakeClient();
+  fake.on("serf/jobs/output", () => ({
+    data: { tail: "hello from the job", totalBytes: 18, retainedStart: 0, truncated: false },
+  }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "job:job_x", parentRef: "ref_parent" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByText("hello from the job")).toBeTruthy());
+  const outputCalls = fake.calls.filter((call) => call.method === "serf/jobs/output");
+  expect(outputCalls).toHaveLength(1);
+  expect(outputCalls[0]?.params).toEqual({ ref: "ref_parent", jobId: "job_x" });
+  expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
+});
+
+test("a truncated job log says how much of the output is shown", async () => {
+  const fake = connectFakeClient();
+  fake.on("serf/jobs/output", () => ({
+    data: { tail: "tail end", totalBytes: 70000, retainedStart: 4464, truncated: true },
+  }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "job:job_x", parentRef: "ref_parent" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByText("tail end")).toBeTruthy());
+  expect(screen.getByText(/showing the last 65,?536 of 70,?000 bytes/i)).toBeTruthy();
+});
+
+test("a job with no output yet says so instead of rendering an empty log", async () => {
+  const fake = connectFakeClient();
+  fake.on("serf/jobs/output", () => ({
+    data: { tail: "", totalBytes: 0, retainedStart: 0, truncated: false },
+  }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "job:job_x", parentRef: "ref_parent" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByText(/no output yet/i)).toBeTruthy());
+});
+
+test("a job: ref without a parentRef reports the transcript unavailable and issues no request", async () => {
+  const fake = connectFakeClient();
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "job:job_x" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByText(/unavailable/i)).toBeTruthy());
+  expect(fake.calls.filter((call) => call.method === "serf/jobs/output")).toHaveLength(0);
+});
+
+test("the job log's refresh action refetches the tail", async () => {
+  const fake = connectFakeClient();
+  let calls = 0;
+  fake.on("serf/jobs/output", () => ({
+    data: { tail: `tail ${++calls}`, totalBytes: 6, retainedStart: 0, truncated: false },
+  }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "job:job_x", parentRef: "ref_parent" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByText("tail 1")).toBeTruthy());
+  fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+  await waitFor(() => expect(screen.getByText("tail 2")).toBeTruthy());
+});
+
+test("a failed job-output read surfaces the error, not a spinner forever", async () => {
+  const fake = connectFakeClient();
+  fake.on("serf/jobs/output", () => Promise.reject(new Error("job not found: job_x")));
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "job:job_x", parentRef: "ref_parent" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByText(/job not found: job_x/i)).toBeTruthy());
+});
+
 // --- kata 0pzz: "Back to parent" — a subagent transcript is a child of a
 // specific parent session; the pane must say so and offer an explicit,
 // durable way back, regardless of where dockview/StackHost happened to

@@ -29,6 +29,7 @@ import { exchangeOpenersFor } from "../session/transcript/exchangeOpeners";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
 import { TurnBlock } from "../session/transcript/TurnBlock";
 import { useTranscript } from "../session/transcript/useTranscript";
+import { JobLog } from "./JobLog";
 // Side-effect barrels: register every message item renderer and every tool
 // descriptor the moment this pane loads, exactly as SessionPane does, so a
 // transcript pane opened before any session pane still renders every item type
@@ -60,6 +61,17 @@ const CLASS = {
 const ESTIMATED_TURN_HEIGHT = 96;
 
 export default function Transcript({ params }: PaneProps<TranscriptParams>) {
+  // A "job:<id>" ref is a shell job's output log, not a thread: it renders
+  // through the job-log surface, which never touches the thread engine (no
+  // thread/read, no ensureThread). Refs never change for a mounted pane, so
+  // this dispatch is stable for the component's lifetime.
+  if (params.ref.startsWith("job:")) {
+    return <JobLog jobRef={params.ref} parentRef={params.parentRef} />;
+  }
+  return <ThreadTranscript params={params} />;
+}
+
+function ThreadTranscript({ params }: { params: TranscriptParams }) {
   const { ref, parentRef } = params;
   const backAction = parentRef !== undefined ? <BackToParentAction parentRef={parentRef} /> : undefined;
 

@@ -994,19 +994,22 @@ func projectActivityJob(rec *jobstore.JobRecord, ownerRef string) appwire.JobAct
 		JobID:          rec.JobID,
 		OwnerSessionID: rec.OwnerSessionID,
 		OwnerRef:       ownerRef,
-		TranscriptRef:  rec.TranscriptRef,
-		Type:           string(rec.Type),
-		Status:         string(rec.Status),
-		Outcome:        outcome,
-		Terminal:       terminal,
-		Background:     rec.Background,
-		HasOutput:      rec.OutputPath != "" || rec.OutputBytes > 0,
-		Description:    description,
-		Command:        rec.Command,
-		Task:           rec.Task,
-		Reason:         rec.Reason,
-		StartedAt:      rec.StartedAt.UTC().Format(time.RFC3339),
-		OutputBytes:    rec.OutputBytes,
+		// jobTranscriptRef derives the canonical "job:<id>" ref for shell jobs
+		// (their records never store one) and passes through a stored ref
+		// (delegate turns point at the child session) unchanged.
+		TranscriptRef: jobTranscriptRef(rec),
+		Type:          string(rec.Type),
+		Status:        string(rec.Status),
+		Outcome:       outcome,
+		Terminal:      terminal,
+		Background:    rec.Background,
+		HasOutput:     rec.OutputPath != "" || rec.OutputBytes > 0,
+		Description:   description,
+		Command:       rec.Command,
+		Task:          rec.Task,
+		Reason:        rec.Reason,
+		StartedAt:     rec.StartedAt.UTC().Format(time.RFC3339),
+		OutputBytes:   rec.OutputBytes,
 	}
 	if rec.EndedAt != nil {
 		job.EndedAt = rec.EndedAt.UTC().Format(time.RFC3339)

@@ -183,6 +183,22 @@ func TestProjectActivitySession_ProjectsOwnerRefsAndChildren(t *testing.T) {
 	}
 }
 
+func TestProjectActivitySession_ShellJobFallsBackToJobTranscriptRef(t *testing.T) {
+	snap := activitySessionSnapshot{
+		SessionID: "root", Ref: "local:root", Label: "Root",
+		Jobs: []*jobstore.JobRecord{
+			{JobID: "job_shell", Type: jobstore.JobShell, OwnerSessionID: "root", Status: jobstore.StatusCompleted},
+		},
+	}
+	got := projectActivitySession(snap, newActivityBudget())
+	if len(got.Entries) != 1 || got.Entries[0].Job == nil {
+		t.Fatalf("entries=%+v, want one shell job", got.Entries)
+	}
+	if ref := got.Entries[0].Job.TranscriptRef; ref != "job:job_shell" {
+		t.Fatalf("TranscriptRef = %q, want the derived shell ref %q", ref, "job:job_shell")
+	}
+}
+
 func TestProjectActivitySession_UnavailableChildPreservesDelegate(t *testing.T) {
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root",
