@@ -7,6 +7,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/clock"
 	"primeradiant.com/serf/agent/internal/contextmgr"
+	"primeradiant.com/serf/agent/internal/envctx"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/internal/worktree"
@@ -358,6 +359,13 @@ type testConfig struct {
 	// leaves it nil and probes the live host (sandbox.RealProber); tests inject a
 	// sandbox.FakeProber so the resume path never shells out to bwrap.
 	sandboxProber sandbox.Prober
+
+	// envProbes, when non-nil, replaces envctx.DefaultProbes() wholesale for the
+	// session's environment-context collector — including the production
+	// GitBranch wiring, which is skipped entirely when this is set. Tests use it
+	// for a deterministic clock (and nil/no-op pressure probes) instead of the
+	// real host clock and git subprocess. Nil in production.
+	envProbes *envctx.Probes
 }
 
 // spawnConfig holds the SessionConfig fields that only spawnAgent (plus the

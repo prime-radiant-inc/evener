@@ -91,14 +91,17 @@ func TestSession_AutoSave_WritesMetaAfterProcessInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
-	if len(entries) < 2 {
-		t.Fatalf("expected at least 2 transcript entries, got %d", len(entries))
+	if len(entries) < 3 {
+		t.Fatalf("expected at least 3 transcript entries, got %d", len(entries))
 	}
-	if entries[0].Turn.Kind != schema.TurnUserInput {
-		t.Fatalf("entry[0].kind: got %q want %q", entries[0].Turn.Kind, schema.TurnUserInput)
+	if entries[0].Turn.Kind != schema.TurnEnvironment {
+		t.Fatalf("entry[0].kind: got %q want %q", entries[0].Turn.Kind, schema.TurnEnvironment)
 	}
-	if entries[1].Turn.Kind != schema.TurnAssistant {
-		t.Fatalf("entry[1].kind: got %q want %q", entries[1].Turn.Kind, schema.TurnAssistant)
+	if entries[1].Turn.Kind != schema.TurnUserInput {
+		t.Fatalf("entry[1].kind: got %q want %q", entries[1].Turn.Kind, schema.TurnUserInput)
+	}
+	if entries[2].Turn.Kind != schema.TurnAssistant {
+		t.Fatalf("entry[2].kind: got %q want %q", entries[2].Turn.Kind, schema.TurnAssistant)
 	}
 }
 
