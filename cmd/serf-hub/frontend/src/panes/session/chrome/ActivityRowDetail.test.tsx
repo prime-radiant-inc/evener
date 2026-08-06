@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { ActivityRowDetail } from "./ActivityRowDetail";
 import type { ActivityDelegate, ActivityJob, ActivitySessionNode } from "./activityData";
@@ -116,13 +117,32 @@ describe("ActivityRowDetail", () => {
 
   test("renders the mandate for a delegate row, falling back to child label then childSessionId", () => {
     const { rerender } = render(<ActivityRowDetail row={delegateRow({ mandate: "Inspect the repo" })} now={NOW} />);
-    expect(screen.getByText("Inspect the repo").tagName).toBe("CODE");
+    expect(screen.getByText("Inspect the repo").tagName).toBe("P");
 
     rerender(<ActivityRowDetail row={delegateRow({ child: childSession("Child label") })} now={NOW} />);
     expect(screen.getByText("Child label").tagName).toBe("CODE");
 
     rerender(<ActivityRowDetail row={delegateRow({})} now={NOW} />);
     expect(screen.getByText("sess_child").tagName).toBe("CODE");
+  });
+
+  test("renders delegate mandate markdown inline and discloses later paragraphs", async () => {
+    const { rerender } = render(
+      <ActivityRowDetail
+        row={delegateRow({ mandate: "Inspect **the repo**.\n\nAdditional instructions: keep the report concise." })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByText("the repo").tagName).toBe("STRONG");
+    expect(screen.queryByText("Additional instructions: keep the report concise.")).toBeNull();
+
+    const showMore = screen.getByText("Show more");
+    expect(showMore.tagName).toBe("SUMMARY");
+    await userEvent.click(showMore);
+    expect(screen.getByText("Additional instructions: keep the report concise.")).toBeTruthy();
+
+    rerender(<ActivityRowDetail row={delegateRow({ mandate: "Only one paragraph." })} now={NOW} />);
+    expect(screen.queryByText("Show more")).toBeNull();
   });
 
   test("live job row meta says running with quiet age, output bytes, and started time", () => {

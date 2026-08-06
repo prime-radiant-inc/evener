@@ -392,6 +392,8 @@ test("ArrowDown moves the active row (aria-selected) with wraparound", async () 
 test("Enter on an exact built-in name runs the built-in", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
+  // Keep the branch deterministic in jsdom: this test exercises desktop behavior.
+  vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
   focusSession("ref_a");
   render(<CommandPalette />);
   act(() => openPalette("/status"));

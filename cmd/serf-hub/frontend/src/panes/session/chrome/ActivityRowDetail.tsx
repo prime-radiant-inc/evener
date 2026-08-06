@@ -4,7 +4,9 @@
 // transcript action. Pure presentation - ActivityTree owns the detailID state
 // and passes the row plus its ticking `now` straight through.
 import type { JSX } from "react";
+import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { Markdown } from "../../../widgets/markdown";
 import { formatClockTime } from "../transcript/messages/format";
 import { OpenTranscriptButton } from "../transcript/openTranscript";
 import { formatQuietAge, quietAnchorMillis } from "./activityFormat";
@@ -107,16 +109,33 @@ export function ActivityRowDetail({
   row: ActivityJobRow | ActivityDelegateRow;
   now: number;
 }): JSX.Element {
+  const mandate = row.kind === "delegate" ? row.delegate.mandate : undefined;
   const command =
     row.kind === "job"
       ? (row.job.command ?? row.job.task ?? row.job.description)
-      : (row.delegate.mandate ?? row.delegate.child?.label ?? row.delegate.childSessionId);
+      : mandate
+        ? undefined
+        : (row.delegate.child?.label ?? row.delegate.childSessionId);
+  const paragraphs = mandate?.split(/\n\s*\n/) ?? [];
+  const firstParagraph = paragraphs[0] ?? "";
+  const remainingMandate = paragraphs.slice(1).join("\n\n");
   // Same rule as ActivityTree's transcriptTarget: a row with no ref gets no
   // transcript action at all (there is deliberately no `job:<id>` fallback).
   const ref = row.transcriptRef?.trim();
   return (
     <div className={CLASS.detailStrip}>
-      <code className={CLASS.detailCommand}>{command}</code>
+      {mandate ? (
+        <div className={CLASS.detailCommand}>
+          <Markdown source={firstParagraph} />
+          {remainingMandate && (
+            <Disclosure id={`delegate-mandate-${row.delegate.delegateId}`} summary="Show more">
+              <Markdown source={remainingMandate} />
+            </Disclosure>
+          )}
+        </div>
+      ) : (
+        <code className={CLASS.detailCommand}>{command}</code>
+      )}
       <span className={CLASS.detailMeta}>{metaText(row, now)}</span>
       {ref && (
         <div className={CLASS.detailActions}>
