@@ -241,12 +241,15 @@ const (
 // apiHealthRecordedEmptyCaveat documents why RecordedEmpty may not be the
 // final word: it counts a call as empty from the compact counts recorded at
 // call time (text_length==0 && tool_call_count==0), not from a re-decode of
-// the response body. WS1's `--recompute` (still unmerged as of this task)
-// will add a `recomputed_nonempty` figure derived from the raw body instead
-// -- see docs/superpowers/plans/2026-08-06-ws1-responses-recording.md. This
-// field is emitted unconditionally rather than gated behind a WS1 check so
-// the caveat is always visible next to the count it qualifies.
-const apiHealthRecordedEmptyCaveat = "recorded_empty reflects the compact counts (text_length/tool_call_count) recorded at call time, not a re-decode of the response body; WS1's --recompute (docs/superpowers/plans/2026-08-06-ws1-responses-recording.md, not yet merged) will add a recomputed_nonempty figure alongside this one"
+// the response body. `apilog --recompute` (merged 812eb5c15 --
+// docs/superpowers/plans/2026-08-06-ws1-responses-recording.md) re-extracts
+// those counts from the stored body for rows recorded as empty -- historical
+// records from before the accumulated-item settlement fix -- and reports a
+// recomputed_nonempty total. This field is emitted unconditionally rather
+// than gated behind a check so the caveat is always visible next to the
+// count it qualifies; --health itself does not run --recompute (see
+// cmdAPILog's flag composition doc).
+const apiHealthRecordedEmptyCaveat = "recorded_empty reflects the compact counts (text_length/tool_call_count) recorded at call time, not a re-decode of the response body; run apilog --recompute (docs/superpowers/plans/2026-08-06-ws1-responses-recording.md) to re-extract from the stored body for zeroed pre-fix records -- it reports a recomputed_nonempty figure alongside this one"
 
 // apiHealthErrorsByClassQuotaCaveat documents the errors_by_class "quota"
 // bucket's confident-zero trap for anyone reading only the tool's output

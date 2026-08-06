@@ -1029,8 +1029,8 @@ func TestAPIHealthVerdict(t *testing.T) {
 	if res.ErrorsByClass[apiErrorClassQuota] != 0 {
 		t.Fatalf("quota errors = %d, want 0: today's recorded fields cannot distinguish a quota 429 from a rate-limit 429", res.ErrorsByClass[apiErrorClassQuota])
 	}
-	if res.RecordedEmptyCaveat == "" || !strings.Contains(res.RecordedEmptyCaveat, "ws1-responses-recording") {
-		t.Fatalf("recorded_empty_caveat must name the WS1 plan; got %q", res.RecordedEmptyCaveat)
+	if res.RecordedEmptyCaveat == "" || !strings.Contains(res.RecordedEmptyCaveat, "apilog --recompute") {
+		t.Fatalf("recorded_empty_caveat must point at apilog --recompute; got %q", res.RecordedEmptyCaveat)
 	}
 	if res.ErrorsByClassQuotaCaveat == "" || !strings.Contains(res.ErrorsByClassQuotaCaveat, "quota") || !strings.Contains(res.ErrorsByClassQuotaCaveat, "rate-limit") {
 		t.Fatalf("errors_by_class_quota_caveat must explain the quota/rate-limit confident-zero trap; got %q", res.ErrorsByClassQuotaCaveat)
