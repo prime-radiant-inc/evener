@@ -71,8 +71,8 @@ check exists to cover them:**
 - **In-band error reporting defeats the errors clause.** Some tools (MCP
   tools especially) report failure inside a successful result body — the
   call is recorded `is_error=false` with `"Error: ..."` text in the content
-  — rather than setting the transport-level error flag. `longest_identical_
-  run.errors` reads the recorded `is_error` flag, so it can never be true
+  — rather than setting the transport-level error flag.
+  `longest_identical_run.errors` reads the recorded `is_error` flag, so it can never be true
   for a tool that fails this way, no matter how long or how failed the run
   actually is.
 - Because of both gaps, **the loop-detector check is the primary net for
