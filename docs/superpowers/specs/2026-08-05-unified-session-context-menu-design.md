@@ -66,52 +66,57 @@ An app-level component (not a widget). It owns:
 - the Delete confirm dialog,
 - the PinSectionPicker dialog (reused from `shell/rail/PinSectionPicker.tsx`).
 
-Props are a normalized view of one session plus callbacks:
+Props are a normalized view of one session plus a callback object:
 
 ```ts
 interface SessionMenuProps {
   sessionRef: string;
   title: string;
+  triggerLabel: string; // sr-only trigger name per context
   // Capability/flags, mapped by the caller from ThreadModel or ApiTreeNode.
   canRename: boolean;
   canShutdown: boolean;
-  organization?: {
-    // Absent = omit Pin/Archive/Delete (non-top-level, or session not in tree).
-    pinned: boolean;
-    archived: boolean;
-    canDelete: boolean; // top-level && local
-  };
+  // The session's tree node. Present ⟺ Pin/Archive/Delete are offered
+  // (eligibility still checks isTopLevelSession / host_id inside the menu);
+  // absent (session not in the tree) omits them. Also feeds PinSectionPicker.
+  treeNode?: ApiTreeNode;
   panesOpen: { details: boolean; tasks: boolean; activity: boolean };
-  labels?: { tasks?: string; activity?: string }; // live counts, session ctx
-  // Behavior callbacks — the context decides what "open Details" means.
-  onOpenPane: (pane: "details" | "tasks" | "activity") => void;
-  // Trigger rendered inside Menu's trigger button ("⋯" + sr-only label today).
+  taskLabel?: string;     // e.g. "Tasks 3/7", session ctx
+  activityLabel?: string; // e.g. "Activity · 2", session ctx
+  actions: SessionMenuActions;
   triggerTabIndex?: number; // -1 in the rail row (roving tabindex contract)
+}
+
+interface SessionMenuActions {
+  onOpenPane(pane: SessionPanelKind): void;
+  onRename(name: string): Promise<void>;
+  onShutdown(): Promise<void>;
+  onPin(target: PinTarget, section?: PinSectionSummary): Promise<void>;
+  onUnpin(): Promise<void>;
+  onToggleArchive(): Promise<void>;
+  onDelete(): Promise<void>;
 }
 ```
 
-Mutations (rename, pin, unpin, archive, delete, shutdown) are performed by the
-component itself through the existing stores/APIs — `threadsStore.rename` /
-`threadsStore.shutdown` and `shell/rail/actions.ts` (`assignSessionPin`,
-`unpinSession`, `setArchived`, `deleteSession`) — followed by
-`treeStore.refresh()` for the tree-affecting ones. Toasts on failure follow
-the existing `sessionActionError` convention.
-
-The rail's optimistic-pending overlay (`Rail.tsx` `runAction`) must keep
-wrapping rail-initiated mutations. SessionMenu therefore accepts one optional
-prop, `runMutation`, with exactly `runAction`'s signature
-(`(fn, failureMessage, optimistic?) => Promise<void>`). Rail passes its
-`runAction`; every other context uses the component's default runner
-(await → refresh → toast on failure). This keeps one owner per dialog — the
-shared component — with no duplicated dialog stacks, and Rail keeps its
-pending-overlay behavior without knowing anything about the dialogs.
+Mutations are performed by the **adapters** behind these callbacks, not by
+the component: the session-pane adapter calls `threadsStore.rename` /
+`threadsStore.shutdown` and the rail REST helpers (`assignSessionPin`,
+`unpinSession`, `setArchived`, `deleteSession`) with a `treeStore.refresh()`;
+the rail adapter routes the same calls through its `runAction` so the
+optimistic-pending overlay keeps working. Failure convention: the adapter
+toasts (`sessionActionError` / Rail's messages) and rethrows; SessionMenu
+keeps the dialog open on rejection and closes only on success. This keeps
+one owner per dialog — the shared component — with no duplicated dialog
+stacks, and Rail keeps its pending-overlay behavior without knowing anything
+about the dialogs.
 
 ### Session-pane adapter (`SessionChrome.tsx`)
 
 - Maps `ThreadModel.capabilities` → `canRename`/`canShutdown`.
-- Looks the session up in the tree store by ref to build `organization`
-  (top-level/local/tier/pin state). If the session is absent from the tree,
-  `organization` is undefined and Pin/Archive/Delete are omitted.
+- Looks the session up in the tree store by ref (`findSessionNode`) and
+  passes it as `treeNode` (top-level/local/tier/pin state are read off it).
+  If the session is absent from the tree, `treeNode` is undefined and
+  Pin/Archive/Delete are omitted.
 - `onOpenPane` preserves today's behavior exactly: desktop toggles the
   workspace pane (`togglePane("sessionDetails" | "sessionTasks" |
   "sessionActivity", { ref })`); mobile opens the Sheet via the existing
