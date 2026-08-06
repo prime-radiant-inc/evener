@@ -41,6 +41,7 @@ type activitySessionSnapshot struct {
 	Jobs      []*jobstore.JobRecord
 	LiveJobs  map[string]*jobstore.JobRecord
 	Delegates map[string]*jobstore.DelegateRecord
+	Usage     *appwire.SerfUsage                  // cumulative self-only tokens; nil = unknown
 	Children  map[string]*activitySessionSnapshot // child session ID
 	Errors    map[string]error                    // child session ID
 }
@@ -312,6 +313,7 @@ func loadLiveActivityBase(s *Session) (activityLoadedBase, error) {
 		LiveJobs:  map[string]*jobstore.JobRecord{},
 		Delegates: map[string]*jobstore.DelegateRecord{},
 	}
+	snapshot.Usage = appwire.SerfUsageFromLLM(s.CumulativeUsageSnapshot())
 	jm, err := sessionJobManager(s)
 	if err == nil && jm != nil && jm.store != nil {
 		ordered, err := jm.store.LoadOrdered()
@@ -766,6 +768,10 @@ func projectActivityDelegate(snapshot activitySessionSnapshot, group *activityDe
 		delegate.Branch.Error = fmt.Sprintf("delegate %q child link does not match loaded session", anchor.DelegateID)
 		return delegate
 	}
+	if child.Usage != nil {
+		usage := *child.Usage
+		delegate.Usage = &usage
+	}
 	childPath := appendActivityPath(path, anchor.DelegateID)
 	if budget != nil && budget.bounded && depth >= budget.maxDepth {
 		markActivityDelegateTruncated(&delegate, budget, child.SessionID, childPath)
@@ -1004,6 +1010,9 @@ func projectActivityJob(rec *jobstore.JobRecord, ownerRef string) appwire.JobAct
 	}
 	if rec.EndedAt != nil {
 		job.EndedAt = rec.EndedAt.UTC().Format(time.RFC3339)
+	}
+	if rec.LastActivity != nil {
+		job.LastOutputAt = rec.LastActivity.UTC().Format(time.RFC3339)
 	}
 	if rec.ExitCode != nil {
 		exit := *rec.ExitCode

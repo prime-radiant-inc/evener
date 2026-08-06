@@ -1,16 +1,6 @@
-import {
-  forwardRef,
-  useCallback,
-  useEffect,
-  useImperativeHandle,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { errorText } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
-import { useIsMobile } from "../../../shell/useIsMobile";
 import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
 import {
   activitySummaryStore,
@@ -20,8 +10,7 @@ import {
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { ActivityInspector } from "./ActivityInspector";
-import { ActivityTree, type ActivityTreeHandle, findActivitySelection } from "./ActivityTree";
+import { ActivityTree, type ActivityTreeHandle } from "./ActivityTree";
 import { type ActivityCounts, type ActivityTree as ActivityTreeData, parseActivityTree } from "./activityData";
 import styles from "./activitypanel.module.css";
 
@@ -50,10 +39,7 @@ const CLASS = {
   stale: requireClass(styles.stale, "activitypanel.module.css", "stale"),
   staleMessage: requireClass(styles.staleMessage, "activitypanel.module.css", "staleMessage"),
   panel: requireClass(styles.panel, "activitypanel.module.css", "panel"),
-  masterDetail: requireClass(styles.masterDetail, "activitypanel.module.css", "masterDetail"),
-  mobilePane: requireClass(styles.mobilePane, "activitypanel.module.css", "mobilePane"),
   panelColumn: requireClass(styles.panelColumn, "activitypanel.module.css", "panelColumn"),
-  mobileBack: requireClass(styles.mobileBack, "activitypanel.module.css", "mobileBack"),
 };
 
 function continuationFailureMessage(err?: unknown): string {
@@ -88,13 +74,10 @@ function refreshRoot(
 /** Shared activity reader body used by the mobile Sheet and desktop pane. */
 export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps) {
   const toasts = useToasts();
-  const isMobile = useIsMobile();
   const treeRef = useRef<ActivityTreeHandle>(null);
   const mountedRef = useRef(false);
   const bodyGenerationRef = useRef(0);
-  const focusRestoreIDRef = useRef<string | null>(null);
   const currentSessionRef = useRef(sessionRef);
-  const [showMobileTree, setShowMobileTree] = useState(true);
   const entry = useActivityPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_PANEL_ENTRY;
   const summary = useActivitySummaryStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_SUMMARY_ENTRY;
   // Bumped on every full-snapshot publish (reconnect, targeted resync). It is
@@ -102,11 +85,6 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
   // whose jobsUpdatedAt is null on both sides - see threads.ts's own comment.
   const hydrationGeneration = useThreadsStore((state) => state.hydrations.get(sessionRef) ?? 0);
   currentSessionRef.current = sessionRef;
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: this effect resets transient mobile navigation when the ref changes
-  useEffect(() => {
-    setShowMobileTree(true);
-  }, [sessionRef]);
 
   useEffect(() => {
     const bodyGeneration = bodyGenerationRef.current + 1;
@@ -118,20 +96,6 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
       activitySummaryStore.getState().unmountBody(sessionRef);
     };
   }, [sessionRef]);
-
-  useLayoutEffect(() => {
-    if (!showMobileTree) return;
-    if (!focusRestoreIDRef.current) return;
-    const id = focusRestoreIDRef.current;
-    focusRestoreIDRef.current = null;
-    treeRef.current?.focusRow(id);
-  }, [showMobileTree]);
-
-  const tree = retainedTree(entry.load);
-  const selection = useMemo(
-    () => findActivitySelection(tree, entry.disclosure.selectedID),
-    [tree, entry.disclosure.selectedID],
-  );
 
   const fetchRoot = useCallback(
     (continuation?: { nodeID: string; token: string }, forceRoot = false) => {
@@ -205,21 +169,8 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
     // this check after a wholesale rehydration that changed nothing visible.
   }, [fetchRoot, hydrationGeneration, model.jobsUpdatedAt, sessionRef]);
 
-  useEffect(() => {
-    if (!isMobile) setShowMobileTree(true);
-  }, [isMobile]);
-
-  useEffect(() => {
-    if (isMobile && entry.disclosure.selectedID) setShowMobileTree(false);
-  }, [entry.disclosure.selectedID, isMobile]);
-
   function handleContinue(nodeID: string, token: string) {
     fetchRoot({ nodeID, token });
-  }
-
-  function handleBackToActivity() {
-    focusRestoreIDRef.current = entry.disclosure.selectedID ?? null;
-    setShowMobileTree(true);
   }
 
   function renderBody() {
@@ -280,47 +231,17 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
             hint="No shell or delegate activity has been retained for this session."
           />
         ) : currentTree ? (
-          isMobile && !showMobileTree ? (
-            <div className={CLASS.mobilePane}>
-              <div className={CLASS.mobileBack}>
-                <Button variant="quiet" size="sm" onClick={handleBackToActivity}>
-                  Back to activity
-                </Button>
-              </div>
-              <div className={CLASS.panelColumn}>
-                <ActivityInspector
-                  selection={selection}
-                  removedSelectionNotice={entry.disclosure.selectionPruned}
-                  sessionRef={sessionRef}
-                />
-              </div>
-            </div>
-          ) : (
-            <div className={CLASS.masterDetail}>
-              <div className={CLASS.panelColumn}>
-                <ActivityTree
-                  ref={treeRef}
-                  tree={currentTree}
-                  expandedIDs={entry.disclosure.expandedIDs}
-                  selectedID={entry.disclosure.selectedID}
-                  continuationFailures={entry.continuationFailures}
-                  onExpandedChange={(expandedIDs) => activityPanelStore.getState().setExpanded(sessionRef, expandedIDs)}
-                  onSelect={(selectedID) => activityPanelStore.getState().setSelected(sessionRef, selectedID)}
-                  onContinue={handleContinue}
-                  loadingContinuationID={entry.continuationLoadingID}
-                />
-              </div>
-              {!isMobile && (
-                <div className={CLASS.panelColumn}>
-                  <ActivityInspector
-                    selection={selection}
-                    removedSelectionNotice={entry.disclosure.selectionPruned}
-                    sessionRef={sessionRef}
-                  />
-                </div>
-              )}
-            </div>
-          )
+          <div className={CLASS.panelColumn}>
+            <ActivityTree
+              ref={treeRef}
+              tree={currentTree}
+              expandedFoldIDs={entry.expandedFoldIDs}
+              onToggleFold={(foldID) => activityPanelStore.getState().toggleFold(sessionRef, foldID)}
+              continuationFailures={entry.continuationFailures}
+              onContinue={handleContinue}
+              loadingContinuationID={entry.continuationLoadingID}
+            />
+          </div>
         ) : null}
       </div>
     );

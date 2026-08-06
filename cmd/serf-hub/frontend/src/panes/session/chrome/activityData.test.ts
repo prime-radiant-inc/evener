@@ -791,3 +791,97 @@ describe("reconcileActivityState", () => {
     });
   });
 });
+
+function jobFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    jobId: "job_1",
+    ownerSessionId: "sess_root",
+    ownerRef: "ref_root",
+    type: "shell",
+    status: "running",
+    terminal: false,
+    background: true,
+    hasOutput: true,
+    description: "make test-web",
+    startedAt: "2026-08-05T15:00:00Z",
+    outputBytes: 18432,
+    ...overrides,
+  };
+}
+
+function treeFixture(entries: unknown[]) {
+  return {
+    revision: 1,
+    root: {
+      sessionId: "sess_root",
+      ref: "ref_root",
+      label: "Root",
+      aggregate: "working",
+      counts: { active: 1, failed: 0, completed: 0, complete: true },
+      entries,
+      branch: {},
+    },
+  };
+}
+
+describe("lastOutputAt and usage wire fields", () => {
+  it("parses lastOutputAt on jobs", () => {
+    const tree = parseActivityTree(
+      treeFixture([{ kind: "shell", job: jobFixture({ lastOutputAt: "2026-08-05T15:02:11Z" }) }]),
+    );
+    expect(tree?.root.entries[0]).toMatchObject({
+      kind: "shell",
+      job: { lastOutputAt: "2026-08-05T15:02:11Z" },
+    });
+  });
+
+  it("parses usage on delegates", () => {
+    const tree = parseActivityTree(
+      treeFixture([
+        {
+          kind: "delegate",
+          delegate: {
+            delegateId: "dlg_1",
+            childSessionId: "sess_child",
+            childRef: "ref_child",
+            turns: [],
+            branch: {},
+            usage: { inputTokens: 41200, outputTokens: 6100 },
+          },
+        },
+      ]),
+    );
+    expect(tree?.root.entries[0]).toMatchObject({
+      kind: "delegate",
+      delegate: { usage: { inputTokens: 41200, outputTokens: 6100 } },
+    });
+  });
+
+  it("omits both fields when absent (old daemon)", () => {
+    const tree = parseActivityTree(treeFixture([{ kind: "shell", job: jobFixture() }]));
+    const entry = tree?.root.entries[0];
+    expect(entry?.kind === "shell" && entry.job.lastOutputAt).toBeUndefined();
+  });
+
+  it("rejects malformed usage (non-numeric inputTokens) as incomplete", () => {
+    const tree = parseActivityTree(
+      treeFixture([
+        {
+          kind: "delegate",
+          delegate: {
+            delegateId: "dlg_1",
+            childSessionId: "sess_child",
+            childRef: "ref_child",
+            turns: [],
+            branch: {},
+            usage: { inputTokens: "many", outputTokens: 1 },
+          },
+        },
+      ]),
+    );
+    // Malformed delegate drops from entries and flags the branch incomplete,
+    // matching how other malformed fields behave.
+    expect(tree?.root.entries).toHaveLength(0);
+    expect(tree?.root.branch.error).toBeDefined();
+  });
+});

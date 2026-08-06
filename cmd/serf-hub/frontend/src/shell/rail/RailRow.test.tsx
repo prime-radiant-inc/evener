@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
 import { Tree, type TreeRowInfo } from "../../widgets";
+import { requireClass } from "../../widgets/internal/requireClass";
 import railStyles from "./Rail.module.css";
 import { activityGloss, cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
 import type {
@@ -280,7 +281,11 @@ describe("inactive-subagent fold row", () => {
   // raw nesting level in from the parent's own row edge.
   test("carries the alignment class on its root", () => {
     render(<RailRow node={inactiveFoldRailNode(2)} info={info({ hasChildren: true })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-inactive-fold").classList.contains(railStyles.inactiveFold)).toBe(true);
+    expect(
+      screen
+        .getByTestId("rail-row-inactive-fold")
+        .classList.contains(requireClass(railStyles.inactiveFold, "Rail.module.css", "inactiveFold")),
+    ).toBe(true);
   });
 
   // Quiet parent (no signal dot): parent label x = chevron (--space-4) + gap

@@ -1,6 +1,6 @@
 {
   "name": "activity-tree-responsive",
-  "description": "deep Activity trees keep desktop tree+inspector and mobile single-pane behavior while all sheet, pane, and production CodeBlock owners stay horizontally contained and output wraps instead of scrolling sideways",
+  "description": "the dense Activity tree keeps its single-pane column at desktop and mobile widths while sheet, body, and pane owners stay horizontally contained, deep row labels and detail-strip commands clip with ellipsis, and the continuation strip wraps instead of scrolling sideways",
   "viewport": {
     "width": 1600,
     "height": 5200,
@@ -14,8 +14,6 @@
     "widgets/sheet/sheet.module.css",
     "panes/session/chrome/activitypanel.module.css",
     "widgets/button/button.module.css",
-    "widgets/iconbutton/iconbutton.module.css",
-    "widgets/codeblock/codeblock.module.css",
     "widgets/statusdot/statusdot.module.css"
   ]
 }
