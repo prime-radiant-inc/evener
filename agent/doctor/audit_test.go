@@ -128,6 +128,114 @@ func TestParseRunbook_EmptyRunbookErrors(t *testing.T) {
 	}
 }
 
+// TestParseRunbook_DuplicateCategoryTitleErrors is the fix-round-1 Important
+// finding's regression test: auditSignature keys on (category, title), so
+// two checks sharing that pair would silently collapse into one Finding at
+// audit time -- the second check's tripped sessions merging into the
+// first's evidence and freezing the wrong severity. That must be caught at
+// parse time instead.
+func TestParseRunbook_DuplicateCategoryTitleErrors(t *testing.T) {
+	bad := "## CLASSIFY\n```yaml\n" +
+		"audit:\n" +
+		"  - title: \"Run-timeout jobs wasting budget\"\n" +
+		"    severity: high\n" +
+		"    category: timeout\n" +
+		"    metric: jobs.run_timeout\n" +
+		"    op: \">=\"\n" +
+		"    value: 5\n" +
+		"  - title: \"Run-timeout jobs wasting budget\"\n" +
+		"    severity: medium\n" +
+		"    category: timeout\n" +
+		"    metric: jobs.other_reason\n" +
+		"    op: \">=\"\n" +
+		"    value: 1\n" +
+		"```\n"
+	_, err := ParseRunbook("dup", []byte(bad))
+	if err == nil {
+		t.Fatal("want error for duplicate (category, title) pair")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("error should say duplicate, got: %v", err)
+	}
+	for _, want := range []string{"Run-timeout jobs wasting budget", "timeout", "high", "medium"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should name both colliding checks (want %q), got: %v", want, err)
+		}
+	}
+}
+
+// TestParseRunbook_DuplicateTitleDifferentCategoryIsAllowed proves the
+// uniqueness constraint is scoped to (category, title), not title alone --
+// two checks with the same title but different categories don't collide,
+// since auditSignature includes category.
+func TestParseRunbook_DuplicateTitleDifferentCategoryIsAllowed(t *testing.T) {
+	ok := "## CLASSIFY\n```yaml\n" +
+		"audit:\n" +
+		"  - title: \"Budget waste\"\n" +
+		"    severity: high\n" +
+		"    category: timeout\n" +
+		"    metric: jobs.run_timeout\n" +
+		"    op: \">=\"\n" +
+		"    value: 5\n" +
+		"  - title: \"Budget waste\"\n" +
+		"    severity: medium\n" +
+		"    category: provider_error\n" +
+		"    metric: longest_identical_run.length\n" +
+		"    op: \">=\"\n" +
+		"    value: 3\n" +
+		"```\n"
+	rb, err := ParseRunbook("ok", []byte(ok))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rb.Checks) != 2 {
+		t.Fatalf("Checks = %d, want 2 (same title, different category, not a collision)", len(rb.Checks))
+	}
+}
+
+// TestParseRunbook_AuditBlockOutsideClassifyErrors is the fix-round-1 Minor
+// finding's regression test: an audit: block must live inside CLASSIFY, per
+// writing-runbooks.md -- one placed elsewhere (e.g. under INSPECT) must be
+// caught loudly, not silently accepted.
+func TestParseRunbook_AuditBlockOutsideClassifyErrors(t *testing.T) {
+	bad := "## INSPECT\n```yaml\n" +
+		"audit:\n" +
+		"  - title: x\n" +
+		"    severity: high\n" +
+		"    category: timeout\n" +
+		"    metric: jobs.run_timeout\n" +
+		"    op: \">=\"\n" +
+		"    value: 5\n" +
+		"```\n"
+	_, err := ParseRunbook("misplaced", []byte(bad))
+	if err == nil {
+		t.Fatal("want error: audit: block outside CLASSIFY")
+	}
+	if !strings.Contains(err.Error(), "CLASSIFY") {
+		t.Errorf("error should name CLASSIFY, got: %v", err)
+	}
+}
+
+// TestParseRunbook_AuditBlockWithNoHeadingErrors covers the no-heading-yet
+// case (an audit: block appearing before any "## " heading at all) --
+// inClassify starts false, so this must also error rather than accepting a
+// block with no section context.
+func TestParseRunbook_AuditBlockWithNoHeadingErrors(t *testing.T) {
+	bad := "```yaml\n" +
+		"audit:\n" +
+		"  - title: x\n" +
+		"    severity: high\n" +
+		"    category: timeout\n" +
+		"    metric: jobs.run_timeout\n" +
+		"    op: \">=\"\n" +
+		"    value: 5\n" +
+		"```\n"
+	_, err := ParseRunbook("no-heading", []byte(bad))
+	if err == nil {
+		t.Fatal("want error: audit: block with no CLASSIFY heading in scope")
+	}
+}
+
 // fiveRunTimeoutJobsFor builds five terminal, zero-output run_timeout jobs
 // owned by sid -- enough to trip the fixture's `jobs.run_timeout >= 5` check.
 func fiveRunTimeoutJobsFor(sid string) []jobstore.Event {

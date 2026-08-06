@@ -109,13 +109,33 @@ func (rb Runbook) needsAPILog() bool {
 	return false
 }
 
+// addCheck appends check to rb.Checks, rejecting a duplicate (category,
+// title) pair. auditSignature keys on exactly that pair, so two checks
+// sharing it would silently collapse into one Finding at audit time: the
+// second check's tripped sessions would merge into the first's evidence,
+// freezing whichever check's severity/description happened to be recorded
+// first and misattributing evidence between two different conditions. This
+// is caught at parse time instead, loudly, naming both colliding checks.
+func (rb *Runbook) addCheck(check AuditCheck) error {
+	for _, existing := range rb.Checks {
+		if existing.Category == check.Category && existing.Title == check.Title {
+			return fmt.Errorf("duplicate audit check: title %q category %q is defined twice (severities %q and %q) — two checks sharing category+title would collapse into one Finding, since that pair is exactly what auditSignature keys on; give each check a distinct title",
+				check.Title, check.Category, existing.Severity, check.Severity)
+		}
+	}
+	rb.Checks = append(rb.Checks, check)
+	return nil
+}
+
 // ParseRunbook parses a runbook markdown document: every fenced code block
 // that YAML-decodes to a non-empty top-level `audit:` list becomes a set of
-// AuditChecks (see writing-runbooks.md for the block schema), and every
-// top-level `- ` bullet in the CLASSIFY section outside any fence — the
-// prose an LLM operator must judge, not a mechanical check — becomes a
-// ManualStep. A runbook with neither is not audit-executable, so that's a
-// loud error rather than a silent no-op.
+// AuditChecks (see writing-runbooks.md for the block schema) — and it must
+// be inside CLASSIFY, or ParseRunbook fails loudly rather than silently
+// accepting a misplaced block — and every top-level `- ` bullet in the
+// CLASSIFY section outside any fence — the prose an LLM operator must
+// judge, not a mechanical check — becomes a ManualStep. A runbook with
+// neither is not audit-executable, so that's a loud error rather than a
+// silent no-op.
 func ParseRunbook(name string, content []byte) (Runbook, error) {
 	rb := Runbook{Name: name}
 	inFence := false
@@ -126,16 +146,20 @@ func ParseRunbook(name string, content []byte) (Runbook, error) {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
 			if inFence {
-				checks, err := parseAuditFence(strings.Join(fenceLines, "\n"))
-				if err != nil {
-					return Runbook{}, fmt.Errorf("runbook %s: %w", name, err)
-				}
-				for _, raw := range checks {
-					check, err := normalizeCheck(raw)
-					if err != nil {
-						return Runbook{}, fmt.Errorf("runbook %s: invalid audit check %q: %w", name, raw.Title, err)
+				checks, found := parseAuditFence(strings.Join(fenceLines, "\n"))
+				if found {
+					if !inClassify {
+						return Runbook{}, fmt.Errorf("runbook %s: found an audit: block (first check %q) outside the CLASSIFY section — audit: blocks must live inside CLASSIFY", name, checks[0].Title)
 					}
-					rb.Checks = append(rb.Checks, check)
+					for _, raw := range checks {
+						check, err := normalizeCheck(raw)
+						if err != nil {
+							return Runbook{}, fmt.Errorf("runbook %s: invalid audit check %q: %w", name, raw.Title, err)
+						}
+						if err := rb.addCheck(check); err != nil {
+							return Runbook{}, fmt.Errorf("runbook %s: %w", name, err)
+						}
+					}
 				}
 				fenceLines = nil
 			}
@@ -161,22 +185,23 @@ func ParseRunbook(name string, content []byte) (Runbook, error) {
 	return rb, nil
 }
 
-// parseAuditFence tries to YAML-decode a fenced block as an `audit:` list.
-// A fence that isn't one (e.g. the INSPECT section's serf-doctor invocation)
-// either fails to decode into the wrapper shape or decodes with an empty
-// list; both cases are silently skipped, not an error — only a
-// well-formed but semantically invalid audit entry is a parse error.
-func parseAuditFence(content string) ([]auditCheckRaw, error) {
+// parseAuditFence tries to YAML-decode a fenced block as an `audit:` list,
+// reporting whether it found one. A fence that isn't one (e.g. the INSPECT
+// section's serf-doctor invocation) either fails to decode into the wrapper
+// shape or decodes with an empty list; both read as found=false, not an
+// error — ParseRunbook decides separately whether a *found* block sits in
+// the wrong section.
+func parseAuditFence(content string) (checks []auditCheckRaw, found bool) {
 	var wrapper struct {
 		Audit []auditCheckRaw `yaml:"audit"`
 	}
 	if err := yaml.Unmarshal([]byte(content), &wrapper); err != nil {
-		return nil, nil
+		return nil, false
 	}
 	if len(wrapper.Audit) == 0 {
-		return nil, nil
+		return nil, false
 	}
-	return wrapper.Audit, nil
+	return wrapper.Audit, true
 }
 
 // normalizeCheck validates a raw audit: entry and collapses its

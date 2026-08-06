@@ -83,7 +83,12 @@ CLASSIFY bullet is prose for a human/LLM operator, and the driver reports it
 under `manual`, never silently drops it.
 
 A runbook opts into batch driving by adding one fenced YAML block, inside
-CLASSIFY, whose top-level key is `audit:` — a list of checks:
+CLASSIFY, whose top-level key is `audit:` — a list of checks. The block
+**must** live inside CLASSIFY: `ParseRunbook` only looks for it there, and
+errors loudly if it finds one anywhere else (HEALTHY, INSPECT, or before any
+heading) rather than accepting it silently — a misplaced block usually means
+the author meant to gate it on a section that no longer runs as CLASSIFY
+prose.
 
 ```yaml
 audit:
@@ -109,7 +114,7 @@ audit:
 
 | Field | Req | Notes |
 |---|---|---|
-| `title` | yes | one-line label; becomes the Finding's `title` and (slugified) part of its `signature`. Must be unique within the runbook. |
+| `title` | yes | one-line label; becomes the Finding's `title` and (slugified) part of its `signature`. Must be unique per `category` within the runbook — `ParseRunbook` rejects a duplicate `(category, title)` pair at parse time, because `auditSignature` keys on exactly that pair and a collision would silently merge two different checks' evidence into one Finding. |
 | `severity` | yes | `low` \| `medium` \| `high` — becomes the Finding's `severity`. |
 | `category` | yes | a `finding-contract.md` category (mint a new one only for a genuinely new forensic shape, per that doc's own allowance) — becomes the Finding's `category`. |
 | `suggested_fix` | no | `diagnosis` \| `runbook` \| `skill`, per the contract's routing table. Default: `diagnosis`. |
