@@ -305,6 +305,16 @@ func (p *Profile) SupportsParallelToolCalls() bool { return p.parallel }
 // ContextWindowSize returns the model's context window in tokens.
 func (p *Profile) ContextWindowSize() int { return p.contextWindow }
 
+// MaxOutputTokens is the model's output-token cap: the instance's
+// providers.toml max_output_tokens when configured, else the embedded
+// catalog's, else 0 (unknown — the provider adapter's own default governs).
+func (p *Profile) MaxOutputTokens() int {
+	if mc, ok := p.instModels[p.model]; ok && mc.MaxOutputTokens > 0 {
+		return mc.MaxOutputTokens
+	}
+	return llm.EmbeddedModelCatalog().MaxOutputTokensFor(p.model)
+}
+
 // ProjectDocFiles returns the project-doc filenames this provider loads
 // from the working directory (e.g. CLAUDE.md, AGENTS.md), in priority order.
 func (p *Profile) ProjectDocFiles() []string {

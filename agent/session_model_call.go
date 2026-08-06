@@ -717,6 +717,12 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 	if opts := profile.ProviderOptions(); opts != nil {
 		req.ProviderOptions = opts
 	}
+	// Request the model's full output budget. Adapters default liberally too
+	// (defense in depth), but filling it here makes the cap uniform across
+	// providers and immune to any one adapter's default.
+	if mt := profile.MaxOutputTokens(); mt > 0 {
+		req.MaxTokens = &mt
+	}
 	if reasoningEffort != "" && profile.SupportsReasoning() {
 		// Clamp to what the active model supports so loop-detector escalation,
 		// the --reasoning-effort flag, and the UI selector never send a level the
