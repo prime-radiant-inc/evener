@@ -220,6 +220,14 @@ SELFTEST_SCRIPTS := run-module-lint run-module-tests make-selftest reclaim-test-
 # removed only for fixture observability (discovering and confirming a
 # worker's pid from outside the recipe); no production signal path in this
 # recipe ever reads it.
+# $pids is pruned as each wrapper is reaped (an ordered per-pid wait, not the
+# no-argument wait) rather than cleared only once the whole wave finishes, so
+# stop_children never signals a wrapper this shell already reaped just
+# because some other worker is still running. The spawn loop uses the same
+# deferred-flag idiom as the wrapper: HUP/INT/TERM record which signal fired
+# instead of exiting immediately while pids may be incomplete, and once the
+# loop finishes (pids complete) the real exit-traps are restored and any
+# deferred signal is acted on then, with the full, correct registration set.
 selftest:
 	@set -u; fail=0; normal=0; pids=""; \
 	dir="$$(mktemp -d -t serf-selftest.XXXXXX)" || exit 1; \
@@ -241,12 +249,24 @@ selftest:
 		printf 'real %s\n' "$$((end - start))" >>"$$dir/$$s.log"; \
 		echo "$$status" >"$$dir/$$s.status"; \
 	}; \
+	spawn_interrupted=""; \
+	trap 'spawn_interrupted=HUP' HUP; trap 'spawn_interrupted=INT' INT; trap 'spawn_interrupted=TERM' TERM; \
 	for s in $(SELFTEST_SCRIPTS); do \
 		run_worker "$$s" & \
 		pids="$$pids $$!"; \
 	done; \
-	wait; \
-	pids=""; \
+	trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+	case "$$spawn_interrupted" in \
+		HUP) exit 129;; \
+		INT) exit 130;; \
+		TERM) exit 143;; \
+	esac; \
+	set -- $$pids; \
+	while [ "$$#" -gt 0 ]; do \
+		wait "$$1" 2>/dev/null || :; \
+		shift; \
+		pids="$$*"; \
+	done; \
 	for s in $(SELFTEST_SCRIPTS); do \
 		if [ "$$(cat "$$dir/$$s.status" 2>/dev/null || echo 1)" = 0 ]; then \
 			printf 'PASS  %-26s %s\n' "$$s" "$$(awk '/^real /{print $$2"s"}' "$$dir/$$s.log" | tail -1)"; \

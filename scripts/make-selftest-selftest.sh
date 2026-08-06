@@ -670,6 +670,57 @@ kill -TERM "$sentinel_pid" 2>/dev/null || :
 wait "$sentinel_pid" 2>/dev/null || :
 
 new_case
+long_done_out="$case_dir/long-done.out"
+ready_fifo="$case_state/ready"
+stop_fifo="$case_state/stopped"
+reap_release_fifo="$case_state/reap-release"
+exec 9<>"$ready_fifo"
+exec 8<>"$stop_fifo"
+exec 6<>"$reap_release_fifo"
+run_make_with_readiness_events hold "$long_done_out" "" "" "" "" "" probe-one
+if wait_for_ready_workers; then
+	ok "the long-done fixture receives both worker readiness events"
+else
+	bad "the long-done fixture receives both worker readiness events"
+fi
+printf 'release\n' >&6
+exited_event=""
+IFS= read -r -t 10 -u 9 exited_event || :
+assert_eq "$exited_event" "worker-exited:probe-one" "the long-done fixture's released worker actually exits"
+exec 9>&-
+exec 6>&-
+# probe-one's own suite process exiting is necessary but not sufficient here: this case exists
+# to exercise "worker A long-done while worker B still runs", so bound-poll until probe-one is
+# fully gone (not just exited but reaped) before interrupting, rather than racing that reap.
+attempt=0
+probe_one_gone=0
+while [ "$attempt" -lt 100 ]; do
+	pid="$(cat "$case_state/probe-one.pid" 2>/dev/null || :)"
+	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+		attempt=$((attempt + 1))
+		sleep 0.05
+	else
+		probe_one_gone=1
+		break
+	fi
+done
+if [ "$probe_one_gone" -eq 1 ]; then
+	ok "the long-done fixture's finished worker is fully gone before the interrupt"
+else
+	bad "the long-done fixture's finished worker is fully gone before the interrupt"
+fi
+stop_make_with_readiness_events
+exec 8>&-
+[ "$make_status" -ne 0 ] && ok "an interrupted wave with one long-done worker exits nonzero" || bad "an interrupted wave with one long-done worker exits nonzero"
+pid="$(cat "$case_state/probe-two.pid" 2>/dev/null || :)"
+if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+	bad "an interrupted wave with one long-done worker leaves probe-two alive"
+	kill -KILL "$pid" 2>/dev/null || :
+else
+	ok "an interrupted wave with one long-done worker reaps probe-two"
+fi
+
+new_case
 child_work="$case_dir/interrupt-child"
 mkdir -p "$child_work"
 MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD=1 MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD_WORK="$child_work" bash "$0" >"$case_dir/interrupt-child.out" 2>&1 &
