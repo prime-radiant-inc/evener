@@ -39,6 +39,10 @@ interface OpenFence {
   length: number;
   quoteDepth: number;
   quotePrefix: string;
+  // extra list-item content indent to strip, on each subsequent quoted
+  // line, before checking it against this fence - set when the fence
+  // opened inside a list item nested under a blockquote (0 otherwise).
+  childIndent: number;
 }
 
 interface OpenCodeSpan {
@@ -111,7 +115,13 @@ function isSetextUnderline(line: string): boolean {
 }
 
 type BlockquoteLine = { content: string; depth: number; prefix: string };
-type BlockquoteListContainer = { contentIndent: number; depth: number };
+// Tracks an active list item nested under a blockquote, so its deindented
+// child lines can be classified with the same block-boundary rules as any
+// other line. `quoteDepth` is the depth of a nested blockquote CURRENTLY
+// open within the child content (0 when the child is not inside one) - it
+// carries across lines the same way `blockquoteDepth` does at the top
+// level, instead of being recomputed from scratch on every line.
+type BlockquoteListContainer = { contentIndent: number; depth: number; quoteDepth: number };
 
 function isQuoteSpace(char: string | undefined): boolean {
   return char === " " || char === "\t";
@@ -236,6 +246,91 @@ function matchEmphasis(marker: "**" | "*" | "~~", canOpen: boolean, canClose: bo
   if (canOpen) stack.push({ kind: "emphasis", marker });
 }
 
+// A fence opened by a child line of a quoted list item - `quoteDepth` and
+// `quotePrefix` come from the OUTER blockquote line, not from this scan, so
+// the caller fills them in.
+type ChildFenceOpen = { char: "`" | "~"; length: number; childIndent: number };
+
+// Scans one CONTENT line of a list item nested under a blockquote (already
+// stripped of the `>` prefix, still carrying its list-item indentation) and
+// classifies it with the same block-boundary rules used at the top level,
+// updating `stack` and `container.quoteDepth` in place. `container` is the
+// SAME object across calls for consecutive child lines, so its `quoteDepth`
+// persists - that persistence, plus reclassifying every line rather than
+// only the first, is what lets a nested quote or fence stay open (or die at
+// a real boundary) across more than one child line.
+function scanQuotedListChild(
+  quotedContent: string,
+  container: BlockquoteListContainer,
+  stack: OpenMarker[],
+  openFence: (open: ChildFenceOpen) => void,
+): void {
+  const childLine = removeIndent(quotedContent, container.contentIndent);
+  const childQuote = blockquoteLine(childLine);
+
+  if (childQuote !== undefined) {
+    if (childQuote.depth !== container.quoteDepth) stack.length = 0;
+    if (childQuote.content.trim() === "") {
+      stack.length = 0;
+    } else if (isAtxHeading(childQuote.content) || isThematicBreak(childQuote.content)) {
+      stack.length = 0;
+      scanInline(childQuote.content, stack);
+    } else if (isSetextUnderline(childQuote.content)) {
+      stack.length = 0;
+    } else {
+      const childFenceRun = fenceOpener(childQuote.content);
+      if (childFenceRun !== undefined) {
+        stack.length = 0;
+        openFence({
+          char: childFenceRun.charAt(0) as "`" | "~",
+          length: childFenceRun.length,
+          childIndent: container.contentIndent,
+        });
+      } else {
+        scanInline(childQuote.content, stack);
+      }
+    }
+    container.quoteDepth = childQuote.depth;
+    return;
+  }
+
+  // No nested quote marker on THIS line. If the container was tracking an
+  // open nested quote, it just ended (lazily continuing quoted content,
+  // without its own `>`, is not something this scanner supports - it dies
+  // at the boundary like any other unrecognized case).
+  const wasInNestedQuote = container.quoteDepth !== 0;
+  container.quoteDepth = 0;
+  if (isIndentedCodeBlock(childLine)) {
+    stack.length = 0; // nested indented code: literal, nothing to scan
+    return;
+  }
+  const childFenceRun = fenceOpener(childLine);
+  if (childFenceRun !== undefined) {
+    stack.length = 0;
+    openFence({
+      char: childFenceRun.charAt(0) as "`" | "~",
+      length: childFenceRun.length,
+      childIndent: container.contentIndent,
+    });
+    return;
+  }
+  if (isThematicBreak(childLine) || isSetextUnderline(childLine)) {
+    stack.length = 0; // no content to scan
+    return;
+  }
+  if (isAtxHeading(childLine) || isListItem(childLine)) {
+    // A heading or a new nested list item interrupts the parent paragraph
+    // (same as at the top level) but still scans its own inline markers.
+    stack.length = 0;
+    scanInline(childLine, stack);
+    return;
+  }
+  // Plain paragraph-continuation text - the open stack carries through
+  // unless a nested quote just ended, which is itself a boundary.
+  if (wasInNestedQuote) stack.length = 0;
+  scanInline(childLine, stack);
+}
+
 export function closeOpenMarkdown(source: string): string {
   const lines = source.split("\n");
   let fence: OpenFence | null = null;
@@ -254,12 +349,10 @@ export function closeOpenMarkdown(source: string): string {
       if (fence.quoteDepth > 0 && (quoted === undefined || quoted.depth < fence.quoteDepth)) {
         fence = null;
       } else {
-        const closingRun =
-          fence.quoteDepth === 0
-            ? fenceCloser(line)
-            : quoted?.depth === fence.quoteDepth
-              ? fenceCloser(quoted.content)
-              : undefined;
+        const content = fence.quoteDepth === 0 ? line : quoted?.depth === fence.quoteDepth ? quoted.content : undefined;
+        const deindented =
+          content === undefined || fence.childIndent === 0 ? content : removeIndent(content, fence.childIndent);
+        const closingRun = deindented === undefined ? undefined : fenceCloser(deindented);
         if (closingRun !== undefined && closingRun.charAt(0) === fence.char && closingRun.length >= fence.length) {
           fence = null;
         }
@@ -272,6 +365,7 @@ export function closeOpenMarkdown(source: string): string {
         length: fenceRun.length,
         quoteDepth: 0,
         quotePrefix: "",
+        childIndent: 0,
       };
       stack = []; // a fence interrupts a paragraph; its open emphasis dies here
       paragraph = "none";
@@ -325,32 +419,25 @@ export function closeOpenMarkdown(source: string): string {
         continue;
       }
       if (isIndentedCodeBlock(quoted.content)) {
-        let resultingQuoteDepth = quoted.depth;
-        if (!quoteContinuesParagraph) {
-          stack = [];
-          paragraph = "none";
-          blockquoteListContainer = null;
-        } else if (blockquoteListContainer?.depth !== quoted.depth) {
-          scanInline(quoted.content, stack);
-          paragraph = "blockquote";
-        } else {
-          const childLine = removeIndent(quoted.content, blockquoteListContainer.contentIndent);
-          const childQuote = blockquoteLine(childLine);
-          if (isIndentedCodeBlock(childLine) || fenceOpener(childLine) !== undefined) {
+        if (!quoteContinuesParagraph || blockquoteListContainer?.depth !== quoted.depth) {
+          // No active list child to deindent into - this is either fresh
+          // indented content abandoning the previous block, or ordinary
+          // continuation text of a quoted paragraph.
+          if (!quoteContinuesParagraph) {
             stack = [];
             paragraph = "none";
-          } else if (childQuote !== undefined) {
-            stack = [];
-            scanInline(childQuote.content, stack);
-            paragraph = "blockquote";
-            resultingQuoteDepth += childQuote.depth;
           } else {
-            scanInline(childLine, stack);
+            scanInline(quoted.content, stack);
             paragraph = "blockquote";
           }
           blockquoteListContainer = null;
+        } else {
+          scanQuotedListChild(quoted.content, blockquoteListContainer, stack, (openedFence) => {
+            fence = { ...openedFence, quoteDepth: quoted.depth, quotePrefix: quoted.prefix };
+          });
+          paragraph = "blockquote";
         }
-        blockquoteDepth = resultingQuoteDepth;
+        blockquoteDepth = quoted.depth;
         continue;
       }
       const quotedFenceRun = fenceOpener(quoted.content);
@@ -360,6 +447,7 @@ export function closeOpenMarkdown(source: string): string {
           length: quotedFenceRun.length,
           quoteDepth: quoted.depth,
           quotePrefix: quoted.prefix,
+          childIndent: 0,
         };
         stack = [];
         paragraph = "none";
@@ -372,7 +460,9 @@ export function closeOpenMarkdown(source: string): string {
         stack = [];
         const contentIndent = listItemContentIndent(quoted.content);
         blockquoteListContainer =
-          quotedIsListItem && contentIndent !== undefined ? { contentIndent, depth: quoted.depth } : null;
+          quotedIsListItem && contentIndent !== undefined
+            ? { contentIndent, depth: quoted.depth, quoteDepth: 0 }
+            : null;
       }
       if (isSetextUnderline(quoted.content)) {
         stack = [];

@@ -202,6 +202,28 @@ test("a nested quoted child scans its own inline markers", () => {
   expect(closeOpenMarkdown(source)).toBe(source.concat("**"));
 });
 
+// --- Roborev 4581: nested-child block state must carry across lines --------
+
+test("a deindented heading interrupts a quoted list paragraph (Roborev 4581)", () => {
+  const source = "> - **parent\n>     # heading";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("a deindented nested list item interrupts a quoted list paragraph (Roborev 4581)", () => {
+  const source = "> - **parent\n>     - nested";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("a nested quoted child carries its quote depth across a continuation line (Roborev 4581)", () => {
+  const source = "> - parent\n>     > **child\n>     > continuation";
+  expect(closeOpenMarkdown(source)).toBe(source.concat("**"));
+});
+
+test("a fenced child under a quoted list keeps its fence open across lines (Roborev 4581)", () => {
+  const source = "> - parent\n>     ```\n>     **code";
+  expect(closeOpenMarkdown(source)).toBe(`${source}\n> \`\`\``);
+});
+
 test("an abandoned emphasis opener does not close across a setext heading underline", () => {
   const source = "**abandoned\n===";
   expect(closeOpenMarkdown(source)).toBe(source);
