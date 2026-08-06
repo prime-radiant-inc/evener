@@ -321,6 +321,14 @@ function scanQuotedListChild(
   if (isAtxHeading(childLine) || isListItem(childLine)) {
     // A heading or a new nested list item interrupts the parent paragraph
     // (same as at the top level) but still scans its own inline markers.
+    // A nested list item also deepens the indent frame: its OWN content
+    // indent is relative to this already-deindented childLine, so it adds
+    // onto (not replaces) the container's accumulated contentIndent - the
+    // next child line must deindent past both levels to reach its content.
+    if (isListItem(childLine)) {
+      const nestedContentIndent = listItemContentIndent(childLine);
+      if (nestedContentIndent !== undefined) container.contentIndent += nestedContentIndent;
+    }
     stack.length = 0;
     scanInline(childLine, stack);
     return;

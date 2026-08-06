@@ -224,6 +224,23 @@ test("a fenced child under a quoted list keeps its fence open across lines (Robo
   expect(closeOpenMarkdown(source)).toBe(`${source}\n> \`\`\``);
 });
 
+// --- Roborev 4581 review, fix round 1 ---------------------------------------
+
+test("a doubly-nested list item's own continuation stays active at its deeper indent", () => {
+  const source = "> - parent\n>     - **nested\n>       continuation";
+  expect(closeOpenMarkdown(source)).toBe(source.concat("**"));
+});
+
+test("a fence opened via a nested quote inside a list closes at the outer quote depth", () => {
+  // Documents current behavior (Roborev 4581 review, Low finding): the fence
+  // is tracked against the OUTER blockquote depth, not the nested quote's -
+  // the nested `>` on later lines becomes literal fence content, same as any
+  // other text inside a fence (fenced code is never markdown, blockquote
+  // markers included).
+  const source = "> - parent\n>     > ```\n>     > code";
+  expect(closeOpenMarkdown(source)).toBe(`${source}\n> \`\`\``);
+});
+
 test("an abandoned emphasis opener does not close across a setext heading underline", () => {
   const source = "**abandoned\n===";
   expect(closeOpenMarkdown(source)).toBe(source);
