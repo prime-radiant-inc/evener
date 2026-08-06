@@ -109,7 +109,8 @@ export function ActivityRowDetail({
   row: ActivityJobRow | ActivityDelegateRow;
   now: number;
 }): JSX.Element {
-  const mandate = row.kind === "delegate" ? row.delegate.mandate : undefined;
+  const delegate = row.kind === "delegate" ? row.delegate : undefined;
+  const mandate = delegate?.mandate;
   const command =
     row.kind === "job"
       ? (row.job.command ?? row.job.task ?? row.job.description)
@@ -124,11 +125,14 @@ export function ActivityRowDetail({
   const ref = row.transcriptRef?.trim();
   return (
     <div className={CLASS.detailStrip}>
-      {mandate ? (
+      {/* delegate && mandate: the mandate truthiness alone cannot narrow the
+          row union for the Disclosure id below - the local keeps one code path
+          and gives the compiler a real narrowing. */}
+      {delegate && mandate ? (
         <div className={CLASS.detailCommand}>
           <Markdown source={firstParagraph} />
           {remainingMandate && (
-            <Disclosure id={`delegate-mandate-${row.delegate.delegateId}`} summary="Show more">
+            <Disclosure id={`delegate-mandate-${delegate.delegateId}`} summary="Show more">
               <Markdown source={remainingMandate} />
             </Disclosure>
           )}
