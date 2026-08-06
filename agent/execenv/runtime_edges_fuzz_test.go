@@ -423,7 +423,7 @@ func (i runtimeEdgeFileInfo) ModTime() time.Time { return time.Unix(0, 0) }
 func (i runtimeEdgeFileInfo) IsDir() bool        { return i.mode.IsDir() }
 func (i runtimeEdgeFileInfo) Sys() any           { return nil }
 
-func (f oneRuntimeFactory) Shell(string) commandRuntime                            { return f.command }
+func (f oneRuntimeFactory) Shell(string) commandRuntime           { return f.command }
 func (f oneRuntimeFactory) Argv(string, ...string) commandRuntime { return f.command }
 
 func openDirFD(t *testing.T, path string) int {
