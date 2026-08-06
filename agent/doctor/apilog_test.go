@@ -921,3 +921,179 @@ func apilogHumanColumn(t *testing.T, output, attemptID, column string) string {
 	}
 	return strings.TrimSpace(row[start:end])
 }
+
+// apiHealthAttempt builds a bare-minimum valid apilog.APIAttemptRecord for
+// APIHealth fixtures, letting callers set Response/ErrorClass explicitly
+// (unlike doctorAttempt, which always builds a Success response or a fixed
+// "context_deadline" failure).
+func apiHealthAttempt(group string, index int, outcome apilog.AttemptOutcomeClass) apilog.APIAttemptRecord {
+	return apilog.APIAttemptRecord{
+		Kind:             "api_attempt",
+		SchemaVersion:    1,
+		AttemptID:        identifier.MustNewAPIAttemptID(),
+		AttemptGroupID:   group,
+		AttemptIndex:     index,
+		Timestamp:        time.Date(2026, 7, 15, 14, index, 0, 0, time.UTC),
+		LatencyMS:        10,
+		ProviderInstance: "openai-primary",
+		RequestModel:     "gpt-5.2-codex",
+		Request: apilog.APIAttemptRequest{
+			Method:         "POST",
+			Endpoint:       "https://provider.test/v1/responses",
+			Body:           apilog.EncodeBody([]byte("{}")),
+			Model:          "gpt-5.2-codex",
+			EndpointFamily: "openai_public",
+		},
+		Outcome: outcome,
+	}
+}
+
+// TestAPIHealthVerdict is the WS9 Task 4 Step 1 fixture: a 4-attempt group
+// (a retry storm), an unsettled tail (no settlement record at all), and a
+// 403 (a permanent provider error) -- covering every APIHealthResult field.
+func TestAPIHealthVerdict(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	var records []apilog.APILogRecord
+
+	// A 4-attempt retry storm: three provider timeouts, then a success that
+	// settles the group.
+	var stormFinal apilog.APIAttemptRecord
+	for i := 1; i <= 4; i++ {
+		outcome := apilog.AttemptProviderTimeout
+		if i == 4 {
+			outcome = apilog.AttemptSuccess
+		}
+		attempt := apiHealthAttempt("ag_storm", i, outcome)
+		if outcome == apilog.AttemptSuccess {
+			attempt.Response = &apilog.APIAttemptResponse{
+				StatusCode:    intp(200),
+				Body:          apilog.EncodeBody([]byte("{}")),
+				TextLength:    intp(1),
+				ToolCallCount: intp(0),
+			}
+			stormFinal = attempt
+		} else {
+			attempt.ErrorClass = "timeout"
+			attempt.ErrorMessage = "context deadline exceeded"
+		}
+		records = append(records, attempt)
+	}
+	records = append(records, doctorSettlement(stormFinal, 4))
+
+	// An unsettled tail: one successful attempt, no settlement record at
+	// all (clean EOF, not a partial-tail write race).
+	tail := apiHealthAttempt("ag_tail", 1, apilog.AttemptSuccess)
+	tail.Response = &apilog.APIAttemptResponse{
+		StatusCode:    intp(200),
+		Body:          apilog.EncodeBody([]byte("{}")),
+		TextLength:    intp(1),
+		ToolCallCount: intp(0),
+	}
+	records = append(records, tail)
+
+	// A single-attempt group rejected 403 (permanent).
+	forbidden := apiHealthAttempt("ag_403", 1, apilog.AttemptProviderReject)
+	forbidden.ErrorClass = "access_denied"
+	forbidden.ErrorMessage = "forbidden"
+	forbidden.Response = &apilog.APIAttemptResponse{
+		StatusCode: intp(403),
+		Body:       apilog.EncodeBody([]byte("{}")),
+	}
+	records = append(records, forbidden, doctorSettlement(forbidden, 1))
+
+	writeRichSession(t, bucket, sidA, nil, records, schema.SessionMeta{})
+
+	res, err := APIHealth(base, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionID != sidA {
+		t.Fatalf("session_id = %q, want %q", res.SessionID, sidA)
+	}
+	if res.Attempts != 6 {
+		t.Fatalf("attempts = %d, want 6 (4 storm + 1 tail + 1 forbidden)", res.Attempts)
+	}
+	if res.RetryStormGroups != 1 {
+		t.Fatalf("retry_storm_groups = %d, want 1 (ag_storm has 4 attempts)", res.RetryStormGroups)
+	}
+	if res.UnsettledGroups != 1 {
+		t.Fatalf("unsettled_groups = %d, want 1 (ag_tail has no settlement)", res.UnsettledGroups)
+	}
+	if res.ErrorsByClass[apiErrorClassRetryable] != 3 {
+		t.Fatalf("retryable errors = %d, want 3 (the storm's three timeouts)", res.ErrorsByClass[apiErrorClassRetryable])
+	}
+	if res.ErrorsByClass[apiErrorClassPermanent] != 1 {
+		t.Fatalf("permanent errors = %d, want 1 (the 403)", res.ErrorsByClass[apiErrorClassPermanent])
+	}
+	if res.ErrorsByClass[apiErrorClassQuota] != 0 {
+		t.Fatalf("quota errors = %d, want 0: today's recorded fields cannot distinguish a quota 429 from a rate-limit 429", res.ErrorsByClass[apiErrorClassQuota])
+	}
+	if res.RecordedEmptyCaveat == "" || !strings.Contains(res.RecordedEmptyCaveat, "apilog --recompute") {
+		t.Fatalf("recorded_empty_caveat must point at apilog --recompute; got %q", res.RecordedEmptyCaveat)
+	}
+	if res.ErrorsByClassQuotaCaveat == "" || !strings.Contains(res.ErrorsByClassQuotaCaveat, "quota") || !strings.Contains(res.ErrorsByClassQuotaCaveat, "rate-limit") {
+		t.Fatalf("errors_by_class_quota_caveat must explain the quota/rate-limit confident-zero trap; got %q", res.ErrorsByClassQuotaCaveat)
+	}
+
+	human := RenderAPIHealth(res)
+	for _, want := range []string{"session " + sidA, "attempts=6", "recorded_empty=0", "retry_storm_groups=1", "unsettled_groups=1", "quota=0*", "permanent=1", "retryable=3", res.ErrorsByClassQuotaCaveat} {
+		if !strings.Contains(human, want) {
+			t.Fatalf("verdict missing %q:\n%s", want, human)
+		}
+	}
+	// The verdict is a one-line summary plus a `*`-marked footnote on
+	// quota's confident-zero trap -- never more than that.
+	if strings.Count(human, "\n") != 2 {
+		t.Fatalf("verdict must be a summary line plus one footnote line, got:\n%s", human)
+	}
+}
+
+// TestAPIHealthRecordedEmptyCountsCompactZeroResponses exercises the
+// recorded_empty count directly, independent of the retry-storm/error-class
+// fixture above.
+func TestAPIHealthRecordedEmptyCountsCompactZeroResponses(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	attempt := doctorAttempt("ag_empty_health", 1, apilog.AttemptSuccess, 1, 0, 0, 0, 0, 0)
+	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt, doctorSettlement(attempt, 1)}, schema.SessionMeta{})
+
+	res, err := APIHealth(base, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RecordedEmpty != 1 {
+		t.Fatalf("recorded_empty = %d, want 1", res.RecordedEmpty)
+	}
+	if res.UnsettledGroups != 0 || res.RetryStormGroups != 0 {
+		t.Fatalf("unsettled/retry_storm = %d/%d, want 0/0", res.UnsettledGroups, res.RetryStormGroups)
+	}
+}
+
+// TestAPIHealthQuotaClassIsForwardCompatible proves the quota bucket is
+// reachable given an explicit error_class=="quota_exceeded" -- forward
+// compatible with a future logging fix, even though today's transport-layer
+// fallback never emits that value (see classifyAPIErrorClass's doc comment).
+func TestAPIHealthQuotaClassIsForwardCompatible(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	attempt := apiHealthAttempt("ag_quota", 1, apilog.AttemptProviderReject)
+	attempt.ErrorClass = llm.KindQuotaExceeded.String()
+	attempt.ErrorMessage = "quota exceeded"
+	attempt.Response = &apilog.APIAttemptResponse{
+		StatusCode: intp(http.StatusTooManyRequests),
+		Body:       apilog.EncodeBody([]byte("{}")),
+	}
+	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt, doctorSettlement(attempt, 1)}, schema.SessionMeta{})
+
+	res, err := APIHealth(base, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ErrorsByClass[apiErrorClassQuota] != 1 {
+		t.Fatalf("quota errors = %d, want 1 (explicit error_class=quota_exceeded overrides the 429 status)", res.ErrorsByClass[apiErrorClassQuota])
+	}
+	if res.ErrorsByClass[apiErrorClassRetryable] != 0 {
+		t.Fatalf("retryable errors = %d, want 0", res.ErrorsByClass[apiErrorClassRetryable])
+	}
+}

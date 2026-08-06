@@ -123,6 +123,39 @@ func TestRun_WatchesRunawayFuse(t *testing.T) {
 	}
 }
 
+func TestRun_TranscriptHealthHuman(t *testing.T) {
+	base, sid := fixture(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"transcript", sid, "--state-dir", base, "--health"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	for _, want := range []string{sid, "longest_identical_run:", "truncation_warnings:", "stale_notifications:", "user_corrections (proxy):"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("--health output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRun_TranscriptHealthJSON(t *testing.T) {
+	base, sid := fixture(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"transcript", sid, "--state-dir", base, "--health", "--json"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	var res struct {
+		SessionID string `json:"session_id"`
+		Jobs      struct {
+			ByTerminalReason map[string]int `json:"by_terminal_reason"`
+		} `json:"jobs"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if res.SessionID != sid {
+		t.Errorf("session_id = %q, want %q", res.SessionID, sid)
+	}
+}
+
 // Flags must parse when they follow the selector — the documented
 // `serf-doctor <cmd> <selector> [flags]` form. Go's flag package stops at the
 // first non-flag arg, so without the leading-selector peel these are dropped.
@@ -586,6 +619,61 @@ func TestRun_APILogValidateJSON(t *testing.T) {
 	}
 	if res.SessionID != sid || res.RecordsOK != 8 || !res.Clean || res.ProblemCount != 0 {
 		t.Errorf("validate json = %+v", res)
+	}
+}
+
+// TestRun_APILogHealthHuman covers `apilog --health`'s one-line verdict over
+// fixtureWithAPILogData: four attempts, each its own settled single-attempt
+// group (so no retry storm, no unsettled group), one recorded-empty
+// success, and one provider-timeout error (recorded error_class "timeout",
+// which classifyAPIErrorClass buckets retryable).
+func TestRun_APILogHealthHuman(t *testing.T) {
+	base, sid := fixtureWithAPILogData(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"apilog", "--state-dir", base, "--health", sid}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	outStr := out.String()
+	for _, want := range []string{"session " + sid, "attempts=4", "recorded_empty=1", "retry_storm_groups=0", "unsettled_groups=0", "quota=0*", "permanent=0", "retryable=1", "always reads 0"} {
+		if !strings.Contains(outStr, want) {
+			t.Errorf("apilog --health output missing %q; got:\n%s", want, outStr)
+		}
+	}
+}
+
+func TestRun_APILogHealthJSON(t *testing.T) {
+	base, sid := fixtureWithAPILogData(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"apilog", "--json", "--state-dir", base, "--health", sid}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	var res struct {
+		SessionID                string         `json:"session_id"`
+		Attempts                 int            `json:"attempts"`
+		RecordedEmpty            int            `json:"recorded_empty"`
+		RecordedEmptyCaveat      string         `json:"recorded_empty_caveat"`
+		RetryStormGroups         int            `json:"retry_storm_groups"`
+		UnsettledGroups          int            `json:"unsettled_groups"`
+		ErrorsByClass            map[string]int `json:"errors_by_class"`
+		ErrorsByClassQuotaCaveat string         `json:"errors_by_class_quota_caveat"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if res.SessionID != sid || res.Attempts != 4 || res.RecordedEmpty != 1 || res.RetryStormGroups != 0 || res.UnsettledGroups != 0 {
+		t.Errorf("health json = %+v", res)
+	}
+	if res.ErrorsByClass["retryable"] != 1 || res.ErrorsByClass["permanent"] != 0 || res.ErrorsByClass["quota"] != 0 {
+		t.Errorf("errors_by_class = %+v, want retryable=1 permanent=0 quota=0", res.ErrorsByClass)
+	}
+	if res.RecordedEmptyCaveat == "" {
+		t.Errorf("recorded_empty_caveat must be present")
+	}
+	if res.ErrorsByClassQuotaCaveat == "" || !strings.Contains(res.ErrorsByClassQuotaCaveat, "quota") {
+		t.Errorf("errors_by_class_quota_caveat must be present and explain the quota confident-zero trap; got %q", res.ErrorsByClassQuotaCaveat)
+	}
+	if strings.Contains(out.String(), "provider-body-sentinel") || strings.Contains(out.String(), "quota detail") {
+		t.Errorf("apilog --health JSON exposed provider body-derived error text:\n%s", out.String())
 	}
 }
 

@@ -8,13 +8,15 @@
 // Usage:
 //
 //	serf-doctor locate     <selector>
-//	serf-doctor transcript <selector> [--count <tool>] [--format outline|markdown] [--range last:N|start:N|A-B]
-//	serf-doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary] [--validate]
+//	serf-doctor transcript <selector> [--count <tool>] [--health] [--format outline|markdown] [--range last:N|start:N|A-B]
+//	serf-doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary] [--validate] [--health]
 //	serf-doctor jobs       <selector> [--job <id>]
 //	serf-doctor mutations  <selector>
 //	serf-doctor watches    <selector> [--watch <id>] [--self-loops]
 //	serf-doctor tree       <selector> [--depth N] [--observers]
 //	serf-doctor turnids    (no selector — sweeps every session under the state root)
+//	serf-doctor sessions   [--since DUR] [--bucket B | --all] [--json]  (no selector — enumerates every session, or one --bucket's, under the state root)
+//	serf-doctor audit      --runbook NAME (--sessions <sel,...> | --since DUR) [--json]  (no selector — batch runbook driver over a session set)
 //
 // A selector is "", local:<id>, proj:<project-id>:<id>, or a bare <id>. Common flags:
 // --state-dir <path> (overrides SERF_STATE_DIR / XDG default) and --json.
@@ -25,11 +27,15 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path"
 	"strings"
+	"time"
 
 	"primeradiant.com/serf/agent/doctor"
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/internal/bundled"
 	"primeradiant.com/serf/internal/plugins"
 )
 
@@ -63,6 +69,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdTree(rest, stdout, stderr)
 	case "turnids":
 		return cmdTurnIDs(rest, stdout, stderr)
+	case "sessions":
+		return cmdSessions(rest, stdout, stderr)
+	case "audit":
+		return cmdAudit(rest, stdout, stderr)
 	case "plugins":
 		return cmdPlugins(rest, stdout, stderr)
 	case "-h", "--help", "help":
@@ -86,13 +96,15 @@ USAGE:
 
 SUBCOMMANDS:
   locate      resolve a selector to its transcript/API-log/meta/jobs/mutations paths
-  transcript  render a session's turns; --count <tool> prints the structural call count
-  apilog      API-call diagnostics: per-call tokens/latency, empties, errors, cache spikes
+  transcript  render a session's turns; --count <tool> prints the structural call count; --health prints mechanical per-session health metrics
+  apilog      API-call diagnostics: per-call tokens/latency, empties, errors, cache spikes; --health prints a one-line API-health verdict
   jobs        job inspector: every job the session ran, with status, reason, exit code, output bytes, and timings
   mutations   client-mutation store: the journal of every client mutation the daemon accepted or rejected, plus the durable input queue
   watches     watch/delivery inspector: distinct deliveries, provenance, breaker telemetry (self-influence depth, runaway drops)
   tree        parent ↔ delegate/observer session tree across buckets
   turnids     sweep every session for reserved turn ids minted inside the transcript's entry-index namespace (no selector — the whole state root is the question)
+  sessions    enumerate every session (or one --bucket's), sorted by last activity, for batch forensic studies (no selector)
+  audit       run a runbook's mechanical checks across a session set, emitting deduped, contract-valid Findings (no selector — see "serf-doctor audit -h")
   plugins     plugin-store health check: registry/disk drift, marketplace health, component validity, auto-upgrade sanity (no selector — see "serf-doctor plugins -h")
 
 SELECTOR:
@@ -199,6 +211,7 @@ func cmdLocate(args []string, stdout, stderr io.Writer) int {
 func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 	fs, stateDir, asJSON := stateFlags("transcript", stderr)
 	count := fs.String("count", "", "print the structural invocation count of this tool name and exit")
+	health := fs.Bool("health", false, "print mechanical per-session health metrics (tool errors, identical-run loops, truncation, steering, jobs, stale notifications) and exit")
 	format := fs.String("format", "markdown", "render format: outline | markdown")
 	rangeArg := fs.String("range", "", "turn window: last:N | start:N | A-B")
 	sel, code := parseSelectorAndFlags(fs, args)
@@ -216,6 +229,17 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 			return emitJSON(stdout, res)
 		}
 		return writeln(stdout, doctor.RenderCount(res))
+	}
+
+	if *health {
+		res, err := doctor.TranscriptHealth(base, sel)
+		if err != nil {
+			return fail(stderr, "transcript", err)
+		}
+		if *asJSON {
+			return emitJSON(stdout, res)
+		}
+		return writeText(stdout, doctor.RenderHealth(res))
 	}
 
 	res, err := doctor.Transcript(base, sel, doctor.TranscriptOpts{Format: *format, Range: *rangeArg})
@@ -237,6 +261,7 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 	summary := fs.Bool("summary", false, "render only the per-session aggregate")
 	recompute := fs.Bool("recompute", false, "re-extract text/tool-call counts from stored response bodies for rows recorded as empty (TextLength=0, ToolCalls=0) but with a stored body -- historical records from before the accumulated-item settlement fix; adds recomputed_txt/recomputed_tools columns and a recomputed_nonempty total")
 	validate := fs.Bool("validate", false, "whole-history integrity scan: strictly decode every record offset zero..EOF via apilog.Decoder and report every corrupt/malformed/oversized/unsupported record with its offset (explicit diagnostics, proportional to file size; ignores --empty/--errors/--cache-spikes/--threshold/--summary; exits nonzero if any problem is found)")
+	health := fs.Bool("health", false, "one-line API-health verdict: attempts, recorded_empty (see its caveat), retry_storm_groups (attempt groups with >=3 attempts), unsettled_groups, errors_by_class (quota/permanent/retryable — quota always reads 0 against today's real logs, see its caveat) and exit; ignores --recompute/--empty/--errors/--summary; --validate takes precedence over --health")
 	sel, code := parseSelectorAndFlags(fs, args)
 	if code != 0 {
 		return code
@@ -260,6 +285,17 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	}
+
+	if *health {
+		res, err := doctor.APIHealth(base, sel)
+		if err != nil {
+			return fail(stderr, "apilog", err)
+		}
+		if *asJSON {
+			return emitJSON(stdout, res)
+		}
+		return writeText(stdout, doctor.RenderAPIHealth(res))
 	}
 
 	opts := doctor.APILogOpts{
@@ -383,6 +419,116 @@ func cmdTurnIDs(args []string, stdout, stderr io.Writer) int {
 		return emitJSON(stdout, scan)
 	}
 	return writeText(stdout, doctor.RenderTurnIDScan(scan))
+}
+
+// cmdSessions enumerates sessions for batch forensic studies. Like turnids and
+// plugins it takes no selector — it is a bucket/state-root-wide question, not
+// a single-session one — so a stray positional argument is refused rather than
+// silently swept past.
+func cmdSessions(args []string, stdout, stderr io.Writer) int {
+	fs, stateDir, asJSON := stateFlags("sessions", stderr)
+	since := fs.String("since", "", "only sessions with last activity within this duration ago (e.g. 120h); default: no filter")
+	bucketFlag := fs.String("bucket", "", "scope to one bucket (project id); default is every bucket under the state root")
+	all := fs.Bool("all", false, "explicit: enumerate every bucket (already the default; mutually exclusive with --bucket)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		if code := writef(stderr, "serf-doctor sessions: takes no selector; it enumerates every session (or one --bucket's) under the state root (got %q)\n", fs.Arg(0)); code != 0 {
+			return code
+		}
+		return 2
+	}
+	if *bucketFlag != "" && *all {
+		return fail(stderr, "sessions", fmt.Errorf("--bucket and --all are mutually exclusive"))
+	}
+	var sinceDur time.Duration
+	if *since != "" {
+		d, err := time.ParseDuration(*since)
+		if err != nil {
+			return fail(stderr, "sessions", fmt.Errorf("invalid --since duration %q: %w", *since, err))
+		}
+		sinceDur = d
+	}
+	base := doctor.ResolveStateBase(*stateDir)
+	res, err := doctor.ListSessions(base, doctor.SessionsOpts{Since: sinceDur, Bucket: *bucketFlag})
+	if err != nil {
+		return fail(stderr, "sessions", err)
+	}
+	if *asJSON {
+		return emitJSON(stdout, res)
+	}
+	return writeText(stdout, doctor.RenderSessions(res))
+}
+
+// bundledSkills is a package var (like doctorLocate) so tests can substitute
+// a fixture runbook without touching the embedded skill assets.
+var bundledSkills = bundled.Skills
+
+// loadRunbook resolves a runbook by name from the bundled doctoring-serf
+// skill's runbooks/ dir and parses it. It is the only place this binary
+// touches internal/bundled — agent/doctor stays a pure reader over durable
+// session state, per its package doc.
+func loadRunbook(name string) (doctor.Runbook, error) {
+	rbPath := path.Join("doctoring-serf", "runbooks", name+".md")
+	content, err := fs.ReadFile(bundledSkills(), rbPath)
+	if err != nil {
+		return doctor.Runbook{}, fmt.Errorf("load runbook %q: %w", name, err)
+	}
+	return doctor.ParseRunbook(name, content)
+}
+
+// cmdAudit runs a runbook's mechanical checks across a session set. Like
+// sessions and turnids it is not single-session-scoped, so it takes no
+// selector; the session set comes from --sessions (an explicit selector
+// list) or --since (a state-root-wide window), exactly one of which is
+// required.
+func cmdAudit(args []string, stdout, stderr io.Writer) int {
+	fs, stateDir, asJSON := stateFlags("audit", stderr)
+	runbookName := fs.String("runbook", "", "runbook name to run, resolved from the bundled doctoring-serf skill's runbooks/ (required)")
+	sessions := fs.String("sessions", "", "comma-separated session selectors to audit (mutually exclusive with --since)")
+	since := fs.String("since", "", "audit every session with last activity within this duration ago, e.g. 120h (mutually exclusive with --sessions)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		if code := writef(stderr, "serf-doctor audit: takes no selector; use --sessions or --since (got %q)\n", fs.Arg(0)); code != 0 {
+			return code
+		}
+		return 2
+	}
+	if *runbookName == "" {
+		return fail(stderr, "audit", fmt.Errorf("--runbook is required"))
+	}
+	if (*sessions == "") == (*since == "") {
+		return fail(stderr, "audit", fmt.Errorf("exactly one of --sessions or --since is required"))
+	}
+
+	runbook, err := loadRunbook(*runbookName)
+	if err != nil {
+		return fail(stderr, "audit", err)
+	}
+
+	opts := doctor.AuditOpts{}
+	if *sessions != "" {
+		opts.Sessions = strings.Split(*sessions, ",")
+	} else {
+		d, err := time.ParseDuration(*since)
+		if err != nil {
+			return fail(stderr, "audit", fmt.Errorf("invalid --since duration %q: %w", *since, err))
+		}
+		opts.Since = d
+	}
+
+	base := doctor.ResolveStateBase(*stateDir)
+	res, err := doctor.RunAudit(base, runbook, opts)
+	if err != nil {
+		return fail(stderr, "audit", err)
+	}
+	if *asJSON {
+		return emitJSON(stdout, res)
+	}
+	return writeText(stdout, doctor.RenderAudit(res))
 }
 
 // cmdPlugins runs the plugin-store health check (internal/plugins.Doctor,

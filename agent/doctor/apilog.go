@@ -226,6 +226,232 @@ func apiLog(stateBase, selector string, opts APILogOpts, mode apilog.DecodeMode)
 	return res, nil
 }
 
+// apiHealthRetryStormThreshold is the attempt-group size ("this many
+// attempts before it's providers or budget worth inspecting, not routine
+// retry") that RetryStormGroups counts against -- matching the plan's own
+// "attempt groups with >=3 attempts" definition.
+const apiHealthRetryStormThreshold = 3
+
+const (
+	apiErrorClassQuota     = "quota"
+	apiErrorClassPermanent = "permanent"
+	apiErrorClassRetryable = "retryable"
+)
+
+// apiHealthRecordedEmptyCaveat documents why RecordedEmpty may not be the
+// final word: it counts a call as empty from the compact counts recorded at
+// call time (text_length==0 && tool_call_count==0), not from a re-decode of
+// the response body. `apilog --recompute` (merged 812eb5c15 --
+// docs/superpowers/plans/2026-08-06-ws1-responses-recording.md) re-extracts
+// those counts from the stored body for rows recorded as empty -- historical
+// records from before the accumulated-item settlement fix -- and reports a
+// recomputed_nonempty total. This field is emitted unconditionally rather
+// than gated behind a check so the caveat is always visible next to the
+// count it qualifies; --health itself does not run --recompute (see
+// cmdAPILog's flag composition doc).
+const apiHealthRecordedEmptyCaveat = "recorded_empty reflects the compact counts (text_length/tool_call_count) recorded at call time, not a re-decode of the response body; run apilog --recompute (docs/superpowers/plans/2026-08-06-ws1-responses-recording.md) to re-extract from the stored body for zeroed pre-fix records -- it reports a recomputed_nonempty figure alongside this one"
+
+// apiHealthErrorsByClassQuotaCaveat documents the errors_by_class "quota"
+// bucket's confident-zero trap for anyone reading only the tool's output
+// (not classifyAPIErrorClass's doc comment): today's recorded fields cannot
+// tell a quota-exhausted 429 apart from an ordinary rate-limit 429 (both are
+// logged as status_code=429, error_class="rate_limit"), so this bucket reads
+// 0 on every real session until the transport layer records the
+// distinction -- a runbook check on errors_by_class.quota can never trip.
+// Emitted unconditionally, like RecordedEmptyCaveat, so the caveat travels
+// with the count it qualifies rather than living only in source comments.
+const apiHealthErrorsByClassQuotaCaveat = "errors_by_class.quota always reads 0 against today's real logs: a quota-exhausted 429 and an ordinary rate-limit 429 are both recorded as status_code=429, error_class=\"rate_limit\" -- the distinction lives only in the response body, which apilog does not persist. A runbook check on apilog.errors_by_class.quota cannot trip until the transport layer records that distinction."
+
+// APIHealthResult is apilog --health's one-line verdict: every attempt group
+// in a session's whole API log (never truncated the way APILog's row/
+// settlement caps are -- there is nothing here to page through) reduced to
+// the counts a batch study needs to decide "does this session's provider
+// traffic deserve a closer look."
+type APIHealthResult struct {
+	SessionID string `json:"session_id"`
+
+	// Attempts is the total provider-attempt count across the whole log.
+	Attempts int `json:"attempts"`
+
+	// RecordedEmpty is the count of successful attempts recorded as empty
+	// (no text, no tool calls) -- see RecordedEmptyCaveat.
+	RecordedEmpty       int    `json:"recorded_empty"`
+	RecordedEmptyCaveat string `json:"recorded_empty_caveat"`
+
+	// RetryStormGroups is the count of attempt groups with
+	// apiHealthRetryStormThreshold or more recorded attempts, whether or
+	// not the group ever settled.
+	RetryStormGroups int `json:"retry_storm_groups"`
+	// UnsettledGroups is the count of attempt groups with no
+	// attempt_group_settlement record anywhere in the log. A partial-tail
+	// EOF (an in-flight append) can inflate this by one for whichever group
+	// was mid-write -- routine, not a defect; see APILog's SettlementState
+	// handling of the same condition for the row-level analogue.
+	UnsettledGroups int `json:"unsettled_groups"`
+
+	// ErrorsByClass buckets every non-success attempt into one of three
+	// retry-disposition classes -- see classifyAPIErrorClass's doc comment
+	// for the recorded-field mapping and its judgment calls. Always carries
+	// all three keys ("quota", "permanent", "retryable"), zero or not, so a
+	// consumer never has to guess whether an absent key means zero or
+	// "not computed."
+	ErrorsByClass map[string]int `json:"errors_by_class"`
+	// ErrorsByClassQuotaCaveat documents ErrorsByClass["quota"]'s
+	// confident-zero trap -- see apiHealthErrorsByClassQuotaCaveat.
+	ErrorsByClassQuotaCaveat string `json:"errors_by_class_quota_caveat"`
+}
+
+// apiHealthGroup is one attempt group's running tally while APIHealth scans
+// the log once, independent of the row/settlement retention caps APILog
+// applies for interactive display.
+type apiHealthGroup struct {
+	attempts int
+	settled  bool
+}
+
+// APIHealth computes APIHealthResult for one session: a single pass over the
+// whole canonical API log, independent of APILog's row/settlement caps so a
+// batch study's verdict never silently drops evidence from a long session.
+func APIHealth(stateBase, selector string) (APIHealthResult, error) {
+	paths, err := Locate(stateBase, selector)
+	if err != nil {
+		return APIHealthResult{}, err
+	}
+	f, err := os.Open(paths.APILogPath)
+	if err != nil {
+		return APIHealthResult{}, fmt.Errorf("open API log %s: %w", paths.APILogPath, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	res := APIHealthResult{
+		SessionID:                paths.SessionID,
+		RecordedEmptyCaveat:      apiHealthRecordedEmptyCaveat,
+		ErrorsByClassQuotaCaveat: apiHealthErrorsByClassQuotaCaveat,
+		ErrorsByClass: map[string]int{
+			apiErrorClassQuota:     0,
+			apiErrorClassPermanent: 0,
+			apiErrorClassRetryable: 0,
+		},
+	}
+	groups := map[string]*apiHealthGroup{}
+	groupFor := func(id string) *apiHealthGroup {
+		g := groups[id]
+		if g == nil {
+			g = &apiHealthGroup{}
+			groups[id] = g
+		}
+		return g
+	}
+
+	decoder := apilog.NewDecoder(f, doctorAPILogMaxLineBytes)
+	for {
+		record, decodeErr := decoder.Next()
+		if errors.Is(decodeErr, io.EOF) {
+			break
+		}
+		if errors.Is(decodeErr, apilog.ErrPartialTail) {
+			break
+		}
+		if decodeErr != nil {
+			return APIHealthResult{}, fmt.Errorf("decode API log %s: %w", paths.APILogPath, decodeErr)
+		}
+		switch record := record.(type) {
+		case apilog.APIAttemptRecord:
+			res.Attempts++
+			groupFor(record.AttemptGroupID).attempts++
+			row := rowFromAttempt(record)
+			if row.Empty {
+				res.RecordedEmpty++
+			}
+			if row.Outcome != apilog.AttemptSuccess {
+				res.ErrorsByClass[classifyAPIErrorClass(row.Outcome, row.StatusCode, row.ErrorClass)]++
+			}
+		case apilog.APIAttemptGroupSettlement:
+			groupFor(record.AttemptGroupID).settled = true
+		}
+	}
+
+	for _, g := range groups {
+		if g.attempts >= apiHealthRetryStormThreshold {
+			res.RetryStormGroups++
+		}
+		if !g.settled {
+			res.UnsettledGroups++
+		}
+	}
+	return res, nil
+}
+
+// classifyAPIErrorClass maps one attempt's *recorded* fields -- outcome,
+// status_code, and error_class (despite the field name, this is
+// llm.Kind(err).String(), the category axis, not llm.ErrorClass's
+// retry-disposition axis -- see APIAttemptRecord.ErrorClass and
+// llm/errorkind.go's doc comment) -- to one of three retry-disposition
+// buckets. It mirrors llm.Classify's status-code/Kind table (llm/classify.go)
+// over durable evidence instead of a live error value, and documents where
+// that substitution is a judgment call rather than an exact reconstruction:
+//
+//   - quota: llm.Classify reaches this only via a typed *quotaExceededError
+//     match (llm/errors.go) that inspects the response BODY for
+//     provider-specific quota signals -- evidence the apilog schema does
+//     not persist. The transport layer's own recorded-field fallback
+//     (explicitAPIAttemptErrorClass,
+//     llm/providers/internal/transport/api_attempt.go) never distinguishes
+//     a quota-exhausted 429 from an ordinary rate-limit 429: both land as
+//     status_code=429, error_class="rate_limit". So this bucket is reachable
+//     today only via an explicit error_class=="quota_exceeded"
+//     (llm.KindQuotaExceeded.String()) -- forward-compatible with a future
+//     logging fix, but always zero against today's real logs. This is
+//     deliberate: guessing quota from the error message's text would
+//     misclassify ordinary rate limits as quota.
+//   - permanent: outcome==caller_cancellation (mirrors Classify's
+//     context.Canceled/*AbortError branch), or status_code in
+//     {400,401,403,404,413,422}, or -- when no status_code is recorded --
+//     error_class in {invalid_request, authentication, access_denied,
+//     not_found, context_length, content_filter}.
+//   - retryable: status_code in {408,429,500,502,503,504}, or -- when no
+//     status_code is recorded -- error_class in {timeout, rate_limit,
+//     server}, or anything else. This default (not permanent) mirrors
+//     Classify's own conservative fallback for an unclassified error.
+func classifyAPIErrorClass(outcome apilog.AttemptOutcomeClass, statusCode *int, errorClass string) string {
+	if errorClass == llm.KindQuotaExceeded.String() {
+		return apiErrorClassQuota
+	}
+	if outcome == apilog.AttemptCallerCancel {
+		return apiErrorClassPermanent
+	}
+	if statusCode != nil {
+		switch *statusCode {
+		case 400, 401, 403, 404, 413, 422:
+			return apiErrorClassPermanent
+		case 408, 429, 500, 502, 503, 504:
+			return apiErrorClassRetryable
+		}
+	}
+	switch errorClass {
+	case llm.KindInvalidRequest.String(), llm.KindAuthentication.String(), llm.KindAccessDenied.String(),
+		llm.KindNotFound.String(), llm.KindContextLength.String(), llm.KindContentFilter.String():
+		return apiErrorClassPermanent
+	case llm.KindTimeout.String(), llm.KindRateLimit.String(), llm.KindServer.String():
+		return apiErrorClassRetryable
+	}
+	return apiErrorClassRetryable
+}
+
+// RenderAPIHealth renders an APIHealthResult as a one-line verdict a batch
+// study scans across many sessions at once, plus a `*`-marked footnote on
+// quota's confident-zero trap (ErrorsByClassQuotaCaveat) -- the verdict line
+// alone would let a reader mistake "quota=0" for "no quota errors occurred"
+// rather than "this bucket cannot be reached from today's recorded fields."
+func RenderAPIHealth(r APIHealthResult) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "session %s: attempts=%d recorded_empty=%d retry_storm_groups=%d unsettled_groups=%d errors_by_class(quota=%d* permanent=%d retryable=%d)\n",
+		r.SessionID, r.Attempts, r.RecordedEmpty, r.RetryStormGroups, r.UnsettledGroups,
+		r.ErrorsByClass[apiErrorClassQuota], r.ErrorsByClass[apiErrorClassPermanent], r.ErrorsByClass[apiErrorClassRetryable])
+	fmt.Fprintf(&b, "* %s\n", r.ErrorsByClassQuotaCaveat)
+	return b.String()
+}
+
 // doctorAPILogValidationMaxProblems bounds retained validation problems, like
 // doctorAPILogMaxCalls/doctorAPILogMaxSettlements bound APILog's rows. Unlike
 // those (which retain the latest activity for live debugging), validation
