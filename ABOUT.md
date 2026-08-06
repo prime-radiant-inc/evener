@@ -5,11 +5,11 @@
 **Family:** agent-libs · **Type:** tool · **Lifecycle:** production · **Owner:** obra
 
 ## What it does
-Serv is a non-interactive coding agent. Given a prompt, it uses the LLM's native tool-calling to read files, write files, run commands, and search code in a loop until the work is complete. It supports OpenAI, Anthropic, and Google models. The repo also ships `llmcall` (a one-shot LLM client) and a multi-session web orchestrator (`hub`).
+Serf is a non-interactive coding agent. Given a prompt, it uses the LLM's native tool-calling to read files, write files, run commands, and search code in a loop until the work is complete. It supports OpenAI, Anthropic, and Google models, and can confine a session's file, process, and network access with `--sandbox`. The repo also ships `llmcall` (a one-shot LLM client) and a multi-session web orchestrator (`hub`).
 
 ## How it fits
-- Depends on: — (Go workspace of intra-repo modules only: serf/agent, serf/auth, serf/llm; no internal prime-radiant-inc cross-repo deps)
-- Used by: —
+- Depends on: — (Go workspace of intra-repo modules only: serf/agent, serf/auth, serf/llm, serf/envvars, serf/fuzz, serf/identifier, serf/invariant; no internal prime-radiant-inc cross-repo deps)
+- Used by: [sen-deploy](https://github.com/prime-radiant-inc/sen-deploy) — builds `serf` and `llmcall` into the toil image (docker/Dockerfile.toil)
 - External: OpenAI, Anthropic, and Google LLM APIs (native tool-calling)
 
 ## Runtime & data
