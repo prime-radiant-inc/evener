@@ -102,6 +102,163 @@ test("a fence closed mid-stream is not closed again", () => {
   expect(closeOpenMarkdown("```\ncode\n```\nafter **bo")).toBe("```\ncode\n```\nafter **bo**");
 });
 
+test("a closing fence with a non-whitespace suffix remains code content", () => {
+  const source = "```\n````js\ncode";
+  expect(closeOpenMarkdown(source)).toBe(`${source}\n\`\`\``);
+});
+
+test("a fence indented four spaces is not treated as a fenced block", () => {
+  const source = "    ```\ncode";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("an abandoned emphasis opener does not close across a heading", () => {
+  const source = "**abandoned\n# heading";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("an abandoned emphasis opener does not close across a list", () => {
+  const source = "**abandoned\n- item";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("indented continuation text stays in the active paragraph", () => {
+  const source = "**bold\n    continuation";
+  expect(closeOpenMarkdown(source)).toBe(`${source}**`);
+});
+
+test("emphasis continues across consecutive blockquote lines", () => {
+  const source = "> **bold\n> continuation";
+  expect(closeOpenMarkdown(source)).toBe(`${source}**`);
+});
+
+test("a lazy blockquote continuation keeps the quoted paragraph active", () => {
+  const source = "> **bold\ncontinuation\n> end";
+  expect(closeOpenMarkdown(source)).toBe(`${source}**`);
+});
+
+test.each(["> child", "- child", "code"])("an indented nested %s block ends the parent list paragraph", (nested) => {
+  const source = `- **parent\n    ${nested}`;
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("a quoted fence clears emphasis and closes only with the same quote depth", () => {
+  const source = "> **abandoned\n> ```\n> **code**\n> ```";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("an open quoted fence receives a quoted closing fence", () => {
+  const source = "> ```\n> code";
+  expect(closeOpenMarkdown(source)).toBe(`${source}\n> \`\`\``);
+});
+
+test("spaced nested quote markers do not leak emphasis into the parent quote", () => {
+  const source = ">   > **nested\n> parent";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("a quoted fence ends when its blockquote container ends", () => {
+  const source = "> ```\n> code\noutside **bo";
+  expect(closeOpenMarkdown(source)).toBe(`${source}**`);
+});
+
+test("a shallower quote ends a deeper quoted fence", () => {
+  const source = "> > ```\n> > code\n> outside **bo";
+  expect(closeOpenMarkdown(source)).toBe(`${source}**`);
+});
+
+test("an over-indented quoted fence line remains code content", () => {
+  const source = "> ```\n>     ```\n> code";
+  expect(closeOpenMarkdown(source)).toBe(`${source}\n> \`\`\``);
+});
+
+test("four spaces between quote markers form a nested quote", () => {
+  const source = ">    > **nested\n> parent";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("tab-indented quote content does not become a nested quote", () => {
+  const source = ">\t\t> **nested";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("indented quoted continuation text stays in the active paragraph", () => {
+  const source = "> **bold\n>     continuation";
+  expect(closeOpenMarkdown(source)).toBe(source.concat("**"));
+});
+
+test("an indented child block ends a quoted list paragraph", () => {
+  const source = "> - **parent\n>     > child";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("a quoted list paragraph keeps indented continuation text active", () => {
+  const source = "> - **parent\n>     continuation";
+  expect(closeOpenMarkdown(source)).toBe(source.concat("**"));
+});
+
+test("a nested quoted child scans its own inline markers", () => {
+  const source = "> - parent\n>     > **child";
+  expect(closeOpenMarkdown(source)).toBe(source.concat("**"));
+});
+
+// --- Roborev 4581: nested-child block state must carry across lines --------
+
+test("a deindented heading interrupts a quoted list paragraph (Roborev 4581)", () => {
+  const source = "> - **parent\n>     # heading";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("a deindented nested list item interrupts a quoted list paragraph (Roborev 4581)", () => {
+  const source = "> - **parent\n>     - nested";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("a nested quoted child carries its quote depth across a continuation line (Roborev 4581)", () => {
+  const source = "> - parent\n>     > **child\n>     > continuation";
+  expect(closeOpenMarkdown(source)).toBe(source.concat("**"));
+});
+
+test("a fenced child under a quoted list keeps its fence open across lines (Roborev 4581)", () => {
+  // The synthesized closer must preserve the list's own content indent
+  // (Roborev 4803) - a bare "> ```" would exit the list item and open an
+  // unrelated outer fence instead of closing this one.
+  const source = "> - parent\n>     ```\n>     **code";
+  expect(closeOpenMarkdown(source)).toBe(`${source}\n>   \`\`\``);
+});
+
+// --- Roborev 4581 review, fix round 1 ---------------------------------------
+
+test("a doubly-nested list item's own continuation stays active at its deeper indent", () => {
+  const source = "> - parent\n>     - **nested\n>       continuation";
+  expect(closeOpenMarkdown(source)).toBe(source.concat("**"));
+});
+
+test("a fence opened via a nested quote inside a list closes at the outer quote depth", () => {
+  // Documents current behavior (Roborev 4581 review, Low finding): the fence
+  // is tracked against the OUTER blockquote depth, not the nested quote's -
+  // the nested `>` on later lines becomes literal fence content, same as any
+  // other text inside a fence (fenced code is never markdown, blockquote
+  // markers included). The synthesized closer must reproduce the FULL
+  // container prefix (outer quote + list indent + nested quote marker) -
+  // `"> ```"` alone would exit the list item and the nested blockquote,
+  // opening a new outer fence instead of closing this one.
+  const source = "> - parent\n>     > ```\n>     > code";
+  expect(closeOpenMarkdown(source)).toBe(`${source}\n>     > \`\`\``);
+});
+
+// --- Roborev 4801 review, fix round 2 ---------------------------------------
+
+test("indented code under a later sibling list item is not over-deindented", () => {
+  const source = "> - parent\n>     - first\n>     - second\n>           **code";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("an abandoned emphasis opener does not close across a setext heading underline", () => {
+  const source = "**abandoned\n===";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
 // --- documented non-goals ------------------------------------------------------
 
 test("underscore emphasis is NEVER auto-closed (snake_case would false-positive constantly)", () => {
