@@ -138,12 +138,114 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.5rem;
-  min-width: 1.5rem;
+  width: 12px;
+  min-width: 12px;
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--ink-mid);
+}
+
+/* Dense activity tree rows (2026-08-05 redesign). */
+.denseRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px var(--space-3);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+  cursor: pointer;
+}
+.denseRow:hover {
+  background: var(--surface-2);
+}
+.denseRow:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.denseName {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.denseNameLive {
+  font-weight: var(--font-weight-medium);
+}
+.denseKind {
+  width: 14px;
+  flex: none;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-low);
+}
+.denseMeta {
+  flex: none;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+.denseQuiet {
+  color: var(--ink-mid);
+}
+.denseFailed {
+  color: var(--danger);
+}
+/* Same-file `composes` is not used anywhere in this codebase (only the
+ * cross-file `composes: x from "..."` form is), so .foldRow is the denseRow
+ * declarations written out longhand plus its muted ink. */
+.foldRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px var(--space-3);
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+  cursor: pointer;
+}
+.foldRow:hover {
+  background: var(--surface-2);
+}
+.foldRow:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.detailStrip {
+  margin: 2px var(--space-3) 6px calc(var(--space-3) + 20px);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-0);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+.detailCommand {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.detailMeta {
+  display: block;
+  margin-top: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-low);
+}
+.detailActions {
+  margin-top: var(--space-2);
+  display: flex;
+  gap: var(--space-2);
+}
+.indentGuide {
+  border-left: 1px solid var(--edge);
+  margin-left: calc(var(--space-3) + 6px);
 }
 
 .rowActions {
