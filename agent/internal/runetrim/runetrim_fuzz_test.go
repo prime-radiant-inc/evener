@@ -2,6 +2,7 @@ package runetrim
 
 import (
 	"bytes"
+	"slices"
 	"testing"
 	"unicode/utf8"
 )
@@ -137,10 +138,5 @@ func FuzzRuneTrim(f *testing.F) {
 // byte (10xxxxxx) — a slice with no lead byte anywhere in it to anchor a
 // trim against.
 func allContinuation(b []byte) bool {
-	for _, c := range b {
-		if utf8.RuneStart(c) {
-			return false
-		}
-	}
-	return true
+	return !slices.ContainsFunc(b, utf8.RuneStart)
 }

@@ -153,6 +153,7 @@ TARGETS=(
 	"native:agent:./internal/promptpath:FuzzPromptPaths::"
 	"native:agent:./internal/globpattern:FuzzExpand::expand.go"
 	"native:agent:./internal/runetrim:FuzzRuneTrim::"
+	"native:agent:./internal/liveeval:FuzzLiveEvalPaths::"
 	"native:agent:./internal/tool/repair:FuzzRepairJSON::"
 	"native:agent:./internal/tool/repair:FuzzRepairArgs::"
 	"native:agent:./internal/tool/repair:FuzzRepairDiagnostics::"
