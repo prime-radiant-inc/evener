@@ -483,46 +483,61 @@ with the captured kimi 403 body; wireModel table test.
 
 ## WS8 — Worktree lifecycle and instruction/registry coherence
 
-1. **dispose ownership is exact-match on the original creator forever.**
-   `findDelegateLaneRecord` requires descriptor `ParentSessionID == s.id`
-   (`agent/session_tools_worktree_dispose.go:66-92`); descriptors preserve
-   the *original* creator across forwarding/resume, and the close-time
-   sweep filters identically (`agent/session_worktree_close.go:33-52`), so
-   a resumed session can never dispose lanes it legitimately inherited —
-   and `disposeHintForRetainedIdle` silently gives no hint in exactly those
-   cases. **Fix:** ownership follows lineage: a session whose id appears in
-   the descriptor's parent chain (or that holds the resumed identity of the
-   creator) may dispose; on session resume, re-stamp inherited descriptors
-   with the live session id so both the live op and the close sweep see
-   them.
-2. **The live-work guard has no force path and counts idle retained
-   subagents as live** (`agent/session_tools_worktree.go:749-807,1748-1753`).
-   **Fix:** `remove force:true` on a tree whose only blockers are
-   retained-idle delegates performs the dispose cascade itself (dispose
-   each idle lane, then remove); genuinely running jobs still refuse.
-3. **No registry adoption for external/inherited worktrees** — enumeration
-   is strictly `isUnderManagedDir` (`session_tools_worktree.go:1280-1321`).
-   **Fix (minimal):** `manage_worktree list` gains an `unmanaged` section
-   showing `git worktree list --porcelain` entries under the managed root
-   that lack a sidecar, and `adopt` creates the sidecar for one — killing
-   the "registry does not know this worktree" dead end after a raw-git
-   fallback (which WS8.1/2 make rarer to begin with).
-4. **Steering that names unregistered tools:** the self-compact nudge fires
-   on `s.contextMgr != nil` alone (`agent/session_self_compact.go:98-118`)
-   with no registry check, while `compact_context` can be pruned by denied
-   tools, minimal registries, or delegate policy
-   (`agent/session_init.go:999-1019`). **Fix:** gate the nudge (and audit
-   the other steering templates for tool mentions) on
-   `s.reg.Get(name) != nil`, with the nudge falling back to "summarize and
-   drop stale context in your next messages" when the tool is absent. The
-   `manage_worktree exit` mandate came from a role prompt outside agent/ —
-   audit `internal/bundled` prompts for tool mentions and gate or reword.
+**Audited against `docs/superpowers/specs/2026-07-02-native-worktree-tools-design.md`
+and walked with Jesse 2026-08-06; items 1-3 confirmed, item 4 expanded.**
+
+1. **Dispose ownership follows resumed identity — chain-walk cut.** The
+   design record's ownership scoping is deliberate ("defaults to not
+   destroying other sessions' work"); an ancestor disposing a descendant's
+   lane would violate it, so no lineage walk. The actual bug: descriptors
+   keep the original creator id forever
+   (`agent/session_tools_worktree_dispose.go:66-92`,
+   `agent/session_worktree_close.go:33-52`), so a **resumed** session is
+   treated as "another session" and cannot dispose lanes it itself
+   created. Fix: on resume, inherited lane descriptors re-stamp to the
+   resumed identity; genuinely-other sessions stay refused.
+2. **`remove force:true` runs the sanctioned dispose cascade for
+   retained-idle lanes.** The record scopes `force` to provenance/merge
+   gating and `force_dirty` to the dirty-tree refusal; the live-work
+   refusal is deliberately not force-overridable and stays that way for
+   running jobs. Retained-*idle* delegates are not live execution and
+   `dispose` is their sanctioned exit — so when the only live-work
+   blockers are retained-idle lanes (`agent/session_tools_worktree.go:749-807,
+   1748-1753`), `remove force:true` disposes each lane first (each dispose
+   keeping its own unmerged-work gate, force-overridable per the existing
+   dispose contract) and then removes. Running jobs still refuse, always.
+3. **Explicit adoption for unmanaged worktrees under the managed root.**
+   The record keeps destructive ops managed-only ("never removed or pruned
+   by this tool") and already contains an idempotent-adopt concept for
+   locks. `manage_worktree list` gains a labeled `unmanaged` section for
+   raw-git worktrees under the managed root; a new explicit `adopt`
+   operation creates the sidecar, converting one to managed on request.
+   Nothing auto-adopts; nothing unmanaged is ever removable. (Items 1-2
+   shrink this class at the source — agents fell back to raw git after the
+   tool failed them.)
+4. **Tool-instruction coherence (expanded per Jesse 2026-08-06).** Two
+   parts:
+   (a) **Subagents should have `compact_context`** — the affected delegate
+   sessions lacking it was itself the bug. Investigate which pruning path
+   removed it (`agent/session_init.go:999-1019`,
+   `registerMinimalWorktreeTools`) and fix the default subagent surface so
+   they get it.
+   (b) **Generalized validate-before-instruct:** any steering template or
+   canned prompt that names a tool checks the session registry first
+   (`s.reg.Get(name) != nil`); if absent, skip or use tool-free fallback
+   wording (the self-compact nudge falls back to "summarize and drop stale
+   context in your next messages"). The unconditional nudge at
+   `agent/session_self_compact.go:81-118` is the first fix; then audit
+   `internal/bundled` role prompts for tool mentions (the `manage_worktree
+   exit` mandate came from one) and gate or reword each.
 
 **Tests:** lineage-dispose test across a simulated resume; force-cascade
-test with a retained-idle delegate; adopt round-trip test; nudge-gating
-test with a pruned registry.
-**Size:** ~450 loc.
+test with a retained-idle delegate (and a refusal test with a genuinely
+running job); adopt round-trip test; subagent-surface test asserting
+compact_context present; nudge-gating tests for present/absent registry
+states.
 
+**Size:** ~450 loc.
 ## WS9 — serf-doctor: make the next study mechanical
 
 This study cost ~16M subagent tokens because agents re-derived mechanical
