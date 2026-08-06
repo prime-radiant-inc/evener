@@ -345,7 +345,7 @@ function scanQuotedListChild(
       char: childFenceRun.charAt(0) as "`" | "~",
       length: childFenceRun.length,
       childIndent: topIndent,
-      childClosePrefix: "",
+      childClosePrefix: " ".repeat(topIndent),
     });
     return;
   }

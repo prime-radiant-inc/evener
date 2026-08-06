@@ -220,8 +220,11 @@ test("a nested quoted child carries its quote depth across a continuation line (
 });
 
 test("a fenced child under a quoted list keeps its fence open across lines (Roborev 4581)", () => {
+  // The synthesized closer must preserve the list's own content indent
+  // (Roborev 4803) - a bare "> ```" would exit the list item and open an
+  // unrelated outer fence instead of closing this one.
   const source = "> - parent\n>     ```\n>     **code";
-  expect(closeOpenMarkdown(source)).toBe(`${source}\n> \`\`\``);
+  expect(closeOpenMarkdown(source)).toBe(`${source}\n>   \`\`\``);
 });
 
 // --- Roborev 4581 review, fix round 1 ---------------------------------------
