@@ -717,6 +717,20 @@ test("a read_file card OUTSIDE the session cwd shows no Open beside control", ()
   expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
 });
 
+test("a read_file card outside the session cwd renders no trailing-anchor wrapper", () => {
+  resetThreadsStoreForTests();
+  seedThreadCwd("ref_a", "/home/proj");
+  render(
+    <ToolCallItem
+      item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/etc/passwd" }) })}
+      turn={turn}
+      live={false}
+      sessionRef="ref_a"
+    />,
+  );
+  expect(screen.queryByTestId("tool-row-trailing")).toBe(null);
+});
+
 test("a read_file card with no session ref shows no Open beside control", () => {
   resetThreadsStoreForTests();
   seedThreadCwd("ref_a", "/home/proj");
