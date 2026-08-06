@@ -236,9 +236,19 @@ test("a fence opened via a nested quote inside a list closes at the outer quote 
   // is tracked against the OUTER blockquote depth, not the nested quote's -
   // the nested `>` on later lines becomes literal fence content, same as any
   // other text inside a fence (fenced code is never markdown, blockquote
-  // markers included).
+  // markers included). The synthesized closer must reproduce the FULL
+  // container prefix (outer quote + list indent + nested quote marker) -
+  // `"> ```"` alone would exit the list item and the nested blockquote,
+  // opening a new outer fence instead of closing this one.
   const source = "> - parent\n>     > ```\n>     > code";
-  expect(closeOpenMarkdown(source)).toBe(`${source}\n> \`\`\``);
+  expect(closeOpenMarkdown(source)).toBe(`${source}\n>     > \`\`\``);
+});
+
+// --- Roborev 4801 review, fix round 2 ---------------------------------------
+
+test("indented code under a later sibling list item is not over-deindented", () => {
+  const source = "> - parent\n>     - first\n>     - second\n>           **code";
+  expect(closeOpenMarkdown(source)).toBe(source);
 });
 
 test("an abandoned emphasis opener does not close across a setext heading underline", () => {

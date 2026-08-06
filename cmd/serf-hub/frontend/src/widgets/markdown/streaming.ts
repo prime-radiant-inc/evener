@@ -43,6 +43,12 @@ interface OpenFence {
   // line, before checking it against this fence - set when the fence
   // opened inside a list item nested under a blockquote (0 otherwise).
   childIndent: number;
+  // extra literal text between `quotePrefix` and the fence characters when
+  // synthesizing an EOF closer - reproduces the list indent and any nested
+  // quote marker the fence opened through, so the synthesized closer stays
+  // inside that container instead of exiting it (empty for a fence with no
+  // such container to preserve).
+  childClosePrefix: string;
 }
 
 interface OpenCodeSpan {
@@ -121,7 +127,17 @@ type BlockquoteLine = { content: string; depth: number; prefix: string };
 // open within the child content (0 when the child is not inside one) - it
 // carries across lines the same way `blockquoteDepth` does at the top
 // level, instead of being recomputed from scratch on every line.
-type BlockquoteListContainer = { contentIndent: number; depth: number; quoteDepth: number };
+//
+// `contentIndents` is a STACK of content-start columns, one per active
+// nesting depth: index 0 is the outer list item's own content indent (the
+// floor, never popped); each further entry is a nested list item found
+// while scanning child lines. A later child line's OWN leading indent
+// (measured against the RAW, undeindented content) decides whether it goes
+// deeper than the current top (push) or is a sibling/dedent of an
+// enclosing item (pop back to the matching depth first) - so a sibling at
+// depth N always resolves against depth N's real content column instead of
+// inheriting whatever a deeper, since-ended item last pushed.
+type BlockquoteListContainer = { contentIndents: number[]; depth: number; quoteDepth: number };
 
 function isQuoteSpace(char: string | undefined): boolean {
   return char === " " || char === "\t";
@@ -248,24 +264,41 @@ function matchEmphasis(marker: "**" | "*" | "~~", canOpen: boolean, canClose: bo
 
 // A fence opened by a child line of a quoted list item - `quoteDepth` and
 // `quotePrefix` come from the OUTER blockquote line, not from this scan, so
-// the caller fills them in.
-type ChildFenceOpen = { char: "`" | "~"; length: number; childIndent: number };
+// the caller fills them in. `childClosePrefix` is the extra literal text
+// (list indent spaces, plus a nested quote's own "> " if the fence opened
+// through one) needed between `quotePrefix` and the fence characters so an
+// EOF-synthesized closer stays INSIDE the same list item / nested quote
+// instead of exiting it and opening a new, different fence.
+type ChildFenceOpen = { char: "`" | "~"; length: number; childIndent: number; childClosePrefix: string };
 
 // Scans one CONTENT line of a list item nested under a blockquote (already
 // stripped of the `>` prefix, still carrying its list-item indentation) and
 // classifies it with the same block-boundary rules used at the top level,
-// updating `stack` and `container.quoteDepth` in place. `container` is the
-// SAME object across calls for consecutive child lines, so its `quoteDepth`
-// persists - that persistence, plus reclassifying every line rather than
-// only the first, is what lets a nested quote or fence stay open (or die at
-// a real boundary) across more than one child line.
+// updating `stack` and `container.quoteDepth`/`contentIndents` in place.
+// `container` is the SAME object across calls for consecutive child lines,
+// so its state persists - that persistence, plus reclassifying every line
+// rather than only the first, is what lets a nested quote, a fence, or a
+// deeper list frame stay open (or resolve to the right ancestor) across
+// more than one child line.
 function scanQuotedListChild(
   quotedContent: string,
   container: BlockquoteListContainer,
   stack: OpenMarker[],
   openFence: (open: ChildFenceOpen) => void,
 ): void {
-  const childLine = removeIndent(quotedContent, container.contentIndent);
+  // A line that doesn't reach the innermost tracked list frame's content
+  // column has dedented out of it (a sibling of an enclosing item, or a
+  // dedent to the outer item itself) - pop back to the nearest frame it
+  // DOES reach before deindenting. Index 0 (the outer list item's own
+  // frame) is the floor and never pops.
+  const available = quotedContent.match(/^ */)?.[0].length ?? 0;
+  while (container.contentIndents.length > 1) {
+    const innermost = container.contentIndents[container.contentIndents.length - 1];
+    if (innermost === undefined || available >= innermost) break;
+    container.contentIndents.pop();
+  }
+  const topIndent = container.contentIndents[container.contentIndents.length - 1] ?? 0;
+  const childLine = removeIndent(quotedContent, topIndent);
   const childQuote = blockquoteLine(childLine);
 
   if (childQuote !== undefined) {
@@ -284,7 +317,8 @@ function scanQuotedListChild(
         openFence({
           char: childFenceRun.charAt(0) as "`" | "~",
           length: childFenceRun.length,
-          childIndent: container.contentIndent,
+          childIndent: topIndent,
+          childClosePrefix: " ".repeat(topIndent) + childQuote.prefix,
         });
       } else {
         scanInline(childQuote.content, stack);
@@ -310,7 +344,8 @@ function scanQuotedListChild(
     openFence({
       char: childFenceRun.charAt(0) as "`" | "~",
       length: childFenceRun.length,
-      childIndent: container.contentIndent,
+      childIndent: topIndent,
+      childClosePrefix: "",
     });
     return;
   }
@@ -321,13 +356,15 @@ function scanQuotedListChild(
   if (isAtxHeading(childLine) || isListItem(childLine)) {
     // A heading or a new nested list item interrupts the parent paragraph
     // (same as at the top level) but still scans its own inline markers.
-    // A nested list item also deepens the indent frame: its OWN content
-    // indent is relative to this already-deindented childLine, so it adds
-    // onto (not replaces) the container's accumulated contentIndent - the
-    // next child line must deindent past both levels to reach its content.
+    // A nested list item also pushes a new, deeper indent frame - its OWN
+    // content indent is relative to this already-deindented childLine, so
+    // the new frame is topIndent + that width. A SIBLING (or a dedent to
+    // an enclosing item) already popped down to the right ancestor frame
+    // above, so pushing here replaces whatever deeper frame a since-ended
+    // item left behind, rather than compounding on top of it.
     if (isListItem(childLine)) {
-      const nestedContentIndent = listItemContentIndent(childLine);
-      if (nestedContentIndent !== undefined) container.contentIndent += nestedContentIndent;
+      const ownContentIndent = listItemContentIndent(childLine);
+      if (ownContentIndent !== undefined) container.contentIndents.push(topIndent + ownContentIndent);
     }
     stack.length = 0;
     scanInline(childLine, stack);
@@ -374,6 +411,7 @@ export function closeOpenMarkdown(source: string): string {
         quoteDepth: 0,
         quotePrefix: "",
         childIndent: 0,
+        childClosePrefix: "",
       };
       stack = []; // a fence interrupts a paragraph; its open emphasis dies here
       paragraph = "none";
@@ -456,6 +494,7 @@ export function closeOpenMarkdown(source: string): string {
           quoteDepth: quoted.depth,
           quotePrefix: quoted.prefix,
           childIndent: 0,
+          childClosePrefix: "",
         };
         stack = [];
         paragraph = "none";
@@ -469,7 +508,7 @@ export function closeOpenMarkdown(source: string): string {
         const contentIndent = listItemContentIndent(quoted.content);
         blockquoteListContainer =
           quotedIsListItem && contentIndent !== undefined
-            ? { contentIndent, depth: quoted.depth, quoteDepth: 0 }
+            ? { contentIndents: [contentIndent], depth: quoted.depth, quoteDepth: 0 }
             : null;
       }
       if (isSetextUnderline(quoted.content)) {
@@ -520,7 +559,7 @@ export function closeOpenMarkdown(source: string): string {
     }
   }
 
-  if (fence) return `${source}\n${fence.quotePrefix}${fence.char.repeat(fence.length)}`;
+  if (fence) return `${source}\n${fence.quotePrefix}${fence.childClosePrefix}${fence.char.repeat(fence.length)}`;
   let closers = "";
   for (let index = stack.length - 1; index >= 0; index -= 1) {
     const entry = stack[index];
