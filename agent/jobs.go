@@ -1094,6 +1094,58 @@ func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, t
 	return tailOutputFile(path, tailBytes, validatedTotal)
 }
 
+// jobOutputWindow is one paged read of a job's output in lifetime offsets:
+// the content covering [start, end) of total bytes ever written, where
+// earliest is the oldest still-retained offset (the evicted prefix length).
+type jobOutputWindow struct {
+	content  string
+	start    int64
+	end      int64
+	total    int64
+	earliest int64
+}
+
+// readOutputWindow reads up to maxBytes of jobID's output ending at lifetime
+// offset beforeBytes (exclusive); beforeBytes <= 0 reads the tail. It backs
+// serf/jobs/output paging for both the live output store and terminal logs.
+func (jm *jobManager) readOutputWindow(jobID string, beforeBytes, maxBytes int64) (jobOutputWindow, error) {
+	jm.mu.Lock()
+	run := jm.running[jobID]
+	jm.mu.Unlock()
+	if run != nil {
+		buf, start, end, total, err := run.output.Window(beforeBytes, int(maxBytes))
+		if err != nil {
+			return jobOutputWindow{}, err
+		}
+		return jobOutputWindow{
+			content:  string(buf),
+			start:    start,
+			end:      end,
+			total:    total,
+			earliest: run.output.RetainedStart(),
+		}, nil
+	}
+
+	recs, err := jm.store.Load()
+	if err != nil {
+		return jobOutputWindow{}, err
+	}
+	rec := recs[jobID]
+	if rec == nil {
+		return jobOutputWindow{}, errJobNotFound(jobID)
+	}
+	path := jm.outputPathForJob(rec, jobID)
+	total, earliest, err := validatedOutputStatsForRecord(path, rec)
+	if err != nil {
+		return jobOutputWindow{}, err
+	}
+	content, start, end, err := windowOutputFile(path, beforeBytes, maxBytes, total, earliest)
+	if err != nil {
+		return jobOutputWindow{}, err
+	}
+	return jobOutputWindow{content: content, start: start, end: end, total: total, earliest: earliest}, nil
+}
+
 func (jm *jobManager) readOutputHead(jobID string, headBytes int) (content string, total int64, truncated bool, err error) {
 	jm.mu.Lock()
 	run := jm.running[jobID]
@@ -1962,6 +2014,65 @@ func validatedOutputStatsForRecord(path string, rec *jobstore.JobRecord) (total 
 
 func tailOutputFile(path string, tailBytes int, total int64) (output string, totalBytes int64, truncated bool, err error) {
 	return tailOutputFileWithOpen(path, tailBytes, total, func(path string) (jobOutputReadFile, error) { return os.Open(path) })
+}
+
+// windowOutputFile reads the on-disk log's [start, end) lifetime window for a
+// beforeBytes/maxBytes page request (beforeBytes <= 0 reads the tail), the
+// file-based counterpart of jobstore.OutputStore.Window. total and earliest
+// come from the output metadata (validatedOutputStatsForRecord): earliest is
+// the evicted prefix length, so lifetime offsets map onto the file by
+// subtracting it.
+func windowOutputFile(path string, beforeBytes, maxBytes, total, earliest int64) (output string, start, end int64, err error) {
+	return windowOutputFileWithOpen(path, beforeBytes, maxBytes, total, earliest, func(path string) (jobOutputReadFile, error) { return os.Open(path) })
+}
+
+func windowOutputFileWithOpen(path string, beforeBytes, maxBytes, total, earliest int64, open func(string) (jobOutputReadFile, error)) (output string, start, end int64, err error) {
+	if maxBytes < 0 {
+		return "", 0, 0, fmt.Errorf("%w: maxBytes=%d", jobstore.ErrInvalidLimit, maxBytes)
+	}
+	start, end = jobstore.WindowBounds(beforeBytes, maxBytes, total, earliest)
+
+	f, err := open(path)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("jobstore: open output: %w", err)
+	}
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("jobstore: close output: %w", closeErr)
+		}
+	}()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("jobstore: stat output: %w", err)
+	}
+	// The file's own size bounds the read; the metadata's total can outrun it
+	// only while a writer is mid-append, and a short read must not become one.
+	fileStart := start - earliest
+	fileEnd := end - earliest
+	if fileEnd > info.Size() {
+		fileEnd = info.Size()
+	}
+	if fileStart > info.Size() {
+		fileStart = info.Size()
+	}
+	if _, err := f.Seek(fileStart, 0); err != nil {
+		return "", 0, 0, err
+	}
+	buf := make([]byte, fileEnd-fileStart)
+	if len(buf) > 0 {
+		if _, err := io.ReadFull(f, buf); err != nil {
+			return "", 0, 0, fmt.Errorf("jobstore: read output: %w", err)
+		}
+	}
+	if fileStart > 0 {
+		// Same mid-rune rule as tailOutputFileWithOpen: the window SHRINKS and
+		// start advances, so start still names the first byte returned.
+		before := len(buf)
+		buf = runetrim.TrimLeadingPartial(buf)
+		start += int64(before - len(buf))
+	}
+	return string(buf), start, end, nil
 }
 
 type jobOutputReadFile interface {

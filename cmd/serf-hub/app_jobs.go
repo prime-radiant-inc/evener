@@ -73,7 +73,7 @@ func hubJobsOutput(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if !ok {
 		return appwire.JobsOutputResponse{}, err
 	}
-	tail, found, tailErr := agent.LoadSessionJobOutputTail(entry.StateDir, entry.Meta.ID, params.JobID, params.MaxBytes)
+	tail, found, tailErr := agent.LoadSessionJobOutputTail(entry.StateDir, entry.Meta.ID, params.JobID, params.BeforeBytes, params.MaxBytes)
 	if tailErr != nil {
 		return appwire.JobsOutputResponse{}, tailErr
 	}

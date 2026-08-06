@@ -230,6 +230,67 @@ test("a truncated job log says how much of the output is shown", async () => {
 
   await waitFor(() => expect(screen.getByText("tail end")).toBeTruthy());
   expect(screen.getByText(/showing the last 65,?536 of 70,?000 bytes/i)).toBeTruthy();
+  // No hasEarlier field (an older daemon's shape) means no paging affordance:
+  // the note alone carries the truncation, exactly as before paging existed.
+  expect(screen.queryByRole("button", { name: /load earlier/i })).toBeNull();
+});
+
+test("load earlier pages backwards through the job log until the head", async () => {
+  const fake = connectFakeClient();
+  fake.on("serf/jobs/output", (params) => {
+    const before = (params as { beforeBytes?: number }).beforeBytes;
+    if (before === undefined) {
+      return { data: { tail: "6789", totalBytes: 10, retainedStart: 6, truncated: true, hasEarlier: true } };
+    }
+    if (before === 6) {
+      return { data: { tail: "2345", totalBytes: 10, retainedStart: 2, truncated: true, hasEarlier: true } };
+    }
+    if (before === 2) {
+      return { data: { tail: "01", totalBytes: 10, retainedStart: 0, truncated: true, hasEarlier: false } };
+    }
+    throw new Error(`unexpected beforeBytes ${before}`);
+  });
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "job:job_x", parentRef: "ref_parent" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByTestId("joblog-content").textContent).toBe("6789"));
+
+  fireEvent.click(screen.getByRole("button", { name: /load earlier/i }));
+  await waitFor(() => expect(screen.getByTestId("joblog-content").textContent).toBe("23456789"));
+  expect(screen.getByText(/showing the last 8 of 10 bytes/i)).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: /load earlier/i }));
+  await waitFor(() => expect(screen.getByTestId("joblog-content").textContent).toBe("0123456789"));
+  // The whole log is on screen: the button and the truncation note both go away.
+  expect(screen.queryByRole("button", { name: /load earlier/i })).toBeNull();
+  expect(screen.queryByText(/showing the last/i)).toBeNull();
+
+  const calls = fake.calls.filter((call) => call.method === "serf/jobs/output");
+  expect(calls.map((call) => (call.params as { beforeBytes?: number }).beforeBytes)).toEqual([undefined, 6, 2]);
+});
+
+test("a daemon that ignores beforeBytes stops paging instead of duplicating the tail", async () => {
+  const fake = connectFakeClient();
+  // Every request returns the same tail window, as a daemon that predates
+  // beforeBytes would.
+  fake.on("serf/jobs/output", () => ({
+    data: { tail: "6789", totalBytes: 10, retainedStart: 6, truncated: true, hasEarlier: true },
+  }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "job:job_x", parentRef: "ref_parent" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByTestId("joblog-content").textContent).toBe("6789"));
+  fireEvent.click(screen.getByRole("button", { name: /load earlier/i }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: /load earlier/i })).toBeNull());
+  expect(screen.getByTestId("joblog-content").textContent).toBe("6789");
 });
 
 test("a job with no output yet says so instead of rendering an empty log", async () => {

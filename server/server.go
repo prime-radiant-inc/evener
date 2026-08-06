@@ -254,7 +254,7 @@ type Server struct {
 	listModelsFunc                func(context.Context) ([]ModelsResponseItem, error)
 	tasksFn                       func() any
 	jobsFn                        func(appwire.JobsListParams) (any, error)
-	jobOutputFn                   func(jobID string, maxBytes int64) (data any, found bool, err error)
+	jobOutputFn                   func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
 	shutdownFunc                  func()
 	// sandboxEscalationResolveFunc delivers a human's approve/deny decision for a
 	// pending sandbox-exemption escalation (M7) to the session, unblocking the
@@ -590,7 +590,8 @@ func (s *Server) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
 
 // SetJobOutputFunc sets the function backing serf/jobs/output. found=false
 // maps to an invalid-params wire error (the caller guessed a job id).
-func (s *Server) SetJobOutputFunc(fn func(jobID string, maxBytes int64) (data any, found bool, err error)) {
+// beforeBytes > 0 pages backwards through the job's output log.
+func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)) {
 	s.mu.Lock()
 	s.jobOutputFn = fn
 	s.mu.Unlock()

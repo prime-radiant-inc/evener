@@ -376,6 +376,114 @@ func TestOutputTailTruncatesToLastBytes(t *testing.T) {
 	}
 }
 
+func TestWindowBounds(t *testing.T) {
+	tests := []struct {
+		name                        string
+		before, max, total, earliest int64
+		wantStart, wantEnd          int64
+	}{
+		{name: "tail when before is zero", before: 0, max: 4, total: 10, earliest: 0, wantStart: 6, wantEnd: 10},
+		{name: "tail when before is negative", before: -5, max: 4, total: 10, earliest: 0, wantStart: 6, wantEnd: 10},
+		{name: "page ending mid-log", before: 6, max: 4, total: 10, earliest: 0, wantStart: 2, wantEnd: 6},
+		{name: "page clamped to the head", before: 2, max: 4, total: 10, earliest: 0, wantStart: 0, wantEnd: 2},
+		{name: "before beyond the end reads the tail", before: 99, max: 4, total: 10, earliest: 0, wantStart: 6, wantEnd: 10},
+		{name: "before at the retained head is empty", before: 4, max: 4, total: 10, earliest: 4, wantStart: 4, wantEnd: 4},
+		{name: "window never crosses the retained head", before: 8, max: 6, total: 10, earliest: 4, wantStart: 4, wantEnd: 8},
+		{name: "empty log", before: 0, max: 4, total: 0, earliest: 0, wantStart: 0, wantEnd: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			start, end := WindowBounds(tt.before, tt.max, tt.total, tt.earliest)
+			if start != tt.wantStart || end != tt.wantEnd {
+				t.Fatalf("WindowBounds(%d, %d, %d, %d) = [%d, %d), want [%d, %d)",
+					tt.before, tt.max, tt.total, tt.earliest, start, end, tt.wantStart, tt.wantEnd)
+			}
+		})
+	}
+}
+
+func TestOutputWindowPagesBackwardsThroughTheLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 1<<20)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendOutput(t, o, "0123456789")
+
+	// beforeBytes <= 0 is the tail, identical to Tail(maxBytes).
+	buf, start, end, total, err := o.Window(0, 4)
+	if err != nil {
+		t.Fatalf("window tail: %v", err)
+	}
+	if string(buf) != "6789" || start != 6 || end != 10 || total != 10 {
+		t.Fatalf("tail window = %q [%d,%d) of %d, want 6789 [6,10) of 10", buf, start, end, total)
+	}
+
+	// Paging: each window ends where the previous one began.
+	buf, start, end, _, err = o.Window(6, 4)
+	if err != nil {
+		t.Fatalf("window page: %v", err)
+	}
+	if string(buf) != "2345" || start != 2 || end != 6 {
+		t.Fatalf("page window = %q [%d,%d), want 2345 [2,6)", buf, start, end)
+	}
+
+	// The last page is clamped to the head of the log.
+	buf, start, end, _, err = o.Window(2, 4)
+	if err != nil {
+		t.Fatalf("window head page: %v", err)
+	}
+	if string(buf) != "01" || start != 0 || end != 2 {
+		t.Fatalf("head page = %q [%d,%d), want 01 [0,2)", buf, start, end)
+	}
+}
+
+func TestOutputWindowNeverReadsBeforeTheRetainedHead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 6)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendOutput(t, o, "abcdef")
+	appendOutput(t, o, "ghij") // lifetime 10, retained "efghij", retainedStart 4
+
+	buf, start, end, total, err := o.Window(0, 1024)
+	if err != nil {
+		t.Fatalf("window tail: %v", err)
+	}
+	if string(buf) != "efghij" || start != 4 || end != 10 || total != 10 {
+		t.Fatalf("tail window = %q [%d,%d) of %d, want efghij [4,10) of 10", buf, start, end, total)
+	}
+
+	// A page ending at the retained head is empty: the evicted prefix is gone.
+	buf, start, end, _, err = o.Window(4, 1024)
+	if err != nil {
+		t.Fatalf("window before retained head: %v", err)
+	}
+	if len(buf) != 0 || start != 4 || end != 4 {
+		t.Fatalf("page at retained head = %q [%d,%d), want empty [4,4)", buf, start, end)
+	}
+}
+
+func TestOutputWindowRealignsAMidRuneCut(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 1<<20)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendOutput(t, o, "abécd") // é is 2 bytes: a0 b1 é2-3 c4 d5, total 6
+
+	// The 3-byte tail opens on é's continuation byte; the window shrinks to
+	// "cd" and start advances past the dangling byte.
+	buf, start, end, total, err := o.Window(0, 3)
+	if err != nil {
+		t.Fatalf("window: %v", err)
+	}
+	if string(buf) != "cd" || start != 4 || end != 6 || total != 6 {
+		t.Fatalf("window = %q [%d,%d) of %d, want cd [4,6) of 6", buf, start, end, total)
+	}
+}
+
 func TestOutputEnforcesCapAndReportsLifetimeBytes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "job_A.log")
 	o, err := OpenOutput(path, 6)

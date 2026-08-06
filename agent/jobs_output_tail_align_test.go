@@ -8,8 +8,20 @@ import (
 // A tail window that lands mid-rune starts on the next rune boundary instead of
 // on a UTF-8 continuation byte, and the reported offsets describe the bytes
 // actually returned: the panel caption counts totalBytes - retainedStart, and
-// jobOutputTailFrom derives retainedStart from the returned content, so the
-// shrunken window and the caption stay in agreement.
+// the window's start names the first byte handed back, so the shrunken window
+// and the caption stay in agreement.
+
+// tailWindowProjection projects a tail read (content ending at total) through
+// the same constructor the production paths use.
+func tailWindowProjection(out string, total int64) JobOutputTail {
+	return jobOutputTailFromWindow(jobOutputWindow{
+		content: out,
+		start:   total - int64(len(out)),
+		end:     total,
+		total:   total,
+	})
+}
+
 func TestTailOutputFileAlignsMidRuneWindowStart(t *testing.T) {
 	t.Parallel()
 	// Two 4-byte emoji: a 6-byte window starts 2 bytes into the first one.
@@ -28,7 +40,7 @@ func TestTailOutputFileAlignsMidRuneWindowStart(t *testing.T) {
 	if out != "😀" || total != 8 || !truncated {
 		t.Fatalf("tail = (%q, %d, %v), want (😀, 8, true)", out, total, truncated)
 	}
-	projected := jobOutputTailFrom(out, total, truncated)
+	projected := tailWindowProjection(out, total)
 	if projected.RetainedStart != 4 || projected.TotalBytes-projected.RetainedStart != int64(len(out)) {
 		t.Fatalf("projection = %+v, want retainedStart 4 describing %d returned bytes", projected, len(out))
 	}
@@ -47,7 +59,7 @@ func TestTailOutputFileWindowOnRuneBoundaryUnchanged(t *testing.T) {
 	if out != "😀" || total != 8 || !truncated {
 		t.Fatalf("tail = (%q, %d, %v), want (😀, 8, true)", out, total, truncated)
 	}
-	if got := jobOutputTailFrom(out, total, truncated).RetainedStart; got != 4 {
+	if got := tailWindowProjection(out, total).RetainedStart; got != 4 {
 		t.Fatalf("retainedStart = %d, want 4", got)
 	}
 }
@@ -88,7 +100,7 @@ func TestTailOutputFileWindowNarrowerThanRuneIsEmpty(t *testing.T) {
 	if out != "" || total != 4 || !truncated {
 		t.Fatalf("tail = (%q, %d, %v), want (\"\", 4, true)", out, total, truncated)
 	}
-	projected := jobOutputTailFrom(out, total, truncated)
+	projected := tailWindowProjection(out, total)
 	if projected.RetainedStart != 4 || projected.TotalBytes-projected.RetainedStart != 0 {
 		t.Fatalf("projection = %+v, want retainedStart 4 describing 0 returned bytes", projected)
 	}
@@ -133,14 +145,14 @@ func TestTailOutputFileKeepsInvalidUTF8(t *testing.T) {
 			path := w2dlg_writeFile(t, string(tc.content))
 			total := int64(len(tc.content))
 
-			out, gotTotal, truncated, err := tailOutputFile(path, tc.bytes, total)
+			out, gotTotal, _, err := tailOutputFile(path, tc.bytes, total)
 			if err != nil {
 				t.Fatalf("tailOutputFile: %v", err)
 			}
 			if out != string(tc.want) {
 				t.Fatalf("tail = %x, want %x", out, tc.want)
 			}
-			projected := jobOutputTailFrom(out, gotTotal, truncated)
+			projected := tailWindowProjection(out, gotTotal)
 			if projected.TotalBytes-projected.RetainedStart != int64(len(out)) {
 				t.Fatalf("projection = %+v, want the caption to count the %d returned bytes", projected, len(out))
 			}

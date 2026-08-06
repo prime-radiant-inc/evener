@@ -89,7 +89,7 @@ type serveServer interface {
 	SetListModelsFunc(func(context.Context) ([]server.ModelsResponseItem, error))
 	SetTasksFunc(func() any)
 	SetJobsFunc(func(appwire.JobsListParams) (any, error))
-	SetJobOutputFunc(func(string, int64) (any, bool, error))
+	SetJobOutputFunc(func(string, int64, int64) (any, bool, error))
 	SetClearFunc(func(context.Context) error)
 	SetWorkingDir(string)
 	SetShutdownFunc(func())
@@ -849,8 +849,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		return sess.JobActivityTree(params)
 	})
-	srv.SetJobOutputFunc(func(jobID string, maxBytes int64) (any, bool, error) {
-		return getSession().JobOutputTail(jobID, maxBytes)
+	srv.SetJobOutputFunc(func(jobID string, beforeBytes, maxBytes int64) (any, bool, error) {
+		return getSession().JobOutputTail(jobID, beforeBytes, maxBytes)
 	})
 	srv.SetClearFunc(func(ctx context.Context) error {
 		oldSess := getSession()

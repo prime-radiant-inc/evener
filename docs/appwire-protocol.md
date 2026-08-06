@@ -595,6 +595,7 @@ _(no fields)_
 | `ref` | `string` | yes |  |
 | `jobId` | `string` |  |  |
 | `maxBytes` | `int64` | yes |  |
+| `beforeBytes` | `int64` | yes |  |
 
 
 ### `JobsOutputResponse`

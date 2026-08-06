@@ -215,7 +215,9 @@ export interface ThreadsStoreState {
   // wrapped, so the store stays shape-agnostic; the caller owns interpreting
   // them (the chrome stream's parseActivityTree / parseJobOutputData).
   listJobs(ref: string, continuation?: string): Promise<unknown>;
-  jobOutput(ref: string, jobId: string): Promise<unknown>;
+  // beforeBytes > 0 pages backwards: the window ending at that lifetime
+  // output offset instead of the tail (appwire.JobsOutputParams.BeforeBytes).
+  jobOutput(ref: string, jobId: string, beforeBytes?: number): Promise<unknown>;
   // Answers one serf/sandbox/escalation/requested via serf/sandbox/
   // escalation/resolve. On success, removes the escalation from whichever
   // of threads/watchedThreads currently track `ref` (both, if both do -
@@ -2046,9 +2048,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     return resp.data;
   },
 
-  async jobOutput(ref, jobId) {
+  async jobOutput(ref, jobId, beforeBytes) {
     const client = requireClient();
-    const resp = await client.request("serf/jobs/output", { ref, jobId });
+    const resp = await client.request("serf/jobs/output", {
+      ref,
+      jobId,
+      ...(beforeBytes !== undefined && beforeBytes > 0 ? { beforeBytes } : {}),
+    });
     return resp.data;
   },
 

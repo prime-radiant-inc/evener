@@ -36,12 +36,14 @@ func clampJobTailBytes(maxBytes int64) int64 {
 
 // JobOutputTail is the live-daemon serf/jobs/output payload. found=false
 // means no job with that id exists; a found job with no output file yet is
-// an empty tail, not an error.
-func (s *Session) JobOutputTail(jobID string, maxBytes int64) (JobOutputTail, bool, error) {
+// an empty tail, not an error. beforeBytes > 0 pages backwards: the window of
+// up to maxBytes ending at that lifetime offset, with HasEarlier reporting
+// whether a further page exists.
+func (s *Session) JobOutputTail(jobID string, beforeBytes, maxBytes int64) (JobOutputTail, bool, error) {
 	if s == nil || s.jobManager == nil {
 		return JobOutputTail{}, false, nil
 	}
-	content, total, truncated, err := s.jobManager.readOutput(jobID, int(clampJobTailBytes(maxBytes)))
+	w, err := s.jobManager.readOutputWindow(jobID, beforeBytes, clampJobTailBytes(maxBytes))
 	if err != nil {
 		if isJobNotFoundErr(err) {
 			return JobOutputTail{}, false, nil
@@ -51,19 +53,25 @@ func (s *Session) JobOutputTail(jobID string, maxBytes int64) (JobOutputTail, bo
 		}
 		return JobOutputTail{}, true, err
 	}
-	return jobOutputTailFrom(content, total, truncated), true, nil
+	return jobOutputTailFromWindow(w), true, nil
 }
 
-func jobOutputTailFrom(content string, total int64, truncated bool) JobOutputTail {
-	retainedStart := max(total-int64(len(content)), 0)
-	return JobOutputTail{Tail: content, TotalBytes: total, RetainedStart: retainedStart, Truncated: truncated}
+func jobOutputTailFromWindow(w jobOutputWindow) JobOutputTail {
+	return JobOutputTail{
+		Tail:          w.content,
+		TotalBytes:    w.total,
+		RetainedStart: w.start,
+		Truncated:     w.start > 0 || w.end < w.total,
+		HasEarlier:    w.start > w.earliest,
+	}
 }
 
 // LoadSessionJobOutputTail reads one local session's durable jobs.jsonl and
-// returns the tail of one job's output file, for the hub's past-session
+// returns a window of one job's output file, for the hub's past-session
 // fallback. It is read-only. found=false means no job with that id exists;
 // a found job with no output file yet is an empty tail, not an error.
-func LoadSessionJobOutputTail(stateDir, sessionID, jobID string, maxBytes int64) (JobOutputTail, bool, error) {
+// beforeBytes has the same paging meaning as Session.JobOutputTail's.
+func LoadSessionJobOutputTail(stateDir, sessionID, jobID string, beforeBytes, maxBytes int64) (JobOutputTail, bool, error) {
 	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
 	if _, err := historicalJobsStat(path); err != nil {
 		if os.IsNotExist(err) {
@@ -88,19 +96,25 @@ func LoadSessionJobOutputTail(stateDir, sessionID, jobID string, maxBytes int64)
 	if outPath == "" {
 		outPath = filepath.Join(jobsDir(stateDir, sessionID), "jobs", jobID+".log")
 	}
-	validatedTotal, _, err := validatedOutputStatsForRecord(outPath, rec)
+	validatedTotal, earliest, err := validatedOutputStatsForRecord(outPath, rec)
 	if err != nil {
 		if isOutputNotExistErr(err) {
 			return JobOutputTail{}, true, nil
 		}
 		return JobOutputTail{}, true, err
 	}
-	content, total, truncated, err := tailOutputFile(outPath, int(clampJobTailBytes(maxBytes)), validatedTotal)
+	content, start, end, err := windowOutputFile(outPath, beforeBytes, clampJobTailBytes(maxBytes), validatedTotal, earliest)
 	if err != nil {
 		if isOutputNotExistErr(err) {
 			return JobOutputTail{}, true, nil
 		}
 		return JobOutputTail{}, true, err
 	}
-	return jobOutputTailFrom(content, total, truncated), true, nil
+	return jobOutputTailFromWindow(jobOutputWindow{
+		content:  content,
+		start:    start,
+		end:      end,
+		total:    validatedTotal,
+		earliest: earliest,
+	}), true, nil
 }

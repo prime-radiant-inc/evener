@@ -1278,22 +1278,28 @@ var AllJobActivityTypes = []any{
 	JobActivityBranchState{},
 }
 
-// JobOutputTail is the serf/jobs/output payload: the last bytes of a job's
+// JobOutputTail is the serf/jobs/output payload: one window of a job's
 // durable output plus the bookkeeping a client needs to say "showing last N
-// of M bytes".
+// of M bytes" and to page backwards through the log.
 type JobOutputTail struct {
 	Tail          string `json:"tail"`
 	TotalBytes    int64  `json:"totalBytes"`
 	RetainedStart int64  `json:"retainedStart"`
 	Truncated     bool   `json:"truncated"`
+	// HasEarlier is true when retained output exists before the window: a
+	// follow-up read with beforeBytes=RetainedStart returns the previous page.
+	HasEarlier bool `json:"hasEarlier,omitempty"`
 }
 
-// JobsOutputParams reads a byte tail of one job's durable output. MaxBytes
-// defaults server-side (4 KiB) and is capped (64 KiB).
+// JobsOutputParams reads a byte window of one job's durable output. MaxBytes
+// defaults server-side (4 KiB) and is capped (64 KiB). BeforeBytes > 0 pages
+// backwards: the window ends at that lifetime output offset (exclusive)
+// instead of at the end of the log.
 type JobsOutputParams struct {
-	Ref      string `json:"ref,omitempty"`
-	JobID    string `json:"jobId"`
-	MaxBytes int64  `json:"maxBytes,omitempty"`
+	Ref         string `json:"ref,omitempty"`
+	JobID       string `json:"jobId"`
+	MaxBytes    int64  `json:"maxBytes,omitempty"`
+	BeforeBytes int64  `json:"beforeBytes,omitempty"`
 }
 
 type JobsOutputResponse struct {

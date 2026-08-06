@@ -73,15 +73,68 @@ func TestLoadSessionJobOutputTail(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	tail, found, err := LoadSessionJobOutputTail(dir, sessionID, "job_x", 4)
+	tail, found, err := LoadSessionJobOutputTail(dir, sessionID, "job_x", 0, 4)
 	if err != nil || !found {
 		t.Fatalf("tail: found=%v err=%v", found, err)
 	}
 	if tail.Tail != "6789" || tail.TotalBytes != 10 || !tail.Truncated {
 		t.Errorf("tail: %+v", tail)
 	}
-	if _, found, err := LoadSessionJobOutputTail(dir, sessionID, "job_nope", 4); err != nil || found {
+	if _, found, err := LoadSessionJobOutputTail(dir, sessionID, "job_nope", 0, 4); err != nil || found {
 		t.Errorf("unknown job: found=%v err=%v", found, err)
+	}
+}
+
+// Paging: beforeBytes reads the window ending at that lifetime offset, and
+// HasEarlier tells the client whether another page exists.
+func TestLoadSessionJobOutputTailPagesBackwards(t *testing.T) {
+	dir := t.TempDir()
+	sessionID := identifier.MustNewSessionID()
+	logDir := filepath.Join(jobsDir(dir, sessionID), "jobs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(logDir, "job_x.log")
+	if err := os.WriteFile(outPath, []byte("0123456789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := jobstore.Open(filepath.Join(jobsDir(dir, sessionID), "jobs.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := st.Append(jobstore.Event{Kind: jobstore.EventJobStarted, TS: now, JobID: "job_x", Type: jobstore.JobShell, Status: jobstore.StatusRunning, OwnerSessionID: sessionID, VisibleToSession: sessionID, StartedAt: &now, OutputPath: outPath}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Append(jobstore.Event{Kind: jobstore.EventJobFinished, TS: now, JobID: "job_x", Status: jobstore.StatusCompleted, OutputBytes: 10, TerminalGen: "tg-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	page, found, err := LoadSessionJobOutputTail(dir, sessionID, "job_x", 0, 4)
+	if err != nil || !found {
+		t.Fatalf("tail: found=%v err=%v", found, err)
+	}
+	if page.Tail != "6789" || page.RetainedStart != 6 || !page.HasEarlier {
+		t.Fatalf("tail page: %+v, want 6789 at 6 with earlier pages", page)
+	}
+
+	page, found, err = LoadSessionJobOutputTail(dir, sessionID, "job_x", page.RetainedStart, 4)
+	if err != nil || !found {
+		t.Fatalf("middle page: found=%v err=%v", found, err)
+	}
+	if page.Tail != "2345" || page.RetainedStart != 2 || !page.HasEarlier {
+		t.Fatalf("middle page: %+v, want 2345 at 2 with earlier pages", page)
+	}
+
+	page, found, err = LoadSessionJobOutputTail(dir, sessionID, "job_x", page.RetainedStart, 4)
+	if err != nil || !found {
+		t.Fatalf("head page: found=%v err=%v", found, err)
+	}
+	if page.Tail != "01" || page.RetainedStart != 0 || page.HasEarlier {
+		t.Fatalf("head page: %+v, want 01 at 0 with no earlier pages", page)
 	}
 }
 
@@ -115,7 +168,7 @@ func TestLoadSessionJobOutputTailAlignsMultiByteWindow(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	tail, found, err := LoadSessionJobOutputTail(dir, sessionID, "job_e", 6)
+	tail, found, err := LoadSessionJobOutputTail(dir, sessionID, "job_e", 0, 6)
 	if err != nil || !found {
 		t.Fatalf("tail: found=%v err=%v", found, err)
 	}
@@ -146,7 +199,7 @@ func TestLoadSessionJobOutputTailMissingOutputFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	// No output file was ever written: the default <jobs>/<id>.log is absent.
-	tail, found, err := LoadSessionJobOutputTail(dir, sessionID, "job_y", 0)
+	tail, found, err := LoadSessionJobOutputTail(dir, sessionID, "job_y", 0, 0)
 	if err != nil || !found {
 		t.Fatalf("missing output file: found=%v err=%v", found, err)
 	}
@@ -157,7 +210,7 @@ func TestLoadSessionJobOutputTailMissingOutputFile(t *testing.T) {
 
 func TestSessionJobOutputTailNilManager(t *testing.T) {
 	var s *Session
-	if _, found, err := s.JobOutputTail("job_1", 0); err != nil || found {
+	if _, found, err := s.JobOutputTail("job_1", 0, 0); err != nil || found {
 		t.Errorf("nil session JobOutputTail: found=%v err=%v", found, err)
 	}
 }

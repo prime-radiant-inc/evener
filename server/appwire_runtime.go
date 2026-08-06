@@ -1118,7 +1118,7 @@ func (s *Server) handleAppJobsOutput(_ context.Context, params appwire.JobsOutpu
 	if fn == nil {
 		return appwire.JobsOutputResponse{}, appwire.Unavailable("job output not available")
 	}
-	data, found, err := fn(params.JobID, params.MaxBytes)
+	data, found, err := fn(params.JobID, params.BeforeBytes, params.MaxBytes)
 	if err != nil {
 		return appwire.JobsOutputResponse{}, err
 	}

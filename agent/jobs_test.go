@@ -503,6 +503,67 @@ func TestJobManagerReadOutput(t *testing.T) {
 	}
 }
 
+func TestJobManagerReadOutputWindowPagesBackwards(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	_, _ = jm.running[rec.JobID].output.Append([]byte("0123456789"))
+
+	// beforeBytes=0 is the tail window.
+	w, err := jm.readOutputWindow(rec.JobID, 0, 4)
+	if err != nil {
+		t.Fatalf("tail window: %v", err)
+	}
+	if w.content != "6789" || w.start != 6 || w.end != 10 || w.total != 10 || w.earliest != 0 {
+		t.Fatalf("tail window = %+v, want 6789 [6,10) of 10", w)
+	}
+
+	// Each earlier page ends where the previous one began.
+	w, err = jm.readOutputWindow(rec.JobID, 6, 4)
+	if err != nil {
+		t.Fatalf("page: %v", err)
+	}
+	if w.content != "2345" || w.start != 2 || w.end != 6 {
+		t.Fatalf("page = %+v, want 2345 [2,6)", w)
+	}
+
+	w, err = jm.readOutputWindow(rec.JobID, 2, 4)
+	if err != nil {
+		t.Fatalf("head page: %v", err)
+	}
+	if w.content != "01" || w.start != 0 || w.end != 2 {
+		t.Fatalf("head page = %+v, want 01 [0,2)", w)
+	}
+}
+
+func TestJobManagerReadOutputWindowTerminalLog(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := jm.running[rec.JobID].output.Append([]byte("hello\nworld\n")); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	// The terminal path pages through the on-disk log the same way the live
+	// path pages through the output store.
+	w, err := jm.readOutputWindow(rec.JobID, 6, 6)
+	if err != nil {
+		t.Fatalf("page: %v", err)
+	}
+	if w.content != "hello\n" || w.start != 0 || w.end != 6 || w.total != 12 {
+		t.Fatalf("terminal page = %+v, want hello\\n [0,6) of 12", w)
+	}
+	if _, err := jm.readOutputWindow("job_missing", 0, 4); !isJobNotFoundErr(err) {
+		t.Fatalf("missing job err = %v, want job-not-found", err)
+	}
+}
+
 func TestJobManagerReadOutputTerminalLog(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)

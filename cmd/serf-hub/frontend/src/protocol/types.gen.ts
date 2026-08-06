@@ -366,6 +366,7 @@ export interface JobsOutputParams {
   ref?: string;
   jobId: string;
   maxBytes?: number;
+  beforeBytes?: number;
 }
 
 export interface JobsOutputResponse {

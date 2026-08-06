@@ -207,6 +207,82 @@ func (o *OutputStore) RetainedStart() int64 {
 	return o.retainedStart
 }
 
+// WindowBounds maps a paged read onto the lifetime offset space [start, end):
+// beforeBytes <= 0 reads the tail window ending at total; beforeBytes > 0
+// reads up to maxBytes ending at that offset (exclusive). The window never
+// crosses below earliest - bytes evicted by the retention cap are gone, so a
+// page ending at or before earliest is empty.
+func WindowBounds(beforeBytes, maxBytes, total, earliest int64) (start, end int64) {
+	end = total
+	if beforeBytes > 0 && beforeBytes < total {
+		end = beforeBytes
+	}
+	if end < earliest {
+		end = earliest
+	}
+	start = end - maxBytes
+	if start < earliest {
+		start = earliest
+	}
+	return start, end
+}
+
+// Window returns up to maxBytes of the log ending at lifetime offset
+// beforeBytes (exclusive), paging backwards from the tail: beforeBytes <= 0
+// reads the tail, exactly like Tail(maxBytes). It returns the window bytes
+// plus the lifetime offsets [start, end) actually handed over - start is
+// after any mid-rune realignment, so it always names the first byte returned.
+// Pair with RetainedStart: start > RetainedStart() means an earlier page
+// exists.
+func (o *OutputStore) Window(beforeBytes int64, maxBytes int) (buf []byte, start, end, total int64, err error) {
+	if maxBytes < 0 {
+		return nil, 0, 0, 0, fmt.Errorf("%w: maxBytes=%d", ErrInvalidLimit, maxBytes)
+	}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	info, err := o.fs.Stat(o.path)
+	if err != nil {
+		return nil, 0, 0, 0, fmt.Errorf("jobstore: stat output: %w", err)
+	}
+	total = o.total
+	start, end = WindowBounds(beforeBytes, int64(maxBytes), o.total, o.retainedStart)
+	f, err := o.fs.Open(o.path)
+	if err != nil {
+		return nil, 0, 0, total, fmt.Errorf("jobstore: open output: %w", err)
+	}
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("jobstore: close output: %w", closeErr)
+		}
+	}()
+	// Lifetime offsets map onto the retained file by dropping the evicted
+	// prefix; the file's own size (not total) bounds the read because appends
+	// land through this store before the stat above can see them.
+	fileStart := start - o.retainedStart
+	fileEnd := end - o.retainedStart
+	if fileEnd > info.Size() {
+		fileEnd = info.Size()
+	}
+	if _, err := f.Seek(fileStart, 0); err != nil {
+		return nil, 0, 0, total, err
+	}
+	buf = make([]byte, fileEnd-fileStart)
+	if len(buf) > 0 {
+		if _, err := io.ReadFull(f, buf); err != nil {
+			return nil, 0, 0, total, fmt.Errorf("jobstore: read output: %w", err)
+		}
+	}
+	if fileStart > 0 {
+		// Same mid-rune rule as Tail: the window only ever SHRINKS, and start
+		// advances so it still names the first byte actually returned.
+		before := len(buf)
+		buf = runetrim.TrimLeadingPartial(buf)
+		start += int64(before - len(buf))
+	}
+	return buf, start, end, total, nil
+}
+
 // Tail returns the last maxBytes bytes of the log, the total byte count, and
 // whether the returned slice is a truncated tail of a larger log.
 func (o *OutputStore) Tail(maxBytes int) (buf []byte, total int64, truncated bool, err error) {

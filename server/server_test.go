@@ -1568,7 +1568,7 @@ func TestHandleAppJobsOutputNilFunc(t *testing.T) {
 func TestHandleAppJobsOutputNotFound(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobOutputFunc(func(string, int64) (any, bool, error) { return nil, false, nil })
+	srv.SetJobOutputFunc(func(string, int64, int64) (any, bool, error) { return nil, false, nil })
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -1590,9 +1590,12 @@ func TestHandleAppJobsOutputNotFound(t *testing.T) {
 func TestHandleAppJobsOutput(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobOutputFunc(func(jobID string, maxBytes int64) (any, bool, error) {
+	srv.SetJobOutputFunc(func(jobID string, beforeBytes, maxBytes int64) (any, bool, error) {
 		if jobID != "job_1" {
 			t.Errorf("jobID = %q, want job_1", jobID)
+		}
+		if beforeBytes != 7 {
+			t.Errorf("beforeBytes = %d, want 7", beforeBytes)
 		}
 		if maxBytes != 99 {
 			t.Errorf("maxBytes = %d, want 99", maxBytes)
@@ -1605,7 +1608,7 @@ func TestHandleAppJobsOutput(t *testing.T) {
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsOutput, appwire.JobsOutputParams{JobID: "job_1", MaxBytes: 99}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsOutput, appwire.JobsOutputParams{JobID: "job_1", BeforeBytes: 7, MaxBytes: 99}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v (%+v)", resp.Kind(), resp.Error)
 	}
