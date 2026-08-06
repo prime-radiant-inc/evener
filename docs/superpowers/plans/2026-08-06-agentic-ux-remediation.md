@@ -156,6 +156,16 @@ MCP circuit breaker is transport-level reconnect, never application errors.
    future tools are all covered. MCP `IsError` results count as failures.
    Parked calls are recorded as ordinary error tool results (no new turn
    kind); WS9's `--health` counts them.
+7. **Second trigger (decided 2026-08-06, replaces a proposed MCP-only
+   heuristic):** consecutive identical calls returning **byte-identical
+   result bodies** nudge at 2 and park at 3 regardless of error status —
+   repetition itself is the signal, generic at the dispatch layer, no text
+   sniffing, nothing MCP-specific. Motivating case: the chrome MCP plugin
+   reports failures as `isError:false` with an "Error:" body (serf records
+   them faithfully as successes), so an IsError-only ledger missed the
+   300-call set_viewport loop. The plugin bug is filed upstream
+   (obra/superpowers-chrome#44); serf's breaker must not depend on tools
+   signaling errors correctly.
 
 **Tests:** unit tests on the ledger (reset semantics, error-class equality);
 an integration test driving a fake tool that always fails identically and
