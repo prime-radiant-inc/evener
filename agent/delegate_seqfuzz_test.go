@@ -82,6 +82,7 @@ import (
 // regression test; a flaky one is quarantined.
 // serf:fuzz rapid
 func TestDelegateSeqFuzz(t *testing.T) {
+	t.Parallel()
 	pkgDir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)

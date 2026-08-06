@@ -361,6 +361,7 @@ func (r *wtRepo) create(t *testing.T, args map[string]any) (map[string]any, erro
 // common directory back to the same canonical project, which needs a real
 // `worktree add` and a real .git pointer to follow.
 func TestManagedWorktreeStorageUsesOneProjectIDFromMainAndLinkedCheckout(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	mainProject := resolvedProjectID(t, r.s.currentEnv(), r.mainRoot)
 

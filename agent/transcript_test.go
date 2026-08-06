@@ -2858,6 +2858,7 @@ func TestReadSessionTranscriptAttemptExpansionBoundsHeaderAndBodyEnvelope(t *tes
 }
 
 func TestReadAPILogAttemptBodyPageMakesProgressWhenInlineHeadersConsumePage(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	body := []byte(strings.Repeat("body", 512))

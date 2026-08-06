@@ -92,6 +92,7 @@ import (
 // emitted to a temp dir as a regression test; a flaky one is quarantined.
 // serf:fuzz rapid
 func TestLifecycleSeqFuzz(t *testing.T) {
+	t.Parallel()
 	// Default-off: PersistPaths returns the temp fallbacks (no tree writes) for
 	// every gate run; the local triage tool sets SERF_FUZZ_PERSIST to capture a
 	// live-found crasher durably (see fuzz/promoter/persist.go).
