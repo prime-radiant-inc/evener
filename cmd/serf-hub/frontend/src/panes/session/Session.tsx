@@ -312,6 +312,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
             <VirtualList
               ref={virtualListRef}
               dynamic
+              anchorToEnd
               count={viewRows.length}
               estimateSize={() => ESTIMATED_TURN_HEIGHT}
               getItemKey={(index) => rowAt(index).id}

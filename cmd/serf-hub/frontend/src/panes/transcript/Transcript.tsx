@@ -92,17 +92,21 @@ export default function Transcript({ params }: PaneProps<TranscriptParams>) {
   const { model, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
   const listRef = useRef<VirtualListHandle>(null);
 
-  // Open at the latest turn once, when content first arrives - the one scroll
-  // behavior a read-only viewer needs. Deliberately fires only on the FIRST
-  // non-empty render (a ref guard), not on every turn-count change, so a
-  // later "load older" prepend doesn't yank the view back to the bottom.
+  // Open at the latest turn once, when content first arrives. anchorToEnd on
+  // the VirtualList below keeps the viewport pinned to the TRUE end while the
+  // initial estimate->measured correction settles (and follows later appends
+  // only while the reader stays at the end) - without it this one-shot scroll
+  // lands at the ESTIMATED end and strands the reader mid-transcript. The ref
+  // guard keeps it a one-shot: a later "load older" prepend doesn't yank the
+  // view back to the bottom (and the list's own end-anchor keeps a prepend
+  // visually anchored either way).
   const turnCount = model?.turns.length ?? 0;
   const openers = useMemo(() => (model ? exchangeOpenersFor(model.turns) : undefined), [model]);
   const didInitialScrollRef = useRef(false);
   useEffect(() => {
     if (!didInitialScrollRef.current && turnCount > 0) {
       didInitialScrollRef.current = true;
-      listRef.current?.scrollToIndex(turnCount - 1);
+      listRef.current?.scrollToIndex(turnCount - 1, { align: "end" });
     }
   }, [turnCount]);
 
@@ -137,6 +141,7 @@ export default function Transcript({ params }: PaneProps<TranscriptParams>) {
             <VirtualList
               ref={listRef}
               dynamic
+              anchorToEnd
               count={model.turns.length}
               estimateSize={() => ESTIMATED_TURN_HEIGHT}
               getItemKey={(index) => turnAt(index).id}

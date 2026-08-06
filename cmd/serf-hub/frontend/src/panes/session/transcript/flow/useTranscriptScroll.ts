@@ -1,11 +1,21 @@
 // useTranscriptScroll: the transcript pane's one scroll-behavior hook -
 // stick-to-bottom, the new-content pill's count/needs-you state, near-top
-// loadOlder triggering, prepend scroll-anchor correction, and per-ref
-// scroll-position persistence. Kept as a single hook (rather than several
-// independently-attaching ones) because every one of these concerns reads
-// and reacts to the SAME scroll element and the SAME "did the turn/item
-// shape change" signal - splitting them would mean multiple native scroll
-// listeners racing on one DOM node for no benefit.
+// loadOlder triggering, and view-mode scroll-anchor capture/restore. Kept
+// as a single hook (rather than several independently-attaching ones)
+// because every one of these concerns reads and reacts to the SAME scroll
+// element and the SAME "did the turn/item shape change" signal - splitting
+// them would mean multiple native scroll listeners racing on one DOM node
+// for no benefit.
+//
+// What this hook deliberately does NOT own anymore: raw scroll-position
+// COMPENSATION. Prepend (loadOlder) anchoring, estimate->measured settle
+// correction, and follow-on-append are the VirtualList's own job since it
+// grew an end-anchor (widgets/virtuallist's anchorToEnd, backed by
+// virtual-core 3.17's anchorTo:"end" + followOnAppend): the virtualizer
+// reads REAL DOM geometry at the moment of the mutation, where this hook's
+// hand-rolled scrollTop math had to trust estimated sizes and could strand
+// a freshly-opened session mid-transcript (or mis-time a yank). Doing both
+// would double-compensate every prepend.
 //
 // Design notes (see this task's report for the fuller reasoning):
 //  - "At bottom before the mutation" is measured continuously by the native
@@ -229,7 +239,6 @@ export function useTranscriptScroll({
   const [pillArrowDirection, setPillArrowDirection] = useState<"up" | "down">("down");
 
   const wasAtBottomRef = useRef(true);
-  const prevScrollHeightRef = useRef<number | null>(null);
   const firstTurnIdRef = useRef<string | undefined>(undefined);
   const baselineItemCountRef = useRef(0);
   const initializedRef = useRef(false);
@@ -410,7 +419,6 @@ export function useTranscriptScroll({
       if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
       const m = measure(el);
       wasAtBottomRef.current = isAtBottom(m);
-      prevScrollHeightRef.current = m.scrollHeight;
       firstTurnIdRef.current = firstTurnId;
       baselineItemCountRef.current = itemCountRef.current;
       // Turns present at mount (e.g. a cold-opened session whose history
@@ -554,12 +562,10 @@ export function useTranscriptScroll({
         for (const t of currentModel.turns.slice(0, prevIndex)) {
           if (isFailedTurn(t)) resolvedFailedTurnIdsRef.current.add(t.id);
         }
-
-        const prevScrollHeight = prevScrollHeightRef.current;
-        if (prevScrollHeight !== null) {
-          const m = measure(el);
-          el.scrollTop = m.scrollTop + (m.scrollHeight - prevScrollHeight);
-        }
+        // No scrollTop correction here on purpose: the end-anchored
+        // VirtualList (anchorToEnd) re-anchors the visible row across a
+        // prepend with real per-item geometry. This hook used to add the
+        // scrollHeight delta by hand; doing both double-shifts the viewport.
       }
     } else {
       // Failed-turn tracking runs independent of item growth - the real
@@ -605,7 +611,6 @@ export function useTranscriptScroll({
     }
 
     firstTurnIdRef.current = firstTurnId;
-    prevScrollHeightRef.current = measure(el).scrollHeight;
     // model is read via modelRef.current (see above), not closed over here,
     // specifically so this effect does NOT re-run on every streaming delta.
     // failedTurns is the one exception to "primitives derived from model

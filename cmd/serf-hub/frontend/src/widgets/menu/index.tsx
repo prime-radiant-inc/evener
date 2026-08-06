@@ -145,12 +145,13 @@ function stepEnabledIndex(items: MenuEntry[], from: number, delta: 1 | -1): numb
  * scrollable list, a status row hard against the viewport's edge) otherwise
  * gets cut off, at its container's edge or the viewport's, with no way for
  * a descendant to escape either via CSS alone. Reopening always re-measures
- * rather than trusting a stale position; a scroll anywhere or a resize
- * while open closes the menu rather than continuously repositioning it -
- * simpler, and this app has no overlay that needs to survive a scroll today
- * (Dialog is a full-viewport modal with nothing to reposition; ModelSwitch's
- * own popover isn't portaled, so it scrolls for free with whatever it's
- * anchored to).
+ * rather than trusting a stale position. A resize, a document scroll, or a
+ * scroll INSIDE a container that holds the trigger closes the menu rather
+ * than continuously repositioning it (the trigger's rect moves out from
+ * under the fixed popup in all three). A scroll anywhere else - the session
+ * transcript scrolling beside its own chrome's "..." menu, an unrelated
+ * pane - leaves the trigger's rect exactly where it was, so the menu stays
+ * open (kata: the session's "..." menu must survive transcript scrolling).
  */
 export function Menu({ trigger, items, triggerTabIndex, variant = "default" }: MenuProps) {
   const [isOpen, setIsOpen] = useState(false);
@@ -313,17 +314,32 @@ export function Menu({ trigger, items, triggerTabIndex, variant = "default" }: M
     return () => document.removeEventListener("mousedown", onDocumentMouseDown);
   }, [isOpen, closeMenu]);
 
-  // A scroll anywhere (capture-phase, so this also catches a scrollable
-  // ancestor's own scroll, not just window's - "scroll" doesn't bubble, but
-  // capture still reaches every ancestor on the way down to whatever
-  // actually scrolled) or a viewport resize closes the menu - see this
-  // component's own doc comment above for why closing, not repositioning.
+  // A scroll that can move the trigger out from under the fixed popup
+  // closes the menu; a scroll anywhere else leaves it open (see this
+  // component's own doc comment above for the rule and its reasoning). The
+  // listener is capture-phase because "scroll" doesn't bubble - capture
+  // still reaches every ancestor on the way down to whatever actually
+  // scrolled, so one window listener sees every scroller.
   useEffect(() => {
     if (!isOpen) return;
-    window.addEventListener("scroll", closeMenu, true);
+    function onScrollCapture(event: Event) {
+      const target = event.target;
+      // The whole document/window scrolling moves every trigger; a
+      // container scrolling moves the trigger only when the trigger lives
+      // inside it. Anything else (e.g. the session transcript beside this
+      // menu's chrome) can't move the popup's anchor, so the menu stays.
+      if (
+        target instanceof Document ||
+        target === window ||
+        (target instanceof Element && rootRef.current !== null && target.contains(rootRef.current))
+      ) {
+        closeMenu();
+      }
+    }
+    window.addEventListener("scroll", onScrollCapture, true);
     window.addEventListener("resize", closeMenu);
     return () => {
-      window.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("scroll", onScrollCapture, true);
       window.removeEventListener("resize", closeMenu);
     };
   }, [isOpen, closeMenu]);
