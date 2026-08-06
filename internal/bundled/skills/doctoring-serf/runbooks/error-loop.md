@@ -26,7 +26,7 @@ serf-doctor transcript <selector> --health --json
 audit:
   - title: "Long identical-error tool-call run"
     severity: medium
-    category: provider_error
+    category: error_loop
     all:
       - metric: longest_identical_run.errors
         op: "=="
@@ -34,6 +34,12 @@ audit:
       - metric: longest_identical_run.length
         op: ">="
         value: 3
+  - title: "Runtime loop-detector fired"
+    severity: medium
+    category: error_loop
+    metric: steering.loop-detected
+    op: ">="
+    value: 1
 ```
 
 - Read the flagged session's transcript around the identical run
@@ -50,4 +56,40 @@ audit:
   is not a Finding — retrying once or twice after a transient error is
   normal and often correct.
 
+**Two blind spots in the identical-run check, and why the loop-detector
+check exists to cover them:**
+
+- **Free-text argument fields fragment the signature.** The identical-run
+  signature hashes a call's whole arguments payload
+  (`toolCallSignature`/`shortHash`), so a tool whose arguments carry a
+  free-text field the model varies each call (e.g. a browser tool's
+  `purpose` rationale string) never repeats the same hash twice, even when
+  every other argument and the underlying action are identical. A ~300-call
+  MCP tool loop measured `longest_identical_run.length` at 10, not 300,
+  purely from this fragmentation — the run was real, the metric just
+  couldn't see it.
+- **In-band error reporting defeats the errors clause.** Some tools (MCP
+  tools especially) report failure inside a successful result body — the
+  call is recorded `is_error=false` with `"Error: ..."` text in the content
+  — rather than setting the transport-level error flag. `longest_identical_
+  run.errors` reads the recorded `is_error` flag, so it can never be true
+  for a tool that fails this way, no matter how long or how failed the run
+  actually is.
+- Because of both gaps, **the loop-detector check is the primary net for
+  this failure shape**, not the identical-run check — the runtime's own
+  detector operates on live signatures as calls happen, independent of
+  argument-field content or which channel a tool used to report failure.
+  Treat an identical-run miss as inconclusive, not as evidence of health;
+  use `serf-doctor transcript <sid> --count <tool>` to get the tool's real
+  call count and `serf-doctor transcript <sid> --format outline` to read
+  the run and judge it manually when the mechanical checks disagree or
+  both stay silent.
+
 A healthy run emits zero findings.
+
+`category: error_loop` is minted for this runbook — `provider_error` (this
+runbook's prior category) named a transport/provider failure class, but a
+tool-call loop is a session-behavior defect that can happen with a healthy
+provider and a perfectly working tool the session simply keeps calling the
+same way; `error_loop` names that shape honestly instead of borrowing a
+category about something else.

@@ -188,8 +188,11 @@ func TestRun_AuditErrorLoopBundledRunbook(t *testing.T) {
 		t.Fatalf("Findings = %+v, want exactly 1 (only tripSID trips)", res.Findings)
 	}
 	f := res.Findings[0]
-	if f.Severity != "medium" || f.Category != "provider_error" {
-		t.Errorf("finding severity/category = %q/%q, want medium/provider_error", f.Severity, f.Category)
+	if f.Severity != "medium" || f.Category != "error_loop" {
+		t.Errorf("finding severity/category = %q/%q, want medium/error_loop", f.Severity, f.Category)
+	}
+	if f.Title != "Long identical-error tool-call run" {
+		t.Errorf("finding title = %q", f.Title)
 	}
 	if len(f.Evidence.SessionRefs) != 1 || !strings.Contains(f.Evidence.SessionRefs[0], tripSID) {
 		t.Errorf("finding sessionRefs = %v, want only %s", f.Evidence.SessionRefs, tripSID)
@@ -204,6 +207,92 @@ func TestRun_AuditErrorLoopBundledRunbook_HealthyEmitsZero(t *testing.T) {
 	res := studyAuditJSON(t, base, "error-loop", healthySID)
 	if len(res.Findings) != 0 {
 		t.Errorf("Findings = %+v, want none — a healthy run emits zero findings", res.Findings)
+	}
+}
+
+// inBandMCPErrorLoopTurns reproduces the real-world session shape the
+// 2026-08-06 final review found the identical-run check blind to: a tool
+// call (like use_browser) whose arguments carry a free-text field the model
+// varies every call (here "purpose"), fragmenting longest_identical_run's
+// signature well below the check's threshold even though the underlying
+// action repeats; and a failure reported in-band inside a successful result
+// (is_error=false, "Error: ..." text) rather than via the transport error
+// flag, so longest_identical_run.errors can never be true either. A
+// steering turn carrying SteeringKindLoopDetected is the one signal that
+// does fire for this shape -- the runtime's own live loop detector, not
+// derived from either of the above.
+func inBandMCPErrorLoopTurns() []schema.Turn {
+	var turns []schema.Turn
+	purposes := []string{
+		"checking initial page state", "confirming the viewport resized",
+		"verifying the element is visible", "re-checking after the click",
+	}
+	for i, purpose := range purposes {
+		id := fmt.Sprintf("mcp%d", i)
+		args := fmt.Sprintf(`{"action":"screenshot","purpose":%q}`, purpose)
+		turns = append(turns,
+			schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				studyToolCall(id, "use_browser", args),
+			}}),
+			schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+				// is_error=false: the MCP tool reports the failure in the
+				// body text, not via the transport error flag.
+				studyToolResult(id, "use_browser", "Error: element not found", false),
+			}}),
+		)
+	}
+	turns = append(turns, studySteeringTurn(events.SteeringKindLoopDetected, "loop detected: repeated use_browser calls"))
+	return turns
+}
+
+func TestRun_AuditErrorLoopBundledRunbook_LoopDetectorCatchesInBandMCPLoop(t *testing.T) {
+	base := t.TempDir()
+	sid := "02wLIRxqmq3AUo6vl2OW6A"
+	writeStudySession(t, base, sid, inBandMCPErrorLoopTurns())
+
+	res := studyAuditJSON(t, base, "error-loop", sid)
+	if res.SessionsChecked != 1 {
+		t.Fatalf("SessionsChecked = %d, want 1", res.SessionsChecked)
+	}
+	if len(res.Findings) != 1 {
+		t.Fatalf("Findings = %+v, want exactly 1 (the loop-detector check only -- free-text args and in-band errors defeat the identical-run check)", res.Findings)
+	}
+	f := res.Findings[0]
+	if f.Title != "Runtime loop-detector fired" {
+		t.Errorf("finding title = %q, want the loop-detector check -- the identical-run check must NOT have tripped for this session", f.Title)
+	}
+	if f.Severity != "medium" || f.Category != "error_loop" {
+		t.Errorf("finding severity/category = %q/%q, want medium/error_loop", f.Severity, f.Category)
+	}
+}
+
+// TestRun_AuditErrorLoopBundledRunbook_ChecksAreIndependent proves the two
+// error-loop checks fire independently: errorLoopTripTurns' plain
+// transport-level-error run trips only the identical-run check (no
+// steering.loop-detected turn), inBandMCPErrorLoopTurns trips only the
+// loop-detector check (fragmented signature + in-band error body) -- each
+// finding names exactly the session that tripped its own check.
+func TestRun_AuditErrorLoopBundledRunbook_ChecksAreIndependent(t *testing.T) {
+	base := t.TempDir()
+	identicalSID, loopDetectorSID := "02wLIRxqmq3AUo6vl2OW6B", "02wLIRxqmq3AUo6vl2OW6C"
+	writeStudySession(t, base, identicalSID, errorLoopTripTurns())
+	writeStudySession(t, base, loopDetectorSID, inBandMCPErrorLoopTurns())
+
+	res := studyAuditJSON(t, base, "error-loop", identicalSID, loopDetectorSID)
+	if len(res.Findings) != 2 {
+		t.Fatalf("Findings = %+v, want exactly 2 (one per check, each tripped by exactly one session)", res.Findings)
+	}
+	byTitle := map[string][]string{}
+	for _, f := range res.Findings {
+		byTitle[f.Title] = f.Evidence.SessionRefs
+	}
+	identicalRefs := byTitle["Long identical-error tool-call run"]
+	if len(identicalRefs) != 1 || !strings.Contains(identicalRefs[0], identicalSID) {
+		t.Errorf("identical-run finding sessionRefs = %v, want only %s", identicalRefs, identicalSID)
+	}
+	loopRefs := byTitle["Runtime loop-detector fired"]
+	if len(loopRefs) != 1 || !strings.Contains(loopRefs[0], loopDetectorSID) {
+		t.Errorf("loop-detector finding sessionRefs = %v, want only %s", loopRefs, loopDetectorSID)
 	}
 }
 

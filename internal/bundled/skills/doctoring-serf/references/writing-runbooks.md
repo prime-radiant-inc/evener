@@ -166,12 +166,16 @@ The checks above are the fixture `agent/doctor/audit_test.go`'s
 `fixtureRunbookMD` exercises end to end: `jobs.run_timeout >= 5` (high,
 `category: timeout`) flags sessions that burned budget on jobs the runtime
 had to kill for running too long; `longest_identical_run.errors &&
-longest_identical_run.length >= 3` (medium, `category: provider_error`)
-flags a stuck retry loop the runtime's own loop detector would also have
-caught. The standing `runbooks/error-loop.md` and `runbooks/
-run-timeout-waste.md` runbooks build on exactly this pattern (WS9 Task 5);
-`runbooks/truncation-waste.md` and `runbooks/stale-notification.md` are the
-other two study-derived standing runbooks from the same task.
+longest_identical_run.length >= 3` (medium, `category: provider_error` in
+this illustrative fixture) flags a stuck retry loop the runtime's own loop
+detector would also have caught. The standing `runbooks/error-loop.md`
+builds on this pattern but mints its own `category: error_loop` (see that
+runbook for why) and adds a second check on `steering.loop-detected` — the
+2026-08-05 session study found real loops the identical-run check alone
+cannot see (see error-loop.md's CLASSIFY). `runbooks/run-timeout-waste.md`
+also builds on this pattern (WS9 Task 5); `runbooks/truncation-waste.md`
+and `runbooks/stale-notification.md` are the other two study-derived
+standing runbooks from the same task.
 
 ## When you are *extending* (authoring a brand-new runbook)
 
