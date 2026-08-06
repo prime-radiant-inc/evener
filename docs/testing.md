@@ -159,13 +159,27 @@ and its siblings named for the same "seed100" convention are native `FuzzXxx`
 targets under the `serffuzz` build tag — already excluded from every default
 build, not part of this change.
 
-Two other entry points drive this same rapid family and needed
+Three other entry points drive this same rapid family and needed
 `SERF_FUZZ_TESTS=1` threaded through so this ruling would not silently blind
 them: `make fuzz`'s fixed-seed rapid replay loop (`scripts/run-fuzz.sh`'s
-`rapid` case, used by `fuzz-nightly`/`fuzz-triage`/`fuzz-continuous` too) and
+`rapid` case, used by `fuzz-nightly`/`fuzz-triage`/`fuzz-continuous` too),
 `scripts/fuzz-oracle-audit.sh`'s `run_seeds`, which replays a mutation against
 `TestJobstoreSeqFuzz` and must never read that test's now-default skip as the
-oracle failing to catch the mutation.
+oracle failing to catch the mutation, and `scripts/fuzz-coverage-global.sh`'s
+Rapid replay branch (`fuzz-coverage-global-selftest.sh` now asserts the
+opt-in actually propagates — not just that it's in the source — by proving a
+gated replay's coverage profile carries a nonzero execution count, and by
+mutation-testing that assertion itself: stripping the opt-in from a copy of
+the runner reproduces a zero-count profile and makes the assertion fail).
+
+Fuzz-family coverage and the default gate's coverage number are tracked on
+two separate tracks, not one. `go test ./agent -short`'s `-cover` output (and
+the coverage floor it feeds) measures only the imperative test suite — the
+seqfuzz/schemafuzz family t.Skip()s there by design. Coverage contributed by
+this family is instead the fuzz coverage pipeline's job: `make fuzz-coverage`
+and `make fuzz-coverage-global` replay it (with `SERF_FUZZ_TESTS=1`, as above)
+against their own ratchets. Do not read a default-gate coverage number as
+"whole-repo coverage including fuzz" — it never was, and now it's explicit.
 
 ## Proving a Type Survives a Round Trip
 

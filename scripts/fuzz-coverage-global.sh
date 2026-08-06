@@ -516,8 +516,12 @@ replay_target() {
 	[ -n "$logical_module_dir" ] || die "missing module directory mapping: $module"
 	echo "fuzz-coverage-global: replay $label" >&2
 	if [ "$kind" = rapid ]; then
+		# SERF_FUZZ_TESTS=1: the seqfuzz/schemafuzz rapid family t.Skip()s under a
+		# plain `go test` (moved out of `make test` per the fuzz-family ruling);
+		# this coverage replay must still drive them, not accept a skip's
+		# zero-count profile as coverage.
 		if ! (cd "$logical_module_dir" && \
-			env -u RAPID_FAILFILE RAPID_SEED="$seed" RAPID_CHECKS="$rapid_checks" RAPID_STEPS="$rapid_steps" RAPID_NOFAILFILE="$rapid_nofailfile" RAPID_LOG="$rapid_log" RAPID_V="$rapid_verbose" RAPID_DEBUG="$rapid_debug" RAPID_DEBUGVIS="$rapid_debugvis" RAPID_SHRINKTIME="$rapid_shrinktime" \
+			env -u RAPID_FAILFILE SERF_FUZZ_TESTS=1 RAPID_SEED="$seed" RAPID_CHECKS="$rapid_checks" RAPID_STEPS="$rapid_steps" RAPID_NOFAILFILE="$rapid_nofailfile" RAPID_LOG="$rapid_log" RAPID_V="$rapid_verbose" RAPID_DEBUG="$rapid_debug" RAPID_DEBUGVIS="$rapid_debugvis" RAPID_SHRINKTIME="$rapid_shrinktime" \
 			"$capped" "$go_bin" test -tags serffuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg") >&2; then
 			die "replay failed: $label"
 		fi

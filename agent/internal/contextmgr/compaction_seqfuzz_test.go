@@ -67,7 +67,7 @@ import (
 // call/result turns, end_turn communicate replies), so generated histories are
 // always legal shapes, not arbitrary bytes.
 //
-// Run hard with: go test -run '^TestCompactionSeqFuzz$' -rapid.checks=5000 .
+// Run hard with: SERF_FUZZ_TESTS=1 go test -run '^TestCompactionSeqFuzz$' -rapid.checks=5000 .
 // Steps are bounded and tokens kept small so the checkpoint's char budget never
 // sheds content (which would otherwise be a legitimate, by-design loss the
 // survival invariant must not mistake for a bug).

@@ -51,7 +51,7 @@ import (
 // from the current model state, so the generated log is always a shape the real
 // system could emit — not arbitrary bytes (that is FuzzJobEventLogReplay's job).
 //
-// Run hard with: go test -run '^TestJobstoreSeqFuzz$' -rapid.checks=5000 .
+// Run hard with: SERF_FUZZ_TESTS=1 go test -run '^TestJobstoreSeqFuzz$' -rapid.checks=5000 .
 // Under -tags serffuzz the reducer's own invariant.Hold assertions are live too,
 // so a generated sequence that tripped the in-reducer monotonicity guard would
 // surface as a panic.
