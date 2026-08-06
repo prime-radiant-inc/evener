@@ -58,9 +58,37 @@ Read the diff, not just the summary.
 
 ## Everything shared, and how it bites
 
-**`refs/stash` is shared across every worktree.** `git stash` in one
-worktree can be popped into another. Never stash; make a targeted edit
-instead.
+**Git state operations are dangerous on a shared worktree.**
+Repo-wide commands like `git stash`, `git reset`, `git checkout`, and
+`git clean` can sweep up work from concurrent agents. Three incidents on
+2026-08-05/06 traced back:
+
+- `git stash` for a before/after comparison swept up a concurrent
+  agent's uncommitted frontend edits in `refs/stash` (recovered via
+  targeted checkout from the stash). `refs/stash` is shared across
+  every worktree.
+- `git reset` by one agent wiped another's uncommitted edits
+  mid-task (recovered by redoing the edits and committing immediately
+  with explicit paths).
+- `git stash` during an in-progress merge silently discarded
+  `.git/MERGE_HEAD` and `MERGE_MSG` — stash treats merge state like a
+  reset (recovered by reconstructing both by hand and verifying
+  parents).
+
+The conventions that emerged:
+
+- **One implementer per worktree at a time.** Concurrent read-only
+  investigators must not touch worktree files; use `cp` round-trips to
+  the scratchpad instead.
+- **Forbid repo-wide git state commands in agent briefs.** `stash`,
+  `reset`, tree-wide `checkout`, and `clean` are forbidden. Use `cp`
+  round-trips on specific files for before/after comparisons.
+- **Stage by explicit path and commit early.** Uncommitted work is the
+  only thing these incidents ever endangered. `git add` specific files
+  by name, never `git add -A` or `git add .`.
+- **Never stash during an in-progress merge.** If merge metadata is
+  lost, reconstruct `.git/MERGE_HEAD` and `.git/MERGE_MSG` by hand and
+  independently verify the resulting commit's parents.
 
 **`node_modules` is one real install, symlinked from each worktree.**
 `npm ci` deletes the symlink's target, emptying it for every worktree at
