@@ -98,6 +98,18 @@ gpt-5.4-mini shows nonzero `tool_call_count` in `serf-doctor apilog`;
 **Size:** ~300 loc + fixtures. **Priority: first** — restores forensic ground
 truth everything else is verified with.
 
+**Status: DONE 2026-08-06** — merged to main as 812eb5c15 (branch
+ws1-responses-recording, 3 tasks + fix rounds, final review "Ready to
+merge"). Two follow-ups surfaced during execution, tracked here:
+- apilog large-log cost is dominated by a **double JSON structural parse**
+  per record (kind-sniff + struct decode, ~85% CPU) — the base64 double
+  decode was ~1%. The "summary in minutes on 500MB" acceptance needs that
+  parse-once refactor; fold into a future apilog perf item.
+- `openai_compatible_chat_completions` **SSE** bodies are not recomputable
+  (`--recompute` reports an explicit not-supported error; fields stay nil,
+  never zero) — needs openaicompat's `decodeStream` factored into a shared
+  accumulator the way the openai package's decoders were.
+
 ## WS2 — Failure-aware tool-dispatch breaker **[design gate]**
 
 **Symptoms:** ~300 identical failing `use_browser set_viewport` calls through
