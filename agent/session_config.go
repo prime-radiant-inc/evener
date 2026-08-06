@@ -216,6 +216,21 @@ type SessionConfig struct {
 	// testOnly holds injection points used only by package-internal tests. It is
 	// never set by app callers and never persisted (json:"-").
 	testOnly testConfig `json:"-"`
+
+	// ForceRealIO opts a session construction back into the real,
+	// fsync-bearing I/O paths (jobstore append fsync, transcript header
+	// fsync, on-disk installation-ID persistence) that testSpeedIO
+	// (session_init.go) otherwise skips by default whenever running under
+	// `go test` (testing.Testing() is true for every test binary, including
+	// black-box and live/E2E ones outside this package). Package-agent's own
+	// tests reach that default through the unexported testOnly.forceRealIO
+	// field; this exported twin is the supported escape valve for a test in
+	// another package - which cannot reach an unexported field - whose own
+	// contract IS that I/O cost or its on-disk durability (e.g. asserting a
+	// stable installation ID across a restore, or that a transcript survives
+	// an unclean process exit). False in production, where it is inert
+	// because testing.Testing() is always false there.
+	ForceRealIO bool `json:"-"`
 }
 
 // testConfig holds injection points used ONLY by package-internal (package

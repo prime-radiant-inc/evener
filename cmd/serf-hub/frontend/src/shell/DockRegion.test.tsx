@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { resetNotificationsForTests } from "../notifications";
+import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import { connectionStore } from "../stores/connection";
 import { resetTreeStoreForTests } from "../stores/tree";
@@ -82,7 +82,6 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   window.history.pushState({}, "", "/");
-  vi.unstubAllGlobals();
   // Whichever override the LAST test set (mockRejectedValue/mockResolvedValue/
   // mockResolvedValueOnce...) would otherwise still be armed on this shared
   // spy for the next file in the worker that calls the real loadDockHost -
@@ -96,7 +95,29 @@ afterEach(() => {
   // later file's own fresh ready-client connect read as a spurious
   // reconnect - see App.test.tsx's identical reset and its own comment on
   // stores/tree.test.ts's dependent assertion.
+  //
+  // AppShell.tsx's module-scope initNotifications() call only ever fires
+  // once per worker (its own "only once" guard), so leaving it reset would
+  // leave the engine permanently uninitialized for the rest of this
+  // isolate:false worker - so it is re-run immediately below, restoring the
+  // same state a fresh module evaluation would have left (kata p5w9's
+  // identical pattern in AppShell.test.tsx). initNotifications() seeds its
+  // `sawReady`/baseline snapshot from whatever connectionStore/treeStore
+  // hold AT THIS MOMENT, so both are forced back to their neutral
+  // pre-render values FIRST (this file's own beforeEach does the same for
+  // the NEXT test in this file; nothing else does it for the NEXT FILE) -
+  // seeding from a still-"ready" connectionStore (as this test's own render
+  // left it moments ago) would wrongly arm the "reconnect" detector this
+  // reset exists to neutralize, exactly the failure mode App.test.tsx's own
+  // comment above describes. Run before vi.unstubAllGlobals() below so
+  // initNotifications()'s baseline ensureLoaded() fetch (treeStore's tree is
+  // null again below) still hits this file's own beforeEach fetch stub
+  // instead of a real network call.
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetTreeStoreForTests();
   resetNotificationsForTests();
+  initNotifications();
+  vi.unstubAllGlobals();
 });
 
 test("a rejected DockHost chunk degrades the dock region, never the whole shell", async () => {

@@ -25,7 +25,12 @@ func BenchmarkNewSession(b *testing.B) {
 	prof := provider.NewOpenAIProfile("gpt-5.2")
 	for b.Loop() {
 		dir := b.TempDir()
-		sess, err := NewSession(c, prof, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{MaxSubagentDepth: 1, testOnly: testConfig{forceRealIO: true}})
+		stateDir := b.TempDir()
+		sess, err := NewSession(c, prof, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			MaxSubagentDepth: 1,
+			StateDir:         stateDir,
+			testOnly:         testConfig{forceRealIO: true},
+		})
 		if err != nil {
 			b.Fatalf("NewSession: %v", err)
 		}

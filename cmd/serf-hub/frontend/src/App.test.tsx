@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { resetNotificationsForTests } from "./notifications";
+import { initNotifications, resetNotificationsForTests } from "./notifications";
 import { AppwireClient } from "./protocol/client";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
 import { connectionStore } from "./stores/connection";
@@ -198,16 +198,6 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetTreeStoreForTests();
-  // AppShell.tsx calls initNotifications() at MODULE SCOPE (guarded by its
-  // own `if (initialized) return`), so the FIRST render anywhere in this
-  // worker that imports AppShell - unavoidably, every test in this file -
-  // installs notifications/index.ts's own connectionStore.subscribe (its
-  // "reconnect" detector, `sawReady`) for the rest of the worker's life.
-  // Left un-reset, a LATER file's own client connecting straight to "ready"
-  // (e.g. `new FakeClient("ready")`) reads as a "reconnect" against this
-  // leftover `sawReady=true`, firing an extra, unexpected
-  // treeStore.refresh() into that file's own fetch-call assertions.
-  resetNotificationsForTests();
   // Each test above renders <App/> with no test client injected, so every
   // one constructs a fresh real AppwireClient and wires it into
   // connectionStore - which threads.ts's module-scope
@@ -221,6 +211,32 @@ afterEach(() => {
   closeAllCreatedClients();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  // AppShell.tsx calls initNotifications() at MODULE SCOPE (guarded by its
+  // own `if (initialized) return`), so the FIRST render anywhere in this
+  // worker that imports AppShell - unavoidably, every test in this file -
+  // installs notifications/index.ts's own connectionStore.subscribe (its
+  // "reconnect" detector, `sawReady`) for the rest of the worker's life.
+  // Left un-reset, a LATER file's own client connecting straight to "ready"
+  // (e.g. `new FakeClient("ready")`) reads as a "reconnect" against this
+  // leftover `sawReady=true`, firing an extra, unexpected
+  // treeStore.refresh() into that file's own fetch-call assertions.
+  //
+  // AppShell.tsx's module-scope initNotifications() call only ever fires
+  // once per worker (its own "only once" guard), so leaving it reset would
+  // leave the engine permanently uninitialized for the rest of this
+  // isolate:false worker - so it is re-run immediately below, restoring the
+  // same state a fresh module evaluation would have left (kata p5w9's
+  // identical pattern in AppShell.test.tsx; see notifications/index.ts's own
+  // reset comment). This pair runs LAST, after connectionStore and treeStore
+  // are already back to idle/null above: initNotifications() seeds its
+  // `sawReady`/baseline snapshot from whatever those stores hold AT THIS
+  // MOMENT, and seeding from a still-"ready" connectionStore (as this test's
+  // own render left it moments ago) would wrongly arm the very "reconnect"
+  // detector this reset exists to neutralize - reading the NEXT file's first
+  // real connect as a reconnect and firing a spurious treeStore.refresh()
+  // into ITS fetch-call assertions instead.
+  resetNotificationsForTests();
+  initNotifications();
   vi.unstubAllGlobals();
   window.history.pushState({}, "", "/");
 });

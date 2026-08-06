@@ -2422,18 +2422,24 @@ describe("useThreadsStore.ensureThread", () => {
   // through a manual-retry client swap with no action call required at
   // all - so the spies must be attached BEFORE connect() to observe that.
   //
-  // The count captured right after connect() (rather than a literal 1) is
-  // this store's OWN contribution, not a hardcoded total: stores/tree.ts,
-  // stores/extensions.ts, and stores/credentials.ts each independently run
-  // this exact same reactive-wiring pattern against connectionStore, so
-  // `fake.onNotification`/`fake.onReady` also get called once per OTHER
-  // such store whose module happens to already be loaded in this worker
-  // (e.g. via an earlier file's real App render pulling in tree.ts) - a
-  // real, correct fact about this composition, not a leak. What THIS test
-  // owns proving is narrower and unaffected by that: that connecting a
-  // client wires threads.ts's own handler exactly once, and that wiring
-  // never happens AGAIN per store action - i.e. the count stays flat
-  // across the action calls below, whatever its post-connect baseline is.
+  // The count right after connect() is NOT this store's own contribution
+  // alone: stores/tree.ts, stores/extensions.ts, and stores/credentials.ts
+  // each independently run this exact same reactive-wiring pattern against
+  // connectionStore, so `fake.onNotification`/`fake.onReady` also get called
+  // once per OTHER such store whose module happens to already be loaded in
+  // this worker (e.g. via an earlier file's real App render pulling in
+  // tree.ts) - a real, correct fact about this composition, not a leak.
+  //
+  // What THIS test owns proving is narrower: that connecting a client wires
+  // threads.ts's OWN handler exactly once, and that wiring never happens
+  // AGAIN per store action. resetThreadsStoreForTests() unwires only
+  // threads.ts's registration and nulls its own wiredClient - every other
+  // reactively-wired store still holds wiredClient === fake, so re-publishing
+  // that SAME client reference through connectionStore (bypassing connect()'s
+  // own "already this client" guard) re-triggers ONLY threads.ts's
+  // rewireClient. The resulting delta is threads.ts's contribution in
+  // isolation, provably exactly one call per handler - not merely "some
+  // baseline that stays flat afterward".
   test("wires onNotification/onReady on the client exactly once, at connect time - not per store action", async () => {
     const fake = new FakeClient();
     const onNotificationSpy = vi.spyOn(fake, "onNotification");
@@ -2441,10 +2447,16 @@ describe("useThreadsStore.ensureThread", () => {
     fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref));
 
     connectionStore.getState().connect(fake);
+
+    resetThreadsStoreForTests();
+    const notificationCallsBeforeRewire = onNotificationSpy.mock.calls.length;
+    const readyCallsBeforeRewire = onReadySpy.mock.calls.length;
+    connectionStore.setState({ client: fake, state: fake.state });
+    expect(onNotificationSpy.mock.calls.length - notificationCallsBeforeRewire).toBe(1);
+    expect(onReadySpy.mock.calls.length - readyCallsBeforeRewire).toBe(1);
+
     const wiredNotificationCalls = onNotificationSpy.mock.calls.length;
     const wiredReadyCalls = onReadySpy.mock.calls.length;
-    expect(wiredNotificationCalls).toBeGreaterThanOrEqual(1);
-    expect(wiredReadyCalls).toBeGreaterThanOrEqual(1);
 
     await threadsStore.getState().ensureThread("ref_a");
     await threadsStore.getState().ensureThread("ref_b");

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vitest/config";
@@ -60,8 +61,15 @@ export default defineConfig({
     isolate: false,
     // Vitest 4 moved threads.maxThreads/minThreads to this top-level,
     // single-value option (poolOptions.threads.* is deprecated - a
-    // `test.poolOptions` warning fires if used).
-    maxWorkers: 10,
+    // `test.poolOptions` warning fires if used). Derived from the runtime's
+    // own logical CPU count rather than one developer machine's number
+    // (10) hardcoded - a shared host with fewer processors would otherwise
+    // be oversubscribed, especially since `make test-web` runs Vitest
+    // alongside typechecking and linting. Capped so a many-core host still
+    // leaves headroom for those siblings instead of spawning one worker per
+    // core; the cap sits above this measured machine's 10 so its own
+    // ~28% wall-time improvement (isolate:false comment above) is preserved.
+    maxWorkers: Math.max(1, Math.min(os.availableParallelism(), 12)),
     setupFiles: [],
     // A handful of shell suites must import the real pane modules from inside
     // beforeAll rather than statically: those modules transitively pull in

@@ -450,9 +450,11 @@ func TestJobActivityTree_TruncatesAtDepth33(t *testing.T) {
 		// Finalize the delegate job immediately to avoid teardown overhead.
 		// Finalize marks the job terminal and leaves it with NotifyPending status.
 		// This removes the job from jobManager.running, so Session.Close() avoids
-		// closeRuntimeState's closeGrace wait (250ms drainRecheckInterval) that would
-		// block on a completion that will never arrive — ~200ms × 33 nodes of pure
-		// fixture cost, not part of what this test proves.
+		// closeRuntimeState's closeGrace wait (the test-configured closeGrace:
+		// 200ms normally, 3s under -race — see closegrace_{norace,race}_test.go;
+		// closeRuntimeState uses closeGrace directly, not the unrelated 250ms
+		// drainRecheckInterval) that would block on a completion that will never
+		// arrive — pure fixture cost × 33 nodes, not part of what this test proves.
 		if err := current.jobManager.finalize(run.rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); err != nil {
 			t.Fatalf("finalize delegate job %d: %v", i, err)
 		}
