@@ -273,6 +273,32 @@ func TestUpdate_DoubleInProgress_NamesTheBlockingTask(t *testing.T) {
 	}
 }
 
+func TestUpdate_DoubleInProgress_DoesNotBlameATaskTheBatchResolves(t *testing.T) {
+	s := newTestStore(t)
+	added, _ := s.Append([]TaskInput{{Description: "first"}, {Description: "second"}, {Description: "third"}})
+	first, second, third := added[0].ID, added[1].ID, added[2].ID
+
+	if err := s.Update([]TaskUpdate{{ID: first, Status: TaskInProgress}}); err != nil {
+		t.Fatalf("starting first task: %v", err)
+	}
+
+	// This batch resolves the old blocker (first -> done) but creates a NEW
+	// conflict between second and third. The error must not blame first,
+	// since first won't be in_progress once this batch applies.
+	err := s.Update([]TaskUpdate{
+		{ID: first, Status: TaskDone},
+		{ID: second, Status: TaskInProgress},
+		{ID: third, Status: TaskInProgress},
+	})
+	if err == nil {
+		t.Fatal("second and third both in_progress in same batch: want error")
+	}
+	want := "only one task may be in_progress at a time; update would result in 2"
+	if err.Error() != want {
+		t.Errorf("err = %q, want %q", err.Error(), want)
+	}
+}
+
 func TestProgressCountsOnlyDone(t *testing.T) {
 	s := newTestStore(t)
 	added, _ := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}, {Description: "c"}})
