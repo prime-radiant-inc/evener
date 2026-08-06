@@ -8,6 +8,7 @@ import {
   settingsOverviewStore,
   useSettingsOverviewStore,
 } from "./settingsOverview";
+import { resetThreadsStoreForTests } from "./threads";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -28,6 +29,15 @@ const SAMPLE_RESPONSE: SettingsOverviewResponse = {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetSettingsOverviewStoreForTests();
+  // threads.ts wires a connectionStore.subscribe() detector at module scope
+  // (permanent, not per-file) that reacts to EVERY connect() call in the
+  // worker, including this file's own connectFakeClient() below, by
+  // re-hydrating whatever refs its own module-private bookkeeping still
+  // tracks. This file doesn't touch threads.ts at all, so a ref some other
+  // file left tracked (module singleton, shared registry under
+  // isolate:false) can otherwise land an extra "thread/read" call on THIS
+  // file's own fake client, corrupting its unrelated call-count assertions.
+  resetThreadsStoreForTests();
 });
 
 afterEach(() => {

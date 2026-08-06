@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
+import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
 import { resetTreeStoreForTests, type TreeNode, type TreeResponse, treeStore } from "../stores/tree";
@@ -113,6 +114,12 @@ beforeEach(() => {
   resetNotificationsForTests();
   resetTreeStoreForTests();
   resetLeaderForTests();
+  // baseTitle() (notifications/title.ts) reads workspaceStore's focused pane
+  // - workspaceStore is a module singleton shared with every other file in
+  // the worker, so this file's own "no focused pane -> 'serf hub'" title
+  // assertions need a pristine workspace regardless of what an earlier file
+  // left focused.
+  resetWorkspaceStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   localStorage.clear();
   resetPrefsStoreForTests();

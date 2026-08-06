@@ -2,6 +2,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { resetTreeStoreForTests } from "../../stores/tree";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { TreeDrawer } from "./TreeDrawer";
@@ -32,6 +33,12 @@ afterAll(() => {
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+  // treeStore is a module singleton (stores/tree.ts) shared across every
+  // file in the worker; RailHost reads it directly, so a project fixture
+  // left behind by an earlier file (e.g. one named "prime-radiant") shows
+  // up as an extra "New session in <project>" button here otherwise,
+  // breaking this file's own /new session/i role lookups.
+  resetTreeStoreForTests();
 });
 
 afterEach(() => {

@@ -51,6 +51,17 @@ export default defineConfig({
     // localStorage unless it is disabled in each Vitest worker.
     execArgv: ["--no-experimental-webstorage"],
     pool: "threads",
+    // Cross-file state leaks (stale pane-registry stubs, unclosed real
+    // clients, leaked mock replacements) were root-caused and fixed, so the
+    // suite is safe to run with a persistent module registry + jsdom per
+    // worker instead of fresh ones per file - measured ~28% less wall time
+    // on a sample. Explicit thread count matches this machine's logical
+    // CPUs; leaving it unset defaults to half of them.
+    isolate: false,
+    // Vitest 4 moved threads.maxThreads/minThreads to this top-level,
+    // single-value option (poolOptions.threads.* is deprecated - a
+    // `test.poolOptions` warning fires if used).
+    maxWorkers: 10,
     setupFiles: [],
     // A handful of shell suites must import the real pane modules from inside
     // beforeAll rather than statically: those modules transitively pull in

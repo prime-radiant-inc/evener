@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { lazy } from "react";
 import { afterEach, expect, test } from "vitest";
-import { type PaneDescriptor, type PaneProps, paneFor, registerPaneForTests } from "./paneRegistry";
+import { type PaneDescriptor, type PaneProps, type PaneTypeId, paneFor, registerPaneForTests } from "./paneRegistry";
 
 // A minimal descriptor fixture. `component` must be a LazyExoticComponent
 // per the locked PaneDescriptor shape (see the wave-3 plan's Locked
@@ -39,8 +39,15 @@ test("registerPane makes a descriptor retrievable by paneFor via its id", () => 
 });
 
 test("paneFor throws a clear error for an id that was never registered", () => {
-  // "transcript" is never registered anywhere in this file.
-  expect(() => paneFor("transcript")).toThrow(/transcript/);
+  // Every real PaneTypeId ("session"/"transcript"/"doc"/"spawn"/"settings"/
+  // "welcome") gets registered by its own production module at import time -
+  // under isolate:false, registry is a module singleton shared by every file
+  // in the worker, so by the time this file runs, some earlier file has
+  // already transitively imported and registered all six. An id outside the
+  // closed union (cast past the type check, simulating a corrupted/impossible
+  // id) is the only one guaranteed to stay unregistered regardless of run
+  // order.
+  expect(() => paneFor("not-a-real-pane-type" as PaneTypeId)).toThrow(/not-a-real-pane-type/);
 });
 
 test("paneFor preserves singleton: true as registered", () => {

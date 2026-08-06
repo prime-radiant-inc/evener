@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { resetNotificationsForTests } from "../notifications";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import { connectionStore } from "../stores/connection";
 import { resetTreeStoreForTests } from "../stores/tree";
@@ -88,6 +89,14 @@ afterEach(() => {
   // see this file's own comment on the vi.spyOn call above.
   loadDockHost.mockReset();
   loadDockHost.mockImplementation(realLoadDockHost);
+  // Rendering <AppShell/> above calls notifications/index.ts's
+  // initNotifications() at module scope (guarded by its own "only once"
+  // flag), wiring its reconnect detector to whichever FakeClient this file
+  // connected. Left unreset, that detector's stale "sawReady" flag makes a
+  // later file's own fresh ready-client connect read as a spurious
+  // reconnect - see App.test.tsx's identical reset and its own comment on
+  // stores/tree.test.ts's dependent assertion.
+  resetNotificationsForTests();
 });
 
 test("a rejected DockHost chunk degrades the dock region, never the whole shell", async () => {
