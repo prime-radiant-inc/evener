@@ -578,29 +578,7 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 				rawResp = payload
 			}
 			r := fromResponses(rawResp, req.Model)
-			terminalOutput, _ := rawResp["output"].([]any)
-			switch {
-			case len(terminalOutput) == 0 && len(accumulatedOutput) > 0:
-				// The terminal payload carries no output even though the stream's
-				// output_item.done events carried real content (observed on
-				// affected sessions). Synthesize the settled message from what the
-				// stream actually sent, reusing fromResponses' item-walk.
-				r.Message.Content = responseContentFromOutputItems(accumulatedOutput)
-				if status, _ := rawResp["status"].(string); status != "incomplete" {
-					if len(r.ToolCalls()) > 0 {
-						r.Finish = llm.FinishReason{Reason: "tool_calls"}
-					} else {
-						r.Finish = llm.FinishReason{Reason: "stop"}
-					}
-				}
-			case len(terminalOutput) > 0 && len(accumulatedOutput) > 0 && len(terminalOutput) != len(accumulatedOutput):
-				// Terminal output is authoritative when non-empty, but a count
-				// mismatch against what the stream accumulated is worth surfacing.
-				r.Warnings = append(r.Warnings, llm.Warning{
-					Code:    "responses_output_item_count_mismatch",
-					Message: fmt.Sprintf("terminal output items=%d differ from accumulated stream items=%d", len(terminalOutput), len(accumulatedOutput)),
-				})
-			}
+			settleResponsesTerminalOutput(&r, rawResp, accumulatedOutput)
 			a.stampResponseIDHash(&r)
 			llm.StampEndpointURL(&r, llm.FinalResponseEndpointURL(resp, a.responsesURL()), a.apiLogCredentialMaterial(nil))
 			// Ensure text segment is closed.
@@ -1234,6 +1212,43 @@ func responseContentFromOutputItems(out []any) []llm.ContentPart {
 		}
 	}
 	return content
+}
+
+// settleResponsesTerminalOutput decides the settled message content and
+// finish reason for a Responses-API terminal (response.completed) payload,
+// given the output items accumulated from the stream en route. When the
+// terminal payload's own "output" array is non-empty it is authoritative
+// (the provider's settled truth); when it's empty but the stream accumulated
+// real items, those are synthesized in its place (observed on affected
+// sessions: the terminal payload carries no output even though earlier
+// response.output_item.done events in the same stream carried real content).
+// Shared by the live streaming decoder (decodeResponsesStream) and offline
+// recomputation (ExtractRecordedResponse) so both apply the identical
+// terminal-wins rule.
+func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accumulatedOutput []any) {
+	terminalOutput, _ := rawResp["output"].([]any)
+	switch {
+	case len(terminalOutput) == 0 && len(accumulatedOutput) > 0:
+		// The terminal payload carries no output even though the stream's
+		// output_item.done events carried real content (observed on
+		// affected sessions). Synthesize the settled message from what the
+		// stream actually sent, reusing fromResponses' item-walk.
+		r.Message.Content = responseContentFromOutputItems(accumulatedOutput)
+		if status, _ := rawResp["status"].(string); status != "incomplete" {
+			if len(r.ToolCalls()) > 0 {
+				r.Finish = llm.FinishReason{Reason: "tool_calls"}
+			} else {
+				r.Finish = llm.FinishReason{Reason: "stop"}
+			}
+		}
+	case len(terminalOutput) > 0 && len(accumulatedOutput) > 0 && len(terminalOutput) != len(accumulatedOutput):
+		// Terminal output is authoritative when non-empty, but a count
+		// mismatch against what the stream accumulated is worth surfacing.
+		r.Warnings = append(r.Warnings, llm.Warning{
+			Code:    "responses_output_item_count_mismatch",
+			Message: fmt.Sprintf("terminal output items=%d differ from accumulated stream items=%d", len(terminalOutput), len(accumulatedOutput)),
+		})
+	}
 }
 
 func fromResponses(raw map[string]any, requestedModel string) llm.Response {
