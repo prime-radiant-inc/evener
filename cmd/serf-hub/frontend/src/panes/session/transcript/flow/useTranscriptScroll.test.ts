@@ -702,19 +702,27 @@ describe("prepend anchoring (loadOlder resolving)", () => {
     expect(result.current.pillCount).toBe(0);
   });
 
-  test("a prepend corrects scrollTop by the height delta, keeping the reader's content visually anchored", () => {
+  test("a prepend does NOT write scrollTop itself - the end-anchored VirtualList owns position anchoring across a prepend", () => {
+    // Ownership split (2026-08): the virtualizer's anchorTo:"end" re-anchors
+    // the visible row across a prepend using REAL per-item geometry; this
+    // hook's old hand-rolled "scrollTop += scrollHeight delta" compensation
+    // ran on top of it and double-shifted the viewport. What this hook still
+    // owns on a prepend is pure bookkeeping (baseline/pill, error-anchor
+    // index shift - the other tests in this block); the DOM's scrollTop is
+    // the list's to move, never the hook's. The sentinel below would be
+    // stomped by the old math (200 + (800 - 500) = 500); it must survive.
     const { ref, el } = makeListHandle();
     const { measure, set } = makeMeasure({ scrollTop: 200, scrollHeight: 500, clientHeight: 100 });
     const { rerender } = renderHook(
       ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
       { initialProps: { m: model([turn("t2", ["i2"])]) } },
     );
+    el.scrollTop = 200;
 
-    // The prepended content grows the sizer's total height by 300px (500 -> 800).
     set({ scrollHeight: 800 });
     rerender({ m: model([turn("t1", ["i1a", "i1b", "i1c"]), turn("t2", ["i2"])]) });
 
-    expect(el.scrollTop).toBe(500); // 200 + (800 - 500)
+    expect(el.scrollTop).toBe(200);
   });
 
   test("an append (no first-turn-id change) does NOT run the prepend scroll correction", () => {

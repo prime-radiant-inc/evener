@@ -374,6 +374,55 @@ test("ref.current.getVisibleRange() returns null before mount (no ref attached)"
   expect(ref.current).toBeNull();
 });
 
+// anchorToEnd (session transcript, 2026-08): opt-in end-anchored following,
+// backed by virtual-core's anchorTo:"end" + followOnAppend (already in the
+// locked dependency tree via react-virtual 3.14.7's own virtual-core 3.17.5
+// pin). The behaviors those options buy - staying pinned to the TRUE end
+// while dynamic measurement settles, following appends only while the reader
+// is at the end, anchoring the visible row across a prepend - are real-
+// geometry behaviors jsdom cannot exercise (see this file's top comment).
+// What CAN be proven here, honestly, is the wiring: the real virtualizer
+// instance (captured through the onChange seam) must resolve exactly these
+// options with the prop on, and exactly upstream's defaults with it off.
+describe("anchorToEnd", () => {
+  type ResolvedOptions = {
+    options: { anchorTo: string; followOnAppend: unknown; scrollEndThreshold: number };
+  };
+
+  function captureResolvedOptions(anchorToEnd?: boolean): ResolvedOptions {
+    let captured: ResolvedOptions | undefined;
+    render(
+      <VirtualList
+        count={10}
+        estimateSize={() => ROW_HEIGHT}
+        getItemKey={(i) => `row-${i}`}
+        anchorToEnd={anchorToEnd}
+        onChange={(instance) => {
+          captured = instance as unknown as ResolvedOptions;
+        }}
+        renderRow={(i) => <div key={i}>row {i}</div>}
+      />,
+    );
+    if (!captured) throw new Error("onChange never fired - the virtualizer never resolved its options");
+    return captured;
+  }
+
+  test("on: the virtualizer anchors to the end, follows appends, and uses the 50px end threshold", () => {
+    const resolved = captureResolvedOptions(true);
+    expect(resolved.options.anchorTo).toBe("end");
+    expect(resolved.options.followOnAppend).toBe(true);
+    // Same "within 50px of true bottom" as the transcript scroll metrics'
+    // AT_BOTTOM_THRESHOLD_PX - see END_ANCHOR_THRESHOLD_PX in ./index.tsx.
+    expect(resolved.options.scrollEndThreshold).toBe(50);
+  });
+
+  test("off (default): upstream defaults hold - start-anchored, no append following", () => {
+    const resolved = captureResolvedOptions();
+    expect(resolved.options.anchorTo).toBe("start");
+    expect(resolved.options.followOnAppend).toBe(false);
+  });
+});
+
 // Overflow containment (2026-07-30-mobile-session-layout-design.md, decision
 // 5): the list's own scroller never pans sideways. overflow-y: auto makes
 // overflow-x compute to auto by default, which is exactly the page-level

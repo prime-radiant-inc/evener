@@ -1,4 +1,4 @@
-import { type ScrollToOptions, useVirtualizer } from "@tanstack/react-virtual";
+import { type ScrollToOptions, useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
 import { type ReactNode, type Ref, useImperativeHandle, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./virtuallist.module.css";
@@ -56,9 +56,33 @@ export interface VirtualListProps {
   /**
    * Called after react-virtual changes its rendered range or measurements.
    * Consumers can finish layout work that depends on a row becoming measured
-   * without timers or polling.
+   * without timers or polling. The arguments are exactly upstream's onChange
+   * (the virtualizer instance and its sync flag); a consumer that only needs
+   * "something changed" ignores both, as before.
    */
-  onChange?: () => void;
+  onChange?: (instance: Virtualizer<HTMLDivElement, HTMLDivElement>, sync: boolean) => void;
+  /**
+   * Opt in to end-anchored following (virtual-core 3.17's anchorTo:"end" +
+   * followOnAppend - the locked dependency tree already carries it, via
+   * react-virtual 3.14.7's own @tanstack/virtual-core@3.17.5 pin). Meant for
+   * live-append lists like the session transcript:
+   *  - While the reader is within END_ANCHOR_THRESHOLD_PX of the end, row
+   *    re-measurements (dynamic settling after mount, a streaming last row
+   *    growing) keep the viewport pinned to the TRUE end - so "open at the
+   *    latest turn" survives the estimate->measured correction instead of
+   *    stranding the reader mid-transcript.
+   *  - An append while the reader is at the end follows it; an append while
+   *    the reader has scrolled back does NOT move the viewport (the at-end
+   *    check reads real DOM geometry at append time, so it can't be fooled
+   *    by a stale "was at bottom" flag).
+   *  - A prepend (loadOlder paging) keeps the currently-visible row anchored
+   *    instead of jumping - the compensation useTranscriptScroll used to do
+   *    by hand, done by the virtualizer with per-item precision.
+   * Off by default: fixed-height consumers (the gallery demo) want none of
+   * this. Requires getItemKey to be meaningful (the follow/anchor decisions
+   * are keyed) - both transcript consumers already pass one.
+   */
+  anchorToEnd?: boolean;
   ref?: Ref<VirtualListHandle>;
 }
 
@@ -72,6 +96,14 @@ const CLASS = {
 // keyboard paging don't flash blank rows before the next frame paints.
 const DEFAULT_OVERSCAN = 6;
 
+// How close to the true end (px) counts as "following the tail" when
+// anchorToEnd is on. Matches the transcript scroll metrics' own
+// AT_BOTTOM_THRESHOLD_PX (panes/session/transcript/flow/scrollMetrics.ts) -
+// legacy renderer.js parity (docs/web-ui/parity/parity-m4-transcript.md
+// §15): "within 50px of true bottom". Duplicated rather than imported
+// because the import direction is panes -> widgets, never the reverse.
+const END_ANCHOR_THRESHOLD_PX = 50;
+
 /**
  * Windows `count` rows down to the visible range via @tanstack/react-virtual
  * (already a dependency): `renderRow(index)` is only called for rows near
@@ -81,7 +113,16 @@ const DEFAULT_OVERSCAN = 6;
  * rows this wave's consumers have and keeps this a thin wrapper rather
  * than a dynamic-height layout engine.
  */
-export function VirtualList({ count, estimateSize, renderRow, dynamic, getItemKey, onChange, ref }: VirtualListProps) {
+export function VirtualList({
+  count,
+  estimateSize,
+  renderRow,
+  dynamic,
+  getItemKey,
+  onChange,
+  anchorToEnd,
+  ref,
+}: VirtualListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const virtualizer = useVirtualizer({
@@ -91,6 +132,9 @@ export function VirtualList({ count, estimateSize, renderRow, dynamic, getItemKe
     overscan: DEFAULT_OVERSCAN,
     getItemKey,
     onChange,
+    ...(anchorToEnd
+      ? { anchorTo: "end" as const, followOnAppend: true, scrollEndThreshold: END_ANCHOR_THRESHOLD_PX }
+      : {}),
   });
 
   useImperativeHandle(

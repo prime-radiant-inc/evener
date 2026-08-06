@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { Dialog } from "../dialog";
@@ -178,6 +178,66 @@ test("clicking outside the menu closes it", async () => {
   await user.click(screen.getByRole("button", { name: "Actions" }));
   expect(screen.getByRole("menu")).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "Elsewhere" }));
+  expect(screen.queryByRole("menu")).toBeNull();
+});
+
+// --- scroll-close semantics (2026-08) --------------------------------------
+// The popup is portaled and fixed-positioned off the trigger's rect, so the
+// menu must close when a scroll can move the trigger out from under it - but
+// ONLY then. The live case for "stays open": the session pane's "..." menu
+// sits in the chrome while the transcript scrolls beside it (kata: scrolling
+// a session must not dismiss its open context menu).
+
+test("a scroll in a container that does not hold the trigger leaves the menu open", async () => {
+  const user = userEvent.setup();
+  render(
+    <div>
+      <Menu trigger="Actions" items={items()} />
+      <div data-testid="unrelated-scroller" />
+    </div>,
+  );
+  await user.click(screen.getByRole("button", { name: "Actions" }));
+  expect(screen.getByRole("menu")).toBeTruthy();
+
+  fireEvent.scroll(screen.getByTestId("unrelated-scroller"));
+
+  expect(screen.getByRole("menu")).toBeTruthy();
+});
+
+test("a scroll inside the trigger's own container closes the menu", async () => {
+  const user = userEvent.setup();
+  render(
+    <div data-testid="owning-scroller">
+      <Menu trigger="Actions" items={items()} />
+    </div>,
+  );
+  await user.click(screen.getByRole("button", { name: "Actions" }));
+  expect(screen.getByRole("menu")).toBeTruthy();
+
+  fireEvent.scroll(screen.getByTestId("owning-scroller"));
+
+  expect(screen.queryByRole("menu")).toBeNull();
+});
+
+test("a document scroll closes the menu", async () => {
+  const user = userEvent.setup();
+  render(<Menu trigger="Actions" items={items()} />);
+  await user.click(screen.getByRole("button", { name: "Actions" }));
+  expect(screen.getByRole("menu")).toBeTruthy();
+
+  fireEvent.scroll(document);
+
+  expect(screen.queryByRole("menu")).toBeNull();
+});
+
+test("a viewport resize still closes the menu regardless of scroll semantics", async () => {
+  const user = userEvent.setup();
+  render(<Menu trigger="Actions" items={items()} />);
+  await user.click(screen.getByRole("button", { name: "Actions" }));
+  expect(screen.getByRole("menu")).toBeTruthy();
+
+  fireEvent(window, new Event("resize"));
+
   expect(screen.queryByRole("menu")).toBeNull();
 });
 
