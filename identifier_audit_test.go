@@ -208,6 +208,11 @@ var identifierSHA256Inventory = map[string]map[string]map[string]bool{
 	// Content address for tool-result image bytes; every sha-addressed image
 	// route keys on it. No identifier is derived from the digest.
 	"agent/events/payloads.go": {"imageSHA": {"Sum256(data)": true}},
+	// Reimplements the runtime loop detector's own tool-call signature
+	// (name+shortHash(args)) so the doctor package never imports the agent
+	// session/runtime. No identifier is derived from the digest — it is a
+	// loop-detection signature over the call's arguments.
+	"agent/doctor/health.go": {"toolCallSignature": {"Sum256(args)": true}},
 	"agent/internal/jobstore/output.go": {
 		"outputFileHasPrefixSHA256": {"New()": true},
 		"outputFileHasSuffixSHA256": {"New()": true},
