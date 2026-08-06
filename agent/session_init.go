@@ -10,7 +10,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"testing"
 	"time"
+
+	"github.com/spf13/afero"
 
 	"primeradiant.com/serf/agent/diagnostic"
 	"primeradiant.com/serf/agent/events"
@@ -42,6 +45,32 @@ import (
 // a package-level setting because it is a per-process constant — the same value
 // for every session in a run — mirroring openai.ClientVersion in the llm module.
 var BuildVersion = "dev"
+
+// testSpeedIO reports whether NewSession/RestoreSession should skip the
+// fsync-bearing I/O paths (jobstore append fsync, transcript header fsync,
+// on-disk installation-ID persistence) that every construction pays for but
+// that only crash-durability tests actually exercise. testing.Testing()
+// reports true only inside a binary built by `go test`, so production
+// callers (never built that way) are unaffected; cfg.forceRealIO lets a test
+// whose own subject IS that I/O cost (BenchmarkNewSession) opt back into the
+// production path.
+func testSpeedIO(cfg testConfig) bool {
+	return testing.Testing() && !cfg.forceRealIO
+}
+
+// resolveInstallationID loads or creates the installation ID for stateDir.
+// Under testSpeedIO it uses an in-memory afero.Fs, whose Sync() is a no-op —
+// eliminating the two fsyncs LoadOrCreateInstallationID pays on first touch
+// of a fresh stateDir — at the cost of generating a fresh ID per Session
+// construction rather than persisting one on disk. No agent-package test
+// asserts installation-ID stability across restore (only that the client
+// metadata key is present and non-empty), so this is safe under testSpeedIO.
+func resolveInstallationID(cfg testConfig, stateDir string) string {
+	if testSpeedIO(cfg) {
+		return installid.LoadOrCreateInstallationIDWithFS(afero.NewMemMapFs(), stateDir)
+	}
+	return installid.LoadOrCreateInstallationID(stateDir)
+}
 
 // selectStrategy creates the appropriate contextmgr.Strategy from config.
 func selectStrategy(cfg SessionConfig, cm *contextmgr.Manager, sess *Session) (contextmgr.Strategy, error) {
@@ -165,7 +194,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		env:                           env,
 		clock:                         cfg.clock,
 		stateDir:                      cfg.StateDir,
-		installID:                     installid.LoadOrCreateInstallationID(cfg.StateDir),
+		installID:                     resolveInstallationID(cfg.testOnly, cfg.StateDir),
 		state:                         SessionIdle,
 		jobTreeClock:                  jobClock,
 		events:                        make(chan events.SessionEvent, 256),
@@ -179,7 +208,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	s.createdAt = s.sclock().Now().UTC()
 	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
 	newJM := newJobManager
-	if cfg.testOnly.noSyncJobStore {
+	if cfg.testOnly.noSyncJobStore || testSpeedIO(cfg.testOnly) {
 		newJM = newJobManagerNoSync
 	}
 	var jm *jobManager
@@ -286,6 +315,8 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		var twErr error
 		if fault := s.sessionInitFault("new_transcript"); fault != nil {
 			twErr = fault
+		} else if testSpeedIO(cfg.testOnly) {
+			tw, twErr = transcript.NewWriterNoSync(tpath, hdr)
 		} else {
 			tw, twErr = transcript.NewWriter(tpath, hdr)
 		}
@@ -546,7 +577,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		env:                      env,
 		clock:                    cfg.clock,
 		stateDir:                 cfg.StateDir,
-		installID:                installid.LoadOrCreateInstallationID(cfg.StateDir),
+		installID:                resolveInstallationID(cfg.testOnly, cfg.StateDir),
 		state:                    SessionIdle,
 		events:                   make(chan events.SessionEvent, 256),
 		history:                  resumeHistory,
@@ -575,7 +606,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
 	newJM := newJobManager
-	if cfg.testOnly.noSyncJobStore {
+	if cfg.testOnly.noSyncJobStore || testSpeedIO(cfg.testOnly) {
 		newJM = newJobManagerNoSync
 	}
 	jm, err := newJM(s.stateDir, s.id, nil)
@@ -712,6 +743,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			var twErr error
 			if fault := s.sessionInitFault("restore_new_transcript"); fault != nil {
 				twErr = fault
+			} else if testSpeedIO(cfg.testOnly) {
+				tw, twErr = transcript.NewWriterNoSync(tpath, hdr)
 			} else {
 				tw, twErr = transcript.NewWriter(tpath, hdr)
 			}

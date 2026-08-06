@@ -711,6 +711,10 @@ func TestSession_PopulatesModelRequestMetadata(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: stateDir,
+		// forceRealIO: this test's contract includes the installation_id file
+		// actually existing at StateDir on the real filesystem (asserted below);
+		// the test-speed default resolves installID against an in-memory fs.
+		testOnly: testConfig{forceRealIO: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

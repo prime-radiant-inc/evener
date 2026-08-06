@@ -328,6 +328,16 @@ type testConfig struct {
 	// durability. The event bytes and append/load behavior stay the same.
 	noSyncJobStore bool
 
+	// forceRealIO disables the test-binary-wide default (see testSpeedIO in
+	// session_init.go) that skips jobstore fsyncs, the transcript header fsync,
+	// and on-disk installation-ID persistence whenever running under `go test`.
+	// Known setters: BenchmarkNewSession, whose subject IS real
+	// session-construction I/O cost (the test-speed default would make it
+	// measure something other than what it claims); and
+	// TestSession_PopulatesModelRequestMetadata, which asserts the
+	// installation_id file exists on the real filesystem.
+	forceRealIO bool
+
 	// sandboxProber, when non-nil, supplies the host facts used to RE-RESOLVE a
 	// resumed delegate's persisted sandbox policy against its lane. Production
 	// leaves it nil and probes the live host (sandbox.RealProber); tests inject a

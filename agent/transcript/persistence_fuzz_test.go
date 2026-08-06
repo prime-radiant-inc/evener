@@ -63,8 +63,8 @@ func FuzzTranscriptWriterPersistence(f *testing.F) {
 		osFS := afero.NewBasePathFs(afero.NewOsFs(), t.TempDir())
 		memFS := afero.NewMemMapFs()
 
-		osW, errOS := newWriterFS(osFS, path, header)
-		memW, errMem := newWriterFS(memFS, path, header)
+		osW, errOS := newWriterFS(osFS, path, header, true)
+		memW, errMem := newWriterFS(memFS, path, header, true)
 		requireErrParity(t, "NewWriter", errOS, errMem)
 		if errOS != nil {
 			return
@@ -108,8 +108,8 @@ func FuzzTranscriptWriterPersistence(f *testing.F) {
 				if errOS != nil {
 					// Both failed to reopen (parity held); restart fresh so the
 					// remaining program still has live writers to drive.
-					osW, errOS = newWriterFS(osFS, path, header)
-					memW, errMem = newWriterFS(memFS, path, header)
+					osW, errOS = newWriterFS(osFS, path, header, true)
+					memW, errMem = newWriterFS(memFS, path, header, true)
 					requireErrParity(t, "NewWriter(restart)", errOS, errMem)
 					if errOS != nil {
 						return

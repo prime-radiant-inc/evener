@@ -16,13 +16,16 @@ func benchClient() *llm.Client {
 
 // BenchmarkNewSession measures full session construction against a real local
 // execution environment (the path that forks git rev-parse and compiles tool
-// schemas).
+// schemas). forceRealIO opts this benchmark out of the test-binary-wide
+// no-fsync default (testSpeedIO in session_init.go): its subject IS real
+// construction I/O cost, including the jobstore/transcript/installation-ID
+// fsyncs every other test in this package is now exempted from.
 func BenchmarkNewSession(b *testing.B) {
 	c := benchClient()
 	prof := provider.NewOpenAIProfile("gpt-5.2")
 	for b.Loop() {
 		dir := b.TempDir()
-		sess, err := NewSession(c, prof, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{MaxSubagentDepth: 1})
+		sess, err := NewSession(c, prof, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{MaxSubagentDepth: 1, testOnly: testConfig{forceRealIO: true}})
 		if err != nil {
 			b.Fatalf("NewSession: %v", err)
 		}

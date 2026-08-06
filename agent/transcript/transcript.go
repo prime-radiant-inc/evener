@@ -283,20 +283,31 @@ func (w *Writer) FailedToolCalls() (int, bool) {
 // NewWriter creates a transcript file at path, writes the header as the first line,
 // and returns a writer that keeps the file handle open for subsequent Append calls.
 func NewWriter(path string, header Header) (*Writer, error) {
-	return NewWriterWithFS(afero.NewOsFs(), path, header)
+	return newWriterFS(afero.NewOsFs(), path, header, true)
 }
 
 // NewWriterWithFS creates a transcript writer over fs. It has the same behavior
 // as NewWriter, but allows callers that already own a filesystem boundary to
 // keep transcript persistence on that filesystem.
 func NewWriterWithFS(fs afero.Fs, path string, header Header) (*Writer, error) {
-	return newWriterFS(fs, path, header)
+	return newWriterFS(fs, path, header, true)
+}
+
+// NewWriterNoSync creates a transcript file exactly like NewWriter, on the
+// real OS filesystem, but skips the header fsync. Every other durability
+// property (file exists at path, header bytes present, subsequent Append
+// behavior) is identical — only the guarantee that the header survives a
+// crash before the first fsync is given up. For tests whose contract is not
+// crash durability; production always calls NewWriter.
+func NewWriterNoSync(path string, header Header) (*Writer, error) {
+	return newWriterFS(afero.NewOsFs(), path, header, false)
 }
 
 // newWriterFS is the filesystem-injecting seam behind NewWriter. Production
 // passes afero.NewOsFs() (byte-identical to direct os calls); tests and the
-// persistence fuzzer inject an in-memory or sandboxed filesystem.
-func newWriterFS(fs afero.Fs, path string, header Header) (*Writer, error) {
+// persistence fuzzer inject an in-memory or sandboxed filesystem. sync
+// controls whether the header write is fsynced before return.
+func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, error) {
 	header.Kind = "header"
 	header.FormatVersion = FormatVersion
 
@@ -320,9 +331,11 @@ func newWriterFS(fs afero.Fs, path string, header Header) (*Writer, error) {
 		return nil, fmt.Errorf("write transcript header: %w", err)
 	}
 
-	if err := f.Sync(); err != nil {
-		_ = f.Close() // cleanup on error path; the sync error is what matters
-		return nil, fmt.Errorf("sync transcript header: %w", err)
+	if sync {
+		if err := f.Sync(); err != nil {
+			_ = f.Close() // cleanup on error path; the sync error is what matters
+			return nil, fmt.Errorf("sync transcript header: %w", err)
+		}
 	}
 
 	return &Writer{fs: fs, file: f, lastSync: time.Now()}, nil
