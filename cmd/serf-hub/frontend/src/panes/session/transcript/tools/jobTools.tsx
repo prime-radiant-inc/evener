@@ -218,6 +218,7 @@ type DelegateSendRawState = {
   action: string;
   running_in_background: boolean;
   output?: string;
+  transcript_ref?: string;
 };
 
 function delegateSendResult(raw: unknown): raw is DelegateSendRawState {
@@ -227,7 +228,8 @@ function delegateSendResult(raw: unknown): raw is DelegateSendRawState {
     typeof state.action === "string" &&
     state.action.trim() !== "" &&
     typeof state.running_in_background === "boolean" &&
-    (state.output === undefined || typeof state.output === "string")
+    (state.output === undefined || typeof state.output === "string") &&
+    (state.transcript_ref === undefined || typeof state.transcript_ref === "string")
   );
 }
 
@@ -321,6 +323,31 @@ function delegateSendResponse(item: ItemModel): string | undefined {
   return response.trim() === "" ? undefined : response;
 }
 
+// The target's transcript ref rides the tool call's raw state
+// (agent/session_tools_jobs.go's delegateSendResult.TranscriptRef), so the
+// collapsed row can offer the same open-in-pane link the subagent module rows
+// have. Runtime-message results and pre-field transcripts carry no ref - no
+// button, never a dead link.
+function delegateSendTranscriptRef(item: ItemModel): string | undefined {
+  if (!delegateSendResult(item.raw)) return undefined;
+  const ref = item.raw.transcript_ref;
+  return ref !== undefined && ref.trim() !== "" ? ref : undefined;
+}
+
+// The collapsed summary names the target and, once the call settles, one
+// status word recovered from the footer's own text (statusWordFromText -
+// field order/presence in the footer is not fixed). The footer's remaining
+// metadata (delegate_id echo, started_job_id, "running in background") is
+// noise on a one-line summary and stays out of it.
+function delegateSendSummary(item: ItemModel): string {
+  const args = parseArgs(item.argumentsJSON);
+  const target = clip(delegateSendTarget(args), ID_CLIP);
+  const base = target === "" ? "Sent a message to a delegate" : `Sent a message to delegate ${target}`;
+  const footer = delegateSendFooter(item.output ?? "");
+  const status = footer ? statusWordFromText(footer.text) : undefined;
+  return status ? `${base} · ${status}` : base;
+}
+
 function DelegateSendBody(props: ToolRenderProps) {
   const { item } = props;
   const message = str(parseArgs(item.argumentsJSON), "message");
@@ -362,12 +389,8 @@ function DelegateSendBody(props: ToolRenderProps) {
 registerToolRenderer({
   match: (name) => name === "delegate_send" || name === "job_send_message",
   icon: "send",
-  summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
-    const target = clip(delegateSendTarget(args), ID_CLIP);
-    const footer = delegateSendFooter(item.output ?? "");
-    return footer ? `Messaged ${target} · ${footer.text}` : `Messaged ${target}`;
-  },
+  summary: delegateSendSummary,
+  openTranscriptRef: delegateSendTranscriptRef,
   body: DelegateSendBody,
 });
 

@@ -148,13 +148,54 @@ test("job_stop: no footer yet (request in flight) shows just the target", () => 
 
 // --- delegate_send (+ legacy job_send_message alias) ---------------------
 
-test("delegate_send: summary shows the target delegate and the tool's own footer", () => {
+test("delegate_send: summary names the target delegate and a one-word status, not the raw footer", () => {
   const d = toolRendererFor("delegate_send");
   const args = JSON.stringify({ to: "dlg_abc123", message: "status?" });
   const output = "on it\n[delegate_id dlg_abc123 · delivered · running]";
   expect(d.summary(item({ toolName: "delegate_send", argumentsJSON: args, output }))).toBe(
-    "Messaged dlg_abc123 · delegate_id dlg_abc123 · delivered · running",
+    "Sent a message to delegate dlg_abc123 · running",
   );
+});
+
+test("delegate_send: summary omits the status segment when there is no footer yet (in flight)", () => {
+  const d = toolRendererFor("delegate_send");
+  const args = JSON.stringify({ to: "dlg_abc123", message: "status?" });
+  expect(d.summary(item({ toolName: "delegate_send", argumentsJSON: args, output: "" }))).toBe(
+    "Sent a message to delegate dlg_abc123",
+  );
+});
+
+test("delegate_send: summary degrades gracefully with no target arg", () => {
+  const d = toolRendererFor("delegate_send");
+  expect(d.summary(item({ toolName: "delegate_send", argumentsJSON: "{}", output: "" }))).toBe(
+    "Sent a message to a delegate",
+  );
+});
+
+test("delegate_send: openTranscriptRef reads transcript_ref from valid raw state", () => {
+  const d = toolRendererFor("delegate_send");
+  const it = item({
+    toolName: "delegate_send",
+    raw: { action: "steered", running_in_background: true, transcript_ref: "local:child1" },
+  });
+  expect(d.openTranscriptRef?.(it)).toBe("local:child1");
+});
+
+test("delegate_send: openTranscriptRef is undefined for absent, malformed, or blank-ref raw state", () => {
+  const d = toolRendererFor("delegate_send");
+  expect(d.openTranscriptRef?.(item({ toolName: "delegate_send" }))).toBeUndefined();
+  // Missing running_in_background: not a valid delegateSendResult at all.
+  expect(
+    d.openTranscriptRef?.(item({ toolName: "delegate_send", raw: { action: "steered", transcript_ref: "local:c" } })),
+  ).toBeUndefined();
+  expect(
+    d.openTranscriptRef?.(
+      item({
+        toolName: "delegate_send",
+        raw: { action: "steered", running_in_background: true, transcript_ref: "  " },
+      }),
+    ),
+  ).toBeUndefined();
 });
 
 function renderDelegateSendBody({
@@ -299,7 +340,7 @@ test("job_send_message aliases to the same descriptor as delegate_send, reading 
   expect(jobSendMessage).toBe(delegateSend);
   const args = JSON.stringify({ target: "dlg_legacy", message: "hi" });
   expect(jobSendMessage.summary(item({ toolName: "job_send_message", argumentsJSON: args, output: "" }))).toBe(
-    "Messaged dlg_legacy",
+    "Sent a message to delegate dlg_legacy",
   );
 });
 
