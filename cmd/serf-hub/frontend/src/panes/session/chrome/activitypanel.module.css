@@ -1,6 +1,5 @@
-/* Activity panel: master-detail tree + in-place inspector, with a mobile
- * inspector-only mode below the shared 899px breakpoint. Uses token colors and
- * spacing only. */
+/* Activity panel: single-column dense tree. Uses token colors and spacing
+ * only. */
 
 .triggerCount {
   color: var(--ink-mid);
@@ -32,20 +31,6 @@
   min-height: 0;
 }
 
-.masterDetail {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(18rem, 24rem);
-  gap: var(--space-3);
-  min-height: 0;
-}
-
-.mobilePane {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  min-height: 0;
-}
-
 .panelColumn {
   min-width: 0;
   min-height: 0;
@@ -54,11 +39,6 @@
   border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
   background: var(--surface-1);
-}
-
-.mobileBack {
-  display: inline-flex;
-  align-self: flex-start;
 }
 
 .tree {
@@ -361,11 +341,4 @@
   flex-wrap: wrap;
   gap: var(--space-2);
   align-items: center;
-}
-
-@media (max-width: 899px) {
-  .masterDetail {
-    display: flex;
-    flex-direction: column;
-  }
 }

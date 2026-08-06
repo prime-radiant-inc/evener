@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../protocol/errors";
@@ -12,7 +12,6 @@ import { tasksPanelStore } from "../../stores/tasksPanel";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import type { ActivityTree } from "../session/chrome/activityData";
-import { activityNodeID } from "../session/chrome/activityData";
 import { NOW_TICK_MS } from "../session/liveness";
 import { sessionPanelTitle } from "./index";
 import { SessionPanelPane } from "./SessionPanelPane";
@@ -134,7 +133,7 @@ function retainedActivity(): ActivityTree {
       ref: "ref_a",
       label: "Build session",
       aggregate: "running",
-      counts: { active: 1, failed: 0, completed: 0, complete: true },
+      counts: { active: 1, failed: 0, completed: 1, complete: true },
       entries: [
         {
           kind: "shell",
@@ -149,6 +148,23 @@ function retainedActivity(): ActivityTree {
             hasOutput: false,
             description: "compile retained shell",
             startedAt: "2026-08-05T00:00:00Z",
+            outputBytes: 0,
+          },
+        },
+        {
+          kind: "shell",
+          job: {
+            jobId: "job_done",
+            ownerSessionId: "session_a",
+            ownerRef: "ref_a",
+            type: "shell",
+            status: "completed",
+            terminal: true,
+            background: false,
+            hasOutput: false,
+            description: "retained done shell",
+            startedAt: "2026-08-05T00:01:00Z",
+            endedAt: "2026-08-05T00:02:00Z",
             outputBytes: 0,
           },
         },
@@ -336,20 +352,16 @@ test("retains Tasks rows and disclosure state across a pane remount", async () =
   expect(screen.getByTestId("task-detail-prompt")).toBeTruthy();
 });
 
-test("renders retained Activity selection and expansion after a pane remount", () => {
+test("renders retained Activity rows and collapsed fold state after a pane remount", () => {
   const model = testModel({ jobsUpdatedAt: 1 });
   const tree = retainedActivity();
-  const rootID = activityNodeID(tree.root);
-  const shellEntry = tree.root.entries[0];
-  if (!shellEntry) throw new Error("retained activity fixture has no shell entry");
-  const shellID = activityNodeID(shellEntry);
   const entry: ActivityPanelEntry = {
     load: { kind: "ready", tree },
-    disclosure: { expandedIDs: [rootID], selectedID: shellID, selectionPruned: false, tree },
+    disclosure: { expandedIDs: [], selectedID: undefined, selectionPruned: false, tree },
     established: true,
     continuationFailures: {},
     requestID: 0,
-    collapsedFoldIDs: [],
+    collapsedFoldIDs: ["session:session_a:inactive-fold"],
   };
   activityPanelStore.setState({ entries: new Map([[model.ref, entry]]) });
   activitySummaryStore.setState({
@@ -372,15 +384,16 @@ test("renders retained Activity selection and expansion after a pane remount", (
   const first = render(
     <SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity" focused kind="activity" />,
   );
-  const firstRow = screen.getByRole("treeitem", { name: /compile retained shell/i });
-  expect(firstRow.getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("treeitem", { name: /compile retained shell/i })).toBeTruthy();
+  expect(screen.getByRole("treeitem", { name: "1 inactive" }).getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByRole("treeitem", { name: /retained done shell/i })).toBeNull();
   first.unmount();
 
   seedModel(model);
   render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-2" focused kind="activity" />);
-  const remountedRow = screen.getByRole("treeitem", { name: /compile retained shell/i });
-  expect(remountedRow.getAttribute("aria-selected")).toBe("true");
-  expect(screen.getByRole("tree")).toBeTruthy();
+  expect(screen.getByRole("treeitem", { name: /compile retained shell/i })).toBeTruthy();
+  expect(screen.getByRole("treeitem", { name: "1 inactive" }).getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByRole("treeitem", { name: /retained done shell/i })).toBeNull();
 });
 
 test("renders daemon-gone state from the retained Tasks store result", async () => {
@@ -407,7 +420,9 @@ test.each(["tasks", "activity"] as const)("%s pane does not install the Details 
   render(<SessionPanelPane params={{ ref: model.ref }} paneId={`panel-${kind}`} focused kind={kind} />);
   await act(async () => Promise.resolve());
 
-  expect(setIntervalSpy).not.toHaveBeenCalled();
+  // The dense activity tree runs its own 1s live-row ticker; the assertion is
+  // only that neither pane installs the Details clock's NOW_TICK_MS cadence.
+  expect(setIntervalSpy).not.toHaveBeenCalledWith(expect.any(Function), NOW_TICK_MS);
   setIntervalSpy.mockRestore();
 });
 
@@ -474,14 +489,16 @@ test("retains deferred Activity root completion after unmount and remount", asyn
   seedModel(model);
   render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-remount" focused kind="activity" />);
   const row = await screen.findByRole("treeitem", { name: /compile retained shell/i });
-  expect(row.getAttribute("aria-selected")).toBeNull();
+  expect(row).toBeTruthy();
 
-  await userEvent.click(row);
-  expect(row.getAttribute("aria-selected")).toBe("true");
-  expect(activityPanelStore.getState().entries.get(model.ref)?.disclosure.selectedID).toBe("job:job_a");
+  await userEvent.click(screen.getByRole("treeitem", { name: "1 inactive" }));
+  expect(activityPanelStore.getState().entries.get(model.ref)?.collapsedFoldIDs).toEqual([
+    "session:session_a:inactive-fold",
+  ]);
+  expect(screen.queryByRole("treeitem", { name: /retained done shell/i })).toBeNull();
 });
 
-test("retains Activity continuation failure, retry, graft, selection, and expansion across remounts", async () => {
+test("retains Activity continuation failure, retry, and graft across remounts", async () => {
   const fake = connectFakeClient();
   const root = deferred<{ data: unknown }>();
   const failedContinuation = deferred<{ data: unknown }>();
@@ -509,12 +526,8 @@ test("retains Activity continuation failure, retry, graft, selection, and expans
   const second = render(
     <SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-second" focused kind="activity" />,
   );
-  const delegate = await screen.findByRole("treeitem", { name: "Continue retained branch" });
-  await userEvent.click(screen.getByRole("button", { name: "Collapse Continue retained branch" }));
-  await userEvent.click(screen.getByRole("button", { name: "Expand Continue retained branch" }));
-  await userEvent.click(delegate);
-  expect(delegate.getAttribute("aria-selected")).toBe("true");
-  await userEvent.click(within(delegate).getByRole("button", { name: "Load more" }));
+  expect(await screen.findByRole("treeitem", { name: "Continue retained branch" })).toBeTruthy();
+  await userEvent.click(screen.getByRole("button", { name: "Load more" }));
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
   second.unmount();
 
@@ -525,11 +538,9 @@ test("retains Activity continuation failure, retry, graft, selection, and expans
   seedModel(model);
   render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-failed" focused kind="activity" />);
   expect(await screen.findByText(/couldn't load more retained activity/i)).toBeTruthy();
-  const failedDelegate = screen.getByRole("treeitem", { name: "Continue retained branch" });
-  expect(failedDelegate.getAttribute("aria-expanded")).toBe("true");
-  expect(failedDelegate.getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("treeitem", { name: "Continue retained branch" })).toBeTruthy();
 
-  await userEvent.click(within(failedDelegate).getByRole("button", { name: "Load more" }));
+  await userEvent.click(screen.getByRole("button", { name: "Load more" }));
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(3));
   cleanup();
   await act(async () => {
@@ -539,9 +550,7 @@ test("retains Activity continuation failure, retry, graft, selection, and expans
 
   seedModel(model);
   render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-grafted" focused kind="activity" />);
-  const graftedDelegate = await screen.findByRole("treeitem", { name: "Continue retained branch" });
-  expect(graftedDelegate.getAttribute("aria-expanded")).toBe("true");
-  expect(graftedDelegate.getAttribute("aria-selected")).toBe("true");
+  expect(await screen.findByRole("treeitem", { name: "Continue retained branch" })).toBeTruthy();
   expect(await screen.findByRole("treeitem", { name: /continued shell/i })).toBeTruthy();
 });
 
