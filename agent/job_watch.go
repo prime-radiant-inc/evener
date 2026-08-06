@@ -115,6 +115,17 @@ func watchLostAtRestartMessage(target string, status jobstore.Status) string {
 
 const callbackWatchesCancelledAtRestartMessage = "<system-notification>All your callback watches were cancelled because the agent restarted. No further deliveries will occur. If you still want a callback, re-register it with the job_watch tool.</system-notification>"
 
+// watchLostAtRestartSessionMessage is the restart end-notice text for a
+// session-target watch (source "self" or "parent"): its target is this
+// session's own live event stream, not a job with a terminal outcome to
+// report. The session itself keeps running past restart — only the watch's
+// condition-tracking runtime is gone — so this is watchLostAtRestartMessage's
+// claim (the target may still occur; nothing is watching for it), never
+// watchEndedUnfiredMessage's (there is no terminal outcome to name).
+func watchLostAtRestartSessionMessage() string {
+	return "watch ended: this session restarted and the watch did not survive it; the observed session is still running, so its condition may still occur with nothing watching — re-arm the watch if you still care"
+}
+
 // watchBudgetClearedMessage is the single final notification text emitted when a
 // watch trips the delivery budget (spec §4 F1). The count is the budget itself.
 func watchBudgetClearedMessage(target string) string {
@@ -2825,13 +2836,24 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 		if watch.SendTo == "" || spoke[watchFrameOrigin{watchID: watch.WatchID, generation: watch.Generation}] {
 			continue
 		}
-		rec := recs[watch.Target]
-		if rec == nil {
-			continue
-		}
-		trigger := watchLostAtRestartMessage(watch.Target, rec.Status)
-		if rec.Status.IsTerminal() {
-			trigger = watchEndedUnfiredMessage(watch.Target, rec.Status, rec.Reason, rec.OutputBytes)
+		var trigger string
+		if isWatchSessionTarget(watch.Target) {
+			// A session-target watch (source "self" or "parent") has no job
+			// record: its target is this session's own live event stream, not a
+			// job with a terminal outcome. recs[watch.Target] would never match
+			// (watch.Target is the "caller" alias), silently dropping the notice.
+			// The session itself keeps running past restart, so this is
+			// watchLostAtRestartMessage's claim, not watchEndedUnfiredMessage's.
+			trigger = watchLostAtRestartSessionMessage()
+		} else {
+			rec := recs[watch.Target]
+			if rec == nil {
+				continue
+			}
+			trigger = watchLostAtRestartMessage(watch.Target, rec.Status)
+			if rec.Status.IsTerminal() {
+				trigger = watchEndedUnfiredMessage(watch.Target, rec.Status, rec.Reason, rec.OutputBytes)
+			}
 		}
 		// A detached config, like the one restoreWatchSendPendingFrom rebuilds for
 		// a pending frame: enough identity for the send rail to route and settle
