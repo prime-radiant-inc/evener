@@ -301,6 +301,34 @@ afterEach(() => {
   // GeneralSection, whose mount effect touches settingsOverviewStore for
   // real - same module-singleton reasoning as warmRoute's own reset above.
   resetSettingsOverviewStoreForTests();
+  // Rendering <AppShell/> above calls notifications/index.ts's
+  // initNotifications() at module scope (guarded by its own "only once"
+  // flag), wiring its reconnect detector to whichever FakeClient this test
+  // connected to "ready". Left unreset, that detector's stale "sawReady"
+  // flag makes a later file's own fresh ready-client connect read as a
+  // spurious reconnect, firing an unexpected treeStore.refresh() into that
+  // file's own fetch-call assertions (see App.test.tsx's identical reset
+  // and its own comment; ConnectionBanner.test.tsx's Retry test was a
+  // confirmed victim of this exact leak before this reset was added).
+  //
+  // AppShell.tsx's module-scope initNotifications() call only ever fires
+  // once per worker (its own "only once" guard), so leaving it reset would
+  // leave the engine permanently uninitialized for the rest of this
+  // isolate:false worker - so it is re-run immediately below, restoring the
+  // same state a fresh module evaluation would have left (kata p5w9's
+  // identical pattern below). initNotifications() seeds its
+  // `sawReady`/baseline snapshot from whatever connectionStore/treeStore
+  // hold AT THIS MOMENT, so both are forced back to their neutral
+  // pre-render values FIRST - seeding from a still-"ready" connectionStore
+  // (as this test's own render left it moments ago) would wrongly arm the
+  // "reconnect" detector this reset exists to neutralize. Run before
+  // vi.unstubAllGlobals() below so initNotifications()'s baseline
+  // ensureLoaded() fetch still hits this file's own beforeEach fetch stub
+  // instead of a real network call.
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetTreeStoreForTests();
+  resetNotificationsForTests();
+  initNotifications();
   vi.unstubAllGlobals();
 });
 
@@ -1025,6 +1053,16 @@ test("deep-linking to /settings replaces any existing main pane", async () => {
 test("deep-linking to /thread/{ref} opens the session pane chrome-stripped (rail hidden, marker set)", async () => {
   window.history.pushState({}, "", "/thread/local:ref_shared");
   render(<AppShell client={new FakeClient("ready")} />);
+  // Single-pane mode never mounts RailHost (its own mount effect is the
+  // usual /api/tree trigger - see the file-level comment on RailHost's
+  // rendering condition just above the JSX), so nothing here fetches the
+  // tree on its own; a real boot's baseline fetch (initNotifications()'s
+  // ensureLoaded(), module-scope, fires only once ever) already covers this
+  // path in production. Mirrors "nested deep-link waits for successful tree
+  // refresh..." above for the same reason.
+  await act(async () => {
+    await treeStore.getState().refresh();
+  });
 
   // /thread/{ref} routes to the SESSION pane (its loading text proves the
   // pane mounted), not the never-URL'd transcript pane.
@@ -1230,6 +1268,13 @@ test("mobile: a /s/{ref} deep link still opens once the tree lands, instead of b
 
   window.history.pushState({}, "", "/s/local:s1");
   render(<AppShell client={new FakeClient("ready")} />);
+  // Mobile never mounts RailHost (its own mount effect is the usual
+  // /api/tree trigger), so nothing here fetches the tree on its own; a real
+  // boot's baseline fetch (initNotifications()'s ensureLoaded(), module-
+  // scope, fires only once ever) already covers this path in production.
+  // Fire-and-forget, not awaited, so the "tree still in flight" window below
+  // is this test's own to control via treePromise/resolveTree.
+  void treeStore.getState().ensureLoaded();
 
   // The mobile host has settled on its own welcome fallback with the tree
   // still in flight - the whole window in which the deep link was lost.
@@ -1257,6 +1302,14 @@ test("kata 098n: on mobile a /thread/{ref} share link keeps its URL and its sing
   installMobileViewport();
   window.history.pushState({}, "", "/thread/local:s1");
   render(<AppShell client={new FakeClient("ready")} />);
+  // Mobile never mounts RailHost (its own mount effect is the usual
+  // /api/tree trigger - see the file-level comment on RailHost's rendering
+  // condition), so nothing here fetches the tree on its own; a real boot's
+  // baseline fetch (initNotifications()'s ensureLoaded(), module-scope,
+  // fires only once ever) already covers this path in production.
+  await act(async () => {
+    await treeStore.getState().refresh();
+  });
 
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
   await waitFor(() => expect(window.location.pathname).toBe("/thread/local:s1"));

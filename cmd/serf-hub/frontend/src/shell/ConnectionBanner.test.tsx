@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { SIGN_IN_PROMPT_MESSAGE } from "../auth";
+import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { AppwireClient, type ConnectionState } from "../protocol/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { InitializeResponse } from "../protocol/types.gen";
@@ -62,10 +63,29 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
   closeStaleClient();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  // Whichever earlier test file in this isolate:false worker first imported
+  // AppShell.tsx armed notifications/index.ts's connectionStore subscriber
+  // (its "reconnect" detector, sawReady) for the rest of the worker's life -
+  // this file has SEVERAL tests above (and in "clicking Retry" below) that
+  // each connect a FRESH client straight to "ready", the exact transition
+  // that detector watches for. Left unreset, the first such test here arms
+  // sawReady and every later one in this file reads as a spurious reconnect,
+  // firing an extra, unscripted treeStore.refresh() -> fetch("/api/tree")
+  // that can consume one of a later test's own scripted fetchMock slots (the
+  // "clicking Retry > a retry re-probes..." flake this reset fixes - see
+  // AppShell.test.tsx's identical reset for the fuller writeup). Reset+reinit
+  // (not just reset) for the same reason as there: initNotifications() only
+  // ever fires once per worker, so leaving it merely reset would starve
+  // every later file's own attention/title wiring for the rest of the run.
+  // Run before vi.unstubAllGlobals() below so initNotifications()'s baseline
+  // ensureLoaded() fetch still hits a stub (this test's own, still active)
+  // instead of a real network call.
+  resetNotificationsForTests();
+  initNotifications();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 const QUIET_STATES: ConnectionState[] = ["idle", "connecting", "ready"];
