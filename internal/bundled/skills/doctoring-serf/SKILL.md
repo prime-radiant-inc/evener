@@ -53,14 +53,28 @@ Run them via the shell tool. First positional arg is a session selector:
 | Command | Answers | Key flags |
 |---|---|---|
 | `serf-doctor locate <sel>` | where are this session's transcript / private API log / meta / jobs / client-mutation files? | — |
+| `serf-doctor sessions` | enumerate sessions for a batch study — id, bucket, timestamps, model(s), turn count, transcript bytes, subagent/parent linkage, outcome hint | `--since DUR`, `--bucket B \| --all`, `--json` |
 | `serf-doctor transcript <sel>` | render the turns; **how many real `X` calls?** | `--count <tool>`, `--format outline\|markdown`, `--range last:N` |
-| `serf-doctor apilog <sel>` | summarize canonical `sessions/<sid>.api.jsonl` attempt identity/grouping/finality, tokens/latency, **empty responses, errors, cache spikes**; `--validate` strictly decodes offset zero..EOF and reports every corrupt/malformed/oversized/unsupported record with its offset (whole-file scan, explicit diagnostics only) | `--empty`, `--errors`, `--cache-spikes [--threshold N]`, `--summary`, `--validate` |
+| `serf-doctor transcript <sel> --health` | one session's mechanical metrics in one shot — tool calls/errors by class, longest identical-call run (+ whether it's all errors), truncation warnings, steering counts, jobs by terminal reason, stale notifications, user corrections (proxy) | `--json` |
+| `serf-doctor apilog <sel>` | summarize canonical `sessions/<sid>.api.jsonl` attempt identity/grouping/finality, tokens/latency, **empty responses, errors, cache spikes**; `--validate` strictly decodes offset zero..EOF and reports every corrupt/malformed/oversized/unsupported record with its offset (whole-file scan, explicit diagnostics only) | `--empty`, `--errors`, `--cache-spikes [--threshold N]`, `--summary`, `--validate`, `--recompute` |
+| `serf-doctor apilog <sel> --health` | one-line API-health verdict — attempts, recorded-empty count, retry-storm groups (≥3 attempts), unsettled groups, errors by class (quota/permanent/retryable) | `--json` |
 | `serf-doctor jobs <sel>` | **what jobs has this session run**, and **what state is job X in** — status, reason, exit code, output bytes, start/end times, delegate/transcript/parent links | `--job <id>` |
 | `serf-doctor mutations <sel>` | **did the user's input reach the daemon?** — the journal of every client mutation the daemon accepted or rejected, plus the durable input queue, pending executions, accepted turns, and queue revision | — |
 | `serf-doctor watches <sel>` | distinct deliveries (collapsing coalescing), provenance, **breaker telemetry (self-influence depth + runaway drops)**, and the **target job's state** — "why didn't my watch fire" | `--watch <id>`, `--self-loops` |
 | `serf-doctor tree <sel>` | parent ↔ delegate/observer tree across buckets | `--depth N`, `--observers` |
+| `serf-doctor audit` | run a runbook's mechanical `audit:` checks across a whole session set, deduped into contract-valid Findings, plus a pattern × session-count summary and every non-mechanical CLASSIFY step surfaced as `manual` (never silently skipped) | `--runbook NAME`, `--sessions <sel,...> \| --since DUR`, `--json` |
 
 Flag-level detail lives in each subcommand's `--help`, not here.
+
+**apilog empties caveat:** `recorded_empty` (and `apilog --health`'s
+`errors_by_class`) reflect the compact fields recorded at call time, not a
+re-decode of the response body. Logs written before the
+Responses-API-decoder fix (WS1, merged to main 2026-08-06 as `812eb5c15`)
+can under-record non-empty responses as empty; run `serf-doctor apilog <sel>
+--recompute` to re-extract text/tool-call counts from the stored body for
+those rows (adds `recomputed_txt`/`recomputed_tools` columns and a
+`recomputed_nonempty` total) before trusting an empty-response verdict on
+pre-fix logs.
 
 ## The Finding contract (in brief)
 

@@ -168,9 +168,10 @@ The checks above are the fixture `agent/doctor/audit_test.go`'s
 had to kill for running too long; `longest_identical_run.errors &&
 longest_identical_run.length >= 3` (medium, `category: provider_error`)
 flags a stuck retry loop the runtime's own loop detector would also have
-caught. A standing `error-loop.md` runbook built on this pattern is planned
-(WS9 Task 5) — read the fixture for the complete, tested block in the
-meantime.
+caught. The standing `runbooks/error-loop.md` and `runbooks/
+run-timeout-waste.md` runbooks build on exactly this pattern (WS9 Task 5);
+`runbooks/truncation-waste.md` and `runbooks/stale-notification.md` are the
+other two study-derived standing runbooks from the same task.
 
 ## When you are *extending* (authoring a brand-new runbook)
 
