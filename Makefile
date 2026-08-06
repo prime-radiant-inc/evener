@@ -223,7 +223,18 @@ SELFTEST_SCRIPTS := run-module-lint run-module-tests make-selftest reclaim-test-
 # $pids is pruned as each wrapper is reaped (an ordered per-pid wait, not the
 # no-argument wait) rather than cleared only once the whole wave finishes, so
 # stop_children never signals a wrapper this shell already reaped just
-# because some other worker is still running. The spawn loop uses the same
+# because some other worker is still running. Waiting in spawn order does not
+# guarantee reaping in spawn order, though -- a shell blocked in `wait pidA`
+# still reaps other children as they exit, so a worker that finishes early
+# can be reaped by the kernel while its entry is still sitting further down
+# this list, unpruned, until this loop's iteration reaches it. Each $pids
+# entry is therefore "$s:$pid", and stop_children skips a pid whose script
+# has already written $dir/$s.status -- the wrapper's last act before it
+# exits, on every exit path, normal or interrupted. This is a file used to
+# SUPPRESS a signal (fail-safe: skipping a worker that's already done or
+# about to be), never to derive one -- the kill target is still $pid from
+# $pids, read from memory, exactly as before; no production path signals
+# a pid it only knows from a file. The spawn loop uses the same
 # deferred-flag idiom as the wrapper: HUP/INT/TERM record which signal fired
 # instead of exiting immediately while pids may be incomplete, and once the
 # loop finishes (pids complete) the real exit-traps are restored and any
@@ -231,20 +242,26 @@ SELFTEST_SCRIPTS := run-module-lint run-module-tests make-selftest reclaim-test-
 selftest:
 	@set -u; fail=0; normal=0; pids=""; \
 	dir="$$(mktemp -d -t serf-selftest.XXXXXX)" || exit 1; \
-	stop_children() { for pid in $$pids; do kill -TERM "$$pid" 2>/dev/null || :; done; }; \
+	stop_children() { \
+		for entry in $$pids; do \
+			s="$${entry%%:*}"; pid="$${entry#*:}"; \
+			[ -e "$$dir/$$s.status" ] && continue; \
+			kill -TERM "$$pid" 2>/dev/null || :; \
+		done; \
+	}; \
 	cleanup() { \
 		if [ "$$normal" -eq 0 ]; then stop_children; fi; \
-		for pid in $$pids; do wait "$$pid" 2>/dev/null || :; done; \
+		for entry in $$pids; do wait "$${entry#*:}" 2>/dev/null || :; done; \
 		rm -rf "$$dir"; \
 	}; \
 	trap 'status=$$?; cleanup; exit "$$status"' 0; \
 	trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
 	run_worker() { \
 		s="$$1"; start="$$(date +%s)"; child=""; interrupted=0; \
-		trap 'if [ -n "$$child" ]; then kill -TERM "-$$child" 2>/dev/null || kill -TERM "$$child" 2>/dev/null || :; wait "$$child" 2>/dev/null || :; exit 143; else interrupted=1; fi' HUP INT TERM; \
+		trap 'if [ -n "$$child" ]; then kill -TERM "-$$child" 2>/dev/null || kill -TERM "$$child" 2>/dev/null || :; wait "$$child" 2>/dev/null || :; echo 143 >"$$dir/$$s.status"; exit 143; else interrupted=1; fi' HUP INT TERM; \
 		perl -e 'setpgrp(0,0); exec @ARGV or die "exec: $$!"' -- scripts/$$s-selftest.sh >"$$dir/$$s.log" 2>&1 & child="$$!"; \
 		echo "$$child" >"$$dir/$$s.pid"; \
-		if [ "$$interrupted" -eq 1 ]; then kill -TERM "-$$child" 2>/dev/null || kill -TERM "$$child" 2>/dev/null || :; wait "$$child" 2>/dev/null || :; exit 143; fi; \
+		if [ "$$interrupted" -eq 1 ]; then kill -TERM "-$$child" 2>/dev/null || kill -TERM "$$child" 2>/dev/null || :; wait "$$child" 2>/dev/null || :; echo 143 >"$$dir/$$s.status"; exit 143; fi; \
 		wait "$$child"; status="$$?"; trap - HUP INT TERM; rm -f "$$dir/$$s.pid"; end="$$(date +%s)"; \
 		printf 'real %s\n' "$$((end - start))" >>"$$dir/$$s.log"; \
 		echo "$$status" >"$$dir/$$s.status"; \
@@ -253,7 +270,7 @@ selftest:
 	trap 'spawn_interrupted=HUP' HUP; trap 'spawn_interrupted=INT' INT; trap 'spawn_interrupted=TERM' TERM; \
 	for s in $(SELFTEST_SCRIPTS); do \
 		run_worker "$$s" & \
-		pids="$$pids $$!"; \
+		pids="$$pids $$s:$$!"; \
 	done; \
 	trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
 	case "$$spawn_interrupted" in \
@@ -263,7 +280,7 @@ selftest:
 	esac; \
 	set -- $$pids; \
 	while [ "$$#" -gt 0 ]; do \
-		wait "$$1" 2>/dev/null || :; \
+		wait "$${1#*:}" 2>/dev/null || :; \
 		shift; \
 		pids="$$*"; \
 	done; \

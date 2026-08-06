@@ -677,48 +677,87 @@ reap_release_fifo="$case_state/reap-release"
 exec 9<>"$ready_fifo"
 exec 8<>"$stop_fifo"
 exec 6<>"$reap_release_fifo"
-run_make_with_readiness_events hold "$long_done_out" "" "" "" "" "" probe-one
+# probe-two is the exit-fast one here, not probe-one: SELFTEST_SCRIPTS spawns probe-one first, so
+# finding 1's completion-order mismatch (the shell reaps a LATER child while blocked waiting for
+# an EARLIER one) needs the second-spawned worker to finish first while the first-spawned one is
+# still the one running -- the opposite pairing wouldn't exercise the mismatch at all, since a
+# per-pid wait loop in spawn order happens to already match completion order when the
+# first-spawned worker is also the first to finish.
+run_make_with_readiness_events hold "$long_done_out" "" "" "" "" "" probe-two
 if wait_for_ready_workers; then
 	ok "the long-done fixture receives both worker readiness events"
 else
 	bad "the long-done fixture receives both worker readiness events"
 fi
+# Discover the recipe's own private directory (the same mktemp interposition the stale-pid case
+# uses) so this case can find $dir/probe-two.pid (the suite pid) and, from its ppid, the actual
+# run_worker WRAPPER pid -- the thing stop_children's $pids list names and the thing finding 1
+# was about, not the suite process this case's earlier version checked instead.
+logdir=""
+attempt=0
+while [ "$attempt" -lt 200 ]; do
+	logdir="$(cat "$case_state/logdir" 2>/dev/null || :)"
+	[ -n "$logdir" ] && [ -f "$logdir/probe-two.pid" ] && break
+	attempt=$((attempt + 1))
+	sleep 0.05
+done
+child_pid=""
+wrapper_pid=""
+if [ -n "$logdir" ] && [ -f "$logdir/probe-two.pid" ]; then
+	child_pid="$(cat "$logdir/probe-two.pid" 2>/dev/null || :)"
+	[ -n "$child_pid" ] && wrapper_pid="$(ps -o ppid= -p "$child_pid" 2>/dev/null | tr -d ' ')"
+fi
+if [ -n "$wrapper_pid" ] && kill -0 "$wrapper_pid" 2>/dev/null; then
+	ok "the wrapper-prune fixture discovers a live wrapper pid before release"
+else
+	bad "the wrapper-prune fixture discovers a live wrapper pid before release"
+fi
 printf 'release\n' >&6
 exited_event=""
 IFS= read -r -t 10 -u 9 exited_event || :
-assert_eq "$exited_event" "worker-exited:probe-one" "the long-done fixture's released worker actually exits"
+assert_eq "$exited_event" "worker-exited:probe-two" "the long-done fixture's released worker actually exits"
 exec 9>&-
 exec 6>&-
-# probe-one's own suite process exiting is necessary but not sufficient here: this case exists
-# to exercise "worker A long-done while worker B still runs", so bound-poll until probe-one is
-# fully gone (not just exited but reaped) before interrupting, rather than racing that reap.
+# The suite process exiting is necessary but not sufficient here: this case exists to exercise
+# "the second-spawned worker finishes first while the first-spawned worker still runs" against the
+# actual completion-gated suppression contract, so bound-poll for both of its preconditions -- the
+# wrapper itself fully reaped (not just its suite) and $dir/probe-two.status written, the file
+# stop_children's skip decision reads -- rather than racing either.
 attempt=0
-probe_one_gone=0
+probe_two_retired=0
 while [ "$attempt" -lt 100 ]; do
-	pid="$(cat "$case_state/probe-one.pid" 2>/dev/null || :)"
-	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-		attempt=$((attempt + 1))
-		sleep 0.05
-	else
-		probe_one_gone=1
+	wrapper_alive=1
+	[ -n "$wrapper_pid" ] && kill -0 "$wrapper_pid" 2>/dev/null || wrapper_alive=0
+	if [ "$wrapper_alive" -eq 0 ] && [ -n "$logdir" ] && [ -f "$logdir/probe-two.status" ]; then
+		probe_two_retired=1
 		break
 	fi
+	attempt=$((attempt + 1))
+	sleep 0.05
 done
-if [ "$probe_one_gone" -eq 1 ]; then
-	ok "the long-done fixture's finished worker is fully gone before the interrupt"
+if [ "$probe_two_retired" -eq 1 ]; then
+	ok "the wrapper-prune fixture's retired wrapper is reaped with its status file written"
 else
-	bad "the long-done fixture's finished worker is fully gone before the interrupt"
+	bad "the wrapper-prune fixture's retired wrapper is reaped with its status file written"
 fi
 stop_make_with_readiness_events
 exec 8>&-
 [ "$make_status" -ne 0 ] && ok "an interrupted wave with one long-done worker exits nonzero" || bad "an interrupted wave with one long-done worker exits nonzero"
-pid="$(cat "$case_state/probe-two.pid" 2>/dev/null || :)"
+pid="$(cat "$case_state/probe-one.pid" 2>/dev/null || :)"
 if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-	bad "an interrupted wave with one long-done worker leaves probe-two alive"
+	bad "an interrupted wave with one long-done worker leaves the straggler alive"
 	kill -KILL "$pid" 2>/dev/null || :
 else
-	ok "an interrupted wave with one long-done worker reaps probe-two"
+	ok "an interrupted wave with one long-done worker reaps the straggler"
 fi
+# What this proves: with the completion-order mismatch finding 1 named actually reproduced (the
+# second-spawned worker retired first), the retired wrapper is fully reaped and its status file is
+# in place -- the exact precondition stop_children's skip branch keys on -- at the instant of
+# interruption, and the live straggler is still correctly signaled around it. What it does not
+# prove: that had the status file been absent (a crash before it could be written) and the retired
+# wrapper's pid been reused by an unrelated live process, stop_children would have wrongly signaled
+# it -- that would require forcing real kernel pid reuse, the same infeasibility as the
+# irreducibility analysis.
 
 new_case
 child_work="$case_dir/interrupt-child"
