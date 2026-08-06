@@ -322,9 +322,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	status := s.status
 	envelope := s.appEnvelope
 	descendantSessionIDs := make([]string, 0, len(s.appDescendants))
+	var descendantStates map[string]string
 	for id, projection := range s.appDescendants {
 		if projection != nil && projection.thread.Status.Type != appwire.ThreadStatusClosed {
 			descendantSessionIDs = append(descendantSessionIDs, id)
+			if state := string(projection.thread.Status.Type); state != "" {
+				if descendantStates == nil {
+					descendantStates = make(map[string]string, len(s.appDescendants))
+				}
+				descendantStates[id] = state
+			}
 		}
 	}
 	processing := s.processing
@@ -353,6 +360,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	status.ContextRemaining = envelope.ContextMetrics.Remaining
 	status.Detailed = envelope.Detailed
 	status.DescendantSessionIDs = descendantSessionIDs
+	status.DescendantStates = descendantStates
 	status.WorkMillis = envelope.WorkMillis
 	status.Usage = envelope.Usage
 	status.ActiveTurnStartedAt = envelope.ActiveTurnStartedAt

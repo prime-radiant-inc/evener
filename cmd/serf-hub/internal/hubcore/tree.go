@@ -636,6 +636,7 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	// Index live entries by SessionID.
 	liveMap := make(map[string]LiveEntry, len(live))
 	runningSubagentIDs := make(map[string]bool)
+	runningSubagentStates := make(map[string]string)
 	for _, le := range live {
 		if le.SessionID != "" {
 			liveMap[le.SessionID] = le
@@ -643,6 +644,9 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		for _, childID := range le.RunningSubagentIDs {
 			if childID != "" {
 				runningSubagentIDs[childID] = true
+				if state := le.RunningSubagentStates[childID]; state != "" {
+					runningSubagentStates[childID] = state
+				}
 			}
 		}
 	}
@@ -653,13 +657,25 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		}
 	}
 
+	// runningSubagentState resolves a live in-process child's display state:
+	// the child's own projected status when its daemon carried one, else the
+	// historical "listed means working" fallback (old daemons, legacy job
+	// discovery). Liveness alone must not read as activity — a settled,
+	// resumable delegate stays listed while doing nothing.
+	runningSubagentState := func(id string) string {
+		if state, ok := runningSubagentStates[id]; ok {
+			return NormalizeState(state)
+		}
+		return "active"
+	}
+
 	// stateFor resolves the display state for a session ID.
 	stateFor := func(id string) string {
 		if le, ok := liveMap[id]; ok {
 			return NormalizeState(le.Status)
 		}
 		if runningSubagentIDs[id] {
-			return "active"
+			return runningSubagentState(id)
 		}
 		return "ended"
 	}
@@ -839,7 +855,7 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			askPending = false
 		} else if kind == "subagent" {
 			if _, ok := runningChildIDs[m.ID]; ok {
-				state = "active"
+				state = runningSubagentState(m.ID)
 			}
 		}
 		node := TreeNode{

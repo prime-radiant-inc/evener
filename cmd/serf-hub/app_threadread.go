@@ -246,8 +246,17 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 	createdAt := hubcore.OrderCreatedAt(entry.Meta.CreatedAt, entry.Meta.UpdatedAt)
 	updatedAt := hubcore.OrderUpdatedAt(entry.Meta.UpdatedAt, entry.Meta.CreatedAt)
 	status := appwire.ThreadStatusNotLoaded
-	if cfg.Roster != nil && cfg.Roster.IsSubagentActive(entry.Meta.ID) {
-		status = appwire.ThreadStatusActive
+	if cfg.Roster != nil {
+		if subState, live := cfg.Roster.SubagentState(entry.Meta.ID); live {
+			// subState is already AppWire vocabulary (the daemon's projected
+			// thread status); "" means an old daemon carried no per-descendant
+			// states, so keep the historical listed-means-working fallback.
+			subState = strings.TrimSpace(subState)
+			if subState == "" {
+				subState = appwire.ThreadStatusActive
+			}
+			status = subState
+		}
 	}
 	// cumulativeUsage is the persisted full-session token total; the cost stamp
 	// derives its "~$X.XX" from it at the session model's price (empty when

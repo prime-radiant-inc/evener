@@ -25,22 +25,29 @@ import (
 type LiveEntry struct {
 	rendezvous.Entry
 	SessionID          string
-	Status             string             // most-recent daemon state ("active", "idle", "awaiting", etc.)
-	Crashed            bool               // true only for a retained record whose daemon PID is confirmed gone
-	PendingAsk         bool               // true while the daemon reports an unanswered ask_user question
-	PendingEscalation  bool               // true while the daemon reports a blocked sandbox-exemption escalation (M7)
-	RunningSubagentIDs []string           // in-process children reported by this daemon; not independently routable
-	Project            identifier.Project // canonical identity resolved at hub ingestion, when available
+	Status             string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
+	Crashed            bool     // true only for a retained record whose daemon PID is confirmed gone
+	PendingAsk         bool     // true while the daemon reports an unanswered ask_user question
+	PendingEscalation  bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	RunningSubagentIDs []string // in-process children reported by this daemon; not independently routable
+	// RunningSubagentStates carries each running child's own projected status
+	// ("active", "idle", ...) when the daemon reports it. A listed child with
+	// no entry has an unknown state (old daemon), NOT a settled one — callers
+	// must keep their previous fallback for that case. Keyed by child session
+	// ID; a defensive copy rides every List/Find like the IDs slice.
+	RunningSubagentStates map[string]string
+	Project               identifier.Project // canonical identity resolved at hub ingestion, when available
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
 type ProbeResult struct {
-	SessionID          string
-	Status             string
-	PendingAsk         bool
-	PendingEscalation  bool
-	RunningSubagentIDs []string
-	OK                 bool
+	SessionID             string
+	Status                string
+	PendingAsk            bool
+	PendingEscalation     bool
+	RunningSubagentIDs    []string
+	RunningSubagentStates map[string]string
+	OK                    bool
 }
 
 // Prober is implemented by liveness-checking strategies.
@@ -50,6 +57,19 @@ type ProbeResult struct {
 // rendezvous file was written) and the daemon's current state.
 type Prober interface {
 	Probe(entry rendezvous.Entry) ProbeResult
+}
+
+// cloneSubagentStates defensive-copies a running-subagent state map; nil
+// stays nil so "daemon carried no states" survives every hand-off intact.
+func cloneSubagentStates(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 type rosterWatcher interface {
@@ -169,6 +189,7 @@ func NewRosterWithEntries(entries ...LiveEntry) *Roster {
 	r := NewRoster("", nil)
 	for _, e := range entries {
 		e.RunningSubagentIDs = append([]string(nil), e.RunningSubagentIDs...)
+		e.RunningSubagentStates = cloneSubagentStates(e.RunningSubagentStates)
 		r.byPID[e.PID] = e
 		if e.SessionID != "" {
 			r.bySess[e.SessionID] = e
@@ -211,6 +232,11 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		sort.Strings(runningSubagentIDs)
 		for _, childID := range runningSubagentIDs {
 			_, _ = h.Write([]byte(childID))
+			_, _ = h.Write([]byte{0})
+			// A child's own state transition (working -> settled) must bump the
+			// fingerprint just like its arrival or departure: it changes what
+			// the sidebar renders for that child.
+			_, _ = h.Write([]byte(bySess[id].RunningSubagentStates[childID]))
 			_, _ = h.Write([]byte{0})
 		}
 		_, _ = h.Write([]byte{0})
@@ -312,12 +338,13 @@ func (r *Roster) Refresh() {
 			continue
 		}
 		live := LiveEntry{
-			Entry:              e,
-			SessionID:          res.SessionID,
-			Status:             res.Status,
-			PendingAsk:         res.PendingAsk,
-			PendingEscalation:  res.PendingEscalation,
-			RunningSubagentIDs: append([]string(nil), res.RunningSubagentIDs...),
+			Entry:                 e,
+			SessionID:             res.SessionID,
+			Status:                res.Status,
+			PendingAsk:            res.PendingAsk,
+			PendingEscalation:     res.PendingEscalation,
+			RunningSubagentIDs:    append([]string(nil), res.RunningSubagentIDs...),
+			RunningSubagentStates: cloneSubagentStates(res.RunningSubagentStates),
 		}
 		if res.SessionID != "" {
 			if prev, ok := bySess[res.SessionID]; !ok || preferLiveEntry(live, prev) {
@@ -366,6 +393,7 @@ func (r *Roster) List() []LiveEntry {
 	out := make([]LiveEntry, 0, len(r.byPID))
 	for _, e := range r.byPID {
 		e.RunningSubagentIDs = append([]string(nil), e.RunningSubagentIDs...)
+		e.RunningSubagentStates = cloneSubagentStates(e.RunningSubagentStates)
 		sessionID := strutil.FirstNonEmpty(e.SessionID, e.Entry.SessionID, e.ThreadID)
 		if sessionID == "" {
 			out = append(out, e)
@@ -388,17 +416,28 @@ func (r *Roster) List() []LiveEntry {
 // running in-process child. Child IDs remain outside bySess so callers cannot
 // mistake the parent's endpoint for an independently routable child daemon.
 func (r *Roster) IsSubagentActive(sessionID string) bool {
+	_, live := r.SubagentState(sessionID)
+	return live
+}
+
+// SubagentState resolves a running in-process child's own projected status.
+// live is true when a live parent daemon currently lists the child (it is
+// non-closed and resumable); the returned state is the child's own reported
+// status, or "" when its daemon carried no per-descendant states (an old
+// daemon — unknown, NOT settled). Callers deciding what to render should
+// keep their pre-states fallback for the "" case.
+func (r *Roster) SubagentState(sessionID string) (string, bool) {
 	if sessionID == "" {
-		return false
+		return "", false
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, entry := range r.byPID {
 		if slices.Contains(entry.RunningSubagentIDs, sessionID) {
-			return true
+			return entry.RunningSubagentStates[sessionID], true
 		}
 	}
-	return false
+	return "", false
 }
 
 func preferLiveEntry(candidate, current LiveEntry) bool {
@@ -419,6 +458,7 @@ func (r *Roster) Find(sessionID string) (LiveEntry, bool) {
 	defer r.mu.RUnlock()
 	e, ok := r.bySess[sessionID]
 	e.RunningSubagentIDs = append([]string(nil), e.RunningSubagentIDs...)
+	e.RunningSubagentStates = cloneSubagentStates(e.RunningSubagentStates)
 	return e, ok
 }
 

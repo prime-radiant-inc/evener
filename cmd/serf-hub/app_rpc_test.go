@@ -1143,6 +1143,23 @@ func TestHubThreadListProjectsRunningSubagentActive(t *testing.T) {
 	t.Fatalf("running subagent %s missing from thread list: %+v", childID, resp.Data)
 }
 
+func TestHubThreadListProjectsIdleSubagentIdle(t *testing.T) {
+	cfg, childID := runningSubagentProjectionConfigWithState(t, appwire.ThreadStatusIdle)
+	resp, err := hubThreadList(context.Background(), cfg, appsource.NewRegistry(), appwire.ThreadListParams{IncludeSubagents: true})
+	if err != nil {
+		t.Fatalf("hubThreadList: %v", err)
+	}
+	for _, thread := range resp.Data {
+		if thread.ID == childID {
+			if thread.Status.Type != appwire.ThreadStatusIdle {
+				t.Fatalf("idle subagent status = %q, want %q", thread.Status.Type, appwire.ThreadStatusIdle)
+			}
+			return
+		}
+	}
+	t.Fatalf("idle subagent %s missing from thread list: %+v", childID, resp.Data)
+}
+
 func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
 	runDir := t.TempDir()
 	base := time.Now().UTC()

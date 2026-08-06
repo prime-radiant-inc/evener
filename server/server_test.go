@@ -12,8 +12,60 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/appwire"
 )
+
+// TestStatusEndpoint_DescendantStates verifies /status carries each projected
+// in-process descendant's own thread status alongside descendant_session_ids,
+// so the hub can tell a settled-but-resumable delegate (idle) from one that is
+// actively working — the IDs list alone is a liveness set and says nothing
+// about activity.
+func TestStatusEndpoint_DescendantStates(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{
+		Kind:      events.EventUserInput,
+		SessionID: "child-idle",
+		Data:      events.UserInputData{Text: "settled"},
+	})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{
+		Kind:      events.EventSessionEnd,
+		SessionID: "child-idle",
+		Data:      events.SessionEndData{Reason: "input_complete", State: "idle"},
+	})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{
+		Kind:      events.EventUserInput,
+		SessionID: "child-active",
+		Data:      events.UserInputData{Text: "working"},
+	})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{
+		Kind:      events.EventSessionEnd,
+		SessionID: "child-closed",
+		Data:      events.SessionEndData{Reason: "shutdown", State: "closed"},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code: got %d, want 200", w.Code)
+	}
+	var status StatusInfo
+	if err := json.NewDecoder(w.Body).Decode(&status); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := status.DescendantStates["child-idle"]; got != "idle" {
+		t.Errorf("descendant_states[child-idle] = %q, want idle", got)
+	}
+	if got := status.DescendantStates["child-active"]; got != "active" {
+		t.Errorf("descendant_states[child-active] = %q, want active", got)
+	}
+	if _, ok := status.DescendantStates["child-closed"]; ok {
+		t.Errorf("descendant_states carried a closed descendant: %v", status.DescendantStates)
+	}
+}
 
 func TestStatusEndpoint_Idle(t *testing.T) {
 	srv := NewServer(ServerConfig{})
