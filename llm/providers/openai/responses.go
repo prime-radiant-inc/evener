@@ -329,6 +329,13 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 	}
 	toolStates := map[string]*toolState{}
 	itemToCallID := map[string]string{}
+	// accumulatedOutput mirrors the wire shape of a response.completed
+	// payload's "output" array, built from response.output_item.done events
+	// as they arrive. Some Responses-API terminal payloads carry an empty
+	// output array even though the stream carried real content — this lets
+	// the terminal-settlement path synthesize the settled Response from what
+	// the stream actually sent.
+	var accumulatedOutput []any
 
 	parseErr := llm.ParseSSE(sctx, resp.Body, func(ev llm.SSEEvent) error {
 		if len(ev.Data) == 0 {
@@ -541,6 +548,13 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 						}
 						tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: json.RawMessage(argsStr), Type: "function"}
 						s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
+						accumulatedOutput = append(accumulatedOutput, map[string]any{
+							"type":      "function_call",
+							"call_id":   st.id,
+							"id":        st.itemID,
+							"name":      st.name,
+							"arguments": argsStr,
+						})
 					} else {
 						s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 					}
@@ -550,6 +564,7 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 						s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
 						textStarted = false
 					}
+					accumulatedOutput = append(accumulatedOutput, item)
 				}
 			} else if textStarted {
 				// Best-effort: treat as end-of-text.
@@ -563,6 +578,29 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 				rawResp = payload
 			}
 			r := fromResponses(rawResp, req.Model)
+			terminalOutput, _ := rawResp["output"].([]any)
+			switch {
+			case len(terminalOutput) == 0 && len(accumulatedOutput) > 0:
+				// The terminal payload carries no output even though the stream's
+				// output_item.done events carried real content (observed on
+				// affected sessions). Synthesize the settled message from what the
+				// stream actually sent, reusing fromResponses' item-walk.
+				r.Message.Content = responseContentFromOutputItems(accumulatedOutput)
+				if status, _ := rawResp["status"].(string); status != "incomplete" {
+					if len(r.ToolCalls()) > 0 {
+						r.Finish = llm.FinishReason{Reason: "tool_calls"}
+					} else {
+						r.Finish = llm.FinishReason{Reason: "stop"}
+					}
+				}
+			case len(terminalOutput) > 0 && len(accumulatedOutput) > 0 && len(terminalOutput) != len(accumulatedOutput):
+				// Terminal output is authoritative when non-empty, but a count
+				// mismatch against what the stream accumulated is worth surfacing.
+				r.Warnings = append(r.Warnings, llm.Warning{
+					Code:    "responses_output_item_count_mismatch",
+					Message: fmt.Sprintf("terminal output items=%d differ from accumulated stream items=%d", len(terminalOutput), len(accumulatedOutput)),
+				})
+			}
 			a.stampResponseIDHash(&r)
 			llm.StampEndpointURL(&r, llm.FinalResponseEndpointURL(resp, a.responsesURL()), a.apiLogCredentialMaterial(nil))
 			// Ensure text segment is closed.
@@ -1115,6 +1153,89 @@ func parseReasoningSummary(raw any) []string {
 	return out
 }
 
+// responseContentFromOutputItems converts a Responses API output-item array
+// into message content parts. It walks the same wire shape whether the items
+// come from a terminal response.completed payload's "output" field or from
+// decodeResponsesStream's accumulated response.output_item.done events, so
+// both callers share this one walk.
+func responseContentFromOutputItems(out []any) []llm.ContentPart {
+	var content []llm.ContentPart
+	for _, itemAny := range out {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _ := item["type"].(string)
+		switch typ {
+		case "message":
+			phase, _ := item["phase"].(string)
+			// content: [{type:"output_text", text:"..."}]
+			if itemContent, ok := item["content"].([]any); ok {
+				for _, cAny := range itemContent {
+					c, ok := cAny.(map[string]any)
+					if !ok {
+						continue
+					}
+					ct, _ := c["type"].(string)
+					if ct == "output_text" {
+						text, _ := c["text"].(string)
+						if text != "" || phase != "" {
+							content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: text, Phase: phase})
+						}
+					}
+				}
+			}
+		case "function_call":
+			name, _ := item["name"].(string)
+			args, _ := item["arguments"].(string)
+			callID, _ := item["call_id"].(string)
+			itemID, _ := item["id"].(string)
+			if itemID == "" {
+				itemID, _ = item["item_id"].(string)
+			}
+			content = append(content, llm.ContentPart{
+				Kind: llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{
+					ID:        callID,
+					ItemID:    itemID,
+					Name:      name,
+					Arguments: json.RawMessage(args),
+					Type:      "function",
+				},
+			})
+		case "web_search_call":
+			query := ""
+			if action, _ := item["action"].(map[string]any); action != nil {
+				query, _ = action["query"].(string)
+			}
+			raw, _ := json.Marshal(item)
+			content = append(content, llm.ContentPart{
+				Kind: llm.ContentWebSearch,
+				WebSearch: &llm.WebSearchData{
+					Query: query,
+					Raw:   raw,
+				},
+			})
+		case "reasoning":
+			id, _ := item["id"].(string)
+			encryptedContent, _ := item["encrypted_content"].(string)
+			if encryptedContent != "" {
+				content = append(content, llm.ContentPart{
+					Kind: llm.ContentThinking,
+					Thinking: &llm.ThinkingData{
+						ID:               id,
+						EncryptedContent: encryptedContent,
+						Summary:          parseReasoningSummary(item["summary"]),
+					},
+				})
+			}
+		default:
+			// ignore
+		}
+	}
+	return content
+}
+
 func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 	// Best-effort mapping. OpenAI Responses output is a list of typed items.
 	r := llm.Response{
@@ -1133,79 +1254,7 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 
 	// Parse output items.
 	if out, ok := raw["output"].([]any); ok {
-		for _, itemAny := range out {
-			item, ok := itemAny.(map[string]any)
-			if !ok {
-				continue
-			}
-			typ, _ := item["type"].(string)
-			switch typ {
-			case "message":
-				phase, _ := item["phase"].(string)
-				// content: [{type:"output_text", text:"..."}]
-				if content, ok := item["content"].([]any); ok {
-					for _, cAny := range content {
-						c, ok := cAny.(map[string]any)
-						if !ok {
-							continue
-						}
-						ct, _ := c["type"].(string)
-						if ct == "output_text" {
-							text, _ := c["text"].(string)
-							if text != "" || phase != "" {
-								msg.Content = append(msg.Content, llm.ContentPart{Kind: llm.ContentText, Text: text, Phase: phase})
-							}
-						}
-					}
-				}
-			case "function_call":
-				name, _ := item["name"].(string)
-				args, _ := item["arguments"].(string)
-				callID, _ := item["call_id"].(string)
-				itemID, _ := item["id"].(string)
-				if itemID == "" {
-					itemID, _ = item["item_id"].(string)
-				}
-				msg.Content = append(msg.Content, llm.ContentPart{
-					Kind: llm.ContentToolCall,
-					ToolCall: &llm.ToolCallData{
-						ID:        callID,
-						ItemID:    itemID,
-						Name:      name,
-						Arguments: json.RawMessage(args),
-						Type:      "function",
-					},
-				})
-			case "web_search_call":
-				query := ""
-				if action, _ := item["action"].(map[string]any); action != nil {
-					query, _ = action["query"].(string)
-				}
-				raw, _ := json.Marshal(item)
-				msg.Content = append(msg.Content, llm.ContentPart{
-					Kind: llm.ContentWebSearch,
-					WebSearch: &llm.WebSearchData{
-						Query: query,
-						Raw:   raw,
-					},
-				})
-			case "reasoning":
-				id, _ := item["id"].(string)
-				encryptedContent, _ := item["encrypted_content"].(string)
-				if encryptedContent != "" {
-					msg.Content = append(msg.Content, llm.ContentPart{
-						Kind: llm.ContentThinking,
-						Thinking: &llm.ThinkingData{
-							ID:               id,
-							EncryptedContent: encryptedContent,
-							Summary:          parseReasoningSummary(item["summary"]),
-						},
-					})
-				}
-			default:
-				// ignore
-			}
-		}
+		msg.Content = responseContentFromOutputItems(out)
 	}
 
 	r.Message = msg
