@@ -40,7 +40,7 @@ audit:
   (`serf-doctor transcript <sel> --format outline` or `--range last:N`) to
   confirm the calls really are identical retries of a failing operation, not
   a legitimate scripted retry with backoff — and check whether the runtime's
-  own loop-detector steering (`steering.loop_detected` in the same
+  own loop-detector steering (`steering.loop-detected` in the same
   `--health` output) already fired, and whether the session heeded it. The
   2026-08-05 session study found this pattern reach ~300 consecutive
   failures in one session (`034163AU8MmLapfXKT7nMu`, a `set_viewport` loop
