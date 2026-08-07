@@ -271,6 +271,32 @@ func TestBuildBwrapArgvSessionTmp(t *testing.T) {
 	if !hasSeq(args, "--bind", tmp, tmp) {
 		t.Errorf("expected the session tmp %q bound writable: %v", tmp, args)
 	}
+	if seqIndex(args, "--remount-ro", "/tmp") >= 0 {
+		t.Errorf("writable mode must NOT remount /tmp read-only: %v", args)
+	}
+}
+
+// TestBuildBwrapArgvReadOnlySessionTmp pins the fix for the read-only-mode /tmp
+// leak: session_prompts.go promises "all other writes are denied" under
+// ModeReadOnly, but the /tmp tmpfs was left fully writable. /tmp must be
+// remounted read-only AFTER the session tmp is bound writable inside it, so the
+// scratch dir stays writable while everything else under /tmp is not.
+func TestBuildBwrapArgvReadOnlySessionTmp(t *testing.T) {
+	rp, cwd, _ := resolveFixture(t, ModeReadOnly, true)
+	tmp := t.TempDir()
+	args := buildBwrapArgv(rp, tmp, cwd)
+
+	bindIdx := seqIndex(args, "--bind", tmp, tmp)
+	if bindIdx < 0 {
+		t.Fatalf("expected the session tmp %q bound writable: %v", tmp, args)
+	}
+	remountIdx := seqIndex(args, "--remount-ro", "/tmp")
+	if remountIdx < 0 {
+		t.Fatalf("expected /tmp remounted read-only in read-only mode: %v", args)
+	}
+	if remountIdx < bindIdx {
+		t.Errorf("--remount-ro /tmp (at %d) must come AFTER the session tmp bind (at %d): %v", remountIdx, bindIdx, args)
+	}
 }
 
 // TestBuildBwrapArgvBindsInfraReadRoots pins the Linux half of the 2026-08-06
