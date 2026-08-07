@@ -13,6 +13,7 @@ package typegen
 
 import (
 	"encoding/json"
+	"maps"
 	"reflect"
 	"sort"
 	"strings"
@@ -236,9 +237,7 @@ func nullable(inner map[string]any) map[string]any {
 // mutates a shared override schema.
 func cloneSchema(s map[string]any) map[string]any {
 	out := make(map[string]any, len(s))
-	for k, v := range s {
-		out[k] = v
-	}
+	maps.Copy(out, s)
 	return out
 }
 
