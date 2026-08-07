@@ -69,6 +69,26 @@ type HostFacts struct {
 	// never a session-start failure.
 	DeveloperToolRoots []string
 
+	// DeveloperToolBinDir is the bin directory of the ACTIVE developer directory
+	// (`xcode-select -p` + /usr/bin), where the real git, clang and friends that
+	// the /usr/bin shims exec actually live. Empty when no toolchain is active or
+	// the directory does not exist.
+	//
+	// It is named so the env floor can put it on PATH and let a sandboxed `git`
+	// BE the real git. The /usr/bin shim otherwise memoizes its tool lookup in a
+	// cache file under the per-user temp directory confstr(_CS_DARWIN_USER_TEMP_DIR)
+	// reports — which honours no env var, sits in a shared multi-tenant tree no
+	// mode makes writable, and so fails on every call, making the shim re-run
+	// `xcodebuild -find git` each time: two denial lines on stderr and seconds of
+	// latency per invocation.
+	//
+	// Derived from the same `xcode-select -p` probe as DeveloperToolRoots, and so
+	// equally untrusted ($DEVELOPER_DIR steers it): the resolver passes it through
+	// RootGuard and requires it to be readable under the mode's own grants before
+	// naming it. It adds no grant — the directory is already inside the read-only
+	// toolchain grant.
+	DeveloperToolBinDir string
+
 	// GitGlobalConfigPaths are the user's GLOBAL git config FILES that exist on
 	// this host. git-config(1) FILES names two of them —
 	// $XDG_CONFIG_HOME/git/config (with $HOME/.config standing in for an unset or
@@ -208,6 +228,7 @@ func probeHost(system probeSystem) HostFacts {
 			facts.SandboxExecPath = seatbelt
 		}
 		facts.DeveloperToolRoots = probeDeveloperToolRoots(system)
+		facts.DeveloperToolBinDir = probeDeveloperToolBinDir(system)
 	}
 
 	return facts
@@ -282,6 +303,19 @@ func probeDeveloperToolRoots(system probeSystem) []string {
 	add(enclosingAppBundle(activeDeveloperDir(system)))
 	add(commandLineToolsRoot)
 	return out
+}
+
+// probeDeveloperToolBinDir returns the active developer directory's bin
+// directory — where the real tools the /usr/bin shims exec actually live — or ""
+// when no toolchain is active or the directory is absent. It deliberately does
+// NOT widen to the enclosing app bundle the way the read grant does: this value
+// goes on PATH, and only the directory holding the executables belongs there.
+func probeDeveloperToolBinDir(system probeSystem) string {
+	dev := activeDeveloperDir(system)
+	if dev == "" {
+		return ""
+	}
+	return CanonicalDir(filepath.Join(dev, "usr", "bin"))
 }
 
 // enclosingAppBundle widens a developer directory inside an application bundle

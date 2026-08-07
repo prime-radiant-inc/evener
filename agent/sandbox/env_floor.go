@@ -37,6 +37,9 @@ var floorPrefixDrops = []string{
 //     floorPrefixDrops),
 //   - drops a worktree-external KUBECONFIG (an absolute path outside every granted
 //     root points at a cluster config the sandboxed session should not reach),
+//   - puts the resolved developer-toolchain bin directory on PATH ahead of the
+//     system directories, so a spawned `git` is the real git and not the
+//     /usr/bin xcrun shim (which is loud and slow under a sandbox),
 //   - points TMPDIR and SERF_SCRATCH_DIR at the per-session scratch, and
 //   - redirects the language cache vars (GOCACHE / GOMODCACHE / npm_config_cache /
 //     CARGO_HOME) into the session tmp when the cache strategy is session-private,
@@ -65,6 +68,7 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 		out = append(out, kv)
 	}
 
+	out = applyToolchainPath(out, policy.ToolchainBinDir)
 	out = ApplySessionScratchEnv(out, sessionScratch)
 	if sessionScratch != "" {
 		if policy.CacheStrategy == CacheSessionPrivate {
@@ -77,6 +81,54 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 		}
 	}
 	return out
+}
+
+// systemBinDirs are the PATH entries the macOS developer-tool shims live in.
+// The toolchain directory is inserted immediately BEFORE the first of them.
+var systemBinDirs = []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+
+// applyToolchainPath inserts the developer-toolchain bin directory into PATH so
+// a spawned `git` is the real git rather than the /usr/bin xcrun shim, whose
+// per-call lookup a sandbox makes both loud and slow (see
+// ResolvedPolicy.ToolchainBinDir).
+//
+// It goes in just ahead of the SYSTEM directories rather than at the front, so
+// it shadows the shims and nothing else: a developer who put their own git — a
+// Homebrew build, a version manager — ahead of /usr/bin still gets it. With no
+// system directory on PATH there is no shim to shadow, so the toolchain goes
+// last, where it can only help a lookup that would otherwise fail.
+//
+// An empty binDir, an absent PATH, or a PATH that already names the directory
+// are all left exactly as they were: the floor never invents a search path.
+func applyToolchainPath(env []string, binDir string) []string {
+	if binDir == "" {
+		return env
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, val, ok := strings.Cut(kv, "=")
+		if !ok || name != envvars.Path.Name {
+			out = append(out, kv)
+			continue
+		}
+		out = append(out, envvars.Path.Assignment(insertToolchainDir(val, binDir)))
+	}
+	return out
+}
+
+// insertToolchainDir returns path with binDir placed before its first system
+// directory (or appended when it has none), unchanged if it already lists it.
+func insertToolchainDir(path, binDir string) string {
+	entries := filepath.SplitList(path)
+	if slices.Contains(entries, binDir) {
+		return path
+	}
+	for i, e := range entries {
+		if slices.Contains(systemBinDirs, filepath.Clean(e)) {
+			return strings.Join(slices.Insert(slices.Clone(entries), i, binDir), string(filepath.ListSeparator))
+		}
+	}
+	return strings.Join(append(slices.Clone(entries), binDir), string(filepath.ListSeparator))
 }
 
 // ApplySessionScratchEnv replaces the two reserved scratch variables together.

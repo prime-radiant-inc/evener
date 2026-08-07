@@ -30,26 +30,27 @@ var probedPathTools = []string{"go", "node", "rg"}
 // `go env` reads). It is tight because that work is tight.
 var toolProbeTimeout = 2 * time.Second
 
-// gitProbeTimeout bounds the git probe SEPARATELY, and generously, because the
-// work it bounds is genuinely expensive: docs/sandboxing.md records as measured
-// fact that every `git` call under `restricted` costs roughly 4s, since the
-// xcrun shim retries a cache write the mode does not grant. Sharing the tool
-// probe's 2s budget would have timed the whole probe out on exactly the mode
-// the preamble most exists for — rendering everything "unprobed" while still
-// burning the full budget to learn nothing.
+// gitProbeTimeout bounds the git probe SEPARATELY from the tool probe. It used
+// to be sized against a genuinely expensive call — a `git` under `restricted`
+// cost 3.62-4.42s (mean 3.98s) while the /usr/bin xcrun shim re-ran its tool
+// lookup on every invocation, so the budget stood at 10s. That cost is gone:
+// the env floor now names the developer toolchain's bin directory on PATH
+// (sandbox.ResolvedPolicy.ToolchainBinDir), so a sandboxed `git` IS the real
+// git. Re-measured 2026-08-07 as an interleaved A/B in a live restricted
+// sandbox: shim path mean 8.61s (5.27-12.75s on a loaded host), toolchain path
+// mean 164ms (127-225ms).
 //
-// The budget is sized against that MEASUREMENT, re-taken on 2026-08-07 once the
-// global git config became readable and the probe began parsing a real config
-// instead of a blanked-out one: eight consecutive sandboxed calls ran
-// 3.62-4.42s, mean 3.98s. The previous 5s left ~15% of headroom, which a loaded
-// host eats — and a probe that times out renders the preamble "unprobed" on
-// exactly the mode it exists for. Re-measure before shrinking this.
+// 5s is therefore a fallback bound rather than an expected budget. It leaves
+// ~30x headroom over the measured call, and still covers a host where the
+// toolchain directory could not be named (no active developer directory, or one
+// the RootGuard refused) and git falls back to the shim. Re-measure before
+// changing this.
 //
-// This is bounding the real work, not widening a blanket timeout to make a slow
-// thing fit: the two probes run CONCURRENTLY with independent deadlines, so a
-// slow or wedged git can never consume the PATH and cache measurements, and the
-// cheap facts still land at their own pace.
-var gitProbeTimeout = 10 * time.Second
+// It stays separate from the tool probe's tighter bound rather than merging into
+// it: the two probes run CONCURRENTLY with independent deadlines, so a slow or
+// wedged git can never consume the PATH and cache measurements, and the cheap
+// facts still land at their own pace.
+var gitProbeTimeout = 5 * time.Second
 
 // capabilityProbe is what the session-start probes measured. Its two halves are
 // tracked independently (gitProbed / toolsProbed) precisely so one failing does
@@ -173,31 +174,34 @@ func capabilityPreambleLines(f capabilityFacts) []string {
 // restricted mode, immediately after the git probe result so a failed probe has
 // its recorded explanation adjacent rather than costing a session the turns to
 // rediscover it. Same precedent as the go telemetry line: a resolved ruling is
-// a fact the preamble may state, and it is stated only for the exact mode (and,
-// for the xcrun residual, the exact backend) the ruling covers.
+// a fact the preamble may state, and it is stated only for the exact mode the
+// ruling covers.
 //
 // The global-config line states the 2026-08-07 grant and its exact extent. It
 // replaced the earlier line, which told sessions a present ~/.gitconfig fatals
 // git: once the grant landed that became FALSE, and a stale false line is the
 // precise failure the never-overstates principle exists to prevent. The scope
-// The scope clause is stated with it so the line cannot be read as a home-read
-// grant it is not. It is deliberately scoped to THIS grant rather than claiming
-// the home directory is otherwise unreadable: the hook/MCP infrastructure grant
-// can also name a path under the home directory (a plugin dir under ~/.claude is
-// the canonical case), so an absolute claim would overstate containment in the
+// clause is stated with it so the line cannot be read as a home-read grant it is
+// not. It is deliberately scoped to THIS grant rather than claiming the home
+// directory is otherwise unreadable: the hook/MCP infrastructure grant can also
+// name a path under the home directory (a plugin dir under ~/.claude is the
+// canonical case), so an absolute claim would overstate containment in the
 // reassuring direction — the worse direction for a banner to be wrong in.
+//
+// The macOS xcrun line that used to sit beside it — "xcrun_db writes denied
+// (2 stderr lines/call), ~4s/call" — is GONE with the residual it described:
+// the env floor names the developer toolchain's bin directory on PATH, so a
+// sandboxed git is the real git, silent and fast (2026-08-07). Keeping the line
+// would have overstated the cost in the pessimistic direction, which the
+// never-overstates principle forbids just as firmly as the reassuring one.
 func gitResidualLines(f capabilityFacts) []string {
 	if !f.sandboxed() || f.policy.Mode != sandbox.ModeRestricted {
 		return nil
 	}
-	lines := []string{
+	return []string{
 		"git under restricted: the global git config (~/.gitconfig, " +
 			"~/.config/git/config) is readable but not writable; the grant covers those files only",
 	}
-	if f.policy.Backend == sandbox.BackendSeatbelt {
-		lines = append(lines, "git under restricted on macOS: xcrun_db writes denied (2 stderr lines/call), ~4s/call")
-	}
-	return lines
 }
 
 // writableRootsSummary summarizes the spawned layer's write grants without
@@ -291,8 +295,8 @@ func onPathSummary(p capabilityProbe) string {
 // what the daemon process happens to see.
 //
 // It is two subprocesses run CONCURRENTLY under INDEPENDENT deadlines: the
-// cheap tool probe (toolProbeTimeout) and the expensive git probe
-// (gitProbeTimeout, sized for restricted mode's measured ~4s per git call).
+// cheap tool probe (toolProbeTimeout) and the git probe (gitProbeTimeout, a
+// fallback bound rather than an expected budget — see its comment).
 // Independence is the point — a wedged git leaves the PATH and cache facts
 // intact, and the cheap probe's tight bound is not relaxed to accommodate it.
 // Session start therefore waits at most the LONGER of the two, and each half

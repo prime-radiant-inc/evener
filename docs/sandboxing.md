@@ -70,11 +70,11 @@ credentials. A probe is reported as the command it ran and that command's exit
 status, never as a broader claim: `git config --list` exiting 0 says the config
 chain is readable, not that every git operation succeeds.
 
-The two probes are **bounded independently and run concurrently** — the tool
-probe tightly, the git probe generously, because a `git` call under `restricted`
-costs roughly 4s (see `restricted` below). Sharing one tight budget would have timed the whole
-probe out on exactly the mode the preamble most exists for; independence means a
-slow git degrades only the git line.
+The two probes are **bounded independently and run concurrently**. The git probe
+keeps the looser bound as a fallback, not because the work is slow: a
+`restricted` `git` call now costs ~164ms (see `restricted` below), but on a host
+where the developer toolchain cannot be named it falls back to the slow `xcrun`
+shim. Independence means a slow git degrades only the git line.
 
 ## Modes
 
@@ -173,11 +173,34 @@ sockets beyond stdio.
   `<common>/rr-cache`. That is the intended behaviour: the mode runs the
   developer's git, not a blanked-out one.
 
-  Two residuals remain on macOS: every `git` call under `restricted` emits two
-  `xcrun_db` cache-write denials to stderr and costs roughly 4s (measured 2026-08-07:
-  eight consecutive calls, 3.62-4.42s, mean 3.98s), because the
-  `xcrun` shim retries a cache write into the per-user temp directory that the mode
-  does not grant.
+  **git under a sandbox is silent and fast on macOS** (ruled 2026-08-07). It was
+  neither: every `git` call emitted two `xcrun_db` cache-write denials to stderr
+  and cost seconds. The cause was the shim, not the sandbox. `/usr/bin/git`
+  memoizes its tool lookup in `xcrun_db` under the per-user temp directory that
+  `confstr(_CS_DARWIN_USER_TEMP_DIR)` reports — a path that honours no
+  environment variable (not `TMPDIR`) and sits in the shared, multi-tenant
+  `/var/folders` tree no mode makes writable. With the memo unwritable the shim
+  re-ran `xcodebuild -sdk macosx -find git` on *every* invocation.
+
+  The fix names the answer instead of paying for it: the environment floor puts
+  the active developer directory's `usr/bin` — where the binary the shim would
+  have found actually lives — on a spawned process's `PATH`, immediately ahead of
+  `/usr/bin`. Measured as an interleaved A/B in a live `restricted` sandbox:
+  8.61s mean via the shim (5.27-12.75s on a loaded host, two stderr lines every
+  time) against 164ms mean via the toolchain (127-225ms, stderr pristine).
+
+  It **adds no grant**. The directory is inside the read-only toolchain grant
+  above, and the floor names it only after it passes the same shared-tree guard,
+  is not masked, and is really readable under the mode's own spawned grants — an
+  unreadable `PATH` entry would turn a noisy `git` into a missing one. The
+  insertion point is deliberate too: ahead of the *system* directories rather
+  than at the front, so it shadows the shim and nothing else. A developer who put
+  their own `git` ahead of `/usr/bin` still gets it.
+
+  `DEVELOPER_DIR` was tried first and **does not work**: the shim reports it,
+  keys its cache on it, and then still runs `xcodebuild -find`. Granting the
+  per-user temp directory would have silenced the write, and was refused — that
+  widens the sandbox to buy quiet.
 
 ## The fail-closed floor
 

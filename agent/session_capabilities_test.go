@@ -107,10 +107,12 @@ func TestCapabilityPreambleRestricted(t *testing.T) {
 	}
 }
 
-// TestCapabilityPreambleRestrictedSeatbelt: on the Seatbelt backend, restricted
-// mode carries a SECOND recorded residual — the xcrun shim's denied cache write
-// (docs/sandboxing.md). It is stated only there: the same policy on bwrap must
-// not claim a macOS-only cost, which the restricted snapshot above pins.
+// TestCapabilityPreambleRestrictedSeatbelt: the Seatbelt backend states the SAME
+// git residuals as any other — no more. It used to carry a macOS-only extra, the
+// xcrun shim's denied cache write and its multi-second cost; the env floor's
+// toolchain PATH removed that residual on 2026-08-07, so stating it would now
+// overstate the cost. This snapshot pins its absence, because a banner that
+// never overstates is wrong in the pessimistic direction too.
 func TestCapabilityPreambleRestrictedSeatbelt(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
@@ -137,7 +139,6 @@ func TestCapabilityPreambleRestrictedSeatbelt(t *testing.T) {
 		"go: telemetry writes denied (harmless stderr noise)",
 		"git config read: `git config --list` exit 0",
 		"git under restricted: the global git config (~/.gitconfig, ~/.config/git/config) is readable but not writable; the grant covers those files only",
-		"git under restricted on macOS: xcrun_db writes denied (2 stderr lines/call), ~4s/call",
 		"On PATH: go=yes node=yes rg=no",
 	}, "\n")
 	if diff := normalize(got, policy.Git.WorktreeRoot, home); diff != want {

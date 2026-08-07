@@ -497,23 +497,17 @@ func writeFile(t *testing.T, path, content string) {
 // files, credential helpers — comes from the real global config.
 const realConfigGit = "git -c user.email=t@e -c user.name=t "
 
-// xcrunCacheDenialFragment identifies the one residual stderr line a git
-// invocation emits inside a restricted sandbox. /usr/bin/git is an xcrun shim,
-// and xcrun memoizes its lookup in a cache file under the PER-USER temp
-// directory that confstr(_CS_DARWIN_USER_TEMP_DIR) reports — a shared,
-// multi-tenant location the sandbox deliberately does not make writable (the
-// session TMPDIR is granted instead, and xcrun does not consult TMPDIR). The
-// lookup still succeeds; only the memoization fails. Removing this residual
-// would take a WRITE grant, which the read-only developer-toolchain ruling does
-// not authorize.
-const xcrunCacheDenialFragment = "xcrun_db"
-
-// unexpectedStderr returns the stderr lines that are not the known xcrun cache
-// residual — the lines a live git assertion must not have.
+// unexpectedStderr returns the non-empty stderr lines of a live git assertion.
+// There is no tolerance list: a git invocation in a restricted sandbox must be
+// PRISTINE on stderr (ruled 2026-08-07). The xcrun cache-write denial that used
+// to be allowed here is gone at the source — the env floor puts the resolved
+// developer toolchain's bin directory on PATH, so `git` is the real git rather
+// than the /usr/bin shim that memoizes its lookup in the per-user temp
+// directory. See ResolvedPolicy.ToolchainBinDir.
 func unexpectedStderr(stderr string) []string {
 	var out []string
 	for _, line := range strings.Split(strings.TrimRight(stderr, "\n"), "\n") {
-		if line == "" || strings.Contains(line, xcrunCacheDenialFragment) {
+		if line == "" {
 			continue
 		}
 		out = append(out, line)

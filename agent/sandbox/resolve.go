@@ -142,6 +142,21 @@ type ResolvedPolicy struct {
 	// config/hook surfaces, and outside-worktree read grants. Zero for off.
 	Git GitLayout
 
+	// ToolchainBinDir is the macOS developer-toolchain bin directory the env floor
+	// puts on a spawned process's PATH, ahead of the system directories, so `git`
+	// and friends resolve to the real binaries instead of the /usr/bin xcrun
+	// shims. The shims memoize their lookup in a per-user temp file no sandbox
+	// mode makes writable, so under a sandbox each shim invocation re-runs
+	// `xcodebuild -find`: stderr noise and seconds of latency, on every call.
+	//
+	// It is NOT a grant and never widens one — the directory sits inside the
+	// read-only toolchain grant restricted mode already makes, and this field is
+	// populated only when the directory survives RootGuard, is not masked, and is
+	// really readable under this policy's spawned grants. Empty for off, on
+	// non-darwin hosts, and whenever any of those checks fails (in which case the
+	// shim path still works, just loudly).
+	ToolchainBinDir string
+
 	// resolveInputs and resolveHost are the request this policy was resolved
 	// FROM, retained so ReRoot / ControlPolicy can re-run the root + gitdir
 	// resolution against a DIFFERENT worktree (a child delegate lane, a managed
@@ -308,7 +323,38 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	rp.FileTool.WriteRoots = filterMasked(rp.FileTool.WriteRoots, masked)
 	rp.Spawned.ReadRoots = filterMasked(rp.Spawned.ReadRoots, masked)
 	rp.Spawned.WriteRoots = filterMasked(rp.Spawned.WriteRoots, masked)
+
+	rp.ToolchainBinDir = toolchainBinDir(host, rp, worktree)
 	return rp, nil
+}
+
+// toolchainBinDir decides whether the probed developer-toolchain bin directory
+// may go on a spawned process's PATH. It grants nothing: the directory is
+// already inside restricted mode's read-only toolchain grant, and the looser
+// modes read everywhere but the denylist. The checks exist so PATH never names a
+// directory the process cannot actually read — an unreadable PATH entry would
+// turn a noisy `git` into a missing one, which is strictly worse.
+//
+//   - RootGuard, because the value derives from `xcode-select -p`, which honours
+//     $DEVELOPER_DIR: it is untrusted input exactly like the read grant.
+//   - Not at or beneath a masked path, which is unreadable in every mode.
+//   - Under a granted spawned read root whenever the spawned layer is
+//     root-limited; the read-anywhere modes need no such check.
+func toolchainBinDir(host HostFacts, rp ResolvedPolicy, worktree string) string {
+	bin := host.DeveloperToolBinDir
+	if bin == "" {
+		return ""
+	}
+	if len(guardedHostRoots([]string{bin}, host.Home, worktree)) == 0 {
+		return ""
+	}
+	if len(filterMasked([]string{bin}, rp.MaskedPaths)) == 0 {
+		return ""
+	}
+	if rp.Spawned.Read == ReadWorktreeOnly && !isUnderAnyRoot(bin, rp.Spawned.ReadRoots) {
+		return ""
+	}
+	return bin
 }
 
 // ResolveNamed resolves a session policy from a mode NAME (the persisted/flag form)
