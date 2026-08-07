@@ -42,7 +42,7 @@ type failureEntry struct {
 type failureLedger struct {
 	mu      sync.Mutex
 	entries map[string]*failureEntry
-	order   []string // insertion order, for FIFO eviction
+	order   []string // most-recently-used last, for LRU eviction
 }
 
 func newFailureLedger() *failureLedger {

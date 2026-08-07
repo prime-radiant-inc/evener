@@ -280,7 +280,7 @@ func TestFailureLedger_InterleavedOtherToolCalls_RepeatStreakPreserved(t *testin
 	}
 }
 
-func TestFailureLedger_SurvivingSuccessEntries_DoNotCorruptFIFOEviction(t *testing.T) {
+func TestFailureLedger_SurvivingSuccessEntries_DoNotCorruptEviction(t *testing.T) {
 	l := newFailureLedger()
 	// 513 distinct signatures, all successes. Since success no longer
 	// deletes, every one of these creates a live entry.
