@@ -189,7 +189,9 @@ func formatPath(segs []string) string {
 	var b strings.Builder
 	for i, seg := range segs {
 		if _, isIdx := arrayIndex(seg); isIdx {
-			b.WriteString("[" + seg + "]")
+			b.WriteString("[")
+			b.WriteString(seg)
+			b.WriteString("]")
 			continue
 		}
 		if i > 0 {
