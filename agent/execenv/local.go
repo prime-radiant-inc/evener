@@ -20,6 +20,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/spf13/afero"
+	"primeradiant.com/serf/agent/internal/tool/repair"
 	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/envvars"
 )
@@ -850,7 +851,8 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 	abs := e.resolve(path)
 	var b []byte
 	var err error
-	if sfs := e.sandbox(); sfs != nil {
+	sfs := e.sandbox()
+	if sfs != nil {
 		// Sandboxed: race-safe fd read (symlink-refusing, root/denylist-checked).
 		// The image/PDF/binary/line-numbering contract below is applied identically
 		// to the returned bytes, so the output is unchanged from the off path.
@@ -859,6 +861,18 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 		b, err = afero.ReadFile(e.filesystem(), abs)
 	}
 	if err != nil {
+		// Best-effort "did you mean" suggestion for a genuine missing-file miss
+		// (never for a permission error or a directory-not-a-file error). Skipped
+		// when sandboxed: the diagnostic listing walks plain os.Stat/os.ReadDir
+		// outside the confined resolver, and could name a masked or denied
+		// directory's contents that the sandbox would otherwise keep the model
+		// from seeing. Off/unsandboxed is the default mode, so this still covers
+		// the common case; sandboxed sessions just get the raw ENOENT.
+		if sfs == nil && errors.Is(err, fs.ErrNotExist) {
+			if suggestion := readFileNotFoundSuggestion(abs); suggestion != "" {
+				return "", fmt.Errorf("%w. %s", err, suggestion)
+			}
+		}
 		return "", err
 	}
 	// Image files: return base64-encoded data instead of erroring on binary.
@@ -895,6 +909,54 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 		fmt.Fprintf(&out, "%4d\t%s\n", i, lines[i-1])
 	}
 	return out.String(), nil
+}
+
+// readFileNotFoundSuggestion renders a "did you mean" hint for a read_file
+// ENOENT on absPath, or "" if it can't find anything worth suggesting.
+//
+// It walks up absPath's ancestors (starting at its own parent) until it finds
+// one that exists as a directory, then fuzzy-matches absPath's basename
+// against that directory's direct children. This single algorithm covers two
+// distinct misses with the same code path: an ordinary typo in a file that
+// lives right next to where the model looked (the walk terminates
+// immediately, since the parent already exists), and a "doubled path
+// segment" miss like ".../worktrees/x/worktrees/x/file.go" where the real
+// file is at ".../worktrees/x/file.go" (the walk climbs past the fictional
+// nested worktrees/x before landing on a real directory whose listing
+// contains an exact match).
+func readFileNotFoundSuggestion(absPath string) string {
+	dir := filepath.Dir(absPath)
+	for {
+		info, err := os.Stat(dir)
+		if err == nil && info.IsDir() {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "" // walked to the filesystem root without finding a real directory
+		}
+		dir = parent
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	matches := repair.TopMatches(filepath.Base(absPath), names, 3)
+	if len(matches) == 0 {
+		return ""
+	}
+	full := make([]string, len(matches))
+	for i, m := range matches {
+		full[i] = filepath.Join(dir, m)
+	}
+	if len(full) == 1 {
+		return fmt.Sprintf("Did you mean %s?", full[0])
+	}
+	return fmt.Sprintf("Did you mean one of: %s?", strings.Join(full, ", "))
 }
 
 // WriteFile writes content to the file at path, creating any missing parent

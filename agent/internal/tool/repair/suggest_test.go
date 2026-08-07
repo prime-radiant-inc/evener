@@ -40,6 +40,38 @@ func TestUnknownToolMessage_NoSuggestionWhenFar(t *testing.T) {
 	}
 }
 
+func TestTopMatches_ReturnsClosestWithinThreshold(t *testing.T) {
+	got := TopMatches("session_tolls.go", []string{"session_tools.go", "session_tools_file.go", "unrelated.go"}, 3)
+	if len(got) == 0 || got[0] != "session_tools.go" {
+		t.Fatalf("got %v, want first match session_tools.go", got)
+	}
+}
+
+func TestTopMatches_CapsAtN(t *testing.T) {
+	got := TopMatches("file", []string{"file1", "file2", "file3", "file4"}, 2)
+	if len(got) != 2 {
+		t.Fatalf("got %d matches, want 2: %v", len(got), got)
+	}
+}
+
+func TestTopMatches_NoneWithinThreshold(t *testing.T) {
+	got := TopMatches("zzzzzz", []string{"read_file", "shell"}, 3)
+	if len(got) != 0 {
+		t.Fatalf("got %v, want empty", got)
+	}
+}
+
+func TestTopMatches_SortedByDistanceThenLexically(t *testing.T) {
+	// "cot" is distance 1 from both "cat" and "cog"; ties break lexically.
+	got := TopMatches("cot", []string{"cog", "cat", "dot"}, 3)
+	if len(got) != 3 {
+		t.Fatalf("got %v, want 3 matches", got)
+	}
+	if got[0] != "cat" || got[1] != "cog" {
+		t.Fatalf("got %v, want [cat cog ...] (lexical tiebreak)", got)
+	}
+}
+
 func TestUnknownToolMessage_CapsLongList(t *testing.T) {
 	names := make([]string, 40)
 	for i := range 40 {

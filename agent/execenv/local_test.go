@@ -367,6 +367,79 @@ func TestReadFile_PDF_DetectedByMagicBytes(t *testing.T) {
 	}
 }
 
+// TestReadFile_MissingFile_SuggestsSiblingInParentDir pins case (a) of the
+// ENOENT "did you mean" algorithm: when the requested path's parent directory
+// exists but the file itself does not, the error names an existing sibling
+// whose basename is a close fuzzy match.
+func TestReadFile_MissingFile_SuggestsSiblingInParentDir(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	if err := os.WriteFile(filepath.Join(dir, "session_tools.go"), []byte("package agent\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := env.ReadFile("session_tolls.go", nil, nil)
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	if !strings.Contains(err.Error(), "session_tools.go") {
+		t.Fatalf("expected suggestion naming session_tools.go, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Did you mean") {
+		t.Fatalf("expected 'Did you mean' suggestion text, got: %v", err)
+	}
+}
+
+// TestReadFile_MissingFile_NoSuggestionWhenNothingClose confirms the
+// suggestion is omitted (not fabricated) when nothing in the parent
+// directory is a plausible fuzzy match.
+func TestReadFile_MissingFile_NoSuggestionWhenNothingClose(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	if err := os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := env.ReadFile("zzzzzzzzzzzzzzzzzzzz.go", nil, nil)
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	if strings.Contains(err.Error(), "Did you mean") {
+		t.Fatalf("unexpected suggestion when nothing is close: %v", err)
+	}
+}
+
+// TestReadFile_DoubledPathSegment_WalksUpToNearestExistingAncestor pins case
+// (b): a path that duplicates a directory segment (e.g. an agent mistakenly
+// repeating ".../worktrees/x/worktrees/x/file.go") doesn't exist anywhere
+// along its full length, but walking up to the nearest existing ancestor and
+// fuzzy-matching the requested basename against ITS listing finds the real
+// file, collapsed back to its actual location.
+func TestReadFile_DoubledPathSegment_WalksUpToNearestExistingAncestor(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	realDir := filepath.Join(dir, "worktrees", "x")
+	if err := os.MkdirAll(realDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "file.go"), []byte("package x\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Doubled "worktrees/x" segment: worktrees/x/worktrees/x/file.go doesn't
+	// exist, nor does worktrees/x/worktrees; worktrees/x is the nearest
+	// existing ancestor and its listing contains an exact match on file.go.
+	doubled := filepath.Join("worktrees", "x", "worktrees", "x", "file.go")
+	_, err := env.ReadFile(doubled, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for missing doubled-segment path")
+	}
+	wantSuggestion := filepath.Join(realDir, "file.go")
+	if !strings.Contains(err.Error(), wantSuggestion) {
+		t.Fatalf("expected suggestion naming %q, got: %v", wantSuggestion, err)
+	}
+}
+
 func TestEditFile_FuzzyMatchWhitespace(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)

@@ -15,8 +15,8 @@ func DefReadFile() llm.ToolDefinition {
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"file_path": map[string]any{"type": "string"},
-				"offset":    map[string]any{"type": "integer"},
-				"limit":     map[string]any{"type": "integer"},
+				"offset":    map[string]any{"type": "integer", "description": "For large files read in slices: 1-based start line (default 1)."},
+				"limit":     map[string]any{"type": "integer", "description": "For large files read in slices: line count to return, default 2000."},
 				"purpose":   map[string]any{"type": "string", "description": "For image/PDF files: describe what factual data you need extracted. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate."},
 			},
 			"required": []string{"file_path"},
