@@ -347,6 +347,91 @@ func TestHubTranscriptReducerToolOutputDeltaBeforeStartStaysInOneToolGroup(t *te
 	}
 }
 
+// TestHubTranscriptReducerStripsRedundantCdWhenCwdSet guards the wired path:
+// a reducer with SetCwd applied strips the shell command's redundant
+// "cd <cwd> && " prefix from the displayed description while RawArgs keeps
+// the original command untouched.
+func TestHubTranscriptReducerStripsRedundantCdWhenCwdSet(t *testing.T) {
+	reducer := NewTranscriptReducer(nil, nil, nil)
+	reducer.SetCwd("/w")
+
+	reducer.ApplyThreadItem(appwire.ThreadItem{
+		Type:          "commandExecution",
+		ID:            "tool_1",
+		CallID:        "call_1",
+		TurnID:        "turn_1",
+		ToolName:      "shell",
+		ArgumentsJSON: `{"command":"cd /w && make test"}`,
+		Status:        "completed",
+	}, 1, true)
+
+	if len(reducer.messages) != 1 || reducer.messages[0].Tool == nil {
+		t.Fatalf("messages=%+v, want one tool message", reducer.messages)
+	}
+	tool := reducer.messages[0].Tool
+	if tool.Description != "make test" {
+		t.Fatalf("Description = %q, want stripped %q", tool.Description, "make test")
+	}
+	if tool.RawArgs != `{"command":"cd /w && make test"}` {
+		t.Fatalf("RawArgs = %q, want original unstripped command preserved", tool.RawArgs)
+	}
+}
+
+// TestHubTranscriptReducerLeavesCdUnstrippedWithoutSetCwd pins the fallback:
+// a reducer that never had SetCwd called displays the full command, exactly
+// as it did before the cd-strip feature.
+func TestHubTranscriptReducerLeavesCdUnstrippedWithoutSetCwd(t *testing.T) {
+	reducer := NewTranscriptReducer(nil, nil, nil)
+
+	reducer.ApplyThreadItem(appwire.ThreadItem{
+		Type:          "commandExecution",
+		ID:            "tool_1",
+		CallID:        "call_1",
+		TurnID:        "turn_1",
+		ToolName:      "shell",
+		ArgumentsJSON: `{"command":"cd /w && make test"}`,
+		Status:        "completed",
+	}, 1, true)
+
+	if len(reducer.messages) != 1 || reducer.messages[0].Tool == nil {
+		t.Fatalf("messages=%+v, want one tool message", reducer.messages)
+	}
+	if desc := reducer.messages[0].Tool.Description; desc != "cd /w && make test" {
+		t.Fatalf("Description = %q, want unstripped fallback", desc)
+	}
+}
+
+// TestMessagesFromThreadStripsRedundantCdFromThreadCwd exercises the
+// end-to-end thread-replay path: MessagesFromThread reads the strip cwd from
+// appwire.Thread.CWD, so a resumed session's shell tool call displays the
+// stripped command just like a live one.
+func TestMessagesFromThreadStripsRedundantCdFromThreadCwd(t *testing.T) {
+	thread := appwire.Thread{
+		CWD: "/w",
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{{
+				Type:          "commandExecution",
+				ID:            "tool_1",
+				TurnID:        "turn_1",
+				ToolName:      "shell",
+				CallID:        "call_1",
+				ArgumentsJSON: `{"command":"cd /w && make test"}`,
+				Status:        appwire.TurnStatusCompleted,
+			}},
+		}},
+	}
+
+	messages := MessagesFromThread(thread)
+	if len(messages) != 1 || messages[0].Tool == nil {
+		t.Fatalf("messages=%+v, want one tool message", messages)
+	}
+	if desc := messages[0].Tool.Description; desc != "make test" {
+		t.Fatalf("Description = %q, want stripped %q", desc, "make test")
+	}
+}
+
 func TestHubTranscriptReducerPreservesSerfAndCodexToolShapes(t *testing.T) {
 	reducer := NewTranscriptReducer(nil, nil, nil)
 

@@ -548,7 +548,9 @@ func (m *hubModel) applyReasoningSummaryDelta(turnID, itemID, delta string) {
 }
 
 func (m *hubModel) sessionTranscriptReducer() transcript.TranscriptReducer {
-	return transcript.NewTranscriptReducer(m.session.messages, m.session.activeTools, m.session.activeMessages)
+	reducer := transcript.NewTranscriptReducer(m.session.messages, m.session.activeTools, m.session.activeMessages)
+	reducer.SetCwd(m.detail.WorkingDir)
+	return reducer
 }
 
 func (m *hubModel) applySessionTranscriptReducer(reducer transcript.TranscriptReducer) {

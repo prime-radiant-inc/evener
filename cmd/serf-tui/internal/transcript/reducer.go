@@ -12,6 +12,11 @@ type TranscriptReducer struct {
 	messages       []ChatMessage
 	activeTools    map[string]int
 	activeMessages map[string]int
+	// cwd is the session's working directory, used to strip a redundant
+	// "cd <cwd> && " prefix off displayed shell commands. Empty when the
+	// caller has no session cwd to offer (SetCwd was never called), which
+	// disables the strip — never on a blank command.
+	cwd string
 }
 
 func NewTranscriptReducer(messages []ChatMessage, activeTools, activeMessages map[string]int) TranscriptReducer {
@@ -26,6 +31,14 @@ func NewTranscriptReducer(messages []ChatMessage, activeTools, activeMessages ma
 		activeTools:    activeTools,
 		activeMessages: activeMessages,
 	}
+}
+
+// SetCwd records the session's working directory so subsequently applied
+// commandExecution items get their displayed shell command's redundant
+// "cd <cwd> && " prefix stripped. Callers that cannot determine the session
+// cwd simply never call this, leaving today's unstripped display.
+func (r *TranscriptReducer) SetCwd(cwd string) {
+	r.cwd = cwd
 }
 
 // Messages returns the current message list the reducer has folded.
@@ -290,7 +303,7 @@ func (r *TranscriptReducer) ApplyThreadItem(item appwire.ThreadItem, turnIndex i
 			if info == nil {
 				return
 			}
-			mergeThreadItemIntoToolInfo(info, item, done)
+			mergeThreadItemIntoToolInfo(info, item, done, r.cwd)
 			if done {
 				r.clearActiveTool(item)
 			} else {
@@ -298,7 +311,7 @@ func (r *TranscriptReducer) ApplyThreadItem(item appwire.ThreadItem, turnIndex i
 			}
 			return
 		}
-		info := toolInfoFromThreadItem(item, done)
+		info := toolInfoFromThreadItem(item, done, r.cwd)
 		idx := len(r.messages)
 		r.messages = append(r.messages, ChatMessage{Kind: MsgTool, TurnID: item.TurnID, TurnIndex: turnIndex, ItemID: item.ID, ToolCallID: item.CallID, Tool: info})
 		if !done {

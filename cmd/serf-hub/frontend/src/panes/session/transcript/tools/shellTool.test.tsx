@@ -1,14 +1,25 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { toolRendererFor } from "../toolRenderers";
+import { stripRedundantCd } from "./shellTool";
 import "./shellTool";
-import type { ItemModel } from "../../../../protocol/model";
+import type { ItemModel, ThreadModel } from "../../../../protocol/model";
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
+
+beforeEach(() => resetThreadsStoreForTests());
+
+// Mirrors fileOpenBeside.test.tsx's own seedThreadCwd - the by-ref threads
+// store selector ShellBody and ToolCallItem's summary() call site both read.
+function seedThreadCwd(ref: string, cwd: string): void {
+  const model = { ref, cwd, turns: [] } as unknown as ThreadModel;
+  threadsStore.setState({ threads: new Map([[ref, model]]) });
+}
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
@@ -104,6 +115,18 @@ test("summary: falls back to the `cmd` arg key when `command` is absent", () => 
   expect(d.summary(item({ toolName: "shell", argumentsJSON: args }))).toBe("Ran ls");
 });
 
+test("summary: strips the redundant cd-cwd prefix when a ToolSummaryContext cwd is given", () => {
+  const d = toolRendererFor("shell");
+  expect(d.summary(withCommand("cd /Users/jesse/work && make test"), { cwd: "/Users/jesse/work" })).toBe(
+    "Ran make test",
+  );
+});
+
+test("summary: with no context (or no cwd), the prefix passes through unstripped", () => {
+  const d = toolRendererFor("shell");
+  expect(d.summary(withCommand("cd /Users/jesse/work && make test"))).toBe("Ran cd /Users/jesse/work && make test");
+});
+
 test("exec_command and run_shell_command alias to the same descriptor as shell", () => {
   const shell = toolRendererFor("shell");
   expect(toolRendererFor("exec_command")).toBe(shell);
@@ -193,6 +216,27 @@ test("body copies the exact raw command", async () => {
   const Body = toolRendererFor("shell").body!;
   const raw = "cd /tmp &&  printf '%s\\n' \"$HOME\"";
   render(<Body item={withCommand(raw, { output: "ok" })} live={false} />);
+
+  await user.click(screen.getByRole("button", { name: "Copy command" }));
+  expect(writeText).toHaveBeenCalledExactlyOnceWith(raw);
+});
+
+test("body strips the redundant cd-cwd prefix from the rendered command block", () => {
+  seedThreadCwd("ref_a", "/Users/jesse/work");
+  const Body = toolRendererFor("shell").body!;
+  const { container } = render(
+    <Body item={withCommand("cd /Users/jesse/work && make test", { output: "" })} live={false} sessionRef="ref_a" />,
+  );
+  expect(container.querySelector("code")?.textContent).toBe("make test");
+});
+
+test("body's Copy command affordance still copies the ORIGINAL command (display-only strip)", async () => {
+  seedThreadCwd("ref_a", "/Users/jesse/work");
+  const user = userEvent.setup();
+  const writeText = vi.spyOn(navigator.clipboard, "writeText");
+  const Body = toolRendererFor("shell").body!;
+  const raw = "cd /Users/jesse/work && make test";
+  render(<Body item={withCommand(raw, { output: "" })} live={false} sessionRef="ref_a" />);
 
   await user.click(screen.getByRole("button", { name: "Copy command" }));
   expect(writeText).toHaveBeenCalledExactlyOnceWith(raw);
@@ -404,4 +448,33 @@ test("detail does NOT repeat the command", () => {
   const longCmd = "x".repeat(100);
   expect(d.summary(withCommand(longCmd))).toBe(`Ran ${"x".repeat(100)}`);
   expect(d.detail?.(withCommand(longCmd, { exitCode: 0 }))).toBe("exit 0");
+});
+
+describe("stripRedundantCd", () => {
+  const cwd = "/Users/jesse/work";
+  test("strips the exact cd-cwd prefix", () => {
+    expect(stripRedundantCd("cd /Users/jesse/work && make test", cwd)).toBe("make test");
+  });
+  test("different directory is untouched", () => {
+    expect(stripRedundantCd("cd /elsewhere && make test", cwd)).toBe("cd /elsewhere && make test");
+  });
+  test("quoted cwd is untouched (literal match only)", () => {
+    expect(stripRedundantCd('cd "/Users/jesse/work" && make', cwd)).toBe('cd "/Users/jesse/work" && make');
+  });
+  test("trailing slash variant is untouched", () => {
+    expect(stripRedundantCd("cd /Users/jesse/work/ && make", cwd)).toBe("cd /Users/jesse/work/ && make");
+  });
+  test("semicolon join is untouched", () => {
+    expect(stripRedundantCd("cd /Users/jesse/work ; make", cwd)).toBe("cd /Users/jesse/work ; make");
+  });
+  test("cd mid-command is untouched", () => {
+    expect(stripRedundantCd("make && cd /Users/jesse/work && ls", cwd)).toBe("make && cd /Users/jesse/work && ls");
+  });
+  test("undefined or empty cwd never strips", () => {
+    expect(stripRedundantCd("cd /Users/jesse/work && make", undefined)).toBe("cd /Users/jesse/work && make");
+    expect(stripRedundantCd("cd /Users/jesse/work && make", "")).toBe("cd /Users/jesse/work && make");
+  });
+  test("prefix-only command (nothing after &&) is untouched", () => {
+    expect(stripRedundantCd("cd /Users/jesse/work && ", cwd)).toBe("cd /Users/jesse/work && ");
+  });
 });
