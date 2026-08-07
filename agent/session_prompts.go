@@ -117,6 +117,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 		Model:                    s.profile.Model(),
 		KnowledgeCutoff:          s.envInfo.KnowledgeCutoff,
 		Sandbox:                  sandboxPromptLine(env),
+		Capabilities:             capabilityPreambleLines(capabilityFactsFromEnv(env, s.capabilities)),
 		GitModifiedFiles:         s.envInfo.GitModifiedFiles,
 		GitUntrackedFiles:        s.envInfo.GitUntrackedFiles,
 		GitRecentCommitTitles:    s.envInfo.GitRecentCommitTitles,

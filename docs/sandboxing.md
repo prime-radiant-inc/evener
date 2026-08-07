@@ -49,6 +49,24 @@ directory (the fallback when the host's bubblewrap lacks overlay support); `none
 when the mode never writes caches (read-only). A degraded resolution (e.g. overlay
 unavailable → `private`) is reflected honestly in the line.
 
+## What the session is told
+
+The model gets the same facts in its system prompt's `<environment>` block, as a
+short capability preamble: the sandbox mode and network decision, a summary of
+the writable roots, the masked-path count, the scratch directory behind
+`$SERF_SCRATCH_DIR`/`$TMPDIR`, the cache strategy, the resolved `GOCACHE` /
+`GOMODCACHE`, and a toolchain probe (does `git` run; are `go`, `node`, `rg` on
+PATH). An unsandboxed session gets the same block minus the sandbox-derived
+lines. It exists so a session reads its box instead of discovering it by failing
+at it.
+
+The same rule governs it: every line is read from the resolved policy or
+measured once at session start by a single short-timeout probe, run through the
+session's own execution environment (so what it measures is what a real command
+meets). A probe that cannot run, errors, or times out renders `unprobed` —
+never a guess. Paths and counts only: no environment variable values that could
+be credentials.
+
 ## Modes
 
 All sandboxed modes share a common floor: a per-session writable temp directory

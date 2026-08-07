@@ -188,6 +188,24 @@ func (e *LocalExecutionEnvironment) sessionScratchPath() string {
 	return e.Wrapper.SessionTmp()
 }
 
+// SessionScratchDir reports the per-session scratch directory spawned commands
+// already receive as $SERF_SCRATCH_DIR/$TMPDIR — the sandboxed env's wrapper tmp,
+// or an unsandboxed env's own lazily provisioned dir — and "" when neither has
+// been provisioned. It deliberately never provisions one: it is a REPORTING
+// accessor (the session prompt's capability preamble), and reporting a path must
+// not create it, nor turn a prompt render into a filesystem side effect.
+func (e *LocalExecutionEnvironment) SessionScratchDir() string {
+	if e.Wrapper != nil {
+		return e.Wrapper.SessionTmp()
+	}
+	e.unsandboxedScratchMu.Lock()
+	defer e.unsandboxedScratchMu.Unlock()
+	if e.unsandboxedScratch != nil {
+		return e.unsandboxedScratch.Dir
+	}
+	return ""
+}
+
 // WithSandboxInvocationGrant returns a short-lived clone of this env whose file-tool
 // enforcement layer additionally permits EXACTLY the one path — the M7 escalation
 // approve path re-dispatches a single denied tool call through it. The clone shares

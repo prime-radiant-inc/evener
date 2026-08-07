@@ -31,6 +31,13 @@ type promptData struct {
 	// scratch directory path when one has been provisioned); empty when the
 	// session is unsandboxed, so the line is omitted (byte-identical to today).
 	Sandbox string
+	// Capabilities are the capability-preamble lines that follow the sandbox
+	// line: writable roots, masked-path count, PATH source, scratch vars, cache
+	// facts, and the session-start toolchain probe. Every line states a resolved
+	// policy fact or a measurement; an unrunnable probe renders "unprobed". An
+	// unsandboxed session gets this same block without the sandbox-derived lines
+	// (session_capabilities.go).
+	Capabilities []string
 
 	// Git
 	GitModifiedFiles      int
