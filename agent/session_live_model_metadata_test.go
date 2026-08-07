@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
@@ -109,5 +110,50 @@ func TestSessionSetModelFetchesModelListExactlyOnce(t *testing.T) {
 
 	if adapter.listCalls != 1 {
 		t.Fatalf("ListModels called %d times during SetModel, want exactly 1", adapter.listCalls)
+	}
+}
+
+// TestNewSession_RejectsModelAbsentFromEnumerableInstance verifies that
+// NewSession (Task 3: resolveLiveModelProfileValidated) fails closed when the
+// requested profile's model is absent from a successfully-enumerated live
+// model list, naming the requested model and a live alternative.
+func TestNewSession_RejectsModelAbsentFromEnumerableInstance(t *testing.T) {
+	t.Parallel()
+	adapter := &liveModelMetadataAdapter{
+		fakeAdapter: fakeAdapter{name: "openai"},
+		models:      []llm.ModelInfo{{ID: "gpt-5.5", Provider: "openai"}},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.9-does-not-exist"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err == nil {
+		t.Fatal("NewSession with a model absent from the live list = nil error, want non-nil")
+	}
+	if sess != nil {
+		t.Fatalf("NewSession returned a non-nil session alongside an error: %#v", sess)
+	}
+	if !strings.Contains(err.Error(), "gpt-5.9-does-not-exist") {
+		t.Fatalf("error = %q, want it to name the requested model", err.Error())
+	}
+	if !strings.Contains(err.Error(), "gpt-5.5") {
+		t.Fatalf("error = %q, want it to name a live alternative %q", err.Error(), "gpt-5.5")
+	}
+}
+
+// TestNewSession_EnumerationFailure_FailsOpen verifies that NewSession still
+// succeeds when the client can't enumerate live models (no client registered
+// for the profile's instance) — the fail-open path from before Task 3 must
+// remain unaffected by the new membership check.
+func TestNewSession_EnumerationFailure_FailsOpen(t *testing.T) {
+	t.Parallel()
+	client := llm.NewClient() // no adapter registered: ListModels fails to find the instance
+
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.9-does-not-exist"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession with unenumerable instance should fail open, got error: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("NewSession returned a nil session with a nil error")
 	}
 }

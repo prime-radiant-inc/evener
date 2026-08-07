@@ -3,6 +3,7 @@ package openai
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/llm"
@@ -49,6 +50,56 @@ func TestGPT56_CodexBackendMapsBareSlugToSol(t *testing.T) {
 	})
 	if body["model"] != "gpt-5.6-terra" {
 		t.Errorf("model = %#v, want \"gpt-5.6-terra\"", body["model"])
+	}
+}
+
+// TestValidateModel_CodexBackend exercises Adapter.ValidateModel against the
+// codexModelVariants table on a codex-backend adapter: the four cataloged
+// gpt-5.6* slugs are accepted, an uncataloged slug (gpt-5.6-mini) is
+// rejected naming itself and the supported slugs.
+func TestValidateModel_CodexBackend(t *testing.T) {
+	tests := []struct {
+		model   string
+		wantErr bool
+	}{
+		{"gpt-5.6", false},
+		{"gpt-5.6-sol", false},
+		{"gpt-5.6-terra", false},
+		{"gpt-5.6-luna", false},
+		{"gpt-5.6-mini", true},
+	}
+
+	codex := &Adapter{ChatGPTAccountID: "acct_test"}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			err := codex.ValidateModel(tt.model)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ValidateModel(%q) = nil, want error", tt.model)
+				}
+				if !strings.Contains(err.Error(), "gpt-5.6-mini") {
+					t.Errorf("error = %q, want it to name %q", err.Error(), "gpt-5.6-mini")
+				}
+				for _, want := range []string{"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error = %q, want it to name supported slug %q", err.Error(), want)
+					}
+				}
+			} else if err != nil {
+				t.Fatalf("ValidateModel(%q) = %v, want nil", tt.model, err)
+			}
+		})
+	}
+}
+
+// TestValidateModel_PlatformBackendNoOp verifies ValidateModel is a no-op
+// off the codex backend: the platform API's own live model list is
+// authoritative there, so an uncataloged codex-only slug like gpt-5.6-mini
+// must NOT be rejected by the static table.
+func TestValidateModel_PlatformBackendNoOp(t *testing.T) {
+	platform := &Adapter{}
+	if err := platform.ValidateModel("gpt-5.6-mini"); err != nil {
+		t.Fatalf("ValidateModel on platform-API adapter = %v, want nil (no-op)", err)
 	}
 }
 

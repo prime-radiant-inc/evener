@@ -627,6 +627,22 @@ func TestClient_SupportsToolChoice(t *testing.T) {
 	}
 }
 
+// TestClient_ValidateModelCompatibility_NoOpWithoutInterface verifies that
+// ValidateModelCompatibility is a no-op (nil) for an adapter that doesn't
+// implement ModelCompatibilityValidator, and for an unknown provider name —
+// mirroring SupportsToolChoice's default-permissive dispatch shape.
+func TestClient_ValidateModelCompatibility_NoOpWithoutInterface(t *testing.T) {
+	c := NewClient()
+	c.Register(&fakeAdapter{name: "plain"})
+
+	if err := c.ValidateModelCompatibility("plain", "any-model"); err != nil {
+		t.Fatalf("ValidateModelCompatibility on non-implementing adapter = %v, want nil", err)
+	}
+	if err := c.ValidateModelCompatibility("no-such-provider", "any-model"); err != nil {
+		t.Fatalf("ValidateModelCompatibility on unknown provider = %v, want nil", err)
+	}
+}
+
 // --- Instance-name identity tests (PRI-1880) ---
 
 // instanceAdapter simulates an adapter that always hardcodes its own type

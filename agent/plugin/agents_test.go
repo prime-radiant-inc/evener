@@ -479,6 +479,34 @@ Body.
 	}
 }
 
+// TestParseAgent_TaskInvalidReasoningEffort pins the reasoning_effort
+// vocabulary guard at plugin-agent config load: a task with an unknown
+// reasoning_effort level fails the whole agent parse loudly, naming the
+// task title and the bad value, instead of silently baking it into every
+// session that uses the agent.
+func TestParseAgent_TaskInvalidReasoningEffort(t *testing.T) {
+	data := []byte(`---
+name: bad-effort
+description: bad effort
+tasks:
+  - title: Review
+    prompt: Review this code
+    reasoning_effort: ultra
+---
+Body.
+`)
+	_, err := ParseAgent(data, "p")
+	if err == nil {
+		t.Fatal("expected error for invalid reasoning_effort")
+	}
+	if !strings.Contains(err.Error(), "Review") {
+		t.Errorf("error %q does not name task title %q", err.Error(), "Review")
+	}
+	if !strings.Contains(err.Error(), "ultra") {
+		t.Errorf("error %q does not name invalid value %q", err.Error(), "ultra")
+	}
+}
+
 func TestParseAgent_ModelOverride(t *testing.T) {
 	data := []byte(`---
 name: model-test

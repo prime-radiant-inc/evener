@@ -67,6 +67,33 @@ func TestW3Init_NewSession_NilArgGuards(t *testing.T) {
 	}
 }
 
+// TestW3Init_NewSession_InvalidReasoningEffort covers the reasoning_effort
+// vocabulary guard: an unknown level fails NewSession before any session
+// state is created, naming the bad value and the vocabulary.
+func TestW3Init_NewSession_InvalidReasoningEffort(t *testing.T) {
+	t.Parallel()
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	profile := NewOpenAIProfile("gpt-5.2")
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+
+	sess, err := NewSession(client, profile, env, SessionConfig{ReasoningEffort: "ultra"})
+	if err == nil {
+		t.Fatalf("NewSession(reasoning_effort=ultra) err = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "ultra") {
+		t.Fatalf("err = %v, want it to name the invalid value %q", err, "ultra")
+	}
+	for _, lvl := range llm.ReasoningEffortVocabulary() {
+		if !strings.Contains(err.Error(), lvl) {
+			t.Fatalf("err = %v, want it to name vocabulary level %q", err, lvl)
+		}
+	}
+	if sess != nil {
+		t.Fatalf("NewSession(reasoning_effort=ultra) returned a non-nil session, want nil")
+	}
+}
+
 // TestW3Init_NewSession_EnvInitializeError covers the env.Initialize failure arm.
 func TestW3Init_NewSession_EnvInitializeError(t *testing.T) {
 	t.Parallel()

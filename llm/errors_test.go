@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -289,6 +290,59 @@ func TestRegular403_StillNonRetryable(t *testing.T) {
 	}
 	if e.Retryable() {
 		t.Fatal("regular 403 should NOT be retryable")
+	}
+}
+
+// A 403 with a body-bearing error that names no usage limit must still
+// classify as access-denied, not quota-exceeded — the message fallback added
+// for the Kimi billing-cycle case must not over-fire on ordinary permission
+// errors.
+func TestRegular403WithBody_StillAccessDenied(t *testing.T) {
+	raw := map[string]any{"error": map[string]any{"type": "permission_error", "message": "insufficient permissions"}}
+	err := ErrorFromHTTPStatus("openai", 403, "insufficient permissions", raw, nil)
+
+	var target *accessDeniedError
+	if !errors.As(err, &target) {
+		t.Fatalf("got %T, want *accessDeniedError", err)
+	}
+	if got := Kind(err); got != KindAccessDenied {
+		t.Errorf("Kind = %v, want KindAccessDenied", got)
+	}
+	var le Error
+	if !errors.As(err, &le) {
+		t.Fatalf("not an llm.Error: %T", err)
+	}
+	if le.Retryable() {
+		t.Error("Retryable = true, want false: a plain access-denied 403 is not retryable")
+	}
+}
+
+// The real captured Kimi billing-cycle 403 body (session
+// 0341i3MDP7PKYfPqGhqPWO) must classify as quota-exceeded, not access-denied,
+// so orchestrators stop re-dispatching delegate waves into a spent quota.
+func TestUsageLimit403IsQuotaExceededAndNotRetryable(t *testing.T) {
+	raw := rawBody(t, kimiBillingCycle403Body)
+	err := ErrorFromHTTPStatus("kimi-anthropic", 403, "messages.create failed", raw, nil)
+
+	var target *quotaExceededError
+	if !errors.As(err, &target) {
+		t.Fatalf("got %T, want *quotaExceededError", err)
+	}
+	if got := Kind(err); got != KindQuotaExceeded {
+		t.Errorf("Kind = %v, want KindQuotaExceeded", got)
+	}
+	var le Error
+	if !errors.As(err, &le) {
+		t.Fatalf("not an llm.Error: %T", err)
+	}
+	if le.Retryable() {
+		t.Error("Retryable = true, want false: a billing-cycle usage limit must not be retried")
+	}
+	if got := le.StatusCode(); got != 403 {
+		t.Errorf("StatusCode = %d, want 403 preserved", got)
+	}
+	if !strings.Contains(err.Error(), "usage limit for this billing cycle") {
+		t.Errorf("message = %q, want it to contain %q", err.Error(), "usage limit for this billing cycle")
 	}
 }
 

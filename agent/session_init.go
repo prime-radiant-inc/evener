@@ -125,7 +125,14 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}
-	profile = resolveLiveModelProfileWithTimeout(client, profile)
+	if err := llm.ValidateReasoningEffort(cfg.ReasoningEffort); err != nil {
+		return nil, err
+	}
+	resolvedProfile, err := resolveLiveModelProfileValidated(client, profile)
+	if err != nil {
+		return nil, err
+	}
+	profile = resolvedProfile
 	cfg.applyDefaults()
 	// Let the provider profile override the generic default command timeout.
 	if profileTimeout := profile.DefaultCommandTimeoutMS(); profileTimeout > 0 && cfg.DefaultCommandTimeoutMS == 10_000 {

@@ -63,12 +63,13 @@ func parseUsageLimit(raw any, now time.Time) (usageLimit, bool) {
 			break
 		}
 	}
-	if code == "" {
+	message, _ := errObj["message"].(string)
+	if code == "" && !usageLimitMessagePattern(message) {
 		return usageLimit{}, false
 	}
 
 	limit := usageLimit{code: code}
-	limit.message, _ = errObj["message"].(string)
+	limit.message = message
 	limit.planType, _ = errObj["plan_type"].(string)
 
 	if secs, ok := jsonInt64(errObj["resets_at"]); ok && secs > 0 {
@@ -77,6 +78,17 @@ func parseUsageLimit(raw any, now time.Time) (usageLimit, bool) {
 		limit.resetsAt = now.Add(time.Duration(secs) * time.Second)
 	}
 	return limit, true
+}
+
+// usageLimitMessagePattern reports whether message names a usage limit by
+// text alone, for providers that don't use one of usageLimitCodes. Kimi's
+// coding-plan Anthropic-compatible API returns error.type="permission_error"
+// on its billing-cycle limit, with no dedicated code — only message text
+// names it. A precise phrase match avoids the broader false-positive surface
+// of classifyByMessage's bare "quota"/"billing" substrings, which would also
+// catch unrelated permission errors that merely mention billing.
+func usageLimitMessagePattern(message string) bool {
+	return strings.Contains(strings.ToLower(message), "usage limit")
 }
 
 // jsonInt64 coerces a decoded JSON number to seconds. Adapters decode with

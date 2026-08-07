@@ -329,6 +329,9 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	if err != nil {
 		return delegateStartFailed(err)
 	}
+	if err := llm.ValidateReasoningEffort(args.ReasoningEffort); err != nil {
+		return delegateStartFailed(err)
+	}
 	if selection.warning != nil {
 		s.emitDiagnosticWarning(*selection.warning)
 	}

@@ -339,6 +339,14 @@ type ResponsesContinuationPlanner interface {
 	PlanResponsesContinuation(req Request) (ResponsesContinuationPlan, error)
 }
 
+// ModelCompatibilityValidator is implemented by adapters that enforce a
+// static model-support map independent of live enumeration — e.g. the
+// OpenAI Codex backend, whose ChatGPT-account model set is narrower than
+// the platform API and isn't reliably distinguished by a live models list.
+type ModelCompatibilityValidator interface {
+	ValidateModel(model string) error
+}
+
 // Close closes all registered adapters that implement the Closer interface.
 func (c *Client) Close() error {
 	if c == nil {
@@ -385,6 +393,24 @@ func (c *Client) SupportsToolChoice(provider, mode string) bool {
 		return tc.SupportsToolChoice(mode)
 	}
 	return true
+}
+
+// ValidateModelCompatibility runs an adapter's static compatibility check
+// for model, when the adapter implements ModelCompatibilityValidator; nil
+// (no opinion) otherwise, including for unknown providers.
+func (c *Client) ValidateModelCompatibility(provider, model string) error {
+	if c == nil {
+		return nil
+	}
+	provider = normalizeProviderName(provider)
+	a, ok := c.providers[provider]
+	if !ok {
+		return nil
+	}
+	if v, ok := a.(ModelCompatibilityValidator); ok {
+		return v.ValidateModel(model)
+	}
+	return nil
 }
 
 // ListModels returns available models from the named provider. The adapter

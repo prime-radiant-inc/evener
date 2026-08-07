@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/serf/agent/internal/frontmatter"
 	"primeradiant.com/serf/agent/internal/toolname"
 	"primeradiant.com/serf/agent/task"
+	"primeradiant.com/serf/llm"
 )
 
 // Agent represents a subagent defined by a plugin.
@@ -162,6 +163,9 @@ func ParseAgent(data []byte, pluginName string) (Agent, error) {
 			}
 			if v, ok := m["reasoning_effort"].(string); ok {
 				tt.ReasoningEffort = v
+				if err := llm.ValidateReasoningEffort(tt.ReasoningEffort); err != nil {
+					return Agent{}, fmt.Errorf("agent task %q: %w", tt.Title, err)
+				}
 			}
 			if v, ok := m["type"].(string); ok {
 				tt.Type = v

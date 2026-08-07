@@ -901,15 +901,31 @@ func responsesLiteModel(model string) bool {
 	return strings.HasPrefix(model, "gpt-5.6")
 }
 
+// codexModelVariants maps a caller-facing gpt-5.6 slug to the wire slug the
+// Codex backend accepts. Grounded in llm/data/litellm_model_catalog.json's
+// exhaustive gpt-5.6* entries (exactly gpt-5.6, gpt-5.6-sol, gpt-5.6-terra,
+// gpt-5.6-luna, confirmed by grep) — a future added variant must update both
+// the catalog data and this table together. The bare "gpt-5.6" slug maps to
+// "gpt-5.6-sol" (the highest-priority variant in codex's model manifest);
+// every other cataloged variant maps to itself.
+var codexModelVariants = map[string]string{
+	"gpt-5.6":       "gpt-5.6-sol",
+	"gpt-5.6-sol":   "gpt-5.6-sol",
+	"gpt-5.6-terra": "gpt-5.6-terra",
+	"gpt-5.6-luna":  "gpt-5.6-luna",
+}
+
 // wireModel returns the model slug to send on the wire. The ChatGPT codex
 // backend has no bare "gpt-5.6" slug — it rejects it with "not supported when
 // using Codex with a ChatGPT account" — because the codex CLI always sends a
-// full variant slug. Map bare gpt-5.6 to the default variant (sol, the
-// highest-priority variant in codex's model manifest). The platform API serves
-// bare gpt-5.6 directly, so api-key requests keep the caller's slug.
+// full variant slug. Map bare gpt-5.6 to the default variant via
+// codexModelVariants. The platform API serves bare gpt-5.6 directly, so
+// api-key requests keep the caller's slug.
 func (a *Adapter) wireModel(model string) string {
-	if a.usesCodexBackend() && model == "gpt-5.6" {
-		return "gpt-5.6-sol"
+	if a.usesCodexBackend() {
+		if wire, ok := codexModelVariants[model]; ok {
+			return wire
+		}
 	}
 	return model
 }

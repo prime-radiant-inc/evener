@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -81,26 +82,20 @@ const modelSwitchEnumerationTimeout = 8 * time.Second
 // the metadata-fill call and the membership-check call, letting the two
 // disagree about availability.
 func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile) (*provider.Profile, error) {
-	if client == nil || profile == nil {
-		return profile, nil
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), modelSwitchEnumerationTimeout)
 	defer cancel()
-	models, err := client.ListModels(ctx, profile.ID())
-	if err != nil {
+	filled, models, ok := fillLiveModelMetadata(ctx, client, profile)
+	if !ok {
 		// Fail open unconditionally: a non-enumerable instance (adapter
 		// doesn't implement ModelLister) and any enumeration failure
 		// (timeout, auth error, etc.) both accept the switch, with no live
 		// metadata to fill.
-		return profile, nil
+		return filled, nil
 	}
-	if info, ok := liveModelInfoFor(models, profile.Model()); ok {
-		profile = profile.WithLiveModelInfo(info)
+	if err := validateModelSwitchMembership(client, filled, models); err != nil {
+		return filled, err
 	}
-	if err := validateModelSwitchMembership(client, profile, models); err != nil {
-		return profile, err
-	}
-	return profile, nil
+	return filled, nil
 }
 
 // validateModelSwitchMembership mirrors the launch policy's live-enumeration +
@@ -118,6 +113,9 @@ func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile
 	if client == nil || profile == nil {
 		return nil
 	}
+	if err := client.ValidateModelCompatibility(profile.ID(), profile.Model()); err != nil {
+		return err
+	}
 	tag := client.BehaviorTagOf(profile.ID())
 	cat := llm.EmbeddedModelCatalog()
 	for _, m := range models {
@@ -130,7 +128,37 @@ func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile
 		// enumerated set is not the source of truth for what it can serve.
 		return nil
 	}
-	return fmt.Errorf("model %s is not available from instance %s", profile.Model(), profile.ID())
+	return fmt.Errorf("model %s is not available from instance %s (available: %s)", profile.Model(), profile.ID(), formatModelAlternatives(models, tag, cat))
+}
+
+// maxModelAlternatives caps how many live-list alternatives
+// formatModelAlternatives names in a not-a-member error, so a large instance
+// catalog doesn't blow up an error message.
+const maxModelAlternatives = 20
+
+// formatModelAlternatives renders the visible (modelSwitchVisible), sorted,
+// deduplicated model IDs from models as a comma-separated list for a
+// not-a-member error, capped at maxModelAlternatives with a "+N more" suffix
+// when there are more.
+func formatModelAlternatives(models []llm.ModelInfo, tag string, cat *llm.ModelCatalog) string {
+	seen := make(map[string]bool, len(models))
+	var ids []string
+	for _, m := range models {
+		if !modelSwitchVisible(tag, m.ID, cat) || seen[m.ID] {
+			continue
+		}
+		seen[m.ID] = true
+		ids = append(ids, m.ID)
+	}
+	sort.Strings(ids)
+	if len(ids) == 0 {
+		return "none"
+	}
+	if len(ids) > maxModelAlternatives {
+		extra := len(ids) - maxModelAlternatives
+		return fmt.Sprintf("%s, +%d more", strings.Join(ids[:maxModelAlternatives], ", "), extra)
+	}
+	return strings.Join(ids, ", ")
 }
 
 // modelSwitchVisible mirrors launchcheck's launchCheckModelVisible: non-chat

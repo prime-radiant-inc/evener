@@ -190,7 +190,8 @@ func (a *fakeUnenumerableAdapter) ListModels(ctx context.Context) ([]llm.ModelIn
 
 // TestSetModel_UnknownModelOnEnumerableInstance_Rejected verifies (a): a
 // switch to a model absent from an enumerable instance's live model set is
-// rejected, and the error names the instance.
+// rejected, the error names the instance, and it names a live alternative
+// model ID drawn from the enumerated list (Task 3: formatModelAlternatives).
 func TestSetModel_UnknownModelOnEnumerableInstance_Rejected(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t,
@@ -213,6 +214,9 @@ func TestSetModel_UnknownModelOnEnumerableInstance_Rejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "anthropic") {
 		t.Fatalf("error = %q, want it to name the instance %q", err.Error(), "anthropic")
+	}
+	if !strings.Contains(err.Error(), "claude-opus-4-6") {
+		t.Fatalf("error = %q, want it to name a live alternative %q", err.Error(), "claude-opus-4-6")
 	}
 }
 
@@ -262,6 +266,67 @@ func TestSetModel_EnumerationFailure_FailsOpenUnconditionally(t *testing.T) {
 
 	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
 		t.Fatalf("SetModel with enumeration failure should fail open, got error: %v", err)
+	}
+}
+
+// fakeCompatValidatingAdapter is a fakeEnumerableAdapter that also
+// implements llm.ModelCompatibilityValidator, standing in for a
+// Codex-backend-flavored instance whose static model-support table rejects
+// a model independent of what its (scripted, for test purposes) live list
+// reports.
+type fakeCompatValidatingAdapter struct {
+	fakeEnumerableAdapter
+	rejectModel string
+	err         error
+}
+
+func (a *fakeCompatValidatingAdapter) ValidateModel(model string) error {
+	if model == a.rejectModel {
+		return a.err
+	}
+	return nil
+}
+
+// TestSetModel_StaticCompatibilityRejection_RunsBeforeLiveEnumeration
+// verifies that validateModelSwitchMembership's ModelCompatibilityValidator
+// check runs first and independently of live-list enumeration: even when
+// the scripted live list (incorrectly, for test purposes) includes the
+// requested model, a static rejection still blocks the switch and names the
+// supported slugs.
+func TestSetModel_StaticCompatibilityRejection_RunsBeforeLiveEnumeration(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withAdapter(&fakeCompatValidatingAdapter{
+			fakeEnumerableAdapter: fakeEnumerableAdapter{
+				fakeAdapter: fakeAdapter{name: "anthropic"},
+				// The live list includes the model that will be statically
+				// rejected below, proving the static check isn't merely
+				// redundant with a correctly-scripted live list.
+				models: []llm.ModelInfo{{ID: "gpt-5.6-mini", Provider: "anthropic"}},
+			},
+			rejectModel: "gpt-5.6-mini",
+			err:         fmt.Errorf("model gpt-5.6-mini is not supported (supported: gpt-5.6-luna, gpt-5.6-sol, gpt-5.6-terra)"),
+		}),
+		withConfig(SessionConfig{
+			NoProjectPrompts: true,
+			ResolveProfile:   testResolver,
+			testOnly:         testConfig{skipGitSnapshot: true},
+		}),
+	)
+
+	err := sess.SetModel("anthropic/gpt-5.6-mini")
+	if err == nil {
+		t.Fatal("SetModel with statically-rejected model = nil error, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "gpt-5.6-mini") {
+		t.Fatalf("error = %q, want it to name gpt-5.6-mini", err.Error())
+	}
+	for _, want := range []string{"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to name supported slug %q", err.Error(), want)
+		}
 	}
 }
 
