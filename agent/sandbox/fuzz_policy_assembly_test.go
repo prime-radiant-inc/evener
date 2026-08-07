@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -138,14 +139,14 @@ func fuzzPolicyModes(t *testing.T, fixture structuralFixture, home, raw string, 
 
 	// ResolveNamed must bypass host resolution for off, reject invalid persisted
 	// values, and resolve a valid persisted mode through the same pure resolver.
-	if rp, err := ResolveNamed(" off ", nil, HostFacts{}, fixture.main); err != nil || rp != nil {
+	if rp, err := ResolveNamed(" off ", nil, HostFacts{}, fixture.main, nil); err != nil || rp != nil {
 		t.Fatalf("ResolveNamed(off) = (%v, %v), want (nil, nil)", rp, err)
 	}
-	if _, err := ResolveNamed("not-a-mode", nil, HostFacts{}, fixture.main); err == nil {
+	if _, err := ResolveNamed("not-a-mode", nil, HostFacts{}, fixture.main, nil); err == nil {
 		t.Fatal("ResolveNamed accepted an invalid mode")
 	}
 	net := true
-	if rp, err := ResolveNamed("restricted", &net, HostFacts{OS: "darwin", Home: home, SandboxExecPath: "/fixture/sandbox-exec"}, fixture.main); err != nil || rp == nil || rp.Backend != BackendSeatbelt {
+	if rp, err := ResolveNamed("restricted", &net, HostFacts{OS: "darwin", Home: home, SandboxExecPath: "/fixture/sandbox-exec"}, fixture.main, nil); err != nil || rp == nil || rp.Backend != BackendSeatbelt {
 		t.Fatalf("ResolveNamed restricted seatbelt = (%+v, %v)", rp, err)
 	}
 
@@ -308,7 +309,7 @@ func fuzzSessionScratchAndProbeHelpers(t *testing.T, fixture structuralFixture) 
 	sessionScratchUserCacheDir = oldCache
 
 	facts := HostFacts{OS: "linux", Home: fixture.root, BwrapPath: "/fixture/bwrap", BwrapCapable: true}
-	if got := (FakeProber{Facts: facts}).Probe(); got != facts {
+	if got := (FakeProber{Facts: facts}).Probe(); !reflect.DeepEqual(got, facts) {
 		t.Fatalf("FakeProber changed facts: %+v", got)
 	}
 	args := bwrapProbeArgs("/fixture/bwrap")
