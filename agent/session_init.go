@@ -16,11 +16,11 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/serf/agent/diagnostic"
+	"primeradiant.com/serf/agent/envctx"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/clock"
 	"primeradiant.com/serf/agent/internal/contextmgr"
-	"primeradiant.com/serf/agent/internal/envctx"
 	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/internal/installid"
@@ -75,7 +75,7 @@ func resolveInstallationID(cfg SessionConfig, stateDir string) string {
 }
 
 // initEnvContext constructs the session's environment-context collector and
-// tracker (agent/internal/envctx), seeding the tracker from persisted (nil on
+// tracker (agent/envctx), seeding the tracker from persisted (nil on
 // a fresh session; meta.EnvContext on resume, itself possibly nil for a
 // session that predates this feature or never emitted a block). Requires s.cfg
 // and s.env to already be set. Called once, before any turn is processed:

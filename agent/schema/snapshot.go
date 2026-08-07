@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/agent/internal/envctx"
+	"primeradiant.com/serf/agent/envctx"
 	"primeradiant.com/serf/identifier"
 )
 
