@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -261,8 +262,8 @@ func tryParsePartialJSON(s string) any {
 	var b strings.Builder
 	b.Grow(len(attempt) + len(closers))
 	b.WriteString(attempt)
-	for i := len(closers) - 1; i >= 0; i-- {
-		b.WriteByte(closers[i])
+	for _, c := range slices.Backward(closers) {
+		b.WriteByte(c)
 	}
 
 	return tryUnmarshal(b.String())

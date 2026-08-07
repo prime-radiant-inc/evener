@@ -1,6 +1,9 @@
 package appwire
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // WindowTurns and PageTurns are two independently written turn slicers for the
 // same on-disk turn list, serving two RPCs:
@@ -115,8 +118,8 @@ func assertPagingCoversAll(t *testing.T, all []Turn, limit int) {
 
 	// Pages come newest→oldest; reverse to rebuild oldest-first.
 	var got []string
-	for i := len(pages) - 1; i >= 0; i-- {
-		got = append(got, ids(pages[i])...)
+	for _, v := range slices.Backward(pages) {
+		got = append(got, ids(v)...)
 	}
 	want := ids(all)
 	if !equalIDs(got, want) {

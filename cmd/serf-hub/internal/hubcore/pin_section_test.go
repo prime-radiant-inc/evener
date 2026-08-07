@@ -206,10 +206,10 @@ func TestPinSectionStoreConcurrentEquivalentCreateOrReuseConvergesAcrossConnecti
 	firstInserted := make(chan struct{})
 	oldHook := pinSectionBeforeSectionInsertHook
 	defer func() { pinSectionBeforeSectionInsertHook = oldHook }()
-	var enteredCount int32
+	var enteredCount atomic.Int32
 	pinSectionBeforeSectionInsertHook = func() {
-		if atomic.AddInt32(&enteredCount, 1) <= 2 {
-			if atomic.LoadInt32(&enteredCount) == 1 {
+		if enteredCount.Add(1) <= 2 {
+			if enteredCount.Load() == 1 {
 				close(firstInserted)
 			}
 			entered <- struct{}{}
@@ -287,9 +287,9 @@ func TestPinSectionStoreLastCommittedAssignmentWinsWithoutDuplicates(t *testing.
 	defer func() { pinSectionBeforeAssignmentCommitHook = oldHook }()
 	releaseFirst := make(chan struct{})
 	firstEntered := make(chan struct{})
-	var hookCount int32
+	var hookCount atomic.Int32
 	pinSectionBeforeAssignmentCommitHook = func() {
-		if atomic.AddInt32(&hookCount, 1) == 1 {
+		if hookCount.Add(1) == 1 {
 			close(firstEntered)
 			<-releaseFirst
 		}

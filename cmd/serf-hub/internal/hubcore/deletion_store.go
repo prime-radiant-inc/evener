@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"syscall"
@@ -177,8 +178,7 @@ func (s *DeletionStore) DeletingProject(projectID string) (DeletionRecord, bool)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := len(s.state.Records) - 1; i >= 0; i-- {
-		record := s.state.Records[i]
+	for _, record := range slices.Backward(s.state.Records) {
 		if record.ProjectID == projectID && record.State == DeletionStateDeleting {
 			return cloneDeletionRecord(record), true
 		}
@@ -194,8 +194,7 @@ func (s *DeletionStore) TargetState(ref, threadID string) (DeletionState, bool) 
 	ref, _ = normalizeDeletionLookup(ref, threadID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := len(s.state.Records) - 1; i >= 0; i-- {
-		record := s.state.Records[i]
+	for _, record := range slices.Backward(s.state.Records) {
 		for _, target := range record.Targets {
 			if target.Ref == ref {
 				return record.State, true

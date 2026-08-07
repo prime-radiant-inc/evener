@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -227,8 +228,8 @@ func (s *WebServer) acquireProjectDeletionCandidates(
 	var skipped []projectDeleteSkip
 	var releases []func()
 	release := func() {
-		for i := len(releases) - 1; i >= 0; i-- {
-			releases[i]()
+		for _, fn := range slices.Backward(releases) {
+			fn()
 		}
 	}
 	for _, target := range targets {
@@ -282,11 +283,11 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 	var locks []*sync.Mutex
 	var owners []*llm.APILogger
 	release := func() {
-		for i := len(owners) - 1; i >= 0; i-- {
-			_ = owners[i].Close()
+		for _, owner := range slices.Backward(owners) {
+			_ = owner.Close()
 		}
-		for i := len(locks) - 1; i >= 0; i-- {
-			locks[i].Unlock()
+		for _, lock := range slices.Backward(locks) {
+			lock.Unlock()
 		}
 	}
 	for _, target := range targets {

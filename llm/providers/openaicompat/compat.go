@@ -2,6 +2,7 @@ package openaicompat
 
 import (
 	"maps"
+	"slices"
 	"strings"
 
 	"primeradiant.com/serf/llm"
@@ -323,9 +324,9 @@ func anthropicCacheControl(body map[string]any, longRetention bool) {
 			break
 		}
 	}
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if r := msgs[i]["role"]; r == "user" || r == "assistant" {
-			if addCacheControlToTextContent(msgs[i], cc) {
+	for _, m := range slices.Backward(msgs) {
+		if r := m["role"]; r == "user" || r == "assistant" {
+			if addCacheControlToTextContent(m, cc) {
 				break
 			}
 		}
@@ -347,9 +348,9 @@ func addCacheControlToTextContent(msg map[string]any, cc map[string]any) bool {
 		msg["content"] = []map[string]any{{"type": "text", "text": content, "cache_control": cc}}
 		return true
 	case []map[string]any:
-		for i := len(content) - 1; i >= 0; i-- {
-			if content[i]["type"] == "text" {
-				content[i]["cache_control"] = cc
+		for _, part := range slices.Backward(content) {
+			if part["type"] == "text" {
+				part["cache_control"] = cc
 				return true
 			}
 		}
