@@ -352,3 +352,53 @@ func TestWorktreeRemove_Force_LaneNamedDirectly_UnlockedCascades(t *testing.T) {
 		t.Errorf("branch_deleted = %v, want true (the cascade really deleted %s)", out["branch_deleted"], delegateID)
 	}
 }
+
+// TestWorktreeRemove_Force_CascadeRunsAfterOwnGatesPass pins code-review
+// finding I1: the sanctioned dispose cascade is destructive to lanes other
+// than target, so it must not run until remove's OWN non-cascade refusal
+// gates (steps 5-7 — provenance, target's own dirty preflight, restore-env)
+// have all already passed. Here target ("lane") is independently dirty
+// (nothing to do with the cascade-eligible delegate lane, a sibling under
+// "nested"), so step 6's dirty preflight refuses on its own terms. A `remove
+// force:true` that ultimately refuses must leave every lane intact: the
+// retained delegate's lane and branch, and the target itself.
+func TestWorktreeRemove_Force_CascadeRunsAfterOwnGatesPass(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	nested := filepath.Join(path, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	// Make target itself dirty — independent of the delegate lane, and
+	// force_dirty is not set, so step 6 must refuse before step 8 is ever
+	// reached.
+	mustWriteFile(t, filepath.Join(path, "dirty.txt"), "uncommitted")
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+
+	delegateID, lanePath := seedRetainedIsolationLane(t, r, nested)
+
+	_, err = r.removeOp(t, map[string]any{"name": "lane", "force": true})
+	if err == nil {
+		t.Fatal("expected remove to be refused by target's own dirty tree")
+	}
+	if !strings.Contains(err.Error(), "uncommitted changes") {
+		t.Errorf("refusal should be target's own dirty-preflight gate, got: %v", err)
+	}
+	// I1 invariant: the cascade must not have run ahead of this refusal.
+	if _, statErr := os.Stat(lanePath); statErr != nil {
+		t.Errorf("delegate lane %s disposed despite remove's own later refusal (I1 regression): %v", lanePath, statErr)
+	}
+	if !r.branchExists(t, delegateID) {
+		t.Errorf("delegate branch %s deleted despite remove's own later refusal (I1 regression)", delegateID)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Errorf("lane %s removed despite its own dirty-tree refusal: %v", path, statErr)
+	}
+}

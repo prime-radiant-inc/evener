@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1769,47 +1770,37 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	// effort: liveWorkUnder scans running shell/delegate jobs and live
 	// subagent envs (see its doc comment); a shell command that `cd`s after
 	// launch is invisible to it.
+	//
+	// force-cascade addendum: when every blocker is a retained-idle, owned,
+	// worktree-isolated delegate, force disposes each one through the
+	// SANCTIONED dispose path (worktreeDispose — the exact op
+	// `manage_worktree op=dispose` runs) rather than bypassing this guard.
+	// This step only DECIDES eligibility and records it in
+	// forceCascadeDlgIDs; it does NOT dispose anything yet — the dispose
+	// calls are destructive to lanes OTHER than target, and running them
+	// here, ahead of steps 5-7 (which can still refuse), would let a call
+	// that ultimately refuses have already destroyed retained-idle lanes.
+	// The cascade actually runs just before step 8, once steps 5-7 have all
+	// passed (code-review finding I1;
+	// TestWorktreeRemove_Force_CascadeRunsAfterOwnGatesPass pins it). Each
+	// cascaded dispose keeps its OWN gates: it always runs with force=false,
+	// forceDirty=false, so an unmerged or dirty lane still refuses on
+	// dispose's own terms — remove's `force` means "run the sanctioned
+	// cascade," never "invent a new force semantics for dispose." A
+	// genuinely running job (not a retained-idle subagent) makes
+	// retainedIdleDelegateIDs fail closed, so this block never records
+	// anything and the live-execution refusal below is unchanged (spec
+	// "Running jobs block removal, always").
+	var forceCascadeDlgIDs []string
 	if live := s.liveWorkUnder(target); len(live) > 0 {
-		// force-cascade addendum: when every blocker is a retained-idle,
-		// owned, worktree-isolated delegate, force disposes each one through
-		// the SANCTIONED dispose path (worktreeDispose — the exact op
-		// `manage_worktree op=dispose` runs) rather than bypassing this
-		// guard. Each cascaded dispose keeps its OWN gates: it always runs
-		// with force=false, forceDirty=false, so an unmerged or dirty lane
-		// still refuses on dispose's own terms — remove's `force` means "run
-		// the sanctioned cascade," never "invent a new force semantics for
-		// dispose." A genuinely running job (not a retained-idle subagent)
-		// makes retainedIdleDelegateIDs fail closed, so this block never
-		// fires and the live-execution refusal below is unchanged (spec
-		// "Running jobs block removal, always").
+		eligible := false
 		if force {
 			if dlgIDs, ok := s.retainedIdleDelegateIDs(live); ok {
-				for _, dlg := range dlgIDs {
-					if _, err := s.worktreeDispose(ctx, dlg, false, false); err != nil {
-						return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: force disposing retained-idle lane %s: %w", dlg, err)
-					}
-				}
-				// The cascade may have already removed target itself: a
-				// retained delegate whose own lane IS the worktree being
-				// removed sits exactly at target (pathEqualOrUnder's "equal"
-				// case), so its dispose already ran `git worktree remove`,
-				// `branch -D` and the sidecar delete against the very same
-				// meta dir steps 8-10 below would use. Nothing is left for
-				// them to do, so report what the cascade actually
-				// accomplished — the branch is deleted iff it is really gone,
-				// never asserted from the fact that a dispose ran (dispose
-				// can keep a lane that turned dirty mid-disposal, and
-				// downgrades a failed branch delete to a warning). Only an
-				// UNLOCKED lane reaches here: one still carrying its
-				// serf:dlg: marker classifies Foreign to this session's
-				// remove and is refused by the lock guard at step 3.
-				if !managedWorktreeExists(target) {
-					return WorktreeRemoveResult{Path: target, Branch: name, BranchDeleted: !branchExists(run, name)}, nil
-				}
-				live = s.liveWorkUnder(target)
+				forceCascadeDlgIDs = dlgIDs
+				eligible = true
 			}
 		}
-		if len(live) > 0 {
+		if !eligible {
 			if hint := s.disposeHintForRetainedIdle(live); hint != "" {
 				return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: live work under %s: %s. %s", target, strings.Join(live, ", "), hint)
 			}
@@ -1878,6 +1869,66 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 			return WorktreeRemoveResult{}, err
 		}
 		removeWarning = warning
+	}
+
+	// Force-cascade execution (deferred from step 4; code-review finding I1):
+	// steps 5-7 above are remove's OWN non-cascade refusal gates on target,
+	// and none of them is destructive to a retained-idle lane (step 7 only
+	// swaps this session's OWN env pointer — already accepted as recoverable
+	// if a later step fails, per step 8's own comment below). Only now that
+	// they have ALL passed do we run the sanctioned dispose cascade, so a
+	// call that refuses anywhere above — or a cascaded dispose's own refusal
+	// right here — has never destroyed a lane.
+	if len(forceCascadeDlgIDs) > 0 {
+		// targetIsCascadeLane is a RECORD-based signal (code-review finding
+		// I2): a delegate's own lane is always named exactly its delegate id
+		// (spec §9 step 1 — createDelegateWorktree names it `delegateID`), so
+		// target IS one of the lanes the cascade is about to dispose iff
+		// `name` is literally one of the ids we just resolved from live,
+		// owned blockers. This is checked BEFORE running anything, from the
+		// same eligibility list step 4 built — never inferred after the fact
+		// from a bare stat of target/.git, which cannot distinguish "the
+		// cascade removed this" from "this directory happened to already be
+		// gone for an unrelated reason" (e.g. deleted out of band while a
+		// stale blocker still pointed at it).
+		targetIsCascadeLane := slices.Contains(forceCascadeDlgIDs, name)
+		for _, dlg := range forceCascadeDlgIDs {
+			if _, err := s.worktreeDispose(ctx, dlg, false, false); err != nil {
+				return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: force disposing retained-idle lane %s: %w", dlg, err)
+			}
+		}
+		if targetIsCascadeLane {
+			// A retained delegate whose own lane IS the worktree being
+			// removed sits exactly at target (pathEqualOrUnder's "equal"
+			// case). Its dispose call above already ran the full removal
+			// sequence — unlock, `git worktree remove`, mark disposed,
+			// `branch -D`, delete sidecar — against the very same meta dir
+			// steps 8-10 below would use, so target's own removal is
+			// entirely owned by that dispose call now; nothing below acts on
+			// it, whichever way dispose resolved it.
+			if managedWorktreeExists(target) {
+				// dispose declined to remove it (the lane turned dirty
+				// mid-disposal and was kept resumable — disposeExecute's
+				// laneKeptDirty outcome, a nil-error SUCCESS from dispose's
+				// own perspective). The requested removal did not happen, so
+				// remove must report that honestly rather than a false
+				// success, and must not fall through to steps 8-11, which
+				// would act on a lane whose sidecar/lock state dispose
+				// already re-owns (downgradeRelockKeep).
+				return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s became dirty during the cascade and was kept by dispose, not removed; it remains resumable via delegate_send or a later remove/dispose", target)
+			}
+			// The branch is deleted iff it is really gone, never asserted
+			// from the fact that a dispose ran (a failed branch delete
+			// downgrades to a warning inside dispose, keeping the branch).
+			return WorktreeRemoveResult{Path: target, Branch: name, BranchDeleted: !branchExists(run, name)}, nil
+		}
+		// Belt and braces: a successful dispose always evicts its blocker's
+		// retained child (disposeExecute step 7) regardless of whether the
+		// lane itself was fully torn down or kept dirty, so this is normally
+		// empty; kept as a defensive re-check rather than assumed.
+		if live := s.liveWorkUnder(target); len(live) > 0 {
+			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: live work under %s: %s", target, strings.Join(live, ", "))
+		}
 	}
 
 	// Step 8: remove the worktree itself. --force covers git's own
