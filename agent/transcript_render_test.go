@@ -527,6 +527,7 @@ func TestRenderMarkdown_SteeringCompact(t *testing.T) {
 		{"steering", schema.TurnSteering, "steer me", "## Turn 0 — Steering", "> [Steering] steer me"},
 		{"summary", schema.TurnSummary, "summary body", "## Turn 0 — Summary", "> [Summary] summary body"},
 		{"checkpoint", schema.TurnCheckpoint, "checkpoint body", "## Turn 0 — Checkpoint", "> [Checkpoint] checkpoint body"},
+		{"environment", schema.TurnEnvironment, "cwd: /tmp\nbranch: main", "## Turn 0 — Environment", "> [Environment] cwd: /tmp"},
 	}
 
 	for _, tc := range tests {

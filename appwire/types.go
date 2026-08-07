@@ -665,6 +665,12 @@ const (
 	// transcript renders for a turn that failed terminally. It lets clients
 	// find the failure by type rather than by reading the item's prose.
 	ThreadItemEventKindError ThreadItemEventKind = "error"
+	// ThreadItemEventKindEnvironment marks the systemMessage item a reloaded
+	// transcript renders for a schema.TurnEnvironment turn: the harness's
+	// diff-rendered cwd/git-branch/pressure block, not a settings-governed
+	// toggle — no visibility preference hides it (transcriptVisibility.ts's
+	// "no toggle governs it" default applies).
+	ThreadItemEventKindEnvironment ThreadItemEventKind = "environment"
 )
 
 // AllThreadItemEventKinds is every ThreadItem.EventKind value emitted for
@@ -685,6 +691,7 @@ var AllThreadItemEventKinds = []string{
 	string(ThreadItemEventKindToolRepair),
 	string(ThreadItemEventKindModelSwitch),
 	string(ThreadItemEventKindError),
+	string(ThreadItemEventKindEnvironment),
 }
 
 type ThreadItem struct {

@@ -353,6 +353,8 @@ func outlineRoleLabel(kind schema.TurnKind) string {
 		return "Summary"
 	case schema.TurnCheckpoint:
 		return "Checkpoint"
+	case schema.TurnEnvironment:
+		return "Environment"
 	case schema.TurnSystem:
 		return "System"
 	case schema.TurnToolResults, schema.TurnTool:
