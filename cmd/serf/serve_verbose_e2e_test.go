@@ -77,6 +77,7 @@ func TestServeVerboseSurvivesAnUnreadStderr(t *testing.T) {
 	stderrWrite.Close()
 
 	progress := make(chan string, 1)
+	scanErr := make(chan error, 1)
 	go func() {
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
@@ -87,6 +88,7 @@ func TestServeVerboseSurvivesAnUnreadStderr(t *testing.T) {
 				}
 			}
 		}
+		scanErr <- scanner.Err()
 	}()
 
 	stalled := false
@@ -117,6 +119,15 @@ func TestServeVerboseSurvivesAnUnreadStderr(t *testing.T) {
 	}
 	stderrRead.Close()
 	childStderr := <-drained
+
+	select {
+	case err := <-scanErr:
+		if err != nil {
+			t.Fatalf("scanning child stdout: %v\nchild stderr:\n%s", err, tailOf(childStderr))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for stdout scan to finish\nchild stderr:\n%s", tailOf(childStderr))
+	}
 
 	if stalled {
 		t.Fatalf("the daemon made no progress with its stderr unread: the authoritative "+
