@@ -210,6 +210,13 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 	env := execenv.NewLocalExecutionEnvironment(cfg.workDir)
+	// A daemon/session launched outside the developer's shell rc chain (macOS
+	// launchd, a GUI app, systemd) inherits a PATH lacking tool directories like
+	// /opt/homebrew/bin; the login shell's own PATH wins for spawned commands
+	// (kata 31gh). LoginShellPATH probes once per process with a short timeout
+	// and never blocks launch — it falls back to "" (inherited PATH unchanged)
+	// on any failure.
+	env.LoginPATH = execenv.LoginShellPATH()
 
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{

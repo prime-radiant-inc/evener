@@ -394,6 +394,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return err
 	}
 	env := execenv.NewLocalExecutionEnvironment(wd)
+	// A daemon/session launched outside the developer's shell rc chain (macOS
+	// launchd, a GUI app, systemd) inherits a PATH lacking tool directories like
+	// /opt/homebrew/bin; the login shell's own PATH wins for spawned commands
+	// (kata 31gh). LoginShellPATH probes once per process with a short timeout
+	// and never blocks launch — it falls back to "" (inherited PATH unchanged)
+	// on any failure.
+	env.LoginPATH = execenv.LoginShellPATH()
 	sessionCfg := agent.SessionConfig{
 		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(*maxRounds),
 		ShareTasksWithChildren:      *shareTaskStore,
@@ -869,6 +876,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// (a fail-open). Each session owns its own env + session tmp, disposed on Close,
 		// so oldSess.Close() no longer pulls the tmp out from under the new session.
 		clearEnv := execenv.NewLocalExecutionEnvironment(wd)
+		clearEnv.LoginPATH = execenv.LoginShellPATH() // cached: free after the first probe this process
 		if err := deps.provisionSandbox(clearEnv, &clearCfg, wd); err != nil {
 			return fmt.Errorf("clear sandbox: %w", err)
 		}

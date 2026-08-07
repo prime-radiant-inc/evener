@@ -123,6 +123,34 @@ type LocalExecutionEnvironment struct {
 	// symlink refusal are unaffected. It is never set on a durable env and never
 	// copied by WithWorkingDirectory, so the grant cannot outlive the one re-dispatch.
 	sandboxGrant string
+
+	// LoginPATH, when non-empty, overrides the inherited process PATH for the
+	// PATH variable ONLY in commandEnvironment — every other variable still
+	// flows through the existing EnvPolicy filter untouched. Callers that
+	// construct a session/daemon env set it from LoginShellPATH() (kata 31gh):
+	// a daemon launched from a context that skips the shell rc chain (macOS
+	// launchd, a GUI app, systemd) inherits a PATH lacking developer tool
+	// directories like /opt/homebrew/bin, which only the login shell's rc chain
+	// adds. Empty means "use the inherited process PATH unchanged" (the probe
+	// was never run, failed, or timed out).
+	LoginPATH string
+
+	// unsandboxedScratchMu guards lazy provisioning of unsandboxedScratch.
+	unsandboxedScratchMu sync.Mutex
+	// unsandboxedScratch is a per-session scratch dir this UNSANDBOXED env
+	// provisions on first spawn, so commandEnvironment can export
+	// SERF_SCRATCH_DIR/TMPDIR per docs/environment.md's contract, which carries
+	// no sandbox-only caveat. It reuses the sandbox scratch location convention
+	// (sandbox.NewSessionScratch) but is entirely separate from ownedSessionTmp,
+	// which only a sandboxed env owns — a sandboxed spawn's scratch vars come
+	// from sandbox.ApplyEnvFloor instead, so this is never consulted when
+	// Wrapper is non-nil. Provisioning is best-effort: a failure disables the
+	// export rather than blocking the spawn (unsandboxedScratchFailed is sticky
+	// so a broken base is not re-probed on every spawn). Not copied by
+	// WithWorkingDirectory or WithSandboxInvocationGrant, matching
+	// ownedSessionTmp — a re-rooted clone provisions its own on first use.
+	unsandboxedScratch       *sandbox.SessionScratch
+	unsandboxedScratchFailed bool
 }
 
 // sandbox returns the environment's fd-anchored enforcement layer, or nil when
@@ -259,7 +287,61 @@ func (e *LocalExecutionEnvironment) commandEnvironment(extra map[string]string) 
 	if e.inheritedEnv != nil {
 		inherited = e.inheritedEnv()
 	}
-	return filteredEnvWithSource(e.EnvPolicy, extra, inherited)
+	return filteredEnvWithSource(e.EnvPolicy, e.overlaySessionEnv(extra), inherited)
+}
+
+// overlaySessionEnv layers this environment's developer-PATH override
+// (LoginPATH) and, for an unsandboxed session, its always-on scratch vars
+// onto extra, without mutating the caller's map. A caller-supplied value in
+// extra always wins — this only fills in what the caller left unset. A
+// sandboxed env (Wrapper != nil) never gets scratch vars here: those come
+// from sandbox.ApplyEnvFloor at the spawn site instead, so sandboxed
+// behavior is byte-identical to before.
+func (e *LocalExecutionEnvironment) overlaySessionEnv(extra map[string]string) map[string]string {
+	overlay := map[string]string{}
+	if e.LoginPATH != "" {
+		overlay[envvars.Path.Name] = e.LoginPATH
+	}
+	if e.Wrapper == nil {
+		if scratch := e.unsandboxedScratchDir(); scratch != "" {
+			overlay[envvars.TmpDir.Name] = scratch
+			overlay[envvars.SERFScratchDir.Name] = scratch
+		}
+	}
+	if len(overlay) == 0 {
+		return extra
+	}
+	for k, v := range extra {
+		overlay[k] = v // caller-supplied extra stays authoritative
+	}
+	return overlay
+}
+
+// unsandboxedScratchDir lazily provisions (once) and returns this
+// unsandboxed env's per-session scratch directory, or "" if provisioning
+// failed. A scratch dir is a convenience, never a launch or spawn blocker: a
+// failure silently disables the SERF_SCRATCH_DIR/TMPDIR export instead of
+// erroring the command.
+func (e *LocalExecutionEnvironment) unsandboxedScratchDir() string {
+	e.unsandboxedScratchMu.Lock()
+	defer e.unsandboxedScratchMu.Unlock()
+	if e.unsandboxedScratch != nil {
+		return e.unsandboxedScratch.Dir
+	}
+	if e.unsandboxedScratchFailed {
+		return ""
+	}
+	workspaceRoot := GitRootOrEmpty(e, e.RootDir)
+	if workspaceRoot == "" {
+		workspaceRoot = e.RootDir
+	}
+	tmp, err := sandbox.NewSessionScratch(e.sandboxTmpBase, workspaceRoot)
+	if err != nil {
+		e.unsandboxedScratchFailed = true
+		return ""
+	}
+	e.unsandboxedScratch = tmp
+	return tmp.Dir
 }
 
 func (e *LocalExecutionEnvironment) findExecutable(name string) (string, error) {
@@ -635,7 +717,48 @@ var (
 	venvCandidateDirs      = func(root, binDir string) []string {
 		return []string{filepath.Join(root, ".venv", binDir), filepath.Join(root, "venv", binDir)}
 	}
+	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return execCommandContext(ctx, name, args...).Output()
+	}
 )
+
+var (
+	loginShellPATHOnce  sync.Once
+	loginShellPATHValue string
+)
+
+// loginShellPATHTimeout bounds the login-shell probe so a wedged or slow rc
+// file can never block session/daemon launch — a short timeout, never a hard
+// failure surfaced to the user.
+const loginShellPATHTimeout = 2 * time.Second
+
+// LoginShellPATH resolves the PATH the user's login shell would produce
+// ($SHELL -lc 'echo $PATH'), so a session or daemon launched from a context
+// that skips the shell rc chain (macOS launchd, a GUI app, systemd) can still
+// give spawned commands the developer's real PATH — including entries like
+// /opt/homebrew/bin that only the rc chain adds (kata 31gh). Resolved once
+// per process and cached, exactly like OSVersion: a wedged or slow rc file
+// costs at most one short-timeout probe, never one per session or per spawn.
+// Returns "" when $SHELL is unset, the probe fails, or it times out —
+// callers then leave the inherited process PATH unchanged.
+func LoginShellPATH() string {
+	loginShellPATHOnce.Do(func() { loginShellPATHValue = resolveLoginShellPATH() })
+	return loginShellPATHValue
+}
+
+func resolveLoginShellPATH() string {
+	shell := strings.TrimSpace(os.Getenv(envvars.Shell.Name))
+	if shell == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), loginShellPATHTimeout)
+	defer cancel()
+	out, err := loginShellPATHOutput(ctx, shell, "-lc", "echo $"+envvars.Path.Name)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
 
 func resolveOSVersion() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1675,7 +1798,16 @@ func filteredEnvWithPolicy(policy EnvVarPolicy, extra map[string]string) []strin
 func filteredEnvWithSource(policy EnvVarPolicy, extra map[string]string, inherited []string) []string {
 	switch policy {
 	case EnvPolicyAll:
-		out := append([]string(nil), inherited...)
+		out := make([]string, 0, len(inherited)+len(extra))
+		for _, kv := range inherited {
+			k, _, ok := strings.Cut(kv, "=")
+			if ok {
+				if _, overridden := extra[k]; overridden {
+					continue
+				}
+			}
+			out = append(out, kv)
+		}
 		for k, v := range extra {
 			out = append(out, k+"="+v)
 		}
@@ -1694,9 +1826,13 @@ func filteredEnvWithSource(policy EnvVarPolicy, extra map[string]string, inherit
 		out := []string{}
 		for _, kv := range inherited {
 			k, _, ok := strings.Cut(kv, "=")
-			if ok && core[k] {
-				out = append(out, kv)
+			if !ok || !core[k] {
+				continue
 			}
+			if _, overridden := extra[k]; overridden {
+				continue
+			}
+			out = append(out, kv)
 		}
 		for k, v := range extra {
 			out = append(out, k+"="+v)
@@ -1711,6 +1847,11 @@ func filteredEnv(extra map[string]string) []string {
 	return filteredEnvFrom(extra, os.Environ())
 }
 
+// filteredEnvFrom scrubs secret-named vars from inherited, then layers extra
+// on top. A key present in extra always wins over the SAME key in inherited
+// (skipped rather than duplicated) so a caller-supplied override — e.g. the
+// login-shell PATH or the always-on scratch vars — replaces the inherited
+// value instead of appending a second, shadowing entry.
 func filteredEnvFrom(extra map[string]string, inherited []string) []string {
 	deny := sandbox.IsSecretEnvName
 	out := []string{}
@@ -1720,6 +1861,9 @@ func filteredEnvFrom(extra map[string]string, inherited []string) []string {
 			continue
 		}
 		if deny(k) {
+			continue
+		}
+		if _, overridden := extra[k]; overridden {
 			continue
 		}
 		out = append(out, kv)
