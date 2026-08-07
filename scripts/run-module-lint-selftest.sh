@@ -680,11 +680,6 @@ write_fake_mktemp "$bin"
 cp "$makefile" "$repo/Makefile"
 cp "$runner" "$repo/scripts/run-module-lint.sh"
 chmod +x "$repo/scripts/run-module-lint.sh"
-cat >"$repo/scripts/disk-reclaim.sh" <<'FAKE_DISK_RECLAIM'
-#!/usr/bin/env bash
-exit 0
-FAKE_DISK_RECLAIM
-chmod +x "$repo/scripts/disk-reclaim.sh"
 for module in agent llm auth envvars invariant identifier fuzz; do mkdir -p "$repo/$module"; done
 
 cat >"$bin/go" <<'FAKE_GO'
@@ -838,11 +833,6 @@ generated_bin="$generated_case/bin"
 mkdir -p "$generated_repo/docs" \
 	"$generated_repo/cmd/serf-hub/frontend/src/protocol" "$generated_repo/scripts" "$generated_bin"
 cp "$makefile" "$generated_repo/Makefile"
-cat >"$generated_repo/scripts/disk-reclaim.sh" <<'FAKE_GENERATED_DISK_RECLAIM'
-#!/usr/bin/env bash
-exit 0
-FAKE_GENERATED_DISK_RECLAIM
-chmod +x "$generated_repo/scripts/disk-reclaim.sh"
 printf 'current protocol doc\n' >"$generated_repo/docs/appwire-protocol.md"
 printf 'stale protocol types\n' >"$generated_repo/cmd/serf-hub/frontend/src/protocol/types.gen.ts"
 cat >"$generated_bin/go" <<'FAKE_GENERATOR'

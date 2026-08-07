@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub cache-preflight web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install selftest test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install selftest test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -26,7 +26,7 @@ build: build-runtime
 # guarantees every serf/serf-hub pair build embeds the dist build-web just
 # produced. No target may ship a serf-hub binary with a stale or empty
 # embedded web UI.
-build-runtime: cache-preflight build-web
+build-runtime: build-web
 	LDFLAGS="$(LDFLAGS)" scripts/build-runtime-pair.sh
 
 # Cross-compile for Linux (eval deployments). Invalidates the agent package
@@ -153,12 +153,6 @@ FUZZ_GO_MODULES := $(GO_MODULES) fuzz
 build-go:
 	@for m in $(GO_MODULES); do (cd $$m && go build ./...) || exit 1; done
 
-# Cache health must be known before any aggregate lint or runtime build work
-# starts, so a stalled cache reports its own diagnosis instead of failing later
-# inside an unrelated Go command.
-cache-preflight:
-	@scripts/disk-reclaim.sh --check
-
 # MEMCAP runs a recipe under a hard per-run memory ceiling (a systemd user scope)
 # so a leaky test or fuzz run is OOM-killed individually instead of firing the
 # kernel's global OOM killer and taking the whole host — and its network — down.
@@ -183,7 +177,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # aggregate lint runner. The six fuzz-*-selftest suites listed here are
 # fixture-contained: their git bisect, worktree, and go-test operations stay in
 # throwaway worlds rather than touching this repository.
-SELFTEST_SCRIPTS := run-module-lint run-module-tests reclaim-test-debris agent-test-shards merge-approval-gate disk-reclaim setup-gocache web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation live-compaction-eval tmux-read tmux-send scenario-cite-migrate fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
+SELFTEST_SCRIPTS := run-module-lint run-module-tests reclaim-test-debris agent-test-shards merge-approval-gate setup-gocache web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation live-compaction-eval tmux-read tmux-send scenario-cite-migrate fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
 
 # selftest hangs off `make test` because a script selftest is a test. It stays
 # off `make lint` because run-module-lint-selftest.sh drives a fixture `make
@@ -516,8 +510,6 @@ lint-generated:
 	$(call run_quiet_lint,go generate ./appwire/... && { git diff --exit-code -- docs/appwire-protocol.md cmd/serf-hub/frontend/src/protocol/types.gen.ts || { echo "generated AppWire outputs are stale; run 'make generate' and commit."; exit 1; }; })
 
 LINT_TARGETS := lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci lint-generated secret-scan
-
-$(LINT_TARGETS): cache-preflight
 
 lint: $(LINT_TARGETS)
 

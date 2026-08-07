@@ -119,14 +119,6 @@ new_case() {
 	for module in agent llm auth envvars invariant identifier; do
 		mkdir -p "$repo/$module"
 	done
-	# The runner's disk guard is the first thing it does and it shells out to a
-	# sibling script; the fixture answers for it so no case depends on how full
-	# the real Data volume happens to be.
-	cat >"$repo/scripts/disk-reclaim.sh" <<'FAKE_DISK_RECLAIM'
-#!/usr/bin/env bash
-exit 0
-FAKE_DISK_RECLAIM
-	chmod +x "$repo/scripts/disk-reclaim.sh"
 	cat >"$bin/go" <<'FAKE_GO'
 #!/usr/bin/env bash
 set -u

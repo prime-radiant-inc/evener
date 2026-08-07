@@ -127,11 +127,8 @@ instead. `go env -w` writes to a per-user file outside this git checkout,
 so a fresh clone or a new machine does **not** inherit it — this is a
 step to run, not a setting to commit.
 
-The external volume itself can be unmounted. That must fail loudly, not
-mysteriously: `scripts/disk-reclaim.sh --check` probes `GOCACHE` and
-gives a specific "this is what an unmounted build-cache volume looks
-like" diagnosis instead of a bare `go build` error naming neither
-`GOCACHE` nor "unmounted".
+The external volume itself can be unmounted, and that surfaces as a bare
+`go build` error naming neither `GOCACHE` nor "unmounted".
 
 It can also **stall while still mounted**, which is worse than being
 gone: nothing fails, everything blocks. `mkdir` blocks, and so does every
@@ -139,11 +136,14 @@ go command that touches the cache — four go processes were once found
 sleeping 12-23 hours that way, on a volume that answered `ls` instantly
 by the time anyone looked, while a session watched five background
 `go test` jobs die at their run timeout with zero output and no
-explanation (kata r07s). So the probe is bounded: 10s by default,
-`SERF_GOCACHE_PROBE_TIMEOUT` to change it, and the diagnosis names the
-stall. A sleepy volume costs one failed check, not a fleet-wide mystery.
-Do not route around it with `GOCACHE=/tmp/...`; that fills the volume the
-external cache exists to spare (kata 98x9).
+explanation (kata r07s). A bounded preflight probe used to catch both
+cases ahead of time and name them (disk-reclaim.sh); that check has since
+been removed with no replacement — suites now rely on the wave runner's
+per-suite cleanup instead of a disk-health gate — so an unmounted or
+stalled cache volume once again surfaces only as an ordinary hung or
+failing `go` command. Do not route around a full checkout volume with
+`GOCACHE=/tmp/...`; that fills the volume the external cache exists to
+spare (kata 98x9).
 
 Disk exhaustion never announces itself otherwise. It surfaces as
 `link: mapping output file failed`, `t.TempDir()` failures, and jobstore
@@ -241,62 +241,46 @@ trivially an ancestor of what it was cut from, so an ancestor check
 alone marks unstarted work as merged — that deleted six worktrees ninety
 seconds after six agents were given them, and the dirty-check did not
 save them, because a checkout nobody has written to yet is perfectly
-clean.
+clean. A follow-up fix that read the first fact as "the branch tip is
+still the base's tip" also failed: that holds only at cut time, and two
+merges landing on the base between `worktree add` and the next check
+moved five more fresh worktrees out from under it. The fact that held was
+the **branch's own reflog** — the commit it was created at, and whether
+anyone has committed on it since — because a moving base cannot change
+either answer.
 
-The follow-up fix read the first fact as "the branch tip is still the
-base's tip". That holds only at cut time: two merges landed on the base
-between `worktree add` and the next run, five more fresh worktrees
-stopped matching, and they went too. `scripts/disk-reclaim.sh` now takes
-the first fact from the **branch's own reflog** — the commit it was
-created at, and whether anyone has committed on it since — so a moving
-base cannot change the answer. Nothing has to be done at creation time
-for this to hold, so a worktree made by any means is covered; a branch
-whose reflog is missing is kept.
-
-**Ignored is not disposable.** git calls a checkout whose only content
-is git-ignored clean, so `git worktree remove` without `--force` deleted
-one holding an agent's `.superpowers/` SDD archive. The script keeps any
-candidate holding ignored content it cannot name as regenerable
-(`node_modules`, `.build/`, the built binaries, `.DS_Store`), and never
-considers the main checkout at all.
+**Ignored is not disposable.** git calls a checkout whose only content is
+git-ignored clean, so `git worktree remove` without `--force` deleted
+one holding an agent's `.superpowers/` SDD archive.
 
 Failure must always fall toward keeping. A worktree kept that could have
 gone costs disk; the other direction costs a running agent its
-workspace. `scripts/disk-reclaim-selftest.sh` carries a scenario per
-hole — run it after touching the classifier.
+workspace.
 
-**Expect `--worktrees` to free nothing, and do not treat that as a bug
-in the classifier.** Every kata agent writes
-`.superpowers/<kata>-report.md` into its worktree, and that file is
-git-ignored work the script keeps by design. So a merged worktree is
-normally *also* a kept one: measured at the disk floor on 2026-07-30, all
-8 merged worktrees were held this way and the removable share was 0
-bytes. The pressure this creates is the danger — the remedy on offer does
-nothing, and the obvious next move is to loosen the classifier, which is
-how the deletion incident already happened twice.
+These three rules once lived in an automated classifier
+(`disk-reclaim.sh`) that could remove a MERGED worktree on its own. That
+script, its disk-floor preflight check, and its whole reclaim/report
+machinery have since been removed with no replacement: per-suite cleanup
+enforced by the selftest wave runner now covers the failure mode the
+preflight check existed for (kata 98x9's disk exhaustion), and worktree
+disposal is entirely a human/controller judgment call again. The three
+rules above are what any such review — automated or by hand — still has
+to get right; they cost six worktrees, then five more, to learn the first
+time.
 
-That zero is not a gap needing a new mechanism — kata worktrees have a
-disposal path, and it is the CONTROLLER'S RETIREMENT PASS, not
-`--worktrees`. After central gates go green the controller reads the
-report, verifies the branch is clean and landed (both facts), and removes
-worktree and branch by hand; the report goes with it, having been read.
-Sixteen worktrees retired that way in one night with zero friction. The
-report living inside the worktree is what makes the ratchet CORRECT for
-everything else: a worktree nobody retired is abandoned work, and its
-report is the only record of what that work was. Do not move reports out
-of worktrees to "fix" the yield, and do not treat `--worktrees` as the
-kata-cleanup tool — it is a background net for the other classes.
+**Retiring a worktree is the CONTROLLER'S job, done by hand.** After
+central gates go green the controller reads the worktree's
+`.superpowers/<kata>-report.md` (git-ignored, left in the worktree on
+purpose), verifies the branch is clean and landed (both facts above), and
+removes worktree and branch by hand; the report goes with it, having been
+read. Sixteen worktrees retired that way in one night with zero friction.
+Do not move reports out of worktrees "to make cleanup easier" — a
+worktree nobody retired is abandoned work, and its report is the only
+record of what that work was.
 
-So the levers have to be honest about what they can do. `--check` is a
-bare `df` on every test invocation and cannot measure, so it names the
-tools that can rather than promising a yield. The report sizes
-**removable, kept and unregistered separately**, because one total for
-the worktrees directory reads as the amount `--worktrees` would free —
-8.3G, when the answer was zero.
-
-**Most of the reclaimable disk is not in registered worktrees.** Two
-pockets are larger and neither is removed by any script here, because for
-both of them git's own "is this safe" check is unavailable:
+**Most of the reclaimable disk is not in registered worktrees at all.**
+Two pockets are larger, and neither has ever had a removal tool, because
+for both of them git's own "is this safe" check is unavailable:
 
 - `scripts/report-tmp-debris.sh` — per-session scratch under `/tmp`,
   measured at 10.0G across 120 entries on the same volume as the
@@ -307,11 +291,8 @@ both of them git's own "is this safe" check is unavailable:
 - `scripts/report-orphaned-worktrees.sh` — ~1.6G of pre-rename checkouts
   `git worktree list` has no record of (kata smw0).
 
-**Do not `du` the build cache from the report.** It lives on an external
-volume by design, where emptying it cannot move this checkout's floor,
-and sizing it costs 32.6s of every run to answer a question nobody asked.
-`df` of its volume is the fact that matters. Same rule as the levers:
-measure what you can act on.
+Both remain read-only inspection tools; nothing in this repo deletes
+either class for you.
 
 ## Model tiering
 

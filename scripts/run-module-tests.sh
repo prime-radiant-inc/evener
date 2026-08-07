@@ -29,14 +29,6 @@
 # failure.
 set -uo pipefail
 
-# Fail fast, with a specific diagnosis, if the Data volume is too tight to
-# safely build/test (kata 98x9). Every module-test path funnels through here
-# (make test, test-short, test-race, and direct invocation), so this is the one
-# place a check catches every run instead of depending on someone remembering
-# to run scripts/disk-reclaim.sh first. Silent when there's nothing to say;
-# a single `df`, so the cost is unmeasurable next to the rest of this script.
-scripts/disk-reclaim.sh --check || exit 1
-
 MODULES=${MODULES:-". agent llm auth envvars invariant identifier"}
 ROOT_FULL=${ROOT_FULL:-0}
 
