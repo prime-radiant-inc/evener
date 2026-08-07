@@ -102,6 +102,17 @@ func TestWorktreeList_SurfacesUnmanagedWorktreesInTheirOwnSection(t *testing.T) 
 	if !strings.Contains(msg, "unmanaged") || !strings.Contains(msg, strayPath) {
 		t.Errorf("message = %q, want it to label the unmanaged worktree and name its path", msg)
 	}
+	// The digest's hands-off guarantee is model-facing text a caller acts on, so
+	// it is pinned to the two things remove really delivers: prune never touches
+	// an unmanaged worktree, and remove refuses one only without force (step 5
+	// gates on !force && !hasSidecar). Pinning the claims, not the sentence,
+	// leaves ordinary rewording free but fails if the promise itself changes.
+	if !strings.Contains(msg, "never prunes") {
+		t.Errorf("message = %q, want the never-prunes guarantee", msg)
+	}
+	if !strings.Contains(msg, "never removes without force") {
+		t.Errorf("message = %q, want the removal guarantee stated as force-gated, not absolute", msg)
+	}
 }
 
 // TestWorktreeAdopt_RoundTripMakesItManaged covers brief step 1(b): adopt by
