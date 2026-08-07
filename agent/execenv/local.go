@@ -15,7 +15,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -1661,20 +1660,6 @@ func resolveSymlinksBestEffort(path string) string {
 			return filepath.Clean(filepath.Join(append([]string{r}, suffix...)...))
 		}
 	}
-}
-
-func terminateProcessGroup(pid int) {
-	if pid <= 0 {
-		return
-	}
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
-}
-
-func killProcessGroup(pid int) {
-	if pid <= 0 {
-		return
-	}
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
 }
 
 func filteredEnvWithPolicy(policy EnvVarPolicy, extra map[string]string) []string {
