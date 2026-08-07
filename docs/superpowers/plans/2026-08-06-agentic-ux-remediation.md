@@ -157,15 +157,22 @@ MCP circuit breaker is transport-level reconnect, never application errors.
    Parked calls are recorded as ordinary error tool results (no new turn
    kind); WS9's `--health` counts them.
 7. **Second trigger (decided 2026-08-06, replaces a proposed MCP-only
-   heuristic):** consecutive identical calls returning **byte-identical
-   result bodies** nudge at 2 and park at 3 regardless of error status —
-   repetition itself is the signal, generic at the dispatch layer, no text
-   sniffing, nothing MCP-specific. Motivating case: the chrome MCP plugin
-   reports failures as `isError:false` with an "Error:" body (serf records
-   them faithfully as successes), so an IsError-only ledger missed the
-   300-call set_viewport loop. The plugin bug is filed upstream
-   (obra/superpowers-chrome#44); serf's breaker must not depend on tools
-   signaling errors correctly.
+   heuristic; amended same day — nudge-only):** consecutive identical calls
+   returning **byte-identical result bodies** are nudged from 2 onward,
+   regardless of error status — repetition itself is the signal, generic at
+   the dispatch layer, no text sniffing, nothing MCP-specific. **This
+   trigger never parks** (Jesse, 2026-08-06): implementation showed
+   repetition-parking assumes same-args-means-same-result forever, which is
+   false for every tool observing mutable state — three identical
+   `communicate` turns parked the session's only exit door, and a third
+   `read_file` after an external change was refused though it would have
+   returned new content. Parking stays exclusive to the failure trigger
+   (point 3). Motivating case: the chrome MCP plugin reports failures as
+   `isError:false` with an "Error:" body (serf records them faithfully as
+   successes), so an IsError-only ledger missed the 300-call set_viewport
+   loop; that shape now draws a persistent nudge rather than a park. The
+   plugin bug is filed upstream (obra/superpowers-chrome#44); serf's breaker
+   must not depend on tools signaling errors correctly.
 
 **Tests:** unit tests on the ledger (reset semantics, error-class equality);
 an integration test driving a fake tool that always fails identically and
@@ -173,8 +180,10 @@ asserting the nudge at 2 and the park at 3 with the intervention text; an
 MCP-path test using a stub server returning IsError.
 
 **Acceptance:** no tool call with identical args and identical error class
-executes more than 3 times in a session; the 300-call pattern becomes
-impossible by construction.
+executes more than 3 times in a session; the 300-call `set_viewport` shape
+draws the repetition nudge from call 2 onward (nudge-only per the
+2026-08-06 amendment — the failure trigger still parks genuine identical
+failures).
 
 **Size:** ~400 loc. **Priority: second** — this is the guardrail that
 contains every other tool's future bugs.
