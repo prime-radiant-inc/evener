@@ -174,7 +174,7 @@ func TestStoreIncrementalReloadMatchesFullReread(t *testing.T) {
 			}()
 			requireIncrementalMatchesFullReread(t, s, path, "empty log")
 			next := 0
-			for step := 0; step < 30; step++ {
+			for step := range 30 {
 				switch rng.Intn(4) {
 				case 0:
 					if err := s.Append(incrementalTestEvent(next)); err != nil {

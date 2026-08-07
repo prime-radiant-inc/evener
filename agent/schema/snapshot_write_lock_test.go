@@ -89,14 +89,12 @@ func TestConcurrentSaveSessionMetaUnionsObservedBy(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, writers)
 	for i := range writers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			meta := SessionMeta{ID: worker, ObservedBy: []string{fmt.Sprintf("observer_%02d", i)}}
 			if err := SaveSessionMetaWithFS(fs, dir, meta); err != nil {
 				errs <- err
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -137,13 +135,11 @@ func TestConcurrentAppendSessionObservedByUnionsAll(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, observers)
 	for i := range observers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			if err := appendSessionObservedByWithFS(fs, dir, worker, fmt.Sprintf("observer_%02d", i)); err != nil {
 				errs <- err
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -180,14 +176,12 @@ func TestConcurrentSaveSessionMetaDistinctSessions(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, len(ids))
 	for _, id := range ids {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			meta := SessionMeta{ID: id, Name: "session " + id, ObservedBy: []string{"observer_" + id}}
 			if err := SaveSessionMetaWithFS(fs, dir, meta); err != nil {
 				errs <- err
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
