@@ -240,7 +240,7 @@ see the workstream ledger for shas.
      **do not execute, and do not record**. The repetition counter never parks,
      so it is not consulted here.
   2. **After** the result is computed:
-     `failStreak, repeatStreak := breaker.record(name, call.Arguments, res.IsError, res.Output)`
+     `failStreak, repeatStreak := breaker.record(name, call.Arguments, res.IsError, res.FullOutput)`
      — computed on the body **before** any nudge is appended. Then, if
      `failStreak >= 2`, append the failure nudge; else if `repeatStreak >= 2`,
      append the repetition nudge. Append a blank line then the text to
@@ -263,7 +263,13 @@ The failures so far:
 
 - Bypass: `func WithBreakerBypass(ctx context.Context) context.Context` plus an
   unexported context key in the `tool` package. `rerunToolWithGrant` wraps its
-  ctx with it, because a human just approved that exact retry.
+  ctx with it, because a human just approved that exact retry. A bypassed
+  dispatch does not merely skip judgement — it **clears** the signature's
+  failure streak, class, and snippets. The grant is per-invocation, so without
+  the clear the denials accumulate while the approved successes go unrecorded,
+  and the third identical call is parked with no typed error left for the
+  approval card to key on: the escalation path would manufacture the streak
+  that disables it.
 
 - [x] **Step 1: Failing test (failure path)** — a fake tool that always returns
   the same error. Call 1 plain; call 2 ends with the exact failure nudge; call
