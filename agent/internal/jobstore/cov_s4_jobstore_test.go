@@ -521,8 +521,9 @@ func openFsUnderFault(t *testing.T, content string, s *fault.Schedule) error {
 // TestStoreOpenTrailingRecoveryFaults pins the error arms of the trailing-line
 // recovery a store runs at open when the last line is a COMPLETE event missing
 // its newline: the inspect (stat/open/seek/read/read-whole) probes, the finish
-// (seek/terminate/sync) writes, and the subsequent full read (open/scan) each
-// fault at a known step and surface as a wrapped open error.
+// (seek/terminate/sync) writes, and the subsequent full read (stat/open/scan)
+// each fault at a known step and surface as a wrapped open error. The read's
+// stat is how the tail cursor identifies the file it decoded.
 func TestStoreOpenTrailingRecoveryFaults(t *testing.T) {
 	// event1 terminated; event2 complete but WITHOUT a trailing newline.
 	content := `{"kind":"job_started","seq":1,"job_id":"job_A"}` + "\n" +
@@ -540,8 +541,9 @@ func TestStoreOpenTrailingRecoveryFaults(t *testing.T) {
 		{name: "finish_seek", op: 8, want: "seek after trailing recovery"},
 		{name: "finish_terminate", op: 9, want: "terminate trailing event"},
 		{name: "finish_sync", op: 10, want: "sync trailing recovery"},
-		{name: "readall_open", op: 11, want: "read /jobs.jsonl"},
-		{name: "readall_scan", op: 12, want: "scan /jobs.jsonl"},
+		{name: "readall_stat", op: 11, want: "stat /jobs.jsonl"},
+		{name: "readall_open", op: 12, want: "read /jobs.jsonl"},
+		{name: "readall_scan", op: 13, want: "scan /jobs.jsonl"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := openFsUnderFault(t, content, planFaultAt(tc.op))
@@ -555,8 +557,8 @@ func TestStoreOpenTrailingRecoveryFaults(t *testing.T) {
 // TestStoreLoadReadFaultsPropagate pins the readAllLocked-error propagation arm
 // of every Load* reader: an fs fault while a reader re-reads the log surfaces as
 // a wrapped error rather than a partial or empty fold. Each reader gets a fresh
-// store seeded with one event; a clean open consumes fs ops 0..7, so faulting op
-// 8 trips the reader's first read.
+// store seeded with one event; a clean open consumes fs ops 0..8, so faulting op
+// 9 trips the reader's first read.
 func TestStoreLoadReadFaultsPropagate(t *testing.T) {
 	const seeded = `{"kind":"job_started","seq":1,"job_id":"job_A"}` + "\n"
 	newReaderStore := func(t *testing.T) *Store {
@@ -565,7 +567,7 @@ func TestStoreLoadReadFaultsPropagate(t *testing.T) {
 		if err := afero.WriteFile(base, "/jobs.jsonl", []byte(seeded), 0o644); err != nil {
 			t.Fatalf("seed store: %v", err)
 		}
-		st, err := openFs(fault.FS(base, planFaultAt(8)), "/jobs.jsonl")
+		st, err := openFs(fault.FS(base, planFaultAt(9)), "/jobs.jsonl")
 		if err != nil {
 			t.Fatalf("openFs: %v", err)
 		}
