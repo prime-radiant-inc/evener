@@ -240,6 +240,11 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 	case agent != nil && len(agent.Tools) > 0:
 		allowed = append([]string(nil), agent.Tools...)
 		allowed = appendUniqueStrings(allowed, "task_list")
+		// compact_context is context hygiene, not a capability an agent type
+		// opts into: a child that cannot compact can only wait for the
+		// automatic compaction to run unsteered. The untyped surface already
+		// keeps it (deny-list path), so listing tools: must not take it away.
+		allowed = appendUniqueStrings(allowed, "compact_context")
 		return false, allowed, nil
 	default:
 		if canDelegate {
