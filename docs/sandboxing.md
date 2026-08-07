@@ -89,7 +89,7 @@ sockets beyond stdio.
 | `off` (default) | anywhere | working root only (today's behavior) | anywhere | anywhere |
 | `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only |
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
-| `restricted` | worktree only | worktree + temp | worktree + system read roots + temp | worktree + temp + git metadata (not config/hooks) |
+| `restricted` | worktree only | worktree + temp | worktree + system read roots + developer toolchain + hook/MCP paths + temp | worktree + temp + git metadata (not config/hooks) |
 
 - **`off`** is exactly today's behavior — a strict superset of every sandboxed
   mode, with no new code path engaged.
@@ -116,6 +116,15 @@ sockets beyond stdio.
   contributes nothing; a session never fails to start over one. The grant reaches
   the spawned layer only — the model's file tools cannot browse the toolchain —
   it adds nothing to any write surface, and the denylist still wins over it.
+
+  The probed directories are treated as untrusted input, because `xcode-select -p`
+  honours `$DEVELOPER_DIR`: each candidate passes through the **same shared-tree
+  guard** the hook/MCP grant uses (["Never a shared, multi-tenant
+  tree"](#hooks-and-mcp-under-a-sandbox)), so a directory at or above your home,
+  the session's worktree, or a temp root — or fewer than two components deep — is
+  refused. That is why a `$DEVELOPER_DIR` pointing at `/Users` cannot gut
+  `restricted` mode: the denylist alone could not stop it, since it drops roots at
+  or *beneath* a masked path and such a root sits above them.
 
   This grant is **necessary but not sufficient**: on a host with a `~/.gitconfig`,
   `git` still fails under `restricted` with
@@ -189,7 +198,9 @@ additions are removable.
 
 In the writable modes, git's object store works normally — objects, refs, the
 index, logs, and packed-refs are writable, so `commit`, `add`, and `checkout`
-succeed. On macOS/Seatbelt the packed-refs grant also covers the two fixed sibling
+succeed — with one known exception in a linked worktree under
+`rerere.enabled=true`, recorded under [Known residuals](#known-residuals). On
+macOS/Seatbelt the packed-refs grant also covers the two fixed sibling
 names git rewrites it through (`packed-refs.lock` and `packed-refs.new`, renamed
 into place), so `git pack-refs` and the ref packing a commit triggers work too.
 But every git **config and hook** surface is read-only:
@@ -369,7 +380,7 @@ raw stderr never becomes the model's opening context.
 
 ## Known residuals
 
-Three boundary edges are deliberately documented as open rather than claimed closed:
+Four boundary edges are deliberately documented as open rather than claimed closed:
 
 - **A pre-existing hardlink** inside the worktree to an out-of-tree secret is
   *readable* through the worktree (path-based masking cannot see that two names share
@@ -393,6 +404,16 @@ Three boundary edges are deliberately documented as open rather than claimed clo
   Seatbelt matches path strings instead of mounting and grants those entries
   exactly. Closing the gap on Linux needs a directory-level decision about the
   common dir, which is open.
+- **`git commit` in a linked worktree fails under `rerere.enabled=true`.** With
+  rerere on — a common setting in a developer's global gitconfig, which the
+  writable modes read — a commit creates `<commonDir>/rr-cache`, and the common
+  dir is granted entry by entry with no `rr-cache` entry among them. This one is
+  **not** Linux-only: unlike the bind-mount residual above, it is an absent
+  *grant* rather than an absent mount, so macOS/Seatbelt fails the same way. (A
+  main checkout is unaffected — its whole `.git` is under the worktree write
+  root.) A session can work around it with `-c rerere.enabled=false`, which is
+  what serf's own live git tests do. Whether the common dir should grant a
+  writable `rr-cache` is undecided, so the defect is unfixed pending that ruling.
 
 ## macOS notes
 

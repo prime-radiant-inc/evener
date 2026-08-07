@@ -390,6 +390,9 @@ Serf reads the command's **stdout**, **stderr**, and **exit code**.
   table](#exit-codes-per-event)). **JSON is ignored on exit 2** — only stderr is
   used.
 - **Other non-zero** → a non-blocking error for the events serf fires.
+- **Any non-zero from `SessionStart`** → summarized into a single user-facing
+  warning; the hook's output never reaches the model (see [Failed `SessionStart`
+  hooks](#failed-sessionstart-hooks)).
 
 > **JSON is parsed only on exit 0.** If your hook exits non-zero, any JSON it
 > printed is discarded; serf uses the exit code and stderr. Print your decision
@@ -435,6 +438,33 @@ The output JSON serf reads (exit 0):
   interactive permission prompt, so the tool proceeds and a user-visible diagnostic
   names the unsupported decision. `updatedInput` revalidation is reserved.
 
+### Failed `SessionStart` hooks
+
+A `SessionStart` hook that exits **non-zero** — exit 2 included — is the one case
+where the failing hook's output never reaches the model. Its stderr (or its stdout
+when stderr is empty) is summarized into **one operator-facing warning line**
+naming the event, the registering plugin and matcher, and the exit code, followed
+by the first non-empty line of that output (truncated to 160 characters):
+
+```
+SessionStart hook my-plugin failed (exit 2): /path/to/hook.sh: permission denied
+```
+
+A hook that never produced an exit code at all (a spawn failure, or a timeout
+kill) reads `SessionStart hook my-plugin failed to run: <error>` instead.
+
+The reasoning: a `SessionStart` hook's output is the session's FIRST steering
+input, and the model can do nothing with a permission denial or a broken script —
+a wall of shell stderr as opening context is worse than no context. Every other
+event keeps the Claude-compatible contract that a non-zero hook's stderr reaches
+the model, which is how a tool-event hook corrects it. This moves serf toward
+Claude's own `SessionStart` rule, which
+[07](subagent-management/07-lifecycle-hooks-claude-compat.md#exit-code-semantics)
+records as "show stderr to user only".
+
+Write `SessionStart` diagnostics you want the MODEL to read on the **exit-0**
+path — plain stdout, or `hookSpecificOutput.additionalContext`.
+
 ### Exit codes per event
 
 Exit 2 blocks for some events and is informational for others. The serf-fired
@@ -448,7 +478,7 @@ subset:
 | `UserPromptSubmit` | **no block yet** — Claude erases the prompt here, but serf does not yet enforce the block; stderr is delivered to the model |
 | `PreCompact` | **no block yet** — Claude blocks compaction here, but serf does not yet enforce the block; stderr is delivered to the model |
 | `PostToolUse` | **no block** (cannot undo the tool) — stderr is delivered to the model as context |
-| `SessionStart` | **no block** — stderr is delivered to the model |
+| `SessionStart` | **no block** — the failure is summarized to the **user**; neither stderr nor stdout reaches the model (see [Failed `SessionStart` hooks](#failed-sessionstart-hooks)) |
 | `SessionEnd` | **no block** — the session is ending, so the stderr is captured but not delivered (no following turn) |
 | `Notification` | **no block** — stderr is delivered to the model |
 
