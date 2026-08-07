@@ -2094,9 +2094,24 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 		// gone for an unrelated reason" (e.g. deleted out of band while a
 		// stale blocker still pointed at it).
 		targetIsCascadeLane := slices.Contains(forceCascadeDlgIDs, name)
+		// Hazard: step 7 above has already swapped s.env and unlocked target by
+		// the time a cascaded dispose can refuse, so a refusal here can leave
+		// the session out of a worktree it never removed. In a RESUMED
+		// coordinator that is reachable without any user error:
+		// armPendingTerminalNotifications re-arms terminal delegate records to
+		// NotifyPending, and delegateRecordQuiescent then refuses a lane the
+		// pre-resume session would have disposed. The fix belongs to the
+		// quiescence gate, not here.
 		for _, dlg := range forceCascadeDlgIDs {
 			if _, err := s.worktreeDispose(ctx, dlg, false, false); err != nil {
-				return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: force disposing retained-idle lane %s: %w", dlg, err)
+				// Name dispose's own force, not remove's: remove's force runs
+				// the sanctioned cascade and never widens a cascaded dispose's
+				// gates, so re-invoking remove force:true would only loop.
+				return WorktreeRemoveResult{}, fmt.Errorf(
+					"manage_worktree remove: cannot first dispose retained-idle lane %s: %w. "+
+						"remove's force runs the sanctioned cascade only and never widens dispose's own gates; "+
+						"run `manage_worktree op=dispose id=%s force=true` yourself if you mean to discard that lane's work",
+					dlg, err, dlg)
 			}
 		}
 		if targetIsCascadeLane {
@@ -2226,19 +2241,6 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	return result, nil
 }
 
-// worktreeListSummary builds the human-readable list message: a count plus a
-// one-line-per-lane digest (name, commits ahead, dirty/clean, merged) so a
-// model that reads only the result message — not the structured entries array —
-// still learns which lanes have work. A live ergonomics run showed a strong
-// model shell out to `git log` per lane when the message was a bare count.
-//
-// A lane whose state could not be read says so. Rendering its zero values would
-// describe it as empty and clean, which is the description a model acts on by
-// discarding it.
-//
-// Unmanaged worktrees found under the managed root are appended as their own
-// labeled clause rather than folded into the count, so a reader never mistakes
-// one for a lane serf will clean up.
 // partitionWorktreeListEntries splits list's entries into the ones serf
 // manages and the ones it merely found sitting under the managed root. The
 // sidecar is the whole test (spec §6 "Metadata sidecar": a worktree without
@@ -2274,8 +2276,10 @@ func worktreeUnmanagedEntryToMap(e WorktreeListEntry) map[string]any {
 }
 
 // worktreeUnmanagedSummary renders the unmanaged section's digest, naming the
-// operation that converts one and stating plainly that serf will not touch
-// them meanwhile — the two facts a reader needs to act.
+// operation that converts one and stating exactly how far serf's hands-off
+// treatment goes meanwhile — the two facts a reader needs to act. The digest
+// promises only what remove step 5 delivers: an unmanaged worktree is never
+// pruned, and never removed unless the caller passes force.
 func worktreeUnmanagedSummary(unmanaged []WorktreeListEntry) string {
 	if len(unmanaged) == 0 {
 		return ""
@@ -2289,10 +2293,23 @@ func worktreeUnmanagedSummary(unmanaged []WorktreeListEntry) string {
 		parts[i] = fmt.Sprintf("%s (%s)", e.Path, branch)
 	}
 	return fmt.Sprintf(
-		" %d unmanaged worktree(s) under the managed root, which serf neither removes nor prunes — use manage_worktree adopt with the path to take one over: %s.",
+		" %d unmanaged worktree(s) under the managed root, which serf never prunes and never removes without force — use manage_worktree adopt with the path to take one over: %s.",
 		len(unmanaged), strings.Join(parts, "; "))
 }
 
+// worktreeListSummary builds the human-readable list message: a count plus a
+// one-line-per-lane digest (name, commits ahead, dirty/clean, merged) so a
+// model that reads only the result message — not the structured entries array —
+// still learns which lanes have work. A live ergonomics run showed a strong
+// model shell out to `git log` per lane when the message was a bare count.
+//
+// A lane whose state could not be read says so. Rendering its zero values would
+// describe it as empty and clean, which is the description a model acts on by
+// discarding it.
+//
+// Unmanaged worktrees found under the managed root are appended as their own
+// labeled clause rather than folded into the count, so a reader never mistakes
+// one for a lane serf will clean up.
 func worktreeListSummary(entries, unmanaged []WorktreeListEntry) string {
 	if len(entries) == 0 {
 		return "0 managed worktree(s)." + worktreeUnmanagedSummary(unmanaged)

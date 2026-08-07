@@ -193,6 +193,15 @@ func TestWorktreeRemove_Force_UnmergedRetainedIdleLaneCascadeRefuses(t *testing.
 	if !strings.Contains(msg, delegateID) {
 		t.Errorf("refusal should name the delegate id %s, got: %v", delegateID, msg)
 	}
+	// The refusal must not send the caller back around remove force:true, which
+	// it already passed: it says remove's force never widens dispose's gates and
+	// names the dispose call that would actually discard the work.
+	if !strings.Contains(msg, "never widens dispose's own gates") {
+		t.Errorf("refusal should say remove's force does not widen dispose's gates, got: %v", msg)
+	}
+	if want := "manage_worktree op=dispose id=" + delegateID + " force=true"; !strings.Contains(msg, want) {
+		t.Errorf("refusal should name %q as the next action, got: %v", want, msg)
+	}
 	if _, statErr := os.Stat(path); statErr != nil {
 		t.Errorf("lane %s removed despite the cascade refusal: %v", path, statErr)
 	}
