@@ -213,10 +213,10 @@ func TestConcurrentSaveSessionMetaDistinctSessions(t *testing.T) {
 func BenchmarkSaveSessionMetaContention(b *testing.B) {
 	dir := b.TempDir()
 	fs := afero.NewOsFs()
-	var next int64
+	var next atomic.Int64
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		id := fmt.Sprintf("02wMz5TxvEMoJEDTDG%04d", atomic.AddInt64(&next, 1))
+		id := fmt.Sprintf("02wMz5TxvEMoJEDTDG%04d", next.Add(1))
 		meta := SessionMeta{ID: id, Name: "bench"}
 		for pb.Next() {
 			if err := SaveSessionMetaWithFS(fs, dir, meta); err != nil {
