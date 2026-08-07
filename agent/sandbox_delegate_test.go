@@ -247,7 +247,7 @@ func TestSandboxHostFactsProbedOncePerSession(t *testing.T) {
 
 	const n = 5
 	for i := range n {
-		rp, reason := s.resolveRestoredDelegateSandbox(desc, lane)
+		rp, reason := s.resolveRestoredDelegateSandbox(desc, execenv.NewLocalExecutionEnvironment(lane))
 		if reason != "" {
 			t.Fatalf("assessment %d: unexpected not-resumable reason %q", i, reason)
 		}
@@ -402,6 +402,34 @@ func TestDelegateRestoreOffUnderSandboxedParentStaysOff(t *testing.T) {
 	}
 }
 
+// TestDelegateRestoreGuardsInfraRootsAgainstItsOwnLane: the infrastructure grant's
+// RootGuard must be anchored on the DELEGATE's lane, not on the parent session's
+// working directory — a root at or above the delegate's own lane hands the spawned
+// child every sibling lane. The spawn path (subagents.go) already passes the
+// re-rooted child env; the restore path must agree, because two paths disagreeing
+// about a security rule is how a hole gets introduced later.
+func TestDelegateRestoreGuardsInfraRootsAgainstItsOwnLane(t *testing.T) {
+	hermeticInfraEnv(t)
+	lane, home := sbxLane(t)
+	laneParent := filepath.Dir(lane) // holds every sibling lane, including this one
+	s := sbxDelegateSessionWithConfig(t, sandbox.FakeProber{Facts: sbxBwrapFacts(home)},
+		func(cfg *SessionConfig) { cfg.PluginDirs = []string{laneParent} })
+
+	snap := sandboxSnapshotFromInputs(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted})
+	desc := &jobstore.DelegateRestoreDescriptor{WorkingDir: lane, LocalEnvPolicy: "default", Sandbox: snap}
+
+	rp, reason := s.resolveRestoredDelegateSandbox(desc, execenv.NewLocalExecutionEnvironment(lane))
+	if reason != "" {
+		t.Fatalf("unexpected not-resumable reason %q", reason)
+	}
+	if rp == nil {
+		t.Fatal("expected a re-resolved policy")
+	}
+	if slices.Contains(rp.Spawned.ReadRoots, laneParent) {
+		t.Errorf("a plugin dir at the delegate lane's parent must be refused by the lane-anchored guard; roots: %v", rp.Spawned.ReadRoots)
+	}
+}
+
 // sbxDelegateSession builds a delegate-capable session whose resumed-delegate
 // sandbox re-resolution uses an injected FakeProber (never the live host).
 func sbxDelegateSession(t *testing.T, facts sandbox.HostFacts) *Session {
@@ -413,9 +441,17 @@ func sbxDelegateSession(t *testing.T, facts sandbox.HostFacts) *Session {
 // so a test can observe how often the host is probed across resume assessments.
 func sbxDelegateSessionWithProber(t *testing.T, prober sandbox.Prober) *Session {
 	t.Helper()
+	return sbxDelegateSessionWithConfig(t, prober, nil)
+}
+
+// sbxDelegateSessionWithConfig is sbxDelegateSessionWithProber with a hook to
+// adjust the session config (e.g. configured plugin dirs, which feed the
+// hook/MCP infrastructure grant).
+func sbxDelegateSessionWithConfig(t *testing.T, prober sandbox.Prober, tweak func(*SessionConfig)) *Session {
+	t.Helper()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	return newSession(t, withClient(c), withConfig(SessionConfig{
+	cfg := SessionConfig{
 		StateDir:         packageFixtureTempDir(t, "sbx-delegate-*"),
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
@@ -425,7 +461,11 @@ func sbxDelegateSessionWithProber(t *testing.T, prober sandbox.Prober) *Session 
 			noSyncJobStore:      true,
 			sandboxProber:       prober,
 		},
-	}))
+	}
+	if tweak != nil {
+		tweak(&cfg)
+	}
+	return newSession(t, withClient(c), withConfig(cfg))
 }
 
 // countingProber records how many times the host is probed, returning fixed facts.

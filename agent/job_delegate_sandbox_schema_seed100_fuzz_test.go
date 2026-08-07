@@ -71,7 +71,7 @@ func FuzzJobDelegateRestoreSandboxFloorSeed100(f *testing.F) {
 			Mode:    sandbox.ModeReadOnly.String(),
 			Network: network,
 		}}
-		resolved, reason := s.resolveRestoredDelegateSandbox(desc, root)
+		resolved, reason := s.resolveRestoredDelegateSandbox(desc, execenv.NewLocalExecutionEnvironment(root))
 		if resolved != nil || reason != notResumableSandboxUnsatisfiable {
 			t.Fatalf("network escalation = (%+v, %q), want nil/%q", resolved, reason, notResumableSandboxUnsatisfiable)
 		}

@@ -123,11 +123,11 @@ func jdExactProfileAndPureHelpers(t *testing.T) {
 	parent.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted, Network: true}
 	s = &Session{env: parent}
 	loose := &jobstore.DelegateRestoreDescriptor{Sandbox: &jobstore.SandboxSnapshot{Mode: sandbox.ModeReadOnly.String()}}
-	if _, reason := s.resolveRestoredDelegateSandbox(loose, root); reason != notResumableSandboxUnsatisfiable {
+	if _, reason := s.resolveRestoredDelegateSandbox(loose, execenv.NewLocalExecutionEnvironment(root)); reason != notResumableSandboxUnsatisfiable {
 		t.Fatalf("loose sandbox reason = %q", reason)
 	}
 	off := &jobstore.DelegateRestoreDescriptor{WorkingDir: root, LocalEnvPolicy: "default"}
-	if rp, reason := s.resolveRestoredDelegateSandbox(off, root); rp != nil || reason != "" {
+	if rp, reason := s.resolveRestoredDelegateSandbox(off, execenv.NewLocalExecutionEnvironment(root)); rp != nil || reason != "" {
 		t.Fatalf("off sandbox = (%v, %q)", rp, reason)
 	}
 	if _, err := s.restoreDelegateChildEnvironment(&jobstore.DelegateRestoreDescriptor{
