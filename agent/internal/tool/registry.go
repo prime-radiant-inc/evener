@@ -560,12 +560,20 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	v, err := t.Exec(ctx, env, args)
 	res := dispatchedResult(name, callID, t.Limit, v, err)
 	if judged {
-		// Recorded on the body the tool produced, before any nudge is
-		// appended, so the nudge cannot poison the body hash. Nudging after
-		// truncation is deliberate: the text must survive the limiter.
-		failStreak, repeatStreak := r.breaker.record(name, call.Arguments, res.IsError, res.Output)
+		// Recorded on the untruncated body, before any nudge is appended, so
+		// the nudge cannot poison the body hash. FullOutput rather than
+		// Output: a TruncTail tool renders every over-limit error behind the
+		// same truncation banner, and classing on that banner would read two
+		// unrelated failures as one and park a call that never repeated
+		// itself. Nudging after truncation is deliberate: the text must
+		// survive the limiter.
+		judgedBody := res.FullOutput
+		if judgedBody == "" {
+			judgedBody = res.Output
+		}
+		failStreak, repeatStreak := r.breaker.record(name, call.Arguments, res.IsError, judgedBody)
 		switch {
-		case failStreak == breakerThreshold:
+		case failStreak >= breakerThreshold:
 			appendIntervention(&res, failureNudgeText)
 		case repeatStreak >= breakerThreshold:
 			// Repeats on every subsequent identical result: nothing else

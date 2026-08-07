@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -324,5 +325,41 @@ func TestBreakerDispatch_BypassExecutesAParkedCall(t *testing.T) {
 	}
 	if strings.Contains(res.Output, "serf did not execute this call:") {
 		t.Errorf("bypassed call was parked: %q", res.Output)
+	}
+}
+
+// A TruncTail tool whose error bodies both overflow the limit renders each one
+// behind the same truncation banner. Classing on the truncated body would read
+// that banner as the whole error, collapse two genuinely different failures
+// into one class, and park a call that never failed the same way twice.
+func TestBreakerDispatch_DifferentLargeErrorsUnderTruncationDoNotPark(t *testing.T) {
+	r := NewRegistry()
+	calls := 0
+	err := r.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{
+			Name:        "verbose",
+			Description: "breaker test fake",
+			Parameters:  map[string]any{"type": "object"},
+		}},
+		Limit: schema.ToolOutputLimit{MaxChars: 80, Strategy: schema.TruncTail},
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			calls++
+			// Distinct failures, each far larger than the limit. Only the
+			// shared truncation banner survives truncation.
+			return nil, fmt.Errorf("failure kind %s: %s", []string{"alpha", "beta", "gamma"}[calls-1], strings.Repeat("z", 400))
+		},
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	env := breakerEnv(t)
+	ctx := context.Background()
+	call := breakerCall("c1", "verbose", `{"target":"a"}`)
+
+	for i := 1; i <= 3; i++ {
+		res := r.ExecuteCall(ctx, env, call)
+		if strings.HasPrefix(res.Output, "serf did not execute this call:") {
+			t.Fatalf("call %d was parked on a truncation-banner class: %q", i, res.Output)
+		}
 	}
 }
