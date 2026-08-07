@@ -20,6 +20,14 @@ agents had never run — one a real bug.
 A test whose mutation was never executed is a test nobody has shown can
 fail. Ask for that column and read it.
 
+A third reason, learned on a loaded host: a subagent that launches a
+long gate and dies ending its turn while waiting **orphans the gate
+processes**, which keep running with no owner — that pattern once drove
+load to 109 on its own. Gates belong to the controller (foreground, or a
+background task the controller owns), never to a subagent's dying turn.
+Judge a flaky gate stream by isolated re-runs with exit codes, not by
+reading its scrollback.
+
 ## Verify what an agent reports
 
 Agents are usually right and occasionally confidently wrong. The
@@ -221,6 +229,19 @@ kernel-assigned port. Derive scratch paths from `mktemp -d`, never from a
 wave-wide prefix; two agents deriving from a shared prefix overwrote each
 other's binaries.
 
+**`main` is a moving target while any fleet is live, and history
+rewrites race it.** Fleet orchestrators merge worktree branches into
+main and push to origin on their own schedule. A rebase or reset of main
+mid-fleet loses that race in the worst way: a concurrent merge
+re-attaches the pre-rewrite lineage as its second parent, and a push
+lands both histories on origin permanently (this happened — trees
+identical, every pre-rebase commit duplicated). Before any
+rebase/reset/force-push of main, check for live sessions (`ps aux | grep
+git`, activity in `.worktrees/` and `.claude/worktrees/`) and get the
+fleet paused first. Related: the remote `snapshot` tag moves, so a plain
+`git fetch` can fail on tag clobber — fetch the branch explicitly or
+force-update tags.
+
 ## Worktrees
 
 Create them from the **local** branch under test. `isolation: "worktree"`
@@ -300,6 +321,11 @@ Use the cheapest model that does the job. Decompose for tier: many small
 sessions beat one large one for mechanical work. Runners are mid-tier,
 gates can be small, coordinators and reviewers want the strong model.
 Never put an inherited frontier model on procedural work.
+
+One standing exception (Jesse, 2026-07-30): **implementers run opus**,
+even for small scoped katas — every implementer dispatch (fresh katas,
+fix-loop rounds, SDD tasks) gets the strong model at medium effort where
+an effort knob exists. Reviewers and gates keep the tiering above.
 
 Note that a restricted tool list may be a prerequisite: an agent
 inheriting a large tool surface can exceed a small model's context before
