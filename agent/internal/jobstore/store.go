@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/afero"
 )
@@ -32,6 +33,46 @@ type Store struct {
 	// Open, which leaves this false, so the durable write path is unchanged. The
 	// on-disk bytes are identical either way.
 	disableSync bool
+
+	// The tail cursor: decoded events for the file's leading bytes, so a reload
+	// re-reads and re-decodes only what was appended since the last one. The file
+	// on disk stays the sole truth for what is durable; the cursor is a cache of
+	// bytes already read, and it is trusted only while the file is byte-for-byte
+	// the one the store itself last left behind. See cursorTrustedLocked.
+	cursor fileCursor
+}
+
+// fileCursor caches the events decoded from the log's leading bytes.
+//
+// COHERENCE. valid means: events are exactly the decode of the file's bytes
+// [0, offset), offset lands just past a newline, and the file was size bytes
+// long with modification time mod when the store last looked. Every load stats
+// the file and keeps the cursor only when size and mod still match, so anything
+// the store did not do itself — a rewrite by another process, a test replacing
+// the log, a delegate log truncated by hand — forces a full reread of the file
+// as it now is, and the store's own appends carry the new size and mod forward.
+// A load never trusts bytes it has not accounted for.
+//
+// The residual: a foreign writer that rewrote the log to the SAME length within
+// the same filesystem timestamp tick as the store's own last write is
+// indistinguishable from no write at all. The log is append-only by contract and
+// the owning store is its only sanctioned writer, so this is a bound on how far
+// out-of-contract writes are tolerated, not a durability property.
+//
+// CRASH SAFETY. The cursor is process memory only, never persisted, and no
+// durable byte depends on it: appends still write and fsync exactly as before,
+// and a crash simply loses it. A fresh process reads the file from byte zero. A
+// torn trailing line is handled ahead of the cursor by
+// recoverTrailingPartialLineLocked, and any repair it performs (terminating or
+// truncating the tail) invalidates the cursor; an unterminated tail is never
+// committed to it, since offset only ever advances past a newline.
+type fileCursor struct {
+	events []Event
+	offset int64
+	lines  int
+	size   int64
+	mod    time.Time
+	valid  bool
 }
 
 // Open opens (creating if needed) the jobs.jsonl at path and recovers the next
@@ -91,6 +132,7 @@ func (s *Store) Append(e Event) error {
 	if err := s.ensureOpenLocked(); err != nil {
 		return err
 	}
+	s.verifyCursorBeforeAppendLocked()
 	nextSeq := s.seq + 1
 	e.Seq = nextSeq
 	b, err := json.Marshal(e)
@@ -108,6 +150,7 @@ func (s *Store) Append(e Event) error {
 		return s.appendFailureLocked("sync event", err, startOffset)
 	}
 	s.seq = nextSeq
+	s.noteAppendedLocked(startOffset)
 	return nil
 }
 
@@ -124,6 +167,7 @@ func (s *Store) AppendBatch(events []Event) error {
 	if err := s.ensureOpenLocked(); err != nil {
 		return err
 	}
+	s.verifyCursorBeforeAppendLocked()
 	startOffset, err := s.f.Seek(0, io.SeekEnd)
 	if err != nil {
 		return fmt.Errorf("jobstore: seek append start: %w", err)
@@ -144,6 +188,7 @@ func (s *Store) AppendBatch(events []Event) error {
 		return s.appendFailureLocked("sync event", err, startOffset)
 	}
 	s.seq = nextSeq
+	s.noteAppendedLocked(startOffset)
 	return nil
 }
 
@@ -241,9 +286,113 @@ func (s *Store) readAll() ([]Event, error) {
 	return s.readAllLocked()
 }
 
-func (s *Store) readAllLocked() (events []Event, err error) {
+// readAllLocked returns every durable event in the log. It reads and decodes
+// only the bytes appended since the previous call, replaying the rest from the
+// tail cursor; the result is what a full reread of the file would produce.
+func (s *Store) readAllLocked() ([]Event, error) {
 	if err := s.recoverTrailingPartialLineLocked(); err != nil {
 		return nil, err
+	}
+	info, err := s.fs.Stat(s.path)
+	if err != nil {
+		s.resetCursorLocked()
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("jobstore: stat %s: %w", s.path, err)
+	}
+	if !s.cursorTrustedLocked(info) {
+		s.resetCursorLocked()
+	}
+	// An unterminated trailing line survived recovery, which means it is durable
+	// corruption or a value recovery chose not to touch; it is reported by the
+	// decode below but never committed to the cursor.
+	tail, err := s.advanceCursorLocked(info.Size())
+	if err != nil {
+		s.resetCursorLocked()
+		return nil, err
+	}
+	s.cursor.size = info.Size()
+	s.cursor.mod = info.ModTime()
+	s.cursor.valid = true
+	if len(s.cursor.events) == 0 && len(tail) == 0 {
+		return nil, nil
+	}
+	events := make([]Event, 0, len(s.cursor.events)+len(tail))
+	for _, e := range s.cursor.events {
+		events = append(events, cloneEvent(e))
+	}
+	for _, e := range tail {
+		events = append(events, cloneEvent(e))
+	}
+	return events, nil
+}
+
+// cursorTrustedLocked reports whether the file is still the one the cursor was
+// built from: same length, same modification time. Anything else — including a
+// foreign append, which is cheap enough to reread whole — is not accounted for,
+// so the cursor is dropped rather than extended over unverified bytes.
+func (s *Store) cursorTrustedLocked(info os.FileInfo) bool {
+	return s.cursor.valid && info.Size() == s.cursor.size && info.ModTime().Equal(s.cursor.mod)
+}
+
+func (s *Store) resetCursorLocked() {
+	s.cursor = fileCursor{}
+}
+
+// invalidateCursorLocked drops the cursor after the store itself changed the
+// file in a way that is not a plain append (a rollback truncation, a
+// trailing-line repair), so the next load re-reads the file from byte zero.
+func (s *Store) invalidateCursorLocked() {
+	s.cursor.valid = false
+}
+
+// verifyCursorBeforeAppendLocked drops the cursor unless the file is still the
+// one it was built from. It runs BEFORE the store appends, because an append
+// moves the file's identity forward: without this check a foreign rewrite that
+// happened since the last load would be laundered into the cursor's own history
+// and the stale prefix trusted forever. Agent tests rewrite a delegate's log in
+// place and then append to it, so this is a live path, not a hypothetical.
+func (s *Store) verifyCursorBeforeAppendLocked() {
+	if !s.cursor.valid {
+		return
+	}
+	info, err := s.fs.Stat(s.path)
+	if err != nil || !s.cursorTrustedLocked(info) {
+		s.cursor.valid = false
+	}
+}
+
+// noteAppendedLocked carries the cursor's file identity across the store's own
+// append: the cached prefix is still exactly the file's leading bytes, only the
+// length and modification time moved. Bookkeeping failures leave the cursor
+// invalid and are NOT reported as append failures — the bytes are already
+// durable, and a stale cursor costs a reread, never a wrong answer.
+func (s *Store) noteAppendedLocked(startOffset int64) {
+	if !s.cursor.valid {
+		return
+	}
+	if startOffset != s.cursor.size {
+		// The file grew or shrank behind the store's back before this append.
+		s.cursor.valid = false
+		return
+	}
+	info, err := s.fs.Stat(s.path)
+	if err != nil {
+		s.cursor.valid = false
+		return
+	}
+	s.cursor.size = info.Size()
+	s.cursor.mod = info.ModTime()
+}
+
+// advanceCursorLocked decodes the log from the cursor's offset to size,
+// committing every newline-terminated line to the cursor. An unterminated final
+// line is decoded and returned separately: it is not durable bytes the cursor
+// may keep, but it must be reported exactly as a full reread reports it.
+func (s *Store) advanceCursorLocked(size int64) (tail []Event, err error) {
+	if size <= s.cursor.offset {
+		return nil, nil
 	}
 	f, err := s.fs.Open(s.path)
 	if err != nil {
@@ -257,25 +406,68 @@ func (s *Store) readAllLocked() (events []Event, err error) {
 			err = fmt.Errorf("jobstore: close %s: %w", s.path, closeErr)
 		}
 	}()
+	if s.cursor.offset > 0 {
+		if _, err := f.Seek(s.cursor.offset, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("jobstore: seek %s: %w", s.path, err)
+		}
+	}
 	sc := bufio.NewScanner(f)
+	sc.Split(scanLinesKeepingTerminator)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	lineNo := 0
 	for sc.Scan() {
-		lineNo++
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
+		raw := sc.Bytes()
+		terminated := raw[len(raw)-1] == '\n'
+		line := trimLineTerminator(raw)
+		lineNo := s.cursor.lines + 1
 		var e Event
-		if err := json.Unmarshal(line, &e); err != nil {
-			return nil, fmt.Errorf("jobstore: parse event line %d: %w", lineNo, err)
+		decoded := false
+		if len(line) > 0 {
+			if err := json.Unmarshal(line, &e); err != nil {
+				return nil, fmt.Errorf("jobstore: parse event line %d: %w", lineNo, err)
+			}
+			decoded = true
 		}
-		events = append(events, e)
+		if !terminated {
+			if decoded {
+				tail = append(tail, e)
+			}
+			break
+		}
+		s.cursor.lines = lineNo
+		s.cursor.offset += int64(len(raw))
+		if decoded {
+			s.cursor.events = append(s.cursor.events, e)
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("jobstore: scan %s: %w", s.path, err)
 	}
-	return events, nil
+	return tail, nil
+}
+
+// scanLinesKeepingTerminator is bufio.ScanLines with the newline left on the
+// token, so the cursor can account the exact byte length of every line it
+// consumes. trimLineTerminator reproduces ScanLines' own trimming, including its
+// carriage-return handling, so the bytes handed to the decoder are unchanged.
+func scanLinesKeepingTerminator(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, data[:i+1], nil
+	}
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
+func trimLineTerminator(raw []byte) []byte {
+	line := bytes.TrimSuffix(raw, []byte{'\n'})
+	if len(line) > 0 && line[len(line)-1] == '\r' {
+		line = line[:len(line)-1]
+	}
+	return line
 }
 
 func (s *Store) recoverTrailingPartialLineLocked() (err error) {
@@ -328,6 +520,8 @@ func (s *Store) recoverTrailingJSONLineLocked(line []byte, offset int64) error {
 	if !isIncompleteTrailingJSON(line, err) {
 		return nil
 	}
+	// Repairing the tail changes the file under the cursor: re-read from zero.
+	s.invalidateCursorLocked()
 	if err := s.f.Truncate(offset); err != nil {
 		return fmt.Errorf("jobstore: truncate trailing partial line: %w", err)
 	}
@@ -341,6 +535,8 @@ func (s *Store) recoverTrailingJSONLineLocked(line []byte, offset int64) error {
 }
 
 func (s *Store) finishTrailingJSONLineLocked() error {
+	// Terminating the tail changes the file under the cursor: re-read from zero.
+	s.invalidateCursorLocked()
 	if _, err := s.f.Seek(0, io.SeekEnd); err != nil {
 		return fmt.Errorf("jobstore: seek after trailing recovery: %w", err)
 	}
@@ -420,6 +616,9 @@ func (s *Store) appendFailureLocked(operation string, err error, startOffset int
 }
 
 func (s *Store) rollbackAppendLocked(startOffset int64) error {
+	// The file's length and modification time both moved in ways the cursor did
+	// not record; the next load re-reads from byte zero.
+	s.invalidateCursorLocked()
 	truncateErr := s.f.Truncate(startOffset)
 	_, seekErr := s.f.Seek(0, io.SeekEnd)
 	syncErr := error(nil)
@@ -452,5 +651,7 @@ func (s *Store) Close() error {
 		return fmt.Errorf("jobstore: close %s: %w", s.path, err)
 	}
 	s.closed = true
+	// Release the cached events; a closed store can no longer be loaded.
+	s.resetCursorLocked()
 	return nil
 }
