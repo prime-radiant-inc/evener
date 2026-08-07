@@ -2,6 +2,7 @@ package provenance
 
 import (
 	"bytes"
+	"slices"
 	"testing"
 )
 
@@ -206,9 +207,9 @@ func assertLatestDeliveryID(t *testing.T, p *Causal) {
 	t.Helper()
 	want := ""
 	if p != nil {
-		for i := len(p.Chain) - 1; i >= 0; i-- {
-			if p.Chain[i].DeliveryID != "" {
-				want = p.Chain[i].DeliveryID
+		for _, e := range slices.Backward(p.Chain) {
+			if e.DeliveryID != "" {
+				want = e.DeliveryID
 				break
 			}
 		}

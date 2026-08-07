@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -164,7 +165,7 @@ func responsesContinuationHistoryBaseStillCurrent(reservation responsesContinuat
 }
 
 func latestContextBoundaryIndex(history []schema.Turn) int {
-	for i := len(history) - 1; i >= 0; i-- {
+	for i := range slices.Backward(history) {
 		switch history[i].Kind {
 		case schema.TurnCheckpoint, schema.TurnSummary:
 			return i

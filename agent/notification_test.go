@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -540,8 +541,8 @@ func (a *sustainedNotificationAdapter) Stream(ctx context.Context, req llm.Reque
 // notification turn. acceptNotificationInput appends that reminder as the final
 // steering turn before the request, so it is the most recent message text.
 func lastMessageIsNotification(req llm.Request) bool {
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if t := req.Messages[i].Text(); strings.TrimSpace(t) != "" {
+	for _, m := range slices.Backward(req.Messages) {
+		if t := m.Text(); strings.TrimSpace(t) != "" {
 			return strings.Contains(t, "<job-notification")
 		}
 	}
@@ -553,8 +554,8 @@ func lastMessageIsNotification(req llm.Request) bool {
 // driving a turn is appended as the final steering message, so this isolates it from
 // the historical turns that precede it.
 func lastTextMessage(req llm.Request) string {
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if t := req.Messages[i].Text(); strings.TrimSpace(t) != "" {
+	for _, m := range slices.Backward(req.Messages) {
+		if t := m.Text(); strings.TrimSpace(t) != "" {
 			return t
 		}
 	}
