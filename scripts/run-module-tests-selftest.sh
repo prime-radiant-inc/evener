@@ -455,12 +455,12 @@ ready_fifo="$state/root-list.ready"
 mkfifo "$ready_fifo"
 (
 	exec 8>"$ready_fifo"
-	exec sleep 20
+	exec sleep 6
 ) &
 ready_keeper_pid="$!"
 exec 9<"$ready_fifo"
-run_tests_async "." "$out" FAKE_LIST_HOLD=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=5 FAKE_READY_FIFO="$ready_fifo"
-start_fixture_watchdog "$runner_pid" 10 "$state/root-list.watchdog" "$ready_fifo" startup-watchdog
+run_tests_async "." "$out" FAKE_LIST_HOLD=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=1 FAKE_READY_FIFO="$ready_fifo"
+start_fixture_watchdog "$runner_pid" 5 "$state/root-list.watchdog" "$ready_fifo" startup-watchdog
 startup_watchdog_pid="$fixture_watchdog_pid"
 ready_signal=""
 startup_ready=0
@@ -474,7 +474,7 @@ if [ "$startup_ready" -eq 1 ]; then
 	exec 9<&-
 	kill "$ready_keeper_pid" 2>/dev/null || :
 	wait "$ready_keeper_pid" 2>/dev/null || :
-	start_fixture_watchdog "$runner_pid" 8 "$state/root-list.watchdog" "" ""
+	start_fixture_watchdog "$runner_pid" 5 "$state/root-list.watchdog" "" ""
 	watchdog_pid="$fixture_watchdog_pid"
 	if wait "$runner_pid"; then rc=0; else rc=$?; fi
 	stop_fixture_watchdog "$watchdog_pid"
