@@ -10,9 +10,10 @@ import (
 	"unicode"
 )
 
-// maxFailureLedgerEntries bounds the ledger's memory. Raised from 256: a
-// success no longer deletes its entry (the body hash must survive), so
-// successful signatures now accumulate too.
+// maxFailureLedgerEntries bounds the ledger's memory. It has room for
+// successful signatures too, not just failing ones: a success keeps its entry
+// (the body hash must survive to catch repetition), so every distinct
+// signature a session dispatches accumulates.
 const maxFailureLedgerEntries = 512
 
 // maxFailureSnippets caps how many failure outputs are retained per
@@ -185,6 +186,31 @@ func (l *failureLedger) record(name string, args []byte, isErr bool, output stri
 	}
 	e.snippets = append(e.snippets, snippet)
 	return e.count, e.bodyCount
+}
+
+// clearFailures retires a signature's failure evidence: the streak, its error
+// class, and the retained snippets. A human who authorizes a dispatch has
+// judged the refusals that preceded it, so they may no longer park a later
+// identical call; if the authorized call fails again, the next ordinary one
+// records a fresh streak of 1.
+//
+// The body-hash streak is deliberately left alone. Repetition only ever nudges,
+// and approving a call says nothing about whether its output changed.
+func (l *failureLedger) clearFailures(name string, args []byte) {
+	if l == nil { // a zero-value Registry has no ledger and judges nothing
+		return
+	}
+	key := signature(name, args)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	e, ok := l.entries[key]
+	if !ok {
+		return // nothing recorded, so nothing to retire — and no entry to evict for
+	}
+	e.class = ""
+	e.count = 0
+	e.snippets = nil
+	l.touch(key)
 }
 
 // touch moves key to the most-recently-used end of the order and evicts the
