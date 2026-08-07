@@ -5,9 +5,7 @@
 set -uo pipefail
 
 script="$(cd "$(dirname "$0")" && pwd)/report-orphaned-worktrees.sh"
-checks=0 fails=0
-ok() { checks=$((checks + 1)); printf '  ok: %s\n' "$1"; }
-bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL: %s\n' "$1"; }
+. "$(dirname "$0")/selftest-lib.sh"
 
 work="$(mktemp -d -t report-orphaned-worktrees-selftest.XXXXXX)"
 # Resolve symlinks now (macOS's /var/folders is a symlink to /private/var/folders):
@@ -97,6 +95,4 @@ fi
 
 (cd "$repo" && git worktree remove -f ".claude/worktrees/healthy" 2>/dev/null)
 
-echo
-echo "$checks checks, $fails failed"
-[ "$fails" -eq 0 ]
+selftest_summary
