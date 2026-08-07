@@ -138,10 +138,10 @@ additions are removable.
 
 In the writable modes, git's object store works normally — objects, refs, the
 index, logs, and packed-refs are writable, so `commit`, `add`, and `checkout`
-succeed. The packed-refs grant covers the two fixed sibling names git rewrites it
-through (`packed-refs.lock` and `packed-refs.new`, renamed into place), so
-`git pack-refs` and the ref packing a commit triggers work too. But every git
-**config and hook** surface is read-only:
+succeed. On macOS/Seatbelt the packed-refs grant also covers the two fixed sibling
+names git rewrites it through (`packed-refs.lock` and `packed-refs.new`, renamed
+into place), so `git pack-refs` and the ref packing a commit triggers work too.
+But every git **config and hook** surface is read-only:
 
 - `.git/config`, per-worktree config (`config.worktree`), submodule configs
   (`.git/modules/*/config`), and `.git/hooks`.
@@ -299,7 +299,7 @@ model's opening context.
 
 ## Known residuals
 
-Two boundary edges are deliberately documented as open rather than claimed closed:
+Three boundary edges are deliberately documented as open rather than claimed closed:
 
 - **A pre-existing hardlink** inside the worktree to an out-of-tree secret is
   *readable* through the worktree (path-based masking cannot see that two names share
@@ -310,6 +310,19 @@ Two boundary edges are deliberately documented as open rather than claimed close
   An exotic or custom daemon socket under `/run` that is not on the list could still
   be reached; a broader `/run` mask is deferred because it would also hide
   legitimate runtime state and break DNS/daemons.
+- **On Linux/bubblewrap, a linked worktree's common `.git` grants only the
+  metadata entries that already exist.** That common dir sits outside the worktree
+  and is granted entry by entry, and bubblewrap grants by bind-mounting, which
+  requires the target to exist. Any granted entry absent when the sandbox starts —
+  `packed-refs` and its `packed-refs.lock` / `packed-refs.new` siblings, `logs`,
+  `index` — is therefore skipped, and git cannot create it. (A main checkout is
+  unaffected: its whole `.git` sits under the worktree write root, as does a linked
+  worktree's own per-worktree git dir.) This is structural, not an oversight:
+  permission to *create* a name belongs to the parent directory, so no mount can
+  express "may create exactly this filename in a read-only directory". macOS/
+  Seatbelt matches path strings instead of mounting and grants those entries
+  exactly. Closing the gap on Linux needs a directory-level decision about the
+  common dir, which is open.
 
 ## macOS notes
 

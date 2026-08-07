@@ -258,6 +258,12 @@ func TestSeatbeltLiveGitConfigAndHooksStillDenied(t *testing.T) {
 		t.Run(kind.String(), func(t *testing.T) {
 			rp, cwd := liveResolveKind(t, kind, ModeWorkspaceWrite, true)
 
+			// An empty protected set would let every assertion below vacuously pass,
+			// so a denial test must first prove it has something to deny.
+			if len(rp.Git.ProtectedPaths) == 0 {
+				t.Fatalf("%v: no protected git surfaces resolved — the denial assertions would pass vacuously", kind)
+			}
+
 			// Every protected surface the resolver claims to protect, proven denied
 			// against the real kernel — config files by an append, the hooks dir by
 			// planting a hook inside it.
