@@ -17,7 +17,54 @@ import (
 
 var marshalSessionMeta = json.Marshal
 
-var sessionMetaWriteMu sync.Mutex
+// sessionMetaFS is the filesystem session-meta persistence uses when a caller
+// does not supply one. afero.OsFs delegates straight to os, so the exported
+// non-FS entry points behave exactly as direct os calls; tests and fuzzers pass
+// their own afero.Fs to the WithFS variants instead of swapping this out, which
+// keeps them safe to run in parallel.
+var sessionMetaFS = afero.NewOsFs()
+
+// sessionMetaWriteStripes is the number of locks session-meta writes are spread
+// across. A fixed array rather than a per-session-ID map so a long-running
+// daemon's lock table cannot grow with the number of sessions it has ever
+// written; two session IDs that happen to share a stripe merely serialize.
+const sessionMetaWriteStripes = 256
+
+var sessionMetaWriteMus [sessionMetaWriteStripes]sync.Mutex
+
+// sessionMetaWriteLock returns the lock guarding meta writes for one session.
+//
+// A session-meta write is a read-modify-write of that session's persisted
+// ObservedBy set (load, union, store) followed by a non-atomic temp-file write
+// and rename — and every path involved, target and temp alike, is derived from
+// the session ID. So the exclusion the lock owes is per session: two writers for
+// one ID would otherwise lose an observer to a stale read, or have one's rename
+// fail on a temp file the other already renamed away. Writers for different IDs
+// touch disjoint files and share only the sessions directory, whose MkdirAll is
+// safe to race.
+//
+// The shard key is the session ID, deliberately not the resolved target path:
+// two callers can spell the same state directory differently and must still
+// land on the same lock. The ID is canonicalized first, because a lock may only
+// ever be coarser than the file it guards and two unequal IDs can still name
+// one file — a traversal segment collapses when the path is joined, and a
+// case-insensitive filesystem folds case. Nothing validates meta.ID on the way
+// in, so this side does not assume it is well-formed.
+func sessionMetaWriteLock(sessionID string) *sync.Mutex {
+	key := strings.ToLower(filepath.Clean(sessionID))
+	// FNV-1a, inlined rather than via hash/fnv's interface-returning
+	// constructor, which would escape to the heap on every write.
+	const (
+		fnvOffset32 = 2166136261
+		fnvPrime32  = 16777619
+	)
+	hash := uint32(fnvOffset32)
+	for i := 0; i < len(key); i++ {
+		hash ^= uint32(key[i])
+		hash *= fnvPrime32
+	}
+	return &sessionMetaWriteMus[hash%sessionMetaWriteStripes]
+}
 
 // SessionMeta holds session metadata without the full conversation history.
 // The history is always recovered from the transcript JSONL file.
@@ -178,26 +225,31 @@ const sessionsSubdir = "sessions"
 // SaveSessionMeta writes a SessionMeta to <dir>/sessions/<id>.meta.json using
 // atomic rename and compact JSON (no indentation).
 func SaveSessionMeta(dir string, meta SessionMeta) error {
-	return SaveSessionMetaWithFS(afero.NewOsFs(), dir, meta)
+	return SaveSessionMetaWithFS(sessionMetaFS, dir, meta)
 }
 
 // SaveSessionMetaWithFS writes a SessionMeta through fs using the same atomic
-// temp-file and rename sequence as SaveSessionMeta.
+// temp-file and rename sequence as SaveSessionMeta: mkdir plus a temp write and
+// rename, all through the injected filesystem. Tests and fuzzers inject an
+// in-memory or sandboxed filesystem to exercise persistence without touching
+// real disk.
 func SaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
-	sessionMetaWriteMu.Lock()
-	defer sessionMetaWriteMu.Unlock()
+	lock := sessionMetaWriteLock(meta.ID)
+	lock.Lock()
+	defer lock.Unlock()
 	return saveSessionMetaLocked(fs, dir, meta)
 }
 
 // AppendSessionObservedBy records a deduplicated observer UI relationship
 // without changing other persisted session metadata.
 func AppendSessionObservedBy(dir, workerSessionID, observerSessionID string) error {
-	return appendSessionObservedByWithFS(afero.NewOsFs(), dir, workerSessionID, observerSessionID)
+	return appendSessionObservedByWithFS(sessionMetaFS, dir, workerSessionID, observerSessionID)
 }
 
 func appendSessionObservedByWithFS(fs afero.Fs, dir, workerSessionID, observerSessionID string) error {
-	sessionMetaWriteMu.Lock()
-	defer sessionMetaWriteMu.Unlock()
+	lock := sessionMetaWriteLock(workerSessionID)
+	lock.Lock()
+	defer lock.Unlock()
 	meta, err := loadSessionMetaFS(fs, dir, workerSessionID)
 	if err != nil {
 		return err
@@ -208,7 +260,7 @@ func appendSessionObservedByWithFS(fs afero.Fs, dir, workerSessionID, observerSe
 
 // LoadSessionMeta reads a SessionMeta from <dir>/sessions/<id>.meta.json.
 func LoadSessionMeta(dir, id string) (SessionMeta, error) {
-	return LoadSessionMetaWithFS(afero.NewOsFs(), dir, id)
+	return LoadSessionMetaWithFS(sessionMetaFS, dir, id)
 }
 
 // LoadSessionMetaWithFS reads a SessionMeta through fs using the same path and
@@ -220,20 +272,14 @@ func LoadSessionMetaWithFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
 // ListSessionMetas returns all valid session metas sorted by UpdatedAt descending.
 // Scans for .meta.json files. Corrupt files are silently skipped.
 func ListSessionMetas(dir string) ([]SessionMeta, error) {
-	return listSessionMetasFS(afero.NewOsFs(), dir)
+	return listSessionMetasFS(sessionMetaFS, dir)
 }
 
-// saveSessionMetaFS is the filesystem seam beneath SaveSessionMeta: it performs
-// the mkdir + atomic temp+rename write through an injected afero.Fs. Production
-// passes afero.NewOsFs(), whose methods delegate directly to os, so behavior is
-// byte-identical to using os calls; tests and fuzzers inject an in-memory or
-// sandboxed filesystem to exercise persistence without touching real disk.
-func saveSessionMetaFS(fs afero.Fs, dir string, meta SessionMeta) error {
-	sessionMetaWriteMu.Lock()
-	defer sessionMetaWriteMu.Unlock()
-	return saveSessionMetaLocked(fs, dir, meta)
-}
-
+// saveSessionMetaLocked performs the write with the session's write lock already
+// held. Callers must not re-enter any of the session-meta write entry points
+// from within it: re-entering for the same session self-deadlocks, and now that
+// the lock is striped, re-entering for a different session self-deadlocks only
+// on a stripe collision — a hang that would be rare enough to be untraceable.
 func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 	previous, err := loadSessionMetaFS(fs, dir, meta.ID)
 	if err == nil {

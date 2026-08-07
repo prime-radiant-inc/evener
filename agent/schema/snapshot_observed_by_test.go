@@ -150,9 +150,9 @@ func TestSessionMetaWritesSerializeObserverAppend(t *testing.T) {
 	saveDone := make(chan error, 1)
 	go func() { saveDone <- SaveSessionMetaWithFS(saveFS, dir, saved) }()
 	<-saveFS.entered
-	if sessionMetaWriteMu.TryLock() {
-		sessionMetaWriteMu.Unlock()
-		t.Fatal("whole-meta save reached rename without holding sessionMetaWriteMu")
+	if lock := sessionMetaWriteLock(worker); lock.TryLock() {
+		lock.Unlock()
+		t.Fatal("whole-meta save reached rename without holding the session's meta write lock")
 	}
 
 	appendDone := make(chan error, 1)
@@ -163,9 +163,9 @@ func TestSessionMetaWritesSerializeObserverAppend(t *testing.T) {
 	}
 
 	<-appendFS.entered
-	if sessionMetaWriteMu.TryLock() {
-		sessionMetaWriteMu.Unlock()
-		t.Fatal("observer append reached rename without holding sessionMetaWriteMu")
+	if lock := sessionMetaWriteLock(worker); lock.TryLock() {
+		lock.Unlock()
+		t.Fatal("observer append reached rename without holding the session's meta write lock")
 	}
 	appendFS.releaseRename()
 	if err := <-appendDone; err != nil {

@@ -66,8 +66,8 @@ func FuzzSessionMetaPersistence(f *testing.F) {
 			case opSave:
 				tick++
 				meta := r.drawMeta(time.Unix(tick*60, 0).UTC())
-				errOS := saveSessionMetaFS(osFs, dir, meta)
-				errMem := saveSessionMetaFS(memFs, dir, meta)
+				errOS := SaveSessionMetaWithFS(osFs, dir, meta)
+				errMem := SaveSessionMetaWithFS(memFs, dir, meta)
 				requireMetaErrParity(t, "SaveSessionMeta", errOS, errMem)
 			case opLoad:
 				id := metaIDPool[int(r.next())%len(metaIDPool)]

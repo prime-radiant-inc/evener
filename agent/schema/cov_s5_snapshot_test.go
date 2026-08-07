@@ -51,12 +51,12 @@ func TestSessionMeta_CumulativeUsageOmitzero(t *testing.T) {
 	}
 }
 
-// saveSessionMetaFS round-trips through an in-memory fs and surfaces a mkdir
+// SaveSessionMetaWithFS round-trips through an in-memory fs and surfaces a mkdir
 // failure on a read-only fs.
 func TestCov_SaveSessionMetaFS(t *testing.T) {
 	mem := afero.NewMemMapFs()
 	meta := SessionMeta{ID: "01SESSIONXXXXXXXXXXXXXXXXXX"}
-	if err := saveSessionMetaFS(mem, "/state", meta); err != nil {
+	if err := SaveSessionMetaWithFS(mem, "/state", meta); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	got, err := loadSessionMetaFS(mem, "/state", meta.ID)
@@ -69,7 +69,7 @@ func TestCov_SaveSessionMetaFS(t *testing.T) {
 
 	// Read-only fs → MkdirAll fails → save surfaces an error.
 	ro := afero.NewReadOnlyFs(afero.NewMemMapFs())
-	if err := saveSessionMetaFS(ro, "/state", meta); err == nil {
+	if err := SaveSessionMetaWithFS(ro, "/state", meta); err == nil {
 		t.Fatal("save on a read-only fs should error")
 	}
 }
@@ -82,7 +82,7 @@ func TestCov_ListSessionMetasFS(t *testing.T) {
 		t.Errorf("missing dir should yield (nil,nil), got %v %v", metas, err)
 	}
 	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
-	if err := saveSessionMetaFS(mem, "/state", SessionMeta{ID: sessionID}); err != nil {
+	if err := SaveSessionMetaWithFS(mem, "/state", SessionMeta{ID: sessionID}); err != nil {
 		t.Fatal(err)
 	}
 	metas, err = listSessionMetasFS(mem, "/state")

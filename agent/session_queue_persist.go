@@ -45,7 +45,7 @@ func saveQueues(stateDir, id string, steering []steeringMessage, input []queuedI
 }
 
 // saveQueuesFS is the filesystem seam beneath saveQueues (mirrors
-// schema.saveSessionMetaFS / TaskStore's injected afero.Fs): production calls
+// schema.SaveSessionMetaWithFS / TaskStore's injected afero.Fs): production calls
 // saveQueues, which passes afero.NewOsFs() (byte-identical to direct os
 // calls); tests inject an in-memory or sandboxed filesystem.
 func saveQueuesFS(fs afero.Fs, stateDir, id string, steering []steeringMessage, input []queuedInput) error {

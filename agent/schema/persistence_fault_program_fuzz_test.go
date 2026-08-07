@@ -29,7 +29,7 @@ func FuzzSchemaPersistenceFaultProgram(f *testing.F) {
 		}
 
 		mem := afero.NewMemMapFs()
-		if err := saveSessionMetaFS(mem, "/state", meta); err != nil {
+		if err := SaveSessionMetaWithFS(mem, "/state", meta); err != nil {
 			t.Fatalf("save healthy meta: %v", err)
 		}
 		if got, err := loadSessionMetaFS(mem, "/state", id); err != nil || got.ID != id {
@@ -49,13 +49,13 @@ func FuzzSchemaPersistenceFaultProgram(f *testing.F) {
 		}
 
 		writeSentinel := errors.New("write fault")
-		if err := saveSessionMetaFS(schemaFuzzFaultFS{Fs: afero.NewMemMapFs(), openFileErr: writeSentinel}, "/state", meta); !errors.Is(err, writeSentinel) {
+		if err := SaveSessionMetaWithFS(schemaFuzzFaultFS{Fs: afero.NewMemMapFs(), openFileErr: writeSentinel}, "/state", meta); !errors.Is(err, writeSentinel) {
 			t.Fatalf("write fault = %v", err)
 		}
 
 		renameSentinel := errors.New("rename fault")
 		renameBase := afero.NewMemMapFs()
-		if err := saveSessionMetaFS(schemaFuzzFaultFS{Fs: renameBase, renameErr: renameSentinel}, "/state", meta); !errors.Is(err, renameSentinel) {
+		if err := SaveSessionMetaWithFS(schemaFuzzFaultFS{Fs: renameBase, renameErr: renameSentinel}, "/state", meta); !errors.Is(err, renameSentinel) {
 			t.Fatalf("rename fault = %v", err)
 		}
 		if exists, err := afero.Exists(renameBase, "/state/sessions/"+id+".meta.json.tmp"); err != nil || exists {
@@ -63,13 +63,13 @@ func FuzzSchemaPersistenceFaultProgram(f *testing.F) {
 		}
 
 		mkdirSentinel := errors.New("mkdir fault")
-		if err := saveSessionMetaFS(schemaFuzzFaultFS{Fs: afero.NewMemMapFs(), mkdirErr: mkdirSentinel}, "/state", meta); !errors.Is(err, mkdirSentinel) {
+		if err := SaveSessionMetaWithFS(schemaFuzzFaultFS{Fs: afero.NewMemMapFs(), mkdirErr: mkdirSentinel}, "/state", meta); !errors.Is(err, mkdirSentinel) {
 			t.Fatalf("mkdir fault = %v", err)
 		}
 		marshalSentinel := errors.New("marshal fault")
 		oldMarshal := marshalSessionMeta
 		marshalSessionMeta = func(any) ([]byte, error) { return nil, marshalSentinel }
-		if err := saveSessionMetaFS(afero.NewMemMapFs(), "/state", meta); !errors.Is(err, marshalSentinel) {
+		if err := SaveSessionMetaWithFS(afero.NewMemMapFs(), "/state", meta); !errors.Is(err, marshalSentinel) {
 			t.Fatalf("marshal fault = %v", err)
 		}
 		marshalSessionMeta = oldMarshal
