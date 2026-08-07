@@ -86,7 +86,7 @@ func (s *byteSource) next() byte {
 // exhaustion).
 func (s *byteSource) readUint(nbytes int) uint64 {
 	var v uint64
-	for i := 0; i < nbytes; i++ {
+	for range nbytes {
 		v = v<<8 | uint64(s.next())
 	}
 	return v

@@ -224,7 +224,7 @@ func exerciseGeneratorBranches(t *testing.T) {
 	_ = genInteger(&fixedSource{bools: []bool{true}, ints: []int{0}}, nil, Valid)
 
 	// Select each arbitrary JSON kind; object and array receive length one.
-	for kind := 0; kind < 7; kind++ {
+	for kind := range 7 {
 		_ = genArbitraryJSON(&fixedSource{ints: []int{kind, 1, 0, 4}, bools: []bool{false}}, 0)
 	}
 

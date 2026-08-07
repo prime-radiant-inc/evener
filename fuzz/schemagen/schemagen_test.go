@@ -98,7 +98,7 @@ var fixtures = map[string]map[string]any{
 func TestValidMode_Conforms(t *testing.T) {
 	for name, schema := range fixtures {
 		g := Generator(schema, Valid)
-		for seed := 0; seed < 300; seed++ {
+		for seed := range 300 {
 			v := g.Example(seed)
 			if ok, why := conforms(v, schema); !ok {
 				t.Fatalf("%s seed=%d: valid value does not conform: %s\nvalue=%#v", name, seed, why, v)
@@ -116,7 +116,7 @@ func TestAdjacentMode_ProducesViolations(t *testing.T) {
 		g := Generator(schema, Adjacent)
 		violations := 0
 		const n = 300
-		for seed := 0; seed < n; seed++ {
+		for seed := range n {
 			if ok, _ := conforms(g.Example(seed), schema); !ok {
 				violations++
 			}
@@ -177,7 +177,7 @@ func TestByteSourceDeterminism(t *testing.T) {
 // many byte streams, conforms to the schema.
 func TestByteSourceValidConforms(t *testing.T) {
 	for name, schema := range fixtures {
-		for seed := 0; seed < 300; seed++ {
+		for seed := range 300 {
 			data := pseudoBytes(seed, 64)
 			v := Value(NewByteSource(data), schema, Valid)
 			if ok, why := conforms(v, schema); !ok {
@@ -226,7 +226,7 @@ func TestEnum_ValidIsMember(t *testing.T) {
 	schema := map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}}
 	g := Generator(schema, Valid)
 	want := map[string]bool{"low": true, "medium": true, "high": true}
-	for seed := 0; seed < 100; seed++ {
+	for seed := range 100 {
 		v := g.Example(seed)
 		s, ok := v.(string)
 		if !ok || !want[s] {
@@ -239,7 +239,7 @@ func TestEnum_ValidIsMember(t *testing.T) {
 func TestRequired_AlwaysPresent(t *testing.T) {
 	schema := fixtures["read_file_like"]
 	g := Generator(schema, Valid)
-	for seed := 0; seed < 200; seed++ {
+	for seed := range 200 {
 		m, ok := g.Example(seed).(map[string]any)
 		if !ok {
 			t.Fatalf("seed=%d: object schema produced non-object %#v", seed, g.Example(seed))
