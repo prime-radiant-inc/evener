@@ -103,7 +103,7 @@ func benchmarkAPILogFixture(b *testing.B, recordCount int) []byte {
 	requestBody := strings.Repeat("request payload byte content. ", 200)   // ~6.4KB
 	responseBody := strings.Repeat("response payload byte content. ", 200) // ~6.4KB
 	var buf bytes.Buffer
-	for i := 0; i < recordCount; i++ {
+	for range recordCount {
 		record := APIAttemptRecord{
 			Kind:             attemptRecordKind,
 			SchemaVersion:    recordSchemaVersion,
