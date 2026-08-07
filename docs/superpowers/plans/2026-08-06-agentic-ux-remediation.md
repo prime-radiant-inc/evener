@@ -283,12 +283,18 @@ two open questions ruled by Jesse the same day.**
    unset cases were unsandboxed sessions. Provision a session scratch dir
    and export `SERF_SCRATCH_DIR`/`TMPDIR` unconditionally — reality up to
    the documented contract.
-3. **Go telemetry**: `GOTELEMETRY=off` in `ApplyEnvFloor` (decided
-   2026-08-06; per-session HOME considered and declined). Structurally
-   consistent with the sandbox cache design: telemetry lives in config,
-   which was never meant to be writable. Verify `GOMODCACHE` under custom
-   GOPATH resolves inside a granted root; extend `isRedirectedCacheVar`
-   (`agent/sandbox/env_floor.go:116-118`) if not.
+3. **Go telemetry** (amended 2026-08-06, superseding same-day
+   `GOTELEMETRY=off` ruling): implementation proved `GOTELEMETRY` is a
+   NON-SETTABLE Go env var — it only mirrors the persisted mode file under
+   the user config dir, and setting it in a real Seatbelt sandbox changed
+   nothing (telemetry still stats its upload-token file and emits
+   "operation not permitted" on stderr; exit codes unaffected). Jesse's
+   ruling: **accept + document**. No telemetry code change; the pristine-
+   stderr acceptance allows exactly this known noise line, pinned as
+   expected in the integration test; the capability preamble states it as
+   a resolved fact. The `GOMODCACHE`-outside-granted-roots gap found in
+   the same task was real and is fixed via `isRedirectedCacheVar`
+   (per-session HOME remains considered-and-declined).
 4. **GOCACHE wedge — investigation reframed by the audit.** Sandboxed
    sessions already get contained caches by design (`docs/sandboxing.md`:
    "a sandboxed session can never poison a cache that a later build

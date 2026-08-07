@@ -279,16 +279,23 @@ type Registry struct {
 	mu         sync.RWMutex
 	tools      map[string]RegisteredTool
 	middleware []toolMiddleware
+
+	// breaker is this dispatch scope's record of repeated identical calls.
+	// One registry per session, so the ledger is per-session; it carries its
+	// own mutex and is never guarded by r.mu.
+	breaker *failureLedger
 }
 
 // NewRegistry returns an empty Registry ready for tool registration.
 func NewRegistry() *Registry {
-	return &Registry{tools: map[string]RegisteredTool{}}
+	return &Registry{tools: map[string]RegisteredTool{}, breaker: newFailureLedger()}
 }
 
 // Clone returns an independent registry with the same registered tools and
 // middleware. Compiled schemas are immutable after registration, so clones share
-// schema pointers while keeping their tool maps isolated.
+// schema pointers while keeping their tool maps isolated. A clone is a new
+// dispatch scope, so it starts with the fresh breaker ledger NewRegistry gives
+// it — repeated-call state must never leak out of the session that produced it.
 func (r *Registry) Clone() *Registry {
 	out := NewRegistry()
 	if r == nil {
@@ -496,6 +503,27 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		callID = "call_" + shortHash(call.Arguments)
 	}
 
+	// A signature that has already failed the same way twice is refused here,
+	// before the tool is even looked up, and is deliberately not recorded:
+	// recording the refusal's own body would replace the stored hash and
+	// release the next identical call. Only failures park — a repeated
+	// identical *success* may still be the call that finally sees the world
+	// change, and refusing it would strand a session repeating its result tool.
+	judged := !breakerBypassed(ctx)
+	if judged {
+		if failStreak, _, snippets := r.breaker.check(name, call.Arguments); failStreak >= breakerThreshold {
+			return truncateResult(name, callID, failureParkText(name, snippets), true, defaultToolLimit(name))
+		}
+	} else {
+		// A human authorized this dispatch, which retires the refusals that
+		// led here as evidence. Clearing rather than merely skipping judgement
+		// is what keeps a repeatedly-approved call approvable: the grant is
+		// per-invocation, so the same call comes back and is denied again, and
+		// a streak that only ever grows would park the next one before
+		// dispatch — with no typed error left to raise another approval card.
+		r.breaker.clearFailures(name, call.Arguments)
+	}
+
 	r.mu.RLock()
 	t, ok := r.tools[name]
 	r.mu.RUnlock()
@@ -538,6 +566,36 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		delete(args, "purpose")
 	}
 	v, err := t.Exec(ctx, env, args)
+	res := dispatchedResult(name, callID, t.Limit, v, err)
+	if judged {
+		// Recorded on the untruncated body, before any nudge is appended, so
+		// the nudge cannot poison the body hash. FullOutput rather than
+		// Output: a TruncTail tool renders every over-limit error behind the
+		// same truncation banner, and classing on that banner would read two
+		// unrelated failures as one and park a call that never repeated
+		// itself. Nudging after truncation is deliberate: the text must
+		// survive the limiter.
+		judgedBody := res.FullOutput
+		if judgedBody == "" {
+			judgedBody = res.Output
+		}
+		failStreak, repeatStreak := r.breaker.record(name, call.Arguments, res.IsError, judgedBody)
+		switch {
+		case failStreak >= breakerThreshold:
+			appendIntervention(&res, failureNudgeText)
+		case repeatStreak >= breakerThreshold:
+			// Repeats on every subsequent identical result: nothing else
+			// applies pressure once repetition is never parked.
+			appendIntervention(&res, repetitionNudgeText)
+		}
+	}
+	return res
+}
+
+// dispatchedResult turns an executor's return into an ExecResult, unpacking
+// the side-channel result shapes. It is the single point every dispatched
+// call funnels through, so the breaker sees every executed result exactly once.
+func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, err error) ExecResult {
 	if err != nil {
 		full := ""
 		if v != nil {
@@ -546,14 +604,14 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		if strings.TrimSpace(full) == "" {
 			full = fmt.Sprintf("%v", err)
 		}
-		res := truncateResult(name, callID, full, true, t.Limit)
+		res := truncateResult(name, callID, full, true, lim)
 		res.Err = err // preserved verbatim for typed inspection (sandbox.AsDenied)
 		return res
 	}
 
 	// ImageResult carries both text and raw image bytes.
 	if img, ok := v.(ImageResult); ok {
-		res := truncateResult(name, callID, img.Text, false, t.Limit)
+		res := truncateResult(name, callID, img.Text, false, lim)
 		res.ImageData = img.Data
 		res.ImageMediaType = img.MediaType
 		res.ImagePurpose = img.Purpose
@@ -563,7 +621,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	// StateResult carries an LLM-facing Output plus a JSON-serializable
 	// State snapshot that rides along on the TOOL_CALL_END event.
 	if st, ok := v.(StateResult); ok {
-		res := truncateResult(name, callID, st.Output, false, t.Limit)
+		res := truncateResult(name, callID, st.Output, false, lim)
 		if st.State != nil {
 			if data, err := json.Marshal(st.State); err == nil {
 				res.ToolState = data
@@ -575,7 +633,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	}
 
 	if text, ok := v.(TextResult); ok {
-		res := truncateResult(name, callID, text.Output, false, t.Limit)
+		res := truncateResult(name, callID, text.Output, false, lim)
 		if text.FullOutput != "" {
 			res.FullOutput = text.FullOutput
 		}
@@ -583,7 +641,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	}
 
 	full := toolValueToString(v)
-	return truncateResult(name, callID, full, false, t.Limit)
+	return truncateResult(name, callID, full, false, lim)
 }
 
 func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOutputLimit) ExecResult {

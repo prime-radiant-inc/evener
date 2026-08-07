@@ -570,7 +570,7 @@ func TestCancellationDuringAPIAttemptAppendsBeforeSettlement(t *testing.T) {
 		t.Fatalf("events = %v", events)
 	}
 	attemptContextErrs, settlementContextErrs := sink.contextErrors()
-	if !reflect.DeepEqual(attemptContextErrs, []error{nil}) || !reflect.DeepEqual(settlementContextErrs, []error{nil}) {
+	if len(attemptContextErrs) != 1 || attemptContextErrs[0] != nil || len(settlementContextErrs) != 1 || settlementContextErrs[0] != nil {
 		t.Fatalf("durability contexts carried cancellation: attempts=%v settlements=%v", attemptContextErrs, settlementContextErrs)
 	}
 }

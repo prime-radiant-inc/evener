@@ -54,7 +54,8 @@ func TestInjectPostToolSteering_PersistsTaskReminderKind(t *testing.T) {
 	s.mu.Unlock()
 
 	var toolSigs []string
-	if _, err := s.injectPostToolSteering(context.Background(), nil, &toolSigs); err != nil {
+	var toolSigFailed []bool
+	if _, err := s.injectPostToolSteering(context.Background(), nil, nil, &toolSigs, &toolSigFailed); err != nil {
 		t.Fatalf("injectPostToolSteering: %v", err)
 	}
 

@@ -258,7 +258,8 @@ func stmRunRoundContracts(t *testing.T, program []byte) {
 
 	s.Steer("queued " + value)
 	var sigs []string
-	if _, err := s.injectPostToolSteering(ctx, calls, &sigs); err != nil {
+	var sigFailed []bool
+	if _, err := s.injectPostToolSteering(ctx, calls, nil, &sigs, &sigFailed); err != nil {
 		t.Fatalf("inject post-tool steering: %v", err)
 	}
 	if len(sigs) != len(calls) {

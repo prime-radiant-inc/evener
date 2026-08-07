@@ -44,6 +44,38 @@ func gitOriginURL(env execenv.ExecutionEnvironment, cwd string) string {
 	return strings.TrimSpace(res.Stdout)
 }
 
+// snapshotGitBranch reads only the current branch name for cwd, skipping the
+// status/log/origin-url subprocess calls snapshotGit also runs. Used by the
+// envctx GitBranch probe (agent/session_init.go), which runs on every user
+// turn and needs just the branch name, not a full session-launch environment
+// snapshot.
+func snapshotGitBranch(env execenv.ExecutionEnvironment, cwd string) string {
+	if env == nil {
+		return ""
+	}
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		cwd = env.WorkingDirectory()
+	}
+	if !hasGitMetadataAncestor(cwd) {
+		return ""
+	}
+	run := func(cmd string) (execenv.ExecResult, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
+		defer cancel()
+		return env.ExecCommand(ctx, cmd, gitExecTimeoutMS(), cwd, nil)
+	}
+	inside, err := run("git rev-parse --is-inside-work-tree")
+	if err != nil || inside.ExitCode != 0 || strings.TrimSpace(inside.Stdout) != "true" {
+		return ""
+	}
+	br, err := run("git rev-parse --abbrev-ref HEAD")
+	if err != nil || br.ExitCode != 0 {
+		return ""
+	}
+	return strings.TrimSpace(br.Stdout)
+}
+
 func snapshotGit(env execenv.ExecutionEnvironment, cwd string) (inRepo bool, branch string, modifiedFiles int, untrackedFiles int, recentCommitTitles []string) {
 	if env == nil {
 		return false, "", 0, 0, nil

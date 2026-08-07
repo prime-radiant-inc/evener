@@ -109,6 +109,34 @@ linting. When a tagged file needs the full treatment, run it by hand:
 golangci-lint run --build-tags serffuzz ./...
 ```
 
+## Platform-specific code gets a seam, never a blanket build tag
+
+gopls type-checks every unconstrained file for other ports (notably
+`GOOS=windows`), so raw `unix.*`/`syscall.Kill`/`Flock` usage in a
+portable file shows up as a wall of `undefined: … [windows,amd64]`
+diagnostics in any editor. The tempting fix — slapping `//go:build
+darwin || linux` on the flagged files — makes it worse: the symbols
+those files define vanish from the windows port, and every *importer*
+lights up instead. A 90-diagnostic problem confined to one package
+became 176 diagnostics across 48 files before it was reverted.
+
+The repo's convention (see `agent/execenv/securepath_other.go`, which
+states it explicitly) is a platform seam: move the primitive that
+touches the syscall into a `//go:build linux || darwin` file, and give
+the `!linux && !darwin` counterpart a fail-closed or best-effort
+stand-in with a doc comment saying which and why. Everything above the
+seam stays portable, every package type-checks on every port, and the
+sandboxing floor (`docs/sandboxing.md`) keeps its "refuse, don't
+crash" story on unsupported platforms. Test files are the one
+exception: a test that exercises unix-only behavior just takes the
+`linux || darwin` tag directly.
+
+Verify a seam with the compiler, not the editor:
+
+```
+GOOS=windows go vet ./...   # per module; silent means the port is whole
+```
+
 ## `gofmt -r` is a blunt instrument
 
 Rewrite rules are useful for mechanical renames across a package, with

@@ -197,6 +197,42 @@ posted questions, regardless of the communicate's own end-turn value. `ask_user`
 interactive-root-only — invisible in non-interactive sessions and in every subagent — so this
 branch never applies to a delegate.
 
+### The repeated-call breaker
+
+Steering a stuck agent has two layers. `injectPostToolSteering`
+(`agent/session_tool_round.go`) watches a window of recent call signatures and, when
+`detectLoop` fires, injects steering — the structural intervention when every call in
+the window failed, today's tiered escalation otherwise. Underneath it,
+`Registry.ExecuteCall` (`agent/internal/tool/registry.go`) consults a ledger
+(`agent/internal/tool/breaker.go`) that every *dispatched* tool call passes through,
+native and MCP alike — a call refused before dispatch — by pre-validation, an unknown tool
+name, unparseable arguments, a schema violation, blocking middleware, or the
+argument-size guard — never reaches the ledger. The ledger carries **two triggers, both keyed on tool name + a hash of the raw
+argument bytes**. The **failure trigger** counts consecutive failures sharing an error
+class: the second appends a nudge to the result, and the third is **not executed at
+all** — the call is refused before the tool is looked up. The **repetition trigger**
+counts consecutive byte-identical result bodies regardless of error status, and only
+ever nudges, from the second onward; a tool observing mutable state may yet return
+something new, and refusing `communicate` would take away the session's only exit
+door. Repetition catches what error flags miss: a plugin that reports its failures with
+`is_error: false` and the failure as plain body text still trips it, so serf needs no
+knowledge of any tool's error conventions.
+
+The ledger is per session and per signature — it lives on the session's own
+`*tool.Registry`, and a `Clone` starts empty. Calls to other signatures never disturb a
+signature's counters. A success or a failure of a different error class resets the
+failure counter; a different result body resets the repetition counter. A parked call
+is recorded as an ordinary error tool result whose output begins
+`serf did not execute this call:` — no new turn kind, no new event type — and the park
+itself is not recorded, so the refusal's own body cannot release the next identical
+call.
+
+One consequence worth knowing before you meet it: a parked result carries **no typed
+error**, only text. Sandbox denial escalation (`agent/session_escalation.go`) keys off
+`sandbox.AsDenied(res.Err)`, so a third identical file-tool call that the breaker parks
+never raises the human approval card a live denial would have raised. Changing the
+arguments or the approach is what clears it.
+
 ### Ownership and mailboxes
 
 A `Session` runs no persistent goroutine; it is driven by `ProcessInput` and woken by

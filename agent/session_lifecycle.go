@@ -980,6 +980,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}
 
 	var toolSigs []string
+	var toolSigFailed []bool
 	var lastText string // accumulated assistant text for round-limit return
 	ctxWarned := false
 	contentFilterRetried := false // track whether we've already tried recovering from a content filter error
@@ -1175,7 +1176,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		timings.AfterAction = time.Since(tPhaseStart)
 
-		yieldToObserverCallback, steerErr := s.injectPostToolSteering(ctx, calls, &toolSigs)
+		yieldToObserverCallback, steerErr := s.injectPostToolSteering(ctx, calls, results, &toolSigs, &toolSigFailed)
 		steerErr = errors.Join(steerErr, sessionLifecycleFault(ctx, "post_tool_steer"))
 		if steerErr != nil {
 			return "", progressed, steerErr
@@ -1263,7 +1264,6 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 
 	s.mu.Lock()
 	s.turns++
-	userInputTurn := len(s.history) + 1
 	s.mu.Unlock()
 
 	if drainResumeSessionStart {
@@ -1275,6 +1275,15 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 		// prompt it applies to in the first resumed model request.
 		s.drainPendingSessionStartHooksForUserTurn(ctx)
 	}
+
+	s.maybeAppendEnvironmentContext()
+
+	// userInputTurn is computed AFTER any SessionStart-hook and environment-context
+	// turns above so it reports the USER_INPUT turn's actual history position,
+	// not a position stale by however many turns those inserted ahead of it.
+	s.mu.Lock()
+	userInputTurn := len(s.history) + 1
+	s.mu.Unlock()
 
 	if queuedIdentity.ClientMutationID == "" {
 		s.appendTurn(schema.TurnUserInput, buildUserInputMessage(input, images))

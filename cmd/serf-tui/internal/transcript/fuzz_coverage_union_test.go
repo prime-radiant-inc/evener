@@ -121,9 +121,9 @@ func replayTranscriptCoverage(t *testing.T) {
 	clipStr(" short ", 60)
 	ImageItemsPlaceholder(nil)
 	systemMessageItemText(appwire.ThreadItem{Text: "plain"})
-	mergeThreadItemIntoToolInfo(nil, appwire.ThreadItem{}, false)
-	mergeThreadItemIntoToolInfo(&ToolCallInfo{Name: "delegate", Description: "existing"}, appwire.ThreadItem{ToolName: "delegate", Raw: []byte(`{"job_id":"x"}`)}, false)
-	mergeThreadItemIntoToolInfo(&ToolCallInfo{Description: "existing", Detail: "detail"}, appwire.ThreadItem{Output: "1\n2\n3\n4\n5\n6"}, true)
+	mergeThreadItemIntoToolInfo(nil, appwire.ThreadItem{}, false, "")
+	mergeThreadItemIntoToolInfo(&ToolCallInfo{Name: "delegate", Description: "existing"}, appwire.ThreadItem{ToolName: "delegate", Raw: []byte(`{"job_id":"x"}`)}, false, "")
+	mergeThreadItemIntoToolInfo(&ToolCallInfo{Description: "existing", Detail: "detail"}, appwire.ThreadItem{Output: "1\n2\n3\n4\n5\n6"}, true, "")
 	subagentRunFromToolItem(appwire.ThreadItem{Output: `{"current_job_id":"x","total_bytes":4}`})
 	subagentRunFromToolItem(appwire.ThreadItem{})
 

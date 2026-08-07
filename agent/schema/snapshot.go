@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/serf/agent/envctx"
 	"primeradiant.com/serf/identifier"
 )
 
@@ -23,6 +24,73 @@ var marshalSessionMeta = json.Marshal
 // their own afero.Fs to the WithFS variants instead of swapping this out, which
 // keeps them safe to run in parallel.
 var sessionMetaFS = afero.NewOsFs()
+
+// ErrInvalidSessionID reports a session ID that session-meta persistence
+// refuses, because it is not safe to use as a filename component.
+var ErrInvalidSessionID = errors.New("invalid session id")
+
+// sessionIDMaxLen bounds an ID so that the longest name derived from it,
+// <id>.meta.json.tmp, stays well inside the 255-byte filename limit.
+const sessionIDMaxLen = 128
+
+// windowsReservedSessionIDs are the DOS device names Windows resolves no matter
+// what extension follows them: opening "NUL.meta.json" reaches the NUL device,
+// not a file. serf builds for Windows (agent/internal/installid/
+// lock_windows.go), and a state directory written on one platform can be read
+// on another, so these are refused everywhere rather than under a GOOS guard.
+// Dots are already banned, so the whole ID is the basename to compare.
+var windowsReservedSessionIDs = map[string]bool{
+	"CON": true, "PRN": true, "AUX": true, "NUL": true,
+	"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true,
+	"COM6": true, "COM7": true, "COM8": true, "COM9": true,
+	"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true,
+	"LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+}
+
+// validateSessionID accepts a session ID only when it is safe to use directly as
+// a filename component: 1 to 128 bytes, each an ASCII letter, an ASCII digit,
+// '-' or '_'. Everything else is refused, which is what makes the ID safe to
+// join into a path and safe to key the write lock on:
+//
+//   - No '/', '\' or ':', so an ID cannot name a file in another directory.
+//   - No '.', so no ID is "." or ".." or carries a traversal segment, and none
+//     can impersonate the ".meta.json" or ".tmp" suffixes the layout uses.
+//   - No spaces, control bytes or NUL, so an ID cannot be an unprintable
+//     near-duplicate of another.
+//   - No Windows reserved device name, which no extension makes safe.
+//   - ASCII only, so case folding is exactly ASCII case folding. Two distinct
+//     IDs can then only alias onto one file through case, which
+//     sessionMetaWriteLock's strings.ToLower already accounts for — whereas
+//     Unicode folding and NFC/NFD normalization vary by filesystem and are
+//     beyond what any in-process canonicalization can predict.
+//
+// The rule is deliberately wider than identifier.ValidateSessionID's minted
+// base62 shape: this is a safety boundary, not an authenticity check, and test
+// fixtures across the repo legitimately persist terse IDs like "WORKER".
+//
+// A write is checked transitively anyway, since saveSessionMetaLocked loads the
+// previous meta first and that load validates. Checking at each entry point
+// buys the stronger property: a refused ID takes no write lock and creates no
+// directory, so it leaves the filesystem untouched.
+func validateSessionID(id string) error {
+	if id == "" {
+		return fmt.Errorf("session id is empty: %w", ErrInvalidSessionID)
+	}
+	if len(id) > sessionIDMaxLen {
+		return fmt.Errorf("session id is %d bytes, limit is %d: %w", len(id), sessionIDMaxLen, ErrInvalidSessionID)
+	}
+	for i := 0; i < len(id); i++ {
+		switch c := id[i]; {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return fmt.Errorf("session id %q has a disallowed byte %#x at offset %d: %w", id, c, i, ErrInvalidSessionID)
+		}
+	}
+	if windowsReservedSessionIDs[strings.ToUpper(id)] {
+		return fmt.Errorf("session id %q is a reserved device name: %w", id, ErrInvalidSessionID)
+	}
+	return nil
+}
 
 // sessionMetaWriteStripes is the number of locks session-meta writes are spread
 // across. A fixed array rather than a per-session-ID map so a long-running
@@ -45,13 +113,13 @@ var sessionMetaWriteMus [sessionMetaWriteStripes]sync.Mutex
 //
 // The shard key is the session ID, deliberately not the resolved target path:
 // two callers can spell the same state directory differently and must still
-// land on the same lock. The ID is canonicalized first, because a lock may only
-// ever be coarser than the file it guards and two unequal IDs can still name
-// one file — a traversal segment collapses when the path is joined, and a
-// case-insensitive filesystem folds case. Nothing validates meta.ID on the way
-// in, so this side does not assume it is well-formed.
+// land on the same lock. It is lowercased first, because a lock may only ever be
+// coarser than the file it guards, and validateSessionID admits "ABC" and "abc"
+// as distinct IDs that name one file on a case-insensitive filesystem. It needs
+// no path canonicalization: every caller validates first, so no ID reaching here
+// can carry a separator or a "." segment for filepath.Clean to collapse.
 func sessionMetaWriteLock(sessionID string) *sync.Mutex {
-	key := strings.ToLower(filepath.Clean(sessionID))
+	key := strings.ToLower(sessionID)
 	// FNV-1a, inlined rather than via hash/fnv's interface-returning
 	// constructor, which would escape to the heap on every write.
 	const (
@@ -120,6 +188,9 @@ type SessionMeta struct {
 	// PinnedNote is the agent's self-compaction note_to_self, persisted so it
 	// survives daemon restart and serf resume (mirrors Goal).
 	PinnedNote string `json:"pinned_note,omitempty"`
+	// EnvContext is the environment-context tracker state (last emitted
+	// snapshot), persisted so resume stays silent when nothing changed.
+	EnvContext *envctx.State `json:"env_context,omitempty"`
 	// ObservedBy records append-only observer UI relationships. It grants no
 	// access and lets the hub auto-open an observer beside this worker.
 	ObservedBy []string `json:"observed_by,omitempty"`
@@ -234,6 +305,9 @@ func SaveSessionMeta(dir string, meta SessionMeta) error {
 // in-memory or sandboxed filesystem to exercise persistence without touching
 // real disk.
 func SaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
+	if err := validateSessionID(meta.ID); err != nil {
+		return err
+	}
 	lock := sessionMetaWriteLock(meta.ID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -247,6 +321,9 @@ func AppendSessionObservedBy(dir, workerSessionID, observerSessionID string) err
 }
 
 func appendSessionObservedByWithFS(fs afero.Fs, dir, workerSessionID, observerSessionID string) error {
+	if err := validateSessionID(workerSessionID); err != nil {
+		return err
+	}
 	lock := sessionMetaWriteLock(workerSessionID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -254,6 +331,8 @@ func appendSessionObservedByWithFS(fs afero.Fs, dir, workerSessionID, observerSe
 	if err != nil {
 		return err
 	}
+	// Only workerSessionID is validated: it names the file being written, while
+	// observerSessionID is persisted as data and never joined into a path here.
 	meta.ObservedBy = stableUnion(meta.ObservedBy, []string{observerSessionID})
 	return saveSessionMetaLocked(fs, dir, meta)
 }
@@ -327,6 +406,9 @@ func stableUnion(existing, added []string) []string {
 
 // loadSessionMetaFS is the filesystem seam beneath LoadSessionMeta.
 func loadSessionMetaFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
+	if err := validateSessionID(id); err != nil {
+		return SessionMeta{}, err
+	}
 	path := filepath.Join(dir, sessionsSubdir, id+".meta.json")
 	data, err := afero.ReadFile(fs, path)
 	if err != nil {
