@@ -681,18 +681,7 @@ func TestTUITmuxE2E_CtrlCRequiresDoublePressFromSession(t *testing.T) {
 	// pure quit-arming path. (With an active turn the first ctrl+c interrupts
 	// the turn first — covered by the header/composer state behavior.)
 	openEndedSession(t, app)
-	app.SendKeys("C-c")
-	// Poll over a window wider than any realistic render delay so a broken
-	// handler that defers the warning render is reliably caught. A single
-	// fixed sleep misses warnings that render after the sleep completes;
-	// repeated captures over 300 ms cannot.
-	settleDeadline := time.Now().Add(300 * time.Millisecond)
-	for time.Now().Before(settleDeadline) {
-		if screen := app.Capture(); strings.Contains(screen, "Press ctrl+c again") || strings.Contains(screen, "Restore this session:") {
-			t.Fatalf("first ctrl+c should not render an in-app quit warning:\n%s", screen)
-		}
-		time.Sleep(tuiE2EPollInterval)
-	}
+	sendFirstCtrlCAndAssertNoQuitWarning(t, app)
 	// Positive gate: session must still be alive after the settling window.
 	app.WaitFor("serf / session / ended maintenance")
 	app.SendKeys("C-c")
@@ -709,16 +698,7 @@ func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
 	defer app.Close()
 
 	openEndedSession(t, app)
-	app.SendKeys("C-c")
-	// Poll over a window wider than any realistic render delay so a broken
-	// handler that defers the warning render is reliably caught.
-	settleDeadline := time.Now().Add(300 * time.Millisecond)
-	for time.Now().Before(settleDeadline) {
-		if screen := app.Capture(); strings.Contains(screen, "Press ctrl+c again") || strings.Contains(screen, "Restore this session:") {
-			t.Fatalf("first ctrl+c should not render an in-app quit warning:\n%s", screen)
-		}
-		time.Sleep(tuiE2EPollInterval)
-	}
+	sendFirstCtrlCAndAssertNoQuitWarning(t, app)
 	// Positive gate: session must still be alive after the settling window.
 	app.WaitFor("serf / session / ended maintenance")
 	app.SendKeys("C-c")
@@ -982,6 +962,42 @@ func openLiveSession(t *testing.T, app *tmuxTUI) {
 	app.WaitFor("Session:  01LIVE", "Action:   enter opens session")
 	app.SendKeys("Enter")
 	app.WaitFor("serf / session / live task")
+}
+
+// sendFirstCtrlCAndAssertNoQuitWarning sends a single ctrl+c and asserts that
+// no in-app quit warning renders within the following 300ms — the window
+// wide enough that a broken handler which defers the warning render is
+// reliably caught.
+//
+// It streams the pane's raw output via `tmux pipe-pane` for that window
+// rather than repeatedly forking `tmux capture-pane` in a poll loop (the
+// original approach). This loop runs entirely inside hubCtrlCQuitWindow (the
+// production 1s double-ctrl+c debounce, see hub_model.go), and the caller
+// sends the second ctrl+c immediately after this returns, so every
+// subprocess spawned here eats directly into that budget. Periodic
+// capture-pane polling assumes ~2.6ms/call (see tuiE2EPollInterval), which
+// holds when the machine is idle but not under CPU contention (a concurrent
+// go test suite elsewhere): fork/exec scheduling delay can push the combined
+// cost of dozens of calls past hubCtrlCQuitWindow, making the second real
+// ctrl+c land too late and get treated as a fresh first press instead of a
+// quit — this is the flake this helper replaces. pipe-pane costs exactly one
+// subprocess for the whole window and captures every byte serf-tui writes,
+// so a transient or deferred render can't be missed the way periodic
+// sampling could.
+func sendFirstCtrlCAndAssertNoQuitWarning(t *testing.T, app *tmuxTUI) {
+	t.Helper()
+	logPath := filepath.Join(t.TempDir(), "ctrlc-settle.log")
+	runTmux(t, "pipe-pane", "-t", app.session, "cat >> "+shellQuote(logPath))
+	t.Cleanup(func() { _ = exec.Command("tmux", "pipe-pane", "-t", app.session).Run() })
+	app.SendKeys("C-c")
+	time.Sleep(300 * time.Millisecond)
+	data, err := os.ReadFile(logPath)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read piped pane output: %v", err)
+	}
+	if screen := normalizePane(string(data)); strings.Contains(screen, "Press ctrl+c again") || strings.Contains(screen, "Restore this session:") {
+		t.Fatalf("first ctrl+c should not render an in-app quit warning:\n%s", screen)
+	}
 }
 
 // openEndedSession reveals and opens the folded ended "ended maintenance"
