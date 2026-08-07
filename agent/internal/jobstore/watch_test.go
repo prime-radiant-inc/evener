@@ -156,7 +156,7 @@ func TestOutputMatcherCarriesProvenanceAcrossChunks(t *testing.T) {
 	}
 
 	got := m.FeedAtWithProvenance([]byte("ady\n"), 6, nil)
-	if len(got) != 1 || got[0].Line != "ready" {
+	if len(got) != 1 || got[0].Text != "ready" {
 		t.Fatalf("matches = %+v, want ready", got)
 	}
 	if !provenance.ContainsWatch(got[0].Provenance, "watch_A", "wg_1") {
@@ -173,29 +173,28 @@ func TestOutputMatcherDoesNotRematchOldBytes(t *testing.T) {
 	}
 }
 
-func TestOutputMatcherFlushReturnsFinalPartial(t *testing.T) {
+// The window scanner does not wait for a terminator: an unterminated tail
+// matches as soon as its bytes arrive, so there is nothing left to flush when
+// the job ends.
+func TestOutputMatcherMatchesUnterminatedTail(t *testing.T) {
 	m := NewOutputMatcher(regexp.MustCompile(`done`))
-	if got := m.Feed([]byte("all done")); len(got) != 0 {
-		t.Fatalf("unterminated line must not match on Feed: %#v", got)
+	if got := m.Feed([]byte("all done")); len(got) != 1 || got[0] != "all done" {
+		t.Fatalf("unterminated tail must match on Feed: %#v", got)
 	}
-	if got := m.Flush(); len(got) != 1 || got[0] != "all done" {
-		t.Errorf("Flush must match the buffered final line: %#v", got)
+	if got := m.Feed([]byte("\n")); len(got) != 0 {
+		t.Fatalf("terminating the same tail must not re-fire: %#v", got)
 	}
 }
 
-func TestOutputMatcherCarriesProvenanceToFlush(t *testing.T) {
+func TestOutputMatcherCarriesProvenanceOnUnterminatedTail(t *testing.T) {
 	m := NewOutputMatcher(regexp.MustCompile(`ready`))
 	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", "session_1", "job_1")
-	if got := m.FeedAtWithProvenance([]byte("ready"), 5, p); len(got) != 0 {
-		t.Fatalf("partial feed matches = %#v, want none", got)
+	got := m.FeedAtWithProvenance([]byte("ready"), 5, p)
+	if len(got) != 1 || got[0].Text != "ready" {
+		t.Fatalf("unterminated tail matches = %+v, want ready", got)
 	}
-
-	flushed := m.FlushWithProvenance(nil)
-	if len(flushed) != 1 || flushed[0].Line != "ready" {
-		t.Fatalf("flush matches = %+v, want ready", flushed)
-	}
-	if !provenance.ContainsWatch(flushed[0].Provenance, "watch_A", "wg_1") {
-		t.Fatalf("flush provenance = %+v, want carried watch_A/wg_1", flushed[0].Provenance)
+	if !provenance.ContainsWatch(got[0].Provenance, "watch_A", "wg_1") {
+		t.Fatalf("match provenance = %+v, want watch_A/wg_1", got[0].Provenance)
 	}
 }
 
@@ -215,62 +214,74 @@ func TestOutputMatcherEmptyChunksAreNoop(t *testing.T) {
 	}
 }
 
-func TestOutputMatcherEmptyRegexpMatchesCompletedLines(t *testing.T) {
+// An empty pattern matches at every position in the window, so it reports the
+// line each of those positions falls on — including the unterminated tail.
+func TestOutputMatcherEmptyRegexpReportsEveryLine(t *testing.T) {
 	m := NewOutputMatcher(regexp.MustCompile(``))
 	got := m.Feed([]byte("one\n\npartial"))
-	if len(got) != 2 || got[0] != "one" || got[1] != "" {
-		t.Fatalf("empty regexp matches completed lines = %#v, want [\"one\", \"\"]", got)
+	if len(got) == 0 {
+		t.Fatal("empty regexp must match")
 	}
-	if got := m.Flush(); len(got) != 1 || got[0] != "partial" {
-		t.Fatalf("empty regexp must match flushed partial line: %#v", got)
+	seen := map[string]bool{}
+	for _, g := range got {
+		seen[g] = true
+	}
+	for _, want := range []string{"one", "", "partial"} {
+		if !seen[want] {
+			t.Fatalf("empty regexp excerpts = %#v, want one containing %q", got, want)
+		}
 	}
 }
 
-func TestOutputMatcherFlushRepeatedlyClearsCarry(t *testing.T) {
+func TestOutputMatcherEmptyChunkAfterMatchDoesNotRefire(t *testing.T) {
 	m := NewOutputMatcher(regexp.MustCompile(`done`))
-	_ = m.Feed([]byte("done"))
-	if got := m.Flush(); len(got) != 1 || got[0] != "done" {
-		t.Fatalf("first Flush must match the buffered line: %#v", got)
+	if got := m.Feed([]byte("done")); len(got) != 1 {
+		t.Fatalf("first feed must match: %#v", got)
 	}
-	if got := m.Flush(); len(got) != 0 {
-		t.Fatalf("second Flush must not re-match: %#v", got)
+	if got := m.Feed(nil); len(got) != 0 {
+		t.Fatalf("empty chunk must not re-match: %#v", got)
 	}
 }
 
+// A CRLF producer's lines end where $ expects them to, and the reported
+// excerpt does not carry the '\r'.
 func TestOutputMatcherStripsCRLFBeforeMatching(t *testing.T) {
-	m := NewOutputMatcher(regexp.MustCompile(`ready$`))
+	m := NewOutputMatcher(mustCompileOutputMatch(t, `ready$`))
 	got := m.Feed([]byte("server ready\r\n"))
 	if len(got) != 1 || got[0] != "server ready" {
 		t.Fatalf("CRLF line matches = %#v, want [\"server ready\"]", got)
 	}
 }
 
-func TestOutputMatcherBoundsOverlongCarry(t *testing.T) {
+// However long a line grows, the retained window stays bounded — that bound is
+// the matcher's whole memory footprint.
+func TestOutputMatcherBoundsRetainedWindow(t *testing.T) {
 	m := NewOutputMatcher(regexp.MustCompile(`ready`))
-	if got := m.Feed([]byte(strings.Repeat("x", maxOutputMatcherLineBytes+1))); len(got) != 0 {
-		t.Fatalf("overlong unterminated line must not match: %#v", got)
+	if got := m.Feed([]byte(strings.Repeat("x", 4*outputMatchWindowBytes))); len(got) != 0 {
+		t.Fatalf("non-matching output must not match: %#v", got)
 	}
-	if len(m.carry) > maxOutputMatcherLineBytes {
-		t.Fatalf("carry length = %d, want <= %d", len(m.carry), maxOutputMatcherLineBytes)
+	if len(m.carry) > outputMatchWindowBytes {
+		t.Fatalf("window length = %d, want <= %d", len(m.carry), outputMatchWindowBytes)
 	}
-	if got := m.Feed([]byte("ready\n")); len(got) != 0 {
-		t.Fatalf("overlong line must be skipped through newline: %#v", got)
-	}
-	if got := m.Feed([]byte("server ready\n")); len(got) != 1 || got[0] != "server ready" {
-		t.Fatalf("matcher did not recover after overlong line: %#v", got)
+	// A match inside the same never-terminated line still fires.
+	if got := m.Feed([]byte("ready")); len(got) != 1 {
+		t.Fatalf("match inside a long line must fire: %#v", got)
 	}
 }
 
-func TestOutputMatcherFlushSkipsOverlongPartial(t *testing.T) {
+// The old line matcher dropped this whole line on the floor. The window scanner
+// finds the token and reports a bounded excerpt of the line around it.
+func TestOutputMatcherMatchesInsideAnUnterminatedOverlongLine(t *testing.T) {
 	m := NewOutputMatcher(regexp.MustCompile(`ready`))
-	if got := m.Feed([]byte(strings.Repeat("x", maxOutputMatcherLineBytes+1) + "ready")); len(got) != 0 {
-		t.Fatalf("overlong unterminated line must not match on Feed: %#v", got)
+	got := m.Feed([]byte(strings.Repeat("x", outputMatchWindowBytes+1) + "ready"))
+	if len(got) != 1 {
+		t.Fatalf("token in an unterminated overlong line fired %d times, want 1", len(got))
 	}
-	if got := m.Flush(); len(got) != 0 {
-		t.Fatalf("overlong final partial line must not match on Flush: %#v", got)
+	if len(got[0]) > outputMatchWindowBytes {
+		t.Fatalf("excerpt is %d bytes, want <= %d", len(got[0]), outputMatchWindowBytes)
 	}
-	if got := m.Feed([]byte("server ready\n")); len(got) != 1 || got[0] != "server ready" {
-		t.Fatalf("matcher did not recover after overlong flush: %#v", got)
+	if !strings.HasSuffix(got[0], "ready") {
+		t.Fatalf("excerpt %q does not end at the match", got[0])
 	}
 }
 
@@ -338,28 +349,32 @@ func TestOutputMatcherFeedAtNeverMatchesLineBelowScanOffset(t *testing.T) {
 	}
 }
 
-func TestOutputMatcherSeedCarryReplacesBufferedPartial(t *testing.T) {
-	m := NewOutputMatcher(regexp.MustCompile(`^fresh tail$`))
+// SeedCarry replaces the window wholesale and accounts for everything already
+// in it: the seeded bytes never fire, bytes appended after them do.
+func TestOutputMatcherSeedCarryReplacesTheWindow(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`ready`))
 	if got := m.Feed([]byte("stale partial")); len(got) != 0 {
-		t.Fatalf("partial line must not match: %#v", got)
+		t.Fatalf("non-matching output must not match: %#v", got)
 	}
-	m.SeedCarry([]byte("fresh tail"))
-	if got := m.Feed([]byte("\n")); len(got) != 1 || got[0] != "fresh tail" {
-		t.Fatalf("seeded carry must replace the buffered partial: %#v", got)
+	m.SeedCarry([]byte("already ready"))
+	if got := m.Feed([]byte("\n")); len(got) != 0 {
+		t.Fatalf("seeded (already-scanned) bytes must not fire: %#v", got)
+	}
+	if got := m.Feed([]byte("ready again\n")); len(got) != 1 || got[0] != "ready again" {
+		t.Fatalf("output after the seed must fire: %#v", got)
 	}
 }
 
-func TestOutputMatcherSeedCarryBoundsOverlongTail(t *testing.T) {
+func TestOutputMatcherSeedCarryBoundsTheWindow(t *testing.T) {
 	m := NewOutputMatcher(regexp.MustCompile(`ready`))
-	m.SeedCarry([]byte(strings.Repeat("x", maxOutputMatcherLineBytes+1)))
-	if len(m.carry) > maxOutputMatcherLineBytes {
-		t.Fatalf("carry length = %d, want <= %d", len(m.carry), maxOutputMatcherLineBytes)
+	m.SeedCarry([]byte(strings.Repeat("x", 4*outputMatchWindowBytes)))
+	if len(m.carry) > outputMatchWindowBytes {
+		t.Fatalf("window length = %d, want <= %d", len(m.carry), outputMatchWindowBytes)
 	}
-	if got := m.Feed([]byte("ready\n")); len(got) != 0 {
-		t.Fatalf("line completing an overlong seeded tail must not match: %#v", got)
-	}
-	if got := m.Feed([]byte("server ready\n")); len(got) != 1 || got[0] != "server ready" {
-		t.Fatalf("matcher did not recover after overlong seeded tail: %#v", got)
+	// The seeded line has no newline in it, so the match still sits on a line
+	// longer than the window: the excerpt falls back to the match onward.
+	if got := m.Feed([]byte("server ready\n")); len(got) != 1 || got[0] != "ready" {
+		t.Fatalf("output after an oversized seed must still match: %#v", got)
 	}
 }
 
@@ -371,30 +386,32 @@ func TestScanRetainedReturnsLastMatchingLine(t *testing.T) {
 	}
 }
 
-func TestScanRetainedIgnoresUnterminatedFinalLine(t *testing.T) {
+// The level scan does not require a terminator: a job whose output ends without
+// a newline is exactly the case this scanner exists to serve.
+func TestScanRetainedMatchesUnterminatedFinalLine(t *testing.T) {
 	m := NewOutputMatcher(regexp.MustCompile(`ready`))
-	// The only "ready" sits on the unterminated final line; it belongs to the
-	// carry and must not be reported by the level scan.
 	last, matched := m.ScanRetained([]byte("starting\nserver ready"))
-	if matched {
-		t.Fatalf("unterminated final line must be ignored, got match %q", last)
+	if !matched || last != "server ready" {
+		t.Fatalf("ScanRetained = (%q, %v), want \"server ready\"", last, matched)
 	}
 }
 
-func TestScanRetainedSkipsOverlongLine(t *testing.T) {
+func TestScanRetainedFindsMatchInAnOverlongLine(t *testing.T) {
 	m := NewOutputMatcher(regexp.MustCompile(`ready`))
-	// A complete line longer than the cap is skipped exactly like the stream path,
-	// so a match buried in an overlong line is not reported.
-	data := []byte(strings.Repeat("x", maxOutputMatcherLineBytes+1) + "ready\n")
+	// A line longer than the window is no longer skipped: the level scan reports
+	// a bounded excerpt ending at the match.
+	data := []byte(strings.Repeat("x", outputMatchWindowBytes+1) + "ready\n")
 	last, matched := m.ScanRetained(data)
-	if matched {
-		t.Fatalf("overlong complete line must be skipped, got match %q", last)
+	if !matched {
+		t.Fatal("match buried in an overlong line must be reported")
 	}
-	// A normal matching line after the overlong one is still found.
+	if len(last) > outputMatchWindowBytes || !strings.HasSuffix(last, "ready") {
+		t.Fatalf("excerpt = %q (%d bytes), want a bounded excerpt ending at the match", last, len(last))
+	}
+	// A normal matching line after the overlong one wins as the LAST match.
 	data = append(data, []byte("server ready\n")...)
-	last, matched = m.ScanRetained(data)
-	if !matched || last != "server ready" {
-		t.Fatalf("ScanRetained after overlong line = (%q, %v), want \"server ready\"", last, matched)
+	if last, matched = m.ScanRetained(data); !matched || last != "server ready" {
+		t.Fatalf("ScanRetained = (%q, %v), want \"server ready\"", last, matched)
 	}
 }
 
@@ -493,4 +510,178 @@ func TestFoldWatchSendsPreservesProvenance(t *testing.T) {
 	if !provenance.ContainsWatch(pending.Provenance, "watch_A", "wg_1") {
 		t.Fatalf("pending provenance changed after source mutation: %+v", pending.Provenance)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Byte-window scanner (WS3 T2). The matcher scans a rolling byte window over
+// the raw stream instead of assembling lines, so output that never emits a
+// newline — a progress bar, a JSON blob, a no-newline build log — can still
+// fire a watch.
+// ---------------------------------------------------------------------------
+
+// (a) The incident: a job whose output is one enormous line. The line-assembly
+// matcher dropped any line over the cap, so the token was silently never seen.
+func TestOutputMatcherMatchesInsideOneEnormousLine(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`READY`))
+	blob := strings.Repeat("x", 5000) + "READY" + strings.Repeat("y", 5000)
+	var got []string
+	for off := 0; off < len(blob); off += 1024 {
+		end := min(off+1024, len(blob))
+		got = append(got, m.Feed([]byte(blob[off:end]))...)
+	}
+	if len(got) != 1 {
+		t.Fatalf("token inside a 10KB single line fired %d times, want 1: %#v", len(got), got)
+	}
+	if !strings.Contains(got[0], "READY") {
+		t.Fatalf("reported excerpt %q does not contain the match", got[0])
+	}
+}
+
+// (b) A match straddling two chunks fires exactly once: the window carries the
+// tail of the previous chunk, and the seam is not a match boundary.
+func TestOutputMatcherMatchSpanningWindowSeamFiresOnce(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`READY`))
+	if got := m.Feed([]byte(strings.Repeat("x", 5000) + "REA")); len(got) != 0 {
+		t.Fatalf("half a token must not fire: %#v", got)
+	}
+	if got := m.Feed([]byte("DY" + strings.Repeat("y", 10))); len(got) != 1 {
+		t.Fatalf("token spanning the seam fired %d times, want 1: %#v", len(got), got)
+	}
+	if got := m.Feed([]byte(strings.Repeat("z", 10))); len(got) != 0 {
+		t.Fatalf("re-scanning the window must not re-fire: %#v", got)
+	}
+}
+
+// (c) Offset dedup: a re-fed chunk, and a chunk overlapping one already fed,
+// never fire a match the scanner has already reported.
+func TestOutputMatcherRefedOverlappingWindowsDoNotDoubleFire(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`READY`))
+	if got := m.FeedAt([]byte("a READY b"), 9); len(got) != 1 {
+		t.Fatalf("first feed = %#v, want one match", got)
+	}
+	if got := m.FeedAt([]byte("a READY b"), 9); len(got) != 0 {
+		t.Fatalf("an identical re-fed chunk must not fire: %#v", got)
+	}
+	// A chunk whose first bytes repeat already-scanned output contributes only
+	// its suffix, and the repeated match does not fire again.
+	if got := m.FeedAt([]byte("READY b c"), 14); len(got) != 0 {
+		t.Fatalf("overlapping re-feed must not double-fire: %#v", got)
+	}
+	if got := m.FeedAt([]byte(" READY d"), 22); len(got) != 1 {
+		t.Fatalf("genuinely new match must still fire: %#v", got)
+	}
+}
+
+// (d) Anchor semantics. Patterns are compiled multiline, so ^/$ anchor at
+// newlines; the window edge also counts as a text boundary, so ^/$ can anchor
+// there even mid-line. Both halves are pinned here.
+func TestOutputMatcherAnchorsAreMultiline(t *testing.T) {
+	re, err := CompileOutputMatch(`^READY$`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	m := NewOutputMatcher(re)
+	if got := m.Feed([]byte("noise\nREADY\nmore\n")); len(got) != 1 || got[0] != "READY" {
+		t.Fatalf("multiline anchors = %#v, want [\"READY\"]", got)
+	}
+}
+
+func TestOutputMatcherDollarAnchorsAtTheGrowingWindowEnd(t *testing.T) {
+	re, err := CompileOutputMatch(`^done$`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	m := NewOutputMatcher(re)
+	// The stream has produced "done" with no newline yet. The end of the scan
+	// window counts as end-of-text, so $ anchors there and the watch fires now
+	// rather than waiting for a terminator that may never come.
+	if got := m.Feed([]byte("done")); len(got) != 1 || got[0] != "done" {
+		t.Fatalf("$ at the growing window end = %#v, want [\"done\"]", got)
+	}
+	// More output arrives on the same line: the earlier fire is not repeated,
+	// and the now-longer line does not match.
+	if got := m.Feed([]byte("zo\n")); len(got) != 0 {
+		t.Fatalf("extending the line must not re-fire: %#v", got)
+	}
+}
+
+func TestOutputMatcherCaretAnchorsAtTheWindowStart(t *testing.T) {
+	re, err := CompileOutputMatch(`^x+READY$`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	m := NewOutputMatcher(re)
+	// The line is longer than the window, so the window start lands mid-line.
+	// ^ anchors at the window start: the fire is deliberate, documented, and the
+	// price of never dropping a long line on the floor.
+	if got := m.Feed([]byte(strings.Repeat("x", outputMatchWindowBytes) + "READY")); len(got) != 0 {
+		t.Fatalf("unterminated line must not match ^x+READY$ yet: %#v", got)
+	}
+	if got := m.Feed([]byte("\n")); len(got) != 1 {
+		t.Fatalf("^ at the window start = %#v, want one match", got)
+	}
+}
+
+// (e) Match-length bound: the window is the stated limit on how long a single
+// match may be. A longer match is not reported.
+func TestOutputMatcherMatchLongerThanWindowDoesNotFire(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`A[^B]*B`))
+	long := "A" + strings.Repeat("-", outputMatchWindowBytes) + "B"
+	if got := m.Feed([]byte(long)); len(got) != 0 {
+		t.Fatalf("match longer than the window must not fire: %#v", got)
+	}
+	short := "A" + strings.Repeat("-", 10) + "B"
+	if got := m.Feed([]byte(short)); len(got) != 1 || got[0] != short {
+		t.Fatalf("match within the window bound = %#v, want %q", got, short)
+	}
+}
+
+// (f) The attach-time level scan uses the same windowing and the same bound, so
+// attach and stream agree on what can match.
+func TestScanRetainedFindsMatchInsideOneEnormousLine(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`READY`))
+	data := []byte(strings.Repeat("x", 5000) + "READY" + strings.Repeat("y", 5000))
+	last, matched := m.ScanRetained(data)
+	if !matched {
+		t.Fatal("attach scan must find a token inside a 10KB single line")
+	}
+	if !strings.Contains(last, "READY") {
+		t.Fatalf("attach excerpt %q does not contain the match", last)
+	}
+}
+
+func TestScanRetainedSkipsMatchLongerThanWindow(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`A[^B]*B`))
+	data := []byte("A" + strings.Repeat("-", outputMatchWindowBytes) + "B\n")
+	if last, matched := m.ScanRetained(data); matched {
+		t.Fatalf("attach scan must honour the same match-length bound, got %q", last)
+	}
+}
+
+// Attach then stream: a long-line match already present at attach fires once
+// through the level scan and is not re-fired by the live path that re-scans the
+// same bytes inside its window.
+func TestAttachScanThenStreamDoesNotDoubleFireLongLine(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`READY`))
+	retained := []byte(strings.Repeat("x", 5000) + "READY" + strings.Repeat("y", 100))
+	m.SetScanOffset(int64(len(retained)))
+	m.SeedCarry(retained)
+	if _, matched := m.ScanRetained(retained); !matched {
+		t.Fatal("attach scan must fire on the retained long line")
+	}
+	if got := m.FeedAt([]byte("zzz"), int64(len(retained))+3); len(got) != 0 {
+		t.Fatalf("live path must not re-fire the attach-scanned match: %#v", got)
+	}
+	if got := m.FeedAt([]byte(" READY again"), int64(len(retained))+15); len(got) != 1 {
+		t.Fatalf("a new match after attach must fire: %#v", got)
+	}
+}
+
+func mustCompileOutputMatch(t *testing.T, pattern string) *regexp.Regexp {
+	t.Helper()
+	re, err := CompileOutputMatch(pattern)
+	if err != nil {
+		t.Fatalf("CompileOutputMatch(%q): %v", pattern, err)
+	}
+	return re
 }

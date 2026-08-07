@@ -9,7 +9,7 @@ import (
 
 // TestOutputMatcherOracleDemo demonstrates the fuzz/oracle combinators against
 // the SAME property FuzzOutputMatcher checks by hand — that OutputMatcher agrees
-// with the independent referenceMatches splitter, and is deterministic. It shows
+// with the independent referenceMatches windowed scanner, and is deterministic. It shows
 // the ergonomics: the hand-written "run both, normalize nil, reflect.DeepEqual,
 // Fatalf" block collapses to a single oracle.AgreesWith call, and the "fresh
 // matcher fed identically" block to a single oracle.Deterministic call. The
@@ -35,12 +35,10 @@ func TestOutputMatcherOracleDemo(t *testing.T) {
 		// The production path and the reference splitter as two pure funcs of the
 		// blob, so the differential and determinism oracles apply directly.
 		matcher := func(b []byte) []string {
-			m := NewOutputMatcher(re)
-			return normalizeMatches(append(append([]string{}, m.Feed(b)...), m.Flush()...))
+			return normalizeMatches(NewOutputMatcher(re).Feed(b))
 		}
 		reference := func(b []byte) []string {
-			completed, flush := referenceMatches(re, b)
-			return normalizeMatches(append(append([]string{}, completed...), flush...))
+			return normalizeMatches(referenceMatches(re, b))
 		}
 
 		// The WS3 workhorse: "the two agree" is the whole oracle.

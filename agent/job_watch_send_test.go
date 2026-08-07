@@ -1318,9 +1318,6 @@ func TestWatchSendTerminalFlushBatchContinuesAfterPersistenceFailure(t *testing.
 	}); err != nil {
 		t.Fatalf("configure second watch: %v", err)
 	}
-	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("server ready")); err != nil {
-		t.Fatalf("append output: %v", err)
-	}
 	appendErr := errors.New("pending append failed")
 	realAppend := jm.appendEvent
 	blockFirst := true
@@ -1335,8 +1332,13 @@ func TestWatchSendTerminalFlushBatchContinuesAfterPersistenceFailure(t *testing.
 		}
 		return realAppend(e)
 	}
+	// Neither watch ever matches, so both end unfired and finalize builds a
+	// two-frame terminal end-notice batch.
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("still working")); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
 
-	// finalize persists the terminal batch as pending (delivery is the drain's
+	// finalize persists that terminal batch as pending (delivery is the drain's
 	// job). One pending persist fails; the failed target is retained in runtime
 	// terminalFlush, the survivor persists, and arming is not blocked (spec §4.1).
 	code := 0

@@ -1,14 +1,12 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -1022,7 +1020,7 @@ func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 		cfg.triggerEvery = a.Every
 	}
 	if a.OutputMatch != "" {
-		re, err := regexp.Compile(a.OutputMatch)
+		re, err := jobstore.CompileOutputMatch(a.OutputMatch)
 		if err != nil {
 			return nil, fmt.Errorf("invalid_request: output_match: %w", err)
 		}
@@ -2502,9 +2500,9 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 			matchRoot := root
 			matchRoot.Provenance = provenance.Clone(match.Provenance)
 			if cfg.send != nil {
-				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match.Line, matchRoot).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, match.Provenance)))
+				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match.Text, matchRoot).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, match.Provenance)))
 			} else {
-				notifications = append(notifications, jm.watchNotificationFromWatch(cfg, jobID, "output_match: "+match.Line, match.Provenance))
+				notifications = append(notifications, jm.watchNotificationFromWatch(cfg, jobID, "output_match: "+match.Text, match.Provenance))
 				if jm.recordWatchDeliveryLocked(cfg) {
 					overBudget = append(overBudget, cfg)
 				}
@@ -2518,17 +2516,6 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 	jm.autoClearOverBudgetWatches(overBudget)
 }
 
-// tailAfterLastNewline returns the slice of data after its last '\n', or all of
-// data if it contains no newline. This is the unterminated final-line tail that
-// seeds an attach-scan matcher's carry so a token half-written at attach
-// completes through the live FeedAt path (spec §7.1 step 1).
-func tailAfterLastNewline(data []byte) []byte {
-	if idx := bytes.LastIndexByte(data, '\n'); idx >= 0 {
-		return data[idx+1:]
-	}
-	return data
-}
-
 // prepareAttachScanLocked primes a freshly installed output_match matcher for a
 // level-trigger attach scan and returns the retained output to scan after the
 // lock is released. The caller holds jm.mu and has just installed cfg for a
@@ -2539,15 +2526,23 @@ func tailAfterLastNewline(data []byte) []byte {
 //
 // Under jm.mu it reads the job's retained output and lifetime length N, records
 // scanOffset=N on the matcher (so the live FeedAt path will not re-fire bytes the
-// scan covers), and seeds the carry with the tail after the last newline (so a
-// token straddling the attach boundary completes through FeedAt). The actual scan
-// runs after the lock is released, in fireAttachScan.
+// scan covers), and seeds the scan window with that retained output (so a token
+// straddling the attach boundary completes through FeedAt without firing twice).
+// The actual scan runs after the lock is released, in fireAttachScan.
+//
+// A watchable job with no output store cannot be level-checked at all. That is
+// not a quiet no-fire: it is reported to the caller as an unable-to-scan warning
+// by way of the error return, so a watch that can never see its target's
+// already-produced output says so instead of looking armed.
 func (jm *jobManager) prepareAttachScanLocked(cfg *watchConfig, run *runningJob) (data []byte, scan bool, err error) {
 	if cfg == nil || cfg.outputMatcher == nil {
 		return nil, false, nil
 	}
-	if !isWatchableConcreteJobLocked(run) || run.output == nil {
+	if !isWatchableConcreteJobLocked(run) {
 		return nil, false, nil
+	}
+	if run.output == nil {
+		return nil, false, errors.New("job has no readable output store")
 	}
 	// truncated is discarded: a pruned prefix can't be level-checked (its bytes
 	// are gone), but SetScanOffset(total) uses the full lifetime count, so the
@@ -2558,7 +2553,7 @@ func (jm *jobManager) prepareAttachScanLocked(cfg *watchConfig, run *runningJob)
 		return nil, false, err
 	}
 	cfg.outputMatcher.SetScanOffset(total)
-	cfg.outputMatcher.SeedCarry(tailAfterLastNewline(buf))
+	cfg.outputMatcher.SeedCarry(buf)
 	return buf, true, nil
 }
 
@@ -2621,12 +2616,14 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 // installed either way; the result reports terminal_catchup with the terminal
 // status, and Fired distinguishes a matched scan from an unmatched one.
 //
-// The scan uses jm.grepOutput, which reads retained output for both running-but-
-// terminal and store-only jobs and — unlike T2's attach scan (ScanRetained) —
-// matches the final UNTERMINATED line at EOF. That divergence is intentional: the
-// job is dead, so nothing will ever complete the tail; a match on the last line
-// of a job whose output has no trailing newline must still count. The frame
-// carries the LAST matching line.
+// The scan uses jm.grepOutput because it reads retained output for both
+// running-but-terminal and store-only jobs; ScanRetained needs bytes already in
+// hand, and a store-only job's bytes are still on disk. The unterminated-final-
+// line divergence that used to justify this is gone — the byte-window scanner
+// matches a tail without a terminator — but grepOutput is still line-based and
+// still skips a line over maxJobGrepLineBytes, so catch-up on an already-terminal
+// job remains blind to a match buried in one enormous line. The frame carries the
+// LAST matching line.
 //
 // A matched catch-up with a send has no home in the live pending machinery (no
 // watch is installed), so it mints a one-shot DETACHED config registered in
@@ -2720,32 +2717,10 @@ func (jm *jobManager) completeExpiredJobWatchesLocked(jobID string, expired []ex
 		}
 		cfg := e.cfg
 		spoke := watchEverDelivered(cfg)
-		if cfg.outputMatcher != nil {
-			trackTerminalFlush := len(cfg.pending) != 0
-			for _, match := range cfg.outputMatcher.FlushWithProvenance(root.Provenance) {
-				spoke = true
-				matchRoot := root
-				matchRoot.Provenance = provenance.Clone(match.Provenance)
-				if cfg.send != nil {
-					delivery := jm.watchSendSnapshot(cfg, jobID, "output_match: "+match.Line, matchRoot)
-					delivery.allowAfterTerminalExpiry = true
-					delivery = delivery.withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, match.Provenance))
-					deliveries = append(deliveries, delivery)
-					trackTerminalFlush = true
-				} else {
-					notifications = append(notifications, jm.watchNotificationFromWatch(cfg, jobID, "output_match: "+match.Line, match.Provenance))
-					// A no-send caller notification is delivered for sure, but only
-					// after the cfg is removed below, so the drain's later increment
-					// would never reach recent_watches. Count it now. Send deliveries
-					// are NOT pre-counted: they may still be dropped, and they settle
-					// (and count) on their own path.
-					cfg.deliveries++
-				}
-			}
-			if trackTerminalFlush {
-				jm.rememberDetachedPendingLocked(cfg)
-			}
-		} else if len(cfg.pending) != 0 {
+		// There is no terminal flush for an output_match watch: the byte-window
+		// scanner matches every byte as it arrives instead of waiting for a line
+		// terminator, so nothing is ever left buffered when the job ends.
+		if len(cfg.pending) != 0 {
 			jm.rememberDetachedPendingLocked(cfg)
 		}
 		if !spoke {

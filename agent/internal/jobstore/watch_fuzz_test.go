@@ -7,23 +7,21 @@ import (
 	"testing"
 )
 
-// FuzzOutputMatcher drives OutputMatcher — the streaming carry/regexp line
-// matcher that watches a job's output and fires on completed lines. Input is an
-// arbitrary regexp pattern plus an arbitrary output blob. The blob is fed as a
-// single Feed() chunk and then Flush()ed, so every chunk boundary coincides with
-// the blob itself and the result is fully determined by the line structure.
+// FuzzOutputMatcher drives OutputMatcher — the streaming byte-window regexp
+// matcher that watches a job's output. Input is an arbitrary regexp pattern plus
+// an arbitrary output blob. The blob is fed as a single Feed() chunk, so the scan
+// window is exactly the blob and the result is fully determined by it.
 //
-// Oracle: a hand-written reference line-splitter that mirrors the matcher's
-// documented policy (split on '\n'; a completed line is the bytes before a '\n'
-// with a single trailing '\r' stripped before matching; lines longer than
-// maxOutputMatcherLineBytes — with a +1 budget when the fragment ends in '\r' —
-// are skipped; Flush emits the unterminated tail un-stripped only when it is not
-// overlong and at most maxOutputMatcherLineBytes long). The fuzzer asserts:
-//   - Feed()+Flush() returns EXACTLY the reference match list (a real
+// Oracle: a hand-written reference windowed scanner that mirrors the matcher's
+// documented policy (run the pattern over the window with CRLF rewritten so $
+// anchors at a CRLF line end; skip any match longer than outputMatchWindowBytes;
+// report the line the match begins on, capped at outputMatchWindowBytes and
+// stripped of one trailing '\r'). The fuzzer asserts:
+//   - Feed() returns EXACTLY the reference match list (a real
 //     reference-implementation differential, not a no-panic floor).
-//   - ScanRetained returns the LAST completed match and a matched flag that agree
-//     with the reference, cross-checking the independent scan-path loop.
-//   - Every returned line genuinely matches the regexp and contains no newline.
+//   - ScanRetained returns the LAST reference match and a matched flag that agree
+//     with the reference, cross-checking the independent scan-path entry point.
+//   - Every returned excerpt is within the window bound and contains no newline.
 //   - The matcher is deterministic across two fresh runs.
 func FuzzOutputMatcher(f *testing.F) {
 	f.Add(`error`, "ok\nerror here\nfine\n")
@@ -46,47 +44,45 @@ func FuzzOutputMatcher(f *testing.F) {
 		}
 
 		data := []byte(blob)
-		wantCompleted, wantFlush := referenceMatches(re, data)
-		wantAll := append(append([]string{}, wantCompleted...), wantFlush...)
+		want := referenceMatches(re, data)
 
 		m := NewOutputMatcher(re)
-		got := append(append([]string{}, m.Feed(data)...), m.Flush()...)
+		got := m.Feed(data)
 
 		// Normalize nil vs empty so DeepEqual compares contents, not nilness.
 		if len(got) == 0 {
 			got = nil
 		}
-		if len(wantAll) == 0 {
-			wantAll = nil
+		if len(want) == 0 {
+			want = nil
 		}
-		if !reflect.DeepEqual(got, wantAll) {
-			t.Fatalf("Feed+Flush mismatch\n pattern=%q\n blob=%q\n got =%#v\n want=%#v", pattern, blob, got, wantAll)
-		}
-
-		// Every reported line must really match and carry no newline.
-		for _, line := range got {
-			if !re.MatchString(line) {
-				t.Fatalf("reported line %q does not match pattern %q", line, pattern)
-			}
-			if bytes.IndexByte([]byte(line), '\n') >= 0 {
-				t.Fatalf("reported line contains a newline: %q", line)
-			}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Feed mismatch\n pattern=%q\n blob=%q\n got =%#v\n want=%#v", pattern, blob, got, want)
 		}
 
-		// ScanRetained: independent scan-path loop, cross-checked against the
-		// reference's completed-line list (it ignores the unterminated tail).
+		// Every reported excerpt stays inside the stated bound and on one line.
+		for _, excerpt := range got {
+			if len(excerpt) > outputMatchWindowBytes {
+				t.Fatalf("excerpt %d bytes exceeds the window bound %d", len(excerpt), outputMatchWindowBytes)
+			}
+			if bytes.IndexByte([]byte(excerpt), '\n') >= 0 {
+				t.Fatalf("reported excerpt contains a newline: %q", excerpt)
+			}
+		}
+
+		// ScanRetained: independent entry point, cross-checked against the same
+		// reference list (it reports only the LAST match).
 		last, matched := NewOutputMatcher(re).ScanRetained(data)
-		wantMatched := len(wantCompleted) > 0
+		wantMatched := len(want) > 0
 		if matched != wantMatched {
 			t.Fatalf("ScanRetained matched=%v want=%v (pattern=%q blob=%q)", matched, wantMatched, pattern, blob)
 		}
-		if wantMatched && last != wantCompleted[len(wantCompleted)-1] {
-			t.Fatalf("ScanRetained last=%q want=%q", last, wantCompleted[len(wantCompleted)-1])
+		if wantMatched && last != want[len(want)-1] {
+			t.Fatalf("ScanRetained last=%q want=%q", last, want[len(want)-1])
 		}
 
 		// Determinism: a fresh matcher fed identically yields the same result.
-		m2 := NewOutputMatcher(re)
-		got2 := append(append([]string{}, m2.Feed(data)...), m2.Flush()...)
+		got2 := NewOutputMatcher(re).Feed(data)
 		if len(got2) == 0 {
 			got2 = nil
 		}
@@ -96,56 +92,53 @@ func FuzzOutputMatcher(f *testing.F) {
 	})
 }
 
-// referenceMatches reimplements OutputMatcher's line policy independently of the
-// production code, returning the completed-line matches (in order) and any
-// Flush-emitted unterminated-tail match. It mirrors appendLineFragment's overlong
-// budget, completedLine's single trailing-'\r' strip, and Flush's raw,
-// un-stripped, 4096-capped tail handling.
-func referenceMatches(re *regexp.Regexp, data []byte) (completed, flush []string) {
-	pieces := bytes.Split(data, []byte("\n"))
-	// Every piece but the last precedes a '\n' and is a completed line; the
-	// final piece is the unterminated tail Flush handles (empty if data ended
-	// in '\n' or is empty).
-	for _, frag := range pieces[:len(pieces)-1] {
-		if overlongFragment(frag) {
+// referenceMatches reimplements OutputMatcher's window policy independently of
+// the production code for the single-chunk case, where the scan window is the
+// whole blob and nothing has been scanned before.
+func referenceMatches(re *regexp.Regexp, data []byte) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	var out []string
+	for _, loc := range re.FindAllIndex(referenceAnchorText(data), -1) {
+		if loc[1]-loc[0] > outputMatchWindowBytes {
 			continue
 		}
-		line := stripTrailingCR(frag)
-		if re.Match(line) {
-			completed = append(completed, string(line))
+		out = append(out, referenceExcerpt(data, loc[0]))
+	}
+	return out
+}
+
+// referenceAnchorText mirrors the CRLF rewrite the scanner applies before
+// running the pattern: a '\r' that precedes a '\n' becomes a '\n', so a CRLF
+// line ends where $ expects it to and indices still address the original bytes.
+func referenceAnchorText(data []byte) []byte {
+	out := append([]byte(nil), data...)
+	for i := 0; i+1 < len(out); i++ {
+		if out[i] == '\r' && out[i+1] == '\n' {
+			out[i] = '\n'
 		}
 	}
-
-	tail := pieces[len(pieces)-1]
-	if len(tail) == 0 || overlongFragment(tail) {
-		return completed, nil
-	}
-	// Flush does NOT strip a trailing '\r' and caps at maxOutputMatcherLineBytes.
-	if len(tail) > maxOutputMatcherLineBytes {
-		return completed, nil
-	}
-	if re.Match(tail) {
-		flush = append(flush, string(tail))
-	}
-	return completed, flush
+	return out
 }
 
-// overlongFragment mirrors appendLineFragment's drop condition for a single
-// fragment appended onto an empty carry: a trailing '\r' grants one extra byte.
-func overlongFragment(frag []byte) bool {
-	if len(frag) == 0 {
-		return false
+// referenceExcerpt mirrors the reported text: the line the match begins on,
+// capped at outputMatchWindowBytes, with one trailing '\r' stripped.
+func referenceExcerpt(data []byte, start int) string {
+	lo := bytes.LastIndexByte(data[:start], '\n') + 1
+	hi := len(data)
+	if i := bytes.IndexByte(data[start:], '\n'); i >= 0 {
+		hi = start + i
 	}
-	limit := maxOutputMatcherLineBytes
-	if frag[len(frag)-1] == '\r' {
-		limit++
+	if hi-lo > outputMatchWindowBytes {
+		lo = start
+		if hi > start+outputMatchWindowBytes {
+			hi = start + outputMatchWindowBytes
+		}
 	}
-	return len(frag) > limit
-}
-
-func stripTrailingCR(line []byte) []byte {
+	line := data[lo:hi]
 	if len(line) > 0 && line[len(line)-1] == '\r' {
-		return line[:len(line)-1]
+		line = line[:len(line)-1]
 	}
-	return line
+	return string(line)
 }

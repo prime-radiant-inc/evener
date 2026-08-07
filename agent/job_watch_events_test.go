@@ -968,3 +968,34 @@ func TestMarshalWatchResultTerminalCatchupProjection(t *testing.T) {
 		}
 	}
 }
+
+// TestOutputMatchFiresInsideOneEnormousLine is the incident this scanner exists
+// to fix: a job whose output is one 10KB line with no newline in it. The old
+// line-assembly matcher dropped any line over its cap, so the watch produced
+// zero matches and the caller waited forever. Real store, real append path.
+func TestOutputMatchFiresInsideOneEnormousLine(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "BUILD_DONE"}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	output := jm.running[rec.JobID].output
+	blob := strings.Repeat("=", 5000) + "BUILD_DONE" + strings.Repeat("=", 5000)
+	for off := 0; off < len(blob); off += 1024 {
+		end := min(off+1024, len(blob))
+		if _, err := jm.appendJobOutput(rec.JobID, output, []byte(blob[off:end])); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	if len(notified) != 1 {
+		t.Fatalf("a token inside a 10KB single line fired %d notifications, want 1", len(notified))
+	}
+	if !strings.Contains(notified[0].Reason, "BUILD_DONE") {
+		t.Fatalf("notification reason = %q, want it to carry the match", notified[0].Reason)
+	}
+}
