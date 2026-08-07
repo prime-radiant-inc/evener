@@ -99,7 +99,7 @@ func TestCapabilityPreambleRestricted(t *testing.T) {
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"go: telemetry writes denied (harmless stderr noise)",
 		"git config read: `git config --list` exit 0",
-		"git under restricted: the global git config (~/.gitconfig, ~/.config/git/config) is readable but not writable; nothing else in the home directory is",
+		"git under restricted: the global git config (~/.gitconfig, ~/.config/git/config) is readable but not writable; the grant covers those files only",
 		"On PATH: go=yes node=yes rg=no",
 	}, "\n")
 	if diff := normalize(got, root, home); diff != want {
@@ -136,8 +136,8 @@ func TestCapabilityPreambleRestrictedSeatbelt(t *testing.T) {
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"go: telemetry writes denied (harmless stderr noise)",
 		"git config read: `git config --list` exit 0",
-		"git under restricted: the global git config (~/.gitconfig, ~/.config/git/config) is readable but not writable; nothing else in the home directory is",
-		"git under restricted on macOS: xcrun_db writes denied (2 stderr lines/call), ~3.5s/call",
+		"git under restricted: the global git config (~/.gitconfig, ~/.config/git/config) is readable but not writable; the grant covers those files only",
+		"git under restricted on macOS: xcrun_db writes denied (2 stderr lines/call), ~4s/call",
 		"On PATH: go=yes node=yes rg=no",
 	}, "\n")
 	if diff := normalize(got, policy.Git.WorktreeRoot, home); diff != want {
@@ -224,7 +224,7 @@ func TestCapabilityPreambleUnprobed(t *testing.T) {
 		"Cache: session-private",
 		"Go cache: unprobed",
 		"git config read: unprobed",
-		"git under restricted: the global git config (~/.gitconfig, ~/.config/git/config) is readable but not writable; nothing else in the home directory is",
+		"git under restricted: the global git config (~/.gitconfig, ~/.config/git/config) is readable but not writable; the grant covers those files only",
 		"On PATH: unprobed",
 	}, "\n")
 	if diff := normalize(got, root, home); diff != want {
@@ -295,7 +295,7 @@ func TestParseCapabilityProbe(t *testing.T) {
 
 // TestCapabilityPreambleGitProbeFailsAloneKeepsToolFacts: the two probes are
 // bounded independently, so a git probe that times out (restricted mode's git
-// costs ~3.5s per call — docs/sandboxing.md) must leave the PATH and cache
+// costs ~4s per call — docs/sandboxing.md) must leave the PATH and cache
 // measurements standing rather than collapsing the whole preamble to
 // "unprobed". Only the git line degrades.
 func TestCapabilityPreambleGitProbeFailsAloneKeepsToolFacts(t *testing.T) {

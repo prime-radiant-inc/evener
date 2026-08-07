@@ -72,7 +72,7 @@ chain is readable, not that every git operation succeeds.
 
 The two probes are **bounded independently and run concurrently** — the tool
 probe tightly, the git probe generously, because a `git` call under `restricted`
-costs roughly 3.5s (see `restricted` below). Sharing one tight budget would have timed the whole
+costs roughly 4s (see `restricted` below). Sharing one tight budget would have timed the whole
 probe out on exactly the mode the preamble most exists for; independence means a
 slow git degrades only the git line.
 
@@ -141,10 +141,19 @@ sockets beyond stdio.
   The grant is deliberately narrow, and what it does **not** change matters as
   much as what it does:
 
-  - It is **file-exact**. The two config FILES are granted, never `$HOME` and never
-    the `~/.config` or `~/.config/git` directories. Every other path under the home
-    directory stays unreadable. A file that does not exist contributes nothing and
+  - It is **file-exact**, and it adds no other read under the home directory. The
+    two config FILES are granted, never `$HOME` and never the `~/.config` or
+    `~/.config/git` directories. A file that does not exist contributes nothing and
     never fails session start; a path that names a directory is refused outright.
+    File-exactness is enforced where the candidates are *probed* — a candidate is
+    admitted only if it exists and is not a directory — and not by the shared-tree
+    guard, which admits directories by design because the toolchain and hook/MCP
+    grants need it to. (This grant is not the only one that may name a path under
+    your home directory: the [hook and MCP infrastructure
+    grant](#hooks-and-mcp-under-a-sandbox) can too, deliberately — a plugin
+    directory under `~/.claude` is the ordinary case. "Nothing else in `$HOME` is
+    readable" would therefore be false; what is true is that *this* grant adds
+    nothing else.)
   - It is **read-only**. Config and hook **write** protection is untouched: the
     global config cannot be written under `restricted`, `git config --global` and
     `git config --local` are still denied, and `.git/config` and `.git/hooks` are
@@ -165,7 +174,8 @@ sockets beyond stdio.
   developer's git, not a blanked-out one.
 
   Two residuals remain on macOS: every `git` call under `restricted` emits two
-  `xcrun_db` cache-write denials to stderr and costs roughly 3.5s, because the
+  `xcrun_db` cache-write denials to stderr and costs roughly 4s (measured 2026-08-07:
+  eight consecutive calls, 3.62-4.42s, mean 3.98s), because the
   `xcrun` shim retries a cache write into the per-user temp directory that the mode
   does not grant.
 

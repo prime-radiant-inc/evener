@@ -80,7 +80,11 @@ type HostFacts struct {
 	//
 	// READ-ONLY and FILE-EXACT (ruled 2026-08-07): each entry is an existing
 	// non-directory FILE, never a directory and never the home directory itself,
-	// so the grant cannot widen into a home read. It changes no write surface — git
+	// so the grant cannot widen into a home read. File-exactness is enforced HERE,
+	// at the probe: RootGuard, which every candidate also passes through, refuses
+	// shared trees but admits directories by design (the toolchain and hook/MCP
+	// grants are directories), so it is the non-directory test below — not the
+	// guard — that keeps this grant to files. It changes no write surface — git
 	// config and hook writes stay denied — and loses to the credential denylist,
 	// so a credential.helper line becomes readable while ~/.git-credentials stays
 	// masked. A path that does not exist contributes nothing and never fails

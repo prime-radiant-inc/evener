@@ -32,17 +32,24 @@ var toolProbeTimeout = 2 * time.Second
 
 // gitProbeTimeout bounds the git probe SEPARATELY, and generously, because the
 // work it bounds is genuinely expensive: docs/sandboxing.md records as measured
-// fact that every `git` call under `restricted` costs roughly 3.5s, since the
+// fact that every `git` call under `restricted` costs roughly 4s, since the
 // xcrun shim retries a cache write the mode does not grant. Sharing the tool
 // probe's 2s budget would have timed the whole probe out on exactly the mode
 // the preamble most exists for — rendering everything "unprobed" while still
 // burning the full budget to learn nothing.
 //
+// The budget is sized against that MEASUREMENT, re-taken on 2026-08-07 once the
+// global git config became readable and the probe began parsing a real config
+// instead of a blanked-out one: eight consecutive sandboxed calls ran
+// 3.62-4.42s, mean 3.98s. The previous 5s left ~15% of headroom, which a loaded
+// host eats — and a probe that times out renders the preamble "unprobed" on
+// exactly the mode it exists for. Re-measure before shrinking this.
+//
 // This is bounding the real work, not widening a blanket timeout to make a slow
 // thing fit: the two probes run CONCURRENTLY with independent deadlines, so a
 // slow or wedged git can never consume the PATH and cache measurements, and the
 // cheap facts still land at their own pace.
-var gitProbeTimeout = 5 * time.Second
+var gitProbeTimeout = 10 * time.Second
 
 // capabilityProbe is what the session-start probes measured. Its two halves are
 // tracked independently (gitProbed / toolsProbed) precisely so one failing does
@@ -173,18 +180,22 @@ func capabilityPreambleLines(f capabilityFacts) []string {
 // replaced the earlier line, which told sessions a present ~/.gitconfig fatals
 // git: once the grant landed that became FALSE, and a stale false line is the
 // precise failure the never-overstates principle exists to prevent. The scope
-// half ("nothing else under $HOME") is stated with it so the line cannot be read
-// as a home-read grant it is not.
+// The scope clause is stated with it so the line cannot be read as a home-read
+// grant it is not. It is deliberately scoped to THIS grant rather than claiming
+// the home directory is otherwise unreadable: the hook/MCP infrastructure grant
+// can also name a path under the home directory (a plugin dir under ~/.claude is
+// the canonical case), so an absolute claim would overstate containment in the
+// reassuring direction — the worse direction for a banner to be wrong in.
 func gitResidualLines(f capabilityFacts) []string {
 	if !f.sandboxed() || f.policy.Mode != sandbox.ModeRestricted {
 		return nil
 	}
 	lines := []string{
 		"git under restricted: the global git config (~/.gitconfig, " +
-			"~/.config/git/config) is readable but not writable; nothing else in the home directory is",
+			"~/.config/git/config) is readable but not writable; the grant covers those files only",
 	}
 	if f.policy.Backend == sandbox.BackendSeatbelt {
-		lines = append(lines, "git under restricted on macOS: xcrun_db writes denied (2 stderr lines/call), ~3.5s/call")
+		lines = append(lines, "git under restricted on macOS: xcrun_db writes denied (2 stderr lines/call), ~4s/call")
 	}
 	return lines
 }
@@ -281,7 +292,7 @@ func onPathSummary(p capabilityProbe) string {
 //
 // It is two subprocesses run CONCURRENTLY under INDEPENDENT deadlines: the
 // cheap tool probe (toolProbeTimeout) and the expensive git probe
-// (gitProbeTimeout, sized for restricted mode's recorded ~3.5s per git call).
+// (gitProbeTimeout, sized for restricted mode's measured ~4s per git call).
 // Independence is the point — a wedged git leaves the PATH and cache facts
 // intact, and the cheap probe's tight bound is not relaxed to accommodate it.
 // Session start therefore waits at most the LONGER of the two, and each half
