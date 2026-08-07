@@ -196,24 +196,27 @@ Drop `make-selftest` from `SELFTEST_SCRIPTS`. Trim the SELFTEST_SCRIPTS comment 
 - [ ] **Step 3:** `make lint` — green (audit tests updated in Task 4 run here too).
 - [ ] **Step 4: Commit** any stragglers; update this plan's checkboxes.
 
-### Task 8: take the selftest wave out of the inner `make test` loop
+### Task 8: rename the wave `test-tooling` and take it out of the inner `make test` loop
 
-**Rationale (Jesse's directive):** the selftest suites test development tooling — lint/test runners, janitors, fuzz orchestration, tmux helpers — not the product. They belong in the gate that runs when tooling can regress (the merge gate), not in every inner-loop `make test`.
+**Rationale (Jesse's directives):** (a) `selftest` names nothing — the wave tests development tooling, so the target is `test-tooling`, matching the `test-web`/`test-install`/`test-race` family. (b) The suites test tooling, not the product: they belong in the merge gate (where tooling regressions matter) and on demand, not in every inner-loop `make test`. The `SELFTEST=1` stream plumbing inside run-module-tests.sh is removed outright, not defaulted off.
 
 **Files:**
-- Modify: `Makefile` — `test:` target: drop `SELFTEST=1` from the run-module-tests invocation; `merge-approval-gate:` target: append `@$(MAKE) selftest` as the final serial step; rewrite the comment above the `selftest:` target ("selftest hangs off `make test`…") to say it is a standalone gate run by merge-approval-gate and on demand.
-- Modify: `scripts/merge-approval-gate-selftest.sh` — the fixture's fake `$(MAKE)` records recursive invocations; add an assertion that the gate invokes `selftest` after `test` (same `assert_before` idiom the suite already uses for lint/build/test ordering).
-- Modify: `scripts/run-module-tests-selftest.sh` — any scenario that asserts the selftest stream runs by default under `make test` semantics now passes `SELFTEST=1` explicitly in its fixture env (the script's own `SELFTEST=${SELFTEST:-0}` default already matches the new wiring).
-- Modify: `docs/testing.md` — wherever it says the selftest wave runs inside `make test`, say it runs in `make merge-approval-gate` and on demand via `make selftest`.
+- Rename: `cmd/serf-selftest/` → `cmd/serf-test-tooling/` (`git mv`; update the doc comment in main.go; the binary name in usage text follows). Individual `scripts/X-selftest.sh` files keep their names — each is genuinely a self-test of script X.
+- Modify: `Makefile` — target `selftest:` → `test-tooling:` (recipe becomes `go run ./cmd/serf-test-tooling $(TOOLING_TEST_SCRIPTS)`); variable `SELFTEST_SCRIPTS` → `TOOLING_TEST_SCRIPTS`; `.PHONY` line follows; `test:` drops `SELFTEST=1 ` from the run-module-tests invocation; `merge-approval-gate:` appends `@$(MAKE) test-tooling` as its final serial step; comments above the target and variable rewritten to match.
+- Modify: `scripts/run-module-tests.sh` — delete the SELFTEST stream entirely: the `SELFTEST=${SELFTEST:-0}` default (line 47), the `selftest` module-name-collision guard (lines 90-93), and the stream spawn/finish block (lines 395-404). The name `selftest` stops being special.
+- Modify: `scripts/run-module-tests-selftest.sh` — delete the scenarios that pinned the SELFTEST stream (name collision, wave order of the selftest stream, its log accounting); the remaining scenarios must still PASS.
+- Modify: `scripts/merge-approval-gate-selftest.sh` — assert the gate invokes `test-tooling` after `test` (same recorded-fake-make + `assert_before` idiom the suite already uses for lint/build/test ordering).
+- Modify: `docs/testing.md` — the wave is `make test-tooling`, run by `make merge-approval-gate` and on demand; no longer inside `make test`.
 
 **Interfaces:**
-- Consumes: the `selftest` target from Task 3 (`go run ./cmd/serf-selftest $(SELFTEST_SCRIPTS)`).
-- Produces: `make test` = product only (Go modules + frontend); `make merge-approval-gate` = lint → build → test → selftest.
+- Consumes: the wave runner from Tasks 1-3 (path changes only).
+- Produces: `make test` = product only (Go modules + frontend); `make merge-approval-gate` = lint → build → test → test-tooling; `make test-tooling` = the tooling wave, on demand.
 
-- [ ] **Step 1:** Make the Makefile edits above.
-- [ ] **Step 2:** Update the two selftest suites' fixtures/assertions; run `scripts/merge-approval-gate-selftest.sh` and `scripts/run-module-tests-selftest.sh` → both PASS.
-- [ ] **Step 3:** `make test` completes without spawning the selftest stream (verify: its output has no `selftest` stream line); `make selftest` still runs the wave.
-- [ ] **Step 4:** Update `docs/testing.md`; commit `feat(make): move the selftest wave to the merge gate`.
+- [ ] **Step 1:** `git mv cmd/serf-selftest cmd/serf-test-tooling`; Makefile edits above; `go test ./cmd/serf-test-tooling/` PASS.
+- [ ] **Step 2:** Remove the SELFTEST stream from run-module-tests.sh and its scenarios from run-module-tests-selftest.sh; run `scripts/run-module-tests-selftest.sh` → PASS.
+- [ ] **Step 3:** Update merge-approval-gate-selftest.sh; run it → PASS.
+- [ ] **Step 4:** `make test-tooling` → all suites PASS. `grep -n selftest Makefile` shows only the per-suite convenience targets (fuzz-*-selftest et al) and TOOLING_TEST_SCRIPTS suite names; `make test` output contains no tooling stream.
+- [ ] **Step 5:** Update `docs/testing.md`; commit `feat(make): rename the tooling wave test-tooling and move it to the merge gate`.
 
 ## Decisions locked (and one flagged)
 
@@ -221,3 +224,4 @@ Drop `make-selftest` from `SELFTEST_SCRIPTS`. Trim the SELFTEST_SCRIPTS comment 
 - Cleanup enforcement moves into the runner: a suite that leaves anything in its TMPDIR fails. That is the replacement for janitorial reclamation.
 - `reclaim-test-debris.sh` (GOCACHE shard ager) survives this plan: it handles SIGKILL/power-loss debris that no in-test cleanup can, and its selftest costs 1s. Candidate for a later unwind if Jesse wants.
 - tmux-read/tmux-send stay separate suites (separate subject scripts); duplication is resolved by the shared harness, not by merging suites.
+- **Flagged for Jesse (out of scope here):** `setup-gocache.sh` is machine provisioning (put GOCACHE on the external volume) living in a product repo — candidate to move to homedir-manager machine config. The repo keeps only the preflight that checks cache health.
