@@ -57,8 +57,15 @@ func (s *Session) initEnvContext(persisted *envctx.State) {
 		probes = *s.cfg.testOnly.envProbes
 	} else {
 		probes.GitBranch = func(cwd string) string {
-			_, branch, _, _, _ := snapshotGit(s.currentEnv(), cwd)
-			return branch
+			// Mirrors initSessionState's own skipGitSnapshot gate around
+			// snapshotGit: tests below the git-snapshot layer must not shell
+			// out here either, and this probe runs on every user turn (unlike
+			// snapshotGit, which runs once at session launch), so honoring the
+			// same knob matters more, not less.
+			if s.cfg.testOnly.skipGitSnapshot {
+				return ""
+			}
+			return snapshotGitBranch(s.currentEnv(), cwd)
 		}
 	}
 	s.envCollector = envctx.NewCollector(probes)
