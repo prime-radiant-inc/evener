@@ -8,25 +8,29 @@ import (
 	"unicode"
 )
 
-// maxFailureLedgerEntries bounds the ledger's memory: only failing
-// signatures are stored, and a runaway session must not grow this
-// unboundedly.
-const maxFailureLedgerEntries = 256
+// maxFailureLedgerEntries bounds the ledger's memory. Raised from 256: a
+// success no longer deletes its entry (the body hash must survive), so
+// successful signatures now accumulate too.
+const maxFailureLedgerEntries = 512
 
 // maxFailureSnippets caps how many failure outputs are retained per
 // signature, enough to show the parked-call intervention its evidence
 // without accumulating unbounded text.
 const maxFailureSnippets = 2
 
-// maxFailureSnippetLen truncates each retained failure output.
-const maxFailureSnippetLen = 500
+// maxFailureSnippetRunes truncates each retained failure output, in runes.
+const maxFailureSnippetRunes = 500
 
-// failureEntry tracks the consecutive-failure streak for one dispatch
-// signature (tool name + argument hash).
+// failureEntry tracks, for one dispatch signature (tool name + argument
+// hash), two independent streaks: consecutive failures sharing an error
+// class, and consecutive calls returning a byte-identical result body.
 type failureEntry struct {
 	class    string
 	count    int
 	snippets []string
+
+	bodyHash  string
+	bodyCount int
 }
 
 // failureLedger records consecutive identical-failure streaks per dispatch
@@ -54,45 +58,61 @@ func signature(name string, args []byte) string {
 }
 
 // check is the pre-dispatch read: the signature's current consecutive-
-// failure count and recorded snippets, without mutating the ledger.
-func (l *failureLedger) check(name string, args []byte) (streak int, snippets []string) {
+// failure streak, consecutive-identical-body streak, and recorded failure
+// snippets, without mutating the ledger.
+func (l *failureLedger) check(name string, args []byte) (failStreak int, repeatStreak int, snippets []string) {
 	key := signature(name, args)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	e, ok := l.entries[key]
 	if !ok {
-		return 0, nil
+		return 0, 0, nil
 	}
-	return e.count, append([]string(nil), e.snippets...)
+	return e.count, e.bodyCount, append([]string(nil), e.snippets...)
 }
 
-// record is the post-dispatch write. A success deletes the entry and
-// returns streak 0. A failure whose error class matches the recorded class
-// increments the streak; a failure with a different class starts a fresh
-// streak of 1. It returns the new streak.
-func (l *failureLedger) record(name string, args []byte, isErr bool, output string) int {
+// record is the post-dispatch write for both triggers. The body-hash streak
+// tracks byte-identical result bodies regardless of error status: repetition
+// itself is the signal, since a tool's error flag cannot be trusted (a
+// failing call can report isErr=false with the failure as plain body text).
+// The failure streak keeps its original semantics, except a success no
+// longer deletes the entry — it zeroes the failure streak and clears the
+// class and snippets, but the entry survives so the body hash persists.
+func (l *failureLedger) record(name string, args []byte, isErr bool, output string) (failStreak int, repeatStreak int) {
 	key := signature(name, args)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	e, ok := l.entries[key]
+	if !ok {
+		e = &failureEntry{}
+		l.entries[key] = e
+		l.insert(key)
+	}
+
+	bodyHash := shortHash([]byte(output))
+	if e.bodyHash == bodyHash {
+		e.bodyCount++
+	} else {
+		e.bodyHash = bodyHash
+		e.bodyCount = 1
+	}
+
 	if !isErr {
-		if _, ok := l.entries[key]; ok {
-			delete(l.entries, key)
-			l.removeFromOrder(key)
-		}
-		return 0
+		e.class = ""
+		e.count = 0
+		e.snippets = nil
+		return 0, e.bodyCount
 	}
 
 	class := errorClass(output)
-	snippet := truncateRunes(output, maxFailureSnippetLen)
+	snippet := truncateRunes(output, maxFailureSnippetRunes)
 
-	e, ok := l.entries[key]
-	if !ok || e.class != class {
-		l.entries[key] = &failureEntry{class: class, count: 1, snippets: []string{snippet}}
-		if !ok {
-			l.insert(key)
-		}
-		return 1
+	if e.class != class {
+		e.class = class
+		e.count = 1
+		e.snippets = []string{snippet}
+		return 1, e.bodyCount
 	}
 
 	e.count++
@@ -100,7 +120,7 @@ func (l *failureLedger) record(name string, args []byte, isErr bool, output stri
 		e.snippets = e.snippets[1:]
 	}
 	e.snippets = append(e.snippets, snippet)
-	return e.count
+	return e.count, e.bodyCount
 }
 
 // insert appends a newly-created key to the insertion order and evicts the
@@ -114,19 +134,6 @@ func (l *failureLedger) insert(key string) {
 	oldest := l.order[0]
 	l.order = l.order[1:]
 	delete(l.entries, oldest)
-}
-
-// removeFromOrder drops key from the insertion-order slice, keeping it in
-// sync with l.entries so a later eviction never targets a key whose entry
-// was already deleted (and possibly replaced by a newer one under the same
-// key). Must be called with l.mu held.
-func (l *failureLedger) removeFromOrder(key string) {
-	for i, k := range l.order {
-		if k == key {
-			l.order = append(l.order[:i], l.order[i+1:]...)
-			return
-		}
-	}
 }
 
 // errorClass normalizes a tool error output into a stable 8-character
