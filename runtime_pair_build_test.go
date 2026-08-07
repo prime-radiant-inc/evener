@@ -235,10 +235,6 @@ func newBuildWebFixture(t *testing.T) runtimeBuildFixture {
 	fixture := newRuntimeBuildFixture(t)
 	installFrontendToolchainStubs(t, fixture)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "Makefile", 0o644)
-	// The real Makefile now checks the host cache before runtime builds. This
-	// fixture isolates build ordering, so provide a deterministic healthy probe
-	// instead of reaching for the repository's host-dependent disk check.
-	writeTestFile(t, filepath.Join(fixture.root, "scripts", "disk-reclaim.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/build-runtime-pair.sh", 0o755)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web-preflight.sh", 0o755)
 	return fixture

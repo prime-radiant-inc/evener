@@ -79,19 +79,6 @@ var scenarioPatternKillAllowedMentions = map[string][]string{
 		// it must survive whatever rule replaced the hand-written warnings.
 		"`pkill -f 'serf serve.*<session_id>'` — kill mid-life.",
 	},
-	"scripts/disk-reclaim-selftest.sh": {
-		// The comment over `probe_run_id`, which is where the rule below is
-		// written down for the next author of this script.
-		"# by its COMMAND LINE with `pgrep -f` / `pkill -f`. That command line therefore",
-		// Cleanup for the run's OWN stall probe, after the assertion that it
-		// should already be dead has failed. The pattern is what makes this safe:
-		// the probe's command-line token carries this run's unique work-directory
-		// suffix, so it cannot match a concurrent selftest's probe. Before kata
-		// qw8e both runs spawned a fixed `sleep 987654` and this line reaped the
-		// other run's probe while that run was still polling for it.
-		`pkill -f "$stall_probe_token"`,
-		`pkill -f "$report_stall_probe_token"`,
-	},
 	"test/scenarios/model-switch-providers-live.md": {
 		"never a `pkill -f 'serf serve'` pattern, which would also kill a",
 	},
@@ -120,13 +107,20 @@ var scenarioPatternKillAllowedMentions = map[string][]string{
 // checklist.
 //
 // scripts/*.sh is the second corpus, added by kata qw8e. A script has the same
-// reach as a card and gets run more often, and disk-reclaim-selftest.sh was
-// carrying the class live: it killed its stall probe by the fixed pattern
+// reach as a card and gets run more often: disk-reclaim-selftest.sh once
+// carried the class live, killing its stall probe by the fixed pattern
 // `sleep 987654`, which two concurrent selftests both spawn, so one run's
 // cleanup reaped the other's probe while that run was still polling for it.
+// disk-reclaim.sh and its selftest are gone now with no replacement —
+// suites clean up their own TMPDIR under the wave runner's leak check
+// instead — so scripts/*.sh currently holds no live example of the hazard.
+// The corpus stays audited because the danger is about any FUTURE script
+// under scripts/ or test/, not about a specific file; falsifiability for the
+// pattern itself lives in TestScenarioPatternKillPatternMatchesTheShapesItClaims
+// below, and the card corpus's many allowed mentions keep this test itself
+// exercised.
 func TestNoCardOrScriptPatternKillsAProcess(t *testing.T) {
 	var findings []string
-	scriptMatches := 0
 	for _, path := range append(scenarioCardFiles(t), auditedShellScripts(t)...) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -137,24 +131,11 @@ func TestNoCardOrScriptPatternKillsAProcess(t *testing.T) {
 			if !scenarioPatternKillPattern.MatchString(line) {
 				continue
 			}
-			if isAuditedShellScript(path) {
-				scriptMatches++
-			}
 			if lineIsAllowed(line, allowed) {
 				continue
 			}
 			findings = append(findings, path+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line))
 		}
-	}
-	// Clean corpus and dead needle are the same green, and only a floor on
-	// matches tells them apart (scenariofixture_audit_test.go). scripts/ carries
-	// the two sanctioned kills below and the comment that explains them, so zero
-	// is not "the scripts are clean" — it is "this audit stopped reading them".
-	if scriptMatches == 0 {
-		t.Fatalf("the pattern-kill needle matched nothing across %s/*.sh, where "+
-			"disk-reclaim-selftest.sh reaps its own stall probes with `pkill -f`. "+
-			"Zero matches means the pattern or the file set is dead and the script "+
-			"half of this audit is checking nothing", auditedShellScriptDirs)
 	}
 	if len(findings) > 0 {
 		sort.Strings(findings)

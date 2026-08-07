@@ -14,10 +14,7 @@ bisect="$(cd "$(dirname "$0")" && pwd)/fuzz-bisect.sh"
 work="$(mktemp -d -t fuzz-bisect-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 
-pass=0
-fail=0
-ok()  { printf 'ok   - %s\n' "$1"; pass=$((pass + 1)); }
-bad() { printf 'FAIL - %s\n' "$1"; fail=$((fail + 1)); }
+. "$(dirname "$0")/selftest-lib.sh"
 
 repo="$work/repo"
 mkdir -p "$repo"
@@ -123,6 +120,4 @@ else
 	bad "bisected repo unexpectedly contains a helper script"
 fi
 
-echo "----"
-echo "fuzz-bisect-selftest: $pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+selftest_summary

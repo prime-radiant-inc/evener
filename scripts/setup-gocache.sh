@@ -13,9 +13,10 @@
 # macOS) OUTSIDE this git checkout. A fresh checkout or a new machine does
 # NOT inherit it — there is nothing in the repo to inherit it from. That is
 # why this is a script to run once per machine, not a repo file to commit.
-# scripts/disk-reclaim.sh --check (wired into every test run via
-# run-module-tests.sh) fails loud if GOCACHE points at a path that cannot be
-# reached — the signature of the volume it lived on being unmounted or gone.
+# If the target volume is later unmounted or stalls, nothing here catches it
+# ahead of time: a `go` command will hang or fail against the unreachable
+# path, same as any other unmounted-volume failure. Re-run this script
+# against a reachable path to recover.
 #
 # Usage:
 #   scripts/setup-gocache.sh /path/on/big/volume

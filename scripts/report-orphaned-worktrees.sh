@@ -14,8 +14,7 @@
 #     nobody pushed.
 #   - `git worktree list` run from THIS repo has no record of them at all —
 #     they were never registered under the current .git, only under the old
-#     one — so `git worktree prune`/`remove` cannot reach them, and neither
-#     can scripts/disk-reclaim.sh, which walks `git worktree list`.
+#     one — so `git worktree prune`/`remove` cannot reach them either.
 #
 # That combination is the finding this script exists to report: the usual
 # "is it safe to delete" check (ask git) is UNAVAILABLE for these specific
@@ -32,12 +31,10 @@
 #   scripts/report-orphaned-worktrees.sh --paths-only  # one path per line, for scripting
 #   scripts/report-orphaned-worktrees.sh --help
 #
-# Removal is deliberately NOT built into this script or wired into
-# disk-reclaim.sh --worktrees: that script's whole safety model assumes git's
-# own merge/dirty checks are available, and for these directories git has no
-# idea they exist. The "kept if dirty" backstop that already had one
-# near-miss on that script cannot fire here. Review by hand, per directory,
-# with git's own tooling repaired just enough to ask the real question:
+# Removal is deliberately NOT built into this script: doing it safely needs
+# git's own merge/dirty checks, and for these directories git has no idea
+# they exist. Review by hand, per directory, with git's own tooling repaired
+# just enough to ask the real question:
 #
 #   name=exp-a   # one candidate from the report above
 #   dir=".claude/worktrees/$name"

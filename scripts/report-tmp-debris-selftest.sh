@@ -10,9 +10,7 @@
 set -uo pipefail
 
 script="$(cd "$(dirname "$0")" && pwd)/report-tmp-debris.sh"
-checks=0 fails=0
-ok() { checks=$((checks + 1)); printf '  ok: %s\n' "$1"; }
-bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL: %s\n' "$1"; }
+. "$(dirname "$0")/selftest-lib.sh"
 
 work="$(mktemp -d -t report-tmp-debris-selftest.XXXXXX)"
 # Resolve symlinks now (macOS's /var/folders is a symlink to /private/var/folders):
@@ -167,6 +165,4 @@ else
 	bad "--help is truncated or overran the header: $help_out"
 fi
 
-echo
-echo "$checks checks, $fails failed"
-[ "$fails" -eq 0 ]
+selftest_summary

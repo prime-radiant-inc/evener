@@ -29,14 +29,6 @@
 # failure.
 set -uo pipefail
 
-# Fail fast, with a specific diagnosis, if the Data volume is too tight to
-# safely build/test (kata 98x9). Every module-test path funnels through here
-# (make test, test-short, test-race, and direct invocation), so this is the one
-# place a check catches every run instead of depending on someone remembering
-# to run scripts/disk-reclaim.sh first. Silent when there's nothing to say;
-# a single `df`, so the cost is unmeasurable next to the rest of this script.
-scripts/disk-reclaim.sh --check || exit 1
-
 MODULES=${MODULES:-". agent llm auth envvars invariant identifier"}
 ROOT_FULL=${ROOT_FULL:-0}
 
@@ -44,7 +36,6 @@ ROOT_FULL=${ROOT_FULL:-0}
 # the frontend directory is absent so this script still works in a checkout
 # without it.
 WEB=${WEB:-1}
-SELFTEST=${SELFTEST:-0}
 WEB_DIR=${WEB_DIR:-cmd/serf-hub/frontend}
 [ -d "$WEB_DIR" ] || WEB=0
 
@@ -85,11 +76,6 @@ for m in $WAVE1 $WAVE2; do
 	if [ "$WEB" -ne 0 ] && [ "$m" = "web" ]; then
 		echo "run-module-tests.sh: 'web' is the frontend stream's name, not a Go module." >&2
 		echo "run-module-tests.sh: run 'make test-web' for the frontend alone, or pass WEB=0 to test a Go module named web." >&2
-		exit 2
-	fi
-	if [ "$SELFTEST" -ne 0 ] && [ "$m" = "selftest" ]; then
-		echo "run-module-tests.sh: 'selftest' is the tooling stream's name, not a Go module." >&2
-		echo "run-module-tests.sh: run 'make selftest' for tooling alone, or pass SELFTEST=0 to test a Go module named selftest." >&2
 		exit 2
 	fi
 done
@@ -392,16 +378,8 @@ fi
 
 run_wave $WAVE1
 
-selftest_pid=""
-if [ "$SELFTEST" -ne 0 ]; then
-	/usr/bin/time -p "${MAKE:-make}" selftest >"$(logpath selftest)" 2>&1 &
-	selftest_pid="$!"
-	active_pids+=("$selftest_pid")
-fi
-
 run_wave $WAVE2
 
-[ -n "$selftest_pid" ] && finish_stream selftest "$selftest_pid"
 [ -n "$web_pid" ] && finish_stream web "$web_pid"
 
 if [ "$fail" -ne 0 ]; then

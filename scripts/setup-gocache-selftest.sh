@@ -12,9 +12,7 @@
 set -uo pipefail
 
 script="$(cd "$(dirname "$0")" && pwd)/setup-gocache.sh"
-checks=0 fails=0
-ok() { checks=$((checks + 1)); printf '  ok: %s\n' "$1"; }
-bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL: %s\n' "$1"; }
+. "$(dirname "$0")/selftest-lib.sh"
 
 work="$(mktemp -d -t setup-gocache-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
@@ -63,5 +61,4 @@ else
 	fi
 fi
 
-printf '\n%d checks, %d failed\n' "$checks" "$fails"
-[ "$fails" -eq 0 ]
+selftest_summary

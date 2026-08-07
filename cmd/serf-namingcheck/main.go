@@ -17,6 +17,12 @@
 //
 //	llm/providers/*/         — JSON tags are exempt entirely.
 //
+// Plus one narrow, (file, tag-name)-scoped carve-out for the doctor's
+// Finding wire contract — see internal/bundled/skills/doctoring-serf/
+// references/finding-contract.md and doctorFindingContractExemptions below.
+// The same tag spelling is still a violation anywhere outside that
+// allowlist.
+//
 // It scans every Go file for struct tags and every TOML file for keys, and
 // prints one violation per line in `path:line: message` format. Exits non-zero
 // when violations exist.
@@ -331,7 +337,7 @@ func tagKey(v string) (key string, skip bool) {
 	return v, false
 }
 
-// checkJSONTag enforces snake_case JSON tags, with two path-based carve-outs:
+// checkJSONTag enforces snake_case JSON tags, with a few carve-outs:
 //
 //   - Files that speak the codex/appwire wire protocol are exempt because the
 //     protocol forces camelCase. That covers appwire/ (the protocol
@@ -340,6 +346,12 @@ func tagKey(v string) (key string, skip bool) {
 //     hub runtime glue that threads appwire payloads through the hub).
 //   - Files under llm/providers/ are exempt entirely; each provider's tag
 //     spelling has to match its upstream API verbatim.
+//   - isUpstreamCamelKey names, wherever they appear, since they're fixed
+//     spellings from an upstream config format.
+//   - doctorFindingContractExemptions' (file, tag) pairs — the doctor's
+//     Finding wire contract, camelCase by design (see that var's doc
+//     comment). Narrower than the above: both the file and the tag name
+//     must match.
 //
 // Pure-lowercase single-word keys (e.g. "model", "id") satisfy both
 // snake_case and camelCase, so they pass everywhere.
@@ -361,6 +373,9 @@ func checkJSONTag(v, rel string) string {
 	if isUpstreamCamelKey(key) {
 		return ""
 	}
+	if isDoctorFindingContractKey(key, rel) {
+		return ""
+	}
 	if !isSnakeCase(key) {
 		return fmt.Sprintf("json tag %q must be snake_case (suggest %q)", key, toSnakeCase(key))
 	}
@@ -376,6 +391,42 @@ func isUpstreamCamelKey(key string) bool {
 	switch key {
 	case "mcpServers", "enabledPlugins":
 		return true
+	}
+	return false
+}
+
+// doctorFindingContractExemptions maps each file that implements or decodes
+// the doctor's Finding wire contract to the exact JSON tag names that
+// internal/bundled/skills/doctoring-serf/references/finding-contract.md
+// specifies as camelCase for the Finding envelope and its evidence/
+// suggestedFix sub-objects. The contract is a cross-tool wire format shared
+// between serf-doctor's Go-emitted `audit --json` output
+// (agent/doctor/audit.go) and the doctor LLM agent's own hand-authored
+// Findings (internal/bundled/agents/doctor.md reads the same contract doc),
+// so it deliberately keeps finding-contract.md's camelCase spelling instead
+// of this project's usual snake_case JSON default.
+//
+// Both the file and the tag name must match: this is not a blanket
+// camelCase allowance for agent/doctor/ or cmd/serf-doctor/, and it does not
+// exempt these tag names anywhere else. TestDoctorFindingContractExemptionsUpToDate
+// guards against an entry surviving after the tag it names is renamed or
+// removed.
+var doctorFindingContractExemptions = map[string][]string{
+	"agent/doctor/audit.go": {
+		"suggestedFix", "sessionRefs", "watchIds", "deliveryIds",
+		"transcriptTurns", "doctorCommand", "logSnippets", "fileHint", "symbolHint",
+	},
+	"cmd/serf-doctor/audit_test.go":          {"sessionRefs"},
+	"cmd/serf-doctor/study_runbooks_test.go": {"sessionRefs"},
+}
+
+// isDoctorFindingContractKey reports whether key is exempted in rel by
+// doctorFindingContractExemptions.
+func isDoctorFindingContractKey(key, rel string) bool {
+	for _, k := range doctorFindingContractExemptions[rel] {
+		if k == key {
+			return true
+		}
 	}
 	return false
 }

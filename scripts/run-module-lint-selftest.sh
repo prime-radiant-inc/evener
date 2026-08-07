@@ -5,32 +5,10 @@ set -uo pipefail
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 runner="$script_dir/run-module-lint.sh"
 makefile="$(cd "$script_dir/.." && pwd)/Makefile"
+. "$(dirname "$0")/selftest-lib.sh"
+
 work="$(mktemp -d -t serf-module-lint-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
-
-checks=0
-fails=0
-ok() { checks=$((checks + 1)); printf 'ok   - %s\n' "$1"; }
-bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL - %s\n' "$1"; }
-assert_eq() {
-	if [ "$1" = "$2" ]; then ok "$3"; else bad "$3 (want '$2', got '$1')"; fi
-}
-assert_has() {
-	if grep -qF -- "$2" "$1"; then
-		ok "$3"
-	else
-		bad "$3 (missing '$2')"
-		sed 's/^/    | /' "$1"
-	fi
-}
-assert_not_has() {
-	if grep -qF -- "$2" "$1"; then
-		bad "$3 (unexpected '$2')"
-		sed 's/^/    | /' "$1"
-	else
-		ok "$3"
-	fi
-}
 
 assert_count() {
 	actual="$(grep -cF -- "$2" "$1" || :)"
@@ -680,11 +658,6 @@ write_fake_mktemp "$bin"
 cp "$makefile" "$repo/Makefile"
 cp "$runner" "$repo/scripts/run-module-lint.sh"
 chmod +x "$repo/scripts/run-module-lint.sh"
-cat >"$repo/scripts/disk-reclaim.sh" <<'FAKE_DISK_RECLAIM'
-#!/usr/bin/env bash
-exit 0
-FAKE_DISK_RECLAIM
-chmod +x "$repo/scripts/disk-reclaim.sh"
 for module in agent llm auth envvars invariant identifier fuzz; do mkdir -p "$repo/$module"; done
 
 cat >"$bin/go" <<'FAKE_GO'
@@ -838,11 +811,6 @@ generated_bin="$generated_case/bin"
 mkdir -p "$generated_repo/docs" \
 	"$generated_repo/cmd/serf-hub/frontend/src/protocol" "$generated_repo/scripts" "$generated_bin"
 cp "$makefile" "$generated_repo/Makefile"
-cat >"$generated_repo/scripts/disk-reclaim.sh" <<'FAKE_GENERATED_DISK_RECLAIM'
-#!/usr/bin/env bash
-exit 0
-FAKE_GENERATED_DISK_RECLAIM
-chmod +x "$generated_repo/scripts/disk-reclaim.sh"
 printf 'current protocol doc\n' >"$generated_repo/docs/appwire-protocol.md"
 printf 'stale protocol types\n' >"$generated_repo/cmd/serf-hub/frontend/src/protocol/types.gen.ts"
 cat >"$generated_bin/go" <<'FAKE_GENERATOR'
@@ -897,6 +865,4 @@ assert_count "$out" "docs stderr diagnostic" "1" "failed non-module stderr is re
 assert_has "$out" "Error 9" "failed non-module check reports its original status"
 assert_eq "$(find "$tmp" -type f -name 'serf-lint-check.*' | wc -l | tr -d ' ')" "0" "failed check removes its quiet-wrapper log"
 
-echo "----"
-echo "run-module-lint-selftest: $checks checks, $fails failed"
-[ "$fails" -eq 0 ]
+selftest_summary
