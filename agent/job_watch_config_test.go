@@ -1076,7 +1076,7 @@ func TestKeptSyncRetryDoesNotArmOwnerNotification(t *testing.T) {
 	}
 }
 
-func TestKeptSyncTerminalWatchAppendFailureRetainsBufferedMatch(t *testing.T) {
+func TestKeptSyncTerminalWatchAppendFailureDefersNotification(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
@@ -1091,7 +1091,9 @@ func TestKeptSyncTerminalWatchAppendFailureRetainsBufferedMatch(t *testing.T) {
 	if run == nil {
 		t.Fatal("running job missing")
 	}
-	if _, err := jm.appendJobOutput(rec.JobID, run.output, []byte("server ready")); err != nil {
+	// Non-matching output: the watch ends without ever having fired, so the one
+	// notification at stake is the teardown frame the durable clear gates.
+	if _, err := jm.appendJobOutput(rec.JobID, run.output, []byte("still working")); err != nil {
 		t.Fatalf("append output: %v", err)
 	}
 
@@ -1120,8 +1122,8 @@ func TestKeptSyncTerminalWatchAppendFailureRetainsBufferedMatch(t *testing.T) {
 	if err := jm.finalizeKeptSync(run, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
 		t.Fatalf("retry finalizeKeptSync: %v", err)
 	}
-	if len(notified) != 1 || !strings.Contains(notified[0].Reason, "server ready") {
-		t.Fatalf("notifications = %+v, want retained terminal output_match", notified)
+	if len(notified) != 1 || !strings.Contains(notified[0].Reason, "condition never matched") {
+		t.Fatalf("notifications = %+v, want one watch-ended-unfired teardown frame after the retry", notified)
 	}
 }
 
@@ -1151,8 +1153,9 @@ func TestWatchHistoryCountsTerminalFlushDeliveries(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	// An unterminated final line is buffered by the matcher and only matches at the
-	// terminal Flush — the fire that must still be counted in recent_watches.
+	// An unterminated final line matches as its bytes arrive — the byte-window
+	// scanner never waits for a terminator — and that fire must be counted in
+	// recent_watches after the job goes terminal.
 	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("server ready")); err != nil {
 		t.Fatalf("append: %v", err)
 	}

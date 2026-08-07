@@ -265,10 +265,14 @@ type Server struct {
 	// caller of clearFunc. It gates a clear against another clear the way
 	// processing gates one against a turn: see handleClear for why a second
 	// concurrent clear is refused rather than queued.
-	clearing   bool
-	inputCh    chan InputMessage
-	hubToken   string
-	sameOrigin httpguard.SameOriginPolicy
+	clearing bool
+	// notifyWakeRearmed is true while a goroutine is parked on the send of a
+	// notification kick that found the input slot full. It coalesces further
+	// drops into that one parked send. See SubmitNotification.
+	notifyWakeRearmed bool
+	inputCh           chan InputMessage
+	hubToken          string
+	sameOrigin        httpguard.SameOriginPolicy
 }
 
 // SetRetrySafeTurnFunctions installs the authoritative retry-safe mutation
@@ -664,17 +668,43 @@ func (s *Server) SubmitContinuation(prompt string) {
 	}
 }
 
-// SubmitNotification wakes an idle session to drain its pending subagent
+// SubmitNotification wakes an idle session to drain its pending job
 // notifications. It pushes a text-less EntryNotification-kind message onto the
-// 1-slot input channel with non-blocking/drop-if-full semantics: a dropped kick
-// is safe because the durable notification queue and the tail-drain suppress
-// cover it (spec §N1). It is wired from serve.go via Session.SetNotifyFunc
+// 1-slot input channel. It is wired from serve.go via Session.SetNotifyFunc
 // (the agent module must not import server).
+//
+// The wake is GUARANTEED, not best-effort. A kick that finds the slot occupied
+// is re-armed on a goroutine that parks on the send and completes it the moment
+// the slot frees. Dropping it outright is only safe for a session that is
+// mid-turn, where the drain loop's tail gate re-checks the queue; an idle
+// session has no tail to run, so a dropped kick leaves a finished job unheard
+// until some unrelated input happens along. There is no timer and no poll here:
+// the parked send IS the wait for channel availability.
+//
+// The call itself never blocks, and repeated drops coalesce into the one parked
+// send — the queue that wake drains is drained whole, so one wake settles any
+// number of dropped kicks.
 func (s *Server) SubmitNotification() {
 	select {
 	case s.inputCh <- InputMessage{Kind: agent.EntryNotification}:
+		return
 	default:
 	}
+	s.mu.Lock()
+	if s.notifyWakeRearmed {
+		s.mu.Unlock()
+		return
+	}
+	s.notifyWakeRearmed = true
+	s.mu.Unlock()
+	go func() {
+		s.inputCh <- InputMessage{Kind: agent.EntryNotification}
+		// Cleared only after the send lands, so every kick dropped while this
+		// one was parked is covered by it.
+		s.mu.Lock()
+		s.notifyWakeRearmed = false
+		s.mu.Unlock()
+	}()
 }
 
 // SubmitClientMutationStart wakes the serve loop after a turn/start intent is

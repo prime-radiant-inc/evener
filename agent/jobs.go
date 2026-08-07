@@ -119,6 +119,11 @@ type jobManager struct {
 	forward     func(jobstore.Event) error
 	parentJobID string
 	enqueue     func(jobNotification)
+	// holdWake defers the owner's notification wake until the returned release
+	// runs, so a group of notices produced by ONE event reaches the model in one
+	// notification turn instead of interrupting it once per notice. Only a real
+	// session wires it; nil means every enqueue wakes on its own, as before.
+	holdWake func() func()
 	// notifySystem routes a restart-owned system notification to the session
 	// that held a callback watch. It uses the durable steering queue rather than
 	// the lost callback closure, so the notice survives the restore boundary.
@@ -1782,6 +1787,28 @@ func validateStructuredResultWithAddResource(value any, resultSchema any, addRes
 	return compiled.Validate(value)
 }
 
+// enqueueNotifications queues a group of notifications onto the owner's rail
+// and wakes it ONCE, reporting whether anything was queued (a manager with no
+// rail wired queues nothing, and its owner still owes a kick). Every notice
+// still travels the same single enqueue rail; only the wake is held, so one
+// event that has several things to say costs the model one turn, not one turn
+// per thing. Without a session-wired hold it degrades to a wake per notice,
+// which is the old behavior and still correct — just noisier.
+func (jm *jobManager) enqueueNotifications(notifs []jobNotification) bool {
+	if len(notifs) == 0 || jm.enqueue == nil {
+		return false
+	}
+	release := func() {}
+	if jm.holdWake != nil {
+		release = jm.holdWake()
+	}
+	defer release()
+	for _, n := range notifs {
+		jm.enqueue(n)
+	}
+	return true
+}
+
 func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] != run || run.terminal != terminal {
@@ -1799,6 +1826,22 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		watchRegistryEvents, expiredWatches, watchRootProvenance = jm.expireJobWatchesLocked(run.rec.JobID)
 	}
 
+	// A completion is ONE event with two things to say: the watches it settled
+	// and the job's own terminal status. They are collected here and queued
+	// together at the end, so an idle owner is woken once and reads both in the
+	// same notification turn instead of being interrupted twice about the same
+	// completion. Only the wake is coalesced — every durable record below is
+	// written exactly where and when it was before.
+	var ownNotices []jobNotification
+	var watchSendRecorded bool
+	flushNotices := func() {
+		if queued := jm.enqueueNotifications(ownNotices); watchSendRecorded && !queued {
+			jm.kick()
+		}
+		ownNotices = nil
+		watchSendRecorded = false
+	}
+
 	if !pendingAppended {
 		if err := jm.appendRegistry(watchRegistryEvents); err != nil {
 			jm.mu.Unlock()
@@ -1806,8 +1849,10 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		}
 		watchNotifications, watchDeliveries = jm.completeExpiredJobWatchesLocked(run.rec.JobID, expiredWatches, watchRootProvenance)
 		jm.mu.Unlock()
-		jm.enqueueWatchNotifications(watchNotifications)
-		jm.recordWatchSendsAndKick(watchDeliveries)
+		ownNotices = jm.routeWatchNotifications(watchNotifications)
+		var tokens []jobNotification
+		tokens, watchSendRecorded = jm.recordWatchSends(watchDeliveries)
+		ownNotices = append(ownNotices, tokens...)
 	} else {
 		jm.mu.Unlock()
 	}
@@ -1821,6 +1866,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 			Provenance:  provenance.Clone(run.rec.Provenance),
 		}
 		if err := jm.appendEvent(pending); err != nil {
+			flushNotices()
 			return err
 		}
 		jm.mu.Lock()
@@ -1833,6 +1879,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 
 	if !suppressOwnerNotification {
 		if err := jm.forwardPendingJobNotification(run, terminal); err != nil {
+			flushNotices()
 			return err
 		}
 	}
@@ -1843,6 +1890,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		run.treeSlot.release()
 	} else {
 		jm.mu.Unlock()
+		flushNotices()
 		return nil
 	}
 	jm.mu.Unlock()
@@ -1853,9 +1901,11 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	// Enqueue the terminal owner notification BEFORE closing done: anything that
 	// wakes on done (blocked reads, boundary checks) must find the notification
 	// already queued, or a notification turn driven right after the wake drains
-	// an empty queue and the delivery slips a boundary.
-	if jm.enqueue != nil && !suppressOwnerNotification {
-		jm.enqueue(jobNotification{
+	// an empty queue and the delivery slips a boundary. The watch settlements
+	// collected above ride the same enqueue, in the documented order — watch
+	// notices first, then the terminal.
+	if !suppressOwnerNotification {
+		ownNotices = append(ownNotices, jobNotification{
 			JobID:            run.rec.JobID,
 			JobType:          string(run.rec.Type),
 			Status:           string(terminal.status),
@@ -1869,6 +1919,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 			Provenance:       provenance.Clone(run.rec.Provenance),
 		})
 	}
+	flushNotices()
 	run.closeDone()
 	return nil
 }

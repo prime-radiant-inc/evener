@@ -223,8 +223,8 @@ func jobstorePackageStoreEdges(t *testing.T) {
 func jobstorePackageMatcherEdges(t *testing.T) {
 	t.Helper()
 	m := NewOutputMatcher(regexp.MustCompile("x"))
-	m.carry = make([]byte, maxOutputMatcherLineBytes+1)
-	_ = m.FlushWithProvenance(nil)
+	m.carry = make([]byte, outputMatchWindowBytes+1)
+	_ = m.FeedAt([]byte("x"), int64(len(m.carry))+1)
 	_, _ = grepReaderLimit(bufio.NewReaderSize(&jobstorePackageErrReader{}, 1), regexp.MustCompile("x"), 8, 0, 8)
 	_, _ = grepReaderLimit(bufio.NewReader(bytes.NewBufferString("xxxx\r")), regexp.MustCompile("x"), 8, 0, 4)
 	_, _ = grepFileLimitAtOpen("x", regexp.MustCompile("x"), 8, 0, 8, 0, func(string) (io.ReadCloser, error) {

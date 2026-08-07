@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
@@ -403,12 +404,54 @@ func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	if live, liveErr := findJobRecord(jm, jobID); liveErr == nil {
 		rec = live
 	}
+	consumeTerminalJobNotification(s, jm, rec)
 	out := projectJobStatus(jm.now(), rec)
 	rendered, err := marshalBoundedJSON(out, maxChars)
 	if err != nil {
 		return "", err
 	}
 	return tool.StateResult{Output: rendered, State: out}, nil
+}
+
+// consumeTerminalJobNotification settles the terminal notification of a job
+// whose caller just read its terminal status: the caller has learned the job
+// ended, so waking it later to say the same thing is an interruption that
+// carries no news.
+//
+// It is recorded durably as its own state (consumed, not delivered) so the
+// told-the-caller invariant stays true without claiming a notification turn
+// that never happened — serf-doctor can still tell the two apart.
+//
+// Only the OWNER's own reads consume. A parent's forwarded copy of a
+// child-owned pending is a drive signal, not the parent's news to hear:
+// settling it there would silence the child's own undelivered notification.
+func consumeTerminalJobNotification(s *Session, jm *jobManager, rec *jobstore.JobRecord) {
+	if jm == nil || rec == nil || rec.TerminalGen == "" {
+		return
+	}
+	if !rec.Status.IsTerminal() || rec.NotifyState != jobstore.NotifyPending {
+		return
+	}
+	if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
+		return
+	}
+	consumed := jobstore.Event{
+		Kind:        jobstore.EventJobNotificationConsumed,
+		TS:          jm.now(),
+		JobID:       rec.JobID,
+		TerminalGen: rec.TerminalGen,
+	}
+	if err := jm.appendEvent(consumed); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("job notification consume mark failed: %v", err)})
+		return
+	}
+	rec.NotifyState = jobstore.NotifyConsumed
+	// Settle the parent's forwarded COPY too, for the same reason a delivery
+	// does: the copy is only a drive signal, and a signal nobody clears
+	// re-drives forever.
+	if err := jm.forwardSnapshot(consumed); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("job notification consume forward failed: %v", err)})
+	}
 }
 
 func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
@@ -1407,6 +1450,26 @@ func sessionJobManager(s *Session) (*jobManager, error) {
 		return nil, errors.New(jobManagerUnavailableReason)
 	}
 	return s.jobManager, nil
+}
+
+// sessionRunningJobIDs lists this session's own running (session-launched,
+// non-nested) job ids, in job_list's default order. Used by the communicate
+// end_turn running-job warning; returns nil when the session has no job
+// manager or no running jobs.
+func sessionRunningJobIDs(s *Session) []string {
+	jm, err := sessionJobManager(s)
+	if err != nil {
+		return nil
+	}
+	recs := jm.list(listFilter{Status: jobstore.StatusRunning})
+	if len(recs) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(recs))
+	for _, rec := range recs {
+		ids = append(ids, rec.JobID)
+	}
+	return ids
 }
 
 func jobListFilterFromArgs(args map[string]any) (listFilter, error) {

@@ -47,7 +47,10 @@ type JobView struct {
 	OutputPath       string `json:"output_path,omitempty"`
 
 	// NotifyState is the terminal-notification progress: a terminal job still
-	// "pending" is one whose caller was never told it ended.
+	// "pending" is one whose caller was never told it ended. "delivered" was
+	// rendered into the caller's own notification turn; "consumed" means the
+	// caller read the terminal job_status itself, which settles the pending
+	// without a turn. Both mean told — do not count only "delivered".
 	NotifyState      string `json:"terminal_notification_state,omitempty"`
 	ExhaustionBudget string `json:"exhaustion_budget,omitempty"`
 	ExhaustionLimit  int    `json:"exhaustion_limit,omitempty"`

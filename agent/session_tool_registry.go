@@ -89,6 +89,11 @@ type toolDeps struct {
 	// turn back to the parent that owns the watch-origin delegate job.
 	deliverWatchCallback func(message string)
 
+	// runningJobIDs lists this session's own running (session-launched,
+	// non-nested) job ids. The communicate handler uses it to warn when
+	// end_turn=true is called while work is still in flight.
+	runningJobIDs func() []string
+
 	// skill looks up a discovered skill by name.
 	skill func(name string) (skill.SkillMeta, bool)
 
@@ -239,6 +244,7 @@ func newToolDeps(s *Session) *toolDeps {
 			s.mu.Unlock()
 		},
 		deliverWatchCallback: s.deliverWatchCommunicateCallback,
+		runningJobIDs:        func() []string { return sessionRunningJobIDs(s) },
 		skill: func(name string) (skill.SkillMeta, bool) {
 			meta, ok := s.skills[name]
 			return meta, ok
