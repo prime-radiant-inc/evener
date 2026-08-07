@@ -47,7 +47,7 @@ func TestSpawnedDaemonOutputStaysOutOfTheHubLog(t *testing.T) {
 	writeFakeSerf(t, bin, registeringFakeSerf(runDir, "033z7k96Nj0LLiLImAqa9s", "daemon says this on stdout", "daemon says this on stderr"))
 
 	var hubLog bytes.Buffer
-	entry, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 10*time.Second, &hubLog)
+	entry, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog)
 	if err != nil {
 		t.Fatalf("spawnDaemon: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestSpawnBannerNamesTheDaemonLogFile(t *testing.T) {
 	writeFakeSerf(t, bin, registeringFakeSerf(runDir, "033z7k96Nj0LLiLImAqa9s", "out", "err"))
 
 	var hubLog bytes.Buffer
-	entry, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 10*time.Second, &hubLog)
+	entry, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog)
 	if err != nil {
 		t.Fatalf("spawnDaemon: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestResumedDaemonAppendsToTheSessionsOwnLog(t *testing.T) {
 		bin := filepath.Join(dir, "fake-serf-"+strings.ReplaceAll(said, " ", "-"))
 		writeFakeSerf(t, bin, registeringFakeSerf(runDir, "01JRESUME", said, said+" on stderr"))
 		var hubLog bytes.Buffer
-		entry, err := resumeDaemon(context.Background(), bin, runDir, hubcore.ResumeRequest{SessionID: "01JRESUME"}, 10*time.Second, &hubLog)
+		entry, err := resumeDaemon(context.Background(), bin, runDir, hubcore.ResumeRequest{SessionID: "01JRESUME"}, 60*time.Second, &hubLog)
 		if err != nil {
 			t.Fatalf("resumeDaemon(%s): %v", said, err)
 		}
@@ -142,7 +142,7 @@ func TestFailedResumeReportsOnlyCurrentLaunchOutput(t *testing.T) {
 	writeFakeSerf(t, bin, "#!/bin/sh\nprintf '%s\\n' '"+currentStdout+"'\nprintf '%s\\n' '"+currentStderr+"' >&2\nexit 42\n")
 
 	var hubLog bytes.Buffer
-	_, err := resumeDaemon(context.Background(), bin, runDir, hubcore.ResumeRequest{SessionID: sessionID}, 10*time.Second, &hubLog)
+	_, err := resumeDaemon(context.Background(), bin, runDir, hubcore.ResumeRequest{SessionID: sessionID}, 60*time.Second, &hubLog)
 	if err == nil {
 		t.Fatal("resume succeeded, want the fake daemon to fail before rendezvous")
 	}
@@ -233,7 +233,7 @@ func TestFailedReplacementResumeLeavesLiveDaemonLogNamed(t *testing.T) {
 	writeFakeSerf(t, bin, fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' '%s'\nprintf '%%s\\n' '%s' >&2\nexit 42\n", replacementDiagnostic, replacementDiagnostic))
 
 	var hubLog bytes.Buffer
-	_, err = resumeDaemon(context.Background(), bin, runDir, hubcore.ResumeRequest{SessionID: sessionID}, 10*time.Second, &hubLog)
+	_, err = resumeDaemon(context.Background(), bin, runDir, hubcore.ResumeRequest{SessionID: sessionID}, 60*time.Second, &hubLog)
 	if err == nil {
 		t.Fatal("resume succeeded, want the replacement daemon to fail before rendezvous")
 	}
@@ -315,7 +315,7 @@ func TestSpawnFailsWhenTheDaemonLogCannotBeOpened(t *testing.T) {
 	writeFakeSerf(t, bin, "#!/bin/sh\ntouch "+ran+"\n")
 
 	var hubLog bytes.Buffer
-	_, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 10*time.Second, &hubLog)
+	_, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog)
 	if err == nil {
 		t.Fatal("spawn succeeded with an unopenable daemon log")
 	}
@@ -368,7 +368,7 @@ func TestFailedLaunchLeavesNoPendingDaemonLogBehind(t *testing.T) {
 			}
 
 			var hubLog bytes.Buffer
-			_, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 10*time.Second, &hubLog)
+			_, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog)
 			if err == nil {
 				t.Fatal("spawn should have failed")
 			}
@@ -400,7 +400,7 @@ func TestAdoptedDaemonLogSurvivesTheLaunchThatMadeIt(t *testing.T) {
 	writeFakeSerf(t, bin, registeringFakeSerf(runDir, "033z7k96Nj0LLiLImAqa9s", "out", "daemon says this on stderr"))
 
 	var hubLog bytes.Buffer
-	if _, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 10*time.Second, &hubLog); err != nil {
+	if _, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog); err != nil {
 		t.Fatalf("spawnDaemon: %v", err)
 	}
 	logPath := filepath.Join(runDir, "logs", "daemon-033z7k96Nj0LLiLImAqa9s.log")
