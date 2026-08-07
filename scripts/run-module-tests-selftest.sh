@@ -16,32 +16,10 @@ set -uo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 runner="$script_dir/run-module-tests.sh"
+. "$(dirname "$0")/selftest-lib.sh"
+
 work="$(mktemp -d -t serf-module-tests-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
-
-checks=0
-fails=0
-ok() { checks=$((checks + 1)); printf 'ok   - %s\n' "$1"; }
-bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL - %s\n' "$1"; }
-assert_eq() {
-	if [ "$1" = "$2" ]; then ok "$3"; else bad "$3 (want '$2', got '$1')"; fi
-}
-assert_has() {
-	if grep -qF -- "$2" "$1"; then
-		ok "$3"
-	else
-		bad "$3 (missing '$2')"
-		sed 's/^/    | /' "$1"
-	fi
-}
-assert_not_has() {
-	if grep -qF -- "$2" "$1"; then
-		bad "$3 (unexpected '$2')"
-		sed 's/^/    | /' "$1"
-	else
-		ok "$3"
-	fi
-}
 
 assert_has_word() {
 	case " $1 " in
@@ -119,14 +97,6 @@ new_case() {
 	for module in agent llm auth envvars invariant identifier; do
 		mkdir -p "$repo/$module"
 	done
-	# The runner's disk guard is the first thing it does and it shells out to a
-	# sibling script; the fixture answers for it so no case depends on how full
-	# the real Data volume happens to be.
-	cat >"$repo/scripts/disk-reclaim.sh" <<'FAKE_DISK_RECLAIM'
-#!/usr/bin/env bash
-exit 0
-FAKE_DISK_RECLAIM
-	chmod +x "$repo/scripts/disk-reclaim.sh"
 	cat >"$bin/go" <<'FAKE_GO'
 #!/usr/bin/env bash
 set -u
@@ -169,18 +139,6 @@ if [ "$module" = "agent" ] && [ "${FAKE_HOLD_STREAMS:-0}" -ne 0 ]; then
 	: >"$FAKE_STATE/agent.started"
 	exec sleep 1000
 fi
-if [ "$module" = "agent" ] && [ "${FAKE_AGENT_AWAITS_SELFTEST:-0}" -ne 0 ]; then
-	: >"$FAKE_STATE/agent.started"
-	attempt=0
-	while [ ! -f "$FAKE_STATE/selftest.started" ]; do
-		attempt=$((attempt + 1))
-		if [ "$attempt" -ge 200 ]; then
-			printf 'agent started without the selftest stream\n' >&2
-			exit 3
-		fi
-		sleep 0.01
-	done
-fi
 # A build failure carries none of the markers `go test` prints for a failing
 # test, which is the shape a marker-matching failure dump drops on the floor.
 case " ${FAKE_BUILD_FAIL:-} " in
@@ -201,7 +159,6 @@ FAKE_GO
 #!/usr/bin/env bash
 set -u
 stream=web
-[ "${1:-}" = "selftest" ] && stream=selftest
 printf '%s\t%s\n' "$stream" "$*" >>"$FAKE_STATE/calls"
 if [ "$stream" = "web" ] && [ "${FAKE_HOLD_STREAMS:-0}" -ne 0 ]; then
 	printf 'web-stdout: interrupted-run marker\n'
@@ -209,30 +166,6 @@ if [ "$stream" = "web" ] && [ "${FAKE_HOLD_STREAMS:-0}" -ne 0 ]; then
 	printf '%s\n' "$$" >"$FAKE_STATE/web.pid"
 	: >"$FAKE_STATE/web.started"
 	exec sleep 1000
-fi
-if [ "$stream" = "selftest" ]; then
-	if [ "${FAKE_SELFTEST_REQUIRES_ROOT:-0}" -ne 0 ] && [ ! -f "$FAKE_STATE/root.finished" ]; then
-		printf 'selftest started before root finished\n' >&2
-		exit 4
-	fi
-	: >"$FAKE_STATE/selftest.started"
-	if [ "${FAKE_SELFTEST_AWAITS_AGENT:-0}" -ne 0 ]; then
-		attempt=0
-		while [ ! -f "$FAKE_STATE/agent.started" ]; do
-			attempt=$((attempt + 1))
-			if [ "$attempt" -ge 200 ]; then
-				printf 'selftest started without the wave-two agent\n' >&2
-				exit 5
-			fi
-			sleep 0.01
-		done
-	fi
-	printf 'selftest-stdout: tooling contracts passed\n'
-	if [ "${FAKE_SELFTEST_FAIL:-0}" -ne 0 ]; then
-		printf 'selftest-stderr: tooling contract failed\n' >&2
-		exit 1
-	fi
-	exit 0
 fi
 printf 'web-stdout: 5308 tests passed\n'
 if [ "${FAKE_WEB_FAIL:-0}" -ne 0 ]; then
@@ -245,9 +178,10 @@ FAKE_MAKE
 }
 
 # MAKE is set explicitly rather than left to the runner's `${MAKE:-make}`
-# default: `make selftest` exports MAKE into every recipe, so an inherited one
-# would send the frontend stream to the real make in a fixture with no Makefile
-# and this suite would pass standalone while failing under the gate that runs it.
+# default: `make test-dev-tooling` exports MAKE into every recipe, so an
+# inherited one would send the frontend stream to the real make in a fixture
+# with no Makefile and this suite would pass standalone while failing under
+# the gate that runs it.
 run_tests() {
 	modules="$1"
 	output="$2"
@@ -256,7 +190,7 @@ run_tests() {
 		cd "$repo" || exit 1
 		env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
-			MODULES="$modules" AGENT_SHARDS=0 SELFTEST=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
+			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
 	) >"$output" 2>&1
 }
 
@@ -276,14 +210,14 @@ run_tests_async() {
 			printf 'runner-started\n' >"$ready_fifo"
 		env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
-			MODULES="$modules" AGENT_SHARDS=0 SELFTEST=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
+			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
 			runner_status="$?"
 			printf 'runner-exited:%s\n' "$runner_status" >"$ready_fifo"
 			exit "$runner_status"
 		fi
 		exec env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
-			MODULES="$modules" AGENT_SHARDS=0 SELFTEST=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
+			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
 	) >"$output" 2>&1 &
 	runner_pid="$!"
 }
@@ -295,7 +229,7 @@ run_tests_default_modules() {
 		cd "$repo" || exit 1
 		env -u MODULES -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
-			AGENT_SHARDS=0 SELFTEST=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
+			AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
 	) >"$output" 2>&1
 }
 
@@ -370,13 +304,6 @@ full_logs_path() {
 }
 
 new_case
-out="$case_dir/inherited-selftest-disabled.out"
-if SELFTEST=1 run_tests "agent" "$out"; then rc=0; else rc=$?; fi
-assert_eq "$rc" "0" "an inherited SELFTEST value does not fail an ordinary fixture case"
-assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" "agent web" "an inherited SELFTEST value does not add a tooling verdict"
-assert_eq "$(started_streams)" "agent web" "an inherited SELFTEST value does not start a tooling stream"
-
-new_case
 out="$case_dir/all-pass.out"
 if run_tests ". agent llm" "$out"; then rc=0; else rc=$?; fi
 assert_eq "$rc" "0" "all-passing run exits zero"
@@ -419,15 +346,6 @@ assert_has_word "$root_args" "-count=1" "full-root mode preserves root's other f
 assert_has_word "$agent_args" "-short" "full-root mode keeps -short on non-root modules"
 assert_has_word "$agent_args" "-count=1" "full-root mode preserves non-root flags"
 
-new_case
-out="$case_dir/selftest-overlap.out"
-if FAKE_SELFTEST_REQUIRES_ROOT=1 FAKE_AGENT_AWAITS_SELFTEST=1 \
-	FAKE_SELFTEST_AWAITS_AGENT=1 run_tests ". agent" "$out" SELFTEST=1; then rc=0; else rc=$?; fi
-assert_eq "$rc" "0" "selftest waits for root and overlaps wave two"
-assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" ". agent selftest web" "selftest reports once after wave two"
-assert_one_verdict_per_name "$out" "selftest overlap reports no name twice"
-assert_eq "$(started_streams)" ". agent selftest web" "selftest overlap starts every requested stream"
-
 # kata mjzx: the frontend stream already reports and logs under the name "web",
 # so a MODULES entry of the same name gave one label two owners - two verdict
 # lines, two writers on one log, and a failure dump with nothing in it.
@@ -441,15 +359,6 @@ assert_has "$out" "make test-web" "the refusal names the frontend's own entry po
 assert_has "$out" "WEB=0" "the refusal names the other way out"
 assert_not_has "$out" "=== failing module output ===" "the refused run prints no empty failure section"
 assert_eq "$(started_streams)" "" "the refused run starts no stream"
-
-new_case
-out="$case_dir/selftest-name-conflict.out"
-if run_tests "selftest" "$out" SELFTEST=1; then rc=0; else rc=$?; fi
-assert_eq "$rc" "2" "a module colliding with the selftest stream is refused"
-assert_eq "$(verdicts "$out" | wc -l | tr -d ' ')" "0" "the refused selftest collision reports no verdict"
-assert_has "$out" "make selftest" "the refusal names the selftest entry point"
-assert_has "$out" "SELFTEST=0" "the refusal names the explicit opt-out"
-assert_eq "$(started_streams)" "" "the refused selftest collision starts no stream"
 
 # WAVE1/WAVE2 are a documented override that bypasses MODULES entirely, so the
 # same collision arrives by a second route and has to be refused by the same
@@ -485,13 +394,12 @@ fi
 
 new_case
 out="$case_dir/root-failure-still-covers-later-streams.out"
-if FAKE_TEST_FAIL="." run_tests ". agent" "$out" SELFTEST=1; then rc=0; else rc=$?; fi
+if FAKE_TEST_FAIL="." run_tests ". agent" "$out"; then rc=0; else rc=$?; fi
 if [ "$rc" -ne 0 ]; then ok "root failure keeps the aggregate red"; else bad "root failure unexpectedly exits zero"; fi
-assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" ". agent selftest web" "root failure still runs every later stream"
-assert_eq "$(started_streams)" ". agent selftest web" "root failure does not skip later coverage"
+assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" ". agent web" "root failure still runs every later stream"
+assert_eq "$(started_streams)" ". agent web" "root failure does not skip later coverage"
 assert_has "$out" "----- . -----" "the root failure is dumped"
 assert_not_has "$out" "----- agent -----" "the later passing module is not dumped"
-assert_not_has "$out" "----- selftest -----" "the later passing selftest is not dumped"
 
 # A module whose directory is gone fails in `cd`, long before `go test` prints
 # any marker at all. The verdict is worthless to the reader without the reason.
@@ -525,12 +433,12 @@ ready_fifo="$state/root-list.ready"
 mkfifo "$ready_fifo"
 (
 	exec 8>"$ready_fifo"
-	exec sleep 20
+	exec sleep 6
 ) &
 ready_keeper_pid="$!"
 exec 9<"$ready_fifo"
-run_tests_async "." "$out" FAKE_LIST_HOLD=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=5 FAKE_READY_FIFO="$ready_fifo"
-start_fixture_watchdog "$runner_pid" 10 "$state/root-list.watchdog" "$ready_fifo" startup-watchdog
+run_tests_async "." "$out" FAKE_LIST_HOLD=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=1 FAKE_READY_FIFO="$ready_fifo"
+start_fixture_watchdog "$runner_pid" 5 "$state/root-list.watchdog" "$ready_fifo" startup-watchdog
 startup_watchdog_pid="$fixture_watchdog_pid"
 ready_signal=""
 startup_ready=0
@@ -544,7 +452,7 @@ if [ "$startup_ready" -eq 1 ]; then
 	exec 9<&-
 	kill "$ready_keeper_pid" 2>/dev/null || :
 	wait "$ready_keeper_pid" 2>/dev/null || :
-	start_fixture_watchdog "$runner_pid" 8 "$state/root-list.watchdog" "" ""
+	start_fixture_watchdog "$runner_pid" 5 "$state/root-list.watchdog" "" ""
 	watchdog_pid="$fixture_watchdog_pid"
 	if wait "$runner_pid"; then rc=0; else rc=$?; fi
 	stop_fixture_watchdog "$watchdog_pid"
@@ -597,17 +505,6 @@ assert_has "$out" "web-stderr: 1 test failed" "the frontend's failure output rea
 assert_not_has "$out" "----- agent -----" "the passing module is not dumped alongside the frontend"
 
 new_case
-out="$case_dir/selftest-failure.out"
-if FAKE_SELFTEST_FAIL=1 run_tests "agent" "$out" SELFTEST=1; then rc=0; else rc=$?; fi
-if [ "$rc" -ne 0 ]; then ok "a failing selftest stream exits nonzero"; else bad "a failing selftest stream unexpectedly exits zero"; fi
-assert_has "$out" "FAIL  selftest" "the selftest stream reports its own verdict"
-assert_one_verdict_per_name "$out" "selftest failure reports no name twice"
-assert_dump_nonempty "$out" "a failing selftest stream dumps output"
-assert_has "$out" "----- selftest -----" "the selftest log is dumped under its own name"
-assert_has "$out" "selftest-stderr: tooling contract failed" "the selftest diagnostic reaches the reader"
-assert_not_has "$out" "----- agent -----" "the passing module is not dumped with selftest"
-
-new_case
 out="$case_dir/interrupted-run.out"
 FAKE_HOLD_STREAMS=1 run_tests_async "agent" "$out"
 if wait_for_file "$state/agent.started" && wait_for_file "$state/web.started"; then
@@ -647,6 +544,4 @@ for stream in agent web; do
 	fi
 done
 
-echo "----"
-echo "run-module-tests-selftest: $checks checks, $fails failed"
-[ "$fails" -eq 0 ]
+selftest_summary

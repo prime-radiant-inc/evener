@@ -7,25 +7,7 @@ work="$(mktemp -d -t reclaim-test-debris-selftest.XXXXXX)"
 work="$(cd "$work" && pwd -P)"
 trap 'rm -rf "$work"' EXIT
 
-checks=0
-fails=0
-ok() { checks=$((checks + 1)); printf '  ok: %s\n' "$1"; }
-bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL: %s\n' "$1"; }
-assert_eq() {
-	if [ "$1" = "$2" ]; then
-		ok "$3"
-	else
-		bad "$3 (want '$2', got '$1')"
-	fi
-}
-assert_has() {
-	if grep -qF -- "$2" "$1"; then
-		ok "$3"
-	else
-		bad "$3 (missing '$2')"
-		sed 's/^/    | /' "$1"
-	fi
-}
+. "$(dirname "$0")/selftest-lib.sh"
 
 tmpbase="$work/tmp"
 mkdir -p "$tmpbase"
@@ -156,6 +138,4 @@ assert_has "$dry_cache_out" "dry run: nothing removed" "a dry-run declares that 
 [ -d "$abandoned" ] && ok "a dry-run leaves the abandoned cache in place" || bad "a dry-run removed the abandoned cache"
 [ -d "$other_cache" ] && ok "a dry-run leaves the verified live cache in place" || bad "a dry-run removed the live cache"
 
-echo
-echo "reclaim-test-debris-selftest: $checks checks, $fails failed"
-[ "$fails" -eq 0 ]
+selftest_summary

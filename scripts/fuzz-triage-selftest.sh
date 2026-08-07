@@ -14,15 +14,15 @@
 set -uo pipefail
 
 triage="$(cd "$(dirname "$0")" && pwd)/fuzz-triage.sh"
+. "$(dirname "$0")/selftest-lib.sh"
+
 work="$(mktemp -d -t fuzz-triage-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 
-pass=0
-fail=0
-ok()   { printf 'ok   - %s\n' "$1"; pass=$((pass + 1)); }
-bad()  { printf 'FAIL - %s\n' "$1"; fail=$((fail + 1)); }
-
-assert_has()  { if printf '%s' "$1" | grep -qF -- "$2"; then ok "$3"; else bad "$3 (missing: $2)"; printf '%s\n' "$1" | sed 's/^/    | /'; fi; }
+# assert_str_has STRING NEEDLE DESC — DESC passes if STRING contains NEEDLE.
+# Distinct from the lib's file-based assert_has: every call site here already
+# has its candidate output in hand as a string, not as a file on disk.
+assert_str_has()  { if printf '%s' "$1" | grep -qF -- "$2"; then ok "$3"; else bad "$3 (missing: $2)"; printf '%s\n' "$1" | sed 's/^/    | /'; fi; }
 assert_not()  { if printf '%s' "$1" | grep -qF -- "$2"; then bad "$3 (unexpected: $2)"; printf '%s\n' "$1" | sed 's/^/    | /'; else ok "$3"; fi; }
 
 # --- stubs -------------------------------------------------------------------
@@ -125,8 +125,8 @@ echo "== fuzz-triage self-test =="
 # Scenario 1: deterministic native crash -> would open exactly one PR (dry-run).
 r=$(fresh_repo s1)
 out=$(run_triage "$r" STUB_MAKE_CRASHER=1 STUB_GO_TEST_EXIT=1 -- --dry-run agent:FuzzFoo)
-assert_has "$out" "crasher (native)" "s1: discovers the native crasher"
-assert_has "$out" "would open PR fuzz/crash-abc123def456" "s1: deterministic crash -> open PR (dry-run)"
+assert_str_has "$out" "crasher (native)" "s1: discovers the native crasher"
+assert_str_has "$out" "would open PR fuzz/crash-abc123def456" "s1: deterministic crash -> open PR (dry-run)"
 assert_not "$out" "dedup" "s1: a novel crash is not deduped"
 
 # Scenario 2: dedup via the ledger (signature already filed) -> no PR.
@@ -135,19 +135,19 @@ jq '.["FuzzFoo:abc123def456789"] = {status:"found", sig:"abc123def456", pkg:"age
 	"$r/fuzz/state/ledger.json" >"$r/fuzz/state/ledger.json.tmp" && mv "$r/fuzz/state/ledger.json.tmp" "$r/fuzz/state/ledger.json"
 # STUB_GO_TEST_EXIT=1 so reconcile keeps it `found` (replay still fails).
 out=$(run_triage "$r" STUB_MAKE_CRASHER=1 STUB_GO_TEST_EXIT=1 -- --dry-run agent:FuzzFoo)
-assert_has "$out" "dedup (ledger)" "s2: known signature deduped via ledger"
+assert_str_has "$out" "dedup (ledger)" "s2: known signature deduped via ledger"
 assert_not "$out" "would open PR" "s2: no PR for a known signature"
 
 # Scenario 3: dedup via an existing PR (gh pr list non-empty) -> no PR.
 r=$(fresh_repo s3)
 out=$(run_triage "$r" STUB_MAKE_CRASHER=1 STUB_GO_TEST_EXIT=1 STUB_GH_PRLIST='[{"number":12}]' -- --dry-run agent:FuzzFoo)
-assert_has "$out" "dedup (pr-exists): fuzz/crash-abc123def456" "s3: open PR deduped via gh pr list"
+assert_str_has "$out" "dedup (pr-exists): fuzz/crash-abc123def456" "s3: open PR deduped via gh pr list"
 assert_not "$out" "would open PR" "s3: no second PR while one is open"
 
 # Scenario 4: flaky failure (passes a replay within K) -> quarantine, no PR.
 r=$(fresh_repo s4)
 out=$(run_triage "$r" STUB_MAKE_CRASHER=1 STUB_GO_FLAKY=1 STUB_COUNTER="$work/s4.cnt" -- --dry-run agent:FuzzFoo)
-assert_has "$out" "quarantine: survived a replay" "s4: flaky crash is quarantined"
+assert_str_has "$out" "quarantine: survived a replay" "s4: flaky crash is quarantined"
 assert_not "$out" "would open PR" "s4: no PR for a flaky crash"
 
 # Scenario 5: reconcile flips a stale `found` entry to `fixed` (replay passes).
@@ -156,7 +156,7 @@ jq '.["FuzzFoo:old"] = {status:"found", sig:"oldsig000000", pkg:"agent", run:"Fu
 	"$r/fuzz/state/ledger.json" >"$r/fuzz/state/ledger.json.tmp" && mv "$r/fuzz/state/ledger.json.tmp" "$r/fuzz/state/ledger.json"
 # STUB_GO_TEST_EXIT=0: the bug is fixed, the replay passes. No new crasher.
 out=$(run_triage "$r" STUB_MAKE_CRASHER=0 STUB_GO_TEST_EXIT=0 -- agent:FuzzFoo)
-assert_has "$out" "reconcile FuzzFoo:old -> fixed" "s5: fixed bug reconciled to fixed"
+assert_str_has "$out" "reconcile FuzzFoo:old -> fixed" "s5: fixed bug reconciled to fixed"
 status=$(jq -r '.["FuzzFoo:old"].status' "$r/fuzz/state/ledger.json")
 [ "$status" = "fixed" ] && ok "s5: ledger persisted status=fixed" || bad "s5: ledger status=$status, want fixed"
 
@@ -164,7 +164,7 @@ status=$(jq -r '.["FuzzFoo:old"].status' "$r/fuzz/state/ledger.json")
 # ledger entry, NO push (no remote needed). Exercises the write path.
 r=$(fresh_repo s6)
 out=$(run_triage "$r" STUB_MAKE_CRASHER=1 STUB_GO_TEST_EXIT=1 -- --no-pr agent:FuzzFoo)
-assert_has "$out" "committed to local branch fuzz/crash-abc123def456" "s6: --no-pr commits to a local branch"
+assert_str_has "$out" "committed to local branch fuzz/crash-abc123def456" "s6: --no-pr commits to a local branch"
 if git -C "$r" rev-parse --verify -q fuzz/crash-abc123def456 >/dev/null; then ok "s6: crasher branch created"; else bad "s6: crasher branch missing"; fi
 status=$(jq -r '.["FuzzFoo:abc123def456789"].status' "$r/fuzz/state/ledger.json" 2>/dev/null || echo "")
 [ "$status" = "found" ] && ok "s6: ledger records status=found" || bad "s6: ledger status=$status, want found"
@@ -175,13 +175,13 @@ wt=$(git -C "$r" branch --show-current)
 if git -C "$r" cat-file -e fuzz/crash-abc123def456:agent/testdata/fuzz/FuzzFoo/abc123def456789 2>/dev/null; then ok "s6: crasher artifact committed on the branch"; else bad "s6: crasher artifact missing from the branch"; fi
 # Change #2: the captured failure line rides into the ledger detail + commit body.
 detail=$(jq -r '.["FuzzFoo:abc123def456789"].detail' "$r/fuzz/state/ledger.json" 2>/dev/null || echo "")
-assert_has "$detail" "synthetic crasher detail boom" "s6: ledger detail carries the real failure line"
-assert_has "$(git -C "$r" log -1 --format=%B fuzz/crash-abc123def456 2>/dev/null)" "synthetic crasher detail boom" "s6: crash-branch commit body carries the real failure"
+assert_str_has "$detail" "synthetic crasher detail boom" "s6: ledger detail carries the real failure line"
+assert_str_has "$(git -C "$r" log -1 --format=%B fuzz/crash-abc123def456 2>/dev/null)" "synthetic crasher detail boom" "s6: crash-branch commit body carries the real failure"
 
 # Scenario 7: gh unauthenticated -> degrade gracefully (no push), default (PR) mode.
 r=$(fresh_repo s7)
 out=$(run_triage "$r" STUB_MAKE_CRASHER=1 STUB_GO_TEST_EXIT=1 STUB_GH_AUTH=1 -- agent:FuzzFoo)
-assert_has "$out" "gh unavailable/unauthenticated" "s7: missing gh auth degrades gracefully"
+assert_str_has "$out" "gh unavailable/unauthenticated" "s7: missing gh auth degrades gracefully"
 assert_not "$out" "opened PR" "s7: no PR opened without gh auth"
 
 # Scenario 8: corpus promotion MINIMIZES the promoted set — content-dedup,
@@ -199,12 +199,11 @@ head -c 200 /dev/zero | tr '\0' 'x' >"$cache/big"           # over the byte cap 
 out=$(run_triage "$r" STUB_MAKE_CRASHER=0 STUB_GOCACHE="$work/gocache-s8" \
 	SERF_FUZZ_MAX_SEEDS=2 SERF_FUZZ_MAX_SEED_BYTES=100 -- --no-pr agent:FuzzFoo)
 dest="$r/agent/testdata/fuzz/FuzzFoo"
-assert_has "$out" "promoted 2 minimized seed(s)" "s8: promotes exactly the count cap"
+assert_str_has "$out" "promoted 2 minimized seed(s)" "s8: promotes exactly the count cap"
 [ -f "$dest/small_a" ] && [ -f "$dest/small_b" ] && ok "s8: the two smallest unique seeds were promoted" \
 	|| bad "s8: smallest unique seeds missing"
 [ -e "$dest/small_c" ] && bad "s8: count cap not enforced (small_c promoted)" || ok "s8: count cap drops the extra unique seed"
 [ -e "$dest/big" ]     && bad "s8: size cap not enforced (big promoted)"     || ok "s8: size cap drops the oversized seed"
 [ -e "$dest/dup" ]     && bad "s8: content-dedup failed (dup promoted)"      || ok "s8: content-dedup skips a byte-identical seed"
 
-echo "== $pass passed, $fail failed =="
-[ "$fail" -eq 0 ]
+selftest_summary

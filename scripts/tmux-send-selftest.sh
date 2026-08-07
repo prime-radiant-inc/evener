@@ -14,19 +14,7 @@
 set -uo pipefail
 
 script="$(cd "$(dirname "$0")" && pwd)/tmux-send.sh"
-checks=0 fails=0
-ok() { checks=$((checks + 1)); printf '  ok: %s\n' "$1"; }
-bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL: %s\n' "$1"; }
-assert_eq() {
-	if [ "$1" = "$2" ]; then ok "$3"; else
-		bad "$3 (want '$2', got '$1')"
-	fi
-}
-assert_has() {
-	if grep -qF -- "$2" "$1"; then ok "$3"; else
-		bad "$3 (missing '$2' in: $(cat "$1"))"
-	fi
-}
+. "$(dirname "$0")/selftest-lib.sh"
 
 work="$(mktemp -d -t tmux-send-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
@@ -302,6 +290,4 @@ rc=$?
 assert_eq "$rc" "0" "TMUX_BIN can point straight at a fake, bypassing PATH"
 assert_eq "$(call_text 1)" "via TMUX_BIN" "the message sent via TMUX_BIN override is intact"
 
-echo
-echo "$checks checks, $fails failed"
-[ "$fails" -eq 0 ]
+selftest_summary

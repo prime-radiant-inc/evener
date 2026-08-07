@@ -176,7 +176,7 @@ func ParseRunbook(name string, content []byte) (Runbook, error) {
 	// closed by a blank line/heading/fence/new bullet).
 	openStep := -1
 
-	for _, line := range strings.Split(string(content), "\n") {
+	for line := range strings.SplitSeq(string(content), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
 			if inFence {

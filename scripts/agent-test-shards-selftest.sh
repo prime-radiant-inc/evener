@@ -7,16 +7,8 @@ work="$(mktemp -d -t agent-test-shards-selftest.XXXXXX)"
 work="$(cd "$work" && pwd -P)"
 trap 'rm -rf "$work"' EXIT
 
-checks=0
-fails=0
-ok() { checks=$((checks + 1)); printf '  ok: %s\n' "$1"; }
-bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL: %s\n' "$1"; }
-assert_eq() {
-	if [ "$1" = "$2" ]; then ok "$3"; else bad "$3 (want '$2', got '$1')"; fi
-}
-assert_has() {
-	if grep -qF -- "$2" "$1"; then ok "$3"; else bad "$3 (missing '$2')"; fi
-}
+. "$(dirname "$0")/selftest-lib.sh"
+
 assert_absent() {
 	if [ ! -e "$1" ]; then ok "$2"; else bad "$2 (still present: $1)"; fi
 }
@@ -63,12 +55,9 @@ esac
 printf '%s\n' "$$" >"$FAKE_STATE/$label.pid"
 case "${FAKE_MODE:-green}" in
 	hold)
-		sleep 1000 &
-		child="$!"
-		printf '%s\n' "$child" >"$FAKE_STATE/$label.child.pid"
 		[ -n "${FAKE_READY_FIFO:-}" ] && printf 'ready:%s\n' "$label" >"$FAKE_READY_FIFO"
-		wait "$child"
-		exit "$?"
+		IFS= read -r _ <"$FAKE_STATE/hold"
+		exit 0
 		;;
 	fail)
 		if [ "$label" = beta ]; then
@@ -95,6 +84,10 @@ new_case() {
 	bin="$case_root/bin"
 	cache="$case_root/cache"
 	mkdir -p "$tmp" "$state" "$bin" "$cache" "$case_root/agent"
+	# A held test binary blocks reading this FIFO rather than idling on a
+	# timer: nobody ever writes to it, so the block lasts until the process
+	# is killed, not until a clock runs out.
+	mkfifo "$state/hold"
 	write_fake_mktemp "$bin"
 	write_fake_go "$bin"
 }
@@ -198,7 +191,7 @@ exec 8<>"$stop_fifo"
 	# Until child_pid is in hand there is nothing to forward a signal to, so a
 	# TERM arriving in that window is recorded rather than run through a handler
 	# that would report a stop the wrapper never actually performed (the same
-	# spawn-window cover make-selftest-selftest.sh's wrapper carries).
+	# spawn-window race any wrapper that forks its real work off has to cover).
 	trap 'spawn_interrupted=1' TERM
 	FAKE_MODE=hold FAKE_READY_FIFO="$ready_fifo" run_case_async >"$out" 2>&1 &
 	child_pid="$!"
@@ -285,6 +278,4 @@ else
 fi
 assert_pids_gone "$tracked" "an interrupted shard run"
 
-echo "----"
-echo "agent-test-shards-selftest: $checks checks, $fails failed"
-[ "$fails" -eq 0 ]
+selftest_summary

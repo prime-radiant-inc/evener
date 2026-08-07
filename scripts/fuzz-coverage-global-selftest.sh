@@ -6,25 +6,14 @@ set -euo pipefail
 
 runner="$(cd "$(dirname "$0")" && pwd)/fuzz-coverage-global.sh"
 makefile="$(cd "$(dirname "$runner")/.." && pwd)/Makefile"
+. "$(dirname "$0")/selftest-lib.sh"
+
 work="$(mktemp -d -t fuzzcov-global-selftest.XXXXXX)"
 # Canonicalize: the runner resolves its repo root with pwd -P, so the fixture's
 # spelling must be physical too or the fake go's exact-$PWD dispatch never
 # matches (macOS $TMPDIR lives behind the /var -> /private/var symlink).
 work="$(cd "$work" && pwd -P)"
 trap 'rm -rf "$work"' EXIT
-checks=0
-fails=0
-
-ok() {
-	checks=$((checks + 1))
-	printf 'ok   - %s\n' "$1"
-}
-
-bad() {
-	checks=$((checks + 1))
-	fails=$((fails + 1))
-	printf 'FAIL - %s\n' "$1"
-}
 
 has() {
 	local haystack="$1" needle="$2" label="$3"
@@ -922,6 +911,4 @@ expect_failure FAKE_GO_LIST_FAIL=1
 has "$last_output" 'go list failed for module: .' 'go list failure is fatal'
 lacks "$(cat "$go_log")" $'\ttest ' 'go list failure invokes no replay'
 
-echo '----'
-echo "fuzz-coverage-global-selftest: $checks checks, $fails failed"
-[ "$fails" -eq 0 ]
+selftest_summary

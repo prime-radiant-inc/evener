@@ -235,10 +235,6 @@ func newBuildWebFixture(t *testing.T) runtimeBuildFixture {
 	fixture := newRuntimeBuildFixture(t)
 	installFrontendToolchainStubs(t, fixture)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "Makefile", 0o644)
-	// The real Makefile now checks the host cache before runtime builds. This
-	// fixture isolates build ordering, so provide a deterministic healthy probe
-	// instead of reaching for the repository's host-dependent disk check.
-	writeTestFile(t, filepath.Join(fixture.root, "scripts", "disk-reclaim.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/build-runtime-pair.sh", 0o755)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web-preflight.sh", 0o755)
 	return fixture
@@ -328,7 +324,7 @@ func runRuntimePairBuild(fixture runtimeBuildFixture, failPackage string) ([]byt
 func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 	environment := make([]string, 0, len(os.Environ())+4)
 	for _, assignment := range os.Environ() {
-		name := strings.SplitN(assignment, "=", 2)[0]
+		name, _, _ := strings.Cut(assignment, "=")
 		if name == "PATH" || name == "LDFLAGS" || name == "SERF_TEST_GO_LOG" || name == "SERF_TEST_GO_FAIL_PACKAGE" {
 			continue
 		}

@@ -11,15 +11,15 @@
 set -uo pipefail
 
 audit="$(cd "$(dirname "$0")" && pwd)/fuzz-oracle-audit.sh"
+. "$(dirname "$0")/selftest-lib.sh"
+
 work="$(mktemp -d -t fuzz-oracle-audit-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 
-pass=0
-fail=0
-ok()  { printf 'ok   - %s\n' "$1"; pass=$((pass + 1)); }
-bad() { printf 'FAIL - %s\n' "$1"; fail=$((fail + 1)); }
-assert_has() { if printf '%s' "$1" | grep -qF -- "$2"; then ok "$3"; else bad "$3 (missing: $2)"; printf '%s\n' "$1" | sed 's/^/    | /'; fi; }
-assert_eq()  { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3 (want '$2', got '$1')"; fi; }
+# assert_str_has STRING NEEDLE DESC — DESC passes if STRING contains NEEDLE.
+# Distinct from the lib's file-based assert_has: every call site here already
+# has its candidate output in hand as a string, not as a file on disk.
+assert_str_has() { if printf '%s' "$1" | grep -qF -- "$2"; then ok "$3"; else bad "$3 (missing: $2)"; printf '%s\n' "$1" | sed 's/^/    | /'; fi; }
 
 repo="$work/repo"
 mkdir -p "$repo/fuzz/mutations"
@@ -121,12 +121,12 @@ set +e
 out="$(run_audit)"; rc=$?
 set -e
 echo "$out" | sed 's/^/    | /'
-assert_has "$out" "ok   caught"  "caught mutation: oracle reddened"
-assert_has "$out" "BLIND blind"  "blind mutation: non-reddening oracle reported"
-assert_has "$out" "ROT  rot"     "rotted patch: reported, not silently skipped"
-assert_has "$out" "ERR  broken"  "non-compiling mutation: scored ERR, not a false catch"
-assert_has "$out" "does not compile" "non-compiling mutation: diagnosed as a build failure"
-assert_has "$out" "UNAUDITED: .:FuzzUnaudited" "gap report flags the unaudited target"
+assert_str_has "$out" "ok   caught"  "caught mutation: oracle reddened"
+assert_str_has "$out" "BLIND blind"  "blind mutation: non-reddening oracle reported"
+assert_str_has "$out" "ROT  rot"     "rotted patch: reported, not silently skipped"
+assert_str_has "$out" "ERR  broken"  "non-compiling mutation: scored ERR, not a false catch"
+assert_str_has "$out" "does not compile" "non-compiling mutation: diagnosed as a build failure"
+assert_str_has "$out" "UNAUDITED: .:FuzzUnaudited" "gap report flags the unaudited target"
 assert_eq "$rc" "1" "audit exits non-zero when an oracle is blind or a patch rotted"
 # The disposable worktree (mktemp'd as fuzz-oracle-audit.XXXX) is gone; only the
 # throwaway repo's own main worktree should remain registered.
@@ -140,9 +140,7 @@ fi
 set +e
 out2="$(run_audit --gap-only)"; rc2=$?
 set -e
-assert_has "$out2" "UNAUDITED: .:FuzzUnaudited" "gap-only: lists the unaudited target"
+assert_str_has "$out2" "UNAUDITED: .:FuzzUnaudited" "gap-only: lists the unaudited target"
 assert_eq "$rc2" "0" "gap-only: exits zero (report, not a gate)"
 
-echo "----"
-echo "fuzz-oracle-audit-selftest: $pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+selftest_summary

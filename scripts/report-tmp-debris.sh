@@ -130,19 +130,19 @@ echo
 echo "Total: ${total_h} across ${#sized[@]} entr$(plural "${#sized[@]}")."
 echo
 
-# Whether this space can move the repo volume's disk floor is a fact about
-# devices, not about size. Saying it helps when it cannot is the dishonesty
-# kata td3g exists to remove, so say which it is or say nothing.
+# Whether this space can free up room on the repo's own volume is a fact
+# about devices, not about size. Saying it helps when it cannot is the
+# dishonesty kata td3g exists to remove, so say which it is or say nothing.
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null)
 if [ -n "$repo_root" ]; then
 	root_dev=$(df -P "$root" 2>/dev/null | awk 'NR==2 {print $1}')
 	repo_dev=$(df -P "$repo_root" 2>/dev/null | awk 'NR==2 {print $1}')
 	if [ -n "$root_dev" ] && [ "$root_dev" = "$repo_dev" ]; then
 		echo "$root is on the same volume as $repo_root, so all of that counts"
-		echo "against the disk floor (scripts/disk-reclaim.sh --check)."
+		echo "against the free space that checkout has to work with."
 	elif [ -n "$root_dev" ] && [ -n "$repo_dev" ]; then
 		echo "$root is on a DIFFERENT volume from $repo_root, so clearing"
-		echo "it cannot move that checkout's disk floor."
+		echo "it cannot free space on that checkout's volume."
 	fi
 	echo
 fi
