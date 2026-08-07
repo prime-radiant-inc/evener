@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install selftest test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -170,33 +170,36 @@ endif
 # persisted Go configuration or GOFLAGS, and always use this checkout's workspace.
 override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 
-# SELFTEST_SCRIPTS are the scripts/<name>-selftest.sh suites that pin the
-# behaviour of serf's own tooling. Each is offline, deterministic and works only
-# in throwaway fixtures, and each is the ONLY thing that pins its script's
+# DEV_TOOLING_TEST_SCRIPTS are the scripts/<name>-selftest.sh suites that pin
+# the behaviour of serf's own tooling. Each is offline, deterministic and works
+# only in throwaway fixtures, and each is the ONLY thing that pins its script's
 # contract — run-module-lint-selftest.sh alone carries 167 assertions about the
 # aggregate lint runner. The six fuzz-*-selftest suites listed here are
 # fixture-contained: their git bisect, worktree, and go-test operations stay in
 # throwaway worlds rather than touching this repository.
-SELFTEST_SCRIPTS := run-module-lint run-module-tests reclaim-test-debris agent-test-shards merge-approval-gate setup-gocache web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation live-compaction-eval tmux-read tmux-send scenario-cite-migrate fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
+DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests reclaim-test-debris agent-test-shards merge-approval-gate setup-gocache web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation live-compaction-eval tmux-read tmux-send scenario-cite-migrate fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
 
-# selftest hangs off `make test` because a script selftest is a test. It stays
-# off `make lint` because run-module-lint-selftest.sh drives a fixture `make
-# lint` of its own — putting the selftests there would have that fixture reach
-# back for scripts it does not have. The wave runner (cmd/serf-selftest) owns
-# parallel spawn, signal forwarding to each suite's process group, per-suite
-# TMPDIR isolation, and the leftover-files check that fails any suite that
-# does not clean up after itself. Quiet on success; a failing suite's whole
-# log is replayed. The runner's contract is pinned by
-# cmd/serf-selftest/wave_test.go, which runs in the ordinary Go test wave.
-selftest:
-	@go run ./cmd/serf-selftest $(SELFTEST_SCRIPTS)
+# test-dev-tooling tests tooling, not the product, so it runs in
+# `make merge-approval-gate` (where tooling regressions matter) and on demand
+# — not in every inner-loop `make test`. It stays off `make lint` because
+# run-module-lint-selftest.sh drives a fixture `make lint` of its own —
+# putting the suites there would have that fixture reach back for scripts it
+# does not have. The wave runner (cmd/serf-test-dev-tooling) owns parallel
+# spawn, signal forwarding to each suite's process group, per-suite TMPDIR
+# isolation, and the leftover-files check that fails any suite that does not
+# clean up after itself. Quiet on success; a failing suite's whole log is
+# replayed. The runner's contract is pinned by
+# cmd/serf-test-dev-tooling/wave_test.go, which runs in the ordinary Go test
+# wave.
+test-dev-tooling:
+	@go run ./cmd/serf-test-dev-tooling $(DEV_TOOLING_TEST_SCRIPTS)
 
 # test covers the Go modules AND the frontend. The frontend gate runs as a third
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can
 # re-enter this Makefile's test-web target); it is node work, so it overlaps the
 # Go waves instead of adding its runtime on the end. WEB=0 skips it.
 test:
-	@MODULES="$(GO_MODULES)" SELFTEST=1 MAKE="$(MAKE)" $(MEMCAP) scripts/run-module-tests.sh -short -count=1
+	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" $(MEMCAP) scripts/run-module-tests.sh -short -count=1
 
 test-short:
 	@$(MAKE) test
@@ -221,6 +224,7 @@ merge-approval-gate:
 	@$(MAKE) lint
 	@$(MAKE) build
 	@ROOT_FULL=1 $(MAKE) test
+	@$(MAKE) test-dev-tooling
 
 # The permanent -race gate (CI), across every non-fuzz module. AGENT_PARALLEL=
 # leaves the agent wave at GOMAXPROCS: under -race (~10x slower) extra

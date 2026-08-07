@@ -39,14 +39,14 @@ type suiteResult struct {
 // every running suite's process group (KILL after cfg.KillGrace), the wave
 // waits for every suite to be reaped, and the exit code is 128+signal.
 func runWave(cfg waveConfig) int {
-	runDir, err := os.MkdirTemp("", "serf-selftest.")
+	runDir, err := os.MkdirTemp("", "serf-test-dev-tooling.")
 	if err != nil {
-		fmt.Fprintf(cfg.Out, "serf-selftest: %v\n", err)
+		fmt.Fprintf(cfg.Out, "serf-test-dev-tooling: %v\n", err)
 		return 1
 	}
 	defer os.RemoveAll(runDir)
 	if err := writeMktempShim(runDir); err != nil {
-		fmt.Fprintf(cfg.Out, "serf-selftest: %v\n", err)
+		fmt.Fprintf(cfg.Out, "serf-test-dev-tooling: %v\n", err)
 		return 1
 	}
 
@@ -123,11 +123,11 @@ func runWave(cfg waveConfig) int {
 func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) suiteResult {
 	tmp := filepath.Join(runDir, name, "tmp")
 	if err := os.MkdirAll(tmp, 0o755); err != nil {
-		return suiteResult{exitCode: 1, failure: fmt.Sprintf("serf-selftest: %s: %v", name, err)}
+		return suiteResult{exitCode: 1, failure: fmt.Sprintf("serf-test-dev-tooling: %s: %v", name, err)}
 	}
 	logFile, err := os.Create(filepath.Join(runDir, name+".log"))
 	if err != nil {
-		return suiteResult{exitCode: 1, failure: fmt.Sprintf("serf-selftest: %s: %v", name, err)}
+		return suiteResult{exitCode: 1, failure: fmt.Sprintf("serf-test-dev-tooling: %s: %v", name, err)}
 	}
 	defer logFile.Close()
 
@@ -140,7 +140,7 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
-		return suiteResult{exitCode: 1, failure: fmt.Sprintf("serf-selftest: %s: %v", name, err)}
+		return suiteResult{exitCode: 1, failure: fmt.Sprintf("serf-test-dev-tooling: %s: %v", name, err)}
 	}
 
 	var mu sync.Mutex
@@ -190,7 +190,7 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 	}
 	if leftovers := listDir(tmp); len(leftovers) > 0 {
 		return suiteResult{
-			failure: fmt.Sprintf("serf-selftest: %s passed but leaked temp files: %s",
+			failure: fmt.Sprintf("serf-test-dev-tooling: %s passed but leaked temp files: %s",
 				name, strings.Join(leftovers, ", ")),
 			seconds: seconds,
 		}
