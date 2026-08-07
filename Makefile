@@ -183,120 +183,19 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # aggregate lint runner. The six fuzz-*-selftest suites listed here are
 # fixture-contained: their git bisect, worktree, and go-test operations stay in
 # throwaway worlds rather than touching this repository.
-SELFTEST_SCRIPTS := run-module-lint run-module-tests make-selftest reclaim-test-debris agent-test-shards merge-approval-gate disk-reclaim setup-gocache web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation live-compaction-eval tmux-read tmux-send scenario-cite-migrate fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
+SELFTEST_SCRIPTS := run-module-lint run-module-tests reclaim-test-debris agent-test-shards merge-approval-gate disk-reclaim setup-gocache web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation live-compaction-eval tmux-read tmux-send scenario-cite-migrate fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
 
-# selftest hangs off `make test` because a script selftest is a test. The runner
-# starts this wave after protected wave one. It stays off `make lint` because
-# run-module-lint-selftest.sh drives a fixture `make lint` of its own — putting
-# the selftests there would have that fixture reach back for scripts it does not
-# have. Quiet on success like every other
-# gate here; a failing suite's whole log is replayed. The scripts are mostly
-# waiting on other work rather than CPU-bound (the original seven measured
-# 31-76s wall on a fleet-loaded box but only ~15s CPU), so the wave costs the
-# machine little while it overlaps the later streams. The six fuzz
-# selftests are fixture-contained (seam-driven stubs, mktemp worlds) and never
-# touch this repo, so they are safe in the same wave.
-# The worker wrapper owns the actual suite PID so an interrupted recipe can
-# forward a signal and wait before removing the diagnostic directory. Each
-# worker's suite process gets its own process group (via a perl setpgrp
-# wrapper, not shell job control -- job control needs a controlling terminal
-# and fails outright under dash without one, which is how this recipe
-# actually runs in CI) so a TERM to that group reaches descendants the suite
-# forked rather than exec'd, which a signal aimed at a single PID cannot.
-# Every kill target in this recipe is owned in-process, never read from a
-# file: stop_children signals only $pids, the run_worker wrapper subshells,
-# which are this shell's own direct children and therefore reuse-safe kill
-# targets for exactly as long as $pids lists them (cleared the instant this
-# shell's own wait reaps them, below). Each wrapper is the only thing that
-# ever signals its own suite's process group, using $child from its own
-# memory -- never published anywhere for another process to read, so there
-# is no window where a signal could be sent to a pid some other process last
-# saw associated with this worker. The wrapper's trap is installed before
-# the suite is even spawned and defers to an "interrupted" flag if $child
-# doesn't exist yet, checked immediately after spawning, so a signal in that
-# instant is neither dropped nor forwarded empty-handed; the trap is disarmed
-# the moment its own wait returns, before any bookkeeping, so nothing can act
-# on the child's pid once it may have been reused. $dir/$s.pid is written and
-# removed only for fixture observability (discovering and confirming a
-# worker's pid from outside the recipe); no production signal path in this
-# recipe ever reads it.
-# $pids is pruned as each wrapper is reaped (an ordered per-pid wait, not the
-# no-argument wait) rather than cleared only once the whole wave finishes, so
-# stop_children never signals a wrapper this shell already reaped just
-# because some other worker is still running. Waiting in spawn order does not
-# guarantee reaping in spawn order, though -- a shell blocked in `wait pidA`
-# still reaps other children as they exit, so a worker that finishes early
-# can be reaped by the kernel while its entry is still sitting further down
-# this list, unpruned, until this loop's iteration reaches it. Each $pids
-# entry is therefore "$s:$pid", and stop_children skips a pid whose script
-# has already written $dir/$s.status -- published immediately after the
-# forwarding trap is disarmed, before any further bookkeeping (removing the
-# pid file, timing the run, appending the log), on every exit path, normal
-# or interrupted, so the window where the trap is down but no status marker
-# exists yet is a single disarm-then-publish command pair, not the whole
-# tail of the normal path. This is a file used to SUPPRESS a signal
-# (fail-safe: skipping a worker that's already done or about to be), never
-# to derive one -- the kill target is still $pid from $pids, read from
-# memory, exactly as before; no production path signals a pid it only knows
-# from a file. The spawn loop uses the same
-# deferred-flag idiom as the wrapper: HUP/INT/TERM record which signal fired
-# instead of exiting immediately while pids may be incomplete, and once the
-# loop finishes (pids complete) the real exit-traps are restored and any
-# deferred signal is acted on then, with the full, correct registration set.
+# selftest hangs off `make test` because a script selftest is a test. It stays
+# off `make lint` because run-module-lint-selftest.sh drives a fixture `make
+# lint` of its own — putting the selftests there would have that fixture reach
+# back for scripts it does not have. The wave runner (cmd/serf-selftest) owns
+# parallel spawn, signal forwarding to each suite's process group, per-suite
+# TMPDIR isolation, and the leftover-files check that fails any suite that
+# does not clean up after itself. Quiet on success; a failing suite's whole
+# log is replayed. The runner's contract is pinned by
+# cmd/serf-selftest/wave_test.go, which runs in the ordinary Go test wave.
 selftest:
-	@set -u; fail=0; normal=0; pids=""; \
-	dir="$$(mktemp -d -t serf-selftest.XXXXXX)" || exit 1; \
-	stop_children() { \
-		for entry in $$pids; do \
-			s="$${entry%%:*}"; pid="$${entry#*:}"; \
-			[ -e "$$dir/$$s.status" ] && continue; \
-			kill -TERM "$$pid" 2>/dev/null || :; \
-		done; \
-	}; \
-	cleanup() { \
-		if [ "$$normal" -eq 0 ]; then stop_children; fi; \
-		for entry in $$pids; do wait "$${entry#*:}" 2>/dev/null || :; done; \
-		rm -rf "$$dir"; \
-	}; \
-	trap 'status=$$?; cleanup; exit "$$status"' 0; \
-	trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
-	run_worker() { \
-		s="$$1"; start="$$(date +%s)"; child=""; interrupted=0; \
-		trap 'if [ -n "$$child" ]; then kill -TERM "-$$child" 2>/dev/null || kill -TERM "$$child" 2>/dev/null || :; wait "$$child" 2>/dev/null || :; echo 143 >"$$dir/$$s.status"; exit 143; else interrupted=1; fi' HUP INT TERM; \
-		perl -e 'setpgrp(0,0); exec @ARGV or die "exec: $$!"' -- scripts/$$s-selftest.sh >"$$dir/$$s.log" 2>&1 & child="$$!"; \
-		echo "$$child" >"$$dir/$$s.pid"; \
-		if [ "$$interrupted" -eq 1 ]; then kill -TERM "-$$child" 2>/dev/null || kill -TERM "$$child" 2>/dev/null || :; wait "$$child" 2>/dev/null || :; echo 143 >"$$dir/$$s.status"; exit 143; fi; \
-		wait "$$child"; status="$$?"; trap - HUP INT TERM; echo "$$status" >"$$dir/$$s.status"; \
-		rm -f "$$dir/$$s.pid"; end="$$(date +%s)"; \
-		printf 'real %s\n' "$$((end - start))" >>"$$dir/$$s.log"; \
-	}; \
-	spawn_interrupted=""; \
-	trap 'spawn_interrupted=HUP' HUP; trap 'spawn_interrupted=INT' INT; trap 'spawn_interrupted=TERM' TERM; \
-	for s in $(SELFTEST_SCRIPTS); do \
-		run_worker "$$s" & \
-		pids="$$pids $$s:$$!"; \
-	done; \
-	trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
-	case "$$spawn_interrupted" in \
-		HUP) exit 129;; \
-		INT) exit 130;; \
-		TERM) exit 143;; \
-	esac; \
-	set -- $$pids; \
-	while [ "$$#" -gt 0 ]; do \
-		wait "$${1#*:}" 2>/dev/null || :; \
-		shift; \
-		pids="$$*"; \
-	done; \
-	for s in $(SELFTEST_SCRIPTS); do \
-		if [ "$$(cat "$$dir/$$s.status" 2>/dev/null || echo 1)" = 0 ]; then \
-			printf 'PASS  %-26s %s\n' "$$s" "$$(awk '/^real /{print $$2"s"}' "$$dir/$$s.log" | tail -1)"; \
-		else \
-			printf 'FAIL  %-26s\n' "$$s"; cat "$$dir/$$s.log"; fail=1; \
-		fi; \
-		done; \
-	normal=1; \
-	exit $$fail
+	@go run ./cmd/serf-selftest $(SELFTEST_SCRIPTS)
 
 # test covers the Go modules AND the frontend. The frontend gate runs as a third
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can

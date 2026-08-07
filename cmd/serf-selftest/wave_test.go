@@ -210,3 +210,23 @@ func TestTermIgnoringSuiteIsKilledAfterGrace(t *testing.T) {
 		t.Fatalf("exit %d, want 143; output:\n%s", code, out.String())
 	}
 }
+
+func TestMktempTMinusTIsCaughtByLeakCheck(t *testing.T) {
+	// macOS mktemp -t ignores TMPDIR (docs/testing.md, kata cqne): without
+	// the runner's mktemp shim these suites would write to the real per-user
+	// temp dir and the leak check could never see it.
+	dir := t.TempDir()
+	writeSuite(t, dir, "leaky", "mktemp -d -t serf-leak-probe >/dev/null\nexit 0\n")
+	writeSuite(t, dir, "tidy", "d=$(mktemp -d -t serf-tidy-probe)\nrmdir \"$d\"\nexit 0\n")
+	var out bytes.Buffer
+	code := runWave(waveConfig{ScriptsDir: dir, Suites: []string{"leaky", "tidy"}, KillGrace: time.Second, Out: &out})
+	if code != 1 {
+		t.Fatalf("exit %d, want 1; output:\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "FAIL  leaky") || !strings.Contains(out.String(), "leaked") {
+		t.Fatalf("leak via mktemp -t not caught:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "PASS  tidy") {
+		t.Fatalf("tidy suite should pass:\n%s", out.String())
+	}
+}

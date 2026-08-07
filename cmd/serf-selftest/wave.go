@@ -45,6 +45,10 @@ func runWave(cfg waveConfig) int {
 		return 1
 	}
 	defer os.RemoveAll(runDir)
+	if err := writeMktempShim(runDir); err != nil {
+		fmt.Fprintf(cfg.Out, "serf-selftest: %v\n", err)
+		return 1
+	}
 
 	// shutdown is closed by the signal listener; every suite's watcher
 	// goroutine sees it and signals its own child. waveDone stops the
@@ -130,7 +134,9 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 	cmd := exec.Command(filepath.Join(cfg.ScriptsDir, name+"-selftest.sh"))
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.Env = append(environWithout("TMPDIR"), "TMPDIR="+tmp)
+	cmd.Env = append(environWithout("TMPDIR", "PATH"),
+		"TMPDIR="+tmp,
+		"PATH="+filepath.Join(runDir, "bin")+":"+os.Getenv("PATH"))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
@@ -192,13 +198,52 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 	return suiteResult{seconds: seconds}
 }
 
+// writeMktempShim installs <runDir>/bin/mktemp, which every suite sees first
+// on PATH. macOS mktemp -t ignores TMPDIR (docs/testing.md, kata cqne), so
+// without this shim a suite's `mktemp -d -t x` would escape its private
+// sandbox and the leak check could never see what it left behind. The shim
+// rewrites `-t prefix` (and the bare no-template form, which -t underlies)
+// against TMPDIR; explicit templates pass through untouched. Suites whose
+// fixtures reset PATH bypass the shim; those fixtures fake mktemp themselves.
+func writeMktempShim(runDir string) error {
+	binDir := filepath.Join(runDir, "bin")
+	if err := os.Mkdir(binDir, 0o755); err != nil {
+		return err
+	}
+	shim := `#!/bin/sh
+flags=""
+prefix=""
+template=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-t) shift; prefix="$1" ;;
+	-*) flags="$flags $1" ;;
+	*) template="$1" ;;
+	esac
+	shift
+done
+if [ -n "$template" ]; then
+	exec /usr/bin/mktemp $flags "$template"
+fi
+exec /usr/bin/mktemp $flags "${TMPDIR:-/tmp}/${prefix:-tmp}.XXXXXX"
+`
+	return os.WriteFile(filepath.Join(binDir, "mktemp"), []byte(shim), 0o755)
+}
+
 // environWithout returns the current environment minus any existing setting
-// of the named variable, so the caller's replacement is the only one.
-func environWithout(name string) []string {
+// of the named variables, so the caller's replacements are the only ones.
+func environWithout(names ...string) []string {
 	env := os.Environ()
 	kept := env[:0]
 	for _, kv := range env {
-		if !strings.HasPrefix(kv, name+"=") {
+		drop := false
+		for _, name := range names {
+			if strings.HasPrefix(kv, name+"=") {
+				drop = true
+				break
+			}
+		}
+		if !drop {
 			kept = append(kept, kv)
 		}
 	}
