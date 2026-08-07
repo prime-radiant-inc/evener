@@ -831,10 +831,11 @@ func TestTerminalCatchupNoMatchReportsTerminalCatchup(t *testing.T) {
 	}
 }
 
-// TestTerminalCatchupFinalUnterminatedLineFires covers spec §7.1's documented
-// T3-vs-T2 divergence: for a TERMINAL catch-up the final unterminated line counts
-// (the job is dead; nothing will complete the tail), so grepOutput's EOF match
-// fires. This is the opposite of T2's attach scan (ScanRetained ignores the tail).
+// TestTerminalCatchupFinalUnterminatedLineFires covers spec §7.1's terminal
+// catch-up on output with no trailing newline: the job is dead and nothing will
+// ever complete the tail, so a match in it must still count. The windowed scanner
+// has no notion of an unterminated line, so catch-up and the attach scan agree
+// here rather than diverging as they once did.
 func TestTerminalCatchupFinalUnterminatedLineFires(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -997,5 +998,80 @@ func TestOutputMatchFiresInsideOneEnormousLine(t *testing.T) {
 	}
 	if !strings.Contains(notified[0].Reason, "BUILD_DONE") {
 		t.Fatalf("notification reason = %q, want it to carry the match", notified[0].Reason)
+	}
+}
+
+// TestTerminalCatchupFiresInsideOneEnormousLine is the incident on the TERMINAL
+// path: a job that has already finished, whose output is one >4KB line with the
+// token buried in it. Catch-up used to scan through the line-based grep, which
+// skips any line over maxJobGrepLineBytes, so the catch-up the docs point agents
+// at was exactly as blind as the live watch used to be.
+func TestTerminalCatchupFiresInsideOneEnormousLine(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	blob := strings.Repeat("=", 5000) + "BUILD_DONE" + strings.Repeat("=", 5000)
+	jobID := terminalShellWithOutput(t, jm, blob)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	res, err := jm.configureWatch(watchArgs{Target: jobID, OutputMatch: "BUILD_DONE"})
+	if err != nil {
+		t.Fatalf("configureWatch terminal catch-up: %v", err)
+	}
+	if !res.Fired || !res.TerminalCatchup {
+		t.Fatalf("result = %+v, want fired+terminal_catchup for a token inside a 10KB single line", res)
+	}
+	if len(notified) != 1 {
+		t.Fatalf("terminal catch-up fired %d notifications, want exactly 1", len(notified))
+	}
+	if !strings.Contains(notified[0].Reason, "BUILD_DONE") {
+		t.Fatalf("notification reason = %q, want it to carry the match", notified[0].Reason)
+	}
+}
+
+// TestOutputMatchFiresOnceAcrossAttachStreamAndTerminal pins that the offset
+// dedup holds across all three scan paths for the SAME match: the attach-time
+// level scan, the live feed that re-scans those bytes inside its window, and the
+// job going terminal. One match, one notification, whichever path saw it first.
+func TestOutputMatchFiresOnceAcrossAttachStreamAndTerminal(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	output := jm.running[rec.JobID].output
+	// Pre-watch output holding the match, inside a line longer than the window
+	// and with no terminator — every trap at once.
+	if _, err := jm.appendJobOutput(rec.JobID, output, []byte(strings.Repeat("=", 5000)+"BUILD_DONE")); err != nil {
+		t.Fatalf("append pre-watch output: %v", err)
+	}
+
+	// Attach: the level scan sees the already-retained match and fires once.
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "BUILD_DONE"}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if len(notified) != 1 {
+		t.Fatalf("attach scan fired %d notifications, want 1", len(notified))
+	}
+
+	// Live: more output arrives on the same never-terminated line, so the window
+	// re-scans the already-fired bytes. It must not fire again.
+	if _, err := jm.appendJobOutput(rec.JobID, output, []byte(strings.Repeat("=", 100))); err != nil {
+		t.Fatalf("append live output: %v", err)
+	}
+	if len(notified) != 1 {
+		t.Fatalf("live feed re-fired the attach-scanned match: %+v", notified)
+	}
+
+	// Terminal: the watch expires. The match must not be replayed.
+	code := 0
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	for _, n := range notified[1:] {
+		if strings.Contains(n.Reason, "BUILD_DONE") {
+			t.Fatalf("terminal path replayed the match: %+v", notified)
+		}
 	}
 }

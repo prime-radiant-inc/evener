@@ -2611,19 +2611,17 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 }
 
 // runTerminalCatchup serves an output_match-only watch on an already-terminal job
-// as a one-shot catch-up: it scans the terminal job's retained output and, if a
-// line matches, fires once (spec §7.1 "Terminal target"). No live watch is
-// installed either way; the result reports terminal_catchup with the terminal
-// status, and Fired distinguishes a matched scan from an unmatched one.
+// as a one-shot catch-up: it scans the terminal job's retained output and, if it
+// matches, fires once (spec §7.1 "Terminal target"). No live watch is installed
+// either way; the result reports terminal_catchup with the terminal status, and
+// Fired distinguishes a matched scan from an unmatched one.
 //
-// The scan uses jm.grepOutput because it reads retained output for both
-// running-but-terminal and store-only jobs; ScanRetained needs bytes already in
-// hand, and a store-only job's bytes are still on disk. The unterminated-final-
-// line divergence that used to justify this is gone — the byte-window scanner
-// matches a tail without a terminator — but grepOutput is still line-based and
-// still skips a line over maxJobGrepLineBytes, so catch-up on an already-terminal
-// job remains blind to a match buried in one enormous line. The frame carries the
-// LAST matching line.
+// The scan is the SAME windowed level scan the attach path runs (ScanRetained)
+// over the same retained bytes jm.readOutput serves for both running-but-terminal
+// and store-only jobs. Catch-up and attach therefore agree on exactly what can
+// match — including a match buried in a line longer than the scan window, and a
+// match in an unterminated tail, neither of which a line-based scan can see. The
+// frame carries the LAST match.
 //
 // A matched catch-up with a send has no home in the live pending machinery (no
 // watch is installed), so it mints a one-shot DETACHED config registered in
@@ -2635,24 +2633,25 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 	// output_match into its matcher (wrapping a bad pattern as
 	// "invalid_request: output_match:"), and the send branch reuses it to carry
 	// the send through the durable rail with a fresh generation and cloned send.
-	// The scan reuses the same compiled regexp so output_match compiles once.
+	// The scan reuses the config's own matcher so output_match compiles once.
 	cfg, err := newWatchConfig(a, jm.now())
 	if err != nil {
 		return watchResult{}, err
 	}
-	re := cfg.outputMatcher.Regexp()
 
 	result := watchResult{Source: cfg.sourcePublic, Target: key.Target, Watching: false, TerminalCatchup: true, Status: string(status)}
 
-	matches, err := jm.grepOutput(key.Target, re)
+	// maxJobOutputRetentionBytes caps retention, so it doubles as the scan budget.
+	data, _, _, err := jm.readOutput(key.Target, maxJobOutputRetentionBytes)
 	if err != nil {
 		return watchResult{}, err
 	}
-	if len(matches) == 0 {
+	last, matched := cfg.outputMatcher.ScanRetained([]byte(data))
+	if !matched {
 		return result, nil
 	}
 	result.Fired = true
-	reason := "output_match: " + matches[len(matches)-1].Line
+	reason := "output_match: " + last
 
 	if a.Send == nil {
 		jm.enqueueWatchNotifications([]jobNotification{jm.watchNotificationFromWatch(cfg, key.Target, reason, jobProvenanceForWatch(jm, key.Target))})
