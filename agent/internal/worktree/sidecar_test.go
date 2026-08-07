@@ -5,6 +5,7 @@ package worktree
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -506,13 +507,64 @@ func withTinyFileSizeLimit(t *testing.T, n uint64, fn func()) {
 	fn()
 }
 
+// fsizeLimitedHelperProcessEnv marks a subprocess re-exec of this test
+// binary spawned to run a single test under a lowered RLIMIT_FSIZE.
+//
+// RLIMIT_FSIZE is a process-wide limit, not scoped to a goroutine or a
+// single file descriptor. Lowering it in-process — even briefly, even
+// correctly restored afterward — also clips any OTHER write happening in
+// this process during that window. In particular, go test's own buffered
+// testlog writer (testing/internal/testdeps.testLog, which cmd/go reads to
+// decide what to cache) logs every os.Open/os.Stat/os.Chdir call from every
+// goroutine in the process through a shared bufio.Writer, autoflushing every
+// 4096 bytes; the flush's write error is silently discarded by the logger
+// and only resurfaces at process exit, as
+// "testing: can't write .../testlog.txt: file too large" attributed to no
+// particular test. This package does enough real filesystem work (git
+// worktrees, many files) that the log crosses a flush boundary during the
+// tiny-limit window often enough to turn a passing run flaky. Running the
+// rlimit-lowering test in its own subprocess — one cmd/go didn't launch, so
+// it has no -test.testlogfile of its own — confines the lowered limit (and
+// anything it clips) to a throwaway process instead of the one being scored
+// for the build cache.
+const fsizeLimitedHelperProcessEnv = "SERF_WORKTREE_FSIZE_HELPER_PROCESS"
+
+// isFsizeLimitedHelperProcess reports whether the current process is the
+// subprocess spawned by runFsizeLimitedHelperProcess. Test functions guarded
+// by it are a no-op under a normal test run and only do their real work
+// (which includes lowering RLIMIT_FSIZE) inside that subprocess.
+func isFsizeLimitedHelperProcess() bool {
+	return os.Getenv(fsizeLimitedHelperProcessEnv) == "1"
+}
+
+// runFsizeLimitedHelperProcess re-execs the test binary to run testName by
+// itself in a fresh process, with fsizeLimitedHelperProcessEnv set. See
+// fsizeLimitedHelperProcessEnv for why.
+func runFsizeLimitedHelperProcess(t *testing.T, testName string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^"+testName+"$", "-test.v")
+	cmd.Env = append(os.Environ(), fsizeLimitedHelperProcessEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s subprocess failed: %v\n%s", testName, err, out)
+	}
+}
+
 // TestWriteSidecarExclEncodeFailure exercises WriteSidecarExcl's write-error
 // path (the file is created successfully, but the subsequent JSON write to
 // it fails) via a real, genuine os-level I/O failure: RLIMIT_FSIZE capped
 // below the encoded sidecar's byte size triggers a real EFBIG from the
 // kernel on write, exactly the class of failure ("disk full", "quota
-// exceeded") this branch exists to surface.
+// exceeded") this branch exists to surface. The rlimit-lowering runs in a
+// subprocess; see fsizeLimitedHelperProcessEnv for why.
 func TestWriteSidecarExclEncodeFailure(t *testing.T) {
+	runFsizeLimitedHelperProcess(t, "TestWriteSidecarExclEncodeFailureHelper")
+}
+
+func TestWriteSidecarExclEncodeFailureHelper(t *testing.T) {
+	if !isFsizeLimitedHelperProcess() {
+		return
+	}
 	dir := t.TempDir()
 	sc := testSidecar()
 	withTinyFileSizeLimit(t, 4, func() {
@@ -526,8 +578,16 @@ func TestWriteSidecarExclEncodeFailure(t *testing.T) {
 // TestUpdateSidecarEncodeFailure exercises UpdateSidecar's encode-error path
 // the same way: the read succeeds (the sidecar already exists, written
 // before the limit is lowered), but re-marshaling and writing it back
-// overflows the tiny file-size limit.
+// overflows the tiny file-size limit. The rlimit-lowering runs in a
+// subprocess; see fsizeLimitedHelperProcessEnv for why.
 func TestUpdateSidecarEncodeFailure(t *testing.T) {
+	runFsizeLimitedHelperProcess(t, "TestUpdateSidecarEncodeFailureHelper")
+}
+
+func TestUpdateSidecarEncodeFailureHelper(t *testing.T) {
+	if !isFsizeLimitedHelperProcess() {
+		return
+	}
 	dir := t.TempDir()
 	sc := testSidecar()
 	if err := WriteSidecarExcl(dir, sc.Name, sc); err != nil {
