@@ -713,16 +713,12 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 			}
 		}
 	}
-	var restorePreflight *delegateRestorePreflight
 	if sub == nil || sub.sess == nil {
-		if restorePreflight == nil {
-			assessment := s.assessDelegateResumability(rec, delegateResumabilityPreflight)
-			if !assessment.Resumable {
-				return sendMessageFailed(target, notResumableSendError(assessment.Reason))
-			}
-			restorePreflight = assessment.Preflight
+		assessment := s.assessDelegateResumability(rec, delegateResumabilityPreflight)
+		if !assessment.Resumable {
+			return sendMessageFailed(target, notResumableSendError(assessment.Reason))
 		}
-		sub, err = s.restoreTerminalDelegateChild(rec, childID, restorePreflight)
+		sub, err = s.restoreTerminalDelegateChild(rec, childID, assessment.Preflight)
 		if err != nil {
 			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is not retained: %w", childID, err))
 		}
