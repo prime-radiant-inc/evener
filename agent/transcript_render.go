@@ -774,6 +774,10 @@ func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool stri
 		fmt.Fprintf(b, "\n## Turn %d — Steering\n", seq)
 		writeCompactNote(b, "Steering", e.Turn, wantFullTurn(opt, seq))
 
+	case schema.TurnEnvironment:
+		fmt.Fprintf(b, "\n## Turn %d — Environment\n", seq)
+		writeCompactNote(b, "Environment", e.Turn, wantFullTurn(opt, seq))
+
 	case schema.TurnSummary:
 		fmt.Fprintf(b, "\n## Turn %d — Summary\n", seq)
 		writeCompactNote(b, "Summary", e.Turn, wantFullTurn(opt, seq))

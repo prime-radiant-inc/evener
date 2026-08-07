@@ -188,9 +188,9 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 //     last" (spec §6: "an interrupted ack-less ask is never pending"). A
 //     denied or invalid ask_user call is IsError for the same reason and is
 //     excluded the same way.
-//   - TurnSteering, TurnCheckpoint, TurnSummary, TurnSystem, and the
-//     deprecated TurnTool: bookkeeping, not decisive — the scan continues
-//     past them. A trailing steering turn (e.g. a task-nudge reminder
+//   - TurnSteering, TurnCheckpoint, TurnSummary, TurnSystem, TurnEnvironment,
+//     and the deprecated TurnTool: bookkeeping, not decisive — the scan
+//     continues past them. A trailing steering turn (e.g. a task-nudge reminder
 //     injected before the round-boundary check runs) must not resolve a
 //     pending ask by looking like the user moved last (spec §6); a trailing
 //     checkpoint/summary is the resume anchor ResumeHistory already
