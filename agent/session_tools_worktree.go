@@ -2096,12 +2096,19 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 		targetIsCascadeLane := slices.Contains(forceCascadeDlgIDs, name)
 		// Hazard: step 7 above has already swapped s.env and unlocked target by
 		// the time a cascaded dispose can refuse, so a refusal here can leave
-		// the session out of a worktree it never removed. In a RESUMED
-		// coordinator that is reachable without any user error:
-		// armPendingTerminalNotifications re-arms terminal delegate records to
-		// NotifyPending, and delegateRecordQuiescent then refuses a lane the
-		// pre-resume session would have disposed. The fix belongs to the
-		// quiescence gate, not here.
+		// the session out of a worktree it never removed. That is the accepted
+		// cost of I1's ordering (a destructive cascade must not run before
+		// remove's own gates pass). EVERY rung of dispose's ladder can still
+		// land here — not just the unmerged/dirty verdict, but an armed watch
+		// targeting the delegate, a live shell under its lane, and the
+		// "became active while disposing" race, none of which the caller
+		// necessarily provoked. Recovery is a re-entered worktree, never lost
+		// work: no lane is torn down on any of those paths. What is gone is the
+		// one refusal that fired with no user error AND no way to avoid it — a
+		// RESUMED coordinator whose own idle lane came back re-armed to
+		// NotifyPending (armPendingTerminalNotifications) — because
+		// delegateRecordQuiescent no longer counts a session's own undelivered
+		// render as work (WS8 Task 1).
 		for _, dlg := range forceCascadeDlgIDs {
 			if _, err := s.worktreeDispose(ctx, dlg, false, false); err != nil {
 				// Name dispose's own force, not remove's: remove's force runs

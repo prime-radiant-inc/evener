@@ -25,31 +25,80 @@ verified 2026-08-06; trust symbol names.
   Jesse, never get coded around.
 - Running jobs block removal, always — no force override for live
   execution.
-- Nothing unmanaged is ever removed or pruned; adoption is explicit only.
+- Nothing unmanaged is ever *implicitly* removed or pruned; adoption is
+  explicit only. **Ruled 2026-08-07 (Jesse):** the design record's
+  "refuse *without* force" governs — `remove force:true` may remove an
+  unmanaged worktree, because explicit `force` is the anti-implicit-
+  destruction line. Shipped behaviour is correct; no code change. `prune`
+  never touches an unmanaged worktree.
 - TDD; real git worktrees in tests (the package's existing fixtures), no
-  mocks; multi-module gates per commit, exit codes only.
+  mocks; multi-module gates per commit, exit codes only. Gates must include
+  `make lint` — build+test alone does not compile `//go:build serffuzz`
+  sources, and a broken compile floor once survived a full review round.
 
 ---
 
-### Task 1: Lane ownership follows resumed identity
+### Task 1 (RE-SCOPED 2026-08-07): A resumed session can dispose its own idle lane
+
+**The original task's premise was false.** It assumed resume mints a new
+session id and that lane ownership therefore breaks. It does not: resume
+preserves `meta.ID` (`agent/session_init.go`, `id: meta.ID`), and
+`cmd/serf-hub/spawn.go` documents that as load-bearing — a fresh id is
+minted only by `/clear`. The ownership gate already passes for a resumed
+session, so the prescribed Step-1 failing test could not be written. The
+prescribed fix — re-stamping `ParentSessionID` on inherited descriptors —
+would have rewritten *forwarded descendant* descriptors
+(`agent/jobs_nested.go`), letting an ancestor dispose a live descendant's
+lane, contradicting the record's ownership scoping. Reported
+BLOCKED_ON_DECISION rather than coded around; the final whole-branch
+reviewer concurred the refusal was correct.
+
+**Ruled 2026-08-07 (Jesse): fix the real defect instead.** What actually
+blocks a resumed session from disposing its own lane is the QUIESCENCE
+gate, not ownership: `armPendingTerminalNotifications` re-arms terminal
+delegate records to `NotifyPending` on resume, and `delegateRecordQuiescent`
+then refuses with "still has running or undelivered work". The gate must
+recognize resumed-session ownership rather than blocking unconditionally.
+
+This is not cosmetic: it sits directly under the Task-2 cascade. In a
+resumed session, `remove force:true` finds the lanes *eligible* at step 4
+(ownership passes), so no dispose hint is emitted; steps 5-7 run, including
+the env swap and unlock; then the cascade fails on quiescence — a refusal
+that has already moved the session out of the worktree and unlocked it.
+
+**Binding:** the ownership-scoping record still governs. The fix must NOT
+let an ancestor dispose a live descendant's lane, and must not weaken the
+"running jobs block removal, always" rule. A genuinely un-quiesced lane —
+real running work, or a terminal event a *different* live session has not
+consumed — must still refuse.
 
 **Files:**
-- Modify: the session-resume path that restores delegate lane descriptors (find where `DelegateRestoreDescriptor`s are loaded on resume; re-stamp there), `agent/session_tools_worktree_dispose.go` (`findDelegateLaneRecord` ~:506-531 unchanged in logic — the fix is descriptor state), `agent/session_worktree_close.go` (`ownedIsolationLanes` ~:33-52 benefits automatically)
-- Test: resume-dispose integration test
+- Investigate + modify: `agent/jobs.go`
+  (`armPendingTerminalNotifications`, `rearmTerminalNotificationDecision`
+  ~:1918), the `delegateRecordQuiescent` predicate, and the dispose path in
+  `agent/session_tools_worktree_dispose.go`
+- Test: resume-then-dispose integration test using real git worktrees
 
-- [ ] **Step 1 (failing test):** create a lane, simulate a session resume
-  (new session id restoring the prior session's state), call
-  `manage_worktree dispose` for the lane — currently rejected as "not a
-  known isolation delegate"; assert it succeeds post-fix.
-- [ ] **Step 2:** on resume, inherited lane descriptors re-stamp
-  `ParentSessionID` to the resumed identity (durable, via the jobstore
-  event path descriptors already use). A genuinely different session
-  (not a resume of the creator) still gets the ownership refusal — pin
-  with a second test.
-- [ ] **Step 3:** close-time sweep (`disposeDelegateLanesAtClose`) now
-  also covers resumed lanes — assert via a close-path test.
-- [ ] **Step 4:** gates; commit
-  (`fix(worktree): lane ownership follows resumed session identity`).
+- [ ] **Step 1 (investigate):** establish precisely why a resumed session's
+  own terminal delegate records are non-quiescent, and whether the state
+  clears on its own after the resumed session's first turn (the earlier
+  investigation left this unverified). Record the finding in the report —
+  if it self-clears, the fix may be narrower than expected.
+- [ ] **Step 2 (failing test):** create a lane, drive its delegate to
+  terminal, resume the session, call `manage_worktree dispose` for that
+  lane — currently refused as "still has running or undelivered work";
+  assert it succeeds post-fix.
+- [ ] **Step 3:** make the quiescence predicate recognize that the
+  resumed owner is the session being asked to dispose. Pin the negatives
+  with tests: a lane with genuinely running work still refuses; a
+  descendant's live lane is still not disposable by an ancestor; another
+  session's undelivered terminal event is still respected.
+- [ ] **Step 4:** confirm the Task-2 force cascade now succeeds end to end
+  in a resumed session, and that a cascade which still refuses does so
+  *before* the step-7 env swap and unlock — no partial mutation on a
+  refusing call.
+- [ ] **Step 5:** gates (including `make lint`); commit
+  (`fix(worktree): a resumed session can dispose its own quiesced lane`).
 
 ### Task 2: remove force:true disposes retained-idle lanes first
 
@@ -121,7 +170,8 @@ instruction naming a tool validates availability first.
 
 ## Acceptance (whole workstream)
 
-- A resumed session disposes and removes its own lanes end to end.
+- A resumed session disposes and removes its own lanes end to end (Task 1
+  re-scoped 2026-08-07 to the quiescence gate; see the task for why).
 - `remove force:true` on an idle-lane-blocked tree succeeds; on a
   running-job tree, refuses.
 - A raw-git worktree under the managed root is visible, adoptable, and

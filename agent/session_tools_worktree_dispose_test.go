@@ -150,7 +150,47 @@ func TestDispose_RunningJob_Refused(t *testing.T) {
 	defer deleteRunning(r.s, "job_running")
 
 	err := disposeErr(t, r.s, id, false, false)
-	requireRefusalContains(t, err, "running or undelivered work")
+	requireRefusalContains(t, err, "running or unfinished work")
+}
+
+// TestDispose_DurablyRunningRecordNotInRunningMap_Refused covers the half of
+// record quiescence the running-map scan cannot see: a delegate job that is
+// durably recorded as started with no terminal, and no entry in jm.running.
+// That is not hypothetical — a delegate-start double-fault leaves exactly this
+// state (job_delegate.go: "the run is never added to jm.running, so no
+// finalizer can adopt it", reconciled only at the owner's next restart). Until
+// that reconciliation the delegate is unaccounted for, and "running jobs block
+// removal, always" means the lane is not the disposer's to reclaim yet.
+func TestDispose_DurablyRunningRecordNotInRunningMap_Refused(t *testing.T) {
+	t.Parallel()
+	r := newScriptedLaneRepo(t)
+	id, _ := r.seedIsolationLane(t)
+
+	// A second job for the same delegate, durably started and never finished.
+	// Nothing is put in jm.running, so only the durable half can catch it.
+	now := time.Now().UTC()
+	if err := r.s.jobManager.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               now,
+		JobID:            jobstore.NewJobID(r.s.ID()),
+		DelegateID:       id,
+		Type:             jobstore.JobDelegate,
+		OwnerSessionID:   r.s.ID(),
+		VisibleToSession: r.s.ID(),
+		StartedAt:        &now,
+	}); err != nil {
+		t.Fatalf("append unfinished delegate start: %v", err)
+	}
+
+	r.s.jobManager.mu.Lock()
+	inMap := len(r.s.jobManager.running)
+	r.s.jobManager.mu.Unlock()
+	if inMap != 0 {
+		t.Fatalf("jm.running has %d entries; this test is only meaningful with an empty running map", inMap)
+	}
+
+	err := disposeErr(t, r.s, id, false, false)
+	requireRefusalContains(t, err, "running or unfinished work")
 }
 
 func TestDispose_ArmedWatchSendTo_Refused(t *testing.T) {
