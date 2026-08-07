@@ -106,27 +106,26 @@ func TestServeVerboseSurvivesAnUnreadStderr(t *testing.T) {
 		drained <- string(out)
 	}()
 
-	waitErr := make(chan error, 1)
-	go func() { waitErr <- cmd.Wait() }()
-
-	var exitErr error
+	// Drain stdout to completion before calling Wait: Wait closes the pipe as
+	// soon as it sees the child exit, and racing that close against the scan
+	// goroutine's own Read produces "file already closed" instead of a clean
+	// EOF. os/exec requires all reads from a StdoutPipe to finish before Wait
+	// is called.
+	var scanFailed error
 	select {
-	case exitErr = <-waitErr:
+	case scanFailed = <-scanErr:
 	case <-time.After(60 * time.Second):
 		_ = cmd.Process.Kill()
-		<-waitErr
-		exitErr = errors.New("child never exited")
+		<-scanErr
+		scanFailed = errors.New("child never exited")
 	}
+
+	exitErr := cmd.Wait()
 	stderrRead.Close()
 	childStderr := <-drained
 
-	select {
-	case err := <-scanErr:
-		if err != nil {
-			t.Fatalf("scanning child stdout: %v\nchild stderr:\n%s", err, tailOf(childStderr))
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for stdout scan to finish\nchild stderr:\n%s", tailOf(childStderr))
+	if scanFailed != nil {
+		t.Fatalf("scanning child stdout: %v\nchild stderr:\n%s", scanFailed, tailOf(childStderr))
 	}
 
 	if stalled {

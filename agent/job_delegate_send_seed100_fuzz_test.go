@@ -116,8 +116,8 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 		case 10:
 			s := &Session{}
 			s.cfg.spawn.parentSteer = func(string, *provenance.Causal, string) {}
-			delegateSendTestHooks.afterClassify = func(got *Session) { got.cfg.spawn.parentSteer = nil }
-			t.Cleanup(func() { delegateSendTestHooks.afterClassify = nil })
+			s.cfg.testOnly.delegateSend.afterClassify = func(got *Session) { got.cfg.spawn.parentSteer = nil }
+			t.Cleanup(func() { s.cfg.testOnly.delegateSend.afterClassify = nil })
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: runtimeMessageAliasCaller, Message: "seed"})
 			if res.Err != nil || !res.Delivered {
 				t.Fatalf("local caller steering = %+v, want delivered", res)
@@ -125,10 +125,10 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 		case 11:
 			s := newLeanDelegateRestorePreflightSession(t, llm.NewClient())
 			rec := seedStoppedDelegateRestoreRecord(t, s)
-			delegateSendTestHooks.findJob = func(*jobManager, string) (*jobstore.JobRecord, error) {
+			s.cfg.testOnly.delegateSend.findJob = func(*jobManager, string) (*jobstore.JobRecord, error) {
 				return nil, errors.New("seed lookup")
 			}
-			t.Cleanup(func() { delegateSendTestHooks.findJob = nil })
+			t.Cleanup(func() { s.cfg.testOnly.delegateSend.findJob = nil })
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed"})
 			requireSendSeed100Error(t, res, "target_not_found: seed lookup")
 		case 12:
@@ -138,8 +138,8 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 			events = events[:len(events)-1]
 			rewriteJobStoreEvents(t, s.jobManager, events)
 			s.subagents.track(&subagent{id: rec.DelegateRestore.ChildSessionID, sess: &Session{}})
-			delegateSendTestHooks.finalize = func(*Session, string, string, *subagent) error { return errors.New("seed finalize") }
-			t.Cleanup(func() { delegateSendTestHooks.finalize = nil })
+			s.cfg.testOnly.delegateSend.finalize = func(*Session, string, string, *subagent) error { return errors.New("seed finalize") }
+			t.Cleanup(func() { s.cfg.testOnly.delegateSend.finalize = nil })
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed"})
 			requireSendSeed100Error(t, res, "target_not_resumable: finalize observed-terminal")
 		case 13:
@@ -162,14 +162,14 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 			rewriteJobStoreEvents(t, s.jobManager, events)
 			s.subagents.track(&subagent{id: rec.DelegateRestore.ChildSessionID, sess: &Session{}})
 			calls := 0
-			delegateSendTestHooks.findJob = func(jm *jobManager, id string) (*jobstore.JobRecord, error) {
+			s.cfg.testOnly.delegateSend.findJob = func(jm *jobManager, id string) (*jobstore.JobRecord, error) {
 				calls++
 				if calls > 1 {
 					return nil, errors.New("reload fault")
 				}
 				return findJobRecord(jm, id)
 			}
-			t.Cleanup(func() { delegateSendTestHooks.findJob = nil })
+			t.Cleanup(func() { s.cfg.testOnly.delegateSend.findJob = nil })
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed"})
 			requireSendSeed100Error(t, res, "target_not_found: reload fault")
 		case 15, 16:
@@ -177,36 +177,36 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 			client.Register(&fakeAdapter{name: "openai"})
 			s := newDelegateRestorePreflightSession(t, client)
 			rec := seedStoppedDelegateRestoreRecord(t, s)
-			delegateSendTestHooks.beforePostState = func(sub *subagent) { sub.mu.Lock(); sub.running = true; sub.mu.Unlock() }
-			delegateSendTestHooks.findRunning = func(*jobManager, string) (*jobstore.JobRecord, error) {
+			s.cfg.testOnly.delegateSend.beforePostState = func(sub *subagent) { sub.mu.Lock(); sub.running = true; sub.mu.Unlock() }
+			s.cfg.testOnly.delegateSend.findRunning = func(*jobManager, string) (*jobstore.JobRecord, error) {
 				if seed%21 == 15 {
 					return nil, errors.New("running lookup fault")
 				}
 				return rec, nil
 			}
-			t.Cleanup(func() { delegateSendTestHooks.beforePostState = nil; delegateSendTestHooks.findRunning = nil })
+			t.Cleanup(func() { s.cfg.testOnly.delegateSend.beforePostState = nil; s.cfg.testOnly.delegateSend.findRunning = nil })
 			_ = s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed"})
 		case 17:
 			client := llm.NewClient()
 			client.Register(&fakeAdapter{name: "openai"})
 			s := newDelegateRestorePreflightSession(t, client)
 			rec := seedStoppedDelegateRestoreRecord(t, s)
-			delegateSendTestHooks.resume = func(*jobManager, string, string, *subagent, string, string, any, *jobstore.DelegateRestoreDescriptor, bool, *provenance.Causal) (*runningJob, <-chan error, *jobstore.JobRecord, error) {
+			s.cfg.testOnly.delegateSend.resume = func(*jobManager, string, string, *subagent, string, string, any, *jobstore.DelegateRestoreDescriptor, bool, *provenance.Causal) (*runningJob, <-chan error, *jobstore.JobRecord, error) {
 				return nil, nil, rec, nil
 			}
-			t.Cleanup(func() { delegateSendTestHooks.resume = nil })
+			t.Cleanup(func() { s.cfg.testOnly.delegateSend.resume = nil })
 			_ = s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed"})
 		case 18:
 			s := newDelegateRestorePreflightSession(t, llm.NewClient())
 			rec := seedStoppedDelegateRestoreRecord(t, s)
 			rec.Reason = "stopped"
-			delegateSendTestHooks.findJob = func(*jobManager, string) (*jobstore.JobRecord, error) { return rec, nil }
+			s.cfg.testOnly.delegateSend.findJob = func(*jobManager, string) (*jobstore.JobRecord, error) { return rec, nil }
 			old := delegateRestoreSession
 			delegateRestoreSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, RestoreSessionConfig) (*Session, error) {
 				return nil, errors.New("seed restore fault")
 			}
 			t.Cleanup(func() {
-				delegateSendTestHooks.findJob = nil
+				s.cfg.testOnly.delegateSend.findJob = nil
 				delegateRestoreSession = old
 			})
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed"})

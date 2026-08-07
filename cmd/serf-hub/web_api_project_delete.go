@@ -228,8 +228,8 @@ func (s *WebServer) acquireProjectDeletionCandidates(
 	var skipped []projectDeleteSkip
 	var releases []func()
 	release := func() {
-		for _, r := range slices.Backward(releases) {
-			r()
+		for _, fn := range slices.Backward(releases) {
+			fn()
 		}
 	}
 	for _, target := range targets {

@@ -255,6 +255,10 @@ type testConfig struct {
 	// subagentStopGated overrides child stop-gating when handled is true.
 	subagentStopGated func(*Session, string) (stopped, handled bool)
 
+	// delegateSend holds delegate_send injection seams for this session only;
+	// see delegateSendTestSeams for why they must not be package globals.
+	delegateSend delegateSendTestSeams
+
 	// registerTool injects deterministic registration failures. Nil preserves
 	// direct Registry.Register calls.
 	registerTool func(*tool.Registry, tool.RegisteredTool) error

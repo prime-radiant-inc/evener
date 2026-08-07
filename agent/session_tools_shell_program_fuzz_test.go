@@ -51,10 +51,10 @@ func FuzzShellToolsBufferedProgram(f *testing.F) {
 		{16},                             // list_dir error
 		{32},                             // grep error
 		{64},                             // glob error
-		{0, 0, 0, 1},                     // max_runtime_ms clamps to one second
-		{0, 0, 0, 6},                     // negative max_runtime_ms rejects before exec
+		{0, 0, 0, 1},                     // decodes a nonzero (now-inert) max-runtime byte
+		{0, 0, 0, 6},                     // decodes a negative (now-inert) max-runtime byte
 		stpForegroundOutputSeed(4, 3, 0), // default timeout caps at max timeout
-		stpForegroundOutputSeed(4, 0, 4), // runtime lowers the default timeout
+		stpForegroundOutputSeed(4, 0, 4), // default timeout with no cap
 		stpFilledSeed(96, 0xff),          // long background/list-error program
 		stpFilledSeed(96, 0x55),          // long background/grep-error program
 	} {
@@ -208,8 +208,11 @@ func stpFilledSeed(n int, value byte) []byte {
 
 // stpForegroundOutputSeed makes command/description empty so the next bytes
 // select nonempty no-newline stdout and stderr. This keeps fixed replay on the
-// real buffered-output formatter while the three timeout selectors cover its
-// precedence rules.
+// real buffered-output formatter while the defaultTimeout/maxTimeout selectors
+// cover the session policy's precedence rule. maxRuntime is still decoded (it
+// shapes the byte-program layout for existing seeds) but has no effect: the
+// shell tool's max_runtime_ms argument was removed from the model-facing
+// schema in commit 429e22d68 ("fix: hide shell runtime cap from models").
 func stpForegroundOutputSeed(defaultTimeout, maxTimeout, maxRuntime byte) []byte {
 	return []byte{
 		0, defaultTimeout, maxTimeout, maxRuntime, // foreground flags and timeouts
@@ -528,11 +531,14 @@ func stpRunProgram(t *testing.T, p stpProgram) stpRunResult {
 	}
 
 	result := stpRunResult{}
+	// max_runtime_ms was removed from the model-facing shell schema (commit
+	// 429e22d68, "fix: hide shell runtime cap from models"); p.maxRuntime is
+	// still decoded to keep the byte-program layout stable for existing seeds,
+	// but it is no longer sent and has no effect on the real boundary.
 	result.shell = call("shell", map[string]any{
-		"command":        p.command,
-		"description":    p.description,
-		"background":     p.background,
-		"max_runtime_ms": p.maxRuntime,
+		"command":     p.command,
+		"description": p.description,
+		"background":  p.background,
 	})
 	result.list = call("list_dir", map[string]any{
 		"path":   p.listPath,
@@ -580,15 +586,6 @@ func stpAssertShell(t *testing.T, p stpProgram, result stpToolResult, calls []st
 	if result.toolName != "shell" || result.callID != "stp-shell" {
 		t.Fatalf("shell identity = %#v", result)
 	}
-	if p.maxRuntime < 0 {
-		if !result.isError || !strings.Contains(result.fullOutput, "max_runtime_ms must be non-negative") {
-			t.Fatalf("negative max runtime result = %#v", result)
-		}
-		if len(calls) != 0 {
-			t.Fatalf("negative max runtime called executor: %#v", calls)
-		}
-		return
-	}
 	if p.background {
 		if !result.isError || !strings.Contains(result.fullOutput, "background requires a streaming") {
 			t.Fatalf("buffered background result = %#v", result)
@@ -601,7 +598,7 @@ func stpAssertShell(t *testing.T, p stpProgram, result stpToolResult, calls []st
 	if len(calls) != 1 {
 		t.Fatalf("shell executor calls = %#v, want one", calls)
 	}
-	wantTimeout := stpExpectedTimeout(p.defaultTimeout, p.maxTimeout, p.maxRuntime)
+	wantTimeout := stpExpectedTimeout(p.defaultTimeout, p.maxTimeout)
 	if call := calls[0]; call.command != p.command || call.timeoutMS != wantTimeout || call.workDir != "" {
 		t.Fatalf("shell executor call = %#v, want command=%q timeout=%d workdir=empty", call, p.command, wantTimeout)
 	}
@@ -615,16 +612,10 @@ func stpAssertShell(t *testing.T, p stpProgram, result stpToolResult, calls []st
 	}
 }
 
-func stpExpectedTimeout(defaultTimeout, maxTimeout, maxRuntime int) int {
+func stpExpectedTimeout(defaultTimeout, maxTimeout int) int {
 	timeout := defaultTimeout
 	if maxTimeout > 0 && timeout > maxTimeout {
 		timeout = maxTimeout
-	}
-	if maxRuntime > 0 && maxRuntime < minShellMaxRuntimeMS {
-		maxRuntime = minShellMaxRuntimeMS
-	}
-	if maxRuntime > 0 && (timeout == 0 || maxRuntime < timeout) {
-		timeout = maxRuntime
 	}
 	return timeout
 }

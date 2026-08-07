@@ -520,7 +520,13 @@ func classifyDelegateSendTarget(target, message string, blockTimeoutMS int, from
 	return delegateTargetDelegateID, ""
 }
 
-var delegateSendTestHooks struct {
+// delegateSendTestSeams holds delegate_send injection points, scoped to one
+// session via cfg.testOnly.delegateSend. Session-scoped rather than
+// package-global: a parallel test's seams must never fire inside another
+// test's sendDelegateMessage (a leaked beforePostState that clears
+// sub.running lets a resume launch a second concurrent run and double-close
+// sub.done).
+type delegateSendTestSeams struct {
 	afterClassify   func(*Session)
 	findJob         func(*jobManager, string) (*jobstore.JobRecord, error)
 	finalize        func(*Session, string, string, *subagent) error
@@ -537,7 +543,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	target := strings.TrimSpace(args.Target)
 	message := strings.TrimSpace(args.Message)
 	kind, reason := classifyDelegateSendTarget(target, message, args.BlockTimeoutMS, args.FromWatch, s.hasCallerRoute())
-	if hook := delegateSendTestHooks.afterClassify; hook != nil {
+	if hook := s.cfg.testOnly.delegateSend.afterClassify; hook != nil {
 		hook(s)
 	}
 	switch kind {
@@ -616,7 +622,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate %q has no job history", target))
 	}
 	findJob := findJobRecord
-	if hook := delegateSendTestHooks.findJob; hook != nil {
+	if hook := s.cfg.testOnly.delegateSend.findJob; hook != nil {
 		findJob = hook
 	}
 	rec, err := findJob(jm, recTarget)
@@ -655,7 +661,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		finalize := func(s *Session, jobID, childID string, sub *subagent) error {
 			return s.finalizeDelegate(jobID, childID, sub)
 		}
-		if hook := delegateSendTestHooks.finalize; hook != nil {
+		if hook := s.cfg.testOnly.delegateSend.finalize; hook != nil {
 			finalize = hook
 		}
 		if err := finalize(s, rec.JobID, childID, sub); err != nil {
@@ -704,7 +710,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		}
 		if running {
 			findRunning := findRunningDelegateByTranscriptRef
-			if hook := delegateSendTestHooks.findRunning; hook != nil {
+			if hook := s.cfg.testOnly.delegateSend.findRunning; hook != nil {
 				findRunning = hook
 			}
 			active, err := findRunning(jm, rec.TranscriptRef)
@@ -727,7 +733,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		}
 	}
 
-	if hook := delegateSendTestHooks.beforePostState; hook != nil {
+	if hook := s.cfg.testOnly.delegateSend.beforePostState; hook != nil {
 		hook(sub)
 	}
 	sub.mu.Lock()
@@ -746,7 +752,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	}
 	if running {
 		findRunning := findRunningDelegateByTranscriptRef
-		if hook := delegateSendTestHooks.findRunning; hook != nil {
+		if hook := s.cfg.testOnly.delegateSend.findRunning; hook != nil {
 			findRunning = hook
 		}
 		active, err := findRunning(jm, rec.TranscriptRef)
@@ -762,7 +768,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	var run *runningJob
 	var finalizeErr <-chan error
 	var active *jobstore.JobRecord
-	if hook := delegateSendTestHooks.resume; hook != nil {
+	if hook := s.cfg.testOnly.delegateSend.resume; hook != nil {
 		run, finalizeErr, active, err = hook(jm, childID, message, sub, rec.TranscriptRef, delegateID, delegateResultSchema(rec), rec.DelegateRestore, args.FromWatch, messageProvenance)
 	} else {
 		run, finalizeErr, active, err = s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef, delegateID, delegateResultSchema(rec), rec.DelegateRestore, args.FromWatch, messageProvenance)

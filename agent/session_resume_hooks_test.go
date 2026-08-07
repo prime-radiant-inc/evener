@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
@@ -146,8 +145,11 @@ func TestRestoreSessionDefersResumeSessionStartHooksUntilUserInput(t *testing.T)
 		t.Fatalf("resume hook output was injected during restore; history:\n%s", preHistory)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// These tests assert resume-hook drain ordering, not ProcessInput latency. A
+	// fixed wall-clock deadline here flaked under concurrent test-suite load,
+	// where scheduling delays (not a hang) could exceed a few seconds. t.Context()
+	// is the real deadline, so a genuine hang still fails the run.
+	ctx := t.Context()
 	if _, err := sess.ProcessInput(ctx, "current user task", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -181,8 +183,11 @@ func TestRestoreSessionNotificationDoesNotDrainResumeSessionStartHooks(t *testin
 	eventsPtr, mu, doneCh := collectEvents(sess)
 	sess.Steer("notification steering without resume hooks")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// These tests assert resume-hook drain ordering, not ProcessInput latency. A
+	// fixed wall-clock deadline here flaked under concurrent test-suite load,
+	// where scheduling delays (not a hang) could exceed a few seconds. t.Context()
+	// is the real deadline, so a genuine hang still fails the run.
+	ctx := t.Context()
 	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
@@ -228,8 +233,11 @@ func TestRestoreSessionWatchDeliveryDoesNotDrainResumeSessionStartHooks(t *testi
 	sess := restoredSessionWithResumeHook(t, adapter)
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// These tests assert resume-hook drain ordering, not ProcessInput latency. A
+	// fixed wall-clock deadline here flaked under concurrent test-suite load,
+	// where scheduling delays (not a hang) could exceed a few seconds. t.Context()
+	// is the real deadline, so a genuine hang still fails the run.
+	ctx := t.Context()
 	if _, err := sess.ProcessInputKind(ctx, "watch delivery before user", nil, EntryWatchDelivery); err != nil {
 		t.Fatalf("ProcessInputKind(EntryWatchDelivery): %v", err)
 	}
@@ -287,8 +295,11 @@ func TestRestoreSessionStartHooksDrainOnlyOnce(t *testing.T) {
 	sess := restoredSessionWithResumeHook(t, adapter)
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// These tests assert resume-hook drain ordering, not ProcessInput latency. A
+	// fixed wall-clock deadline here flaked under concurrent test-suite load,
+	// where scheduling delays (not a hang) could exceed a few seconds. t.Context()
+	// is the real deadline, so a genuine hang still fails the run.
+	ctx := t.Context()
 	if _, err := sess.ProcessInput(ctx, "first user", nil); err != nil {
 		t.Fatalf("first ProcessInput: %v", err)
 	}
@@ -325,8 +336,11 @@ func TestRestoreSessionMaxTurnsRejectedUserInputKeepsPendingResumeHooks(t *testi
 	sess.turns = 1
 	sess.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// These tests assert resume-hook drain ordering, not ProcessInput latency. A
+	// fixed wall-clock deadline here flaked under concurrent test-suite load,
+	// where scheduling delays (not a hang) could exceed a few seconds. t.Context()
+	// is the real deadline, so a genuine hang still fails the run.
+	ctx := t.Context()
 	_, err := sess.ProcessInput(ctx, "rejected by max turns", nil)
 	requireBudgetExhaustion(t, err, exhaustedBudgetTurns, 1, false)
 	if got := len(adapter.Requests()); got != 0 {
@@ -366,8 +380,11 @@ func TestRestoreSessionRejectedUserInputKeepsPendingResumeHooks(t *testing.T) {
 	if err := sess.Enqueue(context.Background(), ""); err == nil {
 		t.Fatal("empty enqueue succeeded, want rejection")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// These tests assert resume-hook drain ordering, not ProcessInput latency. A
+	// fixed wall-clock deadline here flaked under concurrent test-suite load,
+	// where scheduling delays (not a hang) could exceed a few seconds. t.Context()
+	// is the real deadline, so a genuine hang still fails the run.
+	ctx := t.Context()
 	if _, err := sess.ProcessInput(ctx, "accepted user", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

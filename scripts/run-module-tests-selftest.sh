@@ -117,12 +117,18 @@ case "${1:-}" in
 			exit 1
 		fi
 		if [ "${FAKE_LIST_HOLD:-0}" -ne 0 ]; then
+			# Establish the held descendant and publish its pid BEFORE the
+			# readiness event: the suite's reap assertion needs the descendant
+			# to exist before the runner's timeout sweep, and the event is the
+			# only causal fence the suite has. With the old order (event
+			# first) the sweep could land in the gap between event and fork,
+			# killing this process before the descendant existed.
+			sleep 1000 &
+			printf '%s\n' "$!" >"$FAKE_STATE/root-list-child.pid"
+			: >"$FAKE_STATE/root-list.started"
 			if [ -n "${FAKE_READY_FIFO:-}" ] && [ -p "$FAKE_READY_FIFO" ]; then
 				printf 'go-list-started\n' >"$FAKE_READY_FIFO"
 			fi
-			: >"$FAKE_STATE/root-list.started"
-			sleep 1000 &
-			printf '%s\n' "$!" >"$FAKE_STATE/root-list-child.pid"
 			wait "$!"
 			exit $?
 		fi
@@ -437,7 +443,11 @@ mkfifo "$ready_fifo"
 ) &
 ready_keeper_pid="$!"
 exec 9<"$ready_fifo"
-run_tests_async "." "$out" FAKE_LIST_HOLD=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=1 FAKE_READY_FIFO="$ready_fifo"
+# Timeout 2, not the 1-second floor: the runner's sweep fires 1.0-2.0s after
+# spawn (integer SECONDS granularity), and at 1 the sweep raced the fixture's
+# own establishment under load — seen twice as "leaves its descendant alive".
+# 2 keeps the deliberate trip cheap while clearing the establishment window.
+run_tests_async "." "$out" FAKE_LIST_HOLD=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=2 FAKE_READY_FIFO="$ready_fifo"
 start_fixture_watchdog "$runner_pid" 5 "$state/root-list.watchdog" "$ready_fifo" startup-watchdog
 startup_watchdog_pid="$fixture_watchdog_pid"
 ready_signal=""
@@ -477,11 +487,13 @@ if [ "$startup_ready" -eq 1 ]; then
 	assert_has "$out" "go clean -cache -modcache" "a root package-discovery timeout gives a cache repair command"
 	assert_has "$out" "scripts/run-module-tests.sh -short -count=1" "a root package-discovery timeout gives an exact retry command"
 	child_pid="$(cat "$state/root-list-child.pid" 2>/dev/null || :)"
-	if [ -n "$child_pid" ] && wait_for_process_exit "$child_pid"; then
+	if [ -z "$child_pid" ]; then
+		bad "the held go list never published its descendant pid (fixture establishment lost)"
+	elif wait_for_process_exit "$child_pid"; then
 		ok "a root package-discovery timeout reaps its descendant"
 	else
 		bad "a root package-discovery timeout leaves its descendant alive"
-		[ -n "$child_pid" ] && kill -KILL "$child_pid" 2>/dev/null || :
+		kill -KILL "$child_pid" 2>/dev/null || :
 	fi
 else
 	bad "the root package-discovery timeout fixture did not reach held go list (last event '$ready_signal')"

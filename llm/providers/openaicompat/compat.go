@@ -348,9 +348,9 @@ func addCacheControlToTextContent(msg map[string]any, cc map[string]any) bool {
 		msg["content"] = []map[string]any{{"type": "text", "text": content, "cache_control": cc}}
 		return true
 	case []map[string]any:
-		for _, c := range slices.Backward(content) {
-			if c["type"] == "text" {
-				c["cache_control"] = cc
+		for _, part := range slices.Backward(content) {
+			if part["type"] == "text" {
+				part["cache_control"] = cc
 				return true
 			}
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -469,7 +470,7 @@ func TestAtomicRejoinDuringSnapshotCloneDeliversDeltaOnce(t *testing.T) {
 	for msg := range conn.send {
 		messages = append(messages, msg)
 	}
-	combined := ""
+	var combined strings.Builder
 	for _, msg := range messages {
 		switch {
 		case msg.Response != nil:
@@ -477,19 +478,19 @@ func TestAtomicRejoinDuringSnapshotCloneDeliversDeltaOnce(t *testing.T) {
 			if !ok {
 				t.Fatalf("snapshot result = %T, want snapshotResponse", msg.Response.Result)
 			}
-			combined += got.Text
+			combined.WriteString(got.Text)
 		case msg.Notification != nil:
 			var params appwire.AgentMessageDeltaParams
 			if err := json.Unmarshal(msg.Notification.Params, &params); err != nil {
 				t.Fatalf("decode delta: %v", err)
 			}
-			combined += params.Delta
+			combined.WriteString(params.Delta)
 		default:
 			t.Fatalf("unexpected message: %+v", msg)
 		}
 	}
-	if combined != "delta" {
-		t.Fatalf("snapshot plus released deltas = %q, want one append-only delta", combined)
+	if combined.String() != "delta" {
+		t.Fatalf("snapshot plus released deltas = %q, want one append-only delta", combined.String())
 	}
 }
 
