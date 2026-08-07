@@ -204,8 +204,9 @@ Steering a stuck agent has two layers. `injectPostToolSteering`
 `detectLoop` fires, injects steering — the structural intervention when every call in
 the window failed, today's tiered escalation otherwise. Underneath it,
 `Registry.ExecuteCall` (`agent/internal/tool/registry.go`) consults a ledger
-(`agent/internal/tool/breaker.go`) that every tool call passes through, native and MCP
-alike. The ledger carries **two triggers, both keyed on tool name + a hash of the raw
+(`agent/internal/tool/breaker.go`) that every *dispatched* tool call passes through,
+native and MCP alike — a call refused before dispatch (pre-validation, an unknown tool,
+unparseable arguments, a schema violation) never reaches the ledger. The ledger carries **two triggers, both keyed on tool name + a hash of the raw
 argument bytes**. The **failure trigger** counts consecutive failures sharing an error
 class: the second appends a nudge to the result, and the third is **not executed at
 all** — the call is refused before the tool is looked up. The **repetition trigger**

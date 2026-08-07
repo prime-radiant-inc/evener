@@ -514,6 +514,14 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		if failStreak, _, snippets := r.breaker.check(name, call.Arguments); failStreak >= breakerThreshold {
 			return truncateResult(name, callID, failureParkText(name, snippets), true, defaultToolLimit(name))
 		}
+	} else {
+		// A human authorized this dispatch, which retires the refusals that
+		// led here as evidence. Clearing rather than merely skipping judgement
+		// is what keeps a repeatedly-approved call approvable: the grant is
+		// per-invocation, so the same call comes back and is denied again, and
+		// a streak that only ever grows would park the next one before
+		// dispatch — with no typed error left to raise another approval card.
+		r.breaker.clearFailures(name, call.Arguments)
 	}
 
 	r.mu.RLock()

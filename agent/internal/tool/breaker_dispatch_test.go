@@ -328,6 +328,59 @@ func TestBreakerDispatch_BypassExecutesAParkedCall(t *testing.T) {
 	}
 }
 
+// A human authorizing a dispatch retires the refusals that preceded it: the
+// bypass must clear the signature's failure streak, not merely skip judgement.
+// Otherwise the next ordinary identical call parks on failures a human already
+// answered, and no further approval is possible.
+func TestBreakerDispatch_BypassClearsTheFailureStreak(t *testing.T) {
+	r := NewRegistry()
+	fake := registerBreakerFake(t, r, "flaky", func(int) (any, error) {
+		return nil, errors.New("boom: connection refused")
+	})
+	env := breakerEnv(t)
+	ctx := context.Background()
+	call := breakerCall("c1", "flaky", `{}`)
+
+	for range 2 {
+		r.ExecuteCall(ctx, env, call)
+	}
+	if fake.calls != 2 {
+		t.Fatalf("setup invocations = %d, want 2", fake.calls)
+	}
+
+	r.ExecuteCall(WithBreakerBypass(ctx), env, call)
+	if fake.calls != 3 {
+		t.Fatalf("a bypassed call must execute: invocations = %d, want 3", fake.calls)
+	}
+
+	// The streak starts over from the authorized dispatch: the next two
+	// ordinary calls fail afresh (the second nudged), and only the one after
+	// that parks.
+	first := r.ExecuteCall(ctx, env, call)
+	if fake.calls != 4 {
+		t.Fatalf("the call after an authorized dispatch was parked: invocations = %d, want 4", fake.calls)
+	}
+	if strings.Contains(first.Output, wantFailureNudge) {
+		t.Errorf("a fresh streak must not nudge on its first failure: %q", first.Output)
+	}
+
+	second := r.ExecuteCall(ctx, env, call)
+	if fake.calls != 5 {
+		t.Fatalf("the second call after an authorized dispatch was parked: invocations = %d, want 5", fake.calls)
+	}
+	if !strings.HasSuffix(second.Output, wantFailureNudge) {
+		t.Errorf("the second failure of a fresh streak must nudge, got %q", second.Output)
+	}
+
+	third := r.ExecuteCall(ctx, env, call)
+	if fake.calls != 5 {
+		t.Errorf("the rebuilt streak must park again: invocations = %d, want 5", fake.calls)
+	}
+	if !strings.HasPrefix(third.Output, wantFailurePark("flaky")) {
+		t.Errorf("parked output missing the failure park sentence, got %q", third.Output)
+	}
+}
+
 // A TruncTail tool whose error bodies both overflow the limit renders each one
 // behind the same truncation banner. Classing on the truncated body would read
 // that banner as the whole error, collapse two genuinely different failures
