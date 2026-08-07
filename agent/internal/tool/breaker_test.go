@@ -304,6 +304,35 @@ func TestFailureLedger_SurvivingSuccessEntries_DoNotCorruptFIFOEviction(t *testi
 	}
 }
 
+func TestFailureLedger_RecurringSignature_SurvivesUnrelatedChurn(t *testing.T) {
+	l := newFailureLedger()
+	churn := func(from, to int) {
+		for i := from; i < to; i++ {
+			l.record("read_file", []byte(fmt.Sprintf(`{"i":%d}`, i)), false, "body")
+		}
+	}
+	failing := []byte(`{"path":"broken"}`)
+
+	// A signature that keeps failing, interleaved with a flood of distinct
+	// one-off calls. Eviction must be driven by how recently a signature was
+	// used, not by how long ago it was first seen — otherwise the very calls
+	// the breaker exists to catch are the ones it forgets.
+	l.record("write_file", failing, true, "boom")
+	churn(0, 511)
+	if streak, _ := l.record("write_file", failing, true, "boom"); streak != 2 {
+		t.Fatalf("second failure after churn: streak = %d, want 2", streak)
+	}
+	// One short of the cap: an LRU keeps the recently-touched signature, a
+	// FIFO evicts it. Churning a full cap's worth of new signatures would
+	// evict everything under either policy and prove nothing.
+	churn(511, 1022)
+
+	streak, _, _ := l.check("write_file", failing)
+	if streak != 2 {
+		t.Fatalf("recurring signature evicted by unrelated churn: streak = %d, want 2", streak)
+	}
+}
+
 func TestFailureLedger_ConcurrentRecord_BothCountersRaceClean(t *testing.T) {
 	l := newFailureLedger()
 	var wg sync.WaitGroup
