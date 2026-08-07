@@ -275,7 +275,10 @@ too. The two backends reach that outcome differently: Seatbelt names the granted
 entries, while bubblewrap — which grants by mounting, and cannot express "may
 create exactly this filename in a read-only directory" — binds a linked worktree's
 or submodule's shared common `.git` writable as a whole **directory** and re-binds
-the protected surfaces read-only on top of it.
+the protected surfaces read-only on top of it. The two backends therefore reach
+the same *outcome* through different breadth: inside that shared common dir Linux
+also leaves the metadata nobody named — `HEAD`, `ORIG_HEAD`, `info` — writable,
+where macOS denies them. Everything below stays denied on both.
 
 But every git **config and hook** surface is read-only:
 
