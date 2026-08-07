@@ -831,7 +831,7 @@ func NewOpenAIProfile(model string) *Profile {
 		toolNameMap: map[string]string{
 			"shell": "exec_command",
 			"grep":  "grep_files",
-			"glob":  "list_dir",
+			"glob":  "find_files",
 		},
 		capabilities: openAICodexCapabilities,
 	})

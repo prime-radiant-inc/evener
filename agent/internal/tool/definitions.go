@@ -325,7 +325,7 @@ func DefGrep() llm.ToolDefinition {
 func DefGlob() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "glob",
-		Description: "Find files matching a glob pattern. Supports *, ?, [], **, and bounded nested brace alternatives such as *.{ts,tsx,css}; malformed braces are rejected. Use this for pattern-based file discovery. If a provider aliases this tool to a name like list_dir, it still performs glob matching rather than a literal directory listing.",
+		Description: "Find files by pattern: a recursive glob match over file paths, not a literal directory listing. Supports *, ?, [], **, and bounded nested brace alternatives such as *.{ts,tsx,css}; malformed braces are rejected. Use this for pattern-based file discovery. Some providers alias this tool to a name like find_files; it still performs glob matching regardless of the wire name.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

@@ -150,7 +150,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 	data.ProfileTools = toolEntriesFromDefinitions(profileDefs)
 	// Use the same provider-visible tool definitions that are sent to the model.
 	// Prompting with canonical names while the API receives mapped names such as
-	// exec_command/grep_files/list_dir is contradictory and confuses tool use.
+	// exec_command/grep_files/find_files is contradictory and confuses tool use.
 	actualDefs := append([]llm.ToolDefinition(nil), s.cachedToolDefs...)
 	data.CallableToolNames = toolNamesFromDefinitions(actualDefs)
 	data.UnavailableProfileToolNames = unavailableToolNames(profileDefs, actualDefs)

@@ -881,7 +881,7 @@ func canonicalShell(provider string) string {
 func canonicalGlob(provider string) string {
 	switch provider {
 	case "openai":
-		return "list_dir"
+		return "find_files"
 	default:
 		// anthropic and gemini both expose "glob" without renaming in their ToolNameMaps.
 		return "glob"

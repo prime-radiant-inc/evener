@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
@@ -96,7 +97,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 	t.Run("openai", func(t *testing.T) {
 		p := NewOpenAIProfile("gpt-5.2")
 		// ToolDefinitions returns canonical names; provider-specific renaming
-		// (shell→exec_command, grep→grep_files, glob→list_dir) is applied at the
+		// (shell→exec_command, grep→grep_files, glob→find_files) is applied at the
 		// agent wire edge, verified by TestToolNameMapping_OpenAI.
 		assertToolListExact(t, p, []string{
 			"read_file",
@@ -1330,8 +1331,8 @@ func TestToolNameMapping_OpenAI(t *testing.T) {
 	if !toolNames["grep_files"] {
 		t.Fatal("OpenAI wire defs should contain grep_files (mapped from grep)")
 	}
-	if !toolNames["list_dir"] {
-		t.Fatal("OpenAI wire defs should contain list_dir (mapped from glob)")
+	if !toolNames["find_files"] {
+		t.Fatal("OpenAI wire defs should contain find_files (mapped from glob)")
 	}
 	// Should NOT contain canonical names for mapped tools.
 	if toolNames["shell"] {
@@ -1342,6 +1343,82 @@ func TestToolNameMapping_OpenAI(t *testing.T) {
 	}
 	if toolNames["glob"] {
 		t.Fatal("OpenAI wire defs should not contain canonical 'glob'")
+	}
+}
+
+// TestToolNameMapping_NoWireNameCollisions asserts no two canonical tools
+// map to the same wire name within any profile's toolNameMap. A collision
+// means one of the two tools would be shadowed at the session wire edge
+// (see rebuildToolDefsCache in session_tools.go).
+func TestToolNameMapping_NoWireNameCollisions(t *testing.T) {
+	t.Parallel()
+	profiles := []*provider.Profile{
+		NewOpenAIProfile("gpt-5.2"),
+		newAnthropicProfile("claude-test"),
+		newGeminiProfile("gemini-test"),
+		newMiniMaxProfile("MiniMax-M2.7"),
+		newOpenRouterAnthropicProfile("anthropic/claude-test"),
+		newOpenAICompatProfile("openrouter", "openai/gpt-test", 0),
+		newOpenAICompatProfile("kimi", "kimi-test", 0),
+		newOpenAICompatProfile("glm", "glm-test", 0),
+		newOpenAICompatProfile("ollama", "llama3", 0),
+	}
+	for _, p := range profiles {
+		t.Run(p.ID(), func(t *testing.T) {
+			nameMap := p.ToolNameMap()
+			if len(nameMap) == 0 {
+				return
+			}
+			// Every canonical tool name not explicitly remapped keeps its own
+			// name on the wire. A collision occurs when a mapped wire name equals
+			// another canonical tool's effective wire name (itself unmapped, or
+			// mapped to the same target).
+			wireToCanonical := map[string]string{}
+			for _, td := range p.ToolDefinitions() {
+				wire := td.Name
+				if mapped, ok := nameMap[td.Name]; ok {
+					wire = mapped
+				}
+				if prevCanonical, exists := wireToCanonical[wire]; exists {
+					t.Fatalf("wire name %q claimed by both canonical %q and %q", wire, prevCanonical, td.Name)
+				}
+				wireToCanonical[wire] = td.Name
+			}
+		})
+	}
+}
+
+// TestToolNameMapping_OpenAI_ListDirNotShadowed exercises the full session
+// wire-tool assembly (profile tools + registry tools), where the real
+// list_dir directory-listing tool is registered separately from the
+// profile's glob tool. Before the fix, OpenAI mapped glob->list_dir, and
+// rebuildToolDefsCache's shadowing workaround silently dropped the real
+// list_dir tool from the wire. After the fix, glob maps to find_files and
+// list_dir keeps its own name unshadowed.
+func TestToolNameMapping_OpenAI_ListDirNotShadowed(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	env := execenv.NewLocalExecutionEnvironment(dir)
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	names := map[string]bool{}
+	for _, td := range sess.ToolDefinitions() {
+		names[td.Name] = true
+	}
+	if !names["find_files"] {
+		t.Fatal("OpenAI session tools should contain find_files (mapped from glob)")
+	}
+	if !names["list_dir"] {
+		t.Fatal("OpenAI session tools should contain list_dir (the real directory-listing tool) unshadowed")
+	}
+	if !names["grep_files"] {
+		t.Fatal("OpenAI session tools should contain grep_files (mapped from grep)")
 	}
 }
 
