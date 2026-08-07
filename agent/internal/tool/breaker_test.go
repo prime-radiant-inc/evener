@@ -2,8 +2,10 @@ package tool
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestFailureLedger_IdenticalFailureTwice_StreakTwo(t *testing.T) {
@@ -112,6 +114,53 @@ func TestFailureLedger_Eviction_KeepsNewest(t *testing.T) {
 	streak, _ = l.check("write_file", []byte(`{"i":256}`))
 	if streak != 1 {
 		t.Fatalf("newest signature should survive eviction, streak = %d, want 1", streak)
+	}
+}
+
+func TestFailureLedger_SuccessThenRefailUnderEvictionPressure_SurvivesEviction(t *testing.T) {
+	l := newFailureLedger()
+	argsA := []byte(`{"path":"a"}`)
+
+	// A fails, then succeeds: the entry is deleted. If the ledger fails to
+	// also drop A's stale slot in the insertion order, that stale slot lingers
+	// and can later cause a live entry to be evicted by key collision.
+	l.record("write_file", argsA, true, "boom")
+	l.record("write_file", argsA, false, "")
+
+	// Fill the ledger to capacity with 255 other distinct failing signatures.
+	for i := 0; i < 255; i++ {
+		args := []byte(fmt.Sprintf(`{"i":%d}`, i))
+		l.record("write_file", args, true, "boom")
+	}
+
+	// A fails again: a fresh entry, streak 1. This is the 256th live
+	// signature, so no eviction should be needed yet — but a stale insertion
+	// record for A (from before its success) would push the order slice to
+	// 257 entries and trigger a bogus eviction that deletes A's brand-new
+	// entry via key collision.
+	streak := l.record("write_file", argsA, true, "boom")
+	if streak != 1 {
+		t.Fatalf("refail after success: record streak = %d, want 1", streak)
+	}
+	streak, _ = l.check("write_file", argsA)
+	if streak != 1 {
+		t.Fatalf("refail after success: check streak = %d, want 1 (entry silently destroyed)", streak)
+	}
+}
+
+func TestFailureLedger_SnippetTruncation_IsUTF8Safe(t *testing.T) {
+	l := newFailureLedger()
+	// 499 ASCII bytes followed by a 3-byte rune (€): a naive byte-index
+	// truncation at 500 bytes splits the multi-byte rune and produces
+	// invalid UTF-8.
+	output := strings.Repeat("x", 499) + "€€€"
+	l.record("write_file", []byte(`{"path":"a"}`), true, output)
+	_, snippets := l.check("write_file", []byte(`{"path":"a"}`))
+	if len(snippets) != 1 {
+		t.Fatalf("snippets = %v, want 1 entry", snippets)
+	}
+	if !utf8.ValidString(snippets[0]) {
+		t.Fatalf("snippet is not valid UTF-8: %q", snippets[0])
 	}
 }
 
