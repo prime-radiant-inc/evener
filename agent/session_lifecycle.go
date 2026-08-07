@@ -980,6 +980,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}
 
 	var toolSigs []string
+	var toolSigFailed []bool
 	var lastText string // accumulated assistant text for round-limit return
 	ctxWarned := false
 	contentFilterRetried := false // track whether we've already tried recovering from a content filter error
@@ -1175,7 +1176,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		timings.AfterAction = time.Since(tPhaseStart)
 
-		yieldToObserverCallback, steerErr := s.injectPostToolSteering(ctx, calls, &toolSigs)
+		yieldToObserverCallback, steerErr := s.injectPostToolSteering(ctx, calls, results, &toolSigs, &toolSigFailed)
 		steerErr = errors.Join(steerErr, sessionLifecycleFault(ctx, "post_tool_steer"))
 		if steerErr != nil {
 			return "", progressed, steerErr

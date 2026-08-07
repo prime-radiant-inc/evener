@@ -165,7 +165,8 @@ func FuzzSessionToolRoundTailCoverage(f *testing.F) {
 			s.cfg.LoopDetectionWindow = 2
 			calls := []llm.ToolCallData{{ID: "loop", Name: "tail_read", Arguments: []byte(`{}`)}}
 			sigs := []string{"tail_read:" + shortHash([]byte(`{}`))}
-			if _, err := s.injectPostToolSteering(context.Background(), calls, &sigs); err != nil {
+			var sigFailed []bool
+			if _, err := s.injectPostToolSteering(context.Background(), calls, nil, &sigs, &sigFailed); err != nil {
 				t.Fatalf("loop steering: %v", err)
 			}
 			if s.loopDetectionCount == 0 {
@@ -175,25 +176,25 @@ func FuzzSessionToolRoundTailCoverage(f *testing.F) {
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 			sigs = []string{"tail_read:" + shortHash([]byte(`{}`))}
-			if _, err := s.injectPostToolSteering(ctx, calls, &sigs); !errors.Is(err, context.Canceled) {
+			if _, err := s.injectPostToolSteering(ctx, calls, nil, &sigs, &sigFailed); !errors.Is(err, context.Canceled) {
 				t.Fatalf("loop warning cancellation = %v", err)
 			}
 
 			watchErr := errors.New("scripted watch drain failure")
 			ctx = context.WithValue(context.Background(), sessionToolRoundHooksKey{}, sessionToolRoundHooks{drainErr: watchErr})
-			if _, err := s.injectPostToolSteering(ctx, nil, &sigs); !errors.Is(err, watchErr) {
+			if _, err := s.injectPostToolSteering(ctx, nil, nil, &sigs, &sigFailed); !errors.Is(err, watchErr) {
 				t.Fatalf("watch drain error = %v", err)
 			}
 
 			ctx, cancel = context.WithCancel(context.Background())
 			ctx = context.WithValue(ctx, sessionToolRoundHooksKey{}, sessionToolRoundHooks{beforeSteering: cancel})
-			if _, err := s.injectPostToolSteering(ctx, nil, &sigs); !errors.Is(err, context.Canceled) {
+			if _, err := s.injectPostToolSteering(ctx, nil, nil, &sigs, &sigFailed); !errors.Is(err, context.Canceled) {
 				t.Fatalf("steering checkpoint cancellation = %v", err)
 			}
 
 			ctx, cancel = context.WithCancel(context.Background())
 			ctx = context.WithValue(ctx, sessionToolRoundHooksKey{}, sessionToolRoundHooks{beforeTaskReminder: cancel})
-			if _, err := s.injectPostToolSteering(ctx, nil, &sigs); !errors.Is(err, context.Canceled) {
+			if _, err := s.injectPostToolSteering(ctx, nil, nil, &sigs, &sigFailed); !errors.Is(err, context.Canceled) {
 				t.Fatalf("task reminder checkpoint cancellation = %v", err)
 			}
 		})
