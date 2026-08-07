@@ -156,9 +156,9 @@ func TestReconnect_ClosureReachesNewSession_ZeroInitBackoff(t *testing.T) {
 	ss1, ct1 := newReconnectTestServer(t, "s", "probe", "dial1-reply")
 	_, ct2 := newReconnectTestServer(t, "s", "probe", "dial2-reply")
 
-	var dialCalls int32
+	var dialCalls atomic.Int32
 	dial := func(context.Context) (mcpsdk.Transport, error) {
-		n := atomic.AddInt32(&dialCalls, 1)
+		n := dialCalls.Add(1)
 		if n == 1 {
 			return ct1, nil
 		}
@@ -197,7 +197,7 @@ func TestReconnect_ClosureReachesNewSession_ZeroInitBackoff(t *testing.T) {
 	if out != "dial2-reply" {
 		t.Errorf("Output = %q, want dial #2's distinct reply %q", out, "dial2-reply")
 	}
-	if got := atomic.LoadInt32(&dialCalls); got != 2 {
+	if got := dialCalls.Load(); got != 2 {
 		t.Errorf("dial factory called %d times, want exactly 2 (initial connect + one reconnect)", got)
 	}
 	if got := mgr.conns[0].status; got != "connected" {
@@ -225,9 +225,9 @@ func TestReconnect_Discrimination_PlainJSONRPCError_NoRedial(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var dialCalls int32
+	var dialCalls atomic.Int32
 	dial := func(context.Context) (mcpsdk.Transport, error) {
-		atomic.AddInt32(&dialCalls, 1)
+		dialCalls.Add(1)
 		return ct, nil
 	}
 
@@ -247,7 +247,7 @@ func TestReconnect_Discrimination_PlainJSONRPCError_NoRedial(t *testing.T) {
 	if !isErr {
 		t.Fatal("expected an error result for a plain RPC-application error, got success")
 	}
-	if got := atomic.LoadInt32(&dialCalls); got != 1 {
+	if got := dialCalls.Load(); got != 1 {
 		t.Errorf("dial factory called %d times, want exactly 1 (no redial for a plain RPC error)", got)
 	}
 	if got := mgr.conns[0].status; got != "connected" {
@@ -277,9 +277,9 @@ func TestReconnect_Discrimination_CtxCancelled_NoRedial(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var dialCalls int32
+	var dialCalls atomic.Int32
 	dial := func(context.Context) (mcpsdk.Transport, error) {
-		atomic.AddInt32(&dialCalls, 1)
+		dialCalls.Add(1)
 		return ct, nil
 	}
 
@@ -301,7 +301,7 @@ func TestReconnect_Discrimination_CtxCancelled_NoRedial(t *testing.T) {
 	if !isErr {
 		t.Fatal("expected an error result for a ctx-cancelled call, got success")
 	}
-	if got := atomic.LoadInt32(&dialCalls); got != 1 {
+	if got := dialCalls.Load(); got != 1 {
 		t.Errorf("dial factory called %d times, want exactly 1 (no redial on ctx cancellation)", got)
 	}
 	if got := mgr.conns[0].status; got != "connected" {
@@ -338,9 +338,9 @@ func TestReconnect_DisplacedSessionClosedExactlyOnce(t *testing.T) {
 	var dial1Closes int32
 	spiedCt1 := spyCloseTransport{inner: ct1, closes: &dial1Closes}
 
-	var dialCalls int32
+	var dialCalls atomic.Int32
 	dial := func(context.Context) (mcpsdk.Transport, error) {
-		n := atomic.AddInt32(&dialCalls, 1)
+		n := dialCalls.Add(1)
 		if n == 1 {
 			return spiedCt1, nil
 		}
@@ -396,9 +396,9 @@ func TestReconnect_BackoffWindow_SkipsRedialUntilElapsed(t *testing.T) {
 	ss1, ct1 := newReconnectTestServer(t, "s", "probe", "dial1-reply")
 	ss2, ct2 := newReconnectTestServer(t, "s", "probe", "dial2-reply")
 
-	var dialCalls int32
+	var dialCalls atomic.Int32
 	dial := func(context.Context) (mcpsdk.Transport, error) {
-		n := atomic.AddInt32(&dialCalls, 1)
+		n := dialCalls.Add(1)
 		if n == 1 {
 			return ct1, nil
 		}
@@ -433,7 +433,7 @@ func TestReconnect_BackoffWindow_SkipsRedialUntilElapsed(t *testing.T) {
 	if isErr || out != "dial2-reply" {
 		t.Fatalf("first reconnect: IsError=%v Output=%q, want success with dial2-reply", isErr, out)
 	}
-	if got := atomic.LoadInt32(&dialCalls); got != 2 {
+	if got := dialCalls.Load(); got != 2 {
 		t.Fatalf("dial factory called %d times after the first reconnect, want 2", got)
 	}
 
@@ -447,7 +447,7 @@ func TestReconnect_BackoffWindow_SkipsRedialUntilElapsed(t *testing.T) {
 	if !isErr {
 		t.Fatal("expected the call to fail while backoff is active (no server to serve it), got success")
 	}
-	if got := atomic.LoadInt32(&dialCalls); got != 2 {
+	if got := dialCalls.Load(); got != 2 {
 		t.Errorf("dial factory called %d times, want still 2 (backoff window should suppress the 3rd redial)", got)
 	}
 	if got := mgr.conns[0].status; got != "degraded" {
@@ -597,9 +597,9 @@ func TestReconnect_ConcurrentSameConn_NoClobberedSession(t *testing.T) {
 	_, ctB := newReconnectTestServer(t, "sB", "probe", "dialB-reply")
 
 	c := &conn{name: "s", client: client, session: sess0}
-	var dialN int32
+	var dialN atomic.Int32
 	c.dial = func(context.Context) (mcpsdk.Transport, error) {
-		n := atomic.AddInt32(&dialN, 1)
+		n := dialN.Add(1)
 		// Widen the race window far beyond the nanosecond cost of the gate's
 		// lock/check/unlock, so both goroutines are guaranteed to have
 		// passed the gate before either of them gets here.
@@ -714,9 +714,9 @@ func TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry(t *testing.T)
 	ss1, ct1 := newReconnectTestServer(t, "s", "probe", "dial1-reply")
 	dialErr := errors.New("reconnect: dial refused (server permanently down)")
 
-	var dialCalls int32
+	var dialCalls atomic.Int32
 	dial := func(context.Context) (mcpsdk.Transport, error) {
-		n := atomic.AddInt32(&dialCalls, 1)
+		n := dialCalls.Add(1)
 		if n == 1 {
 			return ct1, nil
 		}
@@ -760,7 +760,7 @@ func TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry(t *testing.T)
 	if _, isErr := execProbe(ctx, reg, t); !isErr {
 		t.Fatal("expected the call to fail: the server is down and reconnect's own dial fails too")
 	}
-	if got := atomic.LoadInt32(&dialCalls); got != 2 {
+	if got := dialCalls.Load(); got != 2 {
 		t.Fatalf("dial factory called %d times after the first failed reconnect, want 2", got)
 	}
 
@@ -770,7 +770,7 @@ func TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry(t *testing.T)
 	if _, isErr := execProbe(ctx, reg, t); !isErr {
 		t.Fatal("expected the call to still fail (dead server)")
 	}
-	if got := atomic.LoadInt32(&dialCalls); got != 2 {
+	if got := dialCalls.Load(); got != 2 {
 		t.Errorf("dial factory called %d times, want still 2 — the failure-branch backoff should have suppressed this 3rd redial attempt", got)
 	}
 	if got := mgr.conns[0].status; got != "degraded" {
