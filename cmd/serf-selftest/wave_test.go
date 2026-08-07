@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -108,4 +109,104 @@ func readTrimmed(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return strings.TrimSpace(string(b))
+}
+
+// mkFixtureFifos creates the named FIFOs under dir and returns dir.
+func mkFixtureFifos(t *testing.T, names ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, n := range names {
+		if err := syscall.Mkfifo(filepath.Join(dir, n), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// readFifoLine blocks until one line arrives on the FIFO. Opening a FIFO for
+// reading blocks until a writer appears, so this is pure event sync.
+func readFifoLine(t *testing.T, path string) string {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	buf := make([]byte, 256)
+	n, err := f.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(buf[:n]))
+}
+
+// startWave runs runWave in a goroutine and returns the exit-code channel.
+func startWave(cfg waveConfig) chan int {
+	codes := make(chan int, 1)
+	go func() { codes <- runWave(cfg) }()
+	return codes
+}
+
+func TestInterruptTermsProcessGroupAndExits143(t *testing.T) {
+	fx := mkFixtureFifos(t, "ready", "events", "hold")
+	dir := t.TempDir()
+	writeSuite(t, dir, "holder",
+		"trap 'echo suite-termed >"+fx+"/events; exit 143' TERM\n"+
+			"echo ready >"+fx+"/ready\n"+
+			"read _ <"+fx+"/hold\n")
+	signals := make(chan os.Signal, 1)
+	var out bytes.Buffer
+	codes := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"holder"}, KillGrace: time.Minute, Out: &out, Signals: signals})
+	if got := readFifoLine(t, filepath.Join(fx, "ready")); got != "ready" {
+		t.Fatalf("readiness handshake got %q", got)
+	}
+	signals <- syscall.SIGTERM
+	if got := readFifoLine(t, filepath.Join(fx, "events")); got != "suite-termed" {
+		t.Fatalf("suite never saw TERM, got %q", got)
+	}
+	if code := <-codes; code != 143 {
+		t.Fatalf("exit %d, want 143; output:\n%s", code, out.String())
+	}
+}
+
+func TestForkedDescendantIsReaped(t *testing.T) {
+	fx := mkFixtureFifos(t, "ready", "ready2", "events", "hold", "hold2")
+	dir := t.TempDir()
+	writeSuite(t, dir, "forker",
+		"( trap 'echo grandchild-termed >"+fx+"/events; exit 0' TERM\n"+
+			"  echo up >"+fx+"/ready2\n"+
+			"  read _ <"+fx+"/hold2 ) &\n"+
+			"echo ready >"+fx+"/ready\n"+
+			"read _ <"+fx+"/hold\n")
+	signals := make(chan os.Signal, 1)
+	var out bytes.Buffer
+	codes := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"forker"}, KillGrace: time.Minute, Out: &out, Signals: signals})
+	readFifoLine(t, filepath.Join(fx, "ready"))
+	readFifoLine(t, filepath.Join(fx, "ready2"))
+	signals <- syscall.SIGTERM
+	if got := readFifoLine(t, filepath.Join(fx, "events")); got != "grandchild-termed" {
+		t.Fatalf("forked descendant never saw TERM, got %q", got)
+	}
+	if code := <-codes; code != 143 {
+		t.Fatalf("exit %d, want 143; output:\n%s", code, out.String())
+	}
+}
+
+func TestTermIgnoringSuiteIsKilledAfterGrace(t *testing.T) {
+	fx := mkFixtureFifos(t, "ready", "hold")
+	dir := t.TempDir()
+	writeSuite(t, dir, "stubborn",
+		"trap '' TERM\n"+
+			"echo ready >"+fx+"/ready\n"+
+			"read _ <"+fx+"/hold\n")
+	signals := make(chan os.Signal, 1)
+	var out bytes.Buffer
+	codes := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"stubborn"}, KillGrace: 50 * time.Millisecond, Out: &out, Signals: signals})
+	readFifoLine(t, filepath.Join(fx, "ready"))
+	signals <- syscall.SIGTERM
+	// runWave only returns once the KILLed suite is reaped; no clock here
+	// beyond the injected grace.
+	if code := <-codes; code != 143 {
+		t.Fatalf("exit %d, want 143; output:\n%s", code, out.String())
+	}
 }
