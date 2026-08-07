@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -355,9 +354,6 @@ func FuzzExfsInjectLocalVenvPath(f *testing.F) {
 		}
 
 		binDir := "bin"
-		if runtime.GOOS == "windows" {
-			binDir = "Scripts"
-		}
 		mk := func(cond bool, base, kind string) {
 			if cond {
 				_ = os.MkdirAll(filepath.Join(base, kind, binDir), 0o755)
