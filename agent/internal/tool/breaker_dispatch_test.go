@@ -16,10 +16,15 @@ import (
 // The decided intervention texts, repeated verbatim here so a reworded
 // constant in the implementation fails the test rather than silently
 // changing what the model reads.
-const (
-	wantFailureNudge    = "You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach"
-	wantRepetitionNudge = "You have now made this same call twice and received the identical result. Repeating it will not change the answer — use the result you already have, or change your approach."
-)
+const wantFailureNudge = "You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach"
+
+func wantRepetitionNudge(count int) string {
+	return fmt.Sprintf("You have now made this same call and received the identical result %d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach.", count)
+}
+
+// repetitionNudgeMarker is present in the repetition nudge at any count, for
+// tests that only need to assert the nudge is absent.
+const repetitionNudgeMarker = "and received the identical result"
 
 func wantFailurePark(toolName string) string {
 	return "serf did not execute this call: " + toolName + " with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach."
@@ -144,20 +149,24 @@ func TestBreakerDispatch_IdenticalSuccessBodyNudgesEveryRepeat(t *testing.T) {
 	}
 
 	// The nudge repeats from the second identical result onward: with parking
-	// off the table, nothing else applies pressure to break the loop.
-	for i := range 2 {
+	// off the table, nothing else applies pressure to break the loop. It also
+	// states the real consecutive count each time, not a fixed "twice", so a
+	// long loop reads as escalating.
+	for i := range 8 {
+		count := i + 2
 		res := r.ExecuteCall(ctx, env, call)
-		if fake.calls != i+2 {
-			t.Fatalf("call %d must dispatch: invocations = %d, want %d", i+2, fake.calls, i+2)
+		if fake.calls != count {
+			t.Fatalf("call %d must dispatch: invocations = %d, want %d", count, fake.calls, count)
 		}
 		if res.IsError {
-			t.Errorf("call %d must not be an error result: %#v", i+2, res)
+			t.Errorf("call %d must not be an error result: %#v", count, res)
 		}
-		if !strings.HasSuffix(res.Output, wantRepetitionNudge) {
-			t.Errorf("call %d output must end with the repetition nudge, got %q", i+2, res.Output)
+		want := wantRepetitionNudge(count)
+		if !strings.HasSuffix(res.Output, want) {
+			t.Errorf("call %d output must end with %q, got %q", count, want, res.Output)
 		}
-		if !strings.HasSuffix(res.FullOutput, wantRepetitionNudge) {
-			t.Errorf("call %d FullOutput must end with the repetition nudge, got %q", i+2, res.FullOutput)
+		if !strings.HasSuffix(res.FullOutput, want) {
+			t.Errorf("call %d FullOutput must end with %q, got %q", count, want, res.FullOutput)
 		}
 	}
 }
@@ -232,7 +241,7 @@ func TestBreakerDispatch_ChangingBodyIsNeverNudgedOrParked(t *testing.T) {
 			t.Fatalf("call %d was not dispatched: invocations = %d", i+1, fake.calls)
 		}
 		if strings.Contains(res.Output, "serf did not execute this call:") ||
-			strings.Contains(res.Output, wantRepetitionNudge) ||
+			strings.Contains(res.Output, repetitionNudgeMarker) ||
 			strings.Contains(res.Output, wantFailureNudge) {
 			t.Fatalf("call %d with a changing body was judged: %q", i+1, res.Output)
 		}
@@ -265,7 +274,7 @@ func TestBreakerDispatch_DifferentFailuresThenSuccessDoesNotPark(t *testing.T) {
 		if strings.Contains(res.Output, "serf did not execute this call:") {
 			t.Fatalf("call %d parked: %q", i+1, res.Output)
 		}
-		if strings.Contains(res.Output, wantFailureNudge) || strings.Contains(res.Output, wantRepetitionNudge) {
+		if strings.Contains(res.Output, wantFailureNudge) || strings.Contains(res.Output, repetitionNudgeMarker) {
 			t.Fatalf("call %d nudged: %q", i+1, res.Output)
 		}
 	}

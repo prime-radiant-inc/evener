@@ -333,6 +333,31 @@ func TestFailureLedger_RecurringSignature_SurvivesUnrelatedChurn(t *testing.T) {
 	}
 }
 
+func TestRepetitionNudgeText_StatesActualCount(t *testing.T) {
+	cases := []struct {
+		count int
+		want  string
+	}{
+		{2, "2 times"},
+		{3, "3 times"},
+		{7, "7 times"},
+		{1000, "1000 times"},
+	}
+	for _, c := range cases {
+		got := repetitionNudgeText(c.count)
+		if !strings.Contains(got, c.want) {
+			t.Errorf("repetitionNudgeText(%d) = %q, want it to contain %q", c.count, got, c.want)
+		}
+	}
+	// Two different counts must not produce the same text — otherwise a long
+	// loop reads exactly like the second call did.
+	two := repetitionNudgeText(2)
+	seven := repetitionNudgeText(7)
+	if two == seven {
+		t.Errorf("repetitionNudgeText(2) and repetitionNudgeText(7) must differ, both = %q", two)
+	}
+}
+
 func TestFailureLedger_ConcurrentRecord_BothCountersRaceClean(t *testing.T) {
 	l := newFailureLedger()
 	var wg sync.WaitGroup
