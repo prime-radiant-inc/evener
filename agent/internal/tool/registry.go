@@ -24,6 +24,18 @@ import (
 
 const toolPurposeDescription = "A short verb-first gerund phrase naming what this call is doing, e.g. \"Reading the config file\" or \"Searching for the handler\". Keep it to a few words so it renders nicely as an inline activity label."
 
+// maxToolArgumentBytes caps the size of a tool call's raw argument payload
+// before it is parsed, so a runaway generation can't push a multi-hundred-KB
+// blob through JSON unmarshaling and schema validation for no useful reason.
+// This must stay above agent/jobs.go's maxPersistedStructuredResultJSONBytes
+// (1MB) — that constant governs how large a communicate structured-result
+// payload may legitimately be before it's gracefully dropped at persistence
+// time, and a lower registry-level cap would hard-reject the tool call
+// before it ever reached that graceful path. (Cross-package constant:
+// agent/internal/tool cannot import agent to derive this by reference, so
+// keep the two values in sync by comment.)
+const maxToolArgumentBytes = 2 * 1024 * 1024
+
 func WithPurposeParameter(td llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(td.Parameters)
 	if params == nil {
@@ -489,6 +501,11 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	r.mu.RUnlock()
 	if !ok {
 		msg := "unknown tool: " + name
+		return truncateResult(name, callID, msg, true, defaultToolLimit(name))
+	}
+
+	if len(call.Arguments) > maxToolArgumentBytes {
+		msg := fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(call.Arguments), maxToolArgumentBytes)
 		return truncateResult(name, callID, msg, true, defaultToolLimit(name))
 	}
 
