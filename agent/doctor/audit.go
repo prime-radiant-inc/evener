@@ -563,7 +563,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		return AuditResult{}, errors.New("--sessions and --since are mutually exclusive")
 	}
 	if len(opts.Sessions) == 0 && opts.Since <= 0 {
-		return AuditResult{}, fmt.Errorf("either --sessions or --since must be given")
+		return AuditResult{}, errors.New("either --sessions or --since must be given")
 	}
 
 	res := AuditResult{Runbook: runbook.Name, Manual: append([]string(nil), runbook.ManualSteps...)}
