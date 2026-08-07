@@ -63,12 +63,9 @@ esac
 printf '%s\n' "$$" >"$FAKE_STATE/$label.pid"
 case "${FAKE_MODE:-green}" in
 	hold)
-		sleep 1000 &
-		child="$!"
-		printf '%s\n' "$child" >"$FAKE_STATE/$label.child.pid"
 		[ -n "${FAKE_READY_FIFO:-}" ] && printf 'ready:%s\n' "$label" >"$FAKE_READY_FIFO"
-		wait "$child"
-		exit "$?"
+		IFS= read -r _ <"$FAKE_STATE/hold"
+		exit 0
 		;;
 	fail)
 		if [ "$label" = beta ]; then
@@ -95,6 +92,10 @@ new_case() {
 	bin="$case_root/bin"
 	cache="$case_root/cache"
 	mkdir -p "$tmp" "$state" "$bin" "$cache" "$case_root/agent"
+	# A held test binary blocks reading this FIFO rather than idling on a
+	# timer: nobody ever writes to it, so the block lasts until the process
+	# is killed, not until a clock runs out.
+	mkfifo "$state/hold"
 	write_fake_mktemp "$bin"
 	write_fake_go "$bin"
 }
