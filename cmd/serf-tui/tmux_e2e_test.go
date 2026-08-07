@@ -991,6 +991,12 @@ func sendFirstCtrlCAndAssertNoQuitWarning(t *testing.T, app *tmuxTUI) {
 	t.Cleanup(func() { _ = exec.Command("tmux", "pipe-pane", "-t", app.session).Run() })
 	app.SendKeys("C-c")
 	time.Sleep(300 * time.Millisecond)
+	// Stop the pipe before reading: this closes cat's stdin, so cat sees EOF
+	// and flushes its output before exiting, guaranteeing a render from the
+	// window's last few ms is on disk by the time we read it. Without this,
+	// os.ReadFile could race a `cat` still buffering its final write. The
+	// t.Cleanup toggle-off becomes a harmless no-op once this has run.
+	_ = exec.Command("tmux", "pipe-pane", "-t", app.session).Run()
 	data, err := os.ReadFile(logPath)
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("read piped pane output: %v", err)
