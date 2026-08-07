@@ -531,10 +531,19 @@ func findDelegateLaneRecord(recs map[string]*jobstore.JobRecord, id string) (*jo
 
 // delegateRecordQuiescent reports whether delegate id has no running job and no
 // unfinished job record — the dispose record-quiescence gate (spec §P1 step 1:
-// "Latest job terminal, no running/queued follow-up"), taken under ONE jm.mu
-// hold so the running-map read and the durable snapshot are consistent against
-// the finalization sequence (the outstandingDelegateCount recipe, scoped to one
-// delegate).
+// "Latest job terminal, no running/queued follow-up").
+//
+// What it guarantees: no job of this delegate is EXECUTING. Both halves are
+// read under ONE jm.mu hold, so a job cannot slip between them by finalizing
+// mid-check — armFinalizedJob appends the terminal event before deleting from
+// the running map under the same lock, so a job is either still in the map or
+// already durably terminal.
+//
+// What it does NOT guarantee, deliberately: that the delegate's terminal event
+// has been RENDERED. A finalized job sits briefly outside the running map with
+// its notification not yet enqueued, and disposal is admitted in that window —
+// which is correct, because by then nothing of the delegate is running and the
+// only thing outstanding is a render that survives disposal (below).
 //
 // An UNDELIVERED terminal notification is deliberately NOT counted. It is a
 // render this session owes ITSELF, not work in flight: the owner filter below

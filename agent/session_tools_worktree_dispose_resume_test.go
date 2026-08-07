@@ -369,3 +369,54 @@ func TestWorktreeRemove_Force_ResumedSession_RefusingCascadeInsideTargetDestroys
 		t.Errorf("target still locked (%q) — step 7's unlock runs before the cascade (I1 ordering)", reason)
 	}
 }
+
+// TestDispose_ResumedSession_LiveDescendantLaneStillRefused covers the binding
+// constraint at its literal wording — an ancestor must not dispose a LIVE
+// descendant's lane — where the sibling test above covers a descendant record
+// holding no work. The lane is a real worktree on disk and the descendant has a
+// job in flight, and the refusal still comes from the ownership rung (step 1),
+// ahead of quiescence: the ancestor never even gets to judge a lane it did not
+// create, so nothing about the descendant's liveness can change the answer.
+func TestDispose_ResumedSession_LiveDescendantLaneStillRefused(t *testing.T) {
+	t.Parallel()
+	r := newResumableWorktreeRepo(t)
+
+	descendantID := jobstore.NewDelegateID()
+	lanePath, _, _, _, _, err := r.s.createDelegateWorktree(context.Background(), descendantID)
+	if err != nil {
+		t.Fatalf("createDelegateWorktree: %v", err)
+	}
+	jobID := jobstore.NewJobID(r.s.ID())
+	now := time.Now().UTC()
+	if err := r.s.jobManager.appendEvent(jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: now, JobID: jobID, DelegateID: descendantID,
+		Type: jobstore.JobDelegate, StartedAt: &now,
+		OwnerSessionID: "descendant-session", VisibleToSession: r.s.ID(),
+		DelegateRestore: &jobstore.DelegateRestoreDescriptor{
+			Version:         1,
+			ParentSessionID: "descendant-session",
+			OwnerSessionID:  "descendant-session",
+			WorkingDir:      lanePath,
+			Isolation:       "worktree",
+		},
+	}); err != nil {
+		t.Fatalf("append forwarded descendant record: %v", err)
+	}
+
+	restored := r.resumeSameSession(t, r.mainRoot)
+	restored.jobManager.mu.Lock()
+	restored.jobManager.running["job_descendant_live"] = &runningJob{rec: &jobstore.JobRecord{
+		JobID: "job_descendant_live", Type: jobstore.JobDelegate, DelegateID: descendantID,
+	}}
+	restored.jobManager.mu.Unlock()
+	defer deleteRunning(restored, "job_descendant_live")
+
+	err = disposeErr(t, restored, descendantID, true, true)
+	requireRefusalContains(t, err, "created by another session")
+	if !laneWorktreePresent(lanePath) {
+		t.Fatalf("live descendant's lane %s destroyed by an ancestor's dispose", lanePath)
+	}
+	if !r.branchExists(t, descendantID) {
+		t.Fatal("live descendant's branch deleted by an ancestor's dispose")
+	}
+}
