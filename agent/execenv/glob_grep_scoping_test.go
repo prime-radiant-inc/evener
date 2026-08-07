@@ -187,6 +187,96 @@ func TestSandboxedGlob_IncludeIgnoredRestoresExcludedPaths(t *testing.T) {
 	}
 }
 
+// TestGlobWithExclusions_ReportsExcludedCountWhenFullyFiltered proves D2: a
+// glob pattern that only matches paths the default dotfile/gitignore
+// exclusion drops returns zero matches AND a non-zero excluded count, so a
+// caller can tell "genuinely nothing matched" apart from "everything matched
+// was filtered out". include_ignored=true must restore both the match and
+// report zero excluded (nothing was filtered).
+func TestGlobWithExclusions_ReportsExcludedCountWhenFullyFiltered(t *testing.T) {
+	dir := writeScopingFixture(t)
+	env := NewLocalExecutionEnvironment(dir)
+
+	matches, excluded, err := env.GlobWithExclusions("node_modules/**/*.js", dir, false)
+	if err != nil {
+		t.Fatalf("GlobWithExclusions: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected no matches (node_modules is gitignored), got: %v", matches)
+	}
+	if excluded == 0 {
+		t.Fatal("expected a non-zero excluded count for a fully-filtered glob")
+	}
+
+	matches, excluded, err = env.GlobWithExclusions("node_modules/**/*.js", dir, true)
+	if err != nil {
+		t.Fatalf("GlobWithExclusions include_ignored: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected include_ignored=true to restore the match, got: %v", matches)
+	}
+	if excluded != 0 {
+		t.Fatalf("expected excluded=0 when include_ignored is set, got %d", excluded)
+	}
+}
+
+// TestSandboxedGlobWithExclusions_ReportsExcludedCountWhenFullyFiltered mirrors
+// TestGlobWithExclusions_ReportsExcludedCountWhenFullyFiltered for the
+// sandboxed path (sandboxFS.glob).
+func TestSandboxedGlobWithExclusions_ReportsExcludedCountWhenFullyFiltered(t *testing.T) {
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
+	writeScopingFixtureAt(t, worktree)
+
+	matches, excluded, err := env.GlobWithExclusions("node_modules/**/*.js", worktree, false)
+	if err != nil {
+		t.Fatalf("GlobWithExclusions: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected no matches (node_modules is gitignored), got: %v", matches)
+	}
+	if excluded == 0 {
+		t.Fatal("expected a non-zero excluded count for a fully-filtered sandboxed glob")
+	}
+}
+
+// TestGrepNative_ReportsExclusionWhenFullyFiltered proves D2's grep half: a
+// pattern that only matches inside a gitignored path (node_modules) returns
+// an explanatory "0 matches; N ... excluded" string rather than a bare "",
+// which would be indistinguishable from a genuine no-match.
+func TestGrepNative_ReportsExclusionWhenFullyFiltered(t *testing.T) {
+	dir := writeScopingFixture(t)
+	env := NewLocalExecutionEnvironment(dir)
+
+	result, err := env.grepNative("module\\.exports", dir, "", false, 100, "content")
+	if err != nil {
+		t.Fatalf("grepNative: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected an explanatory message, not a bare empty string, for a fully-excluded grep")
+	}
+	if !strings.Contains(result, "0 matches") || !strings.Contains(result, "excluded") {
+		t.Fatalf("expected an exclusion explanation, got: %q", result)
+	}
+}
+
+// TestSandboxedGrepNative_ReportsExclusionWhenFullyFiltered mirrors
+// TestGrepNative_ReportsExclusionWhenFullyFiltered for the sandboxed path.
+func TestSandboxedGrepNative_ReportsExclusionWhenFullyFiltered(t *testing.T) {
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
+	writeScopingFixtureAt(t, worktree)
+
+	result, err := env.Grep("module\\.exports", worktree, "", false, 100, "content")
+	if err != nil {
+		t.Fatalf("Grep: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected an explanatory message, not a bare empty string, for a fully-excluded sandboxed grep")
+	}
+	if !strings.Contains(result, "0 matches") || !strings.Contains(result, "excluded") {
+		t.Fatalf("expected an exclusion explanation, got: %q", result)
+	}
+}
+
 // TestSandboxedGrepNative_ExcludesDotDirsAndGitignoredByDefault mirrors
 // TestGrepNative_ExcludesDotDirsAndGitignoredByDefault but routes through
 // sandboxFS.grepNative (env.Sandbox set), which is the code path a real

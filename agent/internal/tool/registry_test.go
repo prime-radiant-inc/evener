@@ -967,8 +967,8 @@ func TestDefaultToolLimit_MatchesSpecTable(t *testing.T) {
 	cases := []want{
 		{tool: "read_file", chars: 50_000, lines: 0, strategy: schema.TruncHeadTail},
 		{tool: "shell", chars: 30_000, lines: 512, strategy: schema.TruncHeadTail},
-		{tool: "grep", chars: 0, lines: 200, strategy: schema.TruncHeadCount},
-		{tool: "glob", chars: 0, lines: 500, strategy: schema.TruncHeadCount},
+		{tool: "grep", chars: 20_000, lines: 200, strategy: schema.TruncHeadCount},
+		{tool: "glob", chars: 20_000, lines: 500, strategy: schema.TruncHeadCount},
 		{tool: "edit_file", chars: 10_000, lines: 0, strategy: schema.TruncTail},
 		{tool: "apply_patch", chars: 10_000, lines: 0, strategy: schema.TruncTail},
 		{tool: "write_file", chars: 1_000, lines: 0, strategy: schema.TruncTail},
@@ -989,7 +989,7 @@ func TestTruncateHeadCount_KeepsFirstEntriesWithSummary(t *testing.T) {
 	}
 	full := strings.Join(lines, "\n")
 
-	got := truncateHeadCount(full, 10)
+	got := truncateHeadCount(full, 10, 0)
 
 	// No front-truncation: the first 10 entries must all be present, in order.
 	for i := range 10 {
@@ -1001,16 +1001,55 @@ func TestTruncateHeadCount_KeepsFirstEntriesWithSummary(t *testing.T) {
 	if strings.Contains(got, lines[29]) {
 		t.Fatalf("expected last entry to be dropped, got:\n%s", got)
 	}
-	if !strings.Contains(got, "30 total matches") || !strings.Contains(got, "showing first 10") {
-		t.Fatalf("expected structural summary with total and shown counts, got:\n%s", got)
+	// The summary must describe LINES, not matches: context_lines can emit
+	// several output lines per real match, so a "matches" count would be false.
+	if strings.Contains(got, "total matches") {
+		t.Fatalf("summary must not claim a match count it doesn't have, got:\n%s", got)
+	}
+	if !strings.Contains(got, "30 total lines") || !strings.Contains(got, "showing first 10") {
+		t.Fatalf("expected structural summary with total and shown line counts, got:\n%s", got)
 	}
 }
 
 func TestTruncateHeadCount_UnderLimitReturnsUnchanged(t *testing.T) {
 	full := "a\nb\nc"
-	got := truncateHeadCount(full, 10)
+	got := truncateHeadCount(full, 10, 0)
 	if got != full {
 		t.Fatalf("expected unchanged output under the cap, got:\n%s", got)
+	}
+}
+
+// TestTruncateHeadCount_AppliesCharCapAfterLineCap proves I1: a grep/glob
+// result that survives the line-count bound but is still far too many
+// characters (e.g. every "line" is one giant minified-bundle match) gets a
+// further character cap, and that cap trims from the TAIL — the head (and
+// the line-count summary) is never dropped.
+func TestTruncateHeadCount_AppliesCharCapAfterLineCap(t *testing.T) {
+	longLine := strings.Repeat("x", 5_000)
+	lines := []string{longLine, longLine, longLine, longLine, longLine} // 5 lines, well under maxEntries
+	full := strings.Join(lines, "\n")
+
+	got := truncateHeadCount(full, 100, 8_000)
+
+	if len([]rune(got)) > 8_000 {
+		t.Fatalf("expected char cap to hold, got %d chars", len([]rune(got)))
+	}
+	if !strings.HasPrefix(got, longLine[:100]) {
+		t.Fatalf("expected the head to survive the char cap, got prefix:\n%s", got[:min(200, len(got))])
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Fatalf("expected a truncation warning, got:\n%s", got)
+	}
+}
+
+// TestTruncateHeadCount_CharCapAppliesEvenUnderLineCap proves the char bound
+// is not conditional on the line-count bound having fired: a short list of
+// lines that's already within maxEntries can still be too many characters.
+func TestTruncateHeadCount_CharCapAppliesEvenUnderLineCap(t *testing.T) {
+	full := strings.Repeat("y", 50_000)
+	got := truncateHeadCount(full, 500, 20_000)
+	if len([]rune(got)) > 20_000 {
+		t.Fatalf("expected char cap to hold even though line count never exceeded maxEntries, got %d chars", len([]rune(got)))
 	}
 }
 
@@ -1051,8 +1090,8 @@ func TestToolRegistry_GlobAndGrep_HeadFirstBoundedNoFrontTruncation(t *testing.T
 			if strings.Contains(res.Output, lines[len(lines)-1]) {
 				t.Fatalf("%s: expected last match to be dropped, got:\n%s", toolName, res.Output)
 			}
-			if !strings.Contains(res.Output, "700 total matches") {
-				t.Fatalf("%s: expected total-match count in summary, got:\n%s", toolName, res.Output)
+			if !strings.Contains(res.Output, "700 total lines") {
+				t.Fatalf("%s: expected total-line count in summary, got:\n%s", toolName, res.Output)
 			}
 			if strings.Contains(res.Output, "removed from the") || strings.Contains(res.Output, "characters were removed") {
 				t.Fatalf("%s: expected no char-truncation marker (front-truncation), got:\n%s", toolName, res.Output)

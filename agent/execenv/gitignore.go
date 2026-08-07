@@ -41,16 +41,33 @@ type ignoreDir struct {
 // rather than failing the search, and a base with no .gitignore files
 // anywhere (including one that is not inside a git repository at all) yields
 // an ignoreSet that matches nothing.
-func loadIgnoreSet(fsys fs.FS) *ignoreSet {
+//
+// skip, when non-nil, is consulted for every path (relative to fsys' root,
+// slash-separated) before it is descended into or read; skip returning true
+// prunes the whole subtree for a directory and skips reading a file. The
+// sandboxed caller wires this to its masking check so the walk never lists a
+// masked directory's contents or reads a .gitignore inside one — a policy
+// this walk otherwise has no other way to honor, since fsys itself (a
+// symlink-refusing, root-confined secureDirFS) enforces confinement but not
+// masking. The off-path caller (no masking concept) passes a no-op skip.
+func loadIgnoreSet(fsys fs.FS, skip func(relPath string) bool) *ignoreSet {
 	set := &ignoreSet{}
 	_ = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // best-effort: skip unreadable entries
 		}
+		if p != "." && skip != nil && skip(p) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() {
-			// .git itself is excluded by the caller's dot-skip; no need to
-			// scan its (often huge) internals for stray .gitignore files.
-			if d.Name() == ".git" && p != "." {
+			// Dot-directories (.git, .worktrees, .claude scratch dirs, ...)
+			// never hold .gitignore files worth loading and can be enormous
+			// (.git) — skip them the same way Glob's own match-filtering
+			// does, so this walk doesn't pay to descend into them either.
+			if p != "." && strings.HasPrefix(d.Name(), ".") {
 				return fs.SkipDir
 			}
 			return nil

@@ -647,7 +647,7 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOutputLimit) ExecResult {
 	out := full
 	if lim.Strategy == schema.TruncHeadCount {
-		out = truncateHeadCount(out, lim.MaxLines)
+		out = truncateHeadCount(out, lim.MaxLines, lim.MaxChars)
 	} else {
 		out = truncateChars(out, lim.MaxChars, lim.Strategy)
 		if lim.MaxLines > 0 {
@@ -683,25 +683,55 @@ func truncateChars(s string, limit int, strategy schema.TruncationStrategy) stri
 	}
 }
 
-// truncateHeadCount bounds glob/grep-shaped output (one match per line) by
-// keeping the first maxEntries entries and appending a structural summary —
-// total count, shown count, and a hint to narrow the search. Unlike
-// truncateChars' TruncTail case, this never drops the head of the result: an
-// agent scanning an unscoped search always sees the earliest (and, per
-// Glob/Grep's own ordering, most relevant) matches, with an explicit count of
-// what was omitted rather than a silently smaller result.
-func truncateHeadCount(s string, maxEntries int) string {
+// truncateHeadCount bounds glob/grep-shaped output (one match per line, though
+// grep's context_lines can add several output lines per match plus "--" group
+// separators, so this counts LINES, not matches) by keeping the first
+// maxEntries lines and appending a structural summary — total line count,
+// shown count, and a hint to narrow the search. Unlike truncateChars'
+// TruncTail case, this never drops the head of the result: an agent scanning
+// an unscoped search always sees the earliest (and, per Glob/Grep's own
+// ordering, most relevant) matches, with an explicit count of what was
+// omitted rather than a silently smaller result.
+//
+// After the line-count bound is applied, maxChars (when positive) further
+// bounds the result's character count by truncating from the TAIL and
+// appending a warning — the line-count bound's head (and its summary line,
+// reserved for by the budget) is always preserved, so a single enormous
+// matched line still cannot balloon the result past both bounds.
+func truncateHeadCount(s string, maxEntries, maxChars int) string {
 	if maxEntries <= 0 || s == "" {
 		return s
 	}
+	out := s
 	lines := strings.Split(s, "\n")
 	total := len(lines)
-	if total <= maxEntries {
+	if total > maxEntries {
+		shown := lines[:maxEntries]
+		summary := fmt.Sprintf("\n[%d total lines; showing first %d; narrow the pattern to see the rest]", total, maxEntries)
+		out = strings.Join(shown, "\n") + summary
+	}
+	if maxChars > 0 {
+		out = truncateCharsFromTail(out, maxChars)
+	}
+	return out
+}
+
+// truncateCharsFromTail bounds s to at most limit characters by dropping
+// characters from the END and appending a warning marker, preserving
+// whatever head content the caller already assembled (e.g. truncateHeadCount's
+// earliest-first matches and their summary line).
+func truncateCharsFromTail(s string, limit int) string {
+	runes := []rune(s)
+	if limit <= 0 || len(runes) <= limit {
 		return s
 	}
-	shown := lines[:maxEntries]
-	summary := fmt.Sprintf("\n[%d total matches; showing first %d; narrow the pattern to see the rest]", total, maxEntries)
-	return strings.Join(shown, "\n") + summary
+	marker := "\n[WARNING: Tool output was truncated. The remaining characters were removed from the end. The full output is available in the event stream. If you need to see specific parts, re-run the tool with more targeted parameters.]"
+	markerLen := len([]rune(marker))
+	keep := limit - markerLen
+	if keep < 0 {
+		keep = 0
+	}
+	return string(runes[:keep]) + marker
 }
 
 func truncateLines(s string, limit int) string {
@@ -728,9 +758,9 @@ func defaultToolLimit(toolName string) schema.ToolOutputLimit {
 	case "shell":
 		return schema.ToolOutputLimit{MaxChars: 30_000, MaxLines: 512, Strategy: schema.TruncHeadTail}
 	case "grep":
-		return schema.ToolOutputLimit{MaxLines: 200, Strategy: schema.TruncHeadCount}
+		return schema.ToolOutputLimit{MaxChars: 20_000, MaxLines: 200, Strategy: schema.TruncHeadCount}
 	case "glob":
-		return schema.ToolOutputLimit{MaxLines: 500, Strategy: schema.TruncHeadCount}
+		return schema.ToolOutputLimit{MaxChars: 20_000, MaxLines: 500, Strategy: schema.TruncHeadCount}
 	case "edit_file":
 		return schema.ToolOutputLimit{MaxChars: 10_000, Strategy: schema.TruncTail}
 	case "apply_patch":

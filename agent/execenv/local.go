@@ -1262,10 +1262,21 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 // excluded by default, matching grepNative's long-standing hidden-file skip
 // plus new .gitignore awareness; pass includeIgnored(true) to restore them.
 func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string, includeIgnored ...bool) ([]string, error) {
-	ignoreOverride := len(includeIgnored) > 0 && includeIgnored[0]
+	matches, _, err := e.GlobWithExclusions(pattern, basePath, len(includeIgnored) > 0 && includeIgnored[0])
+	return matches, err
+}
+
+// GlobWithExclusions implements GlobExcluder: same matching as Glob, but also
+// reports how many candidate matches the default dotfile/gitignore exclusion
+// dropped, so a fully-filtered result can be told apart from a genuinely
+// empty one (see the "silent-empty is the enemy" global constraint). The
+// count never includes matches dropped by sandbox masking — that's a
+// separate security boundary, not something to describe to the caller as
+// "gitignored".
+func (e *LocalExecutionEnvironment) GlobWithExclusions(pattern string, basePath string, includeIgnored bool) ([]string, int, error) {
 	patterns, err := expandSearchPattern(pattern)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	base := strings.TrimSpace(basePath)
 	if base == "" {
@@ -1277,22 +1288,25 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string, includ
 	if sfs := e.sandbox(); sfs != nil {
 		// Sandboxed: the base is policy-checked and the walk refuses symlink
 		// traversal (no out-of-root match) and drops masked matches.
-		return sfs.glob("glob", base, pattern, ignoreOverride)
+		return sfs.glob("glob", base, pattern, includeIgnored)
 	}
 	fsys := os.DirFS(base)
 	var ignores *ignoreSet
-	if !ignoreOverride {
-		ignores = loadIgnoreSet(fsys)
+	if !includeIgnored {
+		// No masking concept off the sandboxed path: no-op skip.
+		ignores = loadIgnoreSet(fsys, nil)
 	}
 	seen := make(map[string]struct{})
 	var abs []string
+	excluded := 0
 	for _, pattern := range patterns {
 		matches, err := doublestar.Glob(fsys, pattern)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		for _, m := range matches {
-			if !ignoreOverride && (isDotPath(m) || ignores.matches(m, globMatchIsDir(fsys, m))) {
+			if !includeIgnored && (isDotPath(m) || ignores.matches(m, globMatchIsDir(fsys, m))) {
+				excluded++
 				continue
 			}
 			path := filepath.Join(base, m)
@@ -1304,7 +1318,7 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string, includ
 		}
 	}
 	sortPathsByMtimeDesc(abs)
-	return abs, nil
+	return abs, excluded, nil
 }
 
 // Grep searches for pattern under path (defaulting to RootDir), using ripgrep
@@ -1433,7 +1447,9 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 	if err != nil {
 		return "", err
 	}
-	ignores := loadIgnoreSet(os.DirFS(path))
+	// No masking concept off the sandboxed path: no-op skip.
+	ignores := loadIgnoreSet(os.DirFS(path), nil)
+	excludedByIgnore := 0
 
 	err = grepWalk(path, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -1442,13 +1458,23 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 		relPath, _ := filepath.Rel(path, p)
 		relSlash := filepath.ToSlash(relPath)
 		if d.IsDir() {
-			if p != path && (strings.HasPrefix(d.Name(), ".") || ignores.matches(relSlash, true)) {
-				return filepath.SkipDir
+			if p != path {
+				if strings.HasPrefix(d.Name(), ".") {
+					return filepath.SkipDir
+				}
+				if ignores.matches(relSlash, true) {
+					excludedByIgnore++
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}
 		// Skip hidden and gitignored files
-		if strings.HasPrefix(d.Name(), ".") || ignores.matches(relSlash, false) {
+		if strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+		if ignores.matches(relSlash, false) {
+			excludedByIgnore++
 			return nil
 		}
 		if len(globFilters) > 0 {
@@ -1476,7 +1502,15 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 	if err != nil {
 		return "", err
 	}
-	return a.finish(), nil
+	result := a.finish()
+	// Silent-empty is the enemy (D2): distinguish "genuinely no matches" from
+	// "no matches among the files searched, but N were skipped by the
+	// default dotfile/gitignore exclusion" — grep has no include_ignored
+	// knob, so this is informational rather than a suggestion to retry.
+	if result == "" && excludedByIgnore > 0 {
+		return fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore), nil
+	}
+	return result, nil
 }
 
 // ExecCommand runs command through the platform shell in its own process group,

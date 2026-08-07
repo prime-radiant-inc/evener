@@ -118,3 +118,18 @@ type ExecutionEnvironment interface {
 	// directory, and extra environment variables, returning its result.
 	ExecCommand(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error)
 }
+
+// GlobExcluder is an optional capability an ExecutionEnvironment's Glob may
+// additionally implement: it reports, alongside the matches, how many
+// candidate matches were dropped by the default dotfile/gitignore exclusion.
+// Callers use this to tell a genuinely empty result apart from one that was
+// silently emptied out entirely by filtering (rather than widening the
+// ExecutionEnvironment interface's Glob signature itself, which every
+// implementation — including test doubles with no exclusion logic — would
+// otherwise have to grow a meaningless extra return value for).
+type GlobExcluder interface {
+	// GlobWithExclusions behaves like Glob but also returns the number of
+	// candidate matches dropped by the default dotfile/gitignore exclusion
+	// (always 0 when includeIgnored is true).
+	GlobWithExclusions(pattern, basePath string, includeIgnored bool) (matches []string, excluded int, err error)
+}

@@ -228,9 +228,22 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if v, ok := args["include_ignored"].(bool); ok {
 				includeIgnored = v
 			}
-			matches, err := env.Glob(pat, path, includeIgnored)
+			var matches []string
+			var excluded int
+			var err error
+			if ge, ok := env.(execenv.GlobExcluder); ok {
+				matches, excluded, err = ge.GlobWithExclusions(pat, path, includeIgnored)
+			} else {
+				matches, err = env.Glob(pat, path, includeIgnored)
+			}
 			if err != nil {
 				return "", err
+			}
+			// Silent-empty is the enemy: a bare "" here is indistinguishable
+			// from "genuinely no matches" when it's actually "every match was
+			// filtered out by the default dotfile/gitignore exclusion" (D2).
+			if len(matches) == 0 && excluded > 0 {
+				return fmt.Sprintf("0 matches after excluding %d dotfile/gitignored path(s); set include_ignored to include them", excluded), nil
 			}
 			return strings.Join(matches, "\n"), nil
 		},

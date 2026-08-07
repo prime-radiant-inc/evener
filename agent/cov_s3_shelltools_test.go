@@ -149,3 +149,45 @@ func TestS3Cov_ShellTools_ListGrepGlob(t *testing.T) {
 		}
 	})
 }
+
+// TestS3Cov_GlobTool_FullyExcludedResultExplainsRatherThanEmpties proves D2 at
+// the tool-registration boundary (not just execenv's Glob/GlobWithExclusions):
+// a glob call whose only candidate matches all live under a gitignored
+// directory must return an explanatory message through the actual "glob"
+// tool's Exec, not a bare "" that a model can't distinguish from "nothing
+// matched at all".
+func TestS3Cov_GlobTool_FullyExcludedResultExplainsRatherThanEmpties(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("node_modules/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "node_modules", "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "node_modules", "pkg", "index.js"), []byte("module.exports = {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newSession(t, withDir(dir))
+	res := s3cov_exec(t, s, "glob", `{"pattern":"node_modules/**/*.js","path":"."}`)
+	if res.IsError {
+		t.Fatalf("glob error: %v", res.Output)
+	}
+	if res.Output == "" {
+		t.Fatal("expected an explanatory message for a fully-excluded glob, got a bare empty string")
+	}
+	if !strings.Contains(res.Output, "0 matches") || !strings.Contains(res.Output, "include_ignored") {
+		t.Fatalf("expected an exclusion explanation naming include_ignored, got: %q", res.Output)
+	}
+
+	// Sanity: include_ignored=true actually finds the match, proving the
+	// explanation's own suggestion works.
+	res = s3cov_exec(t, s, "glob", `{"pattern":"node_modules/**/*.js","path":".","include_ignored":true}`)
+	if res.IsError {
+		t.Fatalf("glob include_ignored error: %v", res.Output)
+	}
+	if !strings.Contains(res.Output, "index.js") {
+		t.Fatalf("expected include_ignored=true to find the match, got: %q", res.Output)
+	}
+}
