@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -110,7 +111,11 @@ func TestMCPBreaker_IdenticalBodiesNudgeWithoutIsError(t *testing.T) {
 	})
 	env := &agenttest.FakeEnv{WorkDir: t.TempDir()}
 	call := llm.ToolCallData{ID: "c", Name: "s__probe", Arguments: json.RawMessage(`{}`)}
-	const nudge = "You have now made this same call twice and received the identical result. Repeating it will not change the answer — use the result you already have, or change your approach."
+	// The nudge counts the actual streak (Jesse ruling 2026-08-07), so each
+	// call expects its own number.
+	nudgeAt := func(count int) string {
+		return fmt.Sprintf("You have now made this same call and received the identical result %d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach.", count)
+	}
 
 	first := reg.ExecuteCall(ctx, env, call)
 	if first.IsError {
@@ -128,8 +133,8 @@ func TestMCPBreaker_IdenticalBodiesNudgeWithoutIsError(t *testing.T) {
 		if !strings.HasPrefix(res.Output, body) {
 			t.Errorf("call %d dropped the result body: %q", n, res.Output)
 		}
-		if !strings.HasSuffix(res.Output, nudge) {
-			t.Errorf("call %d missing the repetition nudge: %q", n, res.Output)
+		if !strings.HasSuffix(res.Output, nudgeAt(n)) {
+			t.Errorf("call %d missing the repetition nudge for count %d: %q", n, n, res.Output)
 		}
 		if got := requests.Load(); got != int64(n) {
 			t.Fatalf("server saw %d requests after %d calls: repetition must never park", got, n)
