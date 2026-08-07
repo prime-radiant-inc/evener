@@ -1685,7 +1685,7 @@ func jobNotifications(notifs []deliverableJobNotification) []jobNotification {
 func (s *Session) formatJobNotificationReminder(jobNotifs []deliverableJobNotification) string {
 	blocks := make([]string, 0, len(jobNotifs))
 	for _, n := range jobNotifs {
-		blocks = append(blocks, formatJobNotificationBlock(n.notification, s.terminalNotificationExcerpt(n.notification)))
+		blocks = append(blocks, formatJobNotificationBlock(n.notification, s.terminalNotificationExcerpt(n.notification), s.canInstructTool("read_transcript")))
 	}
 	return strings.Join(blocks, "\n")
 }

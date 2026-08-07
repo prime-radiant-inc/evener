@@ -104,7 +104,7 @@ func FuzzShellNotificationRenderProgram(f *testing.F) {
 			}
 		}
 
-		block := formatJobNotificationBlock(n, excerpt)
+		block := formatJobNotificationBlock(n, excerpt, true)
 		if !utf8.ValidString(block) || !strings.HasPrefix(block, "<job-notification ") || !strings.HasSuffix(block, "</job-notification>") {
 			t.Fatalf("malformed notification block: %q", block)
 		}

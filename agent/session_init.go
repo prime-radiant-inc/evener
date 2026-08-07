@@ -324,7 +324,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 					if current.ReasoningEffort != "" {
 						s.cfg.ReasoningEffort = current.ReasoningEffort
 					}
-					s.SteerKind(formatCurrentTaskSteering(current), events.SteeringKindCurrentTask)
+					s.SteerKind(formatCurrentTaskSteering(current, s.canInstructTool("task_list")), events.SteeringKindCurrentTask)
 				}
 			}
 		}

@@ -175,7 +175,11 @@ func notificationAttr(key, value string) string {
 // bounded result excerpt for a finished job (shell tail / delegate head),
 // appended only to the terminal job_finished branch; it is ignored for watch
 // frames and no-job watch events.
-func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) string {
+//
+// canReadTranscript is the receiving session's answer to "do I serve
+// read_transcript": false drops the output pointer rather than pointing at a
+// tool the receiver cannot call.
+func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, canReadTranscript bool) string {
 	if n.WatchSend != nil {
 		attrs := []string{
 			notificationAttr("job_id", n.JobID),
@@ -241,14 +245,17 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 	// A complete excerpt makes a transcript read redundant. Otherwise,
 	// present output inspection as an available follow-up instead of the next
 	// required action.
-	instruction := "Output is available through read_transcript if needed."
-	if ref := notificationTranscriptRef(n); ref != "" {
-		instruction = fmt.Sprintf("Output is available through read_transcript(transcript_ref=%q) if needed.", ref)
+	instruction := ""
+	if canReadTranscript {
+		instruction = "Output is available through read_transcript if needed."
+		if ref := notificationTranscriptRef(n); ref != "" {
+			instruction = fmt.Sprintf("Output is available through read_transcript(transcript_ref=%q) if needed.", ref)
+		}
 	}
 	if excerpt.text != "" && excerpt.complete {
 		instruction = "Complete output below."
 	}
-	body := fmt.Sprintf("Job %s %s. %s", n.JobID, event, instruction)
+	body := strings.TrimSpace(fmt.Sprintf("Job %s %s. %s", n.JobID, event, instruction))
 	if excerpt.text != "" {
 		body += "\nexcerpt:\n" + escapeNotificationText(excerpt.text)
 	}

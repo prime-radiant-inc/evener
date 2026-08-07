@@ -2665,7 +2665,7 @@ func (s *Session) delegateDisposalHint(desc *jobstore.DelegateRestoreDescriptor,
 	if desc.ParentSessionID != s.id {
 		return ""
 	}
-	if s.reg == nil || s.reg.Get("manage_worktree") == nil {
+	if !s.canInstructTool("manage_worktree") {
 		return ""
 	}
 	if !isDelegateID(id) {

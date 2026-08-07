@@ -186,7 +186,7 @@ func (s *SessionLogStrategy) sessionLogCheckpoint(history []schema.Turn, preserv
 	b.WriteString("[CONTEXT CHECKPOINT - SESSION LOG]\n")
 	fmt.Fprintf(&b, "Original prompt: %s\n", originalPrompt)
 	if s.session != nil {
-		fmt.Fprintf(&b, "This session's id is %s. Use read_transcript to recover earlier detail, or find_session_transcripts to search it.\n", s.session.ID())
+		fmt.Fprintf(&b, "This session's id is %s.%s\n", s.session.ID(), s.transcriptRecoverySentence())
 	}
 	b.WriteString("\n")
 
@@ -263,4 +263,14 @@ func (s *SessionLogStrategy) AfterAction(ctx context.Context, history []schema.T
 		}
 	})
 
+}
+
+// transcriptRecoverySentence is the strategy's view of how the agent may
+// recover folded-away detail: worded from the transcript tools the session
+// actually serves, and silent when the manager never reported any.
+func (s *SessionLogStrategy) transcriptRecoverySentence() string {
+	if s == nil || s.cm == nil {
+		return ""
+	}
+	return s.cm.Meta.TranscriptRecoverySentence()
 }

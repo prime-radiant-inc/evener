@@ -78,11 +78,22 @@ func (s *Session) PinnedNote() string {
 	return s.pinnedNote
 }
 
-const selfCompactNudge = "You are running low on context-window headroom. If you are " +
-	"at or near a clean stopping point, call the `compact_context` tool now to fold " +
-	"older history into a summary checkpoint and free headroom — include a note_to_self " +
-	"with the exact details that must survive (and optional compaction_instructions). " +
-	"If you don't, an automatic compaction will run without your steering."
+// selfCompactNudge is the low-headroom warning. The pressure is real either
+// way; only the remedy is tool-dependent, so a session without compact_context
+// gets the same warning worded as something it can actually do.
+func selfCompactNudge(canCompact bool) string {
+	if !canCompact {
+		return "You are running low on context-window headroom. Summarize and drop stale " +
+			"context in your next messages — restate the exact details that must survive " +
+			"(ids, paths, numbers, decisions, next steps) and stop carrying the rest " +
+			"forward. If you don't, an automatic compaction will run without your steering."
+	}
+	return "You are running low on context-window headroom. If you are " +
+		"at or near a clean stopping point, call the `compact_context` tool now to fold " +
+		"older history into a summary checkpoint and free headroom — include a note_to_self " +
+		"with the exact details that must survive (and optional compaction_instructions). " +
+		"If you don't, an automatic compaction will run without your steering."
+}
 
 // maybeNudgeSelfCompact injects a one-time steering nudge when pressure crosses
 // WarnThreshold. Best-effort: a single large tool result can jump past the
@@ -113,7 +124,7 @@ func (s *Session) maybeNudgeSelfCompact(sysPromptChars int) bool {
 	s.mu.Lock()
 	s.nudgedSinceCompact = true
 	s.mu.Unlock()
-	s.SteerKind(selfCompactNudge, events.SteeringKindCompactNudge)
+	s.SteerKind(selfCompactNudge(s.canInstructTool("compact_context")), events.SteeringKindCompactNudge)
 	return true
 }
 

@@ -236,7 +236,9 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 							if t.ReasoningEffort != "" {
 								deps.taskGuard.SetReasoningEffort(t.ReasoningEffort)
 							}
-							deps.steer(formatCurrentTaskSteering(t), events.SteeringKindCurrentTask)
+							// Inside the task_list handler: the tool is registered by
+							// construction, so the steering may name it.
+							deps.steer(formatCurrentTaskSteering(t, true), events.SteeringKindCurrentTask)
 							break
 						}
 					}
@@ -268,14 +270,14 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 								if next.ReasoningEffort != "" {
 									deps.taskGuard.SetReasoningEffort(next.ReasoningEffort)
 								}
-								deps.steer(formatCurrentTaskSteering(next), events.SteeringKindCurrentTask)
+								deps.steer(formatCurrentTaskSteering(next, true), events.SteeringKindCurrentTask)
 							}
 						} else {
 							// No eligible task. If nothing remains open or in_progress,
 							// signal the agent that the list is exhausted.
 							allDone := taskListAllDone(finalTasks)
 							if allDone && len(finalTasks) > 0 {
-								deps.steer(taskReminderAllDone(), events.SteeringKindTasksDone)
+								deps.steer(taskReminderAllDone(deps.resultToolName()), events.SteeringKindTasksDone)
 								msg.WriteString("All tasks complete. ")
 							}
 						}

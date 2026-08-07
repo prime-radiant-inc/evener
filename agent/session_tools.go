@@ -968,9 +968,11 @@ func (s *Session) maybeInjectTaskReminder() (string, string) {
 	s.mu.Unlock()
 
 	roundsSinceUse := totalRounds - lastRound
+	canUseTaskList := s.canInstructTool("task_list")
 
-	// Trigger 3: never used task_list, 10+ rounds in.
-	if !everUsed && !nudgeFired && totalRounds >= 10 {
+	// Trigger 3: never used task_list, 10+ rounds in. A session without the
+	// tool is told nothing: this reminder is nothing but a call suggestion.
+	if canUseTaskList && !everUsed && !nudgeFired && totalRounds >= 10 {
 		s.mu.Lock()
 		s.taskNudgeFired = true
 		s.mu.Unlock()
@@ -984,7 +986,7 @@ func (s *Session) maybeInjectTaskReminder() (string, string) {
 			s.mu.Lock()
 			s.taskToolLastRound = totalRounds
 			s.mu.Unlock()
-			return taskReminderForInactivity(store), events.SteeringKindTaskInactive
+			return taskReminderForInactivity(store, canUseTaskList), events.SteeringKindTaskInactive
 		}
 	}
 

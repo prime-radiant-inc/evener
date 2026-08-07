@@ -95,7 +95,7 @@ func TestDisposalHint_NotificationBlockCarriesSentence(t *testing.T) {
 	t.Parallel()
 	n := jobNotification{JobID: "job_1", JobType: string(jobstore.JobDelegate), Status: "finished"}
 	ex := notificationExcerpt{worktree: &delegateWorktreeReport{Path: "/lane", Branch: "b", DisposalHint: wantDisposalSentence}}
-	block := formatJobNotificationBlock(n, ex)
+	block := formatJobNotificationBlock(n, ex, true)
 	if !strings.Contains(block, wantDisposalSentence) {
 		t.Errorf("notification block missing sentence.\nblock:\n%s", block)
 	}
@@ -106,7 +106,7 @@ func TestDisposalHint_NotificationBlockOmitsWhenNoHint(t *testing.T) {
 	t.Parallel()
 	n := jobNotification{JobID: "job_1", JobType: string(jobstore.JobDelegate), Status: "finished"}
 	ex := notificationExcerpt{worktree: &delegateWorktreeReport{Path: "/lane", Branch: "b"}}
-	block := formatJobNotificationBlock(n, ex)
+	block := formatJobNotificationBlock(n, ex, true)
 	if strings.Contains(block, "dispose its worktree") {
 		t.Errorf("notification block must omit the nudge when hint is empty.\nblock:\n%s", block)
 	}
@@ -179,6 +179,7 @@ func TestDisposalHint_RenderRunsNoGit(t *testing.T) {
 	_ = formatJobNotificationBlock(
 		jobNotification{JobID: "job_1", JobType: string(jobstore.JobDelegate), Status: "finished"},
 		notificationExcerpt{worktree: report},
+		true,
 	)
 
 	if data, err := os.ReadFile(logPath); err == nil && len(strings.TrimSpace(string(data))) != 0 {

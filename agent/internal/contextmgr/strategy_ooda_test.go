@@ -50,6 +50,7 @@ func TestOODAStrategy_ManageContext_NoOrientMessageWhenLogEmpty(t *testing.T) {
 	cm.CheckpointThreshold = 0.99
 	cm.SummarizeThreshold = 0.99
 	cm.PreserveRecentTurns = 2
+	cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
@@ -89,6 +90,7 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 	cm.CheckpointThreshold = 0.99
 	cm.SummarizeThreshold = 0.99
 	cm.PreserveRecentTurns = 2
+	cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
@@ -162,6 +164,7 @@ func TestOODAStrategy_ManageContext_OrientTextUsesTranscriptTools(t *testing.T) 
 	cm.CheckpointThreshold = 0.99
 	cm.SummarizeThreshold = 0.99
 	cm.PreserveRecentTurns = 2
+	cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
@@ -214,6 +217,7 @@ func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 	cm.CheckpointThreshold = 0.99
 	cm.SummarizeThreshold = 0.99
 	cm.PreserveRecentTurns = 2
+	cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
@@ -273,6 +277,7 @@ func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 	cm.CheckpointThreshold = 0.95
 	cm.SummarizeThreshold = 0.99
 	cm.PreserveRecentTurns = 2
+	cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")

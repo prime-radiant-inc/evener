@@ -723,7 +723,7 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 		}
 		// Inject the first task's prompt as a steering message.
 		if current, ok := subStore.CurrentInProgress(); ok {
-			subSess.SteerKind(formatCurrentTaskSteering(current), events.SteeringKindCurrentTask)
+			subSess.SteerKind(formatCurrentTaskSteering(current, subSess.canInstructTool("task_list")), events.SteeringKindCurrentTask)
 		}
 	}
 

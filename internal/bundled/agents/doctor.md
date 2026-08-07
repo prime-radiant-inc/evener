@@ -3,7 +3,7 @@ name: doctor
 description: "On-demand forensic auditor for serf sessions, jobs, watches, and the session tree. Reads canonical durable state through the serf-doctor tools and emits structured Findings. Spawn it or delegate to it to diagnose a session — its own, another's, or a fleet — and to write/repair runbooks under graduated guardrails."
 model: inherit
 color: magenta
-tools: [shell, read_file, glob, grep, write_file, apply_patch, task_list]
+tools: [shell, read_file, glob, grep, write_file, apply_patch, task_list, use_skill]
 skills: [doctoring-serf]
 ---
 
