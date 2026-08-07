@@ -150,7 +150,7 @@ func TestDispose_RunningJob_Refused(t *testing.T) {
 	defer deleteRunning(r.s, "job_running")
 
 	err := disposeErr(t, r.s, id, false, false)
-	requireRefusalContains(t, err, "running or undelivered work")
+	requireRefusalContains(t, err, "running or unfinished work")
 }
 
 func TestDispose_ArmedWatchSendTo_Refused(t *testing.T) {

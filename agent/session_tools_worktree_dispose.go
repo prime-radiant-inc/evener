@@ -156,14 +156,13 @@ func (s *Session) disposeDelegateLane(ctx context.Context, id string, force, for
 	}
 
 	// Record quiescence (spec §P1 step 1): the delegate's latest job is terminal
-	// with no running/queued follow-up and no pending owner notification — checked
-	// under one jm.mu hold.
+	// with no running/queued follow-up — checked under one jm.mu hold.
 	quiescent, qErr := s.jobManager.delegateRecordQuiescent(id)
 	if qErr != nil {
 		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s quiescence check: %w", id, qErr)
 	}
 	if !quiescent {
-		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s still has running or undelivered work; wait for it to finish", id)
+		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s still has running or unfinished work; wait for it to finish", id)
 	}
 
 	// Step 2: delivery quiescence. An armed watch routing send_to this delegate,
@@ -530,11 +529,25 @@ func findDelegateLaneRecord(recs map[string]*jobstore.JobRecord, id string) (*jo
 	return withDesc, desc
 }
 
-// delegateRecordQuiescent reports whether delegate id has no running/queued job
-// and no pending owner notification — the dispose record-quiescence gate (spec
-// §P1 step 1), taken under ONE jm.mu hold so the running-map read and the
-// durable snapshot are consistent against the finalization sequence (the
-// outstandingDelegateCount recipe, scoped to one delegate).
+// delegateRecordQuiescent reports whether delegate id has no running job and no
+// unfinished job record — the dispose record-quiescence gate (spec §P1 step 1:
+// "Latest job terminal, no running/queued follow-up"), taken under ONE jm.mu
+// hold so the running-map read and the durable snapshot are consistent against
+// the finalization sequence (the outstandingDelegateCount recipe, scoped to one
+// delegate).
+//
+// An UNDELIVERED terminal notification is deliberately NOT counted. It is a
+// render this session owes ITSELF, not work in flight: the owner filter below
+// already excludes every other session's copy, so the only notification that
+// could reach this check is one whose delegate the caller is explicitly asking
+// to retire — and disposal destroys neither the job record, nor the queued
+// notification, nor the output store its excerpt is read from, so the render
+// still lands on the session's next notification turn (the drain keeps waiting
+// on it via outstandingDelegateCount, which is unchanged). Counting it made a
+// RESUMED session unable to dispose its own idle lane at all until its first
+// notification turn: restore re-arms every owned, never-delivered terminal
+// record to NotifyPending (armPendingTerminalNotifications), which is exactly
+// the state a lane-owning coordinator comes back in.
 func (jm *jobManager) delegateRecordQuiescent(id string) (bool, error) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
@@ -551,13 +564,13 @@ func (jm *jobManager) delegateRecordQuiescent(id string) (bool, error) {
 		if rec.DelegateID != id {
 			continue
 		}
-		// Only this session's OWN delegate notifications hold quiescence open; a
-		// forwarded descendant copy is the child's attention signal, covered by the
+		// Only this session's OWN delegate records hold quiescence open; a
+		// forwarded descendant copy is the child's own ledger, covered by the
 		// subtree walk (matching outstandingDelegateCount's owner filter).
 		if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
 			continue
 		}
-		if rec.Type == jobstore.JobDelegate && rec.NotifyState == jobstore.NotifyPending {
+		if rec.Type == jobstore.JobDelegate && !rec.Status.IsTerminal() {
 			return false, nil
 		}
 	}
