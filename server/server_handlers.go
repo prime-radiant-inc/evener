@@ -326,7 +326,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	for id, projection := range s.appDescendants {
 		if projection != nil && projection.thread.Status.Type != appwire.ThreadStatusClosed {
 			descendantSessionIDs = append(descendantSessionIDs, id)
-			if state := string(projection.thread.Status.Type); state != "" {
+			if state := projection.thread.Status.Type; state != "" {
 				if descendantStates == nil {
 					descendantStates = make(map[string]string, len(s.appDescendants))
 				}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -43,12 +44,12 @@ type suiteResult struct {
 func runWave(cfg waveConfig) int {
 	runDir, err := os.MkdirTemp("", "serf-test-dev-tooling.")
 	if err != nil {
-		fmt.Fprintf(cfg.Out, "serf-test-dev-tooling: %v\n", err)
+		_, _ = fmt.Fprintf(cfg.Out, "serf-test-dev-tooling: %v\n", err)
 		return 1
 	}
-	defer os.RemoveAll(runDir)
+	defer func() { _ = os.RemoveAll(runDir) }()
 	if err := writeMktempShim(runDir); err != nil {
-		fmt.Fprintf(cfg.Out, "serf-test-dev-tooling: %v\n", err)
+		_, _ = fmt.Fprintf(cfg.Out, "serf-test-dev-tooling: %v\n", err)
 		return 1
 	}
 
@@ -102,13 +103,13 @@ func runWave(cfg waveConfig) int {
 	for i, name := range cfg.Suites {
 		r := results[i]
 		if r.exitCode == 0 && r.failure == "" {
-			fmt.Fprintf(cfg.Out, "PASS  %-26s %ds\n", name, r.seconds)
+			_, _ = fmt.Fprintf(cfg.Out, "PASS  %-26s %ds\n", name, r.seconds)
 			continue
 		}
 		fail = 1
-		fmt.Fprintf(cfg.Out, "FAIL  %-26s\n", name)
+		_, _ = fmt.Fprintf(cfg.Out, "FAIL  %-26s\n", name)
 		if r.failure != "" {
-			fmt.Fprintf(cfg.Out, "%s\n", r.failure)
+			_, _ = fmt.Fprintf(cfg.Out, "%s\n", r.failure)
 		}
 		replayLog(cfg.Out, filepath.Join(runDir, name+".log"))
 	}
@@ -134,9 +135,9 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 	if err != nil {
 		return suiteResult{exitCode: 1, failure: fmt.Sprintf("serf-test-dev-tooling: %s: %v", name, err)}
 	}
-	defer logFile.Close()
+	defer func() { _ = logFile.Close() }()
 
-	cmd := exec.Command(filepath.Join(cfg.ScriptsDir, name+"-selftest.sh"))
+	cmd := exec.CommandContext(context.Background(), filepath.Join(cfg.ScriptsDir, name+"-selftest.sh"))
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Env = append(environWithout(envvars.TmpDir.Name, envvars.Path.Name),
@@ -160,7 +161,7 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 		}
 		mu.Lock()
 		if !finished {
-			syscall.Kill(-pgid, syscall.SIGTERM)
+			_ = syscall.Kill(-pgid, syscall.SIGTERM)
 		}
 		mu.Unlock()
 		select {
@@ -168,7 +169,7 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 		case <-time.After(cfg.KillGrace):
 			mu.Lock()
 			if !finished {
-				syscall.Kill(-pgid, syscall.SIGKILL)
+				_ = syscall.Kill(-pgid, syscall.SIGKILL)
 			}
 			mu.Unlock()
 		}
@@ -272,6 +273,6 @@ func replayLog(out io.Writer, path string) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
-	io.Copy(out, f)
+	defer func() { _ = f.Close() }()
+	_, _ = io.Copy(out, f)
 }

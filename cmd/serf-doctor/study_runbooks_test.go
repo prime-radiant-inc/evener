@@ -98,7 +98,7 @@ func studyCommunicateEndTurn(id string, endTurn bool) llm.ContentPart {
 func writeRunTimeoutJobs(t *testing.T, jobsPath, sid string, n int) {
 	t.Helper()
 	var lines []string
-	for i := 0; i < n; i++ {
+	for i := range n {
 		id := fmt.Sprintf("job_%s_%d", sid, i)
 		lines = append(lines,
 			`{"kind":"job_started","job_id":"`+id+`","type":"shell","command":"x","owner_session_id":"`+sid+`","visible_to_session_id":"`+sid+`","started_at":"2026-08-01T00:00:00Z"}`,
@@ -149,7 +149,7 @@ func studyAuditJSON(t *testing.T, base, runbookName string, sessions ...string) 
 
 func errorLoopTripTurns() []schema.Turn {
 	var turns []schema.Turn
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		id := fmt.Sprintf("el%d", i)
 		turns = append(turns,
 			schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
@@ -395,7 +395,7 @@ const studyTruncationBanner = "[WARNING: Tool output was truncated. First 100 ch
 
 func truncationWasteTripTurns() []schema.Turn {
 	var turns []schema.Turn
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		id := fmt.Sprintf("tw%d", i)
 		turns = append(turns,
 			schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{

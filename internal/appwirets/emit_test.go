@@ -474,19 +474,29 @@ func threadItemEventKindConstantsFromGo(t *testing.T) map[string][]string {
 	const constPrefix = "ThreadItemEventKind"
 
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, filepath.Join("..", "..", "appwire"), func(info os.FileInfo) bool {
-		return !info.IsDir() && strings.HasSuffix(info.Name(), ".go") && !strings.HasSuffix(info.Name(), "_test.go")
-	}, parser.AllErrors)
+	appwireDir := filepath.Join("..", "..", "appwire")
+	entries, err := os.ReadDir(appwireDir)
 	if err != nil {
-		t.Fatalf("parse appwire package: %v", err)
+		t.Fatalf("read appwire package: %v", err)
 	}
-	pkg, ok := pkgs["appwire"]
-	if !ok {
-		t.Fatalf("package appwire not found at %q", filepath.Join("..", "..", "appwire"))
+	var files []*ast.File
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(appwireDir, name), nil, parser.AllErrors)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		files = append(files, f)
+	}
+	if len(files) == 0 {
+		t.Fatalf("no non-test .go files found at %q", appwireDir)
 	}
 
 	constantsByValue := map[string][]string{}
-	for _, f := range pkg.Files {
+	for _, f := range files {
 		var activeType ast.Expr
 		var activeValues []ast.Expr
 		for _, decl := range f.Decls {

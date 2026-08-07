@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -752,8 +753,8 @@ func openAIStateDirFromLaunchEnv(env []string) string {
 
 func envLookup(env []string, key string) (string, bool) {
 	prefix := key + "="
-	for i := len(env) - 1; i >= 0; i-- {
-		if rest, ok := strings.CutPrefix(env[i], prefix); ok {
+	for _, entry := range slices.Backward(env) {
+		if rest, ok := strings.CutPrefix(entry, prefix); ok {
 			return rest, true
 		}
 	}
