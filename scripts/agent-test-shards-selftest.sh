@@ -191,7 +191,7 @@ exec 8<>"$stop_fifo"
 	# Until child_pid is in hand there is nothing to forward a signal to, so a
 	# TERM arriving in that window is recorded rather than run through a handler
 	# that would report a stop the wrapper never actually performed (the same
-	# spawn-window cover make-selftest-selftest.sh's wrapper carries).
+	# spawn-window race any wrapper that forks its real work off has to cover).
 	trap 'spawn_interrupted=1' TERM
 	FAKE_MODE=hold FAKE_READY_FIFO="$ready_fifo" run_case_async >"$out" 2>&1 &
 	child_pid="$!"

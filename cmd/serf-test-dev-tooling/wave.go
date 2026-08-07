@@ -120,8 +120,11 @@ func runWave(cfg waveConfig) int {
 // the TMPDIR on success. On shutdown it TERMs the suite's process group so
 // forked descendants get the signal too, then KILLs the group if the suite
 // has not exited within the grace period. The per-suite mutex orders those
-// signals against Wait returning, so a signal never targets a process group
-// the kernel may have reused.
+// signals against the post-Wait bookkeeping, narrowing the reuse window to
+// the instant between the runtime's reap inside Wait and the finished-flag
+// update; closing it fully would need waitid(WNOWAIT), which pure Go
+// doesn't expose. The residual window is microseconds wide and requires an
+// immediate pid wraparound.
 func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) suiteResult {
 	tmp := filepath.Join(runDir, name, "tmp")
 	if err := os.MkdirAll(tmp, 0o755); err != nil {
