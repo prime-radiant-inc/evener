@@ -270,21 +270,38 @@ func TestSessionInfraRootsResolveIntoNothingOutsideTheWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	canonRoot := canonInfra(t, root)
-	for _, r := range rp.Spawned.ReadRoots {
-		if r == canonRoot || strings.HasPrefix(r, canonRoot+string(filepath.Separator)) {
-			continue // the worktree itself
-		}
-		if slices.Contains(defaultSpawnedSystemRoots, r) || strings.HasPrefix(r, "/usr") {
-			continue // the system roots a process needs to exec, granted for every restricted session
-		}
-		t.Errorf("restricted spawned read surface gained %q from a model-writable config; roots = %v", r, rp.Spawned.ReadRoots)
-	}
+	assertNoReadRootOutside(t, root, infra, rp)
 }
 
-// defaultSpawnedSystemRoots mirrors the resolver's own system read roots, which
-// every restricted session gets regardless of this feature.
-var defaultSpawnedSystemRoots = []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/nix/store"}
+// assertNoReadRootOutside asserts that the roots the DERIVATION contributed add
+// nothing to the restricted spawned read surface outside the worktree.
+//
+// It measures a DELTA against the same policy resolved with no InfraReadRoots
+// rather than checking against a hardcoded list of expected system roots. The
+// resolver grants other things for its own reasons (the system exec roots, and the
+// developer-toolchain roots), and those are not this feature's to police; a
+// hardcoded allowlist would also rot silently every time the resolver gains a
+// grant. The delta isolates exactly what SessionInfraRoots caused.
+func assertNoReadRootOutside(t *testing.T, worktree string, infra []string, rp sandbox.ResolvedPolicy) {
+	t.Helper()
+	net := true
+	baseline, err := sandbox.Resolve(sandbox.SandboxPolicy{
+		Mode: sandbox.ModeRestricted, Network: &net,
+	}, sandbox.RealProber{}.Probe(), worktree)
+	if err != nil {
+		t.Fatalf("Resolve baseline: %v", err)
+	}
+	canonRoot := canonInfra(t, worktree)
+	for _, r := range rp.Spawned.ReadRoots {
+		if slices.Contains(baseline.Spawned.ReadRoots, r) {
+			continue // granted regardless of this feature
+		}
+		if r == canonRoot || strings.HasPrefix(r, canonRoot+string(filepath.Separator)) {
+			continue // inside the session's own lane
+		}
+		t.Errorf("the hook/MCP derivation added read root %q outside the worktree\n  derived: %v\n  resolved: %v", r, infra, rp.Spawned.ReadRoots)
+	}
+}
 
 func runInfraGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
@@ -292,5 +309,130 @@ func runInfraGit(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// TestSessionInfraRootsRefuseCaseVariantOfHome closes the last spelling hole. On a
+// case-insensitive filesystem (APFS by default, NTFS) `/Users/JESSE` and
+// `/Users/jesse` are the SAME directory, but they are not the same string, and
+// filepath.EvalSymlinks returns whichever spelling it was given — canonicalization
+// does not collapse them. A byte-exact anchor check therefore sees depth 2 and no
+// ancestor relationship and lets it through, while Seatbelt's own `subpath`
+// matching is case-INSENSITIVE, so the kernel really does grant the whole home
+// tree. The same shape covers Unicode NFC-vs-NFD spellings, which APFS also treats
+// as one file.
+//
+// Skipped on a genuinely case-sensitive filesystem, where the two names are
+// different directories and refusing the second would be wrong.
+func TestSessionInfraRootsRefuseCaseVariantOfHome(t *testing.T) {
+	hermeticInfraEnv(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no resolvable home directory on this host")
+	}
+	home = filepath.Clean(home)
+	variant := filepath.Join(filepath.Dir(home), strings.ToUpper(filepath.Base(home)))
+	if variant == home {
+		t.Skip("home directory name has no distinct upper-case spelling")
+	}
+	hi, err := os.Stat(home)
+	if err != nil {
+		t.Skipf("cannot stat home: %v", err)
+	}
+	vi, err := os.Stat(variant)
+	if err != nil || !os.SameFile(hi, vi) {
+		t.Skip("case-sensitive filesystem: the upper-case spelling is a different directory")
+	}
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	cfg := SessionConfig{Sandbox: "restricted", PluginDirs: []string{variant}}
+	if got := SessionInfraRoots(cfg, env); len(got) != 0 {
+		t.Errorf("a case-variant spelling of $HOME must not be granted, got %v", got)
+	}
+}
+
+// TestTrustedConfigCannotReachOutsideTheWorktree drives the hostile paths through a
+// TRUSTED layer (--mcp-config), so the project-layer exclusion cannot be what makes
+// it pass. The sibling test above it is dropped wholesale before the guard is ever
+// consulted, which means it would still pass with infraGuard.permit's body deleted;
+// this one exercises permit for real.
+func TestTrustedConfigCannotReachOutsideTheWorktree(t *testing.T) {
+	hermeticInfraEnv(t)
+	root := t.TempDir()
+	runInfraGit(t, root, "init", "-q")
+	env := execenv.NewLocalExecutionEnvironment(root)
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no resolvable home directory on this host")
+	}
+	home = filepath.Clean(home)
+
+	hostile := []string{filepath.Dir(home), home, os.TempDir(), "/tmp", t.TempDir()}
+	if v := filepath.Join(filepath.Dir(home), strings.ToUpper(filepath.Base(home))); v != home {
+		hostile = append(hostile, v)
+	}
+	if _, err := os.Stat(filepath.Join(dataVolumePrefixForTest, "Users")); err == nil {
+		hostile = append(hostile, filepath.Join(dataVolumePrefixForTest, "Users"))
+	}
+	quoted := make([]string, 0, len(hostile))
+	for _, h := range hostile {
+		quoted = append(quoted, `"`+h+`"`)
+	}
+	mcpJSON := writeInfraFile(t, filepath.Join(root, "trusted-mcp.json"),
+		`{"mcpServers":{"evil":{"command":"/bin/sh","args":[`+strings.Join(quoted, ",")+`]}}}`, 0o644)
+
+	infra := SessionInfraRoots(SessionConfig{Sandbox: "restricted", MCPConfigFiles: []string{mcpJSON}}, env)
+	net := true
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{
+		Mode: sandbox.ModeRestricted, Network: &net, InfraReadRoots: infra,
+	}, sandbox.RealProber{}.Probe(), root)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	assertNoReadRootOutside(t, root, infra, rp)
+}
+
+// dataVolumePrefixForTest mirrors the production constant so the test can build an
+// alias path without exporting it.
+const dataVolumePrefixForTest = "/System/Volumes/Data"
+
+// TestSessionInfraRootsGrantLegitimateRootsUnderHome is the positive regression
+// test for the guard. Everything else in this file proves what is REFUSED, and the
+// refusals are easy to over-tighten: the guard's anchors include $HOME itself, and
+// the whole point of the feature is granting a plugin cache that normally lives
+// UNDER $HOME (~/.claude/plugins/..., ~/.config/serf/plugins/...). Nothing else here
+// would notice if a tightening of RootGuard.Permit — the os.SameFile spelling check
+// especially — started refusing those too, because the other tests all use
+// t.TempDir(), which sits under the TEMP anchor rather than under home.
+//
+// A path under an anchor must stay grantable; only a path at or ABOVE one is
+// refused.
+func TestSessionInfraRootsGrantLegitimateRootsUnderHome(t *testing.T) {
+	hermeticInfraEnv(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no resolvable home directory on this host")
+	}
+	// The agent test harness points HOME at a temp dir, so this writes nothing into
+	// a real developer's home.
+	if !strings.Contains(home, os.TempDir()) && !strings.Contains(home, "serf-agent-home") {
+		t.Skip("test harness home is not a scratch directory; refusing to write into a real home")
+	}
+
+	pluginDir := filepath.Join(home, ".claude", "plugins", "superpowers")
+	writeInfraFile(t, filepath.Join(pluginDir, "hooks", "session-start.sh"), "#!/bin/sh\n", 0o755)
+	script := writeInfraFile(t, filepath.Join(home, ".config", "serf", "servers", "server.js"), "// mcp\n", 0o644)
+	mcpJSON := writeInfraFile(t, filepath.Join(t.TempDir(), "mcp.json"),
+		`{"mcpServers":{"under-home":{"command":"node","args":["`+script+`"]}}}`, 0o644)
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	cfg := SessionConfig{Sandbox: "restricted", PluginDirs: []string{pluginDir}, MCPConfigFiles: []string{mcpJSON}}
+	got := SessionInfraRoots(cfg, env)
+
+	for _, want := range []string{canonInfra(t, pluginDir), canonInfra(t, filepath.Dir(script))} {
+		if !slices.Contains(got, want) {
+			t.Errorf("a legitimate root UNDER $HOME must still be granted: %q missing from %v", want, got)
+		}
 	}
 }

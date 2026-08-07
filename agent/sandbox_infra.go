@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/serf/agent/sandbox"
 )
 
 // SessionInfraRoots returns the session's hook and MCP-server paths: the read/
@@ -49,7 +50,7 @@ import (
 // worktree, or under a system root).
 //
 // Every candidate is then filtered by infraGuard, which refuses shared,
-// multi-tenant locations — see its doc for the exact rule.
+// multi-tenant locations — see sandbox.RootGuard for the exact rule.
 //
 // The result is a read/exec grant only — SandboxPolicy.InfraReadRoots reaches the
 // spawned layer and never a write root — and the credential denylist still wins
@@ -91,34 +92,33 @@ func SessionInfraRoots(cfg SessionConfig, env execenv.ExecutionEnvironment) []st
 	return roots
 }
 
-// infraGuard decides whether a configured path may become a read/exec root. It
-// holds the session's shared, multi-tenant anchors in canonical (symlink-resolved)
-// form so the checks below compare like with like.
+// infraGuard decides whether a configured path may become a read/exec root. The
+// safety rule itself lives in sandbox.RootGuard — the single implementation the
+// developer-toolchain grant shares — and this type only resolves a configured
+// plugin dir or MCP program to the candidate root to hand it.
 type infraGuard struct {
-	// shared are locations that hold MANY tenants' data: the user's home (every
-	// other project, every credential the denylist does not name, every other
-	// session's transcripts), the session's own worktree (whose PARENT typically
-	// holds every other lane), and the temp roots (every other session's scratch).
-	// A root at or ABOVE any of these is refused.
-	shared []string
+	sandbox.RootGuard
 }
 
+// newInfraGuard anchors the guard on the session's shared, multi-tenant
+// locations: the user's home, the session's own worktree, and the temp roots.
 func newInfraGuard(env execenv.ExecutionEnvironment) infraGuard {
-	var shared []string
-	addShared := func(p string) {
-		if c := canonicalPath(p); c != "" {
-			shared = append(shared, c)
-		}
-	}
+	anchors := []string{os.TempDir(), "/tmp"}
 	if home, err := os.UserHomeDir(); err == nil {
-		addShared(home)
+		anchors = append(anchors, home)
 	}
 	if env != nil {
-		addShared(env.WorkingDirectory())
+		// Unlike the home and temp anchors, this one is NOT pinned at session start:
+		// it is whatever the environment reports at derivation time, and the delegate
+		// path re-derives the roots per delegate. That is deliberate — a delegate
+		// re-rooted into its own lane must be guarded against ITS lane's parent, not
+		// the parent session's — and it is safe today because the value comes from
+		// the execution environment, which no tool call can set. If a model-settable
+		// working directory is ever introduced, this anchor stops being trustworthy
+		// and must be pinned at session start instead.
+		anchors = append(anchors, env.WorkingDirectory())
 	}
-	addShared(os.TempDir())
-	addShared("/tmp")
-	return infraGuard{shared: shared}
+	return infraGuard{RootGuard: sandbox.NewRootGuard(anchors...)}
 }
 
 // directoryRoot resolves a configured plugin directory to the root to grant. The
@@ -129,7 +129,7 @@ func (g infraGuard) directoryRoot(path string) string {
 	if resolved == "" || !fi.IsDir() {
 		return ""
 	}
-	return g.permit(resolved)
+	return g.Permit(resolved)
 }
 
 // programRoot resolves a configured MCP command or argument to the root to grant:
@@ -146,39 +146,7 @@ func (g infraGuard) programRoot(path string) string {
 	if resolved == "" || !fi.Mode().IsRegular() {
 		return ""
 	}
-	return g.permit(filepath.Dir(resolved))
-}
-
-// permit returns root if it is safe to grant, else "".
-//
-// A root is refused when it is at or ABOVE any shared anchor (home, the worktree,
-// a temp root), or when it has fewer than two path components. Both shapes hand a
-// spawned process a whole multi-tenant tree: "/Users" and "/home" are ANCESTORS of
-// a home directory rather than equal to one, so an equality check misses them, and
-// sandbox.Resolve's filterMasked cannot help either — it drops roots at or BENEATH
-// a masked path, and an ancestor is above them. The result would be read/exec of
-// every home on the machine (and every other worktree lane) minus only the nine
-// named credential directories.
-//
-// A misconfigured hook or server that names such a path stays broken under a
-// sandbox — the same outcome as before this grant existed — rather than silently
-// gutting the mode. Everything a real installation needs is unaffected: a plugin
-// under the registry root, a plugin under ~/.claude or ~/.config, an MCP program in
-// /opt/<vendor>/... or inside the worktree are all at or below their anchors, not
-// above them.
-func (g infraGuard) permit(root string) string {
-	if root == "" || !filepath.IsAbs(root) {
-		return ""
-	}
-	if pathDepth(root) < 2 {
-		return "" // "/", "/Users", "/home", "/private", "/var", "/opt", "/Volumes", …
-	}
-	for _, anchor := range g.shared {
-		if dirContainsOrEquals(root, anchor) {
-			return ""
-		}
-	}
-	return root
+	return g.Permit(filepath.Dir(resolved))
 }
 
 // statCanonical resolves path to its absolute, SYMLINK-RESOLVED form and stats it,
@@ -207,65 +175,5 @@ func statCanonical(path string) (string, os.FileInfo) {
 	if err != nil {
 		return "", nil
 	}
-	return stripDataVolumeAlias(resolved), fi
-}
-
-// dataVolumePrefix is macOS's second real spelling for every data-volume path:
-// /System/Volumes/Data/Users/x and /Users/x are the same file. Firmlinks are not
-// symlinks, so EvalSymlinks does NOT collapse them (the sandbox backend denies
-// both spellings for exactly this reason). Left uncollapsed here, the alias would
-// walk straight past the guard: "/System/Volumes/Data/Users" is four components
-// deep and is not an ancestor of the canonical "/Users/<user>" home, so it would
-// pass both checks while granting every home on the machine.
-const dataVolumePrefix = "/System/Volumes/Data"
-
-// stripDataVolumeAlias reduces a path to its plain spelling, so the alias and the
-// direct path compare equal in every guard check below.
-func stripDataVolumeAlias(p string) string {
-	c := filepath.Clean(p)
-	if c == dataVolumePrefix {
-		return "/"
-	}
-	if rest, ok := strings.CutPrefix(c, dataVolumePrefix+"/"); ok {
-		return filepath.Clean("/" + rest)
-	}
-	return c
-}
-
-// canonicalPath is statCanonical's path half, for anchors that must be comparable
-// even if they cannot be stat'd. An unresolvable path is cleaned, never dropped —
-// a dropped anchor would silently weaken the guard.
-func canonicalPath(p string) string {
-	if strings.TrimSpace(p) == "" {
-		return ""
-	}
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return ""
-	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return stripDataVolumeAlias(resolved)
-	}
-	return stripDataVolumeAlias(abs)
-}
-
-// pathDepth counts a cleaned absolute path's components ("/" is 0, "/Users" is 1,
-// "/Users/jesse" is 2).
-func pathDepth(p string) int {
-	trimmed := strings.Trim(filepath.ToSlash(filepath.Clean(p)), "/")
-	if trimmed == "" {
-		return 0
-	}
-	return strings.Count(trimmed, "/") + 1
-}
-
-// dirContainsOrEquals reports whether parent is at or above child.
-func dirContainsOrEquals(parent, child string) bool {
-	if parent == "" || child == "" {
-		return false
-	}
-	if parent == child {
-		return true
-	}
-	return strings.HasPrefix(child, parent+string(filepath.Separator))
+	return sandbox.StripDataVolumeAlias(resolved), fi
 }
