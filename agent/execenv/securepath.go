@@ -140,7 +140,7 @@ func (s *sandboxFS) deny(tool, denyPath, reason string) *sandbox.DeniedError {
 		// the whole resolution. This is a purely informational, best-effort re-walk
 		// AFTER the denial to make the message name the actual offending component,
 		// never a second vote on whether to allow anything.
-		if diag := symlinkDenialDiagnostic(denyPath); diag != "" {
+		if diag := s.symlinkDenialDiagnostic(denyPath); diag != "" {
 			modelReason = modelReason + "; " + diag
 		}
 	}
@@ -162,6 +162,21 @@ func (s *sandboxFS) deny(tool, denyPath, reason string) *sandbox.DeniedError {
 // denial cannot say which component was the symlink (see deny()'s comment), so
 // this re-derives that fact for humans/models from the outside.
 //
+// Where the walk STARTS depends on which enforcement shape produced the denial,
+// via containingRoot (the same helper openRead/openWrite use):
+//   - denyPath under a granted root (openInRoot): the confined resolver
+//     deliberately TOLERATES a symlinked ANCESTOR of the root — the root fd is
+//     opened once with a plain, symlink-following open (see
+//     TestReadToleratesSymlinkedAncestor) — and only refuses a symlink
+//     COMPONENT INSIDE the root. The walk is anchored at the root and covers
+//     only the in-root tail, so it never reports that tolerated ancestor
+//     symlink (e.g. macOS's own /var → /private/var, or a symlinked $HOME) in
+//     place of the actual in-root offender.
+//   - denyPath under no granted root (openAnywhereMinusMasked / a per-invocation
+//     grant): that shape opens from "/" refusing EVERY symlink with no
+//     ancestor tolerance at all, so walking the full path from "/" is exactly
+//     what matches its enforcement and correctly finds the offender there too.
+//
 // Safety: this NEVER decides whether anything is allowed — the denial already
 // happened — and it never opens or reads through the symlink, only its own
 // target string via os.Readlink. It degrades silently (returns "") on any
@@ -170,15 +185,27 @@ func (s *sandboxFS) deny(tool, denyPath, reason string) *sandbox.DeniedError {
 // this vantage point (e.g. confinement gives a different view than the raw
 // filesystem). A failure here must never surface as an error from deny() — it
 // can only make the message plainer, never break the denial itself.
-func symlinkDenialDiagnostic(deniedPath string) string {
+func (s *sandboxFS) symlinkDenialDiagnostic(deniedPath string) string {
 	abs, err := filepath.Abs(deniedPath)
 	if err != nil {
 		return ""
 	}
 	abs = filepath.Clean(abs)
-	comps := relComponents(strings.TrimPrefix(abs, string(filepath.Separator)))
-	cur := string(filepath.Separator)
-	for _, comp := range comps {
+
+	// Anchor at the containing root when there is one — the walk must stay
+	// below it so a tolerated ancestor symlink is never reported. Outside every
+	// granted root, that enforcement shape refuses every symlink from "/" with
+	// no ancestor tolerance, so walking the full path from "/" matches it.
+	root := string(filepath.Separator)
+	rel := strings.TrimPrefix(abs, string(filepath.Separator))
+	if r, rl, ok := containingRoot(s.policy.FileTool.ReadRoots, abs); ok {
+		root, rel = r, rl
+	} else if r, rl, ok := containingRoot(s.policy.FileTool.WriteRoots, abs); ok {
+		root, rel = r, rl
+	}
+
+	cur := root
+	for _, comp := range relComponents(rel) {
 		cur = filepath.Join(cur, comp)
 		info, lerr := os.Lstat(cur)
 		if lerr != nil {

@@ -6,11 +6,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/sandbox"
 )
+
+// symlinkDiagRe extracts the named component and its resolved target from a
+// symlinkDenialDiagnostic message (`"<component>" is a symlink to "<target>"`),
+// so tests can assert on exactly which path the diagnostic named rather than
+// substring-matching a message whose full quoted component path legitimately
+// contains ancestor directory names as leading segments.
+var symlinkDiagRe = regexp.MustCompile(`"([^"]+)" is a symlink to "([^"]+)"`)
 
 // sandboxedEnv builds a LocalExecutionEnvironment rooted at a fresh worktree
 // beneath a fake home, carrying the resolved policy for mode. This is the
@@ -180,6 +188,87 @@ func TestSymlinkDenialNamesComponentAndTarget(t *testing.T) {
 			}
 			if !strings.Contains(denied.Reason, secretDir) {
 				t.Errorf("%v: message should state the symlink's resolved target %q: %q", mode, secretDir, denied.Reason)
+			}
+		})
+	}
+}
+
+// TestSymlinkDenialIgnoresAncestorSymlink: the diagnostic must anchor its walk at
+// the sandbox's granted root, not filesystem "/". A granted root commonly sits
+// under a symlinked ANCESTOR (macOS /var → /private/var, a symlinked $HOME) that
+// the confined resolver deliberately TOLERATES (see TestReadToleratesSymlinkedAncestor
+// below) — only a symlink COMPONENT INSIDE the root causes a denial. If the
+// diagnostic walked from "/" it would report that tolerated, irrelevant ancestor
+// symlink instead of the real in-root offender.
+func TestSymlinkDenialIgnoresAncestorSymlink(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []sandbox.Mode{sandbox.ModeWorkspaceWrite, sandbox.ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			t.Parallel()
+			base := t.TempDir()
+			realParent := filepath.Join(base, "real")
+			worktreeReal := filepath.Join(realParent, "project")
+			if err := os.MkdirAll(worktreeReal, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// ancestor-link → realParent: a symlinked ANCESTOR of the root, tolerated
+			// by the confined resolver, so the granted root itself is spelled through
+			// this symlink (as it is whenever the session cwd is a symlinked path).
+			ancestorLink := filepath.Join(base, "ancestor-link")
+			if err := os.Symlink(realParent, ancestorLink); err != nil {
+				t.Fatal(err)
+			}
+			worktree := filepath.Join(ancestorLink, "project")
+
+			fileTool := sandbox.AccessScope{Read: sandbox.ReadAnywhere, WriteRoots: []string{worktree}}
+			if mode == sandbox.ModeRestricted {
+				fileTool = sandbox.AccessScope{
+					Read:       sandbox.ReadWorktreeOnly,
+					ReadRoots:  []string{worktree},
+					WriteRoots: []string{worktree},
+				}
+			}
+			env := NewLocalExecutionEnvironment(worktree)
+			env.Sandbox = &sandbox.ResolvedPolicy{Mode: mode, Backend: sandbox.BackendBwrap, FileTool: fileTool}
+			t.Cleanup(env.Cleanup)
+
+			// The actual offender: a symlink COMPONENT strictly INSIDE the root.
+			secretDir := filepath.Join(base, "secret-target-dir")
+			if err := os.MkdirAll(secretDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(secretDir, "leaf.txt"), []byte("hi\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(worktreeReal, "linked-component")
+			if err := os.Symlink(secretDir, link); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(worktree, "linked-component", "leaf.txt")
+
+			_, err := env.ReadFile(target, nil, nil)
+			mustDenied(t, err, "%v read through a symlinked component inside the root", mode)
+			var denied *sandbox.DeniedError
+			if !errors.As(err, &denied) {
+				t.Fatalf("expected *sandbox.DeniedError, got %T", err)
+			}
+			// Extract exactly which component the message claims is the symlink and
+			// what it resolves to, rather than substring-matching: the full quoted
+			// component path legitimately CONTAINS "ancestor-link" as a leading path
+			// segment (it's part of the root's own spelling), so a bare
+			// strings.Contains("ancestor-link") check cannot distinguish "correctly
+			// named linked-component, whose path happens to run through
+			// ancestor-link" from "incorrectly named ancestor-link itself".
+			m := symlinkDiagRe.FindStringSubmatch(denied.Reason)
+			if m == nil {
+				t.Fatalf("%v: message does not match the expected symlink-naming shape: %q", mode, denied.Reason)
+			}
+			namedComponent, resolvedTarget := m[1], m[2]
+			if filepath.Base(namedComponent) != "linked-component" {
+				t.Errorf("%v: named component = %q, want basename \"linked-component\" (not the tolerated ancestor symlink): %q", mode, namedComponent, denied.Reason)
+			}
+			if resolvedTarget != secretDir {
+				t.Errorf("%v: resolved target = %q, want %q: %q", mode, resolvedTarget, secretDir, denied.Reason)
 			}
 		})
 	}
