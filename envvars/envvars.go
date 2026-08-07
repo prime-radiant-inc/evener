@@ -125,14 +125,14 @@ var (
 	HomePath       = Var{Name: "HOMEPATH", Summary: "Windows home path fallback.", Visibility: Inherited}
 	Lang           = Var{Name: "LANG", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	NVMDir         = Var{Name: "NVM_DIR", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
-	Path           = Var{Name: "PATH", Summary: "Executable search path inherited by local commands and child processes.", Visibility: Inherited}
+	Path           = Var{Name: "PATH", Summary: "Executable search path for local commands and child processes; a session/daemon env overrides it with the resolved login-shell PATH when available, else the inherited process PATH.", Visibility: Inherited}
 	PyenvRoot      = Var{Name: "PYENV_ROOT", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	RustupHome     = Var{Name: "RUSTUP_HOME", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	Shell          = Var{Name: "SHELL", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	SSHConnection  = Var{Name: "SSH_CONNECTION", Summary: "Used to auto-detect headless OpenAI login sessions.", Visibility: Inherited}
 	SSHTTY         = Var{Name: "SSH_TTY", Summary: "Used to auto-detect headless OpenAI login sessions.", Visibility: Inherited}
 	Term           = Var{Name: "TERM", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
-	TmpDir         = Var{Name: "TMPDIR", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
+	TmpDir         = Var{Name: "TMPDIR", Summary: "Inherited by core-only command environments; a session/daemon env overrides it to the session scratch directory (see SERF_SCRATCH_DIR).", Visibility: Inherited}
 	User           = Var{Name: "USER", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	UserProfile    = Var{Name: "USERPROFILE", Summary: "Windows user profile fallback.", Visibility: Inherited}
 	WaylandDisplay = Var{Name: "WAYLAND_DISPLAY", Summary: "Used to auto-detect graphical sessions and clipboard support.", Visibility: Inherited}

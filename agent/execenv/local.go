@@ -344,6 +344,19 @@ func (e *LocalExecutionEnvironment) unsandboxedScratchDir() string {
 	return tmp.Dir
 }
 
+// retainUnsandboxedScratch releases this env's unsandboxed per-session
+// scratch lease (if unsandboxedScratchDir ever lazily provisioned one),
+// without removing the directory — the Cleanup counterpart to
+// RetainSandboxScratch for the unsandboxed case, so a session close never
+// holds the lease open for the rest of the daemon's uptime.
+func (e *LocalExecutionEnvironment) retainUnsandboxedScratch() {
+	e.unsandboxedScratchMu.Lock()
+	defer e.unsandboxedScratchMu.Unlock()
+	if e.unsandboxedScratch != nil {
+		_ = e.unsandboxedScratch.Retain()
+	}
+}
+
 func (e *LocalExecutionEnvironment) findExecutable(name string) (string, error) {
 	if e.lookPath != nil {
 		return e.lookPath(name)
@@ -622,6 +635,15 @@ func (e *LocalExecutionEnvironment) Cleanup() {
 	// so a clone's Cleanup never retains or removes the owner's tmp.
 	defer e.RetainSandboxScratch()
 
+	// Release the unsandboxed per-session scratch dir's lease too (if this env
+	// lazily provisioned one via unsandboxedScratchDir) — same retain-not-delete
+	// convention as RetainSandboxScratch above, so it stays inspectable but
+	// becomes eligible for sweepCrashedSessionScratch's 24h reclaim instead of
+	// holding its lease open for the rest of the daemon's uptime. Off/unsandboxed
+	// is the DEFAULT mode, so without this every ordinary session close would
+	// leak one held lease indefinitely.
+	defer e.retainUnsandboxedScratch()
+
 	// Collect running process handles and send SIGTERM. Command execution stores a
 	// commandRuntime so scripted runtimes own their teardown too; a legacy marker
 	// value falls back to the historical PID process-group signals.
@@ -757,7 +779,23 @@ func resolveLoginShellPATH() string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return lastNonEmptyLine(string(out))
+}
+
+// lastNonEmptyLine returns the last non-blank line of s, trimmed. An rc file
+// that prints a banner (nvm/conda version notices, a MOTD-style .zshrc echo)
+// before the login-shell probe's own "echo $PATH" would otherwise prepend
+// that banner text as garbage into the resolved PATH; the probe's own output
+// is always the LAST thing the shell prints, so taking the last line skips
+// any such noise.
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 func resolveOSVersion() string {

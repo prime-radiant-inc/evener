@@ -5,8 +5,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"primeradiant.com/serf/agent/sandbox"
@@ -148,6 +150,22 @@ func TestLoginShellPATH_NoShellFallsBack(t *testing.T) {
 	}
 }
 
+// TestLoginShellPATH_TakesLastLineOverNoisyRCBanner: an rc file that prints a
+// banner to stdout before running (nvm/conda version notices, a MOTD-style
+// .zshrc echo) must not get prepended into the resolved PATH as a garbage
+// ":"-separated segment — the probe's own "echo $PATH" output is always the
+// LAST thing the login shell prints, so only the last non-empty line counts.
+func TestLoginShellPATH_TakesLastLineOverNoisyRCBanner(t *testing.T) {
+	resetLoginShellPATHCache(t)
+	t.Setenv("SHELL", "/bin/zsh")
+	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("nvm is not compatible with the npm config \"prefix\" option\n\n/opt/homebrew/bin:/usr/bin:/bin\n"), nil
+	}
+	if got := LoginShellPATH(); got != "/opt/homebrew/bin:/usr/bin:/bin" {
+		t.Fatalf("LoginShellPATH() = %q, want the last line only (rc banner excluded)", got)
+	}
+}
+
 // --- always-on session scratch vars ---------------------------------------
 
 // TestCommandEnvironment_UnsandboxedSessionExportsScratchVars: docs/environment.md
@@ -202,4 +220,72 @@ func TestCommandEnvironment_SandboxedSessionScratchUnchanged(t *testing.T) {
 	if _, ok := got["SERF_SCRATCH_DIR"]; ok {
 		t.Fatalf("commandEnvironment must not itself inject SERF_SCRATCH_DIR for a sandboxed env; ApplyEnvFloor owns that: %v", got)
 	}
+}
+
+// TestUnsandboxedScratchDirConcurrentProvisioning: unsandboxedScratchDir is
+// called from commandEnvironment, which concurrent ExecCommand/ExecArgv calls
+// can reach at the same time — the mutex-guarded lazy provisioning must hand
+// every caller the SAME directory, never race-allocate two. Run with -race.
+func TestUnsandboxedScratchDirConcurrentProvisioning(t *testing.T) {
+	worktree := t.TempDir()
+	env := NewLocalExecutionEnvironment(worktree)
+
+	const n = 16
+	results := make([]string, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			results[i] = env.unsandboxedScratchDir()
+		}(i)
+	}
+	wg.Wait()
+
+	if results[0] == "" {
+		t.Fatal("unsandboxedScratchDir() returned empty")
+	}
+	for i, got := range results {
+		if got != results[0] {
+			t.Fatalf("goroutine %d got scratch dir %q, want %q (every caller must share one dir)", i, got, results[0])
+		}
+	}
+}
+
+// TestCleanupReleasesUnsandboxedScratchLease is the leak regression from the
+// task-1 review: off/unsandboxed is the DEFAULT sandbox mode, and
+// session_lifecycle.go calls Cleanup() on every session close, so if Cleanup
+// never released the unsandboxedScratch lease, a long-running `serf serve`
+// daemon would hold one open file descriptor (the lease flock) per session
+// for the rest of the process's life — sweepCrashedSessionScratch can only
+// reclaim a lease that is currently acquirable. Verified at the OS level: a
+// fresh flock attempt on the SAME lease file must succeed immediately after
+// Cleanup(), proving the held lock was actually released, not merely that no
+// error was returned.
+func TestCleanupReleasesUnsandboxedScratchLease(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("flock-based lease verification is unix-only")
+	}
+	worktree := t.TempDir()
+	env := NewLocalExecutionEnvironment(worktree)
+	scratch := env.unsandboxedScratchDir()
+	if scratch == "" {
+		t.Fatal("unsandboxedScratchDir provisioning failed")
+	}
+
+	env.Cleanup()
+
+	// ".serf-session.lock" mirrors sandbox.SessionScratch's lease filename
+	// convention (agent/sandbox/session_scratch.go); there is no exported way
+	// to introspect lease state, so this checks the real OS-level lock instead.
+	leasePath := filepath.Join(scratch, ".serf-session.lock")
+	f, err := os.OpenFile(leasePath, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open lease file: %v", err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("lease still held after Cleanup (leak): %v", err)
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }

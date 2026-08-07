@@ -87,14 +87,14 @@ process environments.
 | `HOMEPATH` | Windows home path fallback. |
 | `LANG` | Inherited by core-only command environments. |
 | `NVM_DIR` | Inherited by core-only command environments. |
-| `PATH` | Executable search path inherited by local commands and child processes. |
+| `PATH` | Executable search path for local commands and child processes; a session/daemon env overrides it with the resolved login-shell PATH when available, else the inherited process PATH. |
 | `PYENV_ROOT` | Inherited by core-only command environments. |
 | `RUSTUP_HOME` | Inherited by core-only command environments. |
 | `SHELL` | Inherited by core-only command environments. |
 | `SSH_CONNECTION` | Used to auto-detect headless OpenAI login sessions. |
 | `SSH_TTY` | Used to auto-detect headless OpenAI login sessions. |
 | `TERM` | Inherited by core-only command environments. |
-| `TMPDIR` | Inherited by core-only command environments. |
+| `TMPDIR` | Inherited by core-only command environments; a session/daemon env overrides it to the session scratch directory (see `SERF_SCRATCH_DIR`). |
 | `USER` | Inherited by core-only command environments. |
 | `USERPROFILE` | Windows user profile fallback. |
 | `WAYLAND_DISPLAY` | Used to auto-detect graphical sessions and clipboard support. |
