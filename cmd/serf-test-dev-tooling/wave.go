@@ -136,7 +136,7 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 	}
 	defer func() { _ = logFile.Close() }()
 
-	cmd := exec.Command(filepath.Join(cfg.ScriptsDir, name+"-selftest.sh"))
+	cmd := exec.Command(filepath.Join(cfg.ScriptsDir, name+"-selftest.sh")) //nolint:noctx // lifecycle is managed by the wave's process-group TERM/KILL escalation, which a context kill (direct child only) would defeat
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Env = append(environWithout(envvars.TmpDir.Name, envvars.Path.Name),

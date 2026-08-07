@@ -281,11 +281,11 @@ func normalizeCheck(raw auditCheckRaw) (AuditCheck, error) {
 	if len(conditions) == 0 {
 		conditions = []auditCondition{{Metric: raw.Metric, Op: raw.Op, Value: raw.Value}}
 	} else if raw.Metric != "" || raw.Op != "" || raw.Value != nil {
-		return AuditCheck{}, fmt.Errorf("both a top-level metric/op/value and an \"all\" list were given; use one or the other")
+		return AuditCheck{}, errors.New("both a top-level metric/op/value and an \"all\" list were given; use one or the other")
 	}
 	for _, cond := range conditions {
 		if cond.Metric == "" {
-			return AuditCheck{}, fmt.Errorf("condition missing metric")
+			return AuditCheck{}, errors.New("condition missing metric")
 		}
 		if !validAuditOps[cond.Op] {
 			return AuditCheck{}, fmt.Errorf("condition %q: op %q must be one of >=, >, <=, <, ==, !=", cond.Metric, cond.Op)
@@ -560,7 +560,7 @@ type AuditResult struct {
 // explicit --sessions selector that doesn't resolve.
 func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, error) {
 	if len(opts.Sessions) > 0 && opts.Since > 0 {
-		return AuditResult{}, fmt.Errorf("--sessions and --since are mutually exclusive")
+		return AuditResult{}, errors.New("--sessions and --since are mutually exclusive")
 	}
 	if len(opts.Sessions) == 0 && opts.Since <= 0 {
 		return AuditResult{}, fmt.Errorf("either --sessions or --since must be given")
