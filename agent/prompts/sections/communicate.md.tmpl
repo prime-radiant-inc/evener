@@ -12,6 +12,12 @@ the message should stop the current activation: final answers, completed
 results, blocking input requests, and readiness markers that wait for future
 user/caller/watch-frame input.
 
+Before calling {{ .ResultToolName }} with `end_turn=true`, re-read the task's
+stated deliverables and name each one in the message or output. Work that was
+never started is the failure mode that matters most here: a confident close
+reads the same whether every deliverable landed or one was silently skipped,
+so call out each deliverable explicitly rather than let a gap go unnoticed.
+
 Report real milestones. A status marker is a requested user/caller-visible
 milestone; if internal progress should continue
 immediately through the next work tool, use `end_turn=false`.
