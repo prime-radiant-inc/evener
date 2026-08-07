@@ -161,7 +161,32 @@ func readRootKeys(rp ResolvedPolicy, sessionTmp string, ps *paramSet) []string {
 	roots := dedupeRoots(appendNonEmpty(slices.Clone(rp.Spawned.ReadRoots), sessionTmp))
 	keys := make([]string, 0, len(roots))
 	for i, root := range roots {
-		keys = append(keys, ps.define(fmt.Sprintf("READABLE_ROOT_%d", i), root))
+		keys = append(keys, ps.defineRead(fmt.Sprintf("READABLE_ROOT_%d", i), root)...)
+	}
+	return keys
+}
+
+// defineRead records the read-grant param(s) for ONE read root: the canonical
+// path, plus — when the root is named through a SYMLINK, so its literal spelling
+// differs from that canonical path — a second KEY_LINK param for the literal
+// spelling.
+//
+// Both names are needed, and neither alone widens the grant. Seatbelt evaluates
+// the path a process ACTUALLY NAMES rather than the resolved one, so opening
+// ~/.gitconfig with only its symlink TARGET granted is refused at the link
+// itself ("unable to access '<home>/.gitconfig': Operation not permitted") —
+// the exact shape in which a dotfile-managed global git config was unreadable
+// under restricted mode. Verified against the live kernel in both directions:
+// the converse grant, the link spelling alone, does NOT make an ungranted (or
+// masked) target readable through the link. The literal param is therefore a
+// SPELLING alias, never extra reach — the read-side counterpart of the firmlink
+// alias defineDeny emits, for the same reason.
+func (ps *paramSet) defineRead(key, root string) []string {
+	keys := []string{ps.define(key, root)}
+	if literal := filepath.Clean(root); ps.canon(root) != literal {
+		linkKey := key + "_LINK"
+		ps.params = append(ps.params, DirParam{Key: linkKey, Path: literal})
+		keys = append(keys, linkKey)
 	}
 	return keys
 }

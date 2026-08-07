@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"primeradiant.com/serf/envvars"
 )
 
 // HostFacts are the backend-relevant capabilities of the host, gathered once at
@@ -67,6 +69,24 @@ type HostFacts struct {
 	// never a session-start failure.
 	DeveloperToolRoots []string
 
+	// GitGlobalConfigPaths are the user's GLOBAL git config FILES that exist on
+	// this host. git-config(1) FILES names two of them —
+	// $XDG_CONFIG_HOME/git/config (with $HOME/.config standing in for an unset or
+	// empty XDG_CONFIG_HOME) and ~/.gitconfig — and reads BOTH when both exist.
+	// They live under $HOME, which restricted mode grants no read of, so without
+	// this every git invocation in a restricted session died with
+	// "fatal: unable to access '<home>/.gitconfig': Operation not permitted" on
+	// any host whose developer has a global config at all.
+	//
+	// READ-ONLY and FILE-EXACT (ruled 2026-08-07): each entry is an existing
+	// non-directory FILE, never a directory and never the home directory itself,
+	// so the grant cannot widen into a home read. It changes no write surface — git
+	// config and hook writes stay denied — and loses to the credential denylist,
+	// so a credential.helper line becomes readable while ~/.git-credentials stays
+	// masked. A path that does not exist contributes nothing and never fails
+	// session start.
+	GitGlobalConfigPaths []string
+
 	// KernelVersion is the best-effort `uname -r` string, informational only
 	// (surfaced in the startup enforcement line, not used for decisions).
 	KernelVersion string
@@ -109,6 +129,7 @@ type RealProber struct {
 // bwrap installation.
 type probeSystem interface {
 	goos() string
+	getenv(string) string
 	userHomeDir() (string, error)
 	lookPath(string) (string, error)
 	nonDirectoryFile(string) bool
@@ -122,6 +143,8 @@ type hostProbeSystem struct{}
 var probeUserHomeDir = os.UserHomeDir
 
 func (hostProbeSystem) goos() string { return runtime.GOOS }
+
+func (hostProbeSystem) getenv(name string) string { return os.Getenv(name) }
 
 func (hostProbeSystem) userHomeDir() (string, error) { return probeUserHomeDir() }
 
@@ -167,6 +190,7 @@ func probeHost(system probeSystem) HostFacts {
 	if home, err := system.userHomeDir(); err == nil {
 		facts.Home = home
 	}
+	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
@@ -183,6 +207,48 @@ func probeHost(system probeSystem) HostFacts {
 	}
 
 	return facts
+}
+
+// probeGitGlobalConfigPaths returns the user's global git config files that
+// exist on this host, in git's own precedence order (git-config(1), FILES):
+// $XDG_CONFIG_HOME/git/config first, then ~/.gitconfig. git reads BOTH when both
+// exist, so both are probed rather than the first hit.
+//
+// $XDG_CONFIG_HOME defaults to the home directory's .config when unset or empty. A NON-ABSOLUTE
+// XDG_CONFIG_HOME is ignored entirely: git would resolve it against the process's
+// working directory, which is not a stable file to grant, and guessing would emit
+// a root for a file git never reads.
+//
+// A candidate is admitted only when it names an existing non-DIRECTORY file (the
+// stat follows symlinks, so a dotfile-managed config that is a link to a real
+// file counts and a broken link does not) — a host with no global config
+// contributes nothing and still starts a session.
+//
+// The paths are kept in the LITERAL spelling git uses, not symlink-resolved: the
+// backends grant a root under both its literal and its canonical name, and the
+// literal one is the name git actually opens.
+func probeGitGlobalConfigPaths(system probeSystem) []string {
+	home, err := system.userHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return nil
+	}
+	var candidates []string
+	xdg := strings.TrimSpace(system.getenv(envvars.XDGConfigHome.Name))
+	if xdg == "" {
+		xdg = filepath.Join(home, ".config")
+	}
+	if filepath.IsAbs(xdg) {
+		candidates = append(candidates, filepath.Join(xdg, "git", "config"))
+	}
+	candidates = append(candidates, filepath.Join(home, ".gitconfig"))
+
+	var out []string
+	for _, c := range candidates {
+		if system.nonDirectoryFile(c) && !slices.Contains(out, c) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // commandLineToolsRoot is the fixed location the standalone Xcode Command Line

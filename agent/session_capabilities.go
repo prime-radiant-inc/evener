@@ -169,20 +169,19 @@ func capabilityPreambleLines(f capabilityFacts) []string {
 // a fact the preamble may state, and it is stated only for the exact mode (and,
 // for the xcrun residual, the exact backend) the ruling covers.
 //
-// The home-read line is phrased conditionally because the ruling is: restricted
-// grants no home read, so a session whose global config is PRESENT fails, while
-// one whose config is absent or neutralized works. Rendering it as "git is
-// broken" would overstate a conditional.
+// The global-config line states the 2026-08-07 grant and its exact extent. It
+// replaced the earlier line, which told sessions a present ~/.gitconfig fatals
+// git: once the grant landed that became FALSE, and a stale false line is the
+// precise failure the never-overstates principle exists to prevent. The scope
+// half ("nothing else under $HOME") is stated with it so the line cannot be read
+// as a home-read grant it is not.
 func gitResidualLines(f capabilityFacts) []string {
 	if !f.sandboxed() || f.policy.Mode != sandbox.ModeRestricted {
 		return nil
 	}
 	lines := []string{
-		// GIT_CONFIG_GLOBAL is git's own variable, not one serf sets or supports,
-		// so it is quoted from the ruling as a literal rather than sourced from
-		// the envvars registry (which describes serf's own surface).
-		"git under restricted: no home read — a present ~/.gitconfig fails git " +
-			"(workaround: GIT_CONFIG_GLOBAL=/dev/null)",
+		"git under restricted: the global git config (~/.gitconfig, " +
+			"~/.config/git/config) is readable but not writable; nothing else in the home directory is",
 	}
 	if f.policy.Backend == sandbox.BackendSeatbelt {
 		lines = append(lines, "git under restricted on macOS: xcrun_db writes denied (2 stderr lines/call), ~3.5s/call")

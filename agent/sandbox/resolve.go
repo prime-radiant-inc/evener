@@ -191,10 +191,11 @@ var defaultSystemReadRoots = []string{
 var sharedTempRoots = []string{"/tmp", "/private/tmp", "/var/folders", "/private/var/folders"}
 
 // guardedHostRoots filters host-derived grant candidates (the developer-toolchain
-// directories) through RootGuard, refusing any that sits at or above the home
-// directory, the worktree, or a temp root. The candidates come from a host probe
-// that honours configuration (`xcode-select -p` follows $DEVELOPER_DIR), so they
-// are treated as untrusted input like every other configured root.
+// directories, the global git config files) through RootGuard, refusing any that
+// sits at or above the home directory, the worktree, or a temp root. The
+// candidates come from a host probe that honours configuration (`xcode-select -p`
+// follows $DEVELOPER_DIR, the global config location follows $XDG_CONFIG_HOME),
+// so they are treated as untrusted input like every other configured root.
 func guardedHostRoots(candidates []string, home, worktree string) []string {
 	if len(candidates) == 0 {
 		return nil
@@ -432,9 +433,12 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// Spawned procs additionally read the common git dir + system roots (to
 		// execute), the host's developer-toolchain directories (macOS ships git and
 		// friends as xcrun shims that exec the real binary out of the active
-		// developer directory — ruled 2026-08-06), the session's hook/MCP-server
+		// developer directory — ruled 2026-08-06), the user's global git config
+		// FILES (git fatals on a present-but-unreadable ~/.gitconfig, so without
+		// them git was unusable in this mode on any host with a global config —
+		// read-only and file-exact, ruled 2026-08-07), the session's hook/MCP-server
 		// paths (session infrastructure, which must run in every mode — ruled
-		// 2026-08-06), and write the git metadata subset. Both extra grants stay OUT
+		// 2026-08-06), and write the git metadata subset. Those extra grants stay OUT
 		// of readFile: a hook living in the plugin cache must be executable and the
 		// git shim must reach its toolchain, but the model must not gain a file-tool
 		// browse grant over either along with it.
@@ -443,7 +447,8 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// anywhere-minus-the-denylist, which covers any hook/MCP/toolchain path that
 		// is not masked — and a masked one must stay masked in every mode.
 		devRoots := guardedHostRoots(host.DeveloperToolRoots, host.Home, worktree)
-		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, policy.InfraReadRoots))
+		gitConfig := guardedHostRoots(host.GitGlobalConfigPaths, host.Home, worktree)
+		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, gitConfig, policy.InfraReadRoots))
 		writeSpawn := dedupeRoots(slices.Concat(writeFile, layout.WritablePaths))
 		fileTool = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readFile, WriteRoots: writeFile}
 		spawned = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readSpawn, WriteRoots: writeSpawn}

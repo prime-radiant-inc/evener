@@ -505,3 +505,64 @@ func firstDiff(want, got string) string {
 	}
 	return "(no line diff; trailing bytes differ)"
 }
+
+// TestSeatbeltReadRootGrantsBothSymlinkSpellings pins the emitter half of the
+// 2026-08-07 global-git-config grant: a read root whose literal spelling differs
+// from its canonical form (a symlink, as a dotfile-managed ~/.gitconfig is) is
+// granted under BOTH names, because Seatbelt judges the path a process actually
+// names. Write roots and denials are untouched by this — a widening there would
+// be the expensive mistake.
+func TestSeatbeltReadRootGrantsBothSymlinkSpellings(t *testing.T) {
+	t.Parallel()
+	const link = "/Users/tester/.gitconfig"
+	const target = "/Users/tester/dotfiles/gitconfig"
+	const writeLink = "/Users/tester/worktree"
+	canon := func(p string) string {
+		switch p {
+		case link:
+			return target
+		case writeLink:
+			return "/Users/tester/real-worktree"
+		}
+		return p
+	}
+	rp := ResolvedPolicy{
+		Mode: ModeRestricted,
+		Spawned: AccessScope{
+			Read:       ReadWorktreeOnly,
+			ReadRoots:  []string{writeLink, link},
+			WriteRoots: []string{writeLink},
+		},
+	}
+	text, params := SeatbeltPolicy(rp, "/tmp/session", canon)
+
+	byKey := map[string]string{}
+	for _, p := range params {
+		if _, dup := byKey[p.Key]; dup {
+			t.Fatalf("duplicate param key %q", p.Key)
+		}
+		byKey[p.Key] = p.Path
+	}
+	// Both spellings of the symlinked READ root, each referenced by the allow rule.
+	if got := byKey["READABLE_ROOT_1"]; got != target {
+		t.Errorf("READABLE_ROOT_1 = %q, want the canonical target %q", got, target)
+	}
+	if got := byKey["READABLE_ROOT_1_LINK"]; got != link {
+		t.Errorf("READABLE_ROOT_1_LINK = %q, want the literal spelling %q", got, link)
+	}
+	for _, key := range []string{"READABLE_ROOT_1", "READABLE_ROOT_1_LINK"} {
+		if !strings.Contains(text, `(subpath (param "`+key+`"))`) {
+			t.Errorf("the read allow must reference %q:\n%s", key, text)
+		}
+	}
+	// The WRITE surface gets no such alias: only the canonical spelling is granted.
+	if got := byKey["WRITABLE_ROOT_0"]; got != "/Users/tester/real-worktree" {
+		t.Errorf("WRITABLE_ROOT_0 = %q, want the canonical write root", got)
+	}
+	if _, aliased := byKey["WRITABLE_ROOT_0_LINK"]; aliased {
+		t.Errorf("a write root must not gain a literal-spelling alias: %v", params)
+	}
+	if strings.Contains(text, "WRITABLE_ROOT_0_LINK") {
+		t.Errorf("the write allow must not reference a link alias:\n%s", text)
+	}
+}

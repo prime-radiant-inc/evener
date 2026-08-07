@@ -201,9 +201,11 @@ func TestResolveWithoutDeveloperToolsStillStarts(t *testing.T) {
 type stubProbeSystem struct {
 	xcodeSelectOut string
 	xcodeSelectErr error
+	env            map[string]string
 }
 
 func (stubProbeSystem) goos() string                                 { return "darwin" }
+func (s stubProbeSystem) getenv(name string) string                  { return s.env[name] }
 func (stubProbeSystem) userHomeDir() (string, error)                 { return "/Users/tester", nil }
 func (stubProbeSystem) lookPath(string) (string, error)              { return "", errors.New("not found") }
 func (stubProbeSystem) nonDirectoryFile(string) bool                 { return false }

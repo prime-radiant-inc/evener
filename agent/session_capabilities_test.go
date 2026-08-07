@@ -99,7 +99,7 @@ func TestCapabilityPreambleRestricted(t *testing.T) {
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"go: telemetry writes denied (harmless stderr noise)",
 		"git config read: `git config --list` exit 0",
-		"git under restricted: no home read — a present ~/.gitconfig fails git (workaround: GIT_CONFIG_GLOBAL=/dev/null)",
+		"git under restricted: the global git config (~/.gitconfig, ~/.config/git/config) is readable but not writable; nothing else in the home directory is",
 		"On PATH: go=yes node=yes rg=no",
 	}, "\n")
 	if diff := normalize(got, root, home); diff != want {
@@ -136,7 +136,7 @@ func TestCapabilityPreambleRestrictedSeatbelt(t *testing.T) {
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"go: telemetry writes denied (harmless stderr noise)",
 		"git config read: `git config --list` exit 0",
-		"git under restricted: no home read — a present ~/.gitconfig fails git (workaround: GIT_CONFIG_GLOBAL=/dev/null)",
+		"git under restricted: the global git config (~/.gitconfig, ~/.config/git/config) is readable but not writable; nothing else in the home directory is",
 		"git under restricted on macOS: xcrun_db writes denied (2 stderr lines/call), ~3.5s/call",
 		"On PATH: go=yes node=yes rg=no",
 	}, "\n")
@@ -224,7 +224,7 @@ func TestCapabilityPreambleUnprobed(t *testing.T) {
 		"Cache: session-private",
 		"Go cache: unprobed",
 		"git config read: unprobed",
-		"git under restricted: no home read — a present ~/.gitconfig fails git (workaround: GIT_CONFIG_GLOBAL=/dev/null)",
+		"git under restricted: the global git config (~/.gitconfig, ~/.config/git/config) is readable but not writable; nothing else in the home directory is",
 		"On PATH: unprobed",
 	}, "\n")
 	if diff := normalize(got, root, home); diff != want {
