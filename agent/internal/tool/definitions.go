@@ -311,6 +311,10 @@ func DefGrep() llm.ToolDefinition {
 				"glob_filter":      map[string]any{"type": "string"},
 				"case_insensitive": map[string]any{"type": "boolean"},
 				"max_results":      map[string]any{"type": "integer"},
+				"context_lines": map[string]any{
+					"type":        "integer",
+					"description": "Lines of context to include before and after each match, 0-10 (default 0).",
+				},
 				"output_mode": map[string]any{
 					"type":        "string",
 					"enum":        []any{"content", "files_with_matches", "count"},

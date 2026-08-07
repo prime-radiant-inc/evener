@@ -109,7 +109,7 @@ func (d *DenyEnv) Glob(pattern string, basePath string, includeIgnored ...bool) 
 	return out, nil
 }
 
-func (d *DenyEnv) Grep(pattern string, path string, _ string, _ bool, _ int, outputMode string) (string, error) {
+func (d *DenyEnv) Grep(pattern string, path string, _ string, _ bool, _ int, outputMode string, _ ...int) (string, error) {
 	h := d.draw("grep", pattern, path, outputMode)
 	switch outputMode {
 	case "count":

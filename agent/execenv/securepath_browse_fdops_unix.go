@@ -133,7 +133,7 @@ func (s *sandboxFS) glob(tool, base, pattern string, includeIgnored bool) ([]str
 // walking a secureDirFS so symlinks are never followed and refusing to descend
 // into masked subtrees. The per-file matching/formatting is shared with the off
 // path via grepAccum, so output semantics are identical.
-func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
@@ -144,7 +144,11 @@ func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive
 	}
 	defer func() { _ = unix.Close(baseFd) }()
 
-	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode)
+	ctxLines := 0
+	if len(contextLines) > 0 && contextLines[0] > 0 {
+		ctxLines = contextLines[0]
+	}
+	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode, ctxLines)
 	if err != nil {
 		return "", err
 	}

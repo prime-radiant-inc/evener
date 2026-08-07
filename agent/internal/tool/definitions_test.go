@@ -723,6 +723,32 @@ func TestDefAskUserSchema(t *testing.T) {
 	}
 }
 
+// TestDefGrepContextLinesParam: DefGrep must document a context_lines integer
+// parameter (0-10, default 0) so the model can request surrounding lines, per
+// the contract-surface rule that a new model-facing param is documented in the
+// same commit that adds it.
+func TestDefGrepContextLinesParam(t *testing.T) {
+	def := DefGrep()
+	props, ok := def.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("grep properties = %T, want map[string]any", def.Parameters["properties"])
+	}
+	cl, ok := props["context_lines"].(map[string]any)
+	if !ok {
+		t.Fatalf("grep missing context_lines property; got properties: %v", props)
+	}
+	if cl["type"] != "integer" {
+		t.Errorf("context_lines type = %v, want integer", cl["type"])
+	}
+	desc, _ := cl["description"].(string)
+	if !strings.Contains(desc, "0") || !strings.Contains(desc, "10") {
+		t.Errorf("context_lines description should document the 0-10 range, got: %q", desc)
+	}
+	if !strings.Contains(desc, "default") {
+		t.Errorf("context_lines description should document the default of 0, got: %q", desc)
+	}
+}
+
 // TestDefAskUserDescriptionIsSpecVerbatim pins the description to spec §4.4's
 // key contract points: yields the floor, no timeout, batching, the reply
 // contract, and the "no Other option" rule.

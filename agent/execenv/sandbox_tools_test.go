@@ -138,6 +138,53 @@ func TestReadFileSymlinkOutRefused(t *testing.T) {
 	}
 }
 
+// TestSymlinkDenialNamesComponentAndTarget: a symlink-refusal denial's message
+// must name the actual symlinked path component and either its resolved target
+// or a scoping suggestion — not just the requested path's basename, which for a
+// component-in-the-middle symlink names the wrong thing entirely and gives the
+// model no way to retry successfully.
+func TestSymlinkDenialNamesComponentAndTarget(t *testing.T) {
+	t.Parallel()
+	for _, mode := range sandboxedModes {
+		t.Run(mode.String(), func(t *testing.T) {
+			t.Parallel()
+			env, home, worktree := sandboxedEnv(t, mode)
+			secretDir := filepath.Join(home, "secret-target-dir")
+			if err := os.MkdirAll(secretDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(secretDir, "leaf.txt"), []byte("hi\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// linked-component is a symlink INSIDE the worktree, pointing at
+			// secretDir; the read targets a file beneath it, so the denied path's
+			// own basename ("leaf.txt") names the wrong thing — the symlinked
+			// component is "linked-component".
+			link := filepath.Join(worktree, "linked-component")
+			if err := os.Symlink(secretDir, link); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(link, "leaf.txt")
+
+			_, err := env.ReadFile(target, nil, nil)
+			mustDenied(t, err, "%v read through a symlinked component", mode)
+			var denied *sandbox.DeniedError
+			if !errors.As(err, &denied) {
+				t.Fatalf("expected *sandbox.DeniedError, got %T", err)
+			}
+			if strings.Contains(denied.Reason, "leaf.txt") {
+				t.Errorf("%v: message should not merely name the requested path's basename: %q", mode, denied.Reason)
+			}
+			if !strings.Contains(denied.Reason, "linked-component") {
+				t.Errorf("%v: message should name the symlinked component %q: %q", mode, "linked-component", denied.Reason)
+			}
+			if !strings.Contains(denied.Reason, secretDir) {
+				t.Errorf("%v: message should state the symlink's resolved target %q: %q", mode, secretDir, denied.Reason)
+			}
+		})
+	}
+}
+
 // TestReadToleratesSymlinkedAncestor: when a granted root sits under a SYMLINKED
 // ancestor (macOS /var → /private/var, a symlinked $HOME or project parent), an
 // in-root file must be BOTH readable and writable. Reads anchor at the cached root

@@ -1269,15 +1269,15 @@ func resolveGrepDir(path, rootDir string) string {
 // pure arg-construction core: a fixed no-heading / no-color prefix, then exactly
 // one output-mode flag (files-with-matches / count / line-number), then optional
 // case-insensitivity and glob filter, then the trailing pattern and directory.
-func buildRipgrepArgs(outputMode string, caseInsensitive bool, globFilter, pattern, dir string) []string {
+func buildRipgrepArgs(outputMode string, caseInsensitive bool, globFilter, pattern, dir string, contextLines int) []string {
 	filters := []string(nil)
 	if strings.TrimSpace(globFilter) != "" {
 		filters = []string{globFilter}
 	}
-	return buildRipgrepArgsWithFilters(outputMode, caseInsensitive, filters, pattern, dir)
+	return buildRipgrepArgsWithFilters(outputMode, caseInsensitive, filters, pattern, dir, contextLines)
 }
 
-func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFilters []string, pattern, dir string) []string {
+func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFilters []string, pattern, dir string, contextLines int) []string {
 	args := []string{"--no-heading", "--color", "never"}
 	switch outputMode {
 	case "files_with_matches":
@@ -1295,16 +1295,29 @@ func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFi
 			args = append(args, "-g", globFilter)
 		}
 	}
-	args = append(args, pattern, dir)
+	// -C (context lines) only has an effect on content output: files-with-matches
+	// and count report per-file, not per-line, so surrounding lines have nothing
+	// to attach to there.
+	if contextLines > 0 && (outputMode == "" || outputMode == "content") {
+		args = append(args, "-C", fmt.Sprintf("%d", contextLines))
+	}
+	// A literal "--" ends rg's option parsing, so a pattern that itself looks
+	// like a flag (e.g. "--font-size-body") is treated as the positional search
+	// string instead of being parsed (and silently mishandled) as an option.
+	args = append(args, "--", pattern, dir)
 	return args
 }
 
-func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
 	}
 	dir := resolveGrepDir(path, e.RootDir)
+	ctxLines := 0
+	if len(contextLines) > 0 && contextLines[0] > 0 {
+		ctxLines = contextLines[0]
+	}
 
 	if sfs := e.sandbox(); sfs != nil {
 		// Sandboxed sessions always use the denylist-aware, symlink-refusing native
@@ -1314,16 +1327,16 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 		// read-only). Its kernel wrapping is M3 defense-in-depth, not something to
 		// rely on here: correctness over speed for a sandboxed session. grepNative
 		// policy-checks the base itself and skips masked subtrees.
-		return sfs.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode)
+		return sfs.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines)
 	}
 
 	rg, err := e.findExecutable("rg")
 	if err != nil {
 		// Fallback to native Go regex search when ripgrep is absent
-		return e.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode)
+		return e.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines)
 	}
 
-	args := buildRipgrepArgsWithFilters(outputMode, caseInsensitive, globFilters, pattern, dir)
+	args := buildRipgrepArgsWithFilters(outputMode, caseInsensitive, globFilters, pattern, dir, ctxLines)
 
 	ctx := context.Background()
 	if maxResults <= 0 {
@@ -1345,12 +1358,16 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 	return res.Stdout + res.Stderr, err
 }
 
-func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
 	}
-	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode)
+	ctxLines := 0
+	if len(contextLines) > 0 && contextLines[0] > 0 {
+		ctxLines = contextLines[0]
+	}
+	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode, ctxLines)
 	if err != nil {
 		return "", err
 	}

@@ -36,7 +36,7 @@ func (f *FakeEnv) WriteFile(string, string) (string, error)              { retur
 func (f *FakeEnv) EditFile(string, string, string, bool) (string, error) { return "", nil }
 func (f *FakeEnv) FileExists(string) bool                                { return false }
 func (f *FakeEnv) Glob(string, string, ...bool) ([]string, error)        { return nil, nil }
-func (f *FakeEnv) Grep(string, string, string, bool, int, string) (string, error) {
+func (f *FakeEnv) Grep(string, string, string, bool, int, string, ...int) (string, error) {
 	return "", nil
 }
 func (f *FakeEnv) ListDirectory(string, int) ([]execenv.DirEntry, error) { return nil, nil }

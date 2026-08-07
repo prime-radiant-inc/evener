@@ -37,7 +37,7 @@ func (e *w3sub_readFileEnv) FileExists(string) bool { return false }
 func (e *w3sub_readFileEnv) Glob(string, string, ...bool) ([]string, error) {
 	return nil, errors.New("not implemented")
 }
-func (e *w3sub_readFileEnv) Grep(string, string, string, bool, int, string) (string, error) {
+func (e *w3sub_readFileEnv) Grep(string, string, string, bool, int, string, ...int) (string, error) {
 	return "", errors.New("not implemented")
 }
 func (e *w3sub_readFileEnv) ListDirectory(string, int) ([]execenv.DirEntry, error) {

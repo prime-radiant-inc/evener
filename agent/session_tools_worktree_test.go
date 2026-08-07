@@ -184,7 +184,7 @@ func (fakeZeroExitErrEnv) WriteFile(string, string) (string, error)             
 func (fakeZeroExitErrEnv) EditFile(string, string, string, bool) (string, error) { return "", nil }
 func (fakeZeroExitErrEnv) FileExists(string) bool                                { return false }
 func (fakeZeroExitErrEnv) Glob(string, string, ...bool) ([]string, error)        { return nil, nil }
-func (fakeZeroExitErrEnv) Grep(string, string, string, bool, int, string) (string, error) {
+func (fakeZeroExitErrEnv) Grep(string, string, string, bool, int, string, ...int) (string, error) {
 	return "", nil
 }
 func (fakeZeroExitErrEnv) ListDirectory(string, int) ([]execenv.DirEntry, error) { return nil, nil }

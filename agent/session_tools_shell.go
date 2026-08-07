@@ -204,7 +204,14 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if v, ok := args["output_mode"].(string); ok {
 				outputMode = v
 			}
-			return env.Grep(pat, path, glob, ci, maxRes, outputMode)
+			contextLines := 0
+			if v, ok := args["context_lines"].(float64); ok && int(v) > 0 {
+				contextLines = int(v)
+				if contextLines > 10 {
+					contextLines = 10
+				}
+			}
+			return env.Grep(pat, path, glob, ci, maxRes, outputMode, contextLines)
 		},
 	}); err != nil {
 		return err

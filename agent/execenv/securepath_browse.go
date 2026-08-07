@@ -41,18 +41,23 @@ func (s *sandboxFS) checkWritable(tool, abs string) error {
 // grepAccum accumulates native-grep results across files. It is the shared core of
 // the off-mode and sandboxed native grep so their output modes stay identical.
 type grepAccum struct {
-	re         *regexp.Regexp
-	outputMode string
-	maxResults int
-	results    []string
-	fileCounts map[string]int
-	filesSeen  map[string]struct{}
-	total      int
+	re           *regexp.Regexp
+	outputMode   string
+	maxResults   int
+	contextLines int
+	results      []string
+	fileCounts   map[string]int
+	filesSeen    map[string]struct{}
+	total        int
 }
 
 // newGrepAccum compiles the pattern (with optional case-insensitivity) and
 // initializes the accumulator; maxResults defaults to 100 when non-positive.
-func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMode string) (*grepAccum, error) {
+// contextLines (0-10, validated by the caller) adds that many lines of
+// surrounding context around each match in "content"/"" output mode; it has no
+// effect on "files_with_matches" or "count", which report per-file, not
+// per-line.
+func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMode string, contextLines int) (*grepAccum, error) {
 	flags := ""
 	if caseInsensitive {
 		flags = "(?i)"
@@ -64,12 +69,16 @@ func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMo
 	if maxResults <= 0 {
 		maxResults = 100
 	}
+	if contextLines < 0 {
+		contextLines = 0
+	}
 	return &grepAccum{
-		re:         re,
-		outputMode: outputMode,
-		maxResults: maxResults,
-		fileCounts: map[string]int{},
-		filesSeen:  map[string]struct{}{},
+		re:           re,
+		outputMode:   outputMode,
+		maxResults:   maxResults,
+		contextLines: contextLines,
+		fileCounts:   map[string]int{},
+		filesSeen:    map[string]struct{}{},
 	}, nil
 }
 
@@ -95,7 +104,30 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 		case "count":
 			a.fileCounts[relPath]++
 		default: // "content" or ""
-			a.results = append(a.results, fmt.Sprintf("%s:%d:%s", relPath, i+1, line))
+			if a.contextLines > 0 {
+				// Mirror rg's -C style: a "--" separator between match groups, the
+				// match line itself using ":", and surrounding context lines using
+				// "-" (both as the file/line separator), matched immediately below.
+				if len(a.results) > 0 {
+					a.results = append(a.results, "--")
+				}
+				lo, hi := i-a.contextLines, i+a.contextLines
+				if lo < 0 {
+					lo = 0
+				}
+				if hi >= len(lines) {
+					hi = len(lines) - 1
+				}
+				for j := lo; j <= hi; j++ {
+					sep := "-"
+					if j == i {
+						sep = ":"
+					}
+					a.results = append(a.results, fmt.Sprintf("%s%s%d%s%s", relPath, sep, j+1, sep, lines[j]))
+				}
+			} else {
+				a.results = append(a.results, fmt.Sprintf("%s:%d:%s", relPath, i+1, line))
+			}
 			a.total++
 			if a.total >= a.maxResults {
 				return true
