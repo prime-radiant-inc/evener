@@ -24,6 +24,50 @@ var marshalSessionMeta = json.Marshal
 // keeps them safe to run in parallel.
 var sessionMetaFS = afero.NewOsFs()
 
+// ErrInvalidSessionID reports a session ID that session-meta persistence
+// refuses, because it is not safe to use as a filename component.
+var ErrInvalidSessionID = errors.New("invalid session id")
+
+// sessionIDMaxLen bounds an ID so that the longest name derived from it,
+// <id>.meta.json.tmp, stays well inside the 255-byte filename limit.
+const sessionIDMaxLen = 128
+
+// validateSessionID accepts a session ID only when it is safe to use directly as
+// a filename component: 1 to 128 bytes, each an ASCII letter, an ASCII digit,
+// '-' or '_'. Everything else is refused, which is what makes the ID safe to
+// join into a path and safe to key the write lock on:
+//
+//   - No '/', '\' or ':', so an ID cannot name a file in another directory.
+//   - No '.', so no ID is "." or ".." or carries a traversal segment, and none
+//     can impersonate the ".meta.json" or ".tmp" suffixes the layout uses.
+//   - No spaces, control bytes or NUL, so an ID cannot be an unprintable
+//     near-duplicate of another.
+//   - ASCII only, so case folding is exactly ASCII case folding. Two distinct
+//     IDs can then only alias onto one file through case, which
+//     sessionMetaWriteLock's strings.ToLower already accounts for — whereas
+//     Unicode folding and NFC/NFD normalization vary by filesystem and are
+//     beyond what any in-process canonicalization can predict.
+//
+// The rule is deliberately wider than identifier.ValidateSessionID's minted
+// base62 shape: this is a safety boundary, not an authenticity check, and test
+// fixtures across the repo legitimately persist terse IDs like "WORKER".
+func validateSessionID(id string) error {
+	if id == "" {
+		return fmt.Errorf("session id is empty: %w", ErrInvalidSessionID)
+	}
+	if len(id) > sessionIDMaxLen {
+		return fmt.Errorf("session id is %d bytes, limit is %d: %w", len(id), sessionIDMaxLen, ErrInvalidSessionID)
+	}
+	for i := 0; i < len(id); i++ {
+		switch c := id[i]; {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return fmt.Errorf("session id %q has a disallowed byte %q at offset %d: %w", id, string(rune(c)), i, ErrInvalidSessionID)
+		}
+	}
+	return nil
+}
+
 // sessionMetaWriteStripes is the number of locks session-meta writes are spread
 // across. A fixed array rather than a per-session-ID map so a long-running
 // daemon's lock table cannot grow with the number of sessions it has ever
@@ -234,6 +278,9 @@ func SaveSessionMeta(dir string, meta SessionMeta) error {
 // in-memory or sandboxed filesystem to exercise persistence without touching
 // real disk.
 func SaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
+	if err := validateSessionID(meta.ID); err != nil {
+		return err
+	}
 	lock := sessionMetaWriteLock(meta.ID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -247,6 +294,9 @@ func AppendSessionObservedBy(dir, workerSessionID, observerSessionID string) err
 }
 
 func appendSessionObservedByWithFS(fs afero.Fs, dir, workerSessionID, observerSessionID string) error {
+	if err := validateSessionID(workerSessionID); err != nil {
+		return err
+	}
 	lock := sessionMetaWriteLock(workerSessionID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -327,6 +377,9 @@ func stableUnion(existing, added []string) []string {
 
 // loadSessionMetaFS is the filesystem seam beneath LoadSessionMeta.
 func loadSessionMetaFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
+	if err := validateSessionID(id); err != nil {
+		return SessionMeta{}, err
+	}
 	path := filepath.Join(dir, sessionsSubdir, id+".meta.json")
 	data, err := afero.ReadFile(fs, path)
 	if err != nil {
