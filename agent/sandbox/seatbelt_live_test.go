@@ -229,19 +229,43 @@ func TestSeatbeltLivePackedRefsMaintenance(t *testing.T) {
 		t.Run(kind.String(), func(t *testing.T) {
 			rp, cwd := liveResolveKind(t, kind, ModeWorkspaceWrite, true)
 			// A commit gives the repo a ref to pack; pack-refs then drives the
-			// lock+rename dance over <common>/packed-refs.
-			//
-			// rerere is forced OFF so the assertion depends only on the grant under
-			// test. A developer with `rerere.enabled=true` in ~/.gitconfig (which the
-			// sandbox reads) otherwise has `git commit` create <common>/rr-cache — a
-			// SEPARATE ungranted common-dir surface, tracked apart from packed-refs.
+			// lock+rename dance over <common>/packed-refs. The host's own git config
+			// is left alone — whatever rerere setting the developer carries applies,
+			// as it does in a real session.
 			out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c",
-				"git -c rerere.enabled=false -c user.email=t@e -c user.name=t commit -q --allow-empty -m serf-packed-refs && git pack-refs --all")
+				"git -c user.email=t@e -c user.name=t commit -q --allow-empty -m serf-packed-refs && git pack-refs --all")
 			if exit != 0 {
 				t.Errorf("workspace-write must allow git packed-refs maintenance (exit=%d):\n%s", exit, out)
 			}
 			if strings.TrimSpace(out) != "" {
 				t.Errorf("git packed-refs maintenance must produce no output, got:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestSeatbeltLiveCommitWithRerereEnabled proves the contract's "commit, add and
+// checkout succeed" promise holds with rerere ACTIVE — the setting a great many
+// developers carry in ~/.gitconfig, which every mode now reads. `git commit`
+// calls into rerere, which creates and populates <commonDir>/rr-cache. Before
+// that leaf was granted, a linked worktree's commit died with
+// "could not create directory '.../rr-cache'" because the common dir is granted
+// entry by entry and had no rr-cache entry among them. rerere is set ON here
+// EXPLICITLY rather than left to the host's config so the assertion tests the
+// grant, not the machine it runs on.
+func TestSeatbeltLiveCommitWithRerereEnabled(t *testing.T) {
+	requireLiveSeatbelt(t)
+	for _, kind := range []WorkspaceKind{MainCheckout, LinkedWorktree} {
+		t.Run(kind.String(), func(t *testing.T) {
+			rp, cwd := liveResolveKind(t, kind, ModeWorkspaceWrite, true)
+			stdout, stderr, exit := runUnderSeatbeltSplit(t, rp, cwd, "git",
+				"-c", "rerere.enabled=true", "-c", "user.email=t@e", "-c", "user.name=t",
+				"commit", "-q", "--allow-empty", "-m", "serf-rerere")
+			if exit != 0 {
+				t.Errorf("workspace-write must allow a commit with rerere enabled (exit=%d)\nstdout:\n%s\nstderr:\n%s", exit, stdout, stderr)
+			}
+			if strings.TrimSpace(stderr) != "" {
+				t.Errorf("a commit with rerere enabled must produce no stderr, got:\n%s", stderr)
 			}
 		})
 	}
@@ -483,41 +507,31 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-// hermeticGit is the git command prefix every live git assertion uses, so the
-// assertion depends only on the sandbox grant under test and never on the
-// developer's own git configuration.
+// realConfigGit is the git command prefix every live git assertion uses. It
+// deliberately does NOT neutralize the developer's global git configuration:
+// the 2026-08-07 ruling makes the global config files readable in restricted
+// mode, and the acceptance criterion is that git works against the config the
+// developer REALLY has. A test that set GIT_CONFIG_GLOBAL=/dev/null would be
+// arranging that config out of existence and proving nothing about it.
 //
-//   - GIT_CONFIG_GLOBAL=/dev/null: restricted mode does not grant the home
-//     directory, so an existing ~/.gitconfig is present-but-unreadable and git
-//     FATALS on it ("unable to access '.../.gitconfig': Operation not
-//     permitted"). That is a SEPARATE gap in the restricted-mode read surface,
-//     tracked apart from the developer-toolchain grant.
-//   - core.excludesFile=/dev/null: the same gap, second file — git warns on an
-//     unreadable ~/.config/git/ignore.
-//   - rerere.enabled=false: with rerere on (a common global setting) a commit
-//     creates <common>/rr-cache, an ungranted git-metadata surface — a separate
-//     known defect, likewise not this grant's subject.
-const hermeticGit = "GIT_CONFIG_GLOBAL=/dev/null git " +
-	"-c core.excludesFile=/dev/null -c rerere.enabled=false " +
-	"-c user.email=t@e -c user.name=t "
+// The only -c overrides are the committer identity, which is not a neutralization
+// (git still reads the whole global config) but a floor: a scratch repo has no
+// identity of its own, and a host whose developer never set user.email could not
+// commit at all. Everything else — includes, aliases, rerere, excludes/attributes
+// files, credential helpers — comes from the real global config.
+const realConfigGit = "git -c user.email=t@e -c user.name=t "
 
-// xcrunCacheDenialFragment identifies the one residual stderr line a git
-// invocation emits inside a restricted sandbox. /usr/bin/git is an xcrun shim,
-// and xcrun memoizes its lookup in a cache file under the PER-USER temp
-// directory that confstr(_CS_DARWIN_USER_TEMP_DIR) reports — a shared,
-// multi-tenant location the sandbox deliberately does not make writable (the
-// session TMPDIR is granted instead, and xcrun does not consult TMPDIR). The
-// lookup still succeeds; only the memoization fails. Removing this residual
-// would take a WRITE grant, which the read-only developer-toolchain ruling does
-// not authorize.
-const xcrunCacheDenialFragment = "xcrun_db"
-
-// unexpectedStderr returns the stderr lines that are not the known xcrun cache
-// residual — the lines a live git assertion must not have.
+// unexpectedStderr returns the non-empty stderr lines of a live git assertion.
+// There is no tolerance list: a git invocation in a restricted sandbox must be
+// PRISTINE on stderr (ruled 2026-08-07). The xcrun cache-write denial that used
+// to be allowed here is gone at the source — the env floor puts the resolved
+// developer toolchain's bin directory on PATH, so `git` is the real git rather
+// than the /usr/bin shim that memoizes its lookup in the per-user temp
+// directory. See ResolvedPolicy.ToolchainBinDir.
 func unexpectedStderr(stderr string) []string {
 	var out []string
 	for _, line := range strings.Split(strings.TrimRight(stderr, "\n"), "\n") {
-		if line == "" || strings.Contains(line, xcrunCacheDenialFragment) {
+		if line == "" {
 			continue
 		}
 		out = append(out, line)
@@ -574,9 +588,9 @@ func TestSeatbeltLiveGitRunsInRestrictedMode(t *testing.T) {
 	if len(RealProber{}.Probe().DeveloperToolRoots) == 0 {
 		t.Skip("live seatbelt test: no developer toolchain installed on this host")
 	}
-	stdout, stderr, exit := runUnderSeatbeltSplit(t, rp, cwd, "/bin/sh", "-c", hermeticGit+"--version")
+	stdout, stderr, exit := runUnderSeatbeltSplit(t, rp, cwd, "/bin/sh", "-c", realConfigGit+"--version")
 	if exit != 0 {
-		t.Fatalf("restricted mode must be able to run git (exit=%d)\nstdout:\n%s\nstderr:\n%s", exit, stdout, stderr)
+		t.Fatalf("restricted mode must be able to run git (exit=%d)\nstdout:\n%s\nstderr:\n%s\n\nThis test runs git against YOUR REAL global config (that is the point of the 2026-08-07 ruling), so a failure here may be your gitconfig rather than a broken sandbox. Settings known to break it: commit.gpgsign=true (gpg is not reachable in the sandbox), a core.hooksPath under $HOME, and a core.excludesfile/core.attributesfile naming a file that EXISTS under $HOME (readable config, unreadable target -> a warning on stderr). Compare with GIT_CONFIG_GLOBAL=/dev/null to tell the two apart.", exit, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "git version") {
 		t.Errorf("git --version stdout = %q, want a version line", stdout)
@@ -586,9 +600,10 @@ func TestSeatbeltLiveGitRunsInRestrictedMode(t *testing.T) {
 	}
 }
 
-// TestSeatbeltLiveGitCommitInRestrictedMode is the acceptance bar for the
-// developer-toolchain grant: a FULL commit — stage a new file, write the object,
-// move the ref — inside a restricted sandbox, exiting 0.
+// TestSeatbeltLiveGitCommitInRestrictedMode is the acceptance bar for
+// restricted-mode git: a FULL commit — stage a new file, write the object, move
+// the ref — inside a restricted sandbox, exiting 0, against the developer's
+// REAL global configuration (aliases, rerere, signoff, filters and all).
 func TestSeatbeltLiveGitCommitInRestrictedMode(t *testing.T) {
 	requireLiveSeatbelt(t)
 	rp, cwd := liveResolve(t, ModeRestricted, true)
@@ -597,18 +612,230 @@ func TestSeatbeltLiveGitCommitInRestrictedMode(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(cwd, "committed.txt"), "serf restricted commit\n")
 
-	script := hermeticGit + "add committed.txt && " +
-		hermeticGit + "commit -q -m serf-restricted-commit && " +
-		hermeticGit + "log -1 --format=%s"
+	script := realConfigGit + "add committed.txt && " +
+		realConfigGit + "commit -q -m serf-restricted-commit && " +
+		realConfigGit + "log -1 --format=%s"
 	stdout, stderr, exit := runUnderSeatbeltSplit(t, rp, cwd, "/bin/sh", "-c", script)
 	if exit != 0 {
-		t.Fatalf("restricted mode must allow a full git commit (exit=%d)\nstdout:\n%s\nstderr:\n%s", exit, stdout, stderr)
+		t.Fatalf("restricted mode must allow a full git commit (exit=%d)\nstdout:\n%s\nstderr:\n%s\n\nThis test runs git against YOUR REAL global config (that is the point of the 2026-08-07 ruling), so a failure here may be your gitconfig rather than a broken sandbox. Settings known to break it: commit.gpgsign=true (gpg is not reachable in the sandbox), a core.hooksPath under $HOME, and a core.excludesfile/core.attributesfile naming a file that EXISTS under $HOME (readable config, unreadable target -> a warning on stderr). Compare with GIT_CONFIG_GLOBAL=/dev/null to tell the two apart.", exit, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "serf-restricted-commit") {
 		t.Errorf("the commit did not land; git log said %q", stdout)
 	}
 	if extra := unexpectedStderr(stderr); len(extra) > 0 {
 		t.Errorf("git commit emitted unexpected stderr:\n%s", strings.Join(extra, "\n"))
+	}
+}
+
+// requireLiveGlobalGitConfig skips unless this host really has a global git
+// config. Without one the grant's assertions would pass vacuously — a host with
+// nothing to read proves nothing about reading it.
+func requireLiveGlobalGitConfig(t *testing.T) []string {
+	t.Helper()
+	paths := RealProber{}.Probe().GitGlobalConfigPaths
+	if len(paths) == 0 {
+		t.Skip("live seatbelt test: this host has no global git config to read")
+	}
+	return paths
+}
+
+// TestSeatbeltLiveGlobalGitConfigReadableInRestrictedMode is the direct
+// observable of the 2026-08-07 ruling: inside a restricted sandbox git can READ
+// the developer's real global config — `git config --global --list` exits 0 and
+// reports settings sourced from the real file — while the home directory around
+// it stays unreadable, because the grant is file-exact and not a home read.
+func TestSeatbeltLiveGlobalGitConfigReadableInRestrictedMode(t *testing.T) {
+	requireLiveSeatbelt(t)
+	paths := requireLiveGlobalGitConfig(t)
+	rp, cwd := liveResolve(t, ModeRestricted, true)
+	if len(RealProber{}.Probe().DeveloperToolRoots) == 0 {
+		t.Skip("live seatbelt test: no developer toolchain installed on this host")
+	}
+
+	stdout, stderr, exit := runUnderSeatbeltSplit(t, rp, cwd, "/bin/sh", "-c", realConfigGit+"config --global --list")
+	if exit != 0 {
+		t.Fatalf("restricted mode must be able to read the global git config (exit=%d)\nstderr:\n%s\n\nThis test runs git against YOUR REAL global config (that is the point of the 2026-08-07 ruling), so a failure here may be your gitconfig rather than a broken sandbox. Settings known to break it: commit.gpgsign=true (gpg is not reachable in the sandbox), a core.hooksPath under $HOME, and a core.excludesfile/core.attributesfile naming a file that EXISTS under $HOME (readable config, unreadable target -> a warning on stderr). Compare with GIT_CONFIG_GLOBAL=/dev/null to tell the two apart.", exit, stderr)
+	}
+	if strings.TrimSpace(stdout) == "" {
+		t.Error("git config --global --list produced nothing, so the grant proved nothing")
+	}
+	if extra := unexpectedStderr(stderr); len(extra) > 0 {
+		t.Errorf("git config --global --list emitted unexpected stderr:\n%s", strings.Join(extra, "\n"))
+	}
+
+	// The grant is the FILE, not the tree around it. Listing the home directory
+	// and reading a sibling of the config must both stay denied.
+	home := RealProber{}.Probe().Home
+	sibling := filepath.Join(filepath.Dir(paths[len(paths)-1]), "serf-should-not-be-readable")
+	for _, denied := range []string{"ls " + home, "cat " + sibling} {
+		if _, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", denied+" >/dev/null 2>&1"); exit == 0 {
+			t.Errorf("the global-config grant must not widen into a home read, but %q succeeded", denied)
+		}
+	}
+}
+
+// runUnderSeatbeltCanon is runUnderSeatbelt with the policy's canonicalizer
+// injected, so a test can exercise a grant SPELLING the real canonicalizer would
+// collapse. It uses the production policy generator; only the path-resolution
+// seam differs.
+func runUnderSeatbeltCanon(t *testing.T, rp ResolvedPolicy, cwd string, canon Canonicalizer, command ...string) (string, int) {
+	t.Helper()
+	sessionTmp := t.TempDir()
+	text, params := SeatbeltPolicy(rp, sessionTmp, canon)
+	argv := seatbeltArgs(pathToSeatbelt, text, params, command)
+	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // argv[0] is the hard-coded /usr/bin/sandbox-exec
+	cmd.Dir = cwd
+	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp)
+	out, err := cmd.CombinedOutput()
+	exit := 0
+	var ee *exec.ExitError
+	switch {
+	case err == nil:
+	case errors.As(err, &ee):
+		exit = ee.ExitCode()
+	default:
+		exit = -1
+	}
+	return string(out), exit
+}
+
+// TestSeatbeltLiveSymlinkReadRootSpellings pins the safety property the
+// symlink-alias read grant rests on, and is the evidence behind the macOS note in
+// docs/sandboxing.md: the LITERAL link spelling alone grants no reach — an
+// ungranted target stays unreadable through the link — so emitting the literal
+// name beside the canonical one is a SPELLING alias and never a widening. The
+// second case pins that a symlink-spelled read root does reach its target once
+// the emitter grants both names.
+//
+// The converse — that the canonical target alone is not enough, because Seatbelt
+// judges the path a process actually names — is pinned where it actually bites,
+// by TestSeatbeltLiveGlobalGitConfigReadableInRestrictedMode: under `$HOME`
+// nothing grants access to the link itself, so the read is refused at the link.
+// It cannot be reproduced from a temp directory, because the platform defaults
+// grant file-read-metadata over all of /private/var and the link there resolves
+// freely.
+func TestSeatbeltLiveSymlinkReadRootSpellings(t *testing.T) {
+	requireLiveSeatbelt(t)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "target")
+	link := filepath.Join(dir, "link")
+	writeFile(t, target, "SERF-LIVE-SYMLINK-42\n")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	// A canonicalizer that leaves the link spelling alone, so case 2 can grant the
+	// literal name and nothing else.
+	linkStaysLiteral := func(p string) string {
+		if p == link {
+			return p
+		}
+		return realCanonicalizer(p)
+	}
+	readThroughLink := []string{"/bin/sh", "-c", "cat " + link + " 2>&1"}
+
+	base, cwd := liveResolve(t, ModeRestricted, true)
+
+	linkOnly := base
+	linkOnly.Spawned.ReadRoots = append(slices.Clone(base.Spawned.ReadRoots), link)
+	if out, exit := runUnderSeatbeltCanon(t, linkOnly, cwd, linkStaysLiteral, readThroughLink...); exit == 0 {
+		t.Errorf("the link spelling alone must grant no reach to an ungranted target, but the read succeeded:\n%s", out)
+	}
+
+	bothSpellings := base
+	bothSpellings.Spawned.ReadRoots = append(slices.Clone(base.Spawned.ReadRoots), link)
+	out, exit := runUnderSeatbeltCanon(t, bothSpellings, cwd, realCanonicalizer, readThroughLink...)
+	if exit != 0 || !strings.Contains(out, "SERF-LIVE-SYMLINK-42") {
+		t.Errorf("a symlink-spelled read root must be granted under both spellings (exit=%d):\n%s", exit, out)
+	}
+}
+
+// TestSeatbeltLiveGitCredentialsStayMasked is the single most important check on
+// the 2026-08-07 grant. A readable global config makes a `credential.helper`
+// line visible; the secret store that line points at must NOT become visible with
+// it. The denylist is emitted after every allow and wins.
+//
+// It runs against a SYNTHETIC home so the assertion has a real secret to fail on
+// — the developer's actual ~/.git-credentials may not exist, and "absent" is not
+// "masked". The home is a real directory with real files, the policy is the real
+// resolver's, and the verdict is the real kernel's.
+func TestSeatbeltLiveGitCredentialsStayMasked(t *testing.T) {
+	requireLiveSeatbelt(t)
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(home, ".gitconfig")
+	credentials := filepath.Join(home, ".git-credentials")
+	const secret = "SERF-LIVE-GIT-CREDENTIAL-42"
+	writeFile(t, config, "[credential]\n\thelper = store\n")
+	writeFile(t, credentials, "https://user:"+secret+"@example.invalid\n")
+
+	facts := RealProber{}.Probe()
+	if !facts.SeatbeltAvailable() {
+		t.Skip("live seatbelt test: RealProber reports sandbox-exec unavailable")
+	}
+	facts.Home = home
+	facts.GitGlobalConfigPaths = []string{config}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: &net}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !slices.Contains(rp.MaskedPaths, credentials) {
+		t.Fatalf("the credential store must be on the denylist, got %v", rp.MaskedPaths)
+	}
+
+	out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", "cat "+config+" 2>&1")
+	if exit != 0 || !strings.Contains(out, "helper = store") {
+		t.Fatalf("the granted global config must be readable (exit=%d):\n%s", exit, out)
+	}
+	out, exit = runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", "cat "+credentials+" 2>&1")
+	if exit == 0 {
+		t.Errorf("~/.git-credentials must stay masked beside a readable global config, but the read succeeded:\n%s", out)
+	}
+	if strings.Contains(out, secret) {
+		t.Errorf("the credential secret leaked through the global-config grant:\n%s", out)
+	}
+}
+
+// TestSeatbeltLiveRestrictedGitWritesStillDenied pins what the READ-ONLY grant
+// must leave untouched: in restricted mode, with the global config readable, every
+// git config and hook WRITE surface is still denied — including the global config
+// file itself. docs/sandboxing.md's anti-hook-planting argument rests on the write
+// denial, never on unreadability.
+func TestSeatbeltLiveRestrictedGitWritesStillDenied(t *testing.T) {
+	requireLiveSeatbelt(t)
+	paths := requireLiveGlobalGitConfig(t)
+	rp, cwd := liveResolve(t, ModeRestricted, true)
+	if len(rp.Git.ProtectedPaths) == 0 {
+		t.Fatal("no protected git surfaces resolved — the denial assertions would pass vacuously")
+	}
+
+	for _, p := range rp.Git.ProtectedPaths {
+		target := p
+		if filepath.Base(p) == "hooks" {
+			target = filepath.Join(p, "post-commit")
+		}
+		if out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", "echo serf-escape >>"+target+" 2>&1"); exit == 0 {
+			t.Errorf("write to protected git surface %q must be denied, but it succeeded:\n%s", target, out)
+		}
+	}
+	if _, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", realConfigGit+"config --local core.hooksPath /tmp/evil"); exit == 0 {
+		t.Error("git config --local core.hooksPath must be denied in restricted mode")
+	}
+	// The new grant is READ-only: the global config it makes readable must not
+	// have become writable, by raw append or by porcelain.
+	for _, p := range paths {
+		if out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", "echo serf-escape >>"+p+" 2>&1"); exit == 0 {
+			t.Errorf("the global config %q must stay write-denied, but the append succeeded:\n%s", p, out)
+		}
+	}
+	if _, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", realConfigGit+"config --global core.hooksPath /tmp/evil"); exit == 0 {
+		t.Error("git config --global core.hooksPath must be denied")
 	}
 }
 

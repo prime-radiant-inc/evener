@@ -142,11 +142,14 @@ func TestClassifyLinkedWorktree(t *testing.T) {
 	mustContain(t, got.WritablePaths, filepath.Join(commonDir, "packed-refs"), "WritablePaths")
 	mustContain(t, got.WritablePaths, filepath.Join(commonDir, "packed-refs.lock"), "WritablePaths")
 	mustContain(t, got.WritablePaths, filepath.Join(commonDir, "packed-refs.new"), "WritablePaths")
+	// rr-cache is git working state a commit creates for itself whenever rerere is
+	// enabled; without the leaf the commit fails outright in this layout.
+	mustContain(t, got.WritablePaths, filepath.Join(commonDir, "rr-cache"), "WritablePaths")
 	// The common dir stays granted ENTRY BY ENTRY: it must never itself become a
 	// write root, nor sit under one. Granting the directory would be the tempting
-	// shortcut for the next missing sibling (rr-cache, FETCH_HEAD, …) and would
-	// hand the session create-anything rights over the shared git dir. Pinned as a
-	// negative so that widening fails loudly here instead of passing silently.
+	// shortcut for the next missing sibling (FETCH_HEAD, …) and would hand the
+	// session create-anything rights over the shared git dir. Pinned as a negative
+	// so that widening fails loudly here instead of passing silently.
 	if underAnyRoot(commonDir, got.WritablePaths) {
 		t.Errorf("common dir %q must never be writable (directly or via an enclosing root)\n  WritablePaths: %v", commonDir, got.WritablePaths)
 	}

@@ -70,11 +70,12 @@ credentials. A probe is reported as the command it ran and that command's exit
 status, never as a broader claim: `git config --list` exiting 0 says the config
 chain is readable, not that every git operation succeeds.
 
-The two probes are **bounded independently and run concurrently** — the tool
-probe tightly, the git probe generously, because a `git` call under `restricted`
-costs roughly 3.5s (see `restricted` below). Sharing one tight budget would have timed the whole
-probe out on exactly the mode the preamble most exists for; independence means a
-slow git degrades only the git line.
+The two probes are **bounded independently and run concurrently**. The git probe
+keeps its 10s bound even though a `restricted` `git` call now costs ~164ms (see
+`restricted` below): the bound is a deadline, not a wait, so it is free on that
+path, and it is still needed on a host where the developer toolchain cannot be
+named and git falls back to the slow `xcrun` shim. Independence means a slow git
+degrades only the git line.
 
 ## Modes
 
@@ -89,7 +90,7 @@ sockets beyond stdio.
 | `off` (default) | anywhere | working root only (today's behavior) | anywhere | anywhere |
 | `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only |
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
-| `restricted` | worktree only | worktree + temp | worktree + system read roots + developer toolchain + hook/MCP paths + temp | worktree + temp + git metadata (not config/hooks) |
+| `restricted` | worktree only | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + temp | worktree + temp + git metadata (not config/hooks) |
 
 - **`off`** is exactly today's behavior — a strict superset of every sandboxed
   mode, with no new code path engaged.
@@ -126,17 +127,83 @@ sockets beyond stdio.
   `restricted` mode: the denylist alone could not stop it, since it drops roots at
   or *beneath* a masked path and such a root sits above them.
 
-  This grant is **necessary but not sufficient**: on a host with a `~/.gitconfig`,
-  `git` still fails under `restricted` with
+  The toolchain grant alone was **necessary but not sufficient**. On a host with a
+  global git config, `git` still died under `restricted` with
   `fatal: unable to access '<home>/.gitconfig': Operation not permitted`, because
-  the global git config sits under `$HOME` and restricted mode grants no home read.
-  Reading it is a separate ruling — a global config can carry credential helpers
-  and URL rewrites — and has not been made. Until it is, `git` works under
-  `restricted` only for a session whose global config is absent or neutralized
-  (`GIT_CONFIG_GLOBAL=/dev/null`). Two further residuals: every `git` call under
-  `restricted` emits two `xcrun_db` cache-write denials to stderr and costs roughly
-  3.5s, because the `xcrun` shim retries a cache write into the per-user temp
-  directory that the mode does not grant.
+  that config sits under `$HOME` and the mode grants no home read.
+
+  **The user's global git config files are readable in `restricted`, read-only**
+  (ruled 2026-08-07). They are the two files `git-config(1)` names under FILES:
+  `$XDG_CONFIG_HOME/git/config` (with `$HOME/.config` standing in for an unset
+  `XDG_CONFIG_HOME`) and `~/.gitconfig` — git reads both when both exist, so both
+  are granted. With them, `git --version` and a full `git commit` succeed under
+  `restricted` against the configuration the developer really has.
+
+  The grant is deliberately narrow, and what it does **not** change matters as
+  much as what it does:
+
+  - It is **file-exact**, and it adds no other read under the home directory. The
+    two config FILES are granted, never `$HOME` and never the `~/.config` or
+    `~/.config/git` directories. A file that does not exist contributes nothing and
+    never fails session start; a path that names a directory is refused outright.
+    File-exactness is enforced where the candidates are *probed* — a candidate is
+    admitted only if it exists and is not a directory — and not by the shared-tree
+    guard, which admits directories by design because the toolchain and hook/MCP
+    grants need it to. (This grant is not the only one that may name a path under
+    your home directory: the [hook and MCP infrastructure
+    grant](#hooks-and-mcp-under-a-sandbox) can too, deliberately — a plugin
+    directory under `~/.claude` is the ordinary case. "Nothing else in `$HOME` is
+    readable" would therefore be false; what is true is that *this* grant adds
+    nothing else.)
+  - It is **read-only**. Config and hook **write** protection is untouched: the
+    global config cannot be written under `restricted`, `git config --global` and
+    `git config --local` are still denied, and `.git/config` and `.git/hooks` are
+    still write-denied. The anti-hook-planting argument below rests on config being
+    unwritable, never on it being unreadable.
+  - **The denylist still wins.** A `credential.helper` line in the global config
+    becomes readable; the secret store it points at does not. `~/.git-credentials`
+    stays masked, alongside `~/.ssh`, `~/.aws`, `~/.gnupg` and the rest.
+  - The candidates pass through the **same shared-tree guard** as the toolchain
+    directories, so a configured path at or above your home, the worktree, or a
+    temp root is refused rather than granted.
+  - It reaches the **spawned layer only**. The model's file tools stay confined to
+    the worktree and cannot browse the config.
+
+  Because the config becomes readable, settings in it now take effect inside the
+  sandbox — `rerere.enabled=true`, for instance, makes `git commit` create
+  `<common>/rr-cache`. That is the intended behaviour: the mode runs the
+  developer's git, not a blanked-out one.
+
+  **git under a sandbox is silent and fast on macOS** (ruled 2026-08-07). It was
+  neither: every `git` call emitted two `xcrun_db` cache-write denials to stderr
+  and cost seconds. The cause was the shim, not the sandbox. `/usr/bin/git`
+  memoizes its tool lookup in `xcrun_db` under the per-user temp directory that
+  `confstr(_CS_DARWIN_USER_TEMP_DIR)` reports — a path that honours no
+  environment variable (not `TMPDIR`) and sits in the shared, multi-tenant
+  `/var/folders` tree no mode makes writable. With the memo unwritable the shim
+  re-ran `xcodebuild -sdk macosx -find git` on *every* invocation.
+
+  The fix names the answer instead of paying for it: the environment floor puts
+  the active developer directory's `usr/bin` — where the binary the shim would
+  have found actually lives — on a spawned process's `PATH`, immediately ahead of
+  the first system directory it finds there (`/usr/bin`, `/bin`, `/usr/sbin`,
+  `/sbin`), or at the end when `PATH` names none of them. Measured as an
+  interleaved A/B in a live `restricted` sandbox:
+  8.61s mean via the shim (5.27-12.75s on a loaded host, two stderr lines every
+  time) against 164ms mean via the toolchain (127-225ms, stderr pristine).
+
+  It **adds no grant**. The directory is inside the read-only toolchain grant
+  above, and the floor names it only after it passes the same shared-tree guard,
+  is not masked, and is really readable under the mode's own spawned grants — an
+  unreadable `PATH` entry would turn a noisy `git` into a missing one. The
+  insertion point is deliberate too: ahead of the *system* directories rather
+  than at the front, so it shadows the shim and nothing else. A developer who put
+  their own `git` ahead of `/usr/bin` still gets it.
+
+  `DEVELOPER_DIR` was tried first and **does not work**: the shim reports it,
+  keys its cache on it, and then still runs `xcodebuild -find`. Granting the
+  per-user temp directory would have silenced the write, and was refused — that
+  widens the sandbox to buy quiet.
 
 ## The fail-closed floor
 
@@ -198,8 +265,10 @@ additions are removable.
 
 In the writable modes, git's object store works normally — objects, refs, the
 index, logs, and packed-refs are writable, so `commit`, `add`, and `checkout`
-succeed — with one known exception in a linked worktree under
-`rerere.enabled=true`, recorded under [Known residuals](#known-residuals). On
+succeed. `rr-cache` is writable too: it is git working state (recorded conflict
+resolutions), it is what `git commit` creates for itself when `rerere.enabled=true`,
+and it carries no directive git reads — so granting it costs nothing that config
+and hook protection depends on. On
 macOS/Seatbelt the packed-refs grant also covers the two fixed sibling
 names git rewrites it through (`packed-refs.lock` and `packed-refs.new`, renamed
 into place), so `git pack-refs` and the ref packing a commit triggers work too.
@@ -380,7 +449,7 @@ raw stderr never becomes the model's opening context.
 
 ## Known residuals
 
-Four boundary edges are deliberately documented as open rather than claimed closed:
+Three boundary edges are deliberately documented as open rather than claimed closed:
 
 - **A pre-existing hardlink** inside the worktree to an out-of-tree secret is
   *readable* through the worktree (path-based masking cannot see that two names share
@@ -396,24 +465,14 @@ Four boundary edges are deliberately documented as open rather than claimed clos
   and is granted entry by entry, and bubblewrap grants by bind-mounting, which
   requires the target to exist. Any granted entry absent when the sandbox starts —
   `packed-refs` and its `packed-refs.lock` / `packed-refs.new` siblings, `logs`,
-  `index` — is therefore skipped, and git cannot create it. (A main checkout is
-  unaffected: its whole `.git` sits under the worktree write root, as does a linked
-  worktree's own per-worktree git dir.) This is structural, not an oversight:
-  permission to *create* a name belongs to the parent directory, so no mount can
-  express "may create exactly this filename in a read-only directory". macOS/
-  Seatbelt matches path strings instead of mounting and grants those entries
-  exactly. Closing the gap on Linux needs a directory-level decision about the
-  common dir, which is open.
-- **`git commit` in a linked worktree fails under `rerere.enabled=true`.** With
-  rerere on — a common setting in a developer's global gitconfig, which the
-  writable modes read — a commit creates `<commonDir>/rr-cache`, and the common
-  dir is granted entry by entry with no `rr-cache` entry among them. This one is
-  **not** Linux-only: unlike the bind-mount residual above, it is an absent
-  *grant* rather than an absent mount, so macOS/Seatbelt fails the same way. (A
-  main checkout is unaffected — its whole `.git` is under the worktree write
-  root.) A session can work around it with `-c rerere.enabled=false`, which is
-  what serf's own live git tests do. Whether the common dir should grant a
-  writable `rr-cache` is undecided, so the defect is unfixed pending that ruling.
+  `index`, `rr-cache` — is therefore skipped, and git cannot create it. (A main
+  checkout is unaffected: its whole `.git` sits under the worktree write root, as
+  does a linked worktree's own per-worktree git dir.) This is structural, not an
+  oversight: permission to *create* a name belongs to the parent directory, so no
+  mount can express "may create exactly this filename in a read-only directory".
+  macOS/Seatbelt matches path strings instead of mounting and grants those
+  entries exactly. Closing the gap on Linux needs a directory-level decision
+  about the common dir, which is open.
 
 ## macOS notes
 
@@ -425,7 +484,13 @@ refuses any sandboxed mode — the same fail-closed floor as a Linux host withou
 usable bubblewrap.
 
 Seatbelt policies canonicalize every granted and denied root through symlink and
-firmlink resolution (`/tmp` → `/private/tmp` is pinned by test), and a live parity
+firmlink resolution (`/tmp` → `/private/tmp` is pinned by test). Seatbelt judges the
+path a process *actually names*, so a read root reached through a symlink is granted
+under **both** spellings — its canonical target and its literal name — otherwise a
+dotfile-managed `~/.gitconfig` would be denied at the link even with its target
+granted. The literal spelling is an alias, not extra reach: granting a symlink's own
+name alone does not make an ungranted (or masked) target readable through it, which
+is verified against the real kernel. A live parity
 suite runs the generated profiles under the real `sandbox-exec` when
 `SERF_SEATBELT_LIVE=1` is set.
 

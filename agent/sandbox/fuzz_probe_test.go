@@ -129,9 +129,12 @@ type scriptedProbeSystem struct {
 	kernel          []byte
 	kernelErr       error
 	seatbeltPresent bool
+	env             map[string]string
 }
 
 func (s scriptedProbeSystem) goos() string { return s.osName }
+
+func (s scriptedProbeSystem) getenv(name string) string { return s.env[name] }
 
 func (s scriptedProbeSystem) userHomeDir() (string, error) { return s.home, s.homeErr }
 

@@ -141,6 +141,7 @@
   (subpath (param "WRITABLE_ROOT_6"))
   (subpath (param "WRITABLE_ROOT_7"))
   (subpath (param "WRITABLE_ROOT_8"))
+  (subpath (param "WRITABLE_ROOT_9"))
 )
 ; Serf Seatbelt platform defaults — the macOS system read-roots a spawned
 ; process needs to exec and dyld-load when it is NOT granted full-disk read.

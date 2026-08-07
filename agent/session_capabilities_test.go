@@ -64,7 +64,7 @@ func TestCapabilityPreambleWorkspaceWrite(t *testing.T) {
 	}), "\n")
 
 	want := strings.Join([]string{
-		"Writable roots: <root>; git metadata: 7 paths",
+		"Writable roots: <root>; git metadata: 8 paths",
 		"Masked paths: " + maskedCountString(policy),
 		"PATH: login shell ($SHELL -lc)",
 		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
@@ -91,7 +91,7 @@ func TestCapabilityPreambleRestricted(t *testing.T) {
 	}), "\n")
 
 	want := strings.Join([]string{
-		"Writable roots: <root>; git metadata: 7 paths",
+		"Writable roots: <root>; git metadata: 8 paths",
 		"Masked paths: " + maskedCountString(policy),
 		"PATH: login shell ($SHELL -lc)",
 		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
@@ -99,7 +99,7 @@ func TestCapabilityPreambleRestricted(t *testing.T) {
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"go: telemetry writes denied (harmless stderr noise)",
 		"git config read: `git config --list` exit 0",
-		"git under restricted: no home read — a present ~/.gitconfig fails git (workaround: GIT_CONFIG_GLOBAL=/dev/null)",
+		"git under restricted: the global git config (~/.gitconfig, ~/.config/git/config) is readable but not writable; the grant covers those files only",
 		"On PATH: go=yes node=yes rg=no",
 	}, "\n")
 	if diff := normalize(got, root, home); diff != want {
@@ -107,10 +107,12 @@ func TestCapabilityPreambleRestricted(t *testing.T) {
 	}
 }
 
-// TestCapabilityPreambleRestrictedSeatbelt: on the Seatbelt backend, restricted
-// mode carries a SECOND recorded residual — the xcrun shim's denied cache write
-// (docs/sandboxing.md). It is stated only there: the same policy on bwrap must
-// not claim a macOS-only cost, which the restricted snapshot above pins.
+// TestCapabilityPreambleRestrictedSeatbelt: the Seatbelt backend states the SAME
+// git residuals as any other — no more. It used to carry a macOS-only extra, the
+// xcrun shim's denied cache write and its multi-second cost; the env floor's
+// toolchain PATH removed that residual on 2026-08-07, so stating it would now
+// overstate the cost. This snapshot pins its absence, because a banner that
+// never overstates is wrong in the pessimistic direction too.
 func TestCapabilityPreambleRestrictedSeatbelt(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
@@ -128,7 +130,7 @@ func TestCapabilityPreambleRestrictedSeatbelt(t *testing.T) {
 	}), "\n")
 
 	want := strings.Join([]string{
-		"Writable roots: <root>; git metadata: 7 paths",
+		"Writable roots: <root>; git metadata: 8 paths",
 		"Masked paths: " + maskedCountString(&policy),
 		"PATH: login shell ($SHELL -lc)",
 		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
@@ -136,8 +138,7 @@ func TestCapabilityPreambleRestrictedSeatbelt(t *testing.T) {
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"go: telemetry writes denied (harmless stderr noise)",
 		"git config read: `git config --list` exit 0",
-		"git under restricted: no home read — a present ~/.gitconfig fails git (workaround: GIT_CONFIG_GLOBAL=/dev/null)",
-		"git under restricted on macOS: xcrun_db writes denied (2 stderr lines/call), ~3.5s/call",
+		"git under restricted: the global git config (~/.gitconfig, ~/.config/git/config) is readable but not writable; the grant covers those files only",
 		"On PATH: go=yes node=yes rg=no",
 	}, "\n")
 	if diff := normalize(got, policy.Git.WorktreeRoot, home); diff != want {
@@ -217,14 +218,14 @@ func TestCapabilityPreambleUnprobed(t *testing.T) {
 	}), "\n")
 
 	want := strings.Join([]string{
-		"Writable roots: <root>; git metadata: 7 paths",
+		"Writable roots: <root>; git metadata: 8 paths",
 		"Masked paths: " + maskedCountString(policy),
 		"PATH: login shell ($SHELL -lc)",
 		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
 		"Cache: session-private",
 		"Go cache: unprobed",
 		"git config read: unprobed",
-		"git under restricted: no home read — a present ~/.gitconfig fails git (workaround: GIT_CONFIG_GLOBAL=/dev/null)",
+		"git under restricted: the global git config (~/.gitconfig, ~/.config/git/config) is readable but not writable; the grant covers those files only",
 		"On PATH: unprobed",
 	}, "\n")
 	if diff := normalize(got, root, home); diff != want {
@@ -295,7 +296,7 @@ func TestParseCapabilityProbe(t *testing.T) {
 
 // TestCapabilityPreambleGitProbeFailsAloneKeepsToolFacts: the two probes are
 // bounded independently, so a git probe that times out (restricted mode's git
-// costs ~3.5s per call — docs/sandboxing.md) must leave the PATH and cache
+// costs ~4s per call — docs/sandboxing.md) must leave the PATH and cache
 // measurements standing rather than collapsing the whole preamble to
 // "unprobed". Only the git line degrades.
 func TestCapabilityPreambleGitProbeFailsAloneKeepsToolFacts(t *testing.T) {

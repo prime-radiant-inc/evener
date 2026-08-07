@@ -142,6 +142,21 @@ type ResolvedPolicy struct {
 	// config/hook surfaces, and outside-worktree read grants. Zero for off.
 	Git GitLayout
 
+	// ToolchainBinDir is the macOS developer-toolchain bin directory the env floor
+	// puts on a spawned process's PATH, ahead of the system directories, so `git`
+	// and friends resolve to the real binaries instead of the /usr/bin xcrun
+	// shims. The shims memoize their lookup in a per-user temp file no sandbox
+	// mode makes writable, so under a sandbox each shim invocation re-runs
+	// `xcodebuild -find`: stderr noise and seconds of latency, on every call.
+	//
+	// It is NOT a grant and never widens one — the directory sits inside the
+	// read-only toolchain grant restricted mode already makes, and this field is
+	// populated only when the directory survives RootGuard, is not masked, and is
+	// really readable under this policy's spawned grants. Empty for off, on
+	// non-darwin hosts, and whenever any of those checks fails (in which case the
+	// shim path still works, just loudly).
+	ToolchainBinDir string
+
 	// resolveInputs and resolveHost are the request this policy was resolved
 	// FROM, retained so ReRoot / ControlPolicy can re-run the root + gitdir
 	// resolution against a DIFFERENT worktree (a child delegate lane, a managed
@@ -191,10 +206,11 @@ var defaultSystemReadRoots = []string{
 var sharedTempRoots = []string{"/tmp", "/private/tmp", "/var/folders", "/private/var/folders"}
 
 // guardedHostRoots filters host-derived grant candidates (the developer-toolchain
-// directories) through RootGuard, refusing any that sits at or above the home
-// directory, the worktree, or a temp root. The candidates come from a host probe
-// that honours configuration (`xcode-select -p` follows $DEVELOPER_DIR), so they
-// are treated as untrusted input like every other configured root.
+// directories, the global git config files) through RootGuard, refusing any that
+// sits at or above the home directory, the worktree, or a temp root. The
+// candidates come from a host probe that honours configuration (`xcode-select -p`
+// follows $DEVELOPER_DIR, the global config location follows $XDG_CONFIG_HOME),
+// so they are treated as untrusted input like every other configured root.
 func guardedHostRoots(candidates []string, home, worktree string) []string {
 	if len(candidates) == 0 {
 		return nil
@@ -307,7 +323,38 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	rp.FileTool.WriteRoots = filterMasked(rp.FileTool.WriteRoots, masked)
 	rp.Spawned.ReadRoots = filterMasked(rp.Spawned.ReadRoots, masked)
 	rp.Spawned.WriteRoots = filterMasked(rp.Spawned.WriteRoots, masked)
+
+	rp.ToolchainBinDir = toolchainBinDir(host, rp, worktree)
 	return rp, nil
+}
+
+// toolchainBinDir decides whether the probed developer-toolchain bin directory
+// may go on a spawned process's PATH. It grants nothing: the directory is
+// already inside restricted mode's read-only toolchain grant, and the looser
+// modes read everywhere but the denylist. The checks exist so PATH never names a
+// directory the process cannot actually read — an unreadable PATH entry would
+// turn a noisy `git` into a missing one, which is strictly worse.
+//
+//   - RootGuard, because the value derives from `xcode-select -p`, which honours
+//     $DEVELOPER_DIR: it is untrusted input exactly like the read grant.
+//   - Not at or beneath a masked path, which is unreadable in every mode.
+//   - Under a granted spawned read root whenever the spawned layer is
+//     root-limited; the read-anywhere modes need no such check.
+func toolchainBinDir(host HostFacts, rp ResolvedPolicy, worktree string) string {
+	bin := host.DeveloperToolBinDir
+	if bin == "" {
+		return ""
+	}
+	if len(guardedHostRoots([]string{bin}, host.Home, worktree)) == 0 {
+		return ""
+	}
+	if len(filterMasked([]string{bin}, rp.MaskedPaths)) == 0 {
+		return ""
+	}
+	if rp.Spawned.Read == ReadWorktreeOnly && !isUnderAnyRoot(bin, rp.Spawned.ReadRoots) {
+		return ""
+	}
+	return bin
 }
 
 // ResolveNamed resolves a session policy from a mode NAME (the persisted/flag form)
@@ -432,9 +479,12 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// Spawned procs additionally read the common git dir + system roots (to
 		// execute), the host's developer-toolchain directories (macOS ships git and
 		// friends as xcrun shims that exec the real binary out of the active
-		// developer directory — ruled 2026-08-06), the session's hook/MCP-server
+		// developer directory — ruled 2026-08-06), the user's global git config
+		// FILES (git fatals on a present-but-unreadable ~/.gitconfig, so without
+		// them git was unusable in this mode on any host with a global config —
+		// read-only and file-exact, ruled 2026-08-07), the session's hook/MCP-server
 		// paths (session infrastructure, which must run in every mode — ruled
-		// 2026-08-06), and write the git metadata subset. Both extra grants stay OUT
+		// 2026-08-06), and write the git metadata subset. Those extra grants stay OUT
 		// of readFile: a hook living in the plugin cache must be executable and the
 		// git shim must reach its toolchain, but the model must not gain a file-tool
 		// browse grant over either along with it.
@@ -443,7 +493,8 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// anywhere-minus-the-denylist, which covers any hook/MCP/toolchain path that
 		// is not masked — and a masked one must stay masked in every mode.
 		devRoots := guardedHostRoots(host.DeveloperToolRoots, host.Home, worktree)
-		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, policy.InfraReadRoots))
+		gitConfig := guardedHostRoots(host.GitGlobalConfigPaths, host.Home, worktree)
+		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, gitConfig, policy.InfraReadRoots))
 		writeSpawn := dedupeRoots(slices.Concat(writeFile, layout.WritablePaths))
 		fileTool = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readFile, WriteRoots: writeFile}
 		spawned = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readSpawn, WriteRoots: writeSpawn}

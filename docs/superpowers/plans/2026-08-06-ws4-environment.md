@@ -219,3 +219,30 @@ restricted mode's read roots.
   that — with zero trial-and-error discovery.
 - `SERF_SCRATCH_DIR`/`TMPDIR` present in every session's exec env.
 - Config/hooks write-protection provably unchanged.
+
+### Amendment 2026-08-07 — global git config is readable in restricted mode
+
+The first delivery left the git criterion only partly met: the
+developer-toolchain grant made the `xcrun` shim resolvable, but `git` still
+failed outright on any host with a global config, because that config lives
+under `$HOME` and `restricted` granted no home read. The acceptance test passed
+only by neutralizing it with `GIT_CONFIG_GLOBAL=/dev/null`, which is not the
+criterion — a test that arranges the user's real configuration out of existence
+is not evidence that git works for the user.
+
+**Jesse ruled 2026-08-07: grant read-only.** `~/.gitconfig` and
+`~/.config/git/config` — the paths git actually consults for global config —
+are read-only members of restricted mode's read roots. The
+`GIT_CONFIG_GLOBAL` neutralization comes out of the acceptance test, and the
+criterion becomes the real one:
+
+- **git works in `restricted` mode with the user's actual global config** —
+  `git --version` and a full `git commit`, against the config the developer
+  really has, not a blanked-out one.
+
+Unchanged by this amendment: git config and hook **write** protection (the
+grant is read-only, and the anti-hook-planting argument depends on the write
+denial, not on unreadability), the credential denylist (`~/.git-credentials`
+stays masked, so a `credential.helper` line remains readable while the secret
+it points at does not), and every other invariant. The capability preamble
+reflects the grant rather than the old failure.

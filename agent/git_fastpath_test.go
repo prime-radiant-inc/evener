@@ -31,8 +31,14 @@ var fastGitDirForTest string
 //
 // This only ever REORDERS PATH to a git that is already installed and already
 // what `git` resolves to underneath the shim. It does not change which git
-// version is used, and it is a test-harness concern only — production resolves
-// git through the user's own PATH, deliberately.
+// version is used.
+//
+// A SANDBOXED session does the same thing in production, for the same reason and
+// by the same reasoning, but through the environment floor rather than this
+// harness: see sandbox.ResolvedPolicy.ToolchainBinDir, where skipping the shim
+// buys far more (the shim's sandboxed lookup cannot be memoized, so it costs
+// seconds and two stderr lines per call, not milliseconds). Outside a sandbox,
+// git still resolves through the user's own PATH, deliberately.
 //
 // Portability: the shim is macOS-specific, so this is a no-op everywhere else.
 // It is also a no-op when `xcrun` is missing, when the resolved path is not
