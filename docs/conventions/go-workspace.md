@@ -145,6 +145,33 @@ Verify a seam with the compiler, not the editor:
 GOOS=windows go vet ./...   # per module; silent means the port is whole
 ```
 
+## Some diagnostics are deliberate. Check before "fixing" them.
+
+The tree is kept clean of gopls warnings and golangci findings, with a
+small set of survivors that are load-bearing decisions, not oversights.
+gopls ignores `//nolint` comments, so these show in an editor forever;
+each carries a comment at the site saying why it stays. The standing
+set:
+
+- **Nil-context warnings in `auth/openai/cov_tt_auth_test.go`.** Those
+  tests are the only coverage of production `if ctx == nil` guard
+  branches; passing a real context would make the guards dead code the
+  suite never reaches.
+- **The deprecated `transport.Dial` read in `llm/adapter_timeout.go`.**
+  The 2026-07-13 streaming-response-header-timeout decision record rules
+  that a caller-supplied legacy `Dial`/`DialTLS` hook stays
+  authoritative — the adapter must not override it with a `DialContext`
+  wrapper. Reading the deprecated field is the contract. A migration
+  that "modernizes" this silently kills caller dial authority; it has
+  been attempted and reverted once already.
+- **`parser.ParseDir` deprecations (×3).** The go/packages migration is
+  tracked separately; each site's nolint comment says so.
+
+The general rule: a diagnostic that survived a repo-wide cleanup pass
+did so on purpose. Before fixing one, read the comment at the site and
+any decision record it cites. If there is no comment, fix it — and if
+your fix is rejected, add the comment.
+
 ## `gofmt -r` is a blunt instrument
 
 Rewrite rules are useful for mechanical renames across a package, with
