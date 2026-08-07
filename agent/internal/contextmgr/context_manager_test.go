@@ -2347,7 +2347,7 @@ func TestCheckpoint_TranscriptPointer_WithSessionID(t *testing.T) {
 		{Kind: schema.TurnUserInput, Message: llm.User("do the work")},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
-	meta := &CompactionMeta{SessionID: "01ABC"}
+	meta := &CompactionMeta{SessionID: "01ABC", AvailableTranscriptTools: []string{"read_transcript", "find_session_transcripts"}}
 	result := checkpoint(history, 1, meta, "communicate")
 	text := result[0].Message.Text()
 

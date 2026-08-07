@@ -469,8 +469,9 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 	agentID := parsed["agent_id"].(string)
 	waitForRuntimeSubagent(t, sess, agentID)
 
-	// The subagent should only have read_file, grep, task_list (always kept), and communicate (always kept)
-	allowed := map[string]bool{"read_file": true, "grep": true, "task_list": true, "communicate": true}
+	// The subagent should only have read_file, grep, and the tools every
+	// subagent always keeps: task_list, compact_context, and communicate.
+	allowed := map[string]bool{"read_file": true, "grep": true, "task_list": true, "compact_context": true, "communicate": true}
 
 	// Check tool names against the allowed set.
 	// Note: OpenAI profile maps tool names (shell->exec_command, etc.), so we

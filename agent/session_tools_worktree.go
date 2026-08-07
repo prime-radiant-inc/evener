@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -141,6 +142,17 @@ type WorktreeRemoveResult struct {
 	Warning          string
 }
 
+// WorktreeAdoptResult is what a successful adopt returns: the adopted
+// worktree's path, the managed name it now answers to (its path relative to
+// the managed root), its branch, and the base commit recorded in the sidecar
+// adopt wrote.
+type WorktreeAdoptResult struct {
+	Path    string
+	Name    string
+	Branch  string
+	BaseSHA string
+}
+
 // WorktreeListEntry is one worktree in the manage_worktree list result (spec
 // §5 list step 3): path, branch, current occupancy, lock state, prunable
 // annotation, and disposal-relevant staleness state pulled from the metadata
@@ -243,6 +255,11 @@ type worktreeGuard struct {
 	// switchByPath runs the switch-by-path operation (spec §4 switch, by path),
 	// including the managed-directory reroute to switchByName's choreography.
 	switchByPath func(ctx context.Context, path string) (WorktreeSwitchResult, error)
+	// adoptOp runs the adopt operation: convert an unmanaged worktree under the
+	// managed root into a managed one by writing its metadata sidecar. It is
+	// the ONLY way anything becomes managed after the fact — nothing in list,
+	// remove or prune ever adopts (spec §6 "Metadata sidecar").
+	adoptOp func(ctx context.Context, path string) (WorktreeAdoptResult, error)
 	// exitOp runs the exit operation (spec §4 exit): the operation-level
 	// choreography (leave-unlock, restore, idempotent restore-relock) layered
 	// on top of the exitWorktree env-restore primitive above.
@@ -378,6 +395,25 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 					"branch":  res.Branch,
 					"message": msg,
 				}, nil
+			case "adopt":
+				path, _ := args["path"].(string)
+				if strings.TrimSpace(path) == "" {
+					return nil, errors.New("manage_worktree adopt: path is required")
+				}
+				res, err := deps.worktreeGuard.adoptOp(ctx, path)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{
+					"status":   "adopted",
+					"path":     res.Path,
+					"name":     res.Name,
+					"branch":   res.Branch,
+					"base_sha": res.BaseSHA,
+					"message": fmt.Sprintf(
+						"Adopted the worktree at %s as managed worktree %q (branch %s). It is now switchable by name and subject to remove and prune like any worktree serf created.",
+						res.Path, res.Name, res.Branch),
+				}, nil
 			case "exit":
 				res, err := deps.worktreeGuard.exitOp(ctx)
 				if err != nil {
@@ -437,14 +473,20 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 				if err != nil {
 					return nil, err
 				}
-				out := make([]map[string]any, len(entries))
-				for i, e := range entries {
+				managed, unmanaged := partitionWorktreeListEntries(entries)
+				out := make([]map[string]any, len(managed))
+				for i, e := range managed {
 					out[i] = worktreeListEntryToMap(e)
 				}
+				strays := make([]map[string]any, len(unmanaged))
+				for i, e := range unmanaged {
+					strays[i] = worktreeUnmanagedEntryToMap(e)
+				}
 				return map[string]any{
-					"status":  "listed",
-					"entries": out,
-					"message": worktreeListSummary(entries),
+					"status":    "listed",
+					"entries":   out,
+					"unmanaged": strays,
+					"message":   worktreeListSummary(managed, unmanaged),
 				}, nil
 			case "prune":
 				res, err := deps.worktreeGuard.pruneOp(ctx)
@@ -818,37 +860,36 @@ const (
 	subagentRetainedIdleLabel = " (subagent, retained — idle)"
 )
 
-// disposeHintForRetainedIdle returns a remove-refusal suffix pointing the caller
-// at the dispose op (spec §P1 step 3), but ONLY when every live-work blocker in
-// handles is a retained, idle delegate child with an owned worktree-isolation
-// record. A retained-idle subagent holds no live work of its own — it is
-// terminal history the dispose op can reclaim — so naming the delegate id and
-// suggesting `manage_worktree op=dispose id=<dlg_…>` gives the model a
-// legitimate way forward instead of an opaque refusal it correctly will not
-// bypass. It returns "" (leaving the generic refusal in place) when any blocker
-// is NOT a retained-idle subagent — a running shell, delegate job, or driving
-// child would not be cleared by a dispose — or when a blocker does not resolve
-// to an owned worktree-isolated delegate (a plain or ordinary/shared subagent
-// has no disposable lane).
-func (s *Session) disposeHintForRetainedIdle(handles []string) string {
+// retainedIdleDelegateIDs resolves every live-work blocker in handles to an
+// owned, worktree-isolated delegate id, returning ok=false the moment any
+// blocker fails to resolve — a running shell, delegate job, or driving child
+// (not a retained-idle subagent at all), a subagent with no matching delegate
+// record, or a delegate that is not worktree-isolated or not owned by this
+// session (a plain/ordinary/shared subagent, or another session's lane, has
+// no disposable lane this op may touch). It backs both
+// disposeHintForRetainedIdle's refusal-copy suggestion and worktreeRemove's
+// force cascade (spec §P1 step 3; the force-cascade addendum), so the two stay
+// in lockstep: whatever the hint offers to dispose is exactly what force goes
+// on to dispose.
+func (s *Session) retainedIdleDelegateIDs(handles []string) ([]string, bool) {
 	if len(handles) == 0 || s.jobManager == nil {
-		return ""
+		return nil, false
 	}
 	childIDs := make([]string, 0, len(handles))
 	for _, h := range handles {
 		id, ok := strings.CutSuffix(h, subagentRetainedIdleLabel)
 		if !ok {
-			return ""
+			return nil, false
 		}
 		childIDs = append(childIDs, id)
 	}
 	delegates, err := s.jobManager.store.LoadDelegates()
 	if err != nil {
-		return ""
+		return nil, false
 	}
 	recs, err := s.jobManager.store.Load()
 	if err != nil {
-		return ""
+		return nil, false
 	}
 	childToDelegate := make(map[string]string, len(delegates))
 	for _, d := range delegates {
@@ -856,19 +897,41 @@ func (s *Session) disposeHintForRetainedIdle(handles []string) string {
 			childToDelegate[d.ChildSessionID] = d.DelegateID
 		}
 	}
-	suggestions := make([]string, 0, len(childIDs))
+	dlgIDs := make([]string, 0, len(childIDs))
 	for _, cid := range childIDs {
 		dlg, ok := childToDelegate[cid]
 		if !ok {
-			return ""
+			return nil, false
 		}
 		_, desc := findDelegateLaneRecord(recs, dlg)
 		if desc == nil || desc.ParentSessionID != s.id {
-			return ""
+			return nil, false
 		}
+		dlgIDs = append(dlgIDs, dlg)
+	}
+	return dlgIDs, true
+}
+
+// disposeHintForRetainedIdle returns a remove-refusal suffix pointing the caller
+// at the dispose op (spec §P1 step 3), but ONLY when every live-work blocker in
+// handles resolves to an owned, worktree-isolated delegate
+// (retainedIdleDelegateIDs). A retained-idle subagent holds no live work of its
+// own — it is terminal history the dispose op can reclaim — so naming the
+// delegate id and suggesting `manage_worktree op=dispose id=<dlg_…>`, or
+// pointing at `force` to have `remove` run that cascade itself, gives the model
+// a legitimate way forward instead of an opaque refusal it correctly will not
+// bypass. It returns "" (leaving the generic refusal in place) when
+// retainedIdleDelegateIDs cannot resolve every blocker.
+func (s *Session) disposeHintForRetainedIdle(handles []string) string {
+	dlgIDs, ok := s.retainedIdleDelegateIDs(handles)
+	if !ok {
+		return ""
+	}
+	suggestions := make([]string, 0, len(dlgIDs))
+	for _, dlg := range dlgIDs {
 		suggestions = append(suggestions, "manage_worktree op=dispose id="+dlg)
 	}
-	return "All blockers are retained, idle delegate(s) holding no live work; dispose them to proceed: " + strings.Join(suggestions, "; ")
+	return "All blockers are retained, idle delegate(s) holding no live work; dispose them to proceed, or pass force to remove to have it dispose them automatically: " + strings.Join(suggestions, "; ")
 }
 
 // pathEqualOrUnder reports whether candidate is target itself or nested under
@@ -1540,6 +1603,167 @@ func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (Wor
 	return WorktreeSwitchResult{Path: matchedPath, Branch: matchedBranch}, nil
 }
 
+// worktreeAdopt performs the adopt operation: convert a worktree that sits
+// under the managed root with no metadata sidecar into a managed one, by
+// writing the sidecar it lacks. This is the ONLY route out of the unmanaged
+// section (spec §6 "Metadata sidecar": a sidecar-less worktree under the
+// managed dir is provenance-unknown, skipped by prune and treated by remove
+// as another session's). Nothing adopts implicitly — list, remove and prune
+// go on ignoring an un-adopted stray no matter how often they see it.
+//
+// The sidecar records THIS session as creator, so ownership scoping (spec
+// §5 "Ownership scoping") applies to the adopted worktree from here on
+// exactly as it would to one this session had created.
+//
+// Adopt takes no lock: locks follow occupancy, not provenance (spec §4 switch
+// step 3), and adopting does not enter the worktree. It does honor the record's
+// lock rule set for reading the target's state — a worktree locked by anyone
+// but this session is an occupied worktree, and claiming provenance over
+// someone else's occupancy is refused rather than raced.
+func (s *Session) worktreeAdopt(ctx context.Context, rawPath string) (WorktreeAdoptResult, error) {
+	st := s.worktreeStateSnapshot()
+	if err := st.resolutionError("adopt"); err != nil {
+		return WorktreeAdoptResult{}, err
+	}
+	if st.env == nil {
+		return WorktreeAdoptResult{}, errors.New("manage_worktree requires a local execution environment")
+	}
+	if st.mainRepoRoot == "" {
+		return WorktreeAdoptResult{}, errors.New("manage_worktree adopt: not in a git repository")
+	}
+
+	// Canonicalize the argument and require a match in git's own registry, the
+	// same validator switch-by-path uses (spec §4 switch by-path step 1).
+	canonicalArg, err := filepath.EvalSymlinks(rawPath)
+	if err != nil {
+		return WorktreeAdoptResult{}, fmt.Errorf("manage_worktree adopt: path %q does not exist", rawPath)
+	}
+	canonicalArg = filepath.Clean(canonicalArg)
+
+	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	if err != nil {
+		return WorktreeAdoptResult{}, err
+	}
+	porcelain, err := readWorktreePorcelain(run)
+	if err != nil {
+		return WorktreeAdoptResult{}, fmt.Errorf("manage_worktree adopt: listing worktrees: %w", err)
+	}
+	var entry worktree.PorcelainEntry
+	found := false
+	for _, e := range porcelain {
+		cp, evErr := filepath.EvalSymlinks(e.Path)
+		if evErr != nil {
+			continue // momentarily absent; not a match we can canonicalize
+		}
+		if filepath.Clean(cp) == canonicalArg {
+			entry, found = e, true
+			break
+		}
+	}
+	if !found {
+		return WorktreeAdoptResult{}, fmt.Errorf("manage_worktree adopt: %q is not a worktree registered to this repository", rawPath)
+	}
+
+	// Only worktrees under the managed root can be adopted. A registered
+	// worktree elsewhere stays switchable and exitable but never serf's to
+	// remove or prune (spec §4 switch by-path step 4, "remove stays
+	// managed-only"), and adoption is precisely what would change that.
+	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
+	rel, underManaged := relPathUnderManagedDir(canonicalArg, projectDir)
+	if !underManaged {
+		return WorktreeAdoptResult{}, fmt.Errorf(
+			"manage_worktree adopt: %s is outside the managed worktree root %s; only worktrees under it can be adopted (you can still switch to it by path)",
+			entry.Path, projectDir)
+	}
+	name := filepath.ToSlash(rel)
+	if verr := worktree.ValidateName(name); verr != nil {
+		return WorktreeAdoptResult{}, fmt.Errorf("manage_worktree adopt: %s cannot be adopted: %w", entry.Path, verr)
+	}
+
+	// A managed worktree's directory name IS its branch name: remove step 9
+	// and prune's collector both act on refs/heads/<name>. Adopting a
+	// directory whose branch differs would aim those at the wrong branch, so
+	// the mismatch is refused instead of recorded.
+	branch := strings.TrimPrefix(entry.Branch, "refs/heads/")
+	if branch == "" {
+		return WorktreeAdoptResult{}, fmt.Errorf("manage_worktree adopt: %s has a detached HEAD; check out branch %q in it first", entry.Path, name)
+	}
+	if branch != name {
+		return WorktreeAdoptResult{}, fmt.Errorf(
+			"manage_worktree adopt: %s has branch %q checked out but would be managed under the name %q; a managed worktree's directory name must equal its branch name",
+			entry.Path, branch, name)
+	}
+
+	// Lock state: unlocked or our own crash residue is ours to claim; anything
+	// else is another owner's occupancy (spec §5 "A lock with no reason or a
+	// reason that doesn't parse as a serf marker is foreign"; a delegate marker
+	// is a live lane and foreign to a session-level operation).
+	if entry.Locked {
+		if lockSt := worktree.ClassifyReason(entry.LockReason, s.id, ""); lockSt != worktree.OwnSession {
+			detail := entry.LockReason
+			if detail == "" {
+				detail = "no reason given"
+			}
+			return WorktreeAdoptResult{}, fmt.Errorf(
+				"manage_worktree adopt: %s is locked by another owner (%s); refusing to claim a worktree someone else occupies",
+				entry.Path, detail)
+		}
+	}
+
+	metaDir := metaDirForProject(projectDir)
+	if _, scErr := worktree.ReadSidecar(metaDir, name); scErr == nil {
+		return WorktreeAdoptResult{}, fmt.Errorf("manage_worktree adopt: %s is already managed as %q; adopt only takes over unmanaged worktrees", entry.Path, name)
+	} else if !os.IsNotExist(scErr) {
+		return WorktreeAdoptResult{}, fmt.Errorf("manage_worktree adopt: reading metadata: %w", scErr)
+	}
+
+	// merge_target is read from the MAIN repo root, not the active root that
+	// create uses (spec §6). Adopt does not enter its target and the target may
+	// even BE the active root, in which case an active-root merge target would
+	// name the adopted lane's own branch — making it trivially "merged" and so
+	// collectible by the next prune. The main checkout's branch is the stable,
+	// non-self-referential answer.
+	mergeTarget := branchAtRoot(run, st.mainRepoRoot)
+
+	// base_sha is where this lane diverged from that target, never its current
+	// HEAD: recording HEAD would make an adopted lane full of committed work
+	// satisfy prune's `unchanged` predicate (tip == base) and be collected,
+	// branch and all, on the next sweep. When no merge base can be computed
+	// (detached main checkout, unrelated histories) both fields stay empty,
+	// which lands every downstream predicate in its conservative arm — merge
+	// target unknown, nothing collectible.
+	baseSHA := ""
+	if mergeTarget != "" {
+		if mb, mbErr := run("merge-base", "refs/heads/"+name, "refs/heads/"+mergeTarget); mbErr == nil {
+			baseSHA = strings.TrimSpace(mb)
+		}
+	}
+
+	if mkErr := os.MkdirAll(metaDir, 0o755); mkErr != nil {
+		return WorktreeAdoptResult{}, fmt.Errorf("manage_worktree adopt: create metadata dir: %w", mkErr)
+	}
+	sc := worktree.Sidecar{
+		Name:           name,
+		Branch:         branch,
+		BaseSHA:        baseSHA,
+		MergeTarget:    mergeTarget,
+		OriginalRoot:   st.mainRepoRoot,
+		CreatorSession: s.id,
+		CreatedAt:      s.sclock().Now().UTC().Format(time.RFC3339),
+	}
+	// O_EXCL for the same reason create needs it: two concurrent adopts both
+	// pass the read above, and a plain write would let the loser overwrite the
+	// winner's provenance.
+	if werr := s.writeWorktreeSidecar(metaDir, name, sc); werr != nil {
+		if os.IsExist(werr) {
+			return WorktreeAdoptResult{}, fmt.Errorf("manage_worktree adopt: %s is already being adopted", entry.Path)
+		}
+		return WorktreeAdoptResult{}, fmt.Errorf("manage_worktree adopt: write sidecar: %w", werr)
+	}
+
+	return WorktreeAdoptResult{Path: entry.Path, Name: name, Branch: branch, BaseSHA: baseSHA}, nil
+}
+
 // relockRestoreTargetWithLockState applies the idempotent EvRestoreLand lock
 // rule to a restore target that resolves inside the managed directory (spec §4
 // exit step 4; §5 "Restores follow the same rule"): lock if unlocked, adopt our
@@ -1748,11 +1972,42 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	// effort: liveWorkUnder scans running shell/delegate jobs and live
 	// subagent envs (see its doc comment); a shell command that `cd`s after
 	// launch is invisible to it.
+	//
+	// force-cascade addendum: when every blocker is a retained-idle, owned,
+	// worktree-isolated delegate, force disposes each one through the
+	// SANCTIONED dispose path (worktreeDispose — the exact op
+	// `manage_worktree op=dispose` runs) rather than bypassing this guard.
+	// This step only DECIDES eligibility and records it in
+	// forceCascadeDlgIDs; it does NOT dispose anything yet — the dispose
+	// calls are destructive to lanes OTHER than target, and running them
+	// here, ahead of steps 5-7 (which can still refuse), would let a call
+	// that ultimately refuses have already destroyed retained-idle lanes.
+	// The cascade actually runs just before step 8, once steps 5-7 have all
+	// passed (code-review finding I1;
+	// TestWorktreeRemove_Force_CascadeRunsAfterOwnGatesPass pins it). Each
+	// cascaded dispose keeps its OWN gates: it always runs with force=false,
+	// forceDirty=false, so an unmerged or dirty lane still refuses on
+	// dispose's own terms — remove's `force` means "run the sanctioned
+	// cascade," never "invent a new force semantics for dispose." A
+	// genuinely running job (not a retained-idle subagent) makes
+	// retainedIdleDelegateIDs fail closed, so this block never records
+	// anything and the live-execution refusal below is unchanged (spec
+	// "Running jobs block removal, always").
+	var forceCascadeDlgIDs []string
 	if live := s.liveWorkUnder(target); len(live) > 0 {
-		if hint := s.disposeHintForRetainedIdle(live); hint != "" {
-			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: live work under %s: %s. %s", target, strings.Join(live, ", "), hint)
+		eligible := false
+		if force {
+			if dlgIDs, ok := s.retainedIdleDelegateIDs(live); ok {
+				forceCascadeDlgIDs = dlgIDs
+				eligible = true
+			}
 		}
-		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: live work under %s: %s", target, strings.Join(live, ", "))
+		if !eligible {
+			if hint := s.disposeHintForRetainedIdle(live); hint != "" {
+				return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: live work under %s: %s. %s", target, strings.Join(live, ", "), hint)
+			}
+			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: live work under %s: %s", target, strings.Join(live, ", "))
+		}
 	}
 
 	// Step 5: provenance guard. A worktree with no sidecar has unknown
@@ -1816,6 +2071,81 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 			return WorktreeRemoveResult{}, err
 		}
 		removeWarning = warning
+	}
+
+	// Force-cascade execution (deferred from step 4; code-review finding I1):
+	// steps 5-7 above are remove's OWN non-cascade refusal gates on target,
+	// and none of them is destructive to a retained-idle lane (step 7 only
+	// swaps this session's OWN env pointer — already accepted as recoverable
+	// if a later step fails, per step 8's own comment below). Only now that
+	// they have ALL passed do we run the sanctioned dispose cascade, so a
+	// call that refuses anywhere above — or a cascaded dispose's own refusal
+	// right here — has never destroyed a lane.
+	if len(forceCascadeDlgIDs) > 0 {
+		// targetIsCascadeLane is a RECORD-based signal (code-review finding
+		// I2): a delegate's own lane is always named exactly its delegate id
+		// (spec §9 step 1 — createDelegateWorktree names it `delegateID`), so
+		// target IS one of the lanes the cascade is about to dispose iff
+		// `name` is literally one of the ids we just resolved from live,
+		// owned blockers. This is checked BEFORE running anything, from the
+		// same eligibility list step 4 built — never inferred after the fact
+		// from a bare stat of target/.git, which cannot distinguish "the
+		// cascade removed this" from "this directory happened to already be
+		// gone for an unrelated reason" (e.g. deleted out of band while a
+		// stale blocker still pointed at it).
+		targetIsCascadeLane := slices.Contains(forceCascadeDlgIDs, name)
+		// Hazard: step 7 above has already swapped s.env and unlocked target by
+		// the time a cascaded dispose can refuse, so a refusal here can leave
+		// the session out of a worktree it never removed. In a RESUMED
+		// coordinator that is reachable without any user error:
+		// armPendingTerminalNotifications re-arms terminal delegate records to
+		// NotifyPending, and delegateRecordQuiescent then refuses a lane the
+		// pre-resume session would have disposed. The fix belongs to the
+		// quiescence gate, not here.
+		for _, dlg := range forceCascadeDlgIDs {
+			if _, err := s.worktreeDispose(ctx, dlg, false, false); err != nil {
+				// Name dispose's own force, not remove's: remove's force runs
+				// the sanctioned cascade and never widens a cascaded dispose's
+				// gates, so re-invoking remove force:true would only loop.
+				return WorktreeRemoveResult{}, fmt.Errorf(
+					"manage_worktree remove: cannot first dispose retained-idle lane %s: %w. "+
+						"remove's force runs the sanctioned cascade only and never widens dispose's own gates; "+
+						"run `manage_worktree op=dispose id=%s force=true` yourself if you mean to discard that lane's work",
+					dlg, err, dlg)
+			}
+		}
+		if targetIsCascadeLane {
+			// A retained delegate whose own lane IS the worktree being
+			// removed sits exactly at target (pathEqualOrUnder's "equal"
+			// case). Its dispose call above already ran the full removal
+			// sequence — unlock, `git worktree remove`, mark disposed,
+			// `branch -D`, delete sidecar — against the very same meta dir
+			// steps 8-10 below would use, so target's own removal is
+			// entirely owned by that dispose call now; nothing below acts on
+			// it, whichever way dispose resolved it.
+			if managedWorktreeExists(target) {
+				// dispose declined to remove it (the lane turned dirty
+				// mid-disposal and was kept resumable — disposeExecute's
+				// laneKeptDirty outcome, a nil-error SUCCESS from dispose's
+				// own perspective). The requested removal did not happen, so
+				// remove must report that honestly rather than a false
+				// success, and must not fall through to steps 8-11, which
+				// would act on a lane whose sidecar/lock state dispose
+				// already re-owns (downgradeRelockKeep).
+				return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s became dirty during the cascade and was kept by dispose, not removed; it remains resumable via delegate_send or a later remove/dispose", target)
+			}
+			// The branch is deleted iff it is really gone, never asserted
+			// from the fact that a dispose ran (a failed branch delete
+			// downgrades to a warning inside dispose, keeping the branch).
+			return WorktreeRemoveResult{Path: target, Branch: name, BranchDeleted: !branchExists(run, name)}, nil
+		}
+		// Belt and braces: a successful dispose always evicts its blocker's
+		// retained child (disposeExecute step 7) regardless of whether the
+		// lane itself was fully torn down or kept dirty, so this is normally
+		// empty; kept as a defensive re-check rather than assumed.
+		if live := s.liveWorkUnder(target); len(live) > 0 {
+			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: live work under %s: %s", target, strings.Join(live, ", "))
+		}
 	}
 
 	// Step 8: remove the worktree itself. --force covers git's own
@@ -1911,6 +2241,62 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	return result, nil
 }
 
+// partitionWorktreeListEntries splits list's entries into the ones serf
+// manages and the ones it merely found sitting under the managed root. The
+// sidecar is the whole test (spec §6 "Metadata sidecar": a worktree without
+// one is provenance-unknown). They are reported in separate sections because
+// only a managed entry's name is an id the other operations accept — an
+// unmanaged entry can be switched into and adopted by path, and nothing else.
+func partitionWorktreeListEntries(entries []WorktreeListEntry) (managed, unmanaged []WorktreeListEntry) {
+	for _, e := range entries {
+		if e.HasMetadata {
+			managed = append(managed, e)
+			continue
+		}
+		unmanaged = append(unmanaged, e)
+	}
+	return managed, unmanaged
+}
+
+// worktreeUnmanagedEntryToMap renders an unmanaged worktree found under the
+// managed root: deliberately id-less (no "name"), because serf has no claim
+// on it and no operation takes it by name until it is adopted. Path is what
+// adopt and switch accept; the lock/prunable state is what tells a reader
+// whether someone else is living in it.
+func worktreeUnmanagedEntryToMap(e WorktreeListEntry) map[string]any {
+	return map[string]any{
+		"path":            e.Path,
+		"branch":          e.Branch,
+		"current":         e.Current,
+		"locked":          e.Locked,
+		"lock_reason":     e.LockReason,
+		"prunable":        e.Prunable,
+		"prunable_reason": e.PrunableReason,
+	}
+}
+
+// worktreeUnmanagedSummary renders the unmanaged section's digest, naming the
+// operation that converts one and stating exactly how far serf's hands-off
+// treatment goes meanwhile — the two facts a reader needs to act. The digest
+// promises only what remove step 5 delivers: an unmanaged worktree is never
+// pruned, and never removed unless the caller passes force.
+func worktreeUnmanagedSummary(unmanaged []WorktreeListEntry) string {
+	if len(unmanaged) == 0 {
+		return ""
+	}
+	parts := make([]string, len(unmanaged))
+	for i, e := range unmanaged {
+		branch := e.Branch
+		if branch == "" {
+			branch = "detached HEAD"
+		}
+		parts[i] = fmt.Sprintf("%s (%s)", e.Path, branch)
+	}
+	return fmt.Sprintf(
+		" %d unmanaged worktree(s) under the managed root, which serf never prunes and never removes without force — use manage_worktree adopt with the path to take one over: %s.",
+		len(unmanaged), strings.Join(parts, "; "))
+}
+
 // worktreeListSummary builds the human-readable list message: a count plus a
 // one-line-per-lane digest (name, commits ahead, dirty/clean, merged) so a
 // model that reads only the result message — not the structured entries array —
@@ -1920,9 +2306,13 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 // A lane whose state could not be read says so. Rendering its zero values would
 // describe it as empty and clean, which is the description a model acts on by
 // discarding it.
-func worktreeListSummary(entries []WorktreeListEntry) string {
+//
+// Unmanaged worktrees found under the managed root are appended as their own
+// labeled clause rather than folded into the count, so a reader never mistakes
+// one for a lane serf will clean up.
+func worktreeListSummary(entries, unmanaged []WorktreeListEntry) string {
 	if len(entries) == 0 {
-		return "0 managed worktree(s)."
+		return "0 managed worktree(s)." + worktreeUnmanagedSummary(unmanaged)
 	}
 	parts := make([]string, len(entries))
 	for i, e := range entries {
@@ -1943,7 +2333,7 @@ func worktreeListSummary(entries []WorktreeListEntry) string {
 		}
 		parts[i] = fmt.Sprintf("%s (%s, %s, %s)", e.Name, ahead, state, merged)
 	}
-	return fmt.Sprintf("%d managed worktree(s): %s.", len(entries), strings.Join(parts, "; "))
+	return fmt.Sprintf("%d managed worktree(s): %s.", len(entries), strings.Join(parts, "; ")) + worktreeUnmanagedSummary(unmanaged)
 }
 
 // worktreeListEntryToMap renders a WorktreeListEntry into the tool result
@@ -2058,6 +2448,12 @@ func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error)
 				entry.Dirty = !clean
 			} else {
 				entry.DirtyUnknown = true
+			}
+			// A sidecar with no base SHA — an adopt that could not compute a
+			// merge base — cannot answer "how far ahead"; saying so beats
+			// rendering the zero value as a confident 0.
+			if entry.HasMetadata && entry.BaseSHA == "" {
+				entry.AheadUnknown = true
 			}
 			if entry.HasMetadata && entry.BaseSHA != "" {
 				aheadOut, aErr := run("-C", e.Path, "rev-list", "--count", entry.BaseSHA+"..HEAD")

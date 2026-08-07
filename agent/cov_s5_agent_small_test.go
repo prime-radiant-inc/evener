@@ -70,7 +70,7 @@ func TestS5Cov_TaskReminderFull(t *testing.T) {
 }
 
 func TestS5Cov_FormatCurrentTaskSteering(t *testing.T) {
-	out := formatCurrentTaskSteering(taskpkg.Task{ID: 7, Description: "title", Prompt: "  instructions  "})
+	out := formatCurrentTaskSteering(taskpkg.Task{ID: 7, Description: "title", Prompt: "  instructions  "}, true)
 	for _, want := range []string{`id="7"`, "<TITLE>title</TITLE>", "<INSTRUCTIONS>", "instructions", "mark task 7 as done"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("steering missing %q:\n%s", want, out)

@@ -1,4 +1,4 @@
-## Session transcripts
+{{ if or (.HasTool "read_transcript") (.HasTool "find_session_transcripts") }}## Session transcripts
 
 The transcript tools inspect archived sessions and jobs (your own and other
 sessions on this machine). Use them for audit, forensics, prior-session search,
@@ -7,11 +7,13 @@ tool result, job output, notification, or observer callback as your working
 evidence; read a transcript when you specifically need the full child
 conversation history. Do not access raw transcript files directly; use these
 tools instead.
-
+{{ if .HasTool "find_session_transcripts" }}
 - **`find_session_transcripts`** — find sessions. No arguments lists recent sessions
   newest-first; `query` searches their content; `children_of:"<transcript_ref>"` lists
   the sessions a ref spawned (its subagents/forks); `scope:"all_projects"` widens beyond
   this project. It returns `transcript_ref`s and never reads a session.
+{{- end }}
+{{- if .HasTool "read_transcript" }}
 - **`read_transcript`** — view a session or `job:<job_id>` by `transcript_ref`
   (omit the ref for the current session). `format:"outline"` is a
   one-line-per-turn map; `format:"markdown"` (default) is readable conversation
@@ -26,3 +28,5 @@ The Turn numbers shown in the outline and in markdown are exactly what `range` a
 
 After compaction the checkpoint records this session's id; read it back with
 `read_transcript` to recover turns compaction removed. There is no `recall` tool.
+{{- end }}
+{{ end -}}

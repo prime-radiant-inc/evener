@@ -9,7 +9,10 @@ import (
 
 // formatCurrentTaskSteering wraps a Task into a SYSTEM-REMINDER block that
 // becomes the agent's next steering message. Variant: v09
-func formatCurrentTaskSteering(task taskpkg.Task) string {
+//
+// canUseTaskList is the caller's answer to "does this session serve task_list";
+// false swaps the closing call instruction for wording the session can obey.
+func formatCurrentTaskSteering(task taskpkg.Task, canUseTaskList bool) string {
 	var b strings.Builder
 	b.WriteString("<SYSTEM-REMINDER>\n")
 	fmt.Fprintf(&b, "<CURRENT-TASK id=\"%d\">\n", task.ID)
@@ -20,7 +23,11 @@ func formatCurrentTaskSteering(task taskpkg.Task) string {
 		b.WriteString("\n</INSTRUCTIONS>\n")
 	}
 	b.WriteString("</CURRENT-TASK>\n")
-	fmt.Fprintf(&b, "Call your next tool: use task_list to mark task %d as done when this step is complete.\n", task.ID)
+	if canUseTaskList {
+		fmt.Fprintf(&b, "Call your next tool: use task_list to mark task %d as done when this step is complete.\n", task.ID)
+	} else {
+		fmt.Fprintf(&b, "Work task %d now, and say so when this step is complete.\n", task.ID)
+	}
 	b.WriteString("</SYSTEM-REMINDER>")
 	return b.String()
 }
@@ -57,21 +64,23 @@ func taskReminderFull(store *taskpkg.TaskStore) string {
 // taskReminderForInactivity re-emits the current task's steering message when
 // the agent has gone quiet but still has work in progress. Returns empty when
 // nothing is in_progress — there is no "current step" to re-state.
-func taskReminderForInactivity(store *taskpkg.TaskStore) string {
+func taskReminderForInactivity(store *taskpkg.TaskStore, canUseTaskList bool) string {
 	current, ok := store.CurrentInProgress()
 	if !ok {
 		return ""
 	}
-	return formatCurrentTaskSteering(current)
+	return formatCurrentTaskSteering(current, canUseTaskList)
 }
 
 // taskReminderAllDone signals that the agent has completed all tasks on its
-// list and should either add new work or finish up.
-func taskReminderAllDone() string {
+// list and should either add new work or finish up. resultTool is the session's
+// own name for the result tool, which a session may rename — "communicate" is
+// a tool some sessions do not have.
+func taskReminderAllDone(resultTool string) string {
 	return "<SYSTEM-REMINDER>\n" +
 		"You have completed all tasks on your task list. " +
 		"If you have other work to do, add it to the task list now. " +
-		"Otherwise, deliver your final output with the communicate tool.\n" +
+		"Otherwise, deliver your final output with the " + resultTool + " tool.\n" +
 		"</SYSTEM-REMINDER>"
 }
 

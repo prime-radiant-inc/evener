@@ -199,6 +199,7 @@ func newToolDeps(s *Session) *toolDeps {
 			create:        s.worktreeCreate,
 			switchByName:  s.worktreeSwitchByName,
 			switchByPath:  s.worktreeSwitchByPath,
+			adoptOp:       s.worktreeAdopt,
 			exitOp:        s.worktreeExit,
 			removeOp:      s.worktreeRemove,
 			listOp:        s.worktreeList,

@@ -422,7 +422,10 @@ func TestSessionLogStrategy_SessionLogCheckpoint_ContainsTranscriptRecoveryPoint
 	logPath := filepath.Join(dir, "test.log.jsonl")
 
 	const sessionID = "sess-abc-123"
+	cm := NewManager(nil, nil)
+	cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
 	sls := &SessionLogStrategy{
+		cm:      cm,
 		log:     mustNewSessionLog(t, logPath),
 		session: &fakeStrategyHost{id: sessionID},
 	}

@@ -18,7 +18,7 @@ func TestFormatCurrentTaskSteering(t *testing.T) {
 		Prompt:          "Before you do anything else, identify what determines\nwhether the work is correct.",
 		ReasoningEffort: "low",
 	}
-	msg := formatCurrentTaskSteering(task)
+	msg := formatCurrentTaskSteering(task, true)
 
 	wants := []string{
 		"<SYSTEM-REMINDER>",
@@ -55,7 +55,7 @@ func TestFormatCurrentTaskSteering_NoPrompt(t *testing.T) {
 		ID:          1,
 		Description: "Bare task",
 	}
-	msg := formatCurrentTaskSteering(task)
+	msg := formatCurrentTaskSteering(task, true)
 
 	if strings.Contains(msg, "<INSTRUCTIONS>") {
 		t.Errorf("no-prompt task should omit INSTRUCTIONS block: %s", msg)
@@ -116,7 +116,7 @@ func TestTaskReminderForInactivity_InProgressReFiresCurrentTaskSteering(t *testi
 	})
 	store.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskInProgress}})
 
-	msg := taskReminderForInactivity(store)
+	msg := taskReminderForInactivity(store, true)
 	if msg == "" {
 		t.Fatal("expected non-empty reminder when a task is in_progress")
 	}
@@ -126,9 +126,9 @@ func TestTaskReminderForInactivity_InProgressReFiresCurrentTaskSteering(t *testi
 	if !ok {
 		t.Fatal("expected an in_progress task in the fixture")
 	}
-	want := formatCurrentTaskSteering(current)
+	want := formatCurrentTaskSteering(current, true)
 	if msg != want {
-		t.Fatalf("inactivity reminder should equal formatCurrentTaskSteering(current)\nwant:\n%s\ngot:\n%s", want, msg)
+		t.Fatalf("inactivity reminder should equal formatCurrentTaskSteering(current, true)\nwant:\n%s\ngot:\n%s", want, msg)
 	}
 }
 
@@ -140,7 +140,7 @@ func TestTaskReminderForInactivity_NoInProgressReturnsEmpty(t *testing.T) {
 		{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "a"},
 	})
 	// No task set to in_progress — reminder skipped.
-	msg := taskReminderForInactivity(store)
+	msg := taskReminderForInactivity(store, true)
 	if msg != "" {
 		t.Fatalf("expected empty reminder when no task is in_progress, got: %s", msg)
 	}
@@ -150,7 +150,7 @@ func TestTaskReminderForInactivity_Empty(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "test")
-	msg := taskReminderForInactivity(store)
+	msg := taskReminderForInactivity(store, true)
 	if msg != "" {
 		t.Fatalf("expected empty reminder for empty store, got: %s", msg)
 	}
@@ -175,7 +175,7 @@ func TestTaskReminderNudge(t *testing.T) {
 
 func TestTaskReminderAllDone(t *testing.T) {
 	t.Parallel()
-	msg := taskReminderAllDone()
+	msg := taskReminderAllDone("communicate")
 	if !strings.HasPrefix(msg, "<SYSTEM-REMINDER>") {
 		t.Fatalf("should start with <SYSTEM-REMINDER>: %s", msg)
 	}

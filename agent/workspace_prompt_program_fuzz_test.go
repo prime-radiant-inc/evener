@@ -566,8 +566,12 @@ func wppSectionResolver(t *testing.T, token string) {
 	if got := r.sourceLabel(memory, "x.md"); got != "unknown:x.md" {
 		t.Fatalf("unknown source label = %q", got)
 	}
-	if content, label := (&sectionResolver{sources: []sectionSource{memory}}).readFirst("x.md"); string(content) != "memory" || label != "unknown:x.md" {
-		t.Fatalf("memory source read = %q label:%q", content, label)
+	memResolver := &sectionResolver{sources: []sectionSource{memory}}
+	if content := memResolver.readAndRender("x", promptData{}); content != "memory" {
+		t.Fatalf("memory source read = %q", content)
+	}
+	if len(memResolver.tracked) != 1 || memResolver.tracked[0].Label != "unknown:x.md" {
+		t.Fatalf("memory source tracking = %#v", memResolver.tracked)
 	}
 	embeddedResolver := &sectionResolver{provider: "openai", agent: defaultAgentName, agentFS: bundled.Agents(), sources: []sectionSource{embedded}}
 	if out, sources, err := embeddedResolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "system", promptData{Provider: "openai", Agent: defaultAgentName}); err != nil || out == "" || len(sources) == 0 {

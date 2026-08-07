@@ -79,9 +79,27 @@ func miscCatalogAndReminderProgram(t *testing.T, token string) {
 	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, Notes: token}}); err != nil {
 		t.Fatal(err)
 	}
-	for _, reminder := range []string{taskReminderFull(store), taskReminderForInactivity(store), formatCurrentTaskSteering(created[0]), taskReminderAllDone(), taskReminderNudge()} {
-		if !strings.Contains(reminder, "<SYSTEM-REMINDER>") {
-			t.Fatalf("invalid task reminder %q", reminder)
+	// Both tool-availability variants of the gated reminders keep the envelope.
+	for _, hasTaskList := range []bool{true, false} {
+		for _, reminder := range []string{taskReminderFull(store), taskReminderForInactivity(store, hasTaskList), formatCurrentTaskSteering(created[0], hasTaskList), taskReminderAllDone("communicate"), taskReminderNudge()} {
+			if !strings.Contains(reminder, "<SYSTEM-REMINDER>") {
+				t.Fatalf("invalid task reminder %q", reminder)
+			}
+		}
+	}
+	// Only the closing call instruction varies: a session without task_list is
+	// never told to call it.
+	for _, steering := range []string{formatCurrentTaskSteering(created[0], true), taskReminderForInactivity(store, true)} {
+		if !strings.Contains(steering, "use task_list to mark task") {
+			t.Fatalf("task_list session steering omits the task_list instruction: %q", steering)
+		}
+	}
+	for _, steering := range []string{formatCurrentTaskSteering(created[0], false), taskReminderForInactivity(store, false)} {
+		if strings.Contains(steering, "task_list") {
+			t.Fatalf("no-task_list session steering names task_list: %q", steering)
+		}
+		if !strings.Contains(steering, "say so when this step is complete") {
+			t.Fatalf("no-task_list session steering omits its own closing instruction: %q", steering)
 		}
 	}
 	if got := taskReminderFull(taskpkg.NewTaskStore(t.TempDir(), "empty")); got != "" {
@@ -90,7 +108,7 @@ func miscCatalogAndReminderProgram(t *testing.T, token string) {
 	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := taskReminderForInactivity(store); got != "" {
+	if got := taskReminderForInactivity(store, true); got != "" {
 		t.Fatalf("completed task inactivity reminder = %q", got)
 	}
 }

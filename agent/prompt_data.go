@@ -62,6 +62,12 @@ type promptData struct {
 	CallableToolNames           []string
 	UnavailableProfileToolNames []string
 
+	// CallableTools is the set of canonical tool names this session's registry
+	// actually serves. Sections ask it through HasTool so a canned instruction
+	// never names a tool the session cannot call (ruled 2026-08-06) — the
+	// prompt-side twin of Session.canInstructTool.
+	CallableTools map[string]bool
+
 	// HasAskUser gates the ask-user prompt section (spec §4.5): true exactly
 	// when ask_user is registered, i.e. an interactive root session (spec §7).
 	HasAskUser bool
@@ -212,4 +218,13 @@ func formatToolNamesForPrompt(names []string) string {
 		parts = append(parts, "`"+name+"`")
 	}
 	return strings.Join(parts, ", ")
+}
+
+// HasTool reports whether the session can actually call the named tool, by its
+// canonical name. Prompt sections call it — `{{ if .HasTool "read_transcript" }}`
+// — so instruction text is written only for tools the session has; a typed
+// agent's tools: allowlist deletes the rest, and a page of instructions for
+// deleted tools is a page the model can only fail.
+func (d promptData) HasTool(name string) bool {
+	return d.CallableTools[name]
 }

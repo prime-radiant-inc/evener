@@ -39,6 +39,7 @@ func newTaskToolHarness(t *testing.T, inputs []taskpkg.TaskInput) *taskToolHarne
 		steer: func(text, _ string) {
 			h.steers = append(h.steers, text)
 		},
+		resultToolName: func() string { return "communicate" },
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: func() *taskpkg.TaskStore { return h.store },
 			markUsed:             func() {},

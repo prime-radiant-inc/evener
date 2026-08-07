@@ -28,6 +28,34 @@ import (
 type CompactionMeta struct {
 	SessionID       string   // session id; non-empty only when the session is persistent (has a stateDir)
 	ActivatedSkills []string // skill names activated during this session
+
+	// AvailableTranscriptTools names the transcript tools this session's
+	// registry actually serves. Compaction artifacts tell the agent how to
+	// recover the detail they folded away, and that instruction may only name
+	// tools it can call: a typed agent whose tools: list omits read_transcript,
+	// or a session with no state directory at all, must not be pointed at one
+	// (ruled 2026-08-06). Empty means the artifact says nothing about recovery.
+	AvailableTranscriptTools []string
+}
+
+// TranscriptRecoverySentence is the trailing instruction a compaction artifact
+// appends to tell the agent how to recover folded-away detail, worded from the
+// transcript tools the session actually has. Empty when it has none.
+func (m *CompactionMeta) TranscriptRecoverySentence() string {
+	if m == nil {
+		return ""
+	}
+	hasRead := slices.Contains(m.AvailableTranscriptTools, "read_transcript")
+	hasFind := slices.Contains(m.AvailableTranscriptTools, "find_session_transcripts")
+	switch {
+	case hasRead && hasFind:
+		return " Use read_transcript to recover earlier detail, or find_session_transcripts to search it."
+	case hasRead:
+		return " Use read_transcript to recover earlier detail."
+	case hasFind:
+		return " Use find_session_transcripts to search this session's transcript."
+	}
+	return ""
 }
 
 type compactionTurnCallbackKey struct{}
@@ -832,7 +860,7 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 
 	// Transcript pointer — tells the model how to access full history via transcript tools.
 	if meta != nil && meta.SessionID != "" {
-		fmt.Fprintf(&fixed, "Earlier history was compacted into this checkpoint to free context-window headroom. This session's id is %s. Use read_transcript to recover earlier detail, or find_session_transcripts to search it.\n", meta.SessionID)
+		fmt.Fprintf(&fixed, "Earlier history was compacted into this checkpoint to free context-window headroom. This session's id is %s.%s\n", meta.SessionID, meta.TranscriptRecoverySentence())
 	}
 
 	// Files modified.

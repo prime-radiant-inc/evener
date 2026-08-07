@@ -86,6 +86,11 @@ func (s *Session) steerCompactionTranscriptReminder() {
 	if s.stateDir == "" || s.id == "" {
 		return
 	}
+	// The reminder is a read_transcript call recipe end to end; a session
+	// without that tool is told nothing rather than told to call it.
+	if !s.canInstructTool("read_transcript") {
+		return
+	}
 	ref := encodeRef("", s.id)
 	s.SteerKind("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, use the transcript tool instead of reading raw transcript files directly. Default read: read_transcript({\"transcript_ref\": \""+ref+"\", \"format\": \"markdown\"}). For long sessions, first get a turn map with read_transcript({\"transcript_ref\": \""+ref+"\", \"format\": \"outline\"}), then read a focused range with read_transcript({\"transcript_ref\": \""+ref+"\", \"range\": \"A-B\"}).</SYSTEM-REMINDER>", events.SteeringKindTranscriptPointer)
 }
@@ -206,6 +211,16 @@ func (s *Session) buildCompactionMeta() contextmgr.CompactionMeta {
 	// Session id — only populated for persistent sessions (stateDir set), where transcript tools are available.
 	if s.stateDir != "" {
 		meta.SessionID = s.id
+	}
+
+	// A persistent session is not automatically a session that can READ its
+	// transcript: a typed agent's tools: allowlist can drop either transcript
+	// tool. The checkpoint's recovery instruction is worded from what is
+	// actually registered here.
+	for _, name := range []string{"read_transcript", "find_session_transcripts"} {
+		if s.canInstructTool(name) {
+			meta.AvailableTranscriptTools = append(meta.AvailableTranscriptTools, name)
+		}
 	}
 
 	return meta

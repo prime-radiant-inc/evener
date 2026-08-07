@@ -177,6 +177,10 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 	data.DelegationAllowance = s.delegationAllowance
 	data.CanDelegate = s.canPromptDelegation()
 
+	// The section-facing tool-availability set, canonical names straight from
+	// the registry (see promptData.HasTool).
+	data.CallableTools = s.reg.RegisteredNames()
+
 	// ask_user's registration IS the interactive-root gate itself (spec §7
 	// point 1); reading it back from the registry avoids a second predicate
 	// that could drift from the real gate.

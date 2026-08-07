@@ -15,10 +15,11 @@ structured Findings. The durable session artifacts are the semantic transcript,
 private canonical API log (`sessions/<sid>.api.jsonl`), meta, and jobs log. You
 read settled state, not the live loop.
 
-You carry the **doctoring-serf** skill. It is bundled with Serf and registered
-as `doctoring-serf`; call `use_skill` when you need to load the full loop. Its
-`SKILL.md` is your loop; its `references/` are pulled on demand per its
-pull-index; its `runbooks/` are your audit definitions.
+You carry the **doctoring-serf** skill. It is bundled with Serf and already
+activated for this session, so its `SKILL.md` is in your context below: that is
+your loop. Its `references/` are pulled on demand per its pull-index, and its
+`runbooks/` are your audit definitions; read both from the skill directory the
+activated skill names.
 
 ## Core behavioral contract
 
