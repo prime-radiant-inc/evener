@@ -31,7 +31,7 @@ func (e *readBeforeWriteEnv) WriteFile(path string, content string) (string, err
 	return "wrote " + path, nil
 }
 func (e *readBeforeWriteEnv) EditFile(path string, oldString string, newString string, replaceAll bool) (string, error) {
-	return "", errors.New("not implemented")
+	return "edited " + path, nil
 }
 func (e *readBeforeWriteEnv) FileExists(path string) bool { return e.existing[path] }
 func (e *readBeforeWriteEnv) Glob(pattern string, basePath string, includeIgnored ...bool) ([]string, error) {
@@ -142,5 +142,82 @@ func TestToolDeps_ReadBeforeWriteWarning(t *testing.T) {
 	}
 	if strings.Contains(res.Output, "WARNING") {
 		t.Fatalf("expected no warning after read, got: %q", res.Output)
+	}
+}
+
+// TestToolDeps_WriteFileCreditsEditFile proves write_file credits the session
+// with having read a path it just wrote, mirroring what read_file already does
+// after a successful read. A file written via write_file this session must be
+// editable via edit_file with no "not read in this session" warning. A file
+// written by some other means that bypasses write_file's handler (e.g. a shell
+// heredoc) must still trigger the warning on a subsequent edit_file call, since
+// serf genuinely doesn't know that content.
+func TestToolDeps_WriteFileCreditsEditFile(t *testing.T) {
+	t.Parallel()
+	const written = "/work/created.txt"
+	const shellWritten = "/work/heredoc.txt"
+
+	env := &readBeforeWriteEnv{existing: map[string]bool{written: true, shellWritten: true}}
+
+	read := map[string]bool{}
+	deps := &toolDeps{
+		readGuard: readGuard{
+			trackRead: func(path string) { read[path] = true },
+			readBeforeWriteWarning: func(path string) string {
+				if read[path] {
+					return ""
+				}
+				if !env.FileExists(path) {
+					return ""
+				}
+				return "[WARNING: not read]\n"
+			},
+		},
+	}
+
+	reg := tool.NewRegistry()
+	if err := registerFileTools(reg, deps); err != nil {
+		t.Fatalf("registerFileTools: %v", err)
+	}
+
+	// Write the file via write_file this session, then edit it: no warning,
+	// because write_file should have credited the session with knowing its
+	// just-written content.
+	writeArgs, _ := json.Marshal(map[string]any{"file_path": written, "content": "data"})
+	res := reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
+		ID:        "w1",
+		Name:      "write_file",
+		Arguments: writeArgs,
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %q", res.Output)
+	}
+
+	editArgs, _ := json.Marshal(map[string]any{"file_path": written, "old_string": "a", "new_string": "b"})
+	res = reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
+		ID:        "e1",
+		Name:      "edit_file",
+		Arguments: editArgs,
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %q", res.Output)
+	}
+	if strings.Contains(res.Output, "WARNING") {
+		t.Fatalf("expected no not-read warning after write_file, got: %q", res.Output)
+	}
+
+	// A file written by some path other than write_file's handler (simulating a
+	// shell heredoc) never calls TrackRead, so editing it afterward must still warn.
+	shellEditArgs, _ := json.Marshal(map[string]any{"file_path": shellWritten, "old_string": "a", "new_string": "b"})
+	res = reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
+		ID:        "e2",
+		Name:      "edit_file",
+		Arguments: shellEditArgs,
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %q", res.Output)
+	}
+	if !strings.Contains(res.Output, "WARNING") {
+		t.Fatalf("expected not-read warning for shell-written file, got: %q", res.Output)
 	}
 }
