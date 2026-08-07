@@ -65,24 +65,46 @@ Two behaviors (kata 31gh plus the scratch contract):
 - [ ] **Step 4:** tests green; gates; commit
   (`feat(execenv): preserve developer PATH and always export session scratch vars`).
 
-### Task 2: GOTELEMETRY=off + GOMODCACHE verification
+### Task 2: GOMODCACHE redirection (telemetry: accept + document)
+
+**AMENDED 2026-08-06.** The original task ordered `GOTELEMETRY=off` in
+`ApplyEnvFloor`. Implementation proved the premise false: `GOTELEMETRY` is
+**not a settable Go environment variable** — the Go toolchain only *reports*
+it from the persisted telemetry-mode file (written by `go telemetry <mode>`),
+so setting it in the child environment changes nothing. Verified empirically
+in a real sandbox, not by reading docs.
+
+**Jesse's ruling (2026-08-06): accept and document. Ship no telemetry
+change.** Rationale: the remaining artifact is one harmless stderr line, and
+every mechanism that would actually silence it (a per-session `HOME`, a
+writable grant for the Go config dir, or running `go telemetry off` on the
+user's behalf) either mutates user state serf does not own or widens the
+sandbox — both worse than the noise.
 
 **Files:**
-- Modify: `agent/sandbox/env_floor.go` (`ApplyEnvFloor` ~:48-79, `isRedirectedCacheVar` ~:116-118)
+- Modify: `agent/sandbox/env_floor.go` (`isRedirectedCacheVar` ~:116-118)
 - Test: `agent/sandbox/env_floor_test.go`
 
-- [ ] **Step 1 (failing test):** `ApplyEnvFloor` output contains
-  `GOTELEMETRY=off` for sandboxed sessions.
-- [ ] **Step 2:** implement; comment states the WHY (telemetry token lives
-  in user config, outside cache roots by design — off is narrower than a
-  new writable root; decided 2026-08-06).
-- [ ] **Step 3 (verification, may produce a fix):** with a custom GOPATH,
+- [ ] **Step 1 (verification, may produce a fix):** with a custom GOPATH,
   confirm `GOMODCACHE` resolves inside a granted cache root under both
   cache strategies; if not, extend `isRedirectedCacheVar` and pin with a
-  test.
-- [ ] **Step 4:** sandboxed integration test: `go test` on a trivial module
-  in a `restricted` sandbox exits 0 with pristine stderr (no telemetry
-  denial). Gates; commit (`fix(sandbox): GOTELEMETRY=off in the env floor`).
+  test. *(Result: a real gap was found and fixed — this is now the whole
+  code change for this task.)*
+- [ ] **Step 2 (no telemetry change):** do not set `GOTELEMETRY` anywhere.
+  Remove any `GOTELEMETRY` row from the `envvars` registry and from
+  `docs/environment.md`, and any claim in `docs/sandboxing.md` that the
+  environment floor sets it.
+- [ ] **Step 3:** sandboxed integration test: `go test` on a trivial module
+  in a `restricted` sandbox exits 0. Stderr is pristine **except** for the
+  one known Go telemetry line (`error acquiring upload token ... operation
+  not permitted`), which the test pins as expected-and-explained — asserted
+  against, with a comment naming the ruling, never silenced or globbed away.
+- [ ] **Step 4:** gates; commit
+  (`fix(sandbox): redirect GOMODCACHE into the granted cache root`).
+
+Task 6's capability preamble states the residue as a resolved fact (a short
+line such as `go: telemetry writes denied (harmless stderr noise)`) so a
+session reads it instead of discovering it.
 
 ### Task 3: packed-refs.lock grant granularity
 
