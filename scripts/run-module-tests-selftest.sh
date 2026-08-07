@@ -16,32 +16,10 @@ set -uo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 runner="$script_dir/run-module-tests.sh"
+. "$(dirname "$0")/selftest-lib.sh"
+
 work="$(mktemp -d -t serf-module-tests-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
-
-checks=0
-fails=0
-ok() { checks=$((checks + 1)); printf 'ok   - %s\n' "$1"; }
-bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL - %s\n' "$1"; }
-assert_eq() {
-	if [ "$1" = "$2" ]; then ok "$3"; else bad "$3 (want '$2', got '$1')"; fi
-}
-assert_has() {
-	if grep -qF -- "$2" "$1"; then
-		ok "$3"
-	else
-		bad "$3 (missing '$2')"
-		sed 's/^/    | /' "$1"
-	fi
-}
-assert_not_has() {
-	if grep -qF -- "$2" "$1"; then
-		bad "$3 (unexpected '$2')"
-		sed 's/^/    | /' "$1"
-	else
-		ok "$3"
-	fi
-}
 
 assert_has_word() {
 	case " $1 " in
@@ -566,6 +544,4 @@ for stream in agent web; do
 	fi
 done
 
-echo "----"
-echo "run-module-tests-selftest: $checks checks, $fails failed"
-[ "$fails" -eq 0 ]
+selftest_summary
