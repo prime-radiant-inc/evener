@@ -219,6 +219,9 @@ var identifierSHA256Inventory = map[string]map[string]map[string]bool{
 		"outputFileSHA256":          {"New()": true},
 		"outputBytesSHA256":         {"Sum256(b)": true},
 	},
+	// Groups normalized tool-failure text into a stable class key for the
+	// dispatch breaker's streak tracking. No identifier is derived from it.
+	"agent/internal/tool/breaker.go":  {"errorClass": {"Sum256([]byte(line))": true}},
 	"agent/internal/tool/registry.go": {"shortHash": {"Sum256(b)": true}},
 	"agent/job_watch.go":              {"normalizedWatchConfigHash": {"Sum256(b)": true}},
 	"agent/runtime_dir.go":            {"nonProjectHash": {"Sum256([]byte(input))": true}},

@@ -76,15 +76,15 @@ func (l *failureLedger) record(name string, args []byte, isErr bool, output stri
 	defer l.mu.Unlock()
 
 	if !isErr {
-		delete(l.entries, key)
+		if _, ok := l.entries[key]; ok {
+			delete(l.entries, key)
+			l.removeFromOrder(key)
+		}
 		return 0
 	}
 
 	class := errorClass(output)
-	snippet := output
-	if len(snippet) > maxFailureSnippetLen {
-		snippet = snippet[:maxFailureSnippetLen]
-	}
+	snippet := truncateRunes(output, maxFailureSnippetLen)
 
 	e, ok := l.entries[key]
 	if !ok || e.class != class {
@@ -114,6 +114,19 @@ func (l *failureLedger) insert(key string) {
 	oldest := l.order[0]
 	l.order = l.order[1:]
 	delete(l.entries, oldest)
+}
+
+// removeFromOrder drops key from the insertion-order slice, keeping it in
+// sync with l.entries so a later eviction never targets a key whose entry
+// was already deleted (and possibly replaced by a newer one under the same
+// key). Must be called with l.mu held.
+func (l *failureLedger) removeFromOrder(key string) {
+	for i, k := range l.order {
+		if k == key {
+			l.order = append(l.order[:i], l.order[i+1:]...)
+			return
+		}
+	}
 }
 
 // errorClass normalizes a tool error output into a stable 8-character
@@ -161,7 +174,7 @@ func replaceDigitRuns(s, replacement string) string {
 	var b strings.Builder
 	inDigits := false
 	for _, r := range s {
-		if unicode.IsDigit(r) {
+		if r >= '0' && r <= '9' {
 			if !inDigits {
 				b.WriteString(replacement)
 				inDigits = true
