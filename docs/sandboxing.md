@@ -271,17 +271,25 @@ took the session's first steering input with it.
 - **Hook commands** (SessionStart, PreToolUse, PostToolUse, …) run under the session
   sandbox, same as any spawned process, with their configured paths granted.
 - **stdio MCP servers** are spawned under the session sandbox, with the directories
-  holding their programs and script arguments granted.
+  holding their programs and script files granted.
 - **Remote (HTTP/SSE) MCP servers** require `--sandbox-net on`; under `net=off`
   their egress is disabled.
 
-The grant is bounded on four axes:
+The grant is tightly bounded:
 
 - **Config-derived, never a glob.** The roots come from the plugin directories this
   session actually loads (`--plugin-dir` plus the enabled plugin registry) and the
-  stdio MCP servers this session actually configures (global, project, and CLI
-  layers) — not from a `~/.claude/plugins/*`-shaped pattern, which would both grant
-  caches the session never loads and miss anything configured elsewhere.
+  stdio MCP servers this session actually configures — not from a
+  `~/.claude/plugins/*`-shaped pattern, which would both grant caches the session
+  never loads and miss anything configured elsewhere.
+- **Only inputs the model cannot write.** MCP servers are read from the *trusted*
+  layers only: the global config, `--mcp-config` files, and `--mcp` inline specs.
+  The per-project layer (`<git root>/.serf/mcp.json`) is **excluded**, because it
+  sits inside the model's own write surface — a grant derived from it would let a
+  session widen its own box (plant the file, spawn a delegate with
+  `sandbox=restricted`, read whatever you named), breaking the rule that the policy
+  is fixed for the life of the session. A project-declared MCP server still connects
+  normally; it just cannot hand itself filesystem roots.
 - **Read and exec only.** The write surface is unchanged; a hook's own directory
   stays unwritable in every mode.
 - **Spawned layer only.** File tools do not gain a browse grant over the plugin
@@ -290,12 +298,23 @@ The grant is bounded on four axes:
   granted, and a denylisted subtree inside a granted path stays masked — the
   pseudo-filesystem floor and the credential denylist are authoritative over this
   grant as over every other.
+- **Never a shared, multi-tenant tree.** A candidate root is refused when it is at
+  or *above* the user's home directory, the session's worktree, or a temp root, or
+  when it is fewer than two path components deep. So `/`, `/Users`, `/home`,
+  `/private`, `/var`, `/Volumes` and `/tmp` can never be granted. Paths are
+  symlink-resolved *and* stripped of their `/System/Volumes/Data` firmlink alias
+  before this check, so neither spelling of a path can slip past it. Note that the
+  denylist alone cannot do this job: it drops roots at or *beneath* a masked path,
+  and these are *above* them.
 
-A hook path the sandbox still cannot serve (a program directly in `$HOME`, which
-would hand `restricted` the whole home directory, is deliberately not granted) fails
-the hook, not the session. A failed SessionStart hook surfaces as one summarized
-warning line naming the hook and its exit code; its raw stderr never becomes the
-model's opening context.
+An MCP `command` or argument contributes only when it is a **regular file**, and it
+contributes the directory holding it (an interpreter resolves a script's
+neighbours). A directory named directly as an argument grants nothing.
+
+A hook or server path the sandbox cannot safely serve fails that hook or server, not
+the session — the same outcome as before this grant existed. A failed SessionStart
+hook surfaces as one summarized warning line naming the hook and its exit code; its
+raw stderr never becomes the model's opening context.
 
 ## Known residuals
 

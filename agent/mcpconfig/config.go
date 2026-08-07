@@ -309,6 +309,23 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 	return Merge(layers...), warnings, nil
 }
 
+// DiscoverTrusted is Discover restricted to the layers the session's MODEL cannot
+// write: the global config (~/.config/serf/mcp.json), --mcp-config files, and
+// --mcp inline specs. The per-project layer (<git root>/.serf/mcp.json) is
+// deliberately EXCLUDED because it lives inside the model's own write surface.
+//
+// Use it wherever MCP config feeds a SECURITY decision rather than a connection.
+// The sandbox policy derivation (agent.SessionInfraRoots) is the case that
+// matters: sandbox grants are resolved from it, and SandboxPolicy promises that
+// nothing the model does mid-session can widen its own box. A model that could
+// plant .serf/mcp.json and have it grant filesystem roots would break exactly
+// that promise. Ordinary MCP startup still uses Discover — connecting to a
+// project-declared server is the feature; granting it sandbox roots is not.
+func DiscoverTrusted(extraFiles, inlineSpecs []string) ([]ServerConfig, []string, error) {
+	// A nil env is what suppresses the project layer; see Discover's layer 2.
+	return Discover(nil, extraFiles, inlineSpecs)
+}
+
 // globalMCPConfigPath returns the path to the global MCP config file.
 // Uses XDG_CONFIG_HOME if set, otherwise ~/.config.
 func globalMCPConfigPath() string {
