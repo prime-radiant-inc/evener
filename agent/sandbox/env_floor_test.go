@@ -59,6 +59,25 @@ func TestEnvFloorRedirectsCacheWhenSessionPrivate(t *testing.T) {
 	}
 }
 
+// TestEnvFloorRedirectsGoModCacheWhenSessionPrivate pins the fix for a verified
+// gap: GOMODCACHE defaults to $GOPATH/pkg/mod, and cacheRootsFor's granted cache
+// root is a fixed $HOME/go/pkg — it does NOT track a custom GOPATH. Under the
+// session-private strategy (restricted mode on every host, and EVERY mode on
+// macOS/Seatbelt, which has no overlay), an ambient GOMODCACHE computed from a
+// non-default GOPATH landed outside every granted write root and the write was
+// denied. GOMODCACHE must redirect into the session tmp exactly like GOCACHE,
+// regardless of GOPATH.
+func TestEnvFloorRedirectsGoModCacheWhenSessionPrivate(t *testing.T) {
+	tmp := "/tmp/serf-session-xyz"
+	in := []string{"GOPATH=/custom/gopath", "GOMODCACHE=/custom/gopath/pkg/mod"}
+	out := ApplyEnvFloor(in, ResolvedPolicy{Mode: ModeRestricted, CacheStrategy: CacheSessionPrivate}, tmp)
+
+	v, ok := envValue(out, "GOMODCACHE")
+	if !ok || !strings.HasPrefix(v, tmp) {
+		t.Errorf("GOMODCACHE must redirect into the session tmp under a custom GOPATH, got %q", v)
+	}
+}
+
 func TestEnvFloorKeepsRealCacheUnderOverlay(t *testing.T) {
 	// With an overlay cache strategy the real cache paths stay (bwrap overlays
 	// them read-real/write-private); the floor must not redirect the env.

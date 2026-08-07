@@ -80,21 +80,21 @@ process environments.
 | `XDG_STATE_HOME` | Base for Serf state when `SERF_STATE_DIR` is unset. |
 | `CARGO_HOME` | Inherited by core-only command environments. |
 | `DISPLAY` | Used to auto-detect graphical sessions for OpenAI login. |
-| `GOMODCACHE` | Inherited by core-only command environments. |
+| `GOMODCACHE` | Inherited by core-only command environments; the sandbox environment floor redirects it into the session scratch directory under the session-private cache strategy (see [docs/sandboxing.md](sandboxing.md#caches-are-contained-never-poisoned)). |
 | `GOPATH` | Inherited by core-only command environments. |
 | `HOME` | Home directory fallback for state/config paths and path expansion. |
 | `HOMEDRIVE` | Windows home drive fallback. |
 | `HOMEPATH` | Windows home path fallback. |
 | `LANG` | Inherited by core-only command environments. |
 | `NVM_DIR` | Inherited by core-only command environments. |
-| `PATH` | Executable search path inherited by local commands and child processes. |
+| `PATH` | Executable search path for local commands and child processes; a session/daemon env overrides it with the resolved login-shell PATH when available, else the inherited process PATH. |
 | `PYENV_ROOT` | Inherited by core-only command environments. |
 | `RUSTUP_HOME` | Inherited by core-only command environments. |
 | `SHELL` | Inherited by core-only command environments. |
 | `SSH_CONNECTION` | Used to auto-detect headless OpenAI login sessions. |
 | `SSH_TTY` | Used to auto-detect headless OpenAI login sessions. |
 | `TERM` | Inherited by core-only command environments. |
-| `TMPDIR` | Inherited by core-only command environments. |
+| `TMPDIR` | Inherited by core-only command environments; a session/daemon env overrides it to the session scratch directory (see `SERF_SCRATCH_DIR`). |
 | `USER` | Inherited by core-only command environments. |
 | `USERPROFILE` | Windows user profile fallback. |
 | `WAYLAND_DISPLAY` | Used to auto-detect graphical sessions and clipboard support. |

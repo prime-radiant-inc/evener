@@ -939,8 +939,11 @@ func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode deleg
 	// A sandboxed delegate is resumable only if its persisted policy still resolves
 	// on this host against its lane — a host that lost the backend (or a mode it can
 	// no longer enforce) refuses rather than resuming unscoped. Uses the WorkingDir
-	// already stat-verified above.
-	if _, reason := s.resolveRestoredDelegateSandbox(desc, strings.TrimSpace(desc.WorkingDir)); reason != "" {
+	// already stat-verified above. No child env exists yet on this read-only probe,
+	// so a plain env at the lane stands in for it — the assessment must be anchored
+	// at the delegate's lane, exactly as the real restore will be.
+	laneEnv := execenv.NewLocalExecutionEnvironment(strings.TrimSpace(desc.WorkingDir))
+	if _, reason := s.resolveRestoredDelegateSandbox(desc, laneEnv); reason != "" {
 		return delegateResumability{Reason: reason}
 	}
 	result := delegateResumability{Resumable: true}
@@ -1184,7 +1187,7 @@ func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestore
 		// parent env onto the clone; an off delegate resumes off, not under a
 		// now-sandboxed parent's policy. A sandboxed delegate gets a fresh per-lane
 		// session tmp.
-		rp, reason := s.resolveRestoredDelegateSandbox(desc, workDir)
+		rp, reason := s.resolveRestoredDelegateSandbox(desc, clone)
 		if reason != "" {
 			return nil, fmt.Errorf("delegate restore: %s", reason)
 		}
@@ -1326,7 +1329,12 @@ func (s *Session) sandboxHostFacts() sandbox.HostFacts {
 // success). Re-resolving from the inputs — never replaying stored roots — anchors
 // the box at the delegate's OWN lane and fails closed (notResumableSandboxUnsatisfiable)
 // when the mode is corrupt or the host can no longer enforce it.
-func (s *Session) resolveRestoredDelegateSandbox(desc *jobstore.DelegateRestoreDescriptor, workDir string) (*sandbox.ResolvedPolicy, string) {
+//
+// childEnv is the delegate's OWN re-rooted environment, not the parent session's:
+// the infrastructure grant's root guard is anchored on the env it is handed, and a
+// delegate must be guarded against ITS lane's parent (see newInfraGuard) — the same
+// env the spawn path passes (subagents.go).
+func (s *Session) resolveRestoredDelegateSandbox(desc *jobstore.DelegateRestoreDescriptor, childEnv execenv.ExecutionEnvironment) (*sandbox.ResolvedPolicy, string) {
 	if desc == nil || desc.Sandbox == nil {
 		return nil, ""
 	}
@@ -1359,7 +1367,13 @@ func (s *Session) resolveRestoredDelegateSandbox(desc *jobstore.DelegateRestoreD
 	if resumedNet && !parentNet {
 		return nil, notResumableSandboxUnsatisfiable
 	}
-	rp, err := sandbox.Resolve(pol, s.sandboxHostFacts(), workDir)
+	// Hook/MCP infrastructure roots are DERIVED from the session's current config,
+	// never replayed from the snapshot (which does not carry them) — the same
+	// re-resolve-from-inputs rule the roots above follow. A resumed delegate
+	// therefore gets exactly the infrastructure grant its live parent has, guarded
+	// against ITS OWN lane (childEnv, never the parent's cwd — see newInfraGuard).
+	pol.InfraReadRoots = SessionInfraRoots(s.cfg, childEnv)
+	rp, err := sandbox.Resolve(pol, s.sandboxHostFacts(), childEnv.WorkingDirectory())
 	if err != nil {
 		return nil, notResumableSandboxUnsatisfiable
 	}

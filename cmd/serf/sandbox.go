@@ -68,7 +68,15 @@ func provisionSandbox(env *execenv.LocalExecutionEnvironment, cfg *agent.Session
 // with a controlled home (the credential denylist anchors on host.Home) while still
 // building a real kernel wrapper from the resolved backend.
 func provisionSandboxWithHost(env *execenv.LocalExecutionEnvironment, cfg *agent.SessionConfig, cwd string, host sandbox.HostFacts) error {
-	rp, err := sandbox.ResolveNamed(cfg.Sandbox, cfg.SandboxNet, host, cwd)
+	// The session's hook and MCP-server paths join the policy's read/exec surface
+	// (ruled 2026-08-06: they are session infrastructure and must work in every
+	// mode). Derived only for a sandboxed session, so an off run does no extra
+	// config reads.
+	var infra []string
+	if !sandbox.ModeIsOff(cfg.Sandbox) {
+		infra = agent.SessionInfraRoots(*cfg, env)
+	}
+	rp, err := sandbox.ResolveNamed(cfg.Sandbox, cfg.SandboxNet, host, cwd, infra)
 	if err != nil {
 		return err
 	}

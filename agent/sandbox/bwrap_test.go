@@ -281,3 +281,27 @@ func TestBuildBwrapArgvSessionTmp(t *testing.T) {
 		t.Errorf("expected the session tmp %q bound writable: %v", tmp, args)
 	}
 }
+
+// TestBuildBwrapArgvBindsInfraReadRoots pins the Linux half of the 2026-08-06
+// ruling: the session's hook/MCP-server paths reach the bwrap argv as a
+// read-only bind (never a writable --bind), so a hook script in the plugin cache
+// execs under restricted mode on Linux exactly as it does under Seatbelt. bwrap
+// needs no special case — it binds every Spawned.ReadRoot — and this test is what
+// stops that from regressing.
+func TestBuildBwrapArgvBindsInfraReadRoots(t *testing.T) {
+	home := t.TempDir()
+	infra := t.TempDir()
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: &net, InfraReadRoots: []string{infra}}, bwrapFacts(home), cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	args := buildBwrapArgv(rp, t.TempDir(), cwd)
+	if seqIndex(args, "--ro-bind", infra, infra) < 0 {
+		t.Errorf("hook/MCP root %q must be bound read-only, got argv:\n%v", infra, args)
+	}
+	if seqIndex(args, "--bind", infra, infra) >= 0 {
+		t.Errorf("hook/MCP root %q must never be bound WRITABLE, got argv:\n%v", infra, args)
+	}
+}

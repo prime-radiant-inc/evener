@@ -130,6 +130,8 @@
   (subpath (param "WRITABLE_ROOT_4"))
   (subpath (param "WRITABLE_ROOT_5"))
   (subpath (param "WRITABLE_ROOT_6"))
+  (subpath (param "WRITABLE_ROOT_7"))
+  (subpath (param "WRITABLE_ROOT_8"))
 )
 ; authoritative denials (override every allow above)
 (deny file-read* file-write* (literal (param "MASKED_0")) (subpath (param "MASKED_0")))

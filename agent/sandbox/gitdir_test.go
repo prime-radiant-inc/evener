@@ -134,6 +134,22 @@ func TestClassifyLinkedWorktree(t *testing.T) {
 	// lockfile, COMMIT_EDITMSG, ORIG_HEAD written directly in it all succeed).
 	mustContain(t, got.WritablePaths, filepath.Join(commonDir, "objects"), "WritablePaths")
 	mustContain(t, got.WritablePaths, got.GitDir, "WritablePaths")
+	// git never rewrites packed-refs in place: it takes the sibling
+	// packed-refs.lock and renames the sibling packed-refs.new over the target,
+	// both in the common dir. Granting only the file it locks leaves those
+	// siblings on a write-denied parent, which is what made `git pack-refs` fail
+	// with "Operation not permitted".
+	mustContain(t, got.WritablePaths, filepath.Join(commonDir, "packed-refs"), "WritablePaths")
+	mustContain(t, got.WritablePaths, filepath.Join(commonDir, "packed-refs.lock"), "WritablePaths")
+	mustContain(t, got.WritablePaths, filepath.Join(commonDir, "packed-refs.new"), "WritablePaths")
+	// The common dir stays granted ENTRY BY ENTRY: it must never itself become a
+	// write root, nor sit under one. Granting the directory would be the tempting
+	// shortcut for the next missing sibling (rr-cache, FETCH_HEAD, …) and would
+	// hand the session create-anything rights over the shared git dir. Pinned as a
+	// negative so that widening fails loudly here instead of passing silently.
+	if underAnyRoot(commonDir, got.WritablePaths) {
+		t.Errorf("common dir %q must never be writable (directly or via an enclosing root)\n  WritablePaths: %v", commonDir, got.WritablePaths)
+	}
 
 	assertNoWritableProtected(t, got)
 }

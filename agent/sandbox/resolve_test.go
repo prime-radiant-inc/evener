@@ -387,3 +387,114 @@ func assertNoRootIsMasked(t *testing.T, rp ResolvedPolicy) {
 		}
 	}
 }
+
+// TestCacheRootsCoverDefaultGoModCache verifies the overlay strategy's coverage
+// claim for GOMODCACHE: cacheRootsFor grants a FIXED $HOME/go/pkg (it does not
+// read the actual GOPATH), so overlay coverage of GOMODCACHE holds only when
+// GOPATH is at its default ($HOME/go, so GOMODCACHE defaults to
+// $HOME/go/pkg/mod). This pins that the default case is covered; a custom
+// GOPATH under the overlay strategy is a known, unaddressed residual (Linux-only
+// — this host's Seatbelt backend always uses CacheSessionPrivate, which
+// isRedirectedCacheVar now covers unconditionally, so the residual has no
+// exposure on macOS or in restricted mode on any host).
+func TestCacheRootsCoverDefaultGoModCache(t *testing.T) {
+	home := "/home/tester"
+	defaultGoModCache := filepath.Join(home, "go", "pkg", "mod")
+	roots := cacheRootsFor(ModeWorkspaceWrite, home)
+	if !isUnderAnyRoot(defaultGoModCache, roots) {
+		t.Errorf("default-GOPATH GOMODCACHE %q must fall under a cache root, got roots %v", defaultGoModCache, roots)
+	}
+
+	customGoModCache := "/custom/gopath/pkg/mod"
+	if isUnderAnyRoot(customGoModCache, roots) {
+		t.Errorf("custom-GOPATH GOMODCACHE %q unexpectedly fell under a cache root %v — the known residual has been closed elsewhere; update this test's comment", customGoModCache, roots)
+	}
+}
+
+// --- session infrastructure (hook + MCP-server) roots ----------------------
+
+// TestInfraReadRootsReachTheSpawnedLayerOnly pins the shape of the 2026-08-06
+// ruling's grant: the session's hook/MCP paths join the SPAWNED read surface
+// (which is what execs a hook script), and nothing else. They never reach the
+// file-tool layer — the model must not gain a browse grant over the plugin cache
+// just because a hook lives there — and never a write root in any mode.
+func TestInfraReadRootsReachTheSpawnedLayerOnly(t *testing.T) {
+	root := mainRepo(t)
+	infra := clean(t.TempDir())
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			pol := SandboxPolicy{Mode: mode, Network: netPtr(true), InfraReadRoots: []string{infra}}
+			rp := mustResolve(t, pol, bwrapHost(), root)
+
+			if slices.Contains(rp.FileTool.ReadRoots, infra) {
+				t.Errorf("a hook/MCP path must not become a FILE-TOOL read root: %v", rp.FileTool.ReadRoots)
+			}
+			for _, w := range slices.Concat(rp.FileTool.WriteRoots, rp.Spawned.WriteRoots) {
+				if w == infra {
+					t.Errorf("a hook/MCP path must never become a write root: %v / %v", rp.FileTool.WriteRoots, rp.Spawned.WriteRoots)
+				}
+			}
+			// The spawned layer must be able to reach it: either it reads
+			// anywhere already, or the root is granted explicitly.
+			if rp.Spawned.Read != ReadAnywhere && !slices.Contains(rp.Spawned.ReadRoots, infra) {
+				t.Errorf("a hook/MCP path must be readable by spawned processes, got roots %v", rp.Spawned.ReadRoots)
+			}
+		})
+	}
+}
+
+// TestInfraReadRootsLeaveTheWriteSurfaceByteIdentical is the write-surface proof
+// for the ruling: adding the session's hook/MCP paths changes NOTHING about what
+// a session may write, in any mode or layout.
+func TestInfraReadRootsLeaveTheWriteSurfaceByteIdentical(t *testing.T) {
+	infra := clean(t.TempDir())
+	for _, layout := range []func(*testing.T) string{mainRepo, linkedWorktreeRepo} {
+		root := layout(t)
+		for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+			base := mustResolve(t, SandboxPolicy{Mode: mode, Network: netPtr(true)}, bwrapHost(), root)
+			with := mustResolve(t, SandboxPolicy{Mode: mode, Network: netPtr(true), InfraReadRoots: []string{infra}}, bwrapHost(), root)
+			if !slices.Equal(base.FileTool.WriteRoots, with.FileTool.WriteRoots) {
+				t.Errorf("%v: file-tool write roots changed: %v -> %v", mode, base.FileTool.WriteRoots, with.FileTool.WriteRoots)
+			}
+			if !slices.Equal(base.Spawned.WriteRoots, with.Spawned.WriteRoots) {
+				t.Errorf("%v: spawned write roots changed: %v -> %v", mode, base.Spawned.WriteRoots, with.Spawned.WriteRoots)
+			}
+			if !slices.Equal(base.Git.ProtectedPaths, with.Git.ProtectedPaths) {
+				t.Errorf("%v: git protected paths changed: %v -> %v", mode, base.Git.ProtectedPaths, with.Git.ProtectedPaths)
+			}
+		}
+	}
+}
+
+// TestInfraReadRootsNeverUnmaskADenylistedPath pins the floor: a hook or MCP
+// server configured to live at (or under) a denylisted path does not get that
+// path back. The credential denylist is authoritative over the infrastructure
+// grant, not the other way round.
+func TestInfraReadRootsNeverUnmaskADenylistedPath(t *testing.T) {
+	root := mainRepo(t)
+	host := bwrapHost()
+	for _, masked := range []string{
+		filepath.Join(host.Home, ".ssh"),           // a default credential dir
+		filepath.Join(host.Home, ".ssh", "nested"), // beneath one
+		"/proc", // the non-removable pseudo-fs floor
+		"/proc/self",
+	} {
+		pol := SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true), InfraReadRoots: []string{masked}}
+		rp := mustResolve(t, pol, host, root)
+		if slices.Contains(rp.Spawned.ReadRoots, masked) {
+			t.Errorf("denylisted path %q was granted as a hook/MCP root: %v", masked, rp.Spawned.ReadRoots)
+		}
+	}
+}
+
+// TestInfraReadRootsMustBeAbsolute: a relative infrastructure root would emit a
+// relative grant the absolute-path enforcement layers never match — a silent
+// grant loss that would make hooks fail exactly as before. Refuse instead.
+func TestInfraReadRootsMustBeAbsolute(t *testing.T) {
+	root := mainRepo(t)
+	pol := SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true), InfraReadRoots: []string{"relative/hooks"}}
+	ref := mustRefuse(t, pol, bwrapHost(), root, "")
+	if !strings.Contains(ref.Reason, "relative/hooks") {
+		t.Errorf("refusal must name the offending root, got: %s", ref.Reason)
+	}
+}

@@ -180,6 +180,15 @@ type Session struct {
 	authoritativeConsumer bool
 	envInfo               schema.EnvironmentInfo
 
+	// capabilities is the toolchain measurement the capability preamble renders
+	// (see session_capabilities.go). It is taken ONCE, at session start, by one
+	// short-timeout probe: the prompt is re-rendered often (model switch, env
+	// swap, every restore) and none of those may fork a probe. Its zero value
+	// renders "unprobed", which is what a session whose probe could not run
+	// truthfully reports. Written during init before the session is shared, read
+	// under s.mu by the prompt render.
+	capabilities capabilityProbe
+
 	// envCollector assembles per-turn environment Snapshots (cwd, date,
 	// sandbox, git branch, resource pressure); envTracker diffs successive
 	// Snapshots into the append-only <environment_context> blocks

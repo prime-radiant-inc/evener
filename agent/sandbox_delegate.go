@@ -144,7 +144,7 @@ func provisionRestoredSandbox(cfg SessionConfig, env execenv.ExecutionEnvironmen
 	if cfg.testOnly.sandboxProber != nil {
 		prober = cfg.testOnly.sandboxProber
 	}
-	rp, err := sandbox.ResolveNamed(cfg.Sandbox, cfg.SandboxNet, prober.Probe(), env.WorkingDirectory())
+	rp, err := sandbox.ResolveNamed(cfg.Sandbox, cfg.SandboxNet, prober.Probe(), env.WorkingDirectory(), SessionInfraRoots(cfg, env))
 	if err != nil {
 		return fmt.Errorf("restore session sandbox: %w", err)
 	}

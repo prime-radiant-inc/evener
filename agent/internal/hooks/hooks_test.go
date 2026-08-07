@@ -1354,3 +1354,68 @@ func TestHookInput_CurrentWireShape_Characterization(t *testing.T) {
 		}
 	}
 }
+
+// TestSessionStartFailureIsOneSummarizedWarning pins the rendering of a FAILED
+// SessionStart hook. A SessionStart hook's output is the session's FIRST steering
+// input, so a hook that dies — the exit-126 sandbox denial that motivated this,
+// or any other failure — must never dump raw shell stderr into the model's
+// context. It surfaces as exactly ONE user-facing warning line naming the hook
+// and its exit code.
+func TestSessionStartFailureIsOneSummarizedWarning(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookSessionStart, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5, PluginName: "superpowers",
+		Command: `printf 'line one\nline two\n' >&2; exit 126`,
+	})
+	r := runner.RunSessionStart(context.Background(), Input{CWD: "/tmp", HookEventName: "SessionStart"})
+
+	if len(r.ModelContext) != 0 {
+		t.Fatalf("a failed SessionStart hook must not steer the model at all; ModelContext = %q", r.ModelContext)
+	}
+	if len(r.UserMessages) != 1 {
+		t.Fatalf("a failed SessionStart hook must surface exactly one warning; UserMessages = %q", r.UserMessages)
+	}
+	line := r.UserMessages[0]
+	if strings.Contains(line, "\n") {
+		t.Errorf("the warning must be ONE line, got:\n%s", line)
+	}
+	if !strings.HasPrefix(line, "SessionStart hook superpowers failed (exit 126)") {
+		t.Errorf("the warning must name the event, the hook, and the exit code; got %q", line)
+	}
+	if strings.Contains(line, "line two") {
+		t.Errorf("the warning must not carry the hook's whole stderr; got %q", line)
+	}
+}
+
+// TestSessionStartFailureNamesAnUnattributedHook: a hook with no plugin name
+// still gets a legible one-line warning rather than a bare exit code.
+func TestSessionStartFailureNamesAnUnattributedHook(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookSessionStart, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `exit 3`,
+	})
+	r := runner.RunSessionStart(context.Background(), Input{CWD: "/tmp", HookEventName: "SessionStart"})
+	if len(r.UserMessages) != 1 || r.UserMessages[0] != "SessionStart hook failed (exit 3)" {
+		t.Fatalf("UserMessages = %q, want one %q", r.UserMessages, "SessionStart hook failed (exit 3)")
+	}
+	if len(r.ModelContext) != 0 {
+		t.Fatalf("ModelContext = %q, want none", r.ModelContext)
+	}
+}
+
+// TestToolEventFailureStillFeedsTheModel guards the blast radius: the summarized
+// SessionStart line is a SessionStart-only change. The Claude-compatible contract
+// that a tool event's exit-2 stderr reaches the model (so the model can correct
+// itself) is untouched.
+func TestToolEventFailureStillFeedsTheModel(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookPostToolUse, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5, PluginName: "superpowers",
+		Command: `echo 'raw stderr for the model' >&2; exit 2`,
+	})
+	r := runner.RunPostToolUse(context.Background(), Input{CWD: "/tmp", HookEventName: "PostToolUse", ToolName: "shell"})
+	if len(r.ModelContext) != 1 || !strings.Contains(r.ModelContext[0], "raw stderr for the model") {
+		t.Fatalf("PostToolUse exit-2 stderr must still reach the model; ModelContext = %q", r.ModelContext)
+	}
+}

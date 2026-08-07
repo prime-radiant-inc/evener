@@ -8,4 +8,7 @@ Knowledge cutoff: {{ .KnowledgeCutoff }}
 {{- if .Sandbox }}
 Sandbox: {{ .Sandbox }}
 {{- end }}
+{{- range .Capabilities }}
+{{ . }}
+{{- end }}
 </environment>

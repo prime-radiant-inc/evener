@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"os"
+	"reflect"
 	"slices"
 	"testing"
 )
@@ -74,7 +75,7 @@ func TestFakeProberRepresentsFloorRows(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var p Prober = FakeProber{Facts: tc.facts}
 			got := p.Probe()
-			if got != tc.facts {
+			if !reflect.DeepEqual(got, tc.facts) {
 				t.Fatalf("FakeProber.Probe() = %+v, want %+v", got, tc.facts)
 			}
 			if got.BwrapCapable != tc.wantBwrap {

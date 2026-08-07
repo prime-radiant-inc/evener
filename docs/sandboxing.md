@@ -49,6 +49,33 @@ directory (the fallback when the host's bubblewrap lacks overlay support); `none
 when the mode never writes caches (read-only). A degraded resolution (e.g. overlay
 unavailable → `private`) is reflected honestly in the line.
 
+## What the session is told
+
+The model gets the same facts in its system prompt's `<environment>` block, as a
+short capability preamble: the sandbox mode and network decision, a summary of
+the writable roots, the masked-path count, the scratch directory behind
+`$SERF_SCRATCH_DIR`/`$TMPDIR`, the cache strategy, the resolved `GOCACHE` /
+`GOMODCACHE`, the toolchain residuals this doc records for the session's mode,
+and two probes (the exit status of `git config --list`, and which of `go`,
+`node`, `rg` are on PATH). An unsandboxed session gets the same block minus the
+sandbox-derived lines. It exists so a session reads its box instead of
+discovering it by failing at it.
+
+The same rule governs it: every line is read from the resolved policy, quoted
+from a ruling recorded here, or measured at session start — through the
+session's own execution environment, so what it measures is what a real command
+meets. A probe that cannot run, errors, or times out renders `unprobed`, never
+a guess. Paths and counts only: no environment variable values that could be
+credentials. A probe is reported as the command it ran and that command's exit
+status, never as a broader claim: `git config --list` exiting 0 says the config
+chain is readable, not that every git operation succeeds.
+
+The two probes are **bounded independently and run concurrently** — the tool
+probe tightly, the git probe generously, because a `git` call under `restricted`
+costs roughly 3.5s (see `restricted` below). Sharing one tight budget would have timed the whole
+probe out on exactly the mode the preamble most exists for; independence means a
+slow git degrades only the git line.
+
 ## Modes
 
 All sandboxed modes share a common floor: a per-session writable temp directory
@@ -62,7 +89,7 @@ sockets beyond stdio.
 | `off` (default) | anywhere | working root only (today's behavior) | anywhere | anywhere |
 | `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only |
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
-| `restricted` | worktree only | worktree + temp | worktree + system read roots + temp | worktree + temp + git metadata (not config/hooks) |
+| `restricted` | worktree only | worktree + temp | worktree + system read roots + developer toolchain + hook/MCP paths + temp | worktree + temp + git metadata (not config/hooks) |
 
 - **`off`** is exactly today's behavior — a strict superset of every sandboxed
   mode, with no new code path engaged.
@@ -74,9 +101,42 @@ sockets beyond stdio.
 - **`restricted`** is the tightest mode: the model's file tools can only browse and
   write inside the worktree. Spawned processes additionally get read-only access to
   the system roots a process needs to run — `/usr`, `/bin`, `/sbin`, `/lib`,
-  `/lib64`, `/etc`, `/opt`, `/nix/store` — but not
+  `/lib64`, `/etc`, `/opt`, `/nix/store`, and on macOS the developer-toolchain
+  directories below — but not
   `/proc`. The distinction is deliberate: the file tools expose what the *model*
   may browse; the kernel layer grants what a *process* needs to execute.
+
+  On macOS the developer-toolchain directories are part of that set, **read-only**
+  (ruled 2026-08-06). They are the active developer directory reported by
+  `xcode-select -p` — widened to its enclosing application bundle, typically
+  `/Applications/Xcode.app` — plus `/Library/Developer/CommandLineTools`. Without
+  them restricted mode could not run `git` at all: `/usr/bin/git` is an `xcrun`
+  shim that execs the real binary out of one of those directories, and neither
+  sits under the system roots above. A directory that is absent simply
+  contributes nothing; a session never fails to start over one. The grant reaches
+  the spawned layer only — the model's file tools cannot browse the toolchain —
+  it adds nothing to any write surface, and the denylist still wins over it.
+
+  The probed directories are treated as untrusted input, because `xcode-select -p`
+  honours `$DEVELOPER_DIR`: each candidate passes through the **same shared-tree
+  guard** the hook/MCP grant uses (["Never a shared, multi-tenant
+  tree"](#hooks-and-mcp-under-a-sandbox)), so a directory at or above your home,
+  the session's worktree, or a temp root — or fewer than two components deep — is
+  refused. That is why a `$DEVELOPER_DIR` pointing at `/Users` cannot gut
+  `restricted` mode: the denylist alone could not stop it, since it drops roots at
+  or *beneath* a masked path and such a root sits above them.
+
+  This grant is **necessary but not sufficient**: on a host with a `~/.gitconfig`,
+  `git` still fails under `restricted` with
+  `fatal: unable to access '<home>/.gitconfig': Operation not permitted`, because
+  the global git config sits under `$HOME` and restricted mode grants no home read.
+  Reading it is a separate ruling — a global config can carry credential helpers
+  and URL rewrites — and has not been made. Until it is, `git` works under
+  `restricted` only for a session whose global config is absent or neutralized
+  (`GIT_CONFIG_GLOBAL=/dev/null`). Two further residuals: every `git` call under
+  `restricted` emits two `xcrun_db` cache-write denials to stderr and costs roughly
+  3.5s, because the `xcrun` shim retries a cache write into the per-user temp
+  directory that the mode does not grant.
 
 ## The fail-closed floor
 
@@ -138,7 +198,12 @@ additions are removable.
 
 In the writable modes, git's object store works normally — objects, refs, the
 index, logs, and packed-refs are writable, so `commit`, `add`, and `checkout`
-succeed. But every git **config and hook** surface is read-only:
+succeed — with one known exception in a linked worktree under
+`rerere.enabled=true`, recorded under [Known residuals](#known-residuals). On
+macOS/Seatbelt the packed-refs grant also covers the two fixed sibling
+names git rewrites it through (`packed-refs.lock` and `packed-refs.new`, renamed
+into place), so `git pack-refs` and the ref packing a commit triggers work too.
+But every git **config and hook** surface is read-only:
 
 - `.git/config`, per-worktree config (`config.worktree`), submodule configs
   (`.git/modules/*/config`), and `.git/hooks`.
@@ -163,7 +228,10 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
 - Where overlay is unavailable (macOS/Seatbelt, or a bubblewrap without overlay
   support — including bubblewrap 0.9.0), the cache **degrades to a session-private
   redirect**: `GOCACHE`, `npm_config_cache`, and `CARGO_HOME` point into the session
-  temp (a cold cache), never to a persistent-writable location.
+  temp (a cold cache), never to a persistent-writable location. GOMODCACHE is
+  redirected alongside GOCACHE: it defaults to `$GOPATH/pkg/mod`, which the
+  granted cache root does not track when GOPATH is customized away from its
+  default location, so the redirect applies regardless of GOPATH.
 - `restricted` always uses the session-private redirect.
 
 The overlay is a performance optimization (warm vs cold reads); the no-poisoning
@@ -182,7 +250,22 @@ spawned process:
 - Drops a `KUBECONFIG` that points outside every granted root (an external cluster
   config the session should not reach).
 - Points `TMPDIR` at the per-session temp and, under the session-private cache
-  strategy, redirects `GOCACHE`/`npm_config_cache`/`CARGO_HOME` there.
+  strategy, redirects `GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`CARGO_HOME`
+  there.
+
+**Known residual: Go telemetry noise is not suppressed.** Go's telemetry
+counter/token file lives under the user's Go config directory (outside every
+sandbox root by design), so a `go` invocation inside a sandboxed session logs
+one denied-write line to stderr (`error acquiring upload token: ... operation
+not permitted`) and continues; the command's exit code is unaffected.
+`GOTELEMETRY` was considered as an env-floor fix but is a **report-only** `go
+env` value — the Go toolchain does not read it from the process environment
+(`go env -w GOTELEMETRY=off` itself fails with "GOTELEMETRY cannot be
+modified"), so setting it in the floor would have been a no-op. The only ways
+to actually silence the line are a per-session `HOME` redirect or granting a
+new writable root for Go's config directory; both were rejected as broader
+than the problem warrants. Ruled 2026-08-06: accept and document the noise
+rather than ship an env var that does nothing.
 
 ssh-agent and gpg-agent Unix sockets are not bind-mounted into the sandbox, and
 spawned commands inherit no serf file descriptors beyond stdio — not serf's live
@@ -240,17 +323,64 @@ their persisted policy the same way the root session does. See
 
 ## Hooks and MCP under a sandbox
 
-- **Hook commands** (PreToolUse, PostToolUse, etc.) run under the session sandbox,
-  same as any spawned process. A hook that needs broader access than the sandbox
-  grants is incompatible with a sandboxed session — run such hooks unsandboxed, or
-  widen the policy's roots/denylist from the command line.
-- **stdio MCP servers** are spawned under the session sandbox.
+Hooks and MCP servers are session **infrastructure**, so they work in every mode
+(ruled 2026-08-06). The session's configured hook and MCP-server paths join the
+spawned layer's **read/exec** surface in all modes — including `restricted`, whose
+spawned processes otherwise read only the worktree. Without this, a hook script
+installed in the plugin cache died with exit 126, "Operation not permitted", and
+took the session's first steering input with it.
+
+- **Hook commands** (SessionStart, PreToolUse, PostToolUse, …) run under the session
+  sandbox, same as any spawned process, with their configured paths granted.
+- **stdio MCP servers** are spawned under the session sandbox, with the directories
+  holding their programs and script files granted.
 - **Remote (HTTP/SSE) MCP servers** require `--sandbox-net on`; under `net=off`
   their egress is disabled.
 
+The grant is tightly bounded:
+
+- **Config-derived, never a glob.** The roots come from the plugin directories this
+  session actually loads (`--plugin-dir` plus the enabled plugin registry) and the
+  stdio MCP servers this session actually configures — not from a
+  `~/.claude/plugins/*`-shaped pattern, which would both grant caches the session
+  never loads and miss anything configured elsewhere.
+- **Only inputs the model cannot write.** MCP servers are read from the *trusted*
+  layers only: the global config, `--mcp-config` files, and `--mcp` inline specs.
+  The per-project layer (`<git root>/.serf/mcp.json`) is **excluded**, because it
+  sits inside the model's own write surface — a grant derived from it would let a
+  session widen its own box (plant the file, spawn a delegate with
+  `sandbox=restricted`, read whatever you named), breaking the rule that the policy
+  is fixed for the life of the session. A project-declared MCP server still connects
+  normally; it just cannot hand itself filesystem roots.
+- **Read and exec only.** The write surface is unchanged; a hook's own directory
+  stays unwritable in every mode.
+- **Spawned layer only.** File tools do not gain a browse grant over the plugin
+  cache, so `restricted` still holds the model's own reads to the worktree.
+- **The denylist still wins.** A hook or MCP path at or under a masked path is not
+  granted, and a denylisted subtree inside a granted path stays masked — the
+  pseudo-filesystem floor and the credential denylist are authoritative over this
+  grant as over every other.
+- **Never a shared, multi-tenant tree.** A candidate root is refused when it is at
+  or *above* the user's home directory, the session's worktree, or a temp root, or
+  when it is fewer than two path components deep. So `/`, `/Users`, `/home`,
+  `/private`, `/var`, `/Volumes` and `/tmp` can never be granted. Paths are
+  symlink-resolved *and* stripped of their `/System/Volumes/Data` firmlink alias
+  before this check, so neither spelling of a path can slip past it. Note that the
+  denylist alone cannot do this job: it drops roots at or *beneath* a masked path,
+  and these are *above* them.
+
+An MCP `command` or argument contributes only when it is a **regular file**, and it
+contributes the directory holding it (an interpreter resolves a script's
+neighbours). A directory named directly as an argument grants nothing.
+
+A hook or server path the sandbox cannot safely serve fails that hook or server, not
+the session — the same outcome as before this grant existed. A failed SessionStart
+hook surfaces as one summarized warning line naming the hook and its exit code; its
+raw stderr never becomes the model's opening context.
+
 ## Known residuals
 
-Two boundary edges are deliberately documented as open rather than claimed closed:
+Four boundary edges are deliberately documented as open rather than claimed closed:
 
 - **A pre-existing hardlink** inside the worktree to an out-of-tree secret is
   *readable* through the worktree (path-based masking cannot see that two names share
@@ -261,6 +391,29 @@ Two boundary edges are deliberately documented as open rather than claimed close
   An exotic or custom daemon socket under `/run` that is not on the list could still
   be reached; a broader `/run` mask is deferred because it would also hide
   legitimate runtime state and break DNS/daemons.
+- **On Linux/bubblewrap, a linked worktree's common `.git` grants only the
+  metadata entries that already exist.** That common dir sits outside the worktree
+  and is granted entry by entry, and bubblewrap grants by bind-mounting, which
+  requires the target to exist. Any granted entry absent when the sandbox starts —
+  `packed-refs` and its `packed-refs.lock` / `packed-refs.new` siblings, `logs`,
+  `index` — is therefore skipped, and git cannot create it. (A main checkout is
+  unaffected: its whole `.git` sits under the worktree write root, as does a linked
+  worktree's own per-worktree git dir.) This is structural, not an oversight:
+  permission to *create* a name belongs to the parent directory, so no mount can
+  express "may create exactly this filename in a read-only directory". macOS/
+  Seatbelt matches path strings instead of mounting and grants those entries
+  exactly. Closing the gap on Linux needs a directory-level decision about the
+  common dir, which is open.
+- **`git commit` in a linked worktree fails under `rerere.enabled=true`.** With
+  rerere on — a common setting in a developer's global gitconfig, which the
+  writable modes read — a commit creates `<commonDir>/rr-cache`, and the common
+  dir is granted entry by entry with no `rr-cache` entry among them. This one is
+  **not** Linux-only: unlike the bind-mount residual above, it is an absent
+  *grant* rather than an absent mount, so macOS/Seatbelt fails the same way. (A
+  main checkout is unaffected — its whole `.git` is under the worktree write
+  root.) A session can work around it with `-c rerere.enabled=false`, which is
+  what serf's own live git tests do. Whether the common dir should grant a
+  writable `rr-cache` is undecided, so the defect is unfixed pending that ruling.
 
 ## macOS notes
 

@@ -368,6 +368,10 @@ type parsedHookOutput struct {
 	// SystemMessageIsJSONField is true only when SystemMessage came from the JSON
 	// "systemMessage" field (user-visible), false for plain stdout or error stderr.
 	SystemMessageIsJSONField bool
+	// UserFacing forces SystemMessage to the USER bucket regardless of IsError or
+	// the event's context-ness. It carries the summarized SessionStart failure
+	// line, which is an operator diagnostic and must never become model steering.
+	UserFacing bool
 }
 
 // parseHookOutput interprets hook stdout and exit code into structured output.
@@ -473,6 +477,9 @@ func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, _ plug
 	}
 
 	if err != nil {
+		if event == plugin.HookSessionStart {
+			return sessionStartFailureWarning(hook, err.Error(), -1)
+		}
 		return parsedHookOutput{Continue: true, IsError: true, SystemMessage: err.Error()}
 	}
 
@@ -483,7 +490,78 @@ func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, _ plug
 	if hr.ExitCode != 0 && strings.TrimSpace(hr.Stderr) != "" {
 		output = hr.Stderr
 	}
+	// A SessionStart hook's output is the session's FIRST steering input, so a
+	// FAILED one must not deliver its raw shell stderr to the model — the model
+	// cannot act on a permission denial or a broken script, and a wall of stderr as
+	// opening context is worse than no context. Summarize it into one operator-
+	// facing warning line instead. Every other event keeps the Claude-compatible
+	// contract that a non-zero hook's stderr reaches the model (07 §Exit-code
+	// semantics), which is how a tool-event hook corrects the model.
+	if event == plugin.HookSessionStart && hr.ExitCode != 0 {
+		return sessionStartFailureWarning(hook, output, hr.ExitCode)
+	}
 	return parseHookOutput(output, hr.ExitCode)
+}
+
+// maxHookFailureDetail bounds the excerpt of a failed SessionStart hook's output
+// carried on the warning line, so the summary stays one readable line.
+const maxHookFailureDetail = 160
+
+// sessionStartFailureWarning renders a failed SessionStart hook as ONE user-facing
+// warning line: the event, the hook's configured identity, and its exit code,
+// optionally followed by the first line of its output so the operator can see WHY
+// without the model ever seeing it. exitCode < 0 means the hook never produced one
+// (a spawn failure or a timeout kill), in which case detail is the error text.
+func sessionStartFailureWarning(hook plugin.RegisteredHook, detail string, exitCode int) parsedHookOutput {
+	line := strings.Join(append([]string{"SessionStart hook"}, hookIdentityParts(hook)...), " ")
+	if exitCode < 0 {
+		line += " failed to run"
+	} else {
+		line += fmt.Sprintf(" failed (exit %d)", exitCode)
+	}
+	if excerpt := firstLine(detail); excerpt != "" {
+		line += ": " + excerpt
+	}
+	out := parsedHookOutput{Continue: true, IsError: true, UserFacing: true, SystemMessage: line}
+	if exitCode > 0 {
+		// RawExitCode feeds the HOOK_COMPLETED announcement, which reports a real
+		// exit code or nothing. A hook that never produced one keeps the zero the
+		// infrastructure-error path has always announced.
+		out.RawExitCode = exitCode
+	}
+	return out
+}
+
+// hookIdentityParts names a hook the way schema.HookInfo.Announcement does — the
+// plugin that registered it, then its matcher when that adds information — so the
+// failure warning and the hook-completed announcement identify the same hook the
+// same way. Empty parts are elided; an unattributed hook contributes none, leaving
+// a still-legible "SessionStart hook failed (exit N)".
+func hookIdentityParts(hook plugin.RegisteredHook) []string {
+	var parts []string
+	for _, field := range []string{hook.PluginName, hook.Matcher} {
+		if v := strings.TrimSpace(field); v != "" && v != "*" {
+			parts = append(parts, v)
+		}
+	}
+	return parts
+}
+
+// firstLine returns text's first non-blank line, truncated to
+// maxHookFailureDetail RUNES (never bytes — a byte cut would split a multi-byte
+// rune and emit mojibake in the warning), or "" when there is nothing to show.
+func firstLine(text string) string {
+	for _, l := range strings.Split(text, "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			continue
+		}
+		if r := []rune(l); len(r) > maxHookFailureDetail {
+			l = string(r[:maxHookFailureDetail]) + "…"
+		}
+		return l
+	}
+	return ""
 }
 
 // runAll executes all matched hooks in parallel and returns their parsed outputs.
@@ -676,6 +754,8 @@ func routeOutput(event plugin.HookEvent, o parsedHookOutput, model, user *[]stri
 	}
 	isContext := event == plugin.HookSessionStart || event == plugin.HookUserPromptSubmit
 	switch {
+	case o.UserFacing:
+		*user = append(*user, o.SystemMessage) // summarized failure -> operator, never the model
 	case o.IsError:
 		*model = append(*model, o.SystemMessage) // error stderr -> model (preserves today)
 	case o.SystemMessageIsJSONField:

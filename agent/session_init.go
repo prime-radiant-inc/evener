@@ -950,6 +950,14 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 	s.envInfo = ei
 
+	// The capability preamble's measured half, taken once here (see
+	// Session.capabilities). It rides the same testOnly gate as the git
+	// snapshot: both are the launch-time environment snapshot, and a test whose
+	// contract sits below that layer must not fork for either.
+	if !s.cfg.testOnly.skipGitSnapshot {
+		s.capabilities = probeCapabilities(env, ei.WorkingDir)
+	}
+
 	// Session init whose launch cwd is already inside a managed worktree
 	// (native worktree tools spec §5 occupancy locks / §5 table row "session
 	// init, launch cwd inside a managed worktree"): apply the idempotent

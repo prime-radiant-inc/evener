@@ -258,12 +258,12 @@ func dcrcExerciseProfileAndEnvironment(t *testing.T, s *Session, workDir string)
 		t.Fatal("DenyEnv accepted a changed restored directory")
 	}
 
-	if policy, reason := s.resolveRestoredDelegateSandbox(nil, workDir); policy != nil || reason != "" {
+	if policy, reason := s.resolveRestoredDelegateSandbox(nil, execenv.NewLocalExecutionEnvironment(workDir)); policy != nil || reason != "" {
 		t.Fatalf("nil sandbox restore=(%v,%q), want nil/empty", policy, reason)
 	}
 	badSandbox := *desc
 	badSandbox.Sandbox = &jobstore.SandboxSnapshot{Mode: "bad"}
-	if policy, reason := s.resolveRestoredDelegateSandbox(&badSandbox, workDir); policy != nil || reason != notResumableSandboxUnsatisfiable {
+	if policy, reason := s.resolveRestoredDelegateSandbox(&badSandbox, execenv.NewLocalExecutionEnvironment(workDir)); policy != nil || reason != notResumableSandboxUnsatisfiable {
 		t.Fatalf("invalid sandbox restore=(%v,%q)", policy, reason)
 	}
 }
@@ -424,7 +424,7 @@ func dcrcExerciseRestoreHelpers(t *testing.T, s *Session, rec *jobstore.JobRecor
 	}
 	sandboxed := *desc
 	sandboxed.Sandbox = &jobstore.SandboxSnapshot{Mode: "restricted"}
-	if policy, reason := s.resolveRestoredDelegateSandbox(&sandboxed, workDir); policy != nil || reason != notResumableSandboxUnsatisfiable {
+	if policy, reason := s.resolveRestoredDelegateSandbox(&sandboxed, execenv.NewLocalExecutionEnvironment(workDir)); policy != nil || reason != notResumableSandboxUnsatisfiable {
 		t.Fatalf("unenforceable restored sandbox=(%v,%q)", policy, reason)
 	}
 }
