@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -260,13 +261,13 @@ func parseAuditFence(content string) (checks []auditCheckRaw, found bool) {
 // machinery, and it must never silently degrade to "no findings".
 func normalizeCheck(raw auditCheckRaw) (AuditCheck, error) {
 	if raw.Title == "" {
-		return AuditCheck{}, fmt.Errorf("missing title")
+		return AuditCheck{}, errors.New("missing title")
 	}
 	if !validSeverities[raw.Severity] {
 		return AuditCheck{}, fmt.Errorf("severity %q must be one of low, medium, high", raw.Severity)
 	}
 	if raw.Category == "" {
-		return AuditCheck{}, fmt.Errorf("missing category (see finding-contract.md)")
+		return AuditCheck{}, errors.New("missing category (see finding-contract.md)")
 	}
 	suggestedFix := raw.SuggestedFix
 	if suggestedFix == "" {

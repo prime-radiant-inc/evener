@@ -565,7 +565,7 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 			}
 		}
 		if blockers == 1 {
-			return fmt.Errorf("only one task may be in_progress; %d %q is currently in_progress — complete or defer it in the same updates array.", blocker.ID, blocker.Description)
+			return fmt.Errorf("only one task may be in_progress; %d %q is currently in_progress — complete or defer it in the same updates array", blocker.ID, blocker.Description)
 		}
 		return fmt.Errorf("only one task may be in_progress at a time; update would result in %d", inProgressCount)
 	}

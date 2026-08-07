@@ -293,13 +293,13 @@ func replaceDigitRuns(s, replacement string) string {
 	return b.String()
 }
 
-// TruncateRunes cuts s to at most max runes, never splitting a multi-byte
+// TruncateRunes cuts s to at most maxRunes runes, never splitting a multi-byte
 // rune. Exported so the agent package's steering messages truncate the same
 // way tool results do.
-func TruncateRunes(s string, max int) string {
+func TruncateRunes(s string, maxRunes int) string {
 	r := []rune(s)
-	if len(r) <= max {
+	if len(r) <= maxRunes {
 		return s
 	}
-	return string(r[:max])
+	return string(r[:maxRunes])
 }

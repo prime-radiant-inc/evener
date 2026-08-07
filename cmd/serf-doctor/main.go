@@ -24,6 +24,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -440,7 +441,7 @@ func cmdSessions(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *bucketFlag != "" && *all {
-		return fail(stderr, "sessions", fmt.Errorf("--bucket and --all are mutually exclusive"))
+		return fail(stderr, "sessions", errors.New("--bucket and --all are mutually exclusive"))
 	}
 	var sinceDur time.Duration
 	if *since != "" {
@@ -498,10 +499,10 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *runbookName == "" {
-		return fail(stderr, "audit", fmt.Errorf("--runbook is required"))
+		return fail(stderr, "audit", errors.New("--runbook is required"))
 	}
 	if (*sessions == "") == (*since == "") {
-		return fail(stderr, "audit", fmt.Errorf("exactly one of --sessions or --since is required"))
+		return fail(stderr, "audit", errors.New("exactly one of --sessions or --since is required"))
 	}
 
 	runbook, err := loadRunbook(*runbookName)

@@ -47,6 +47,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -423,12 +424,7 @@ var doctorFindingContractExemptions = map[string][]string{
 // isDoctorFindingContractKey reports whether key is exempted in rel by
 // doctorFindingContractExemptions.
 func isDoctorFindingContractKey(key, rel string) bool {
-	for _, k := range doctorFindingContractExemptions[rel] {
-		if k == key {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(doctorFindingContractExemptions[rel], key)
 }
 
 func checkTOMLTag(v string) string {

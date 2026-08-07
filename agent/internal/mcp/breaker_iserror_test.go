@@ -19,7 +19,7 @@ import (
 // tool that answers every request with result, counting the requests that
 // actually reach it, and registers its tools into a fresh tool.Registry
 // exactly as production does.
-func registerStubServer(t *testing.T, ctx context.Context, result *mcpsdk.CallToolResult) (*tool.Registry, *atomic.Int64) {
+func registerStubServer(ctx context.Context, t *testing.T, result *mcpsdk.CallToolResult) (*tool.Registry, *atomic.Int64) {
 	t.Helper()
 	var requests atomic.Int64
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "s", Version: "v1"}, nil)
@@ -53,7 +53,7 @@ func registerStubServer(t *testing.T, ctx context.Context, result *mcpsdk.CallTo
 // without anything reading a recorded is_error flag.
 func TestMCPBreaker_IsErrorFailuresParkAtThird(t *testing.T) {
 	ctx := context.Background()
-	reg, requests := registerStubServer(t, ctx, &mcpsdk.CallToolResult{
+	reg, requests := registerStubServer(ctx, t, &mcpsdk.CallToolResult{
 		IsError: true,
 		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "boom: upstream 400"}},
 	})
@@ -104,7 +104,7 @@ func TestMCPBreaker_IsErrorFailuresParkAtThird(t *testing.T) {
 func TestMCPBreaker_IdenticalBodiesNudgeWithoutIsError(t *testing.T) {
 	ctx := context.Background()
 	const body = "Error: set_viewport requires payload with width and height: {width,height,deviceScaleFactor?,mobile?}"
-	reg, requests := registerStubServer(t, ctx, &mcpsdk.CallToolResult{
+	reg, requests := registerStubServer(ctx, t, &mcpsdk.CallToolResult{
 		IsError: false,
 		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: body}},
 	})

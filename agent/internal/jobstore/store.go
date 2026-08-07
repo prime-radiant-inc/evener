@@ -160,15 +160,15 @@ func (s *Store) Append(e Event) error {
 	if err != nil {
 		return fmt.Errorf("jobstore: seek append start: %w", err)
 	}
-	line := append(b, '\n')
-	if err := s.writeLineLocked(line); err != nil {
+	b = append(b, '\n')
+	if err := s.writeLineLocked(b); err != nil {
 		return s.appendFailureLocked("write event", err, startOffset)
 	}
 	if err := s.syncLocked(); err != nil {
 		return s.appendFailureLocked("sync event", err, startOffset)
 	}
 	s.seq = nextSeq
-	s.noteAppendedLocked(startOffset, startOffset+int64(len(line)))
+	s.noteAppendedLocked(startOffset, startOffset+int64(len(b)))
 	return nil
 }
 
@@ -199,11 +199,11 @@ func (s *Store) AppendBatch(events []Event) error {
 		if err != nil {
 			return s.appendFailureLocked("marshal event", err, startOffset)
 		}
-		line := append(b, '\n')
-		if err := s.writeLineLocked(line); err != nil {
+		b = append(b, '\n')
+		if err := s.writeLineLocked(b); err != nil {
 			return s.appendFailureLocked("write event", err, startOffset)
 		}
-		written += int64(len(line))
+		written += int64(len(b))
 	}
 	if err := s.syncLocked(); err != nil {
 		return s.appendFailureLocked("sync event", err, startOffset)
