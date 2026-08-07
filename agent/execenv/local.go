@@ -132,7 +132,11 @@ type LocalExecutionEnvironment struct {
 	// launchd, a GUI app, systemd) inherits a PATH lacking developer tool
 	// directories like /opt/homebrew/bin, which only the login shell's rc chain
 	// adds. Empty means "use the inherited process PATH unchanged" (the probe
-	// was never run, failed, or timed out).
+	// was never run, failed, or timed out). It is a property of the PROCESS's
+	// launch context, not of a working directory, so both clone paths
+	// (WithWorkingDirectory, WithSandboxInvocationGrant) carry it: a delegate
+	// in its own worktree or a switched managed worktree must not silently
+	// revert to the launchd/GUI PATH this override exists to replace.
 	LoginPATH string
 
 	// unsandboxedScratchMu guards lazy provisioning of unsandboxedScratch.
@@ -231,6 +235,7 @@ func (e *LocalExecutionEnvironment) WithSandboxInvocationGrant(path string) Exec
 		lookPath:         e.lookPath,
 		sandboxTmpBase:   e.sandboxTmpBase,
 		terminationGrace: e.terminationGrace,
+		LoginPATH:        e.LoginPATH,
 		Sandbox:          e.Sandbox,
 		Wrapper:          e.Wrapper,
 		sandboxGrant:     filepath.Clean(path),
@@ -531,6 +536,7 @@ func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecu
 		lookPath:         e.lookPath,
 		sandboxTmpBase:   e.sandboxTmpBase,
 		terminationGrace: e.terminationGrace,
+		LoginPATH:        e.LoginPATH,
 	}
 	if e.Sandbox != nil {
 		if rerooted, err := e.Sandbox.ReRoot(dir); err != nil {

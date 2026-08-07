@@ -168,6 +168,46 @@ func TestLoginShellPATH_TakesLastLineOverNoisyRCBanner(t *testing.T) {
 	}
 }
 
+// TestLoginPATH_SurvivesReRoot: the developer-PATH fix must reach the paths
+// serf actually runs — a worktree-isolated delegate and a managed-worktree
+// switch both re-root the session env through WithWorkingDirectory, so a
+// child that dropped LoginPATH would silently revert to the launchd/GUI
+// PATH the fix exists to replace.
+func TestLoginPATH_SurvivesReRoot(t *testing.T) {
+	env := &LocalExecutionEnvironment{
+		RootDir:      t.TempDir(),
+		inheritedEnv: func() []string { return []string{"PATH=/usr/bin:/bin"} },
+		LoginPATH:    "/opt/homebrew/bin:/usr/bin:/bin",
+	}
+	child := env.WithWorkingDirectory(t.TempDir())
+	if child.LoginPATH != env.LoginPATH {
+		t.Fatalf("child LoginPATH = %q, want the parent's %q", child.LoginPATH, env.LoginPATH)
+	}
+	if got := envToMap(child.commandEnvironment(nil))["PATH"]; got != env.LoginPATH {
+		t.Fatalf("re-rooted child PATH = %q, want the login-shell PATH", got)
+	}
+}
+
+// TestLoginPATH_SurvivesSandboxInvocationGrant: the M7 escalation re-dispatch
+// clone runs a real tool call, so it must spawn with the same PATH as the env
+// it clones.
+func TestLoginPATH_SurvivesSandboxInvocationGrant(t *testing.T) {
+	worktree := t.TempDir()
+	env := &LocalExecutionEnvironment{
+		RootDir:      worktree,
+		inheritedEnv: func() []string { return []string{"PATH=/usr/bin:/bin"} },
+		LoginPATH:    "/opt/homebrew/bin:/usr/bin:/bin",
+		Sandbox:      &sandbox.ResolvedPolicy{Mode: sandbox.ModeWorkspaceWrite, Backend: sandbox.BackendBwrap},
+	}
+	clone, ok := env.WithSandboxInvocationGrant(filepath.Join(worktree, "granted")).(*LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("WithSandboxInvocationGrant did not return a clone for an enforced policy")
+	}
+	if clone.LoginPATH != env.LoginPATH {
+		t.Fatalf("grant clone LoginPATH = %q, want the parent's %q", clone.LoginPATH, env.LoginPATH)
+	}
+}
+
 // --- always-on session scratch vars ---------------------------------------
 
 // TestCommandEnvironment_UnsandboxedSessionExportsScratchVars: docs/environment.md
