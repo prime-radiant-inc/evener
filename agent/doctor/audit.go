@@ -3,6 +3,7 @@ package doctor
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -699,10 +700,8 @@ func slugify(s string) string {
 }
 
 func appendUniqueString(list []string, v string) []string {
-	for _, existing := range list {
-		if existing == v {
-			return list
-		}
+	if slices.Contains(list, v) {
+		return list
 	}
 	return append(list, v)
 }
