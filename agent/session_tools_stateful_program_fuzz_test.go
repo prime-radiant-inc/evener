@@ -257,7 +257,7 @@ func stpExercisePinnedContracts(t *testing.T, s *Session, env *agenttest.DenyEnv
 	}
 	stpRecord(results, goal)
 	noActive := stpCall(t, s, env, ctx, "goal-repeat", "update_goal", map[string]any{"status": "blocked"})
-	if noActive.IsError || !strings.Contains(noActive.Output, "No active goal") {
+	if noActive.IsError || noActive.Output != "No goal is active for this session (none was set at launch); nothing recorded — this tool only updates a goal the harness registered." {
 		t.Fatalf("repeat update_goal did not report no active goal: %#v", noActive)
 	}
 	stpRecord(results, noActive)

@@ -105,8 +105,12 @@ func auxRepairExact(t *testing.T) {
 		t.Fatalf("plain offending field = %q", got)
 	}
 	ve := &jsonschema.ValidationError{InstanceLocation: "/outer/field"}
-	if got := offendingField(ve); got != "field" {
+	if got := offendingField(ve); got != "outer/field" {
 		t.Fatalf("nested offending field = %q", got)
+	}
+	single := &jsonschema.ValidationError{InstanceLocation: "/field"}
+	if got := offendingField(single); got != "field" {
+		t.Fatalf("single-segment offending field = %q", got)
 	}
 	_ = changeStrings([]repair.Change{{Kind: repair.ChangeKind("fixture"), Field: "x", Detail: "y"}})
 }
