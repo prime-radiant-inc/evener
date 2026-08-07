@@ -381,26 +381,23 @@ func TestClientWithAdapterTimeout_WrapsDialContextWithConnectDeadline(t *testing
 	}
 }
 
-func TestClientWithAdapterTimeout_WrapsDialContextWithConnectDeadline_NoPreexisting(t *testing.T) {
+func TestClientWithAdapterTimeout_PreservesDialAuthority(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
-	observations := make(chan adapterTimeoutDialObservation, 1)
+	called := make(chan struct{}, 1)
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	connectTimeout := time.Second
-	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		select {
-		case observations <- observeAdapterTimeoutDial(ctx):
-		default:
-		}
+	transport.DialContext = nil
+	transport.Dial = func(network, address string) (net.Conn, error) { //nolint:staticcheck // The test verifies legacy Dial remains caller-authoritative.
+		called <- struct{}{}
 		var dialer net.Dialer
-		return dialer.DialContext(ctx, network, address)
+		return dialer.Dial(network, address)
 	}
 
-	client := ClientWithAdapterTimeout(&http.Client{Transport: transport}, &AdapterTimeout{Connect: connectTimeout})
+	client := ClientWithAdapterTimeout(&http.Client{Transport: transport}, &AdapterTimeout{Connect: time.Second})
 	req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -411,10 +408,41 @@ func TestClientWithAdapterTimeout_WrapsDialContextWithConnectDeadline_NoPreexist
 	}
 	_ = resp.Body.Close()
 	select {
-	case observation := <-observations:
-		assertAdapterTimeoutDialObservation(t, observation, connectTimeout)
+	case <-called:
 	default:
-		t.Fatal("DialContext was not called")
+		t.Fatal("custom Dial was not called")
+	}
+}
+
+// TestConfiguredAdapterTransport_DialArms pins the three dial arms structurally:
+// a pre-existing DialContext is wrapped, a bare transport gets a wrapped default
+// dialer, and a caller-supplied legacy Dial stays authoritative (no DialContext
+// is installed over it — the 2026-07-13 streaming-response-header-timeout
+// ruling).
+func TestConfiguredAdapterTransport_DialArms(t *testing.T) {
+	at := &AdapterTimeout{Connect: time.Second}
+
+	preexisting := http.DefaultTransport.(*http.Transport).Clone()
+	preexisting.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return nil, errors.New("unused")
+	}
+	if got := configuredAdapterTransport(preexisting, at); got.DialContext == nil {
+		t.Fatal("pre-existing DialContext arm: wrapper not installed")
+	}
+
+	bare := http.DefaultTransport.(*http.Transport).Clone()
+	bare.DialContext = nil
+	if got := configuredAdapterTransport(bare, at); got.DialContext == nil {
+		t.Fatal("bare transport arm: default dialer wrapper not installed")
+	}
+
+	legacy := http.DefaultTransport.(*http.Transport).Clone()
+	legacy.DialContext = nil
+	legacy.Dial = func(network, address string) (net.Conn, error) { //nolint:staticcheck // The test verifies legacy Dial remains caller-authoritative.
+		return nil, errors.New("unused")
+	}
+	if got := configuredAdapterTransport(legacy, at); got.DialContext != nil {
+		t.Fatal("legacy Dial arm: DialContext was installed over a caller-authoritative Dial")
 	}
 }
 
@@ -472,7 +500,7 @@ func TestClientWithAdapterTimeout_WrapsDialTLSContextWithConnectDeadline(t *test
 	}
 }
 
-func TestClientWithAdapterTimeout_WrapsDialTLSContextWithConnectDeadline_NoPreexisting(t *testing.T) {
+func TestClientWithAdapterTimeout_PropagatesDialTLSContextError(t *testing.T) {
 	dialErr := errors.New("caller DialTLSContext result")
 	called := make(chan struct{}, 1)
 	transport := http.DefaultTransport.(*http.Transport).Clone()
