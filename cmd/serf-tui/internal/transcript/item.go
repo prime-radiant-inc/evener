@@ -14,6 +14,7 @@ import (
 // by replaying every item through a fresh reducer.
 func MessagesFromThread(thread appwire.Thread) []ChatMessage {
 	reducer := NewTranscriptReducer(nil, nil, nil)
+	reducer.SetCwd(thread.CWD)
 	for _, turn := range thread.Turns {
 		turnIndex := TurnIndexFromID(turn.ID)
 		turnCompleted := appwire.IsTerminalTurnStatus(turn.Status)
@@ -32,8 +33,8 @@ func threadItemToolDone(item appwire.ThreadItem, completed bool) bool {
 	return (completed && !appwire.IsActiveItemStatus(item.Status)) || appwire.IsTerminalItemStatus(item.Status) || item.Output != "" || item.Error != ""
 }
 
-func toolInfoFromThreadItem(item appwire.ThreadItem, done bool) *ToolCallInfo {
-	desc, detail := toolsummary.SummarizeTool(item.ToolName, item.ArgumentsJSON)
+func toolInfoFromThreadItem(item appwire.ThreadItem, done bool, cwd string) *ToolCallInfo {
+	desc, detail := toolsummary.SummarizeToolInDir(item.ToolName, item.ArgumentsJSON, cwd)
 	info := &ToolCallInfo{
 		Name:        item.ToolName,
 		Description: desc,
@@ -56,7 +57,7 @@ func toolInfoFromThreadItem(item appwire.ThreadItem, done bool) *ToolCallInfo {
 	return info
 }
 
-func mergeThreadItemIntoToolInfo(info *ToolCallInfo, item appwire.ThreadItem, done bool) {
+func mergeThreadItemIntoToolInfo(info *ToolCallInfo, item appwire.ThreadItem, done bool, cwd string) {
 	if info == nil {
 		return
 	}
@@ -65,7 +66,7 @@ func mergeThreadItemIntoToolInfo(info *ToolCallInfo, item appwire.ThreadItem, do
 		info.Hidden = item.ToolName == "communicate"
 	}
 	if item.ArgumentsJSON != "" || info.Description == "" {
-		desc, detail := toolsummary.SummarizeTool(item.ToolName, item.ArgumentsJSON)
+		desc, detail := toolsummary.SummarizeToolInDir(item.ToolName, item.ArgumentsJSON, cwd)
 		info.Description = desc
 		info.Detail = detail
 		info.RawArgs = item.ArgumentsJSON
