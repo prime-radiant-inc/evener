@@ -265,8 +265,10 @@ additions are removable.
 
 In the writable modes, git's object store works normally — objects, refs, the
 index, logs, and packed-refs are writable, so `commit`, `add`, and `checkout`
-succeed — with one known exception in a linked worktree under
-`rerere.enabled=true`, recorded under [Known residuals](#known-residuals). On
+succeed. `rr-cache` is writable too: it is git working state (recorded conflict
+resolutions), it is what `git commit` creates for itself when `rerere.enabled=true`,
+and it carries no directive git reads — so granting it costs nothing that config
+and hook protection depends on. On
 macOS/Seatbelt the packed-refs grant also covers the two fixed sibling
 names git rewrites it through (`packed-refs.lock` and `packed-refs.new`, renamed
 into place), so `git pack-refs` and the ref packing a commit triggers work too.
@@ -463,7 +465,7 @@ Four boundary edges are deliberately documented as open rather than claimed clos
   and is granted entry by entry, and bubblewrap grants by bind-mounting, which
   requires the target to exist. Any granted entry absent when the sandbox starts —
   `packed-refs` and its `packed-refs.lock` / `packed-refs.new` siblings, `logs`,
-  `index` — is therefore skipped, and git cannot create it. (A main checkout is
+  `index`, `rr-cache` — is therefore skipped, and git cannot create it. (A main checkout is
   unaffected: its whole `.git` sits under the worktree write root, as does a linked
   worktree's own per-worktree git dir.) This is structural, not an oversight:
   permission to *create* a name belongs to the parent directory, so no mount can
@@ -471,17 +473,6 @@ Four boundary edges are deliberately documented as open rather than claimed clos
   Seatbelt matches path strings instead of mounting and grants those entries
   exactly. Closing the gap on Linux needs a directory-level decision about the
   common dir, which is open.
-- **`git commit` in a linked worktree fails under `rerere.enabled=true`.** With
-  rerere on — a common setting in a developer's global gitconfig, which every
-  mode now reads — a commit creates `<commonDir>/rr-cache`, and the common
-  dir is granted entry by entry with no `rr-cache` entry among them. This one is
-  **not** Linux-only: unlike the bind-mount residual above, it is an absent
-  *grant* rather than an absent mount, so macOS/Seatbelt fails the same way. (A
-  main checkout is unaffected — its whole `.git` is under the worktree write
-  root.) A session can work around it with `-c rerere.enabled=false`, which is
-  what serf's own linked-worktree live git test does. Whether the common dir should grant a
-  writable `rr-cache` is undecided, so the defect is unfixed pending that ruling.
-
 ## macOS notes
 
 The macOS backend is Seatbelt (`/usr/bin/sandbox-exec`), driven from the same policy

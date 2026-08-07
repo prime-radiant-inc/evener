@@ -62,8 +62,9 @@ type GitLayout struct {
 	CommonDir    string // shared common git dir (main repo's .git; == GitDir for main/submodule)
 
 	// WritablePaths are git-metadata paths writable in sandboxed writable modes:
-	// objects, refs, index, logs, packed-refs (the spec's stated writable set),
-	// rooted at the common dir and, for a linked worktree, the per-worktree dir.
+	// objects, refs, index, logs, packed-refs (the spec's stated writable set) and
+	// rr-cache, rooted at the common dir and, for a linked worktree, the
+	// per-worktree dir.
 	WritablePaths []string
 
 	// ProtectedPaths are config + hook surfaces that stay WRITE-denied in every
@@ -96,8 +97,25 @@ type GitLayout struct {
 // sibling-beside-target shape that made the per-worktree git dir a whole-dir grant
 // below; here the siblings have fixed names, so naming them keeps the grant exact
 // instead of opening the whole common dir.
+//
+// rr-cache is listed because `git commit` itself creates it whenever rerere is
+// enabled — a common setting in a developer's global gitconfig, which every mode
+// reads. rerere calls mkdir on <commonDir>/rr-cache unconditionally at setup, so
+// with the leaf ungranted a linked worktree's commit died with
+// "could not create directory '.../rr-cache'": the contract's promise that
+// commit/add/checkout succeed was simply false on such a host.
+//
+// It is git WORKING STATE, not a config or hook surface. Its contents are the
+// recorded conflict resolutions — a directory per conflict hash holding
+// `preimage`, `postimage` and `thisimage` blobs, plus the per-invocation
+// `MERGE_RR` index that lives in the git dir, not here. git never reads a
+// directive from rr-cache: rerere's own switches (`rerere.enabled`,
+// `rerere.autoUpdate`) come from config, which stays write-denied, and nothing
+// under rr-cache is ever executed or resolved as a path. So a writable rr-cache
+// cannot become a core.hooksPath-style persistence vector; it belongs with
+// objects and logs.
 var gitWritableLeaves = []string{
-	"objects", "refs", "index", "logs",
+	"objects", "refs", "index", "logs", "rr-cache",
 	"packed-refs", "packed-refs.lock", "packed-refs.new",
 }
 

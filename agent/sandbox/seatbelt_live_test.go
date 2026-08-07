@@ -229,19 +229,43 @@ func TestSeatbeltLivePackedRefsMaintenance(t *testing.T) {
 		t.Run(kind.String(), func(t *testing.T) {
 			rp, cwd := liveResolveKind(t, kind, ModeWorkspaceWrite, true)
 			// A commit gives the repo a ref to pack; pack-refs then drives the
-			// lock+rename dance over <common>/packed-refs.
-			//
-			// rerere is forced OFF so the assertion depends only on the grant under
-			// test. A developer with `rerere.enabled=true` in ~/.gitconfig (which the
-			// sandbox reads) otherwise has `git commit` create <common>/rr-cache — a
-			// SEPARATE ungranted common-dir surface, tracked apart from packed-refs.
+			// lock+rename dance over <common>/packed-refs. The host's own git config
+			// is left alone — whatever rerere setting the developer carries applies,
+			// as it does in a real session.
 			out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c",
-				"git -c rerere.enabled=false -c user.email=t@e -c user.name=t commit -q --allow-empty -m serf-packed-refs && git pack-refs --all")
+				"git -c user.email=t@e -c user.name=t commit -q --allow-empty -m serf-packed-refs && git pack-refs --all")
 			if exit != 0 {
 				t.Errorf("workspace-write must allow git packed-refs maintenance (exit=%d):\n%s", exit, out)
 			}
 			if strings.TrimSpace(out) != "" {
 				t.Errorf("git packed-refs maintenance must produce no output, got:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestSeatbeltLiveCommitWithRerereEnabled proves the contract's "commit, add and
+// checkout succeed" promise holds with rerere ACTIVE — the setting a great many
+// developers carry in ~/.gitconfig, which every mode now reads. `git commit`
+// calls into rerere, which creates and populates <commonDir>/rr-cache. Before
+// that leaf was granted, a linked worktree's commit died with
+// "could not create directory '.../rr-cache'" because the common dir is granted
+// entry by entry and had no rr-cache entry among them. rerere is set ON here
+// EXPLICITLY rather than left to the host's config so the assertion tests the
+// grant, not the machine it runs on.
+func TestSeatbeltLiveCommitWithRerereEnabled(t *testing.T) {
+	requireLiveSeatbelt(t)
+	for _, kind := range []WorkspaceKind{MainCheckout, LinkedWorktree} {
+		t.Run(kind.String(), func(t *testing.T) {
+			rp, cwd := liveResolveKind(t, kind, ModeWorkspaceWrite, true)
+			stdout, stderr, exit := runUnderSeatbeltSplit(t, rp, cwd, "git",
+				"-c", "rerere.enabled=true", "-c", "user.email=t@e", "-c", "user.name=t",
+				"commit", "-q", "--allow-empty", "-m", "serf-rerere")
+			if exit != 0 {
+				t.Errorf("workspace-write must allow a commit with rerere enabled (exit=%d)\nstdout:\n%s\nstderr:\n%s", exit, stdout, stderr)
+			}
+			if strings.TrimSpace(stderr) != "" {
+				t.Errorf("a commit with rerere enabled must produce no stderr, got:\n%s", stderr)
 			}
 		})
 	}

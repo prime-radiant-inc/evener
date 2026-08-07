@@ -64,7 +64,7 @@ func TestCapabilityPreambleWorkspaceWrite(t *testing.T) {
 	}), "\n")
 
 	want := strings.Join([]string{
-		"Writable roots: <root>; git metadata: 7 paths",
+		"Writable roots: <root>; git metadata: 8 paths",
 		"Masked paths: " + maskedCountString(policy),
 		"PATH: login shell ($SHELL -lc)",
 		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
@@ -91,7 +91,7 @@ func TestCapabilityPreambleRestricted(t *testing.T) {
 	}), "\n")
 
 	want := strings.Join([]string{
-		"Writable roots: <root>; git metadata: 7 paths",
+		"Writable roots: <root>; git metadata: 8 paths",
 		"Masked paths: " + maskedCountString(policy),
 		"PATH: login shell ($SHELL -lc)",
 		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
@@ -130,7 +130,7 @@ func TestCapabilityPreambleRestrictedSeatbelt(t *testing.T) {
 	}), "\n")
 
 	want := strings.Join([]string{
-		"Writable roots: <root>; git metadata: 7 paths",
+		"Writable roots: <root>; git metadata: 8 paths",
 		"Masked paths: " + maskedCountString(&policy),
 		"PATH: login shell ($SHELL -lc)",
 		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
@@ -218,7 +218,7 @@ func TestCapabilityPreambleUnprobed(t *testing.T) {
 	}), "\n")
 
 	want := strings.Join([]string{
-		"Writable roots: <root>; git metadata: 7 paths",
+		"Writable roots: <root>; git metadata: 8 paths",
 		"Masked paths: " + maskedCountString(policy),
 		"PATH: login shell ($SHELL -lc)",
 		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
