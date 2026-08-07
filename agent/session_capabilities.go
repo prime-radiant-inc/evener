@@ -39,10 +39,20 @@ type capabilityProbe struct {
 	// ran reports that the probe command completed AND reported every expected
 	// key. A partial reply is not partially believed: it is unprobed.
 	ran bool
-	// gitRuns reports that `git --version` exited 0 inside this session's
-	// execution environment (the sandbox included, since the probe runs through
-	// the same spawn path every command does).
-	gitRuns bool
+	// gitConfigReads reports that `git config --list` exited 0 inside this
+	// session's execution environment (the sandbox included, since the probe
+	// runs through the same spawn path every command does).
+	//
+	// The probed command is deliberately NOT `git --version`, which never opens
+	// a config file and so reports success on a box where every real git
+	// invocation fatals — a restricted session whose ~/.gitconfig is unreadable
+	// is exactly that box. `git config --list` reads the system/global/local
+	// config chain, which is the first thing every git command does.
+	//
+	// It is reported as what it is — a config read — and never as "git works":
+	// a successful config read does not measure the index, object store, or
+	// worktree writes.
+	gitConfigReads bool
 	// onPath holds one entry per probedPathTools name: whether `command -v`
 	// found it.
 	onPath map[string]bool
@@ -115,7 +125,7 @@ func capabilityPreambleLines(f capabilityFacts) []string {
 	if f.sandboxed() && f.probe.ran && f.probe.onPath["go"] {
 		lines = append(lines, "go: telemetry writes denied (harmless stderr noise)")
 	}
-	lines = append(lines, "Toolchain: "+toolchainSummary(f.probe))
+	lines = append(lines, "git: "+gitSummary(f.probe), "On PATH: "+onPathSummary(f.probe))
 	return lines
 }
 
@@ -174,17 +184,26 @@ func goCacheLine(p capabilityProbe) string {
 	return fmt.Sprintf("Go cache: GOCACHE=%s %s=%s", p.goCache, envvars.GoModCache.Name, p.goModCache)
 }
 
-// toolchainSummary renders the measured toolchain results, or "unprobed".
-func toolchainSummary(p capabilityProbe) string {
+// gitSummary renders the git measurement as the exact command that was run and
+// its exit status — never as the broader claim "git works", which no single
+// probe measures.
+func gitSummary(p capabilityProbe) string {
+	switch {
+	case !p.ran:
+		return "unprobed"
+	case p.gitConfigReads:
+		return "`git config --list` exit 0"
+	default:
+		return "`git config --list` failed"
+	}
+}
+
+// onPathSummary renders which probed tools `command -v` found, or "unprobed".
+func onPathSummary(p capabilityProbe) string {
 	if !p.ran {
 		return "unprobed"
 	}
-	parts := make([]string, 0, len(probedPathTools)+1)
-	git := "no"
-	if p.gitRuns {
-		git = "ok"
-	}
-	parts = append(parts, "git="+git)
+	parts := make([]string, 0, len(probedPathTools))
 	for _, tool := range probedPathTools {
 		yes := "no"
 		if p.onPath[tool] {
@@ -217,13 +236,15 @@ func probeCapabilities(env execenv.ExecutionEnvironment, cwd string) capabilityP
 	return parseCapabilityProbe(res.Stdout)
 }
 
-// capabilityProbeScript is the probe command: whether git actually runs, which
+// capabilityProbeScript is the probe command: whether git can read its config
+// chain (see capabilityProbe.gitConfigReads for why that command and not
+// `git --version`), which
 // probed tools are on PATH, and go's resolved cache paths. `go env` stderr is
 // discarded because a sandboxed go writes the telemetry denial there (the
 // preamble states that fact separately).
 func capabilityProbeScript() string {
 	var b strings.Builder
-	b.WriteString("git --version >/dev/null 2>&1 && echo git=ok || echo git=no\n")
+	b.WriteString("git config --list >/dev/null 2>&1 && echo git=ok || echo git=no\n")
 	for _, tool := range probedPathTools {
 		fmt.Fprintf(&b, "command -v %s >/dev/null 2>&1 && echo %s=yes || echo %s=no\n", tool, tool, tool)
 	}
@@ -247,7 +268,7 @@ func parseCapabilityProbe(out string) capabilityProbe {
 	if _, ok := values["git"]; !ok {
 		return capabilityProbe{}
 	}
-	p := capabilityProbe{ran: true, gitRuns: values["git"] == "ok", onPath: map[string]bool{}}
+	p := capabilityProbe{ran: true, gitConfigReads: values["git"] == "ok", onPath: map[string]bool{}}
 	for _, tool := range probedPathTools {
 		val, ok := values[tool]
 		if !ok {

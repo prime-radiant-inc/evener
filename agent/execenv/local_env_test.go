@@ -19,11 +19,13 @@ import (
 // force a fresh probe instead of observing whatever an earlier test cached.
 func resetLoginShellPATHCache(t *testing.T) {
 	t.Helper()
-	prevOnce := loginShellPATHOnce
 	prevValue := loginShellPATHValue
 	prevOutput := loginShellPATHOutput
 	t.Cleanup(func() {
-		loginShellPATHOnce = prevOnce
+		// A sync.Once cannot be saved and restored by value (go vet copylocks);
+		// cleanup hands back a FRESH one, which costs a later caller at most one
+		// re-probe through the restored real output func.
+		loginShellPATHOnce = sync.Once{}
 		loginShellPATHValue = prevValue
 		loginShellPATHOutput = prevOutput
 	})

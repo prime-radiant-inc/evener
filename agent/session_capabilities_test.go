@@ -15,11 +15,11 @@ import (
 // reported the resolved cache paths.
 func probedFacts() capabilityProbe {
 	return capabilityProbe{
-		ran:        true,
-		gitRuns:    true,
-		onPath:     map[string]bool{"go": true, "node": true, "rg": false},
-		goCache:    "/scratch/s1/gocache",
-		goModCache: "/scratch/s1/gomodcache",
+		ran:            true,
+		gitConfigReads: true,
+		onPath:         map[string]bool{"go": true, "node": true, "rg": false},
+		goCache:        "/scratch/s1/gocache",
+		goModCache:     "/scratch/s1/gomodcache",
 	}
 }
 
@@ -69,7 +69,8 @@ func TestCapabilityPreambleWorkspaceWrite(t *testing.T) {
 		"Cache: overlay",
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"go: telemetry writes denied (harmless stderr noise)",
-		"Toolchain: git=ok go=yes node=yes rg=no",
+		"git: `git config --list` exit 0",
+		"On PATH: go=yes node=yes rg=no",
 	}, "\n")
 	if diff := normalize(got, root, home); diff != want {
 		t.Errorf("workspace-write preamble:\ngot:\n%s\nwant:\n%s", diff, want)
@@ -95,7 +96,8 @@ func TestCapabilityPreambleRestricted(t *testing.T) {
 		"Cache: session-private",
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"go: telemetry writes denied (harmless stderr noise)",
-		"Toolchain: git=ok go=yes node=yes rg=no",
+		"git: `git config --list` exit 0",
+		"On PATH: go=yes node=yes rg=no",
 	}, "\n")
 	if diff := normalize(got, root, home); diff != want {
 		t.Errorf("restricted preamble:\ngot:\n%s\nwant:\n%s", diff, want)
@@ -116,7 +118,8 @@ func TestCapabilityPreambleUnsandboxed(t *testing.T) {
 		"PATH: inherited process environment",
 		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
-		"Toolchain: git=ok go=yes node=yes rg=no",
+		"git: `git config --list` exit 0",
+		"On PATH: go=yes node=yes rg=no",
 	}, "\n")
 	if got != want {
 		t.Errorf("unsandboxed preamble:\ngot:\n%s\nwant:\n%s", got, want)
@@ -141,7 +144,8 @@ func TestCapabilityPreambleUnprobed(t *testing.T) {
 		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
 		"Cache: session-private",
 		"Go cache: unprobed",
-		"Toolchain: unprobed",
+		"git: unprobed",
+		"On PATH: unprobed",
 	}, "\n")
 	if diff := normalize(got, root, home); diff != want {
 		t.Errorf("unprobed preamble:\ngot:\n%s\nwant:\n%s", diff, want)
@@ -162,7 +166,8 @@ func TestCapabilityPreambleGoAbsent(t *testing.T) {
 	want := strings.Join([]string{
 		"PATH: inherited process environment",
 		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
-		"Toolchain: git=ok go=no node=yes rg=no",
+		"git: `git config --list` exit 0",
+		"On PATH: go=no node=yes rg=no",
 	}, "\n")
 	if got != want {
 		t.Errorf("go-absent preamble:\ngot:\n%s\nwant:\n%s", got, want)
@@ -184,7 +189,7 @@ func TestCapabilityPreambleNoScratch(t *testing.T) {
 func TestParseCapabilityProbe(t *testing.T) {
 	full := "git=ok\ngo=yes\nnode=no\nrg=yes\ngocache=/c/go\ngomodcache=/c/mod\n"
 	p := parseCapabilityProbe(full)
-	if !p.ran || !p.gitRuns || !p.onPath["go"] || p.onPath["node"] || !p.onPath["rg"] {
+	if !p.ran || !p.gitConfigReads || !p.onPath["go"] || p.onPath["node"] || !p.onPath["rg"] {
 		t.Errorf("parsed probe = %+v, want git ok, go yes, node no, rg yes", p)
 	}
 	if p.goCache != "/c/go" || p.goModCache != "/c/mod" {
@@ -222,7 +227,8 @@ func TestCapabilityPreambleRendersInEnvironmentSection(t *testing.T) {
 		"\nPATH: inherited process environment\n",
 		"\nScratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1\n",
 		"\nGo cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache\n",
-		"\nToolchain: git=ok go=yes node=yes rg=no\n",
+		"\ngit: `git config --list` exit 0\n",
+		"\nOn PATH: go=yes node=yes rg=no\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered environment section missing %q", want)
