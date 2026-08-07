@@ -33,6 +33,36 @@ When a test needs a model, name that as the behavior under test and keep it out
 of the default suite. When the model is only a way to drive Serf, replace it with
 a scripted `llm.ProviderAdapter` response and assert the Serf side effects.
 
+## Flakes and Timeouts
+
+Two standing rules (Jesse, 2026-07-20/21), both absolute:
+
+**A sighted flake gets a root-cause fix on the spot.** Even one failure,
+even under heavy load, even in code you don't own. "Pre-existing" and
+"another session's area" are not exemptions; a deferred flake gets
+re-triaged at full cost by every session that hits it, and it poisons
+every run's signal in between. The fix must address the mechanism, not
+the symptom. Honest irreproducibility after serious looped effort is
+reportable, but only with mechanism analysis, not a shrug.
+
+**Never widen or hardcode a timeout to absorb awaitable work.** A
+widened deadline hides a guess that re-flakes as the suite grows, and it
+converts real failures into timeout mysteries. The preference hierarchy:
+
+1. Await the actual async completion — the import promise, event,
+   callback, channel, or process exit.
+2. Condition-watching (`findBy`/`waitFor`/poll-until) only where no
+   awaitable completion exists; any ceiling there is a tripwire bound,
+   never the mechanism.
+3. Never fixed sleeps, fixed flush counts, or widened deadlines to paper
+   over load-dependent work. Where pacing itself is under test, use the
+   codebase's clock abstraction.
+
+The repo's track record backs the policy: every flake family root-caused
+here (vite-cache digest, tmux palette capture, auth stopwatch, composer
+projection refresh) turned out to be an awaitable completion nobody was
+awaiting, and zero were fixed by widening a timeout.
+
 ## Canonical Gate Matrix
 
 This table is the authoritative answer to which checks run when, what they
