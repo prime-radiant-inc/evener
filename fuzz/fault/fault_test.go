@@ -72,7 +72,7 @@ func TestDeterministic(t *testing.T) {
 	seq := func() []bool {
 		s := FromBytes(plan)
 		var out []bool
-		for i := 0; i < 24; i++ {
+		for range 24 {
 			out = append(out, s.trip() != nil)
 		}
 		return out
@@ -90,7 +90,7 @@ func TestErrorKindsVary(t *testing.T) {
 	// error kind must appear, so type-switching branches get exercised.
 	s := FromBytes([]byte{0, 4, 8, 12, 16}) // all %4==0, different >>2 buckets
 	kinds := map[error]bool{}
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if err := s.trip(); err != nil {
 			kinds[err] = true
 		}
@@ -136,11 +136,11 @@ func TestRoundTripperHonorsContractOnFault(t *testing.T) {
 func TestConcurrentTripIsRaceFree(t *testing.T) {
 	s := FromBytes(bytes.Repeat([]byte{0, 1, 2, 3}, 64))
 	var wg sync.WaitGroup
-	for g := 0; g < 8; g++ {
+	for range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 1000; i++ {
+			for range 1000 {
 				_ = s.trip()
 			}
 		}()

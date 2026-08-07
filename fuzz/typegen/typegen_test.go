@@ -306,13 +306,13 @@ func TestValidRoundTrips(t *testing.T) {
 	}
 
 	// Byte Source: sweep deterministic streams.
-	for seed := 0; seed < 300; seed++ {
+	for seed := range 300 {
 		data := pseudoBytes(seed, 64)
 		check("byte", schemagen.Value(schemagen.NewByteSource(data), schema, schemagen.Valid))
 	}
 	// Rapid Source: same definitions via the rapid backend.
 	g := GeneratorForType(typ, schemagen.Valid)
-	for seed := 0; seed < 300; seed++ {
+	for seed := range 300 {
 		check("rapid", g.Example(seed))
 	}
 }
@@ -323,7 +323,7 @@ func TestNoPanicOnTrickyType(t *testing.T) {
 	typ := reflect.TypeFor[trickyStruct]()
 	schema := SchemaFromType(typ)
 	for _, mode := range []schemagen.Mode{schemagen.Valid, schemagen.Adjacent} {
-		for seed := 0; seed < 300; seed++ {
+		for seed := range 300 {
 			data := pseudoBytes(seed*7+int(mode), 48)
 			val := schemagen.Value(schemagen.NewByteSource(data), schema, mode)
 			raw, err := json.Marshal(val)
@@ -340,7 +340,7 @@ func TestNoPanicOnTrickyType(t *testing.T) {
 func TestByteDeterminism(t *testing.T) {
 	reg := NewRegistry()
 	reg.RegisterType("clean", reflect.TypeFor[cleanStruct]())
-	for seed := 0; seed < 50; seed++ {
+	for seed := range 50 {
 		data := pseudoBytes(seed, 64)
 		a, _ := reg.Value("clean", schemagen.Valid, schemagen.NewByteSource(data))
 		b, _ := reg.Value("clean", schemagen.Valid, schemagen.NewByteSource(data))
@@ -526,7 +526,7 @@ func TestNoSerfImport(t *testing.T) {
 // checks by hand, now behind one call.
 func TestValueFromBytes(t *testing.T) {
 	sawOpt, sawNested := false, false
-	for seed := 0; seed < 64; seed++ {
+	for seed := range 64 {
 		v, ok := ValueFromBytes[cleanStruct](pseudoBytes(seed, 48), schemagen.Valid)
 		if !ok {
 			t.Fatalf("seed %d: Valid value of a round-trippable type failed to decode", seed)

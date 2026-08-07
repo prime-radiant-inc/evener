@@ -173,7 +173,7 @@ func genArray(s Source, schema map[string]any, mode Mode, depth int) any {
 	lo, hi := arrayLenBounds(schema)
 	n := s.IntRange(lo, hi, "array_len")
 	out := make([]any, 0, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		if len(items) == 0 {
 			out = append(out, genArbitraryJSON(s, depth+1))
 			continue
@@ -283,14 +283,14 @@ func genArbitraryJSON(s Source, depth int) any {
 	case "object":
 		n := s.IntRange(0, 3, "obj_len")
 		m := map[string]any{}
-		for i := 0; i < n; i++ {
+		for range n {
 			m[unknownKey(s)] = genArbitraryJSON(s, depth+1)
 		}
 		return m
 	case "array":
 		n := s.IntRange(0, 3, "arr_len")
 		out := make([]any, 0, n)
-		for i := 0; i < n; i++ {
+		for range n {
 			out = append(out, genArbitraryJSON(s, depth+1))
 		}
 		return out

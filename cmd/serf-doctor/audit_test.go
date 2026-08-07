@@ -66,7 +66,7 @@ func auditSessionFixture(t *testing.T) (base, sid string) {
 	mustWrite(t, filepath.Join(sess, sid+".meta.json"), `{"id":"`+sid+`","model":"anthropic/claude-a","turn_count":1}`)
 
 	var jobLines []string
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		id := "job_" + string(rune('a'+i))
 		jobLines = append(jobLines,
 			`{"kind":"job_started","job_id":"`+id+`","type":"shell","command":"x","owner_session_id":"`+sid+`","visible_to_session_id":"`+sid+`","started_at":"2026-08-01T00:00:00Z"}`,
