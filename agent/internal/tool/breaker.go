@@ -251,7 +251,7 @@ func errorClass(output string) string {
 }
 
 func firstNonBlankLine(s string) string {
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		if strings.TrimSpace(line) != "" {
 			return line
 		}
