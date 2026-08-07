@@ -2438,14 +2438,14 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	// Inside the seam we also wrap the winning child's enqueue to count caller
 	// watch-send tokens: the winner surfaces the seeded pending token exactly once,
 	// before it runs the SessionStart hook (the final, FIFO-blocking side effect).
-	var sideEffectsRuns int32
-	var callerTokens int32
+	var sideEffectsRuns atomic.Int32
+	var callerTokens atomic.Int32
 	s.delegateRestoreBeforeSideEffects = func(child *Session) {
-		atomic.AddInt32(&sideEffectsRuns, 1)
+		sideEffectsRuns.Add(1)
 		origEnqueue := child.jobManager.enqueue
 		child.jobManager.enqueue = func(n jobNotification) {
 			if n.WatchSend != nil && n.WatchSend.Key.ResolvedSendTo == runtimeMessageAliasCaller {
-				atomic.AddInt32(&callerTokens, 1)
+				callerTokens.Add(1)
 			}
 			if origEnqueue != nil {
 				origEnqueue(n)
@@ -2488,7 +2488,7 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	// at the tail), so the hook-in-flight signal proves the token is already
 	// enqueued. The loser is parked in pending.wait and surfaces nothing, and the
 	// first user turn is not launched yet, so this count is race-free: exactly one.
-	if got := atomic.LoadInt32(&callerTokens); got != 1 {
+	if got := callerTokens.Load(); got != 1 {
 		t.Fatalf("caller watch-send tokens enqueued while restore hook is in flight = %d, want exactly one (side effects run once)", got)
 	}
 
@@ -2578,7 +2578,7 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	// deduped at render; see drainJobManagerWatchSends). That re-tokening races
 	// reconstruction completion under load. The seam invocation count is the
 	// race-free proof, and the in-flight assertion above proved exactly one token.
-	if got := atomic.LoadInt32(&sideEffectsRuns); got != 1 {
+	if got := sideEffectsRuns.Load(); got != 1 {
 		t.Fatalf("restore side-effects runs = %d, want exactly one (loser reuses winner without re-running side effects)", got)
 	}
 	if got := countFileLines(t, hookMarker); got != 1 {
