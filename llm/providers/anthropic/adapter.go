@@ -777,8 +777,13 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 					r.Warnings = append(r.Warnings, *refusalWarn)
 				}
 				llm.StampEndpointURL(&r, llm.FinalResponseEndpointURL(resp, a.BaseURL+"/v1/messages"), a.apiLogCredentialMaterial(nil))
-				if len(r.ToolCalls()) > 0 {
-					r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: "tool_use"}
+				// See the matching comment in fromAnthropicResponse (response.go):
+				// only fall back to "tool_calls" when message_delta's stop_reason
+				// was missing/empty, never when it already reported something more
+				// specific like "max_tokens" (kata mmr2 — a truncated tool call
+				// must not be reported as a normal tool-calls finish).
+				if len(r.ToolCalls()) > 0 && r.Finish.Reason == llm.FinishReasonStop {
+					r.Finish = llm.FinishReason{Reason: llm.FinishReasonToolCalls, Raw: "tool_use"}
 				}
 
 				// Best-effort thinking-token estimate from visible thinking content,
