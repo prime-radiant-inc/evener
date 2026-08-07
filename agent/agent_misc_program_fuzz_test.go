@@ -79,9 +79,13 @@ func miscCatalogAndReminderProgram(t *testing.T, token string) {
 	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, Notes: token}}); err != nil {
 		t.Fatal(err)
 	}
-	for _, reminder := range []string{taskReminderFull(store), taskReminderForInactivity(store), formatCurrentTaskSteering(created[0]), taskReminderAllDone(), taskReminderNudge()} {
-		if !strings.Contains(reminder, "<SYSTEM-REMINDER>") {
-			t.Fatalf("invalid task reminder %q", reminder)
+	// Both tool-availability variants of the gated reminders keep the envelope:
+	// the wording changes when the session has no task_list, the shape must not.
+	for _, hasTaskList := range []bool{true, false} {
+		for _, reminder := range []string{taskReminderFull(store), taskReminderForInactivity(store, hasTaskList), formatCurrentTaskSteering(created[0], hasTaskList), taskReminderAllDone("communicate"), taskReminderNudge()} {
+			if !strings.Contains(reminder, "<SYSTEM-REMINDER>") {
+				t.Fatalf("invalid task reminder %q", reminder)
+			}
 		}
 	}
 	if got := taskReminderFull(taskpkg.NewTaskStore(t.TempDir(), "empty")); got != "" {
@@ -90,7 +94,7 @@ func miscCatalogAndReminderProgram(t *testing.T, token string) {
 	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := taskReminderForInactivity(store); got != "" {
+	if got := taskReminderForInactivity(store, true); got != "" {
 		t.Fatalf("completed task inactivity reminder = %q", got)
 	}
 }

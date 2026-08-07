@@ -103,7 +103,7 @@ func promptSweepParentSession(t *testing.T) *Session {
 func stripToolInventory(prompt string) string {
 	var out []string
 	inInventory := false
-	for _, line := range strings.Split(prompt, "\n") {
+	for line := range strings.SplitSeq(prompt, "\n") {
 		switch {
 		case strings.HasPrefix(line, "Currently callable tools:"),
 			strings.HasPrefix(line, "Provider tools currently unavailable here:"):

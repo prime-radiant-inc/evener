@@ -185,11 +185,11 @@ func FuzzSessionMetadataHelpers(f *testing.F) {
 		if warning != text || warningHookMessage((*events.WarningData)(nil)) != "<nil>" {
 			t.Fatalf("warning rendering mismatch: %q", warning)
 		}
-		reminder := formatCurrentTaskSteering(taskpkg.Task{ID: int(mode), Description: text, Prompt: alternate})
+		reminder := formatCurrentTaskSteering(taskpkg.Task{ID: int(mode), Description: text, Prompt: alternate}, mode%2 == 0)
 		if !strings.HasPrefix(reminder, "<SYSTEM-REMINDER>") || !strings.HasSuffix(reminder, "</SYSTEM-REMINDER>") {
 			t.Fatalf("task reminder envelope missing: %q", reminder)
 		}
-		if taskReminderAllDone() == "" || taskReminderNudge() == "" {
+		if taskReminderAllDone(text) == "" || taskReminderNudge() == "" {
 			t.Fatal("static task reminders must be non-empty")
 		}
 		eventCh := make(chan events.SessionEvent)
