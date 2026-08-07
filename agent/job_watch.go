@@ -3267,26 +3267,35 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 // never delivers (spec §3); the owner's loop drains and delivers on wake. With
 // nothing recorded there is nothing to drain, so the owner is left undisturbed.
 func (jm *jobManager) recordWatchSendsAndKick(deliveries []watchSendDelivery) {
+	tokens, recorded := jm.recordWatchSends(deliveries)
+	// A queued token wakes the owner by itself; a kick is what covers a
+	// recorded send that queued nothing.
+	if queued := jm.enqueueNotifications(tokens); recorded && !queued {
+		jm.kick()
+	}
+}
+
+// recordWatchSends is the durable half of recordWatchSendsAndKick: it persists
+// every fired send and RETURNS the caller wake tokens rather than queueing
+// them, so a caller with more to say about the same event can wake the owner
+// once for all of it. recorded reports whether anything was persisted at all —
+// with tokens empty, that is what still owes the owner a kick.
+func (jm *jobManager) recordWatchSends(deliveries []watchSendDelivery) (tokens []jobNotification, recorded bool) {
 	if len(deliveries) == 0 {
-		return
+		return nil, false
 	}
 	deliveries = jm.snapshotWatchSendFrames(deliveries)
-	recorded := false
-	kicked := false
 	for _, d := range deliveries {
 		state, _, ok, err := jm.recordWatchSend(d)
 		if err != nil || !ok {
 			continue // recordWatchSend already produced diagnostics/drops
 		}
 		recorded = true
-		if state.Key.ResolvedSendTo == runtimeMessageAliasCaller && jm.enqueue != nil {
-			jm.enqueue(watchSendTokenNotification("", state))
-			kicked = true // enqueueJobNotificationAndNotify wakes internally
+		if state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
+			tokens = append(tokens, watchSendTokenNotification("", state))
 		}
 	}
-	if recorded && !kicked {
-		jm.kick()
-	}
+	return tokens, recorded
 }
 
 func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string) jobstore.WatchSendState {
@@ -5049,8 +5058,18 @@ func limitWatchText(s string, maxChars int) string {
 }
 
 func (jm *jobManager) enqueueWatchNotifications(notifications []jobNotification) {
+	_ = jm.enqueueNotifications(jm.routeWatchNotifications(notifications))
+}
+
+// routeWatchNotifications delivers every watch notification addressed to
+// another session and RETURNS the ones bound for this session's own rail,
+// rather than queueing them. A caller that has more to say about the same
+// event (armFinalizedJob, which also has the job's terminal status) can then
+// queue the whole group with one wake; enqueueWatchNotifications is the
+// nothing-else-to-add case.
+func (jm *jobManager) routeWatchNotifications(notifications []jobNotification) []jobNotification {
 	if len(notifications) == 0 {
-		return
+		return nil
 	}
 	jm.watchNotifyMu.Lock()
 	defer jm.watchNotifyMu.Unlock()
@@ -5058,8 +5077,9 @@ func (jm *jobManager) enqueueWatchNotifications(notifications []jobNotification)
 	closing := jm.closing
 	jm.mu.Unlock()
 	if closing {
-		return
+		return nil
 	}
+	var own []jobNotification
 	for _, n := range notifications {
 		if n.receiverNotify != nil {
 			enqueue := n.receiverNotify
@@ -5070,10 +5090,9 @@ func (jm *jobManager) enqueueWatchNotifications(notifications []jobNotification)
 		if n.receiverSessionID != "" && n.receiverSessionID != jm.sessionID {
 			continue
 		}
-		if jm.enqueue != nil {
-			jm.enqueue(n)
-		}
+		own = append(own, n)
 	}
+	return own
 }
 
 func (jm *jobManager) watchCount() int {

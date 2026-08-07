@@ -456,6 +456,11 @@ type Session struct {
 	// mutex.
 	pendingJobNotifsMu sync.Mutex
 	pendingJobNotifs   []jobNotification
+	// notifyWakeHolds counts in-flight holdJobNotificationWake holds, and
+	// notifyWakeDeferred records that a wake was suppressed while held. Guarded
+	// by pendingJobNotifsMu.
+	notifyWakeHolds    int
+	notifyWakeDeferred bool
 	notifyFunc         func()
 	jobNotifyRetry     notificationRetry
 
@@ -639,8 +644,43 @@ func (s *Session) enqueueJobNotification(n jobNotification) {
 }
 
 func (s *Session) enqueueJobNotificationAndNotify(n jobNotification) {
-	s.enqueueJobNotification(n)
-	s.notify()
+	s.pendingJobNotifsMu.Lock()
+	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
+	held := s.notifyWakeHolds > 0
+	if held {
+		s.notifyWakeDeferred = true
+	}
+	s.pendingJobNotifsMu.Unlock()
+	if !held {
+		s.notify()
+	}
+}
+
+// holdJobNotificationWake defers the notification wake until the returned
+// release runs, which then wakes ONCE if anything was queued meanwhile.
+// Notices produced by a single event belong in a single notification turn: an
+// idle session woken per notice takes one turn for a watch settling and another
+// for the completion that settled it, telling the model the same news twice.
+//
+// A hold taken for one job also defers a concurrent job's wake, which is safe:
+// release always fires whatever was deferred, so a wake is delayed by the
+// length of the hold and never dropped.
+func (s *Session) holdJobNotificationWake() func() {
+	s.pendingJobNotifsMu.Lock()
+	s.notifyWakeHolds++
+	s.pendingJobNotifsMu.Unlock()
+	return func() {
+		s.pendingJobNotifsMu.Lock()
+		s.notifyWakeHolds--
+		wake := s.notifyWakeHolds == 0 && s.notifyWakeDeferred
+		if wake {
+			s.notifyWakeDeferred = false
+		}
+		s.pendingJobNotifsMu.Unlock()
+		if wake {
+			s.notify()
+		}
+	}
 }
 
 func (s *Session) requeueJobNotifications(notifs []jobNotification) {
