@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -314,7 +315,7 @@ func turnIndexWithToolResult(history []schema.Turn, callID string) int {
 }
 
 func lastTurnIndex(history []schema.Turn, kind schema.TurnKind) int {
-	for i := len(history) - 1; i >= 0; i-- {
+	for i := range slices.Backward(history) {
 		if history[i].Kind == kind {
 			return i
 		}

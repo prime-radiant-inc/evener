@@ -18,6 +18,7 @@ package agent
 // in internal/apptranscript/apptranscript_test.go.
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -50,9 +51,9 @@ func lastMarkerTurn(t *testing.T, sess *Session) schema.Turn {
 	t.Helper()
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	for i := len(sess.history) - 1; i >= 0; i-- {
-		if sess.history[i].Kind == schema.TurnModelSwitch {
-			return sess.history[i]
+	for _, h := range slices.Backward(sess.history) {
+		if h.Kind == schema.TurnModelSwitch {
+			return h
 		}
 	}
 	t.Fatal("no TurnModelSwitch turn in history")

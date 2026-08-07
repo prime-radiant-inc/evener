@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
@@ -258,7 +259,7 @@ func deriveRestoredState(history []schema.Turn) SessionState {
 // caller logs a warning only for the latter, and the restore must never fail
 // over either.
 func deriveRestoredAskPending(history []schema.Turn) (pending []askQuestion, isAskRound bool) {
-	for i := len(history) - 1; i >= 0; i-- {
+	for i := range slices.Backward(history) {
 		turn := history[i]
 		switch turn.Kind {
 		case schema.TurnUserInput:

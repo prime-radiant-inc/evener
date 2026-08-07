@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -76,7 +77,7 @@ func (m *hubModel) returnToDashboard() {
 }
 
 func (m hubModel) lastBrowseMessageIndex() int {
-	for i := len(m.session.messages) - 1; i >= 0; i-- {
+	for i := range slices.Backward(m.session.messages) {
 		if msgrender.RenderMessage(m.session.messages[i], max(m.width, 80), false) != "" {
 			return i
 		}

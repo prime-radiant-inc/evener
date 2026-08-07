@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -145,7 +146,7 @@ func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
 func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	// Scan backward for the last compaction turn.
 	compactionIdx := -1
-	for i := len(entries) - 1; i >= 0; i-- {
+	for i := range slices.Backward(entries) {
 		kind := entries[i].Turn.Kind
 		if kind == schema.TurnCheckpoint || kind == schema.TurnSummary {
 			compactionIdx = i

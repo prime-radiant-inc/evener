@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -166,9 +167,9 @@ func TestForkFlowCopyNamesAUserMessageNotATurn(t *testing.T) {
 
 func lastForkEntrySystemMessage(t *testing.T, m hubModel) string {
 	t.Helper()
-	for i := len(m.session.messages) - 1; i >= 0; i-- {
-		if m.session.messages[i].Kind == transcript.MsgSystem {
-			return m.session.messages[i].Text
+	for _, msg := range slices.Backward(m.session.messages) {
+		if msg.Kind == transcript.MsgSystem {
+			return msg.Text
 		}
 	}
 	t.Fatalf("no system message in session log: %s", forkEntrySystemLog(m))

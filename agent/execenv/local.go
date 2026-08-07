@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1431,8 +1432,8 @@ func lookPathInEnv(name string, env []string) (string, bool) {
 
 	pathPrefix := envvars.Path.Name + "="
 	pathValue := ""
-	for i := len(env) - 1; i >= 0; i-- {
-		if rest, ok := strings.CutPrefix(env[i], pathPrefix); ok {
+	for _, e := range slices.Backward(env) {
+		if rest, ok := strings.CutPrefix(e, pathPrefix); ok {
 			pathValue = rest
 			break
 		}

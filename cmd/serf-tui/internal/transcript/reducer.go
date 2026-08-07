@@ -3,6 +3,7 @@ package transcript
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"primeradiant.com/serf/appwire"
@@ -655,7 +656,7 @@ func (r *TranscriptReducer) messageIndexByItemID(itemID string, kind MessageKind
 }
 
 func (r *TranscriptReducer) pendingUserEchoIndex(text string) (int, bool) {
-	for i := len(r.messages) - 1; i >= 0; i-- {
+	for i := range slices.Backward(r.messages) {
 		msg := r.messages[i]
 		if msg.Kind != MsgUser {
 			continue

@@ -3,6 +3,7 @@ package contextmgr
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
@@ -160,9 +161,9 @@ Key facts (one line):`, b.String())
 
 	// Determine action name from recent turns.
 	action := "unknown"
-	for i := len(recent) - 1; i >= 0; i-- {
-		if recent[i].Kind == schema.TurnTool || recent[i].Kind == schema.TurnToolResults {
-			for _, p := range recent[i].Message.Content {
+	for _, r := range slices.Backward(recent) {
+		if r.Kind == schema.TurnTool || r.Kind == schema.TurnToolResults {
+			for _, p := range r.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					action = p.ToolResult.Name
 					break
