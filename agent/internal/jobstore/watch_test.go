@@ -1,6 +1,7 @@
 package jobstore
 
 import (
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -214,22 +215,21 @@ func TestOutputMatcherEmptyChunksAreNoop(t *testing.T) {
 	}
 }
 
-// An empty pattern matches at every position in the window, so it reports the
-// line each of those positions falls on — including the unterminated tail.
-func TestOutputMatcherEmptyRegexpReportsEveryLine(t *testing.T) {
+// An empty pattern matches at every byte position in the window, so it reports
+// the line each of those positions falls on — one fire per position, including
+// the unterminated tail. That is a real change from the old line matcher's one
+// fire per line, and the exact count is what pins it.
+func TestOutputMatcherEmptyRegexpReportsEveryPosition(t *testing.T) {
 	m := NewOutputMatcher(regexp.MustCompile(``))
 	got := m.Feed([]byte("one\n\npartial"))
-	if len(got) == 0 {
-		t.Fatal("empty regexp must match")
+	want := []string{
+		"one", "one", "one", "one", // positions 0-3, the first line
+		"",                                         // position 4, the empty line
+		"partial", "partial", "partial", "partial", // positions 5-12, the
+		"partial", "partial", "partial", "partial", // unterminated tail
 	}
-	seen := map[string]bool{}
-	for _, g := range got {
-		seen[g] = true
-	}
-	for _, want := range []string{"one", "", "partial"} {
-		if !seen[want] {
-			t.Fatalf("empty regexp excerpts = %#v, want one containing %q", got, want)
-		}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("empty regexp excerpts = %#v, want %#v", got, want)
 	}
 }
 
@@ -684,4 +684,100 @@ func mustCompileOutputMatch(t *testing.T, pattern string) *regexp.Regexp {
 		t.Fatalf("CompileOutputMatch(%q): %v", pattern, err)
 	}
 	return re
+}
+
+// ---------------------------------------------------------------------------
+// Sliding-window dedup. Equality dedup let the SAME occurrence fire once per
+// chunk on newline-free output — exactly the shape this task exists to serve —
+// because a window that has slid re-matches it at a different extent: a pattern
+// eating leftward starts at the new window's start edge, one eating rightward
+// ends at the new window's end. Overlap dedup reports the occurrence once.
+// ---------------------------------------------------------------------------
+
+func TestOutputMatcherSlidingWindowFiresEachOccurrenceOnce(t *testing.T) {
+	for _, pattern := range []string{`READY`, `x+READY`, `^x+READY`, `.*READY`, `READY.*`} {
+		for _, terminator := range []string{"", "\n"} {
+			t.Run(pattern+terminator, func(t *testing.T) {
+				m := NewOutputMatcher(mustCompileOutputMatch(t, pattern))
+				// One 10KB line with the token in the middle, fed in 1KB chunks, so
+				// the window slides across the match four times.
+				blob := strings.Repeat("x", 5000) + "READY" + strings.Repeat("x", 5000) + terminator
+				var got []string
+				for off := 0; off < len(blob); off += 1024 {
+					got = append(got, m.Feed([]byte(blob[off:min(off+1024, len(blob))]))...)
+				}
+				if len(got) != 1 {
+					t.Fatalf("occurrence fired %d times, want 1: %#v", len(got), got)
+				}
+			})
+		}
+	}
+}
+
+func TestOutputMatcherReportedExtentsNeverOverlap(t *testing.T) {
+	m := NewOutputMatcher(mustCompileOutputMatch(t, `x*READY`))
+	blob := strings.Repeat("x", 3000) + "READY" + strings.Repeat("y", 3000) + "READY" + strings.Repeat("z", 100)
+	var reported []OutputMatch
+	for off := 0; off < len(blob); off += 512 {
+		end := min(off+512, len(blob))
+		reported = append(reported, m.FeedAtWithProvenance([]byte(blob[off:end]), int64(end), nil)...)
+	}
+	if len(reported) != 2 {
+		t.Fatalf("two occurrences fired %d times, want 2: %+v", len(reported), reported)
+	}
+	for i := 1; i < len(reported); i++ {
+		if reported[i].Start < reported[i-1].End {
+			t.Fatalf("reported extents overlap: %+v then %+v", reported[i-1], reported[i])
+		}
+	}
+}
+
+// A genuinely separate occurrence, disjoint from an already-reported one, is
+// never suppressed by the dedup.
+func TestOutputMatcherDisjointOccurrencesAllFire(t *testing.T) {
+	m := NewOutputMatcher(mustCompileOutputMatch(t, `ERROR`))
+	blob := "ERROR one\nfine\nERROR two\nfine\nERROR three\n"
+	if got := m.Feed([]byte(blob)); len(got) != 3 {
+		t.Fatalf("three disjoint occurrences fired %d times: %#v", len(got), got)
+	}
+}
+
+// ScanRetained walks megabytes of retained output — up to the 8MB retention cap,
+// over a model-supplied pattern. It must never materialise every match: the old
+// single-window FindAllIndex held a []int per match live for the whole scan, so
+// "." over a large terminal log pinned tens of megabytes at a stroke. The
+// backward window walk pays for positions in one window only.
+func TestScanRetainedHoldsOnlyTheFurthestMatch(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`.`))
+	data := []byte(strings.Repeat("abcdefgh", 256*1024)) // 2MB, ~2M matches
+	var last string
+	var matched bool
+	allocs := testing.AllocsPerRun(1, func() {
+		last, matched = m.ScanRetained(data)
+	})
+	if !matched || last == "" {
+		t.Fatalf("ScanRetained over a large blob = (%q, %v), want a match", last, matched)
+	}
+	// One window holds at most 2*outputMatchWindowBytes matches. The old path
+	// allocated on the order of the match count — millions.
+	if allocs > 100_000 {
+		t.Fatalf("ScanRetained allocated %.0f times over a 2MB blob, want O(window) not O(matches)", allocs)
+	}
+}
+
+func TestScanRetainedFindsTheLastMatchAcrossWindowBoundaries(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`TOKEN_\d`))
+	var b strings.Builder
+	b.WriteString("TOKEN_1")
+	b.WriteString(strings.Repeat("-", 5*outputMatchWindowBytes))
+	b.WriteString("TOKEN_2")
+	b.WriteString(strings.Repeat("-", 3*outputMatchWindowBytes))
+	b.WriteString("TOKEN_3")
+	last, matched := m.ScanRetained([]byte(b.String()))
+	if !matched {
+		t.Fatal("ScanRetained must match across window boundaries")
+	}
+	if !strings.Contains(last, "TOKEN_3") {
+		t.Fatalf("ScanRetained excerpt = %q, want the LAST token", last)
+	}
 }

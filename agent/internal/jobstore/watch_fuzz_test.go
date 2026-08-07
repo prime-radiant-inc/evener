@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"reflect"
 	"regexp"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -11,6 +13,15 @@ import (
 // matcher that watches a job's output. Input is an arbitrary regexp pattern plus
 // an arbitrary output blob. The blob is fed as a single Feed() chunk, so the scan
 // window is exactly the blob and the result is fully determined by it.
+//
+// A second leg feeds the SAME blob as TWO chunks split at a fuzz-chosen offset.
+// Without it the window is always exactly the blob and windowStart is always 0,
+// so the carry, the seam, and the reported-range dedup this task introduced sit
+// entirely outside the differential. The chunked leg asserts the two properties
+// that mechanism owes: reported extents never overlap (the same occurrence is
+// never delivered twice, however the window slid onto it), and no occurrence is
+// lost (every match the whole-blob scan finds overlaps something the chunked
+// feed reported).
 //
 // Oracle: a hand-written reference windowed scanner that mirrors the matcher's
 // documented policy (run the pattern over the window with CRLF rewritten so $
@@ -24,17 +35,19 @@ import (
 //   - Every returned excerpt is within the window bound and contains no newline.
 //   - The matcher is deterministic across two fresh runs.
 func FuzzOutputMatcher(f *testing.F) {
-	f.Add(`error`, "ok\nerror here\nfine\n")
-	f.Add(`^WARN`, "WARN: a\r\nnot a warn\nWARNING xyz")
-	f.Add(`.*`, "")
-	f.Add(`x`, "no newline tail x")
-	f.Add(`a`, "a\n\na\r\n")
-	f.Add(``, "anything\n")
-	f.Add(`(?s).`, "\n\n\n")
-	f.Add(`[`, "broken pattern\n")
-	f.Add(`\d+`, "exit_code=42\ncode\n")
+	f.Add(`error`, "ok\nerror here\nfine\n", 3)
+	f.Add(`^WARN`, "WARN: a\r\nnot a warn\nWARNING xyz", 9)
+	f.Add(`.*`, "", 0)
+	f.Add(`x`, "no newline tail x", 8)
+	f.Add(`a`, "a\n\na\r\n", 2)
+	f.Add(``, "anything\n", 4)
+	f.Add(`(?s).`, "\n\n\n", 1)
+	f.Add(`[`, "broken pattern\n", 7)
+	f.Add(`\d+`, "exit_code=42\ncode\n", 5)
+	f.Add(`x+READY`, strings.Repeat("x", 40)+"READY"+strings.Repeat("x", 40), 60)
+	f.Add(`READY.*`, strings.Repeat("x", 40)+"READY"+strings.Repeat("x", 40), 50)
 
-	f.Fuzz(func(t *testing.T, pattern, blob string) {
+	f.Fuzz(func(t *testing.T, pattern, blob string, split int) {
 		if len(pattern) > 200 {
 			return // keep regexp compilation off the pathological end
 		}
@@ -89,7 +102,59 @@ func FuzzOutputMatcher(f *testing.F) {
 		if !reflect.DeepEqual(got, got2) {
 			t.Fatalf("matcher not deterministic for pattern=%q blob=%q", pattern, blob)
 		}
+
+		// Chunked leg. Keep the blob inside one window so the carry holds the whole
+		// first chunk and the final window is the whole blob — that is what makes
+		// the no-loss property below exact.
+		if len(data) > outputMatchWindowBytes {
+			return
+		}
+		at := ((split % (len(data) + 1)) + len(data) + 1) % (len(data) + 1)
+		chunked := feedInTwoChunks(re, data, at)
+
+		// No occurrence is delivered twice: reported extents never overlap.
+		sorted := append([]OutputMatch(nil), chunked...)
+		sort.Slice(sorted, func(i, j int) bool {
+			if sorted[i].Start != sorted[j].Start {
+				return sorted[i].Start < sorted[j].Start
+			}
+			return sorted[i].End < sorted[j].End
+		})
+		for i := 1; i < len(sorted); i++ {
+			if sorted[i].Start < sorted[i-1].End {
+				t.Fatalf("chunked feed reported overlapping extents %+v and %+v (pattern=%q blob=%q split=%d)",
+					sorted[i-1], sorted[i], pattern, blob, at)
+			}
+		}
+
+		// No occurrence is lost: everything the whole-blob scan finds is covered.
+		for _, whole := range NewOutputMatcher(re).FeedAtWithProvenance(data, int64(len(data)), nil) {
+			covered := false
+			for _, part := range chunked {
+				if whole.Start < part.End && part.Start < whole.End || whole.Start == part.Start && whole.End == part.End {
+					covered = true
+					break
+				}
+			}
+			if !covered {
+				t.Fatalf("chunked feed lost occurrence %+v (pattern=%q blob=%q split=%d) reported=%+v",
+					whole, pattern, blob, at, chunked)
+			}
+		}
+
+		// The chunked feed is deterministic too.
+		if again := feedInTwoChunks(re, data, at); !reflect.DeepEqual(chunked, again) {
+			t.Fatalf("chunked feed not deterministic for pattern=%q blob=%q split=%d", pattern, blob, at)
+		}
 	})
+}
+
+// feedInTwoChunks feeds data as two chunks split at at, returning every reported
+// match in order.
+func feedInTwoChunks(re *regexp.Regexp, data []byte, at int) []OutputMatch {
+	m := NewOutputMatcher(re)
+	out := append([]OutputMatch(nil), m.FeedAtWithProvenance(data[:at], int64(at), nil)...)
+	return append(out, m.FeedAtWithProvenance(data[at:], int64(len(data)), nil)...)
 }
 
 // referenceMatches reimplements OutputMatcher's window policy independently of

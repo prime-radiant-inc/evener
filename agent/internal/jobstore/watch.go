@@ -54,11 +54,13 @@ type OutputMatcher struct {
 	// feedOffset counts every byte handed to Feed, supplying the stream end
 	// offset for callers that feed sequentially without tracking offsets.
 	feedOffset int64
-	// accounted holds every match range found in the current window, in stream
-	// offsets, ascending. A range found again in a later window has already been
-	// reported, so it does not fire twice; ranges that fall out of the window are
-	// pruned. This is what makes overlapping windows safe.
-	accounted []matchRange
+	// reported holds the extents already delivered (or covered by an attach-time
+	// scan) that still lie inside the window, ascending and non-overlapping. A
+	// newly found range that overlaps one of them is the same occurrence seen
+	// again from a window that has slid, so it does not fire twice; ranges that
+	// fall out of the window are pruned. This is what makes overlapping windows
+	// safe.
+	reported []matchRange
 }
 
 // matchRange is a half-open match extent in the stream's lifetime byte space.
@@ -73,7 +75,12 @@ type OutputMatch struct {
 	// Text is the matched excerpt: the match widened to the start of the line it
 	// begins on and out to the next newline, capped at outputMatchWindowBytes and
 	// stripped of a single trailing '\r'. It never contains a newline.
-	Text       string
+	Text string
+	// Start and End are the match's own extent in the stream's lifetime byte
+	// space — not the excerpt's. They identify the occurrence: the matcher
+	// reports each occurrence once, and two reported extents never overlap.
+	Start      int64
+	End        int64
 	Provenance *provenance.Causal
 }
 
@@ -95,7 +102,7 @@ func (m *OutputMatcher) SetScanOffset(off int64) {
 	m.scanOffset = off
 	m.carry = m.carry[:0]
 	m.carryProvenance = nil
-	m.accounted = nil
+	m.reported = nil
 }
 
 // SeedCarry primes the rolling window with output already covered by an
@@ -110,7 +117,7 @@ func (m *OutputMatcher) SeedCarry(scanned []byte) {
 	}
 	m.carry = append(m.carry[:0], scanned...)
 	m.carryProvenance = nil
-	m.accounted = m.scanWindow(m.carry, m.scanOffset-int64(len(m.carry)))
+	m.reported = m.scanWindow(m.carry, m.scanOffset-int64(len(m.carry)))
 }
 
 // Feed appends newly produced output and returns matching excerpts. It assumes
@@ -150,11 +157,13 @@ func (m *OutputMatcher) FeedAtWithProvenance(chunk []byte, endOffset int64, p *p
 	window = append(window, chunk...)
 	windowStart := endOffset - int64(len(window))
 
-	found := m.scanWindow(window, windowStart)
+	fresh := unreportedRanges(m.scanWindow(window, windowStart), m.reported)
 	var matches []OutputMatch
-	for _, r := range newRanges(found, m.accounted) {
+	for _, r := range fresh {
 		matches = append(matches, OutputMatch{
 			Text:       matchExcerpt(window, int(r.start-windowStart), int(r.end-windowStart)),
+			Start:      r.start,
+			End:        r.end,
 			Provenance: provenance.Clone(m.carryProvenance),
 		})
 	}
@@ -167,26 +176,49 @@ func (m *OutputMatcher) FeedAtWithProvenance(chunk []byte, endOffset int64, p *p
 		window = window[len(window)-outputMatchWindowBytes:]
 	}
 	m.carry = append(m.carry[:0], window...)
-	m.accounted = pruneRanges(found, endOffset-int64(len(m.carry)))
+	m.reported = pruneRanges(mergeRanges(m.reported, fresh), endOffset-int64(len(m.carry)))
 	return matches
 }
 
-// ScanRetained applies the matcher's regexp to data as a single window and
-// returns the LAST matching excerpt. It is the level check used at attach — "the
-// output already contains the pattern" — and honours the same match-length bound
-// as the stream, so attach and stream agree on what can match. Unlike the old
-// line matcher it does not require a trailing newline: a match in an
-// unterminated tail counts.
+// ScanRetained walks data through the same rolling window the stream uses and
+// returns the LAST matching excerpt. It is the level check used at attach and at
+// terminal catch-up — "the output already contains the pattern" — and it does not
+// require a trailing newline: a match in an unterminated tail counts.
 //
-// It is a pure read: it does not touch the window, the scan offset, or the feed
-// counter, so it composes with a subsequent FeedAt.
+// Retained output can be megabytes over a model-supplied pattern, so this never
+// materialises every match. It walks overlapping windows of
+// 2*outputMatchWindowBytes, stepping by outputMatchWindowBytes so any match
+// within the bound is wholly inside some window — but BACKWARD, testing each
+// window with a boolean Match first. Only the last window that actually contains
+// a reportable match pays for match positions, so memory and allocation are
+// O(window), not O(matches). A window whose only matches are over the length
+// bound yields nothing and the walk keeps going back.
+//
+// It shares the stream's window size and match-length bound, so neither path can
+// see a match the other calls too long. The two do NOT always agree on anchored
+// patterns: ^ and $ also match at a window's own edges, and those edges fall on a
+// fixed stride here but wherever chunks happen to land on the live path. An
+// anchored pattern can therefore fire on one path and not the other.
+//
+// It is a pure read: it does not touch the window, the scan offset, the feed
+// counter, or the reported set, so it composes with a subsequent FeedAt.
 func (m *OutputMatcher) ScanRetained(data []byte) (last string, matched bool) {
-	found := m.scanWindow(data, 0)
-	if len(found) == 0 {
+	if len(data) == 0 {
 		return "", false
 	}
-	r := found[len(found)-1]
-	return matchExcerpt(data, int(r.start), int(r.end)), true
+	for start := ((len(data) - 1) / outputMatchWindowBytes) * outputMatchWindowBytes; start >= 0; start -= outputMatchWindowBytes {
+		window := data[start:min(start+2*outputMatchWindowBytes, len(data))]
+		if !m.re.Match(anchorText(window)) {
+			continue
+		}
+		found := m.scanWindow(window, int64(start))
+		if len(found) == 0 {
+			continue
+		}
+		r := found[len(found)-1]
+		return matchExcerpt(window, int(r.start)-start, int(r.end)-start), true
+	}
+	return "", false
 }
 
 // scanWindow runs the pattern over window — whose first byte sits at stream
@@ -215,6 +247,13 @@ func (m *OutputMatcher) scanWindow(window []byte, windowStart int64) []matchRang
 // ends where $ expects it to. The rewrite is length-preserving, so match indices
 // still address the original window, and excerpts are always cut from the
 // original bytes.
+//
+// RE2 defines both ^ and $ by '\n' and offers no line-terminator setting, so a
+// rewrite that lets $ reach a CRLF line end necessarily lets ^ match one byte
+// later as well. Two consequences on a CRLF stream, both documented for the model
+// in docs/job-control.md: a bare `^$` sees one empty line per CRLF, and a pattern
+// matching a literal "\r\n" cannot match. Trading those for "$ works at all on
+// Windows-style output" is the better deal.
 func anchorText(window []byte) []byte {
 	i := bytes.IndexByte(window, '\r')
 	if i < 0 {
@@ -246,9 +285,6 @@ func matchExcerpt(window []byte, start, end int) string {
 		lo = start
 		hi = min(start+outputMatchWindowBytes, hi)
 	}
-	if hi < end {
-		end = hi
-	}
 	out := window[lo:hi]
 	if len(out) > 0 && out[len(out)-1] == '\r' {
 		out = out[:len(out)-1]
@@ -256,25 +292,75 @@ func matchExcerpt(window []byte, start, end int) string {
 	return string(out)
 }
 
-// newRanges returns the ranges in found — both slices ascending — that are not
-// already in accounted, preserving order.
-func newRanges(found, accounted []matchRange) []matchRange {
-	if len(accounted) == 0 {
+// unreportedRanges returns the ranges in found — both slices ascending and
+// internally non-overlapping — that are not the same occurrence as anything in
+// reported, preserving order.
+//
+// "Same occurrence" is OVERLAP, not equality. A window that has slid re-matches
+// the same occurrence at a different extent: a pattern that eats leftward
+// (`x+READY`) starts at each new window's own start edge, and one that eats
+// rightward (`READY.*`) ends at each new window's end. Equality dedup lets both
+// fire once per chunk. Overlap dedup reports each occurrence exactly once and
+// still fires on any match that reaches bytes no reported match covered — the
+// price is that a second token falling inside the span of an already-reported
+// greedy match is read as part of that match rather than as a new one.
+func unreportedRanges(found, reported []matchRange) []matchRange {
+	if len(reported) == 0 {
 		return found
 	}
 	var fresh []matchRange
 	j := 0
 	for _, r := range found {
-		for j < len(accounted) && lessRange(accounted[j], r) {
+		// reported is ascending and non-overlapping, so everything ending before r
+		// starts is behind us for every remaining r too.
+		for j < len(reported) && reported[j].end < r.start {
 			j++
 		}
-		if j < len(accounted) && accounted[j] == r {
-			j++
-			continue
+		seen := false
+		for k := j; k < len(reported) && reported[k].start <= r.end; k++ {
+			if sameOccurrence(r, reported[k]) {
+				seen = true
+				break
+			}
 		}
-		fresh = append(fresh, r)
+		if !seen {
+			fresh = append(fresh, r)
+		}
 	}
 	return fresh
+}
+
+// sameOccurrence reports whether two match extents describe the same occurrence:
+// they overlap, or they are the identical (possibly empty) extent. The equality
+// arm carries zero-length matches, which cannot overlap anything.
+func sameOccurrence(a, b matchRange) bool {
+	if a == b {
+		return true
+	}
+	return a.start < b.end && b.start < a.end
+}
+
+// mergeRanges merges two ascending, mutually non-overlapping range slices into
+// one ascending slice.
+func mergeRanges(a, b []matchRange) []matchRange {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	out := make([]matchRange, 0, len(a)+len(b))
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		if lessRange(a[i], b[j]) {
+			out = append(out, a[i])
+			i++
+			continue
+		}
+		out = append(out, b[j])
+		j++
+	}
+	return append(append(out, a[i:]...), b[j:]...)
 }
 
 // pruneRanges drops ranges that can no longer reappear because they have fallen

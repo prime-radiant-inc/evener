@@ -1075,3 +1075,46 @@ func TestOutputMatchFiresOnceAcrossAttachStreamAndTerminal(t *testing.T) {
 		}
 	}
 }
+
+// TestOutputMatchWatchOnJobWithNoOutputStoreIsLoud covers Step 3: a watchable
+// running job whose output store is missing cannot be level-checked at all.
+// isWatchableConcreteJobLocked only requires the job to be live and non-terminal,
+// so run.output == nil is reachable — and it used to be a silent no-fire, leaving
+// a watch that looks armed but can never see the output already produced. It now
+// tells the caller.
+func TestOutputMatchWatchOnJobWithNoOutputStoreIsLoud(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "sleep 30"})
+	jm.mu.Lock()
+	output := jm.running[rec.JobID].output
+	jm.running[rec.JobID].output = nil
+	jm.mu.Unlock()
+	// Put the store back before teardown: the job still has to finalize normally.
+	t.Cleanup(func() {
+		jm.mu.Lock()
+		if run := jm.running[rec.JobID]; run != nil {
+			run.output = output
+		}
+		jm.mu.Unlock()
+		finishRunningTestJob(t, jm, rec.JobID)
+	})
+
+	res, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "READY"})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	// The watch still installs and stays live — only the level-trigger is lost.
+	if !res.Watching {
+		t.Fatalf("result = %+v, want the watch installed despite the unscannable target", res)
+	}
+	if res.Fired {
+		t.Fatalf("result = %+v, want fired=false when the attach scan could not run", res)
+	}
+	if len(notified) != 1 || !strings.Contains(notified[0].Reason, "output_match attach scan skipped") {
+		t.Fatalf("notifications = %+v, want one attach-scan-skipped warning", notified)
+	}
+}

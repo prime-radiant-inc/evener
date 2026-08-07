@@ -382,8 +382,8 @@ func jcpWatchAndUtilityPaths(t *testing.T, r *jcpReader) {
 	if got := NewOutputMatcher(regexp.MustCompile(`x`)).scanWindow(nil, 0); got != nil {
 		t.Fatalf("scanWindow over an empty window = %#v", got)
 	}
-	if string(completedLine([]byte("line\r"))) != "line" {
-		t.Fatalf("completedLine did not trim CR")
+	if got := matchExcerpt([]byte("line\r\n"), 0, 4); got != "line" {
+		t.Fatalf("matchExcerpt did not trim the CRLF carriage return: %q", got)
 	}
 
 	ids := []struct {

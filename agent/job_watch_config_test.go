@@ -1122,8 +1122,8 @@ func TestKeptSyncTerminalWatchAppendFailureDefersNotification(t *testing.T) {
 	if err := jm.finalizeKeptSync(run, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
 		t.Fatalf("retry finalizeKeptSync: %v", err)
 	}
-	if len(notified) != 1 {
-		t.Fatalf("notifications = %+v, want one terminal watch frame after the retry", notified)
+	if len(notified) != 1 || !strings.Contains(notified[0].Reason, "condition never matched") {
+		t.Fatalf("notifications = %+v, want one watch-ended-unfired teardown frame after the retry", notified)
 	}
 }
 
