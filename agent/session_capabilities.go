@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
@@ -16,29 +17,39 @@ import (
 // can this session actually do?", so a model reads its box instead of
 // discovering it by failing at it. Its binding rule is docs/sandboxing.md's:
 // the banner NEVER OVERSTATES. Every line below is either read from the
-// RESOLVED policy (mode, roots, masked count, cache strategy) or measured by
-// the one session-start probe; a probe that could not run renders "unprobed",
-// never a guess and never an intention.
+// RESOLVED policy (mode, roots, masked count, cache strategy), quoted from a
+// ruling that doc records, or measured by the session-start probes; a probe
+// that could not run renders "unprobed", never a guess and never an intention.
 
 // probedPathTools are the developer tools whose PATH presence the probe
 // reports. Kept short on purpose: the probe is one subprocess with a tight
 // timeout at session start, not a survey.
 var probedPathTools = []string{"go", "node", "rg"}
 
-// capabilityProbeTimeout bounds the single session-start probe, both as the
-// context deadline and as the timeout ExecCommand arms its own timer from
-// (ExecCommand's timer is independent of the context, so both derive from this
-// one value). On expiry the probe result is the zero value — every measured
-// line renders "unprobed" — and session start continues. A package-level var
-// only so tests can adjust it.
-var capabilityProbeTimeout = 2 * time.Second
+// toolProbeTimeout bounds the cheap probe (three `command -v` calls and two
+// `go env` reads). It is tight because that work is tight.
+var toolProbeTimeout = 2 * time.Second
 
-// capabilityProbe is the result of that one probe. The zero value means the
-// probe never produced a usable answer, which every renderer spells "unprobed".
+// gitProbeTimeout bounds the git probe SEPARATELY, and generously, because the
+// work it bounds is genuinely expensive: docs/sandboxing.md records as measured
+// fact that every `git` call under `restricted` costs roughly 3.5s, since the
+// xcrun shim retries a cache write the mode does not grant. Sharing the tool
+// probe's 2s budget would have timed the whole probe out on exactly the mode
+// the preamble most exists for — rendering everything "unprobed" while still
+// burning the full budget to learn nothing.
+//
+// This is bounding the real work, not widening a blanket timeout to make a slow
+// thing fit: the two probes run CONCURRENTLY with independent deadlines, so a
+// slow or wedged git can never consume the PATH and cache measurements, and the
+// cheap facts still land at their own pace.
+var gitProbeTimeout = 5 * time.Second
+
+// capabilityProbe is what the session-start probes measured. Its two halves are
+// tracked independently (gitProbed / toolsProbed) precisely so one failing does
+// not erase the other. Each unset half renders "unprobed".
 type capabilityProbe struct {
-	// ran reports that the probe command completed AND reported every expected
-	// key. A partial reply is not partially believed: it is unprobed.
-	ran bool
+	// gitProbed reports that the git probe completed and answered.
+	gitProbed bool
 	// gitConfigReads reports that `git config --list` exited 0 inside this
 	// session's execution environment (the sandbox included, since the probe
 	// runs through the same spawn path every command does).
@@ -53,6 +64,11 @@ type capabilityProbe struct {
 	// a successful config read does not measure the index, object store, or
 	// worktree writes.
 	gitConfigReads bool
+
+	// toolsProbed reports that the tool probe completed AND answered for every
+	// probedPathTools name. A partial reply is not partially believed: it is
+	// unprobed.
+	toolsProbed bool
 	// onPath holds one entry per probedPathTools name: whether `command -v`
 	// found it.
 	onPath map[string]bool
@@ -68,12 +84,24 @@ type capabilityProbe struct {
 
 // capabilityFacts are the inputs the preamble renders: the resolved policy (nil
 // when unsandboxed), the scratch directory already exported to spawned
-// commands, whether PATH came from the login shell, and the probe.
+// commands, whether PATH came from the login shell, and the probes.
 type capabilityFacts struct {
 	policy     *sandbox.ResolvedPolicy
 	scratchDir string
 	loginPATH  bool
 	probe      capabilityProbe
+
+	// unknownEnv marks facts read from an execution environment this renderer
+	// cannot inspect (nil, or an implementation other than the local one). The
+	// PATH line is then omitted entirely: `loginPATH` false would otherwise
+	// render "inherited process environment", a positive claim about an
+	// environment nobody measured — the same guess the whole preamble forbids.
+	//
+	// The polarity is negative on purpose. The zero value must mean "readable",
+	// because the fallthrough that CANNOT read the env is the one place that
+	// sets it, and a default that silently claimed readability is exactly the
+	// failure mode being closed.
+	unknownEnv bool
 }
 
 func (f capabilityFacts) sandboxed() bool {
@@ -86,6 +114,7 @@ func capabilityFactsFromEnv(env execenv.ExecutionEnvironment, probe capabilityPr
 	facts := capabilityFacts{probe: probe}
 	le, ok := env.(*execenv.LocalExecutionEnvironment)
 	if !ok || le == nil {
+		facts.unknownEnv = true
 		return facts
 	}
 	if le.Sandbox != nil && le.Sandbox.Enforced() {
@@ -98,17 +127,19 @@ func capabilityFactsFromEnv(env execenv.ExecutionEnvironment, probe capabilityPr
 
 // capabilityPreambleLines renders the preamble as short "label: values" lines.
 // A sandboxed session gets the sandbox-derived lines (writable roots, masked
-// count, cache strategy, the sandboxed-go telemetry fact); an unsandboxed one
-// gets the same section without them.
+// count, cache strategy, the mode's recorded toolchain residuals); an
+// unsandboxed one gets the same section without them.
 func capabilityPreambleLines(f capabilityFacts) []string {
-	lines := make([]string, 0, 8)
+	lines := make([]string, 0, 10)
 	if f.sandboxed() {
 		lines = append(lines,
 			"Writable roots: "+writableRootsSummary(*f.policy),
 			fmt.Sprintf("Masked paths: %d", len(f.policy.MaskedPaths)),
 		)
 	}
-	lines = append(lines, "PATH: "+pathSource(f.loginPATH))
+	if !f.unknownEnv {
+		lines = append(lines, "PATH: "+pathSource(f.loginPATH))
+	}
 	if f.scratchDir != "" {
 		lines = append(lines, "Scratch ($"+envvars.SERFScratchDir.Name+", $"+envvars.TmpDir.Name+"): "+f.scratchDir)
 	}
@@ -122,10 +153,40 @@ func capabilityPreambleLines(f capabilityFacts) []string {
 	// cannot write Go's telemetry counter/token file and logs one denied-write
 	// line to stderr while exiting 0. Stated only when go was actually measured
 	// present, so the line reports a fact about a toolchain this session has.
-	if f.sandboxed() && f.probe.ran && f.probe.onPath["go"] {
+	if f.sandboxed() && f.probe.toolsProbed && f.probe.onPath["go"] {
 		lines = append(lines, "go: telemetry writes denied (harmless stderr noise)")
 	}
-	lines = append(lines, "git: "+gitSummary(f.probe), "On PATH: "+onPathSummary(f.probe))
+	lines = append(lines, "git config read: "+gitSummary(f.probe))
+	lines = append(lines, gitResidualLines(f)...)
+	lines = append(lines, "On PATH: "+onPathSummary(f.probe))
+	return lines
+}
+
+// gitResidualLines states the git residuals docs/sandboxing.md records for
+// restricted mode, immediately after the git probe result so a failed probe has
+// its recorded explanation adjacent rather than costing a session the turns to
+// rediscover it. Same precedent as the go telemetry line: a resolved ruling is
+// a fact the preamble may state, and it is stated only for the exact mode (and,
+// for the xcrun residual, the exact backend) the ruling covers.
+//
+// The home-read line is phrased conditionally because the ruling is: restricted
+// grants no home read, so a session whose global config is PRESENT fails, while
+// one whose config is absent or neutralized works. Rendering it as "git is
+// broken" would overstate a conditional.
+func gitResidualLines(f capabilityFacts) []string {
+	if !f.sandboxed() || f.policy.Mode != sandbox.ModeRestricted {
+		return nil
+	}
+	lines := []string{
+		// GIT_CONFIG_GLOBAL is git's own variable, not one serf sets or supports,
+		// so it is quoted from the ruling as a literal rather than sourced from
+		// the envvars registry (which describes serf's own surface).
+		"git under restricted: no home read — a present ~/.gitconfig fails git " +
+			"(workaround: GIT_CONFIG_GLOBAL=/dev/null)",
+	}
+	if f.policy.Backend == sandbox.BackendSeatbelt {
+		lines = append(lines, "git under restricted on macOS: xcrun_db writes denied (2 stderr lines/call), ~3.5s/call")
+	}
 	return lines
 }
 
@@ -168,11 +229,11 @@ func pathSource(loginPATH bool) string {
 	return "inherited process environment"
 }
 
-// goCacheLine states the resolved Go cache paths, or "unprobed" when the probe
-// could not run. It renders nothing when go was measured absent: there is no
-// resolved cache to state, and the toolchain line already reports go=no.
+// goCacheLine states the resolved Go cache paths, or "unprobed" when the tool
+// probe could not run. It renders nothing when go was measured absent: there is
+// no resolved cache to state, and the On PATH line already reports go=no.
 func goCacheLine(p capabilityProbe) string {
-	if !p.ran {
+	if !p.toolsProbed {
 		return "Go cache: unprobed"
 	}
 	if !p.onPath["go"] {
@@ -189,7 +250,7 @@ func goCacheLine(p capabilityProbe) string {
 // probe measures.
 func gitSummary(p capabilityProbe) string {
 	switch {
-	case !p.ran:
+	case !p.gitProbed:
 		return "unprobed"
 	case p.gitConfigReads:
 		return "`git config --list` exit 0"
@@ -200,7 +261,7 @@ func gitSummary(p capabilityProbe) string {
 
 // onPathSummary renders which probed tools `command -v` found, or "unprobed".
 func onPathSummary(p capabilityProbe) string {
-	if !p.ran {
+	if !p.toolsProbed {
 		return "unprobed"
 	}
 	parts := make([]string, 0, len(probedPathTools))
@@ -214,12 +275,19 @@ func onPathSummary(p capabilityProbe) string {
 	return strings.Join(parts, " ")
 }
 
-// probeCapabilities runs the session's single toolchain probe THROUGH the
-// session's own execution environment, so what it measures is what a real
-// command would meet — inside the sandbox, with the session's PATH and env
-// floor — rather than what the daemon process happens to see. It is one
-// subprocess bounded by capabilityProbeTimeout; on any error, non-zero exit, or
-// timeout it returns the zero value and every measured line renders "unprobed".
+// probeCapabilities runs the session's toolchain probes THROUGH the session's
+// own execution environment, so what they measure is what a real command would
+// meet — inside the sandbox, with the session's PATH and env floor — rather than
+// what the daemon process happens to see.
+//
+// It is two subprocesses run CONCURRENTLY under INDEPENDENT deadlines: the
+// cheap tool probe (toolProbeTimeout) and the expensive git probe
+// (gitProbeTimeout, sized for restricted mode's recorded ~3.5s per git call).
+// Independence is the point — a wedged git leaves the PATH and cache facts
+// intact, and the cheap probe's tight bound is not relaxed to accommodate it.
+// Session start therefore waits at most the LONGER of the two, and each half
+// that errors, exits non-zero, times out, or answers partially renders
+// "unprobed" on its own.
 func probeCapabilities(env execenv.ExecutionEnvironment, cwd string) capabilityProbe {
 	if env == nil {
 		return capabilityProbe{}
@@ -227,24 +295,54 @@ func probeCapabilities(env execenv.ExecutionEnvironment, cwd string) capabilityP
 	if strings.TrimSpace(cwd) == "" {
 		cwd = env.WorkingDirectory()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), capabilityProbeTimeout)
-	defer cancel()
-	res, err := env.ExecCommand(ctx, capabilityProbeScript(), int(capabilityProbeTimeout/time.Millisecond), cwd, nil)
-	if err != nil || res.ExitCode != 0 {
-		return capabilityProbe{}
-	}
-	return parseCapabilityProbe(res.Stdout)
+
+	var wg sync.WaitGroup
+	var git, tools capabilityProbe
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if out, ok := runProbeScript(env, cwd, gitProbeScript(), gitProbeTimeout); ok {
+			git = parseGitProbe(out)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if out, ok := runProbeScript(env, cwd, toolProbeScript(), toolProbeTimeout); ok {
+			tools = parseToolProbe(out)
+		}
+	}()
+	wg.Wait()
+
+	tools.gitProbed = git.gitProbed
+	tools.gitConfigReads = git.gitConfigReads
+	return tools
 }
 
-// capabilityProbeScript is the probe command: whether git can read its config
-// chain (see capabilityProbe.gitConfigReads for why that command and not
-// `git --version`), which
-// probed tools are on PATH, and go's resolved cache paths. `go env` stderr is
-// discarded because a sandboxed go writes the telemetry denial there (the
-// preamble states that fact separately).
-func capabilityProbeScript() string {
+// runProbeScript runs one probe script and reports whether it produced a usable
+// reply. The timeout is passed BOTH as the context deadline and as the
+// millisecond timeout ExecCommand arms its own independent timer from, so the
+// bound holds however the command ends.
+func runProbeScript(env execenv.ExecutionEnvironment, cwd, script string, timeout time.Duration) (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	res, err := env.ExecCommand(ctx, script, int(timeout/time.Millisecond), cwd, nil)
+	if err != nil || res.ExitCode != 0 {
+		return "", false
+	}
+	return res.Stdout, true
+}
+
+// gitProbeScript measures whether git can read its config chain (see
+// capabilityProbe.gitConfigReads for why that command and not `git --version`).
+func gitProbeScript() string {
+	return "git config --list >/dev/null 2>&1 && echo git=ok || echo git=no\n"
+}
+
+// toolProbeScript measures which probed tools are on PATH and go's resolved
+// cache paths. `go env` stderr is discarded because a sandboxed go writes the
+// telemetry denial there (the preamble states that fact separately).
+func toolProbeScript() string {
 	var b strings.Builder
-	b.WriteString("git config --list >/dev/null 2>&1 && echo git=ok || echo git=no\n")
 	for _, tool := range probedPathTools {
 		fmt.Fprintf(&b, "command -v %s >/dev/null 2>&1 && echo %s=yes || echo %s=no\n", tool, tool, tool)
 	}
@@ -254,21 +352,22 @@ func capabilityProbeScript() string {
 	return b.String()
 }
 
-// parseCapabilityProbe turns the probe's key=value output into measured facts.
-// A reply missing any expected key is treated as unprobed rather than partially
-// believed: half a measurement invites the preamble to state something that was
-// not measured.
-func parseCapabilityProbe(out string) capabilityProbe {
-	values := map[string]string{}
-	for line := range strings.SplitSeq(strings.ReplaceAll(out, "\r\n", "\n"), "\n") {
-		if key, val, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
-			values[key] = val
-		}
-	}
-	if _, ok := values["git"]; !ok {
+// parseGitProbe reads the git probe's reply.
+func parseGitProbe(out string) capabilityProbe {
+	values := probeValues(out)
+	got, ok := values["git"]
+	if !ok {
 		return capabilityProbe{}
 	}
-	p := capabilityProbe{ran: true, gitConfigReads: values["git"] == "ok", onPath: map[string]bool{}}
+	return capabilityProbe{gitProbed: true, gitConfigReads: got == "ok"}
+}
+
+// parseToolProbe reads the tool probe's reply. A reply missing any expected key
+// is treated as unprobed rather than partially believed: half a measurement
+// invites the preamble to state something that was not measured.
+func parseToolProbe(out string) capabilityProbe {
+	values := probeValues(out)
+	p := capabilityProbe{toolsProbed: true, onPath: map[string]bool{}}
 	for _, tool := range probedPathTools {
 		val, ok := values[tool]
 		if !ok {
@@ -281,4 +380,14 @@ func parseCapabilityProbe(out string) capabilityProbe {
 	p.goCache = values["gocache"]
 	p.goModCache = values["gomodcache"]
 	return p
+}
+
+func probeValues(out string) map[string]string {
+	values := map[string]string{}
+	for line := range strings.SplitSeq(strings.ReplaceAll(out, "\r\n", "\n"), "\n") {
+		if key, val, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+			values[key] = val
+		}
+	}
+	return values
 }

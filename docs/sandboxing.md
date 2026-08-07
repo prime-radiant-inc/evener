@@ -55,19 +55,26 @@ The model gets the same facts in its system prompt's `<environment>` block, as a
 short capability preamble: the sandbox mode and network decision, a summary of
 the writable roots, the masked-path count, the scratch directory behind
 `$SERF_SCRATCH_DIR`/`$TMPDIR`, the cache strategy, the resolved `GOCACHE` /
-`GOMODCACHE`, and a toolchain probe (the exit status of `git config --list`,
-and which of `go`, `node`, `rg` are on PATH). An unsandboxed session gets the
-same block minus the sandbox-derived lines. It exists so a session reads its box instead of discovering it by failing
-at it.
+`GOMODCACHE`, the toolchain residuals this doc records for the session's mode,
+and two probes (the exit status of `git config --list`, and which of `go`,
+`node`, `rg` are on PATH). An unsandboxed session gets the same block minus the
+sandbox-derived lines. It exists so a session reads its box instead of
+discovering it by failing at it.
 
-The same rule governs it: every line is read from the resolved policy or
-measured once at session start by a single short-timeout probe, run through the
-session's own execution environment (so what it measures is what a real command
-meets). A probe that cannot run, errors, or times out renders `unprobed` —
-never a guess. Paths and counts only: no environment variable values that could
-be credentials. Each probe is reported as the command it ran and that command's
-exit status, never as a broader claim: `git config --list` exiting 0 says the
-config chain is readable, not that every git operation succeeds.
+The same rule governs it: every line is read from the resolved policy, quoted
+from a ruling recorded here, or measured at session start — through the
+session's own execution environment, so what it measures is what a real command
+meets. A probe that cannot run, errors, or times out renders `unprobed`, never
+a guess. Paths and counts only: no environment variable values that could be
+credentials. A probe is reported as the command it ran and that command's exit
+status, never as a broader claim: `git config --list` exiting 0 says the config
+chain is readable, not that every git operation succeeds.
+
+The two probes are **bounded independently and run concurrently** — the tool
+probe tightly, the git probe generously, because a `git` call under `restricted`
+costs roughly 3.5s (see `restricted` below). Sharing one tight budget would have timed the whole
+probe out on exactly the mode the preamble most exists for; independence means a
+slow git degrades only the git line.
 
 ## Modes
 

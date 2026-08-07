@@ -4,19 +4,21 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/internal/bundled"
 )
 
-// probedFacts is the toolchain probe result the snapshots below render: the
-// probe ran, git executed, go and node are on PATH, rg is not, and `go env`
+// probedFacts is the toolchain probe result the snapshots below render: both
+// probes ran, git read its config, go and node are on PATH, rg is not, and `go env`
 // reported the resolved cache paths.
 func probedFacts() capabilityProbe {
 	return capabilityProbe{
-		ran:            true,
+		gitProbed:      true,
 		gitConfigReads: true,
+		toolsProbed:    true,
 		onPath:         map[string]bool{"go": true, "node": true, "rg": false},
 		goCache:        "/scratch/s1/gocache",
 		goModCache:     "/scratch/s1/gomodcache",
@@ -69,7 +71,7 @@ func TestCapabilityPreambleWorkspaceWrite(t *testing.T) {
 		"Cache: overlay",
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"go: telemetry writes denied (harmless stderr noise)",
-		"git: `git config --list` exit 0",
+		"git config read: `git config --list` exit 0",
 		"On PATH: go=yes node=yes rg=no",
 	}, "\n")
 	if diff := normalize(got, root, home); diff != want {
@@ -96,11 +98,88 @@ func TestCapabilityPreambleRestricted(t *testing.T) {
 		"Cache: session-private",
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"go: telemetry writes denied (harmless stderr noise)",
-		"git: `git config --list` exit 0",
+		"git config read: `git config --list` exit 0",
+		"git under restricted: no home read — a present ~/.gitconfig fails git (workaround: GIT_CONFIG_GLOBAL=/dev/null)",
 		"On PATH: go=yes node=yes rg=no",
 	}, "\n")
 	if diff := normalize(got, root, home); diff != want {
 		t.Errorf("restricted preamble:\ngot:\n%s\nwant:\n%s", diff, want)
+	}
+}
+
+// TestCapabilityPreambleRestrictedSeatbelt: on the Seatbelt backend, restricted
+// mode carries a SECOND recorded residual — the xcrun shim's denied cache write
+// (docs/sandboxing.md). It is stated only there: the same policy on bwrap must
+// not claim a macOS-only cost, which the restricted snapshot above pins.
+func TestCapabilityPreambleRestrictedSeatbelt(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	initGitRepo(t, root)
+	host := sandbox.HostFacts{OS: "darwin", Home: home, SandboxExecPath: "/usr/bin/sandbox-exec"}
+	policy, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted}, host, root)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if policy.Backend != sandbox.BackendSeatbelt {
+		t.Fatalf("backend = %s, want seatbelt", policy.Backend)
+	}
+	got := strings.Join(capabilityPreambleLines(capabilityFacts{
+		policy: &policy, scratchDir: "/scratch/s1", loginPATH: true, probe: probedFacts(),
+	}), "\n")
+
+	want := strings.Join([]string{
+		"Writable roots: <root>; git metadata: 7 paths",
+		"Masked paths: " + maskedCountString(&policy),
+		"PATH: login shell ($SHELL -lc)",
+		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
+		"Cache: session-private",
+		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
+		"go: telemetry writes denied (harmless stderr noise)",
+		"git config read: `git config --list` exit 0",
+		"git under restricted: no home read — a present ~/.gitconfig fails git (workaround: GIT_CONFIG_GLOBAL=/dev/null)",
+		"git under restricted on macOS: xcrun_db writes denied (2 stderr lines/call), ~3.5s/call",
+		"On PATH: go=yes node=yes rg=no",
+	}, "\n")
+	if diff := normalize(got, policy.Git.WorktreeRoot, home); diff != want {
+		t.Errorf("restricted/seatbelt preamble:\ngot:\n%s\nwant:\n%s", diff, want)
+	}
+}
+
+// TestCapabilityPreambleResidualsAreRestrictedOnly: the recorded git residuals
+// belong to restricted mode, so no other mode may state them.
+func TestCapabilityPreambleResidualsAreRestrictedOnly(t *testing.T) {
+	for _, mode := range []sandbox.Mode{sandbox.ModeWorkspaceWrite, sandbox.ModeReadOnly} {
+		policy, _, _ := resolvePolicyForTest(t, mode)
+		got := strings.Join(capabilityPreambleLines(capabilityFacts{policy: policy, probe: probedFacts()}), "\n")
+		if strings.Contains(got, "under restricted") {
+			t.Errorf("%s must not state restricted-mode residuals:\n%s", mode, got)
+		}
+	}
+	got := strings.Join(capabilityPreambleLines(capabilityFacts{probe: probedFacts()}), "\n")
+	if strings.Contains(got, "under restricted") {
+		t.Errorf("an unsandboxed session must not state restricted-mode residuals:\n%s", got)
+	}
+}
+
+// TestCapabilityPreambleUnknownEnvMakesNoPathClaim: an execution environment
+// this renderer cannot inspect yields NO PATH line. Rendering the "inherited
+// process environment" default there would be a positive claim about an
+// environment nobody measured — the same guess the preamble forbids everywhere
+// else. Only the probe's measured lines survive.
+func TestCapabilityPreambleUnknownEnvMakesNoPathClaim(t *testing.T) {
+	facts := capabilityFactsFromEnv(nil, probedFacts())
+	if !facts.unknownEnv {
+		t.Fatalf("an uninspectable env must be marked unknown: %+v", facts)
+	}
+	lines := capabilityPreambleLines(facts)
+	for _, line := range lines {
+		if strings.HasPrefix(line, "PATH:") {
+			t.Errorf("an uninspectable env must make no PATH claim, got %q", line)
+		}
+	}
+	got := strings.Join(lines, "\n")
+	if !strings.Contains(got, "On PATH: go=yes node=yes rg=no") {
+		t.Errorf("the probe's own measurements must still render, got:\n%s", got)
 	}
 }
 
@@ -118,7 +197,7 @@ func TestCapabilityPreambleUnsandboxed(t *testing.T) {
 		"PATH: inherited process environment",
 		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
-		"git: `git config --list` exit 0",
+		"git config read: `git config --list` exit 0",
 		"On PATH: go=yes node=yes rg=no",
 	}, "\n")
 	if got != want {
@@ -144,7 +223,8 @@ func TestCapabilityPreambleUnprobed(t *testing.T) {
 		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
 		"Cache: session-private",
 		"Go cache: unprobed",
-		"git: unprobed",
+		"git config read: unprobed",
+		"git under restricted: no home read — a present ~/.gitconfig fails git (workaround: GIT_CONFIG_GLOBAL=/dev/null)",
 		"On PATH: unprobed",
 	}, "\n")
 	if diff := normalize(got, root, home); diff != want {
@@ -166,7 +246,7 @@ func TestCapabilityPreambleGoAbsent(t *testing.T) {
 	want := strings.Join([]string{
 		"PATH: inherited process environment",
 		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
-		"git: `git config --list` exit 0",
+		"git config read: `git config --list` exit 0",
 		"On PATH: go=no node=yes rg=no",
 	}, "\n")
 	if got != want {
@@ -183,24 +263,77 @@ func TestCapabilityPreambleNoScratch(t *testing.T) {
 	}
 }
 
-// TestParseCapabilityProbe: the probe output parses into measured facts, and a
-// reply missing any expected key is treated as unprobed rather than partially
+// TestParseCapabilityProbe: each probe's output parses into measured facts, and
+// a reply missing any expected key is treated as unprobed rather than partially
 // believed.
 func TestParseCapabilityProbe(t *testing.T) {
-	full := "git=ok\ngo=yes\nnode=no\nrg=yes\ngocache=/c/go\ngomodcache=/c/mod\n"
-	p := parseCapabilityProbe(full)
-	if !p.ran || !p.gitConfigReads || !p.onPath["go"] || p.onPath["node"] || !p.onPath["rg"] {
-		t.Errorf("parsed probe = %+v, want git ok, go yes, node no, rg yes", p)
+	if p := parseGitProbe("git=ok\n"); !p.gitProbed || !p.gitConfigReads {
+		t.Errorf("parsed git probe = %+v, want a successful config read", p)
+	}
+	if p := parseGitProbe("git=no\n"); !p.gitProbed || p.gitConfigReads {
+		t.Errorf("parsed git probe = %+v, want a measured failure (probed, not ok)", p)
+	}
+	if p := parseGitProbe(""); p.gitProbed {
+		t.Errorf("empty git probe output must be unprobed, got %+v", p)
+	}
+
+	p := parseToolProbe("go=yes\nnode=no\nrg=yes\ngocache=/c/go\ngomodcache=/c/mod\n")
+	if !p.toolsProbed || !p.onPath["go"] || p.onPath["node"] || !p.onPath["rg"] {
+		t.Errorf("parsed tool probe = %+v, want go yes, node no, rg yes", p)
 	}
 	if p.goCache != "/c/go" || p.goModCache != "/c/mod" {
 		t.Errorf("parsed cache = %q/%q, want /c/go and /c/mod", p.goCache, p.goModCache)
 	}
 
-	if p := parseCapabilityProbe("git=ok\ngo=yes\n"); p.ran {
+	if p := parseToolProbe("go=yes\n"); p.toolsProbed {
 		t.Errorf("a reply missing probed keys must be unprobed, got %+v", p)
 	}
-	if p := parseCapabilityProbe(""); p.ran {
-		t.Errorf("empty probe output must be unprobed, got %+v", p)
+	if p := parseToolProbe(""); p.toolsProbed {
+		t.Errorf("empty tool probe output must be unprobed, got %+v", p)
+	}
+}
+
+// TestCapabilityPreambleGitProbeFailsAloneKeepsToolFacts: the two probes are
+// bounded independently, so a git probe that times out (restricted mode's git
+// costs ~3.5s per call — docs/sandboxing.md) must leave the PATH and cache
+// measurements standing rather than collapsing the whole preamble to
+// "unprobed". Only the git line degrades.
+func TestCapabilityPreambleGitProbeFailsAloneKeepsToolFacts(t *testing.T) {
+	probe := probedFacts()
+	probe.gitProbed, probe.gitConfigReads = false, false
+	got := strings.Join(capabilityPreambleLines(capabilityFacts{scratchDir: "/scratch/s1", probe: probe}), "\n")
+
+	want := strings.Join([]string{
+		"PATH: inherited process environment",
+		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
+		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
+		"git config read: unprobed",
+		"On PATH: go=yes node=yes rg=no",
+	}, "\n")
+	if got != want {
+		t.Errorf("git-only failure preamble:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestProbeCapabilitiesGitTimeoutIsIndependent proves that independence against
+// a REAL execution environment and a REAL subprocess: with the git budget cut to
+// an interval no process can finish in, the git half comes back unprobed while
+// the tool half still reports live, measured facts.
+func TestProbeCapabilitiesGitTimeoutIsIndependent(t *testing.T) {
+	prev := gitProbeTimeout
+	gitProbeTimeout = time.Nanosecond
+	t.Cleanup(func() { gitProbeTimeout = prev })
+
+	dir := t.TempDir()
+	env := execenv.NewLocalExecutionEnvironment(dir)
+	t.Cleanup(env.Cleanup)
+
+	p := probeCapabilities(env, dir)
+	if p.gitProbed {
+		t.Errorf("git probe must not report a result it could not measure: %+v", p)
+	}
+	if !p.toolsProbed || !p.onPath["go"] || p.goCache == "" {
+		t.Errorf("a timed-out git probe must not consume the tool measurements: %+v", p)
 	}
 }
 
@@ -227,7 +360,7 @@ func TestCapabilityPreambleRendersInEnvironmentSection(t *testing.T) {
 		"\nPATH: inherited process environment\n",
 		"\nScratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1\n",
 		"\nGo cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache\n",
-		"\ngit: `git config --list` exit 0\n",
+		"\ngit config read: `git config --list` exit 0\n",
 		"\nOn PATH: go=yes node=yes rg=no\n",
 	} {
 		if !strings.Contains(out, want) {
@@ -247,7 +380,7 @@ func TestProbeCapabilitiesLive(t *testing.T) {
 	t.Cleanup(env.Cleanup)
 
 	p := probeCapabilities(env, dir)
-	if !p.ran {
+	if !p.toolsProbed || !p.gitProbed {
 		t.Fatalf("live probe did not produce a usable result: %+v", p)
 	}
 	if !p.onPath["go"] {
@@ -261,7 +394,7 @@ func TestProbeCapabilitiesLive(t *testing.T) {
 // TestProbeCapabilitiesUnrunnable: a probe that cannot run yields the zero
 // value, which renders "unprobed" — never a guess.
 func TestProbeCapabilitiesUnrunnable(t *testing.T) {
-	if p := probeCapabilities(nil, ""); p.ran {
+	if p := probeCapabilities(nil, ""); p.toolsProbed || p.gitProbed {
 		t.Errorf("a nil environment must leave the probe unprobed, got %+v", p)
 	}
 }
