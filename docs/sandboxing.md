@@ -90,6 +90,18 @@ sockets beyond stdio.
   the spawned layer only — the model's file tools cannot browse the toolchain —
   it adds nothing to any write surface, and the denylist still wins over it.
 
+  This grant is **necessary but not sufficient**: on a host with a `~/.gitconfig`,
+  `git` still fails under `restricted` with
+  `fatal: unable to access '<home>/.gitconfig': Operation not permitted`, because
+  the global git config sits under `$HOME` and restricted mode grants no home read.
+  Reading it is a separate ruling — a global config can carry credential helpers
+  and URL rewrites — and has not been made. Until it is, `git` works under
+  `restricted` only for a session whose global config is absent or neutralized
+  (`GIT_CONFIG_GLOBAL=/dev/null`). Two further residuals: every `git` call under
+  `restricted` emits two `xcrun_db` cache-write denials to stderr and costs roughly
+  3.5s, because the `xcrun` shim retries a cache write into the per-user temp
+  directory that the mode does not grant.
+
 ## The fail-closed floor
 
 A mode is either fully enforced or the session refuses to start. There is no
