@@ -105,10 +105,26 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				"end_turn": endTurn,
 				"inbox":    inbox,
 			}
+			if endTurn && deps.runningJobIDs != nil {
+				if ids := deps.runningJobIDs(); len(ids) > 0 {
+					resp["warning"] = runningJobsEndTurnWarning(ids)
+				}
+			}
 			b, _ := json.Marshal(resp)
 			return string(b), nil
 		},
 	})
+}
+
+// runningJobsEndTurnWarning builds the end_turn=true warning naming this
+// session's still-running jobs. Warn-first (2026-08-06 ruling): the
+// communicate call still succeeds, there is no refusal path. The warning
+// complements docs/job-control.md's notification contract rather than
+// duplicating it — those jobs remain notification-armed and will report on
+// their own when they finish.
+func runningJobsEndTurnWarning(jobIDs []string) string {
+	return fmt.Sprintf("ending turn while %d job(s) are still running: %s. The call still succeeds; each job remains notification-armed and will report separately on completion.",
+		len(jobIDs), strings.Join(jobIDs, ", "))
 }
 
 func watchCommunicateCallbackText(message, output string) string {

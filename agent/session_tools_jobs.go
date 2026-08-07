@@ -1409,6 +1409,26 @@ func sessionJobManager(s *Session) (*jobManager, error) {
 	return s.jobManager, nil
 }
 
+// sessionRunningJobIDs lists this session's own running (session-launched,
+// non-nested) job ids, in job_list's default order. Used by the communicate
+// end_turn running-job warning; returns nil when the session has no job
+// manager or no running jobs.
+func sessionRunningJobIDs(s *Session) []string {
+	jm, err := sessionJobManager(s)
+	if err != nil {
+		return nil
+	}
+	recs := jm.list(listFilter{Status: jobstore.StatusRunning})
+	if len(recs) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(recs))
+	for _, rec := range recs {
+		ids = append(ids, rec.JobID)
+	}
+	return ids
+}
+
 func jobListFilterFromArgs(args map[string]any) (listFilter, error) {
 	limit := defaultJobListLimit
 	if n, ok := shellIntArg(args, "limit"); ok {

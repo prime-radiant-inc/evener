@@ -1018,3 +1018,99 @@ func TestCommunicate_AvailableImmediately(t *testing.T) {
 		t.Fatalf("requests: got %d want 1", got)
 	}
 }
+
+// TestCommunicate_EndTurnWarnsAboutRunningJobs pins the task-4 contract:
+// communicate(end_turn=true) while a session-launched job is still running
+// returns a result carrying a structured warning naming the running job ids;
+// with no running jobs, no warning; end_turn=false never warns. This is a
+// warn-first affordance (2026-08-06 ruling) — the call still succeeds.
+func TestCommunicate_EndTurnWarnsAboutRunningJobs(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID  string `json:"job_id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	if shellOut.JobID == "" || shellOut.Status != "running" {
+		t.Fatalf("shell output = %+v, want running job", shellOut)
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	t.Run("end_turn=false never warns while a job is running", func(t *testing.T) {
+		res := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("no-warn-not-end-turn", map[string]any{
+			"message":  "still working",
+			"end_turn": false,
+		}))
+		if res.IsError {
+			t.Fatalf("communicate error: %s", res.Output)
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(toolResultJSON(res), &resp); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if _, exists := resp["warning"]; exists {
+			t.Fatalf("expected no warning for end_turn=false, got: %v", resp)
+		}
+	})
+
+	t.Run("end_turn=true warns and names the running job id", func(t *testing.T) {
+		res := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("warn-end-turn", map[string]any{
+			"message":  "done for now",
+			"end_turn": true,
+		}))
+		if res.IsError {
+			t.Fatalf("communicate error: %s", res.Output)
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(toolResultJSON(res), &resp); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		warning, ok := resp["warning"].(string)
+		if !ok || warning == "" {
+			t.Fatalf("expected non-empty warning naming the running job, got: %v", resp)
+		}
+		if !strings.Contains(warning, shellOut.JobID) {
+			t.Fatalf("warning = %q, want it to name job id %q", warning, shellOut.JobID)
+		}
+		if accepted, _ := resp["accepted"].(bool); !accepted {
+			t.Fatalf("expected accepted=true (warn-first, call still succeeds), got: %v", resp)
+		}
+	})
+
+	if _, err := s.jobManager.stop(shellOut.JobID); err != nil {
+		t.Fatalf("stop job: %v", err)
+	}
+	waitForShellDone(t, s.jobManager, shellOut.JobID)
+
+	t.Run("no warning once no jobs are running", func(t *testing.T) {
+		res := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("no-warn-no-jobs", map[string]any{
+			"message":  "all clear",
+			"end_turn": true,
+		}))
+		if res.IsError {
+			t.Fatalf("communicate error: %s", res.Output)
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(toolResultJSON(res), &resp); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if _, exists := resp["warning"]; exists {
+			t.Fatalf("expected no warning with no running jobs, got: %v", resp)
+		}
+	})
+}
