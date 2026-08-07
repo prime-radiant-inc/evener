@@ -387,3 +387,26 @@ func assertNoRootIsMasked(t *testing.T, rp ResolvedPolicy) {
 		}
 	}
 }
+
+// TestCacheRootsCoverDefaultGoModCache verifies the overlay strategy's coverage
+// claim for GOMODCACHE: cacheRootsFor grants a FIXED $HOME/go/pkg (it does not
+// read the actual GOPATH), so overlay coverage of GOMODCACHE holds only when
+// GOPATH is at its default ($HOME/go, so GOMODCACHE defaults to
+// $HOME/go/pkg/mod). This pins that the default case is covered; a custom
+// GOPATH under the overlay strategy is a known, unaddressed residual (Linux-only
+// — this host's Seatbelt backend always uses CacheSessionPrivate, which
+// isRedirectedCacheVar now covers unconditionally, so the residual has no
+// exposure on macOS or in restricted mode on any host).
+func TestCacheRootsCoverDefaultGoModCache(t *testing.T) {
+	home := "/home/tester"
+	defaultGoModCache := filepath.Join(home, "go", "pkg", "mod")
+	roots := cacheRootsFor(ModeWorkspaceWrite, home)
+	if !isUnderAnyRoot(defaultGoModCache, roots) {
+		t.Errorf("default-GOPATH GOMODCACHE %q must fall under a cache root, got roots %v", defaultGoModCache, roots)
+	}
+
+	customGoModCache := "/custom/gopath/pkg/mod"
+	if isUnderAnyRoot(customGoModCache, roots) {
+		t.Errorf("custom-GOPATH GOMODCACHE %q unexpectedly fell under a cache root %v — the known residual has been closed elsewhere; update this test's comment", customGoModCache, roots)
+	}
+}

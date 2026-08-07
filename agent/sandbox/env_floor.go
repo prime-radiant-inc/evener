@@ -38,9 +38,9 @@ var floorPrefixDrops = []string{
 //   - drops a worktree-external KUBECONFIG (an absolute path outside every granted
 //     root points at a cluster config the sandboxed session should not reach),
 //   - points TMPDIR and SERF_SCRATCH_DIR at the per-session scratch, and
-//   - redirects the language cache vars (GOCACHE / npm_config_cache / CARGO_HOME)
-//     into the session tmp when the cache strategy is session-private, so a
-//     sandboxed build can never poison a cache a later build consumes.
+//   - redirects the language cache vars (GOCACHE / GOMODCACHE / npm_config_cache /
+//     CARGO_HOME) into the session tmp when the cache strategy is session-private,
+//     so a sandboxed build can never poison a cache a later build consumes.
 //
 // It is a pure function of its inputs and returns a fresh slice; it never reads
 // the process environment. Called at EVERY spawn site (shell jobs, rg, stdio MCP
@@ -70,6 +70,7 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 		if policy.CacheStrategy == CacheSessionPrivate {
 			out = append(out,
 				"GOCACHE="+filepath.Join(sessionScratch, "gocache"),
+				envvars.GoModCache.Assignment(filepath.Join(sessionScratch, "gomodcache")),
 				"npm_config_cache="+filepath.Join(sessionScratch, "npm"),
 				envvars.CargoHome.Assignment(filepath.Join(sessionScratch, "cargo")),
 			)
@@ -113,8 +114,13 @@ func floorDrops(name string) bool {
 
 // isRedirectedCacheVar reports whether name is a language cache var the floor
 // redirects into the session tmp under a session-private cache strategy.
+// GOMODCACHE is included alongside GOCACHE: it defaults to $GOPATH/pkg/mod, and
+// the granted cache root the resolver computes (cacheRootsFor) is a fixed
+// $HOME/go/pkg — it does not track a custom GOPATH, so an ambient GOMODCACHE
+// computed from a non-default GOPATH would land outside every granted root.
+// Verified 2026-08-06 (see env_floor_test.go).
 func isRedirectedCacheVar(name string) bool {
-	return name == "GOCACHE" || name == "npm_config_cache" || name == envvars.CargoHome.Name
+	return name == "GOCACHE" || name == envvars.GoModCache.Name || name == "npm_config_cache" || name == envvars.CargoHome.Name
 }
 
 // kubeconfigIsExternal reports whether a KUBECONFIG value points outside every

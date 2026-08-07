@@ -163,7 +163,10 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
 - Where overlay is unavailable (macOS/Seatbelt, or a bubblewrap without overlay
   support — including bubblewrap 0.9.0), the cache **degrades to a session-private
   redirect**: `GOCACHE`, `npm_config_cache`, and `CARGO_HOME` point into the session
-  temp (a cold cache), never to a persistent-writable location.
+  temp (a cold cache), never to a persistent-writable location. GOMODCACHE is
+  redirected alongside GOCACHE: it defaults to `$GOPATH/pkg/mod`, which the
+  granted cache root does not track when GOPATH is customized away from its
+  default location, so the redirect applies regardless of GOPATH.
 - `restricted` always uses the session-private redirect.
 
 The overlay is a performance optimization (warm vs cold reads); the no-poisoning
@@ -182,7 +185,22 @@ spawned process:
 - Drops a `KUBECONFIG` that points outside every granted root (an external cluster
   config the session should not reach).
 - Points `TMPDIR` at the per-session temp and, under the session-private cache
-  strategy, redirects `GOCACHE`/`npm_config_cache`/`CARGO_HOME` there.
+  strategy, redirects `GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`CARGO_HOME`
+  there.
+
+**Known residual: Go telemetry noise is not suppressed.** Go's telemetry
+counter/token file lives under the user's Go config directory (outside every
+sandbox root by design), so a `go` invocation inside a sandboxed session logs
+one denied-write line to stderr (`error acquiring upload token: ... operation
+not permitted`) and continues; the command's exit code is unaffected.
+`GOTELEMETRY` was considered as an env-floor fix but is a **report-only** `go
+env` value — the Go toolchain does not read it from the process environment
+(`go env -w GOTELEMETRY=off` itself fails with "GOTELEMETRY cannot be
+modified"), so setting it in the floor would have been a no-op. The only ways
+to actually silence the line are a per-session `HOME` redirect or granting a
+new writable root for Go's config directory; both were rejected as broader
+than the problem warrants. Ruled 2026-08-06: accept and document the noise
+rather than ship an env var that does nothing.
 
 ssh-agent and gpg-agent Unix sockets are not bind-mounted into the sandbox, and
 spawned commands inherit no serf file descriptors beyond stdio — not serf's live

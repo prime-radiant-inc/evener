@@ -209,3 +209,78 @@ func TestSeatbeltLiveContractOnHost(t *testing.T) {
 	requireLiveSeatbelt(t)
 	AssertResolve(t, Resolve)
 }
+
+// goTelemetryDenialLine is the ONE tolerated stderr line from a sandboxed `go`
+// invocation: Go's telemetry uploader stats/creates a token file under the
+// user's Go config directory, which sits outside every sandbox root by
+// design (see docs/sandboxing.md's "Known residual: Go telemetry noise is not
+// suppressed"). GOTELEMETRY is a report-only `go env` value the toolchain
+// never reads back from the process environment — `go env -w
+// GOTELEMETRY=off` itself fails with "GOTELEMETRY cannot be modified" — so
+// there is no env-floor lever that silences this; only a per-session HOME
+// redirect or a new writable root would, and both were rejected as broader
+// than the problem warrants. Ruled 2026-08-06: accept and document the
+// noise, don't chase it. Go emits this via log.Printf with one of two
+// prefixes depending on which filesystem call failed — "error acquiring
+// upload taken: statting token file: ..." (sic, an upstream typo) or "error
+// acquiring upload token: creating token file: ...".
+const goTelemetryDenialLine = "error acquiring upload"
+
+// TestSeatbeltLiveGoTestTelemetryDenialIsTheOnlyStderr proves the accepted
+// residual is bounded: `go test` on a trivial module, run inside a restricted
+// sandbox on this macOS/Seatbelt host (always CacheSessionPrivate — the
+// tightest, most representative case), exits 0, and stderr contains AT MOST
+// the one known, explained telemetry-denial line — never anything else. A
+// change that widens the noise (a new denial, a different failure mode) must
+// fail this test rather than slide through file-by-file.
+func TestSeatbeltLiveGoTestTelemetryDenialIsTheOnlyStderr(t *testing.T) {
+	requireLiveSeatbelt(t)
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("live seatbelt test: go not found on PATH")
+	}
+
+	rp, cwd := liveResolve(t, ModeRestricted, true)
+	if rp.CacheStrategy != CacheSessionPrivate {
+		t.Fatalf("restricted mode must resolve CacheSessionPrivate, got %v", rp.CacheStrategy)
+	}
+
+	// A trivial module with no external dependencies: it exercises the build/test
+	// path (and GOCACHE) without needing GOMODCACHE writes, keeping this test
+	// focused on the telemetry denial.
+	writeFile(t, filepath.Join(cwd, "go.mod"), "module serf-live-telemetry-probe\n\ngo 1.21\n")
+	writeFile(t, filepath.Join(cwd, "probe_test.go"), "package probe\n\nimport \"testing\"\n\nfunc TestProbe(t *testing.T) {}\n")
+
+	sessionTmp := t.TempDir()
+	argv, err := seatbeltWrap([]string{goBin, "test", "./..."}, rp, sessionTmp, cwd)
+	if err != nil {
+		t.Fatalf("seatbeltWrap: %v", err)
+	}
+	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // argv[0] is the hard-coded /usr/bin/sandbox-exec
+	cmd.Dir = cwd
+	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+
+	if runErr != nil {
+		t.Errorf("go test must exit 0, got %v\nstdout:\n%s\nstderr:\n%s", runErr, stdout.String(), stderr.String())
+	}
+	for _, line := range strings.Split(strings.TrimRight(stderr.String(), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		if !strings.Contains(line, goTelemetryDenialLine) {
+			t.Errorf("go test stderr must contain only the known telemetry-denial line, got unexpected line:\n%s\nfull stderr:\n%s", line, stderr.String())
+		}
+	}
+}
+
+// writeFile writes content to path, failing the test on error.
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writeFile(%q): %v", path, err)
+	}
+}

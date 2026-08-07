@@ -80,7 +80,7 @@ process environments.
 | `XDG_STATE_HOME` | Base for Serf state when `SERF_STATE_DIR` is unset. |
 | `CARGO_HOME` | Inherited by core-only command environments. |
 | `DISPLAY` | Used to auto-detect graphical sessions for OpenAI login. |
-| `GOMODCACHE` | Inherited by core-only command environments. |
+| `GOMODCACHE` | Inherited by core-only command environments; the sandbox environment floor redirects it into the session scratch directory under the session-private cache strategy (see [docs/sandboxing.md](sandboxing.md#caches-are-contained-never-poisoned)). |
 | `GOPATH` | Inherited by core-only command environments. |
 | `HOME` | Home directory fallback for state/config paths and path expansion. |
 | `HOMEDRIVE` | Windows home drive fallback. |
