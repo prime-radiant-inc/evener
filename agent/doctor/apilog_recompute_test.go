@@ -19,7 +19,11 @@ import (
 func syntheticZeroedResponsesSSE() string {
 	var b strings.Builder
 	write := func(event, data string) {
-		b.WriteString("event: " + event + "\ndata: " + data + "\n\n")
+		b.WriteString("event: ")
+		b.WriteString(event)
+		b.WriteString("\ndata: ")
+		b.WriteString(data)
+		b.WriteString("\n\n")
 	}
 	write("response.created", `{"type":"response.created","response":{"id":"resp_1"}}`)
 	write("response.output_item.added", `{"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_1","id":"item_1","name":"write_file"}}`)

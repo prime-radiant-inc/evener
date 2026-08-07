@@ -2050,12 +2050,8 @@ func windowOutputFileWithOpen(path string, beforeBytes, maxBytes, total, earlies
 	// only while a writer is mid-append, and a short read must not become one.
 	fileStart := start - earliest
 	fileEnd := end - earliest
-	if fileEnd > info.Size() {
-		fileEnd = info.Size()
-	}
-	if fileStart > info.Size() {
-		fileStart = info.Size()
-	}
+	fileEnd = min(fileEnd, info.Size())
+	fileStart = min(fileStart, info.Size())
 	if _, err := f.Seek(fileStart, 0); err != nil {
 		return "", 0, 0, err
 	}

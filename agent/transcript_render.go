@@ -852,7 +852,7 @@ func writeCompactNote(b *strings.Builder, role string, t schema.Turn, full bool)
 	for _, p := range t.Message.Content {
 		if p.Kind == llm.ContentText && p.Text != "" {
 			// Take only the first non-empty line.
-			line := strings.SplitN(strings.TrimSpace(p.Text), "\n", 2)[0]
+			line, _, _ := strings.Cut(strings.TrimSpace(p.Text), "\n")
 			firstLine = strings.TrimSpace(line)
 			break
 		}

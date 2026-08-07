@@ -408,7 +408,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 // decodeStream consumes the messages SSE stream in its own goroutine: it
 // translates each event into llm stream events and emits the final accumulated
 // Response on message_stop. It owns closing the response body and the ChanStream.
-func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, b []byte, attempt *transport.APIAttemptCapture) {
+func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, _ []byte, attempt *transport.APIAttemptCapture) {
 	defer func() {
 		_ = resp.Body.Close()
 		s.CloseSend()

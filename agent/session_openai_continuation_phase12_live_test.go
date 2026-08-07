@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -350,9 +351,9 @@ func phase12ReadCanonicalAPILog(t *testing.T, path string) ([]apilog.APIAttemptR
 
 func phase12FindCanonicalAttempt(t *testing.T, attempts []apilog.APIAttemptRecord, mode llm.HistoryMode) apilog.APIAttemptRecord {
 	t.Helper()
-	for i := len(attempts) - 1; i >= 0; i-- {
-		if attempts[i].Request.HistoryMode == string(mode) && attempts[i].Outcome == apilog.AttemptSuccess {
-			return attempts[i]
+	for _, a := range slices.Backward(attempts) {
+		if a.Request.HistoryMode == string(mode) && a.Outcome == apilog.AttemptSuccess {
+			return a
 		}
 	}
 	t.Fatalf("canonical API log has no successful request for history mode %q; attempts=%+v", mode, attempts)

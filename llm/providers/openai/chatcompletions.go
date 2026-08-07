@@ -245,7 +245,7 @@ func (acc *chatCompletionsChunkAccumulator) Settle() llm.Response {
 // goroutine: it translates each chunk into llm stream events and emits the final
 // accumulated Response on [DONE]. It owns closing the response body and the
 // ChanStream.
-func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, jsonBody []byte, attempt *transport.APIAttemptCapture) {
+func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, _ []byte, attempt *transport.APIAttemptCapture) {
 	defer func() {
 		_ = resp.Body.Close()
 		s.CloseSend()

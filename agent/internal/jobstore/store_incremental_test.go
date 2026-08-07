@@ -174,7 +174,7 @@ func TestStoreIncrementalReloadMatchesFullReread(t *testing.T) {
 			}()
 			requireIncrementalMatchesFullReread(t, s, path, "empty log")
 			next := 0
-			for step := 0; step < 30; step++ {
+			for step := range 30 {
 				switch rng.Intn(4) {
 				case 0:
 					if err := s.Append(incrementalTestEvent(next)); err != nil {
@@ -538,7 +538,7 @@ func TestCloneEventCoversEveryReferenceField(t *testing.T) {
 		"Event.WatchSend.Provenance.Chain",
 		"Event.WatchSend.Provenance.WatchKeys",
 	}
-	got := referenceFieldPaths(reflect.TypeOf(Event{}), "Event", map[reflect.Type]bool{})
+	got := referenceFieldPaths(reflect.TypeFor[Event](), "Event", map[reflect.Type]bool{})
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Event's reference fields changed; update cloneEvent, the test fixture and this list.\n got %#v\nwant %#v", got, want)
 	}
@@ -566,11 +566,11 @@ func referenceFieldPaths(t reflect.Type, prefix string, seen map[reflect.Type]bo
 			for elem.Kind() == reflect.Ptr || elem.Kind() == reflect.Slice || elem.Kind() == reflect.Map {
 				elem = elem.Elem()
 			}
-			if elem.Kind() == reflect.Struct && elem != reflect.TypeOf(time.Time{}) {
+			if elem.Kind() == reflect.Struct && elem != reflect.TypeFor[time.Time]() {
 				out = append(out, referenceFieldPaths(elem, path, seen)...)
 			}
 		case reflect.Struct:
-			if ft != reflect.TypeOf(time.Time{}) {
+			if ft != reflect.TypeFor[time.Time]() {
 				out = append(out, referenceFieldPaths(ft, path, seen)...)
 			}
 		}

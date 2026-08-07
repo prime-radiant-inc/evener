@@ -30,9 +30,9 @@ func TestRedial_NewManager_CallsDialFactoryExactlyOnce(t *testing.T) {
 	ctx := context.Background()
 	ct := newParallelTestServer(t, "r1", "t1")
 
-	var calls int32
+	var calls atomic.Int32
 	spy := func(context.Context) (mcpsdk.Transport, error) {
-		atomic.AddInt32(&calls, 1)
+		calls.Add(1)
 		return ct, nil
 	}
 
@@ -44,7 +44,7 @@ func TestRedial_NewManager_CallsDialFactoryExactlyOnce(t *testing.T) {
 	}
 	defer mgr.Close()
 
-	if got := atomic.LoadInt32(&calls); got != 1 {
+	if got := calls.Load(); got != 1 {
 		t.Errorf("dial factory called %d times, want exactly 1", got)
 	}
 	if mgr.conns[0].dial == nil {
@@ -60,9 +60,9 @@ func TestRedial_FailedConn_StillStoresDial(t *testing.T) {
 	ctx := context.Background()
 	sentinel := errors.New("redial: dial refused")
 
-	var calls int32
+	var calls atomic.Int32
 	spy := func(context.Context) (mcpsdk.Transport, error) {
-		atomic.AddInt32(&calls, 1)
+		calls.Add(1)
 		return nil, sentinel
 	}
 
@@ -74,7 +74,7 @@ func TestRedial_FailedConn_StillStoresDial(t *testing.T) {
 	}
 	defer mgr.Close()
 
-	if got := atomic.LoadInt32(&calls); got != 1 {
+	if got := calls.Load(); got != 1 {
 		t.Errorf("dial factory called %d times, want exactly 1", got)
 	}
 	if mgr.conns[0].dial == nil {

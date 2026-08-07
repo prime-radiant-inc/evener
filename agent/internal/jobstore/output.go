@@ -221,9 +221,7 @@ func WindowBounds(beforeBytes, maxBytes, total, earliest int64) (start, end int6
 		end = earliest
 	}
 	start = end - maxBytes
-	if start < earliest {
-		start = earliest
-	}
+	start = max(start, earliest)
 	return start, end
 }
 
@@ -261,9 +259,7 @@ func (o *OutputStore) Window(beforeBytes int64, maxBytes int) (buf []byte, start
 	// land through this store before the stat above can see them.
 	fileStart := start - o.retainedStart
 	fileEnd := end - o.retainedStart
-	if fileEnd > info.Size() {
-		fileEnd = info.Size()
-	}
+	fileEnd = min(fileEnd, info.Size())
 	if _, err := f.Seek(fileStart, 0); err != nil {
 		return nil, 0, 0, total, err
 	}

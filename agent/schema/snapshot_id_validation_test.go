@@ -180,7 +180,7 @@ func assertNoFilesWritten(t *testing.T, fs afero.Fs) {
 	t.Helper()
 	walkErr := afero.Walk(fs, "/", func(path string, info os.FileInfo, err error) error {
 		if err != nil || info == nil {
-			return nil
+			return nil //nolint:nilerr // an unwalkable entry cannot be a leaked write; keep scanning the rest
 		}
 		if !info.IsDir() {
 			t.Errorf("rejected session ID still wrote %s", path)

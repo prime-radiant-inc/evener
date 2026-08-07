@@ -18,15 +18,15 @@ import (
 // a session was Closed without holding a reference to it.
 type cleanupCountingEnv struct {
 	execenv.ExecutionEnvironment
-	cleanups int32
+	cleanups atomic.Int32
 }
 
 func (e *cleanupCountingEnv) Cleanup() {
-	atomic.AddInt32(&e.cleanups, 1)
+	e.cleanups.Add(1)
 	e.ExecutionEnvironment.Cleanup()
 }
 
-func (e *cleanupCountingEnv) count() int32 { return atomic.LoadInt32(&e.cleanups) }
+func (e *cleanupCountingEnv) count() int32 { return e.cleanups.Load() }
 
 // fakeEmit records the events forwarded through a manager's emit closure.
 type fakeEmit struct {

@@ -13,6 +13,7 @@ package typegen
 
 import (
 	"encoding/json"
+	"maps"
 	"reflect"
 	"sort"
 	"strings"
@@ -23,8 +24,8 @@ import (
 )
 
 var (
-	rawMessageType    = reflect.TypeOf(json.RawMessage(nil))
-	jsonMarshalerType = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+	rawMessageType    = reflect.TypeFor[json.RawMessage]()
+	jsonMarshalerType = reflect.TypeFor[json.Marshaler]()
 )
 
 // SchemaFromType converts a Go type into the map[string]any JSON-Schema subset
@@ -236,9 +237,7 @@ func nullable(inner map[string]any) map[string]any {
 // mutates a shared override schema.
 func cloneSchema(s map[string]any) map[string]any {
 	out := make(map[string]any, len(s))
-	for k, v := range s {
-		out[k] = v
-	}
+	maps.Copy(out, s)
 	return out
 }
 

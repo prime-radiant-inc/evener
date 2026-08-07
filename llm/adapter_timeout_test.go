@@ -414,6 +414,38 @@ func TestClientWithAdapterTimeout_PreservesDialAuthority(t *testing.T) {
 	}
 }
 
+// TestConfiguredAdapterTransport_DialArms pins the three dial arms structurally:
+// a pre-existing DialContext is wrapped, a bare transport gets a wrapped default
+// dialer, and a caller-supplied legacy Dial stays authoritative (no DialContext
+// is installed over it — the 2026-07-13 streaming-response-header-timeout
+// ruling).
+func TestConfiguredAdapterTransport_DialArms(t *testing.T) {
+	at := &AdapterTimeout{Connect: time.Second}
+
+	preexisting := http.DefaultTransport.(*http.Transport).Clone()
+	preexisting.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return nil, errors.New("unused")
+	}
+	if got := configuredAdapterTransport(preexisting, at); got.DialContext == nil {
+		t.Fatal("pre-existing DialContext arm: wrapper not installed")
+	}
+
+	bare := http.DefaultTransport.(*http.Transport).Clone()
+	bare.DialContext = nil
+	if got := configuredAdapterTransport(bare, at); got.DialContext == nil {
+		t.Fatal("bare transport arm: default dialer wrapper not installed")
+	}
+
+	legacy := http.DefaultTransport.(*http.Transport).Clone()
+	legacy.DialContext = nil
+	legacy.Dial = func(network, address string) (net.Conn, error) { //nolint:staticcheck // The test verifies legacy Dial remains caller-authoritative.
+		return nil, errors.New("unused")
+	}
+	if got := configuredAdapterTransport(legacy, at); got.DialContext != nil {
+		t.Fatal("legacy Dial arm: DialContext was installed over a caller-authoritative Dial")
+	}
+}
+
 func TestClientWithAdapterTimeout_WrapsDialTLSContextWithConnectDeadline(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -468,30 +500,30 @@ func TestClientWithAdapterTimeout_WrapsDialTLSContextWithConnectDeadline(t *test
 	}
 }
 
-func TestClientWithAdapterTimeout_PreservesDialTLSAuthority(t *testing.T) {
-	dialErr := errors.New("caller DialTLS result")
+func TestClientWithAdapterTimeout_PropagatesDialTLSContextError(t *testing.T) {
+	dialErr := errors.New("caller DialTLSContext result")
 	called := make(chan struct{}, 1)
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	transport.DialTLSContext = nil
-	transport.DialTLS = func(string, string) (net.Conn, error) { //nolint:staticcheck // The test verifies legacy DialTLS remains caller-authoritative.
+	connectTimeout := time.Second
+	transport.DialTLSContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		called <- struct{}{}
 		return nil, dialErr
 	}
 
-	client := ClientWithAdapterTimeout(&http.Client{Transport: transport}, &AdapterTimeout{Connect: time.Second})
+	client := ClientWithAdapterTimeout(&http.Client{Transport: transport}, &AdapterTimeout{Connect: connectTimeout})
 	req, err := http.NewRequest(http.MethodGet, "https://example.invalid", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = client.Do(req)
 	if !errors.Is(err, dialErr) {
-		t.Fatalf("Do error = %v, want caller DialTLS error", err)
+		t.Fatalf("Do error = %v, want caller DialTLSContext error", err)
 	}
 	select {
 	case <-called:
 	default:
-		t.Fatal("custom DialTLS was not called")
+		t.Fatal("custom DialTLSContext was not called")
 	}
 }
 

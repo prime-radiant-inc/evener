@@ -267,7 +267,7 @@ func TestUpdate_DoubleInProgress_NamesTheBlockingTask(t *testing.T) {
 	if err == nil {
 		t.Fatal("second task in_progress while first still in_progress: want error")
 	}
-	want := fmt.Sprintf("only one task may be in_progress; %d %q is currently in_progress — complete or defer it in the same updates array.", first, "first task")
+	want := fmt.Sprintf("only one task may be in_progress; %d %q is currently in_progress — complete or defer it in the same updates array", first, "first task")
 	if err.Error() != want {
 		t.Errorf("err = %q, want %q", err.Error(), want)
 	}

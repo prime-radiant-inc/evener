@@ -324,7 +324,7 @@ func runRuntimePairBuild(fixture runtimeBuildFixture, failPackage string) ([]byt
 func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 	environment := make([]string, 0, len(os.Environ())+4)
 	for _, assignment := range os.Environ() {
-		name := strings.SplitN(assignment, "=", 2)[0]
+		name, _, _ := strings.Cut(assignment, "=")
 		if name == "PATH" || name == "LDFLAGS" || name == "SERF_TEST_GO_LOG" || name == "SERF_TEST_GO_FAIL_PACKAGE" {
 			continue
 		}

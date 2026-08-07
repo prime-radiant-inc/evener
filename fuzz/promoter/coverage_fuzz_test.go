@@ -30,8 +30,8 @@ func defaultBucketOps() bucketStoreOps {
 }
 
 func FuzzBucketStorePersistence(f *testing.F) {
-	for mode := byte(0); mode < 12; mode++ {
-		f.Add(mode)
+	for mode := range 12 {
+		f.Add(byte(mode))
 	}
 	f.Fuzz(func(t *testing.T, mode byte) {
 		dir := t.TempDir()
@@ -130,8 +130,8 @@ func FuzzBucketStorePersistence(f *testing.F) {
 }
 
 func FuzzGoTestEmission(f *testing.F) {
-	for mode := byte(0); mode < 8; mode++ {
-		f.Add(mode)
+	for mode := range 8 {
+		f.Add(byte(mode))
 	}
 	f.Fuzz(func(t *testing.T, mode byte) {
 		g := GoTest{Package: "regressions", Surface: "9/a", Oracle: Panic, Hash: "abc", ReplayBody: "\t_ = t"}
@@ -197,8 +197,8 @@ type errorQuarantiner struct{ err error }
 func (q errorQuarantiner) Quarantine(Failure, int) error { return q.err }
 
 func FuzzPromoterOutcomes(f *testing.F) {
-	for mode := byte(0); mode < 8; mode++ {
-		f.Add(mode)
+	for mode := range 8 {
+		f.Add(byte(mode))
 	}
 	f.Fuzz(func(t *testing.T, mode byte) {
 		wantStrings := []string{"promoted", "already-known", "quarantined", "outcome(0)"}
@@ -264,8 +264,8 @@ func FuzzPromoterOutcomes(f *testing.F) {
 }
 
 func FuzzPersistPaths(f *testing.F) {
-	for mode := byte(0); mode < 5; mode++ {
-		f.Add(mode)
+	for mode := range 5 {
+		f.Add(byte(mode))
 	}
 	f.Fuzz(func(t *testing.T, mode byte) {
 		fallbackEmit := filepath.Join(t.TempDir(), "emit")

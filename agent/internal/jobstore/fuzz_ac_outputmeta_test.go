@@ -207,7 +207,7 @@ func assertReadOutputMetaDeterministic(t *testing.T, fs afero.Fs, path string) {
 	}
 }
 
-func assertValidReaderDeterministic(t *testing.T, label string, fs afero.Fs, metaPath, outputPath string, retained int64, read func(afero.Fs) (outputMeta, bool, error)) {
+func assertValidReaderDeterministic(t *testing.T, label string, fs afero.Fs, _, _ string, _ int64, read func(afero.Fs) (outputMeta, bool, error)) {
 	t.Helper()
 	m1, ok1, e1 := read(fs)
 	m2, ok2, e2 := read(fs)

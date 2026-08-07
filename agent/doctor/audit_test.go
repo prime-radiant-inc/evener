@@ -304,7 +304,7 @@ func TestMetricSourceResolve_TrailingJunkIsLoudError(t *testing.T) {
 func fiveRunTimeoutJobsFor(sid string) []jobstore.Event {
 	var events []jobstore.Event
 	exitTimeout := -1
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		id := fmt.Sprintf("job_%s_%d", sid, i)
 		events = append(events,
 			jobstore.Event{Kind: jobstore.EventJobStarted, JobID: id, Type: jobstore.JobShell, Command: "x",
@@ -321,7 +321,7 @@ func fiveRunTimeoutJobsFor(sid string) []jobstore.Event {
 // `longest_identical_run.errors && length >= 3` compound check.
 func fourIdenticalFailingShellTurns() []schema.Turn {
 	var turns []schema.Turn
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		id := fmt.Sprintf("c%d", i)
 		turns = append(turns,
 			schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{

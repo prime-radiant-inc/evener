@@ -251,7 +251,7 @@ func errorClass(output string) string {
 }
 
 func firstNonBlankLine(s string) string {
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		if strings.TrimSpace(line) != "" {
 			return line
 		}
@@ -293,13 +293,13 @@ func replaceDigitRuns(s, replacement string) string {
 	return b.String()
 }
 
-// TruncateRunes cuts s to at most max runes, never splitting a multi-byte
+// TruncateRunes cuts s to at most maxRunes runes, never splitting a multi-byte
 // rune. Exported so the agent package's steering messages truncate the same
 // way tool results do.
-func TruncateRunes(s string, max int) string {
+func TruncateRunes(s string, maxRunes int) string {
 	r := []rune(s)
-	if len(r) <= max {
+	if len(r) <= maxRunes {
 		return s
 	}
-	return string(r[:max])
+	return string(r[:maxRunes])
 }

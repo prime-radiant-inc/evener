@@ -184,9 +184,9 @@ func mcpProgramLifecycle(t *testing.T, payload string, variant uint8) {
 	defer func() { _ = firstServer.Close() }()
 	defer func() { _ = secondServer.Close() }()
 
-	var dialCalls int32
+	var dialCalls atomic.Int32
 	dial := func(context.Context) (mcpsdk.Transport, error) {
-		switch atomic.AddInt32(&dialCalls, 1) {
+		switch dialCalls.Add(1) {
 		case 1:
 			return firstTransport, nil
 		case 2:
@@ -219,12 +219,12 @@ func mcpProgramLifecycle(t *testing.T, payload string, variant uint8) {
 		t.Fatalf("manager clock = %v, want fake clock %v", got, now)
 	}
 
-	var reconnects int32
+	var reconnects atomic.Int32
 	mgr.OnReconnect = func(name string) {
 		if name != configName {
 			t.Errorf("OnReconnect name = %q, want %q", name, configName)
 		}
-		atomic.AddInt32(&reconnects, 1)
+		reconnects.Add(1)
 	}
 
 	defs := mgr.ToolDefinitions()
@@ -262,10 +262,10 @@ func mcpProgramLifecycle(t *testing.T, payload string, variant uint8) {
 	if retried.IsError || retried.Output != "second:"+payload {
 		t.Fatalf("reconnect retry = %+v, want second server reply", retried)
 	}
-	if got := atomic.LoadInt32(&dialCalls); got != 2 {
+	if got := dialCalls.Load(); got != 2 {
 		t.Fatalf("dial calls = %d, want initial connection plus one redial", got)
 	}
-	if got := atomic.LoadInt32(&reconnects); got != 1 {
+	if got := reconnects.Load(); got != 1 {
 		t.Fatalf("OnReconnect calls = %d, want 1", got)
 	}
 	afterDrop := mcpProgramServerByName(t, mgr.Servers(), configName)
@@ -606,20 +606,20 @@ func mcpProgramManagerEdges(t *testing.T) {
 	}
 
 	now := time.Unix(100, 0)
-	var redials int32
+	var redials atomic.Int32
 	backoffConn := &conn{
 		client: client,
 		dial: func(context.Context) (mcpsdk.Transport, error) {
-			atomic.AddInt32(&redials, 1)
+			redials.Add(1)
 			return nil, errors.New("redial fail")
 		},
 		now: func() time.Time { return now },
 	}
-	if session, ok := backoffConn.reconnect(ctx); session != nil || ok || atomic.LoadInt32(&redials) != 1 || !backoffConn.backoffUntil.After(now) || backoffConn.reconnecting {
-		t.Fatalf("failed reconnect state: session=%v ok=%v calls=%d conn=%s", session, ok, redials, mcpProgramConnSummary(backoffConn))
+	if session, ok := backoffConn.reconnect(ctx); session != nil || ok || redials.Load() != 1 || !backoffConn.backoffUntil.After(now) || backoffConn.reconnecting {
+		t.Fatalf("failed reconnect state: session=%v ok=%v calls=%d conn=%s", session, ok, redials.Load(), mcpProgramConnSummary(backoffConn))
 	}
-	if session, ok := backoffConn.reconnect(ctx); session != nil || ok || atomic.LoadInt32(&redials) != 1 {
-		t.Fatalf("backoff did not suppress repeat reconnect: session=%v ok=%v calls=%d", session, ok, redials)
+	if session, ok := backoffConn.reconnect(ctx); session != nil || ok || redials.Load() != 1 {
+		t.Fatalf("backoff did not suppress repeat reconnect: session=%v ok=%v calls=%d", session, ok, redials.Load())
 	}
 	for _, c := range []*conn{
 		{closed: true, client: client, dial: backoffConn.dial},

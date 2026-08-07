@@ -35,7 +35,7 @@ func TestExitBehavior_PerEvent(t *testing.T) {
 // blocks when a matched hook exits 2. A "block" entry that no runner consumes is
 // a lie the review flagged; this test fails if one is reintroduced (Fix 3).
 func TestExitBehavior_BlockEntriesAreEnforced(t *testing.T) {
-	exit2 := func(event plugin.HookEvent) plugin.RegisteredHook {
+	exit2 := func(_ plugin.HookEvent) plugin.RegisteredHook {
 		return plugin.RegisteredHook{
 			Matcher: "*",
 			Type:    "command",

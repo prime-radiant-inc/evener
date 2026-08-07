@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -490,8 +491,7 @@ func maskToolResultContent(tr *llm.ToolResultData, resultToolName string, summar
 // findToolCallArgs looks backward from the tool result to find the matching
 // assistant tool call and return its arguments.
 func findToolCallArgs(history []schema.Turn, toolCallID string) json.RawMessage {
-	for i := len(history) - 1; i >= 0; i-- {
-		t := history[i]
+	for _, t := range slices.Backward(history) {
 		if t.Kind != schema.TurnAssistant {
 			continue
 		}
@@ -1148,8 +1148,8 @@ func (cm *Manager) ElicitNote(ctx context.Context, history []schema.Turn) (strin
 func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 	var parts []string
 	total := 0
-	for i := len(history) - 1; i >= 0; i-- {
-		s := renderTurnForElicit(history[i])
+	for _, h := range slices.Backward(history) {
+		s := renderTurnForElicit(h)
 		if s == "" {
 			continue
 		}

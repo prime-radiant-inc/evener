@@ -113,7 +113,7 @@ type stackSender struct{ err error }
 
 func (s stackSender) Send(context.Context, appwire.Message) error { return s.err }
 
-func exerciseSendLoops(t rapidTB) {
+func exerciseSendLoops(_ rapidTB) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	runWebSocketSendLoop(ctx, stackSender{}, make(chan appwire.Message))
@@ -182,7 +182,7 @@ func (p stackPinger) Ping(context.Context) error {
 	return p.err
 }
 
-func exerciseKeepalive(t rapidTB) {
+func exerciseKeepalive(_ rapidTB) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	runWebSocketKeepalive(ctx, stackPinger{called: make(chan struct{}, 1)}, func() {}, time.Hour, time.Hour)

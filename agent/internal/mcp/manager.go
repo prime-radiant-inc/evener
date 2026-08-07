@@ -638,7 +638,7 @@ const (
 // retries the triggering call once against it. On any failure (bailed out,
 // dial/Connect error, or Close() won the race), it returns (nil, false) and
 // the exec closure surfaces the original triggering error.
-func (c *conn) reconnect(ctx context.Context) (*mcpsdk.ClientSession, bool) {
+func (c *conn) reconnect(_ context.Context) (*mcpsdk.ClientSession, bool) {
 	c.mu.Lock()
 	if c.closed || c.reconnecting || c.clock().Before(c.backoffUntil) {
 		c.mu.Unlock()

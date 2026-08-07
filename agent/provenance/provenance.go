@@ -4,6 +4,8 @@
 // the diagnostic Chain is bounded separately so truncation can never drop watch keys.
 package provenance
 
+import "slices"
+
 // maxDiagnosticChain bounds the diagnostic Chain; exceeding it truncates Chain entries
 // only, never WatchKeys.
 const maxDiagnosticChain = 16
@@ -101,9 +103,9 @@ func LatestDeliveryID(p *Causal) string {
 	if p == nil {
 		return ""
 	}
-	for i := len(p.Chain) - 1; i >= 0; i-- {
-		if p.Chain[i].DeliveryID != "" {
-			return p.Chain[i].DeliveryID
+	for _, e := range slices.Backward(p.Chain) {
+		if e.DeliveryID != "" {
+			return e.DeliveryID
 		}
 	}
 	return ""

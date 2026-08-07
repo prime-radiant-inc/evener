@@ -100,7 +100,7 @@ func TestResolveVsSymlinkSwap(t *testing.T) {
 	go swapper(t, wfd, "data", "spare", &stop, &wg)
 
 	sawSuccess, sawDenied := false, false
-	for i := 0; i < 4000; i++ {
+	for i := range 4000 {
 		got, rerr := s.readFile("read_file", target)
 		if rerr == nil {
 			if string(got) != inRoot {
@@ -169,7 +169,7 @@ func TestWriteVsSymlinkSwap(t *testing.T) {
 	wg.Add(1)
 	go swapper(t, wfd, "d", "spare", &stop, &wg)
 
-	for i := 0; i < 4000; i++ {
+	for i := range 4000 {
 		werr := s.writeFile("write_file", target, []byte(marker), 0o644)
 		if werr == nil {
 			continue
@@ -228,7 +228,7 @@ func TestRenameVsSymlinkSwap(t *testing.T) {
 	wg.Add(1)
 	go swapper(t, wfd, "d", "spare", &stop, &wg)
 
-	for i := 0; i < 3000; i++ {
+	for i := range 3000 {
 		// rename consumes src on success; (re)create it each iteration.
 		if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
 			stop.Store(true)

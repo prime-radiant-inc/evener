@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -194,8 +195,7 @@ func sessionModels(headerModel, metaModel string) []string {
 // no assistant turn at all — an absent or malformed outcome is reported as
 // "none", not guessed at.
 func outcomeHint(doc transcriptDoc, resultTool string) string {
-	for i := len(doc.Entries) - 1; i >= 0; i-- {
-		e := doc.Entries[i]
+	for _, e := range slices.Backward(doc.Entries) {
 		if e.Turn.Kind != schema.TurnAssistant {
 			continue
 		}

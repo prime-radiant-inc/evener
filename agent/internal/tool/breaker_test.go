@@ -98,8 +98,8 @@ func TestErrorClass_DifferentMessages_Inequal(t *testing.T) {
 
 func TestFailureLedger_Eviction_KeepsNewest(t *testing.T) {
 	l := newFailureLedger()
-	for i := 0; i < 513; i++ {
-		args := []byte(fmt.Sprintf(`{"i":%d}`, i))
+	for i := range 513 {
+		args := fmt.Appendf(nil, `{"i":%d}`, i)
 		l.record("write_file", args, true, "boom")
 	}
 	if len(l.entries) != 512 {
@@ -129,8 +129,8 @@ func TestFailureLedger_SuccessThenRefailUnderEvictionPressure_SurvivesEviction(t
 	l.record("write_file", argsA, false, "ok")
 
 	// Fill the ledger to capacity with 511 other distinct failing signatures.
-	for i := 0; i < 511; i++ {
-		args := []byte(fmt.Sprintf(`{"i":%d}`, i))
+	for i := range 511 {
+		args := fmt.Appendf(nil, `{"i":%d}`, i)
 		l.record("write_file", args, true, "boom")
 	}
 
@@ -170,11 +170,11 @@ func TestFailureLedger_SnippetTruncation_IsUTF8Safe(t *testing.T) {
 func TestFailureLedger_ConcurrentRecord_ConsistentTotal(t *testing.T) {
 	l := newFailureLedger()
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			args := []byte(fmt.Sprintf(`{"i":%d}`, i%5))
+			args := fmt.Appendf(nil, `{"i":%d}`, i%5)
 			l.record("write_file", args, true, "boom")
 		}(i)
 	}
@@ -284,8 +284,8 @@ func TestFailureLedger_SurvivingSuccessEntries_DoNotCorruptEviction(t *testing.T
 	l := newFailureLedger()
 	// 513 distinct signatures, all successes. Since success no longer
 	// deletes, every one of these creates a live entry.
-	for i := 0; i < 513; i++ {
-		args := []byte(fmt.Sprintf(`{"i":%d}`, i))
+	for i := range 513 {
+		args := fmt.Appendf(nil, `{"i":%d}`, i)
 		l.record("read_file", args, false, "body")
 	}
 	if len(l.entries) != 512 {
@@ -308,7 +308,7 @@ func TestFailureLedger_RecurringSignature_SurvivesUnrelatedChurn(t *testing.T) {
 	l := newFailureLedger()
 	churn := func(from, to int) {
 		for i := from; i < to; i++ {
-			l.record("read_file", []byte(fmt.Sprintf(`{"i":%d}`, i)), false, "body")
+			l.record("read_file", fmt.Appendf(nil, `{"i":%d}`, i), false, "body")
 		}
 	}
 	failing := []byte(`{"path":"broken"}`)
@@ -336,11 +336,11 @@ func TestFailureLedger_RecurringSignature_SurvivesUnrelatedChurn(t *testing.T) {
 func TestFailureLedger_ConcurrentRecord_BothCountersRaceClean(t *testing.T) {
 	l := newFailureLedger()
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			args := []byte(fmt.Sprintf(`{"i":%d}`, i%5))
+			args := fmt.Appendf(nil, `{"i":%d}`, i%5)
 			l.record("read_file", args, false, "same body")
 		}(i)
 	}

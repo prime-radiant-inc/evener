@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
@@ -137,13 +136,13 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 	}
 	defer func() { _ = logFile.Close() }()
 
-	cmd := exec.CommandContext(context.Background(), filepath.Join(cfg.ScriptsDir, name+"-selftest.sh"))
+	cmd := exec.Command(filepath.Join(cfg.ScriptsDir, name+"-selftest.sh")) //nolint:noctx // lifecycle is managed by the wave's process-group TERM/KILL escalation, which a context kill (direct child only) would defeat
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Env = append(environWithout(envvars.TmpDir.Name, envvars.Path.Name),
 		envvars.TmpDir.Name+"="+tmp,
 		envvars.Path.Name+"="+filepath.Join(runDir, "bin")+":"+os.Getenv(envvars.Path.Name))
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = suiteSysProcAttr()
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		return suiteResult{exitCode: 1, failure: fmt.Sprintf("serf-test-dev-tooling: %s: %v", name, err)}
@@ -161,7 +160,7 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 		}
 		mu.Lock()
 		if !finished {
-			_ = syscall.Kill(-pgid, syscall.SIGTERM)
+			terminateSuiteGroup(pgid)
 		}
 		mu.Unlock()
 		select {
@@ -169,7 +168,7 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 		case <-time.After(cfg.KillGrace):
 			mu.Lock()
 			if !finished {
-				_ = syscall.Kill(-pgid, syscall.SIGKILL)
+				killSuiteGroup(pgid)
 			}
 			mu.Unlock()
 		}

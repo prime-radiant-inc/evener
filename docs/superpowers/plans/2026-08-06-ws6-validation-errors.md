@@ -205,7 +205,7 @@ call-site proximity:
   branch calls `currentInProgressLocked()` to find the blocker (the task
   that is in_progress in `s.tasks` *before* this batch's projection — i.e.
   the one the batch didn't necessarily touch) and builds:
-  `` fmt.Errorf("only one task may be in_progress; %d %q is currently in_progress — complete or defer it in the same updates array.", blocker.ID, blocker.Description) ``
+  `` fmt.Errorf("only one task may be in_progress; %d %q is currently in_progress — complete or defer it in the same updates array", blocker.ID, blocker.Description) ``
   — confirm exact punctuation/wording against the spec string before
   hardcoding the test assertion. If no single unambiguous blocker exists
   (e.g., the batch itself sets two *new* tasks in_progress with none

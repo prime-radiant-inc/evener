@@ -115,9 +115,9 @@ func TestSchemaFromType_AllStructuralKinds(t *testing.T) {
 		typ      reflect.Type
 		wantType any
 	}{
-		{reflect.TypeOf([2]string{}), "array"},
-		{reflect.TypeOf(make(chan int)), nil},
-		{reflect.TypeOf(complex64(0)), nil},
+		{reflect.TypeFor[[2]string](), "array"},
+		{reflect.TypeFor[chan int](), nil},
+		{reflect.TypeFor[complex64](), nil},
 	}
 	for _, tc := range cases {
 		got := SchemaFromType(tc.typ)
@@ -126,7 +126,7 @@ func TestSchemaFromType_AllStructuralKinds(t *testing.T) {
 		}
 	}
 
-	recursive := SchemaFromType(reflect.TypeOf(recursiveNode{}))
+	recursive := SchemaFromType(reflect.TypeFor[recursiveNode]())
 	next := recursive["properties"].(map[string]any)["next"].(map[string]any)
 	if len(next) != 0 {
 		t.Errorf("recursive occurrence = %#v, want untyped nullable schema", next)
@@ -134,7 +134,7 @@ func TestSchemaFromType_AllStructuralKinds(t *testing.T) {
 }
 
 func TestSchemaFromType_EmbeddedAndContainerFields(t *testing.T) {
-	schema := SchemaFromType(reflect.TypeOf(embeddedFields{}))
+	schema := SchemaFromType(reflect.TypeFor[embeddedFields]())
 	props := schema["properties"].(map[string]any)
 	for _, name := range []string{"a", "b", "enabled", "named"} {
 		if _, ok := props[name]; !ok {
@@ -145,7 +145,7 @@ func TestSchemaFromType_EmbeddedAndContainerFields(t *testing.T) {
 		t.Errorf("unexported anonymous field leaked: %#v", props)
 	}
 
-	containers := SchemaFromType(reflect.TypeOf(requiredContainers{}))
+	containers := SchemaFromType(reflect.TypeFor[requiredContainers]())
 	if got := containers["required"].([]string); len(got) != 0 {
 		t.Errorf("nullable container fields marked required: %v", got)
 	}
@@ -157,7 +157,7 @@ func TestSchemaFromType_EmbeddedAndContainerFields(t *testing.T) {
 }
 
 func TestSchemaFromType_SpecialKinds(t *testing.T) {
-	s := SchemaFromType(reflect.TypeOf(trickyStruct{}))
+	s := SchemaFromType(reflect.TypeFor[trickyStruct]())
 	props := s["properties"].(map[string]any)
 
 	// []byte → base64 string.
@@ -191,7 +191,7 @@ func TestSchemaFromType_SpecialKinds(t *testing.T) {
 }
 
 func TestSchemaFromType_PointerNullableAndRequired(t *testing.T) {
-	s := SchemaFromType(reflect.TypeOf(cleanStruct{}))
+	s := SchemaFromType(reflect.TypeFor[cleanStruct]())
 	props := s["properties"].(map[string]any)
 
 	// *string → type ["string","null"].
@@ -233,8 +233,8 @@ func TestOverrideFiresAtNestedDepth(t *testing.T) {
 		"required": []string{},
 	}
 	reg := NewRegistry()
-	reg.RegisterTypeSchema(reflect.TypeOf(customLayer{}), override)
-	reg.RegisterType("holder", reflect.TypeOf(holder{}))
+	reg.RegisterTypeSchema(reflect.TypeFor[customLayer](), override)
+	reg.RegisterType("holder", reflect.TypeFor[holder]())
 
 	s, ok := reg.Schema("holder")
 	if !ok {
@@ -269,7 +269,7 @@ func TestOverrideFiresAtNestedDepth(t *testing.T) {
 // TestCustomMarshalerWithoutOverride confirms a json.Marshaler with no override
 // downgrades to untyped {} (the safe §3.3.3 fallback).
 func TestCustomMarshalerWithoutOverride(t *testing.T) {
-	s := SchemaFromType(reflect.TypeOf(customLayer{}))
+	s := SchemaFromType(reflect.TypeFor[customLayer]())
 	if len(s) != 0 {
 		t.Errorf("custom marshaler without override = %#v, want untyped {}", s)
 	}
@@ -279,7 +279,7 @@ func TestCustomMarshalerWithoutOverride(t *testing.T) {
 // cleanly and re-marshal to a fixed point, under BOTH a byte Source and a rapid
 // Source — the core "generated value round-trips into the source struct" claim.
 func TestValidRoundTrips(t *testing.T) {
-	typ := reflect.TypeOf(cleanStruct{})
+	typ := reflect.TypeFor[cleanStruct]()
 	schema := SchemaFromType(typ)
 
 	check := func(label string, val any) {
@@ -306,13 +306,13 @@ func TestValidRoundTrips(t *testing.T) {
 	}
 
 	// Byte Source: sweep deterministic streams.
-	for seed := 0; seed < 300; seed++ {
+	for seed := range 300 {
 		data := pseudoBytes(seed, 64)
 		check("byte", schemagen.Value(schemagen.NewByteSource(data), schema, schemagen.Valid))
 	}
 	// Rapid Source: same definitions via the rapid backend.
 	g := GeneratorForType(typ, schemagen.Valid)
-	for seed := 0; seed < 300; seed++ {
+	for seed := range 300 {
 		check("rapid", g.Example(seed))
 	}
 }
@@ -320,10 +320,10 @@ func TestValidRoundTrips(t *testing.T) {
 // TestNoPanicOnTrickyType proves the special-case kinds never panic the
 // decode/marshal path (the floor oracle), under both Valid and Adjacent modes.
 func TestNoPanicOnTrickyType(t *testing.T) {
-	typ := reflect.TypeOf(trickyStruct{})
+	typ := reflect.TypeFor[trickyStruct]()
 	schema := SchemaFromType(typ)
 	for _, mode := range []schemagen.Mode{schemagen.Valid, schemagen.Adjacent} {
-		for seed := 0; seed < 300; seed++ {
+		for seed := range 300 {
 			data := pseudoBytes(seed*7+int(mode), 48)
 			val := schemagen.Value(schemagen.NewByteSource(data), schema, mode)
 			raw, err := json.Marshal(val)
@@ -339,8 +339,8 @@ func TestNoPanicOnTrickyType(t *testing.T) {
 // TestByteDeterminism proves the same bytes yield the same registry value.
 func TestByteDeterminism(t *testing.T) {
 	reg := NewRegistry()
-	reg.RegisterType("clean", reflect.TypeOf(cleanStruct{}))
-	for seed := 0; seed < 50; seed++ {
+	reg.RegisterType("clean", reflect.TypeFor[cleanStruct]())
+	for seed := range 50 {
 		data := pseudoBytes(seed, 64)
 		a, _ := reg.Value("clean", schemagen.Valid, schemagen.NewByteSource(data))
 		b, _ := reg.Value("clean", schemagen.Valid, schemagen.NewByteSource(data))
@@ -353,7 +353,7 @@ func TestByteDeterminism(t *testing.T) {
 // TestRegistryNamesAndLookup covers the index surface.
 func TestRegistryNamesAndLookup(t *testing.T) {
 	reg := NewRegistry()
-	reg.RegisterType("b", reflect.TypeOf(cleanStruct{}))
+	reg.RegisterType("b", reflect.TypeFor[cleanStruct]())
 	reg.RegisterSchema("a", map[string]any{"type": "string"})
 	if got := reg.Names(); !reflect.DeepEqual(got, []string{"a", "b"}) {
 		t.Errorf("Names() = %v, want [a b]", got)
@@ -373,8 +373,8 @@ func TestRegistryNamesAndLookup(t *testing.T) {
 
 func FuzzRegistrySemanticRoundTrip(f *testing.F) {
 	types := []reflect.Type{
-		reflect.TypeOf(cleanStruct{}),
-		reflect.TypeOf(cleanInner{}),
+		reflect.TypeFor[cleanStruct](),
+		reflect.TypeFor[cleanInner](),
 		reflect.TypeOf(struct {
 			Items [2]string `json:"items"`
 			OK    bool      `json:"ok"`
@@ -438,30 +438,30 @@ func exerciseTypegenSurface(t *testing.T, data []byte) {
 
 	types := []reflect.Type{
 		nil,
-		reflect.TypeOf(""),
-		reflect.TypeOf(false),
-		reflect.TypeOf(int8(0)),
-		reflect.TypeOf(float32(0)),
-		reflect.TypeOf([]byte(nil)),
-		reflect.TypeOf([]string(nil)),
-		reflect.TypeOf([1]string{}),
-		reflect.TypeOf(map[string]int{}),
-		reflect.TypeOf((*string)(nil)),
-		reflect.TypeOf((*any)(nil)).Elem(),
-		reflect.TypeOf(make(chan int)),
-		reflect.TypeOf(json.RawMessage(nil)),
-		reflect.TypeOf(customLayer{}),
-		reflect.TypeOf(recursiveNode{}),
-		reflect.TypeOf(embeddedFields{}),
-		reflect.TypeOf(requiredContainers{}),
-		reflect.TypeOf(trickyStruct{}),
-		reflect.TypeOf(struct{ Plain string }{}),
+		reflect.TypeFor[string](),
+		reflect.TypeFor[bool](),
+		reflect.TypeFor[int8](),
+		reflect.TypeFor[float32](),
+		reflect.TypeFor[[]byte](),
+		reflect.TypeFor[[]string](),
+		reflect.TypeFor[[1]string](),
+		reflect.TypeFor[map[string]int](),
+		reflect.TypeFor[*string](),
+		reflect.TypeFor[any](),
+		reflect.TypeFor[chan int](),
+		reflect.TypeFor[json.RawMessage](),
+		reflect.TypeFor[customLayer](),
+		reflect.TypeFor[recursiveNode](),
+		reflect.TypeFor[embeddedFields](),
+		reflect.TypeFor[requiredContainers](),
+		reflect.TypeFor[trickyStruct](),
+		reflect.TypeFor[struct{ Plain string }](),
 	}
 	for _, typ := range types {
 		_ = SchemaFromType(typ)
 	}
 
-	if got := GeneratorForType(reflect.TypeOf(""), schemagen.Valid).Example(0); reflect.TypeOf(got).Kind() != reflect.String {
+	if got := GeneratorForType(reflect.TypeFor[string](), schemagen.Valid).Example(0); reflect.TypeOf(got).Kind() != reflect.String {
 		t.Fatalf("GeneratorForType(string) produced %T", got)
 	}
 	if _, ok := ValueFromBytes[cleanStruct](data, schemagen.Valid); !ok {
@@ -473,8 +473,8 @@ func exerciseTypegenSurface(t *testing.T, data []byte) {
 
 	override := map[string]any{"type": "object"}
 	reg := NewRegistry()
-	reg.RegisterTypeSchema(reflect.TypeOf(customLayer{}), override)
-	reg.RegisterType("holder", reflect.TypeOf(holder{}))
+	reg.RegisterTypeSchema(reflect.TypeFor[customLayer](), override)
+	reg.RegisterType("holder", reflect.TypeFor[holder]())
 	reg.RegisterSchema("literal", map[string]any{"type": "string"})
 	if _, ok := reg.Schema("holder"); !ok {
 		t.Fatal("registered holder schema missing")
@@ -526,7 +526,7 @@ func TestNoSerfImport(t *testing.T) {
 // checks by hand, now behind one call.
 func TestValueFromBytes(t *testing.T) {
 	sawOpt, sawNested := false, false
-	for seed := 0; seed < 64; seed++ {
+	for seed := range 64 {
 		v, ok := ValueFromBytes[cleanStruct](pseudoBytes(seed, 48), schemagen.Valid)
 		if !ok {
 			t.Fatalf("seed %d: Valid value of a round-trippable type failed to decode", seed)

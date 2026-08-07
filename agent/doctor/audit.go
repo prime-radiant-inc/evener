@@ -2,7 +2,9 @@ package doctor
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -176,7 +178,7 @@ func ParseRunbook(name string, content []byte) (Runbook, error) {
 	// closed by a blank line/heading/fence/new bullet).
 	openStep := -1
 
-	for _, line := range strings.Split(string(content), "\n") {
+	for line := range strings.SplitSeq(string(content), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
 			if inFence {
@@ -259,13 +261,13 @@ func parseAuditFence(content string) (checks []auditCheckRaw, found bool) {
 // machinery, and it must never silently degrade to "no findings".
 func normalizeCheck(raw auditCheckRaw) (AuditCheck, error) {
 	if raw.Title == "" {
-		return AuditCheck{}, fmt.Errorf("missing title")
+		return AuditCheck{}, errors.New("missing title")
 	}
 	if !validSeverities[raw.Severity] {
 		return AuditCheck{}, fmt.Errorf("severity %q must be one of low, medium, high", raw.Severity)
 	}
 	if raw.Category == "" {
-		return AuditCheck{}, fmt.Errorf("missing category (see finding-contract.md)")
+		return AuditCheck{}, errors.New("missing category (see finding-contract.md)")
 	}
 	suggestedFix := raw.SuggestedFix
 	if suggestedFix == "" {
@@ -279,11 +281,11 @@ func normalizeCheck(raw auditCheckRaw) (AuditCheck, error) {
 	if len(conditions) == 0 {
 		conditions = []auditCondition{{Metric: raw.Metric, Op: raw.Op, Value: raw.Value}}
 	} else if raw.Metric != "" || raw.Op != "" || raw.Value != nil {
-		return AuditCheck{}, fmt.Errorf("both a top-level metric/op/value and an \"all\" list were given; use one or the other")
+		return AuditCheck{}, errors.New("both a top-level metric/op/value and an \"all\" list were given; use one or the other")
 	}
 	for _, cond := range conditions {
 		if cond.Metric == "" {
-			return AuditCheck{}, fmt.Errorf("condition missing metric")
+			return AuditCheck{}, errors.New("condition missing metric")
 		}
 		if !validAuditOps[cond.Op] {
 			return AuditCheck{}, fmt.Errorf("condition %q: op %q must be one of >=, >, <=, <, ==, !=", cond.Metric, cond.Op)
@@ -558,10 +560,10 @@ type AuditResult struct {
 // explicit --sessions selector that doesn't resolve.
 func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, error) {
 	if len(opts.Sessions) > 0 && opts.Since > 0 {
-		return AuditResult{}, fmt.Errorf("--sessions and --since are mutually exclusive")
+		return AuditResult{}, errors.New("--sessions and --since are mutually exclusive")
 	}
 	if len(opts.Sessions) == 0 && opts.Since <= 0 {
-		return AuditResult{}, fmt.Errorf("either --sessions or --since must be given")
+		return AuditResult{}, errors.New("either --sessions or --since must be given")
 	}
 
 	res := AuditResult{Runbook: runbook.Name, Manual: append([]string(nil), runbook.ManualSteps...)}
@@ -699,10 +701,8 @@ func slugify(s string) string {
 }
 
 func appendUniqueString(list []string, v string) []string {
-	for _, existing := range list {
-		if existing == v {
-			return list
-		}
+	if slices.Contains(list, v) {
+		return list
 	}
 	return append(list, v)
 }

@@ -307,7 +307,7 @@ func TestSetModel_StaticCompatibilityRejection_RunsBeforeLiveEnumeration(t *test
 				models: []llm.ModelInfo{{ID: "gpt-5.6-mini", Provider: "anthropic"}},
 			},
 			rejectModel: "gpt-5.6-mini",
-			err:         fmt.Errorf("model gpt-5.6-mini is not supported (supported: gpt-5.6-luna, gpt-5.6-sol, gpt-5.6-terra)"),
+			err:         errors.New("model gpt-5.6-mini is not supported (supported: gpt-5.6-luna, gpt-5.6-sol, gpt-5.6-terra)"),
 		}),
 		withConfig(SessionConfig{
 			NoProjectPrompts: true,
