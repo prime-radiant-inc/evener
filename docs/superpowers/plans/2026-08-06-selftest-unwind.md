@@ -196,6 +196,25 @@ Drop `make-selftest` from `SELFTEST_SCRIPTS`. Trim the SELFTEST_SCRIPTS comment 
 - [ ] **Step 3:** `make lint` — green (audit tests updated in Task 4 run here too).
 - [ ] **Step 4: Commit** any stragglers; update this plan's checkboxes.
 
+### Task 8: take the selftest wave out of the inner `make test` loop
+
+**Rationale (Jesse's directive):** the selftest suites test development tooling — lint/test runners, janitors, fuzz orchestration, tmux helpers — not the product. They belong in the gate that runs when tooling can regress (the merge gate), not in every inner-loop `make test`.
+
+**Files:**
+- Modify: `Makefile` — `test:` target: drop `SELFTEST=1` from the run-module-tests invocation; `merge-approval-gate:` target: append `@$(MAKE) selftest` as the final serial step; rewrite the comment above the `selftest:` target ("selftest hangs off `make test`…") to say it is a standalone gate run by merge-approval-gate and on demand.
+- Modify: `scripts/merge-approval-gate-selftest.sh` — the fixture's fake `$(MAKE)` records recursive invocations; add an assertion that the gate invokes `selftest` after `test` (same `assert_before` idiom the suite already uses for lint/build/test ordering).
+- Modify: `scripts/run-module-tests-selftest.sh` — any scenario that asserts the selftest stream runs by default under `make test` semantics now passes `SELFTEST=1` explicitly in its fixture env (the script's own `SELFTEST=${SELFTEST:-0}` default already matches the new wiring).
+- Modify: `docs/testing.md` — wherever it says the selftest wave runs inside `make test`, say it runs in `make merge-approval-gate` and on demand via `make selftest`.
+
+**Interfaces:**
+- Consumes: the `selftest` target from Task 3 (`go run ./cmd/serf-selftest $(SELFTEST_SCRIPTS)`).
+- Produces: `make test` = product only (Go modules + frontend); `make merge-approval-gate` = lint → build → test → selftest.
+
+- [ ] **Step 1:** Make the Makefile edits above.
+- [ ] **Step 2:** Update the two selftest suites' fixtures/assertions; run `scripts/merge-approval-gate-selftest.sh` and `scripts/run-module-tests-selftest.sh` → both PASS.
+- [ ] **Step 3:** `make test` completes without spawning the selftest stream (verify: its output has no `selftest` stream line); `make selftest` still runs the wave.
+- [ ] **Step 4:** Update `docs/testing.md`; commit `feat(make): move the selftest wave to the merge gate`.
+
 ## Decisions locked (and one flagged)
 
 - **Flagged for Jesse:** `disk-reclaim` is not deleted outright — its `--check` floor came from two real disk-full incidents that masqueraded as test flakes (script header, kata 98x9/6jxs/r07s), so the ~60-line preflight keeps that early warning while the worktree-classification/reclaim machinery (~95% of the code and its whole 700-line selftest) is deleted. The read-only `report-*` scripts stay: they are the human-facing "look before you delete" tools and cost the wave ~0s.
