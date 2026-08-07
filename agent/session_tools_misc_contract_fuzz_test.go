@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -312,7 +313,7 @@ func stmRunJobTranscriptContracts(t *testing.T, program []byte) {
 	r := &stmReader{data: program}
 	s, _, _ := stmNewSession(t, program)
 	jm := s.jobManager
-	jobID := "job_transcript_" + r.word()
+	jobID := identifier.MustNewJobID(s.ID())
 	now := s.sclock().Now()
 	started := now
 	if err := jm.appendEvent(jobstore.Event{
