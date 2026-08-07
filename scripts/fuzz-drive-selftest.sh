@@ -12,16 +12,13 @@
 set -uo pipefail
 
 script="$(cd "$(dirname "$0")" && pwd)/fuzz-drive.sh"
-checks=0 fails=0
+. "$(dirname "$0")/selftest-lib.sh"
 selftest_root="$(mktemp -d "${TMPDIR:-/tmp}/fuzz-drive-selftest.XXXXXX")"
 cleanup() { rm -rf "$selftest_root"; }
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-ok() { checks=$((checks + 1)); printf '  ok: %s\n' "$1"; }
-bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL: %s\n' "$1"; }
 
 # new_repo builds a throwaway git repo with fuzz-drive.sh, a 2-task corpus, and
 # the stub binaries under the one root owned by this selftest; echoes its path.
@@ -173,6 +170,4 @@ fixture_count="$(find "$selftest_root" -mindepth 1 -maxdepth 1 -type d -name 'sc
 cleanup
 [ ! -e "$selftest_root" ] && ok "the shared fixture root is removed at completion" || bad "the shared fixture root survived cleanup"
 
-echo
-echo "fuzz-drive-selftest: $checks checks, $fails failed"
-[ "$fails" -eq 0 ]
+selftest_summary

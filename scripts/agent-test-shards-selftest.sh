@@ -7,16 +7,8 @@ work="$(mktemp -d -t agent-test-shards-selftest.XXXXXX)"
 work="$(cd "$work" && pwd -P)"
 trap 'rm -rf "$work"' EXIT
 
-checks=0
-fails=0
-ok() { checks=$((checks + 1)); printf '  ok: %s\n' "$1"; }
-bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL: %s\n' "$1"; }
-assert_eq() {
-	if [ "$1" = "$2" ]; then ok "$3"; else bad "$3 (want '$2', got '$1')"; fi
-}
-assert_has() {
-	if grep -qF -- "$2" "$1"; then ok "$3"; else bad "$3 (missing '$2')"; fi
-}
+. "$(dirname "$0")/selftest-lib.sh"
+
 assert_absent() {
 	if [ ! -e "$1" ]; then ok "$2"; else bad "$2 (still present: $1)"; fi
 }
@@ -286,6 +278,4 @@ else
 fi
 assert_pids_gone "$tracked" "an interrupted shard run"
 
-echo "----"
-echo "agent-test-shards-selftest: $checks checks, $fails failed"
-[ "$fails" -eq 0 ]
+selftest_summary

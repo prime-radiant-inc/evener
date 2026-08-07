@@ -12,19 +12,7 @@
 set -uo pipefail
 
 script="$(cd "$(dirname "$0")" && pwd)/tmux-read.sh"
-checks=0 fails=0
-ok() { checks=$((checks + 1)); printf '  ok: %s\n' "$1"; }
-bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL: %s\n' "$1"; }
-assert_eq() {
-	if [ "$1" = "$2" ]; then ok "$3"; else
-		bad "$3 (want '$2', got '$1')"
-	fi
-}
-assert_has() {
-	if grep -qF -- "$2" "$1"; then ok "$3"; else
-		bad "$3 (missing '$2' in: $(cat "$1"))"
-	fi
-}
+. "$(dirname "$0")/selftest-lib.sh"
 
 work="$(mktemp -d -t tmux-read-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
@@ -223,6 +211,4 @@ FAKE_TMUX_SESSIONS="mysession" args=(mysession)
 out=$(env PATH="/usr/bin:/bin" TMUX_BIN="$bin/tmux" FAKE_STATE="$state" FAKE_TMUX_SESSIONS="$FAKE_TMUX_SESSIONS" "$script" "${args[@]}")
 assert_eq "$out" "via-TMUX_BIN" "TMUX_BIN can point straight at a fake, bypassing PATH"
 
-echo
-echo "$checks checks, $fails failed"
-[ "$fails" -eq 0 ]
+selftest_summary

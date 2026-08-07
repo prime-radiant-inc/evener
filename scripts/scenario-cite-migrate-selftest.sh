@@ -11,10 +11,7 @@ work="$(mktemp -d -t serf-cite-migrate-selftest.XXXXXX)"
 work="$(cd "$work" && pwd -P)"
 trap 'rm -rf "$work"' EXIT
 
-checks=0
-fails=0
-ok() { checks=$((checks + 1)); printf '  ok: %s\n' "$1"; }
-bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL: %s\n' "$1"; }
+. "$(dirname "$0")/selftest-lib.sh"
 
 repo="$work/repo"
 bin="$work/bin"
@@ -135,5 +132,4 @@ else
 	bad "qualified declaration rewrite is not applied"
 fi
 
-printf '\nscenario-cite-migrate-selftest: %d checks, %d failed\n' "$checks" "$fails"
-exit "$fails"
+selftest_summary
