@@ -58,15 +58,15 @@ func gitSurfaceInertContent(path string) (string, bool) {
 //
 // It touches a path only when ALL of: the surface has inert content defined
 // (today, commondir alone), the path does not exist, and the path sits under a
-// spawned write root — i.e. exactly the paths buildBwrapArgv would otherwise pin
-// into existence. A read-only session, or a surface under a read-only parent, is
-// never touched at all.
+// root the argv binds writable — i.e. exactly the paths buildBwrapArgv would
+// otherwise pin into existence. A read-only session, or a surface under a
+// read-only parent, is never touched at all.
 //
 // It fails CLOSED. A surface serf cannot prepare is one bwrap would materialize
 // empty, so the caller refuses to build the wrapper rather than start a sandbox
 // that corrupts the repo it is confining.
 func prepareGitSurfaces(rp ResolvedPolicy) error {
-	writeRoots := rp.Spawned.WriteRoots
+	writeRoots := bwrapWriteRoots(rp)
 	for _, p := range rp.Git.ProtectedPaths {
 		content, ok := gitSurfaceInertContent(p)
 		if !ok || pathExists(p) || !isUnderAnyRoot(p, writeRoots) {

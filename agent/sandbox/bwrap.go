@@ -104,20 +104,25 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// a leaf git creates lazily — packed-refs and its packed-refs.lock /
 	// packed-refs.new siblings, index.lock, logs — is still creatable through that
 	// parent, so skipping the leaf costs nothing.
-	//
-	// The exception is a linked worktree's COMMON dir, which has no writable
-	// parent: it is granted leaf-by-leaf, and a leaf that does not exist yet cannot
-	// be granted at all here. bwrap's mount model has no way to express "may create
-	// this one filename in a read-only directory" — create permission belongs to
-	// the parent directory, and pre-mounting the path would only make git's
-	// O_CREAT|O_EXCL fail with EEXIST instead. Seatbelt, which matches path strings
-	// rather than mounting, grants those siblings exactly. Closing the gap on Linux
-	// therefore needs a directory-level decision on the common dir, not a wider
-	// leaf list; it is deliberately NOT taken here.
 	for _, w := range sp.WriteRoots {
 		if pathExists(w) {
 			add("--bind", w, w)
 		}
+	}
+
+	// A linked worktree's / submodule's COMMON dir has no writable parent, so its
+	// granted metadata entries would be bound leaf by leaf — and a bind target must
+	// exist, so every entry git had not created yet (packed-refs and its
+	// packed-refs.lock / packed-refs.new siblings, logs, index, rr-cache) was
+	// skipped and git could not create it. Permission to CREATE a name belongs to
+	// the parent directory, and pre-mounting the name would only turn git's
+	// O_CREAT|O_EXCL into EEXIST, so the grant is taken at DIRECTORY level: bind
+	// the common dir writable, and let the ProtectedPaths re-binds below land on
+	// top of it — the same shape a linked worktree's per-worktree git dir already
+	// uses. Seatbelt reaches the same OUTCOME by matching path strings, so it keeps
+	// its narrower named grant; this is parity of outcome, not of mechanism.
+	if cd := commonDirWriteGrant(rp); cd != "" {
+		add("--bind", cd, cd)
 	}
 
 	// Cache roots served read-real / write-private via overlay: warm reads from
@@ -137,9 +142,11 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// Re-protect git config + hook surfaces read-only. They sit INSIDE the
 	// writable worktree/gitdir, so without this a writable-root bind would make
 	// .git/config and .git/hooks writable and a planted hook would fire later,
-	// unsandboxed. Applied after the writable binds so the protection wins.
+	// unsandboxed. Applied after the writable binds — including the common-dir
+	// grant above — so the protection wins.
+	protectionRoots := bwrapWriteRoots(rp)
 	for _, p := range rp.Git.ProtectedPaths {
-		maskReadOnly(&a, p, sp.WriteRoots)
+		maskReadOnly(&a, p, protectionRoots)
 	}
 
 	// Mask the secrets + pseudo-fs denylist last so masks win over every bind.
@@ -217,6 +224,45 @@ func maskReadOnly(a *[]string, path string, writeRoots []string) {
 		return
 	}
 	*a = append(*a, "--ro-bind", "/dev/null", path)
+}
+
+// commonDirWriteGrant returns the shared common git dir when the bwrap argv must
+// bind it WRITABLE as a whole directory, or "" when it must not.
+//
+// It applies exactly to the layouts whose common dir lives outside the worktree
+// (linked worktree, submodule) in a mode that already grants writes inside that
+// common dir. A main checkout is excluded: its .git already sits under the
+// worktree write root. A read-only mode is excluded for free — it has no write
+// roots under the common dir, so nothing here can widen it.
+func commonDirWriteGrant(rp ResolvedPolicy) string {
+	cd := rp.Git.CommonDir
+	if cd == "" || !pathExists(cd) {
+		return ""
+	}
+	if isUnderAnyRoot(cd, rp.Spawned.WriteRoots) {
+		return "" // already writable through a parent root (main checkout)
+	}
+	for _, w := range rp.Spawned.WriteRoots {
+		if pathUnder(w, cd) {
+			return cd
+		}
+	}
+	return ""
+}
+
+// bwrapWriteRoots returns the roots the bwrap argv actually binds writable: the
+// resolved spawned write roots plus the directory-level common-dir grant. It is
+// what decides whether a MISSING protected surface can be created inside the
+// sandbox, so both the argv's protection pass and the pre-creation step ask it —
+// the common-dir grant is an argv-local widening the resolved policy does not
+// carry, and a protection pass reading rp.Spawned.WriteRoots alone would leave
+// the common dir's own config/hook surfaces creatable.
+func bwrapWriteRoots(rp ResolvedPolicy) []string {
+	cd := commonDirWriteGrant(rp)
+	if cd == "" {
+		return rp.Spawned.WriteRoots
+	}
+	return append(append([]string{}, rp.Spawned.WriteRoots...), cd)
 }
 
 // isUnderAnyRoot reports whether path is at or beneath any of roots.
