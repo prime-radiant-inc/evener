@@ -3414,8 +3414,7 @@ func TestSendDelegateMessageAliasFromSubagentSteersCaller(t *testing.T) {
 func TestSendDelegateMessageCallerAliasFallbackCarriesAgentMessageKind(t *testing.T) {
 	s := &Session{}
 	s.cfg.spawn.parentSteer = func(string, *provenance.Causal, string) {}
-	delegateSendTestHooks.afterClassify = func(got *Session) { got.cfg.spawn.parentSteer = nil }
-	t.Cleanup(func() { delegateSendTestHooks.afterClassify = nil })
+	s.cfg.testOnly.delegateSend.afterClassify = func(got *Session) { got.cfg.spawn.parentSteer = nil }
 
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  runtimeMessageAliasCaller,

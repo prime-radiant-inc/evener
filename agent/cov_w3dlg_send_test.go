@@ -95,20 +95,14 @@ func TestW3Dlg_SendTerminalRunningSubLookupFailureFallsThroughToResume(t *testin
 		status:  SubagentRunning,
 		done:    make(chan struct{}),
 	})
-	oldFindRunning := delegateSendTestHooks.findRunning
-	oldBeforePostState := delegateSendTestHooks.beforePostState
-	delegateSendTestHooks.findRunning = func(*jobManager, string) (*jobstore.JobRecord, error) {
+	sess.cfg.testOnly.delegateSend.findRunning = func(*jobManager, string) (*jobstore.JobRecord, error) {
 		return nil, errors.New("running lookup fault")
 	}
-	delegateSendTestHooks.beforePostState = func(sub *subagent) {
+	sess.cfg.testOnly.delegateSend.beforePostState = func(sub *subagent) {
 		sub.mu.Lock()
 		sub.running = false
 		sub.mu.Unlock()
 	}
-	t.Cleanup(func() {
-		delegateSendTestHooks.findRunning = oldFindRunning
-		delegateSendTestHooks.beforePostState = oldBeforePostState
-	})
 
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  rec.DelegateID,
