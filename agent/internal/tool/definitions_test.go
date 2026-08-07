@@ -344,6 +344,45 @@ func TestDefDelegateSendShape(t *testing.T) {
 	}
 }
 
+func TestDefDelegateSendDescriptionWarnsNotCommunicate(t *testing.T) {
+	def := DefDelegateSend()
+	want := "Sends a message to a child delegate you created — this is not how you deliver your own results; use communicate for that."
+	if !strings.HasPrefix(def.Description, want) {
+		t.Fatalf("DefDelegateSend description = %q, want prefix %q", def.Description, want)
+	}
+}
+
+func TestDefTaskListDescriptionStatesInProgressInvariant(t *testing.T) {
+	def := DefTaskList(nil)
+	want := "Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same updates array."
+	if !strings.Contains(def.Description, want) {
+		t.Fatalf("DefTaskList description = %q, want to contain %q", def.Description, want)
+	}
+}
+
+func TestDefUpdateGoalShape(t *testing.T) {
+	def := DefUpdateGoal()
+	if def.Name != "update_goal" {
+		t.Fatalf("name = %q, want update_goal", def.Name)
+	}
+	required(t, def, "update_goal", []string{"status"})
+	props := def.Parameters["properties"].(map[string]any)
+	status, ok := props["status"].(map[string]any)
+	if !ok {
+		t.Fatalf("update_goal missing status property")
+	}
+	if status["type"] != "string" {
+		t.Fatalf("status type = %v, want string", status["type"])
+	}
+	enum, ok := status["enum"].([]string)
+	if !ok {
+		t.Fatalf("status enum = %T, want []string", status["enum"])
+	}
+	if !slices.Contains(enum, "complete") || !slices.Contains(enum, "blocked") {
+		t.Fatalf("status enum = %v, want complete and blocked", enum)
+	}
+}
+
 func TestDefDelegateSendNoCallerAlias(t *testing.T) {
 	def := DefDelegateSend()
 	descriptions := []string{def.Description}

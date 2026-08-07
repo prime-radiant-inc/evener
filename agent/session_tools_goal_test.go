@@ -116,8 +116,9 @@ func TestUpdateGoalTool_NoActiveGoal(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("no active goal should not be IsError, got: %s", res.Output)
 	}
-	if res.Output == "" {
-		t.Fatal("expected non-empty output for no active goal case")
+	wantOutput := "No goal is active for this session (none was set at launch); nothing recorded — this tool only updates a goal the harness registered."
+	if res.Output != wantOutput {
+		t.Fatalf("Output = %q, want %q", res.Output, wantOutput)
 	}
 	// The goal store should remain empty (no goal to transition).
 	_, ok := sess.getOrCreateGoalStore().Snapshot()

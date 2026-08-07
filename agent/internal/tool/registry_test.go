@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -288,6 +289,67 @@ func TestToolRegistry_InvalidArgumentsJSON_IsReturnedToModel(t *testing.T) {
 	}
 	if !strings.Contains(res.Output, "invalid tool arguments JSON") {
 		t.Fatalf("output: %q", res.Output)
+	}
+}
+
+func TestToolRegistry_OversizedArguments_IsReturnedToModel(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "t"}},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			_ = args
+			return "ok", nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	arguments := json.RawMessage(strings.Repeat("a", maxToolArgumentBytes+1))
+	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
+		ID:        "c1",
+		Name:      "t",
+		Arguments: arguments,
+	})
+	if !res.IsError {
+		t.Fatalf("expected error")
+	}
+	wantMsg := fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(arguments), maxToolArgumentBytes)
+	if res.Output != wantMsg {
+		t.Fatalf("output = %q, want %q", res.Output, wantMsg)
+	}
+}
+
+func TestToolRegistry_ArgumentsAtSizeCapBoundary_NotRejectedByCap(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "t"}},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			_ = args
+			return "ok", nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	// Exactly at the cap: must not be rejected by the size gate. It's not
+	// valid JSON either, so it falls through to the existing "invalid tool
+	// arguments JSON" path - this test only confirms the size gate didn't fire.
+	arguments := json.RawMessage(strings.Repeat("a", maxToolArgumentBytes))
+	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
+		ID:        "c1",
+		Name:      "t",
+		Arguments: arguments,
+	})
+	if !res.IsError {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(res.Output, "invalid tool arguments JSON") {
+		t.Fatalf("output: %q", res.Output)
+	}
+	if strings.Contains(res.Output, "too large") {
+		t.Fatalf("size cap fired at boundary: %q", res.Output)
 	}
 }
 

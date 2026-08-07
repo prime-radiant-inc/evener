@@ -95,10 +95,13 @@ func changeStrings(changes []repair.Change) []string {
 	return out
 }
 
-// offendingField extracts the single offending property from a jsonschema
-// validation error, or "" when it cannot be pinpointed (e.g. missing-required,
-// where the instance location is the parent object). ExplainSchemaError falls
-// back to listing all required args in that case.
+// offendingField extracts the deepest cause's instance location from a
+// jsonschema validation error, as a JSON-Pointer-style path (e.g.
+// "updates/0", "questions/0/header"), or "" when it cannot be pinpointed
+// (e.g. missing-required at the root, where the instance location is the
+// root object itself). ExplainSchemaError walks this path against the schema
+// and args to find the real container; it falls back to listing all required
+// args when the path is empty.
 func offendingField(err error) string {
 	var ve *jsonschema.ValidationError
 	if !errors.As(err, &ve) {
@@ -107,10 +110,5 @@ func offendingField(err error) string {
 	for len(ve.Causes) > 0 {
 		ve = ve.Causes[0]
 	}
-	loc := strings.Trim(ve.InstanceLocation, "/")
-	if loc == "" {
-		return ""
-	}
-	parts := strings.Split(loc, "/")
-	return parts[len(parts)-1]
+	return strings.Trim(ve.InstanceLocation, "/")
 }

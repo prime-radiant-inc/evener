@@ -10,33 +10,10 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// defUpdateGoal returns the tool definition for update_goal.
-// The model calls this to declare the active goal complete or blocked.
-func defUpdateGoal() llm.ToolDefinition {
-	return llm.ToolDefinition{
-		Name: "update_goal",
-		Description: `Mark the active session goal complete or blocked. ` +
-			`"complete" only when the objective is genuinely achieved and verified ` +
-			`per the goal guidance; "blocked" only when truly stuck per that guidance. ` +
-			`(Criteria live in the continuation guidance, not repeated here.)`,
-		Parameters: map[string]any{
-			"type":                 "object",
-			"additionalProperties": false,
-			"properties": map[string]any{
-				"status": map[string]any{
-					"type": "string",
-					"enum": []string{"complete", "blocked"},
-				},
-			},
-			"required": []string{"status"},
-		},
-	}
-}
-
 // registerGoalTools registers the update_goal tool into reg, mirroring registerTaskTools.
 func registerGoalTools(reg *tool.Registry, deps *toolDeps) {
 	_ = reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: defUpdateGoal()},
+		Tool: llm.Tool{Definition: tool.DefUpdateGoal()},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env
@@ -55,7 +32,7 @@ func registerGoalTools(reg *tool.Registry, deps *toolDeps) {
 			}
 
 			if !store.SetTerminal(st, "", deps.now()) {
-				return tool.StateResult{Output: "No active goal to update."}, nil
+				return tool.StateResult{Output: "No goal is active for this session (none was set at launch); nothing recorded — this tool only updates a goal the harness registered."}, nil
 			}
 
 			snap, _ := store.Snapshot()

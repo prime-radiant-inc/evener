@@ -132,6 +132,114 @@ func TestExplainTruncatedCall(t *testing.T) {
 	}
 }
 
+// taskListParamsForExplain mirrors DefTaskList's updates-item schema (this
+// package must stay dependency-free of agent/internal/tool, so the fixture is
+// hand-built rather than calling the real Def* function).
+func taskListParamsForExplain() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"action": map[string]any{
+				"type": "string",
+				"enum": []string{"view", "append", "update"},
+			},
+			"updates": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"id":     map[string]any{"type": "integer"},
+						"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "done", "cancelled"}},
+						"notes":  map[string]any{"type": "string"},
+					},
+					"required": []string{"id", "status"},
+				},
+			},
+		},
+		"required": []string{"action"},
+	}
+}
+
+// askUserParamsForExplain mirrors DefAskUser's questions-item schema.
+func askUserParamsForExplain() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"questions": map[string]any{
+				"type":     "array",
+				"minItems": 1,
+				"maxItems": 4,
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"header":   map[string]any{"type": "string", "maxLength": 12},
+						"question": map[string]any{"type": "string"},
+						"options": map[string]any{
+							"type":     "array",
+							"minItems": 2,
+							"maxItems": 5,
+							"items":    map[string]any{"type": "object"},
+						},
+					},
+					"required": []string{"question", "options"},
+				},
+			},
+		},
+		"required": []string{"questions"},
+	}
+}
+
+func TestExplainSchemaError_ArrayItemMissingRequiredField(t *testing.T) {
+	params := taskListParamsForExplain()
+	args := map[string]any{
+		"action":  "update",
+		"updates": []any{map[string]any{"id": float64(1), "notes": "x"}},
+	}
+	got := ExplainSchemaError("task_list", params, args, "updates/0")
+	want := "task_list: missing required argument \"status\" in updates[0].\n" +
+		"Required arguments in updates[0]: id (integer), status (string).\n" +
+		"Example: {\"action\": \"...\"}"
+	if got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestExplainSchemaError_NestedPropertyWrongTypeOrValue(t *testing.T) {
+	params := askUserParamsForExplain()
+	args := map[string]any{
+		"questions": []any{map[string]any{
+			"header":   strings.Repeat("x", 20),
+			"question": "q",
+			"options":  []any{},
+		}},
+	}
+	got := ExplainSchemaError("ask_user", params, args, "questions/0/header")
+	want := "ask_user: argument \"questions[0].header\" has the wrong type or value.\n" +
+		"Required arguments in questions[0]: question (string), options (array).\n" +
+		"Example: {\"questions\": []}"
+	if got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestExplainSchemaError_FlatTopLevelUnchanged(t *testing.T) {
+	// Regression: a single-segment instance location (today's only case)
+	// must still produce the unqualified "Required arguments:" line, with
+	// no "in <container>" text anywhere.
+	msg := ExplainSchemaError("edit_file", editParamsForExplain(), map[string]any{"file_path": "/x"}, "old_string")
+	want := "edit_file: missing required argument \"old_string\".\n" +
+		"Required arguments: file_path (string), old_string (string), new_string (string).\n" +
+		"Example: {\"file_path\": \"...\", \"new_string\": \"...\", \"old_string\": \"...\"}"
+	if msg != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", msg, want)
+	}
+	if strings.Contains(msg, " in ") {
+		t.Fatalf("flat top-level message must not gain an 'in <container>' qualifier: %q", msg)
+	}
+}
+
 func TestExplainSchemaError_DoesNotMutateStringRequired(t *testing.T) {
 	required := []string{"new_string", "file_path", "old_string"}
 	params := editParamsForExplain()

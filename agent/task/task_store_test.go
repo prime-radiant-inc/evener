@@ -1,6 +1,7 @@
 package task
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -251,6 +252,50 @@ func TestUpdate_RejectsInvalidStatusUnknownIDAndDoubleInProgress(t *testing.T) {
 		if tk.Status != TaskOpen {
 			t.Fatalf("task %d = %q after rejected batch, want open", tk.ID, tk.Status)
 		}
+	}
+}
+
+func TestUpdate_DoubleInProgress_NamesTheBlockingTask(t *testing.T) {
+	s := newTestStore(t)
+	added, _ := s.Append([]TaskInput{{Description: "first task"}, {Description: "second task"}})
+	first, second := added[0].ID, added[1].ID
+
+	if err := s.Update([]TaskUpdate{{ID: first, Status: TaskInProgress}}); err != nil {
+		t.Fatalf("starting first task: %v", err)
+	}
+	err := s.Update([]TaskUpdate{{ID: second, Status: TaskInProgress}})
+	if err == nil {
+		t.Fatal("second task in_progress while first still in_progress: want error")
+	}
+	want := fmt.Sprintf("only one task may be in_progress; %d %q is currently in_progress — complete or defer it in the same updates array.", first, "first task")
+	if err.Error() != want {
+		t.Errorf("err = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestUpdate_DoubleInProgress_DoesNotBlameATaskTheBatchResolves(t *testing.T) {
+	s := newTestStore(t)
+	added, _ := s.Append([]TaskInput{{Description: "first"}, {Description: "second"}, {Description: "third"}})
+	first, second, third := added[0].ID, added[1].ID, added[2].ID
+
+	if err := s.Update([]TaskUpdate{{ID: first, Status: TaskInProgress}}); err != nil {
+		t.Fatalf("starting first task: %v", err)
+	}
+
+	// This batch resolves the old blocker (first -> done) but creates a NEW
+	// conflict between second and third. The error must not blame first,
+	// since first won't be in_progress once this batch applies.
+	err := s.Update([]TaskUpdate{
+		{ID: first, Status: TaskDone},
+		{ID: second, Status: TaskInProgress},
+		{ID: third, Status: TaskInProgress},
+	})
+	if err == nil {
+		t.Fatal("second and third both in_progress in same batch: want error")
+	}
+	want := "only one task may be in_progress at a time; update would result in 2"
+	if err.Error() != want {
+		t.Errorf("err = %q, want %q", err.Error(), want)
 	}
 }
 
