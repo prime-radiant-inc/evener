@@ -142,7 +142,23 @@ Drop `make-selftest` from `SELFTEST_SCRIPTS`. Trim the SELFTEST_SCRIPTS comment 
 - [ ] **Step 4: Verify:** `make selftest` → all suites PASS (any suite that FAILs the new leak check gets fixed here: add the missing `trap 'rm -rf ...' EXIT` to that suite — each such fix is part of this task). Then Ctrl-C behavior: `make selftest & sleep 2; kill -INT $!` is NOT the verification (wall clock); instead run `go run ./cmd/serf-selftest tmux-read` and interrupt via the Go tests already covering it — the make-level check is just that an interrupted run leaves no `serf-selftest` temp dirs behind (`ls ${TMPDIR:-/tmp} | grep serf-selftest` empty).
 - [ ] **Step 5: Commit** `feat(make): drive the selftest wave with cmd/serf-selftest`.
 
-### Task 4: replace disk-reclaim with disk-preflight
+### Task 4: remove disk-reclaim (no replacement — leaks get fixed, not tolerated)
+
+**REVISED (Jesse's ruling):** no disk-preflight either. The disk-check/reclaim machinery is deleted outright; per-suite cleanup enforced by the wave runner is the replacement. Known cost, accepted: the "GOCACHE volume is STALLED" diagnosis (kata r07s) goes away — a stalled external volume surfaces as a hung go build again. The read-only `report-*` scripts survive as the human-facing inspection tools.
+
+**Files:**
+- Delete: `scripts/disk-reclaim.sh`, `scripts/disk-reclaim-selftest.sh`, and `scripts/disk-preflight.sh` + `scripts/disk-preflight-selftest.sh` if the earlier draft of this task already created them.
+- Modify: `Makefile` — delete the `cache-preflight` target (its whole body was the check), drop `cache-preflight` from `.PHONY`, from `build-runtime:`'s prerequisites (line 29), and from `$(LINT_TARGETS):` (line 520); drop `disk-reclaim` from the suite list variable.
+- Modify: `scripts/run-module-tests.sh:36-38` — delete the `disk-reclaim.sh --check` call and its comment.
+- Modify: `scripts/merge-approval-gate-selftest.sh` — delete the fake disk-reclaim fixture (lines ~107-145) and the four cache-preflight ordering assertions (lines ~216-234).
+- Modify: `runtime_pair_build_test.go:238-242` — delete the fake `scripts/disk-reclaim.sh` stub and its comment (build-runtime no longer has a cache prerequisite).
+- Modify: `scenariopatternkill_audit_test.go` — delete the `"scripts/disk-reclaim-selftest.sh"` map entry; adjust the prose comment (~line 123) so it reads correctly as history.
+- Modify: `scripts/report-tmp-debris.sh:142`, `scripts/report-orphaned-worktrees.sh:18,36`, `scripts/setup-gocache.sh:16` — rewrite the sentences that point at disk-reclaim; the reporters now stand alone as inspection tools.
+- Modify: `docs/testing.md`, `docs/conventions/agent-fleets.md` — disk-reclaim mentions become "suites clean up after themselves (enforced by the wave runner); inspect with the report-* scripts".
+
+**Verify:** `scripts/merge-approval-gate-selftest.sh` PASS; `go test . -run 'TestNoCardOrScriptPatternKills|RuntimePair' -count=1` PASS; `make selftest` (or the renamed target if Task 8 landed first) all PASS; `grep -rn disk-reclaim --include='*.sh' --include='Makefile' --include='*.go' .` → no hits outside docs/superpowers/ history.
+
+### Task 4 (superseded original): replace disk-reclaim with disk-preflight
 
 **Files:**
 - Create: `scripts/disk-preflight.sh` (~60 lines)
@@ -196,27 +212,27 @@ Drop `make-selftest` from `SELFTEST_SCRIPTS`. Trim the SELFTEST_SCRIPTS comment 
 - [ ] **Step 3:** `make lint` — green (audit tests updated in Task 4 run here too).
 - [ ] **Step 4: Commit** any stragglers; update this plan's checkboxes.
 
-### Task 8: rename the wave `test-tooling` and take it out of the inner `make test` loop
+### Task 8: rename the wave `test-dev-tooling` and take it out of the inner `make test` loop
 
-**Rationale (Jesse's directives):** (a) `selftest` names nothing — the wave tests development tooling, so the target is `test-tooling`, matching the `test-web`/`test-install`/`test-race` family. (b) The suites test tooling, not the product: they belong in the merge gate (where tooling regressions matter) and on demand, not in every inner-loop `make test`. The `SELFTEST=1` stream plumbing inside run-module-tests.sh is removed outright, not defaulted off.
+**Rationale (Jesse's directives):** (a) `selftest` names nothing, and `test-dev-tooling` was still too vague — the wave tests development tooling, so the target is `test-dev-tooling`. (b) The suites test tooling, not the product: they belong in the merge gate (where tooling regressions matter) and on demand, not in every inner-loop `make test`. The `SELFTEST=1` stream plumbing inside run-module-tests.sh is removed outright, not defaulted off.
 
 **Files:**
-- Rename: `cmd/serf-selftest/` → `cmd/serf-test-tooling/` (`git mv`; update the doc comment in main.go; the binary name in usage text follows). Individual `scripts/X-selftest.sh` files keep their names — each is genuinely a self-test of script X.
-- Modify: `Makefile` — target `selftest:` → `test-tooling:` (recipe becomes `go run ./cmd/serf-test-tooling $(TOOLING_TEST_SCRIPTS)`); variable `SELFTEST_SCRIPTS` → `TOOLING_TEST_SCRIPTS`; `.PHONY` line follows; `test:` drops `SELFTEST=1 ` from the run-module-tests invocation; `merge-approval-gate:` appends `@$(MAKE) test-tooling` as its final serial step; comments above the target and variable rewritten to match.
+- Rename: `cmd/serf-selftest/` → `cmd/serf-test-dev-tooling/` (`git mv`; update the doc comment in main.go; the binary name in usage text follows). Individual `scripts/X-selftest.sh` files keep their names — each is genuinely a self-test of script X.
+- Modify: `Makefile` — target `selftest:` → `test-dev-tooling:` (recipe becomes `go run ./cmd/serf-test-dev-tooling $(DEV_TOOLING_TEST_SCRIPTS)`); variable `SELFTEST_SCRIPTS` → `DEV_TOOLING_TEST_SCRIPTS`; `.PHONY` line follows; `test:` drops `SELFTEST=1 ` from the run-module-tests invocation; `merge-approval-gate:` appends `@$(MAKE) test-dev-tooling` as its final serial step; comments above the target and variable rewritten to match.
 - Modify: `scripts/run-module-tests.sh` — delete the SELFTEST stream entirely: the `SELFTEST=${SELFTEST:-0}` default (line 47), the `selftest` module-name-collision guard (lines 90-93), and the stream spawn/finish block (lines 395-404). The name `selftest` stops being special.
 - Modify: `scripts/run-module-tests-selftest.sh` — delete the scenarios that pinned the SELFTEST stream (name collision, wave order of the selftest stream, its log accounting); the remaining scenarios must still PASS.
-- Modify: `scripts/merge-approval-gate-selftest.sh` — assert the gate invokes `test-tooling` after `test` (same recorded-fake-make + `assert_before` idiom the suite already uses for lint/build/test ordering).
-- Modify: `docs/testing.md` — the wave is `make test-tooling`, run by `make merge-approval-gate` and on demand; no longer inside `make test`.
+- Modify: `scripts/merge-approval-gate-selftest.sh` — assert the gate invokes `test-dev-tooling` after `test` (same recorded-fake-make + `assert_before` idiom the suite already uses for lint/build/test ordering).
+- Modify: `docs/testing.md` — the wave is `make test-dev-tooling`, run by `make merge-approval-gate` and on demand; no longer inside `make test`.
 
 **Interfaces:**
 - Consumes: the wave runner from Tasks 1-3 (path changes only).
-- Produces: `make test` = product only (Go modules + frontend); `make merge-approval-gate` = lint → build → test → test-tooling; `make test-tooling` = the tooling wave, on demand.
+- Produces: `make test` = product only (Go modules + frontend); `make merge-approval-gate` = lint → build → test → test-dev-tooling; `make test-dev-tooling` = the tooling wave, on demand.
 
-- [ ] **Step 1:** `git mv cmd/serf-selftest cmd/serf-test-tooling`; Makefile edits above; `go test ./cmd/serf-test-tooling/` PASS.
+- [ ] **Step 1:** `git mv cmd/serf-selftest cmd/serf-test-dev-tooling`; Makefile edits above; `go test ./cmd/serf-test-dev-tooling/` PASS.
 - [ ] **Step 2:** Remove the SELFTEST stream from run-module-tests.sh and its scenarios from run-module-tests-selftest.sh; run `scripts/run-module-tests-selftest.sh` → PASS.
 - [ ] **Step 3:** Update merge-approval-gate-selftest.sh; run it → PASS.
-- [ ] **Step 4:** `make test-tooling` → all suites PASS. `grep -n selftest Makefile` shows only the per-suite convenience targets (fuzz-*-selftest et al) and TOOLING_TEST_SCRIPTS suite names; `make test` output contains no tooling stream.
-- [ ] **Step 5:** Update `docs/testing.md`; commit `feat(make): rename the tooling wave test-tooling and move it to the merge gate`.
+- [ ] **Step 4:** `make test-dev-tooling` → all suites PASS. `grep -n selftest Makefile` shows only the per-suite convenience targets (fuzz-*-selftest et al) and TOOLING_TEST_SCRIPTS suite names; `make test` output contains no tooling stream.
+- [ ] **Step 5:** Update `docs/testing.md`; commit `feat(make): rename the tooling wave test-dev-tooling and move it to the merge gate`.
 
 ## Decisions locked (and one flagged)
 
