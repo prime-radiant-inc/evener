@@ -28,11 +28,12 @@ func TestAppShellNeverExceedsHeight(t *testing.T) {
 			if len(lines) > tc.height {
 				t.Fatalf("frame=%d lines exceeds Height=%d:\n%q", len(lines), tc.height, got)
 			}
-			if tc.topBar != "" && !strings.Contains(got, strings.SplitN(tc.topBar, "\n", 2)[0]) {
+			firstTopBarLine, _, _ := strings.Cut(tc.topBar, "\n")
+			if tc.topBar != "" && !strings.Contains(got, firstTopBarLine) {
 				t.Fatalf("TopBar first line dropped (would scroll header off inline):\n%q", got)
 			}
 			if tc.wantOverlayFirstLineInView {
-				firstOverlayLine := strings.SplitN(tc.overlay, "\n", 2)[0]
+				firstOverlayLine, _, _ := strings.Cut(tc.overlay, "\n")
 				if !strings.Contains(got, firstOverlayLine) {
 					t.Fatalf("overlay first line %q missing from output (inner content silently dropped):\n%q", firstOverlayLine, got)
 				}
