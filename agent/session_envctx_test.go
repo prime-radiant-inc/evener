@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/envctx"
 	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/envctx"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )

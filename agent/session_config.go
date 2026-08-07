@@ -3,11 +3,11 @@ package agent
 import (
 	"context"
 
+	"primeradiant.com/serf/agent/envctx"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/clock"
 	"primeradiant.com/serf/agent/internal/contextmgr"
-	"primeradiant.com/serf/agent/internal/envctx"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/internal/worktree"
