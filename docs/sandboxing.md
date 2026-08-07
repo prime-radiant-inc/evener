@@ -449,7 +449,7 @@ raw stderr never becomes the model's opening context.
 
 ## Known residuals
 
-Four boundary edges are deliberately documented as open rather than claimed closed:
+Three boundary edges are deliberately documented as open rather than claimed closed:
 
 - **A pre-existing hardlink** inside the worktree to an out-of-tree secret is
   *readable* through the worktree (path-based masking cannot see that two names share
@@ -465,14 +465,15 @@ Four boundary edges are deliberately documented as open rather than claimed clos
   and is granted entry by entry, and bubblewrap grants by bind-mounting, which
   requires the target to exist. Any granted entry absent when the sandbox starts —
   `packed-refs` and its `packed-refs.lock` / `packed-refs.new` siblings, `logs`,
-  `index`, `rr-cache` — is therefore skipped, and git cannot create it. (A main checkout is
-  unaffected: its whole `.git` sits under the worktree write root, as does a linked
-  worktree's own per-worktree git dir.) This is structural, not an oversight:
-  permission to *create* a name belongs to the parent directory, so no mount can
-  express "may create exactly this filename in a read-only directory". macOS/
-  Seatbelt matches path strings instead of mounting and grants those entries
-  exactly. Closing the gap on Linux needs a directory-level decision about the
-  common dir, which is open.
+  `index`, `rr-cache` — is therefore skipped, and git cannot create it. (A main
+  checkout is unaffected: its whole `.git` sits under the worktree write root, as
+  does a linked worktree's own per-worktree git dir.) This is structural, not an
+  oversight: permission to *create* a name belongs to the parent directory, so no
+  mount can express "may create exactly this filename in a read-only directory".
+  macOS/Seatbelt matches path strings instead of mounting and grants those
+  entries exactly. Closing the gap on Linux needs a directory-level decision
+  about the common dir, which is open.
+
 ## macOS notes
 
 The macOS backend is Seatbelt (`/usr/bin/sandbox-exec`), driven from the same policy
