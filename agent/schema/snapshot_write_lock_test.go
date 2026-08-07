@@ -16,8 +16,13 @@ import (
 // session ID must therefore exclude each other; writers for DIFFERENT session
 // IDs touch disjoint files and must not.
 
+// These three inspect package-global lock state with TryLock, so they must not
+// run in parallel with anything else in the package that takes a meta write
+// lock: another test holding the stripe under inspection would decide the
+// result. Go resumes t.Parallel tests only once the sequential ones finish, so
+// staying sequential is the isolation.
+
 func TestSessionMetaWriteLockExcludesSameSession(t *testing.T) {
-	t.Parallel()
 	const id = "02wMz5TxvEMoJEDTDGOTil"
 	lock := sessionMetaWriteLock(id)
 	lock.Lock()
@@ -30,7 +35,6 @@ func TestSessionMetaWriteLockExcludesSameSession(t *testing.T) {
 }
 
 func TestSessionMetaWriteLockIsolatesDistinctSessions(t *testing.T) {
-	t.Parallel()
 	const (
 		first  = "02wMz5TxvEMoJEDTDGOTil"
 		second = "02wMz5TxvCu3kdckfnw0Gh"
@@ -45,15 +49,19 @@ func TestSessionMetaWriteLockIsolatesDistinctSessions(t *testing.T) {
 	other.Unlock()
 }
 
-// TestSessionMetaWriteLockIgnoresStateDirSpelling pins the shard key to the
-// session ID alone. Keying on the resolved target path instead would put two
-// spellings of the same state directory on different stripes and lose the
-// same-file exclusion the lock exists for.
-func TestSessionMetaWriteLockIgnoresStateDirSpelling(t *testing.T) {
-	t.Parallel()
-	const id = "02wMz5TxvEMoJEDTDGOTil"
-	if sessionMetaWriteLock(id) != sessionMetaWriteLock(id) {
-		t.Fatal("the same session ID mapped to two different meta write locks")
+// TestSessionMetaWriteLockSharesLockAcrossAliasingIDs pins the shard key to a
+// canonicalized session ID. Two IDs that name the same meta file must share a
+// lock even when they are not the same string: path traversal collapses under
+// filepath.Clean, and a case-insensitive filesystem folds case.
+func TestSessionMetaWriteLockSharesLockAcrossAliasingIDs(t *testing.T) {
+	for _, aliases := range [][2]string{
+		{"02wMz5TxvEMoJEDTDGOTil", "02wMz5TxvEMoJEDTDGOTil"},
+		{"02wMz5TxvEMoJEDTDGOTil", "02wMz5TxvEMoJEDTDGOTIL"},
+		{"02wMz5TxvEMoJEDTDGOTil", "other/../02wMz5TxvEMoJEDTDGOTil"},
+	} {
+		if sessionMetaWriteLock(aliases[0]) != sessionMetaWriteLock(aliases[1]) {
+			t.Errorf("session IDs %q and %q name one meta file but mapped to different write locks", aliases[0], aliases[1])
+		}
 	}
 }
 

@@ -43,18 +43,24 @@ var sessionMetaWriteMus [sessionMetaWriteStripes]sync.Mutex
 // touch disjoint files and share only the sessions directory, whose MkdirAll is
 // safe to race.
 //
-// The shard key is the session ID alone, deliberately not the resolved target
-// path: session IDs are globally unique, while two callers can spell the same
-// state directory differently and must still land on the same lock.
+// The shard key is the session ID, deliberately not the resolved target path:
+// two callers can spell the same state directory differently and must still
+// land on the same lock. The ID is canonicalized first, because a lock may only
+// ever be coarser than the file it guards and two unequal IDs can still name
+// one file — a traversal segment collapses when the path is joined, and a
+// case-insensitive filesystem folds case. Nothing validates meta.ID on the way
+// in, so this side does not assume it is well-formed.
 func sessionMetaWriteLock(sessionID string) *sync.Mutex {
-	// FNV-1a, inlined to keep the hot path allocation-free.
+	key := strings.ToLower(filepath.Clean(sessionID))
+	// FNV-1a, inlined rather than via hash/fnv's interface-returning
+	// constructor, which would escape to the heap on every write.
 	const (
 		fnvOffset32 = 2166136261
 		fnvPrime32  = 16777619
 	)
 	hash := uint32(fnvOffset32)
-	for i := 0; i < len(sessionID); i++ {
-		hash ^= uint32(sessionID[i])
+	for i := 0; i < len(key); i++ {
+		hash ^= uint32(key[i])
 		hash *= fnvPrime32
 	}
 	return &sessionMetaWriteMus[hash%sessionMetaWriteStripes]
