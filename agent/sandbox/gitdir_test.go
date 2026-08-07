@@ -134,6 +134,14 @@ func TestClassifyLinkedWorktree(t *testing.T) {
 	// lockfile, COMMIT_EDITMSG, ORIG_HEAD written directly in it all succeed).
 	mustContain(t, got.WritablePaths, filepath.Join(commonDir, "objects"), "WritablePaths")
 	mustContain(t, got.WritablePaths, got.GitDir, "WritablePaths")
+	// git never rewrites packed-refs in place: it takes the sibling
+	// packed-refs.lock and renames the sibling packed-refs.new over the target,
+	// both in the common dir. Granting only the file it locks leaves those
+	// siblings on a write-denied parent, which is what made `git pack-refs` fail
+	// with "Operation not permitted".
+	mustContain(t, got.WritablePaths, filepath.Join(commonDir, "packed-refs"), "WritablePaths")
+	mustContain(t, got.WritablePaths, filepath.Join(commonDir, "packed-refs.lock"), "WritablePaths")
+	mustContain(t, got.WritablePaths, filepath.Join(commonDir, "packed-refs.new"), "WritablePaths")
 
 	assertNoWritableProtected(t, got)
 }

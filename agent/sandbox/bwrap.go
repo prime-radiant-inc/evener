@@ -98,9 +98,22 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	}
 
 	// Writable roots (worktree, git-metadata write subset, extra roots). Bound
-	// after the read baseline so they win; a non-existent root is skipped (bwrap
-	// requires bind targets to exist — the parent writable root already covers
-	// leaves git creates lazily).
+	// after the read baseline so they win; a non-existent root is skipped, because
+	// bwrap requires bind targets to exist. Where a writable PARENT root covers it
+	// (a main checkout's whole worktree, a linked worktree's per-worktree git dir),
+	// a leaf git creates lazily — packed-refs and its packed-refs.lock /
+	// packed-refs.new siblings, index.lock, logs — is still creatable through that
+	// parent, so skipping the leaf costs nothing.
+	//
+	// The exception is a linked worktree's COMMON dir, which has no writable
+	// parent: it is granted leaf-by-leaf, and a leaf that does not exist yet cannot
+	// be granted at all here. bwrap's mount model has no way to express "may create
+	// this one filename in a read-only directory" — create permission belongs to
+	// the parent directory, and pre-mounting the path would only make git's
+	// O_CREAT|O_EXCL fail with EEXIST instead. Seatbelt, which matches path strings
+	// rather than mounting, grants those siblings exactly. Closing the gap on Linux
+	// therefore needs a directory-level decision on the common dir, not a wider
+	// leaf list; it is deliberately NOT taken here.
 	for _, w := range sp.WriteRoots {
 		if pathExists(w) {
 			add("--bind", w, w)

@@ -81,7 +81,25 @@ type GitLayout struct {
 
 // gitWritableLeaves are the git-metadata entries granted writable in sandboxed
 // writable modes so commit/add/checkout still function.
-var gitWritableLeaves = []string{"objects", "refs", "index", "logs", "packed-refs"}
+//
+// packed-refs.lock and packed-refs.new are listed BESIDE packed-refs because git
+// never rewrites packed-refs in place. Rewriting it is a two-sibling dance, both
+// names fixed by git (refs/packed-backend.c):
+//
+//   - `packed-refs.lock`, taken with O_CREAT|O_EXCL, holds the rewrite lock.
+//   - `packed-refs.new`, a tempfile carrying the new content, is renamed over
+//     `packed-refs` on commit.
+//
+// Granting only the file being locked leaves both siblings on a write-denied
+// parent — the "packed-refs.lock: Operation not permitted" failure, and behind it
+// "unable to create file .../packed-refs.new". This is the same
+// sibling-beside-target shape that made the per-worktree git dir a whole-dir grant
+// below; here the siblings have fixed names, so naming them keeps the grant exact
+// instead of opening the whole common dir.
+var gitWritableLeaves = []string{
+	"objects", "refs", "index", "logs",
+	"packed-refs", "packed-refs.lock", "packed-refs.new",
+}
 
 // gitProtectedLeaves are the per-git-dir config + hook surfaces kept write-denied,
 // plus the two redirect files a linked-worktree git dir carries directly:

@@ -138,7 +138,10 @@ additions are removable.
 
 In the writable modes, git's object store works normally — objects, refs, the
 index, logs, and packed-refs are writable, so `commit`, `add`, and `checkout`
-succeed. But every git **config and hook** surface is read-only:
+succeed. The packed-refs grant covers the two fixed sibling names git rewrites it
+through (`packed-refs.lock` and `packed-refs.new`, renamed into place), so
+`git pack-refs` and the ref packing a commit triggers work too. But every git
+**config and hook** surface is read-only:
 
 - `.git/config`, per-worktree config (`config.worktree`), submodule configs
   (`.git/modules/*/config`), and `.git/hooks`.

@@ -38,7 +38,16 @@ func requireLiveSeatbelt(t *testing.T) {
 // test runs on.
 func liveResolve(t *testing.T, mode Mode, netOn bool, extra ...func(*SandboxPolicy)) (ResolvedPolicy, string) {
 	t.Helper()
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	return liveResolveKind(t, MainCheckout, mode, netOn, extra...)
+}
+
+// liveResolveKind is liveResolve over a chosen workspace layout. A linked
+// worktree is the layout whose git metadata lives OUTSIDE the worktree, so its
+// grants come from GitLayout.WritablePaths rather than from the worktree write
+// root — the two cases must be exercised separately.
+func liveResolveKind(t *testing.T, kind WorkspaceKind, mode Mode, netOn bool, extra ...func(*SandboxPolicy)) (ResolvedPolicy, string) {
+	t.Helper()
+	cwd := MaterializeWorkspace(t, kind)
 	net := netOn
 	policy := SandboxPolicy{Mode: mode, Network: &net}
 	for _, f := range extra {
@@ -200,6 +209,75 @@ func TestSeatbeltLiveGitConfigProtected(t *testing.T) {
 	if out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c",
 		"git -c user.email=t@e -c user.name=t commit --allow-empty -m serf-live 2>&1"); exit != 0 {
 		t.Errorf("workspace-write must allow git object writes (commit) (exit=%d):\n%s", exit, out)
+	}
+}
+
+// TestSeatbeltLivePackedRefsMaintenance proves the contract's promise that
+// packed-refs is writable holds for the maintenance git ACTUALLY performs on it:
+// git never writes packed-refs in place — it writes the sibling
+// `packed-refs.lock` in the same directory and renames it over the target. A
+// grant on the `packed-refs` FILE alone therefore leaves the lock on a
+// write-denied parent and `git pack-refs` fails with
+// "packed-refs.lock: Operation not permitted". Both layouts are exercised: a
+// main checkout (whose .git sits under the worktree write root) and a linked
+// worktree (whose common .git is outside it and reachable only through
+// GitLayout.WritablePaths).
+func TestSeatbeltLivePackedRefsMaintenance(t *testing.T) {
+	requireLiveSeatbelt(t)
+	for _, kind := range []WorkspaceKind{MainCheckout, LinkedWorktree} {
+		t.Run(kind.String(), func(t *testing.T) {
+			rp, cwd := liveResolveKind(t, kind, ModeWorkspaceWrite, true)
+			// A commit gives the repo a ref to pack; pack-refs then drives the
+			// lock+rename dance over <common>/packed-refs.
+			//
+			// rerere is forced OFF so the assertion depends only on the grant under
+			// test. A developer with `rerere.enabled=true` in ~/.gitconfig (which the
+			// sandbox reads) otherwise has `git commit` create <common>/rr-cache — a
+			// SEPARATE ungranted common-dir surface, tracked apart from packed-refs.
+			out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c",
+				"git -c rerere.enabled=false -c user.email=t@e -c user.name=t commit -q --allow-empty -m serf-packed-refs && git pack-refs --all")
+			if exit != 0 {
+				t.Errorf("workspace-write must allow git packed-refs maintenance (exit=%d):\n%s", exit, out)
+			}
+			if strings.TrimSpace(out) != "" {
+				t.Errorf("git packed-refs maintenance must produce no output, got:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestSeatbeltLiveGitConfigAndHooksStillDenied pins the persistence-vector
+// protection against the packed-refs grant: widening the git-metadata write
+// surface must NOT make any config or hook surface writable. It asserts the
+// denial directly (a raw shell write to each surface), not just through the git
+// porcelain, and in both layouts — for a linked worktree the surfaces exist on
+// BOTH the per-worktree git dir and the common dir.
+func TestSeatbeltLiveGitConfigAndHooksStillDenied(t *testing.T) {
+	requireLiveSeatbelt(t)
+	for _, kind := range []WorkspaceKind{MainCheckout, LinkedWorktree} {
+		t.Run(kind.String(), func(t *testing.T) {
+			rp, cwd := liveResolveKind(t, kind, ModeWorkspaceWrite, true)
+
+			// Every protected surface the resolver claims to protect, proven denied
+			// against the real kernel — config files by an append, the hooks dir by
+			// planting a hook inside it.
+			for _, p := range rp.Git.ProtectedPaths {
+				target := p
+				if filepath.Base(p) == "hooks" {
+					target = filepath.Join(p, "post-commit")
+				}
+				out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c",
+					"echo serf-escape >>"+target+" 2>&1")
+				if exit == 0 {
+					t.Errorf("write to protected git surface %q must be denied, but it succeeded:\n%s", target, out)
+				}
+			}
+
+			// And the porcelain path stays denied too.
+			if _, exit := runUnderSeatbelt(t, rp, cwd, "git", "config", "--local", "core.hooksPath", "/tmp/evil"); exit == 0 {
+				t.Error("git config --local core.hooksPath must be denied")
+			}
+		})
 	}
 }
 
