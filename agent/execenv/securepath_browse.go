@@ -1,24 +1,19 @@
 package execenv
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
-
-	"github.com/bmatcuk/doublestar/v4"
-	"golang.org/x/sys/unix"
 )
 
-var (
-	secureBrowseWalkDir  = fs.WalkDir
-	secureBrowseReadFile = fs.ReadFile
-)
+// This file holds the platform-independent browse logic (the writability
+// pre-check and the shared grep matching/formatting core) and builds on every
+// platform. The fd-anchored glob and native-grep walks live in
+// securepath_browse_fdops_unix.go (linux/darwin); securepath_other.go supplies
+// fail-closed stand-ins elsewhere.
 
 // checkWritable reports whether a write to abs would be permitted by the policy
 // (writable-root membership, not masked, not a protected git surface) WITHOUT
@@ -41,168 +36,6 @@ func (s *sandboxFS) checkWritable(tool, abs string) error {
 		return s.deny(tool, abs, denyReasonProtected)
 	}
 	return nil
-}
-
-// secureDirFS is an fs.FS rooted at a base directory fd that refuses symlink
-// traversal and cannot escape the base: every Open/ReadDir/Stat resolves beneath
-// baseFd with the same symlink-refusing primitive the file tools use. It backs
-// glob and the native grep walk so neither can be steered out of policy by a
-// symlinked entry mid-walk. basePath is the canonical base, used to skip masked
-// subtrees.
-type secureDirFS struct {
-	baseFd   int
-	basePath string
-	fs       *sandboxFS
-}
-
-func (f *secureDirFS) Open(name string) (fs.File, error) {
-	if !fs.ValidPath(name) {
-		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
-	}
-	fd, err := openBeneathRoot(f.baseFd, name, unix.O_RDONLY, 0)
-	if err != nil {
-		return nil, &fs.PathError{Op: "open", Path: name, Err: toFsErr(err)}
-	}
-	return os.NewFile(uintptr(fd), name), nil
-}
-
-func (f *secureDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
-	fd, err := openBeneathRoot(f.baseFd, name, unix.O_RDONLY|unix.O_DIRECTORY, 0)
-	if err != nil {
-		return nil, &fs.PathError{Op: "open", Path: name, Err: toFsErr(err)}
-	}
-	df := os.NewFile(uintptr(fd), name)
-	defer func() { _ = df.Close() }()
-	return df.ReadDir(-1)
-}
-
-func (f *secureDirFS) Stat(name string) (fs.FileInfo, error) {
-	fd, err := openBeneathRoot(f.baseFd, name, unix.O_RDONLY, 0)
-	if err != nil {
-		return nil, &fs.PathError{Op: "stat", Path: name, Err: toFsErr(err)}
-	}
-	df := os.NewFile(uintptr(fd), name)
-	defer func() { _ = df.Close() }()
-	return df.Stat()
-}
-
-// toFsErr maps a symlink-refusal or root-escape from the resolver to
-// fs.ErrNotExist so glob/WalkDir treat a symlinked/escaping entry as absent
-// (invisible) rather than surfacing a raw errno.
-func toFsErr(err error) error {
-	switch {
-	case errors.Is(err, errSymlinkComponent), errors.Is(err, errEscapesRoot),
-		errors.Is(err, unix.ELOOP), errors.Is(err, unix.EXDEV):
-		return fs.ErrNotExist
-	default:
-		return err
-	}
-}
-
-// glob resolves matches for pattern beneath a policy-checked base directory,
-// refusing symlink traversal (so a pattern cannot escape through a symlink) and
-// dropping any match under a masked path. Results are absolute and sorted like the
-// off path (newest mtime first, ties by path).
-func (s *sandboxFS) glob(tool, base, pattern string) ([]string, error) {
-	patterns, err := expandSearchPattern(pattern)
-	if err != nil {
-		return nil, err
-	}
-	baseFd, canonical, err := s.openReadBaseFd(tool, base)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = unix.Close(baseFd) }()
-
-	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}
-	seen := make(map[string]struct{})
-	var abs []string
-	for _, pattern := range patterns {
-		matches, err := doublestar.Glob(fsys, pattern)
-		if err != nil {
-			return nil, err
-		}
-		for _, m := range matches {
-			p := filepath.Join(canonical, m)
-			if s.underMasked(p) {
-				continue
-			}
-			if _, ok := seen[p]; ok {
-				continue
-			}
-			seen[p] = struct{}{}
-			abs = append(abs, p)
-		}
-	}
-	sortPathsByMtimeDesc(abs)
-	return abs, nil
-}
-
-// grepNative runs the native (ripgrep-absent) grep beneath a policy-checked base,
-// walking a secureDirFS so symlinks are never followed and refusing to descend
-// into masked subtrees. The per-file matching/formatting is shared with the off
-// path via grepAccum, so output semantics are identical.
-func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
-	globFilters, err := expandGrepFilter(globFilter)
-	if err != nil {
-		return "", err
-	}
-	baseFd, canonical, err := s.openReadBaseFd("grep", base)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = unix.Close(baseFd) }()
-
-	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode)
-	if err != nil {
-		return "", err
-	}
-	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}
-	err = secureBrowseWalkDir(fsys, ".", func(rel string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil //nolint:nilerr // skip unreadable / symlink-refused entries and keep walking
-		}
-		abs := filepath.Join(canonical, rel)
-		if s.underMasked(abs) {
-			if d.IsDir() {
-				return fs.SkipDir // never descend into a masked subtree
-			}
-			return nil
-		}
-		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") && rel != "." {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if strings.HasPrefix(d.Name(), ".") {
-			return nil
-		}
-		if len(globFilters) > 0 {
-			matched, matchErr := matchesAnyGrepFilter(d.Name(), globFilters)
-			if matchErr != nil {
-				return matchErr
-			}
-			if !matched {
-				return nil
-			}
-		}
-		data, rerr := secureBrowseReadFile(fsys, rel)
-		if rerr != nil {
-			return nil //nolint:nilerr // best-effort grep: skip unreadable files
-		}
-		if bytes.IndexByte(data, 0) >= 0 {
-			return nil
-		}
-		if a.feed(rel, data) {
-			return fs.SkipAll
-		}
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-	return a.finish(), nil
 }
 
 // grepAccum accumulates native-grep results across files. It is the shared core of

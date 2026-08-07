@@ -95,7 +95,7 @@ func requestToolResult(req llm.Request, callID string) (*llm.ToolResultData, boo
 }
 
 func transcriptToolResult(data []byte, callID string) (*llm.ToolResultData, bool) {
-	for _, line := range bytes.Split(data, []byte("\n")) {
+	for line := range bytes.SplitSeq(data, []byte("\n")) {
 		entry, err := transcript.DecodeEntry(bytes.TrimSpace(line))
 		if err != nil {
 			continue

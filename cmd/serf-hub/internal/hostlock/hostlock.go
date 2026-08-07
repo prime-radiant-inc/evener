@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 )
 
 // AcquireLock takes an exclusive non-blocking flock on path. The returned
@@ -23,7 +22,7 @@ func AcquireLock(path string) (func(), error) {
 	if err != nil {
 		return nil, fmt.Errorf("open lock: %w", err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := flockExclusiveNonBlocking(f); err != nil {
 		_ = f.Close()
 		// Name the path (kata av1j): a raw errno carries none, and the losing
 		// operator's remedy — find the holder, or isolate a test hub under its
@@ -32,7 +31,7 @@ func AcquireLock(path string) (func(), error) {
 		return nil, fmt.Errorf("flock %s: %w (another serf-hub may already be running; a disposable hub needs its own HOME)", path, err)
 	}
 	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = flockUnlock(f)
 		_ = f.Close()
 	}, nil
 }

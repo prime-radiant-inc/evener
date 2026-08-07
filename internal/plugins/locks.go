@@ -1,13 +1,10 @@
 package plugins
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 type lockFile interface {
@@ -20,7 +17,6 @@ var (
 	lockOpenFile = func(name string, flag int, perm os.FileMode) (lockFile, error) {
 		return os.OpenFile(name, flag, perm)
 	}
-	lockFlock = unix.Flock
 	lockNow   = time.Now
 	lockSleep = time.Sleep
 )
@@ -39,14 +35,14 @@ func acquireLock(lockPath string, timeout time.Duration) (func(), error) {
 	deadline := lockNow().Add(timeout)
 	backoff := 10 * time.Millisecond
 	for {
-		err := lockFlock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		err := lockFlock(int(f.Fd()), lockOpExclusiveNB)
 		if err == nil {
 			return func() {
-				_ = lockFlock(int(f.Fd()), unix.LOCK_UN)
+				_ = lockFlock(int(f.Fd()), lockOpUnlock)
 				_ = f.Close()
 			}, nil
 		}
-		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+		if !isLockContended(err) {
 			_ = f.Close()
 			return nil, fmt.Errorf("flock %s: %w", lockPath, err)
 		}

@@ -2,14 +2,13 @@ package hubcore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"hash/fnv"
+	"maps"
 	"os"
 	"slices"
 	"sort"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -66,9 +65,7 @@ func cloneSubagentStates(in map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 
@@ -166,18 +163,6 @@ func NewRoster(runDir string, prober Prober) *Roster {
 func (r *Roster) SetFs(fs afero.Fs) *Roster {
 	r.fs = fs
 	return r
-}
-
-// processAlive reports whether a process with the given PID currently exists.
-// Hub-spawned daemons run on the same host, so signal 0 is a reliable presence
-// check; EPERM (the process exists but is owned by another user) counts as
-// alive.
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // NewRosterWithEntries returns a Roster pre-seeded with the given live entries,
