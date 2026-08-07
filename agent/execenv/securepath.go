@@ -133,6 +133,17 @@ func (s *sandboxFS) deny(tool, denyPath, reason string) *sandbox.DeniedError {
 		// accurate for every mode; the audit record above keeps the terse reason.
 		modelReason = reason + "; this sandbox policy is fixed for the session"
 	}
+	if reason == denyReasonSymlink {
+		// The confined open (openat2/RESOLVE_NO_SYMLINKS on Linux, an O_NOFOLLOW
+		// tail walk on darwin) already made the security decision and cannot say
+		// WHICH path component was the symlink — the kernel returns one ELOOP for
+		// the whole resolution. This is a purely informational, best-effort re-walk
+		// AFTER the denial to make the message name the actual offending component,
+		// never a second vote on whether to allow anything.
+		if diag := s.symlinkDenialDiagnostic(denyPath); diag != "" {
+			modelReason = modelReason + "; " + diag
+		}
+	}
 	return &sandbox.DeniedError{
 		Mode:       s.policy.Mode,
 		Tool:       tool,
@@ -141,6 +152,75 @@ func (s *sandboxFS) deny(tool, denyPath, reason string) *sandbox.DeniedError {
 		Sensitive:  sensitive,
 		ReasonKind: denialReasonKind(reason),
 	}
+}
+
+// symlinkDenialDiagnostic best-effort walks deniedPath component by component
+// with plain (unconfined) os.Lstat, looking for the first component that is
+// itself a symlink, and returns a message naming it and its resolved target —
+// or "" if the walk finds nothing to report. It exists only to make a
+// DenialSymlink message more useful: the confined resolver that produced the
+// denial cannot say which component was the symlink (see deny()'s comment), so
+// this re-derives that fact for humans/models from the outside.
+//
+// Where the walk STARTS depends on which enforcement shape produced the denial,
+// via containingRoot (the same helper openRead/openWrite use):
+//   - denyPath under a granted root (openInRoot): the confined resolver
+//     deliberately TOLERATES a symlinked ANCESTOR of the root — the root fd is
+//     opened once with a plain, symlink-following open (see
+//     TestReadToleratesSymlinkedAncestor) — and only refuses a symlink
+//     COMPONENT INSIDE the root. The walk is anchored at the root and covers
+//     only the in-root tail, so it never reports that tolerated ancestor
+//     symlink (e.g. macOS's own /var → /private/var, or a symlinked $HOME) in
+//     place of the actual in-root offender.
+//   - denyPath under no granted root (openAnywhereMinusMasked / a per-invocation
+//     grant): that shape opens from "/" refusing EVERY symlink with no
+//     ancestor tolerance at all, so walking the full path from "/" is exactly
+//     what matches its enforcement and correctly finds the offender there too.
+//
+// Safety: this NEVER decides whether anything is allowed — the denial already
+// happened — and it never opens or reads through the symlink, only its own
+// target string via os.Readlink. It degrades silently (returns "") on any
+// error: the path may no longer exist (TOCTOU, fine for a diagnostic), a
+// component may be unreadable, or nothing along the path may be a symlink from
+// this vantage point (e.g. confinement gives a different view than the raw
+// filesystem). A failure here must never surface as an error from deny() — it
+// can only make the message plainer, never break the denial itself.
+func (s *sandboxFS) symlinkDenialDiagnostic(deniedPath string) string {
+	abs, err := filepath.Abs(deniedPath)
+	if err != nil {
+		return ""
+	}
+	abs = filepath.Clean(abs)
+
+	// Anchor at the containing root when there is one — the walk must stay
+	// below it so a tolerated ancestor symlink is never reported. Outside every
+	// granted root, that enforcement shape refuses every symlink from "/" with
+	// no ancestor tolerance, so walking the full path from "/" matches it.
+	root := string(filepath.Separator)
+	rel := strings.TrimPrefix(abs, string(filepath.Separator))
+	if r, rl, ok := containingRoot(s.policy.FileTool.ReadRoots, abs); ok {
+		root, rel = r, rl
+	} else if r, rl, ok := containingRoot(s.policy.FileTool.WriteRoots, abs); ok {
+		root, rel = r, rl
+	}
+
+	cur := root
+	for _, comp := range relComponents(rel) {
+		cur = filepath.Join(cur, comp)
+		info, lerr := os.Lstat(cur)
+		if lerr != nil {
+			return "" // gone or unreadable by probe time: no report, not an error
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		target, rerr := os.Readlink(cur)
+		if rerr != nil {
+			return ""
+		}
+		return fmt.Sprintf("%q is a symlink to %q; scope the request below the resolved location instead of through the symlink", cur, target)
+	}
+	return ""
 }
 
 // denialReasonKind maps a display-text reason to its typed classification, so the

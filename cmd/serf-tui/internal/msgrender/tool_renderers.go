@@ -329,8 +329,8 @@ func init() {
 	toolRenderers["grep_files"] = grepRenderer
 	toolRenderers["grep_search"] = grepRenderer
 
-	// glob
-	toolRenderers["glob"] = ToolRenderer{
+	// glob + aliases
+	globRenderer := ToolRenderer{
 		Verb:   func(_ ToolArgs) string { return "glob" },
 		Target: func(args ToolArgs) string { return args.Str("pattern") },
 		Result: func(_ ToolArgs, output, errStr string, _ time.Duration) string {
@@ -349,6 +349,8 @@ func init() {
 			return strconv.Itoa(n) + " matches"
 		},
 	}
+	toolRenderers["glob"] = globRenderer
+	toolRenderers["find_files"] = globRenderer
 
 	// list_dir + aliases
 	listRenderer := ToolRenderer{

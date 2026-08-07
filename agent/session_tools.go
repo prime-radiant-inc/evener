@@ -853,9 +853,8 @@ func (s *Session) rebuildToolDefsCache() {
 			defs = append(defs, wire)
 			included[td.Name] = true // canonical
 			// Also track the provider-mapped name so loop 3 (registry tools)
-			// won't add a registry tool whose canonical name matches the
-			// provider name (e.g. OpenAI maps glob→list_dir; the registry
-			// also has a separate list_dir tool that must be excluded).
+			// won't add a registry tool whose canonical name collides with
+			// another tool's provider-mapped wire name.
 			included[wire.Name] = true
 		}
 	}

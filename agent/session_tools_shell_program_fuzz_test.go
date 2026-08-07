@@ -436,7 +436,7 @@ func (e *stpEnv) ListDirectory(path string, depth int) ([]execenv.DirEntry, erro
 	return append([]execenv.DirEntry(nil), e.listEntries...), e.listErr
 }
 
-func (e *stpEnv) Grep(pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+func (e *stpEnv) Grep(pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
 	e.grepCalls = append(e.grepCalls, stpGrepCall{
 		pattern: pattern,
 		path:    path,
@@ -448,7 +448,7 @@ func (e *stpEnv) Grep(pattern, path, globFilter string, caseInsensitive bool, ma
 	return e.grepOutput, e.grepErr
 }
 
-func (e *stpEnv) Glob(pattern, path string) ([]string, error) {
+func (e *stpEnv) Glob(pattern, path string, includeIgnored ...bool) ([]string, error) {
 	e.globCalls = append(e.globCalls, stpGlobCall{pattern: pattern, path: path})
 	return append([]string(nil), e.globMatches...), e.globErr
 }

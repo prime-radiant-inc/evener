@@ -5,6 +5,7 @@ package execenv
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -83,27 +84,47 @@ func toFsErr(err error) error {
 // glob resolves matches for pattern beneath a policy-checked base directory,
 // refusing symlink traversal (so a pattern cannot escape through a symlink) and
 // dropping any match under a masked path. Results are absolute and sorted like the
-// off path (newest mtime first, ties by path).
-func (s *sandboxFS) glob(tool, base, pattern string) ([]string, error) {
+// off path (newest mtime first, ties by path). The returned int is the number of
+// candidate matches dropped by the dotfile/gitignore exclusion (see
+// GlobExcluder) — it never includes matches dropped by masking, which is a
+// separate security boundary.
+//
+// Dotfiles/dirs and gitignored paths are excluded by default (matching the
+// off path's Glob), unless includeIgnored is set.
+func (s *sandboxFS) glob(tool, base, pattern string, includeIgnored bool) ([]string, int, error) {
 	patterns, err := expandSearchPattern(pattern)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	baseFd, canonical, err := s.openReadBaseFd(tool, base)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer func() { _ = unix.Close(baseFd) }()
 
 	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}
+	var ignores *ignoreSet
+	if !includeIgnored {
+		// Never list or read into a masked subtree while collecting
+		// .gitignore rules — secureDirFS enforces symlink-refusal and root
+		// confinement but not masking, so the skip must be supplied here.
+		ignores = loadIgnoreSet(fsys, func(relPath string) bool {
+			return s.underMasked(filepath.Join(canonical, relPath))
+		})
+	}
 	seen := make(map[string]struct{})
 	var abs []string
+	excluded := 0
 	for _, pattern := range patterns {
 		matches, err := doublestar.Glob(fsys, pattern)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		for _, m := range matches {
+			if !includeIgnored && (isDotPath(m) || ignores.matches(m, globMatchIsDir(fsys, m))) {
+				excluded++
+				continue
+			}
 			p := filepath.Join(canonical, m)
 			if s.underMasked(p) {
 				continue
@@ -116,14 +137,14 @@ func (s *sandboxFS) glob(tool, base, pattern string) ([]string, error) {
 		}
 	}
 	sortPathsByMtimeDesc(abs)
-	return abs, nil
+	return abs, excluded, nil
 }
 
 // grepNative runs the native (ripgrep-absent) grep beneath a policy-checked base,
 // walking a secureDirFS so symlinks are never followed and refusing to descend
 // into masked subtrees. The per-file matching/formatting is shared with the off
 // path via grepAccum, so output semantics are identical.
-func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
@@ -134,11 +155,21 @@ func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive
 	}
 	defer func() { _ = unix.Close(baseFd) }()
 
-	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode)
+	ctxLines := 0
+	if len(contextLines) > 0 && contextLines[0] > 0 {
+		ctxLines = contextLines[0]
+	}
+	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode, ctxLines)
 	if err != nil {
 		return "", err
 	}
 	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}
+	// Never list or read into a masked subtree while collecting .gitignore
+	// rules — see the matching comment in glob above.
+	ignores := loadIgnoreSet(fsys, func(relPath string) bool {
+		return s.underMasked(filepath.Join(canonical, relPath))
+	})
+	excludedByIgnore := 0
 	err = secureBrowseWalkDir(fsys, ".", func(rel string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil //nolint:nilerr // skip unreadable / symlink-refused entries and keep walking
@@ -151,12 +182,23 @@ func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive
 			return nil
 		}
 		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") && rel != "." {
-				return fs.SkipDir
+			if rel != "." {
+				if strings.HasPrefix(d.Name(), ".") {
+					return fs.SkipDir
+				}
+				if ignores.matches(rel, true) {
+					excludedByIgnore++
+					return fs.SkipDir
+				}
 			}
 			return nil
 		}
+		// Skip hidden and gitignored files
 		if strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+		if ignores.matches(rel, false) {
+			excludedByIgnore++
 			return nil
 		}
 		if len(globFilters) > 0 {
@@ -183,5 +225,13 @@ func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive
 	if err != nil {
 		return "", err
 	}
-	return a.finish(), nil
+	result := a.finish()
+	// Silent-empty is the enemy (D2): distinguish "genuinely no matches" from
+	// "no matches among the files searched, but N were skipped by the
+	// default dotfile/gitignore exclusion" — grep has no include_ignored
+	// knob, so this is informational rather than a suggestion to retry.
+	if result == "" && excludedByIgnore > 0 {
+		return fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore), nil
+	}
+	return result, nil
 }

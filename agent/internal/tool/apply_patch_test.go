@@ -354,6 +354,31 @@ func TestApplyPatch_ContextMismatchReportsContextAndCandidates(t *testing.T) {
 	}
 }
 
+func TestApplyPatch_ContextMismatchEndsWithRecoveryPointer(t *testing.T) {
+	dir := t.TempDir()
+	content := strings.Join([]string{
+		"func first() {",
+		"\tmodel := \"openai/gpt-5\"",
+		"\treturn model",
+		"}",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "f.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	patch := "*** Begin Patch\n*** Update File: f.go\n@@\n \tmodel := \"openai/gpt-5\"\n-\treturn nonexistent\n+\treturn model\n*** End Patch\n"
+	_, err := ApplyPatch(testMutator(dir), patch)
+	if err == nil {
+		t.Fatal("expected patch mismatch")
+	}
+	msg := err.Error()
+	const wantSuffix = "the file has changed since the content this patch was built from; re-read the target region with read_file, then rebuild the patch"
+	if !strings.HasSuffix(msg, wantSuffix) {
+		t.Fatalf("error does not end with recovery pointer:\n%s", msg)
+	}
+}
+
 func TestApplyPatch_DeleteMismatchReportsFullBlockCandidate(t *testing.T) {
 	dir := t.TempDir()
 	content := strings.Join([]string{

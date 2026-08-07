@@ -15,8 +15,8 @@ func DefReadFile() llm.ToolDefinition {
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"file_path": map[string]any{"type": "string"},
-				"offset":    map[string]any{"type": "integer"},
-				"limit":     map[string]any{"type": "integer"},
+				"offset":    map[string]any{"type": "integer", "description": "For large files read in slices: 1-based start line (default 1)."},
+				"limit":     map[string]any{"type": "integer", "description": "For large files read in slices: line count to return, default 2000."},
 				"purpose":   map[string]any{"type": "string", "description": "For image/PDF files: describe what factual data you need extracted. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate."},
 			},
 			"required": []string{"file_path"},
@@ -301,7 +301,7 @@ func DefJobStop() llm.ToolDefinition {
 func DefGrep() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "grep",
-		Description: "Search file contents using regex patterns. `glob_filter` accepts *, ?, [], **, and bounded brace alternatives such as *.{go,md}; malformed braces are rejected. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files.",
+		Description: "Search file contents using regex patterns. `glob_filter` accepts *, ?, [], **, and bounded brace alternatives such as *.{go,md}; malformed braces are rejected. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files. Dotfiles/dirs and gitignored paths are always excluded from the search.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -311,6 +311,10 @@ func DefGrep() llm.ToolDefinition {
 				"glob_filter":      map[string]any{"type": "string"},
 				"case_insensitive": map[string]any{"type": "boolean"},
 				"max_results":      map[string]any{"type": "integer"},
+				"context_lines": map[string]any{
+					"type":        "integer",
+					"description": "Lines of context to include before and after each match, 0-10 (default 0).",
+				},
 				"output_mode": map[string]any{
 					"type":        "string",
 					"enum":        []any{"content", "files_with_matches", "count"},
@@ -325,13 +329,14 @@ func DefGrep() llm.ToolDefinition {
 func DefGlob() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "glob",
-		Description: "Find files matching a glob pattern. Supports *, ?, [], **, and bounded nested brace alternatives such as *.{ts,tsx,css}; malformed braces are rejected. Use this for pattern-based file discovery. If a provider aliases this tool to a name like list_dir, it still performs glob matching rather than a literal directory listing.",
+		Description: "Find files by pattern: a recursive glob match over file paths, not a literal directory listing. Supports *, ?, [], **, and bounded nested brace alternatives such as *.{ts,tsx,css}; malformed braces are rejected. Use this for pattern-based file discovery. Some providers alias this tool to a name like find_files; it still performs glob matching regardless of the wire name. By default, dotfiles/dirs (.git, .claude/worktrees/x, ...) and gitignored paths (node_modules, build output, ...) are excluded; set include_ignored to true to search them too.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"pattern": map[string]any{"type": "string"},
-				"path":    map[string]any{"type": "string"},
+				"pattern":         map[string]any{"type": "string"},
+				"path":            map[string]any{"type": "string"},
+				"include_ignored": map[string]any{"type": "boolean", "description": "Include dotfiles/dirs and gitignored paths in results (excluded by default)."},
 			},
 			"required": []string{"pattern"},
 		},

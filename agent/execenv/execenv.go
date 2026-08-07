@@ -103,14 +103,33 @@ type ExecutionEnvironment interface {
 	FileExists(path string) bool
 
 	// Glob returns paths matching the shell-style pattern, rooted at basePath.
-	Glob(pattern string, basePath string) ([]string, error)
+	// Dotfiles/dirs (.git, .claude/worktrees/x, ...) and gitignored paths are
+	// excluded by default; pass includeIgnored(true) to restore them.
+	Glob(pattern string, basePath string, includeIgnored ...bool) ([]string, error)
 	// Grep searches files for pattern and returns matches formatted per
 	// outputMode ("content" (default), "files_with_matches", or "count").
-	Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error)
+	// contextLines, when given (0-10), includes that many lines of context
+	// before/after each match; omitted or non-positive means no context.
+	Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error)
 	// ListDirectory lists entries under path, recursing up to depth levels.
 	ListDirectory(path string, depth int) ([]DirEntry, error)
 
 	// ExecCommand runs a shell command with the given timeout (ms), working
 	// directory, and extra environment variables, returning its result.
 	ExecCommand(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error)
+}
+
+// GlobExcluder is an optional capability an ExecutionEnvironment's Glob may
+// additionally implement: it reports, alongside the matches, how many
+// candidate matches were dropped by the default dotfile/gitignore exclusion.
+// Callers use this to tell a genuinely empty result apart from one that was
+// silently emptied out entirely by filtering (rather than widening the
+// ExecutionEnvironment interface's Glob signature itself, which every
+// implementation — including test doubles with no exclusion logic — would
+// otherwise have to grow a meaningless extra return value for).
+type GlobExcluder interface {
+	// GlobWithExclusions behaves like Glob but also returns the number of
+	// candidate matches dropped by the default dotfile/gitignore exclusion
+	// (always 0 when includeIgnored is true).
+	GlobWithExclusions(pattern, basePath string, includeIgnored bool) (matches []string, excluded int, err error)
 }

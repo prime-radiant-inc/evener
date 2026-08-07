@@ -20,6 +20,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/spf13/afero"
+	"primeradiant.com/serf/agent/internal/tool/repair"
 	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/envvars"
 )
@@ -850,7 +851,8 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 	abs := e.resolve(path)
 	var b []byte
 	var err error
-	if sfs := e.sandbox(); sfs != nil {
+	sfs := e.sandbox()
+	if sfs != nil {
 		// Sandboxed: race-safe fd read (symlink-refusing, root/denylist-checked).
 		// The image/PDF/binary/line-numbering contract below is applied identically
 		// to the returned bytes, so the output is unchanged from the off path.
@@ -859,6 +861,18 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 		b, err = afero.ReadFile(e.filesystem(), abs)
 	}
 	if err != nil {
+		// Best-effort "did you mean" suggestion for a genuine missing-file miss
+		// (never for a permission error or a directory-not-a-file error). Skipped
+		// when sandboxed: the diagnostic listing walks plain os.Stat/os.ReadDir
+		// outside the confined resolver, and could name a masked or denied
+		// directory's contents that the sandbox would otherwise keep the model
+		// from seeing. Off/unsandboxed is the default mode, so this still covers
+		// the common case; sandboxed sessions just get the raw ENOENT.
+		if sfs == nil && errors.Is(err, fs.ErrNotExist) {
+			if suggestion := readFileNotFoundSuggestion(abs); suggestion != "" {
+				return "", fmt.Errorf("%w. %s", err, suggestion)
+			}
+		}
 		return "", err
 	}
 	// Image files: return base64-encoded data instead of erroring on binary.
@@ -895,6 +909,54 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 		fmt.Fprintf(&out, "%4d\t%s\n", i, lines[i-1])
 	}
 	return out.String(), nil
+}
+
+// readFileNotFoundSuggestion renders a "did you mean" hint for a read_file
+// ENOENT on absPath, or "" if it can't find anything worth suggesting.
+//
+// It walks up absPath's ancestors (starting at its own parent) until it finds
+// one that exists as a directory, then fuzzy-matches absPath's basename
+// against that directory's direct children. This single algorithm covers two
+// distinct misses with the same code path: an ordinary typo in a file that
+// lives right next to where the model looked (the walk terminates
+// immediately, since the parent already exists), and a "doubled path
+// segment" miss like ".../worktrees/x/worktrees/x/file.go" where the real
+// file is at ".../worktrees/x/file.go" (the walk climbs past the fictional
+// nested worktrees/x before landing on a real directory whose listing
+// contains an exact match).
+func readFileNotFoundSuggestion(absPath string) string {
+	dir := filepath.Dir(absPath)
+	for {
+		info, err := os.Stat(dir)
+		if err == nil && info.IsDir() {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "" // walked to the filesystem root without finding a real directory
+		}
+		dir = parent
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	matches := repair.TopMatches(filepath.Base(absPath), names, 3)
+	if len(matches) == 0 {
+		return ""
+	}
+	full := make([]string, len(matches))
+	for i, m := range matches {
+		full[i] = filepath.Join(dir, m)
+	}
+	if len(full) == 1 {
+		return fmt.Sprintf("Did you mean %s?", full[0])
+	}
+	return fmt.Sprintf("Did you mean one of: %s?", strings.Join(full, ", "))
 }
 
 // WriteFile writes content to the file at path, creating any missing parent
@@ -1195,10 +1257,26 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 // basePath, which defaults to RootDir and is resolved relative to RootDir when
 // not absolute. Results are sorted by modification time, newest first, with
 // ties broken by path.
-func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]string, error) {
+//
+// Dotfiles/dirs (.git, .claude/worktrees/x, ...) and gitignored paths are
+// excluded by default, matching grepNative's long-standing hidden-file skip
+// plus new .gitignore awareness; pass includeIgnored(true) to restore them.
+func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string, includeIgnored ...bool) ([]string, error) {
+	matches, _, err := e.GlobWithExclusions(pattern, basePath, len(includeIgnored) > 0 && includeIgnored[0])
+	return matches, err
+}
+
+// GlobWithExclusions implements GlobExcluder: same matching as Glob, but also
+// reports how many candidate matches the default dotfile/gitignore exclusion
+// dropped, so a fully-filtered result can be told apart from a genuinely
+// empty one (see the "silent-empty is the enemy" global constraint). The
+// count never includes matches dropped by sandbox masking — that's a
+// separate security boundary, not something to describe to the caller as
+// "gitignored".
+func (e *LocalExecutionEnvironment) GlobWithExclusions(pattern string, basePath string, includeIgnored bool) ([]string, int, error) {
 	patterns, err := expandSearchPattern(pattern)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	base := strings.TrimSpace(basePath)
 	if base == "" {
@@ -1210,16 +1288,27 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]str
 	if sfs := e.sandbox(); sfs != nil {
 		// Sandboxed: the base is policy-checked and the walk refuses symlink
 		// traversal (no out-of-root match) and drops masked matches.
-		return sfs.glob("glob", base, pattern)
+		return sfs.glob("glob", base, pattern, includeIgnored)
+	}
+	fsys := os.DirFS(base)
+	var ignores *ignoreSet
+	if !includeIgnored {
+		// No masking concept off the sandboxed path: no-op skip.
+		ignores = loadIgnoreSet(fsys, nil)
 	}
 	seen := make(map[string]struct{})
 	var abs []string
+	excluded := 0
 	for _, pattern := range patterns {
-		matches, err := doublestar.Glob(os.DirFS(base), pattern)
+		matches, err := doublestar.Glob(fsys, pattern)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		for _, m := range matches {
+			if !includeIgnored && (isDotPath(m) || ignores.matches(m, globMatchIsDir(fsys, m))) {
+				excluded++
+				continue
+			}
 			path := filepath.Join(base, m)
 			if _, ok := seen[path]; ok {
 				continue
@@ -1229,7 +1318,7 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]str
 		}
 	}
 	sortPathsByMtimeDesc(abs)
-	return abs, nil
+	return abs, excluded, nil
 }
 
 // Grep searches for pattern under path (defaulting to RootDir), using ripgrep
@@ -1256,15 +1345,15 @@ func resolveGrepDir(path, rootDir string) string {
 // pure arg-construction core: a fixed no-heading / no-color prefix, then exactly
 // one output-mode flag (files-with-matches / count / line-number), then optional
 // case-insensitivity and glob filter, then the trailing pattern and directory.
-func buildRipgrepArgs(outputMode string, caseInsensitive bool, globFilter, pattern, dir string) []string {
+func buildRipgrepArgs(outputMode string, caseInsensitive bool, globFilter, pattern, dir string, contextLines int) []string {
 	filters := []string(nil)
 	if strings.TrimSpace(globFilter) != "" {
 		filters = []string{globFilter}
 	}
-	return buildRipgrepArgsWithFilters(outputMode, caseInsensitive, filters, pattern, dir)
+	return buildRipgrepArgsWithFilters(outputMode, caseInsensitive, filters, pattern, dir, contextLines)
 }
 
-func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFilters []string, pattern, dir string) []string {
+func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFilters []string, pattern, dir string, contextLines int) []string {
 	args := []string{"--no-heading", "--color", "never"}
 	switch outputMode {
 	case "files_with_matches":
@@ -1282,16 +1371,29 @@ func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFi
 			args = append(args, "-g", globFilter)
 		}
 	}
-	args = append(args, pattern, dir)
+	// -C (context lines) only has an effect on content output: files-with-matches
+	// and count report per-file, not per-line, so surrounding lines have nothing
+	// to attach to there.
+	if contextLines > 0 && (outputMode == "" || outputMode == "content") {
+		args = append(args, "-C", fmt.Sprintf("%d", contextLines))
+	}
+	// A literal "--" ends rg's option parsing, so a pattern that itself looks
+	// like a flag (e.g. "--font-size-body") is treated as the positional search
+	// string instead of being parsed (and silently mishandled) as an option.
+	args = append(args, "--", pattern, dir)
 	return args
 }
 
-func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
 	}
 	dir := resolveGrepDir(path, e.RootDir)
+	ctxLines := 0
+	if len(contextLines) > 0 && contextLines[0] > 0 {
+		ctxLines = contextLines[0]
+	}
 
 	if sfs := e.sandbox(); sfs != nil {
 		// Sandboxed sessions always use the denylist-aware, symlink-refusing native
@@ -1301,16 +1403,16 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 		// read-only). Its kernel wrapping is M3 defense-in-depth, not something to
 		// rely on here: correctness over speed for a sandboxed session. grepNative
 		// policy-checks the base itself and skips masked subtrees.
-		return sfs.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode)
+		return sfs.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines)
 	}
 
 	rg, err := e.findExecutable("rg")
 	if err != nil {
 		// Fallback to native Go regex search when ripgrep is absent
-		return e.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode)
+		return e.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines)
 	}
 
-	args := buildRipgrepArgsWithFilters(outputMode, caseInsensitive, globFilters, pattern, dir)
+	args := buildRipgrepArgsWithFilters(outputMode, caseInsensitive, globFilters, pattern, dir, ctxLines)
 
 	ctx := context.Background()
 	if maxResults <= 0 {
@@ -1332,28 +1434,47 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 	return res.Stdout + res.Stderr, err
 }
 
-func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
 	}
-	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode)
+	ctxLines := 0
+	if len(contextLines) > 0 && contextLines[0] > 0 {
+		ctxLines = contextLines[0]
+	}
+	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode, ctxLines)
 	if err != nil {
 		return "", err
 	}
+	// No masking concept off the sandboxed path: no-op skip.
+	ignores := loadIgnoreSet(os.DirFS(path), nil)
+	excludedByIgnore := 0
 
 	err = grepWalk(path, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // best-effort grep: skip unreadable entries and keep walking
 		}
+		relPath, _ := filepath.Rel(path, p)
+		relSlash := filepath.ToSlash(relPath)
 		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") && p != path {
-				return filepath.SkipDir
+			if p != path {
+				if strings.HasPrefix(d.Name(), ".") {
+					return filepath.SkipDir
+				}
+				if ignores.matches(relSlash, true) {
+					excludedByIgnore++
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}
-		// Skip hidden files
+		// Skip hidden and gitignored files
 		if strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+		if ignores.matches(relSlash, false) {
+			excludedByIgnore++
 			return nil
 		}
 		if len(globFilters) > 0 {
@@ -1373,7 +1494,6 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 		if bytes.IndexByte(data, 0) >= 0 {
 			return nil
 		}
-		relPath, _ := filepath.Rel(path, p)
 		if a.feed(relPath, data) {
 			return filepath.SkipAll
 		}
@@ -1382,7 +1502,15 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 	if err != nil {
 		return "", err
 	}
-	return a.finish(), nil
+	result := a.finish()
+	// Silent-empty is the enemy (D2): distinguish "genuinely no matches" from
+	// "no matches among the files searched, but N were skipped by the
+	// default dotfile/gitignore exclusion" — grep has no include_ignored
+	// knob, so this is informational rather than a suggestion to retry.
+	if result == "" && excludedByIgnore > 0 {
+		return fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore), nil
+	}
+	return result, nil
 }
 
 // ExecCommand runs command through the platform shell in its own process group,

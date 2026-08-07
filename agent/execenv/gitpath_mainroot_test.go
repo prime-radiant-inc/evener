@@ -39,8 +39,8 @@ func (f *fakeExecEnv) FileExists(path string) bool {
 	}
 	return false
 }
-func (f *fakeExecEnv) Glob(string, string) ([]string, error) { return nil, nil }
-func (f *fakeExecEnv) Grep(string, string, string, bool, int, string) (string, error) {
+func (f *fakeExecEnv) Glob(string, string, ...bool) ([]string, error) { return nil, nil }
+func (f *fakeExecEnv) Grep(string, string, string, bool, int, string, ...int) (string, error) {
 	return "", nil
 }
 func (f *fakeExecEnv) ListDirectory(string, int) ([]DirEntry, error) { return nil, nil }

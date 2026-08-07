@@ -70,10 +70,10 @@ func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
 	return nil, errSandboxUnsupported()
 }
 
-func (s *sandboxFS) glob(tool, base, pattern string) ([]string, error) {
-	return nil, errSandboxUnsupported()
+func (s *sandboxFS) glob(tool, base, pattern string, includeIgnored bool) ([]string, int, error) {
+	return nil, 0, errSandboxUnsupported()
 }
 
-func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
 	return "", errSandboxUnsupported()
 }

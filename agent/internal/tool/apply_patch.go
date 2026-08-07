@@ -275,6 +275,10 @@ func formatPatchMismatchError(d patchMismatchDiagnostic) string {
 			}
 		}
 	}
+
+	if d.kind == "expected lines not found" {
+		fmt.Fprintf(&b, "\n\nthe file has changed since the content this patch was built from; re-read the target region with read_file, then rebuild the patch")
+	}
 	return b.String()
 }
 

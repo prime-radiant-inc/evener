@@ -204,7 +204,14 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if v, ok := args["output_mode"].(string); ok {
 				outputMode = v
 			}
-			return env.Grep(pat, path, glob, ci, maxRes, outputMode)
+			contextLines := 0
+			if v, ok := args["context_lines"].(float64); ok && int(v) > 0 {
+				contextLines = int(v)
+				if contextLines > 10 {
+					contextLines = 10
+				}
+			}
+			return env.Grep(pat, path, glob, ci, maxRes, outputMode, contextLines)
 		},
 	}); err != nil {
 		return err
@@ -217,9 +224,26 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			_ = ctx
 			pat := stringArg(args, "pattern")
 			path := stringArg(args, "path")
-			matches, err := env.Glob(pat, path)
+			includeIgnored := false
+			if v, ok := args["include_ignored"].(bool); ok {
+				includeIgnored = v
+			}
+			var matches []string
+			var excluded int
+			var err error
+			if ge, ok := env.(execenv.GlobExcluder); ok {
+				matches, excluded, err = ge.GlobWithExclusions(pat, path, includeIgnored)
+			} else {
+				matches, err = env.Glob(pat, path, includeIgnored)
+			}
 			if err != nil {
 				return "", err
+			}
+			// Silent-empty is the enemy: a bare "" here is indistinguishable
+			// from "genuinely no matches" when it's actually "every match was
+			// filtered out by the default dotfile/gitignore exclusion" (D2).
+			if len(matches) == 0 && excluded > 0 {
+				return fmt.Sprintf("0 matches after excluding %d dotfile/gitignored path(s); set include_ignored to include them", excluded), nil
 			}
 			return strings.Join(matches, "\n"), nil
 		},

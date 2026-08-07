@@ -53,8 +53,11 @@ func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
 			path := fmt.Sprint(args["file_path"])
 			warn := deps.readGuard.ReadBeforeWriteWarning(path)
 			result, err := env.WriteFile(path, fmt.Sprint(args["content"]))
-			if err == nil && warn != "" {
-				return warn + result, nil
+			if err == nil {
+				deps.readGuard.TrackRead(path)
+				if warn != "" {
+					return warn + result, nil
+				}
 			}
 			return result, err
 		},

@@ -139,6 +139,23 @@ func TestGlobRenderer(t *testing.T) {
 	}
 }
 
+// TestFindFilesRendererAliasesGlob: find_files is glob's renamed alias (D1),
+// mirroring how grep_files/grep_search alias grepRenderer and list_directory
+// aliases listRenderer.
+func TestFindFilesRendererAliasesGlob(t *testing.T) {
+	r, ok := lookupToolRenderer("find_files")
+	if !ok {
+		t.Fatal("no renderer for find_files")
+	}
+	args := toolArgsFromJSON(`{"pattern":"**/*.go"}`)
+	if r.Verb(args) != "glob" {
+		t.Errorf("find_files verb = %q; want 'glob'", r.Verb(args))
+	}
+	if got := r.Result(args, "a.go\nb.go", "", 0); got != "2 matches" {
+		t.Errorf("find_files Result = %q; want '2 matches'", got)
+	}
+}
+
 func TestListDirRenderer(t *testing.T) {
 	r, _ := lookupToolRenderer("list_dir")
 	args := toolArgsFromJSON(`{"path":"/tmp"}`)

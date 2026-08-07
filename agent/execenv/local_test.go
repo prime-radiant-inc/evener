@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -363,6 +364,79 @@ func TestReadFile_PDF_DetectedByMagicBytes(t *testing.T) {
 	}
 	if !strings.HasPrefix(result, "[document:") {
 		t.Fatalf("expected [document: prefix, got: %q", result[:min(len(result), 50)])
+	}
+}
+
+// TestReadFile_MissingFile_SuggestsSiblingInParentDir pins case (a) of the
+// ENOENT "did you mean" algorithm: when the requested path's parent directory
+// exists but the file itself does not, the error names an existing sibling
+// whose basename is a close fuzzy match.
+func TestReadFile_MissingFile_SuggestsSiblingInParentDir(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	if err := os.WriteFile(filepath.Join(dir, "session_tools.go"), []byte("package agent\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := env.ReadFile("session_tolls.go", nil, nil)
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	if !strings.Contains(err.Error(), "session_tools.go") {
+		t.Fatalf("expected suggestion naming session_tools.go, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Did you mean") {
+		t.Fatalf("expected 'Did you mean' suggestion text, got: %v", err)
+	}
+}
+
+// TestReadFile_MissingFile_NoSuggestionWhenNothingClose confirms the
+// suggestion is omitted (not fabricated) when nothing in the parent
+// directory is a plausible fuzzy match.
+func TestReadFile_MissingFile_NoSuggestionWhenNothingClose(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	if err := os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := env.ReadFile("zzzzzzzzzzzzzzzzzzzz.go", nil, nil)
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	if strings.Contains(err.Error(), "Did you mean") {
+		t.Fatalf("unexpected suggestion when nothing is close: %v", err)
+	}
+}
+
+// TestReadFile_DoubledPathSegment_WalksUpToNearestExistingAncestor pins case
+// (b): a path that duplicates a directory segment (e.g. an agent mistakenly
+// repeating ".../worktrees/x/worktrees/x/file.go") doesn't exist anywhere
+// along its full length, but walking up to the nearest existing ancestor and
+// fuzzy-matching the requested basename against ITS listing finds the real
+// file, collapsed back to its actual location.
+func TestReadFile_DoubledPathSegment_WalksUpToNearestExistingAncestor(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	realDir := filepath.Join(dir, "worktrees", "x")
+	if err := os.MkdirAll(realDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "file.go"), []byte("package x\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Doubled "worktrees/x" segment: worktrees/x/worktrees/x/file.go doesn't
+	// exist, nor does worktrees/x/worktrees; worktrees/x is the nearest
+	// existing ancestor and its listing contains an exact match on file.go.
+	doubled := filepath.Join("worktrees", "x", "worktrees", "x", "file.go")
+	_, err := env.ReadFile(doubled, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for missing doubled-segment path")
+	}
+	wantSuggestion := filepath.Join(realDir, "file.go")
+	if !strings.Contains(err.Error(), wantSuggestion) {
+		t.Fatalf("expected suggestion naming %q, got: %v", wantSuggestion, err)
 	}
 }
 
@@ -783,6 +857,111 @@ func TestGrepNative_InvalidRegex(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid regex") {
 		t.Fatalf("expected 'invalid regex' error, got: %v", err)
+	}
+}
+
+// TestBuildRipgrepArgs_DashPatternGetsLiteralSeparator: a pattern that itself
+// looks like a flag (e.g. "--font-size-body") must not be parsed by rg as an
+// option. buildRipgrepArgsWithFilters must emit a literal "--" immediately
+// before the pattern so everything after it is positional.
+func TestBuildRipgrepArgs_DashPatternGetsLiteralSeparator(t *testing.T) {
+	args := buildRipgrepArgsWithFilters("content", false, nil, "--font-size-body", "/root", 0)
+	dashIdx := -1
+	for i, a := range args {
+		if a == "--" {
+			dashIdx = i
+			break
+		}
+	}
+	if dashIdx == -1 {
+		t.Fatalf("expected a literal \"--\" separator in args, got: %v", args)
+	}
+	if args[dashIdx+1] != "--font-size-body" {
+		t.Fatalf("expected pattern immediately after \"--\", got: %v", args)
+	}
+	if args[dashIdx+2] != "/root" {
+		t.Fatalf("expected dir immediately after pattern, got: %v", args)
+	}
+}
+
+// TestGrep_DashPrefixedPatternSearchesLiterally is an integration-level regression
+// test: a pattern like "--font-size-body" must be searched literally rather than
+// silently mis-parsed as a flag, through the real Grep entry point (which prefers
+// ripgrep when present and falls back to the native walk otherwise — both paths
+// are exercised depending on the test machine).
+func TestGrep_DashPrefixedPatternSearchesLiterally(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "styles.css"), []byte("width: var(--font-size-body);\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	env := NewLocalExecutionEnvironment(dir)
+	defer env.Cleanup()
+
+	result, err := env.Grep("--font-size-body", dir, "", false, 100, "content")
+	if err != nil {
+		t.Fatalf("Grep with dash-prefixed pattern: %v", err)
+	}
+	if !strings.Contains(result, "styles.css") {
+		t.Fatalf("expected a literal match in styles.css, got: %q", result)
+	}
+}
+
+// TestGrepNative_ContextLines: the native fallback must return the requested
+// number of surrounding lines around each match.
+func TestGrepNative_ContextLines(t *testing.T) {
+	dir := t.TempDir()
+	content := "before2\nbefore1\nMATCH line\nafter1\nafter2\n"
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	env := NewLocalExecutionEnvironment(dir)
+	result, err := env.grepNative("MATCH", dir, "", false, 100, "", 1)
+	if err != nil {
+		t.Fatalf("grepNative with context_lines: %v", err)
+	}
+	if !strings.Contains(result, "MATCH line") {
+		t.Fatalf("expected the match line itself, got: %q", result)
+	}
+	if !strings.Contains(result, "before1") {
+		t.Fatalf("expected one line of context before the match, got: %q", result)
+	}
+	if !strings.Contains(result, "after1") {
+		t.Fatalf("expected one line of context after the match, got: %q", result)
+	}
+	if strings.Contains(result, "before2") || strings.Contains(result, "after2") {
+		t.Fatalf("context_lines=1 should not include the second line away from the match, got: %q", result)
+	}
+}
+
+// TestGrep_ContextLines_Ripgrep: the ripgrep path (when rg is available) must
+// also honor context_lines, via "-C".
+func TestGrep_ContextLines_Ripgrep(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("ripgrep not installed; cannot exercise the rg path")
+	}
+	dir := t.TempDir()
+	content := "before2\nbefore1\nMATCH line\nafter1\nafter2\n"
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	env := NewLocalExecutionEnvironment(dir)
+	defer env.Cleanup()
+
+	result, err := env.Grep("MATCH", dir, "", false, 100, "content", 1)
+	if err != nil {
+		t.Fatalf("Grep with context_lines via rg: %v", err)
+	}
+	if !strings.Contains(result, "MATCH line") {
+		t.Fatalf("expected the match line itself, got: %q", result)
+	}
+	if !strings.Contains(result, "before1") {
+		t.Fatalf("expected one line of context before the match, got: %q", result)
+	}
+	if !strings.Contains(result, "after1") {
+		t.Fatalf("expected one line of context after the match, got: %q", result)
 	}
 }
 

@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,17 +15,22 @@ import (
 //   - exactly one output-mode flag is present, at index 3, matching outputMode;
 //   - "-i" appears in the option region iff caseInsensitive (at most once);
 //   - "-g" appears iff the glob filter is non-blank, followed immediately by it;
+//   - "-C" appears iff contextLines>0 AND outputMode is content/"", followed by
+//     the count;
+//   - a literal "--" always immediately precedes the pattern, so a pattern that
+//     itself looks like a flag is never parsed as one;
 //   - the pattern and directory are always the final two args, in that order.
 func FuzzFc2BuildRipgrepArgs(f *testing.F) {
-	f.Add("content", false, "", "foo", "/root")
-	f.Add("files_with_matches", true, "*.go", "bar", "/root/sub")
-	f.Add("count", true, "  ", "baz", "rel")
-	f.Add("", false, "*.md", "--line-number", "/root") // pattern that looks like a flag
+	f.Add("content", false, "", "foo", "/root", 0)
+	f.Add("files_with_matches", true, "*.go", "bar", "/root/sub", 2)
+	f.Add("count", true, "  ", "baz", "rel", 3)
+	f.Add("", false, "*.md", "--line-number", "/root", 0) // pattern that looks like a flag
+	f.Add("content", false, "", "--font-size-body", "/root", 1)
 
-	f.Fuzz(func(t *testing.T, outputMode string, caseInsensitive bool, globFilter, pattern, dir string) {
-		args := buildRipgrepArgs(outputMode, caseInsensitive, globFilter, pattern, dir)
+	f.Fuzz(func(t *testing.T, outputMode string, caseInsensitive bool, globFilter, pattern, dir string, contextLines int) {
+		args := buildRipgrepArgs(outputMode, caseInsensitive, globFilter, pattern, dir, contextLines)
 
-		args2 := buildRipgrepArgs(outputMode, caseInsensitive, globFilter, pattern, dir)
+		args2 := buildRipgrepArgs(outputMode, caseInsensitive, globFilter, pattern, dir, contextLines)
 		if len(args) != len(args2) {
 			t.Fatalf("non-deterministic length: %d vs %d", len(args), len(args2))
 		}
@@ -34,8 +40,8 @@ func FuzzFc2BuildRipgrepArgs(f *testing.F) {
 			}
 		}
 
-		// Minimum shape: 3-arg prefix + 1 mode flag + pattern + dir.
-		if len(args) < 6 {
+		// Minimum shape: 3-arg prefix + 1 mode flag + "--" + pattern + dir.
+		if len(args) < 7 {
 			t.Fatalf("too few args: %v", args)
 		}
 		wantPrefix := []string{"--no-heading", "--color", "never"}
@@ -59,7 +65,11 @@ func FuzzFc2BuildRipgrepArgs(f *testing.F) {
 			t.Fatalf("mode flag=%q, want %q for outputMode=%q", args[3], wantMode, outputMode)
 		}
 
-		// The pattern and dir are always the last two args.
+		// The final three args are always "--", pattern, dir, in that order — the
+		// "--" guarantees a dash-prefixed pattern is never mistaken for a flag.
+		if args[len(args)-3] != "--" {
+			t.Fatalf("third-to-last arg=%q, want a literal \"--\" separator: %v", args[len(args)-3], args)
+		}
 		if args[len(args)-2] != pattern {
 			t.Fatalf("penultimate arg=%q, want pattern %q", args[len(args)-2], pattern)
 		}
@@ -67,12 +77,13 @@ func FuzzFc2BuildRipgrepArgs(f *testing.F) {
 			t.Fatalf("final arg=%q, want dir %q", args[len(args)-1], dir)
 		}
 
-		// The option region between the mode flag and the trailing pattern+dir
-		// holds only the optional -i and -g<glob>.
-		mid := args[4 : len(args)-2]
+		// The option region between the mode flag and the trailing "--"+pattern+dir
+		// holds only the optional -i, -g<glob>, and -C<n>.
+		mid := args[4 : len(args)-3]
 		wantI := caseInsensitive
 		wantG := strings.TrimSpace(globFilter) != ""
-		iCount, gCount := 0, 0
+		wantC := contextLines > 0 && (outputMode == "" || outputMode == "content")
+		iCount, gCount, cCount := 0, 0, 0
 		for j := 0; j < len(mid); j++ {
 			switch mid[j] {
 			case "-i":
@@ -86,6 +97,15 @@ func FuzzFc2BuildRipgrepArgs(f *testing.F) {
 					t.Fatalf("-g value=%q, want %q", mid[j+1], globFilter)
 				}
 				j++ // skip the glob value
+			case "-C":
+				cCount++
+				if j+1 >= len(mid) {
+					t.Fatalf("-C without a following count value: %v", mid)
+				}
+				if mid[j+1] != fmt.Sprintf("%d", contextLines) {
+					t.Fatalf("-C value=%q, want %q", mid[j+1], fmt.Sprintf("%d", contextLines))
+				}
+				j++ // skip the count value
 			}
 		}
 		if wantI && iCount != 1 {
@@ -99,6 +119,12 @@ func FuzzFc2BuildRipgrepArgs(f *testing.F) {
 		}
 		if !wantG && gCount != 0 {
 			t.Fatalf("blank glob but -g present: %v", mid)
+		}
+		if wantC && cCount != 1 {
+			t.Fatalf("contextLines=%d, outputMode=%q but -C count=%d: %v", contextLines, outputMode, cCount, mid)
+		}
+		if !wantC && cCount != 0 {
+			t.Fatalf("contextLines=%d, outputMode=%q but -C present: %v", contextLines, outputMode, mid)
 		}
 	})
 }
