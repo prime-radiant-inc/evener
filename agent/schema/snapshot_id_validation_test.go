@@ -63,6 +63,8 @@ var safeSessionIDs = []string{
 	"-01TEST0001",
 	"01TEST0001-",
 	"a_b-C9",
+	// The longest ID the rule accepts, so an off-by-one in the limit fails here.
+	"01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567",
 	// Near-misses for the reserved device names, which are ordinary filenames.
 	"COM0",
 	"CONSOLE",
@@ -182,6 +184,9 @@ func assertNoFilesWritten(t *testing.T, fs afero.Fs) {
 		}
 		if !info.IsDir() {
 			t.Errorf("rejected session ID still wrote %s", path)
+		}
+		if info.IsDir() && path != "/" {
+			t.Errorf("rejected session ID still created directory %s", path)
 		}
 		return nil
 	})

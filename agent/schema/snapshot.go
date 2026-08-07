@@ -66,6 +66,11 @@ var windowsReservedSessionIDs = map[string]bool{
 // The rule is deliberately wider than identifier.ValidateSessionID's minted
 // base62 shape: this is a safety boundary, not an authenticity check, and test
 // fixtures across the repo legitimately persist terse IDs like "WORKER".
+//
+// A write is checked transitively anyway, since saveSessionMetaLocked loads the
+// previous meta first and that load validates. Checking at each entry point
+// buys the stronger property: a refused ID takes no write lock and creates no
+// directory, so it leaves the filesystem untouched.
 func validateSessionID(id string) error {
 	if id == "" {
 		return fmt.Errorf("session id is empty: %w", ErrInvalidSessionID)
@@ -107,13 +112,13 @@ var sessionMetaWriteMus [sessionMetaWriteStripes]sync.Mutex
 //
 // The shard key is the session ID, deliberately not the resolved target path:
 // two callers can spell the same state directory differently and must still
-// land on the same lock. The ID is canonicalized first, because a lock may only
-// ever be coarser than the file it guards and two unequal IDs can still name
-// one file — a traversal segment collapses when the path is joined, and a
-// case-insensitive filesystem folds case. Nothing validates meta.ID on the way
-// in, so this side does not assume it is well-formed.
+// land on the same lock. It is lowercased first, because a lock may only ever be
+// coarser than the file it guards, and validateSessionID admits "ABC" and "abc"
+// as distinct IDs that name one file on a case-insensitive filesystem. It needs
+// no path canonicalization: every caller validates first, so no ID reaching here
+// can carry a separator or a "." segment for filepath.Clean to collapse.
 func sessionMetaWriteLock(sessionID string) *sync.Mutex {
-	key := strings.ToLower(filepath.Clean(sessionID))
+	key := strings.ToLower(sessionID)
 	// FNV-1a, inlined rather than via hash/fnv's interface-returning
 	// constructor, which would escape to the heap on every write.
 	const (
@@ -322,6 +327,8 @@ func appendSessionObservedByWithFS(fs afero.Fs, dir, workerSessionID, observerSe
 	if err != nil {
 		return err
 	}
+	// Only workerSessionID is validated: it names the file being written, while
+	// observerSessionID is persisted as data and never joined into a path here.
 	meta.ObservedBy = stableUnion(meta.ObservedBy, []string{observerSessionID})
 	return saveSessionMetaLocked(fs, dir, meta)
 }
