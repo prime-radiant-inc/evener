@@ -17,9 +17,21 @@ registry). The ledger carries **two independent triggers**, both keyed on
 3):
 
 - **(a) Failure trigger** — consecutive failures sharing an error class.
+  Nudges at 2, **parks at 3**.
 - **(b) Repetition trigger** — consecutive calls returning byte-identical
   result bodies, regardless of error status. Repetition itself is the
-  signal.
+  signal. **Nudge-only: it never parks** (Jesse, 2026-08-06).
+
+**Why (b) never parks (Jesse's ruling, 2026-08-06).** Parking on repetition
+assumes that identical arguments imply an identical result forever. That is
+false for every tool that observes mutable state, and the consequences were
+concrete: parking `communicate` refuses the session's only exit door, so
+`setCommunicateResult` never runs and the turn spins to
+`max_tool_rounds_per_input exhausted` (six agent tests proved it); parking a
+third `read_file` refused exactly the read whose environment had changed
+underneath it. A registration-time opt-out flag was offered and declined —
+Jesse took the trade-off knowingly: repetition applies steering pressure, and
+only genuine repeated *failures* are ever refused.
 
 Trigger (b) exists because serf cannot rely on a tool's error signal. Verified
 2026-08-06 from session `034163AU8MmLapfXKT7nMu`: all 153 identical
@@ -66,16 +78,16 @@ without serf knowing anything about any tool's error conventions.
 
 Decided with Jesse — **do not relitigate**:
 
-- Nudge at **2**, park at **3**, for both triggers.
+- Failure trigger: nudge at **2**, park at **3**.
+- Repetition trigger: **nudge only, from 2 onward — it never parks**
+  (Jesse, 2026-08-06).
 - Failure-trigger nudge text, verbatim:
   `You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach`
 - Failure-trigger park sentence, verbatim:
   `this exact call has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach`
-- Repetition-trigger park sentence, verbatim:
-  `you have made the same call 3 times and received the identical result — the answer will not change; use the result you already have or change approach`
 - Park means the call is **not executed**.
-- **No session-level tool fencing.** The per-signature park is the only
-  enforcement tier.
+- **No session-level tool fencing.** The per-signature failure park is the
+  only enforcement tier.
 - **No error-text sniffing and nothing MCP-specific.** Trigger (b) is generic
   or it does not exist.
 - Loop-detector integration: a detected loop whose window is all failures
@@ -205,20 +217,23 @@ see the workstream ledger for shas.
   `NewRegistry`; pin this with a test so a future refactor cannot share it).
 - `ExecuteCall` changes at exactly two points:
   1. **Before** the tool lookup, unless bypassed:
-     `failStreak, repeatStreak, snippets := breaker.check(name, call.Arguments)`.
-     If either is `>= 2`, return a parked `ExecResult` (`IsError: true`,
+     `failStreak, _, snippets := breaker.check(name, call.Arguments)`.
+     If `failStreak >= 2`, return a parked `ExecResult` (`IsError: true`,
      `PrevalOnly` false — the breaker refused it, pre-validation did not) and
-     **do not execute, and do not record**.
+     **do not execute, and do not record**. The repetition counter never parks,
+     so it is not consulted here.
   2. **After** the result is computed:
      `failStreak, repeatStreak := breaker.record(name, call.Arguments, res.IsError, res.Output)`
      — computed on the body **before** any nudge is appended. Then, if
-     `failStreak == 2`, append the failure nudge; else if `repeatStreak == 2`,
+     `failStreak == 2`, append the failure nudge; else if `repeatStreak >= 2`,
      append the repetition nudge. Append a blank line then the text to
      `res.Output` (and `res.FullOutput` when non-empty). Appending after
      truncation is intentional: the nudge must survive the limiter.
      Restructure the tail of `ExecuteCall` minimally so every dispatched
      result funnels through one record point.
 - Repetition nudge text: `You have now made this same call twice and received the identical result. Repeating it will not change the answer — use the result you already have, or change your approach.`
+  It repeats on every subsequent identical result, because nothing else stops
+  the loop once parking is off the table.
 - Failure park text, exact template:
 
 ```
@@ -227,12 +242,6 @@ serf did not execute this call: <tool> with these exact arguments has now failed
 The failures so far:
 1. <snippet 1>
 2. <snippet 2>
-```
-
-- Repetition park text, exact template:
-
-```
-serf did not execute this call: you have made the same call 3 times and received the identical result — the answer will not change; use the result you already have or change approach.
 ```
 
 - Bypass: `func WithBreakerBypass(ctx context.Context) context.Context` plus an
@@ -245,14 +254,16 @@ serf did not execute this call: you have made the same call 3 times and received
   decided failure park sentence plus both snippets; call 4 with the same args
   still parked; call 5 with different args executes.
 - [ ] **Step 2: Failing test (repetition path)** — a fake tool returning a
-  byte-identical body with `IsError: false` (the `set_viewport` shape). Same
-  1/2/3 progression, with the repetition nudge and the repetition park
-  sentence, and the invocation counter proving call 3 never ran.
-- [ ] **Step 3: Failing test (park does not unpark)** — after a park, two more
-  identical calls stay parked and the executor is never invoked again.
+  byte-identical body with `IsError: false` (the `set_viewport` shape). Call 1
+  plain; calls 2 and 3 both carry the repetition nudge; the executor's
+  invocation counter proves **every** call ran, since repetition never parks.
+- [ ] **Step 3: Failing test (park does not unpark)** — after a failure park,
+  two more identical calls stay parked and the executor is never invoked again.
 - [ ] **Step 4: Failing test (no false positives)** — a tool whose body changes
-  every call (a counter in the output) is never nudged or parked across 10
-  calls; a fail/fail/succeed sequence does not park.
+  every call (a counter in the output) is never nudged across 10 calls; a
+  fail/fail/succeed sequence does not park; and an identical-body **success**
+  loop is never parked, only nudged (the `communicate` and mutable-state
+  `read_file` regressions that drove the 2026-08-06 ruling).
 - [ ] **Step 5: Failing test (isolation + bypass)** — `Clone()` of a registry
   with a tripped signature dispatches it (fresh ledger); a `WithBreakerBypass`
   ctx executes a would-be-parked call.
@@ -332,9 +343,11 @@ Stop. Either change the arguments, or take a different approach to the goal.
 - **Replay acceptance test:** the `034163AU8MmLapfXKT7nMu` shape — a stub MCP
   server returning `IsError: false` with the byte-identical body
   `Error: set_viewport requires payload with width and height: {width,height,deviceScaleFactor?,mobile?}`
-  — parks at call 3 via the repetition trigger, proving serf needs no knowledge
-  of the plugin's error convention.
-- Docs: one paragraph stating both triggers, both thresholds, that the ledger is
+  — carries the repetition nudge from call 2 onward, proving serf needs no
+  knowledge of the plugin's error convention. Every call still executes: the
+  repetition trigger never parks.
+- Docs: one paragraph stating both triggers, that the failure trigger nudges at
+  2 and parks at 3 while repetition only ever nudges, that the ledger is
   per-session and per-signature, what resets each counter, and that a parked
   result is an ordinary error result.
 
@@ -353,10 +366,14 @@ Stop. Either change the arguments, or take a different approach to the goal.
   per argument set, proven by an executor invocation counter in both the native
   and MCP tests.
 - A replay of the `034163AU8MmLapfXKT7nMu` shape — identical args, identical
-  `is_error: false` bodies — parks at call 3.
+  `is_error: false` bodies — carries the repetition nudge from call 2 onward,
+  and still executes every call.
 - The second occurrence's result ends with the decided nudge sentence for its
-  trigger, character for character; the third is an error result beginning
-  `serf did not execute this call:` carrying the decided park sentence.
+  trigger, character for character; a third identical *failure* is an error
+  result beginning `serf did not execute this call:` carrying the decided park
+  sentence.
+- `communicate` is never refused by the breaker, so a session can always reach
+  its exit door; three identical successful `read_file` calls all execute.
 - A changed body, a success, or a different error class resets the relevant
   counter; a live `job_status` polling loop is never nudged or parked.
 - A park is never undone by the parked result itself.
