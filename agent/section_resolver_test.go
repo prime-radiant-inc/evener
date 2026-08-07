@@ -676,7 +676,10 @@ func TestTranscriptsSection_TeachesToolsNotRawRead(t *testing.T) {
 		agentFS:  bundled.Agents(),
 		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
-	data := promptData{Provider: "openai", Agent: "coordinator"}
+	data := promptData{
+		Provider: "openai", Agent: "coordinator",
+		CallableTools: map[string]bool{"read_transcript": true, "find_session_transcripts": true},
+	}
 	section := resolver.Section("transcripts", data)
 
 	// Must name both tools.
@@ -699,6 +702,71 @@ func TestTranscriptsSection_TeachesToolsNotRawRead(t *testing.T) {
 		if strings.Contains(section, bad) {
 			t.Errorf("transcripts section should not contain %q (instructs raw file reading)", bad)
 		}
+	}
+}
+
+// TestTranscriptsSection_SilentWithoutTheTools is the other half of the rule
+// ruled 2026-08-06: the section is eight lines of instructions for two tools, so
+// a session that has neither — ten of the eleven shipped typed agents — gets
+// none of it rather than a page it cannot act on.
+func TestTranscriptsSection_SilentWithoutTheTools(t *testing.T) {
+	t.Parallel()
+	resolver := &sectionResolver{
+		provider: "openai",
+		agent:    "explorer",
+		agentFS:  bundled.Agents(),
+		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+	}
+
+	none := resolver.Section("transcripts", promptData{Provider: "openai", Agent: "explorer"})
+	if strings.TrimSpace(none) != "" {
+		t.Fatalf("transcripts section = %q, want nothing for a session with no transcript tool", none)
+	}
+
+	readOnly := resolver.Section("transcripts", promptData{
+		Provider: "openai", Agent: "explorer",
+		CallableTools: map[string]bool{"read_transcript": true},
+	})
+	if !strings.Contains(readOnly, "read_transcript") {
+		t.Fatalf("read-only section = %q, want the read_transcript guidance", readOnly)
+	}
+	if strings.Contains(readOnly, "find_session_transcripts") {
+		t.Fatalf("read-only section names a tool this session cannot call: %q", readOnly)
+	}
+}
+
+// TestWorkflowSection_GatesItsToolMentions covers the other base section that
+// named tools unconditionally: the job-output pointer (read_transcript) and the
+// readiness-condition advice (job_watch).
+func TestWorkflowSection_GatesItsToolMentions(t *testing.T) {
+	t.Parallel()
+	resolver := func() *sectionResolver {
+		return &sectionResolver{
+			provider: "openai",
+			agent:    "explorer",
+			agentFS:  bundled.Agents(),
+			sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		}
+	}
+
+	with := resolver().Section("workflow", promptData{
+		Provider: "openai", Agent: "explorer",
+		CallableTools: map[string]bool{"read_transcript": true, "job_watch": true},
+	})
+	for _, want := range []string{"read_transcript", "job_watch"} {
+		if !strings.Contains(with, want) {
+			t.Errorf("workflow section = %q, want it to name %q when the session has it", with, want)
+		}
+	}
+
+	without := resolver().Section("workflow", promptData{Provider: "openai", Agent: "explorer"})
+	for _, bad := range []string{"read_transcript", "job_watch"} {
+		if strings.Contains(without, bad) {
+			t.Errorf("workflow section names %q, which this session cannot call: %q", bad, without)
+		}
+	}
+	if !strings.Contains(without, "pipefail") {
+		t.Errorf("tool-free workflow section lost its tool-independent guidance: %q", without)
 	}
 }
 
@@ -776,4 +844,32 @@ func TestAnthropicProvider_UsesEditFile(t *testing.T) {
 	// This ensures the provider separation is bidirectional: apply_patch absent
 	// AND edit_file present in the profile that drives the rendered prompt.
 	assertHasTool(t, newAnthropicProfile("claude-test"), "edit_file")
+}
+
+// TestSectionResolver_DiskOverrideBeatsEmbeddedTemplate pins the source-order
+// rule: a disk override replaces the embedded section whichever extension each
+// side uses. Without it, turning an embedded section into a .md.tmpl — which is
+// how a section gates a tool mention — would silently disable every project or
+// global .md override of that section.
+func TestSectionResolver_DiskOverrideBeatsEmbeddedTemplate(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeSection(t, dir, "transcripts.md", "project override")
+
+	r := &sectionResolver{
+		provider: "openai",
+		agent:    "explorer",
+		agentFS:  bundled.Agents(),
+		sources: []sectionSource{
+			diskSource{dir: dir},
+			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
+		},
+	}
+	got := r.Section("transcripts", promptData{
+		Provider: "openai", Agent: "explorer",
+		CallableTools: map[string]bool{"read_transcript": true},
+	})
+	if got != "project override" {
+		t.Fatalf("section = %q, want the disk override to win over the embedded .md.tmpl", got)
+	}
 }

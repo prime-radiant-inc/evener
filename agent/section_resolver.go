@@ -153,39 +153,35 @@ func (r *sectionResolver) resolveRole(data promptData) string {
 	return body
 }
 
-// readAndRender tries to read a section file (template first, then plain),
-// renders it if needed, and tracks the source.
+// readAndRender reads a section file and renders it if it is a template.
+//
+// Source order wins over extension: each source is asked for .md.tmpl and then
+// .md before the next source is consulted. A project or global override is a
+// deliberate replacement of the embedded section, so it must win whichever
+// extension the embedded copy happens to use — otherwise turning an embedded
+// section into a template (to gate a tool mention, say) would silently disable
+// every disk override of it.
 func (r *sectionResolver) readAndRender(stem string, data promptData) string {
-	// Try .md.tmpl first.
-	if raw, label := r.readFirst(stem + ".md.tmpl"); raw != nil {
-		result, err := r.renderTemplate(label, string(raw), data)
-		if err != nil {
-			r.tracked = append(r.tracked, promptSource{Label: "ERROR:" + label})
-			return ""
-		}
-		result = strings.TrimRight(result, "\n")
-		r.tracked = append(r.tracked, promptSource{Label: label, Size: len(result)})
-		return result
-	}
-
-	// Try plain .md.
-	if raw, label := r.readFirst(stem + ".md"); raw != nil {
-		result := strings.TrimRight(string(raw), "\n")
-		r.tracked = append(r.tracked, promptSource{Label: label, Size: len(result)})
-		return result
-	}
-
-	return ""
-}
-
-// readFirst checks each source in order and returns the first match.
-func (r *sectionResolver) readFirst(name string) ([]byte, string) {
 	for _, src := range r.sources {
-		if data, ok := src.ReadFile(name); ok {
-			return data, r.sourceLabel(src, name)
+		if raw, ok := src.ReadFile(stem + ".md.tmpl"); ok {
+			label := r.sourceLabel(src, stem+".md.tmpl")
+			result, err := r.renderTemplate(label, string(raw), data)
+			if err != nil {
+				r.tracked = append(r.tracked, promptSource{Label: "ERROR:" + label})
+				return ""
+			}
+			result = strings.TrimRight(result, "\n")
+			r.tracked = append(r.tracked, promptSource{Label: label, Size: len(result)})
+			return result
+		}
+		if raw, ok := src.ReadFile(stem + ".md"); ok {
+			label := r.sourceLabel(src, stem+".md")
+			result := strings.TrimRight(string(raw), "\n")
+			r.tracked = append(r.tracked, promptSource{Label: label, Size: len(result)})
+			return result
 		}
 	}
-	return nil, ""
+	return ""
 }
 
 // sourceLabel returns a human-readable label for a source/file combination.

@@ -1,10 +1,14 @@
 package agent
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	taskpkg "primeradiant.com/serf/agent/task"
+	"primeradiant.com/serf/llm"
 )
 
 // TestSelfCompactNudgeFallsBackWhenToolMissing pins the rule ruled 2026-08-06:
@@ -163,5 +167,125 @@ func TestJobNotificationOutputPointerGatesOnTranscriptTool(t *testing.T) {
 	}
 	if !strings.Contains(withoutTool, "job_1") {
 		t.Fatalf("tool-free notification lost the job itself: %q", withoutTool)
+	}
+}
+
+// --- call-site coverage -------------------------------------------------
+//
+// The three builders below take availability as a parameter, so a pure-function
+// test proves only that the parameter works. These drive the real call sites, so
+// a site regressing to an unconditional literal fails something.
+
+// TestJobNotificationReminderGatesAtTheCallSite drives the production caller,
+// which must read the flag off its own session's registry.
+func TestJobNotificationReminderGatesAtTheCallSite(t *testing.T) {
+	t.Parallel()
+	notifs := []deliverableJobNotification{
+		{notification: jobNotification{JobID: "job_1", JobType: "shell", Status: "completed", TranscriptRef: "local:abc"}},
+	}
+
+	s := newTestSession(t)
+	if got := s.formatJobNotificationReminder(notifs); !strings.Contains(got, "read_transcript") {
+		t.Fatalf("reminder = %q, want the read_transcript pointer for a session that has it", got)
+	}
+
+	s.reg.Remove("read_transcript")
+	got := s.formatJobNotificationReminder(notifs)
+	if strings.Contains(got, "read_transcript") {
+		t.Fatalf("reminder names a tool this session cannot call: %q", got)
+	}
+	if !strings.Contains(got, "job_1") {
+		t.Fatalf("tool-free reminder lost the job itself: %q", got)
+	}
+}
+
+// TestTaskInactivityReminderGatesAtTheCallSite drives maybeInjectTaskReminder's
+// inactivity trigger, the production caller of formatCurrentTaskSteering that
+// does not sit inside the task_list handler.
+func TestTaskInactivityReminderGatesAtTheCallSite(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		removeTool bool
+		wantNamed  bool
+	}{
+		{name: "with task_list", wantNamed: true},
+		{name: "without task_list", removeTool: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{
+				MaxSubagentDepth: 1,
+				NoProjectPrompts: true,
+				testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+			}))
+			store := s.getOrCreateTaskStore()
+			if _, err := store.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeImplement, Description: "ship it", Prompt: "do the thing"}}); err != nil {
+				t.Fatalf("append: %v", err)
+			}
+			if _, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+				t.Fatalf("start task: %v", err)
+			}
+			if tc.removeTool {
+				s.reg.Remove("task_list")
+			}
+			s.mu.Lock()
+			s.taskToolEverUsed = true
+			s.totalRounds = 30
+			s.taskToolLastRound = 0
+			s.mu.Unlock()
+
+			msg, kind := s.maybeInjectTaskReminder()
+			if kind != events.SteeringKindTaskInactive {
+				t.Fatalf("kind = %q, want the inactivity reminder", kind)
+			}
+			if named := strings.Contains(msg, "task_list"); named != tc.wantNamed {
+				t.Fatalf("reminder names task_list = %v, want %v: %q", named, tc.wantNamed, msg)
+			}
+			if !strings.Contains(msg, "ship it") {
+				t.Fatalf("reminder lost the task itself: %q", msg)
+			}
+		})
+	}
+}
+
+// TestTasksDoneReminderUsesTheRenamedResultToolAtTheCallSite drives the task
+// tool itself on a session that renamed its result tool.
+func TestTasksDoneReminderUsesTheRenamedResultToolAtTheCallSite(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		ResultToolName:   "report_result",
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	ctx := context.Background()
+	env := s.currentEnv()
+
+	appendArgs, _ := json.Marshal(map[string]any{
+		"action": "append",
+		"tasks":  []map[string]any{{"type": "implement", "description": "only task", "prompt": "p"}},
+	})
+	if res := s.reg.ExecuteCall(ctx, env, llm.ToolCallData{ID: "t1", Name: "task_list", Arguments: appendArgs}); res.IsError {
+		t.Fatalf("append: %s", res.Output)
+	}
+	done, _ := json.Marshal(map[string]any{
+		"action":  "update",
+		"updates": []map[string]any{{"id": 1, "status": "done"}},
+	})
+	if res := s.reg.ExecuteCall(ctx, env, llm.ToolCallData{ID: "t2", Name: "task_list", Arguments: done}); res.IsError {
+		t.Fatalf("update: %s", res.Output)
+	}
+
+	var allDone string
+	for _, m := range s.SteeringQueueSnapshot() {
+		if strings.Contains(m.Text, "completed all tasks") {
+			allDone = m.Text
+		}
+	}
+	if allDone == "" {
+		t.Fatalf("no all-tasks-done steering queued: %+v", s.SteeringQueueSnapshot())
+	}
+	if !strings.Contains(allDone, "report_result") || strings.Contains(allDone, "communicate") {
+		t.Fatalf("all-done reminder = %q, want it to name this session's result tool", allDone)
 	}
 }
