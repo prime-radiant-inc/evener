@@ -2,19 +2,27 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** No tool call with identical arguments executes more than twice in a
-session when it keeps producing the same answer — whether that answer is the
-same failure or the byte-identical result. The 300-identical-`set_viewport`
-pattern becomes impossible by construction, uniformly for native tools, MCP
-tools, and anything registered later.
+**Goal:** No tool call with identical arguments and an identical error class
+executes more than twice in a session — it is refused on the third attempt,
+uniformly for native tools, MCP tools, and anything registered later. A call
+that keeps returning the byte-identical *result* is nudged from the second
+occurrence onward but always executes.
+
+**What this does not do (read before relying on it).** The
+300-identical-`set_viewport` incident is **not** impossible by construction.
+Those 153 failures were reported `is_error: false`, so they reach only the
+repetition trigger, which never parks (Jesse's ruling below), and they are
+invisible to the failure-aware loop detector, which keys on `IsError`. What
+WS2 gives that incident is a nudge on every repeat, not a stop. Refusal is
+reserved for calls that genuinely report failure.
 
 **Architecture:** A per-session ledger owned by the session's
 `*tool.Registry` and consulted inside `Registry.ExecuteCall` — the single
 chokepoint every tool call passes through (`agent/session_tools.go:440`
 and `:541` are its only callers, and MCP tools register into the same
 registry). The ledger carries **two independent triggers**, both keyed on
-`tool name + args hash`, both with the same thresholds (nudge at 2, park at
-3):
+`tool name + args hash`, both nudging from the second occurrence — but only
+the failure trigger ever refuses a call:
 
 - **(a) Failure trigger** — consecutive failures sharing an error class.
   Nudges at 2, **parks at 3**.
@@ -138,9 +146,9 @@ key.
 - Calls to *other* signatures never reset a signature's counters:
   "consecutive" is per signature, because the observed pathologies interleave.
 
-**Trigger precedence.** If both fire, the failure trigger's message wins (it
-is the decided text and carries the error digest). The repetition message is
-used only for a non-failure park.
+**Trigger precedence.** If both fire, the failure trigger's nudge wins (it is
+the decided text and its streak is the one that can park). The repetition
+nudge is appended only when the failure trigger has nothing to say.
 
 **Parked calls are not recorded.** A park leaves the ledger entry untouched, so
 the counters stay at their tripped values and every later identical call stays
@@ -148,10 +156,10 @@ parked. Recording the park's own output would reset the body hash and unpark
 the next call — a bug the tests must pin.
 
 **Read-only polling.** Live `job_status` bodies carry `running_for_ms` /
-`quiet_for_ms` and are never byte-identical (verified above). Polling a
-*terminal* job three times with identical args does park, with the advisory
-repetition message — that is the intended "you already have this answer" case,
-not a false positive. No allowlist, no tool-name special cases.
+`quiet_for_ms` and are never byte-identical (verified above), so polling never
+trips the repetition counter at all. Polling a *terminal* job repeatedly does
+draw the repetition nudge — the intended "you already have this answer" case —
+and still executes. No allowlist, no tool-name special cases.
 
 **Where the state lives.** On the `*tool.Registry` instance, one per session,
 rebuilt on resume. `Clone()` must start a **fresh** ledger — a clone is a new
@@ -185,7 +193,7 @@ counts them by that prefix; nothing in WS2 implements health counting.
 **Files:** `agent/internal/tool/breaker.go`, `agent/internal/tool/breaker_test.go`
 
 Trigger (a) only: `failureLedger` with `check`/`record`, `errorClass`
-normalization, per-signature streaks, FIFO eviction. Delivered and reviewed;
+normalization, per-signature streaks, bounded eviction. Delivered and reviewed;
 see the workstream ledger for shas.
 
 ### Task 2: The repetition trigger
@@ -201,16 +209,16 @@ see the workstream ledger for shas.
   class and snippets, and updates the body counter. Eviction cap rises to 512.
 - Body hashing uses the package's `shortHash` over `[]byte(output)`.
 
-- [ ] **Step 1: Failing tests:** three identical successful bodies → repeat
+- [x] **Step 1: Failing tests:** three identical successful bodies → repeat
   streak 3 while failure streak stays 0; a changed body resets the repeat
   streak to 1; identical *failure* bodies advance both counters together;
   a success after failures zeroes the failure counter but leaves the entry and
   its body counter live; different args hash → independent counters;
   interleaved other-tool calls preserve both counters; entries surviving
-  success do not corrupt FIFO eviction at 513 signatures; `-race` concurrency
+  success do not corrupt eviction at 513 signatures; `-race` concurrency
   over both counters.
-- [ ] **Step 2: Implement; tests green.**
-- [ ] **Step 3: Gates (root + agent, plus `-race` on `./internal/tool/`), commit**
+- [x] **Step 2: Implement; tests green.**
+- [x] **Step 3: Gates (root + agent, plus `-race` on `./internal/tool/`), commit**
   (`feat(tool): count consecutive identical result bodies alongside failures`).
 
 ### Task 3: Nudge at 2, park at 3, inside `ExecuteCall`
@@ -234,7 +242,7 @@ see the workstream ledger for shas.
   2. **After** the result is computed:
      `failStreak, repeatStreak := breaker.record(name, call.Arguments, res.IsError, res.Output)`
      — computed on the body **before** any nudge is appended. Then, if
-     `failStreak == 2`, append the failure nudge; else if `repeatStreak >= 2`,
+     `failStreak >= 2`, append the failure nudge; else if `repeatStreak >= 2`,
      append the repetition nudge. Append a blank line then the text to
      `res.Output` (and `res.FullOutput` when non-empty). Appending after
      truncation is intentional: the nudge must survive the limiter.
@@ -257,29 +265,29 @@ The failures so far:
   unexported context key in the `tool` package. `rerunToolWithGrant` wraps its
   ctx with it, because a human just approved that exact retry.
 
-- [ ] **Step 1: Failing test (failure path)** — a fake tool that always returns
+- [x] **Step 1: Failing test (failure path)** — a fake tool that always returns
   the same error. Call 1 plain; call 2 ends with the exact failure nudge; call
   3 not executed (the fake's invocation counter stays at 2) and carries the
   decided failure park sentence plus both snippets; call 4 with the same args
   still parked; call 5 with different args executes.
-- [ ] **Step 2: Failing test (repetition path)** — a fake tool returning a
+- [x] **Step 2: Failing test (repetition path)** — a fake tool returning a
   byte-identical body with `IsError: false` (the `set_viewport` shape). Call 1
   plain; calls 2 and 3 both carry the repetition nudge; the executor's
   invocation counter proves **every** call ran, since repetition never parks.
-- [ ] **Step 3: Failing test (park does not unpark)** — after a failure park,
+- [x] **Step 3: Failing test (park does not unpark)** — after a failure park,
   two more identical calls stay parked and the executor is never invoked again.
-- [ ] **Step 4: Failing test (no false positives)** — a tool whose body changes
+- [x] **Step 4: Failing test (no false positives)** — a tool whose body changes
   every call (a counter in the output) is never nudged across 10 calls; a
   fail/fail/succeed sequence does not park; and an identical-body **success**
   loop is never parked, only nudged (the `communicate` and mutable-state
   `read_file` regressions that drove the 2026-08-06 ruling).
-- [ ] **Step 5: Failing test (isolation + bypass)** — `Clone()` of a registry
+- [x] **Step 5: Failing test (isolation + bypass)** — `Clone()` of a registry
   with a tripped signature dispatches it (fresh ledger); a `WithBreakerBypass`
   ctx executes a would-be-parked call.
-- [ ] **Step 6: Implement; all green.**
-- [ ] **Step 7: Wire the bypass into `rerunToolWithGrant`; agent-module test
+- [x] **Step 6: Implement; all green.**
+- [x] **Step 7: Wire the bypass into `rerunToolWithGrant`; agent-module test
   that an approved sandbox-denial rerun is not parked.**
-- [ ] **Step 8: Gates, commit**
+- [x] **Step 8: Gates, commit**
   (`feat(tool): nudge repeated identical calls at 2 and park the dispatch at 3`).
 
 ### Task 4: Failure-aware loop detection
@@ -317,18 +325,18 @@ Stop. Either change the arguments, or take a different approach to the goal.
   Emitted through the existing `events.EventLoopDetection` +
   `appendSteeringTurn(..., events.SteeringKindLoopDetected)` path.
 
-- [ ] **Step 1: Failing unit tests** for `allFailed`: all-true window → true;
+- [x] **Step 1: Failing unit tests** for `allFailed`: all-true window → true;
   one success in the window → false; short slice → false.
-- [ ] **Step 2: Failing session test** — alternating failing and succeeding
+- [x] **Step 2: Failing session test** — alternating failing and succeeding
   calls fill the window: tier-1 `stuckEscalation` text appears, structural text
   does not.
-- [ ] **Step 3: Failing session test** — all-failing repeats fill the window:
+- [x] **Step 3: Failing session test** — all-failing repeats fill the window:
   structural text injected, tier-1 text absent, reasoning effort unchanged.
-- [ ] **Step 4: Implement; green.** Update the fuzz/coverage callers of
+- [x] **Step 4: Implement; green.** Update the fuzz/coverage callers of
   `injectPostToolSteering`
   (`agent/session_tool_round_tail_coverage_fuzz_test.go`) for the new
   signature.
-- [ ] **Step 5: Gates, commit**
+- [x] **Step 5: Gates, commit**
   (`feat(agent): failure loops skip straight to structural intervention`).
 
 ### Task 5: MCP coverage, replay acceptance, and docs
@@ -360,13 +368,13 @@ Stop. Either change the arguments, or take a different approach to the goal.
   per-session and per-signature, what resets each counter, and that a parked
   result is an ordinary error result.
 
-- [ ] **Step 1: Failing MCP failure test.**
-- [ ] **Step 2: Failing replay acceptance test.**
-- [ ] **Step 3: Green (expected: no production change — if one *is* needed,
+- [x] **Step 1: Failing MCP failure test.**
+- [x] **Step 2: Failing replay acceptance test.**
+- [x] **Step 3: Green (expected: no production change — if one *is* needed,
   that is a real gap in Task 3's uniformity and gets fixed in `registry.go`,
   never in the MCP layer, and never by sniffing error text).**
-- [ ] **Step 4: Docs paragraph.**
-- [ ] **Step 5: Gates, commit**
+- [x] **Step 4: Docs paragraph.**
+- [x] **Step 5: Gates, commit**
   (`test(mcp): prove IsError and identical-body loops both feed the breaker`).
 
 ## Acceptance (whole workstream)
