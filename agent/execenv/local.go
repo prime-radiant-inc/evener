@@ -1453,7 +1453,7 @@ func lookPathInEnv(name string, env []string) (string, bool) {
 		if err != nil || info.IsDir() {
 			continue
 		}
-		if runtime.GOOS == "windows" || info.Mode().Perm()&0o111 != 0 {
+		if info.Mode().Perm()&0o111 != 0 {
 			return candidate, true
 		}
 	}
