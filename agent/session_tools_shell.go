@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -472,14 +473,36 @@ func formatShellResult(out shellToolResult) string {
 			b.WriteByte('\n')
 		}
 	}
+	// runTimeout is a genuine stopped/run_timeout terminal result (job-control.md
+	// §"Defaults and timeout semantics"): the process was still running after
+	// max_runtime_ms, so serf killed it. That is not the command failing on its
+	// own and exit_code is a sentinel for it (job-control.md:802), so the footer
+	// must not present it as an ordinary exit.
+	runTimeout := out.Status == string(jobstore.StatusStopped) && out.Reason != nil && *out.Reason == "run_timeout"
+	// promoted is the foreground-wait-timeout promotion (job-control.md:210,214):
+	// the command itself did not time out — the foreground wait did, and the
+	// command keeps running as a durable background job.
+	promoted := out.RunningInBackground && out.TimedOut && out.JobID != ""
+
 	var foot []string
-	if out.ExitCode != nil && !out.RunningInBackground {
+	if out.ExitCode != nil && !out.RunningInBackground && !runTimeout {
 		foot = append(foot, fmt.Sprintf("exit %d", *out.ExitCode))
 	}
-	if out.TimedOut {
+	if out.TimedOut && !promoted {
 		foot = append(foot, "timed out")
 	}
 	switch {
+	case runTimeout:
+		foot = append(foot, "stopped by serf's runtime limit (max_runtime_ms) — not a command failure")
+		if out.Output == nil || *out.Output == "" {
+			foot = append(foot, "no output before the limit — it may still have been working, e.g. compiling")
+		}
+	case promoted:
+		foot = append(foot,
+			fmt.Sprintf("still running as %s — the foreground wait ended, not the command", out.JobID),
+			fmt.Sprintf("output accumulates durably; read it with read_transcript(transcript_ref=%q)", "job:"+out.JobID),
+			"completion arrives by notification — do not relaunch or poll",
+		)
 	case out.RunningInBackground && out.JobID != "":
 		foot = append(foot, "running in background as "+out.JobID)
 	case out.JobID != "":

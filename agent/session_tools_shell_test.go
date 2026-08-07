@@ -926,6 +926,95 @@ func TestCompleteOrHandleKeptNoNotification(t *testing.T) {
 	}
 }
 
+// TestFormatShellResultPromotionFooter pins the wording a promoted foreground
+// command sees (job-control.md: foreground promotion). The command is not
+// done and did not fail — the foreground wait ended and the work continues as
+// a durable job. The footer must say the job is still running, name the job
+// id, point at read_transcript for durable output, describe completion as
+// notification-driven, and tell the agent not to relaunch or poll.
+func TestFormatShellResultPromotionFooter(t *testing.T) {
+	t.Parallel()
+	reason := "foreground_timeout"
+	output := "partial output\n"
+	got := formatShellResult(shellToolResult{
+		JobID:               "job_promoted",
+		Type:                "shell",
+		Status:              string(jobstore.StatusRunning),
+		Reason:              &reason,
+		RunningInBackground: true,
+		TimedOut:            true,
+		Output:              &output,
+	})
+	for _, want := range []string{
+		"still running",
+		"job_promoted",
+		`read_transcript(transcript_ref="job:job_promoted")`,
+		"notification",
+		"do not relaunch or poll",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("promotion footer = %q, want it to contain %q", got, want)
+		}
+	}
+	if strings.Contains(got, "timed out") {
+		t.Fatalf("promotion footer = %q, must not say the command itself timed out", got)
+	}
+}
+
+// TestFormatShellResultRunTimeoutFooter pins the wording for a genuine
+// stopped/run_timeout terminal result (job-control.md:212, :214): the process
+// was stopped by serf's own runtime limit, not by failing on its own. The
+// footer must attribute the stop to serf's runtime limit and must not present
+// it as an ordinary exit/failure.
+func TestFormatShellResultRunTimeoutFooter(t *testing.T) {
+	t.Parallel()
+	reason := "run_timeout"
+	output := "built most of the way\n"
+	exitCode := -1
+	got := formatShellResult(shellToolResult{
+		Type:                "shell",
+		Status:              string(jobstore.StatusStopped),
+		Reason:              &reason,
+		RunningInBackground: false,
+		TimedOut:            false,
+		ExitCode:            &exitCode,
+		Output:              &output,
+	})
+	for _, want := range []string{"serf", "runtime limit"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("run_timeout footer = %q, want it to contain %q", got, want)
+		}
+	}
+	for _, notWant := range []string{"exit -1", "exit -"} {
+		if strings.Contains(got, notWant) {
+			t.Fatalf("run_timeout footer = %q, must not present the stop as an ordinary exit code", got)
+		}
+	}
+}
+
+// TestFormatShellResultRunTimeoutZeroOutputFooter pins the zero-output case of
+// a genuine run_timeout stop: the footer must additionally say the process
+// produced no output before the limit, since a silent process may simply
+// still have been working (e.g. compiling).
+func TestFormatShellResultRunTimeoutZeroOutputFooter(t *testing.T) {
+	t.Parallel()
+	reason := "run_timeout"
+	exitCode := -1
+	got := formatShellResult(shellToolResult{
+		Type:                "shell",
+		Status:              string(jobstore.StatusStopped),
+		Reason:              &reason,
+		RunningInBackground: false,
+		TimedOut:            false,
+		ExitCode:            &exitCode,
+	})
+	for _, want := range []string{"serf", "runtime limit", "no output"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("zero-output run_timeout footer = %q, want it to contain %q", got, want)
+		}
+	}
+}
+
 func newShellToolTestSession(t *testing.T, cfg SessionConfig) *Session {
 	t.Helper()
 	c := llm.NewClient()

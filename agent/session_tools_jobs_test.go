@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	tooldefs "primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
@@ -422,5 +423,54 @@ func requiredParams(t *testing.T, name string, raw any) []string {
 	default:
 		t.Fatalf("%s required = %T, want array", name, raw)
 		return nil
+	}
+}
+
+// TestJobStatusReportsRunTimeoutAttribution pins job-control.md's stopped/
+// run_timeout attribution (job-control.md:146,154: run_timeout is a serf
+// runtime-limit stop, never command failure) all the way through job_status:
+// a job serf stopped for exceeding max_runtime_ms must report the same
+// status/reason there as the shell result that stopped it. max_runtime_ms has
+// no model-facing shell schema property (out of scope by design; see
+// DefShell), so this drives runShell directly, the same way job_shell_test.go
+// covers the shell-side run_timeout terminal result.
+func TestJobStatusReportsRunTimeoutAttribution(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	se, ok := s.env.(execenv.StreamingExecutor)
+	if !ok {
+		t.Fatal("test session execution environment does not support streaming")
+	}
+
+	res := runShell(context.Background(), s.jobManager, se, shellArgs{
+		Command:        "sleep 5",
+		BlockTimeoutMS: 5000,
+		MaxRuntimeMS:   1000,
+	})
+	if res.JobID == "" {
+		t.Fatal("run_timeout must return a durable job_id")
+	}
+	if res.Status != string(jobstore.StatusStopped) || res.Reason != "run_timeout" {
+		t.Fatalf("shell result = %+v, want stopped/run_timeout", res)
+	}
+	waitForShellDone(t, s.jobManager, res.JobID)
+
+	statusRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "status",
+		Name:      "job_status",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, res.JobID)),
+	})
+	if statusRes.IsError {
+		t.Fatalf("job_status returned error: %s", statusRes.Output)
+	}
+	var status struct {
+		Status string `json:"status"`
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(toolResultJSON(statusRes), &status); err != nil {
+		t.Fatalf("unmarshal job_status: %v (output: %s)", err, statusRes.Output)
+	}
+	if status.Status != string(jobstore.StatusStopped) || status.Reason != "run_timeout" {
+		t.Fatalf("job_status = %+v, want stopped/run_timeout — same attribution as the shell result (job-control.md:146,154)", status)
 	}
 }
