@@ -71,10 +71,11 @@ status, never as a broader claim: `git config --list` exiting 0 says the config
 chain is readable, not that every git operation succeeds.
 
 The two probes are **bounded independently and run concurrently**. The git probe
-keeps the looser bound as a fallback, not because the work is slow: a
-`restricted` `git` call now costs ~164ms (see `restricted` below), but on a host
-where the developer toolchain cannot be named it falls back to the slow `xcrun`
-shim. Independence means a slow git degrades only the git line.
+keeps its 10s bound even though a `restricted` `git` call now costs ~164ms (see
+`restricted` below): the bound is a deadline, not a wait, so it is free on that
+path, and it is still needed on a host where the developer toolchain cannot be
+named and git falls back to the slow `xcrun` shim. Independence means a slow git
+degrades only the git line.
 
 ## Modes
 
@@ -185,7 +186,9 @@ sockets beyond stdio.
   The fix names the answer instead of paying for it: the environment floor puts
   the active developer directory's `usr/bin` — where the binary the shim would
   have found actually lives — on a spawned process's `PATH`, immediately ahead of
-  `/usr/bin`. Measured as an interleaved A/B in a live `restricted` sandbox:
+  the first system directory it finds there (`/usr/bin`, `/bin`, `/usr/sbin`,
+  `/sbin`), or at the end when `PATH` names none of them. Measured as an
+  interleaved A/B in a live `restricted` sandbox:
   8.61s mean via the shim (5.27-12.75s on a loaded host, two stderr lines every
   time) against 164ms mean via the toolchain (127-225ms, stderr pristine).
 

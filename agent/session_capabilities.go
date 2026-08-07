@@ -40,17 +40,19 @@ var toolProbeTimeout = 2 * time.Second
 // sandbox: shim path mean 8.61s (5.27-12.75s on a loaded host), toolchain path
 // mean 164ms (127-225ms).
 //
-// 5s is therefore a fallback bound rather than an expected budget. It leaves
-// ~30x headroom over the measured call, and still covers a host where the
-// toolchain directory could not be named (no active developer directory, or one
-// the RootGuard refused) and git falls back to the shim. Re-measure before
-// changing this.
+// The 10s STAYS, because this is a deadline and not a wait: on the 164ms happy
+// path a loose bound costs exactly nothing, and the only host it changes is the
+// one that still needs it. A Mac with no active developer directory, or one
+// whose $DEVELOPER_DIR the RootGuard refused, names no toolchain and falls back
+// to the shim at the full measured cost — which a tighter bound would render
+// "unprobed" on precisely the mode the preamble most exists for. Shrinking it to
+// 5s would not have covered even the mean.
 //
 // It stays separate from the tool probe's tighter bound rather than merging into
 // it: the two probes run CONCURRENTLY with independent deadlines, so a slow or
 // wedged git can never consume the PATH and cache measurements, and the cheap
 // facts still land at their own pace.
-var gitProbeTimeout = 5 * time.Second
+var gitProbeTimeout = 10 * time.Second
 
 // capabilityProbe is what the session-start probes measured. Its two halves are
 // tracked independently (gitProbed / toolsProbed) precisely so one failing does

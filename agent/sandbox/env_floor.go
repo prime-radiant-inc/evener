@@ -98,8 +98,9 @@ var systemBinDirs = []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
 // system directory on PATH there is no shim to shadow, so the toolchain goes
 // last, where it can only help a lookup that would otherwise fail.
 //
-// An empty binDir, an absent PATH, or a PATH that already names the directory
-// are all left exactly as they were: the floor never invents a search path.
+// An empty binDir, an absent PATH, an explicitly EMPTY PATH, or a PATH that
+// already names the directory are all left exactly as they were: the floor never
+// invents a search path, and an empty PATH is a deliberate "find nothing".
 func applyToolchainPath(env []string, binDir string) []string {
 	if binDir == "" {
 		return env
@@ -117,14 +118,27 @@ func applyToolchainPath(env []string, binDir string) []string {
 }
 
 // insertToolchainDir returns path with binDir placed before its first system
-// directory (or appended when it has none), unchanged if it already lists it.
+// directory (or appended when it has none), unchanged if it already lists it or
+// is empty. Entries are compared CLEANED, so a trailing slash or a doubled
+// separator names the same directory it would name to the kernel and does not
+// earn a second copy.
 func insertToolchainDir(path, binDir string) string {
-	entries := filepath.SplitList(path)
-	if slices.Contains(entries, binDir) {
+	if path == "" {
 		return path
 	}
+	entries := filepath.SplitList(path)
+	clean := make([]string, len(entries))
 	for i, e := range entries {
-		if slices.Contains(systemBinDirs, filepath.Clean(e)) {
+		clean[i] = filepath.Clean(e)
+	}
+	// The already-present check runs over the WHOLE list before any insertion:
+	// a system directory listed BEFORE the toolchain is still an insertion point
+	// the toolchain does not need, and inserting there would duplicate it.
+	if slices.Contains(clean, filepath.Clean(binDir)) {
+		return path
+	}
+	for i, c := range clean {
+		if slices.Contains(systemBinDirs, c) {
 			return strings.Join(slices.Insert(slices.Clone(entries), i, binDir), string(filepath.ListSeparator))
 		}
 	}

@@ -173,6 +173,36 @@ func TestEnvFloorDoesNotDuplicateTheToolchainEntry(t *testing.T) {
 	if got != bin+":/usr/bin" {
 		t.Errorf("an already-present toolchain must leave PATH untouched, got %q", got)
 	}
+
+	// A trailing slash names the same directory, so it is still already there.
+	// Comparing raw strings would have appended a second, cleaned copy.
+	out = ApplyEnvFloor([]string{"PATH=" + bin + "/:/usr/bin"}, policy, "")
+	got, _ = envValue(out, "PATH")
+	if want := bin + "/:/usr/bin"; got != want {
+		t.Errorf("a differently-spelled toolchain entry must not be duplicated: got %q, want %q", got, want)
+	}
+
+	// The toolchain listed AFTER a system directory is still present, so there is
+	// nothing to insert — checking for it only up to the insertion point would
+	// have added a second copy.
+	out = ApplyEnvFloor([]string{"PATH=/usr/bin:" + bin}, policy, "")
+	got, _ = envValue(out, "PATH")
+	if want := "/usr/bin:" + bin; got != want {
+		t.Errorf("a toolchain behind a system dir must not be duplicated: got %q, want %q", got, want)
+	}
+}
+
+// An explicitly empty PATH is a deliberate "find nothing", not a PATH waiting to
+// be helped: the floor leaves it exactly as it found it. The insertion also has
+// nowhere sensible to go — an empty PATH names no system directory to sit ahead
+// of.
+func TestEnvFloorLeavesAnEmptyPathEmpty(t *testing.T) {
+	t.Parallel()
+	policy := ResolvedPolicy{Mode: ModeRestricted, ToolchainBinDir: "/x/usr/bin"}
+	out := ApplyEnvFloor([]string{"PATH="}, policy, "")
+	if got, ok := envValue(out, "PATH"); !ok || got != "" {
+		t.Errorf("PATH = %q (present=%v), want an untouched empty value", got, ok)
+	}
 }
 
 // The floor is a pure function of its inputs, PATH rewrite included.
