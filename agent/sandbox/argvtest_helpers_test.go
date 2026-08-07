@@ -26,6 +26,17 @@ func hasSeq(args []string, seq ...string) bool {
 	return false
 }
 
+// seqIndex returns the start index of the first contiguous occurrence of seq in
+// args, or -1 if absent.
+func seqIndex(args []string, seq ...string) int {
+	for i := 0; i+len(seq) <= len(args); i++ {
+		if slices.Equal(args[i:i+len(seq)], seq) {
+			return i
+		}
+	}
+	return -1
+}
+
 // bwrapFacts is a bwrap-capable host anchored at a fake home so masked paths land
 // under a directory the test controls. It reports OS "linux" so Resolve (which
 // keys on HostFacts.OS, not runtime.GOOS) yields a bwrap-backed policy on any

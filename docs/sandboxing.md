@@ -276,9 +276,22 @@ But every git **config and hook** surface is read-only:
 
 - `.git/config`, per-worktree config (`config.worktree`), submodule configs
   (`.git/modules/*/config`), and `.git/hooks`.
+- The two redirect files a git dir carries — `commondir` (which common dir git
+  reads config from) and `gitdir` — are write-denied for the same reason: a
+  repointed `commondir` makes git read an attacker-controlled `core.hooksPath`.
 - In a linked worktree, git's own writes land under
   `<main>/.git/worktrees/<id>/`; the main repo's `.git/config` is read-granted
   (git must read common config even from a linked worktree) but never writable.
+
+Denying a surface that does not exist yet is what stops it being *planted*, and on
+bubblewrap that denial is a mount, which materializes the name on the real
+filesystem and leaves it there after the session. So serf pre-creates an absent
+`commondir` holding `.` before pinning it: an empty `commondir` is fatal to git
+forever after, and `.` is both the only content git accepts and exactly what a git
+dir without the file already means (it is its own common dir). No other protected
+surface is pre-created — none has content that could be more correct than the empty
+file or directory the mount leaves, and an empty `config`, `config.worktree`,
+`gitdir`, or `hooks` carries no directive.
 
 Because every config file git reads is read-only **and** `$HOME` config files are
 unwritable, a `core.hooksPath` redirect cannot persist and no hook can be planted to
@@ -449,13 +462,21 @@ raw stderr never becomes the model's opening context.
 
 ## Known residuals
 
-Three boundary edges are deliberately documented as open rather than claimed closed:
+Four boundary edges are deliberately documented as open rather than claimed closed:
 
 - **A pre-existing hardlink** inside the worktree to an out-of-tree secret is
   *readable* through the worktree (path-based masking cannot see that two names share
   an inode). A *write* through such a hardlink does not propagate to the original —
   the file tools write atomically via temp-plus-rename, which replaces the name with
   a fresh inode. This read residual is out of the running-amok threat model.
+- **On Linux, a protected surface pinned into existence stays on disk.** bubblewrap
+  denies a not-yet-created config/hook surface by mounting over it, and the
+  mountpoint is real, so an absent `config.worktree` or `gitdir` under a write root
+  comes back as an empty file and an absent `hooks` as an empty directory, both
+  surviving the session. Every one of those residues is inert to git, and the one
+  that would not be — `commondir` — is pre-created holding `.` instead. The tidy
+  alternative, leaving the surface unpinned, is exactly what the write denial
+  exists to prevent, so the litter is accepted rather than removed.
 - **Daemon-socket masking is a targeted list** (docker, podman, containerd, dbus).
   An exotic or custom daemon socket under `/run` that is not on the list could still
   be reached; a broader `/run` mask is deferred because it would also hide
