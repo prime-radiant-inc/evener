@@ -552,11 +552,22 @@ func findDelegateLaneRecord(recs map[string]*jobstore.JobRecord, id string) (*jo
 // to retire — and disposal destroys neither the job record, nor the queued
 // notification, nor the output store its excerpt is read from, so the render
 // still lands on the session's next notification turn (the drain keeps waiting
-// on it via outstandingDelegateCount, which is unchanged). Counting it made a
-// RESUMED session unable to dispose its own idle lane at all until its first
-// notification turn: restore re-arms every owned, never-delivered terminal
-// record to NotifyPending (armPendingTerminalNotifications), which is exactly
-// the state a lane-owning coordinator comes back in.
+// on it via outstandingDelegateCount, which is unchanged). What the render DOES
+// lose is its lane block: isolatedDelegateWorktreeReport reads the lane and its
+// sidecar, both of which dispose deletes, so it returns nil and the block is
+// omitted — the intended outcome, since reporting a lane's HEAD and dirty state
+// after the caller retired that lane would be reporting on something gone.
+// Counting the notification made a RESUMED session unable to dispose its own
+// idle lane at all until its first notification turn: restore re-arms every
+// owned, never-delivered terminal record to NotifyPending
+// (armPendingTerminalNotifications), which is exactly the state a lane-owning
+// coordinator comes back in.
+//
+// This rests entirely on the owner filter below. Relax it and the predicate
+// silently stops respecting another session's undelivered terminal — a
+// forwarded descendant copy would start reading as this session's own render
+// debt. No test covers that direction, because today the filter makes the state
+// unreachable; anyone widening it owes one.
 func (jm *jobManager) delegateRecordQuiescent(id string) (bool, error) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
