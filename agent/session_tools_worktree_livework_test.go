@@ -416,6 +416,13 @@ func seedRetainedDelegateWithIsolation(t *testing.T, s *Session, delegateID, chi
 // retained, idle delegate children, the refusal names the delegate id and
 // suggests `manage_worktree op=dispose id=<dlg_…>` instead of dead-ending the
 // caller with an opaque "live work" refusal it (correctly) will not bypass.
+// force is deliberately false here: this pins the HINT text on the plain
+// refusal path. WS8 Task 2's force-cascade tests
+// (session_tools_worktree_remove_force_dispose_test.go) cover what force:true
+// does instead — it attempts the sanctioned dispose cascade rather than just
+// suggesting it, so this delegate record (no recorded WorkingDir, a fixture
+// scoped to hint-text assertions only) is not a fixture a real cascade
+// attempt could complete against.
 func TestWorktreeRemove_RetainedIdleDelegate_SuggestsDispose(t *testing.T) {
 	t.Parallel()
 	r := newScriptedLaneRepo(t).wt()
@@ -437,7 +444,7 @@ func TestWorktreeRemove_RetainedIdleDelegate_SuggestsDispose(t *testing.T) {
 	r.s.subagents.track(&subagent{id: child.id, sess: child})
 	seedRetainedDelegate(t, r.s, "dlg_retained", child.id)
 
-	_, err = r.removeOp(t, map[string]any{"name": "lane", "force": true})
+	_, err = r.removeOp(t, map[string]any{"name": "lane", "force": false})
 	if err == nil {
 		t.Fatal("expected remove to be refused by the retained idle delegate")
 	}

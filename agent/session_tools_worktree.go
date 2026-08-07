@@ -818,37 +818,36 @@ const (
 	subagentRetainedIdleLabel = " (subagent, retained — idle)"
 )
 
-// disposeHintForRetainedIdle returns a remove-refusal suffix pointing the caller
-// at the dispose op (spec §P1 step 3), but ONLY when every live-work blocker in
-// handles is a retained, idle delegate child with an owned worktree-isolation
-// record. A retained-idle subagent holds no live work of its own — it is
-// terminal history the dispose op can reclaim — so naming the delegate id and
-// suggesting `manage_worktree op=dispose id=<dlg_…>` gives the model a
-// legitimate way forward instead of an opaque refusal it correctly will not
-// bypass. It returns "" (leaving the generic refusal in place) when any blocker
-// is NOT a retained-idle subagent — a running shell, delegate job, or driving
-// child would not be cleared by a dispose — or when a blocker does not resolve
-// to an owned worktree-isolated delegate (a plain or ordinary/shared subagent
-// has no disposable lane).
-func (s *Session) disposeHintForRetainedIdle(handles []string) string {
+// retainedIdleDelegateIDs resolves every live-work blocker in handles to an
+// owned, worktree-isolated delegate id, returning ok=false the moment any
+// blocker fails to resolve — a running shell, delegate job, or driving child
+// (not a retained-idle subagent at all), a subagent with no matching delegate
+// record, or a delegate that is not worktree-isolated or not owned by this
+// session (a plain/ordinary/shared subagent, or another session's lane, has
+// no disposable lane this op may touch). It backs both
+// disposeHintForRetainedIdle's refusal-copy suggestion and worktreeRemove's
+// force cascade (spec §P1 step 3; the force-cascade addendum), so the two stay
+// in lockstep: whatever the hint offers to dispose is exactly what force goes
+// on to dispose.
+func (s *Session) retainedIdleDelegateIDs(handles []string) ([]string, bool) {
 	if len(handles) == 0 || s.jobManager == nil {
-		return ""
+		return nil, false
 	}
 	childIDs := make([]string, 0, len(handles))
 	for _, h := range handles {
 		id, ok := strings.CutSuffix(h, subagentRetainedIdleLabel)
 		if !ok {
-			return ""
+			return nil, false
 		}
 		childIDs = append(childIDs, id)
 	}
 	delegates, err := s.jobManager.store.LoadDelegates()
 	if err != nil {
-		return ""
+		return nil, false
 	}
 	recs, err := s.jobManager.store.Load()
 	if err != nil {
-		return ""
+		return nil, false
 	}
 	childToDelegate := make(map[string]string, len(delegates))
 	for _, d := range delegates {
@@ -856,19 +855,41 @@ func (s *Session) disposeHintForRetainedIdle(handles []string) string {
 			childToDelegate[d.ChildSessionID] = d.DelegateID
 		}
 	}
-	suggestions := make([]string, 0, len(childIDs))
+	dlgIDs := make([]string, 0, len(childIDs))
 	for _, cid := range childIDs {
 		dlg, ok := childToDelegate[cid]
 		if !ok {
-			return ""
+			return nil, false
 		}
 		_, desc := findDelegateLaneRecord(recs, dlg)
 		if desc == nil || desc.ParentSessionID != s.id {
-			return ""
+			return nil, false
 		}
+		dlgIDs = append(dlgIDs, dlg)
+	}
+	return dlgIDs, true
+}
+
+// disposeHintForRetainedIdle returns a remove-refusal suffix pointing the caller
+// at the dispose op (spec §P1 step 3), but ONLY when every live-work blocker in
+// handles resolves to an owned, worktree-isolated delegate
+// (retainedIdleDelegateIDs). A retained-idle subagent holds no live work of its
+// own — it is terminal history the dispose op can reclaim — so naming the
+// delegate id and suggesting `manage_worktree op=dispose id=<dlg_…>`, or
+// pointing at `force` to have `remove` run that cascade itself, gives the model
+// a legitimate way forward instead of an opaque refusal it correctly will not
+// bypass. It returns "" (leaving the generic refusal in place) when
+// retainedIdleDelegateIDs cannot resolve every blocker.
+func (s *Session) disposeHintForRetainedIdle(handles []string) string {
+	dlgIDs, ok := s.retainedIdleDelegateIDs(handles)
+	if !ok {
+		return ""
+	}
+	suggestions := make([]string, 0, len(dlgIDs))
+	for _, dlg := range dlgIDs {
 		suggestions = append(suggestions, "manage_worktree op=dispose id="+dlg)
 	}
-	return "All blockers are retained, idle delegate(s) holding no live work; dispose them to proceed: " + strings.Join(suggestions, "; ")
+	return "All blockers are retained, idle delegate(s) holding no live work; dispose them to proceed, or pass force to remove to have it dispose them automatically: " + strings.Join(suggestions, "; ")
 }
 
 // pathEqualOrUnder reports whether candidate is target itself or nested under
@@ -1749,10 +1770,51 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	// subagent envs (see its doc comment); a shell command that `cd`s after
 	// launch is invisible to it.
 	if live := s.liveWorkUnder(target); len(live) > 0 {
-		if hint := s.disposeHintForRetainedIdle(live); hint != "" {
-			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: live work under %s: %s. %s", target, strings.Join(live, ", "), hint)
+		// force-cascade addendum: when every blocker is a retained-idle,
+		// owned, worktree-isolated delegate, force disposes each one through
+		// the SANCTIONED dispose path (worktreeDispose — the exact op
+		// `manage_worktree op=dispose` runs) rather than bypassing this
+		// guard. Each cascaded dispose keeps its OWN gates: it always runs
+		// with force=false, forceDirty=false, so an unmerged or dirty lane
+		// still refuses on dispose's own terms — remove's `force` means "run
+		// the sanctioned cascade," never "invent a new force semantics for
+		// dispose." A genuinely running job (not a retained-idle subagent)
+		// makes retainedIdleDelegateIDs fail closed, so this block never
+		// fires and the live-execution refusal below is unchanged (spec
+		// "Running jobs block removal, always").
+		if force {
+			if dlgIDs, ok := s.retainedIdleDelegateIDs(live); ok {
+				for _, dlg := range dlgIDs {
+					if _, err := s.worktreeDispose(ctx, dlg, false, false); err != nil {
+						return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: force disposing retained-idle lane %s: %w", dlg, err)
+					}
+				}
+				// The cascade may have already removed target itself: a
+				// retained delegate whose own lane IS the worktree being
+				// removed sits exactly at target (pathEqualOrUnder's "equal"
+				// case), so its dispose already ran `git worktree remove`,
+				// `branch -D` and the sidecar delete against the very same
+				// meta dir steps 8-10 below would use. Nothing is left for
+				// them to do, so report what the cascade actually
+				// accomplished — the branch is deleted iff it is really gone,
+				// never asserted from the fact that a dispose ran (dispose
+				// can keep a lane that turned dirty mid-disposal, and
+				// downgrades a failed branch delete to a warning). Only an
+				// UNLOCKED lane reaches here: one still carrying its
+				// serf:dlg: marker classifies Foreign to this session's
+				// remove and is refused by the lock guard at step 3.
+				if !managedWorktreeExists(target) {
+					return WorktreeRemoveResult{Path: target, Branch: name, BranchDeleted: !branchExists(run, name)}, nil
+				}
+				live = s.liveWorkUnder(target)
+			}
 		}
-		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: live work under %s: %s", target, strings.Join(live, ", "))
+		if len(live) > 0 {
+			if hint := s.disposeHintForRetainedIdle(live); hint != "" {
+				return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: live work under %s: %s. %s", target, strings.Join(live, ", "), hint)
+			}
+			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: live work under %s: %s", target, strings.Join(live, ", "))
+		}
 	}
 
 	// Step 5: provenance guard. A worktree with no sidecar has unknown
