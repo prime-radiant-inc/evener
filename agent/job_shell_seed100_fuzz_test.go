@@ -62,12 +62,12 @@ func covJobShellDefensiveStates(t *testing.T) {
 		t.Fatalf("pre-cancelled start = %+v", res)
 	}
 
-	origOpen := jm.openOutput
-	jm.openOutput = func(string, int64) (*jobstore.OutputStore, error) {
+	origCreate := jm.createOutput
+	jm.createOutput = func(string, int64) (*jobstore.OutputStore, error) {
 		return nil, errors.New("open output")
 	}
 	res = runShell(context.Background(), jm, &shfz_fakeExecutor{}, shellArgs{Command: "x"})
-	jm.openOutput = origOpen
+	jm.createOutput = origCreate
 	if res.Reason != "start_failed" {
 		t.Fatalf("output-open failure = %+v", res)
 	}
