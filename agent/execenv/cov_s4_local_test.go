@@ -372,9 +372,6 @@ func envToMap(env []string) map[string]string {
 // --- injectLocalVenvPath -------------------------------------------------
 
 func TestInjectLocalVenvPath_PrependsBin(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("bin dir name differs on windows")
-	}
 	root := t.TempDir()
 	venvBin := filepath.Join(root, ".venv", "bin")
 	if err := os.MkdirAll(venvBin, 0o755); err != nil {
@@ -388,9 +385,6 @@ func TestInjectLocalVenvPath_PrependsBin(t *testing.T) {
 }
 
 func TestInjectLocalVenvPath_AppendsWhenNoExistingPath(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("bin dir name differs on windows")
-	}
 	root := t.TempDir()
 	venvBin := filepath.Join(root, ".venv", "bin")
 	if err := os.MkdirAll(venvBin, 0o755); err != nil {
@@ -424,9 +418,6 @@ func TestInjectLocalVenvPath_NoVenvUnchanged(t *testing.T) {
 }
 
 func TestInjectLocalVenvPath_DedupesWhenAlreadyPresent(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("bin dir name differs on windows")
-	}
 	root := t.TempDir()
 	venvBin := filepath.Join(root, ".venv", "bin")
 	if err := os.MkdirAll(venvBin, 0o755); err != nil {
@@ -648,9 +639,6 @@ func TestListDirectory_NonExistentPath(t *testing.T) {
 }
 
 func TestListDirectory_DeepRecursionAndFlags(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink/exec-bit semantics differ on Windows")
-	}
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)
 	// Nested three levels deep.
