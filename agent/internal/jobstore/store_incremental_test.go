@@ -724,6 +724,98 @@ func TestStoreCursorDisablesItselfWhenMTimeCannotResolveWrites(t *testing.T) {
 	}
 }
 
+// staleStatFs answers every Stat with the metadata the file had when the fs was
+// armed, standing in for a mount whose attributes lag behind its data (NFS
+// attribute caching being the everyday example). The bytes it hands back on read
+// are always current — only the metadata lies.
+type staleStatFs struct {
+	afero.Fs
+	stale os.FileInfo
+}
+
+// snapshotFileInfo copies the metadata VALUES out of a FileInfo. afero's
+// in-memory FileInfo is a live view of the file it names — its Size() tracks
+// later writes — so a stale-metadata fixture has to hold its own copy.
+type snapshotFileInfo struct {
+	name string
+	size int64
+	mode os.FileMode
+	mod  time.Time
+}
+
+func snapshotInfo(info os.FileInfo) os.FileInfo {
+	return snapshotFileInfo{name: info.Name(), size: info.Size(), mode: info.Mode(), mod: info.ModTime()}
+}
+
+func (i snapshotFileInfo) Name() string       { return i.name }
+func (i snapshotFileInfo) Size() int64        { return i.size }
+func (i snapshotFileInfo) Mode() os.FileMode  { return i.mode }
+func (i snapshotFileInfo) ModTime() time.Time { return i.mod }
+func (i snapshotFileInfo) IsDir() bool        { return false }
+func (i snapshotFileInfo) Sys() any           { return nil }
+
+func (f *staleStatFs) Stat(name string) (os.FileInfo, error) {
+	info, err := f.Fs.Stat(name)
+	if err != nil {
+		return nil, err
+	}
+	if f.stale != nil {
+		return f.stale, nil
+	}
+	return info, nil
+}
+
+// TestStoreLoadSeesAppendedEventDespiteStaleStat is the load-side half of not
+// trusting reported metadata. A filesystem that answers the post-append stat with
+// the PRE-append size and mtime must not be able to convince the store that
+// nothing was appended: the durable event is on disk, so the load must return it.
+// Reported lengths decide nothing about what has been read — only bytes do.
+func TestStoreLoadSeesAppendedEventDespiteStaleStat(t *testing.T) {
+	t.Parallel()
+	const path = "/jobs.jsonl"
+	base := afero.NewMemMapFs()
+	fs := &staleStatFs{Fs: base}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("openFs: %v", err)
+	}
+	s.disableSync = true
+	defer func() { _ = s.Close() }()
+
+	// Prime the cursor on an empty log, which is the worst case: the cursor holds
+	// no events and a stale size of 0 would say there is nothing to read.
+	if _, err := s.Load(); err != nil {
+		t.Fatalf("prime load: %v", err)
+	}
+	frozen, err := base.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	fs.stale = snapshotInfo(frozen)
+
+	if err := s.Append(incrementalTestEvent(0)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	events, err := s.LoadEvents()
+	if err != nil {
+		t.Fatalf("load after append under stale stat: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("load returned %d events, want the 1 durably appended; a stale stat hid it", len(events))
+	}
+	// And it keeps working as the log grows, still under lying metadata.
+	if err := s.AppendBatch([]Event{incrementalTestEvent(1), incrementalTestEvent(2)}); err != nil {
+		t.Fatalf("append batch: %v", err)
+	}
+	events, err = s.LoadEvents()
+	if err != nil {
+		t.Fatalf("second load under stale stat: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("load returned %d events, want 3", len(events))
+	}
+}
+
 // TestStoreCursorHoldsOnlyDecodedValues pins the assumption cloneJSONValue
 // rests on: the events the cursor keeps come from json.Unmarshal and nothing
 // else, so an `any` payload is always a JSON container or scalar. A Go value

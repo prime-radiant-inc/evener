@@ -160,14 +160,15 @@ func (s *Store) Append(e Event) error {
 	if err != nil {
 		return fmt.Errorf("jobstore: seek append start: %w", err)
 	}
-	if err := s.writeLineLocked(append(b, '\n')); err != nil {
+	line := append(b, '\n')
+	if err := s.writeLineLocked(line); err != nil {
 		return s.appendFailureLocked("write event", err, startOffset)
 	}
 	if err := s.syncLocked(); err != nil {
 		return s.appendFailureLocked("sync event", err, startOffset)
 	}
 	s.seq = nextSeq
-	s.noteAppendedLocked(startOffset)
+	s.noteAppendedLocked(startOffset, startOffset+int64(len(line)))
 	return nil
 }
 
@@ -190,6 +191,7 @@ func (s *Store) AppendBatch(events []Event) error {
 		return fmt.Errorf("jobstore: seek append start: %w", err)
 	}
 	nextSeq := s.seq
+	written := int64(0)
 	for _, e := range events {
 		nextSeq++
 		e.Seq = nextSeq
@@ -197,15 +199,17 @@ func (s *Store) AppendBatch(events []Event) error {
 		if err != nil {
 			return s.appendFailureLocked("marshal event", err, startOffset)
 		}
-		if err := s.writeLineLocked(append(b, '\n')); err != nil {
+		line := append(b, '\n')
+		if err := s.writeLineLocked(line); err != nil {
 			return s.appendFailureLocked("write event", err, startOffset)
 		}
+		written += int64(len(line))
 	}
 	if err := s.syncLocked(); err != nil {
 		return s.appendFailureLocked("sync event", err, startOffset)
 	}
 	s.seq = nextSeq
-	s.noteAppendedLocked(startOffset)
+	s.noteAppendedLocked(startOffset, startOffset+written)
 	return nil
 }
 
@@ -318,16 +322,27 @@ func (s *Store) readAllLocked() ([]Event, error) {
 		}
 		return nil, fmt.Errorf("jobstore: stat %s: %w", s.path, err)
 	}
-	if !s.cursorTrustedLocked(info) {
+	trusted := s.cursorTrustedLocked(info)
+	if !trusted {
 		s.resetCursorLocked()
 	}
 	// An unterminated trailing line survived recovery, which means it is durable
 	// corruption or a value recovery chose not to touch; it is reported by the
 	// decode below but never committed to the cursor.
-	tail, err := s.advanceCursorLocked(info.Size())
-	if err != nil {
-		s.resetCursorLocked()
-		return nil, err
+	//
+	// The read is skipped only when the file is the very one already decoded to
+	// its end. A reported length is never allowed to suppress a read on its own:
+	// a filesystem under-reporting the size would otherwise hide durable bytes,
+	// so anything short of "trusted and fully consumed" opens the file and scans
+	// to its real EOF, exactly as the full reread always did.
+	var tail []Event
+	if !trusted || info.Size() != s.cursor.offset {
+		var err error
+		tail, err = s.advanceCursorLocked()
+		if err != nil {
+			s.resetCursorLocked()
+			return nil, err
+		}
 	}
 	s.cursor.size = info.Size()
 	s.cursor.mod = info.ModTime()
@@ -384,10 +399,13 @@ func (s *Store) verifyCursorBeforeAppendLocked() {
 
 // noteAppendedLocked carries the cursor's file identity across the store's own
 // append: the cached prefix is still exactly the file's leading bytes, only the
-// length and modification time moved. Bookkeeping failures leave the cursor
-// invalid and are NOT reported as append failures — the bytes are already
-// durable, and a stale cursor costs a reread, never a wrong answer.
-func (s *Store) noteAppendedLocked(startOffset int64) {
+// length and modification time moved. endOffset is where the store's own write
+// ended, which is the only trustworthy statement about the file's length here —
+// the store computed it from the bytes it wrote, rather than asking the
+// filesystem. Bookkeeping failures leave the cursor invalid and are NOT reported
+// as append failures: the bytes are already durable, and a dropped cursor costs
+// a reread, never a wrong answer.
+func (s *Store) noteAppendedLocked(startOffset, endOffset int64) {
 	if !s.cursor.valid {
 		return
 	}
@@ -401,11 +419,18 @@ func (s *Store) noteAppendedLocked(startOffset int64) {
 		s.cursor.valid = false
 		return
 	}
-	if info.Size() != startOffset && info.ModTime().Equal(s.cursor.mod) {
+	if info.Size() != endOffset {
+		// The filesystem does not report the bytes just written — stale or cached
+		// metadata, or a concurrent writer. Its numbers cannot be used to decide
+		// what has already been read, so the cursor goes.
+		s.cursor.valid = false
+		return
+	}
+	if endOffset != startOffset && info.ModTime().Equal(s.cursor.mod) {
 		// This append changed the file's length and the filesystem reported the
 		// same modification time as before it: timestamps here cannot resolve a
 		// write, so they cannot be used to tell the store's own bytes from
-		// someone else's. Give the cursor up rather than trust it.
+		// someone else's. Give the cursor up for good rather than trust it.
 		s.cursor.disabled = true
 		s.cursor.valid = false
 		return
@@ -414,14 +439,12 @@ func (s *Store) noteAppendedLocked(startOffset int64) {
 	s.cursor.mod = info.ModTime()
 }
 
-// advanceCursorLocked decodes the log from the cursor's offset to size,
-// committing every newline-terminated line to the cursor. An unterminated final
-// line is decoded and returned separately: it is not durable bytes the cursor
-// may keep, but it must be reported exactly as a full reread reports it.
-func (s *Store) advanceCursorLocked(size int64) (tail []Event, err error) {
-	if size <= s.cursor.offset {
-		return nil, nil
-	}
+// advanceCursorLocked decodes the log from the cursor's offset to the file's real
+// EOF, committing every newline-terminated line to the cursor. An unterminated
+// final line is decoded and returned separately: it is not durable bytes the
+// cursor may keep, but it must be reported exactly as a full reread reports it.
+// No length reported by the filesystem bounds this scan.
+func (s *Store) advanceCursorLocked() (tail []Event, err error) {
 	f, err := s.fs.Open(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
