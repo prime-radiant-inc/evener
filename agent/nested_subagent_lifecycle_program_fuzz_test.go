@@ -593,11 +593,11 @@ func nslpManagerOwnershipProgram(t *testing.T, childID string) {
 func nslpForwardRecoveryProgram(t *testing.T) {
 	t.Helper()
 	clock := agenttest.NewFakeClock()
-	parent, err := newJobManagerNoSync(t.TempDir(), "nslp-recovery-parent", nil)
+	parent, err := newJobManagerNoSync(t.TempDir(), testParentSessionID, nil)
 	if err != nil {
 		t.Fatalf("new recovery parent manager: %v", err)
 	}
-	child, err := newJobManagerNoSync(t.TempDir(), "nslp-recovery-child", nil)
+	child, err := newJobManagerNoSync(t.TempDir(), testChildSessionID, nil)
 	if err != nil {
 		_ = parent.closeStoreOnly()
 		t.Fatalf("new recovery child manager: %v", err)
