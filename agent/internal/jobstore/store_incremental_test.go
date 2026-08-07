@@ -1,6 +1,7 @@
 package jobstore
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -578,6 +579,190 @@ func referenceFieldPaths(t reflect.Type, prefix string, seen map[reflect.Type]bo
 	return out
 }
 
+// TestStoreCursorSameSizeSameMTimeRewriteIsTheDocumentedBoundary states, as a
+// test rather than as a comment, exactly how far the cursor's coherence goes: a
+// foreign rewrite that preserves the log's length AND restores its modification
+// time is indistinguishable from no rewrite, and the store keeps serving the
+// prefix it read. Nothing in serf does this — the log is append-only by contract
+// and the owning store is its only sanctioned writer, and every rewrite the test
+// suites actually perform changes the length or the mtime (see
+// TestStoreIncrementalReloadSeesOutOfBandRewrite). Detecting this case would
+// mean re-reading the prefix on every load, which is the cost the cursor exists
+// to remove. If a future change strengthens the file identity, this test fails
+// and should be replaced by one asserting detection.
+func TestStoreCursorSameSizeSameMTimeRewriteIsTheDocumentedBoundary(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	s, err := OpenNoSync(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	seed := make([]Event, 0, 6)
+	for i := range 6 {
+		seed = append(seed, incrementalTestEvent(i))
+	}
+	if err := s.AppendBatch(seed); err != nil {
+		t.Fatalf("append batch: %v", err)
+	}
+	primed, err := s.LoadEvents()
+	if err != nil {
+		t.Fatalf("primed load: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+
+	events := freshFullRead(t, path)
+	events[0].JobID = "job_X"
+	events[0].OwnerSessionID = "ses_other"
+	rewriteLog(t, path, events)
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after rewrite: %v", err)
+	}
+	if after.Size() != info.Size() {
+		t.Fatalf("fixture rewrote %d bytes over %d; it must preserve the length to test the boundary", after.Size(), info.Size())
+	}
+	if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatalf("restore mtime: %v", err)
+	}
+
+	got, err := s.LoadEvents()
+	if err != nil {
+		t.Fatalf("load after undetectable rewrite: %v", err)
+	}
+	if !reflect.DeepEqual(got, primed) {
+		t.Fatalf("the boundary moved: the store detected a same-length, same-mtime rewrite.\nUpdate the fileCursor doc comment and this test to assert detection.")
+	}
+	// The rewrite IS on disk; only this store's cursor is behind.
+	if disk := freshFullRead(t, path); disk[0].JobID != "job_X" {
+		t.Fatalf("fixture did not land the rewrite on disk: %+v", disk[0])
+	}
+}
+
+// frozenTimeFs reports the same modification time forever, standing in for a
+// filesystem whose timestamps cannot resolve a write: a coarse-granularity mount,
+// or one caching attributes (NFS).
+type frozenTimeFs struct {
+	afero.Fs
+}
+
+func (f frozenTimeFs) Stat(name string) (os.FileInfo, error) {
+	info, err := f.Fs.Stat(name)
+	if err != nil {
+		return nil, err
+	}
+	return frozenTimeInfo{FileInfo: info}, nil
+}
+
+type frozenTimeInfo struct {
+	os.FileInfo
+}
+
+func (frozenTimeInfo) ModTime() time.Time { return time.Unix(1700000000, 0).UTC() }
+
+// TestStoreCursorDisablesItselfWhenMTimeCannotResolveWrites covers the
+// calibration that keeps the cursor honest on a filesystem whose timestamps
+// cannot tell a write from no write. The store notices that one of its OWN
+// appends changed the length without moving the mtime, gives the cursor up for
+// good, and goes back to reading the whole file — so even a same-length foreign
+// rewrite, which mtime could never have caught here, is still seen.
+func TestStoreCursorDisablesItselfWhenMTimeCannotResolveWrites(t *testing.T) {
+	t.Parallel()
+	fs := frozenTimeFs{Fs: afero.NewMemMapFs()}
+	const path = "/jobs.jsonl"
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("openFs: %v", err)
+	}
+	s.disableSync = true
+	defer func() { _ = s.Close() }()
+	if err := s.Append(incrementalTestEvent(0)); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+	if _, err := s.Load(); err != nil {
+		t.Fatalf("prime load: %v", err)
+	}
+	if s.cursor.disabled {
+		t.Fatal("cursor disabled before any append could prove the mtime useless")
+	}
+	if err := s.Append(incrementalTestEvent(1)); err != nil {
+		t.Fatalf("second append: %v", err)
+	}
+	if !s.cursor.disabled {
+		t.Fatal("an append that changed the length without moving the mtime must disable the cursor")
+	}
+
+	// From here the store must behave exactly as it did before the cursor existed:
+	// full rereads, so an undetectable-by-mtime rewrite is still seen.
+	events, err := s.LoadEvents()
+	if err != nil {
+		t.Fatalf("load after disable: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("load after disable returned %d events, want 2", len(events))
+	}
+	raw, err := afero.ReadFile(fs, path)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	rewritten := bytes.Replace(raw, []byte(`"job_0"`), []byte(`"job_X"`), 1)
+	if len(rewritten) != len(raw) {
+		t.Fatalf("fixture rewrite changed the length (%d -> %d)", len(raw), len(rewritten))
+	}
+	if err := afero.WriteFile(fs, path, rewritten, 0o644); err != nil {
+		t.Fatalf("rewrite log: %v", err)
+	}
+	after, err := s.LoadEvents()
+	if err != nil {
+		t.Fatalf("load after rewrite: %v", err)
+	}
+	if after[0].JobID != "job_X" {
+		t.Fatalf("load after rewrite returned job %q, want the rewritten job_X", after[0].JobID)
+	}
+}
+
+// TestStoreCursorHoldsOnlyDecodedValues pins the assumption cloneJSONValue
+// rests on: the events the cursor keeps come from json.Unmarshal and nothing
+// else, so an `any` payload is always a JSON container or scalar. A Go value
+// that json cannot round-trip to itself comes back decoded, never as the
+// caller's own object.
+func TestStoreCursorHoldsOnlyDecodedValues(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	s, err := OpenNoSync(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	type payload struct {
+		Count int `json:"count"`
+	}
+	caller := &payload{Count: 1}
+	if err := s.Append(Event{
+		Kind: EventJobFinished, JobID: "job_A", Status: StatusCompleted,
+		TerminalGen: "gen_1", StructuredResult: caller,
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	// Mutating the appended object cannot reach the log or the cursor.
+	caller.Count = 99
+
+	events, err := s.LoadEvents()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got, ok := events[0].StructuredResult.(map[string]any)
+	if !ok {
+		t.Fatalf("StructuredResult = %T, want a decoded map; the cursor is holding a caller's value", events[0].StructuredResult)
+	}
+	if got["count"] != float64(1) {
+		t.Fatalf("decoded count = %v, want the appended 1", got["count"])
+	}
+}
+
 // countingFs counts the bytes a store reads back out of the log, so a test can
 // assert on the work a reload does rather than on how long it takes.
 type countingFs struct {
@@ -705,6 +890,40 @@ func BenchmarkStoreLoadAfterAppend(b *testing.B) {
 				}
 				if _, err := s.Load(); err != nil {
 					b.Fatalf("load: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkStoreAppendWithLiveCursor prices what the cursor costs the WRITE
+// path: while a cursor is live, each append stats the log twice — once to check
+// the file is still the one the cursor holds before extending it, once to record
+// where it now ends. Run with -benchtime to compare against a store whose cursor
+// was never primed (no load, so no stats), which is the shape of the append-only
+// producer that never reloads.
+func BenchmarkStoreAppendWithLiveCursor(b *testing.B) {
+	for _, primed := range []bool{true, false} {
+		name := "cursor=live"
+		if !primed {
+			name = "cursor=absent"
+		}
+		b.Run(name, func(b *testing.B) {
+			path := filepath.Join(b.TempDir(), "jobs.jsonl")
+			s, err := OpenNoSync(path)
+			if err != nil {
+				b.Fatalf("open: %v", err)
+			}
+			defer func() { _ = s.Close() }()
+			if primed {
+				if _, err := s.Load(); err != nil {
+					b.Fatalf("prime load: %v", err)
+				}
+			}
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := s.Append(incrementalTestEvent(i)); err != nil {
+					b.Fatalf("append: %v", err)
 				}
 			}
 		})

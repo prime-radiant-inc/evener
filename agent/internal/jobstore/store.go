@@ -53,11 +53,24 @@ type Store struct {
 // as it now is, and the store's own appends carry the new size and mod forward.
 // A load never trusts bytes it has not accounted for.
 //
-// The residual: a foreign writer that rewrote the log to the SAME length within
-// the same filesystem timestamp tick as the store's own last write is
-// indistinguishable from no write at all. The log is append-only by contract and
-// the owning store is its only sanctioned writer, so this is a bound on how far
-// out-of-contract writes are tolerated, not a durability property.
+// Because that identity leans on mtime, the store CALIBRATES it: if one of its
+// own appends changes the file's length without moving its mtime, this
+// filesystem's timestamps cannot resolve a change (a coarse-granularity or
+// attribute-caching mount), and the cursor is disabled for the store's lifetime —
+// every load re-reads the whole file, exactly as before this cursor existed. The
+// degradation is in the safe direction: slower, never stale. See
+// disabled/TestStoreCursorDisablesItselfWhenMTimeCannotResolveWrites.
+//
+// The residual: a foreign writer that rewrote the log to the SAME length AND
+// restored its mtime afterwards is indistinguishable from no write at all. The
+// log is append-only by contract and the owning store is its only sanctioned
+// writer, so this is a bound on how far out-of-contract writes are tolerated, not
+// a durability property. It is stated as a test, not just here:
+// TestStoreCursorSameSizeSameMTimeRewriteIsTheDocumentedBoundary. Closing it
+// completely means re-reading the prefix on every load, which is the cost this
+// cursor exists to remove; a stat-derived identity (inode, change time) does not
+// close it either, since a filesystem whose mtime is coarse rounds its ctime the
+// same way.
 //
 // CRASH SAFETY. The cursor is process memory only, never persisted, and no
 // durable byte depends on it: appends still write and fsync exactly as before,
@@ -73,6 +86,10 @@ type fileCursor struct {
 	size   int64
 	mod    time.Time
 	valid  bool
+	// disabled is sticky: set when this filesystem proved it cannot tell one of
+	// the store's own writes from no write at all, after which the store always
+	// re-reads the whole file.
+	disabled bool
 }
 
 // Open opens (creating if needed) the jobs.jsonl at path and recovers the next
@@ -333,11 +350,13 @@ func (s *Store) readAllLocked() ([]Event, error) {
 // foreign append, which is cheap enough to reread whole — is not accounted for,
 // so the cursor is dropped rather than extended over unverified bytes.
 func (s *Store) cursorTrustedLocked(info os.FileInfo) bool {
-	return s.cursor.valid && info.Size() == s.cursor.size && info.ModTime().Equal(s.cursor.mod)
+	return s.cursor.valid && !s.cursor.disabled &&
+		info.Size() == s.cursor.size && info.ModTime().Equal(s.cursor.mod)
 }
 
 func (s *Store) resetCursorLocked() {
-	s.cursor = fileCursor{}
+	disabled := s.cursor.disabled
+	s.cursor = fileCursor{disabled: disabled}
 }
 
 // invalidateCursorLocked drops the cursor after the store itself changed the
@@ -379,6 +398,15 @@ func (s *Store) noteAppendedLocked(startOffset int64) {
 	}
 	info, err := s.fs.Stat(s.path)
 	if err != nil {
+		s.cursor.valid = false
+		return
+	}
+	if info.Size() != startOffset && info.ModTime().Equal(s.cursor.mod) {
+		// This append changed the file's length and the filesystem reported the
+		// same modification time as before it: timestamps here cannot resolve a
+		// write, so they cannot be used to tell the store's own bytes from
+		// someone else's. Give the cursor up rather than trust it.
+		s.cursor.disabled = true
 		s.cursor.valid = false
 		return
 	}
