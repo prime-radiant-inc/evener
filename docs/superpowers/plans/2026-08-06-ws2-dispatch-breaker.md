@@ -83,8 +83,9 @@ Decided with Jesse — **do not relitigate**:
   (Jesse, 2026-08-06).
 - Failure-trigger nudge text, verbatim:
   `You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach`
-- Failure-trigger park sentence, verbatim:
-  `this exact call has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach`
+- Failure-trigger park sentence, verbatim (the tool name leads it, so the
+  model reads which call was refused):
+  `serf did not execute this call: <tool> with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach.`
 - Park means the call is **not executed**.
 - **No session-level tool fencing.** The per-signature failure park is the
   only enforcement tier.
@@ -162,8 +163,16 @@ own mutex, taken separately for the pre-dispatch check and the post-dispatch
 record, never held across `t.Exec`.
 
 **Bounded growth.** At most 512 live entries (raised from 256 because
-successful signatures now retain entries), FIFO eviction of the oldest
-inserted signature.
+successful signatures now retain entries), **LRU** eviction: every `record`
+moves its signature to the most-recently-used end. Insertion-order FIFO was
+wrong — a signature's survival tracked age since first sight, so a recurring
+failing call surrounded by one-off traffic was evicted before it could trip,
+which silently broke the "other signatures never reset a counter" invariant.
+
+**What the ledger judges.** The untruncated result body (`FullOutput`). A
+`TruncTail` tool renders every over-limit error behind the same truncation
+banner; classing on the truncated text would read two unrelated failures as
+one class and park a call that never repeated itself.
 
 **WS9 hook.** Parked results are ordinary error results whose output begins
 with the stable prefix `serf did not execute this call:`. WS9's `--health`
