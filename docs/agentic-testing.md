@@ -841,6 +841,26 @@ do not hand-parse transcript JSONL for comprehension; use
 `serf-doctor transcript`. Raw `jsonl` reads are for byte-level replay
 or debugging the transcript format itself.
 
+Three forensics facts that have each closed an investigation:
+
+- **The transcript is lossy for broken tool calls.** A tool call whose
+  arguments failed JSON parsing is stored with `arguments: {}` — the raw
+  broken bytes are NOT in the transcript. They are in
+  `<session>.api.jsonl` (same directory), which records every API
+  attempt with the raw SSE stream in `response.body.data`: reassemble
+  the call's `input_json_delta` parts to see exactly what the model
+  sent.
+- **Check `stop_reason` in api.jsonl before believing an error's
+  self-description.** A batch of "JSON escaping" tool failures was
+  actually `stop_reason: max_tokens` truncation at an output cap; the
+  malformed JSON was the symptom of the cut, not the cause.
+- **The client-mutation journal proves delivery.** The daemon writes
+  `<state-dir>/mutations/<SID>.json` recording every accepted AND
+  rejected client mutation. A mutation absent from that journal never
+  reached the daemon — which localizes a "queued reply never sent" bug
+  to the client (e.g. the web outbox) without reading a line of client
+  code.
+
 ## Falsification debugging — when an assertion fails
 
 If a scenario's assertion fails and the failure isn't obvious from
@@ -850,7 +870,7 @@ has six rebuild points:
 
 1. **Daemon** — `cmd/serf/` and `agent/`. Rebuild: `go build -o "$run/serf" ./cmd/serf`. The hub re-spawns it per session, so the next spawned session picks up the new binary.
 2. **Hub** — `cmd/serf-hub/` and `server/`. Rebuild + kill the running hub by PID (not `pkill -f`, which would also kill any other concurrent agent's hub), then restart it the same way as step 4 of the setup checklist — it binds a *new* ephemeral port, so re-read `$run/hub.log` for the new `PORT`/`HUB`: `kill "$HUBPID"; go build -o "$run/serf-hub" ./cmd/serf-hub && "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" & HUBPID=$!`.
-3. **Web UI** — `cmd/serf-hub/frontend/src/` (TypeScript/React). Two steps, and skipping the first is the classic "my change didn't take": `make build-web` compiles it into `cmd/serf-hub/frontend/dist`, which `webnext.go`'s `//go:embed all:frontend/dist` bakes into the hub binary. So rebuild the frontend, **then** rebuild and restart the hub, then hard-refresh the tab. A checkout that has never run `make build-web` has a one-line `dist/PLACEHOLDER` and serves no app at all. Agent worktrees symlink `node_modules` to a shared install; `make web-preflight` accepts that install when the `package-lock.json` beside it is byte-identical to this worktree's (mtime cannot answer the question — a fresh worktree's lockfile is always newer than the shared install). When the two lockfiles differ it refuses to `npm ci` through the symlink on purpose, because that would empty the install for every other worktree: refresh the shared install where it lives, or give this worktree its own real `node_modules`.
+3. **Web UI** — `cmd/serf-hub/frontend/src/` (TypeScript/React). Two steps, and skipping the first is the classic "my change didn't take": `make build-web` compiles it into `cmd/serf-hub/frontend/dist`, which `webnext.go`'s `//go:embed all:frontend/dist` bakes into the hub binary. So rebuild the frontend, **then** rebuild and restart the hub, then hard-refresh the tab. When in doubt whether a live tab is running the fix, grep the served bundle for a symbol the fix introduced (`curl -s "$HUB/assets/…"` or view-source) — a tab picks nothing up until the hub binary was rebuilt, restarted, AND the tab reloaded. A checkout that has never run `make build-web` has a one-line `dist/PLACEHOLDER` and serves no app at all. Agent worktrees symlink `node_modules` to a shared install; `make web-preflight` accepts that install when the `package-lock.json` beside it is byte-identical to this worktree's (mtime cannot answer the question — a fresh worktree's lockfile is always newer than the shared install). When the two lockfiles differ it refuses to `npm ci` through the symlink on purpose, because that would empty the install for every other worktree: refresh the shared install where it lives, or give this worktree its own real `node_modules`.
 4. **TUI** — `cmd/serf-tui/`. Rebuild: `go build -o "$run/serf-tui" ./cmd/serf-tui`. The running TUI keeps the old binary in memory — kill the tmux session (`tmux kill-session -t "$TMUX_SESSION"`) and restart for the new code.
 5. **AppWire types** — `appwire/`. Both daemon and hub statically link these; rebuild both. The generated TypeScript mirror (`frontend/src/protocol/types.gen.ts`) is a third consumer — a wire change that only rebuilds the Go side leaves the browser decoding the old shape.
 6. **Optimistic-mutation plumbing** — the TUI's pending coordinator and the web's durable outbox (`frontend/src/stores/mutationOutbox.ts`, `panes/session/composer/queue/pendingTurnsStore.ts`); same rebuild rules as 4 and 3 respectively.
