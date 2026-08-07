@@ -24,8 +24,8 @@ import (
 )
 
 var (
-	rawMessageType    = reflect.TypeOf(json.RawMessage(nil))
-	jsonMarshalerType = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+	rawMessageType    = reflect.TypeFor[json.RawMessage]()
+	jsonMarshalerType = reflect.TypeFor[json.Marshaler]()
 )
 
 // SchemaFromType converts a Go type into the map[string]any JSON-Schema subset
