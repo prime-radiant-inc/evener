@@ -259,10 +259,31 @@ call-site proximity:
 - Test: `agent/internal/tool/registry_test.go` (extend)
 
 **Interfaces:**
-- A package-level constant, e.g. `const maxToolArgumentBytes = 256 * 1024`,
-  checked at the top of `ExecuteCall` (before `json.Unmarshal`, so a
-  pathological payload isn't even parsed): when
-  `len(call.Arguments) > maxToolArgumentBytes`, return
+- **Amendment (discovered during implementation, 2026-08-06):** the spec's
+  "256KB" was explicitly proposed as a number "well above any legitimate
+  call" — that assumption collides with an existing, deliberate limit:
+  `agent/jobs.go:41`'s `maxPersistedStructuredResultJSONBytes = 1024 * 1024`
+  (1MB) governs how large a `communicate` structured-result payload may
+  legitimately be before the job store drops it gracefully (marks
+  `structured_result_reason = "schema_result_too_large"` but the call still
+  succeeds) — proven by the existing
+  `TestCreateDelegateDropsOversizedStructuredResultBeforePersistence`. A
+  256KB registry-level hard-reject would intercept that call before it ever
+  reaches the graceful 1MB path, turning a tolerated large-but-legitimate
+  payload into a hard tool-call error. The registry cap must sit above the
+  1MB ceiling (with margin for JSON-string escaping overhead when the
+  payload contains characters that need escaping) to preserve that already-
+  decided behavior. **Use `const maxToolArgumentBytes = 2 * 1024 * 1024`**
+  (2MB) instead of 256KB, with a comment on the constant noting it must
+  stay above `maxPersistedStructuredResultJSONBytes` (cross-package;
+  `agent/internal/tool` cannot import `agent` to derive it directly — keep
+  the two constants in sync by comment, not by reference). This still fully
+  covers the historical failure case (a 60KB degenerate task_list payload)
+  with wide margin — the fix is a legibility/fail-fast backstop against
+  truly runaway generation, not a tight budget.
+- A package-level constant per the above, checked at the top of
+  `ExecuteCall` (before `json.Unmarshal`, so a pathological payload isn't
+  even parsed): when `len(call.Arguments) > maxToolArgumentBytes`, return
   `truncateResult(name, callID, msg, true, defaultToolLimit(name))` with
   `msg` following the file's existing terse convention, e.g.:
   `` fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(call.Arguments), maxToolArgumentBytes) `` —
