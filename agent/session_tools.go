@@ -538,7 +538,9 @@ func (s *Session) rerunToolWithGrant(ctx context.Context, call llm.ToolCallData)
 		}
 	}
 	rerunStart := s.sclock().Now()
-	result := s.reg.ExecuteCall(ctx, env, call)
+	// A human just approved this exact call, so the repeated-call breaker must
+	// not refuse it — its whole job is to stop the model repeating itself.
+	result := s.reg.ExecuteCall(tool.WithBreakerBypass(ctx), env, call)
 	result.DurationMS = s.sclock().Now().Sub(rerunStart).Milliseconds()
 	return result
 }

@@ -1,8 +1,10 @@
 package tool
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"sync"
 	"unicode"
@@ -57,10 +59,69 @@ func signature(name string, args []byte) string {
 	return name + ":" + shortHash(args)
 }
 
+// breakerThreshold is how many times a signature may produce the same answer
+// before the breaker intervenes. The second such result carries a nudge. For
+// repeated failures the call that would be the third is not executed at all;
+// repeated identical successes only ever draw the nudge, since the next one
+// may be the call that finally sees a changed world.
+const breakerThreshold = 2
+
+// The intervention texts. Parked results all begin with parkPrefix, which is
+// the stable marker other layers count them by.
+const (
+	parkPrefix          = "serf did not execute this call: "
+	failureNudgeText    = "You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach"
+	repetitionNudgeText = "You have now made this same call twice and received the identical result. Repeating it will not change the answer — use the result you already have, or change your approach."
+)
+
+// failureParkText is the body of a refused call whose signature keeps failing
+// the same way. It shows the failures themselves so the model can see what it
+// is being asked to stop repeating.
+func failureParkText(name string, snippets []string) string {
+	var b strings.Builder
+	b.WriteString(parkPrefix)
+	b.WriteString(name)
+	b.WriteString(" with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach.")
+	if len(snippets) > 0 {
+		b.WriteString("\n\nThe failures so far:")
+		for i, snippet := range snippets {
+			fmt.Fprintf(&b, "\n%d. %s", i+1, snippet)
+		}
+	}
+	return b.String()
+}
+
+// appendIntervention adds breaker text after the result body, separated by a
+// blank line, on both the model-facing output and the full output.
+func appendIntervention(res *ExecResult, text string) {
+	res.Output += "\n\n" + text
+	if res.FullOutput != "" {
+		res.FullOutput += "\n\n" + text
+	}
+}
+
+// breakerBypassKey marks a context whose dispatch the breaker must not judge.
+type breakerBypassKey struct{}
+
+// WithBreakerBypass exempts calls made with the returned context from the
+// repeated-call breaker. It is for re-dispatches a human explicitly
+// authorized, where refusing the call would override that decision.
+func WithBreakerBypass(ctx context.Context) context.Context {
+	return context.WithValue(ctx, breakerBypassKey{}, true)
+}
+
+func breakerBypassed(ctx context.Context) bool {
+	bypass, _ := ctx.Value(breakerBypassKey{}).(bool)
+	return bypass
+}
+
 // check is the pre-dispatch read: the signature's current consecutive-
 // failure streak, consecutive-identical-body streak, and recorded failure
 // snippets, without mutating the ledger.
 func (l *failureLedger) check(name string, args []byte) (failStreak int, repeatStreak int, snippets []string) {
+	if l == nil { // a zero-value Registry has no ledger and judges nothing
+		return 0, 0, nil
+	}
 	key := signature(name, args)
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -79,6 +140,9 @@ func (l *failureLedger) check(name string, args []byte) (failStreak int, repeatS
 // longer deletes the entry — it zeroes the failure streak and clears the
 // class and snippets, but the entry survives so the body hash persists.
 func (l *failureLedger) record(name string, args []byte, isErr bool, output string) (failStreak int, repeatStreak int) {
+	if l == nil { // a zero-value Registry has no ledger and judges nothing
+		return 0, 0
+	}
 	key := signature(name, args)
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -87,8 +151,8 @@ func (l *failureLedger) record(name string, args []byte, isErr bool, output stri
 	if !ok {
 		e = &failureEntry{}
 		l.entries[key] = e
-		l.insert(key)
 	}
+	l.touch(key)
 
 	bodyHash := shortHash([]byte(output))
 	if e.bodyHash == bodyHash {
@@ -123,10 +187,19 @@ func (l *failureLedger) record(name string, args []byte, isErr bool, output stri
 	return e.count, e.bodyCount
 }
 
-// insert appends a newly-created key to the insertion order and evicts the
-// oldest signature if the ledger has grown past its bound. Must be called
-// with l.mu held.
-func (l *failureLedger) insert(key string) {
+// touch moves key to the most-recently-used end of the order and evicts the
+// least-recently-used signature if the ledger has grown past its bound.
+// Recency, not age since first sight, decides what survives: a signature that
+// keeps recurring is exactly the one the breaker must not forget, however
+// much unrelated one-off traffic flows around it. Must be called with l.mu
+// held.
+func (l *failureLedger) touch(key string) {
+	for i, k := range l.order {
+		if k == key {
+			l.order = append(l.order[:i], l.order[i+1:]...)
+			break
+		}
+	}
 	l.order = append(l.order, key)
 	if len(l.order) <= maxFailureLedgerEntries {
 		return
