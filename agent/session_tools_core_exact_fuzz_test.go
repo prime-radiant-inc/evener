@@ -341,7 +341,7 @@ func stceExecToolBranches(t *testing.T) {
 				setClosing(s)
 			}
 		}
-		if res := s.execTool(context.Background(), stmCall(t, phase, "probe", map[string]any{})); !res.IsError {
+		if res := s.execTool(context.Background(), stmCall(t, phase, "probe", map[string]any{}), ""); !res.IsError {
 			t.Fatalf("closing phase %s = %#v", phase, res)
 		}
 	}
@@ -360,7 +360,7 @@ func stceExecToolBranches(t *testing.T) {
 		if strings.Contains(response, "updatedInput") {
 			args = json.RawMessage(`{`)
 		}
-		res := s.execTool(context.Background(), llm.ToolCallData{ID: "hook", Name: "probe", Arguments: args})
+		res := s.execTool(context.Background(), llm.ToolCallData{ID: "hook", Name: "probe", Arguments: args}, "")
 		if !res.IsError {
 			t.Fatalf("pre hook branch = %#v", res)
 		}
@@ -374,8 +374,8 @@ func stceExecToolBranches(t *testing.T) {
 	runner := hooks.NewRunner(client, "gpt-5.2")
 	runner.Add(plugin.HookPostToolUse, plugin.RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "post"})
 	s.hookRunner = runner
-	_ = s.execTool(context.Background(), stmCall(t, "post", "probe", map[string]any{}))
-	_ = s.execTool(context.Background(), llm.ToolCallData{ID: "item", ItemID: "item-id", Name: "probe", Arguments: json.RawMessage(`{}`)})
+	_ = s.execTool(context.Background(), stmCall(t, "post", "probe", map[string]any{}), "")
+	_ = s.execTool(context.Background(), llm.ToolCallData{ID: "item", ItemID: "item-id", Name: "probe", Arguments: json.RawMessage(`{}`)}, "")
 
 	grantEnv := &stceGrantEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: t.TempDir()}}
 	s.env = grantEnv
