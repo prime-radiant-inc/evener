@@ -406,9 +406,6 @@ func TestEditFile_FuzzyMatch_CompletelyWrongString_StillFails(t *testing.T) {
 }
 
 func TestLocalExecutionEnvironment_ListDirectory_TypeFlags(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink/exec-bit semantics differ on Windows")
-	}
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)
 	if _, err := env.WriteFile("plain.txt", "hi"); err != nil {
@@ -589,10 +586,6 @@ func TestEnvVarPolicy_Default_FiltersSensitive(t *testing.T) {
 }
 
 func TestExecCommand_AddsVenvBinToPATH_WhenPresent(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell/path semantics differ on windows")
-	}
-
 	dir := t.TempDir()
 	venvBin := filepath.Join(dir, "venv", "bin")
 	if err := os.MkdirAll(venvBin, 0o755); err != nil {
@@ -622,10 +615,6 @@ func TestExecCommand_AddsVenvBinToPATH_WhenPresent(t *testing.T) {
 }
 
 func TestExecCommand_DoesNotInventVenvBinPATH_WhenAbsent(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell/path semantics differ on windows")
-	}
-
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)
 
@@ -801,9 +790,6 @@ func TestExecCommand_ShellSelection(t *testing.T) {
 
 func TestExecArgv_PreservesArgvAndExitSemantics(t *testing.T) {
 	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("script argv fixture uses POSIX sh")
-	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "argv-fixture")
 	writeExecFixture(t, script, "#!/bin/sh\nprintf '<%s>\\n' \"$1\"\nprintf 'err:<%s>\\n' \"$2\" >&2\nexit 7\n")
@@ -826,9 +812,6 @@ func TestExecArgv_PreservesArgvAndExitSemantics(t *testing.T) {
 
 func TestExecArgv_UsesInjectedLocalVenvPath(t *testing.T) {
 	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("script argv fixture uses POSIX sh")
-	}
 	dir := t.TempDir()
 	bin := filepath.Join(dir, ".venv", "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
@@ -855,26 +838,16 @@ func TestShellCommand_ReturnsValidCmd(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("shellCommand returned nil")
 	}
-	if runtime.GOOS == "windows" {
-		if cmd.Path == "" || !strings.Contains(cmd.Path, "cmd") {
-			t.Errorf("on windows, expected cmd.exe, got: %s", cmd.Path)
-		}
-	} else {
-		if filepath.Base(cmd.Path) != "bash" {
-			t.Errorf("on unix, expected bash, got: %s", cmd.Path)
-		}
-		wantArgs := []string{"-o", "pipefail", "-c", "echo test"}
-		if !reflect.DeepEqual(cmd.Args[1:], wantArgs) {
-			t.Errorf("on unix, args = %v, want %v", cmd.Args[1:], wantArgs)
-		}
+	if filepath.Base(cmd.Path) != "bash" {
+		t.Errorf("on unix, expected bash, got: %s", cmd.Path)
+	}
+	wantArgs := []string{"-o", "pipefail", "-c", "echo test"}
+	if !reflect.DeepEqual(cmd.Args[1:], wantArgs) {
+		t.Errorf("on unix, args = %v, want %v", cmd.Args[1:], wantArgs)
 	}
 }
 
 func TestShellCommandUsesBashWhenBinBashIsMissing(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX shell contract does not apply on windows")
-	}
-
 	originalGOOS, originalShellStat, originalLookPath := runtimeGOOS, shellStat, execLookPath
 	t.Cleanup(func() {
 		runtimeGOOS, shellStat, execLookPath = originalGOOS, originalShellStat, originalLookPath
@@ -901,10 +874,6 @@ func TestShellCommandUsesBashWhenBinBashIsMissing(t *testing.T) {
 }
 
 func TestShellCommandDoesNotFallbackToShWhenBashIsUnavailable(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX shell contract does not apply on windows")
-	}
-
 	originalGOOS, originalShellStat, originalLookPath := runtimeGOOS, shellStat, execLookPath
 	t.Cleanup(func() {
 		runtimeGOOS, shellStat, execLookPath = originalGOOS, originalShellStat, originalLookPath
