@@ -33,6 +33,20 @@ var ErrInvalidSessionID = errors.New("invalid session id")
 // <id>.meta.json.tmp, stays well inside the 255-byte filename limit.
 const sessionIDMaxLen = 128
 
+// windowsReservedSessionIDs are the DOS device names Windows resolves no matter
+// what extension follows them: opening "NUL.meta.json" reaches the NUL device,
+// not a file. serf builds for Windows (agent/internal/installid/
+// lock_windows.go), and a state directory written on one platform can be read
+// on another, so these are refused everywhere rather than under a GOOS guard.
+// Dots are already banned, so the whole ID is the basename to compare.
+var windowsReservedSessionIDs = map[string]bool{
+	"CON": true, "PRN": true, "AUX": true, "NUL": true,
+	"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true,
+	"COM6": true, "COM7": true, "COM8": true, "COM9": true,
+	"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true,
+	"LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+}
+
 // validateSessionID accepts a session ID only when it is safe to use directly as
 // a filename component: 1 to 128 bytes, each an ASCII letter, an ASCII digit,
 // '-' or '_'. Everything else is refused, which is what makes the ID safe to
@@ -43,6 +57,7 @@ const sessionIDMaxLen = 128
 //     can impersonate the ".meta.json" or ".tmp" suffixes the layout uses.
 //   - No spaces, control bytes or NUL, so an ID cannot be an unprintable
 //     near-duplicate of another.
+//   - No Windows reserved device name, which no extension makes safe.
 //   - ASCII only, so case folding is exactly ASCII case folding. Two distinct
 //     IDs can then only alias onto one file through case, which
 //     sessionMetaWriteLock's strings.ToLower already accounts for — whereas
@@ -63,8 +78,11 @@ func validateSessionID(id string) error {
 		switch c := id[i]; {
 		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
 		default:
-			return fmt.Errorf("session id %q has a disallowed byte %q at offset %d: %w", id, string(rune(c)), i, ErrInvalidSessionID)
+			return fmt.Errorf("session id %q has a disallowed byte %#x at offset %d: %w", id, c, i, ErrInvalidSessionID)
 		}
+	}
+	if windowsReservedSessionIDs[strings.ToUpper(id)] {
+		return fmt.Errorf("session id %q is a reserved device name: %w", id, ErrInvalidSessionID)
 	}
 	return nil
 }

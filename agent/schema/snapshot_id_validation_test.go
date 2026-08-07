@@ -35,6 +35,12 @@ var unsafeSessionIDs = map[string]string{
 	"glob star":              "01TEST*",
 	"tilde path":             "~/01TEST0001",
 	"percent encoded slash":  "01TEST%2F0001",
+	"windows device con":     "CON",
+	"windows device lower":   "nul",
+	"windows device mixed":   "Aux",
+	"windows device prn":     "PRN",
+	"windows device com1":    "COM1",
+	"windows device lpt9":    "lpt9",
 	"over length":            "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789",
 }
 
@@ -57,6 +63,12 @@ var safeSessionIDs = []string{
 	"-01TEST0001",
 	"01TEST0001-",
 	"a_b-C9",
+	// Near-misses for the reserved device names, which are ordinary filenames.
+	"COM0",
+	"CONSOLE",
+	"NULL",
+	"COM10",
+	"LPT",
 }
 
 func TestSaveSessionMetaRejectsUnsafeSessionIDs(t *testing.T) {
