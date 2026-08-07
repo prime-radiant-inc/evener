@@ -3,6 +3,8 @@ package agent
 import (
 	"fmt"
 	"strings"
+
+	"primeradiant.com/serf/agent/internal/tool"
 )
 
 // failureLoopExcerptRunes bounds the failure excerpt carried by the structural
@@ -61,7 +63,7 @@ func failureLoopIntervention(signatures []string, windowSize int, lastFailure st
 			"Stop. Either change the arguments, or take a different approach to the goal.",
 		windowSize,
 		strings.Join(windowToolNames(signatures, windowSize), ", "),
-		truncateRunes(lastFailure, failureLoopExcerptRunes),
+		tool.TruncateRunes(lastFailure, failureLoopExcerptRunes),
 	)
 }
 
@@ -84,15 +86,6 @@ func windowToolNames(signatures []string, windowSize int) []string {
 		}
 	}
 	return names
-}
-
-// truncateRunes cuts s to at most max runes, never splitting a multi-byte rune.
-func truncateRunes(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max])
 }
 
 // allFailed reports whether every one of the last windowSize tool calls failed.

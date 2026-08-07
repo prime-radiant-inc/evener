@@ -43,7 +43,7 @@ func TestAllFailed(t *testing.T) {
 // session directory (so reading them succeeds); any other name is absent, so
 // reading it fails. It returns every loop-detection message the session emitted
 // and the session's reasoning effort afterwards.
-func loopDetectionSession(t *testing.T, window int, present []string, reads []string) ([]string, string) {
+func loopDetectionSession(t *testing.T, window int, present []string, reads []string) ([]string, string, int) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -110,10 +110,11 @@ func loopDetectionSession(t *testing.T, window int, present []string, reads []st
 	}
 	sess.mu.Lock()
 	effort := sess.cfg.ReasoningEffort
+	detections := sess.loopDetectionCount
 	sess.mu.Unlock()
 	sess.Close()
 
-	return <-messages, effort
+	return <-messages, effort, detections
 }
 
 func TestLoopDetection_MixedWindowKeepsStuckEscalation(t *testing.T) {
@@ -122,7 +123,7 @@ func TestLoopDetection_MixedWindowKeepsStuckEscalation(t *testing.T) {
 	// Alternating failure/success fills a 6-wide window with an A-B pattern that
 	// still contains real progress, so today's tiered steering stands.
 	reads := []string{"absent.txt", "present.txt", "absent.txt", "present.txt", "absent.txt", "present.txt"}
-	messages, _ := loopDetectionSession(t, 6, []string{"present.txt"}, reads)
+	messages, _, _ := loopDetectionSession(t, 6, []string{"present.txt"}, reads)
 
 	if len(messages) == 0 {
 		t.Fatal("expected a loop detection for the alternating pattern")
@@ -140,7 +141,7 @@ func TestLoopDetection_AllFailingWindowGetsStructuralIntervention(t *testing.T) 
 	t.Parallel()
 
 	reads := []string{"absent.txt", "absent.txt", "absent.txt", "absent.txt", "absent.txt", "absent.txt"}
-	messages, effort := loopDetectionSession(t, 6, nil, reads)
+	messages, effort, detections := loopDetectionSession(t, 6, nil, reads)
 
 	if len(messages) == 0 {
 		t.Fatal("expected a loop detection for the all-failing pattern")
@@ -155,6 +156,11 @@ func TestLoopDetection_AllFailingWindowGetsStructuralIntervention(t *testing.T) 
 	}
 	if strings.Contains(joined, "Your reasoning effort has been increased") {
 		t.Fatalf("failure loop must skip the tier-1 escalation, got %q", joined)
+	}
+	// The tier counter still advances through a failure loop, so a later mixed
+	// loop escalates from the tier it actually reached rather than restarting.
+	if detections == 0 {
+		t.Fatal("loop detection count must still advance on the failure path")
 	}
 	if effort != "low" {
 		t.Fatalf("reasoning effort = %q, want it unchanged at %q", effort, "low")
