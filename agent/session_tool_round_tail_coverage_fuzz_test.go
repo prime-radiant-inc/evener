@@ -175,7 +175,11 @@ func FuzzSessionToolRoundTailCoverage(f *testing.F) {
 
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
+			// Both accumulators are reset together: injectPostToolSteering reads
+			// them as one window, so letting them drift here would mask exactly
+			// the misalignment the failure-loop rule depends on.
 			sigs = []string{"tail_read:" + shortHash([]byte(`{}`))}
+			sigFailed = []bool{false}
 			if _, err := s.injectPostToolSteering(ctx, calls, nil, &sigs, &sigFailed); !errors.Is(err, context.Canceled) {
 				t.Fatalf("loop warning cancellation = %v", err)
 			}

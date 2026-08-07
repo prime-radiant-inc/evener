@@ -170,7 +170,7 @@ func (l *failureLedger) record(name string, args []byte, isErr bool, output stri
 	}
 
 	class := errorClass(output)
-	snippet := truncateRunes(output, maxFailureSnippetRunes)
+	snippet := TruncateRunes(output, maxFailureSnippetRunes)
 
 	if e.class != class {
 		e.class = class
@@ -218,7 +218,7 @@ func errorClass(output string) string {
 	line = collapseWhitespace(line)
 	line = strings.ToLower(line)
 	line = replaceDigitRuns(line, "#")
-	line = truncateRunes(line, 200)
+	line = TruncateRunes(line, 200)
 
 	sum := sha256.Sum256([]byte(line))
 	return hex.EncodeToString(sum[:4])
@@ -267,7 +267,10 @@ func replaceDigitRuns(s, replacement string) string {
 	return b.String()
 }
 
-func truncateRunes(s string, max int) string {
+// TruncateRunes cuts s to at most max runes, never splitting a multi-byte
+// rune. Exported so the agent package's steering messages truncate the same
+// way tool results do.
+func TruncateRunes(s string, max int) string {
 	r := []rune(s)
 	if len(r) <= max {
 		return s
