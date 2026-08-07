@@ -221,6 +221,22 @@ type SandboxPolicy struct {
 	// folded into the resolved grants. Absolute paths.
 	ExtraWritableRoots []string
 	ExtraReadRoots     []string
+
+	// InfraReadRoots are the session's HOOK and MCP-SERVER paths: the plugin
+	// directories whose hook scripts a session execs, and the directories holding
+	// its configured stdio MCP-server programs. Ruled 2026-08-06: hooks and MCP
+	// servers are session INFRASTRUCTURE and must work in every sandbox mode, so
+	// these roots join the SPAWNED-process read/exec surface in all modes.
+	//
+	// They are deliberately NOT ExtraReadRoots: this grant is read/exec ONLY and
+	// reaches the spawned layer alone, so the model does not gain a file-tool
+	// browse grant over the plugin cache, and the write surface is untouched. The
+	// credential/pseudo-fs denylist still wins — Resolve drops any root at or under
+	// a masked path, and the backends deny masked paths after every allow.
+	//
+	// They are derived from the session's ACTUAL hook/MCP configuration (see
+	// agent.SessionInfraRoots), never from a home-directory glob. Absolute paths.
+	InfraReadRoots []string
 }
 
 // resolveHomePath turns a denylist/root entry into an absolute path: an absolute

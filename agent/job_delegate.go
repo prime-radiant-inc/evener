@@ -1359,6 +1359,11 @@ func (s *Session) resolveRestoredDelegateSandbox(desc *jobstore.DelegateRestoreD
 	if resumedNet && !parentNet {
 		return nil, notResumableSandboxUnsatisfiable
 	}
+	// Hook/MCP infrastructure roots are DERIVED from the session's current config,
+	// never replayed from the snapshot (which does not carry them) — the same
+	// re-resolve-from-inputs rule the roots above follow. A resumed delegate
+	// therefore gets exactly the infrastructure grant its live parent has.
+	pol.InfraReadRoots = SessionInfraRoots(s.cfg, s.currentEnv())
 	rp, err := sandbox.Resolve(pol, s.sandboxHostFacts(), workDir)
 	if err != nil {
 		return nil, notResumableSandboxUnsatisfiable

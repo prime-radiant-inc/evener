@@ -281,6 +281,119 @@ func TestSeatbeltLiveGitConfigAndHooksStillDenied(t *testing.T) {
 	}
 }
 
+// liveInfraDir materializes a stand-in for the session's hook/MCP-server
+// directory OUTSIDE the worktree — the shape of a plugin-cache hook script,
+// which is what a real SessionStart hook execs. It returns the directory and the
+// executable script inside it.
+func liveInfraDir(t *testing.T) (dir, script string) {
+	t.Helper()
+	dir = t.TempDir()
+	script = filepath.Join(dir, "session-start.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho serf-hook-ran\n"), 0o755); err != nil { //nolint:gosec // an executable test fixture
+		t.Fatal(err)
+	}
+	return dir, script
+}
+
+// TestSeatbeltLiveInfraPathNotGrantedIsDenied is the RED reproduction, kept as a
+// permanent control: a hook script living outside the worktree (the plugin
+// cache) is NOT executable under restricted mode unless the session's hook/MCP
+// paths are granted. This is the exit-126 failure the 2026-08-06 ruling
+// addresses, and it pins that the grant below — not some unrelated widening — is
+// what makes hooks work.
+func TestSeatbeltLiveInfraPathNotGrantedIsDenied(t *testing.T) {
+	requireLiveSeatbelt(t)
+	_, script := liveInfraDir(t)
+	rp, cwd := liveResolve(t, ModeRestricted, true)
+	out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", script)
+	if exit == 0 {
+		t.Errorf("restricted mode must deny an UNGRANTED out-of-worktree script (exit=%d out=%q)", exit, out)
+	}
+}
+
+// TestSeatbeltLiveInfraPathExecutableInEveryMode proves the 2026-08-06 ruling
+// against the real kernel: hooks and MCP servers are session INFRASTRUCTURE, so
+// once the session's configured hook/MCP paths are on the policy they execute in
+// every sandbox mode — including restricted, whose spawned layer otherwise reads
+// the worktree only.
+func TestSeatbeltLiveInfraPathExecutableInEveryMode(t *testing.T) {
+	requireLiveSeatbelt(t)
+	infra, script := liveInfraDir(t)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		rp, cwd := liveResolve(t, mode, true, func(p *SandboxPolicy) {
+			p.InfraReadRoots = []string{infra}
+		})
+		out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", script)
+		if exit != 0 || !strings.Contains(out, "serf-hook-ran") {
+			t.Errorf("%v: a configured hook/MCP path must be executable (exit=%d out=%q)", mode, exit, out)
+		}
+	}
+}
+
+// TestSeatbeltLiveInfraPathIsReadOnly proves the infrastructure grant is READ/
+// EXEC only: the same directory that just ran a hook script stays unwritable in
+// every mode, so granting hooks never widens the write surface.
+func TestSeatbeltLiveInfraPathIsReadOnly(t *testing.T) {
+	requireLiveSeatbelt(t)
+	infra, _ := liveInfraDir(t)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		rp, cwd := liveResolve(t, mode, true, func(p *SandboxPolicy) {
+			p.InfraReadRoots = []string{infra}
+		})
+		target := filepath.Join(infra, "planted")
+		out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", "echo x >"+target+" 2>&1")
+		if exit == 0 {
+			t.Errorf("%v: a hook/MCP path must stay write-denied, but %q was created:\n%s", mode, target, out)
+		}
+	}
+}
+
+// TestSeatbeltLiveInfraGrantNeverUnmasksDenylist proves the denylist still wins
+// over the infrastructure grant, in both overlap shapes: a denylisted subtree
+// INSIDE a granted hook path stays unreadable, and a hook path that IS itself
+// denylisted is not granted at all. docs/sandboxing.md's floor — the denylist is
+// authoritative over every allow — must not be dented by session infrastructure.
+func TestSeatbeltLiveInfraGrantNeverUnmasksDenylist(t *testing.T) {
+	requireLiveSeatbelt(t)
+	const sentinel = "SERF-LIVE-INFRA-SECRET-42"
+
+	t.Run("denylisted subtree inside a granted hook path", func(t *testing.T) {
+		infra, script := liveInfraDir(t)
+		secretDir := filepath.Join(infra, "credentials")
+		if err := os.MkdirAll(secretDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		secret := filepath.Join(secretDir, "token")
+		if err := os.WriteFile(secret, []byte(sentinel), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		rp, cwd := liveResolve(t, ModeRestricted, true, func(p *SandboxPolicy) {
+			p.InfraReadRoots = []string{infra}
+			p.DenylistAdd = append(p.DenylistAdd, secretDir)
+		})
+		// The hook itself still runs...
+		if out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", script); exit != 0 {
+			t.Fatalf("the granted hook must still run (exit=%d out=%q)", exit, out)
+		}
+		// ...but the denylisted subtree under it stays masked.
+		out, _ := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", "cat "+secret+" 2>&1 || true")
+		if strings.Contains(out, sentinel) {
+			t.Errorf("the hook/MCP grant un-masked a denylisted path:\n%s", out)
+		}
+	})
+
+	t.Run("hook path that is itself denylisted", func(t *testing.T) {
+		infra, script := liveInfraDir(t)
+		rp, cwd := liveResolve(t, ModeRestricted, true, func(p *SandboxPolicy) {
+			p.InfraReadRoots = []string{infra}
+			p.DenylistAdd = append(p.DenylistAdd, infra)
+		})
+		if out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", script); exit == 0 {
+			t.Errorf("a denylisted path must not become executable by also being a hook path:\n%s", out)
+		}
+	})
+}
+
 // TestSeatbeltLiveContractOnHost re-runs M1's exported contract suite against the
 // live host's real facts, confirming the resolver agrees with the Mac it runs on.
 func TestSeatbeltLiveContractOnHost(t *testing.T) {

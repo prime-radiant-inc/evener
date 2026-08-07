@@ -261,13 +261,41 @@ their persisted policy the same way the root session does. See
 
 ## Hooks and MCP under a sandbox
 
-- **Hook commands** (PreToolUse, PostToolUse, etc.) run under the session sandbox,
-  same as any spawned process. A hook that needs broader access than the sandbox
-  grants is incompatible with a sandboxed session — run such hooks unsandboxed, or
-  widen the policy's roots/denylist from the command line.
-- **stdio MCP servers** are spawned under the session sandbox.
+Hooks and MCP servers are session **infrastructure**, so they work in every mode
+(ruled 2026-08-06). The session's configured hook and MCP-server paths join the
+spawned layer's **read/exec** surface in all modes — including `restricted`, whose
+spawned processes otherwise read only the worktree. Without this, a hook script
+installed in the plugin cache died with exit 126, "Operation not permitted", and
+took the session's first steering input with it.
+
+- **Hook commands** (SessionStart, PreToolUse, PostToolUse, …) run under the session
+  sandbox, same as any spawned process, with their configured paths granted.
+- **stdio MCP servers** are spawned under the session sandbox, with the directories
+  holding their programs and script arguments granted.
 - **Remote (HTTP/SSE) MCP servers** require `--sandbox-net on`; under `net=off`
   their egress is disabled.
+
+The grant is bounded on four axes:
+
+- **Config-derived, never a glob.** The roots come from the plugin directories this
+  session actually loads (`--plugin-dir` plus the enabled plugin registry) and the
+  stdio MCP servers this session actually configures (global, project, and CLI
+  layers) — not from a `~/.claude/plugins/*`-shaped pattern, which would both grant
+  caches the session never loads and miss anything configured elsewhere.
+- **Read and exec only.** The write surface is unchanged; a hook's own directory
+  stays unwritable in every mode.
+- **Spawned layer only.** File tools do not gain a browse grant over the plugin
+  cache, so `restricted` still holds the model's own reads to the worktree.
+- **The denylist still wins.** A hook or MCP path at or under a masked path is not
+  granted, and a denylisted subtree inside a granted path stays masked — the
+  pseudo-filesystem floor and the credential denylist are authoritative over this
+  grant as over every other.
+
+A hook path the sandbox still cannot serve (a program directly in `$HOME`, which
+would hand `restricted` the whole home directory, is deliberately not granted) fails
+the hook, not the session. A failed SessionStart hook surfaces as one summarized
+warning line naming the hook and its exit code; its raw stderr never becomes the
+model's opening context.
 
 ## Known residuals
 

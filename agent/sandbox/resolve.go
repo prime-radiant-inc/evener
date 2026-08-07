@@ -233,7 +233,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	// Extra roots are folded verbatim into the resolved grants, so a relative
 	// entry would emit a relative grant root (same non-matching hazard as a
 	// relative cwd). Refuse rather than resolve a leaky policy.
-	for _, r := range slices.Concat(policy.ExtraReadRoots, policy.ExtraWritableRoots) {
+	for _, r := range slices.Concat(policy.ExtraReadRoots, policy.ExtraWritableRoots, policy.InfraReadRoots) {
 		if strings.TrimSpace(r) == "" {
 			continue
 		}
@@ -294,8 +294,11 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 // host cannot enforce the mode, surfaced as a start-time refusal by the caller).
 //
 // The caller supplies already-probed host facts so an OFF session can skip the
-// probe entirely (see ModeIsOff); ResolveNamed never probes.
-func ResolveNamed(modeName string, net *bool, host HostFacts, cwd string) (*ResolvedPolicy, error) {
+// probe entirely (see ModeIsOff); ResolveNamed never probes. infraReadRoots are
+// the session's hook and MCP-server paths (SandboxPolicy.InfraReadRoots) — session
+// infrastructure that must run in every mode, resolved by the caller from the
+// session's actual hook/MCP config.
+func ResolveNamed(modeName string, net *bool, host HostFacts, cwd string, infraReadRoots []string) (*ResolvedPolicy, error) {
 	if ModeIsOff(modeName) {
 		return nil, nil
 	}
@@ -303,7 +306,7 @@ func ResolveNamed(modeName string, net *bool, host HostFacts, cwd string) (*Reso
 	if err != nil {
 		return nil, err
 	}
-	rp, err := Resolve(SandboxPolicy{Mode: mode, Network: net}, host, cwd)
+	rp, err := Resolve(SandboxPolicy{Mode: mode, Network: net, InfraReadRoots: infraReadRoots}, host, cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -402,8 +405,16 @@ func scopesFor(policy SandboxPolicy, layout GitLayout, worktree string) (fileToo
 		readFile := dedupeRoots(append([]string{worktree}, policy.ExtraReadRoots...))
 		writeFile := dedupeRoots(append([]string{worktree}, policy.ExtraWritableRoots...))
 		// Spawned procs additionally read the common git dir + system roots (to
-		// execute) and write the git metadata subset.
-		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots))
+		// execute), the session's hook/MCP-server paths (session infrastructure,
+		// which must run in every mode — ruled 2026-08-06), and write the git
+		// metadata subset. The infrastructure roots stay OUT of readFile: a hook
+		// living in the plugin cache must be executable, but the model must not gain
+		// a file-tool browse grant over the plugin cache along with it.
+		//
+		// The other modes need no equivalent line: their spawned layer already reads
+		// anywhere-minus-the-denylist, which covers any hook/MCP path that is not
+		// masked — and a masked one must stay masked in every mode.
+		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, policy.InfraReadRoots))
 		writeSpawn := dedupeRoots(slices.Concat(writeFile, layout.WritablePaths))
 		fileTool = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readFile, WriteRoots: writeFile}
 		spawned = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readSpawn, WriteRoots: writeSpawn}

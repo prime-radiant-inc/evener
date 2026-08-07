@@ -621,7 +621,10 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	// OVERRIDES whatever box the working-dir re-root inherited from the parent:
 	// re-resolve the requested policy against the child's own working dir + the
 	// session's memoized host facts, then EnableSandbox so the child's box is a pure
-	// function of ITS OWN policy. The env is mutated in place, so clone the shared
+	// function of ITS OWN policy. The session's hook/MCP infrastructure roots are
+	// folded in because a delegate loads the SAME plugin dirs and MCP config as its
+	// parent — its infrastructure grant is identical, never wider, so the
+	// no-escalation floor is untouched. The env is mutated in place, so clone the shared
 	// parent env first when there was no working-dir re-root to clone it for us.
 	if reqSandbox != nil {
 		le, ok := subEnv.(*execenv.LocalExecutionEnvironment)
@@ -636,7 +639,9 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 		if fault := s.subagentPrepareFault("sandbox_resolve"); fault != nil {
 			err = fault
 		} else {
-			rp, err = sandbox.Resolve(*reqSandbox, s.sandboxHostFacts(), le.WorkingDirectory())
+			pol := *reqSandbox
+			pol.InfraReadRoots = SessionInfraRoots(s.cfg, le)
+			rp, err = sandbox.Resolve(pol, s.sandboxHostFacts(), le.WorkingDirectory())
 		}
 		if err != nil {
 			return nil, fmt.Errorf("per-delegate sandbox: %w", err)
