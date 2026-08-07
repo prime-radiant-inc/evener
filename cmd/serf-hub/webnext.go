@@ -21,7 +21,7 @@ var distFS = func() fs.FS {
 
 // serveSPAIndex serves the app shell for every page route: client routing owns
 // the path. 503s with instructions when the frontend was never built.
-func serveSPAIndex(w http.ResponseWriter, r *http.Request, dist fs.FS) {
+func serveSPAIndex(w http.ResponseWriter, _ *http.Request, dist fs.FS) {
 	b, err := fs.ReadFile(dist, "index.html")
 	if err != nil {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")

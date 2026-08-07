@@ -456,7 +456,7 @@ func (s *CodexSource) removeLiveThread(threadID string, live *codexLiveThread) {
 	s.mu.Unlock()
 }
 
-func (s *CodexSource) subscribeLiveThread(ctx context.Context, threadID string, live *codexLiveThread) <-chan appwire.Notification {
+func (s *CodexSource) subscribeLiveThread(ctx context.Context, _ string, live *codexLiveThread) <-chan appwire.Notification {
 	return live.subscribe(ctx)
 }
 

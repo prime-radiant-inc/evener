@@ -256,7 +256,7 @@ func shellOutputImageCandidates(output string) []string {
 	return out
 }
 
-func supportedOutputImageMedia(data []byte, name string) (string, bool) {
+func supportedOutputImageMedia(data []byte, _ string) (string, bool) {
 	if len(data) == 0 {
 		return "", false
 	}
