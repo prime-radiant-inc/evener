@@ -317,13 +317,24 @@ func (s *Session) notifyStrategyAfterAction(ctx context.Context) error {
 
 // injectPostToolSteering runs the post-tool-round bookkeeping that may inject
 // steering before the next model call: it appends the round's tool-call signatures
-// to toolSigs and runs loop detection, drains queued steering messages, and injects
-// any task reminder. The bool return asks the turn loop to yield after a watch frame
-// is handed to an observer and no callback steering is ready yet.
-func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCallData, toolSigs *[]string) (bool, error) {
+// to toolSigs and whether each call failed to toolSigFailed, runs loop detection,
+// drains queued steering messages, and injects any task reminder. The bool return
+// asks the turn loop to yield after a watch frame is handed to an observer and no
+// callback steering is ready yet.
+func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCallData, results []tool.ExecResult, toolSigs *[]string, toolSigFailed *[]bool) (bool, error) {
 	// Loop detection: track per-call signatures and check for repeating patterns.
-	for _, call := range calls {
+	// Results match calls positionally, as persistToolResults does. A length
+	// mismatch means the round was aborted before every call produced a result,
+	// so nothing in it is judged a failure rather than guessing which call is which.
+	haveResults := len(results) == len(calls)
+	lastFailure := ""
+	for i, call := range calls {
 		*toolSigs = append(*toolSigs, call.Name+":"+shortHash(call.Arguments))
+		failed := haveResults && results[i].IsError
+		*toolSigFailed = append(*toolSigFailed, failed)
+		if failed {
+			lastFailure = results[i].Output
+		}
 	}
 	if s.cfg.EnableLoopDetection != nil && *s.cfg.EnableLoopDetection {
 		if detectLoop(*toolSigs, s.cfg.LoopDetectionWindow) {
@@ -332,7 +343,15 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 			count := s.loopDetectionCount
 			s.mu.Unlock()
 
-			warning := s.stuckEscalation(count)
+			// A window with no successes in it needs a structural intervention, not
+			// more reasoning effort. The count still advances so a later mixed loop
+			// escalates from the right tier.
+			var warning string
+			if allFailed(*toolSigFailed, s.cfg.LoopDetectionWindow) {
+				warning = failureLoopIntervention(*toolSigs, s.cfg.LoopDetectionWindow, lastFailure)
+			} else {
+				warning = s.stuckEscalation(count)
+			}
 			if abortErr := s.withResponseSideEffects(ctx, func() {
 				s.emit(events.EventLoopDetection, events.LoopDetectionData{Message: warning})
 				s.appendSteeringTurn(warning, events.SteeringKindLoopDetected)
