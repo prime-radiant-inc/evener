@@ -364,6 +364,26 @@ around the instruction — but only because they were told to push back.
 Naming a wrong mechanism is worse than naming none, because a named one
 stops the agent looking.
 
+## Decision records are normative. Read them before speccing.
+
+Code exploration tells you what the code does, never why. In this repo
+the why is durably recorded: `docs/job-control.md`,
+`docs/sandboxing.md`, `docs/environment.md`,
+`docs/superpowers/specs/*-design.md`, and `docs/web-ui/decisions.md` are
+normative decision records, and several "obvious bugs" are closed
+questions. A schema-absent-but-still-parsed parameter can mean
+"deliberately removed yesterday," not "undiscoverable capability" — one
+planning session proposed both a `job_wait` tool that
+`docs/job-control.md` explicitly rejects and the re-exposure of a
+parameter removed the day before, from code reading alone.
+
+Before writing a spec, plan section, or fix for any serf subsystem, find
+and read its decision records (grep `docs/` and
+`docs/superpowers/specs/`) and cite them in the plan. When a proposal
+contradicts a record, that is a question for Jesse, not a fix. The audit
+is cheap and pays either way — it has also strengthened fixes by
+surfacing existing concepts the plan could reuse.
+
 ## Auditing a decision record
 
 Reconstructing why a UI is the way it is, from mockups and commit
