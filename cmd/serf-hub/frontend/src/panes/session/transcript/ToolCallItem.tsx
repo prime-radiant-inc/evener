@@ -165,7 +165,12 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   const summarySuffix = useThreadsStore((s) =>
     descriptor.summarySuffix?.(item, sessionRef !== undefined ? s.threads.get(sessionRef) : undefined),
   );
-  const summary = descriptor.summary(item) + (summarySuffix ?? "");
+  // cwd is snapshot-only ThreadModel state (fileOpenBeside.tsx's DECISION B),
+  // stable for the pane's life - the same by-ref selector openBesideCwd above
+  // uses. Threaded into summary() as ToolSummaryContext so shell's own
+  // descriptor can strip a redundant "cd <cwd> && " prefix from its summary.
+  const summaryCwd = useThreadsStore((s) => (sessionRef !== undefined ? s.threads.get(sessionRef)?.cwd : undefined));
+  const summary = descriptor.summary(item, { cwd: summaryCwd }) + (summarySuffix ?? "");
   const purpose = isDelegate ? delegatePurposeOf(item) : item.description;
   // kata xw3t: the URL, if any, embedded in this row's own summary text -
   // web_fetch's only descriptor with one today. Read directly off the item

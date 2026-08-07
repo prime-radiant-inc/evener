@@ -21,9 +21,10 @@
 
 import { useRef } from "react";
 import type { ItemModel } from "../../../../protocol/model";
+import { useThreadsStore } from "../../../../stores/threads";
 import { CodeBlock, ShellCommandBlock } from "../../../../widgets";
 import { AnsiTailBuffer } from "../../../../widgets/codeblock/ansi";
-import type { ToolRenderProps } from "../toolRenderers";
+import type { ToolRenderProps, ToolSummaryContext } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { parseArgs, str, trailingBracketFooter } from "./helpers";
 
@@ -31,6 +32,18 @@ const TAIL_MAX_CHARS = 8000;
 
 function shellCommand(args: Record<string, unknown>): string {
   return str(args, "command") ?? str(args, "cmd") ?? "";
+}
+
+// stripRedundantCd removes the literal "cd <cwd> && " prefix models
+// habitually prepend even though the daemon already runs every command in
+// the session cwd. Literal match only — a cd anywhere else is information
+// and stays. Display-only: argumentsJSON is never modified.
+export function stripRedundantCd(command: string, cwd: string | undefined): string {
+  if (cwd === undefined || cwd === "") return command;
+  const prefix = `cd ${cwd} && `;
+  if (!command.startsWith(prefix)) return command;
+  const rest = command.slice(prefix.length);
+  return rest === "" ? command : rest;
 }
 
 // A second, differently-shaped trailer for the "buffered" execution
@@ -67,7 +80,12 @@ function shellExitCode(item: ItemModel): number | undefined {
 // The row summary owns collapsed command presentation. The expanded body owns
 // a readable formatted command block and the output block independently.
 function ShellBody({ item, live, sessionRef }: ToolRenderProps) {
-  const command = shellCommand(parseArgs(item.argumentsJSON));
+  // cwd is snapshot-only ThreadModel state (fileOpenBeside.tsx's DECISION B),
+  // stable for the pane's life, so this selector returns a stable string - no
+  // re-renders from the session's frequent streaming updates.
+  const cwd = useThreadsStore((s) => (sessionRef !== undefined ? s.threads.get(sessionRef)?.cwd : undefined));
+  const rawCommand = shellCommand(parseArgs(item.argumentsJSON));
+  const command = stripRedundantCd(rawCommand, cwd);
   const output = item.output ?? "";
   const buffer = useRef<{ itemId: string; sessionRef?: string; live: boolean; tail: AnsiTailBuffer } | undefined>(
     undefined,
@@ -88,7 +106,7 @@ function ShellBody({ item, live, sessionRef }: ToolRenderProps) {
       : `earlier output not retained — showing the last ${TAIL_MAX_CHARS.toLocaleString("en-US")} chars\n${tail.renderedText}`;
   return (
     <>
-      {command !== "" && <ShellCommandBlock command={command} />}
+      {command !== "" && <ShellCommandBlock command={command} copyText={rawCommand} />}
       {output !== "" && <CodeBlock text={body} copyText={tail.copyText} copyLabel="Copy output" ansi />}
     </>
   );
@@ -114,9 +132,9 @@ registerToolRenderer({
   // failure look like a footnote). The number itself stays reachable via
   // detail() below, which the row shows both as a hover title and as real text
   // in the expanded body.
-  summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
-    return `Ran ${shellCommand(args)}`;
+  summary(item: ItemModel, ctx?: ToolSummaryContext) {
+    const command = stripRedundantCd(shellCommand(parseArgs(item.argumentsJSON)), ctx?.cwd);
+    return `Ran ${command}`;
   },
   body: ShellBody,
   failed: nonzeroExit,
