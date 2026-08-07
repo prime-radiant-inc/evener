@@ -229,7 +229,10 @@ func SaveSessionMeta(dir string, meta SessionMeta) error {
 }
 
 // SaveSessionMetaWithFS writes a SessionMeta through fs using the same atomic
-// temp-file and rename sequence as SaveSessionMeta.
+// temp-file and rename sequence as SaveSessionMeta: mkdir plus a temp write and
+// rename, all through the injected filesystem. Tests and fuzzers inject an
+// in-memory or sandboxed filesystem to exercise persistence without touching
+// real disk.
 func SaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
 	lock := sessionMetaWriteLock(meta.ID)
 	lock.Lock()
@@ -272,18 +275,11 @@ func ListSessionMetas(dir string) ([]SessionMeta, error) {
 	return listSessionMetasFS(sessionMetaFS, dir)
 }
 
-// saveSessionMetaFS is the filesystem seam beneath SaveSessionMeta: it performs
-// the mkdir + atomic temp+rename write through an injected afero.Fs. Production
-// passes afero.NewOsFs(), whose methods delegate directly to os, so behavior is
-// byte-identical to using os calls; tests and fuzzers inject an in-memory or
-// sandboxed filesystem to exercise persistence without touching real disk.
-func saveSessionMetaFS(fs afero.Fs, dir string, meta SessionMeta) error {
-	lock := sessionMetaWriteLock(meta.ID)
-	lock.Lock()
-	defer lock.Unlock()
-	return saveSessionMetaLocked(fs, dir, meta)
-}
-
+// saveSessionMetaLocked performs the write with the session's write lock already
+// held. Callers must not re-enter any of the session-meta write entry points
+// from within it: re-entering for the same session self-deadlocks, and now that
+// the lock is striped, re-entering for a different session self-deadlocks only
+// on a stripe collision — a hang that would be rare enough to be untraceable.
 func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 	previous, err := loadSessionMetaFS(fs, dir, meta.ID)
 	if err == nil {

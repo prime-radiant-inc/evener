@@ -39,6 +39,11 @@ func TestSessionMetaWriteLockIsolatesDistinctSessions(t *testing.T) {
 		first  = "02wMz5TxvEMoJEDTDGOTil"
 		second = "02wMz5TxvCu3kdckfnw0Gh"
 	)
+	// Two unrelated IDs can always land on one stripe by chance, and that is a
+	// fixture problem, not the failure this test is looking for. Say which.
+	if sessionMetaWriteLock(first) == sessionMetaWriteLock(second) {
+		t.Fatalf("fixture: session IDs %s and %s hash to the same stripe; pick a different pair", first, second)
+	}
 	lock := sessionMetaWriteLock(first)
 	lock.Lock()
 	defer lock.Unlock()
@@ -55,7 +60,6 @@ func TestSessionMetaWriteLockIsolatesDistinctSessions(t *testing.T) {
 // filepath.Clean, and a case-insensitive filesystem folds case.
 func TestSessionMetaWriteLockSharesLockAcrossAliasingIDs(t *testing.T) {
 	for _, aliases := range [][2]string{
-		{"02wMz5TxvEMoJEDTDGOTil", "02wMz5TxvEMoJEDTDGOTil"},
 		{"02wMz5TxvEMoJEDTDGOTil", "02wMz5TxvEMoJEDTDGOTIL"},
 		{"02wMz5TxvEMoJEDTDGOTil", "other/../02wMz5TxvEMoJEDTDGOTil"},
 	} {

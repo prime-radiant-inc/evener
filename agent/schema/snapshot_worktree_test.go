@@ -66,7 +66,7 @@ func TestSessionMeta_WorktreeFieldsFileRoundTrip(t *testing.T) {
 		WorktreeManaged:     false,
 		WorktreeRestoreRoot: "/repo",
 	}
-	if err := saveSessionMetaFS(mem, "/state", meta); err != nil {
+	if err := SaveSessionMetaWithFS(mem, "/state", meta); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	got, err := loadSessionMetaFS(mem, "/state", meta.ID)
