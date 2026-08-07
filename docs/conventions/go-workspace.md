@@ -91,7 +91,15 @@ go build ./... && go vet ./...
 Remember that a build tag hides a whole compilation unit. `make lint`
 now type-checks the two tagged trees for you — `lint-serffuzz` and
 `lint-eval` each run `go vet -tags <tag> ./...` across every module — so
-a rename that strands a tagged call site fails the gate. Before those
+a rename that strands a tagged call site fails the gate.
+
+**`make lint-serffuzz` is part of the standard per-commit gate set**
+(Jesse, 2026-08-07), alongside the per-module build and test runs. Two
+workstreams in one night shipped changes whose serffuzz tree no longer
+compiled — user-visible string changes and signature changes drift the
+tagged tests, and build+test alone never notices. A controller or
+implementer gating a commit that touches `agent` runs it; it is cheap
+(type-checking only, no fuzz execution). Before those
 floors existed it did not: renaming a test that
 `cmd/serf-tui/root_factories_fuzz_test.go` replays by function value left
 that build broken while `make lint` returned 0, and a `[]string` that
