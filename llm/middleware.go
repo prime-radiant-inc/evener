@@ -1,6 +1,9 @@
 package llm
 
-import "context"
+import (
+	"context"
+	"slices"
+)
 
 // CompleteFunc performs a non-streaming completion for req and returns the Response.
 type CompleteFunc func(ctx context.Context, req Request) (Response, error)
@@ -46,22 +49,22 @@ func (m MiddlewareFunc) WrapStream(next StreamFunc) StreamFunc {
 
 func applyMiddlewareComplete(base CompleteFunc, mw []Middleware) CompleteFunc {
 	h := base
-	for i := len(mw) - 1; i >= 0; i-- {
-		if mw[i] == nil {
+	for _, m := range slices.Backward(mw) {
+		if m == nil {
 			continue
 		}
-		h = mw[i].WrapComplete(h)
+		h = m.WrapComplete(h)
 	}
 	return h
 }
 
 func applyMiddlewareStream(base StreamFunc, mw []Middleware) StreamFunc {
 	h := base
-	for i := len(mw) - 1; i >= 0; i-- {
-		if mw[i] == nil {
+	for _, m := range slices.Backward(mw) {
+		if m == nil {
 			continue
 		}
-		h = mw[i].WrapStream(h)
+		h = m.WrapStream(h)
 	}
 	return h
 }
