@@ -76,11 +76,12 @@ run_gate() {
 
 run_gate "" "$work/success.out"
 assert_eq "$gate_rc" "0" "successful gate exits zero"
-expected_calls=$(printf 'lint\t\nbuild\t\ntest\t1\n')
+expected_calls=$(printf 'lint\t\nbuild\t\ntest\t1\ntest-dev-tooling\t\n')
 actual_calls="$(cat "$work/calls" 2>/dev/null || :)"
-assert_eq "$actual_calls" "$expected_calls" "success runs lint, build, then test"
+assert_eq "$actual_calls" "$expected_calls" "success runs lint, build, test, then test-dev-tooling"
 assert_has "$work/success.out" "recursive stdout: lint" "child stdout is visible"
 assert_has "$work/success.out" "recursive stderr: test" "child stderr is visible"
+assert_before "$work/calls" "test	" "test-dev-tooling	" "test-dev-tooling is invoked after test"
 
 run_gate lint "$work/lint-failure.out"
 if [ "$gate_rc" -ne 0 ]; then
