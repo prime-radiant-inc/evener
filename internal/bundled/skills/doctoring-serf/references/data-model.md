@@ -141,7 +141,10 @@ A `JobRecord` is the folded state of one job: `Status` (running / completed /
 failed / cancelled / stopped / exhausted), the `Reason` that produced it (e.g.
 `run_timeout`), `ExitCode`, `OutputBytes`, `StartedAt` / `EndedAt`, the
 `NotifyState` (`terminal_notification_state` on disk — a terminal job still
-`pending` never told its caller), and the links to pivot on (`DelegateID`,
+`pending` never told its caller; `delivered` was rendered into the caller's own
+notification turn, and `consumed` means the caller read the terminal
+`job_status` itself, settling the notification without a turn), and the links to
+pivot on (`DelegateID`,
 `TranscriptRef`, `ParentJobID`). Note what the durable log does **not** carry: `Background` and
 `Phase` live only on the runtime's in-memory record, so no folded record can say
 whether a job ran in the background.

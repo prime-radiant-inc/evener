@@ -16,6 +16,7 @@ const (
 	EventJobMessageSent           EventKind = "job_message_sent"
 	EventJobNotificationPending   EventKind = "job_notification_pending"
 	EventJobNotificationDelivered EventKind = "job_notification_delivered"
+	EventJobNotificationConsumed  EventKind = "job_notification_consumed"
 	EventWatchSendPending         EventKind = "watch_send_pending"
 	EventWatchSendDelivered       EventKind = "watch_send_delivered"
 	EventWatchSendDropped         EventKind = "watch_send_dropped"

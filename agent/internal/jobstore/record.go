@@ -45,6 +45,12 @@ const (
 	NotifyNotArmed  NotifyState = "not_armed"
 	NotifyPending   NotifyState = "pending"
 	NotifyDelivered NotifyState = "delivered"
+	// NotifyConsumed means the caller learned the job ended by reading its
+	// terminal job_status, not by being shown the notification. The caller was
+	// told either way — which is why it settles the pending notification — but
+	// it is a separate value from NotifyDelivered so the durable ledger and
+	// serf-doctor keep saying which of the two actually happened.
+	NotifyConsumed NotifyState = "consumed"
 )
 
 // DelegateStatus identifies the lifecycle state of a durable delegate handle.

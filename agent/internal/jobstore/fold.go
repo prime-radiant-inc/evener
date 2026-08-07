@@ -95,7 +95,8 @@ func isJobRecordEventKind(kind EventKind) bool {
 		EventJobFinished,
 		EventJobMessageSent,
 		EventJobNotificationPending,
-		EventJobNotificationDelivered:
+		EventJobNotificationDelivered,
+		EventJobNotificationConsumed:
 		return true
 	default:
 		return false
@@ -390,6 +391,17 @@ func applyEvent(r *JobRecord, e Event) {
 			return
 		}
 		r.NotifyState = NotifyDelivered
+	case EventJobNotificationConsumed:
+		if !notificationMatchesTerminalGeneration(r, e) {
+			return
+		}
+		// Delivered wins over consumed: rendering the notification into the
+		// caller's own turn is the stronger evidence, and a status read that
+		// races an already-delivered notification must not overwrite that
+		// record with the weaker claim.
+		if r.NotifyState != NotifyDelivered {
+			r.NotifyState = NotifyConsumed
+		}
 	}
 }
 
@@ -399,14 +411,18 @@ func notificationMatchesTerminalGeneration(r *JobRecord, e Event) bool {
 
 // notifyRank orders the notification states so the reducer's monotonicity
 // invariant can compare them: not_armed (0) precedes pending (1) precedes
-// delivered (2). NotifyState is only ever set to one of these constants by the
-// reducer, never read from event bytes, so the default is unreachable in
-// practice and ranks the zero value conservatively as the lowest state.
+// told-the-caller (2). Delivered and consumed share rank 2 — they are two ways
+// the caller learned the same fact, so neither is progress past the other, and
+// the tie is what lets a delivered event settle a record a status read already
+// consumed (and vice versa) without reading as a regression. NotifyState is
+// only ever set to one of these constants by the reducer, never read from event
+// bytes, so the default is unreachable in practice and ranks the zero value
+// conservatively as the lowest state.
 func notifyRank(s NotifyState) int {
 	switch s {
 	case NotifyPending:
 		return 1
-	case NotifyDelivered:
+	case NotifyDelivered, NotifyConsumed:
 		return 2
 	default:
 		return 0

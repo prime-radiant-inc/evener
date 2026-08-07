@@ -671,6 +671,7 @@ Canonical behavior:
 - `last_event_at` is the most recent parent-observable activity for the job (an output append, or the job's start when nothing newer is observable; for a terminal record with no live stamp it falls back to `ended_at`, then `started_at`). It is a supervision hint for spotting a stalled or quiet job; it is not a substitute for terminal notifications.
 - `transcript_ref` is the delegate conversation's session ref for a delegate job, and `job:<job_id>` for a shell job. Hand it to `read_transcript`.
 - Completion is notification-driven. `job_status` is for orientation and recovery, not for waiting: it never blocks, and calling it in a loop is the polling anti-pattern.
+- Reading a job's own terminal status CONSUMES its pending terminal notification: the caller has just learned the job ended, so it is not interrupted later with the same news. The job's `terminal_notification_state` becomes `consumed` — told the caller, but by a status read rather than a notification turn. Only the owner's own read consumes; a parent reading a child-owned job never settles the child's notification.
 - A `job_id` the caller cannot resolve fails `job "job_..." not found — use job_list to see this session's jobs`.
 
 ### Reading job output
@@ -987,7 +988,7 @@ A durable job record exists for promoted shell jobs (including within-bound comp
   "output_path": "...",
   "output_bytes": 0,
   "terminal_generation": null,
-  "terminal_notification_state": "not_armed|pending|delivered"
+  "terminal_notification_state": "not_armed|pending|delivered|consumed"
 }
 ```
 
@@ -1019,6 +1020,7 @@ job_finished           canonical terminal event, including stopped/runtime_lost
 job_message_sent            delegate/session message event
 job_notification_pending
 job_notification_delivered
+job_notification_consumed
 ```
 
 The first canonical terminal durable record/event for a job defines `terminal_generation`. A duplicate reconstructed terminal write for the same job must not create a new `terminal_generation`. Implementations may use a durable event ID, monotonic sequence, or equivalent stable identity, but the identity must be stable across restart and visible-session forwarding.
@@ -1071,6 +1073,7 @@ Rules:
 - A successful drive handoff settles the parent's forwarded pending COPY of a child-owned terminal (marks it delivered) so the same stale signal does not re-drive forever. The forwarded copy is only a drive signal; the child's own durable queue is the delivery ledger and is never touched by the parent's settle. On restart the parent re-arms only its OWN jobs' terminal notifications; a forwarded copy of a direct child's own job is a drive signal, not the parent's render, so it is not re-armed onto the parent's rail (no restart wake-storm). A child whose latest delegate record (by durable append order) terminated by deliberate stop is not driven for attention that predates the stop; new work clears the gate. If a child cannot be driven (non-resumable, closed, descriptor-less) the parent renders the pending itself prefixed `child unreachable:`, so attention escalates one honest level instead of vanishing.
 - If the parent is mid-turn, notifications queue for a safe turn boundary.
 - Duplicate terminal notifications for the same job are suppressed.
+- A terminal `job_status` read by the job's own caller consumes that job's pending terminal notification: the caller already learned the job ended, so no later notification turn repeats it. The durable record settles to `consumed` rather than `delivered`, so "the caller was told" stays true while still distinguishing a rendered notification from a status read.
 - Watch wake-ups and observer frames are opt-in through `job_watch`.
 - Serf supervises running delegate jobs with a built-in quiet-job watchdog. A running delegate that produces no parent-observable activity (no output append; `last_activity` unchanged) for 10 minutes triggers one owner notification reading `quiet for 10m; last activity: <timestamp>`, delivered like a watch notification (`event="watch"`, the delegate's `job_id`). It fires at most once per quiet stretch and re-arms only after the delegate shows fresh activity. This is always-on supervision, not an opt-in `job_watch`; a quiet delegate that is genuinely working (for example reading a large file) is reported the same as a stalled one, because the two are not distinguishable from parent-observable state. The watchdog only notifies the owner; it never steers, resumes, or stops the delegate.
 - Notification delivery state is internal; there is no `job_ack`.
