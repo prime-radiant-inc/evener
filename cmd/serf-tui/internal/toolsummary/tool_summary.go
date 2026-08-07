@@ -15,12 +15,36 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-// SummarizeTool returns a compact one-line description and an optional
-// multi-line detail body for a tool call.
+// SummarizeTool summarizes without a known session cwd: the redundant-cd
+// strip is disabled (empty cwd), everything else is identical.
+func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
+	return SummarizeToolInDir(toolName, argsJSON, "")
+}
+
+// stripRedundantCd removes the literal "cd <cwd> && " prefix models
+// habitually prepend even though the daemon already runs every command in
+// the session cwd. Literal match only — a cd anywhere else is information
+// and stays. Never strips to an empty command, and an empty cwd never
+// strips (callers whose render path cannot know the cwd pass "").
+func stripRedundantCd(command, cwd string) string {
+	if cwd == "" {
+		return command
+	}
+	rest, ok := strings.CutPrefix(command, "cd "+cwd+" && ")
+	if !ok || rest == "" {
+		return command
+	}
+	return rest
+}
+
+// SummarizeToolInDir returns a compact one-line description and an optional
+// multi-line detail body for a tool call. cwd is the session's working
+// directory, used to strip a redundant "cd <cwd> && " prefix off displayed
+// shell commands; pass "" when the caller's render path cannot know the cwd.
 //
 // Callers populate toolCallInfo.Description / Detail fields from this in
 // hub_types.go and message.go.
-func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
+func SummarizeToolInDir(toolName, argsJSON, cwd string) (desc, detail string) {
 	if argsJSON == "" {
 		return "", ""
 	}
@@ -48,6 +72,7 @@ func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
 	switch toolName {
 	case "shell":
 		cmd := str("command")
+		cmd = stripRedundantCd(cmd, cwd)
 		if d := str("purpose"); d != "" {
 			desc = trunc(d, 80)
 		} else if d := str("description"); d != "" {
