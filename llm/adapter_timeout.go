@@ -136,15 +136,13 @@ func configuredAdapterTransport(base *http.Transport, at *AdapterTimeout) *http.
 	if at.Connect > 0 {
 		connectTimeout := at.Connect
 		dialContext := transport.DialContext
-		if dialContext == nil && transport.Dial == nil { //nolint:staticcheck // Preserve a caller-supplied legacy Dial hook rather than overriding it.
+		if dialContext == nil {
 			dialContext = (&net.Dialer{}).DialContext
 		}
-		if dialContext != nil {
-			transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-				ctx, cancel := context.WithTimeout(ctx, connectTimeout)
-				defer cancel()
-				return dialContext(ctx, network, address)
-			}
+		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			ctx, cancel := context.WithTimeout(ctx, connectTimeout)
+			defer cancel()
+			return dialContext(ctx, network, address)
 		}
 
 		if dialTLSContext := transport.DialTLSContext; dialTLSContext != nil {
