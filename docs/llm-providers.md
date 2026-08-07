@@ -646,6 +646,19 @@ adapter `DefaultHeaders`, sourced from the shared constant in
 `llm/providers/internal/kimicoding`. So either Kimi route is accepted; the
 default Go User-Agent is not.
 
+**Strict tool schemas on the native OpenAI Responses path.** The `openai`
+adapter sends tools with `strict: true` by default, and OpenAI's strict mode
+forces EVERY schema property into `required` — `strictifyJSONSchema`
+(`llm/providers/openai/responses.go`) rewrites the schema accordingly, so the
+model must supply every "optional" parameter on every call. Opt out per-tool
+with `llm.Tool.Strict = &falseVal` (as `DefCommunicateNamed` does; the
+transcript tools are registered `strict:false` for the same reason).
+Anthropic and Google pass `parameters` verbatim — no strictify. Design
+implication when authoring a tool schema: an int parameter whose zero value is
+meaningful is a footgun under strict mode, because the model is forced to send
+`0` even when it means "unset" — make zero/empty a safe sentinel, or set
+`Strict=&false` for read-only tools.
+
 `openai-compatible` remains the compatibility adapter because it owns provider
 quirks and the `openai-compatible` option namespace. Env-seeded compatible
 instances now try `/responses` first and fall back to `/chat/completions` on
