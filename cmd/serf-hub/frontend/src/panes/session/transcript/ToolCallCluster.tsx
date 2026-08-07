@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
+import { useThreadsStore } from "../../../stores/threads";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ToolCallItem } from "./ToolCallItem";
 import { ToolRow } from "./ToolRow";
@@ -31,11 +32,14 @@ function leadItem(items: ItemModel[]): ItemModel {
 // same call. This row never passes a `purpose`, so ToolRow always renders the
 // summary in full - the clamped head/tail split that keeps xw3t's per-call
 // row plain text while collapsed cannot arise here.
-function clusterHeader(items: ItemModel[]): { summary: string; summaryLink: string | undefined } {
+function clusterHeader(
+  items: ItemModel[],
+  cwd: string | undefined,
+): { summary: string; summaryLink: string | undefined } {
   const lead = leadItem(items);
   const descriptor = toolRendererFor(lead.toolName ?? "");
   return {
-    summary: `${items.length} steps · ${descriptor.summary(lead)}`,
+    summary: `${items.length} steps · ${descriptor.summary(lead, { cwd })}`,
     summaryLink: descriptor.summaryLink?.(lead),
   };
 }
@@ -46,7 +50,12 @@ function clusterHeader(items: ItemModel[]): { summary: string; summaryLink: stri
 // height; no viewport or scroll state belongs in this component.
 export function ToolCallCluster({ items, turn, sessionRef }: ToolCallClusterProps) {
   const [open, setOpen] = useState(false);
-  const header = clusterHeader(items);
+  // Same by-ref selector ToolCallItem.tsx's own summaryCwd/openBesideCwd use
+  // (copied from fileOpenBeside.tsx) - snapshot-only ThreadModel state, so a
+  // shell-led folded cluster's header strips its redundant "cd <cwd> && "
+  // prefix exactly like the per-call row does.
+  const cwd = useThreadsStore((s) => (sessionRef !== undefined ? s.threads.get(sessionRef)?.cwd : undefined));
+  const header = clusterHeader(items, cwd);
   return (
     <details className={CLASS.cluster} data-testid="tool-call-cluster" open={open}>
       <ToolRow

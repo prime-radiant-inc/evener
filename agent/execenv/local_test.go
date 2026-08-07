@@ -807,7 +807,12 @@ func TestExecArgv_PreservesArgvAndExitSemantics(t *testing.T) {
 	writeExecFixture(t, script, "#!/bin/sh\nprintf '<%s>\\n' \"$1\"\nprintf 'err:<%s>\\n' \"$2\" >&2\nexit 7\n")
 	env := NewLocalExecutionEnvironment(dir)
 
-	res, err := env.ExecArgv(context.Background(), script, []string{"one two; echo nope", "stderr value"}, 5000, "", nil)
+	// timeoutMS is generous on purpose: this test asserts argv preservation and
+	// exit-code semantics, not exec latency. A tight budget here flakes under
+	// concurrent test-suite load, where scheduling delays (not a hang) can push
+	// a trivial subprocess past a few seconds of wall clock. t.Context() is the
+	// real deadline, so a genuine hang still fails the run.
+	res, err := env.ExecArgv(t.Context(), script, []string{"one two; echo nope", "stderr value"}, 300_000, "", nil)
 	if err == nil {
 		t.Fatal("ExecArgv returned nil error for exit 7")
 	}
@@ -836,7 +841,10 @@ func TestExecArgv_UsesInjectedLocalVenvPath(t *testing.T) {
 	writeExecFixture(t, script, "#!/bin/sh\nprintf 'venv:<%s>\\n' \"$1\"\n")
 	env := NewLocalExecutionEnvironment(dir)
 
-	res, err := env.ExecArgv(context.Background(), "serf-execargv-venv-fixture", []string{"value"}, 5000, "", nil)
+	// See the comment in TestExecArgv_PreservesArgvAndExitSemantics: this test
+	// asserts venv PATH injection, not exec latency, so the timeout budget is
+	// generous and t.Context() (not the budget) is the real deadline.
+	res, err := env.ExecArgv(t.Context(), "serf-execargv-venv-fixture", []string{"value"}, 300_000, "", nil)
 	if err != nil {
 		t.Fatalf("ExecArgv: %v (res=%+v)", err, res)
 	}

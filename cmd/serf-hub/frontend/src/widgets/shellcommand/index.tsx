@@ -5,9 +5,14 @@ import styles from "./shellcommand.module.css";
 
 export interface ShellCommandBlockProps {
   command: string;
+  // copyText overrides what "Copy command" places on the clipboard, for a
+  // caller that displays a modified command but must still copy the
+  // original — shellTool.tsx's cd-prefix strip (display-only: the reader
+  // can always recover the exact command they ran). Defaults to `command`.
+  copyText?: string;
 }
 
-export function ShellCommandBlock({ command }: ShellCommandBlockProps): JSX.Element {
+export function ShellCommandBlock({ command, copyText }: ShellCommandBlockProps): JSX.Element {
   const lines = formatShellCommand(command);
   const tokens = tokenizeShellCommand(lines);
   const displayText = lines.map((line) => line.text).join("\n");
@@ -15,7 +20,7 @@ export function ShellCommandBlock({ command }: ShellCommandBlockProps): JSX.Elem
   return (
     <CodeBlock
       text={displayText}
-      copyText={command}
+      copyText={copyText ?? command}
       copyLabel="Copy command"
       // The command is the PRIMARY content of an expanded shell row, not a
       // supporting dump: render every formatted line, never a tail fold.

@@ -1,6 +1,7 @@
 package toolsummary
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -212,6 +213,44 @@ func TestSummarizeTool_InvalidJSON(t *testing.T) {
 	desc, _ := SummarizeTool("shell", "not json")
 	if desc != "not json" {
 		t.Errorf("invalid JSON should return raw: %q", desc)
+	}
+}
+
+func TestSummarizeToolInDirStripsRedundantCd(t *testing.T) {
+	cwd := "/Users/jesse/work"
+	args := `{"command":"cd /Users/jesse/work && make test"}`
+	desc, _ := SummarizeToolInDir("shell", args, cwd)
+	if desc != "make test" {
+		t.Fatalf("desc = %q, want %q", desc, "make test")
+	}
+}
+
+func TestSummarizeToolInDirLeavesNonMatchingCd(t *testing.T) {
+	cwd := "/Users/jesse/work"
+	for _, command := range []string{
+		"cd /elsewhere && make",
+		`cd "/Users/jesse/work" && make`,
+		"cd /Users/jesse/work/ && make",
+		"cd /Users/jesse/work ; make",
+		"make && cd /Users/jesse/work && ls",
+		"cd /Users/jesse/work && ", // strip would leave nothing displayable
+	} {
+		argsJSON, err := json.Marshal(map[string]string{"command": command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		desc, _ := SummarizeToolInDir("shell", string(argsJSON), cwd)
+		if !strings.Contains(desc, "cd ") {
+			t.Fatalf("command %q: cd prefix wrongly stripped, desc = %q", command, desc)
+		}
+	}
+}
+
+func TestSummarizeToolEmptyCwdNeverStrips(t *testing.T) {
+	args := `{"command":"cd /Users/jesse/work && make"}`
+	desc, _ := SummarizeTool("shell", args)
+	if desc != "cd /Users/jesse/work && make" {
+		t.Fatalf("desc = %q, want unstripped command", desc)
 	}
 }
 

@@ -12,13 +12,15 @@
 // would always win the lead and no fixture could ever put a web_fetch call in
 // front.
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
-import type { ItemModel, TurnModel } from "../../../protocol/model";
+import { afterEach, beforeEach, expect, test } from "vitest";
+import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
+import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { ToolCallCluster } from "./ToolCallCluster";
 import "./tools/webTools"; // the real web_fetch descriptor (summary + summaryLink)
 import "./tools/fsTools"; // read_file, the read-only cluster-mate
 import "./tools/editTools"; // write_file, the higher-consequence lead below
+import "./tools/shellTool"; // the real shell descriptor (cd-cwd prefix strip)
 
 // An opened cluster mounts a real ToolCallItem per call, whose disclosure
 // state lives in the shared store keyed by item.id - it must not leak from the
@@ -27,6 +29,16 @@ afterEach(() => {
   cleanup();
   resetDisclosureStoreForTests();
 });
+
+beforeEach(() => resetThreadsStoreForTests());
+
+// Mirrors fileOpenBeside.test.tsx's own seedThreadCwd - the by-ref threads
+// store selector ToolCallCluster's header now reads, same as ToolCallItem's
+// per-call row.
+function seedThreadCwd(ref: string, cwd: string): void {
+  const model = { ref, cwd, turns: [] } as unknown as ThreadModel;
+  threadsStore.setState({ threads: new Map([[ref, model]]) });
+}
 
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 
@@ -119,4 +131,26 @@ test("kata 79cs: the header's link follows the LEAD call, not just any web_fetch
   render(<ToolCallCluster items={items} turn={turn} />);
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("3 steps · Wrote src/cache.go");
   expect(screen.queryByRole("link")).toBeNull();
+});
+
+// kata (fix round 1): the cluster header is a SECOND rendering of the lead
+// descriptor's own summary() text, beside ToolCallItem's per-call row - shell
+// ranks "destructive" (consequenceRank.ts), so a shell call leading a folded
+// run's header must strip the same redundant "cd <cwd> && " prefix the
+// per-call row does, not just leave it as raw text.
+function shellCall(id: string, command: string): ItemModel {
+  return item({ id, toolName: "shell", argumentsJSON: JSON.stringify({ command }), status: "completed" });
+}
+
+test("a shell-led cluster header strips the redundant cd-cwd prefix, same as the per-call row", () => {
+  seedThreadCwd("ref_a", "/Users/jesse/work");
+  const items = [shellCall("shell-1", "cd /Users/jesse/work && make test"), readFile("read-a", "src/cache.go")];
+  render(<ToolCallCluster items={items} turn={turn} sessionRef="ref_a" />);
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("2 steps · Ran make test");
+});
+
+test("a shell-led cluster header leaves the command unstripped when sessionRef (and so cwd) is unavailable", () => {
+  const items = [shellCall("shell-1", "cd /Users/jesse/work && make test"), readFile("read-a", "src/cache.go")];
+  render(<ToolCallCluster items={items} turn={turn} />);
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("2 steps · Ran cd /Users/jesse/work && make test");
 });

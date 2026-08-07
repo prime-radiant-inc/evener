@@ -24,9 +24,18 @@ export interface ToolRenderProps {
   sessionRef?: string;
 }
 
+// ToolSummaryContext carries render-path facts a descriptor's summary() may
+// need but that ItemModel alone can't answer - the session cwd (shell's
+// stripRedundantCd, so a habitual "cd <cwd> && " prefix reads as noise, not
+// information) is the one case today. Optional throughout: every descriptor
+// but shell's own ignores it.
+export interface ToolSummaryContext {
+  cwd?: string; // session working directory, when the render path knows it
+}
+
 export interface ToolRendererDescriptor {
   match: string | ((toolName: string) => boolean); // exact name or predicate (job_* family)
-  summary(item: ItemModel): string; // one-line purpose-first summary
+  summary(item: ItemModel, ctx?: ToolSummaryContext): string; // one-line purpose-first summary
   // The tool-FAMILY glyph riding inline at the start of the row's tool-use
   // line (widgets/toolicon), so the kind of work - shell vs file read vs
   // edit vs web - is scannable down a run of calls without reading the
