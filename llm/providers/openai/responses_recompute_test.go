@@ -13,7 +13,11 @@ import (
 func syntheticResponsesSSE() string {
 	var b strings.Builder
 	write := func(event, data string) {
-		b.WriteString("event: " + event + "\ndata: " + data + "\n\n")
+		b.WriteString("event: ")
+		b.WriteString(event)
+		b.WriteString("\ndata: ")
+		b.WriteString(data)
+		b.WriteString("\n\n")
 	}
 	write("response.created", `{"type":"response.created","response":{"id":"resp_1"}}`)
 	write("response.output_item.added", `{"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_1","id":"item_1","name":"write_file"}}`)
@@ -28,7 +32,11 @@ func syntheticResponsesSSE() string {
 func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testing.T) {
 	var b strings.Builder
 	write := func(event, data string) {
-		b.WriteString("event: " + event + "\ndata: " + data + "\n\n")
+		b.WriteString("event: ")
+		b.WriteString(event)
+		b.WriteString("\ndata: ")
+		b.WriteString(data)
+		b.WriteString("\n\n")
 	}
 	write("response.output_item.added", `{"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_1","id":"item_1","name":"write_file"}}`)
 	write("response.output_item.done", `{"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","id":"item_1","name":"write_file","arguments":"{\"path\":\"x\"}"}}`)
@@ -69,7 +77,9 @@ func TestExtractRecordedResponse_RejectsChatCompletionsJSON(t *testing.T) {
 func TestExtractRecordedResponse_RejectsChatCompletionsSSE(t *testing.T) {
 	var b strings.Builder
 	write := func(data string) {
-		b.WriteString("data: " + data + "\n\n")
+		b.WriteString("data: ")
+		b.WriteString(data)
+		b.WriteString("\n\n")
 	}
 	write(`{"model":"gpt-5.2","choices":[{"delta":{"content":"Hello"}}]}`)
 	write(`[DONE]`)
@@ -82,7 +92,9 @@ func TestExtractRecordedResponse_RejectsChatCompletionsSSE(t *testing.T) {
 func TestExtractRecordedChatCompletionsResponse_SSE(t *testing.T) {
 	var b strings.Builder
 	write := func(data string) {
-		b.WriteString("data: " + data + "\n\n")
+		b.WriteString("data: ")
+		b.WriteString(data)
+		b.WriteString("\n\n")
 	}
 	write(`{"model":"gpt-5.2","choices":[{"delta":{"content":"Hel"}}]}`)
 	write(`{"model":"gpt-5.2","choices":[{"delta":{"content":"lo"}}]}`)
