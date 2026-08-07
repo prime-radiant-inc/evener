@@ -5,28 +5,11 @@ set -uo pipefail
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 real_make="$(command -v make)"
+. "$(dirname "$0")/selftest-lib.sh"
+
 work="$(mktemp -d -t serf-merge-approval-gate-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 
-checks=0
-fails=0
-ok() { checks=$((checks + 1)); printf 'ok   - %s\n' "$1"; }
-bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL - %s\n' "$1"; }
-assert_eq() {
-	if [ "$1" = "$2" ]; then
-		ok "$3"
-	else
-		bad "$3 (want '$2', got '$1')"
-	fi
-}
-assert_has() {
-	if grep -qF -- "$2" "$1"; then
-		ok "$3"
-	else
-		bad "$3 (missing '$2')"
-		sed 's/^/    | /' "$1" 2>/dev/null || :
-	fi
-}
 assert_before() {
 	first="$(grep -n -m 1 -F -- "$2" "$1" 2>/dev/null | cut -d: -f1)"
 	second="$(grep -n -m 1 -F -- "$3" "$1" 2>/dev/null | cut -d: -f1)"
@@ -206,5 +189,4 @@ assert_eq "$make_rc" "0" "dist still resolves its default target platform"
 assert_has "$make_state/calls" "go-env	env GOOS" "dist discovers its default operating system"
 assert_has "$make_state/calls" "go-env	env GOARCH" "dist discovers its default architecture"
 
-printf '%s\n' "merge-approval-gate-selftest: $checks checks, $fails failed"
-[ "$fails" -eq 0 ]
+selftest_summary

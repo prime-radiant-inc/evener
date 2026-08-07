@@ -11,15 +11,15 @@
 set -uo pipefail
 
 loop="$(cd "$(dirname "$0")" && pwd)/fuzz-continuous.sh"
+. "$(dirname "$0")/selftest-lib.sh"
+
 work="$(mktemp -d -t fuzz-continuous-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 
-pass=0
-fail=0
-ok()  { printf 'ok   - %s\n' "$1"; pass=$((pass + 1)); }
-bad() { printf 'FAIL - %s\n' "$1"; fail=$((fail + 1)); }
-assert_has() { if printf '%s' "$1" | grep -qF -- "$2"; then ok "$3"; else bad "$3 (missing: $2)"; printf '%s\n' "$1" | sed 's/^/    | /'; fi; }
-assert_eq()  { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3 (want '$2', got '$1')"; fi; }
+# assert_str_has STRING NEEDLE DESC — DESC passes if STRING contains NEEDLE.
+# Distinct from the lib's file-based assert_has: every call site here already
+# has its candidate output in hand as a string, not as a file on disk.
+assert_str_has() { if printf '%s' "$1" | grep -qF -- "$2"; then ok "$3"; else bad "$3 (missing: $2)"; printf '%s\n' "$1" | sed 's/^/    | /'; fi; }
 
 # --- stubs -------------------------------------------------------------------
 repo="$work/repo"
@@ -89,7 +89,7 @@ assert_eq "$(target_of 2)" "llm:FuzzBeta" "round-robin: turn 2 = Beta"
 assert_eq "$(target_of 3)" ".:FuzzGamma" "round-robin: turn 3 = Gamma"
 assert_eq "$(target_of 4)" "agent:FuzzAlpha" "round-robin: turn 4 wraps to Alpha"
 assert_eq "$(target_of 5)" "llm:FuzzBeta" "round-robin: turn 5 = Beta"
-assert_has "$out" "no new crashers this session" "round-robin: clean session reported"
+assert_str_has "$out" "no new crashers this session" "round-robin: clean session reported"
 assert_eq "$(grep -c 'TestDeltaSeqFuzz' "$work/triage.log")" "0" "rapid target excluded from rotation"
 
 # --- scenario 2: sweep mode runs each target once per round ------------------
@@ -103,10 +103,10 @@ assert_eq "$(target_of 3)" ".:FuzzGamma" "sweep: Gamma third"
 : >"$work/triage.log"
 run_loop --time 5m --dry-run --no-pr --max-turns 1 >/dev/null
 line1="$(sed -n '1p' "$work/triage.log")"
-assert_has "$line1" "--time 5m" "passthrough: --time reaches triage"
-assert_has "$line1" "--dry-run" "passthrough: --dry-run reaches triage"
-assert_has "$line1" "--no-pr" "passthrough: --no-pr reaches triage"
-assert_has "$line1" "--no-corpus" "passthrough: per-turn --no-corpus applied"
+assert_str_has "$line1" "--time 5m" "passthrough: --time reaches triage"
+assert_str_has "$line1" "--dry-run" "passthrough: --dry-run reaches triage"
+assert_str_has "$line1" "--no-pr" "passthrough: --no-pr reaches triage"
+assert_str_has "$line1" "--no-corpus" "passthrough: per-turn --no-corpus applied"
 
 # --- scenario 4: target subset filter ----------------------------------------
 : >"$work/triage.log"
@@ -120,8 +120,8 @@ echo '{}' >"$repo/fuzz/state/ledger.json"
 set +e
 out="$(STUB_MAKE_CRASHER=1 run_loop --max-turns 1)"; rc=$?
 set -e
-assert_has "$out" "NEW crasher signature(s) this session" "crasher: session delta reported"
-assert_has "$out" "sig-boom" "crasher: signature listed"
+assert_str_has "$out" "NEW crasher signature(s) this session" "crasher: session delta reported"
+assert_str_has "$out" "sig-boom" "crasher: signature listed"
 assert_eq "$rc" "1" "crasher: session exits non-zero"
 
 # --- scenario 6: a zero total budget runs no turns ---------------------------
@@ -129,7 +129,7 @@ echo '{}' >"$repo/fuzz/state/ledger.json"
 : >"$work/triage.log"
 out="$(run_loop --total 0s)"
 assert_eq "$(wc -l <"$work/triage.log" | tr -d ' ')" "0" "zero budget: no turns run"
-assert_has "$out" "turns: 0" "zero budget: summary reports 0 turns"
+assert_str_has "$out" "turns: 0" "zero budget: summary reports 0 turns"
 
 # --- scenario 7: a malformed --total ABORTS, never runs unbounded -------------
 # Regression guard: the exit inside to_seconds' command substitution must abort
@@ -146,14 +146,14 @@ echo '{}' >"$repo/fuzz/state/ledger.json"
 : >"$work/triage.log"; : >"$work/drive.log"
 run_loop --drive-every 2 --max-turns 4 >/dev/null
 assert_eq "$(wc -l <"$work/drive.log" | tr -d ' ')" "2" "drive-every 2: ran the driver at turns 2 and 4"
-assert_has "$(sed -n '1p' "$work/drive.log")" "--pr" "drive-every: opens a PR by default"
+assert_str_has "$(sed -n '1p' "$work/drive.log")" "--pr" "drive-every: opens a PR by default"
 # --no-pr -> inspect-first (no --pr); --dry-run -> --no-harvest.
 : >"$work/drive.log"
 run_loop --drive-every 1 --no-pr --max-turns 1 >/dev/null
 if grep -q -- "--pr" "$work/drive.log"; then bad "drive-every --no-pr: must not pass --pr"; else ok "drive-every --no-pr: inspect-first (no --pr)"; fi
 : >"$work/drive.log"
 run_loop --drive-every 1 --dry-run --max-turns 1 >/dev/null
-assert_has "$(cat "$work/drive.log")" "--no-harvest" "drive-every --dry-run: records without harvesting"
+assert_str_has "$(cat "$work/drive.log")" "--no-harvest" "drive-every --dry-run: records without harvesting"
 # Default (no --drive-every): the driver is never called.
 : >"$work/drive.log"
 run_loop --max-turns 3 >/dev/null
@@ -163,6 +163,4 @@ set +e; run_loop --drive-every 0 --max-turns 1 >/dev/null 2>&1; rc=$?; set -e
 assert_eq "$rc" "2" "bad --drive-every: aborts with exit 2"
 
 # --- summary -----------------------------------------------------------------
-echo "----"
-echo "fuzz-continuous-selftest: $pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+selftest_summary

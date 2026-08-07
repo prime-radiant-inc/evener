@@ -5,32 +5,10 @@ set -uo pipefail
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 runner="$script_dir/run-module-lint.sh"
 makefile="$(cd "$script_dir/.." && pwd)/Makefile"
+. "$(dirname "$0")/selftest-lib.sh"
+
 work="$(mktemp -d -t serf-module-lint-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
-
-checks=0
-fails=0
-ok() { checks=$((checks + 1)); printf 'ok   - %s\n' "$1"; }
-bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL - %s\n' "$1"; }
-assert_eq() {
-	if [ "$1" = "$2" ]; then ok "$3"; else bad "$3 (want '$2', got '$1')"; fi
-}
-assert_has() {
-	if grep -qF -- "$2" "$1"; then
-		ok "$3"
-	else
-		bad "$3 (missing '$2')"
-		sed 's/^/    | /' "$1"
-	fi
-}
-assert_not_has() {
-	if grep -qF -- "$2" "$1"; then
-		bad "$3 (unexpected '$2')"
-		sed 's/^/    | /' "$1"
-	else
-		ok "$3"
-	fi
-}
 
 assert_count() {
 	actual="$(grep -cF -- "$2" "$1" || :)"
@@ -887,6 +865,4 @@ assert_count "$out" "docs stderr diagnostic" "1" "failed non-module stderr is re
 assert_has "$out" "Error 9" "failed non-module check reports its original status"
 assert_eq "$(find "$tmp" -type f -name 'serf-lint-check.*' | wc -l | tr -d ' ')" "0" "failed check removes its quiet-wrapper log"
 
-echo "----"
-echo "run-module-lint-selftest: $checks checks, $fails failed"
-[ "$fails" -eq 0 ]
+selftest_summary
