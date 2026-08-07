@@ -268,17 +268,38 @@ index, logs, and packed-refs are writable, so `commit`, `add`, and `checkout`
 succeed. `rr-cache` is writable too: it is git working state (recorded conflict
 resolutions), it is what `git commit` creates for itself when `rerere.enabled=true`,
 and it carries no directive git reads — so granting it costs nothing that config
-and hook protection depends on. On
-macOS/Seatbelt the packed-refs grant also covers the two fixed sibling
-names git rewrites it through (`packed-refs.lock` and `packed-refs.new`, renamed
-into place), so `git pack-refs` and the ref packing a commit triggers work too.
+and hook protection depends on. The packed-refs grant also covers the two fixed
+sibling names git rewrites it through (`packed-refs.lock` and `packed-refs.new`,
+renamed into place), so `git pack-refs` and the ref packing a commit triggers work
+too. The two backends reach that outcome differently: Seatbelt names the granted
+entries, while bubblewrap — which grants by mounting, and cannot express "may
+create exactly this filename in a read-only directory" — binds a linked worktree's
+or submodule's shared common `.git` writable as a whole **directory** and re-binds
+the protected surfaces read-only on top of it. The two backends therefore reach
+the same *outcome* through different breadth: inside that shared common dir Linux
+also leaves the metadata nobody named — `HEAD`, `ORIG_HEAD`, `info` — writable,
+where macOS denies them. Everything below stays denied on both.
+
 But every git **config and hook** surface is read-only:
 
 - `.git/config`, per-worktree config (`config.worktree`), submodule configs
   (`.git/modules/*/config`), and `.git/hooks`.
+- The two redirect files a git dir carries — `commondir` (which common dir git
+  reads config from) and `gitdir` — are write-denied for the same reason: a
+  repointed `commondir` makes git read an attacker-controlled `core.hooksPath`.
 - In a linked worktree, git's own writes land under
   `<main>/.git/worktrees/<id>/`; the main repo's `.git/config` is read-granted
   (git must read common config even from a linked worktree) but never writable.
+
+Denying a surface that does not exist yet is what stops it being *planted*, and on
+bubblewrap that denial is a mount, which materializes the name on the real
+filesystem and leaves it there after the session. So serf pre-creates an absent
+`commondir` holding `.` before pinning it: an empty `commondir` is fatal to git
+forever after, and `.` is both the only content git accepts and exactly what a git
+dir without the file already means (it is its own common dir). No other protected
+surface is pre-created — none has content that could be more correct than the empty
+file or directory the mount leaves, and an empty `config`, `config.worktree`,
+`gitdir`, or `hooks` carries no directive.
 
 Because every config file git reads is read-only **and** `$HOME` config files are
 unwritable, a `core.hooksPath` redirect cannot persist and no hook can be planted to
@@ -456,23 +477,18 @@ Three boundary edges are deliberately documented as open rather than claimed clo
   an inode). A *write* through such a hardlink does not propagate to the original —
   the file tools write atomically via temp-plus-rename, which replaces the name with
   a fresh inode. This read residual is out of the running-amok threat model.
+- **On Linux, a protected surface pinned into existence stays on disk.** bubblewrap
+  denies a not-yet-created config/hook surface by mounting over it, and the
+  mountpoint is real, so an absent `config.worktree` or `gitdir` under a write root
+  comes back as an empty file and an absent `hooks` as an empty directory, both
+  surviving the session. Every one of those residues is inert to git, and the one
+  that would not be — `commondir` — is pre-created holding `.` instead. The tidy
+  alternative, leaving the surface unpinned, is exactly what the write denial
+  exists to prevent, so the litter is accepted rather than removed.
 - **Daemon-socket masking is a targeted list** (docker, podman, containerd, dbus).
   An exotic or custom daemon socket under `/run` that is not on the list could still
   be reached; a broader `/run` mask is deferred because it would also hide
   legitimate runtime state and break DNS/daemons.
-- **On Linux/bubblewrap, a linked worktree's common `.git` grants only the
-  metadata entries that already exist.** That common dir sits outside the worktree
-  and is granted entry by entry, and bubblewrap grants by bind-mounting, which
-  requires the target to exist. Any granted entry absent when the sandbox starts —
-  `packed-refs` and its `packed-refs.lock` / `packed-refs.new` siblings, `logs`,
-  `index`, `rr-cache` — is therefore skipped, and git cannot create it. (A main
-  checkout is unaffected: its whole `.git` sits under the worktree write root, as
-  does a linked worktree's own per-worktree git dir.) This is structural, not an
-  oversight: permission to *create* a name belongs to the parent directory, so no
-  mount can express "may create exactly this filename in a read-only directory".
-  macOS/Seatbelt matches path strings instead of mounting and grants those
-  entries exactly. Closing the gap on Linux needs a directory-level decision
-  about the common dir, which is open.
 
 ## macOS notes
 

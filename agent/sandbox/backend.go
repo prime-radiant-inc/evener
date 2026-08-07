@@ -44,6 +44,16 @@ func NewWrapper(policy ResolvedPolicy, binaryPath, sessionTmp string) (*Wrapper,
 	if !filepath.IsAbs(binaryPath) {
 		return nil, fmt.Errorf("sandbox: backend binary path %q must be an absolute path (cwd-relative sandbox binaries are a PATH-injection vector)", binaryPath)
 	}
+	// bubblewrap pins a MISSING protected git surface by mounting over it, which
+	// materializes that name on the real filesystem — so the surfaces whose empty
+	// residue would break the repo are written with inert content first, once per
+	// wrapper, rather than as a side effect of every Wrap. Seatbelt matches path
+	// strings and creates nothing, so it needs no preparation.
+	if policy.Backend == BackendBwrap {
+		if err := prepareGitSurfaces(policy); err != nil {
+			return nil, err
+		}
+	}
 	return &Wrapper{policy: policy, binaryPath: binaryPath, sessionTmp: sessionTmp}, nil
 }
 

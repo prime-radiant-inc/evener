@@ -15,17 +15,6 @@ import (
 	"testing"
 )
 
-// seqIndex returns the start index of the first contiguous occurrence of seq in
-// args, or -1 if absent.
-func seqIndex(args []string, seq ...string) int {
-	for i := 0; i+len(seq) <= len(args); i++ {
-		if slices.Equal(args[i:i+len(seq)], seq) {
-			return i
-		}
-	}
-	return -1
-}
-
 // A read-only session whose worktree lives under /tmp: the /tmp tmpfs shadows the
 // cwd, so without a re-bind --chdir aborts the sandbox. Read-only mode grants no
 // write root to save the cwd, so it must be re-bound read-only AFTER the tmpfs.
@@ -179,14 +168,16 @@ func TestBuildBwrapArgvLinkedWorktreeNoDeadPin(t *testing.T) {
 	}
 	args := buildBwrapArgv(rp, "/tmp/s", cwd)
 
-	// No protected surface may be pinned via /dev/null under the read-only common
-	// dir. Concretely: the common dir is not a spawned write root, so any missing
-	// config.worktree/config there must be skipped, not pinned.
+	// No protected surface may be pinned via /dev/null under a read-only parent.
+	// The effective roots — not the resolved ones — decide: the argv now binds the
+	// common dir writable at directory level, so a pin inside it lands on a
+	// writable mount; a pin outside every effective write root would still EROFS.
 	commonDir := rp.Git.CommonDir
+	effective := bwrapWriteRoots(rp)
 	for i := 0; i+2 < len(args); i++ {
 		if args[i] == "--ro-bind" && args[i+1] == "/dev/null" {
 			target := args[i+2]
-			if pathUnder(target, commonDir) && !isUnderAnyRoot(target, rp.Spawned.WriteRoots) {
+			if pathUnder(target, commonDir) && !isUnderAnyRoot(target, effective) {
 				t.Errorf("dead pin under read-only common dir would EROFS-abort the sandbox: %q", target)
 			}
 		}

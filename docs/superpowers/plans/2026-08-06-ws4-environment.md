@@ -246,3 +246,51 @@ denial, not on unreadability), the credential denylist (`~/.git-credentials`
 stays masked, so a `credential.helper` line remains readable while the secret
 it points at does not), and every other invariant. The capability preamble
 reflects the grant rather than the old failure.
+
+### Amendment 2026-08-07 — bwrap parity, and a shipped corruption bug
+
+Task 3 fixed git's packed-refs rewrite on Seatbelt but left the Linux backend
+untouched, because bubblewrap grants by bind-mounting and a bind target must
+exist: any granted metadata entry absent at sandbox start is skipped, so a
+linked worktree's common dir keeps the gap. Attempting the ruled shape (grant
+the common dir writable, re-bind `ProtectedPaths` read-only on top) surfaced a
+worse problem underneath.
+
+**The shipped bug.** `commondir` and `gitdir` are in `gitProtectedLeaves`. For a
+**main checkout** `<cwd>/.git/commondir` does not exist *and* sits under the
+worktree write root, so `maskReadOnly` pins it with `--ro-bind /dev/null`.
+Bubblewrap materializes that mountpoint on the real filesystem, leaving an empty
+`commondir` behind after the sandbox exits — and git treats an empty `commondir`
+as fatal, permanently, for every later command in that repo. macOS is
+unaffected: Seatbelt matches path strings and creates nothing.
+
+**Empirically confirmed 2026-08-07** on a real Linux host (magic-kingdom, git
+2.43), after being reasoned out on macOS where no bubblewrap exists:
+
+- A `--ro-bind /dev/null` over an absent `.git/commondir` materializes a real
+  empty file that **persists after the sandbox exits**, and git in that repo is
+  then fatal (`failed to read .../commondir`).
+- The linked-worktree case is safe: `commondir` exists, is pinned over itself,
+  git works inside the sandbox, writes are denied, and the file is intact
+  afterwards.
+
+Neither live bwrap test caught it — one never checks git's exit code, the other
+expects failure — and CI never installs bubblewrap, so there is no automated
+real-bwrap coverage at all.
+
+**Peer behaviour** (for the record, none of them do what serf did): Claude
+Code's srt skips absent files, a documented gap; Codex ro-binds the whole
+existing `.git` directory; nobody materializes absent files.
+
+**Jesse ruled 2026-08-07: SHAPE C.** Serf pre-creates an absent protected
+surface with **inert content** before pinning it — `.` for `commondir`, which is
+exactly what a main checkout's common dir means and is the only content git
+accepts (empty and directory are both fatal). That fixes the corruption bug and
+unblocks the parity grant, at the cost of a side-effecting prep step at sandbox
+setup. Generalize only as far as the real protected-surface list requires, and
+document why each inert value is what it is.
+
+Rejected: pinning as-is (corrupts repos); not pinning `commondir` (a repointed
+`commondir` makes git read an attacker-controlled common dir's config, including
+`core.hooksPath` — the exact persistence vector the write denial exists to
+close).
