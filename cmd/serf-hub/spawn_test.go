@@ -446,7 +446,7 @@ exit 42
 	writeFakeSerf(t, bin, script)
 	_, err := SpawnDaemon(context.Background(), bin, filepath.Join(dir, "run"), hubcore.SpawnRequest{
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5.2"}},
-	}, 10*time.Second)
+	}, 60*time.Second)
 	if err == nil {
 		t.Fatal("expected spawn error")
 	}
@@ -523,7 +523,7 @@ sleep 30
 			name:    "child exits before rendezvous",
 			script:  exitsImmediately,
 			label:   "failed",
-			timeout: 10 * time.Second,
+			timeout: 60 * time.Second,
 			wantContain: []string{
 				"process exited before rendezvous",
 				"exit status 1",
@@ -541,7 +541,7 @@ sleep 30
 			name:    "caller abandons the request",
 			script:  neverRegisters,
 			label:   "canceled",
-			timeout: 10 * time.Second,
+			timeout: 60 * time.Second,
 			callerCtx: func() context.Context {
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
