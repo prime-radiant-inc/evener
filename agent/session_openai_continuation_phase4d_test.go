@@ -226,11 +226,15 @@ func TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta
 	if req.Continuation == nil {
 		t.Fatal("Continuation metadata is nil")
 	}
+	// The session has never reported its environment before this turn, so
+	// maybeAppendEnvironmentContext's ENVIRONMENT turn joins the delta ahead
+	// of the new USER_INPUT turn.
 	if req.Continuation.PreviousResponseIDHash != "cont-handle-v1:response_id:phase4d" ||
 		req.Continuation.AnchorTurnIndex != 1 ||
-		req.Continuation.DeltaTurnCount != 1 ||
-		len(req.Continuation.DeltaTurnKinds) != 1 ||
-		req.Continuation.DeltaTurnKinds[0] != string(schema.TurnUserInput) ||
+		req.Continuation.DeltaTurnCount != 2 ||
+		len(req.Continuation.DeltaTurnKinds) != 2 ||
+		req.Continuation.DeltaTurnKinds[0] != string(schema.TurnEnvironment) ||
+		req.Continuation.DeltaTurnKinds[1] != string(schema.TurnUserInput) ||
 		req.Continuation.EndpointFamily != string(llm.ResponsesEndpointFamilyOpenAIPublic) ||
 		req.Continuation.RequestFingerprint != "cont-req-v1:phase4d" ||
 		req.Continuation.StorageScopeFingerprint != "cont-scope-v1:phase4d" ||

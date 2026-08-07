@@ -515,7 +515,7 @@ func TestSession_CloseCannotBeReopenedByLateTurnCompletion(t *testing.T) {
 	sess.mu.Lock()
 	history := append([]schema.Turn(nil), sess.history...)
 	sess.mu.Unlock()
-	if len(history) != 1 || history[0].Kind != schema.TurnUserInput {
+	if len(history) != 2 || history[0].Kind != schema.TurnEnvironment || history[1].Kind != schema.TurnUserInput {
 		t.Fatalf("late model response was processed into history: %+v", history)
 	}
 }

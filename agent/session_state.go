@@ -153,6 +153,7 @@ func (s *Session) Meta() schema.SessionMeta {
 		CumulativeUsage:          cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),
 		JobTreeRootSessionID:     jobTreeRootSessionID,
 		JobTreeRevision:          jobTreeRevision,
+		EnvContext:               s.envContextState,
 	}
 }
 

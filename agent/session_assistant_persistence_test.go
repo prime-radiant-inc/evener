@@ -124,10 +124,19 @@ func TestSession_AssistantTranscriptFailureStopsBeforeToolDispatch(t *testing.T)
 		t.Fatalf("read transcript: %v", readErr)
 	}
 	lines := bytes.Split(bytes.TrimSpace(data), []byte{'\n'})
-	if len(lines) != 2 {
-		t.Fatalf("transcript lines = %d, want header plus user input", len(lines))
+	// header, the ENVIRONMENT turn maybeAppendEnvironmentContext injects before
+	// every user turn, then the user input itself.
+	if len(lines) != 3 {
+		t.Fatalf("transcript lines = %d, want header plus environment context plus user input", len(lines))
 	}
-	entry, decodeErr := transcript.DecodeEntry(lines[1])
+	envEntry, decodeErr := transcript.DecodeEntry(lines[1])
+	if decodeErr != nil {
+		t.Fatalf("decode persisted environment context: %v", decodeErr)
+	}
+	if envEntry.Turn.Kind != schema.TurnEnvironment {
+		t.Fatalf("persisted turn kind = %s, want %s", envEntry.Turn.Kind, schema.TurnEnvironment)
+	}
+	entry, decodeErr := transcript.DecodeEntry(lines[2])
 	if decodeErr != nil {
 		t.Fatalf("decode persisted user input: %v", decodeErr)
 	}

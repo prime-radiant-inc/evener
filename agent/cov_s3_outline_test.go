@@ -132,6 +132,7 @@ func TestS3Cov_OutlineRoleLabel(t *testing.T) {
 		schema.TurnSteering:    "Steering",
 		schema.TurnSummary:     "Summary",
 		schema.TurnCheckpoint:  "Checkpoint",
+		schema.TurnEnvironment: "Environment",
 		schema.TurnSystem:      "System",
 		schema.TurnToolResults: "ToolResults",
 		schema.TurnTool:        "ToolResults",

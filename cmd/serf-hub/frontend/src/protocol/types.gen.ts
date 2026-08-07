@@ -1505,6 +1505,7 @@ export const THREAD_ITEM_EVENT_KINDS = [
   "tool_repair",
   "model_switch",
   "error",
+  "environment",
 ] as const;
 
 export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];

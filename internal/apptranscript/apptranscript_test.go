@@ -1157,6 +1157,50 @@ func TestProjectTurnModelSwitchMarkerEmptyTextOmitted(t *testing.T) {
 	}
 }
 
+// TestProjectTurnRendersEnvironmentMarker verifies a persisted TurnEnvironment
+// turn projects to a systemMessage item, extending the TurnModelSwitch
+// systemMessage projection pattern above so a reload shows the harness's
+// diff-rendered environment block as chrome rather than dropping it.
+func TestProjectTurnRendersEnvironmentMarker(t *testing.T) {
+	out := ProjectTurn("turn_9", 9, schema.Turn{
+		Kind:    schema.TurnEnvironment,
+		Message: llm.User("<environment_context>\ncwd: \"/tmp\"\n</environment_context>"),
+	}, nil, nil, nil)
+
+	if len(out) != 1 {
+		t.Fatalf("items=%+v, want exactly one", out)
+	}
+	item := out[0]
+	if item.Type != "systemMessage" {
+		t.Fatalf("Type = %q, want systemMessage", item.Type)
+	}
+	if item.TurnID != "turn_9" || item.TranscriptEntryIndex != 9 {
+		t.Fatalf("TurnID/TranscriptEntryIndex = %q/%d, want turn_9/9", item.TurnID, item.TranscriptEntryIndex)
+	}
+	if item.Text != "<environment_context>\ncwd: \"/tmp\"\n</environment_context>" {
+		t.Fatalf("Text = %q", item.Text)
+	}
+	if item.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("Status = %q, want completed", item.Status)
+	}
+	if item.EventKind != appwire.ThreadItemEventKindEnvironment {
+		t.Fatalf("item eventKind=%q, want %q", item.EventKind, appwire.ThreadItemEventKindEnvironment)
+	}
+}
+
+// TestProjectTurnEnvironmentMarkerEmptyTextOmitted mirrors the
+// TurnModelSwitch empty-text no-op behavior: an environment turn with blank
+// text projects to nothing rather than an empty systemMessage.
+func TestProjectTurnEnvironmentMarkerEmptyTextOmitted(t *testing.T) {
+	out := ProjectTurn("turn_9", 9, schema.Turn{
+		Kind:    schema.TurnEnvironment,
+		Message: llm.User("   "),
+	}, nil, nil, nil)
+	if out != nil {
+		t.Fatalf("items=%+v, want nil for blank environment text", out)
+	}
+}
+
 // TestProjectTurnStampsToolItemTimestamps (issue #37): a replayed tool row's
 // hover meta (timestamp · runtime) must come from REAL recorded times. The
 // transcript stamps every entry with when it was recorded, so an assistant

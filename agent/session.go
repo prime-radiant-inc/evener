@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"primeradiant.com/serf/agent/envctx"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/clock"
@@ -179,6 +180,29 @@ type Session struct {
 	authoritativeConsumer bool
 	envInfo               schema.EnvironmentInfo
 
+	// envCollector assembles per-turn environment Snapshots (cwd, date,
+	// sandbox, git branch, resource pressure); envTracker diffs successive
+	// Snapshots into the append-only <environment_context> blocks
+	// maybeAppendEnvironmentContext injects before every user turn.
+	//
+	// envCollector is write-once (constructed at session init, never
+	// reassigned) and only ever read from the turn-processing goroutine, so it
+	// needs no lock. envTracker is NOT single-goroutine-owned: Session.Compact
+	// can run on a caller's own goroutine with no idle gate, and
+	// resetEnvContextTrackerAfterCompaction reassigns the pointer (and
+	// implicitly races the turn goroutine's maybeAppendEnvironmentContext,
+	// which mutates the pointed-to Tracker's internal state via RenderDiff) —
+	// both the read of the pointer and the RenderDiff/reassignment must hold
+	// mu. See maybeAppendEnvironmentContext and
+	// resetEnvContextTrackerAfterCompaction.
+	envCollector *envctx.Collector
+	envTracker   *envctx.Tracker
+	// envContextState mirrors envTracker.State() for Meta()/SessionMeta.EnvContext:
+	// nil until the first ENVIRONMENT turn is emitted (or restored from a prior
+	// session), so a session that has said nothing about its environment yet
+	// persists nothing. Guarded by mu (see setEnvContextState).
+	envContextState *envctx.State
+
 	// --- Synchronization / lock discipline ---
 	//
 	// The turn loop (ProcessInput → processOneInput) is the primary owner of
@@ -200,7 +224,8 @@ type Session struct {
 	//   cachedSystemPrompt, cachedToolDefs, the comm communicate-result,
 	//   steeringQueue, activeProvenance, followups, inputQueue,
 	//   loopDetectionCount, the task* reminder counters, depth, the goalInTurn
-	//   flag and kickFunc callback, the naming name-state, and the worktree
+	//   flag and kickFunc callback, the naming name-state, envTracker,
+	//   envContextState, and the worktree
 	//   occupancy fields (worktreeRestoreEnv, worktreeCurrentPath,
 	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub). It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
@@ -1118,6 +1143,79 @@ func (s *Session) extractOriginalPrompt() string {
 
 func (s *Session) appendTurn(kind schema.TurnKind, m llm.Message) {
 	s.appendTurnWithTranscriptMessage(kind, m, m)
+}
+
+// maybeAppendEnvironmentContext records an ENVIRONMENT turn when the observed
+// environment differs from the last emission (or on the first call ever). It
+// is the single choke point every user-input path calls immediately before
+// appending its TurnUserInput turn, so the context precedes the prompt it
+// applies to. Append-only by construction (RenderDiff never edits a prior
+// turn), so provider prompt caches survive it. A no-op when the session has
+// no envCollector (e.g. a bare struct literal built directly by a test that
+// bypasses NewSession/RestoreSessionFromMetaWithConfig).
+//
+// envTracker is read and mutated (RenderDiff) under mu because
+// Session.Compact can run resetEnvContextTrackerAfterCompaction on a caller's
+// own goroutine concurrently with this method running on the turn-processing
+// goroutine — see the field's doc comment.
+func (s *Session) maybeAppendEnvironmentContext() {
+	if s.envCollector == nil {
+		return
+	}
+	snap := s.envCollector.Collect(envctx.Inputs{
+		Cwd:     s.currentEnv().WorkingDirectory(),
+		Sandbox: s.cfg.Sandbox,
+	})
+
+	s.mu.Lock()
+	tracker := s.envTracker
+	if tracker == nil {
+		s.mu.Unlock()
+		return
+	}
+	block := tracker.RenderDiff(snap)
+	var st envctx.State
+	if block != "" {
+		st = tracker.State()
+	}
+	s.mu.Unlock()
+	if block == "" {
+		return
+	}
+
+	s.appendTurn(schema.TurnEnvironment, llm.User(block))
+	// Persist tracker state so resume stays silent when nothing changed.
+	s.setEnvContextState(st)
+}
+
+// setEnvContextState updates the mu-guarded mirror of envTracker.State() that
+// Meta() reads, then flushes meta.json — mirroring the lock-then-release-then-
+// maybeAutoSave pattern used by SetReasoningEffort/SetTimeout/Rename (maybeAutoSave
+// re-acquires mu via Meta(), so it must not be called while mu is held).
+func (s *Session) setEnvContextState(st envctx.State) {
+	s.mu.Lock()
+	s.envContextState = &st
+	s.mu.Unlock()
+	s.maybeAutoSave()
+}
+
+// resetEnvContextTrackerAfterCompaction clears the environment-context tracker
+// when a CHECKPOINT/SUMMARY turn replaces history: compaction drops any
+// previously appended ENVIRONMENT turns from the model-visible history (they
+// are model-bound content folded away like any other turn), so the model
+// loses whatever drift was last reported. Rebuilding the tracker at its zero
+// state (HasSent=false) makes the next maybeAppendEnvironmentContext call
+// re-emit a full block rather than staying silent on an environment the model
+// can no longer see anything about.
+func (s *Session) resetEnvContextTrackerAfterCompaction() {
+	s.mu.Lock()
+	if s.envTracker == nil {
+		s.mu.Unlock()
+		return
+	}
+	s.envTracker = envctx.NewTracker(envctx.State{})
+	s.mu.Unlock()
+	s.setEnvContextState(envctx.State{})
 }
 
 // appendTurnWithTranscriptMessage keeps the live model context and the durable
