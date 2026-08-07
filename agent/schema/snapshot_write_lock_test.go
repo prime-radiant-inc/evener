@@ -55,13 +55,14 @@ func TestSessionMetaWriteLockIsolatesDistinctSessions(t *testing.T) {
 }
 
 // TestSessionMetaWriteLockSharesLockAcrossAliasingIDs pins the shard key to a
-// canonicalized session ID. Two IDs that name the same meta file must share a
-// lock even when they are not the same string: path traversal collapses under
-// filepath.Clean, and a case-insensitive filesystem folds case.
+// case-folded session ID: two IDs that name one meta file must share a lock even
+// when they are not the same string, and validateSessionID admits IDs that
+// differ only in case. Path-shaped aliases are no longer this function's problem
+// — validateSessionID refuses separators and "." outright, so none can reach it.
 func TestSessionMetaWriteLockSharesLockAcrossAliasingIDs(t *testing.T) {
 	for _, aliases := range [][2]string{
 		{"02wMz5TxvEMoJEDTDGOTil", "02wMz5TxvEMoJEDTDGOTIL"},
-		{"02wMz5TxvEMoJEDTDGOTil", "other/../02wMz5TxvEMoJEDTDGOTil"},
+		{"WORKER", "worker"},
 	} {
 		if sessionMetaWriteLock(aliases[0]) != sessionMetaWriteLock(aliases[1]) {
 			t.Errorf("session IDs %q and %q name one meta file but mapped to different write locks", aliases[0], aliases[1])
