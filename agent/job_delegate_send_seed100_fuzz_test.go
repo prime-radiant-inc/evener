@@ -184,7 +184,10 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 				}
 				return rec, nil
 			}
-			t.Cleanup(func() { s.cfg.testOnly.delegateSend.beforePostState = nil; s.cfg.testOnly.delegateSend.findRunning = nil })
+			t.Cleanup(func() {
+				s.cfg.testOnly.delegateSend.beforePostState = nil
+				s.cfg.testOnly.delegateSend.findRunning = nil
+			})
 			_ = s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed"})
 		case 17:
 			client := llm.NewClient()
