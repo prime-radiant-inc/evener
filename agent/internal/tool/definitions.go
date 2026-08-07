@@ -601,7 +601,10 @@ func DefManageWorktree() llm.ToolDefinition {
 		"parallel exploration of alternative approaches, or isolating a delegate's changes from the parent checkout. " +
 		"This is not for ordinary branch creation or switching; use plain git commands for that. " +
 		"Operations: create (make a new worktree from `name` and optional `base_ref`, default the active HEAD, then enter it); " +
-		"list (show known worktrees); switch (enter an existing worktree by `name` or `path`, exactly one); " +
+		"list (show known worktrees, plus any unmanaged worktrees found under the managed root); " +
+		"switch (enter an existing worktree by `name` or `path`, exactly one); " +
+		"adopt (take over an unmanaged worktree listed under the managed root by its `path`, so it can be switched to by " +
+		"name, removed and pruned like any other; nothing is ever adopted automatically); " +
 		"exit (return to the main checkout); remove (delete a worktree by `name`; `delete_branch` also deletes its branch, " +
 		"`force` overrides provenance/merge gating, `force_dirty` overrides the refusal to discard uncommitted changes); " +
 		"prune (remove worktrees that have no unmerged work — unchanged or already-merged lanes, including ones left behind " +
@@ -620,8 +623,8 @@ func DefManageWorktree() llm.ToolDefinition {
 			"properties": map[string]any{
 				"operation": map[string]any{
 					"type":        "string",
-					"description": "create, list, switch, exit, remove, prune, or dispose.",
-					"enum":        []string{"create", "list", "switch", "exit", "remove", "prune", "dispose"},
+					"description": "create, list, switch, adopt, exit, remove, prune, or dispose.",
+					"enum":        []string{"create", "list", "switch", "adopt", "exit", "remove", "prune", "dispose"},
 				},
 				"name": map[string]any{
 					"type":        "string",
@@ -637,7 +640,7 @@ func DefManageWorktree() llm.ToolDefinition {
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "For switch: path to an existing worktree. Exactly one of name/path.",
+					"description": "For switch: path to an existing worktree. Exactly one of name/path. For adopt: the path of an unmanaged worktree, as reported in list's unmanaged section.",
 				},
 				"force": map[string]any{
 					"type":        "boolean",

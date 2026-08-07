@@ -265,14 +265,14 @@ func TestWorktreeListSummaryLine(t *testing.T) {
 		{Name: "untouched-lane", AheadCommits: 0, Dirty: false, Merged: true},
 		{Name: "work-lane", AheadCommits: 1, Dirty: false, Merged: false},
 	}
-	got := worktreeListSummary(entries)
+	got := worktreeListSummary(entries, nil)
 	for _, want := range []string{"2 managed worktree", "untouched-lane", "work-lane", "0 ahead", "1 ahead"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("list summary missing %q\ngot: %s", want, got)
 		}
 	}
-	if worktreeListSummary(nil) != "0 managed worktree(s)." {
-		t.Fatalf("empty summary = %q", worktreeListSummary(nil))
+	if worktreeListSummary(nil, nil) != "0 managed worktree(s)." {
+		t.Fatalf("empty summary = %q", worktreeListSummary(nil, nil))
 	}
 }
 
@@ -282,7 +282,7 @@ func TestWorktreeListSummaryLine(t *testing.T) {
 func TestWorktreeListSummaryUnknownState(t *testing.T) {
 	got := worktreeListSummary([]WorktreeListEntry{
 		{Name: "unreadable", DirtyUnknown: true, AheadUnknown: true},
-	})
+	}, nil)
 	for _, want := range []string{"ahead unknown", "dirty unknown"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary missing %q\ngot: %s", want, got)
