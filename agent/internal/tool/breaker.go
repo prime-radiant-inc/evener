@@ -69,11 +69,23 @@ const breakerThreshold = 2
 
 // The intervention texts. Parked results all begin with parkPrefix, which is
 // the stable marker other layers count them by.
+//
+// The failure nudge stays a fixed string: the park check runs before every
+// dispatch and refuses a call once its failure streak reaches
+// breakerThreshold, so record() can never observe a failure streak above
+// that threshold and the nudge only ever fires at exactly two failures.
 const (
-	parkPrefix          = "serf did not execute this call: "
-	failureNudgeText    = "You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach"
-	repetitionNudgeText = "You have now made this same call twice and received the identical result. Repeating it will not change the answer — use the result you already have, or change your approach."
+	parkPrefix       = "serf did not execute this call: "
+	failureNudgeText = "You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach"
 )
+
+// repetitionNudgeText builds the nudge for a run of consecutive identical
+// results. Repetition is never parked, so count can climb arbitrarily high
+// as a session loops; stating the real count lets a long loop read as
+// escalating rather than repeating the same "twice" wording forever.
+func repetitionNudgeText(count int) string {
+	return fmt.Sprintf("You have now made this same call and received the identical result %d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach.", count)
+}
 
 // failureParkText is the body of a refused call whose signature keeps failing
 // the same way. It shows the failures themselves so the model can see what it

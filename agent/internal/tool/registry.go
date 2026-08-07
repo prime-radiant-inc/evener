@@ -586,7 +586,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		case repeatStreak >= breakerThreshold:
 			// Repeats on every subsequent identical result: nothing else
 			// applies pressure once repetition is never parked.
-			appendIntervention(&res, repetitionNudgeText)
+			appendIntervention(&res, repetitionNudgeText(repeatStreak))
 		}
 	}
 	return res
