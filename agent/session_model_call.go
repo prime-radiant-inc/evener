@@ -687,9 +687,12 @@ func (s *Session) providerWebSearchEnabled(profile *provider.Profile) bool {
 func (s *Session) buildModelRequest(profile *provider.Profile, sys string, history []llm.Message, toolDefs []llm.ToolDefinition, reasoningEffort string) llm.Request {
 	var messages []llm.Message
 	if s.cfg.SystemPromptAsUser {
-		// Combine system prompt with the first user message into one
-		// message so instructions are adjacent to the task. GPT-5.4
-		// ignores the instructions parameter and follows user messages.
+		// Combine system prompt with the first user-role message into one
+		// message, since GPT-5.4 ignores the instructions parameter and
+		// follows user messages. That first message is usually the task, but
+		// maybeAppendEnvironmentContext's harness-injected ENVIRONMENT turn
+		// can land ahead of it — the system prompt then combines with that
+		// instead, still leading with instructions in a user-role message.
 		if len(history) > 0 && history[0].Role == llm.RoleUser {
 			messages = make([]llm.Message, len(history))
 			copy(messages, history)

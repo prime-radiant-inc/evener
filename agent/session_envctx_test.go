@@ -3,9 +3,11 @@ package agent
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/envctx"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -163,5 +165,158 @@ func TestCompactionResetsEnvironmentContextTracker(t *testing.T) {
 	meta := loadMetaForTest(t, s)
 	if meta.EnvContext == nil || !meta.EnvContext.HasSent {
 		t.Fatalf("post-compaction EnvContext not re-persisted: %+v", meta.EnvContext)
+	}
+}
+
+// TestSession_MaybeAppendEnvironmentContext_NoRaceWithCompact hammers
+// maybeAppendEnvironmentContext (reads envTracker, mutates it via RenderDiff)
+// on one goroutine concurrently with resetEnvContextTrackerAfterCompaction
+// (reassigns envTracker) on another — the exact pair the reviewer flagged:
+// Session.Compact can run resetEnvContextTrackerAfterCompaction on a caller's
+// own goroutine with no idle gate, racing the turn goroutine's
+// maybeAppendEnvironmentContext. RED under -race before both methods took mu
+// around the tracker touch; GREEN after.
+//
+// This calls the two methods directly rather than going through
+// ProcessInput/Compact's full machinery: routing through Compact() (which
+// unconditionally writes s.contextMgr.Meta, same as every per-round
+// ManageContext call inside ProcessInput) surfaces a SEPARATE, pre-existing
+// data race on contextMgr.Meta that predates this task and is out of its
+// scope — see task-5-report.md's fix-round addendum. Calling
+// maybeAppendEnvironmentContext/resetEnvContextTrackerAfterCompaction
+// directly isolates exactly the envTracker race under test without also
+// tripping that unrelated one.
+func TestSession_MaybeAppendEnvironmentContext_NoRaceWithCompact(t *testing.T) {
+	if !raceDetectorEnabled {
+		t.Skip("race-detector stress test; run with -race")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	var hammer sync.WaitGroup
+	hammer.Go(func() {
+		for range 5000 {
+			sess.maybeAppendEnvironmentContext()
+		}
+	})
+	hammer.Go(func() {
+		for range 5000 {
+			sess.resetEnvContextTrackerAfterCompaction()
+		}
+	})
+	hammer.Wait()
+}
+
+// TestRestoredSessionWithMatchingEnvContextStaysSilent: a session persists
+// EnvContext after its first turn, closes, and is restored against the SAME
+// execution environment (same cwd, sandbox, and — via the fixed envProbes
+// clock — the same observed date). The restored session's next turn must
+// observe an unchanged environment and emit no ENVIRONMENT turn at all.
+func TestRestoredSessionWithMatchingEnvContextStaysSilent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	probes := &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}
+	testCfg := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, envProbes: probes}
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(2, "ok")})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+		testOnly: testCfg,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if _, err := sess.ProcessInput(context.Background(), "hello", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if countEnvironmentTurns(sess) != 1 {
+		t.Fatalf("setup: want exactly one ENVIRONMENT turn, got %d: %+v", countEnvironmentTurns(sess), sess.history)
+	}
+	sess.Close()
+
+	meta := loadMetaForTest(t, sess)
+	if meta.EnvContext == nil || !meta.EnvContext.HasSent {
+		t.Fatalf("setup: EnvContext not persisted: %+v", meta.EnvContext)
+	}
+
+	c2 := llm.NewClient()
+	c2.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(2, "ok")})
+	restored, err := RestoreSessionFromMetaWithConfig(c2, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
+		StateDir: dir,
+		testOnly: testCfg,
+	})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+
+	if _, err := restored.ProcessInput(context.Background(), "again", nil); err != nil {
+		t.Fatalf("ProcessInput after restore: %v", err)
+	}
+	// The restored history already carries the ONE ENVIRONMENT turn from
+	// before Close (restored verbatim from the transcript): a matching
+	// environment on the "again" turn must not add a second one.
+	if count := countEnvironmentTurns(restored); count != 1 {
+		t.Fatalf("restored session with a matching environment must stay silent (want the original 1, no new one), got %d ENVIRONMENT turns: %+v", count, restored.history)
+	}
+}
+
+// TestRestoredSessionWithNilEnvContextReemitsFullBlock: a session closed
+// before ever processing a turn persists a nil EnvContext (predating the
+// feature is the same shape: no prior report to be silent about). The
+// restored session's first turn must re-emit a full ENVIRONMENT block, the
+// same as a brand-new session's first turn.
+func TestRestoredSessionWithNilEnvContextReemitsFullBlock(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	probes := &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}
+	testCfg := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, envProbes: probes}
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+		testOnly: testCfg,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	sess.Close() // Closed without ever processing a turn: meta.EnvContext stays nil.
+
+	meta := loadMetaForTest(t, sess)
+	if meta.EnvContext != nil {
+		t.Fatalf("setup: expected nil EnvContext before any turn, got %+v", meta.EnvContext)
+	}
+
+	c2 := llm.NewClient()
+	c2.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(1, "ok")})
+	restored, err := RestoreSessionFromMetaWithConfig(c2, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
+		StateDir: dir,
+		testOnly: testCfg,
+	})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+
+	if _, err := restored.ProcessInput(context.Background(), "hello", nil); err != nil {
+		t.Fatalf("ProcessInput after restore: %v", err)
+	}
+	if count := countEnvironmentTurns(restored); count != 1 {
+		t.Fatalf("restored session with nil EnvContext must re-emit a full block, got %d: %+v", count, restored.history)
+	}
+	restoredMeta := loadMetaForTest(t, restored)
+	if restoredMeta.EnvContext == nil || !restoredMeta.EnvContext.HasSent {
+		t.Fatalf("EnvContext not persisted after restore re-emit: %+v", restoredMeta.EnvContext)
 	}
 }
