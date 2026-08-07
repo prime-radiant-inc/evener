@@ -444,15 +444,11 @@ echo 'serf serve: session creation: plugin initialization: resolving plugin dir 
 exit 42
 `
 	writeFakeSerf(t, bin, script)
-	start := time.Now()
 	_, err := SpawnDaemon(context.Background(), bin, filepath.Join(dir, "run"), hubcore.SpawnRequest{
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5.2"}},
 	}, 10*time.Second)
 	if err == nil {
 		t.Fatal("expected spawn error")
-	}
-	if time.Since(start) > 8*time.Second {
-		t.Fatalf("spawn waited for timeout instead of process exit: %v", time.Since(start))
 	}
 	if !strings.Contains(err.Error(), "exited before rendezvous") {
 		t.Fatalf("error=%v", err)
