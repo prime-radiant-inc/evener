@@ -378,9 +378,9 @@ func TestOutputTailTruncatesToLastBytes(t *testing.T) {
 
 func TestWindowBounds(t *testing.T) {
 	tests := []struct {
-		name                        string
+		name                         string
 		before, max, total, earliest int64
-		wantStart, wantEnd          int64
+		wantStart, wantEnd           int64
 	}{
 		{name: "tail when before is zero", before: 0, max: 4, total: 10, earliest: 0, wantStart: 6, wantEnd: 10},
 		{name: "tail when before is negative", before: -5, max: 4, total: 10, earliest: 0, wantStart: 6, wantEnd: 10},

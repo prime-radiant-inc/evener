@@ -29,10 +29,10 @@ func FuzzLiveEvalPaths(f *testing.F) {
 	f.Add("true", "  /state  ", "  /home/serf  ", "", "")
 	// All three provider-config precedence arms, and combinations of
 	// empty/nonempty, so every arm has its own seed:
-	f.Add("1", "", "/home/serf", "/config/providers.toml", "")                       // SERF_PROVIDERS_CONFIG wins outright
-	f.Add("1", "", "/home/serf", "/config/providers.toml", "/statedir")              //   ...even with SERF_STATE_DIR also set
-	f.Add("1", "", "/home/serf", "", "/statedir")                                    // SERF_STATE_DIR wins when config env is empty
-	f.Add("1", "", "/home/serf", "", "")                                             // falls all the way through to userHome/.serf
+	f.Add("1", "", "/home/serf", "/config/providers.toml", "")          // SERF_PROVIDERS_CONFIG wins outright
+	f.Add("1", "", "/home/serf", "/config/providers.toml", "/statedir") //   ...even with SERF_STATE_DIR also set
+	f.Add("1", "", "/home/serf", "", "/statedir")                       // SERF_STATE_DIR wins when config env is empty
+	f.Add("1", "", "/home/serf", "", "")                                // falls all the way through to userHome/.serf
 	f.Add("", "", "", "", "  ")
 
 	f.Fuzz(func(t *testing.T, enabledValue, stateHome, userHome, providersConfigEnv, stateDirEnv string) {
