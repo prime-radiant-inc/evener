@@ -184,6 +184,31 @@ var defaultSystemReadRoots = []string{
 	"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/nix/store",
 }
 
+// sharedTempRoots are the multi-tenant scratch roots (in both macOS spellings) a
+// host-derived grant root must never sit at or above: they hold every other
+// session's scratch. They anchor the RootGuard alongside the home directory and
+// the session's own worktree.
+var sharedTempRoots = []string{"/tmp", "/private/tmp", "/var/folders", "/private/var/folders"}
+
+// guardedHostRoots filters host-derived grant candidates (the developer-toolchain
+// directories) through RootGuard, refusing any that sits at or above the home
+// directory, the worktree, or a temp root. The candidates come from a host probe
+// that honours configuration (`xcode-select -p` follows $DEVELOPER_DIR), so they
+// are treated as untrusted input like every other configured root.
+func guardedHostRoots(candidates []string, home, worktree string) []string {
+	if len(candidates) == 0 {
+		return nil
+	}
+	guard := NewRootGuard(slices.Concat([]string{home, worktree}, sharedTempRoots)...)
+	out := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if root := guard.Permit(c); root != "" {
+			out = append(out, root)
+		}
+	}
+	return out
+}
+
 // Resolve turns a policy request plus host facts and the session's cwd into a
 // ResolvedPolicy, or a typed *RefusalError when the host cannot enforce the
 // request (the fail-closed floor). It is a pure function of its inputs (reads no
@@ -275,7 +300,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		resolveInputs: policy,
 		resolveHost:   host,
 	}
-	rp.FileTool, rp.Spawned = scopesFor(policy, layout, worktree)
+	rp.FileTool, rp.Spawned = scopesFor(policy, host, layout, worktree)
 
 	// Fail-closed invariant: never grant a root that is at or under a masked path.
 	rp.FileTool.ReadRoots = filterMasked(rp.FileTool.ReadRoots, masked)
@@ -382,7 +407,7 @@ func cacheStrategyFor(mode Mode, backend Backend, host HostFacts) CacheStrategy 
 }
 
 // scopesFor builds the file-tool and spawned-process access scopes for a mode.
-func scopesFor(policy SandboxPolicy, layout GitLayout, worktree string) (fileTool, spawned AccessScope) {
+func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree string) (fileTool, spawned AccessScope) {
 	switch policy.Mode {
 	case ModeReadOnly:
 		// Reads anywhere (minus masked); no writes (session tmp is the only scratch).
@@ -405,16 +430,20 @@ func scopesFor(policy SandboxPolicy, layout GitLayout, worktree string) (fileToo
 		readFile := dedupeRoots(append([]string{worktree}, policy.ExtraReadRoots...))
 		writeFile := dedupeRoots(append([]string{worktree}, policy.ExtraWritableRoots...))
 		// Spawned procs additionally read the common git dir + system roots (to
-		// execute), the session's hook/MCP-server paths (session infrastructure,
-		// which must run in every mode — ruled 2026-08-06), and write the git
-		// metadata subset. The infrastructure roots stay OUT of readFile: a hook
-		// living in the plugin cache must be executable, but the model must not gain
-		// a file-tool browse grant over the plugin cache along with it.
+		// execute), the host's developer-toolchain directories (macOS ships git and
+		// friends as xcrun shims that exec the real binary out of the active
+		// developer directory — ruled 2026-08-06), the session's hook/MCP-server
+		// paths (session infrastructure, which must run in every mode — ruled
+		// 2026-08-06), and write the git metadata subset. Both extra grants stay OUT
+		// of readFile: a hook living in the plugin cache must be executable and the
+		// git shim must reach its toolchain, but the model must not gain a file-tool
+		// browse grant over either along with it.
 		//
 		// The other modes need no equivalent line: their spawned layer already reads
-		// anywhere-minus-the-denylist, which covers any hook/MCP path that is not
-		// masked — and a masked one must stay masked in every mode.
-		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, policy.InfraReadRoots))
+		// anywhere-minus-the-denylist, which covers any hook/MCP/toolchain path that
+		// is not masked — and a masked one must stay masked in every mode.
+		devRoots := guardedHostRoots(host.DeveloperToolRoots, host.Home, worktree)
+		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, policy.InfraReadRoots))
 		writeSpawn := dedupeRoots(slices.Concat(writeFile, layout.WritablePaths))
 		fileTool = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readFile, WriteRoots: writeFile}
 		spawned = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readSpawn, WriteRoots: writeSpawn}

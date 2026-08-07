@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 )
@@ -210,7 +211,7 @@ func TestContractCasesAreDataOnly(t *testing.T) {
 		t.Fatalf("ContractCases() length varies: %d vs %d", len(a), len(b))
 	}
 	for i := range a {
-		if a[i] != b[i] {
+		if !reflect.DeepEqual(a[i], b[i]) {
 			t.Errorf("case %d differs between calls:\n a: %+v\n b: %+v", i, a[i], b[i])
 		}
 	}

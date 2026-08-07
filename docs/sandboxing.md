@@ -74,9 +74,21 @@ sockets beyond stdio.
 - **`restricted`** is the tightest mode: the model's file tools can only browse and
   write inside the worktree. Spawned processes additionally get read-only access to
   the system roots a process needs to run — `/usr`, `/bin`, `/sbin`, `/lib`,
-  `/lib64`, `/etc`, `/opt`, `/nix/store` — but not
+  `/lib64`, `/etc`, `/opt`, `/nix/store`, and on macOS the developer-toolchain
+  directories below — but not
   `/proc`. The distinction is deliberate: the file tools expose what the *model*
   may browse; the kernel layer grants what a *process* needs to execute.
+
+  On macOS the developer-toolchain directories are part of that set, **read-only**
+  (ruled 2026-08-06). They are the active developer directory reported by
+  `xcode-select -p` — widened to its enclosing application bundle, typically
+  `/Applications/Xcode.app` — plus `/Library/Developer/CommandLineTools`. Without
+  them restricted mode could not run `git` at all: `/usr/bin/git` is an `xcrun`
+  shim that execs the real binary out of one of those directories, and neither
+  sits under the system roots above. A directory that is absent simply
+  contributes nothing; a session never fails to start over one. The grant reaches
+  the spawned layer only — the model's file tools cannot browse the toolchain —
+  it adds nothing to any write surface, and the denylist still wins over it.
 
 ## The fail-closed floor
 

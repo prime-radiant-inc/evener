@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -479,5 +480,173 @@ func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("writeFile(%q): %v", path, err)
+	}
+}
+
+// hermeticGit is the git command prefix every live git assertion uses, so the
+// assertion depends only on the sandbox grant under test and never on the
+// developer's own git configuration.
+//
+//   - GIT_CONFIG_GLOBAL=/dev/null: restricted mode does not grant the home
+//     directory, so an existing ~/.gitconfig is present-but-unreadable and git
+//     FATALS on it ("unable to access '.../.gitconfig': Operation not
+//     permitted"). That is a SEPARATE gap in the restricted-mode read surface,
+//     tracked apart from the developer-toolchain grant.
+//   - core.excludesFile=/dev/null: the same gap, second file — git warns on an
+//     unreadable ~/.config/git/ignore.
+//   - rerere.enabled=false: with rerere on (a common global setting) a commit
+//     creates <common>/rr-cache, an ungranted git-metadata surface — a separate
+//     known defect, likewise not this grant's subject.
+const hermeticGit = "GIT_CONFIG_GLOBAL=/dev/null git " +
+	"-c core.excludesFile=/dev/null -c rerere.enabled=false " +
+	"-c user.email=t@e -c user.name=t "
+
+// xcrunCacheDenialFragment identifies the one residual stderr line a git
+// invocation emits inside a restricted sandbox. /usr/bin/git is an xcrun shim,
+// and xcrun memoizes its lookup in a cache file under the PER-USER temp
+// directory that confstr(_CS_DARWIN_USER_TEMP_DIR) reports — a shared,
+// multi-tenant location the sandbox deliberately does not make writable (the
+// session TMPDIR is granted instead, and xcrun does not consult TMPDIR). The
+// lookup still succeeds; only the memoization fails. Removing this residual
+// would take a WRITE grant, which the read-only developer-toolchain ruling does
+// not authorize.
+const xcrunCacheDenialFragment = "xcrun_db"
+
+// unexpectedStderr returns the stderr lines that are not the known xcrun cache
+// residual — the lines a live git assertion must not have.
+func unexpectedStderr(stderr string) []string {
+	var out []string
+	for _, line := range strings.Split(strings.TrimRight(stderr, "\n"), "\n") {
+		if line == "" || strings.Contains(line, xcrunCacheDenialFragment) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// runUnderSeatbeltSplit is runUnderSeatbelt with the two streams kept apart, so
+// a test can assert on stderr alone.
+func runUnderSeatbeltSplit(t *testing.T, rp ResolvedPolicy, cwd string, command ...string) (stdout, stderr string, exit int) {
+	t.Helper()
+	sessionTmp := t.TempDir()
+	argv, err := seatbeltWrap(command, rp, sessionTmp, cwd)
+	if err != nil {
+		t.Fatalf("seatbeltWrap: %v", err)
+	}
+	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // argv[0] is the hard-coded /usr/bin/sandbox-exec
+	cmd.Dir = cwd
+	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp)
+	var outBuf, errBuf strings.Builder
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	runErr := cmd.Run()
+	exit = 0
+	var ee *exec.ExitError
+	switch {
+	case runErr == nil:
+	case errors.As(runErr, &ee):
+		exit = ee.ExitCode()
+	default:
+		exit = -1
+	}
+	return outBuf.String(), errBuf.String(), exit
+}
+
+// TestSeatbeltLiveGitRunsInRestrictedMode is the RED reproduction of the
+// 2026-08-06 developer-toolchain ruling, kept as the permanent proof.
+//
+// On macOS /usr/bin/git is an xcrun shim: it locates the real git under the
+// ACTIVE developer directory (`xcode-select -p`, typically
+// /Applications/Xcode.app) or the standalone Command Line Tools
+// (/Library/Developer/CommandLineTools). Neither lives under restricted mode's
+// system read roots, so before the grant even `git --version` died with
+//
+//	xcrun: error: invalid active developer path
+//	(/Applications/Xcode.app/Contents/Developer), missing xcrun at:
+//	/Applications/Xcode.app/Contents/Developer/usr/bin/xcrun
+//
+// — the verified shape behind sessions that hand-rolled git operations rather
+// than running git.
+func TestSeatbeltLiveGitRunsInRestrictedMode(t *testing.T) {
+	requireLiveSeatbelt(t)
+	rp, cwd := liveResolve(t, ModeRestricted, true)
+	if len(RealProber{}.Probe().DeveloperToolRoots) == 0 {
+		t.Skip("live seatbelt test: no developer toolchain installed on this host")
+	}
+	stdout, stderr, exit := runUnderSeatbeltSplit(t, rp, cwd, "/bin/sh", "-c", hermeticGit+"--version")
+	if exit != 0 {
+		t.Fatalf("restricted mode must be able to run git (exit=%d)\nstdout:\n%s\nstderr:\n%s", exit, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "git version") {
+		t.Errorf("git --version stdout = %q, want a version line", stdout)
+	}
+	if extra := unexpectedStderr(stderr); len(extra) > 0 {
+		t.Errorf("git --version emitted unexpected stderr:\n%s", strings.Join(extra, "\n"))
+	}
+}
+
+// TestSeatbeltLiveGitCommitInRestrictedMode is the acceptance bar for the
+// developer-toolchain grant: a FULL commit — stage a new file, write the object,
+// move the ref — inside a restricted sandbox, exiting 0.
+func TestSeatbeltLiveGitCommitInRestrictedMode(t *testing.T) {
+	requireLiveSeatbelt(t)
+	rp, cwd := liveResolve(t, ModeRestricted, true)
+	if len(RealProber{}.Probe().DeveloperToolRoots) == 0 {
+		t.Skip("live seatbelt test: no developer toolchain installed on this host")
+	}
+	writeFile(t, filepath.Join(cwd, "committed.txt"), "serf restricted commit\n")
+
+	script := hermeticGit + "add committed.txt && " +
+		hermeticGit + "commit -q -m serf-restricted-commit && " +
+		hermeticGit + "log -1 --format=%s"
+	stdout, stderr, exit := runUnderSeatbeltSplit(t, rp, cwd, "/bin/sh", "-c", script)
+	if exit != 0 {
+		t.Fatalf("restricted mode must allow a full git commit (exit=%d)\nstdout:\n%s\nstderr:\n%s", exit, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "serf-restricted-commit") {
+		t.Errorf("the commit did not land; git log said %q", stdout)
+	}
+	if extra := unexpectedStderr(stderr); len(extra) > 0 {
+		t.Errorf("git commit emitted unexpected stderr:\n%s", strings.Join(extra, "\n"))
+	}
+}
+
+// TestSeatbeltLiveDenylistBeatsDeveloperToolRoots pins the precedence the new
+// grant must never invert: a denylisted directory INSIDE a granted
+// developer-toolchain root stays unreadable against the real kernel. The grant
+// is an allow; the denylist is emitted after every allow and wins.
+func TestSeatbeltLiveDenylistBeatsDeveloperToolRoots(t *testing.T) {
+	requireLiveSeatbelt(t)
+	devRoots := RealProber{}.Probe().DeveloperToolRoots
+	if len(devRoots) == 0 {
+		t.Skip("live seatbelt test: no developer toolchain installed on this host")
+	}
+	// Pick a real readable file inside a granted developer root to read for.
+	var probeFile string
+	for _, root := range devRoots {
+		candidate := filepath.Join(root, "usr", "share", "git-core")
+		if st, err := os.Stat(candidate); err == nil && st.IsDir() {
+			probeFile = candidate
+			break
+		}
+	}
+	if probeFile == "" {
+		t.Skip("live seatbelt test: no readable probe path inside a developer root")
+	}
+
+	granted, cwd := liveResolve(t, ModeRestricted, true)
+	if out, exit := runUnderSeatbelt(t, granted, cwd, "/bin/sh", "-c", "ls "+probeFile+" >/dev/null"); exit != 0 {
+		t.Fatalf("baseline: %q must be readable under the developer-tools grant (exit=%d):\n%s", probeFile, exit, out)
+	}
+
+	denied, cwd2 := liveResolve(t, ModeRestricted, true, func(p *SandboxPolicy) {
+		p.DenylistAdd = append(p.DenylistAdd, probeFile)
+	})
+	if slices.Contains(denied.Spawned.ReadRoots, probeFile) {
+		t.Fatalf("a masked path must never survive as a read root: %v", denied.Spawned.ReadRoots)
+	}
+	if out, exit := runUnderSeatbelt(t, denied, cwd2, "/bin/sh", "-c", "ls "+probeFile+" >/dev/null 2>&1"); exit == 0 {
+		t.Errorf("the denylist must beat the developer-tools grant, but %q was still readable:\n%s", probeFile, out)
 	}
 }

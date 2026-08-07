@@ -4,7 +4,9 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 )
@@ -51,6 +53,19 @@ type HostFacts struct {
 	// (Seatbelt), or "" if unavailable. Seatbelt is deny-capable and serves the
 	// full mode matrix (cache always session-private — no overlay on macOS).
 	SandboxExecPath string
+
+	// DeveloperToolRoots are the macOS developer-toolchain directories a spawned
+	// process must be able to READ to run the developer tools macOS ships as
+	// xcrun shims. /usr/bin/git is the load-bearing case: it is a shim that execs
+	// the real git out of the ACTIVE developer directory (`xcode-select -p`) or
+	// the standalone Command Line Tools, neither of which lives under the system
+	// read roots — so without these, restricted mode could not run git at all.
+	//
+	// Read-only, and only consulted by restricted mode (the other modes' spawned
+	// layer already reads everything but the denylist). Empty on non-darwin hosts
+	// and on a Mac with no toolchain installed; a missing path is simply absent,
+	// never a session-start failure.
+	DeveloperToolRoots []string
 
 	// KernelVersion is the best-effort `uname -r` string, informational only
 	// (surfaced in the startup enforcement line, not used for decisions).
@@ -164,9 +179,71 @@ func probeHost(system probeSystem) HostFacts {
 		if system.nonDirectoryFile(seatbelt) {
 			facts.SandboxExecPath = seatbelt
 		}
+		facts.DeveloperToolRoots = probeDeveloperToolRoots(system)
 	}
 
 	return facts
+}
+
+// commandLineToolsRoot is the fixed location the standalone Xcode Command Line
+// Tools install to. It is probed in ADDITION to the active developer directory:
+// a Mac can have both, `xcode-select -p` names only one, and the shims fall back
+// to the other.
+const commandLineToolsRoot = "/Library/Developer/CommandLineTools"
+
+// xcodeSelectPath is the absolute path of the tool that reports the active
+// developer directory. It is spelled absolutely on purpose — resolving it
+// through PATH would let a hijacked PATH entry choose which directory the
+// sandbox grants.
+const xcodeSelectPath = "/usr/bin/xcode-select"
+
+// probeDeveloperToolRoots returns the developer-toolchain directories present on
+// this Mac: the active developer directory plus the standalone Command Line
+// Tools root. Each is admitted only if it resolves to an existing DIRECTORY, so
+// a host with neither installed (or with xcode-select unconfigured) contributes
+// nothing and still starts a session.
+func probeDeveloperToolRoots(system probeSystem) []string {
+	var out []string
+	add := func(p string) {
+		if d := CanonicalDir(p); d != "" && !slices.Contains(out, d) {
+			out = append(out, d)
+		}
+	}
+	add(enclosingAppBundle(activeDeveloperDir(system)))
+	add(commandLineToolsRoot)
+	return out
+}
+
+// enclosingAppBundle widens a developer directory inside an application bundle
+// to the BUNDLE root, and returns any other path unchanged.
+//
+// The active developer directory of an Xcode install is
+// /Applications/Xcode.app/Contents/Developer, but its tools reach outside that
+// subtree into sibling bundle directories: xcodebuild dyld-loads
+// Contents/SharedFrameworks/*.framework and xcrun stats Contents/Info.plist.
+// Granted the developer directory alone, `git --version` still dies with
+// "Library not loaded: @rpath/DVTSystemPrerequisites.framework" and "couldn't
+// stat Xcode's Info.plist". The bundle is the unit the toolchain is installed
+// and versioned as, and is what the 2026-08-06 ruling names.
+func enclosingAppBundle(dir string) string {
+	for p := filepath.Clean(dir); p != "/" && p != "." && p != ""; p = filepath.Dir(p) {
+		if strings.HasSuffix(p, ".app") {
+			return p
+		}
+	}
+	return dir
+}
+
+// activeDeveloperDir returns `xcode-select -p`, or "" when the tool is missing,
+// fails, or reports nothing (no toolchain selected).
+func activeDeveloperDir(system probeSystem) string {
+	ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
+	defer cancel()
+	out, err := system.output(ctx, xcodeSelectPath, "-p")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(trimTrailingNewline(out)))
 }
 
 // bwrapUsernsWorks reports whether the resolved bwrap binary can actually create
