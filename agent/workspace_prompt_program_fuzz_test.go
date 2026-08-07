@@ -794,7 +794,7 @@ func (e *wppEnv) EditFile(string, string, string, bool) (string, error) {
 	return "", errors.New("wppEnv EditFile is not a filesystem")
 }
 func (e *wppEnv) FileExists(string) bool { return false }
-func (e *wppEnv) Glob(string, string) ([]string, error) {
+func (e *wppEnv) Glob(string, string, ...bool) ([]string, error) {
 	return nil, errors.New("wppEnv Glob is not a filesystem")
 }
 func (e *wppEnv) Grep(string, string, string, bool, int, string) (string, error) {

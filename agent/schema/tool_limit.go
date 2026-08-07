@@ -8,6 +8,11 @@ const (
 	TruncHeadTail TruncationStrategy = "head_tail"
 	// TruncTail keeps the last portion of the output, removing the start.
 	TruncTail TruncationStrategy = "tail"
+	// TruncHeadCount keeps the first MaxLines entries (one per line, as
+	// produced by glob/grep) and appends a structural summary stating the
+	// total match count, the shown count, and a hint to narrow the search —
+	// unlike TruncTail, it never silently drops the head of the result.
+	TruncHeadCount TruncationStrategy = "head_count"
 )
 
 // ToolOutputLimit specifies the character and line bounds, and the truncation

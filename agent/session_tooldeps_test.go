@@ -34,7 +34,7 @@ func (e *readBeforeWriteEnv) EditFile(path string, oldString string, newString s
 	return "", errors.New("not implemented")
 }
 func (e *readBeforeWriteEnv) FileExists(path string) bool { return e.existing[path] }
-func (e *readBeforeWriteEnv) Glob(pattern string, basePath string) ([]string, error) {
+func (e *readBeforeWriteEnv) Glob(pattern string, basePath string, includeIgnored ...bool) ([]string, error) {
 	return nil, errors.New("not implemented")
 }
 func (e *readBeforeWriteEnv) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {

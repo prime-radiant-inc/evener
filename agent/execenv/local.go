@@ -1195,7 +1195,12 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 // basePath, which defaults to RootDir and is resolved relative to RootDir when
 // not absolute. Results are sorted by modification time, newest first, with
 // ties broken by path.
-func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]string, error) {
+//
+// Dotfiles/dirs (.git, .claude/worktrees/x, ...) and gitignored paths are
+// excluded by default, matching grepNative's long-standing hidden-file skip
+// plus new .gitignore awareness; pass includeIgnored(true) to restore them.
+func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string, includeIgnored ...bool) ([]string, error) {
+	ignoreOverride := len(includeIgnored) > 0 && includeIgnored[0]
 	patterns, err := expandSearchPattern(pattern)
 	if err != nil {
 		return nil, err
@@ -1210,16 +1215,24 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]str
 	if sfs := e.sandbox(); sfs != nil {
 		// Sandboxed: the base is policy-checked and the walk refuses symlink
 		// traversal (no out-of-root match) and drops masked matches.
-		return sfs.glob("glob", base, pattern)
+		return sfs.glob("glob", base, pattern, ignoreOverride)
+	}
+	fsys := os.DirFS(base)
+	var ignores *ignoreSet
+	if !ignoreOverride {
+		ignores = loadIgnoreSet(fsys)
 	}
 	seen := make(map[string]struct{})
 	var abs []string
 	for _, pattern := range patterns {
-		matches, err := doublestar.Glob(os.DirFS(base), pattern)
+		matches, err := doublestar.Glob(fsys, pattern)
 		if err != nil {
 			return nil, err
 		}
 		for _, m := range matches {
+			if !ignoreOverride && (isDotPath(m) || ignores.matches(m, globMatchIsDir(fsys, m))) {
+				continue
+			}
 			path := filepath.Join(base, m)
 			if _, ok := seen[path]; ok {
 				continue
@@ -1341,19 +1354,22 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 	if err != nil {
 		return "", err
 	}
+	ignores := loadIgnoreSet(os.DirFS(path))
 
 	err = grepWalk(path, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // best-effort grep: skip unreadable entries and keep walking
 		}
+		relPath, _ := filepath.Rel(path, p)
+		relSlash := filepath.ToSlash(relPath)
 		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") && p != path {
+			if p != path && (strings.HasPrefix(d.Name(), ".") || ignores.matches(relSlash, true)) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		// Skip hidden files
-		if strings.HasPrefix(d.Name(), ".") {
+		// Skip hidden and gitignored files
+		if strings.HasPrefix(d.Name(), ".") || ignores.matches(relSlash, false) {
 			return nil
 		}
 		if len(globFilters) > 0 {
@@ -1373,7 +1389,6 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 		if bytes.IndexByte(data, 0) >= 0 {
 			return nil
 		}
-		relPath, _ := filepath.Rel(path, p)
 		if a.feed(relPath, data) {
 			return filepath.SkipAll
 		}

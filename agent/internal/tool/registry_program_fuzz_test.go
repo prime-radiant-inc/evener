@@ -303,7 +303,9 @@ func toolProgramHelpers(t *testing.T, payload string) {
 	}
 
 	for _, name := range []string{"read_file", "shell", "grep", "glob", "edit_file", "apply_patch", "write_file", "delegate", "task_list", "web_fetch", "communicate", "use_skill", "other"} {
-		if lim := defaultToolLimit(name); lim.MaxChars <= 0 || lim.Strategy == "" {
+		// grep/glob bound by entry count (MaxLines) via TruncHeadCount rather
+		// than by character count; every other tool still bounds by MaxChars.
+		if lim := defaultToolLimit(name); (lim.MaxChars <= 0 && lim.MaxLines <= 0) || lim.Strategy == "" {
 			t.Fatalf("defaultToolLimit(%q) = %+v", name, lim)
 		}
 	}

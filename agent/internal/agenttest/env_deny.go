@@ -99,7 +99,7 @@ func (d *DenyEnv) FileExists(path string) bool {
 	return d.draw("exists", path)%2 == 0
 }
 
-func (d *DenyEnv) Glob(pattern string, basePath string) ([]string, error) {
+func (d *DenyEnv) Glob(pattern string, basePath string, includeIgnored ...bool) ([]string, error) {
 	h := d.draw("glob", pattern, basePath)
 	n := int(h % 4)
 	out := make([]string, 0, n)

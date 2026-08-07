@@ -183,7 +183,7 @@ func (fakeZeroExitErrEnv) ReadFile(string, *int, *int) (string, error)          
 func (fakeZeroExitErrEnv) WriteFile(string, string) (string, error)              { return "", nil }
 func (fakeZeroExitErrEnv) EditFile(string, string, string, bool) (string, error) { return "", nil }
 func (fakeZeroExitErrEnv) FileExists(string) bool                                { return false }
-func (fakeZeroExitErrEnv) Glob(string, string) ([]string, error)                 { return nil, nil }
+func (fakeZeroExitErrEnv) Glob(string, string, ...bool) ([]string, error)        { return nil, nil }
 func (fakeZeroExitErrEnv) Grep(string, string, string, bool, int, string) (string, error) {
 	return "", nil
 }

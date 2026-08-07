@@ -301,7 +301,7 @@ func DefJobStop() llm.ToolDefinition {
 func DefGrep() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "grep",
-		Description: "Search file contents using regex patterns. `glob_filter` accepts *, ?, [], **, and bounded brace alternatives such as *.{go,md}; malformed braces are rejected. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files.",
+		Description: "Search file contents using regex patterns. `glob_filter` accepts *, ?, [], **, and bounded brace alternatives such as *.{go,md}; malformed braces are rejected. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files. Dotfiles/dirs and gitignored paths are always excluded from the search.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -325,13 +325,14 @@ func DefGrep() llm.ToolDefinition {
 func DefGlob() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "glob",
-		Description: "Find files by pattern: a recursive glob match over file paths, not a literal directory listing. Supports *, ?, [], **, and bounded nested brace alternatives such as *.{ts,tsx,css}; malformed braces are rejected. Use this for pattern-based file discovery. Some providers alias this tool to a name like find_files; it still performs glob matching regardless of the wire name.",
+		Description: "Find files by pattern: a recursive glob match over file paths, not a literal directory listing. Supports *, ?, [], **, and bounded nested brace alternatives such as *.{ts,tsx,css}; malformed braces are rejected. Use this for pattern-based file discovery. Some providers alias this tool to a name like find_files; it still performs glob matching regardless of the wire name. By default, dotfiles/dirs (.git, .claude/worktrees/x, ...) and gitignored paths (node_modules, build output, ...) are excluded; set include_ignored to true to search them too.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"pattern": map[string]any{"type": "string"},
-				"path":    map[string]any{"type": "string"},
+				"pattern":         map[string]any{"type": "string"},
+				"path":            map[string]any{"type": "string"},
+				"include_ignored": map[string]any{"type": "boolean", "description": "Include dotfiles/dirs and gitignored paths in results (excluded by default)."},
 			},
 			"required": []string{"pattern"},
 		},

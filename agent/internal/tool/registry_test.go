@@ -967,8 +967,8 @@ func TestDefaultToolLimit_MatchesSpecTable(t *testing.T) {
 	cases := []want{
 		{tool: "read_file", chars: 50_000, lines: 0, strategy: schema.TruncHeadTail},
 		{tool: "shell", chars: 30_000, lines: 512, strategy: schema.TruncHeadTail},
-		{tool: "grep", chars: 20_000, lines: 200, strategy: schema.TruncTail},
-		{tool: "glob", chars: 20_000, lines: 500, strategy: schema.TruncTail},
+		{tool: "grep", chars: 0, lines: 200, strategy: schema.TruncHeadCount},
+		{tool: "glob", chars: 0, lines: 500, strategy: schema.TruncHeadCount},
 		{tool: "edit_file", chars: 10_000, lines: 0, strategy: schema.TruncTail},
 		{tool: "apply_patch", chars: 10_000, lines: 0, strategy: schema.TruncTail},
 		{tool: "write_file", chars: 1_000, lines: 0, strategy: schema.TruncTail},
@@ -979,5 +979,84 @@ func TestDefaultToolLimit_MatchesSpecTable(t *testing.T) {
 		if lim.MaxChars != tc.chars || lim.MaxLines != tc.lines || lim.Strategy != tc.strategy {
 			t.Fatalf("%s: got=%+v want MaxChars=%d MaxLines=%d Strategy=%s", tc.tool, lim, tc.chars, tc.lines, tc.strategy)
 		}
+	}
+}
+
+func TestTruncateHeadCount_KeepsFirstEntriesWithSummary(t *testing.T) {
+	var lines []string
+	for i := range 30 {
+		lines = append(lines, fmt.Sprintf("/repo/file-%02d.go", i))
+	}
+	full := strings.Join(lines, "\n")
+
+	got := truncateHeadCount(full, 10)
+
+	// No front-truncation: the first 10 entries must all be present, in order.
+	for i := range 10 {
+		if !strings.Contains(got, lines[i]) {
+			t.Fatalf("expected head entry %q to survive truncation, got:\n%s", lines[i], got)
+		}
+	}
+	// The dropped tail entries must genuinely be gone.
+	if strings.Contains(got, lines[29]) {
+		t.Fatalf("expected last entry to be dropped, got:\n%s", got)
+	}
+	if !strings.Contains(got, "30 total matches") || !strings.Contains(got, "showing first 10") {
+		t.Fatalf("expected structural summary with total and shown counts, got:\n%s", got)
+	}
+}
+
+func TestTruncateHeadCount_UnderLimitReturnsUnchanged(t *testing.T) {
+	full := "a\nb\nc"
+	got := truncateHeadCount(full, 10)
+	if got != full {
+		t.Fatalf("expected unchanged output under the cap, got:\n%s", got)
+	}
+}
+
+func TestToolRegistry_GlobAndGrep_HeadFirstBoundedNoFrontTruncation(t *testing.T) {
+	for _, toolName := range []string{"glob", "grep"} {
+		t.Run(toolName, func(t *testing.T) {
+			r := NewRegistry()
+			var lines []string
+			for i := range 700 {
+				lines = append(lines, fmt.Sprintf("/repo/pkg/file-%03d.go", i))
+			}
+			full := strings.Join(lines, "\n")
+			if err := r.Register(RegisteredTool{
+				Tool: llm.Tool{Definition: llm.ToolDefinition{Name: toolName}},
+				Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+					_ = ctx
+					_ = env
+					_ = args
+					return full, nil
+				},
+				Limit: defaultToolLimit(toolName),
+			}); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
+				ID:        "c1",
+				Name:      toolName,
+				Arguments: json.RawMessage(`{}`),
+			})
+			if res.IsError {
+				t.Fatalf("unexpected error: %+v", res)
+			}
+			// The very first result must survive (front, not tail, is kept).
+			if !strings.Contains(res.Output, lines[0]) {
+				t.Fatalf("%s: expected first match to survive head-first bounding, got:\n%s", toolName, res.Output)
+			}
+			// A late result must be dropped, proving the cap actually bit.
+			if strings.Contains(res.Output, lines[len(lines)-1]) {
+				t.Fatalf("%s: expected last match to be dropped, got:\n%s", toolName, res.Output)
+			}
+			if !strings.Contains(res.Output, "700 total matches") {
+				t.Fatalf("%s: expected total-match count in summary, got:\n%s", toolName, res.Output)
+			}
+			if strings.Contains(res.Output, "removed from the") || strings.Contains(res.Output, "characters were removed") {
+				t.Fatalf("%s: expected no char-truncation marker (front-truncation), got:\n%s", toolName, res.Output)
+			}
+		})
 	}
 }

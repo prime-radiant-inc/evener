@@ -217,7 +217,11 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			_ = ctx
 			pat := stringArg(args, "pattern")
 			path := stringArg(args, "path")
-			matches, err := env.Glob(pat, path)
+			includeIgnored := false
+			if v, ok := args["include_ignored"].(bool); ok {
+				includeIgnored = v
+			}
+			matches, err := env.Glob(pat, path, includeIgnored)
 			if err != nil {
 				return "", err
 			}

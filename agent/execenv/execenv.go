@@ -103,7 +103,9 @@ type ExecutionEnvironment interface {
 	FileExists(path string) bool
 
 	// Glob returns paths matching the shell-style pattern, rooted at basePath.
-	Glob(pattern string, basePath string) ([]string, error)
+	// Dotfiles/dirs (.git, .claude/worktrees/x, ...) and gitignored paths are
+	// excluded by default; pass includeIgnored(true) to restore them.
+	Glob(pattern string, basePath string, includeIgnored ...bool) ([]string, error)
 	// Grep searches files for pattern and returns matches formatted per
 	// outputMode ("content" (default), "files_with_matches", or "count").
 	Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error)

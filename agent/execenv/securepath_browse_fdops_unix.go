@@ -84,7 +84,10 @@ func toFsErr(err error) error {
 // refusing symlink traversal (so a pattern cannot escape through a symlink) and
 // dropping any match under a masked path. Results are absolute and sorted like the
 // off path (newest mtime first, ties by path).
-func (s *sandboxFS) glob(tool, base, pattern string) ([]string, error) {
+//
+// Dotfiles/dirs and gitignored paths are excluded by default (matching the
+// off path's Glob), unless includeIgnored is set.
+func (s *sandboxFS) glob(tool, base, pattern string, includeIgnored bool) ([]string, error) {
 	patterns, err := expandSearchPattern(pattern)
 	if err != nil {
 		return nil, err
@@ -96,6 +99,10 @@ func (s *sandboxFS) glob(tool, base, pattern string) ([]string, error) {
 	defer func() { _ = unix.Close(baseFd) }()
 
 	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}
+	var ignores *ignoreSet
+	if !includeIgnored {
+		ignores = loadIgnoreSet(fsys)
+	}
 	seen := make(map[string]struct{})
 	var abs []string
 	for _, pattern := range patterns {
@@ -104,6 +111,9 @@ func (s *sandboxFS) glob(tool, base, pattern string) ([]string, error) {
 			return nil, err
 		}
 		for _, m := range matches {
+			if !includeIgnored && (isDotPath(m) || ignores.matches(m, globMatchIsDir(fsys, m))) {
+				continue
+			}
 			p := filepath.Join(canonical, m)
 			if s.underMasked(p) {
 				continue
@@ -139,6 +149,7 @@ func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive
 		return "", err
 	}
 	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}
+	ignores := loadIgnoreSet(fsys)
 	err = secureBrowseWalkDir(fsys, ".", func(rel string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil //nolint:nilerr // skip unreadable / symlink-refused entries and keep walking
@@ -151,12 +162,13 @@ func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive
 			return nil
 		}
 		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") && rel != "." {
+			if rel != "." && (strings.HasPrefix(d.Name(), ".") || ignores.matches(rel, true)) {
 				return fs.SkipDir
 			}
 			return nil
 		}
-		if strings.HasPrefix(d.Name(), ".") {
+		// Skip hidden and gitignored files
+		if strings.HasPrefix(d.Name(), ".") || ignores.matches(rel, false) {
 			return nil
 		}
 		if len(globFilters) > 0 {
