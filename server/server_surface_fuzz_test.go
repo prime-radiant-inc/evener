@@ -168,7 +168,7 @@ func exerciseServerFuzzSurface(t *testing.T) {
 	t.Run("TestTasksEndpoint_NoFunc", TestTasksEndpoint_NoFunc)
 }
 
-func exerciseServerFuzzResiduals(t *testing.T) {
+func exerciseServerFuzzResiduals(_ *testing.T) {
 	for _, tc := range []struct {
 		state                              string
 		processing, reserved, stale, steer bool

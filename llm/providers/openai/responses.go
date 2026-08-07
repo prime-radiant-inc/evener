@@ -542,7 +542,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 // accumulated Response on response.completed. It emits errEmptyResponsesStream if
 // the stream closes 200 OK with zero content. It owns closing the response body
 // and the ChanStream.
-func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, b []byte, attempt *transport.APIAttemptCapture) {
+func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, _ []byte, attempt *transport.APIAttemptCapture) {
 	defer func() {
 		_ = resp.Body.Close()
 		s.CloseSend()

@@ -456,8 +456,7 @@ func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
 // runHook executes a single hook (command or prompt) and returns the parsed output.
 // For command hooks, JSON is parsed only on exit 0; on exit 2 the stderr path is used
 // and JSON is ignored per the Claude spec (07 §Exit-code semantics).
-// The event is used to determine whether exit 2 blocks the action via exitBehavior.
-func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, event plugin.HookEvent, input Input) parsedHookOutput {
+func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, _ plugin.HookEvent, input Input) parsedHookOutput {
 	var hr hookResult
 	var err error
 

@@ -124,7 +124,7 @@ func (m *fc1MaybeCompactModel) nextID(prefix string) string {
 	return prefix + "_" + strconv.Itoa(m.ctr) + "_"
 }
 
-func (m *fc1MaybeCompactModel) applyOp(rt *rapid.T, op fc1MaybeCompactOp, step int) {
+func (m *fc1MaybeCompactModel) applyOp(rt *rapid.T, op fc1MaybeCompactOp, _ int) {
 	switch op {
 	case fc1OpAddUser:
 		tok := m.nextID("USER")

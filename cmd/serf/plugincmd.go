@@ -303,7 +303,7 @@ func renderPluginList(w io.Writer, items []plugins.ListItem, asJSON bool) error 
 	return nil
 }
 
-func runPluginLifecycle(verb string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr io.Writer) error {
 	ctx := context.Background()
 	m := newPluginManager()
 

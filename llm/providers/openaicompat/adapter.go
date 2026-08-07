@@ -442,7 +442,7 @@ func restampResponsesStream(inner llm.Stream) llm.Stream {
 // decodeStream consumes the Chat Completions SSE stream in its own goroutine: it
 // translates each chunk into llm stream events and emits the final accumulated
 // Response on [DONE]. It owns closing the response body and the ChanStream.
-func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, jsonBody []byte, rl *llm.RateLimitInfo, attempt *transport.APIAttemptCapture) {
+func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, _ []byte, rl *llm.RateLimitInfo, attempt *transport.APIAttemptCapture) {
 	defer func() {
 		resp.Body.Close() //nolint:errcheck
 		cancel()
