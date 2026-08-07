@@ -221,9 +221,7 @@ func WindowBounds(beforeBytes, maxBytes, total, earliest int64) (start, end int6
 		end = earliest
 	}
 	start = end - maxBytes
-	if start < earliest {
-		start = earliest
-	}
+	start = max(start, earliest)
 	return start, end
 }
 

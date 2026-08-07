@@ -137,13 +137,11 @@ func TestConcurrentTripIsRaceFree(t *testing.T) {
 	s := FromBytes(bytes.Repeat([]byte{0, 1, 2, 3}, 64))
 	var wg sync.WaitGroup
 	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 1000 {
 				_ = s.trip()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	if s.n.Load() != 8*1000 {
