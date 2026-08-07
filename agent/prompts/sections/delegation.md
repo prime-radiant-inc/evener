@@ -45,6 +45,8 @@ matters, assumptions, uncertainty, and a concise recommendation or conclusion.
 
 For delegated final test/commit/push workflows, the delegation must specify what
 may be staged, which tests or checks must pass, the commit-message intent, and
-the remote/branch target. The subagent must report the commands run, test
-results, staged files, commit hash, pushed remote/branch, and final status. The
-parent must still verify the resulting repository state before reporting success.
+the remote/branch target. Require the subagent to stage named paths only —
+never `git add -A` or `git add .` — so an unrelated dirty worktree can't end up
+in the commit. The subagent must report the commands run, test results, staged
+files, commit hash, pushed remote/branch, and final status. The parent must
+still verify the resulting repository state before reporting success.
