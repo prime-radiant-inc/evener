@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -332,6 +333,81 @@ func TestCheckJSONTag_ProvidersCarveOut(t *testing.T) {
 		if msg := checkJSONTag(c.tag, c.rel); msg != "" {
 			t.Errorf("expected providers carve-out to silence %q in %q, got %q", c.tag, c.rel, msg)
 		}
+	}
+}
+
+// TestCheckJSONTag_DoctorFindingContractCarveOut verifies the carve-out for
+// the doctor's Finding wire contract (finding-contract.md) is scoped to
+// exactly the (file, tag) pairs in doctorFindingContractExemptions — not a
+// blanket pass for the tag name everywhere, nor for every camelCase tag in
+// the exempted files.
+func TestCheckJSONTag_DoctorFindingContractCarveOut(t *testing.T) {
+	cases := []struct {
+		name    string
+		rel     string
+		tag     string
+		wantMsg bool
+	}{
+		// Exempted (file, tag) pairs: no violation.
+		{"audit.go suggestedFix ok", "agent/doctor/audit.go", "suggestedFix", false},
+		{"audit.go sessionRefs ok", "agent/doctor/audit.go", "sessionRefs", false},
+		{"audit.go watchIds ok", "agent/doctor/audit.go", "watchIds", false},
+		{"audit.go deliveryIds ok", "agent/doctor/audit.go", "deliveryIds", false},
+		{"audit.go transcriptTurns ok", "agent/doctor/audit.go", "transcriptTurns", false},
+		{"audit.go doctorCommand ok", "agent/doctor/audit.go", "doctorCommand", false},
+		{"audit.go logSnippets ok", "agent/doctor/audit.go", "logSnippets", false},
+		{"audit.go fileHint ok", "agent/doctor/audit.go", "fileHint", false},
+		{"audit.go symbolHint ok", "agent/doctor/audit.go", "symbolHint", false},
+		{"audit_test.go sessionRefs ok", "cmd/serf-doctor/audit_test.go", "sessionRefs", false},
+		{"study_runbooks_test.go sessionRefs ok", "cmd/serf-doctor/study_runbooks_test.go", "sessionRefs", false},
+
+		// Same tag name, file NOT in the allowlist: still a violation. Proves
+		// this isn't a disguised isUpstreamCamelKey-style blanket key pass.
+		{"other file sessionRefs bad", "agent/doctor/apilog.go", "sessionRefs", true},
+		{"unrelated file suggestedFix bad", "internal/runner/run.go", "suggestedFix", true},
+
+		// Exempted file, tag NOT in the allowlist: still a violation. Proves
+		// this isn't a blanket camelCase pass for agent/doctor/.
+		{"audit.go unrelated camelCase bad", "agent/doctor/audit.go", "someOtherField", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			msg := checkJSONTag(c.tag, c.rel)
+			gotMsg := msg != ""
+			if gotMsg != c.wantMsg {
+				t.Fatalf("checkJSONTag(%q,%q) message=%q wantMsg=%v", c.tag, c.rel, msg, c.wantMsg)
+			}
+		})
+	}
+}
+
+// TestDoctorFindingContractExemptionsUpToDate is the staleness guard for
+// doctorFindingContractExemptions, mirroring
+// scenarioPatternKillAllowedMentions' allowlist-staleness idiom
+// (scenariopatternkill_audit_test.go): every (file, tag) entry must still
+// name a real `json:"<tag>..."` struct tag in that file, so a rename or
+// removal of the tag it exempts leaves a loud failure here instead of a
+// silent, permanently-unused allowlist row.
+func TestDoctorFindingContractExemptionsUpToDate(t *testing.T) {
+	var stale []string
+	for rel, keys := range doctorFindingContractExemptions {
+		path := filepath.Join("..", "..", rel)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			stale = append(stale, rel+" (file does not exist)")
+			continue
+		}
+		for _, key := range keys {
+			if !strings.Contains(string(raw), `json:"`+key) {
+				stale = append(stale, rel+": "+key)
+			}
+		}
+	}
+	if len(stale) > 0 {
+		sort.Strings(stale)
+		t.Fatalf("doctorFindingContractExemptions has %d entry/entries that no "+
+			"longer match a json tag in the named file. Drop the entry, or update "+
+			"it to match the tag as it's spelled now:\n%s", len(stale), strings.Join(stale, "\n"))
 	}
 }
 
