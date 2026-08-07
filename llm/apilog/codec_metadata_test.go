@@ -173,7 +173,7 @@ func decodeAllBenchmark(b *testing.B, data []byte, opts ...DecoderOption) {
 func BenchmarkDecoderStrict(b *testing.B) {
 	data := benchmarkAPILogFixture(b, 2000)
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		decodeAllBenchmark(b, data)
 	}
 }
@@ -181,7 +181,7 @@ func BenchmarkDecoderStrict(b *testing.B) {
 func BenchmarkDecoderMetadataOnly(b *testing.B) {
 	data := benchmarkAPILogFixture(b, 2000)
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		decodeAllBenchmark(b, data, WithMetadataOnly())
 	}
 }
