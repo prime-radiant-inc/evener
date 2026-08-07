@@ -10,6 +10,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"primeradiant.com/serf/envvars"
 )
 
 // waveConfig describes one selftest wave: which suites to run, where their
@@ -134,9 +136,9 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 	cmd := exec.Command(filepath.Join(cfg.ScriptsDir, name+"-selftest.sh"))
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.Env = append(environWithout("TMPDIR", "PATH"),
-		"TMPDIR="+tmp,
-		"PATH="+filepath.Join(runDir, "bin")+":"+os.Getenv("PATH"))
+	cmd.Env = append(environWithout(envvars.TmpDir.Name, envvars.Path.Name),
+		envvars.TmpDir.Name+"="+tmp,
+		envvars.Path.Name+"="+filepath.Join(runDir, "bin")+":"+os.Getenv(envvars.Path.Name))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
@@ -210,7 +212,7 @@ func writeMktempShim(runDir string) error {
 	if err := os.Mkdir(binDir, 0o755); err != nil {
 		return err
 	}
-	shim := `#!/bin/sh
+	shim := fmt.Sprintf(`#!/bin/sh
 flags=""
 prefix=""
 template=""
@@ -225,8 +227,8 @@ done
 if [ -n "$template" ]; then
 	exec /usr/bin/mktemp $flags "$template"
 fi
-exec /usr/bin/mktemp $flags "${TMPDIR:-/tmp}/${prefix:-tmp}.XXXXXX"
-`
+exec /usr/bin/mktemp $flags "${%s:-/tmp}/${prefix:-tmp}.XXXXXX"
+`, envvars.TmpDir.Name)
 	return os.WriteFile(filepath.Join(binDir, "mktemp"), []byte(shim), 0o755)
 }
 
