@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
@@ -7,6 +7,10 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  resetWorkspaceStoreForTests();
+});
+
+afterEach(() => {
   resetWorkspaceStoreForTests();
 });
 
