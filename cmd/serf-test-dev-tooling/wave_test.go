@@ -253,12 +253,17 @@ func TestWaveCompletesDespiteBlockedLeakCheck(t *testing.T) {
 		checkLeaksTimeout = 5 * time.Second
 	}()
 
-	// Inject a tiny timeout and a blocking leak check.
+	// Inject a tiny timeout and a selective blocking leak check.
+	// Only the "wedged" suite's leak check blocks; the "normal" suite
+	// gets the real (fast) leak check so it can pass despite the other timing out.
 	checkLeaksTimeout = 50 * time.Millisecond
 	blockForever := make(chan struct{})
-	checkLeaksFn = func(string) []string {
-		<-blockForever // This will block forever since no one closes the channel
-		return nil
+	checkLeaksFn = func(dir string) []string {
+		if strings.Contains(dir, "wedged") {
+			<-blockForever // Block only the wedged suite
+			return nil
+		}
+		return checkLeaks(dir) // Normal suites get real fast leak check
 	}
 
 	dir := t.TempDir()
