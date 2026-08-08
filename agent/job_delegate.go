@@ -2353,12 +2353,29 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 			return jobstore.StatusFailed, "exhausted_persist_failed", nil, nil
 		}
 
-		var structured any
-		structuredCaptureFailed := false
-		if childSess != nil {
-			structured = childSess.CommunicateStructured()
-		} else if delegateResultSchema(run.rec) != nil {
-			structuredCaptureFailed = true
+		// Capture the child's live communicate-structured state exactly once per
+		// job, not on every retry: finalizeDelegateOnce's prepare() runs again
+		// whenever a durable append fails and the outer loop retries (kata
+		// nbb2). If the child session processes another turn in the retry
+		// window — e.g. driveSubagentNotificationTurn draining a late,
+		// unrelated notification and ending with a second, empty terminal
+		// communicate — a fresh read here would silently replace the already-
+		// captured substantive result with that later, empty one. run.structured
+		// is this job's one authoritative capture, set on the first attempt and
+		// reused by every retry after it.
+		jm.mu.Lock()
+		structured := run.structured
+		structuredCaptureFailed := run.structuredCaptureFailed
+		alreadyCaptured := run.structuredCaptured
+		jm.mu.Unlock()
+		if !alreadyCaptured {
+			structured = nil
+			structuredCaptureFailed = false
+			if childSess != nil {
+				structured = childSess.CommunicateStructured()
+			} else if delegateResultSchema(run.rec) != nil {
+				structuredCaptureFailed = true
+			}
 		}
 		finalProvenance := provenance.Union(run.rec.Provenance, runProvenance)
 		jm.mu.Lock()
@@ -2373,6 +2390,7 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 			jm.mu.Lock()
 			run.structured = structured
 			run.structuredCaptureFailed = structuredCaptureFailed
+			run.structuredCaptured = true
 			run.afterDurableFinish = func() {
 				sub.mu.Lock()
 				sub.resultConsumed = true

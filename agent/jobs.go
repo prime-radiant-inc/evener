@@ -236,6 +236,7 @@ type runningJob struct {
 	stopReason                      string
 	structured                      any
 	structuredCaptureFailed         bool
+	structuredCaptured              bool
 	terminal                        *terminalJob
 	finalize                        *finalizeAttempt
 	delegateOutputAppended          bool
