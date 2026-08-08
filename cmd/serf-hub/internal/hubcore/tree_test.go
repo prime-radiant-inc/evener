@@ -1518,12 +1518,12 @@ func fuzzScenarioBuildTree_UnnamedSessionTitleSurvivesItsMetaLanding(t *testing.
 
 	// Once the meta lands, both listings must still read the same thing. A
 	// title that changes here is a row rewriting itself under the reader.
-	afterTree := buildTree([]schema.SessionMeta{{
+	afterTree := BuildTreeAt([]schema.SessionMeta{{
 		ID:        id,
 		CreatedAt: now,
 		UpdatedAt: now,
 		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf"},
-	}}, live)
+	}}, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(afterTree, id)
 	if !inLive || !inProject {
 		t.Fatalf("session missing: live=%v project=%v", inLive, inProject)

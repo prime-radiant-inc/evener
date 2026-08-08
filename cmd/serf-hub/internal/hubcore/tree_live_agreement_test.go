@@ -73,7 +73,7 @@ func fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnState(t *testing.T) {
 				Status:    status,
 			}}
 
-			tree := buildTree(metas, live)
+			tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
 			liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01DOUBLELISTED")
 			if !inLive {
 				t.Fatalf("status %q: session missing from the Live tier", status)
@@ -108,7 +108,7 @@ func fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnAPendingAsk(t *testing.T) {
 		PendingAsk: true,
 	}}
 
-	tree := buildTree(metas, live)
+	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01ASKING")
 	if !inLive || !inProject {
 		t.Fatalf("session missing: live=%v project=%v", inLive, inProject)

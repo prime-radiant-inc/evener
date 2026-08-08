@@ -75,7 +75,7 @@ func fuzzScenarioBuildTree_MarksNeverRunSessionDormant(t *testing.T) {
 				Status:    appwire.ThreadStatusIdle,
 			}}
 
-			tree := buildTree([]schema.SessionMeta{meta}, live)
+			tree := BuildTreeAt([]schema.SessionMeta{meta}, live, map[ArchiveKey]bool{}, now)
 			liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01DORMANCY")
 			if !inLive || !inProject {
 				t.Fatalf("session missing: live=%v project=%v", inLive, inProject)
@@ -114,7 +114,7 @@ func fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnDormancy(t *testing.T) {
 		Status:    appwire.ThreadStatusIdle,
 	}}
 
-	tree := buildTree(metas, live)
+	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01NEVERRAN")
 	if !inLive || !inProject {
 		t.Fatalf("session missing: live=%v project=%v", inLive, inProject)
