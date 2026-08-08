@@ -105,9 +105,9 @@ func (w *Wrapper) withNetworkAllowed() *Wrapper {
 	if w == nil {
 		return nil
 	}
-	p := w.policy
-	p.Network = true
-	return &Wrapper{policy: p, binaryPath: w.binaryPath, sessionTmp: w.sessionTmp}
+	dup := *w
+	dup.policy.Network = true
+	return &dup
 }
 
 // Wrap prepends the backend invocation to argv so the command runs confined to
