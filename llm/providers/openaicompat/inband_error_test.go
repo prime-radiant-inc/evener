@@ -2,9 +2,9 @@ package openaicompat
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
-	"errors"
 	"strings"
 	"testing"
 
