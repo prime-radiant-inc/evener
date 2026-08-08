@@ -1,7 +1,7 @@
 # Provider-Failure Feedback and Retry Resilience
 
 **Date:** 2026-08-07
-**Status:** Draft — awaiting review
+**Status:** Draft v2 — revised after adversarial review; awaiting review
 
 ## Context
 
@@ -15,110 +15,73 @@ again after the user typed "continue". The forensics exposed four gaps:
    as "stuck thinking".
 2. Transient failures get 10 identical retries (`llm.DefaultRetryPolicy`)
    with no early stop, even when every attempt fails the same way.
-3. Retries are byte-identical, so a turn whose completion cannot fit under an
-   upstream transport cap can never succeed by retrying.
+3. Partial output from a cut-off stream is discarded everywhere the model
+   could see it: `consumeModelStream` drops the accumulator on error, and the
+   UI partial is reset on retry. A turn that streamed ~10k tokens of real
+   output five times leaves nothing behind.
 4. Persisted `TurnFailure` markers are presentational only and are never sent
    to the model (`agent/session_model_call.go:1147`). On resume, the model has
    no idea its previous response was cut off, so it repeats the same doomed
    behavior.
 
-This spec addresses all four. The unifying idea for 3 and 4: when a try
-fails, tell the *model* what went wrong — transiently during retries, and
-persistently at turn failure — so the agent can change behavior.
+The unifying fix for 3 and 4: when a turn fails, persist what the model
+actually produced as the assistant turn it was, followed by a model-visible
+steering turn that says what happened — so on resume the model continues
+from the cut point instead of starting over blind.
+
+## Design history (why not the alternatives)
+
+- **Prefill/continuation salvage** (send the partial back as a trailing
+  assistant message for the API to continue): impossible. Assistant prefill
+  returns 400 on all current Anthropic models; thinking blocks cannot be
+  modified; OpenAI-compatible reasoning deltas are write-only.
+- **Transient retry-time fold-in** (v1 of this spec): fatally flawed. The
+  reminder died with the retry group, so multi-round recovery lost the
+  remainder; and re-emitting the whole partial in one response takes as long
+  as the original generation and hits the same transport cap.
+- **File-spill** (write the partial to a file, steer the model to read it
+  back): works, but strictly worse than persisting it as history — it adds a
+  file lifecycle and read-tool round trips, and the model still re-emits
+  everything it reads.
+- **Persist as history** (this spec): the partial rides in the transcript at
+  exactly the cost it would have had if the turn succeeded, survives rounds
+  and restarts for free, and for plain-text output the model continues from
+  the cut point with no re-emission at all. This is also the
+  provider-documented replacement for continuation prefill ("Your previous
+  response was interrupted and ended with […]. Continue from there.").
 
 ## Out of scope
 
-- Salvaging partial output as continuation state (assistant prefill).
-  Rejected: prefill returns 400 on all current Anthropic models, thinking
-  blocks cannot be modified or fabricated, and OpenAI-compatible reasoning
-  deltas are write-only. There is no provider-general resume mechanism.
 - Cross-session or cross-turn provider health tracking (circuit breaker at
-  the profile level). The early stop in component 2 is per attempt group.
+  the profile level). The early stop in component 2 is per retry group.
+- Automatic re-issue of the failed round after settlement. V1 settles the
+  turn; the user resumes.
 - Fixing lunarouter's ~300s stream cap or mid-stream stalls (upstream issue,
   tracked separately).
-
-## Shared piece: the failure explanation composer
-
-One function turns an attempt group's failure state into a short, factual
-explanation string. Inputs: error class, attempt count, elapsed time, and
-per-attempt stream stats (bytes streamed, duration — already captured on the
-api.jsonl attempt records; the composer takes them from in-memory attempt
-state, not by re-reading the log). Output is honest and minimal, e.g.:
-
-> Provider stream failures interrupted this turn: 11 attempts over 20m, all
-> ending before completion. The longest attempt streamed ~5 minutes of output
-> before the transport cut it off.
-
-No speculation, no instructions beyond what the failure class supports. When
-the failure class is truncation-after-substantial-output, the composer appends
-the actionable guidance:
-
-> If you were producing a long response, produce shorter responses and
-> continue the work across multiple rounds.
-
-Both component 3 and component 4 render their text through this composer so
-the retry reminder and the settlement steering never drift apart.
-
-### Partial-output fold-in rule
-
-The composer embeds the cut-off output itself. The governing fact: the
-partial was never persisted anywhere — the tool call it was headed for never
-ran — so the fold-in is the **only surviving copy** of the work. Truncating
-it destroys generated output we already paid for and forces the model to
-re-derive it. With the full text in context, the model transcribes it back
-out in small chunks (no re-reasoning, no divergence) and generates fresh
-content only from the cut point onward.
-
-1. **No truncation.** The full accumulated assistant text of the selected
-   partial is included, verbatim, wrapped in a clearly delimited block. It
-   was produced as a single response, so by construction it fits within the
-   conversation's budget as input.
-2. **Material.** Text content blocks from the stream accumulator only.
-   Never reasoning/thinking deltas (write-only output on every provider;
-   replaying them invites confusion). Never partial tool-call argument JSON
-   (broken by construction; out of scope for v1).
-3. **Selection.** The *largest* partial across the attempt group, not the
-   most recent — a 2.9 MB attempt must not be shadowed by a later 4 KB
-   stall. The fold-in is recomputed as attempts complete and the single
-   reminder is replaced, never stacked.
-4. **Accompanying guidance:** "Your previous response was cut off by the
-   transport. Its content up to the cutoff is preserved below — reuse it
-   rather than regenerating it (for example, write it out in smaller
-   chunks), then continue from where it ends."
-
-Size thresholds do **not** bound the fold-in. They have exactly one job:
-the ≥ 60s-of-streaming / ≥ 8 KB-of-text signal distinguishes a
-transport-cap truncation (where the produce-shorter-responses advice
-applies, and the retry-time reminder fires) from a stall (where no behavior
-change helps and no retry-time reminder fires).
-
-Plumbing note: today `consumeModelStream` (`agent/session_stream.go`) drops
-the accumulator on error. The attempt closure must return the accumulator's
-partial response alongside the error so `callModel` can retain per-group
-partial state.
+- Salvaging reasoning/thinking output. It is write-only on every provider
+  and replaying it invites confusion; it is never persisted or replayed.
 
 ## Component 1: sticky, cumulative retry liveness
 
 **Now:** `MODEL_RETRY` fires only in `OnRetry` (before the backoff sleep);
-both UIs clear the chip on the first delta (`cmd/serf-tui/hub_notifications.go:580`
-and the web LivenessLine equivalent). Nothing is cumulative.
+both UIs clear the chip on the first delta
+(`cmd/serf-tui/hub_notifications.go:580` and the web LivenessLine
+equivalent). Nothing is cumulative.
 
-**Change:**
+**Change (minimal):**
 
-- `events.ModelRetryData` gains `GroupElapsedMS` (since the group's first
-  attempt) and `AttemptGroupID`.
-- A companion event fires when a retry attempt actually starts (after the
-  sleep), carrying the same identity, so the UI can flip from "retrying in
-  32s" to "attempt 9/11 in progress" instead of going blank.
-- Projection forwards both on the existing `serf/thread/modelRetry`
-  notification (a `Phase` field: `waiting` | `in_progress`) — one
-  notification shape, no new protocol method.
+- `events.ModelRetryData` gains `GroupElapsedMS` — elapsed time since the
+  retry group's first attempt. No new event kind, no phase field, no group
+  ID on the wire: clients already receive `DelayMS` and can derive
+  waiting-vs-in-progress locally (delay expired, or a delta arrived).
 - UI clearing rule changes: the retry state survives deltas and clears only
-  on turn settlement or round completion (`NotifyItemCompleted`,
-  `NotifyTurnCompleted`, `NotifyTurnStarted`). Rendering becomes:
-  `provider error · attempt 9/11 · retrying in 32s · 14m on this turn`
-  (waiting) / `provider error · attempt 9/11 · in progress · 14m on this
-  turn` (streaming).
+  on round completion or turn settlement (`NotifyItemCompleted`,
+  `NotifyTurnCompleted`, `NotifyTurnStarted`). While a retry attempt is
+  streaming, the chip renders "in progress" instead of vanishing.
+- Rendering: `provider error · attempt 9/11 · retrying in 32s · 14m on this
+  call` (waiting) / `… · in progress · 14m on this call` (streaming). The
+  elapsed label is per retry group (one model call), not per turn — a
+  multi-round turn restarts the clock each round.
 
 ## Component 2: failure-streak early stop
 
@@ -127,95 +90,113 @@ and the web LivenessLine equivalent). Nothing is cumulative.
 
 **Change:** `RetryStreamOptions` gains `FailFastAfter int` (0 = disabled;
 serf's agent passes 4). When `FailFastAfter` consecutive attempts fail with
-the same error class (`llm.Kind`) and no attempt in the group has succeeded,
-`RetryStream` returns early with a distinct wrapper error
-(`llm.ProviderUnhealthyError`) carrying the last error plus group stats
-(attempts, elapsed, dominant class). `emitTurnFailure` surfaces it as its own
-failure message so the user sees "provider unhealthy after 4 identical
-failures (2m10s)" in ~2 minutes instead of a generic error after 20.
+retryable stream-level failures, `RetryStream` returns early with a distinct
+wrapper error (`llm.ProviderUnhealthyError`) carrying the last error plus
+group stats (attempts, elapsed, per-attempt durations/bytes).
 
-A retry that follows a component-3 reminder injection is no longer
-byte-identical to its predecessor, but the streak still counts by error
-class — the point is to stop hammering an unhealthy provider, not to detect
-identical requests.
+- **No error-class matching.** The incident's two failure modes classify
+  differently (`StreamRead` stall → `KindTimeout`; cap truncation →
+  `StreamError` → `KindUnknown`), so keying the streak on `llm.Kind` would
+  reset it on exactly the mixed incidents it exists for. The streak is
+  simply consecutive failed attempts in the group; any success ends the
+  group anyway (`RetryStream` returns on success).
+- **Fallback classification.** `ProviderUnhealthyError` is
+  fallback-eligible in `callModelWithFallback`: the provider has been
+  declared unhealthy, so a configured fallback model is the only remaining
+  route. Each fallback model gets its own (fail-fast-bounded) group, so the
+  worst case with N fallbacks is N+1 short groups, not N+1 full budgets.
+- `emitTurnFailure` surfaces it as its own failure message ("provider
+  unhealthy after 4 stream failures, 2m10s") so the incident's 20-minute
+  silent grind becomes a clear failure in ~2 minutes.
 
-## Component 3: retry-time steering injection (transient)
+**Scope note:** partial-salvage state and streak state are per
+`callModel` invocation (one `RetryStream` group). `callModelWithFallback`
+can run several groups per round (continuation fallback, model fallbacks);
+each group's state is independent, and settlement reports the group that
+ultimately failed.
 
-When a retry follows a truncation-class failure with substantial output
-(per the fold-in rule's threshold), `callModel` appends one system-reminder
-message to the retry request's messages: the composer's explanation, the
-full partial fold-in, and the produce-shorter-responses guidance.
-Properties:
-
-- **Transient.** Request-level only; never written to the transcript. The
-  transcript records at most the settlement steering (component 4).
-- **Single instance.** Each retry carries exactly one reminder reflecting
-  the latest group state; it replaces the previous retry's reminder.
-- **Message shape.** The same system-reminder convention the harness already
-  uses for steering content, appended after the existing history so provider
-  prompt-cache prefixes are preserved.
-- **Scope.** Only truncation-class failures past the substantial-output
-  threshold. Stall-class failures get no injection (nothing actionable) —
-  they are component 2's job.
-
-## Component 4: settlement steering (persistent, model-visible)
+## Component 3: partial-preserving settlement
 
 When a turn fails with a provider-failure class (not user interrupts, not
-cancellations), `recordTurnFailure` (`agent/session_events.go:223`)
-additionally persists a **steering turn** — the mechanism that already
-renders to the model — carrying the composer's explanation, and the full
-partial fold-in when any accumulated assistant text exists. After
-settlement, the transcript is the only place the cut-off content can
-survive into the resumed session, so it is persisted whole. The
-presentational `TurnFailure` marker is unchanged.
+cancellations), settlement persists up to two model-visible turns, in order:
 
-On resume ("continue"), the model now sees what happened and the guidance to
-work in smaller pieces, instead of a bare `write_file result → "continue"`
-history.
+1. **The salvaged assistant turn** (only when salvageable text exists). A
+   normal `TurnAssistant` carrying what the model actually produced in the
+   failed group's best attempt:
+   - Text content blocks from the stream accumulator, verbatim and whole.
+     The partial is at most one response's worth of tokens, so persisting
+     it costs exactly what a successful response would have — no special
+     budget or compaction treatment.
+   - Content cut off inside a tool-call argument is extracted
+     (`partialJSONStringField`, already used for communicate previews) and
+     rendered into the turn as text under a marker noting the tool call
+     that never executed. Broken tool calls themselves are never persisted
+     — a `tool_use` without a result is invalid history on several
+     providers.
+   - Selection: the largest salvageable partial across the failed group's
+     attempts (a 10k-token cap-cut must not be shadowed by a later stall's
+     trickle).
+   - Reasoning deltas: never included.
+2. **The steering turn** (always). Model-visible, via the existing steering
+   mechanism, composed from group stats:
+   - What happened: "The provider connection failed before your response
+     completed: N attempts over M minutes." Honest per-class detail (stall
+     vs. transport cut) from the recorded attempt stats.
+   - When a salvaged turn precedes it: "Before the connection failed, you
+     sent the response above. Any tool calls in progress did not execute.
+     Continue from where it ends — do not start over."
+   - When the failure class is truncation-after-substantial-output (stream
+     ran ≥60s or salvaged text ≥8 KB): "The transport cuts off long
+     responses. Produce shorter responses and continue your work across
+     multiple rounds."
 
-**Dedupe:** if the immediately preceding model-visible turn is already a
-failure-steering turn (consecutive failures with no other input between),
-the new one replaces it rather than stacking.
+The presentational `TurnFailure` marker is unchanged and remains
+model-invisible. No dedupe machinery: the transcript is append-only, and
+with component 2's early stop, consecutive failure settlements are rare,
+bounded, and harmless to stack.
 
-**Scope:** all provider-failure classes persist the explanation — even for
-stalls, "the provider is unstable; your previous response did not complete
-and was not saved" is honest, useful context on resume. The
-shorter-responses guidance appears only past the substantial-output
-threshold; the fold-in appears whenever there is any text to preserve.
+**Effect on resume:** the model's history reads as a conversation in which
+it produced the partial, was told the connection failed, and was told to
+continue — the documented interrupted-response continuation pattern. For
+plain-text output it continues from the cut point with zero re-emission.
+For tool-arg content the material is in context to write out in pieces.
 
 ## How the incident would have played out
 
-1. Turn starts failing at 22:27. Attempts 1–4 stall (~32s each). Component 2
-   stops the group at ~22:30 with "provider unhealthy: 4 stream failures,
-   same class". Component 1 showed live attempt state the whole time.
-2. Component 4 persists a steering turn: stream failures, nothing saved.
-3. User types "continue". The model, seeing the steering, writes the plan in
-   smaller write_file chunks. If an attempt still gets cut at ~295s after
-   streaming 2 MB, component 3 injects the explanation plus the full
-   preserved partial on the next retry, and the model writes the preserved
-   content out in short pieces under the cap, then continues from where it
-   ended.
+1. Turn starts failing at 22:27. Attempts 1–4 fail (~32s stalls). Component
+   2 stops the group at ~22:30 with "provider unhealthy: 4 stream
+   failures". Component 1 showed live attempt state and elapsed time the
+   whole way.
+2. Component 3 persists the largest partial (the plan text already
+   streamed) as an assistant turn plus the steering turn.
+3. User types "continue". The model sees its own partial plan and the
+   steering; it continues from the cut point in smaller pieces instead of
+   regenerating 10k tokens into the same transport cap.
 
 ## Testing
 
 TDD throughout; per repo policy, all functionality covered.
 
-- **Composer:** table-driven unit tests — failure classes × threshold
-  gating × fold-in selection (largest partial wins, full text verbatim, no
-  reasoning content or tool-call fragments ever included).
-- **RetryStream:** `FailFastAfter` unit tests — streak counting by class,
-  reset on success and on class change, disabled when 0, wrapper error
-  carries stats. Existing retry tests stay green.
-- **callModel:** fake-provider tests that the retry request carries exactly
-  one reminder, replaced across retries, absent for stalls; partial state
-  survives `consumeModelStream` error returns.
-- **Settlement:** transcript tests that the steering turn persists with the
-  right content, is model-visible in history projection
-  (`buildHistory`), dedupes consecutively, and never fires for
-  cancellations. `TurnFailure` stays model-invisible.
-- **Events/projection/UI:** `ModelRetryData` field plumbing, phase
-  transitions, and the new clearing rules in the TUI notification tests and
-  web reducer tests.
+- **RetryStream:** `FailFastAfter` unit tests — streak counting across
+  mixed error classes, disabled when 0, wrapper error carries stats;
+  existing retry tests stay green.
+- **Fallback interaction:** `callModelWithFallback` treats
+  `ProviderUnhealthyError` as fallback-eligible; per-group state isolation
+  across continuation/model-fallback groups.
+- **Salvage:** accumulator partial survives `consumeModelStream` error
+  returns; largest-partial selection; tool-arg text extraction with
+  never-executed marker; no reasoning content; no broken tool calls in the
+  persisted turn.
+- **Settlement:** transcript tests — assistant turn + steering turn
+  persisted in order, model-visible in `buildHistory`, absent for
+  cancellations/interrupts; steering-only when nothing salvageable;
+  `TurnFailure` stays model-invisible; resumed-session history includes
+  both turns after restore.
+- **Composer:** table-driven — stats rendering, per-class wording,
+  threshold gating of the shorter-responses guidance.
+- **Events/UI:** `GroupElapsedMS` plumbing; new clearing rules in TUI
+  notification tests and web reducer tests; chip survives deltas and clears
+  on settlement.
 - **Integration:** one end-to-end fake-provider scenario reproducing the
-  incident shape (stall streak → early stop → steering persisted → resumed
-  turn carries steering in model history).
+  incident shape (stall streak → early stop → partial + steering persisted
+  → resumed turn carries both in model history).
