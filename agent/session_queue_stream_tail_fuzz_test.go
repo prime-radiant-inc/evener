@@ -12,8 +12,9 @@ import (
 
 type sessionTailNilAccumulator struct{}
 
-func (*sessionTailNilAccumulator) Process(llm.StreamEvent) {}
-func (*sessionTailNilAccumulator) Response() *llm.Response { return nil }
+func (*sessionTailNilAccumulator) Process(llm.StreamEvent)        {}
+func (*sessionTailNilAccumulator) Response() *llm.Response        { return nil }
+func (*sessionTailNilAccumulator) PartialResponse() *llm.Response { return nil }
 
 func FuzzSessionQueueStreamTails(f *testing.F) {
 	f.Add(byte(0))

@@ -62,6 +62,7 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 	case StreamEventReasoningDelta:
 		if ev.ReasoningDelta != "" {
 			a.reasoning.WriteString(ev.ReasoningDelta)
+			a.partial = a.buildResponse()
 		}
 	case StreamEventToolCallStart:
 		if ev.ToolCall != nil && ev.ToolCall.ID != "" {
@@ -93,6 +94,7 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 			}
 			if len(ev.ToolCall.Arguments) > 0 {
 				tc.Arguments = append(tc.Arguments, ev.ToolCall.Arguments...)
+				a.partial = a.buildResponse()
 			}
 		}
 	case StreamEventToolCallEnd:
@@ -114,6 +116,7 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 			}
 			if len(ev.ToolCall.Arguments) > 0 {
 				tc.Arguments = append(tc.Arguments[:0], ev.ToolCall.Arguments...)
+				a.partial = a.buildResponse()
 			}
 		}
 	case StreamEventFinish:

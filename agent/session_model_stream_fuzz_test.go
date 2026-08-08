@@ -22,8 +22,8 @@ import (
 //     fuzzer's bytes. Oracle: it never panics; a stream that carries an ERROR
 //     event or that ends without FINISH surfaces an error (never a lost turn);
 //     and on success the assembled response is internally consistent (provider
-//     /model stamped, finish usage/reason preserved, the streamed-assistant
-//     bool and the sessionModelResponse field agree).
+//     /model stamped, finish usage/reason preserved, and the observation's
+//     accumulator snapshot is never nil with a nonzero salvage count).
 //
 //   - callModelWithFallback (session_model_call.go) — driven through a real
 //     Session and a fuzzed STREAMING adapter that faults at open (retryable /
@@ -266,7 +266,13 @@ func FuzzMsfzConsumeModelStream(f *testing.F) {
 		st := newMsfzStream(plan.events)
 
 		ctx := context.Background()
-		modelResp, partial, err := sess.consumeModelStream(ctx, req, st)
+		modelResp, obs, err := sess.consumeModelStream(ctx, req, st)
+
+		// The observation's accumulator snapshot and its derived salvage count
+		// must agree on both paths: no bytes claimed from a nil snapshot.
+		if obs.Partial == nil && obs.SalvagedBytes != 0 {
+			t.Fatalf("consumeModelStream: SalvagedBytes=%d with nil Partial", obs.SalvagedBytes)
+		}
 
 		expectErr := plan.hasError || !plan.hasFinish
 		if expectErr {
@@ -294,9 +300,10 @@ func FuzzMsfzConsumeModelStream(f *testing.F) {
 		if modelResp.Response.Model == "" {
 			t.Fatalf("consumeModelStream: success response missing Model: %+v", modelResp.Response)
 		}
-		// The partial bool and the response field must agree.
-		if partial != modelResp.StreamedAssistant {
-			t.Fatalf("consumeModelStream: partial=%v disagrees with StreamedAssistant=%v", partial, modelResp.StreamedAssistant)
+		// A finished stream always accumulates something, even an empty
+		// placeholder content part, so the observation snapshot is never nil.
+		if obs.Partial == nil {
+			t.Fatalf("consumeModelStream: success path returned nil observation Partial")
 		}
 		// The finish event's usage and reason are preserved into the assembled
 		// response (the last finish wins; no error means all events processed).
