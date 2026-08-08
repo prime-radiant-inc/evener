@@ -235,27 +235,36 @@ type Server struct {
 	// never suppressed as "unchanged" by whatever the previous session on
 	// this server left behind.
 	appLastStampedFailedToolCalls *int
-	retrySafeTurns                RetrySafeTurnFunctions
-	cancelFunc                    context.CancelFunc
-	steerFunc                     func(string)
-	steerWithImagesFunc           func(string, []ImageAttachment)
-	queueFunc                     func(string) error
-	queueWithImagesFunc           func(string, []ImageAttachment) error
-	goalFunc                      func(objective string) (bool, error)
-	drainSteerFunc                func() error
-	drainSteerInputFunc           func(string, []ImageAttachment) error
-	promoteSteerFunc              func(int, string) error
-	cancelQueuedFunc              func(int, string) (string, int, error)
-	compactFunc                   func(context.Context) error
-	clearFunc                     func(context.Context) error
-	modelFunc                     func(string) error
-	nameFunc                      func(string)
-	reasoningEffortFunc           func(string)
-	listModelsFunc                func(context.Context) ([]ModelsResponseItem, error)
-	tasksFn                       func() any
-	jobsFn                        func(appwire.JobsListParams) (any, error)
-	jobOutputFn                   func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
-	shutdownFunc                  func()
+	// appDescendantTranscriptPathFunc resolves a descendant thread ID to its
+	// backing transcript file path, when the caller has one. RecordDescendantAppEvent
+	// consults it on a descendant's first observation to seed that descendant's
+	// turn snapshot from persisted history, mirroring PrepareAppIdentity's seed
+	// of the ROOT thread — without it, a restored descendant's thread/read would
+	// only ever show events recorded after the restore point (ledger #110/#111).
+	// Nil is a legitimate answer: a fresh (never-persisted) descendant has
+	// nothing to seed from.
+	appDescendantTranscriptPathFunc func(threadID string) string
+	retrySafeTurns                  RetrySafeTurnFunctions
+	cancelFunc                      context.CancelFunc
+	steerFunc                       func(string)
+	steerWithImagesFunc             func(string, []ImageAttachment)
+	queueFunc                       func(string) error
+	queueWithImagesFunc             func(string, []ImageAttachment) error
+	goalFunc                        func(objective string) (bool, error)
+	drainSteerFunc                  func() error
+	drainSteerInputFunc             func(string, []ImageAttachment) error
+	promoteSteerFunc                func(int, string) error
+	cancelQueuedFunc                func(int, string) (string, int, error)
+	compactFunc                     func(context.Context) error
+	clearFunc                       func(context.Context) error
+	modelFunc                       func(string) error
+	nameFunc                        func(string)
+	reasoningEffortFunc             func(string)
+	listModelsFunc                  func(context.Context) ([]ModelsResponseItem, error)
+	tasksFn                         func() any
+	jobsFn                          func(appwire.JobsListParams) (any, error)
+	jobOutputFn                     func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
+	shutdownFunc                    func()
 	// sandboxEscalationResolveFunc delivers a human's approve/deny decision for a
 	// pending sandbox-exemption escalation (M7) to the session, unblocking the
 	// waiting tool-exec goroutine. nil when no session is attached.

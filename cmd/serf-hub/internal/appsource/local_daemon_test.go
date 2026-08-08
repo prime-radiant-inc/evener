@@ -864,3 +864,32 @@ func fuzzScenarioLocalDaemonSourceInterruptWithoutTurnIDUsesRESTInterrupt(t *tes
 		t.Fatal("REST /interrupt was called")
 	}
 }
+
+// TestThreadFromEntryReadOnlyAliasCarriesKindAndParentRef guards ledger #112:
+// a ReadOnlyAlias entry addresses an in-process descendant (subagent) served
+// through its owner's daemon endpoint. threadFromEntry must mark it as a
+// subagent with a non-empty ParentRef so hub views (web_api_tree.go's
+// IsSubagent/parent-lookup) can distinguish it from a top-level session,
+// instead of leaving Serf.Kind/ParentRef at their zero values.
+func TestThreadFromEntryReadOnlyAliasCarriesKindAndParentRef(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return nil }, nil)
+	item := LocalDaemonEntry{
+		Entry: rendezvous.Entry{
+			Protocol: appwire.ProtocolVersion,
+			Endpoint: "ws://127.0.0.1/rpc",
+			ThreadID: "th_root",
+		},
+		SessionID:      "sess_child",
+		OwnerSessionID: "sess_root",
+		ReadOnlyAlias:  true,
+	}
+
+	thread := source.threadFromEntry(item)
+
+	if thread.Serf.Kind != "subagent" {
+		t.Fatalf("Serf.Kind = %q, want %q", thread.Serf.Kind, "subagent")
+	}
+	if thread.Serf.ParentRef == "" {
+		t.Fatal("Serf.ParentRef is empty, want a non-empty parent reference")
+	}
+}

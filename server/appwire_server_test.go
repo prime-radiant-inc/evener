@@ -1872,3 +1872,76 @@ func TestAppTurnsFromTranscriptFileProjectsToolResultImages(t *testing.T) {
 		t.Fatalf("OutputImages[0]=%+v, want %+v", images[0], want)
 	}
 }
+
+// TestServerAppWireThreadReadRejectsMalformedOrForeignRef guards ledger
+// #110/#111: a present-but-unparseable ref, or a ref naming a foreign
+// source, must never fall through to the ROOT thread's own content.
+// appThreadIDForRead's empty-ref fallback to appProjectionThreadID is only
+// correct when the caller supplied NEITHER a ThreadID nor a Ref; a ref that
+// IS supplied but doesn't resolve must error instead of silently answering
+// for a different session.
+func TestServerAppWireThreadReadRejectsMalformedOrForeignRef(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_root")
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "th_root"})
+
+	for _, ref := range []string{"not-a-valid-ref", "remote:th_1"} {
+		resp, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref})
+		if err == nil && resp.Thread.ID != "" {
+			t.Fatalf("ref=%q returned thread %+v instead of erroring", ref, resp.Thread)
+		}
+	}
+}
+
+// TestServerAppWireDescendantThreadReadIncludesSeededTranscriptHistory
+// guards ledger #110/#111's second half: a descendant SessionStart{Restored:
+// true} with a real backing transcript must seed the descendant's turn
+// snapshot from that transcript on first observation, the same way
+// PrepareAppIdentity seeds the ROOT thread's snapshot before any live event
+// arrives. Without seeding, thread/read for the descendant only ever shows
+// events recorded after the restore point, silently losing the persisted
+// history.
+func TestServerAppWireDescendantThreadReadIncludesSeededTranscriptHistory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "child.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "child"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("first"))); err != nil {
+		t.Fatalf("append first: %v", err)
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("second"))); err != nil {
+		t.Fatalf("append second: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
+		if threadID == "child" {
+			return path
+		}
+		return ""
+	})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{
+		Kind:      events.EventSessionStart,
+		SessionID: "child",
+		Data:      events.SessionStartData{Restored: true, TranscriptEntries: 2},
+	})
+
+	resp, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{ThreadID: "child", IncludeTurns: true})
+	if err != nil {
+		t.Fatalf("handleAppThreadRead: %v", err)
+	}
+	if len(resp.Thread.Turns) != 2 {
+		t.Fatalf("turns=%v, want the 2 seeded turns from the descendant's transcript", turnIDs(resp.Thread.Turns))
+	}
+	if got := resp.Thread.Turns[0].Items[0].Text; got != "first" {
+		t.Fatalf("first turn text=%q, want the seeded head", got)
+	}
+	if got := resp.Thread.Turns[1].Items[0].Text; got != "second" {
+		t.Fatalf("second turn text=%q, want the seeded tail", got)
+	}
+}

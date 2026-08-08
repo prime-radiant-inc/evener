@@ -43,6 +43,11 @@ type LocalDaemonEntry struct {
 	// daemon. It is valid for reads/subscriptions only; mutation methods must not
 	// accidentally apply a child-targeted request to the owning root session.
 	ReadOnlyAlias bool
+	// OwnerSessionID is the owning root session's ID, set only when
+	// ReadOnlyAlias is true. threadFromEntry uses it to populate
+	// Serf.ParentRef so hub views can trace a subagent back to its root
+	// (ledger #112).
+	OwnerSessionID string
 	// PendingAsk mirrors hubcore.LiveEntry.PendingAsk — true while the daemon
 	// reports an unanswered ask_user question. threadFromEntry carries it into
 	// appwire.SerfThread.AskPending so the TUI's per-row ask marker (Task 29)
@@ -845,6 +850,10 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 	}
 	if item.ReadOnlyAlias {
 		thread.Serf.Capabilities = appwire.ThreadCapabilities{}
+		thread.Serf.Kind = "subagent"
+		if item.OwnerSessionID != "" {
+			thread.Serf.ParentRef = appwire.Ref{SourceID: s.sourceID, ThreadID: item.OwnerSessionID}.String()
+		}
 	}
 	return thread
 }
