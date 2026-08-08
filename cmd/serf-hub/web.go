@@ -45,6 +45,7 @@ type WebServer struct {
 	treeCache  *hubcore.TreeCache
 	manifestFS fs.FS
 
+	frontendHash     string
 	deletionStoreErr error
 }
 
@@ -66,6 +67,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	if cfg.ResumeLocks == nil {
 		cfg.ResumeLocks = hubcore.NewResumeLocks()
 	}
+	fHash, _ := frontendDistHash(distFS())
 	web := &WebServer{
 		cfg:              cfg,
 		sources:          sources,
@@ -74,6 +76,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		liveModels:       &modelsCache{},
 		treeCache:        &hubcore.TreeCache{},
 		manifestFS:       assetsRoot(),
+		frontendHash:     fHash,
 		deletionStoreErr: deletionStoreErr,
 	}
 	web.appRPC = newHubAppServer(cfg, sources)

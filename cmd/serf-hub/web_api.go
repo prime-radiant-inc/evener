@@ -142,11 +142,13 @@ func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeAPIJSON(w, http.StatusOK, hubapi.HealthResponse{
-		Version:   buildinfo.Version(),
-		StartedAt: s.startedAt,
-		HubAddr:   s.cfg.HubAddr,
-		RunDir:    s.cfg.RunDir,
-		StateGlob: s.apiStateGlob(),
+		Version:       buildinfo.Version(),
+		StartedAt:     s.startedAt,
+		HubAddr:       s.cfg.HubAddr,
+		RunDir:        s.cfg.RunDir,
+		StateGlob:     s.apiStateGlob(),
+		BackendGitSha: buildinfo.GitSHA,
+		FrontendHash:  s.frontendHash,
 		Capabilities: hubapi.HealthCapabilities{
 			Tree:             true,
 			TranscriptFollow: true,
