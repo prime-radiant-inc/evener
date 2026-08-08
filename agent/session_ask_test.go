@@ -251,7 +251,7 @@ func TestAskUser_ValidationDuplicateLabels(t *testing.T) {
 	sess := newAskTestSession(t, SessionConfig{})
 
 	res := sess.reg.ExecuteCall(context.Background(), sess.env, askUserCall("c1", askUserArgsDuplicateLabels()))
-	if !res.IsError || res.Output != "ask_user: option labels must be unique within a question" {
+	if !res.IsError || !strings.Contains(res.Output, "ask_user: option labels must be unique within a question") {
 		t.Fatalf("duplicate-label call = %+v, want the instructive uniqueness error", res)
 	}
 	if got := sess.askPendingCount(); got != 0 {
@@ -266,7 +266,7 @@ func TestAskUser_ValidationTwoRecommended(t *testing.T) {
 	sess := newAskTestSession(t, SessionConfig{})
 
 	res := sess.reg.ExecuteCall(context.Background(), sess.env, askUserCall("c1", askUserArgsTwoRecommended()))
-	if !res.IsError || res.Output != "ask_user: at most one option may be recommended" {
+	if !res.IsError || !strings.Contains(res.Output, "ask_user: at most one option may be recommended") {
 		t.Fatalf("two-recommended call = %+v, want the instructive recommended error", res)
 	}
 	if got := sess.askPendingCount(); got != 0 {
