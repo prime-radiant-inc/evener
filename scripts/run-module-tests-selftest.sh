@@ -16,6 +16,10 @@ set -uo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 runner="$script_dir/run-module-tests.sh"
+runner_command=("$runner")
+if [ -n "${SERF_RUN_MODULE_TESTS_SHELL:-}" ]; then
+	runner_command=("$SERF_RUN_MODULE_TESTS_SHELL" "$runner")
+fi
 . "$(dirname "$0")/selftest-lib.sh"
 
 work="$(mktemp -d -t serf-module-tests-selftest.XXXXXX)"
@@ -202,7 +206,7 @@ run_tests() {
 		cd "$repo" || exit 1
 		env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
-			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
+			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
 	) >"$output" 2>&1
 }
 
@@ -220,16 +224,16 @@ run_tests_async() {
 		cd "$repo" || exit 1
 		if [ -n "$ready_fifo" ]; then
 			printf 'runner-started\n' >"$ready_fifo"
-		env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
-			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
-			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
+			env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+				GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
+				MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
 			runner_status="$?"
 			printf 'runner-exited:%s\n' "$runner_status" >"$ready_fifo"
 			exit "$runner_status"
 		fi
 		exec env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
-			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
+			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
 	) >"$output" 2>&1 &
 	runner_pid="$!"
 }
@@ -241,7 +245,7 @@ run_tests_default_modules() {
 		cd "$repo" || exit 1
 		env -u MODULES -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
-			AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
+			AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
 	) >"$output" 2>&1
 }
 
@@ -318,6 +322,13 @@ stop_fixture_watchdog() {
 full_logs_path() {
 	awk '/^full logs: / { print substr($0, 12); exit }' "$1"
 }
+
+new_case
+out="$case_dir/multiple-active-stream-cleanup.out"
+if run_tests "agent" "$out"; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "multiple active streams complete without aborting cleanup"
+assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" "agent web" "multiple active streams each report a verdict"
+assert_eq "$(runner_logdirs)" "" "multiple active streams remove their temporary logs"
 
 new_case
 out="$case_dir/all-pass.out"

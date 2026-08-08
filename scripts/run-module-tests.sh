@@ -138,9 +138,11 @@ active_pids=()
 
 forget_pid() {
 	local pid="$1" i
-	for i in ${!active_pids[@]+"${!active_pids[@]}"}; do
-		[ "${active_pids[$i]}" = "$pid" ] && active_pids[$i]=""
-	done
+	if [ "${#active_pids[@]}" -gt 0 ]; then
+		for i in "${!active_pids[@]}"; do
+			[ "${active_pids[$i]}" = "$pid" ] && active_pids[$i]=""
+		done
+	fi
 }
 
 process_descendants() {
@@ -157,27 +159,39 @@ stop_process_tree() {
 	for descendant in $(process_descendants "$pid"); do
 		descendants+=("$descendant")
 	done
-	for descendant in ${descendants[@]+"${descendants[@]}"} "$pid"; do
-		[ -n "$descendant" ] && kill -TERM "$descendant" 2>/dev/null || :
-	done
+	if [ "${#descendants[@]}" -gt 0 ]; then
+		for descendant in "${descendants[@]}"; do
+			[ -n "$descendant" ] && kill -TERM "$descendant" 2>/dev/null || :
+		done
+	fi
+	kill -TERM "$pid" 2>/dev/null || :
 	wait "$pid" 2>/dev/null || :
 }
 
 stop_children() {
 	local pid descendant
 	local -a descendants=()
-	for pid in ${active_pids[@]+"${active_pids[@]}"}; do
-		[ -n "$pid" ] || continue
-		for descendant in $(process_descendants "$pid"); do
-			descendants+=("$descendant")
+	if [ "${#active_pids[@]}" -gt 0 ]; then
+		for pid in "${active_pids[@]}"; do
+			[ -n "$pid" ] || continue
+			for descendant in $(process_descendants "$pid"); do
+				descendants+=("$descendant")
+			done
 		done
-	done
-	for pid in ${descendants[@]+"${descendants[@]}"} ${active_pids[@]+"${active_pids[@]}"}; do
-		[ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null || :
-	done
-	for pid in ${active_pids[@]+"${active_pids[@]}"}; do
-		[ -n "$pid" ] && wait "$pid" 2>/dev/null || :
-	done
+	fi
+	if [ "${#descendants[@]}" -gt 0 ]; then
+		for pid in "${descendants[@]}"; do
+			[ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null || :
+		done
+	fi
+	if [ "${#active_pids[@]}" -gt 0 ]; then
+		for pid in "${active_pids[@]}"; do
+			[ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null || :
+		done
+		for pid in "${active_pids[@]}"; do
+			[ -n "$pid" ] && wait "$pid" 2>/dev/null || :
+		done
+	fi
 	active_pids=()
 }
 
@@ -394,7 +408,7 @@ if [ "$fail" -ne 0 ]; then
 	# those, leaving the verdicts with the most to explain with nothing at all
 	# behind them (kata mjzx). The web gate's output is vitest/tsc/biome rather
 	# than `go test`, and reads the same way here.
-	for m in ${failed_modules[@]+"${failed_modules[@]}"}; do
+	for m in "${failed_modules[@]}"; do
 		log="$(logpath "$m")"
 		echo "----- $m -----"
 		if [ -f "$log" ]; then
