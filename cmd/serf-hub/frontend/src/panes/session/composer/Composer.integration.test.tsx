@@ -12,7 +12,7 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
+import type { MethodTypes, Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
@@ -21,7 +21,18 @@ import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer } from "./Composer";
 import { usePendingTurnEntries } from "./queue";
-import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+import { resetPendingTurnsStoreForTests, settlePendingTurnsProjectionForTests } from "./queue/pendingTurnsStore";
+
+async function settlePendingProjection(): Promise<void> {
+  for (let round = 0; round < 10; round += 1) {
+    let awaited = 0;
+    await act(async () => {
+      awaited = await settlePendingTurnsProjectionForTests();
+    });
+    if (awaited === 0) return;
+  }
+  throw new Error("pending-turns projection never settled");
+}
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global.
@@ -514,8 +525,9 @@ test("a plain send exposes its durable pending entry while the network remains u
 
   await user.type(textarea() as HTMLTextAreaElement, "hello agent");
   await user.click(screen.getByRole("button", { name: /^send\b/i }));
+  await settlePendingProjection();
 
-  await waitFor(() => expect(result.current).toHaveLength(1));
+  expect(result.current).toHaveLength(1);
   expect(result.current[0]).toMatchObject({ ref: "ref_a", method: "send", text: "hello agent" });
 });
 
@@ -635,24 +647,29 @@ test("the ask dock renders once a question is pending, and the composer's input 
 test("sending an answer submits through the normal send path and restores the composer once resolved", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", idleNoTurnOverrides());
-  fake.on("turn/start", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
-    turn: { id: "turn_2", status: "inProgress", itemsView: "" },
-  }));
+  let observeTurnStart!: (params: MethodTypes["turn/start"]["params"]) => void;
+  const turnStarted = new Promise<MethodTypes["turn/start"]["params"]>((resolve) => {
+    observeTurnStart = resolve;
+  });
+  fake.on("turn/start", (params) => {
+    observeTurnStart(params);
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_2", status: "inProgress", itemsView: "" },
+    };
+  });
   startTurn(fake, "ref_a", "turn_1");
   ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
   await screen.findByText("Deploy?");
 
   await user.click(screen.getByRole("button", { name: /send answers/i }));
 
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
-  const call = fake.calls.find((c) => c.method === "turn/start");
-  expect(call?.params).toMatchObject({
+  await expect(turnStarted).resolves.toMatchObject({
     input: [{ type: "text", text: "[answers]\n1. [Deploy?] → skipped (no answer)" }],
   });
   expect(await screen.findByRole("textbox", { name: /message/i })).toBeTruthy(); // composer un-hides again
