@@ -392,6 +392,14 @@ type testConfig struct {
 	// milliseconds. It moves nothing else — attempt durations, retry backoff,
 	// and the stall classification still read the wall clock. Nil in
 	// production, where the window is measured against time.Now.
+	//
+	// It is a seam of its own rather than the session's clock.Clock because
+	// the window measures a provider stream, not session lifecycle time: the
+	// fuzz harnesses that inject agenttest.FakeClock as the session clock hold
+	// virtual time still except at explicit Advance ops (the delegate sequence
+	// fuzzer draws jumps of up to five virtual minutes), so routing the window
+	// through it would let unrelated clock ops, not the stream, decide whether
+	// an attempt looks cap-shaped to the 60-second rule.
 	contentWindowClock func() time.Time
 }
 
