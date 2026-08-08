@@ -407,8 +407,10 @@ func TestSettlement_InterruptMidRetryGroupSalvagesPartial(t *testing.T) {
 	if salvaged.Message.Text() != draft {
 		t.Errorf("salvaged turn carried %d bytes, want the %d-byte draft verbatim", len(salvaged.Message.Text()), len(draft))
 	}
-	if salvaged.ResponseModel != "primary" || salvaged.ResponseProvider == "" {
-		t.Errorf("salvaged turn provenance = model %q provider %q, want the interrupted group's model/provider",
+	// Pinned to the scripted adapter's actual provider, not merely non-empty, so
+	// a provenance mix-up between groups fails here.
+	if salvaged.ResponseModel != "primary" || salvaged.ResponseProvider != "openai" {
+		t.Errorf("salvaged turn provenance = model %q provider %q, want model \"primary\" provider \"openai\"",
 			salvaged.ResponseModel, salvaged.ResponseProvider)
 	}
 	if salvaged.ResponseID != "" || salvaged.AttemptGroupID != "" || turnHasResponsesContinuationMetadata(salvaged) {
@@ -463,6 +465,59 @@ func TestSettlement_InterruptMidRetryGroupSalvagesPartial(t *testing.T) {
 		if got := gotEvents[len(gotEvents)-len(tail)+i]; got != wantKind {
 			t.Fatalf("interrupt events = %v, want a tail of %v", gotEvents, tail)
 		}
+	}
+}
+
+// TestSettlement_InterruptNeverPersistsFilterTrippingSalvage: the spec's
+// content-filter exclusion is unconditional — the interrupt carve-out spares a
+// round the failure steering, never the filter rule. The reachable shape is a
+// chain walk: the primary streams content that trips the filter and dies
+// (permanent, so the chain walks on), and the user interrupts the fallback. The
+// terminal error is then a cancellation, so this settles on the interrupt path
+// while the salvage belongs to the filter-killed group.
+func TestSettlement_InterruptNeverPersistsFilterTrippingSalvage(t *testing.T) {
+	t.Parallel()
+	draft := strings.Repeat("blocked step. ", 500)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := &scriptedStreamAdapter{
+		provider: "openai",
+		script: map[string]func(*llm.ChanStream){
+			"primary": streamTextThenFail(draft, filterBlockedErr(t)),
+			"fallback-b": func(st *llm.ChanStream) {
+				st.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "t1"})
+				cancel()
+				st.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: context.Canceled})
+			},
+		},
+	}
+	sess := settlementSession(t, a, "fallback-b")
+	drainSessionEvents(sess)
+
+	if _, err := sess.ProcessInput(ctx, "write the plan", nil); err == nil {
+		t.Fatal("expected a cancellation error from ProcessInput")
+	}
+	tpath := sess.TranscriptPath()
+	hist := sessionHistory(sess)
+	sess.Close()
+
+	// Only the round loop's own interrupt marker. A compaction-atomic,
+	// recent-tail-protected turn carrying the content that TRIPPED the filter
+	// would pin it in history and defeat the ForceCompact recovery that exists
+	// to remove it on the next turn.
+	want := []schema.TurnKind{schema.TurnSteering}
+	assertKinds(t, "history", settledKinds(hist), want)
+	assertKinds(t, "transcript", settledKinds(transcriptTurns(t, tpath)), want)
+	for _, turn := range hist {
+		if strings.Contains(turn.Message.Text(), draft) {
+			t.Fatal("interrupted round persisted the content that tripped the content filter")
+		}
+		if turn.Kind == schema.TurnSteering && turn.Message.Text() == wantInterruptSteering {
+			t.Fatal("interrupted round persisted interrupt-salvage steering for a filter-killed group")
+		}
+	}
+	if got := hist[len(hist)-1].SteeringKind; got != events.SteeringKindInterrupted {
+		t.Errorf("last steering kind = %q, want %q", got, events.SteeringKindInterrupted)
 	}
 }
 

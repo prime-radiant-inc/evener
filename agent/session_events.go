@@ -461,16 +461,23 @@ func (s *Session) settleFailedRound(terminalErr error) {
 	if steering == "" {
 		return
 	}
-	if salvaged != "" {
-		// A draft that did not reach the transcript is a draft the steering's
-		// "the response above" would point at nothing, so the pair settles
-		// together or not at all.
-		if err := s.persistSalvagedTurn(salvaged, model, provider); err != nil {
-			return
-		}
-		s.emitSalvagedTurn(salvaged, model)
+	if salvaged != "" && !s.persistAndEmitSalvage(salvaged, model, provider) {
+		return
 	}
 	s.appendSteeringTurn(steering, events.SteeringKindProviderFailure)
+}
+
+// persistAndEmitSalvage records the salvaged draft and replays it on the event
+// bus, reporting whether it reached the transcript. Both settlement paths gate
+// their steering turn on it: a draft that did not reach the transcript is a
+// draft the steering's "the content above" would point at nothing, so the pair
+// settles together or not at all.
+func (s *Session) persistAndEmitSalvage(salvaged, model, provider string) bool {
+	if err := s.persistSalvagedTurn(salvaged, model, provider); err != nil {
+		return false
+	}
+	s.emitSalvagedTurn(salvaged, model)
+	return true
 }
 
 // interruptSalvageSteering explains a salvaged draft that a user interrupt, not
@@ -509,17 +516,23 @@ func (s *Session) settleInterruptedRound() {
 	if from == nil {
 		return
 	}
+	// The spec's content-filter exclusion is unconditional, and the interrupt
+	// carve-out spares a round only its FAILURE STEERING. Persisting the content
+	// that tripped the filter would pin it in a compaction-atomic, recent-tail-
+	// protected turn and defeat the ForceCompact recovery that exists to remove
+	// it — which the next turn re-arms, so an ended turn defers that recovery
+	// rather than retiring it. Keyed on the salvage-producing group, exactly as
+	// classifySettlement keys it.
+	if contentFilterKilledGroup(from) {
+		return
+	}
 	salvaged, model, provider := salvageText(partial), from.Model, from.Provider
 	if salvaged == "" {
 		return
 	}
-	// A draft that did not reach the transcript is a draft the steering's "the
-	// content above" would point at nothing, so the pair settles together or
-	// not at all.
-	if err := s.persistSalvagedTurn(salvaged, model, provider); err != nil {
+	if !s.persistAndEmitSalvage(salvaged, model, provider) {
 		return
 	}
-	s.emitSalvagedTurn(salvaged, model)
 	s.appendSteeringTurn(interruptSalvageSteering, events.SteeringKindInterrupted)
 }
 
