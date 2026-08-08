@@ -987,8 +987,8 @@ func openLiveSession(t *testing.T, app *tmuxTUI) {
 func sendFirstCtrlCAndAssertNoQuitWarning(t *testing.T, app *tmuxTUI) {
 	t.Helper()
 	logPath := filepath.Join(t.TempDir(), "ctrlc-settle.log")
-	runTmux(t, "pipe-pane", "-t", app.session, "cat >> "+shellQuote(logPath))
-	t.Cleanup(func() { _ = exec.Command("tmux", "pipe-pane", "-t", app.session).Run() })
+	app.runTmux("pipe-pane", "-t", app.session, "cat >> "+shellQuote(logPath))
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", app.socket, "pipe-pane", "-t", app.session).Run() })
 	app.SendKeys("C-c")
 	time.Sleep(300 * time.Millisecond)
 	// Stop the pipe before reading: this closes cat's stdin, so cat sees EOF
@@ -996,7 +996,7 @@ func sendFirstCtrlCAndAssertNoQuitWarning(t *testing.T, app *tmuxTUI) {
 	// window's last few ms is on disk by the time we read it. Without this,
 	// os.ReadFile could race a `cat` still buffering its final write. The
 	// t.Cleanup toggle-off becomes a harmless no-op once this has run.
-	_ = exec.Command("tmux", "pipe-pane", "-t", app.session).Run()
+	_ = exec.Command("tmux", "-L", app.socket, "pipe-pane", "-t", app.session).Run()
 	data, err := os.ReadFile(logPath)
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("read piped pane output: %v", err)
@@ -1081,9 +1081,30 @@ func buildTUIBinary(t *testing.T) string {
 	return tuiBinaryPath
 }
 
+// tmuxTUI drives one serf-tui process on its own dedicated tmux server,
+// connected via a unique "-L" socket rather than tmux's shared default server
+// (the one at $TMUX_TMPDIR or /tmp/tmux-$UID/default). uniqueTmuxSessionName
+// already rules out session-NAME collisions on any given server, but without
+// a per-test socket every parallel test's session would still live on that
+// one shared, stateful server process, which then fields every test's
+// connect/capture-pane/send-keys/kill-session churn at once, plus whatever
+// else on the machine happens to be talking to that same default socket — a
+// real shared-mutable-resource risk under load, independent of naming.
+// socket/socketPath give each test its own server process holding exactly
+// one session; socketPath is that server's own resolved socket file path
+// (see tmuxSocketPath), kept only so Close can remove the file tmux itself
+// leaks on exit (see Close).
 type tmuxTUI struct {
-	t       *testing.T
-	session string
+	t          *testing.T
+	session    string
+	socket     string
+	socketPath string
+}
+
+// runTmux runs a tmux subcommand against this session's dedicated socket.
+func (a *tmuxTUI) runTmux(args ...string) {
+	a.t.Helper()
+	runTmux(a.t, a.socket, args...)
 }
 
 func startTUITmux(t *testing.T, bin, hubURL string) *tmuxTUI {
@@ -1105,13 +1126,18 @@ func tuiCoverEnvPrefix() string {
 func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmuxTUI {
 	t.Helper()
 	acquireTmuxSlot(t)
+	// A session name and a socket name are different tmux namespaces, so the
+	// same unique string safely serves both — one test, one dedicated tmux
+	// server, holding exactly one session (see tmuxTUI's socket-isolation
+	// comment).
 	session := uniqueTmuxSessionName()
+	socket := session
 	stateDir := t.TempDir()
 	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL) + " -state-dir " + shellQuote(stateDir)
-	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
-	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
-	pinTmuxWindowSize(t, session, width, height)
-	app := &tmuxTUI{t: t, session: session}
+	runTmux(t, socket, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
+	runTmux(t, socket, "set-option", "-t", session, "remain-on-exit", "on")
+	pinTmuxWindowSize(t, socket, session, width, height)
+	app := &tmuxTUI{t: t, session: session, socket: socket, socketPath: tmuxSocketPath(t, socket)}
 	app.WaitFor("SERF LIVE")
 	return app
 }
@@ -1120,6 +1146,7 @@ func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) 
 	t.Helper()
 	acquireTmuxSlot(t)
 	session := uniqueTmuxSessionName()
+	socket := session
 	stateDir := t.TempDir()
 	// Keep the pane's shell alive past serf-tui's own exit. serf-tui leaves the
 	// alternate screen and prints its restore instructions to the normal screen
@@ -1130,10 +1157,10 @@ func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) 
 	// receives holds the pty open so tmux drains and renders the message; the
 	// test reads it via WaitForHistory and Close() tears the session down.
 	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL) + " -state-dir " + shellQuote(stateDir) + "; read _"
-	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
-	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
-	pinTmuxWindowSize(t, session, width, height)
-	app := &tmuxTUI{t: t, session: session}
+	runTmux(t, socket, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
+	runTmux(t, socket, "set-option", "-t", session, "remain-on-exit", "on")
+	pinTmuxWindowSize(t, socket, session, width, height)
+	app := &tmuxTUI{t: t, session: session, socket: socket, socketPath: tmuxSocketPath(t, socket)}
 	app.WaitFor("SERF LIVE")
 	return app
 }
@@ -1144,21 +1171,21 @@ func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) 
 // 46x24 with no client), ignoring new-session -x/-y once the process draws.
 // Switching the window-size option to manual and resizing makes the pane the
 // geometry the TUI actually renders against.
-func pinTmuxWindowSize(t *testing.T, session string, width, height int) {
+func pinTmuxWindowSize(t *testing.T, socket, session string, width, height int) {
 	t.Helper()
-	runTmux(t, "set-option", "-t", session, "window-size", "manual")
-	runTmux(t, "resize-window", "-t", session, "-x", strconv.Itoa(width), "-y", strconv.Itoa(height))
-	waitForTmuxPaneSize(t, session, width, height)
+	runTmux(t, socket, "set-option", "-t", session, "window-size", "manual")
+	runTmux(t, socket, "resize-window", "-t", session, "-x", strconv.Itoa(width), "-y", strconv.Itoa(height))
+	waitForTmuxPaneSize(t, socket, session, width, height)
 }
 
-func waitForTmuxPaneSize(t *testing.T, session string, width, height int) {
+func waitForTmuxPaneSize(t *testing.T, socket, session string, width, height int) {
 	t.Helper()
 	deadline := time.Now().Add(tuiE2EWaitTimeout)
 	wantWidth := strconv.Itoa(width)
 	wantHeight := strconv.Itoa(height)
 	var last string
 	for time.Now().Before(deadline) {
-		out, err := exec.Command("tmux", "display-message", "-p", "-t", session, "#{pane_width} #{pane_height}").CombinedOutput()
+		out, err := exec.Command("tmux", "-L", socket, "display-message", "-p", "-t", session, "#{pane_width} #{pane_height}").CombinedOutput()
 		last = strings.TrimSpace(string(out))
 		if err == nil {
 			fields := strings.Fields(last)
@@ -1171,30 +1198,55 @@ func waitForTmuxPaneSize(t *testing.T, session string, width, height int) {
 	t.Fatalf("tmux pane size for %s = %q, want %dx%d", session, last, width, height)
 }
 
+// tmuxSocketPath asks a just-started dedicated server for the resolved
+// filesystem path of its own listening socket, via tmux's own
+// #{socket_path} format variable. This is the only reliable way to learn it:
+// tmux's default socket directory depends on $TMUX_TMPDIR and platform
+// temp-dir conventions this file has no business guessing at. Used only so
+// Close can remove the file the server leaks on exit — see Close.
+func tmuxSocketPath(t *testing.T, socket string) string {
+	t.Helper()
+	out, err := exec.Command("tmux", "-L", socket, "display-message", "-p", "#{socket_path}").CombinedOutput()
+	if err != nil {
+		t.Fatalf("tmux socket path for %s: %v\n%s", socket, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func (a *tmuxTUI) Close() {
-	_ = exec.Command("tmux", "kill-session", "-t", a.session).Run()
+	_ = exec.Command("tmux", "-L", a.socket, "kill-session", "-t", a.session).Run()
+	// tmux does not unlink its own socket file when a dedicated server exits
+	// after its last session is killed — verified empirically on this host
+	// (tmux 3.5a/macOS): the server process is gone, but a zero-byte socket
+	// file is left behind under the tmux socket directory. Left alone, every
+	// test run leaks one such file forever. Removing it here is safe even if
+	// the server's own shutdown hasn't fully settled yet: unlinking a bound
+	// Unix socket's directory entry only blocks future connect attempts, it
+	// does not affect a process still holding the listening fd open, and
+	// nothing ever reconnects to a name this unique again.
+	_ = os.Remove(a.socketPath)
 }
 
 func (a *tmuxTUI) SendKeys(keys ...string) {
 	a.t.Helper()
 	args := append([]string{"send-keys", "-t", a.session}, keys...)
-	runTmux(a.t, args...)
+	a.runTmux(args...)
 }
 
 func (a *tmuxTUI) TypeLine(text string) {
 	a.t.Helper()
 	a.TypeText(text)
-	runTmux(a.t, "send-keys", "-t", a.session, "Enter")
+	a.runTmux("send-keys", "-t", a.session, "Enter")
 }
 
 func (a *tmuxTUI) TypeText(text string) {
 	a.t.Helper()
-	runTmux(a.t, "send-keys", "-t", a.session, "-l", text)
+	a.runTmux("send-keys", "-t", a.session, "-l", text)
 }
 
 func (a *tmuxTUI) Capture() string {
 	a.t.Helper()
-	out, err := exec.Command("tmux", "capture-pane", "-p", "-t", a.session).CombinedOutput()
+	out, err := exec.Command("tmux", "-L", a.socket, "capture-pane", "-p", "-t", a.session).CombinedOutput()
 	if err != nil {
 		a.t.Fatalf("capture tmux pane: %v\n%s", err, out)
 	}
@@ -1203,7 +1255,7 @@ func (a *tmuxTUI) Capture() string {
 
 func (a *tmuxTUI) CaptureHistory() string {
 	a.t.Helper()
-	out, err := exec.Command("tmux", "capture-pane", "-p", "-S", "-200", "-t", a.session).CombinedOutput()
+	out, err := exec.Command("tmux", "-L", a.socket, "capture-pane", "-p", "-S", "-200", "-t", a.session).CombinedOutput()
 	if err != nil {
 		a.t.Fatalf("capture tmux history: %v\n%s", err, out)
 	}
@@ -1252,8 +1304,8 @@ func (a *tmuxTUI) CaptureStable() string {
 
 func (a *tmuxTUI) Resize(width, height int) {
 	a.t.Helper()
-	runTmux(a.t, "resize-window", "-t", a.session, "-x", strconv.Itoa(width), "-y", strconv.Itoa(height))
-	waitForTmuxPaneSize(a.t, a.session, width, height)
+	a.runTmux("resize-window", "-t", a.session, "-x", strconv.Itoa(width), "-y", strconv.Itoa(height))
+	waitForTmuxPaneSize(a.t, a.socket, a.session, width, height)
 }
 
 func (a *tmuxTUI) WaitFor(wants ...string) string {
@@ -1407,7 +1459,7 @@ func (a *tmuxTUI) WaitForExit() {
 		if _, dead := a.PaneDeadStatus(); dead {
 			return
 		}
-		if err := exec.Command("tmux", "has-session", "-t", a.session).Run(); err != nil {
+		if err := exec.Command("tmux", "-L", a.socket, "has-session", "-t", a.session).Run(); err != nil {
 			return
 		}
 		time.Sleep(tuiE2EPollInterval)
@@ -1417,7 +1469,7 @@ func (a *tmuxTUI) WaitForExit() {
 
 func (a *tmuxTUI) PaneDeadStatus() (string, bool) {
 	a.t.Helper()
-	out, err := exec.Command("tmux", "display-message", "-p", "-t", a.session, "#{pane_dead} #{pane_dead_status}").CombinedOutput()
+	out, err := exec.Command("tmux", "-L", a.socket, "display-message", "-p", "-t", a.session, "#{pane_dead} #{pane_dead_status}").CombinedOutput()
 	if err != nil {
 		return "", false
 	}
@@ -1456,11 +1508,16 @@ func TestParsePaneDeadStatus(t *testing.T) {
 	}
 }
 
-func runTmux(t *testing.T, args ...string) {
+// runTmux runs a tmux subcommand against the given dedicated socket. "-L"
+// (the socket-name flag) must precede the subcommand, per tmux's own flag
+// parsing, which is why it's threaded through here rather than left to each
+// call site.
+func runTmux(t *testing.T, socket string, args ...string) {
 	t.Helper()
-	out, err := exec.Command("tmux", args...).CombinedOutput()
+	fullArgs := append([]string{"-L", socket}, args...)
+	out, err := exec.Command("tmux", fullArgs...).CombinedOutput()
 	if err != nil {
-		t.Fatalf("tmux %s: %v\n%s", strings.Join(args, " "), err, out)
+		t.Fatalf("tmux %s: %v\n%s", strings.Join(fullArgs, " "), err, out)
 	}
 }
 
