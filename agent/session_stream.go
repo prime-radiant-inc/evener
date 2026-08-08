@@ -52,11 +52,11 @@ type attemptObservation struct {
 	SalvagedBytes int
 }
 
-// modelRetryFailFastAfter mirrors callModel's RetryStreamOptions.FailFastAfter
-// (llm/stream_retry.go's streak-rule budget). Duplicated as a named constant
-// here rather than read off callModel's literal because callModel's retry
-// closure is out of scope for this change; keep the two in sync by hand if
-// the streak budget ever changes.
+// modelRetryFailFastAfter is the fail-fast budget callModel gives
+// llm.RetryStream: the number of consecutive consume-phase failures that ends
+// a retry group early (llm/stream_retry.go's streak rule). Named here because
+// the retry chip's denominator drops to it as soon as such a failure lands, so
+// the two readers must not drift.
 const modelRetryFailFastAfter = 4
 
 // emitModelRetry builds the RetryPolicy.OnRetry hook that reports each retry of
@@ -137,10 +137,11 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 				s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
 			},
 			// FailFastAfter enables both llm.RetryStream early-stop rules: the
-			// streak rule (4 consecutive consume-phase failures) and the cap
-			// rule (2 consecutive long streams cut mid-flight). Disabled (0) in
-			// RetryStream's non-agent callers, which see no behavior change.
-			FailFastAfter: 4,
+			// streak rule (modelRetryFailFastAfter consecutive consume-phase
+			// failures) and the cap rule (2 consecutive long streams cut
+			// mid-flight). Disabled (0) in RetryStream's non-agent callers,
+			// which see no behavior change.
+			FailFastAfter: modelRetryFailFastAfter,
 		}, func(ctx context.Context) (llm.AttemptReport, error) {
 			attemptStart := time.Now()
 			st, err := s.client.Stream(ctx, req)
