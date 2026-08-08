@@ -438,8 +438,9 @@ func hubRPCURL(addr HubAddress) string {
 }
 
 func StartLocalHub(req HubStartRequest) error {
-	// The hub is intentionally detached (Process.Release below) to outlive the
-	// TUI, so it must NOT be bound to a cancellable context that would kill it.
+	// The hub is intentionally detached (releaseHubProcess below) to outlive
+	// the TUI, so it must NOT be bound to a cancellable context that would
+	// kill it.
 	//nolint:noctx // launched process is deliberately released to run independently.
 	cmd := exec.Command(req.Binary, "--addr", req.BindAddr)
 	if req.StateDir != "" {
@@ -486,7 +487,20 @@ func StartLocalHub(req HubStartRequest) error {
 		return fmt.Errorf("serf-hub exited during startup: %w", err)
 	case <-time.After(LocalHubImmediateExitWindow):
 	}
-	return releaseHubProcess(cmd.Process)
+	// The hub survived the window: it's healthy and stays running detached
+	// from the TUI. The goroutine above remains parked inside cmd.Wait()
+	// for as long as the hub runs, which may be indefinitely. Go's
+	// Process.Release and Process.Wait must never be called concurrently on
+	// the same *os.Process (Release mutates bookkeeping, such as Pid, that
+	// Wait concurrently reads); calling releaseHubProcess(cmd.Process) here
+	// would race that still-in-flight Wait. Detach through an independent
+	// Process handle for the same pid instead, so cmd.Process itself is
+	// only ever touched by the Wait goroutine.
+	standalone, err := os.FindProcess(cmd.Process.Pid)
+	if err != nil {
+		return err
+	}
+	return releaseHubProcess(standalone)
 }
 
 func StateHomeForSerfStateDir(stateDir string) string {
