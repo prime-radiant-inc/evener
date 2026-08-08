@@ -478,8 +478,10 @@ TDD throughout; per repo policy, all functionality covered.
   mixed-round precedence — primary consume-phase salvage survives a chain
   walk ending in an open-phase or context-length fallback error, and
   steering describes the consume-phase group with a fallback-also-failed
-  clause; steering-only when nothing salvageable; wording matches failure
-  shape.
+  clause; steering-only when nothing salvageable — meaning literally zero
+  salvaged bytes (silent stalls), never a smallness judgment: a
+  trickle-stall's fragment persists with fragment wording; wording
+  matches failure shape.
 - **Composer templates:** every terminal-error class that can reach
   settlement maps to exactly one template; singular/plural truthfulness
   (a one-attempt settlement never says "repeatedly"); fragment-vs-draft
