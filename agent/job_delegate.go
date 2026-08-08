@@ -718,7 +718,22 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 				return s.sendRunningDelegateMessage(target, message, active, args.FromWatch, args.Provenance)
 			}
 			if strings.HasPrefix(err.Error(), "active_delegate_not_found:") {
-				return sendMessageFailed(target, notResumableSendError(notResumableChildSessionBusy))
+				// TOCTOU guard (kata 4gm9): the top-of-block sub.running read and
+				// this findRunning lookup are not atomic, so the retained child may
+				// have gone idle (its notification turn finished) in between. A
+				// retained child's ownership is still ours regardless, but its
+				// classification depends on live state at send time, not at the
+				// moment we entered this block: re-read under lock and only
+				// classify child_session_busy if it is genuinely still
+				// running/driving now. Otherwise, don't misreport a resumable
+				// retained child as busy — fall through to the generic re-check
+				// below, which re-derives fresh state and resumes it.
+				sub.mu.Lock()
+				stillBusy := sub.running || sub.driving
+				sub.mu.Unlock()
+				if stillBusy {
+					return sendMessageFailed(target, notResumableSendError(notResumableChildSessionBusy))
+				}
 			}
 		}
 	}
