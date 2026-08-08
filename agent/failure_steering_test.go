@@ -79,6 +79,19 @@ func capGroup(n int) groupRecord {
 	return g
 }
 
+// contentFilterGroup is a group whose OWN stream the provider's content filter
+// killed. That is the shape the filter carve-out exists for: this group's
+// partial is the content that tripped the filter, so persisting it would pin it
+// in history and defeat the ForceCompact recovery.
+func contentFilterGroup(t *testing.T, n int) groupRecord {
+	t.Helper()
+	g := groupRecord{Model: "kimi-k3", Provider: "lunarouter"}
+	for range n {
+		g.Attempts = append(g.Attempts, consumeAttempt(filterBlockedErr(t), 20*time.Second, 10*time.Second, 40))
+	}
+	return g
+}
+
 func withSalvage(g groupRecord, text string) groupRecord {
 	g.BestPartial = responseWith(textPart(text))
 	g.BestBytes = len(text)
@@ -159,15 +172,24 @@ func TestClassifySettlement(t *testing.T) {
 		},
 		{
 			name:     "content filter with a consume-phase failure is steering only",
-			rec:      &roundRecorder{Groups: []groupRecord{stallGroup(2)}},
+			rec:      &roundRecorder{Groups: []groupRecord{contentFilterGroup(t, 2)}},
 			terminal: filterBlockedErr(t),
 			want:     settleSteeringOnly,
 		},
 		{
-			name:     "content filter never persists salvage",
-			rec:      &roundRecorder{Groups: []groupRecord{withSalvage(capGroup(2), strings.Repeat("plan ", 2000))}},
+			name:     "content filter never persists the salvage it filtered",
+			rec:      &roundRecorder{Groups: []groupRecord{withSalvage(contentFilterGroup(t, 2), strings.Repeat("plan ", 2000))}},
 			terminal: filterBlockedErr(t),
 			want:     settleSteeringOnly,
+		},
+		{
+			name: "mixed round: primary consume-phase salvage survives a fallback content-filter terminal",
+			rec: &roundRecorder{Groups: []groupRecord{
+				withSalvage(stallGroup(4), strings.Repeat("plan ", 2000)),
+				{Model: "kimi-k3-mini", Attempts: []attemptRecord{consumeAttempt(filterBlockedErr(t), 20*time.Second, 10*time.Second, 40)}},
+			}},
+			terminal: filterBlockedErr(t),
+			want:     settleSalvageAndSteering,
 		},
 		{
 			name:     "content filter without a consume-phase failure never settles",
@@ -279,9 +301,21 @@ func TestComposeFailureSteering(t *testing.T) {
 		},
 		{
 			name:     "content filter gets filter wording with no draft reference",
-			rec:      &roundRecorder{Groups: []groupRecord{stallGroup(2)}},
+			rec:      &roundRecorder{Groups: []groupRecord{contentFilterGroup(t, 2)}},
 			terminal: filterBlockedErr(t),
 			want:     "The provider blocked this response under its content policy. Nothing was delivered or saved.",
+		},
+		{
+			name: "mixed round describes the salvage-producing stall group, not the fallback's content filter",
+			rec: &roundRecorder{Groups: []groupRecord{
+				withSalvage(stallGroup(4), strings.Repeat("plan ", 2000)),
+				{Model: "kimi-k3-mini", Attempts: []attemptRecord{consumeAttempt(filterBlockedErr(t), 20*time.Second, 10*time.Second, 40)}},
+			}},
+			terminal:      filterBlockedErr(t),
+			salvagedBytes: 40000,
+			want: "The provider stopped responding mid-stream, 4 times over 2 minutes. " +
+				"The configured fallback model also failed (content filter error). " +
+				wantDraftSentences,
 		},
 		{
 			name:     "unhealthy verdict without recorded attempts still renders its shape",
@@ -366,8 +400,19 @@ func TestComposeFailureSteering_OneTemplatePerTerminalClass(t *testing.T) {
 		{"silent stall", &roundRecorder{Groups: []groupRecord{{Attempts: []attemptRecord{silentStallAttempt(30 * time.Second)}}}}, midStreamErr()},
 		{"cap", &roundRecorder{Groups: []groupRecord{capGroup(2)}}, &llm.ProviderUnhealthyError{Shape: "cap", Attempts: 2, Elapsed: 600 * time.Second, LastErr: midStreamErr()}},
 		{"decoded in-band", &roundRecorder{Groups: []groupRecord{{Attempts: []attemptRecord{consumeAttempt(inBandErr(), 40*time.Second, 30*time.Second, 120)}}}}, inBandErr()},
-		{"content filter", &roundRecorder{Groups: []groupRecord{stallGroup(2)}}, filterBlockedErr(t)},
+		{"content filter", &roundRecorder{Groups: []groupRecord{contentFilterGroup(t, 2)}}, filterBlockedErr(t)},
 		{"mixed round ending on an open-phase fallback", &roundRecorder{Groups: []groupRecord{stallGroup(4), {Attempts: []attemptRecord{openAttempt(authErr())}}}}, authErr()},
+		// Nothing salvageable, so the described group IS the one that filtered.
+		{"mixed round ending on a fallback content filter", &roundRecorder{Groups: []groupRecord{
+			stallGroup(4),
+			{Attempts: []attemptRecord{consumeAttempt(filterBlockedErr(t), 20*time.Second, 10*time.Second, 40)}},
+		}}, filterBlockedErr(t)},
+		// Salvage moves the described group back to the primary, whose failure
+		// no filter touched: the stall template wins over the terminal error's.
+		{"mixed round whose salvage-producing group stalled while the fallback filtered", &roundRecorder{Groups: []groupRecord{
+			withSalvage(stallGroup(4), strings.Repeat("plan ", 2000)),
+			{Attempts: []attemptRecord{consumeAttempt(filterBlockedErr(t), 20*time.Second, 10*time.Second, 40)}},
+		}}, filterBlockedErr(t)},
 	}
 
 	for _, tc := range tests {
@@ -452,8 +497,9 @@ func TestClassifySettlement_SalvageNeedsNoByteFloor(t *testing.T) {
 	if got := classifySettlement(rec, midStreamErr()); got != settleSalvageAndSteering {
 		t.Fatalf("classifySettlement with a 1-byte partial = %v, want settleSalvageAndSteering", got)
 	}
+	// Model-visible product text: the count agrees with its unit at n=1.
 	got := composeFailureSteering(rec, midStreamErr(), 1, "communicate")
-	if !strings.Contains(got, "A small fragment (1 bytes) was produced and not delivered.") {
+	if !strings.Contains(got, "A small fragment (1 byte) was produced and not delivered.") {
 		t.Fatalf("steering %q, want the fragment sentence", got)
 	}
 }

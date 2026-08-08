@@ -49,7 +49,7 @@ const (
 		"Treat it as your draft — re-send user-facing content through %s and re-issue " +
 		"file writes in smaller pieces, reusing the draft rather than regenerating it. " +
 		"Do not start over."
-	fragmentSteering  = "A small fragment (%d bytes) was produced and not delivered."
+	fragmentSteering  = "A small fragment (%s) was produced and not delivered."
 	capAdviceSteering = "The transport cannot sustain responses that long. Keep each response " +
 		"well under that size and continue your work across multiple rounds."
 	fallbackAlsoFailedSteering = "The configured fallback model also failed"
@@ -81,28 +81,47 @@ const (
 // Excluded: cancellations, and rounds whose only failures are open-phase
 // request rejections (auth, 4xx, quota, context length — all rejected before
 // the stream opened, so "the provider connection failed" would be false).
-// Content-filter rounds settle steering-only, and never with salvage: a
-// compaction-atomic turn carrying the filtered content would pin it in history
-// and defeat the ForceCompact recovery that exists to remove it.
+// A round whose described group was itself killed by a content filter settles
+// steering-only, and never with salvage: a compaction-atomic turn carrying the
+// filtered content would pin it in history and defeat the ForceCompact recovery
+// that exists to remove it.
 func classifySettlement(rec *roundRecorder, terminalErr error) settlementKind {
 	if roundWasCancelled(terminalErr) {
 		return settleNone
 	}
-	consumePhase := rec.HasConsumePhaseFailure()
-	if llm.Kind(terminalErr) == llm.KindContentFilter {
-		if consumePhase {
-			return settleSteeringOnly
-		}
-		return settleNone
+	if contentFilterKilledGroup(rec.SteeringGroup()) {
+		return settleSteeringOnly
 	}
 	var unhealthy *llm.ProviderUnhealthyError
-	if !consumePhase && !errors.As(terminalErr, &unhealthy) {
+	if !rec.HasConsumePhaseFailure() && !errors.As(terminalErr, &unhealthy) {
 		return settleNone
 	}
 	if partial, _ := rec.BestSalvage(); salvageText(partial) != "" {
 		return settleSalvageAndSteering
 	}
 	return settleSteeringOnly
+}
+
+// contentFilterKilledGroup reports whether the group the round's steering
+// describes was itself blocked by the provider's content filter.
+//
+// Keyed on that group, never on the round's terminal error, per the spec's
+// mixed-round precedence ("the exclusions key on the class of the
+// salvage-producing (or consume-phase) group's failure"). A chain walk can end
+// on a fallback's filter rejection while the primary group's partial — content
+// no filter ever touched — is exactly the work settlement exists to preserve,
+// and the carve-out's own rationale (never pin the content that TRIPPED the
+// filter) does not reach a partial from a different group.
+func contentFilterKilledGroup(g *groupRecord) bool {
+	if g == nil {
+		return false
+	}
+	for _, a := range g.Attempts {
+		if a.Err != nil && llm.Kind(a.Err) == llm.KindContentFilter {
+			return true
+		}
+	}
+	return false
 }
 
 // roundWasCancelled reports whether the round ended because its context went away
@@ -125,10 +144,11 @@ func roundWasCancelled(err error) bool {
 // Interrupt wording is deliberately absent: an interrupted round makes no
 // provider-failure claim and is steered elsewhere.
 func composeFailureSteering(rec *roundRecorder, terminalErr error, salvagedBytes int, resultToolName string) string {
-	if llm.Kind(terminalErr) == llm.KindContentFilter {
+	steeringGroup := rec.SteeringGroup()
+	if contentFilterKilledGroup(steeringGroup) {
 		return contentFilterSteering
 	}
-	what, shape, ok := describeGroupFailure(rec.SteeringGroup(), terminalErr)
+	what, shape, ok := describeGroupFailure(steeringGroup, terminalErr)
 	if !ok {
 		return ""
 	}
@@ -140,7 +160,9 @@ func composeFailureSteering(rec *roundRecorder, terminalErr error, salvagedBytes
 	case salvagedBytes >= substantialSalvageBytes:
 		parts = append(parts, fmt.Sprintf(draftSteering, resultToolName))
 	case salvagedBytes > 0:
-		parts = append(parts, fmt.Sprintf(fragmentSteering, salvagedBytes))
+		// pluralizedUnit, not a bare %d bytes: the fragment sentence is
+		// model-visible product text and must agree with its unit at n=1.
+		parts = append(parts, fmt.Sprintf(fragmentSteering, pluralizedUnit(salvagedBytes, "byte")))
 	}
 	if shape == shapeCap {
 		parts = append(parts, capAdviceSteering)
