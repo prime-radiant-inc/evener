@@ -346,6 +346,10 @@ let mutationStorageForTests: MutationOutboxIndexedDB | null = null;
 let createMutationBroadcastChannelForTests: NonNullable<MutationOutboxOptions["createBroadcastChannel"]> | undefined;
 const mutationPersistenceListeners = new Set<(targetRefs: string[]) => void>();
 
+function isCurrentMutationRuntime(runtime: MutationRuntime | null): runtime is MutationRuntime {
+  return runtime?.active === true && mutationRuntime === runtime;
+}
+
 function notifyMutationPersistence(targetRefs: Iterable<string>): void {
   const refs = [...new Set(targetRefs)];
   for (const listener of mutationPersistenceListeners) listener(refs);
@@ -374,9 +378,9 @@ function dropUnpinnedModel(ref: string): void {
 }
 
 async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterable<string>): Promise<void> {
-  if (!runtime.active || mutationRuntime !== runtime) return;
+  if (!isCurrentMutationRuntime(runtime)) return;
   for (const targetRef of targetRefs) {
-    if (!runtime.active || mutationRuntime !== runtime) return;
+    if (!isCurrentMutationRuntime(runtime)) return;
     const [outbox, optimistic] = await Promise.all([
       runtime.storage.listOutbox(targetRef),
       runtime.storage.listOptimistic(targetRef),
@@ -397,7 +401,7 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
 }
 
 function scheduleMutationDispatch(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
-  if (!runtime.active) return;
+  if (!isCurrentMutationRuntime(runtime)) return;
   const refs = [...new Set(targetRefs)].filter((targetRef) => dispatchableMutationRefs.has(targetRef));
   if (refs.length === 0) return;
   void runtime.dispatcher
@@ -409,7 +413,7 @@ function scheduleMutationDispatch(runtime: MutationRuntime, targetRefs: Iterable
 }
 
 function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
-  if (!runtime.active || mutationRuntime !== runtime) return;
+  if (!isCurrentMutationRuntime(runtime)) return;
   const refs = [...new Set(targetRefs)];
   for (const targetRef of refs) pinnedMutationRefs.add(targetRef);
   notifyMutationPersistence(refs);
@@ -431,28 +435,31 @@ function getMutationRuntime(): MutationRuntime | null {
   if (!globalThis.indexedDB) return null;
 
   const storage = mutationStorageForTests ?? new MutationOutboxIndexedDB();
+  let runtime: MutationRuntime | null = null;
   const dispatcher = new MutationDispatcher(storage, {
-    getClient: currentDispatchClient,
-    onStorageChange: notifyMutationPersistence,
+    getClient: (targetRef) => (isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef) : null),
+    onStorageChange: (targetRefs) => {
+      if (isCurrentMutationRuntime(runtime)) notifyMutationPersistence(targetRefs);
+    },
   });
-  let runtime: MutationRuntime;
   const outbox = new MutationOutbox(storage, {
-    isReady: () => currentDispatchClient() !== null,
+    isReady: () => isCurrentMutationRuntime(runtime) && currentDispatchClient() !== null,
     onDiscover: (targetRefs) => {
-      handleDiscoveredMutations(runtime, targetRefs);
+      if (runtime) handleDiscoveredMutations(runtime, targetRefs);
     },
     createBroadcastChannel: createMutationBroadcastChannelForTests,
   });
-  runtime = {
+  const initializedRuntime: MutationRuntime = {
     storage,
     dispatcher,
     outbox,
     start: Promise.resolve(),
     active: true,
   };
-  mutationRuntime = runtime;
-  runtime.start = outbox.start();
-  return runtime;
+  runtime = initializedRuntime;
+  mutationRuntime = initializedRuntime;
+  initializedRuntime.start = outbox.start();
+  return initializedRuntime;
 }
 
 function requireMutationRuntime(): MutationRuntime {
@@ -1448,21 +1455,28 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
     ...Array.from(watchRefs, (ref) => refreshWatchedThread(client, epoch, ref, targetedResync)),
   ]);
 
-  if (!runtime || wiredClient !== client || readyEpoch !== epoch || client.state !== "ready") return;
+  if (!isCurrentMutationRuntime(runtime) || wiredClient !== client || readyEpoch !== epoch || client.state !== "ready")
+    return;
   if (!targetedResync) {
     const alreadyHydrated = new Set(refs);
     const discovered = await discoveredPinnedRefs;
-    // A pin is a fact about storage, so record it whatever generation we are
-    // in. Rejoining is a fact about a connection: this scan is a real
-    // IndexedDB read and a reconnect can land inside it, so re-check before
-    // dispatching rather than letting a dead generation put reads on the wire
-    // and relying on the publish gate to throw their snapshots away.
+    // A pin is a fact about this runtime's storage, while rejoining is a fact
+    // about this connection generation. This scan is a real IndexedDB read,
+    // so reset or reconnect can land inside it; re-check both owners before
+    // mutating the shared pin set or putting reads on the wire.
+    if (!isCurrentMutationRuntime(runtime)) return;
     for (const ref of discovered) pinnedMutationRefs.add(ref);
     if (wiredClient !== client || readyEpoch !== epoch || client.state !== "ready") return;
     await Promise.all(
       discovered.filter((ref) => !alreadyHydrated.has(ref)).map((ref) => handleReady(client, epoch, ref)),
     );
-    if (wiredClient !== client || readyEpoch !== epoch || client.state !== "ready") return;
+    if (
+      !isCurrentMutationRuntime(runtime) ||
+      wiredClient !== client ||
+      readyEpoch !== epoch ||
+      client.state !== "ready"
+    )
+      return;
   }
   if (!targetedResync) {
     dispatchReadyClient = client;

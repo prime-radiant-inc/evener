@@ -38,6 +38,7 @@ import {
   resendRecoveryMutation,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
+  subscribeMutationPersistence,
   threadsStore,
   useThreadsStore,
 } from "./threads";
@@ -3790,6 +3791,77 @@ test("reset retires an outbox discovery before the next runtime starts", async (
   expect(fake.calls.filter((call) => call.method === "thread/read").map((call) => call.params)).not.toContainEqual(
     expect.objectContaining({ ref: "stale_ref" }),
   );
+});
+
+test("reset retires an in-flight dispatcher's persistence callback", async () => {
+  const oldStorage = new MutationOutboxIndexedDB();
+  let finishOldSettlement!: (settled: boolean) => void;
+  const oldSettlement = new Promise<boolean>((resolve) => {
+    finishOldSettlement = resolve;
+  });
+  let oldSettlementStarted!: () => void;
+  const settlementStarted = new Promise<void>((resolve) => {
+    oldSettlementStarted = resolve;
+  });
+  vi.spyOn(oldStorage, "settleReceipt").mockImplementation(() => {
+    oldSettlementStarted();
+    return oldSettlement;
+  });
+  setMutationStorageForTests(oldStorage);
+
+  const oldClient = connectMutationClient();
+  oldClient.on("turn/start", (params) => ({
+    turn: { id: "turn_old", status: "inProgress", itemsView: "" },
+    receipt: mutationReceipt(params.clientMutationId),
+  }));
+  await threadsStore.getState().send("old_ref", "old runtime");
+  await settlementStarted;
+
+  resetThreadsStoreForTests();
+  const persisted: string[][] = [];
+  const unsubscribe = subscribeMutationPersistence((targetRefs) => persisted.push(targetRefs));
+  finishOldSettlement(true);
+  await settleCallerContinuations();
+  unsubscribe();
+
+  expect(persisted).toEqual([]);
+});
+
+test("reset retires a ready scan before it can pin refs in the next runtime", async () => {
+  const oldStorage = new MutationOutboxIndexedDB();
+  let finishOldReadyScan!: (targetRefs: string[]) => void;
+  const oldReadyScan = new Promise<string[]>((resolve) => {
+    finishOldReadyScan = resolve;
+  });
+  let oldReadyScanStarted!: () => void;
+  const readyScanStarted = new Promise<void>((resolve) => {
+    oldReadyScanStarted = resolve;
+  });
+  let scans = 0;
+  vi.spyOn(oldStorage, "listTargetRefs").mockImplementation(() => {
+    scans += 1;
+    if (scans === 1) return Promise.resolve([]);
+    oldReadyScanStarted();
+    return oldReadyScan;
+  });
+  setMutationStorageForTests(oldStorage);
+
+  const oldClient = connectFakeClient("connecting");
+  oldClient.emitReady();
+  await readyScanStarted;
+
+  resetThreadsStoreForTests();
+  const newStorage = new MutationOutboxIndexedDB();
+  vi.spyOn(newStorage, "listTargetRefs").mockResolvedValue([]);
+  setMutationStorageForTests(newStorage);
+  finishOldReadyScan(["stale_ref"]);
+  await settleCallerContinuations();
+
+  const newClient = new FakeClient("ready");
+  newClient.on("thread/read", () => readResponse("stale_ref"));
+  connectionStore.getState().connect(newClient);
+
+  expect(newClient.calls.filter((call) => call.method === "thread/read")).toEqual([]);
 });
 
 describe("useThreadsStore.listTasks", () => {
