@@ -892,25 +892,38 @@ func (s *Session) noteParentJobActivity(phase string) {
 }
 
 // markSalvagedTurnPersisted records that Component 3 settlement just appended
-// a salvaged assistant turn to this session's transcript. Called only from
-// persistSalvagedTurn, on the success path, so it can never latch true from a
-// draft that never actually reached the transcript.
+// a salvaged assistant turn to this session's transcript, stamping the round
+// it happened in (totalRounds). Called only from persistSalvagedTurn, on the
+// success path, so it can never stamp a draft that never actually reached
+// the transcript. Overwritten on every subsequent salvage — see
+// hasSalvageFromFinalRound for why the round stamp matters.
 func (s *Session) markSalvagedTurnPersisted() {
 	s.mu.Lock()
-	s.salvagedTurnPersisted = true
+	s.salvagedTurnRound = s.totalRounds
 	s.mu.Unlock()
 }
 
-// hasSalvagedTurnPersisted reports whether this session's transcript holds a
-// Component 3 salvaged turn. A delegating parent calls this on a failed
-// child's session at finalize time to decide whether the failed delegate
-// result should point at resuming the draft (delegate_send) — reading the
-// materialized latch directly rather than guessing from the child's error
-// text.
-func (s *Session) hasSalvagedTurnPersisted() bool {
+// hasSalvageFromFinalRound reports whether this session's transcript holds a
+// Component 3 salvaged turn from the LAST round the session ever ran — the
+// round whose failure actually ended it, not some earlier settlement the
+// session ran past on its way to a later, unrelated failure. A delegating
+// parent calls this on a failed child's session at finalize time to decide
+// whether the failed delegate result should point at resuming the draft
+// (delegate_send).
+//
+// The round scope matters: a session can salvage a transient stall on round
+// 2, run several more rounds, and finally die of context length on round 8 —
+// a class Component 3 deliberately excludes from salvage/steering, because
+// appending more input to an already-overflowing history makes it worse.
+// Recommending delegate_send off the stale round-2 salvage would defeat that
+// exclusion by a side door. Comparing salvagedTurnRound to the CURRENT
+// totalRounds (read after the child has fully stopped, so both are stable)
+// is exact: equal means nothing ran after the salvage, so it explains why
+// the session stopped; unequal means the salvage is stale.
+func (s *Session) hasSalvageFromFinalRound() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.salvagedTurnPersisted
+	return s.salvagedTurnRound != 0 && s.salvagedTurnRound == s.totalRounds
 }
 
 func (s *Session) sendInput(ctx context.Context, agentID string, input string) (any, error) {

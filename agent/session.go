@@ -234,7 +234,7 @@ type Session struct {
 	//   steeringQueue, activeProvenance, followups, inputQueue,
 	//   loopDetectionCount, the task* reminder counters, depth, the goalInTurn
 	//   flag and kickFunc callback, the naming name-state, envTracker,
-	//   envContextState, currentRoundRecorder, salvagedTurnPersisted, and the worktree
+	//   envContextState, currentRoundRecorder, salvagedTurnRound, and the worktree
 	//   occupancy fields (worktreeRestoreEnv, worktreeCurrentPath,
 	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub). It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
@@ -315,14 +315,15 @@ type Session struct {
 	// settlement path after a terminal failure. Guarded by mu.
 	currentRoundRecorder *roundRecorder
 
-	// salvagedTurnPersisted latches true the first time persistSalvagedTurn
-	// (Component 3 settlement) appends a salvaged assistant turn to this
-	// session's transcript. Never cleared once set. A delegating parent reads
-	// it via hasSalvagedTurnPersisted, after this session has run as a child,
-	// to decide whether a failed delegate result should point at resuming the
-	// draft (delegate_send) rather than re-dispatching from scratch. Guarded
+	// salvagedTurnRound is the totalRounds value at the moment
+	// persistSalvagedTurn (Component 3 settlement) most recently appended a
+	// salvaged assistant turn to this session's transcript; 0 means never.
+	// Overwritten on every salvage, never cleared otherwise. A delegating
+	// parent compares it against totalRounds (hasSalvageFromFinalRound) to
+	// tell a salvage that explains why the session ultimately stopped from a
+	// stale one the session ran past — see hasSalvageFromFinalRound. Guarded
 	// by mu.
-	salvagedTurnPersisted bool
+	salvagedTurnRound int
 
 	fork forkInfo
 

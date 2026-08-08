@@ -2371,10 +2371,12 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 		runProvenance := provenance.Clone(sub.runProvenance)
 		sub.mu.Unlock()
 
-		// Read directly off the child's persisted-turn latch — never inferred
-		// from subErr's text — while childSess is still known live, the same
-		// "capture now, read back later" shape run.structured uses below.
-		salvagedDraft := childSess != nil && childSess.hasSalvagedTurnPersisted()
+		// Read directly off the child's round-scoped salvage signal — never
+		// inferred from subErr's text — while childSess is still known live,
+		// the same "capture now, read back later" shape run.structured uses
+		// below. hasSalvageFromFinalRound (not "ever salvaged") is what keeps
+		// this from recommending a resume off a stale, unrelated salvage.
+		salvagedDraft := childSess != nil && childSess.hasSalvageFromFinalRound()
 
 		exhaustion, _ := budgetExhaustionFromError(subErr)
 		jm.mu.Lock()

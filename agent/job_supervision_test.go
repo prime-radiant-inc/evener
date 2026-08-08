@@ -420,14 +420,22 @@ func TestSubagentModelRetrySurfacesJobPhaseModelRetrying(t *testing.T) {
 // failed delegate whose child transcript already holds a Component 3
 // salvaged turn must tell the parent to resume it via delegate_send rather
 // than re-dispatch a fresh child that regenerates the same work. Detection
-// reads the child session's persisted-turn latch directly (hasSalvagedTurnPersisted),
-// never sub.err's text.
+// reads the child session's persisted-turn latch directly
+// (hasSalvageFromFinalRound), never sub.err's text. Here the salvage happens
+// in the same (and only) round the child ever ran, so it trivially IS the
+// round whose failure ended the session.
 func TestDelegateTerminalResult_FailedChildWithSalvagedDraftNotesResume(t *testing.T) {
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	clk := newMutableClock(time.Unix(7500, 0).UTC())
 	parent.jobManager.now = clk.now
 
+	// A real settlement never fires before totalRounds is at least 1 (it is
+	// always incremented at the start of the round it settles); stamp that
+	// here so the round-scoped check below sees a realistic "salvaged during
+	// the one round this child ran" round count rather than the fresh
+	// session's zero value.
+	child.totalRounds = 1
 	if err := child.persistSalvagedTurn("the plan so far", "gpt-5.2", "openai"); err != nil {
 		t.Fatalf("persistSalvagedTurn: %v", err)
 	}
@@ -456,6 +464,120 @@ func TestDelegateTerminalResult_FailedChildWithSalvagedDraftNotesResume(t *testi
 	const want = "partial draft salvaged in the child transcript — resume it with delegate_send rather than re-dispatching"
 	if !strings.Contains(res.Output, want) {
 		t.Fatalf("res.Output = %q, want it to contain %q", res.Output, want)
+	}
+}
+
+// TestDelegateTerminalResult_StaleSalvageFromEarlierRoundIsNotRecommended:
+// round 2 salvages a transient stall, the child then runs six more rounds
+// (3-8), and round 8 dies of an unrelated, non-salvageable failure (e.g.
+// context length) that persists no new salvage. The stale round-2 salvage
+// must NOT tell the parent to resume: Component 3 deliberately excludes
+// context-length failures from salvage/steering because appending more
+// input to an already-overflowing history makes it worse, and recommending
+// delegate_send here would defeat that exclusion by a side door.
+func TestDelegateTerminalResult_StaleSalvageFromEarlierRoundIsNotRecommended(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	clk := newMutableClock(time.Unix(7600, 0).UTC())
+	parent.jobManager.now = clk.now
+
+	child.totalRounds = 2
+	if err := child.persistSalvagedTurn("early transient stall draft", "gpt-5.2", "openai"); err != nil {
+		t.Fatalf("persistSalvagedTurn: %v", err)
+	}
+	child.totalRounds = 8 // more rounds ran after the salvage; none produced a new one
+
+	sub := &subagent{
+		id:     child.ID(),
+		sess:   child,
+		status: SubagentFailed,
+		err:    errors.New("context length exceeded"),
+		done:   make(chan struct{}),
+	}
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+		t.Fatalf("finalizeDelegate: %v", err)
+	}
+	waitForShellDone(t, parent.jobManager, run.rec.JobID)
+
+	res := delegateTerminalResult(parent, parent.jobManager, run)
+	if res.Status != jobstore.StatusFailed {
+		t.Fatalf("res.Status = %q, want %q", res.Status, jobstore.StatusFailed)
+	}
+	if strings.Contains(res.Output, "partial draft salvaged") {
+		t.Fatalf("res.Output = %q, must not recommend resuming a round-2 salvage for a round-8 failure", res.Output)
+	}
+}
+
+// TestDelegateTerminalResult_CompletedChildWithSalvageHasNoNote: the note is
+// gated on Status == Failed, so a delegate that salvaged mid-conversation but
+// went on to complete successfully must never carry it.
+func TestDelegateTerminalResult_CompletedChildWithSalvageHasNoNote(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	clk := newMutableClock(time.Unix(7700, 0).UTC())
+	parent.jobManager.now = clk.now
+
+	if err := child.persistSalvagedTurn("draft", "gpt-5.2", "openai"); err != nil {
+		t.Fatalf("persistSalvagedTurn: %v", err)
+	}
+
+	sub := completedDelegateSubagent(child, "final report")
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+		t.Fatalf("finalizeDelegate: %v", err)
+	}
+	waitForShellDone(t, parent.jobManager, run.rec.JobID)
+
+	res := delegateTerminalResult(parent, parent.jobManager, run)
+	if res.Status != jobstore.StatusCompleted {
+		t.Fatalf("res.Status = %q, want %q", res.Status, jobstore.StatusCompleted)
+	}
+	if strings.Contains(res.Output, "partial draft salvaged") {
+		t.Fatalf("res.Output = %q, a completed delegate must never carry the salvage note", res.Output)
+	}
+}
+
+// TestDelegateTerminalResult_FailedChildWithNoSalvageHasNoNote: the note is
+// gated on the child having actually persisted a salvaged turn — a plain
+// failure with nothing salvaged must not carry it.
+func TestDelegateTerminalResult_FailedChildWithNoSalvageHasNoNote(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	clk := newMutableClock(time.Unix(7800, 0).UTC())
+	parent.jobManager.now = clk.now
+
+	sub := &subagent{
+		id:     child.ID(),
+		sess:   child,
+		status: SubagentFailed,
+		err:    errors.New("provider unhealthy"),
+		done:   make(chan struct{}),
+	}
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+		t.Fatalf("finalizeDelegate: %v", err)
+	}
+	waitForShellDone(t, parent.jobManager, run.rec.JobID)
+
+	res := delegateTerminalResult(parent, parent.jobManager, run)
+	if res.Status != jobstore.StatusFailed {
+		t.Fatalf("res.Status = %q, want %q", res.Status, jobstore.StatusFailed)
+	}
+	if strings.Contains(res.Output, "partial draft salvaged") {
+		t.Fatalf("res.Output = %q, a failed delegate with nothing salvaged must not carry the note", res.Output)
 	}
 }
 
