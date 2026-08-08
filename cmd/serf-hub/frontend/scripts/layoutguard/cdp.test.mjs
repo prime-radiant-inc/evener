@@ -1,91 +1,149 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { test } from "node:test";
+import { probeBrowserCapability } from "./cdp.mjs";
 
-// This test suite documents and verifies the preflight probe mechanism
-// (probeBrowserCapability() in cdp.mjs and its integration into run.mjs).
-//
-// The tests below are designed to run (not commented out) but require mocking
-// spawn() and file I/O to avoid actual Chrome startup. A complete mock-based
-// test would use a utility like `sinon` or custom spawn mocking. These tests
-// document the contract and expected behavior when Chrome startup fails.
+test("probeBrowserCapability includes Chrome binary path in error message on startup failure", async () => {
+  // Mock a spawn that returns a process with stderr but never succeeds waitForCdp
+  const mockSpawn = () => {
+    const proc = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = () => {};
+    // Never emit a success signal; waitForCdp will timeout and throw
+    return proc;
+  };
 
-test("probeBrowserCapability error message contains all required diagnostics", async () => {
-  // When Chrome startup fails, probeBrowserCapability() must throw an error
-  // with a message containing:
-  // 1. "Chrome startup failed (environment problem, not a test case failure)"
-  // 2. "Chrome binary: " with the resolved binary path
-  // 3. "Launch args: " with the arguments passed to spawn
-  // 4. A "To remediate:" section with actionable guidance
-  // 5. Either Chrome stderr or a fallback message about permissions/resources
-  //
-  // This documentation test verifies the error structure is comprehensive enough
-  // that an operator can quickly diagnose and fix the environment issue.
-
-  const expectedMessageParts = [
-    "Chrome startup failed (environment problem, not a test case failure)",
-    "Chrome binary:",
-    "Launch args:",
-    "To remediate:",
-    "Verify Chrome/Chromium is installed",
-    "Check system resources",
-    "Ensure no port conflict",
-  ];
-
-  // To test this in practice, mock spawn() to reject/timeout and verify
-  // all expectedMessageParts are present in the thrown error message.
+  await assert.rejects(
+    () => probeBrowserCapability(mockSpawn),
+    (err) => {
+      assert.ok(err.message.includes("Chrome startup failed"), "error should mention Chrome startup failed");
+      assert.ok(err.message.includes("Chrome binary:"), "error should include Chrome binary path");
+      return true;
+    },
+  );
 });
 
-test("layoutguard runner fails fast once when preflight probe fails", async () => {
-  // When probeBrowserCapability() throws in main(), run.mjs must:
-  // 1. Catch the error immediately
-  // 2. Print the diagnostic to stderr (console.error)
-  // 3. Exit with status code 1
-  // 4. NOT iterate any test cases
-  //
-  // This prevents the cascading identical "chrome devtools endpoint never came
-  // up" error messages (one per case) described in kata 2jyd.
-  //
-  // To test: mock spawn() to fail, mock fs.readdirSync() to return 14 cases,
-  // capture stdout/stderr, and verify:
-  // - stderr contains exactly one "Chrome startup failed" message
-  // - stdout contains zero per-case results (no "case1 ... PASS/FAIL", etc.)
-  // - process exit code is 1
+test("probeBrowserCapability includes launch arguments in error message", async () => {
+  const mockSpawn = () => {
+    const proc = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = () => {};
+    return proc;
+  };
+
+  await assert.rejects(
+    () => probeBrowserCapability(mockSpawn),
+    (err) => {
+      assert.ok(err.message.includes("Launch args:"), "error should include launch arguments");
+      // Verify specific args are included
+      assert.ok(err.message.includes("--headless=new"), "error should contain --headless=new");
+      assert.ok(err.message.includes("--disable-gpu"), "error should contain --disable-gpu");
+      return true;
+    },
+  );
 });
 
-test("filtered single-case run also gets preflight probe protection", async () => {
-  // Even when run with a case filter (e.g., `node run.mjs case-name`),
-  // probeBrowserCapability() runs BEFORE the filter is applied. This ensures
-  // environment problems are caught early and reported once, regardless of
-  // whether the runner iterates 1 case or 14 cases.
-  //
-  // To test: mock spawn() to fail, mock fs.readdirSync() to return 14 cases,
-  // run with process.argv[2] = "some-case", and verify the preflight still
-  // fails once before any case filtering happens.
+test("probeBrowserCapability includes remediation guidance in error message", async () => {
+  const mockSpawn = () => {
+    const proc = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = () => {};
+    return proc;
+  };
+
+  await assert.rejects(
+    () => probeBrowserCapability(mockSpawn),
+    (err) => {
+      assert.ok(
+        err.message.includes("To remediate:"),
+        "error should include remediation section",
+      );
+      assert.ok(
+        err.message.includes("Verify Chrome/Chromium is installed"),
+        "error should mention Chrome installation",
+      );
+      assert.ok(
+        err.message.includes("Check system resources"),
+        "error should mention system resources",
+      );
+      assert.ok(
+        err.message.includes("Ensure no port conflict"),
+        "error should mention port conflict check",
+      );
+      return true;
+    },
+  );
 });
 
-test("per-case launches succeed normally when preflight succeeds", async () => {
-  // When probeBrowserCapability() succeeds, the runner proceeds to iterate
-  // and launch cases normally. Individual per-case assertion failures are
-  // reported as usual (PASS/FAIL/ERROR per case), not as environment failures.
-  //
-  // This verifies the fix does not break the happy path: successful preflight
-  // means all cases run and per-case results are reported individually.
-  //
-  // To test: mock spawn() and waitForCdp() to succeed on preflight, mock
-  // evalInFreshChrome() to return measurement data, mock case assertions to
-  // pass/fail as desired, and verify per-case output is produced normally.
+test("probeBrowserCapability captures and includes stderr in error message when Chrome fails", async () => {
+  const mockSpawn = () => {
+    const proc = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = () => {};
+    // Simulate Chrome emitting diagnostic stderr
+    setImmediate(() => {
+      proc.stderr.emit("data", Buffer.from("Chrome failed: binary not found"));
+    });
+    return proc;
+  };
+
+  await assert.rejects(
+    () => probeBrowserCapability(mockSpawn),
+    (err) => {
+      assert.ok(
+        err.message.includes("Chrome stderr:"),
+        "error should include Chrome stderr section",
+      );
+      assert.ok(
+        err.message.includes("binary not found"),
+        "error should contain captured stderr output",
+      );
+      return true;
+    },
+  );
 });
 
-test("stderr capture in probeBrowserCapability is included in error message", async () => {
-  // If Chrome startup fails and stderr was captured, the diagnostic message
-  // should include "Chrome stderr:" followed by the captured output. If no
-  // stderr was captured, a fallback message guides the operator to check
-  // permissions and resources.
-  //
-  // This helps operators see the actual Chrome error (e.g., binary not found,
-  // segfault, permission denied) directly in the layoutguard output, without
-  // needing to check separate logs.
-  //
-  // To test: mock spawn() with a stdio config that captures stderr, trigger
-  // a Chrome startup failure, and verify stderr is included in the error message.
+test("probeBrowserCapability includes fallback message when no stderr is captured", async () => {
+  const mockSpawn = () => {
+    const proc = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = () => {};
+    // Don't emit any stderr data
+    return proc;
+  };
+
+  await assert.rejects(
+    () => probeBrowserCapability(mockSpawn),
+    (err) => {
+      assert.ok(
+        err.message.includes("no stderr captured"),
+        "error should include fallback when no stderr",
+      );
+      assert.ok(
+        err.message.includes("check Chrome binary permissions and system resources"),
+        "error should provide guidance when stderr unavailable",
+      );
+      return true;
+    },
+  );
+});
+
+test("probeBrowserCapability distinguishes environment failure from test case failure in error", async () => {
+  const mockSpawn = () => {
+    const proc = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = () => {};
+    return proc;
+  };
+
+  await assert.rejects(
+    () => probeBrowserCapability(mockSpawn),
+    (err) => {
+      assert.ok(
+        err.message.includes("environment problem, not a test case failure"),
+        "error must clearly indicate this is an environment issue",
+      );
+      return true;
+    },
+  );
 });

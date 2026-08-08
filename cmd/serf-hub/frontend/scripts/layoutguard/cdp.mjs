@@ -34,10 +34,11 @@ function findChrome() {
  * Probes whether Chrome can start and CDP is reachable. Fails fast if not, with
  * diagnostic info. Call this ONCE before iterating cases to avoid cascading
  * identical environment-failure errors.
+ * @param {Function} [spawnProcess=spawn] - injectable spawn function for testing
  * @returns {Promise<{chromeBin: string, args: string[], launchStderr: string}>}
  *   diagnostic info to include if Chrome startup subsequently fails in a case
  */
-export async function probeBrowserCapability() {
+export async function probeBrowserCapability(spawnProcess = spawn) {
   const chromeBin = findChrome();
   const profileDir = mkdtempSync(path.join(tmpdir(), "layoutguard-chrome-probe-"));
   let port;
@@ -56,7 +57,7 @@ export async function probeBrowserCapability() {
   ];
 
   let launchStderr = "";
-  const chrome = spawn(chromeBin, args, {
+  const chrome = spawnProcess(chromeBin, args, {
     stdio: ["ignore", "ignore", "pipe"],
   });
 
