@@ -914,6 +914,15 @@ func shouldRetryResponsesContinuationAsFullHistory(req llm.Request, err error) b
 	if len(req.FullHistoryFallbackMessages) == 0 {
 		return false
 	}
+	// An unhealthy verdict settles the round from any group (spec: component 2),
+	// and the recovery re-call is another full retry group against the endpoint
+	// RetryStream just indicted. Checked before the llm.Error match because the
+	// verdict unwraps to its last attempt error, so an anchor-missing attempt
+	// error would otherwise be read straight through the verdict.
+	var unhealthy *llm.ProviderUnhealthyError
+	if errors.As(err, &unhealthy) {
+		return false
+	}
 	var llmErr llm.Error
 	if !errors.As(err, &llmErr) {
 		return false

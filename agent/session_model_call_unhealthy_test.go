@@ -264,6 +264,85 @@ func TestFallbackChain_NoResetWhenNoGroupProducedOutput(t *testing.T) {
 	}
 }
 
+// continuationRecoveryRequest is a Responses-continuation delta request shaped
+// so that shouldRetryResponsesContinuationAsFullHistory's own preconditions
+// (delta mode, an anchor, a stored full-history fallback) all hold — leaving
+// the terminal error as the only thing that decides whether the recovery
+// re-call fires.
+func continuationRecoveryRequest() llm.Request {
+	return llm.Request{
+		Provider:                    "openai",
+		Model:                       "primary",
+		Messages:                    []llm.Message{llm.User("delta")},
+		HistoryMode:                 llm.HistoryModeResponsesDelta,
+		PreviousResponseID:          "resp_anchor",
+		FullHistoryFallbackMessages: []llm.Message{llm.User("full history")},
+	}
+}
+
+// TestContinuationRecovery_SkippedOnProviderUnhealthyVerdict: the primary group
+// burns its consume-phase streak and settles with llm.ProviderUnhealthyError.
+// The verdict wraps its last attempt error, and that attempt error names a
+// missing previous_response — so without a guard the verdict matches the
+// continuation-recovery predicate *through* the wrapped error and the round
+// spends a second full retry group against a provider RetryStream just declared
+// unhealthy. Exactly one group must run.
+func TestContinuationRecovery_SkippedOnProviderUnhealthyVerdict(t *testing.T) {
+	// A mid-stream in-band failure whose text names the anchor as missing: the
+	// only error shape that reaches the recovery predicate through the verdict.
+	midStreamErr := llm.ErrorFromHTTPStatus("openai", 503, "previous_response resp_anchor not found", nil, nil)
+	a := &scriptedStreamAdapter{
+		provider: "openai",
+		script: map[string]func(*llm.ChanStream){
+			"primary": streamThenFail("partial draft", midStreamErr),
+		},
+	}
+	policy := llm.RetryPolicy{MaxRetries: 10, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond}
+	sess := newSession(t,
+		withAdapter(a),
+		withProfile(NewOpenAIProfile("primary")),
+		withConfig(SessionConfig{
+			LLMRetryPolicy: &policy,
+			LLMSleep:       func(context.Context, time.Duration) error { return nil },
+		}),
+	)
+	drainSessionEvents(sess)
+
+	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), continuationRecoveryRequest(), "", 1)
+
+	var pu *llm.ProviderUnhealthyError
+	if !errors.As(err, &pu) {
+		t.Fatalf("terminal error = %v (%T), want *llm.ProviderUnhealthyError", err, err)
+	}
+	reqs := a.Requests()
+	for _, req := range reqs {
+		if req.HistoryMode == llm.HistoryModeFullHistoryFallback {
+			t.Fatalf("continuation-recovery re-call issued after an unhealthy verdict (requests: %d)", len(reqs))
+		}
+	}
+	if len(reqs) != modelRetryFailFastAfter {
+		t.Fatalf("stream attempts = %d, want %d (the primary group alone)", len(reqs), modelRetryFailFastAfter)
+	}
+}
+
+// TestShouldRetryResponsesContinuationAsFullHistory_UnhealthyVerdict pins the
+// unwrap leak at the predicate's own errors.As site: ProviderUnhealthyError
+// unwraps to its last attempt error, so an anchor-missing attempt error stays
+// visible through the verdict. The verdict is a decision about the provider's
+// transport, not about the anchor, and must not be read as one.
+func TestShouldRetryResponsesContinuationAsFullHistory_UnhealthyVerdict(t *testing.T) {
+	anchorMissing := llm.ErrorFromHTTPStatus("openai", 404, "previous_response resp_anchor not found", nil, nil)
+	req := continuationRecoveryRequest()
+
+	if !shouldRetryResponsesContinuationAsFullHistory(req, anchorMissing) {
+		t.Fatalf("bare anchor-missing error must still trigger continuation recovery")
+	}
+	verdict := &llm.ProviderUnhealthyError{Shape: "stall", Attempts: 4, Elapsed: 2 * time.Minute, LastErr: anchorMissing}
+	if shouldRetryResponsesContinuationAsFullHistory(req, verdict) {
+		t.Fatalf("unhealthy verdict wrapping %v must not trigger continuation recovery", anchorMissing)
+	}
+}
+
 // TestModelFallbackEligible_ProviderUnhealthy pins the dedicated
 // non-eligibility arm. The verdict wraps its last attempt error, so deriving
 // the class through llm.Classify would walk into that wrapped error: a
