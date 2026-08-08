@@ -58,12 +58,14 @@ from its own draft instead of starting over blind.
 
 - Cross-session or cross-turn provider health tracking (circuit breaker at
   the profile level). The early stop in component 2 is per retry group.
-- Cross-provider fallbacks. Directed by Jesse, but adversarial review
-  showed it is a spec-sized feature of its own (history re-projection,
-  response-path tool-name mapping, state isolation, credentials, window
-  disparity, meta-provider ref semantics). Requirements captured in
-  `2026-08-07-cross-provider-fallbacks-requirements.md`; this spec only
-  provides the eligibility extension point.
+- Cross-provider fallbacks. Considered and DROPPED (Jesse, 2026-08-08):
+  a ~2k-loc runtime feature whose outcome the product already delivers —
+  an unhealthy provider settles fast with salvage + steering, and
+  recovery is a manual or orchestrator-layer model switch (`SetModel`
+  does cross-provider switches today; the persisted draft survives the
+  switch as plain history). If automation is ever wanted, it belongs in
+  the orchestration layer (~50-100 loc), not the runtime. The eligibility
+  arm for `ProviderUnhealthyError` simply settles.
 - Automatic re-issue of the failed round after settlement. V1 settles the
   turn; the user resumes.
 - Fixing lunarouter's ~300s stream cap or mid-stream stalls (upstream issue,
@@ -253,13 +255,9 @@ real:
   `ProviderUnhealthyError` aborts the remaining chain, and the verdict is
   preserved as the round's terminal error rather than being replaced by
   last-error-wins.
-- **The extension point is a per-entry filter.** When cross-provider
-  fallbacks land (separate spec:
-  `2026-08-07-cross-provider-fallbacks-requirements.md`), eligibility for
-  this error is a filter evaluated per entry inside the chain loop with
-  round state (which providers are already unhealthy this round) — not a
-  new arm in the one-shot boolean gate, which structurally cannot host
-  per-entry, per-round-state predicates.
+- **No fallback route exists for this error.** Cross-provider fallbacks
+  were considered and dropped (see Out of scope); the non-eligible arm is
+  the permanent design, not a placeholder.
 
 Everything else preserves existing behavior exactly: permanent-class
 errors walk the chain as today, and retryable-class errors keep their
@@ -426,10 +424,10 @@ already streamed" — wrong: that group's attempts were stalls with trickle
 output; the large partials belonged to the resumed turn's group. This
 version is consistent with the recorded attempt stats.)
 
-Once cross-provider fallbacks exist (separate spec), a configured escape
-provider changes steps 1 and 2: the round continues there instead of
-settling. Until then, fast settlement + salvage + steering is the whole
-story.
+Fast settlement + salvage + steering is the whole story: recovery from an
+unhealthy provider is a model switch (manual `/model`, or an
+orchestrator-layer policy) followed by "continue" — the persisted draft
+rides across the switch as plain history.
 
 ## Testing
 
