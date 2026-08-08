@@ -237,6 +237,8 @@ var identifierSHA256Inventory = map[string]map[string]map[string]bool{
 	},
 	"auth/openai/pkce.go":           {"GeneratePKCE": {"Sum256([]byte(verifier))": true}},
 	"cmd/serf-fuzz-harvest/emit.go": {"write": {"Sum256(encoded)": true}},
+	// Frontend distribution build artifact fingerprint. No identifier is derived from it.
+	"cmd/serf-hub/frontend_hash.go": {"frontendDistHash": {"New()": true}},
 	"cmd/serf-hub/image_serve.go": {"findImageInTranscript": {
 		"Sum256(p.Image.Data)": true, "Sum256(p.ToolResult.ImageData)": true,
 	}, "imageSha": {"Sum256(data)": true}},
