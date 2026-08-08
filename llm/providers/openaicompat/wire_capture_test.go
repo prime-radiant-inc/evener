@@ -242,7 +242,7 @@ func TestStreamingHappensBeforeRetryPreservesGroupAndPolicy(t *testing.T) {
 				sleepCalls.Add(1)
 				return nil
 			},
-		}, func(attemptCtx context.Context) (bool, error) {
+		}, func(attemptCtx context.Context) (llm.AttemptReport, error) {
 			if attemptCalls.Add(1) == 2 {
 				close(secondAttemptEntered)
 			}
@@ -251,7 +251,7 @@ func TestStreamingHappensBeforeRetryPreservesGroupAndPolicy(t *testing.T) {
 				Messages: []llm.Message{llm.User("hello")},
 			})
 			if err != nil {
-				return false, err
+				return llm.AttemptReport{}, err
 			}
 			partial := false
 			for event := range stream.Events() {
@@ -259,10 +259,10 @@ func TestStreamingHappensBeforeRetryPreservesGroupAndPolicy(t *testing.T) {
 					partial = true
 				}
 				if event.Type == llm.StreamEventError {
-					return partial, event.Err
+					return llm.AttemptReport{PartialOutput: partial}, event.Err
 				}
 			}
-			return partial, nil
+			return llm.AttemptReport{PartialOutput: partial}, nil
 		})
 	}()
 
