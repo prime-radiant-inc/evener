@@ -277,6 +277,38 @@ func TestStreamAccumulator_MultipleToolCalls(t *testing.T) {
 	}
 }
 
+func TestStreamAccumulator_PartialResponse_RebuildsOncePerDirtyRound(t *testing.T) {
+	acc := NewStreamAccumulator()
+	acc.Process(StreamEvent{Type: StreamEventStreamStart})
+	acc.Process(StreamEvent{Type: StreamEventTextStart, TextID: "t1"})
+
+	for range 5 {
+		acc.Process(StreamEvent{Type: StreamEventTextDelta, TextID: "t1", Delta: "a"})
+	}
+
+	if acc.buildCount != 0 {
+		t.Fatalf("buildCount after 5 deltas with no PartialResponse call = %d, want 0 (rebuild must be lazy)", acc.buildCount)
+	}
+
+	before := acc.buildCount
+	pr := acc.PartialResponse()
+	if pr == nil || pr.Text() != "aaaaa" {
+		t.Fatalf("partial = %+v, want text %q", pr, "aaaaa")
+	}
+	if got := acc.buildCount - before; got != 1 {
+		t.Fatalf("builds performed by PartialResponse() = %d, want exactly 1", got)
+	}
+
+	// A second call with no intervening Process() must not trigger another build.
+	before = acc.buildCount
+	if pr2 := acc.PartialResponse(); pr2 == nil || pr2.Text() != "aaaaa" {
+		t.Fatalf("second partial = %+v, want text %q", pr2, "aaaaa")
+	}
+	if got := acc.buildCount - before; got != 0 {
+		t.Fatalf("builds performed by repeated PartialResponse() = %d, want 0", got)
+	}
+}
+
 func TestStreamAccumulator_ReasoningAndToolCallsTogether(t *testing.T) {
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventStreamStart})

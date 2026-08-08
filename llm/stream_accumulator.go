@@ -16,6 +16,8 @@ type StreamAccumulator struct {
 	usage         *Usage
 	final         *Response
 	partial       *Response
+	dirty         bool // true when partial is stale and must be rebuilt before the next read
+	buildCount    int  // number of buildResponse() calls; test-visible proof of lazy rebuild
 }
 
 // NewStreamAccumulator returns a StreamAccumulator with its internal text and
@@ -57,12 +59,12 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 		}
 		if ev.Delta != "" {
 			b.WriteString(ev.Delta)
-			a.partial = a.buildResponse()
+			a.dirty = true
 		}
 	case StreamEventReasoningDelta:
 		if ev.ReasoningDelta != "" {
 			a.reasoning.WriteString(ev.ReasoningDelta)
-			a.partial = a.buildResponse()
+			a.dirty = true
 		}
 	case StreamEventToolCallStart:
 		if ev.ToolCall != nil && ev.ToolCall.ID != "" {
@@ -94,7 +96,7 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 			}
 			if len(ev.ToolCall.Arguments) > 0 {
 				tc.Arguments = append(tc.Arguments, ev.ToolCall.Arguments...)
-				a.partial = a.buildResponse()
+				a.dirty = true
 			}
 		}
 	case StreamEventToolCallEnd:
@@ -116,7 +118,7 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 			}
 			if len(ev.ToolCall.Arguments) > 0 {
 				tc.Arguments = append(tc.Arguments[:0], ev.ToolCall.Arguments...)
-				a.partial = a.buildResponse()
+				a.dirty = true
 			}
 		}
 	case StreamEventFinish:
@@ -130,11 +132,13 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 			}
 			a.final = &cp
 			a.partial = &cp
+			a.dirty = false
 			return
 		}
 		r := a.buildResponse()
 		a.final = r
 		a.partial = r
+		a.dirty = false
 	default:
 		// ignore
 	}
@@ -154,6 +158,10 @@ func (a *StreamAccumulator) PartialResponse() *Response {
 	if a == nil {
 		return nil
 	}
+	if a.dirty {
+		a.partial = a.buildResponse()
+		a.dirty = false
+	}
 	if a.partial != nil {
 		cp := *a.partial
 		return &cp
@@ -165,6 +173,7 @@ func (a *StreamAccumulator) buildResponse() *Response {
 	if a == nil {
 		return nil
 	}
+	a.buildCount++
 	var parts []ContentPart
 
 	// Thinking content comes first (matches provider ordering).
