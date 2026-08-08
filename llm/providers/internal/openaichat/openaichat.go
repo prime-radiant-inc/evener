@@ -7,6 +7,7 @@ package openaichat
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 
 	"primeradiant.com/serf/invariant"
 	"primeradiant.com/serf/llm"
@@ -106,4 +107,37 @@ func ParseChatUsage(raw map[string]any) llm.Usage {
 	// is clamped at zero, so a negative value would mean that clamp regressed.
 	invariant.Hold(usage.InputTokens >= 0, "ParseChatUsage produced negative InputTokens: %d", usage.InputTokens)
 	return usage
+}
+
+// InbandError is the failure payload an OpenAI-style endpoint can deliver on
+// an HTTP 200 stream instead of an error status: meta-providers (OpenRouter,
+// lunarouter) report upstream rejections with an integer code, OpenAI itself
+// with a string code plus type.
+type InbandError struct {
+	Message string          `json:"message"`
+	Type    string          `json:"type"`
+	Code    json.RawMessage `json:"code"`
+}
+
+// StatusCode extracts an HTTP-like status from the payload's code field when
+// it carries one (bare integer, or a string of digits); 0 otherwise, which
+// classifies as retryable-unknown with the code preserved as the error code.
+func (e *InbandError) StatusCode() int {
+	if len(e.Code) == 0 {
+		return 0
+	}
+	var n int
+	if err := json.Unmarshal(e.Code, &n); err == nil {
+		if n >= 400 && n <= 599 {
+			return n
+		}
+		return 0
+	}
+	var s string
+	if err := json.Unmarshal(e.Code, &s); err == nil {
+		if n, err := strconv.Atoi(s); err == nil && n >= 400 && n <= 599 {
+			return n
+		}
+	}
+	return 0
 }

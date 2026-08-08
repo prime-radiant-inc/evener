@@ -493,6 +493,17 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 				return nil //nolint:nilerr // decode failure is surfaced as a raw passthrough event, not a fatal error
 			}
 
+			if _, ok := raw["error"].(map[string]any); ok {
+				// In-band provider failure on an HTTP 200 stream. Decode it
+				// into the typed error hierarchy and end the stream with it —
+				// the raw passthrough below would drop the payload and degrade
+				// the failure to the generic incomplete-stream error, hiding
+				// quota/overload causes from retry logic and forensics.
+				if inband := inbandStreamError(ev.Data); inband != nil {
+					return &transport.FatalStreamError{Err: inband}
+				}
+			}
+
 			// candidates[0].content.parts
 			if cands, ok := raw["candidates"].([]any); ok && len(cands) > 0 {
 				if c0, ok := cands[0].(map[string]any); ok {

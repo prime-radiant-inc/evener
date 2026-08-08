@@ -167,6 +167,32 @@ func parseUsage(u map[string]any) llm.Usage {
 	return usage
 }
 
+// inbandStreamError decodes a Gemini error envelope delivered inside an HTTP
+// 200 stream into the typed error hierarchy, or returns nil when the event
+// carries no error payload. The envelope echoes the HTTP status it would have
+// carried out-of-band, so the in-band failure classifies identically to its
+// out-of-band twin, gRPC-status reclassification included.
+func inbandStreamError(data []byte) error {
+	var errResp struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(data, &errResp); err != nil {
+		return nil //nolint:nilerr // an undecodable event keeps the raw-passthrough path
+	}
+	status := errResp.Error.Code
+	if status < 400 || status > 599 {
+		status = 0
+	}
+	msg := llm.ProviderFailureMessage("streamGenerateContent", data)
+	var raw map[string]any
+	_ = json.Unmarshal(data, &raw)
+	httpErr := llm.ErrorFromHTTPStatus("google", status, msg, raw, nil)
+	return classifyGeminiError(status, data, nil, httpErr)
+}
+
 // classifyGeminiError reclassifies an HTTP-based error using the gRPC status
 // from the Gemini error response body. Gemini can return HTTP 400 with gRPC
 // statuses like RESOURCE_EXHAUSTED, which should map to RateLimitError rather

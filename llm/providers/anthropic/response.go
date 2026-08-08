@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"strings"
 
 	"primeradiant.com/serf/llm"
 )
@@ -151,6 +152,49 @@ func refusalWarning(details map[string]any) *llm.Warning {
 		msg += ": " + expl
 	}
 	return &llm.Warning{Code: "refusal", Message: msg}
+}
+
+// inbandStreamError decodes an SSE error event payload
+// ({"type":"error","error":{"type":...,"message":...}}) into the typed error
+// hierarchy. Anthropic delivers these on an HTTP 200 stream, so the error type
+// is the only signal of what went wrong.
+func inbandStreamError(payload map[string]any) error {
+	errObj, _ := payload["error"].(map[string]any)
+	rawMsg, _ := errObj["message"].(string)
+	msg := strings.TrimSpace(rawMsg)
+	if msg == "" {
+		msg = "provider reported an in-band stream error"
+	}
+	typ, _ := errObj["type"].(string)
+	return llm.ErrorFromHTTPStatus("anthropic", inbandErrorStatus(typ),
+		"messages.create(stream): "+msg, payload, nil)
+}
+
+// inbandErrorStatus maps an Anthropic API error type to the HTTP status the
+// same condition carries when the API reports it as a response status, so an
+// in-band stream failure classifies identically to its out-of-band twin.
+// Undocumented types return 0, which lands in the retryable-unknown class with
+// the provider's error type preserved as the error code.
+func inbandErrorStatus(errType string) int {
+	switch errType {
+	case "invalid_request_error":
+		return 400
+	case "authentication_error":
+		return 401
+	case "permission_error":
+		return 403
+	case "not_found_error":
+		return 404
+	case "request_too_large":
+		return 413
+	case "rate_limit_error":
+		return 429
+	case "api_error":
+		return 500
+	case "overloaded_error":
+		return 529
+	}
+	return 0
 }
 
 func parseUsage(u map[string]any) llm.Usage {

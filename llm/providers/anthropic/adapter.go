@@ -805,6 +805,14 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 				}
 				finished = true
 				cancel()
+			case "error":
+				// Anthropic reports a mid-stream failure as a structured error
+				// event on an HTTP 200 stream. Decode it into the typed error
+				// hierarchy and end the stream with it — the raw passthrough
+				// below would drop the payload and degrade the failure to the
+				// generic incomplete-stream error, hiding the
+				// overload/rate-limit/auth cause from retry logic and forensics.
+				return &transport.FatalStreamError{Err: inbandStreamError(payload)}
 			default:
 				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 			}

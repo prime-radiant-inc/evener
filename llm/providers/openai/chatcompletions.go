@@ -124,7 +124,20 @@ type chatCompletionsChunk struct {
 			} `json:"tool_calls"`
 		} `json:"delta"`
 	} `json:"choices"`
-	Usage map[string]any `json:"usage"`
+	Usage map[string]any          `json:"usage"`
+	Error *openaichat.InbandError `json:"error"`
+}
+
+// inbandStreamError decodes a failure payload delivered inside an HTTP 200
+// stream into the typed error hierarchy. operation names the endpoint for the
+// message, matching the non-2xx path's wording; raw is the undecoded event so
+// the error carries the provider's own payload.
+func inbandStreamError(operation string, e *openaichat.InbandError, raw map[string]any) error {
+	msg := strings.TrimSpace(e.Message)
+	if msg == "" {
+		msg = "provider reported an in-band stream error"
+	}
+	return llm.ErrorFromHTTPStatus("openai", e.StatusCode(), operation+": "+msg, raw, nil)
 }
 
 // chatCompletionsToolCallState accumulates one tool call's streamed
@@ -304,6 +317,19 @@ func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel conte
 				// Skip a single malformed chunk and keep the stream alive;
 				// returning the error would abort the whole stream.
 				return nil //nolint:nilerr // unparseable chunk is intentionally skipped, not fatal
+			}
+			if chunk.Error != nil {
+				// In-band provider failure on an HTTP 200 stream. Decode it
+				// into the typed error hierarchy and end the stream with it —
+				// falling through would drop the payload at the choices check
+				// and degrade the failure to the generic incomplete-stream
+				// error, hiding rate-limit/quota/upstream causes from retry
+				// logic and forensics.
+				var raw map[string]any
+				_ = json.Unmarshal([]byte(data), &raw)
+				return &transport.FatalStreamError{
+					Err: inbandStreamError("chat.completions(stream)", chunk.Error, raw),
+				}
 			}
 			acc.HandleChunkMeta(chunk.Model, chunk.Usage)
 			if len(chunk.Choices) == 0 {

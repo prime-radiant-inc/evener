@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -537,6 +538,43 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	return item, st, argsStr, true
 }
 
+// responsesInbandError decodes a Responses-API failure event delivered on an
+// HTTP 200 stream into a typed error, or returns nil when the event carries no
+// error payload. The flat "error" event holds the error fields at the top
+// level; "response.failed" nests them under response.error.
+func responsesInbandError(data []byte) error {
+	var event struct {
+		Message  string          `json:"message"`
+		Code     json.RawMessage `json:"code"`
+		Response struct {
+			Error *openaichat.InbandError `json:"error"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		return nil //nolint:nilerr // an undecodable event keeps the raw-passthrough path
+	}
+	inband := event.Response.Error
+	if inband == nil {
+		if strings.TrimSpace(event.Message) == "" && len(event.Code) == 0 {
+			return nil
+		}
+		inband = &openaichat.InbandError{Message: event.Message, Code: event.Code}
+	}
+	// Normalize the event into the {"error": {...}} envelope the typed-error
+	// constructor reads the error code from, keeping the rest of the payload
+	// for forensics.
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil || raw == nil {
+		raw = map[string]any{}
+	}
+	var errObj map[string]any
+	if b, err := json.Marshal(inband); err == nil {
+		_ = json.Unmarshal(b, &errObj)
+	}
+	raw["error"] = errObj
+	return inbandStreamError("responses.create(stream)", inband, raw)
+}
+
 // decodeResponsesStream consumes the Responses API SSE stream in its own
 // goroutine: it translates each event into llm stream events and emits the final
 // accumulated Response on response.completed. It emits errEmptyResponsesStream if
@@ -682,6 +720,19 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 			// Stop parsing after finish.
 			finished = true
 			cancel()
+		case "error", "response.failed":
+			// The Responses API reports a mid-stream failure either as a flat
+			// "error" event or as an error nested in the response object of
+			// "response.failed". Decode it into the typed error hierarchy and
+			// end the stream with it: the raw passthrough below would drop the
+			// payload, leaving a content-free failure indistinguishable from an
+			// unsupported-endpoint empty stream (silently retried on Chat
+			// Completions) and a mid-content failure degraded to the generic
+			// incomplete-stream error.
+			if inband := responsesInbandError(ev.Data); inband != nil {
+				return &transport.FatalStreamError{Err: inband}
+			}
+			s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 		default:
 			s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 		}
@@ -689,10 +740,15 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 	}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
 
 	var terminalErr error
+	var fatal *transport.FatalStreamError
 	if !finished {
 		switch {
 		case sctx.Err() != nil:
 			terminalErr = llm.WrapContextError("openai", sctx.Err())
+		case errors.As(parseErr, &fatal):
+			// The provider reported a structured failure in-band; the decoded,
+			// typed error is the stream's terminal error in its own right.
+			terminalErr = fatal.Err
 		case !sentContent:
 			// Stream closed 200 OK with zero content: model likely does not
 			// support /v1/responses. Signal the caller to try Chat Completions.
