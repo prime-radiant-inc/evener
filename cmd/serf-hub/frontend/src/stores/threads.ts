@@ -409,6 +409,7 @@ function scheduleMutationDispatch(runtime: MutationRuntime, targetRefs: Iterable
 }
 
 function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
+  if (!runtime.active || mutationRuntime !== runtime) return;
   const refs = [...new Set(targetRefs)];
   for (const targetRef of refs) pinnedMutationRefs.add(targetRef);
   notifyMutationPersistence(refs);

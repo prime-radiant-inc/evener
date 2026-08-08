@@ -32,6 +32,7 @@ import {
   FRAME_TIMES_MAX_ENTRIES,
   FRAME_TIMES_WINDOW_MS,
   installHydrationRetrySchedulerForTests,
+  readMutationPersistence,
   resendRecoveryMutation,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
@@ -3740,6 +3741,44 @@ describe("useThreadsStore.listModels", () => {
     await threadsStore.getState().listModels();
     expect(fake2.calls.filter((c) => c.method === "model/list")).toHaveLength(1); // fresh fetch, not a stale cache hit
   });
+});
+
+test("reset retires an outbox discovery before the next runtime starts", async () => {
+  const oldStorage = new MutationOutboxIndexedDB();
+  let finishOldDiscovery!: (targetRefs: string[]) => void;
+  const oldDiscovery = new Promise<string[]>((resolve) => {
+    finishOldDiscovery = resolve;
+  });
+  vi.spyOn(oldStorage, "listTargetRefs").mockReturnValueOnce(oldDiscovery);
+  setMutationStorageForTests(oldStorage);
+
+  const oldRead = readMutationPersistence();
+  expect(oldStorage.listTargetRefs).toHaveBeenCalledTimes(1);
+  resetThreadsStoreForTests();
+
+  const newStorage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(newStorage);
+  let newMutationDispatched!: () => void;
+  const dispatched = new Promise<void>((resolve) => {
+    newMutationDispatched = resolve;
+  });
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () => readResponse("stale_ref"));
+  fake.on("turn/start", (params) => {
+    newMutationDispatched();
+    return {
+      turn: { id: "turn_new", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().send("new_ref", "new runtime");
+  await dispatched;
+
+  finishOldDiscovery(["stale_ref"]);
+  await Promise.allSettled([oldRead]);
+
+  expect(fake.calls.filter((call) => call.method === "thread/read" && call.params.ref === "stale_ref")).toEqual([]);
 });
 
 describe("useThreadsStore.listTasks", () => {
