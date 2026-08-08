@@ -2,23 +2,51 @@
 
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
-import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
+import {
+  resetThreadsStoreForTests,
+  setMutationStorageForTests,
+  subscribeMutationPersistence,
+  threadsStore,
+} from "../../../../stores/threads";
 import { useColdStartSkeleton } from "../../coldStart";
 import {
   discardRecoveryPendingTurn,
   refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
   resetPendingTurnsStoreForTests,
+  settlePendingTurnsProjectionForTests,
   submitWithPendingTracking,
   updateRecoveryPendingTurn,
   useAwaitingFirstFrameSend,
   usePendingTurnEntries,
 } from "./pendingTurnsStore";
+
+async function settlePendingProjection(): Promise<void> {
+  for (let round = 0; round < 10; round += 1) {
+    let awaited = 0;
+    await act(async () => {
+      awaited = await settlePendingTurnsProjectionForTests();
+    });
+    if (awaited === 0) return;
+  }
+  throw new Error("pending-turns projection never settled");
+}
+
+function nextMutationPersistence(targetRef: string): Promise<void> {
+  return new Promise((resolve) => {
+    const unsubscribe = subscribeMutationPersistence((targetRefs) => {
+      if (!targetRefs.includes(targetRef)) return;
+      unsubscribe();
+      resolve();
+    });
+    onTestFinished(unsubscribe);
+  });
+}
 
 function thread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -96,8 +124,9 @@ test("an action becomes pending only after its durable enqueue commits", async (
 
   expect(pending.result.current).toEqual([]);
   await act(() => threadsStore.getState().send("ref_a", "hello"));
+  await settlePendingProjection();
 
-  await waitFor(() => expect(pending.result.current).toEqual([expect.objectContaining({ text: "hello" })]));
+  expect(pending.result.current).toEqual([expect.objectContaining({ text: "hello" })]);
 });
 
 test("a local commit failure reports the exact error and never creates optimistic state", async () => {
@@ -180,21 +209,34 @@ test("authoritative pendingMutations reconstruct accepted steering without a bro
 
 test("an applied pending receipt settles transport without dropping optimistic send or cold-start state", async () => {
   const fake = await connect();
-  fake.on("turn/start", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "pending",
-    },
-    turn: { id: "turn_1", status: "inProgress", itemsView: "full" },
-  }));
+  let applyReceipt!: () => void;
+  const receiptGate = new Promise<void>((resolve) => {
+    applyReceipt = resolve;
+  });
+  fake.on("turn/start", async (params) => {
+    await receiptGate;
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "pending",
+      },
+      turn: { id: "turn_1", status: "inProgress", itemsView: "full" },
+    };
+  });
   const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
   const coldStart = renderHook(() => useColdStartSkeleton("ref_a", threadsStore.getState().threads.get("ref_a")));
   await act(() => threadsStore.getState().send("ref_a", "hello"));
+  await settlePendingProjection();
+  expect(pending.result.current).toEqual([expect.objectContaining({ method: "send", text: "hello" })]);
 
+  const receiptPersisted = nextMutationPersistence("ref_a");
+  applyReceipt();
+  await receiptPersisted;
+  await settlePendingProjection();
   const storage = new MutationOutboxIndexedDB();
-  await waitFor(async () => expect(await storage.listOutbox("ref_a")).toEqual([]));
+  expect(await storage.listOutbox("ref_a")).toEqual([]);
 
   expect(pending.result.current).toEqual([expect.objectContaining({ method: "send", text: "hello" })]);
   expect(coldStart.result.current).toBe(true);
