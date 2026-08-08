@@ -21,14 +21,14 @@ func FuzzJobWatchDrainRenderTail(f *testing.F) {
 	f.Add(byte(0))
 	f.Add(byte(1))
 	f.Fuzz(func(t *testing.T, order byte) {
-		jm, err := newJobManager(t.TempDir(), "S", func(jobNotification) {})
+		jm, err := newJobManager(t.TempDir(), testOwnerSessionID, func(jobNotification) {})
 		if err != nil {
 			t.Fatal(err)
 		}
 		freezeClock(jm)
 		jm.clock = agenttest.NewFakeClock()
 		t.Cleanup(func() { _ = jm.store.Close() })
-		s := &Session{id: "S", jobManager: jm}
+		s := &Session{id: testOwnerSessionID, jobManager: jm}
 
 		steps := []func(){
 			func() { jdrExerciseClassifier(t, s) },
@@ -79,7 +79,7 @@ func jdrExerciseClassifier(t *testing.T, s *Session) {
 	t.Helper()
 	trueValue, falseValue := true, false
 	base := watchSendTargetResolver{
-		sessionID: "S", hasJobManager: true,
+		sessionID: testOwnerSessionID, hasJobManager: true,
 		loadDelegates: func() (map[string]*jobstore.DelegateRecord, error) { return nil, errors.New("load") },
 		findJobRecord: func(string) (*jobstore.JobRecord, error) { return nil, errors.New("missing") },
 		assessResumable: func(*jobstore.JobRecord) delegateResumability {
@@ -153,15 +153,15 @@ func jdrExerciseClassifier(t *testing.T, s *Session) {
 func jdrExercisePendingAndRender(t *testing.T, s *Session) {
 	t.Helper()
 	jm := s.jobManager
-	key := jobstore.WatchSendKey{ResolvedWatchedIdentity: "missing", ResolvedSendTo: runtimeMessageAliasCaller, VisibleSessionID: "S"}
+	key := jobstore.WatchSendKey{ResolvedWatchedIdentity: "missing", ResolvedSendTo: runtimeMessageAliasCaller, VisibleSessionID: testOwnerSessionID}
 	state := &jobstore.WatchSendState{Key: key, UpdateSeq: 1, TriggerReason: "trigger"}
 	cfg := &watchConfig{watchID: "w", send: &watchSendArgs{Message: "hello", IncludeExcerpt: true}, pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{key: state}, pendingOrder: []jobstore.WatchSendKey{key, {}}}
-	delegateKey := jobstore.WatchSendKey{ResolvedWatchedIdentity: "missing", ResolvedSendTo: "dlg_missing", VisibleSessionID: "S"}
+	delegateKey := jobstore.WatchSendKey{ResolvedWatchedIdentity: "missing", ResolvedSendTo: "dlg_missing", VisibleSessionID: testOwnerSessionID}
 	delegateState := &jobstore.WatchSendState{Key: delegateKey, UpdateSeq: 2, TriggerReason: "delegate"}
 	delegateCfg := &watchConfig{watchID: "wd", send: &watchSendArgs{To: "dlg_missing"}, pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{delegateKey: delegateState}, pendingOrder: []jobstore.WatchSendKey{delegateKey}}
 	jm.mu.Lock()
-	jm.watches[watchKey{VisibleSessionID: "S", Target: "missing"}] = cfg
-	jm.watches[watchKey{VisibleSessionID: "S", Target: "missing-delegate"}] = delegateCfg
+	jm.watches[watchKey{VisibleSessionID: testOwnerSessionID, Target: "missing"}] = cfg
+	jm.watches[watchKey{VisibleSessionID: testOwnerSessionID, Target: "missing-delegate"}] = delegateCfg
 	if jm.terminalFlush == nil {
 		jm.terminalFlush = make(map[*watchConfig]bool)
 	}
@@ -177,17 +177,17 @@ func jdrExercisePendingAndRender(t *testing.T, s *Session) {
 	_, _ = s.drainJobManagerWatchSends(context.Background(), jm, "child")
 	_, _ = s.drainJobManagerWatchSends(context.Background(), jm, "")
 
-	badKey := jobstore.WatchSendKey{ResolvedWatchedIdentity: "bad", ResolvedSendTo: "job_bad", VisibleSessionID: "S"}
+	badKey := jobstore.WatchSendKey{ResolvedWatchedIdentity: "bad", ResolvedSendTo: "job_bad", VisibleSessionID: testOwnerSessionID}
 	badState := &jobstore.WatchSendState{Key: badKey, UpdateSeq: 3}
 	badCfg := &watchConfig{pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{badKey: badState}, pendingOrder: []jobstore.WatchSendKey{badKey}}
 	jm.mu.Lock()
-	jm.watches[watchKey{VisibleSessionID: "S", Target: "bad"}] = badCfg
+	jm.watches[watchKey{VisibleSessionID: testOwnerSessionID, Target: "bad"}] = badCfg
 	jm.terminalFlush[badCfg] = true
 	jm.mu.Unlock()
 	failAppendN(jm, jobstore.EventWatchSendDropped, 1)
 	_ = s.retryRestoredPendingWatchSends(context.Background())
 	seedWatchSendDelegateTarget(t, jm, "dlg_busy_tail")
-	busyKey := jobstore.WatchSendKey{WatchTarget: "busy", ResolvedWatchedIdentity: "busy", ResolvedSendTo: "dlg_busy_tail", VisibleSessionID: "S"}
+	busyKey := jobstore.WatchSendKey{WatchTarget: "busy", ResolvedWatchedIdentity: "busy", ResolvedSendTo: "dlg_busy_tail", VisibleSessionID: testOwnerSessionID}
 	busyState := &jobstore.WatchSendState{Key: busyKey, UpdateSeq: 4, DeliveryID: "delivery-busy-tail"}
 	busyCfg := &watchConfig{send: &watchSendArgs{To: "dlg_busy_tail"}, pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{busyKey: busyState}, pendingOrder: []jobstore.WatchSendKey{busyKey}}
 	jm.mu.Lock()
@@ -242,16 +242,16 @@ func jdrExercisePendingAndRender(t *testing.T, s *Session) {
 	if !routed {
 		t.Fatal("receiver notification was not routed")
 	}
-	jm.enqueueWatchNotifications([]jobNotification{{receiverSessionID: "other"}, {receiverSessionID: "S"}})
+	jm.enqueueWatchNotifications([]jobNotification{{receiverSessionID: "other"}, {receiverSessionID: testOwnerSessionID}})
 	jm.mu.Lock()
 	jm.closing = true
 	jm.mu.Unlock()
 	jm.enqueueWatchNotifications([]jobNotification{{Reason: "closed"}})
 	jm.mu.Lock()
 	jm.closing = false
-	delete(jm.watches, watchKey{VisibleSessionID: "S", Target: "missing"})
-	delete(jm.watches, watchKey{VisibleSessionID: "S", Target: "missing-delegate"})
-	delete(jm.watches, watchKey{VisibleSessionID: "S", Target: "bad"})
+	delete(jm.watches, watchKey{VisibleSessionID: testOwnerSessionID, Target: "missing"})
+	delete(jm.watches, watchKey{VisibleSessionID: testOwnerSessionID, Target: "missing-delegate"})
+	delete(jm.watches, watchKey{VisibleSessionID: testOwnerSessionID, Target: "bad"})
 	jm.mu.Unlock()
 	jm.hasPendingWatchSends()
 }
@@ -268,7 +268,7 @@ func jdrExerciseGuardsAndFailures(t *testing.T, s *Session) {
 	s.driveChildIfNotStopGated(nil)
 	s.driveChildIfNotStopGated(&subagent{})
 
-	closed, err := newJobManager(t.TempDir(), "C", func(jobNotification) {})
+	closed, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func jdrExerciseGuardsAndFailures(t *testing.T, s *Session) {
 	if err := closed.store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	cs := &Session{id: "C", jobManager: closed}
+	cs := &Session{id: testChildSessionID, jobManager: closed}
 	cs.renderUnreachableChildPendings(nil)
 	_ = cs.childResumable("child")
 	_ = cs.childStopGated("child")
