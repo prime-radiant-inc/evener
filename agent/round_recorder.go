@@ -68,6 +68,14 @@ type roundRecorder struct{ Groups []groupRecord }
 // produced it, or (nil, nil) when nothing was salvaged. Selection spans ALL
 // groups: a fallback group that failed with a trickle must not shadow the
 // primary group's far larger partial.
+//
+// The returned group is an INTERIOR POINTER into Groups, so it stays valid only
+// until the next append: appending a fallback group can relocate the backing
+// array and leave the pointer addressing a stale copy. Read what you need off
+// it (model, provider, partial) before the round appends another group; never
+// stash it across a callModel invocation. Today's callers — settlement and the
+// steering composer — all run after the chain walk is finished, and the fields
+// they need are copied out immediately.
 func (r *roundRecorder) BestSalvage() (partial *llm.Response, from *groupRecord) {
 	if r == nil {
 		return nil, nil
@@ -93,6 +101,9 @@ func (r *roundRecorder) BestSalvage() (partial *llm.Response, from *groupRecord)
 // phase, else nil. Never "whichever group failed last" — a chain walk ending on
 // an open-phase fallback rejection must still describe the group whose stream
 // actually broke.
+//
+// Like BestSalvage, the result is an interior pointer into Groups and is only
+// valid until the next append; see BestSalvage for the constraint.
 func (r *roundRecorder) SteeringGroup() *groupRecord {
 	if r == nil {
 		return nil

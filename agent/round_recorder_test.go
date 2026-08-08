@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/llm"
 )
@@ -215,6 +217,53 @@ func TestRoundRecorder_FallbackTrickleNeverShadowsPrimaryPartial(t *testing.T) {
 	}
 	if last := rec.Groups[2]; last.Model != "fallback-c" || last.BestPartial != nil {
 		t.Fatalf("last group = %+v, want fallback-c with no salvage (rejected at open)", last)
+	}
+}
+
+// TestRoundRecorder_EmptyRecorderSettlesNothing: a round that dies before its
+// first model call — a pre-flight failure, a spawn error, a tool gate — leaves
+// the recorder with zero groups. Every accessor must read that as "nothing
+// happened" rather than indexing into an empty slice, and both settlement paths
+// must persist nothing: no salvage, no steering, and above all no phantom
+// assistant turn claiming the model produced output it never produced.
+func TestRoundRecorder_EmptyRecorderSettlesNothing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sess := newSession(t, withDir(dir), withConfig(SessionConfig{
+		StateDir:         dir,
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{metaFS: afero.NewMemMapFs()},
+	}))
+	drainSessionEvents(sess)
+	sess.beginRoundRecorder()
+
+	rec := sess.roundSalvageRecorder()
+	if rec == nil || len(rec.Groups) != 0 {
+		t.Fatalf("recorder = %+v, want an empty one for a round that never called the model", rec)
+	}
+	if partial, from := rec.BestSalvage(); partial != nil || from != nil {
+		t.Fatalf("BestSalvage on an empty recorder = (%+v, %+v), want (nil, nil)", partial, from)
+	}
+	if g := rec.SteeringGroup(); g != nil {
+		t.Fatalf("SteeringGroup on an empty recorder = %+v, want nil", g)
+	}
+	if rec.HasConsumePhaseFailure() {
+		t.Fatal("HasConsumePhaseFailure on an empty recorder = true, want false")
+	}
+	// A failure that never reached the provider is not a provider failure, so
+	// the round is in the excluded class and settles nothing at all.
+	abortErr := errors.New("round aborted before the model call")
+	if got := classifySettlement(rec, abortErr); got != settleNone {
+		t.Fatalf("classifySettlement on an empty recorder = %v, want settleNone", got)
+	}
+
+	before := len(sessionHistory(sess))
+	sess.settleFailedRound(abortErr)
+	sess.settleInterruptedRound()
+
+	hist := sessionHistory(sess)
+	if len(hist) != before {
+		t.Fatalf("settlement persisted %v on an empty recorder, want nothing", settledKinds(hist[before:]))
 	}
 }
 
