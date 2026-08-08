@@ -206,7 +206,7 @@ test("describeLiveness: a pending retry explains the quiet instead of guessing",
   const retry = retryWait({ attempt: 9, attemptCap: 11, delayMs: 60_000, errorClass: "rate_limit" });
   expect(describeLiveness(30_000, true, 0, retry)).toEqual({
     level: "retrying",
-    text: "Rate limited — retry 9 of 11, next in 60s — 5s on this call",
+    text: "rate limited — attempt 9/11 — retrying in 60s — 5s on this call",
   });
 });
 
@@ -214,7 +214,7 @@ test("describeLiveness: a non-rate-limit retryable error names itself genericall
   const retry = retryWait({ attempt: 2, attemptCap: 11, delayMs: 4_000, errorClass: "server" });
   expect(describeLiveness(30_000, true, 0, retry)).toEqual({
     level: "retrying",
-    text: "Provider error — retry 2 of 11, next in 4s — 5s on this call",
+    text: "provider error — attempt 2/11 — retrying in 4s — 5s on this call",
   });
 });
 
@@ -222,7 +222,7 @@ test("describeLiveness: past the stall threshold a retry reports both facts, nev
   const retry = retryWait({ attempt: 9, attemptCap: 11, delayMs: 60_000, errorClass: "rate_limit" });
   expect(describeLiveness(630_000, true, 0, retry)).toEqual({
     level: "stalled",
-    text: "Rate limited — retry 9 of 11, next in 60s — 5s on this call — no updates for 10m 30s",
+    text: "rate limited — attempt 9/11 — retrying in 60s — 5s on this call — no updates for 10m 30s",
   });
 });
 
@@ -239,7 +239,7 @@ test("describeLiveness: a retry pre-empts the subagent wait — it is the more s
   const retry = retryWait({ attempt: 3, attemptCap: 11, delayMs: 8_000, errorClass: "rate_limit" });
   expect(describeLiveness(30_000, true, 2, retry)).toEqual({
     level: "retrying",
-    text: "Rate limited — retry 3 of 11, next in 8s — 5s on this call",
+    text: "rate limited — attempt 3/11 — retrying in 8s — 5s on this call",
   });
 });
 
@@ -264,7 +264,7 @@ test("describeLiveness: a fast retry storm's second attempt becomes visible imme
   const retry = retryWait({ attempt: 2, attemptCap: 11, delayMs: 2_000, errorClass: "rate_limit" });
   expect(describeLiveness(3_000, true, 0, retry)).toEqual({
     level: "retrying",
-    text: "Rate limited — retry 2 of 11, next in 2s — 5s on this call",
+    text: "rate limited — attempt 2/11 — retrying in 2s — 5s on this call",
   });
 });
 
@@ -281,7 +281,7 @@ test("describeLiveness: a sustained-cadence retry (long per-attempt delay) also 
   const retry = retryWait({ attempt: 2, attemptCap: 11, delayMs: 46_000, errorClass: "rate_limit" });
   expect(describeLiveness(3_000, true, 0, retry)).toEqual({
     level: "retrying",
-    text: "Rate limited — retry 2 of 11, next in 46s — 5s on this call",
+    text: "rate limited — attempt 2/11 — retrying in 46s — 5s on this call",
   });
 });
 
@@ -297,14 +297,14 @@ test("describeLiveness: the denominator is attemptCap, not the raw retry policy 
   // here would promise retries the early-stop rule will not spend.
   const retry = retryWait({ attempt: 3, attemptCap: 4, delayMs: 5_000, errorClass: "rate_limit" });
   expect(describeLiveness(30_000, true, 0, retry).text).toBe(
-    "Rate limited — retry 3 of 4, next in 5s — 5s on this call",
+    "rate limited — attempt 3/4 — retrying in 5s — 5s on this call",
   );
 });
 
 test("describeLiveness: names the model when a fallback chain walk switched it", () => {
   const retry = retryWait({ attempt: 1, attemptCap: 4, delayMs: 5_000, errorClass: "rate_limit", model: "gpt-5" });
   expect(describeLiveness(30_000, true, 0, retry).text).toBe(
-    "Rate limited (gpt-5) — retry 1 of 4, next in 5s — 5s on this call",
+    "rate limited (gpt-5) — attempt 1/4 — retrying in 5s — 5s on this call",
   );
 });
 
@@ -317,7 +317,7 @@ test("describeLiveness: shows the retry group's elapsed time, per the current ca
     groupElapsedMs: 14 * 60_000,
   });
   expect(describeLiveness(30_000, true, 0, retry).text).toBe(
-    "Rate limited — retry 9 of 11, next in 60s — 14m on this call",
+    "rate limited — attempt 9/11 — retrying in 60s — 14m on this call",
   );
 });
 
@@ -329,6 +329,42 @@ test("describeLiveness: shows the retry group's elapsed time, per the current ca
 test("describeLiveness: renders 'in progress' instead of a delay countdown once the wait is over", () => {
   const retry = retryWait({ attempt: 9, attemptCap: 11, delayMs: 60_000, errorClass: "rate_limit", inProgress: true });
   expect(describeLiveness(30_000, true, 0, retry).text).toBe(
-    "Rate limited — retry 9 of 11, in progress — 5s on this call",
+    "rate limited — attempt 9/11 — in progress — 5s on this call",
+  );
+});
+
+// Design doc Component 1 (Jesse 2026-08-08 rendering note) pins the chip
+// string character for character: "provider error — attempt 3/4 — retrying
+// in 32s — 14m on this call" (waiting) / "... — in progress — 14m on this
+// call" (streaming). This is the literal contract, not a paraphrase.
+test("describeLiveness: matches the spec's exact waiting chip string, character for character", () => {
+  const retry = retryWait({ attempt: 3, attemptCap: 4, delayMs: 32_000, errorClass: "server", groupElapsedMs: 14 * 60_000 });
+  expect(describeLiveness(30_000, true, 0, retry).text).toBe(
+    "provider error — attempt 3/4 — retrying in 32s — 14m on this call",
+  );
+});
+
+test("describeLiveness: matches the spec's exact streaming ('in progress') chip string, character for character", () => {
+  const retry = retryWait({
+    attempt: 3,
+    attemptCap: 4,
+    delayMs: 32_000,
+    errorClass: "server",
+    groupElapsedMs: 14 * 60_000,
+    inProgress: true,
+  });
+  expect(describeLiveness(30_000, true, 0, retry).text).toBe(
+    "provider error — attempt 3/4 — in progress — 14m on this call",
+  );
+});
+
+// A hub too old to send AttemptCap sends the zero value; rendering "attempt
+// 3/0" would be exactly the dishonest denominator AttemptCap exists to
+// eliminate, so the web chip omits the denominator entirely rather than
+// falling back to a different budget.
+test("describeLiveness: attemptCap 0 renders the attempt number without a denominator", () => {
+  const retry = retryWait({ attempt: 3, attemptCap: 0, delayMs: 5_000, errorClass: "server" });
+  expect(describeLiveness(30_000, true, 0, retry).text).toBe(
+    "provider error — attempt 3 — retrying in 5s — 5s on this call",
   );
 });

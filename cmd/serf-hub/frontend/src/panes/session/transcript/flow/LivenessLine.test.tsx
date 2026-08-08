@@ -155,7 +155,7 @@ test("renders the retry cause and wait instead of the quiet phrase", () => {
     <LivenessLine lastFrameAt={0} now={30_000} active={true} sessionRef="s1" turnId="turn_0" retry={rawRetry()} />,
   );
   const el = screen.getByTestId("liveness-line");
-  expect(el.textContent).toBe("Rate limited — retry 9 of 11, next in 60s — 5s on this call");
+  expect(el.textContent).toBe("rate limited — attempt 9/11 — retrying in 60s — 5s on this call");
   expect(el.textContent!.toLowerCase()).not.toContain("quiet");
 });
 
@@ -164,7 +164,7 @@ test("past the stall threshold a retry still surfaces the silence rather than hi
     <LivenessLine lastFrameAt={0} now={630_000} active={true} sessionRef="s1" turnId="turn_0" retry={rawRetry()} />,
   );
   const text = screen.getByTestId("liveness-line").textContent ?? "";
-  expect(text).toContain("Rate limited — retry 9 of 11");
+  expect(text).toContain("rate limited — attempt 9/11");
   expect(text).toContain("no updates for");
 });
 
@@ -184,7 +184,28 @@ test("renders the attemptCap denominator, not maxAttempts", () => {
     />,
   );
   expect(screen.getByTestId("liveness-line").textContent).toBe(
-    "Rate limited — retry 3 of 4, next in 5s — 5s on this call",
+    "rate limited — attempt 3/4 — retrying in 5s — 5s on this call",
+  );
+});
+
+// A hub too old to send AttemptCap reports it as 0 (attemptCap is a required
+// wire field, but an old daemon's payload omits it, so the reducer stores the
+// JSON zero value) - rendering "attempt 3/0" would promise a denominator that
+// was never honest, so the chip drops the "/N" entirely rather than
+// substituting maxAttempts or any other budget.
+test("omits the denominator entirely when attemptCap is 0 (a hub too old to send it)", () => {
+  render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={30_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={rawRetry({ attempt: 3, maxAttempts: 11, attemptCap: 0, delayMs: 5_000, receivedAt: 30_000 })}
+    />,
+  );
+  expect(screen.getByTestId("liveness-line").textContent).toBe(
+    "rate limited — attempt 3 — retrying in 5s — 5s on this call",
   );
 });
 
@@ -201,7 +222,7 @@ test("shows the retry's model tag when a fallback chain walk switched off the se
     />,
   );
   expect(screen.getByTestId("liveness-line").textContent).toBe(
-    "Rate limited (gpt-5) — retry 1 of 4, next in 5s — 5s on this call",
+    "rate limited (gpt-5) — attempt 1/4 — retrying in 5s — 5s on this call",
   );
 });
 
@@ -218,7 +239,7 @@ test("omits the model tag when the retry's model matches the session's primary m
     />,
   );
   expect(screen.getByTestId("liveness-line").textContent).toBe(
-    "Rate limited — retry 1 of 4, next in 5s — 5s on this call",
+    "rate limited — attempt 1/4 — retrying in 5s — 5s on this call",
   );
 });
 
@@ -238,7 +259,7 @@ test("shows the retry group's elapsed time from groupElapsedMs", () => {
 
 // Web-only difference from the TUI (task 11 brief): once a delta has landed
 // since the retry was reported, the wait it described is over, so the line
-// says "in progress" instead of leaving a stale "next in 60s" countdown
+// says "in progress" instead of leaving a stale "retrying in 60s" countdown
 // sitting there next to live output.
 test("renders 'in progress' once a frame has landed since the retry was reported, instead of clearing", () => {
   render(
@@ -252,7 +273,7 @@ test("renders 'in progress' once a frame has landed since the retry was reported
     />,
   );
   expect(screen.getByTestId("liveness-line").textContent).toBe(
-    "Rate limited — retry 9 of 11, in progress — 5s on this call",
+    "rate limited — attempt 9/11 — in progress — 5s on this call",
   );
 });
 
@@ -272,6 +293,6 @@ test("renders 'in progress' once the reported delay has elapsed, even with no ne
     />,
   );
   expect(screen.getByTestId("liveness-line").textContent).toBe(
-    "Rate limited — retry 9 of 11, in progress — 5s on this call",
+    "rate limited — attempt 9/11 — in progress — 5s on this call",
   );
 });

@@ -1,7 +1,7 @@
 // Pure "honest liveness" logic: quiet ~Nm -> "may be stalled" - or, when the
 // wait has a known explanation, that explanation instead of either. Two
 // explanations exist, in precedence order: a model call the daemon has told us
-// it is retrying ("rate limited - retry 9 of 11, next in 60s", kata 4zn8), and
+// it is retrying ("rate limited — attempt 9/11 — retrying in 60s", kata 4zn8), and
 // the active turn's own delegated children still running ("waiting on N
 // subagents"). Both are design brief principle 6: a wait fully explained is not
 // a stall. The retry wins when both hold, being the more specific and more
@@ -94,10 +94,12 @@ export interface RetryWait {
  * phrasing: it is the one the reader can act on (wait, or switch model), and it
  * is overwhelmingly the common case - one session logged 91 of them in four
  * hours. Everything else retryable reads as a generic provider error rather
- * than leaking an error-class token like "server" into the UI.
+ * than leaking an error-class token like "server" into the UI. Lowercase,
+ * matching the design doc's own literal chip string (Component 1,
+ * Jesse 2026-08-08 rendering note) character for character.
  */
 export function formatRetryCause(errorClass?: string): string {
-  return errorClass === "rate_limit" ? "Rate limited" : "Provider error";
+  return errorClass === "rate_limit" ? "rate limited" : "provider error";
 }
 
 /**
@@ -107,13 +109,19 @@ export function formatRetryCause(errorClass?: string): string {
  * which is the whole reason this line exists - but once deltas are flowing
  * (`inProgress`) that wait is over, so it reads "in progress" instead of a
  * stale countdown rather than disappearing (design doc Component 1's web-only
- * rule: clearing here would re-create the vanishing-chip bug).
+ * rule: clearing here would re-create the vanishing-chip bug). Field order and
+ * wording match the design doc's literal chip string character for character:
+ * "provider error — attempt 3/4 — retrying in 32s — 14m on this call".
+ * A hub too old to send AttemptCap reports it as 0; rendering "attempt 3/0"
+ * would be exactly the dishonest denominator AttemptCap exists to eliminate,
+ * so the denominator is omitted entirely rather than substituted.
  */
 export function formatRetryWait(retry: RetryWait): string {
   const modelTag = retry.model ? ` (${retry.model})` : "";
-  const wait = retry.inProgress ? "in progress" : `next in ${Math.max(0, Math.round(retry.delayMs / SECOND_MS))}s`;
+  const attempt = retry.attemptCap > 0 ? `attempt ${retry.attempt}/${retry.attemptCap}` : `attempt ${retry.attempt}`;
+  const wait = retry.inProgress ? "in progress" : `retrying in ${Math.max(0, Math.round(retry.delayMs / SECOND_MS))}s`;
   const elapsed = `${formatExactGap(retry.groupElapsedMs)} on this call`;
-  return `${formatRetryCause(retry.errorClass)}${modelTag} — retry ${retry.attempt} of ${retry.attemptCap}, ${wait} — ${elapsed}`;
+  return `${formatRetryCause(retry.errorClass)}${modelTag} — ${attempt} — ${wait} — ${elapsed}`;
 }
 
 /**

@@ -1,7 +1,7 @@
 // LivenessLine is the honest, quiet liveness indicator for the transcript
 // pane: "Quiet ~30s" rolling to "May be stalled - no updates for 3m 5s", or -
 // when the wait has a known explanation - that explanation instead of either:
-// "Rate limited - retry 9 of 11, next in 60s - 14m on this call" while the
+// "rate limited — attempt 9/11 — retrying in 60s — 14m on this call" while the
 // daemon is retrying a model call, or "Waiting on N subagents" while the
 // active turn's own delegated children are still running (design brief
 // principle 6: a wait explained is not a stall). That decision is driven
