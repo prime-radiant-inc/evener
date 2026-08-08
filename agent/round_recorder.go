@@ -73,9 +73,13 @@ type roundRecorder struct{ Groups []groupRecord }
 // until the next append: appending a fallback group can relocate the backing
 // array and leave the pointer addressing a stale copy. Read what you need off
 // it (model, provider, partial) before the round appends another group; never
-// stash it across a callModel invocation. Today's callers — settlement and the
-// steering composer — all run after the chain walk is finished, and the fields
-// they need are copied out immediately.
+// stash it across a callModel invocation.
+//
+// The constraint binds inside callModelWithFallback's chain walk, the only
+// place Groups is appended: its continuation-recovery and fallback-loop
+// group-transition resets both call this immediately before appending a group,
+// and both keep the result if-scoped and merely nil-test it. A mid-walk caller
+// that instead held the pointer across its append is the hazard this documents.
 func (r *roundRecorder) BestSalvage() (partial *llm.Response, from *groupRecord) {
 	if r == nil {
 		return nil, nil

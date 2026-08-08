@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/afero"
-
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/llm"
 )
@@ -222,18 +220,15 @@ func TestRoundRecorder_FallbackTrickleNeverShadowsPrimaryPartial(t *testing.T) {
 
 // TestRoundRecorder_EmptyRecorderSettlesNothing: a round that dies before its
 // first model call — a pre-flight failure, a spawn error, a tool gate — leaves
-// the recorder with zero groups. Every accessor must read that as "nothing
-// happened" rather than indexing into an empty slice, and both settlement paths
-// must persist nothing: no salvage, no steering, and above all no phantom
-// assistant turn claiming the model produced output it never produced.
+// the recorder with zero groups. The salvage accessors must read that as
+// "nothing happened" rather than indexing into an empty slice, and both
+// settlement paths must persist nothing: no salvage, no steering, and above all
+// no phantom assistant turn claiming the model produced output it never
+// produced. (SteeringGroup's own empty case is pinned by
+// TestRoundRecorder_SteeringGroupNilWithoutConsumePhase.)
 func TestRoundRecorder_EmptyRecorderSettlesNothing(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	sess := newSession(t, withDir(dir), withConfig(SessionConfig{
-		StateDir:         dir,
-		MaxSubagentDepth: 1,
-		testOnly:         testConfig{metaFS: afero.NewMemMapFs()},
-	}))
+	sess := newSession(t)
 	drainSessionEvents(sess)
 	sess.beginRoundRecorder()
 
@@ -243,9 +238,6 @@ func TestRoundRecorder_EmptyRecorderSettlesNothing(t *testing.T) {
 	}
 	if partial, from := rec.BestSalvage(); partial != nil || from != nil {
 		t.Fatalf("BestSalvage on an empty recorder = (%+v, %+v), want (nil, nil)", partial, from)
-	}
-	if g := rec.SteeringGroup(); g != nil {
-		t.Fatalf("SteeringGroup on an empty recorder = %+v, want nil", g)
 	}
 	if rec.HasConsumePhaseFailure() {
 		t.Fatal("HasConsumePhaseFailure on an empty recorder = true, want false")
