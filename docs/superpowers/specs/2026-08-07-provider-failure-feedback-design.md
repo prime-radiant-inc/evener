@@ -1,7 +1,7 @@
 # Provider-Failure Feedback and Retry Resilience
 
 **Date:** 2026-08-07
-**Status:** Draft v6 — after fourth adversarial round; awaiting review
+**Status:** Draft v7 — after fifth adversarial round; awaiting review
 
 ## Context
 
@@ -119,9 +119,22 @@ both UIs clear the chip on the first delta
   those arrive mid-grind (a user steering "are you stuck?" completes a
   systemMessage item), and clearing there re-creates the vanishing-chip
   bug this component exists to fix.
-- Rendering: `provider error · attempt 9/11 · retrying in 32s · 14m on this
-  call` (waiting) / `… · in progress · 14m on this call` (streaming). The
-  elapsed label is per retry group (one model call), not per turn.
+- Rendering: `provider error · attempt 3/4 · retrying in 32s · 14m on
+  this call` (waiting) / `… · in progress · 14m on this call`
+  (streaming). The elapsed label is per retry group (one model call), not
+  per turn. Two honesty rules:
+  - **The denominator must be the effective bound.** `ModelRetryData`
+    gains `AttemptCap`: the policy budget while the group has only
+    open-phase failures, dropping to `FailFastAfter` (or the cap-detection
+    bound) once consume-phase failures are present. Rendering `9/11` when
+    component 2 will stop the group at 4 promises patience the budget
+    won't deliver.
+  - **Model identity renders when it differs from the session's primary.**
+    `ModelRetryData.Model` already rides the wire unrendered; a chain walk
+    resets the chip's numbers ("attempt 1/4 · 5s") and without the model
+    tag the user cannot distinguish "same model, still failing" from "now
+    trying a different model" — the confusion class this component exists
+    to eliminate.
 
 ## Component 2: stream-failure early stop
 
@@ -144,32 +157,67 @@ Today those rejections all degrade into a generic "stream ended without
 completion", which is also why the incident's own api.jsonl was so
 uninformative. The adapter learns to decode in-band error chunks into
 typed llm errors carrying the payload's code/status, so a rate-limit,
-quota, or moderation rejection classifies as what it is. This fix is
-independent of everything else in this spec and lands as its own change
-with its own tests.
+quota, or moderation rejection classifies as what it is. **Landed:**
+commit c3b80eb60 (integer and numeric-string codes map to their HTTP
+class; string codes ride as `ErrorCode` on the retryable-unknown class;
+in-band retry hints are **not** mapped to `RetryAfter()` — decoded 429s
+keep normal backoff and cannot trigger the kata-r128 retry-after fallback
+from an in-band hint).
 
-With decoding in place, in-band rejections are **open-phase** for both
-early-stop rules and for settlement gating — they are request rejections,
-whatever their timing on the wire. As a backstop for providers that
-simply drop the connection, a consume-phase failure with **zero content
-events received** is likewise treated as open-phase-equivalent: four fast
-rejections must never produce "the provider repeatedly stopped responding
-mid-stream" steering.
+The fix is code-independent but not behaviorally inert: failures that
+previously degraded to a generic retryable stream error now classify
+truthfully, so a decoded permanent-class in-band error (4xx int code)
+walks the existing model-fallback chain where it previously retried in
+place. That is correct behavior arriving early, and its classification
+and fallback-eligibility cases belong in the standalone fix's tests.
 
-Early-stop rules, both scoped to content-bearing consume-phase failures:
+**Phase classification of decoded and dropped-connection failures** is
+positional, like everything else in this component:
+
+- **"Content events"** for phase classification = text deltas, tool-call
+  argument deltas, AND reasoning deltas — activity is activity, and the
+  incident model (kimi-k3) streams reasoning first. Salvage selection and
+  byte floors remain text + tool-arg only (reasoning is never salvaged).
+- An in-band error with **content events before it** is a
+  **content-bearing consume-phase failure**: it counts toward both
+  early-stop rules and is salvage-eligible — a meta-provider reporting an
+  upstream failure in-band after minutes of streaming is the cap shape
+  with a chattier transport, not a request rejection. Steering wording
+  draws on the decoded class.
+- An in-band error with **zero content events** before it, or any other
+  zero-content failure that resolved **fast**, is open-phase-equivalent:
+  four fast rejections must never produce "the provider repeatedly
+  stopped responding mid-stream" steering.
+- A zero-content failure that ends in the **stall timeout**
+  (`ErrSSEReadTimeout`, or elapsed at the ~30s `StreamRead` bound) is a
+  **consume-phase stall**: the provider accepted the request and sent
+  nothing. It counts toward the streak — accept-then-silence is the
+  incident's stall shape and must not ride the full budget — with its own
+  steering wording ("the provider accepted requests but streamed
+  nothing").
+
+Early-stop rules (consume-phase failures only, per the classification
+above — consume-phase stalls count toward the streak):
 
 - **Streak:** after `FailFastAfter` (serf passes 4) consecutive
   consume-phase failures, stop with `llm.ProviderUnhealthyError`.
 - **Cap detection:** after 2 consecutive consume-phase failures that each
-  ended after substantial streaming, stop immediately — two long streams
-  cut in a row is strong evidence of a hard transport cap that identical
-  retries cannot beat, and each such attempt costs minutes.
+  ended after substantial streaming (content-event window ≥ 60s — twice
+  the 30s `StreamRead` stall bound, so a stream productive that long is
+  demonstrably not a stall; no byte floor, since a reasoning-heavy stream
+  cut at a cap is cap-shaped regardless of how little text it emitted),
+  stop immediately — two long streams cut in a
+  row is strong evidence of a hard transport cap that identical retries
+  cannot beat, and each such attempt costs minutes. Cap detection **also
+  raises `llm.ProviderUnhealthyError`** (wrapping the last attempt
+  error), so both early stops share the settlement and mid-chain-abort
+  semantics — a fallback group tripping cap detection aborts the chain
+  exactly like a streak stop.
 
 **Measurement.** "Substantial streaming" is measured on the
 **content-event window** — first content event to last content event —
-plus a minimum salvaged-bytes floor, both recorded by the agent-side
-closure (which sees the events), not by `RetryStream` (whose attempt
-contract carries no stats). Wall-clock is explicitly not the measure: a
+recorded by the agent-side closure (which sees the events), not by
+`RetryStream` (whose attempt contract carries no stats). Wall-clock is explicitly not the measure: a
 20s-stream-then-30s-stall attempt is stall-shaped, and SSE keep-alive
 comments reset the read timer (`llm/sse.go:169-170`) so an attempt can run
 minutes with zero output. A stall tail is discriminated by the existing
@@ -233,9 +281,33 @@ consume-phase failure. Explicitly excluded: user interrupts and
 cancellations; context-length failures (appending turns to an overflowing
 history makes it worse); and open-phase request rejections (auth, 4xx,
 quota — "the provider connection failed" would be false, and stacking
-steering on a misconfiguration helps nothing). Zero-content consume-phase
-failures (component 2's in-band-rejection subclass) count as open-phase
-here.
+steering on a misconfiguration helps nothing). Fast zero-content failures
+(component 2's classification) count as open-phase here; consume-phase
+stalls and content-bearing in-band failures do not. Two further
+carve-outs:
+
+- **Content-filter/moderation-class failures never persist salvage.** A
+  compaction-atomic, recent-tail-protected turn carrying the content that
+  triggered the filter would pin it in history and defeat the existing
+  ForceCompact content-filter recovery
+  (`agent/session_model_call.go:490-505`), which exists to remove it.
+  Steering-only, with filter-appropriate wording.
+- **Interrupts persist salvage but not failure steering.** When a user
+  interrupt lands while the round's recorder holds a nonzero
+  consume-phase partial, discarding it wastes exactly the work this
+  component preserves — and component 1's honest chip makes interrupting
+  a visible grind *more* likely. The salvaged turn is persisted with an
+  interrupt-specific one-line steering ("this response was interrupted;
+  the content above was produced before the interruption and was not
+  delivered") that makes no provider-failure claim and does not push
+  "continue".
+
+**No salvage floor:** any nonzero salvageable text persists — a byte
+threshold would discard data to fix a sentence. The steering wording
+scales with size instead: a substantial partial gets "treat it as your
+draft… do not start over"; a small fragment gets "a small fragment (N
+bytes) was produced and not delivered", with no draft-reuse instruction.
+("Nothing salvageable" in the gating rules means literally zero bytes.)
 
 **Precedence for mixed rounds.** The exclusions key on the class of the
 **salvage-producing (or consume-phase) group's** failure — never on the
@@ -271,9 +343,16 @@ When it fires, up to two turns are persisted, in order:
 2. **The steering turn** (always, when settlement fires). Model-visible,
    via the existing `appendSteeringTurn` mechanism, composed from recorder
    stats:
-   - What happened, per failure shape: stalls ("the provider repeatedly
-     stopped responding mid-stream: N attempts over M minutes") vs cap
-     ("the transport cut off your response after ~Xs of streaming, twice").
+   - What happened, from one generic consume-phase template parameterized
+     by attempt count and shape — singular and plural must both read
+     truthfully (a permanent mid-stream error settles after ONE attempt;
+     "repeatedly" would be false). Shapes: stall ("the provider stopped
+     responding mid-stream[, N times over M minutes]"), silent stall
+     ("the provider accepted requests but streamed nothing"), cap ("the
+     transport cut off your response after ~Xs of streaming[, twice]"),
+     decoded in-band ("the provider reported: <decoded message>"). Every
+     terminal-error class that can reach settlement maps to exactly one
+     template.
    - When a salvaged turn precedes it: "Before the connection failed, you
      produced the response above. Any tool calls in progress did not
      execute, and nothing was delivered or saved. Treat it as your draft —
@@ -283,6 +362,27 @@ When it fires, up to two turns are persisted, in order:
    - Cap shape adds: "The transport cannot sustain responses that long.
      Keep each response well under that size and continue your work across
      multiple rounds."
+
+**Group-transition reset:** `OnReset` fires only between attempts within
+one group; nothing resets the screen between *groups*. A chain walk after
+a partial-delivering group leaves the primary's dangling partial rendered
+above the fallback's output (the projector's text-start handler abandons
+the item without emitting a reset, unlike the reset handler). Before any
+subsequent group streams, if a prior group in the round delivered partial
+output, the session emits the same assistant-text reset the retry path
+uses — this covers the chain-walk-then-success path, which never reaches
+settlement.
+
+**Delegate scope:** components 1–3 operate per session, children
+included — a delegate child's failing turn salvages and steers in its own
+transcript. Two parent-facing additions make that reachable: the child's
+retry/unhealthy state surfaces into its job activity phase (today a
+child's 10-minute grind reads as `awaiting model`, the exact opacity
+component 1 kills for attached sessions), and a failed delegate result
+notes when a salvaged draft exists ("partial draft salvaged in the child
+transcript — resume it with delegate_send rather than re-dispatching"),
+since re-dispatching a fresh child regenerates everything the child
+already paid for.
 
 **Live-client consistency:** persisted turns must reach watching clients,
 not just reloading ones. At settlement the session emits the corresponding
@@ -308,8 +408,9 @@ content compaction just summarized away.
 1. **First failing turn (the stall group):** attempts 1–4 stall at ~32s
    each; the streak rule stops the group at ~2m10s with "provider
    unhealthy: repeated mid-stream stalls". The chip showed attempts and
-   elapsed throughout. Salvage is a trickle, so settlement persists
-   steering only: provider unstable, nothing was saved.
+   elapsed throughout. The salvaged text is a small fragment, so the
+   persisted turn is tiny and the steering uses the fragment wording:
+   provider unstable, a small fragment was produced, nothing delivered.
 2. **User types "continue".** The retry group for the rebuilt round hits
    the other shape: two attempts stream ~5 minutes of plan text each and
    get cut at the ~300s cap. Cap detection stops the group after the
@@ -340,13 +441,15 @@ TDD throughout; per repo policy, all functionality covered.
   for non-fail-fast terminal errors.
 - **RetryStream:** open-phase failures are transparent (neither count nor
   reset — alternating stall/429 still trips at the 4th stall); streak at 4
-  content-bearing consume-phase failures; zero-content consume failures
-  (in-band rejections) treated as open-phase-equivalent; cap detection at
-  2 substantial consume-phase failures measured on the content-event
-  window + bytes floor (keep-alive-only minutes and stream-then-stall
-  attempts do not qualify; `ErrSSEReadTimeout` discriminates the stall
-  tail); both rules disabled when `FailFastAfter` is 0; wrapper error
-  references group stats; existing retry tests stay green.
+  consume-phase failures including silent stalls; fast zero-content
+  failures (decoded in-band rejections) treated as open-phase-equivalent;
+  cap detection at 2 substantial consume-phase failures measured on the
+  ≥60s content-event window (keep-alive-only minutes and
+  stream-then-stall attempts do not qualify; `ErrSSEReadTimeout`
+  discriminates the stall tail; a reasoning-heavy 5-minute stream cut at
+  the cap qualifies despite little text); both rules disabled when
+  `FailFastAfter` is 0; wrapper error references group stats; existing
+  retry tests stay green.
 - **Adapter (standalone, first):** openai-compat decodes in-band
   `{"error": ...}` chunks into typed llm errors carrying the payload's
   code/status; existing well-formed-stream and line-noise handling
@@ -361,13 +464,32 @@ TDD throughout; per repo policy, all functionality covered.
 - **Salvage content:** all top-level string fields extracted from partial
   tool args, labeled, under never-executed marker; no broken tool calls; no
   reasoning content; largest-by-total-bytes selection.
+- **Classification:** reasoning deltas count as content events for phase
+  classification but never for salvage; in-band-after-content is
+  consume-phase and salvage-eligible; fast zero-content is
+  open-phase-equivalent; zero-content stall (`ErrSSEReadTimeout`) counts
+  toward the streak.
 - **Settlement gating:** fires for consume-phase rounds; absent for
-  interrupts, cancellations, context-length, and open-phase rejections;
+  cancellations, context-length, open-phase rejections, and
+  content-filter classes (steering-only wording for the filter case);
+  interrupts persist any nonzero salvage with interrupt-specific steering
+  and no failure claim; no salvage floor — steering wording scales with
+  fragment size instead;
   mixed-round precedence — primary consume-phase salvage survives a chain
   walk ending in an open-phase or context-length fallback error, and
   steering describes the consume-phase group with a fallback-also-failed
   clause; steering-only when nothing salvageable; wording matches failure
   shape.
+- **Composer templates:** every terminal-error class that can reach
+  settlement maps to exactly one template; singular/plural truthfulness
+  (a one-attempt settlement never says "repeatedly"); fragment-vs-draft
+  wording scales with salvage size.
+- **Group transitions:** assistant-text reset emitted before a subsequent
+  group streams when a prior group delivered partial output — including
+  the chain-walk-then-success path; chip renders the `AttemptCap`
+  denominator and a model tag on fallback groups.
+- **Delegates:** child retry/unhealthy state visible in job activity; a
+  failed delegate result notes when a salvaged draft exists.
 - **Continuation:** the salvaged turn carries no continuation metadata;
   post-settlement rounds take the full-history path cleanly.
 - **Compaction:** the salvaged turn + steering pair survives compaction
