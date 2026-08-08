@@ -40,8 +40,10 @@ type attemptObservation struct {
 	// the attempt returned a non-nil error.
 	Phase llm.AttemptPhase
 	// ContentWindow is first-content-event to last-content-event, zero if no
-	// content event was ever seen. Content events are text, tool-call-argument,
-	// and reasoning deltas — not wall-clock attempt duration, since SSE
+	// content event was ever seen. Content events are text deltas, reasoning
+	// deltas, and tool-call argument bytes (delta OR end — some adapters,
+	// e.g. google, emit a tool call's complete arguments on end alone, with
+	// no preceding delta) — not wall-clock attempt duration, since SSE
 	// keep-alive comments reset the read timer and let a stalled attempt run
 	// minutes with zero output.
 	ContentWindow time.Duration
@@ -118,11 +120,12 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 			var consumeErr error
 			result, obs, consumeErr = s.consumeModelStream(ctx, req, st)
 			return llm.AttemptReport{
-				// obs.Partial covers everything consumeModelStream delivered to
-				// the caller (assistant text, communicate preview, reasoning) —
-				// a strict superset of sessionModelResponse.StreamedAssistant,
-				// which only tracks assistant-visible text and stays zeroed on
-				// every error return (kata-pinned in the msfz fuzz test).
+				// obs.Partial != nil is the accumulator's "something was
+				// delivered to the caller" signal — text, communicate
+				// preview, tool-call args, or reasoning — and unlike
+				// sessionModelResponse.StreamedAssistant it survives the
+				// error path (StreamedAssistant stays zeroed on every error
+				// return, kata-pinned in the msfz fuzz test).
 				PartialOutput: obs.Partial != nil,
 				Phase:         obs.Phase,
 				ContentWindow: obs.ContentWindow,
@@ -189,11 +192,11 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	assistantStarted := false
 	finished := false
 
-	// firstContent/lastContent bound the content-event window — text, tool-arg,
-	// and reasoning deltas only, never wall-clock attempt duration (spec:
-	// SSE keep-alives reset the read timer, so a stalled attempt can run
-	// minutes with zero output; content-event span is what actually
-	// discriminates a cap-shaped cutoff from a stall).
+	// firstContent/lastContent bound the content-event window — text, tool-arg
+	// (delta or end), and reasoning content only, never wall-clock attempt
+	// duration (spec: SSE keep-alives reset the read timer, so a stalled
+	// attempt can run minutes with zero output; content-event span is what
+	// actually discriminates a cap-shaped cutoff from a stall).
 	var firstContent, lastContent time.Time
 	contentSeen := false
 	noteContent := func() {
@@ -326,6 +329,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 				b := &strings.Builder{}
 				b.Write(ev.ToolCall.Arguments)
 				toolArgs[ev.ToolCall.ID] = b
+				noteContent()
 			}
 			if toolNames[ev.ToolCall.ID] == s.resultToolName() {
 				emitCommunicatePreview(ev.ToolCall.ID)

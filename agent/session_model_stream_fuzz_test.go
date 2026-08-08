@@ -253,6 +253,7 @@ func FuzzMsfzConsumeModelStream(f *testing.F) {
 	f.Add([]byte{2, 2, 2, 6})                // reasoning then finish
 	f.Add([]byte{3, 0, 0, 4, 0, 0, 5, 0, 0}) // nil tool-call guards
 	f.Add([]byte{4, 1, 4, 4, 1, 4, 4, 1, 4}) // repeated partial-json communicate
+	f.Add([]byte{1, 5, 1, 0, 0, 1, 7, 0})    // bare ToolCallEnd-with-args (google shape) then error, no delta
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		plan := decodeMsfzStreamPlan(data)
@@ -285,6 +286,16 @@ func FuzzMsfzConsumeModelStream(f *testing.F) {
 			}
 			if modelResp.Response.Provider != "" || modelResp.Response.Model != "" {
 				t.Fatalf("consumeModelStream: error path leaked a non-zero response: %+v", modelResp.Response)
+			}
+			// Salvage and phase must agree: bytes were only salvaged because a
+			// content event moved the accumulator, so a nonzero count implies
+			// the attempt is classified as content-bearing (PhaseConsume).
+			// Adapters that emit a tool call's complete arguments on
+			// ToolCallEnd alone (no ToolCallDelta — e.g.
+			// llm/providers/google/adapter.go) must not slip through as
+			// PhaseFastReject/PhaseSilentStall with salvageable bytes.
+			if obs.SalvagedBytes > 0 && obs.Phase != llm.PhaseConsume {
+				t.Fatalf("consumeModelStream: SalvagedBytes=%d but Phase=%v, want PhaseConsume", obs.SalvagedBytes, obs.Phase)
 			}
 			return
 		}
