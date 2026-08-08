@@ -9,7 +9,12 @@ import type { ConnectionState } from "../../../../protocol/client";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
-import { readMutationPersistence, resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import {
+  readMutationPersistence,
+  resetThreadsStoreForTests,
+  subscribeMutationPersistence,
+  threadsStore,
+} from "../../../../stores/threads";
 import { AskDock } from "./AskDock";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
 
@@ -72,6 +77,16 @@ function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
   const fake = new FakeClient(state);
   connectionStore.getState().connect(fake);
   return fake;
+}
+
+function nextMutationPersistence(targetRef: string): Promise<void> {
+  return new Promise((resolve) => {
+    const unsubscribe = subscribeMutationPersistence((targetRefs) => {
+      if (!targetRefs.includes(targetRef)) return;
+      unsubscribe();
+      resolve();
+    });
+  });
 }
 
 function askArgs(questions: Array<Record<string, unknown>>): string {
@@ -209,14 +224,14 @@ test("clicking Send composes and submits through the plain send() path, then the
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
 
+  const persisted = nextMutationPersistence("ref_a");
   await user.click(screen.getByRole("button", { name: /send answers/i }));
+  await persisted;
 
-  await waitFor(async () => {
-    const [record] = (await readMutationPersistence("ref_a")).outbox;
-    expect(record?.payload).toMatchObject({
-      ref: "ref_a",
-      input: [{ type: "text", text: "[answers]\n1. [Deploy?] → skipped (no answer)" }],
-    });
+  const [record] = (await readMutationPersistence("ref_a")).outbox;
+  expect(record?.payload).toMatchObject({
+    ref: "ref_a",
+    input: [{ type: "text", text: "[answers]\n1. [Deploy?] → skipped (no answer)" }],
   });
   await waitFor(() => expect(askDockStore.getState().byRef.get("ref_a")?.batches ?? []).toEqual([]));
   expect(screen.queryByText("Deploy?")).toBeNull();
@@ -493,10 +508,10 @@ test("the primary button sends once the last unanswered question is answered - t
   // left unanswered once this lands, so the button's job reverts to send.
   await user.click(screen.getByRole("radio", { name: /let serf decide/i }));
 
+  const persisted = nextMutationPersistence("ref_a");
   await user.click(screen.getByRole("button", { name: /send answers/i }));
+  await persisted;
 
-  await waitFor(async () => {
-    const [record] = (await readMutationPersistence("ref_a")).outbox;
-    expect(record?.payload).toMatchObject({ ref: "ref_a" });
-  });
+  const [record] = (await readMutationPersistence("ref_a")).outbox;
+  expect(record?.payload).toMatchObject({ ref: "ref_a" });
 });
