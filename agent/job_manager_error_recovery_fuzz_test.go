@@ -152,7 +152,7 @@ func assertJobManagerCreateFailures(t *testing.T, p jobManagerErrorProgram) {
 		jm := newTestJM(t)
 		defer jm.closeStoreOnly()
 		want := errors.New("scripted output open failure")
-		jm.openOutput = func(string, int64) (*jobstore.OutputStore, error) { return nil, want }
+		jm.createOutput = func(string, int64) (*jobstore.OutputStore, error) { return nil, want }
 		if rec, err := jm.createShell(createShellOpts{Command: p.command}); rec != nil || !errors.Is(err, want) {
 			t.Fatalf("create with output failure = (%+v, %v)", rec, err)
 		}
@@ -224,7 +224,7 @@ func assertJobManagerStartForwardFailure(t *testing.T, p jobManagerErrorProgram)
 func assertJobManagerLostRuntimeRecovery(t *testing.T, p jobManagerErrorProgram) (jobstore.Status, string, int64, int) {
 	t.Helper()
 	stateDir := t.TempDir()
-	jm, err := newJobManagerNoSync(stateDir, "runtime-recovery", nil)
+	jm, err := newJobManagerNoSync(stateDir, testOwnerSessionID, nil)
 	if err != nil {
 		t.Fatalf("new recovery source: %v", err)
 	}
@@ -245,7 +245,7 @@ func assertJobManagerLostRuntimeRecovery(t *testing.T, p jobManagerErrorProgram)
 	}
 
 	var notifications []jobNotification
-	restarted, err := newJobManagerNoSync(stateDir, "runtime-recovery", func(n jobNotification) {
+	restarted, err := newJobManagerNoSync(stateDir, testOwnerSessionID, func(n jobNotification) {
 		notifications = append(notifications, n)
 	})
 	if err != nil {
