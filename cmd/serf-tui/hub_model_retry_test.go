@@ -366,3 +366,33 @@ func TestComposerRetryChipFallsBackToMaxAttemptsWhenCapMissing(t *testing.T) {
 		t.Errorf("chip = %q, want it to contain %q", chip, "attempt 2/11")
 	}
 }
+
+// The chip describes the VIEWED session's model call, so only that session's
+// deltas end its wait. A delta from another session is no evidence this call
+// resumed streaming, and marking it in progress would replace the countdown —
+// the load-bearing part of the chip — with a standing false claim for any user
+// who has a second, busy session open.
+func TestModelRetryInProgressIgnoresForeignSessionDeltas(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.applyHubNotification(modelRetryNotification(t, appwire.ThreadModelRetryParams{
+		Attempt: 2, MaxAttempts: 11, AttemptCap: 11, DelayMS: 45000, ErrorClass: "rate_limit", StatusCode: 429,
+	}))
+	if m.modelRetry == nil {
+		t.Fatal("precondition: modelRetry not recorded")
+	}
+
+	raw, err := json.Marshal(appwire.AgentMessageDeltaParams{
+		Ref: "local:01OTHER", ThreadID: "01OTHER", TurnID: "turn_1", ItemID: "item_1", Delta: "hello",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	m.applyHubNotification(appwire.Notification{Method: appwire.NotifyAgentMessageDelta, Params: raw})
+
+	if m.modelRetryInProgress {
+		t.Error("a delta from another session marked the viewed session's retry in progress")
+	}
+	if got := composerRetryChip(m.modelRetry, "", m.modelRetryInProgress); !strings.Contains(got, "· 45s ·") {
+		t.Errorf("chip = %q, want the countdown intact after a foreign delta", got)
+	}
+}

@@ -13,7 +13,6 @@ import (
 )
 
 func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.Cmd {
-	m.markModelRetryInProgress(notification)
 	m.clearModelRetryOnProgress(notification)
 	// Panel-refresh notifications fire regardless of current mode.
 	switch notification.Method {
@@ -55,6 +54,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 	if !m.notificationMatchesCurrentSession(notification) {
 		return nil
 	}
+	m.markModelRetryInProgress(notification)
 	var cmd tea.Cmd
 	switch notification.Method {
 	case appwire.NotifyTurnStarted:
@@ -577,6 +577,11 @@ func (m *hubModel) replaceSessionTranscript(messages []transcript.ChatMessage) {
 // elapsed, so the chip stops counting down toward a wait that is over — while
 // still standing (clearing it here is the vanishing-chip bug). Deltas drive a
 // re-render on their own, so the transition needs no timer.
+//
+// Its caller runs it below applyHubNotification's current-session filter: this
+// is a positive claim about the viewed session's call, and any other session
+// that happens to be streaming would otherwise keep the chip permanently at
+// "in progress" — suppressing the countdown that is the whole point of it.
 func (m *hubModel) markModelRetryInProgress(notification appwire.Notification) {
 	if m.modelRetry == nil {
 		return
