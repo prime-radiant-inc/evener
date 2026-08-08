@@ -181,6 +181,8 @@ async function warmRoute(path: string, text: string | RegExp): Promise<void> {
 // deadline. A genuinely broken module fails this await with its real error
 // instead of a timeout.
 beforeAll(async () => {
+  resetWorkspaceStoreForTests();
+  resetTreeStoreForTests();
   globalThis.ResizeObserver = StubResizeObserver;
   // @ts-expect-error MemoryStorage deliberately implements only the Storage
   // methods DockHost.tsx actually calls (getItem/setItem/removeItem/clear),
@@ -188,10 +190,10 @@ beforeAll(async () => {
   globalThis.localStorage = new MemoryStorage();
   // connectionStore has no resetXForTests helper (see this file's other
   // stores) - every other file that touches it resets it inline in its own
-  // beforeEach/beforeAll instead; this warm-up render needs a clean slate too,
-  // or a client left "ready"/"closed" by an earlier file in the shared
-  // isolate:false worker renders something other than the welcome pane's
-  // "No session open" the warmRoute below asserts on.
+  // beforeEach/beforeAll instead. This warm-up render is this file's first
+  // lifecycle boundary, before beforeEach, so workspace/tree were reset above
+  // for the same reason: no shared isolate:false state may decide what the
+  // welcome route renders.
   closeStaleClient();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   stubTreeFetch();
