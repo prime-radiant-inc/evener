@@ -779,6 +779,15 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	if err != nil && shouldRetryResponsesContinuationAsFullHistory(req, err) {
 		s.disableResponsesContinuationForRequest(req, profile.SupportsStreaming())
 		retryReq := responsesContinuationFullHistoryFallbackRequest(req)
+		// Group-transition reset: the primary group's error usually arrives
+		// open-phase (nothing streamed), but an in-band mid-stream
+		// "response.failed" can leave real salvage on primaryRecord — this
+		// retry is still a new group streaming over whatever the primary
+		// already showed. See the matching guard before the fallback loop
+		// below for the full rationale.
+		if _, from := recorder.BestSalvage(); from != nil {
+			s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
+		}
 		var recoveryRecord groupRecord
 		modelResp, err = s.callModel(callCtx, policy, profile, retryReq, &recoveryRecord)
 		recorder.Groups = append(recorder.Groups, recoveryRecord)

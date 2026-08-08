@@ -195,6 +195,64 @@ func TestFallbackChain_ResetsAssistantTextBetweenGroups(t *testing.T) {
 	}
 }
 
+// TestFallbackChain_NoResetWhenNoGroupProducedOutput is the negative control
+// for TestFallbackChain_ResetsAssistantTextBetweenGroups: the primary is
+// rejected at stream open (nothing ever rendered), so the fallback's
+// callModel must run with NO reset — there is nothing on screen to clear.
+// Without the BestSalvage() guard, an unconditional reset would still pass
+// the "exactly 1" assertion above (that test's primary always has output);
+// this is the case that actually discriminates a guarded reset from an
+// unconditional one.
+func TestFallbackChain_NoResetWhenNoGroupProducedOutput(t *testing.T) {
+	permErr := llm.ErrorFromHTTPStatus("openai", 403, "primary denied", nil, nil)
+	stop := llm.FinishReason{Reason: llm.FinishReasonStop, Raw: "stop"}
+	a := &scriptedStreamAdapter{
+		provider: "openai",
+		openErr: map[string]error{
+			"primary": permErr,
+		},
+		script: map[string]func(*llm.ChanStream){
+			"fallback-b": func(st *llm.ChanStream) {
+				st.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "t0"})
+				st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: "t0", Delta: "fallback answered"})
+				st.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: "t0"})
+				st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &stop})
+			},
+		},
+	}
+	policy := llm.RetryPolicy{MaxRetries: 10, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond}
+	sess := newSession(t,
+		withAdapter(a),
+		withProfile(NewOpenAIProfile("primary")),
+		withConfig(SessionConfig{
+			LLMRetryPolicy: &policy,
+			LLMSleep:       func(context.Context, time.Duration) error { return nil },
+			ModelFallbacks: []string{"fallback-b"},
+		}),
+	)
+	evs, mu, done := collectEvents(sess)
+
+	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), "", 1)
+	if err != nil {
+		t.Fatalf("callModelWithFallback: %v, want nil (fallback should succeed)", err)
+	}
+
+	sess.Close()
+	<-done
+
+	mu.Lock()
+	var resets int
+	for _, ev := range *evs {
+		if ev.Kind == events.EventAssistantTextReset {
+			resets++
+		}
+	}
+	mu.Unlock()
+	if resets != 0 {
+		t.Fatalf("EventAssistantTextReset count = %d, want 0 (the primary never rendered anything)", resets)
+	}
+}
+
 // TestModelFallbackEligible_ProviderUnhealthy pins the dedicated
 // non-eligibility arm. The verdict wraps its last attempt error, so deriving
 // the class through llm.Classify would walk into that wrapped error: a
