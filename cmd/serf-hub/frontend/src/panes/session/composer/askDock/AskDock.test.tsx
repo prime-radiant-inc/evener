@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, onTestFinished, test } from "vitest";
 import type { ConnectionState } from "../../../../protocol/client";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
@@ -86,6 +86,7 @@ function nextMutationPersistence(targetRef: string): Promise<void> {
       unsubscribe();
       resolve();
     });
+    onTestFinished(unsubscribe);
   });
 }
 
