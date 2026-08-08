@@ -1956,6 +1956,17 @@ func (e *LocalExecutionEnvironment) ensureUnderRoot(abs string) error {
 	return fmt.Errorf("is outside working directory %q", e.RootDir)
 }
 
+// EnsureUnderRoot is the exported form of ensureUnderRoot: it validates that
+// an already-resolved absolute path (joined and filepath.Clean'ed by the
+// caller) does not escape this environment's sandbox root, applying the same
+// symlink-aware escape check as resolveWrite. Callers that only have a raw,
+// possibly-relative path should join/clean it against WorkingDirectory()
+// first — this method does not do that for them. It is the shell tool's entry
+// point for validating a model-chosen `cwd` before spawning a process there.
+func (e *LocalExecutionEnvironment) EnsureUnderRoot(abs string) error {
+	return e.ensureUnderRoot(abs)
+}
+
 // resolveSymlinksBestEffort resolves symlinks in path. For write targets the
 // leaf (and sometimes intermediate dirs) may not exist yet, so this walks up
 // the ancestors until it finds one that does, resolves that, and re-joins

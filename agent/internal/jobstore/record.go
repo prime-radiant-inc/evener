@@ -256,12 +256,16 @@ type JobRecord struct {
 	// always reads false, whatever the job did. Live-only, like LastActivity.
 	Background bool `json:"-"`
 	// WorkingDir is the launch-time working directory of a background shell
-	// job (the executing env's WorkingDirectory() when the shell tool call
-	// started it), recorded so manage_worktree remove/prune's live-work guard
+	// job, recorded so manage_worktree remove/prune's live-work guard
 	// (liveWorkUnder) can refuse deleting a worktree a shell job is running
-	// under. Empty for delegate jobs, which record their working dir in
-	// DelegateRestore.WorkingDir instead. Best-effort: a command that `cd`s
-	// after launch is invisible to it.
+	// under. Usually the executing env's WorkingDirectory() when the shell
+	// tool call started it, but the shell tool's optional `cwd` argument lets
+	// the model choose a different (validated, sandbox-confined) starting
+	// directory instead — so this may be model-chosen, not just inherited.
+	// Empty for delegate jobs, which record their working dir in
+	// DelegateRestore.WorkingDir instead. Best-effort either way: a command
+	// that itself `cd`s elsewhere after launch (e.g. `cd elsewhere && foo`) is
+	// invisible to it — only the initial value is tracked.
 	WorkingDir       string                     `json:"working_dir,omitempty"`
 	Task             string                     `json:"task,omitempty"`
 	ParentSessionID  string                     `json:"parent_session_id,omitempty"`

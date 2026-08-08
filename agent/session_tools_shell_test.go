@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -605,6 +606,145 @@ func TestShellRejectsMaxWaitMS(t *testing.T) {
 	})
 	if !res.IsError {
 		t.Fatalf("shell with max_wait_ms should be rejected, got success: %s", res.Output)
+	}
+}
+
+// --- kata 84xs: optional, validated `cwd` on the shell tool ---
+
+// TestShellToolCwdOmittedDefaultsToWorkingDirectory is the regression case:
+// with no cwd argument, the command must run in env.WorkingDirectory(),
+// exactly as before this kata.
+func TestShellToolCwdOmittedDefaultsToWorkingDirectory(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("pwd is POSIX-only")
+	}
+	s := newTestSession(t)
+	root := s.env.WorkingDirectory()
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		resolvedRoot = root
+	}
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"pwd"}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, resolvedRoot) {
+		t.Fatalf("shell output = %q, want it to contain the session working directory %q", res.Output, resolvedRoot)
+	}
+}
+
+// TestShellToolCwdRelativeResolvesUnderSandboxRoot: a relative cwd is joined
+// against env.WorkingDirectory() and the command runs there.
+func TestShellToolCwdRelativeResolvesUnderSandboxRoot(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("pwd is POSIX-only")
+	}
+	s := newSession(t, withDir(t.TempDir()), withoutGitSnapshot())
+	root := s.env.WorkingDirectory()
+	sub := filepath.Join(root, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	resolvedSub, err := filepath.EvalSymlinks(sub)
+	if err != nil {
+		resolvedSub = sub
+	}
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"pwd","cwd":"sub"}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, resolvedSub) {
+		t.Fatalf("shell output = %q, want it to contain resolved cwd %q", res.Output, resolvedSub)
+	}
+}
+
+// TestShellToolCwdAbsoluteInsideSandboxRootAccepted: an absolute cwd inside
+// the sandbox root is accepted as-is.
+func TestShellToolCwdAbsoluteInsideSandboxRootAccepted(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("pwd is POSIX-only")
+	}
+	s := newSession(t, withDir(t.TempDir()), withoutGitSnapshot())
+	root := s.env.WorkingDirectory()
+	sub := filepath.Join(root, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	resolvedSub, err := filepath.EvalSymlinks(sub)
+	if err != nil {
+		resolvedSub = sub
+	}
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"command":"pwd","cwd":%q}`, sub)),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, resolvedSub) {
+		t.Fatalf("shell output = %q, want it to contain resolved cwd %q", res.Output, resolvedSub)
+	}
+}
+
+// TestShellToolCwdEscapingSandboxRootRejected: a cwd that resolves outside the
+// sandbox root is rejected before the process is spawned, and the error names
+// the RESOLVED path (not the raw ".." input).
+func TestShellToolCwdEscapingSandboxRootRejected(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	root := s.env.WorkingDirectory()
+	// The "resolved" path per this kata is the joined+cleaned path (not a
+	// symlink-canonicalized one) — resolveShellWorkingDir joins raw against
+	// env.WorkingDirectory() and filepath.Clean's the result before validating.
+	wantPath := filepath.Dir(root)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"pwd","cwd":".."}`),
+	})
+	if !res.IsError {
+		t.Fatalf("shell with escaping cwd should be rejected, got success: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, wantPath) {
+		t.Fatalf("escaping-cwd error = %q, want it to contain the resolved path %q", res.Output, wantPath)
+	}
+}
+
+// TestShellToolCwdNonexistentRejected: a cwd naming a nonexistent directory is
+// rejected before the process is spawned, and the error names the RESOLVED
+// (joined+cleaned) path.
+func TestShellToolCwdNonexistentRejected(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	root := s.env.WorkingDirectory()
+	wantPath := filepath.Join(root, "does-not-exist")
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"pwd","cwd":"does-not-exist"}`),
+	})
+	if !res.IsError {
+		t.Fatalf("shell with nonexistent cwd should be rejected, got success: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, wantPath) {
+		t.Fatalf("nonexistent-cwd error = %q, want it to contain the resolved path %q", res.Output, wantPath)
 	}
 }
 

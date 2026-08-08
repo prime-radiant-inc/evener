@@ -45,6 +45,18 @@ type ArgvExecutor interface {
 	ExecArgv(ctx context.Context, name string, args []string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error)
 }
 
+// RootBoundary is an optional execution-environment capability: validating
+// that an already-resolved absolute path stays under the environment's
+// sandbox root. It is separate from ExecutionEnvironment, like
+// StreamingExecutor, so other implementers (incl. test fakes) are unaffected;
+// the shell tool type-asserts for it to validate a model-chosen `cwd` before
+// spawning a process there.
+type RootBoundary interface {
+	// EnsureUnderRoot rejects abs if it escapes the sandbox root. abs must
+	// already be absolute and filepath.Clean'ed by the caller.
+	EnsureUnderRoot(abs string) error
+}
+
 // FileMutator is an optional execution-environment capability: raw,
 // policy-checked file mutations used by apply_patch, which needs to read, write,
 // remove, and rename files directly rather than through the formatted read/write
