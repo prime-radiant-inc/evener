@@ -3588,6 +3588,8 @@ test("serf/thread/modelRetry records retry state and leaves lastFrameAt alone", 
         statusCode: 429,
         message: "rate limit exceeded",
         model: "k3",
+        groupElapsedMs: 840000,
+        attemptCap: 11,
       },
     },
     999000,
@@ -3600,14 +3602,41 @@ test("serf/thread/modelRetry records retry state and leaves lastFrameAt alone", 
     errorClass: "rate_limit",
     statusCode: 429,
     turnId: "turn_1",
+    model: "k3",
+    groupElapsedMs: 840000,
+    attemptCap: 11,
+    receivedAt: 999000,
   });
   expect(model.lastFrameAt).toBe(frameAtBeforeRetry);
 });
 
-// The retry state answers "what is happening now". Once the model actually
-// produces something, or the turn settles, it is history and must not linger
-// next to live output.
-test("modelRetry clears once the model produces a frame", () => {
+// Component 1 (docs/superpowers/specs/2026-08-07-provider-failure-feedback-
+// design.md): the retry state answers "what is happening now, in this retry
+// group" and must survive ordinary mid-grind progress (deltas, a
+// systemMessage announcement completing), clearing only on an actual turn
+// boundary or the completion of a real model-output item. The old rule -
+// clear on ANY frame - made a provider grinding through retries look like the
+// indicator had vanished for no reason (kata 4zn8's own follow-up bug); that
+// is the rule these tests pin the replacement for.
+function retryNotification(turnId: string): AnyNotification {
+  return {
+    method: "serf/thread/modelRetry",
+    params: {
+      threadId: "thr_t",
+      ref: "ref_t",
+      turnId,
+      attempt: 1,
+      maxAttempts: 11,
+      delayMs: 1000,
+      errorClass: "rate_limit",
+      statusCode: 429,
+      groupElapsedMs: 500,
+      attemptCap: 11,
+    },
+  } as AnyNotification;
+}
+
+function withActiveRetry(): ThreadModel {
   let model = testHydrate();
   model = applyNotification(
     model,
@@ -3617,25 +3646,13 @@ test("modelRetry clears once the model produces a frame", () => {
     },
     1001,
   );
-  model = applyNotification(
-    model,
-    {
-      method: "serf/thread/modelRetry",
-      params: {
-        threadId: "thr_t",
-        ref: "ref_t",
-        turnId: "turn_1",
-        attempt: 1,
-        maxAttempts: 11,
-        delayMs: 1000,
-        errorClass: "rate_limit",
-        statusCode: 429,
-      },
-    },
-    1002,
-  );
+  model = applyNotification(model, retryNotification("turn_1"), 1002);
   expect(model.modelRetry).toBeDefined();
+  return model;
+}
 
+test("modelRetry survives an assistant message delta", () => {
+  let model = withActiveRetry();
   model = applyNotification(
     model,
     {
@@ -3646,6 +3663,112 @@ test("modelRetry clears once the model produces a frame", () => {
         turnId: "turn_1",
         item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" },
       },
+    },
+    1003,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/agentMessage/delta",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "hello" },
+    },
+    1004,
+  );
+  expect(model.modelRetry).toBeDefined();
+});
+
+test("modelRetry survives a systemMessage item completion - it arrives mid-grind (e.g. a user steer 'are you stuck?')", () => {
+  let model = withActiveRetry();
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "systemMessage", id: "item_sys_1", turnId: "turn_1", status: "completed", text: "note" },
+      },
+    },
+    1003,
+  );
+  expect(model.modelRetry).toBeDefined();
+});
+
+test("modelRetry survives a userMessage item completion", () => {
+  let model = withActiveRetry();
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "userMessage", id: "item_user_1", turnId: "turn_1", status: "completed", text: "hi" },
+      },
+    },
+    1003,
+  );
+  expect(model.modelRetry).toBeDefined();
+});
+
+test("modelRetry clears once the model's own output item (agentMessage) completes", () => {
+  let model = withActiveRetry();
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" },
+      },
+    },
+    1003,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "completed", text: "done" },
+      },
+    },
+    1004,
+  );
+  expect(model.modelRetry).toBeUndefined();
+});
+
+test("modelRetry clears when its turn completes", () => {
+  let model = withActiveRetry();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "failed", itemsView: "" },
+      },
+    },
+    1003,
+  );
+  expect(model.modelRetry).toBeUndefined();
+});
+
+test("modelRetry clears when a new turn starts", () => {
+  let model = withActiveRetry();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_2", status: "inProgress", itemsView: "" } },
     },
     1003,
   );

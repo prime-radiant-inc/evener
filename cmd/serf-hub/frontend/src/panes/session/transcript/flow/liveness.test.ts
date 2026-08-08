@@ -6,8 +6,16 @@ import {
   formatQuietBucket,
   formatSubagentCount,
   QUIET_THRESHOLD_MS,
+  type RetryWait,
   STALL_THRESHOLD_MS,
 } from "./liveness";
+
+// Fills in RetryWait's non-attempt/delay fields with values these tests don't
+// care about (a nominal 5s call so far, not yet past its wait) so each test
+// only spells out what it's actually pinning.
+function retryWait(overrides: Partial<RetryWait> & Pick<RetryWait, "attempt" | "attemptCap" | "delayMs">): RetryWait {
+  return { errorClass: undefined, model: undefined, groupElapsedMs: 5_000, inProgress: false, ...overrides };
+}
 
 // Thresholds mirror the legacy renderer's own session-level liveness clock
 // (docs/web-ui/parity/parity-m4-transcript.md §16: "quiet at gap>=20000ms,
@@ -195,26 +203,26 @@ test("formatExactGap: minutes and seconds both round down to whole units", () =>
 // case already uses, because a retry claim can go stale too (a daemon that dies
 // mid-retry leaves this state behind forever, kata 3h02).
 test("describeLiveness: a pending retry explains the quiet instead of guessing", () => {
-  const retry = { attempt: 9, maxAttempts: 11, delayMs: 60_000, errorClass: "rate_limit", statusCode: 429 };
+  const retry = retryWait({ attempt: 9, attemptCap: 11, delayMs: 60_000, errorClass: "rate_limit" });
   expect(describeLiveness(30_000, true, 0, retry)).toEqual({
     level: "retrying",
-    text: "Rate limited — retry 9 of 11, next in 60s",
+    text: "Rate limited — retry 9 of 11, next in 60s — 5s on this call",
   });
 });
 
 test("describeLiveness: a non-rate-limit retryable error names itself generically", () => {
-  const retry = { attempt: 2, maxAttempts: 11, delayMs: 4_000, errorClass: "server", statusCode: 503 };
+  const retry = retryWait({ attempt: 2, attemptCap: 11, delayMs: 4_000, errorClass: "server" });
   expect(describeLiveness(30_000, true, 0, retry)).toEqual({
     level: "retrying",
-    text: "Provider error — retry 2 of 11, next in 4s",
+    text: "Provider error — retry 2 of 11, next in 4s — 5s on this call",
   });
 });
 
 test("describeLiveness: past the stall threshold a retry reports both facts, never suppressing the stall", () => {
-  const retry = { attempt: 9, maxAttempts: 11, delayMs: 60_000, errorClass: "rate_limit", statusCode: 429 };
+  const retry = retryWait({ attempt: 9, attemptCap: 11, delayMs: 60_000, errorClass: "rate_limit" });
   expect(describeLiveness(630_000, true, 0, retry)).toEqual({
     level: "stalled",
-    text: "Rate limited — retry 9 of 11, next in 60s — no updates for 10m 30s",
+    text: "Rate limited — retry 9 of 11, next in 60s — 5s on this call — no updates for 10m 30s",
   });
 });
 
@@ -223,15 +231,15 @@ test("describeLiveness: past the stall threshold a retry reports both facts, nev
 // attempt 2 onward a retry bypasses this gate entirely, so this test's own
 // invisibility depends on attempt being 1, not just on being under 20s.
 test("describeLiveness: a first retry (attempt 1) under the quiet threshold stays invisible", () => {
-  const retry = { attempt: 1, maxAttempts: 11, delayMs: 1_000, errorClass: "rate_limit", statusCode: 429 };
+  const retry = retryWait({ attempt: 1, attemptCap: 11, delayMs: 1_000, errorClass: "rate_limit" });
   expect(describeLiveness(5_000, true, 0, retry)).toEqual({ level: "none", text: null });
 });
 
 test("describeLiveness: a retry pre-empts the subagent wait — it is the more specific explanation", () => {
-  const retry = { attempt: 3, maxAttempts: 11, delayMs: 8_000, errorClass: "rate_limit", statusCode: 429 };
+  const retry = retryWait({ attempt: 3, attemptCap: 11, delayMs: 8_000, errorClass: "rate_limit" });
   expect(describeLiveness(30_000, true, 2, retry)).toEqual({
     level: "retrying",
-    text: "Rate limited — retry 3 of 11, next in 8s",
+    text: "Rate limited — retry 3 of 11, next in 8s — 5s on this call",
   });
 });
 
@@ -253,15 +261,15 @@ test("describeLiveness: a retry pre-empts the subagent wait — it is the more s
 // branch at all: a retry that never gets past attempt 1 (resolves or gives
 // up on its first try) never bypasses the gate, so it can never flicker.
 test("describeLiveness: a fast retry storm's second attempt becomes visible immediately, without waiting for the 20s quiet threshold", () => {
-  const retry = { attempt: 2, maxAttempts: 11, delayMs: 2_000, errorClass: "rate_limit" };
+  const retry = retryWait({ attempt: 2, attemptCap: 11, delayMs: 2_000, errorClass: "rate_limit" });
   expect(describeLiveness(3_000, true, 0, retry)).toEqual({
     level: "retrying",
-    text: "Rate limited — retry 2 of 11, next in 2s",
+    text: "Rate limited — retry 2 of 11, next in 2s — 5s on this call",
   });
 });
 
 test("describeLiveness: a single sub-second retry (attempt 1) still does not flicker into view under the quiet threshold", () => {
-  const retry = { attempt: 1, maxAttempts: 11, delayMs: 500, errorClass: "rate_limit" };
+  const retry = retryWait({ attempt: 1, attemptCap: 11, delayMs: 500, errorClass: "rate_limit" });
   expect(describeLiveness(600, true, 0, retry)).toEqual({ level: "none", text: null });
 });
 
@@ -270,9 +278,57 @@ test("describeLiveness: a single sub-second retry (attempt 1) still does not fli
 // per rejection) still becomes visible the instant attempt 2 arrives, well
 // under the 20s gap that would previously have hidden it.
 test("describeLiveness: a sustained-cadence retry (long per-attempt delay) also becomes visible on its second attempt, before the quiet threshold", () => {
-  const retry = { attempt: 2, maxAttempts: 11, delayMs: 46_000, errorClass: "rate_limit" };
+  const retry = retryWait({ attempt: 2, attemptCap: 11, delayMs: 46_000, errorClass: "rate_limit" });
   expect(describeLiveness(3_000, true, 0, retry)).toEqual({
     level: "retrying",
-    text: "Rate limited — retry 2 of 11, next in 46s",
+    text: "Rate limited — retry 2 of 11, next in 46s — 5s on this call",
   });
+});
+
+// Component 1's two honesty rules (design doc): the denominator is the
+// effective bound (AttemptCap), not the raw policy budget, and the model
+// renders only when a chain walk actually switched it - RetryWait.model is
+// already pre-narrowed by the caller (LivenessLine.tsx) to be set ONLY when
+// it differs from the session's primary model, so describeLiveness/
+// formatRetryWait render whatever it is given with no comparison of their own.
+test("describeLiveness: the denominator is attemptCap, not the raw retry policy budget", () => {
+  // A consume-phase failure has dropped the effective bound to 4 well before
+  // maxAttempts' own 11 would suggest more retries remain - rendering 9/11
+  // here would promise retries the early-stop rule will not spend.
+  const retry = retryWait({ attempt: 3, attemptCap: 4, delayMs: 5_000, errorClass: "rate_limit" });
+  expect(describeLiveness(30_000, true, 0, retry).text).toBe(
+    "Rate limited — retry 3 of 4, next in 5s — 5s on this call",
+  );
+});
+
+test("describeLiveness: names the model when a fallback chain walk switched it", () => {
+  const retry = retryWait({ attempt: 1, attemptCap: 4, delayMs: 5_000, errorClass: "rate_limit", model: "gpt-5" });
+  expect(describeLiveness(30_000, true, 0, retry).text).toBe(
+    "Rate limited (gpt-5) — retry 1 of 4, next in 5s — 5s on this call",
+  );
+});
+
+test("describeLiveness: shows the retry group's elapsed time, per the current call rather than the whole turn", () => {
+  const retry = retryWait({
+    attempt: 9,
+    attemptCap: 11,
+    delayMs: 60_000,
+    errorClass: "rate_limit",
+    groupElapsedMs: 14 * 60_000,
+  });
+  expect(describeLiveness(30_000, true, 0, retry).text).toBe(
+    "Rate limited — retry 9 of 11, next in 60s — 14m on this call",
+  );
+});
+
+// Web-only difference from the TUI (task 11 brief): while deltas flow, the
+// wait is over and clearing the indicator would re-create the vanishing-chip
+// bug, so it renders "in progress" instead of a stale delay countdown.
+// RetryWait.inProgress is pre-derived by the caller (spec: "clients can
+// derive waiting-vs-in-progress locally: delay expired, or a delta arrived").
+test("describeLiveness: renders 'in progress' instead of a delay countdown once the wait is over", () => {
+  const retry = retryWait({ attempt: 9, attemptCap: 11, delayMs: 60_000, errorClass: "rate_limit", inProgress: true });
+  expect(describeLiveness(30_000, true, 0, retry).text).toBe(
+    "Rate limited — retry 9 of 11, in progress — 5s on this call",
+  );
 });

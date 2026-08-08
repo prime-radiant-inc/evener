@@ -66,13 +66,27 @@ export function formatExactGap(gapMs: number): string {
 
 /**
  * The pending model-call retry the daemon reported (ThreadModel.modelRetry),
- * narrowed to what this line renders.
+ * narrowed to what this line renders. Unlike the raw ModelRetryState, `model`
+ * and `inProgress` arrive already decided: LivenessLine.tsx narrows `model`
+ * to defined-only-when-it-differs-from-the-session's-primary-model, and
+ * derives `inProgress` from receivedAt/delayMs vs lastFrameAt/now (design doc
+ * Component 1: "clients can derive waiting-vs-in-progress locally"). This
+ * type stays a plain renderer of whatever it's given, with no comparison of
+ * its own.
  */
 export interface RetryWait {
   attempt: number;
-  maxAttempts: number;
+  // The honest denominator (ModelRetryState.attemptCap) - render this, not
+  // the raw retry-policy budget, once a consume-phase failure has dropped it.
+  attemptCap: number;
   delayMs: number;
   errorClass?: string;
+  /** The retry's model, already narrowed to "only when it differs from the session's primary". */
+  model?: string;
+  /** Elapsed wall-clock ms for the current retry group (one model call), not the whole turn. */
+  groupElapsedMs: number;
+  /** Whether the wait is over: a frame has landed since this retry was reported, or its own delay has elapsed. */
+  inProgress: boolean;
 }
 
 /**
@@ -87,13 +101,19 @@ export function formatRetryCause(errorClass?: string): string {
 }
 
 /**
- * The retry line's text: cause, position in the retry budget, and the wait.
- * The wait is the load-bearing part - it is what separates "back in 60s" from
- * "wedged", which is the whole reason this line exists.
+ * The retry line's text: cause, optional model tag, position in the retry
+ * budget, wait-or-progress, and the call's elapsed time. The wait is the
+ * load-bearing part - it is what separates "back in 60s" from "wedged",
+ * which is the whole reason this line exists - but once deltas are flowing
+ * (`inProgress`) that wait is over, so it reads "in progress" instead of a
+ * stale countdown rather than disappearing (design doc Component 1's web-only
+ * rule: clearing here would re-create the vanishing-chip bug).
  */
 export function formatRetryWait(retry: RetryWait): string {
-  const seconds = Math.max(0, Math.round(retry.delayMs / SECOND_MS));
-  return `${formatRetryCause(retry.errorClass)} — retry ${retry.attempt} of ${retry.maxAttempts}, next in ${seconds}s`;
+  const modelTag = retry.model ? ` (${retry.model})` : "";
+  const wait = retry.inProgress ? "in progress" : `next in ${Math.max(0, Math.round(retry.delayMs / SECOND_MS))}s`;
+  const elapsed = `${formatExactGap(retry.groupElapsedMs)} on this call`;
+  return `${formatRetryCause(retry.errorClass)}${modelTag} — retry ${retry.attempt} of ${retry.attemptCap}, ${wait} — ${elapsed}`;
 }
 
 /**

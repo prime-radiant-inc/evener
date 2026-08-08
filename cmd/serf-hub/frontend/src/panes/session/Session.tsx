@@ -421,6 +421,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               sessionRef={ref}
               turnId={model.activeTurnId}
               retry={model.modelRetry}
+              primaryModel={model.model}
             />
             <PendingChips sessionRef={ref} />
             <Composer ref={ref} />

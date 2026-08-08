@@ -526,6 +526,13 @@ function upsertPendingEscalation(
   return escalations.map((e, i) => (i === idx ? incoming : e));
 }
 
+// item/completed kinds that count as the model actually producing something
+// (design doc Component 1): assistant message, reasoning, tool call. A
+// systemMessage or userMessage item completing (a steer "are you stuck?"
+// completing its own systemMessage item, say) arrives mid-grind and must not
+// be mistaken for the retry's wait being over.
+const MODEL_OUTPUT_ITEM_TYPES = new Set(["agentMessage", "reasoning", "commandExecution"]);
+
 // Folds one live wire notification into model. Most notifications carry
 // ref/threadId and are matched via notificationTargetsThread — routing those
 // to the right ThreadModel is the caller's job (or not: a mismatch is a safe
@@ -535,16 +542,16 @@ function upsertPendingEscalation(
 // foldNonActiveTurnCompleted instead.
 export function applyNotification(model: ThreadModel, n: AnyNotification, now: number): ThreadModel {
   const next = applyNotificationToThread(model, n, now);
-  // A real frame supersedes a pending model-call retry: the model produced
-  // something, so the wait the retry described is over. Keyed on lastFrameAt
-  // advancing rather than on a list of "real" methods, so a frame-bearing
-  // notification added later cannot forget to clear it. serf/thread/modelRetry
-  // itself deliberately does not restamp, so it survives its own dispatch.
-  if (next.modelRetry && next.lastFrameAt !== model.lastFrameAt) {
-    const { modelRetry: _superseded, ...cleared } = next;
-    return cleared;
-  }
-  return next;
+  if (!next.modelRetry || !notificationTargetsThread(n, model)) return next;
+  // A pending retry is sticky (design doc Component 1): it survives deltas
+  // and other mid-grind item completions, clearing only on a turn boundary or
+  // the completion of the model's own output item — otherwise a provider
+  // grinding through retries looks like the indicator vanished for no reason.
+  const turnBoundary = n.method === "turn/completed" || n.method === "turn/started";
+  const modelOutputCompleted = n.method === "item/completed" && MODEL_OUTPUT_ITEM_TYPES.has(n.params.item.type);
+  if (!turnBoundary && !modelOutputCompleted) return next;
+  const { modelRetry: _superseded, ...cleared } = next;
+  return cleared;
 }
 
 function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: number): ThreadModel {
@@ -917,6 +924,10 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
           ...(params.errorClass ? { errorClass: params.errorClass } : {}),
           ...(params.statusCode ? { statusCode: params.statusCode } : {}),
           ...(params.turnId ? { turnId: params.turnId } : {}),
+          ...(params.model ? { model: params.model } : {}),
+          groupElapsedMs: params.groupElapsedMs,
+          attemptCap: params.attemptCap,
+          receivedAt: now,
         },
       };
     }

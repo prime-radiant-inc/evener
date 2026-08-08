@@ -162,6 +162,26 @@ export interface ModelRetryState {
   errorClass?: string;
   statusCode?: number;
   turnId?: string;
+  // The retrying call's model (wire ThreadModelRetryParams.model), undefined
+  // for a daemon predating the field. Unnarrowed - a fallback chain walk
+  // means this can equal or differ from ThreadModel.model; LivenessLine.tsx
+  // decides whether to name it (design doc Component 1's model-identity rule).
+  model?: string;
+  // Wall-clock ms since the retry group's first attempt (one model call,
+  // spanning every retry within it) - a snapshot the daemon took when it
+  // reported THIS attempt, not a value that ticks locally between reports.
+  groupElapsedMs: number;
+  // The honest denominator to render instead of maxAttempts: the same policy
+  // budget until the group has a consume-phase failure, then the early-stop
+  // bound that will actually apply (events.ModelRetryData's own doc comment).
+  // Rendering maxAttempts once the two diverge promises retries the early-
+  // stop rule won't spend.
+  attemptCap: number;
+  // Client stamp (the reducer's own `now`) of when this notification was
+  // processed - not wire data. LivenessLine.tsx compares it against
+  // lastFrameAt/now to tell "still waiting" from "in progress" without a new
+  // event kind (design doc Component 1: "delay expired, or a delta arrived").
+  receivedAt: number;
 }
 
 export interface ThreadModel {
@@ -197,8 +217,13 @@ export interface ThreadModel {
   // The in-flight model-call retry, when one is pending (serf/thread/modelRetry).
   // Liveness input, and deliberately NOT a lastFrameAt restamp: the model has
   // produced nothing, so the quiet/stall clock must keep running. This only
-  // explains the silence it is already measuring. Cleared the moment the model
-  // produces a real frame or the turn settles.
+  // explains the silence it is already measuring. Sticky and cumulative
+  // (design doc Component 1): survives deltas and other mid-grind item
+  // completions (a systemMessage announcement, a user item) so a provider
+  // grinding through retries never looks like the indicator vanished for no
+  // reason. Cleared only on a turn boundary (turn/started, turn/completed) or
+  // the completion of the model's own output item (assistant message,
+  // reasoning, tool call) - see reducer.ts's applyNotification.
   modelRetry?: ModelRetryState;
   // Wave 5 T1: the following are all sourced from thread.serf
   // (appwire/types.go's SerfThread, lines 223-274) and are SNAPSHOT-ONLY -

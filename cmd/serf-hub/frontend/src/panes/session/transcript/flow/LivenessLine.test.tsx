@@ -129,7 +129,50 @@ test("an undefined turnId (no active turn yet) reads as zero running children ev
 // limiting. The retry arrives on ThreadModel.modelRetry and is passed straight
 // through; this component adds no clock and no inference of its own.
 
+// A raw ModelRetryState as ThreadModel.modelRetry carries it (reducer.ts):
+// unlike RetryWait, `model` is the retry's own model UNNARROWED, and
+// `receivedAt` is the reducer's client-side stamp of when the notification
+// landed - LivenessLine.tsx derives RetryWait's `model`/`inProgress` fields
+// from these plus `now`/`lastFrameAt`/`primaryModel`, none of which the raw
+// wire state carries an opinion on. Defaults here describe a retry reported
+// at t=0, 5s into its call, still within its own delay - so most tests only
+// need to override what they're actually pinning.
+function rawRetry(overrides: Partial<Parameters<typeof LivenessLine>[0]["retry"]> = {}) {
+  return {
+    attempt: 9,
+    maxAttempts: 11,
+    attemptCap: 11,
+    delayMs: 60_000,
+    errorClass: "rate_limit",
+    groupElapsedMs: 5_000,
+    receivedAt: 0,
+    ...overrides,
+  } as NonNullable<Parameters<typeof LivenessLine>[0]["retry"]>;
+}
+
 test("renders the retry cause and wait instead of the quiet phrase", () => {
+  render(
+    <LivenessLine lastFrameAt={0} now={30_000} active={true} sessionRef="s1" turnId="turn_0" retry={rawRetry()} />,
+  );
+  const el = screen.getByTestId("liveness-line");
+  expect(el.textContent).toBe("Rate limited — retry 9 of 11, next in 60s — 5s on this call");
+  expect(el.textContent!.toLowerCase()).not.toContain("quiet");
+});
+
+test("past the stall threshold a retry still surfaces the silence rather than hiding it", () => {
+  render(
+    <LivenessLine lastFrameAt={0} now={630_000} active={true} sessionRef="s1" turnId="turn_0" retry={rawRetry()} />,
+  );
+  const text = screen.getByTestId("liveness-line").textContent ?? "";
+  expect(text).toContain("Rate limited — retry 9 of 11");
+  expect(text).toContain("no updates for");
+});
+
+// Component 1's second honesty rule: the denominator must be the effective
+// bound (AttemptCap), which can differ from the raw policy budget once a
+// consume-phase failure drops it - a fail-fast group at attempt 3 of a
+// cap-4 group, not the maxAttempts:11 the notification also still carries.
+test("renders the attemptCap denominator, not maxAttempts", () => {
   render(
     <LivenessLine
       lastFrameAt={0}
@@ -137,26 +180,98 @@ test("renders the retry cause and wait instead of the quiet phrase", () => {
       active={true}
       sessionRef="s1"
       turnId="turn_0"
-      retry={{ attempt: 9, maxAttempts: 11, delayMs: 60_000, errorClass: "rate_limit" }}
+      retry={rawRetry({ attempt: 3, maxAttempts: 11, attemptCap: 4, delayMs: 5_000, receivedAt: 30_000 })}
     />,
   );
-  const el = screen.getByTestId("liveness-line");
-  expect(el.textContent).toBe("Rate limited — retry 9 of 11, next in 60s");
-  expect(el.textContent!.toLowerCase()).not.toContain("quiet");
+  expect(screen.getByTestId("liveness-line").textContent).toBe(
+    "Rate limited — retry 3 of 4, next in 5s — 5s on this call",
+  );
 });
 
-test("past the stall threshold a retry still surfaces the silence rather than hiding it", () => {
+test("shows the retry's model tag when a fallback chain walk switched off the session's primary model", () => {
   render(
     <LivenessLine
       lastFrameAt={0}
-      now={630_000}
+      now={30_000}
       active={true}
       sessionRef="s1"
       turnId="turn_0"
-      retry={{ attempt: 9, maxAttempts: 11, delayMs: 60_000, errorClass: "rate_limit" }}
+      primaryModel="claude-opus-4"
+      retry={rawRetry({ attempt: 1, attemptCap: 4, delayMs: 5_000, model: "gpt-5", receivedAt: 30_000 })}
     />,
   );
-  const text = screen.getByTestId("liveness-line").textContent ?? "";
-  expect(text).toContain("Rate limited — retry 9 of 11");
-  expect(text).toContain("no updates for");
+  expect(screen.getByTestId("liveness-line").textContent).toBe(
+    "Rate limited (gpt-5) — retry 1 of 4, next in 5s — 5s on this call",
+  );
+});
+
+test("omits the model tag when the retry's model matches the session's primary model - same model, still failing", () => {
+  render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={30_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      primaryModel="claude-opus-4"
+      retry={rawRetry({ attempt: 1, attemptCap: 4, delayMs: 5_000, model: "claude-opus-4", receivedAt: 30_000 })}
+    />,
+  );
+  expect(screen.getByTestId("liveness-line").textContent).toBe(
+    "Rate limited — retry 1 of 4, next in 5s — 5s on this call",
+  );
+});
+
+test("shows the retry group's elapsed time from groupElapsedMs", () => {
+  render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={30_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={rawRetry({ groupElapsedMs: 14 * 60_000 })}
+    />,
+  );
+  expect(screen.getByTestId("liveness-line").textContent).toContain("14m on this call");
+});
+
+// Web-only difference from the TUI (task 11 brief): once a delta has landed
+// since the retry was reported, the wait it described is over, so the line
+// says "in progress" instead of leaving a stale "next in 60s" countdown
+// sitting there next to live output.
+test("renders 'in progress' once a frame has landed since the retry was reported, instead of clearing", () => {
+  render(
+    <LivenessLine
+      lastFrameAt={5_000}
+      now={30_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={rawRetry({ receivedAt: 0 })}
+    />,
+  );
+  expect(screen.getByTestId("liveness-line").textContent).toBe(
+    "Rate limited — retry 9 of 11, in progress — 5s on this call",
+  );
+});
+
+// The other half of the same rule (spec: "delay expired, or a delta
+// arrived"): even with no frame yet, once the reported delay has elapsed the
+// wait itself is over, so the line stops counting down a delay that's
+// already spent.
+test("renders 'in progress' once the reported delay has elapsed, even with no new frame yet", () => {
+  render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={70_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={rawRetry({ receivedAt: 0, delayMs: 60_000 })}
+    />,
+  );
+  expect(screen.getByTestId("liveness-line").textContent).toBe(
+    "Rate limited — retry 9 of 11, in progress — 5s on this call",
+  );
 });
