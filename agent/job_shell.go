@@ -43,11 +43,13 @@ type shellArgs struct {
 	Background     bool
 	BlockTimeoutMS int
 	MaxRuntimeMS   int
-	// WorkingDir is the executing env's WorkingDirectory() at launch, set by
-	// the shell tool handler (not model-supplied). It rides onto the job
-	// record so manage_worktree remove/prune's live-work guard can see which
-	// worktree, if any, a background shell job is running under (spec §5
-	// remove step 4, §7 liveWorkUnder).
+	// WorkingDir is the resolved, validated absolute directory the command
+	// runs in: env.WorkingDirectory() by default, or the shell tool's
+	// optional model-supplied `cwd` argument once resolved and confirmed to
+	// stay under the sandbox root (resolveShellWorkingDir). It rides onto the
+	// job record so manage_worktree remove/prune's live-work guard can see
+	// which worktree, if any, a background shell job is running under (spec
+	// §5 remove step 4, §7 liveWorkUnder).
 	WorkingDir string
 }
 
@@ -101,7 +103,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 	}
 
 	startCtx, detachStartCtx := newStartOnlyContext(ctx)
-	handle, err := se.StreamCommand(startCtx, args.Command, "", nil, shellOutputWriter{jm: jm, jobID: run.rec.JobID, output: run.output})
+	handle, err := se.StreamCommand(startCtx, args.Command, args.WorkingDir, nil, shellOutputWriter{jm: jm, jobID: run.rec.JobID, output: run.output})
 	detachStartCtx()
 	if err != nil {
 		jm.discardDelayedShell(run)

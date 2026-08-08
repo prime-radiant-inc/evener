@@ -78,20 +78,32 @@ beforeAll(async () => {
   // Measured here: welcome 314ms, doc 305ms and session 307ms on their first
   // render, each inside a findBy budget that defaults to 1000ms. Paying it
   // in a hook whose ceiling is a tripwire, rather than inside an assertion
-  // window. Same fix as App.test.tsx (commit c1a8616ea).
+  // window. Same fix as App.test.tsx (commit c1a8616ea) - but the comment
+  // alone was not the fix: this file's own findLandmark calls never actually
+  // carried App.test.tsx's own WARM_ROUTE_TRIPWIRE_MS override, so they still
+  // raced the 1000ms findBy default under host load (kata fvgs). warmPane
+  // below now threads PANE_WARMUP_TRIPWIRE_MS through to each landmark's own
+  // findBy/findByRole call, same as App.test.tsx's warmRoute.
   await warmPane(
     () => {}, // nothing focused: StackHost's own fallback opens welcome
-    () => screen.findByText("No session open"),
+    (timeout) => screen.findByText("No session open", undefined, { timeout }),
   );
   await warmPane(
     () => workspaceStore.getState().openPane("doc", { ref: "ref_warm" }),
-    () => screen.findByText(/doc pane: ref_warm/),
+    (timeout) => screen.findByText(/doc pane: ref_warm/, undefined, { timeout }),
   );
   await warmPane(
     () => workspaceStore.getState().openPane("session", { ref: "local:ref_warm" }),
-    () => screen.findByRole("heading", { name: "local:ref_warm" }),
+    (timeout) => screen.findByRole("heading", { name: "local:ref_warm" }, { timeout }),
   );
 });
+
+// A warm-up render has no responsiveness bar to hold, and react-dom's
+// Suspense-reveal throttle (see the comment above) publishes no completion
+// signal to await - so this is a tripwire for a hung render, not a
+// responsiveness budget. Same value and reasoning as App.test.tsx's own
+// WARM_ROUTE_TRIPWIRE_MS.
+const PANE_WARMUP_TRIPWIRE_MS = 10_000;
 
 afterAll(() => {
   restoreDocPane();
@@ -102,10 +114,10 @@ afterAll(() => {
 // so both halves of that pane's lazy-loading cost are already paid by the
 // time a test measures it. See the beforeAll above for why the module cache
 // alone is not enough.
-async function warmPane(open: () => void, findLandmark: () => Promise<unknown>): Promise<void> {
+async function warmPane(open: () => void, findLandmark: (timeout: number) => Promise<unknown>): Promise<void> {
   open();
   render(<StackHost />);
-  await findLandmark();
+  await findLandmark(PANE_WARMUP_TRIPWIRE_MS);
   cleanup();
   resetWorkspaceStoreForTests();
   setLastPopstateWasTrustedForTests(false);

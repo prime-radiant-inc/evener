@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -143,14 +145,21 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if err != nil {
 				return "", err
 			}
+			// Resolve shellArgs.WorkingDir (the raw, possibly-relative model-supplied
+			// cwd, or "" if omitted) against env now, once, for both the streaming and
+			// buffered dispatch paths below. Recorded on the job (see
+			// shellArgs.WorkingDir doc) for the manage_worktree remove/prune live-work
+			// guard (liveWorkUnder) regardless of whether the model chose it.
+			resolvedWorkingDir, err := resolveShellWorkingDir(env, shellArgs.WorkingDir)
+			if err != nil {
+				return "", err
+			}
+			shellArgs.WorkingDir = resolvedWorkingDir
 			if se, ok := env.(execenv.StreamingExecutor); ok {
 				if s == nil || s.jobManager == nil {
 					return "", errors.New("shell jobs require an initialized JobManager")
 				}
 				shellArgs = applyShellTimeoutPolicy(deps, shellArgs)
-				// Recorded at launch (not model-supplied) for the manage_worktree
-				// remove/prune live-work guard (liveWorkUnder); see shellArgs.WorkingDir.
-				shellArgs.WorkingDir = env.WorkingDirectory()
 				return marshalShellToolResult(runShell(ctx, s.jobManager, se, shellArgs), shellToolResultMaxChars(reg))
 			}
 			return runBufferedShell(ctx, env, deps, shellArgs)
@@ -276,6 +285,11 @@ func parseShellToolArgs(args map[string]any) (shellArgs, error) {
 		// background false (the strict-provider-forced default) runs foreground and
 		// returns when the command finishes; true starts it and returns the job_id now.
 		Background: shellBoolArg(args, "background"),
+		// WorkingDir is the raw model-supplied cwd, if any; "" means omitted. It is
+		// resolved (relative paths joined against env.WorkingDirectory(), validated
+		// against the sandbox root) by resolveShellWorkingDir before dispatch, which
+		// also supplies the env.WorkingDirectory() fallback when this is "".
+		WorkingDir: stringArg(args, "cwd"),
 	}
 	var ok bool
 	if parsed.MaxRuntimeMS, ok = shellIntArg(args, "max_runtime_ms"); !ok {
@@ -288,6 +302,38 @@ func parseShellToolArgs(args map[string]any) (shellArgs, error) {
 		parsed.MaxRuntimeMS = minShellMaxRuntimeMS
 	}
 	return parsed, nil
+}
+
+// resolveShellWorkingDir resolves the shell tool's raw `cwd` argument against
+// env, or falls back to env.WorkingDirectory() when raw is empty — the
+// unconditional default this kata preserves exactly for the omitted case. A
+// relative raw is joined against env.WorkingDirectory() and filepath.Clean'ed;
+// an absolute raw is Clean'ed as-is. The result is then validated to (a) not
+// escape the sandbox root, reusing the same symlink-aware escape check
+// ExecCommand/StreamCommand already apply to workingDir (execenv.RootBoundary,
+// backed by ensureUnderRoot/resolveSymlinksBestEffort), and (b) exist and be a
+// directory, so a bad cwd fails here — before any process is spawned — rather
+// than surfacing as an opaque exec error. Errors name the RESOLVED path, not
+// the raw input, since that's what the sandbox and the filesystem actually saw.
+func resolveShellWorkingDir(env execenv.ExecutionEnvironment, raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return env.WorkingDirectory(), nil
+	}
+	abs := raw
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(env.WorkingDirectory(), abs)
+	}
+	abs = filepath.Clean(abs)
+	if rb, ok := env.(execenv.RootBoundary); ok {
+		if err := rb.EnsureUnderRoot(abs); err != nil {
+			return "", fmt.Errorf("cwd %q resolves to %s, which escapes the sandbox: %w", raw, abs, err)
+		}
+	}
+	if info, err := os.Stat(abs); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("cwd %q resolves to %s, which does not exist or is not a directory", raw, abs)
+	}
+	return abs, nil
 }
 
 func shellBoolArg(args map[string]any, key string) bool {
@@ -569,7 +615,7 @@ func runBufferedShell(ctx context.Context, env execenv.ExecutionEnvironment, dep
 	if args.MaxRuntimeMS > 0 && (timeout == 0 || args.MaxRuntimeMS < timeout) {
 		timeout = args.MaxRuntimeMS
 	}
-	res, err := env.ExecCommand(ctx, args.Command, timeout, "", nil)
+	res, err := env.ExecCommand(ctx, args.Command, timeout, args.WorkingDir, nil)
 
 	// Return a line-oriented tool output so line truncation works as intended for shell output.
 	var b strings.Builder

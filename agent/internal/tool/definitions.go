@@ -86,6 +86,7 @@ func DefShell() llm.ToolDefinition {
 				"command":     map[string]any{"type": "string"},
 				"description": map[string]any{"type": "string"},
 				"background":  map[string]any{"type": "boolean", "description": "Choose foreground execution (false, default) for inline results, or background execution (true) for an immediate job_id. Foreground commands still running at ~120s continue as background jobs."},
+				"cwd":         map[string]any{"type": "string", "description": "Optional working directory for the command. Relative paths resolve against your current working directory; absolute paths must stay inside it. Must already exist. Default: your current working directory."},
 			},
 			"required": []string{"command"},
 		},

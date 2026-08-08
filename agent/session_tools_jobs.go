@@ -771,6 +771,7 @@ type jobStatusResult struct {
 	JobID            string  `json:"job_id"`
 	Kind             string  `json:"kind"`
 	Status           string  `json:"status"`
+	Description      string  `json:"description"`
 	Phase            string  `json:"phase,omitempty"`
 	Reason           *string `json:"reason,omitempty"`
 	ExhaustionBudget string  `json:"exhaustion_budget,omitempty"`
@@ -1780,7 +1781,7 @@ func projectJobRecordForViewer(viewer *Session, assessor *Session, rec *jobstore
 		Status:             string(rec.Status),
 		Phase:              statusView.Phase,
 		Reason:             stringPtrOrNil(rec.Reason),
-		Description:        rec.Description,
+		Description:        jobRecordDisplayLabel(rec),
 		ParentJobID:        stringPtrOrNil(rec.ParentJobID),
 		OwnerSessionID:     rec.OwnerSessionID,
 		VisibleToSessionID: rec.VisibleToSession,
@@ -1955,6 +1956,7 @@ func projectJobStatus(now time.Time, rec *jobstore.JobRecord) jobStatusResult {
 		JobID:            rec.JobID,
 		Kind:             publicJobKind(rec.Type),
 		Status:           string(rec.Status),
+		Description:      jobRecordDisplayLabel(rec),
 		Phase:            defaultJobPhase(rec),
 		Reason:           stringPtrOrNil(rec.Reason),
 		ExhaustionBudget: rec.ExhaustionBudget,

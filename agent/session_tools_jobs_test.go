@@ -187,6 +187,7 @@ type jobListToolEntry struct {
 	Type               string  `json:"type"`
 	Status             string  `json:"status"`
 	Phase              string  `json:"phase"`
+	Description        string  `json:"description"`
 	ParentJobID        *string `json:"parent_job_id"`
 	ExhaustionBudget   string  `json:"exhaustion_budget"`
 	ExhaustionLimit    int     `json:"exhaustion_limit"`
@@ -472,5 +473,103 @@ func TestJobStatusReportsRunTimeoutAttribution(t *testing.T) {
 	}
 	if status.Status != string(jobstore.StatusStopped) || status.Reason != "run_timeout" {
 		t.Fatalf("job_status = %+v, want stopped/run_timeout — same attribution as the shell result (job-control.md:146,154)", status)
+	}
+}
+
+func TestJobListDescriptionFallbackToTask(t *testing.T) {
+	t.Parallel()
+	// Gap (a): job_list should use jobRecordDisplayLabel's fallback logic
+	// (Description → Command → Task) instead of copying rec.Description verbatim.
+	// When a delegate job has no Description and no Command but has a Task,
+	// the projected row should show the Task-derived label, not blank.
+	s := newTestSession(t)
+	const jobID = "job_task_only"
+	started := time.Unix(2000, 0).UTC()
+	if err := s.jobManager.appendJobEvents([]jobstore.Event{
+		{
+			Kind:             jobstore.EventJobStarted,
+			TS:               started,
+			JobID:            jobID,
+			Type:             jobstore.JobDelegate,
+			Task:             "my_task",
+			Description:      "", // explicitly empty
+			Command:          "", // explicitly empty
+			OwnerSessionID:   s.ID(),
+			VisibleToSession: s.ID(),
+			DelegateID:       "dlg_task_only",
+			TranscriptRef:    encodeRef("", "child_task_only"),
+			StartedAt:        &started,
+		},
+	}); err != nil {
+		t.Fatalf("seed task-only delegate job: %v", err)
+	}
+
+	out := runJobListTool(t, s)
+	row := findJobListToolOutput(out.Jobs, jobID)
+	if row == nil {
+		t.Fatalf("job_list did not return job %s", jobID)
+	}
+	// Description should be populated via the fallback logic: Description→Command→Task
+	// Since Description and Command are empty, it should fall back to Task.
+	if row.Description != "my_task" {
+		t.Fatalf("job_list row description = %q, want %q (Task fallback)", row.Description, "my_task")
+	}
+}
+
+func TestJobStatusDescriptionFallbackToTask(t *testing.T) {
+	t.Parallel()
+	// Gap (b): job_status should include a description field populated via
+	// the same fallback logic as job_list: Description → Command → Task.
+	// When a delegate job has no Description and no Command but has a Task,
+	// the status should show the Task-derived label.
+	s := newTestSession(t)
+	const jobID = "job_status_task_only"
+	started := time.Unix(3000, 0).UTC()
+	ended := time.Unix(3001, 0).UTC()
+	if err := s.jobManager.appendJobEvents([]jobstore.Event{
+		{
+			Kind:             jobstore.EventJobStarted,
+			TS:               started,
+			JobID:            jobID,
+			Type:             jobstore.JobDelegate,
+			Task:             "status_task",
+			Description:      "", // explicitly empty
+			Command:          "", // explicitly empty
+			OwnerSessionID:   s.ID(),
+			VisibleToSession: s.ID(),
+			DelegateID:       "dlg_status_task_only",
+			TranscriptRef:    encodeRef("", "child_status_task_only"),
+			StartedAt:        &started,
+		},
+		{
+			Kind:        jobstore.EventJobFinished,
+			TS:          ended,
+			JobID:       jobID,
+			Status:      jobstore.StatusCompleted,
+			EndedAt:     &ended,
+			TerminalGen: "GEN_DONE",
+		},
+	}); err != nil {
+		t.Fatalf("seed status task-only delegate job: %v", err)
+	}
+
+	statusRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "status",
+		Name:      "job_status",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, jobID)),
+	})
+	if statusRes.IsError {
+		t.Fatalf("job_status returned error: %s", statusRes.Output)
+	}
+	var status struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(toolResultJSON(statusRes), &status); err != nil {
+		t.Fatalf("unmarshal job_status: %v (output: %s)", err, statusRes.Output)
+	}
+	// Description should be populated via the fallback logic: Description→Command→Task
+	// Since Description and Command are empty, it should fall back to Task.
+	if status.Description != "status_task" {
+		t.Fatalf("job_status description = %q, want %q (Task fallback)", status.Description, "status_task")
 	}
 }

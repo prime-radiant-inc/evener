@@ -21,7 +21,7 @@ func FuzzWatchClearHistoryResidue(f *testing.F) {
 
 		receiverSessionID := ""
 		if watchClearHistoryByte(data, 0)&1 != 0 {
-			receiverSessionID = "S1"
+			receiverSessionID = testOwnerSessionID
 		}
 		cfg := &watchConfig{
 			id:                "watch-history",
