@@ -430,3 +430,76 @@ func (s *Session) hookInput(event plugin.HookEvent) hooks.Input {
 	// on Session today. Do NOT fabricate a value the hook would act on.
 	return input
 }
+
+// settleFailedRound persists what a terminally failed round produced, so the
+// work the provider ate survives into the next round instead of being thrown
+// away: up to two model-visible turns, the salvaged assistant draft followed by
+// the failure steering that explains it. See the spec's "Component 3:
+// partial-preserving settlement".
+//
+// It runs on the turn goroutine, the only goroutine that appends to the round
+// recorder's groups, so reading them here needs no further synchronization.
+func (s *Session) settleFailedRound(terminalErr error) {
+	rec := s.roundSalvageRecorder()
+	kind := classifySettlement(rec, terminalErr)
+	if kind == settleNone {
+		return
+	}
+	// The group's model/provider are read out here, while BestSalvage's interior
+	// pointer is known live, so nothing downstream holds a pointer into the
+	// recorder's groups.
+	var salvaged, model, provider string
+	if kind == settleSalvageAndSteering {
+		if partial, from := rec.BestSalvage(); from != nil {
+			salvaged, model, provider = salvageText(partial), from.Model, from.Provider
+		}
+	}
+	// Composed before anything is persisted: a round with nothing a template can
+	// honestly describe settles nothing at all, rather than leaving a salvaged
+	// draft standing with no explanation of where it came from.
+	steering := composeFailureSteering(rec, terminalErr, len(salvaged), s.resultToolName())
+	if steering == "" {
+		return
+	}
+	if salvaged != "" {
+		// A draft that did not reach the transcript is a draft the steering's
+		// "the response above" would point at nothing, so the pair settles
+		// together or not at all.
+		if err := s.persistSalvagedTurn(salvaged, model, provider); err != nil {
+			return
+		}
+		s.emitSalvagedTurn(salvaged, model)
+	}
+	// No steering kind: the enum that labels daemon steering has no entry for a
+	// provider failure yet, and mislabeling one would be worse than the
+	// unlabelled divider an empty kind renders as.
+	s.appendSteeringTurn(steering, "")
+}
+
+// persistSalvagedTurn records the round's best partial as a normal assistant
+// turn stamped with model/provider provenance ONLY.
+//
+// It must never carry Responses-continuation metadata: continuation anchoring
+// scans backward to the most recent assistant turn, and IDs from a response the
+// provider never finalized would poison every subsequent round with
+// previous_response_not_found. The zero ModelAttemptMetadata is what keeps every
+// one of those fields empty.
+func (s *Session) persistSalvagedTurn(salvaged, model, provider string) error {
+	return s.appendAssistantTurn(llm.Response{
+		Message:  llm.Assistant(salvaged),
+		Model:    model,
+		Provider: provider,
+	}, ModelAttemptMetadata{})
+}
+
+// emitSalvagedTurn replays the salvaged draft on the event bus so a watching
+// client renders what the transcript stores. The reset is what reconciles them:
+// the screen holds whichever partial streamed LAST, while settlement persists
+// the LARGEST. The sequence mirrors a normal assistant text round
+// (consumeModelStream's start/delta, emitAssistantResponse's end).
+func (s *Session) emitSalvagedTurn(salvaged, model string) {
+	s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
+	s.emit(events.EventAssistantTextStart, events.AssistantTextStartData{Model: model})
+	s.emit(events.EventAssistantTextDelta, events.AssistantTextDeltaData{Delta: salvaged})
+	s.emit(events.EventAssistantTextEnd, events.AssistantTextEndData{Text: salvaged, Model: model})
+}

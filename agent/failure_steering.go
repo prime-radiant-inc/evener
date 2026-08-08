@@ -32,11 +32,6 @@ const (
 // and any nonzero salvage is persisted either way.
 const substantialSalvageBytes = 512
 
-// steeringResultToolName is the result tool the draft wording points the model
-// at. The composer takes no session handle, so a session that renamed its
-// result tool (Config.ResultToolName) still reads the canonical name here.
-const steeringResultToolName = "communicate"
-
 // capContentWindow is the content-event window above which a dead stream is
 // cap-shaped rather than stall-shaped. It matches llm's cap-detection bound so
 // the steering names the same shape the early stop acted on.
@@ -123,9 +118,13 @@ func roundWasCancelled(err error) bool {
 // whether a configured fallback also failed, what became of any salvage, and —
 // for the cap shape only — how to avoid the cap next round.
 //
+// resultToolName is the session's effective result tool (Session.resultToolName),
+// which the draft wording points the model at; a session that renamed it must
+// not be steered toward a tool it does not expose.
+//
 // Interrupt wording is deliberately absent: an interrupted round makes no
 // provider-failure claim and is steered elsewhere.
-func composeFailureSteering(rec *roundRecorder, terminalErr error, salvagedBytes int) string {
+func composeFailureSteering(rec *roundRecorder, terminalErr error, salvagedBytes int, resultToolName string) string {
 	if llm.Kind(terminalErr) == llm.KindContentFilter {
 		return contentFilterSteering
 	}
@@ -139,7 +138,7 @@ func composeFailureSteering(rec *roundRecorder, terminalErr error, salvagedBytes
 	}
 	switch {
 	case salvagedBytes >= substantialSalvageBytes:
-		parts = append(parts, fmt.Sprintf(draftSteering, steeringResultToolName))
+		parts = append(parts, fmt.Sprintf(draftSteering, resultToolName))
 	case salvagedBytes > 0:
 		parts = append(parts, fmt.Sprintf(fragmentSteering, salvagedBytes))
 	}

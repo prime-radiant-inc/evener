@@ -305,11 +305,28 @@ func TestComposeFailureSteering(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := composeFailureSteering(tc.rec, tc.terminal, tc.salvagedBytes)
+			got := composeFailureSteering(tc.rec, tc.terminal, tc.salvagedBytes, "communicate")
 			if got != tc.want {
 				t.Fatalf("composeFailureSteering =\n%q\nwant\n%q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestComposeFailureSteering_NamesTheGivenResultTool pins that the draft
+// wording points at the caller's result tool. A session that renamed it
+// (Config.ResultToolName) must never be told to re-send through a tool it does
+// not expose.
+func TestComposeFailureSteering_NamesTheGivenResultTool(t *testing.T) {
+	rec := &roundRecorder{Groups: []groupRecord{capGroup(2)}}
+
+	got := composeFailureSteering(rec, midStreamErr(), 40000, "report_result")
+
+	if !strings.Contains(got, "through report_result and re-issue") {
+		t.Fatalf("steering %q, want the draft wording to name report_result", got)
+	}
+	if strings.Contains(got, "communicate") {
+		t.Fatalf("steering %q names a result tool the caller did not configure", got)
 	}
 }
 
@@ -319,7 +336,7 @@ func TestComposeFailureSteering(t *testing.T) {
 func TestComposeFailureSteering_OneAttemptIsNeverRepeatedly(t *testing.T) {
 	rec := &roundRecorder{Groups: []groupRecord{stallGroup(1)}}
 
-	got := composeFailureSteering(rec, midStreamErr(), 0)
+	got := composeFailureSteering(rec, midStreamErr(), 0, "communicate")
 
 	for _, banned := range []string{"repeatedly", "1 times", "twice"} {
 		if strings.Contains(got, banned) {
@@ -355,7 +372,7 @@ func TestComposeFailureSteering_OneTemplatePerTerminalClass(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := composeFailureSteering(tc.rec, tc.terminal, 0)
+			got := composeFailureSteering(tc.rec, tc.terminal, 0, "communicate")
 			matched := 0
 			for _, m := range shapeMarkers {
 				if strings.Contains(got, m) {
@@ -385,7 +402,7 @@ func TestComposeFailureSteering_CapAdviceOnlyForCapShape(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := composeFailureSteering(tc.rec, midStreamErr(), 40000)
+			got := composeFailureSteering(tc.rec, midStreamErr(), 40000, "communicate")
 			if strings.Contains(got, wantCapAdvice) != tc.wantCap {
 				t.Fatalf("steering %q: cap advice present = %v, want %v", got, !tc.wantCap, tc.wantCap)
 			}
@@ -404,7 +421,7 @@ func TestComposeFailureSteering_NoInterruptWording(t *testing.T) {
 	}
 
 	for _, rec := range recs {
-		got := composeFailureSteering(rec, midStreamErr(), 4096)
+		got := composeFailureSteering(rec, midStreamErr(), 4096, "communicate")
 		if strings.Contains(got, "interrupt") {
 			t.Fatalf("failure steering %q must not mention interruption", got)
 		}
@@ -416,7 +433,7 @@ func TestComposeFailureSteering_NoInterruptWording(t *testing.T) {
 func TestComposeFailureSteering_NoSalvageOmitsSalvageWording(t *testing.T) {
 	rec := &roundRecorder{Groups: []groupRecord{stallGroup(4)}}
 
-	got := composeFailureSteering(rec, midStreamErr(), 0)
+	got := composeFailureSteering(rec, midStreamErr(), 0, "communicate")
 
 	if strings.Contains(got, "draft") {
 		t.Fatalf("steering with no salvage %q must not reference a draft", got)
@@ -435,7 +452,7 @@ func TestClassifySettlement_SalvageNeedsNoByteFloor(t *testing.T) {
 	if got := classifySettlement(rec, midStreamErr()); got != settleSalvageAndSteering {
 		t.Fatalf("classifySettlement with a 1-byte partial = %v, want settleSalvageAndSteering", got)
 	}
-	got := composeFailureSteering(rec, midStreamErr(), 1)
+	got := composeFailureSteering(rec, midStreamErr(), 1, "communicate")
 	if !strings.Contains(got, "A small fragment (1 bytes) was produced and not delivered.") {
 		t.Fatalf("steering %q, want the fragment sentence", got)
 	}

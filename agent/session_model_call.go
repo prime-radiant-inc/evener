@@ -504,6 +504,12 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 		return true, nil
 	}
 
+	// Settle before the failure marker so the model-visible turns this round
+	// salvaged sit above it, in the order a reader (and the next request's
+	// history) needs: draft, then the steering that explains it, then the
+	// presentational failure.
+	s.settleFailedRound(err)
+
 	errData := errorDataFromError(err)
 	errData.Cause = providerCauseFromError(err, req.Model)
 	s.emitTurnFailure(errData)

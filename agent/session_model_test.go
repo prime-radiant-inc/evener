@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -157,7 +158,7 @@ func TestSession_RetriesAfterPartialOutputAndResets(t *testing.T) {
 	c.Register(f)
 
 	var mu sync.Mutex
-	resets := 0
+	var kinds []events.EventKind
 	done := make(chan struct{})
 
 	noSleep := func(context.Context, time.Duration) error { return nil }
@@ -172,11 +173,9 @@ func TestSession_RetriesAfterPartialOutputAndResets(t *testing.T) {
 	go func() {
 		defer close(done)
 		for ev := range sess.Events() {
-			if ev.Kind == events.EventAssistantTextReset {
-				mu.Lock()
-				resets++
-				mu.Unlock()
-			}
+			mu.Lock()
+			kinds = append(kinds, ev.Kind)
+			mu.Unlock()
 		}
 	}()
 
@@ -192,12 +191,29 @@ func TestSession_RetriesAfterPartialOutputAndResets(t *testing.T) {
 		t.Fatalf("stream calls = %d, want 4 (partial output must not block retry)", streamCalls)
 	}
 	mu.Lock()
-	gotResets := resets
+	gotKinds := append([]events.EventKind(nil), kinds...)
 	mu.Unlock()
-	// One reset before each of the 3 retries: the partial shown by each failed
-	// attempt is discarded before the next attempt streams.
-	if gotResets != 3 {
-		t.Fatalf("assistant-text resets = %d, want 3 (one before each retry after partial)", gotResets)
+
+	// One reset before each of the 3 retries — the partial shown by each failed
+	// attempt is discarded before the next attempt streams — and one more when
+	// the round finally gives up and settlement re-emits the salvaged partial
+	// as a completed assistant item.
+	var got []events.EventKind
+	for _, kind := range gotKinds {
+		switch kind {
+		case events.EventAssistantTextReset, events.EventAssistantTextStart,
+			events.EventAssistantTextDelta, events.EventAssistantTextEnd:
+			got = append(got, kind)
+		}
+	}
+	want := []events.EventKind{events.EventAssistantTextStart, events.EventAssistantTextDelta}
+	for range 3 {
+		want = append(want, events.EventAssistantTextReset, events.EventAssistantTextStart, events.EventAssistantTextDelta)
+	}
+	want = append(want, events.EventAssistantTextReset, events.EventAssistantTextStart,
+		events.EventAssistantTextDelta, events.EventAssistantTextEnd)
+	if !slices.Equal(got, want) {
+		t.Fatalf("assistant-text events =\n%v\nwant\n%v", got, want)
 	}
 }
 
