@@ -12,9 +12,11 @@ import {
 import type { ConnectionState } from "../protocol/client";
 import { RequestTimeoutError, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
-import { FakeClient } from "../protocol/testing/fakeClient";
+import { FakeClient, type RequestHandler } from "../protocol/testing/fakeClient";
 import type {
   AnyNotification,
+  MethodName,
+  MethodTypes,
   ModelListResponse,
   QueueState,
   Thread,
@@ -46,6 +48,19 @@ import {
 // because the two test files share no test-utils module.
 async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
+}
+
+function nextHandledRequest<M extends MethodName>(
+  fake: FakeClient,
+  method: M,
+  handler: RequestHandler<M>,
+): Promise<MethodTypes[M]["params"]> {
+  return new Promise((resolve) => {
+    fake.on(method, (params) => {
+      resolve(params);
+      return handler(params);
+    });
+  });
 }
 
 // settleCallerContinuations yields to the task queue exactly once, which the
@@ -3042,7 +3057,7 @@ describe("client swap (manual retry) rewiring", () => {
 describe("useThreadsStore.send", () => {
   test("calls turn/start with text and a base64 image attachment (wire InputItem.data/mediaType/name - appwire/types.go:561-570)", async () => {
     const fake = connectMutationClient();
-    fake.on("turn/start", (params) => ({
+    const dispatched = nextHandledRequest(fake, "turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
       receipt: mutationReceipt(params.clientMutationId),
     }));
@@ -3050,10 +3065,9 @@ describe("useThreadsStore.send", () => {
     await threadsStore
       .getState()
       .send("ref_a", "hello", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" }]);
-    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+    const params = await dispatched;
 
-    const call = fake.calls.find((c) => c.method === "turn/start");
-    expect(call?.params).toEqual({
+    expect(params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
       input: [
@@ -3065,16 +3079,15 @@ describe("useThreadsStore.send", () => {
 
   test("send with no attachments sends text-only input", async () => {
     const fake = connectMutationClient();
-    fake.on("turn/start", (params) => ({
+    const dispatched = nextHandledRequest(fake, "turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
       receipt: mutationReceipt(params.clientMutationId),
     }));
 
     await threadsStore.getState().send("ref_a", "hello");
-    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+    const params = await dispatched;
 
-    const call = fake.calls.find((c) => c.method === "turn/start");
-    expect(call?.params).toEqual({
+    expect(params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
       input: [{ type: "text", text: "hello" }],
@@ -3087,7 +3100,7 @@ describe("useThreadsStore.send", () => {
   // marker as its tile anchor; the wire gets prose.
   test("translates the composer's [image N] markers to prose on the wire (kata 6nmz)", async () => {
     const fake = connectMutationClient();
-    fake.on("turn/start", (params) => ({
+    const dispatched = nextHandledRequest(fake, "turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
       receipt: mutationReceipt(params.clientMutationId),
     }));
@@ -3097,10 +3110,9 @@ describe("useThreadsStore.send", () => {
       .send("ref_a", "[image 1]Describe the attached image", [
         { marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
       ]);
-    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+    const params = await dispatched;
 
-    const call = fake.calls.find((c) => c.method === "turn/start");
-    expect(call?.params).toEqual({
+    expect(params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
       input: [
@@ -3115,7 +3127,7 @@ describe("useThreadsStore.send", () => {
   // identity. It is client-side state and the daemon must never see it.
   test("the attachment's marker number never reaches the wire (kata 1gm2)", async () => {
     const fake = connectMutationClient();
-    fake.on("turn/start", (params) => ({
+    const dispatched = nextHandledRequest(fake, "turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
       receipt: mutationReceipt(params.clientMutationId),
     }));
@@ -3123,10 +3135,9 @@ describe("useThreadsStore.send", () => {
     await threadsStore
       .getState()
       .send("ref_a", "[image 7]look", [{ marker: 7, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" }]);
-    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+    const params = await dispatched;
 
-    const call = fake.calls.find((c) => c.method === "turn/start");
-    expect(call?.params).toEqual({
+    expect(params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
       input: [
@@ -3134,12 +3145,12 @@ describe("useThreadsStore.send", () => {
         { type: "image", mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
       ],
     });
-    expect(JSON.stringify(call?.params)).not.toContain("marker");
+    expect(JSON.stringify(params)).not.toContain("marker");
   });
 
   test("an unnamed attachment's marker translates without a dangling name separator (kata 6nmz)", async () => {
     const fake = connectMutationClient();
-    fake.on("turn/start", (params) => ({
+    const dispatched = nextHandledRequest(fake, "turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
       receipt: mutationReceipt(params.clientMutationId),
     }));
@@ -3147,10 +3158,9 @@ describe("useThreadsStore.send", () => {
     await threadsStore
       .getState()
       .send("ref_a", "look: [image 1]", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=" }]);
-    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+    const params = await dispatched;
 
-    const call = fake.calls.find((c) => c.method === "turn/start");
-    expect(call?.params).toEqual({
+    expect(params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
       input: [
@@ -3162,7 +3172,7 @@ describe("useThreadsStore.send", () => {
 
   test("a marker-less text reaches the wire byte-identical, untrimmed (kata 6nmz / floor §1.12)", async () => {
     const fake = connectMutationClient();
-    fake.on("turn/start", (params) => ({
+    const dispatched = nextHandledRequest(fake, "turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
       receipt: mutationReceipt(params.clientMutationId),
     }));
@@ -3172,10 +3182,9 @@ describe("useThreadsStore.send", () => {
       .send("ref_a", "  keep\n  every\n  byte  ", [
         { marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
       ]);
-    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+    const params = await dispatched;
 
-    const call = fake.calls.find((c) => c.method === "turn/start");
-    expect(call?.params).toEqual({
+    expect(params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
       input: [
@@ -3194,13 +3203,13 @@ test("a submitted record recovers into a composer draft with its marker anchors 
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const fake = connectMutationClient();
-  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  const dispatched = nextHandledRequest(fake, "turn/start", () => new Promise<never>(() => undefined));
 
   await threadsStore.getState().send("ref_a", "look [image 3] then [image 1]", [
     { marker: 1, mediaType: "image/png", data: "AQID", name: "first.png" },
     { marker: 3, mediaType: "image/png", data: "BAUG", name: "third.png" },
   ]);
-  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  await dispatched;
   const submitted = (await storage.listOutbox("ref_a"))[0];
   expect(submitted).toBeDefined();
   if (!submitted) return;
@@ -3778,7 +3787,9 @@ test("reset retires an outbox discovery before the next runtime starts", async (
   finishOldDiscovery(["stale_ref"]);
   await Promise.allSettled([oldRead]);
 
-  expect(fake.calls.filter((call) => call.method === "thread/read" && call.params.ref === "stale_ref")).toEqual([]);
+  expect(fake.calls.filter((call) => call.method === "thread/read").map((call) => call.params)).not.toContainEqual(
+    expect.objectContaining({ ref: "stale_ref" }),
+  );
 });
 
 describe("useThreadsStore.listTasks", () => {
@@ -5322,15 +5333,10 @@ describe("retry-safe mutation outbox integration", () => {
     const submitted = threadsStore.getState().send("ref_a", "hello");
     void submitted.catch(() => undefined);
     await called.promise;
-    let locallyCommitted = false;
-    void submitted.then(() => {
-      locallyCommitted = true;
-    });
-    await flushUntil(() => locallyCommitted);
+    await submitted;
 
     const storage = new MutationOutboxIndexedDB();
     const records = await storage.listOutbox("ref_a");
-    expect(locallyCommitted).toBe(true);
     expect(records).toHaveLength(1);
     expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
     expect(fake.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({
