@@ -475,7 +475,7 @@ func FuzzRetryStream(f *testing.F) {
 			RetryAfterPartial: retryAfterPartial,
 			OnReset:           func() { resets++ },
 		}
-		attempt := func(context.Context) (bool, error) {
+		attempt := func(context.Context) (AttemptReport, error) {
 			calls++
 			if calls > hardAttemptCap {
 				t.Fatalf("RetryStream ran the attempt %d times (>%d): loop failed to terminate", calls, hardAttemptCap)
@@ -486,20 +486,21 @@ func FuzzRetryStream(f *testing.F) {
 				partial = partialScript[(calls-1)%len(partialScript)]%2 == 1
 			}
 			lastStep = step
+			rep := AttemptReport{PartialOutput: partial}
 			// Cancelling mid-attempt and failing retryably drives the
 			// post-attempt ctx.Err() guard.
 			if cancelAfter > 0 && calls == cancelAfter {
 				cancel()
 				cancelFired = true
-				return partial, newRetryable()
+				return rep, newRetryable()
 			}
 			switch step {
 			case stepSucceed:
-				return partial, nil
+				return rep, nil
 			case stepPermanent:
-				return partial, ErrorFromHTTPStatus("openai", permanentStatus, "permanent", nil, nil)
+				return rep, ErrorFromHTTPStatus("openai", permanentStatus, "permanent", nil, nil)
 			default:
-				return partial, newRetryable()
+				return rep, newRetryable()
 			}
 		}
 

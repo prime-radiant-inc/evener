@@ -75,19 +75,19 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 			OnReset: func() {
 				s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
 			},
-		}, func(ctx context.Context) (bool, error) {
+		}, func(ctx context.Context) (llm.AttemptReport, error) {
 			st, err := s.client.Stream(ctx, req)
 			if streamUnavailable(err) || (err == nil && st == nil) {
 				streamUnavailableForProfile = true
-				return false, nil
+				return llm.AttemptReport{}, nil
 			}
 			if err != nil {
-				return false, err
+				return llm.AttemptReport{}, err
 			}
 			var partial bool
 			var consumeErr error
 			result, partial, consumeErr = s.consumeModelStream(ctx, req, st)
-			return partial, consumeErr
+			return llm.AttemptReport{PartialOutput: partial}, consumeErr
 		})
 		if !streamUnavailableForProfile {
 			return result, err

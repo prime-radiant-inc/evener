@@ -248,11 +248,11 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 			stepErr := RetryStream(callCtx, RetryStreamOptions{
 				Policy: gs.policy,
 				Sleep:  opts.Sleep,
-			}, func(context.Context) (bool, error) {
+			}, func(context.Context) (AttemptReport, error) {
 				var hasPartial bool
 				var err error
 				finishEv, acc, hasPartial, err = openAndConsumeStream()
-				return hasPartial, err
+				return AttemptReport{PartialOutput: hasPartial}, err
 			})
 
 			attemptGroupScope.SettleResult(stepErr)
