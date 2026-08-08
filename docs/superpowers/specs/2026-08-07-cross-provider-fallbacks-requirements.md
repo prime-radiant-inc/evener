@@ -56,8 +56,11 @@ differ" — the rejection is honest; the feature is making it unnecessary.
    `glm`, `openrouter`, `openrouter-anthropic` ARE `prefixActionSwitch`
    even from meta-provider sessions (`profile.go:607-613`): `kimi/<model>`
    from a lunarouter session reaches a directly-configured kimi instance —
-   the motivating incident's ideal escape (same model family, different
-   transport) is expressible today. The genuine gaps: targets whose
+   the motivating incident's ideal escape is expressible today. Note
+   (Jesse): lunarouter runs its **own** kimi serving, so the direct kimi
+   instance is a genuinely independent stack — the escape is a real
+   infrastructure switch, not a re-route to the same upstream, and the
+   incident's stalls/cap plausibly lived in lunarouter's serving layer. The genuine gaps: targets whose
    prefix collides with an upstream namespace (a directly-configured
    `anthropic` instance is unreachable from openrouter tags) and
    arbitrarily-named instances. Design needs an explicit

@@ -135,16 +135,26 @@ truncation). This is positional knowledge the closure already has — no
 error-class taxonomy needed, which is why v2's `llm.Kind` keying (dropped:
 stall → `KindTimeout`, cap-cut → `KindUnknown`) isn't resurrected.
 
-One refinement to the binary: a consume-phase failure with **zero content
-events received** is treated as open-phase-equivalent for gating and
-steering. Meta-providers report upstream rejections as in-band error
-chunks on an HTTP 200 stream (the openai-compat adapter currently drops
-non-chunk lines, so these surface as "stream ended without completion" —
-positionally consume-phase, semantically a request rejection). Four fast
-in-band rejections must not produce "the provider repeatedly stopped
-responding mid-stream" steering. As part of this work the openai-compat
-adapter learns to decode in-band `{"error": ...}` chunks into typed stream
-errors instead of silently skipping them.
+**Adapter fix (standalone — ships first).** The openai-compat adapter
+drops any SSE line that isn't a well-formed chat-completion chunk
+(`llm/providers/openaicompat/adapter.go:595-599`), including in-band
+`{"error": ...}` chunks — the standard way meta-providers (openrouter,
+lunarouter) report upstream rejections after the 200 header is committed.
+Today those rejections all degrade into a generic "stream ended without
+completion", which is also why the incident's own api.jsonl was so
+uninformative. The adapter learns to decode in-band error chunks into
+typed llm errors carrying the payload's code/status, so a rate-limit,
+quota, or moderation rejection classifies as what it is. This fix is
+independent of everything else in this spec and lands as its own change
+with its own tests.
+
+With decoding in place, in-band rejections are **open-phase** for both
+early-stop rules and for settlement gating — they are request rejections,
+whatever their timing on the wire. As a backstop for providers that
+simply drop the connection, a consume-phase failure with **zero content
+events received** is likewise treated as open-phase-equivalent: four fast
+rejections must never produce "the provider repeatedly stopped responding
+mid-stream" steering.
 
 Early-stop rules, both scoped to content-bearing consume-phase failures:
 
@@ -337,8 +347,12 @@ TDD throughout; per repo policy, all functionality covered.
   attempts do not qualify; `ErrSSEReadTimeout` discriminates the stall
   tail); both rules disabled when `FailFastAfter` is 0; wrapper error
   references group stats; existing retry tests stay green.
-- **Adapter:** openai-compat decodes in-band `{"error": ...}` chunks into
-  typed stream errors.
+- **Adapter (standalone, first):** openai-compat decodes in-band
+  `{"error": ...}` chunks into typed llm errors carrying the payload's
+  code/status; existing well-formed-stream and line-noise handling
+  unchanged; captured meta-provider fixtures
+  (`llm/providers/openaicompat/testdata/`) extended with an in-band error
+  stream.
 - **Fallback interaction:** `ProviderUnhealthyError` has an explicit
   non-eligible classification arm; a mid-chain unhealthy verdict aborts
   the remaining chain and survives as the terminal error; permanent-class
