@@ -128,21 +128,46 @@ func testWrapperNetOff(t *testing.T) *sandbox.Wrapper {
 	return w
 }
 
-func TestRemoteMCPRefusedUnderNetOff(t *testing.T) {
+// TestRemoteMCPAllowedUnderNetOff pins kata 83pm: MCP servers (stdio and
+// remote alike) are trusted infrastructure, launched only from config layers
+// the model cannot write, so net=off does not sever them — unlike
+// model-directed egress (web_fetch/web_search), which remains disabled.
+func TestRemoteMCPAllowedUnderNetOff(t *testing.T) {
 	w := testWrapperNetOff(t)
 	for _, typ := range []string{"sse", "http"} {
 		dial := productionDial(mcpconfig.ServerConfig{Name: "remote", Type: typ, URL: "https://example.com/mcp"}, w)
-		if _, err := dial(context.Background()); err == nil {
-			t.Errorf("%s MCP server must be refused under net=off", typ)
-		} else if !strings.Contains(err.Error(), "network egress is disabled") || strings.Contains(err.Error(), "--sandbox-net") {
-			t.Errorf("%s refusal must be legible (flag-free) about disabled egress, got %v", typ, err)
+		if _, err := dial(context.Background()); err != nil {
+			t.Errorf("%s MCP server must remain available under net=off (trusted infrastructure), got %v", typ, err)
 		}
 	}
-	// A stdio server stays available under net=off (its network is severed by
-	// --unshare-net; it is not tool-plane egress).
+	// A stdio server also stays available under net=off.
 	dial := productionDial(stdioCfg(), w)
 	if _, err := dial(context.Background()); err != nil {
 		t.Errorf("stdio MCP server must remain available under net=off, got %v", err)
+	}
+}
+
+// TestMCPStdioServerKeepsNetworkUnderNetOff pins the other half of kata 83pm:
+// a stdio MCP server's confined exec.Cmd argv must NOT carry --unshare-net
+// under a net=off session policy, even though it keeps every other kernel
+// confinement (the bwrap prefix, --unshare-pid, the env floor, fd hygiene —
+// all already covered by TestMCPStdioServerConfined).
+func TestMCPStdioServerKeepsNetworkUnderNetOff(t *testing.T) {
+	w := testWrapperNetOff(t)
+	dial := productionDial(stdioCfg(), w)
+	tr, err := dial(context.Background())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	ct, ok := tr.(*mcpsdk.CommandTransport)
+	if !ok || ct.Command == nil {
+		t.Fatalf("expected a *CommandTransport with a command, got %T", tr)
+	}
+	if slices.Contains(ct.Command.Args, "--unshare-net") {
+		t.Errorf("stdio MCP server must keep network under net=off (trusted infrastructure): %v", ct.Command.Args)
+	}
+	if !slices.Contains(ct.Command.Args, "--unshare-pid") {
+		t.Errorf("stdio MCP server must still be kernel-confined under net=off: %v", ct.Command.Args)
 	}
 }
 

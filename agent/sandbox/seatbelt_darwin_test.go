@@ -84,3 +84,34 @@ func TestConfineSetsSeatbeltDir(t *testing.T) {
 		t.Errorf("original command must survive after --: %v", cmd.Args)
 	}
 }
+
+// TestConfineTrustedInfraKeepsSeatbeltNetworkUnderNetOff mirrors the bwrap
+// carve-out (kata 83pm) for the Seatbelt backend: under a net=off policy,
+// ConfineTrustedInfra's generated policy text includes the network-outbound
+// allow that Confine's does not.
+func TestConfineTrustedInfraKeepsSeatbeltNetworkUnderNetOff(t *testing.T) {
+	t.Parallel()
+	rp := ResolvedPolicy{
+		Mode:    ModeWorkspaceWrite,
+		Network: false,
+		Backend: BackendSeatbelt,
+		Spawned: AccessScope{Read: ReadAnywhere, WriteRoots: []string{"/work/tree"}},
+		Git:     GitLayout{WorktreeRoot: "/work/tree"},
+	}
+	w, err := NewWrapper(rp, "/usr/bin/sandbox-exec", "/serf-session-tmp")
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+
+	ordinary := exec.Command("/bin/echo", "hi") //nolint:noctx // test-only cmd, never run
+	w.Confine(ordinary, "/work/tree")
+	if strings.Contains(ordinary.Args[2], "network-outbound") {
+		t.Errorf("model-authored spawn must have no network allow under net=off: %s", ordinary.Args[2])
+	}
+
+	infra := exec.Command("/bin/echo", "hi") //nolint:noctx // test-only cmd, never run
+	w.ConfineTrustedInfra(infra, "/work/tree")
+	if !strings.Contains(infra.Args[2], "network-outbound") {
+		t.Errorf("trusted-infrastructure spawn (MCP) must keep a network allow under net=off: %s", infra.Args[2])
+	}
+}

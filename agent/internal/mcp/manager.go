@@ -277,12 +277,10 @@ func productionDial(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper) func(c
 // observing the developer machine's process environment.
 func productionDialWithEnv(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper, environ func() []string) func(context.Context) (mcpsdk.Transport, error) {
 	return func(context.Context) (mcpsdk.Transport, error) {
-		// A remote (sse/http) MCP server is tool-plane egress: refuse it with a
-		// legible error under net=off, before dialing. A stdio server is local and
-		// stays available (its own network is severed by --unshare-net).
-		if wrapper != nil && !wrapper.Policy().Network && (cfg.Type == "sse" || cfg.Type == "http") {
-			return nil, fmt.Errorf("remote MCP server %q (%s) is unavailable: network egress is disabled in this sandbox; this sandbox policy is fixed for the session", cfg.Name, cfg.Type)
-		}
+		// MCP servers — stdio and remote (sse/http) alike — are trusted
+		// infrastructure: they are launched only from config layers the model
+		// cannot write, so net=off does not sever them (kata 83pm). Model-directed
+		// egress (web_fetch/web_search) is unaffected and stays refused elsewhere.
 		t, err := transportForConfigWithEnv(cfg, environ)
 		if err != nil {
 			return nil, err
@@ -313,10 +311,12 @@ func productionDialWithEnv(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper,
 func confineCommandUnderSandbox(cmd *exec.Cmd, cfgEnv map[string]string, w *sandbox.Wrapper, environ func() []string) {
 	base := mergeEnvInto(sandbox.ScrubSecretEnv(environ()), cfgEnv)
 	cmd.Env = sandbox.ApplyEnvFloor(base, w.Policy(), w.SessionTmp())
-	// Confine wraps the argv and, for Seatbelt, sets cmd.Dir to the worktree so a
-	// macOS MCP server starts in the same directory a Linux (bwrap, via --chdir)
-	// one does — sandbox-exec has no chdir flag.
-	w.Confine(cmd, w.Policy().Git.WorktreeRoot)
+	// ConfineTrustedInfra wraps the argv and, for Seatbelt, sets cmd.Dir to the
+	// worktree so a macOS MCP server starts in the same directory a Linux
+	// (bwrap, via --chdir) one does — sandbox-exec has no chdir flag. Unlike
+	// Confine, it keeps network access under net=off: MCP servers are trusted
+	// infrastructure (kata 83pm), not model-directed egress.
+	w.ConfineTrustedInfra(cmd, w.Policy().Git.WorktreeRoot)
 	cmd.ExtraFiles = nil
 }
 

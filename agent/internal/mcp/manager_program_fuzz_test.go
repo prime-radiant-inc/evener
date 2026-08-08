@@ -506,10 +506,13 @@ func mcpProgramConstructionCases(t *testing.T) {
 		t.Fatalf("confined command = %#v", confined)
 	}
 
+	// kata 83pm: remote MCP servers are trusted infrastructure, so net=off does
+	// not refuse them (transport construction is lazy — it never dials the
+	// invalid URL, so this must succeed with no dial-time error either way).
 	netOff := mcpProgramSandboxWrapper(t, false)
 	for _, typ := range []string{"sse", "http"} {
-		if _, err := productionDialWithEnv(mcpconfig.ServerConfig{Name: "remote", Type: typ, URL: "https://invalid.example/mcp"}, netOff, mcpProgramFixedEnvironment)(ctx); err == nil || !strings.Contains(err.Error(), "network egress is disabled") {
-			t.Fatalf("net-off %s dial error = %v", typ, err)
+		if _, err := productionDialWithEnv(mcpconfig.ServerConfig{Name: "remote", Type: typ, URL: "https://invalid.example/mcp"}, netOff, mcpProgramFixedEnvironment)(ctx); err != nil {
+			t.Fatalf("net-off %s dial error = %v, want none (MCP servers are trusted infrastructure)", typ, err)
 		}
 	}
 

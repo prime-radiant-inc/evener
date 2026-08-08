@@ -84,6 +84,32 @@ func (w *Wrapper) Confine(cmd *exec.Cmd, dir string) {
 	cmd.Args = argv
 }
 
+// ConfineTrustedInfra confines cmd exactly like Confine — same filesystem
+// binds, exec floor, fd hygiene — EXCEPT the network is never severed, even
+// under a net=off session policy. It exists for trusted-infrastructure spawns:
+// MCP server subprocesses, launched only from config layers the model cannot
+// write (docs/sandboxing.md), get a network carve-out because the config that
+// started them is trusted, not model-directed. Model-authored spawned
+// processes (the shell, hooks, rg) must go through Confine, which stays
+// network-severed under net=off — this method must never be used for those.
+func (w *Wrapper) ConfineTrustedInfra(cmd *exec.Cmd, dir string) {
+	w.withNetworkAllowed().Confine(cmd, dir)
+}
+
+// withNetworkAllowed returns a Wrapper identical to w except its policy's
+// Network is forced true, so Wrap/Confine on the copy never emit a network
+// denial regardless of the session's real net=off/on setting. A nil receiver
+// stays nil, so ConfineTrustedInfra on an unsandboxed (nil) wrapper is still a
+// no-op, matching Confine's nil behavior.
+func (w *Wrapper) withNetworkAllowed() *Wrapper {
+	if w == nil {
+		return nil
+	}
+	p := w.policy
+	p.Network = true
+	return &Wrapper{policy: p, binaryPath: w.binaryPath, sessionTmp: w.sessionTmp}
+}
+
 // Wrap prepends the backend invocation to argv so the command runs confined to
 // the wrapper's policy. For bwrap the returned slice is
 // [bwrap, <flags...>, --argv0, argv[0], --, argv...] and cwd becomes the sandbox
