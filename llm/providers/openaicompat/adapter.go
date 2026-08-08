@@ -612,7 +612,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 					msg = "provider reported an in-band stream error"
 				}
 				typedErr := llm.ErrorFromHTTPStatus("openai-compatible",
-					chunk.Error.statusCode(), "chat.completions(stream): "+msg, raw, nil)
+					chunk.Error.StatusCode(), "chat.completions(stream): "+msg, raw, nil)
 				return &transport.FatalStreamError{Err: typedErr}
 			}
 			if chunk.ID != "" {
