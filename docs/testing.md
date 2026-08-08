@@ -150,6 +150,13 @@ npm/network access or an existing compatible worktree install, so an
 unavailable setup is a reported prerequisite failure rather than a
 deterministic test pass.
 
+The frontend unit gate caps Vitest at four workers because `make test` runs it
+beside the Go test waves. Vitest's host-sized default pool oversubscribed a
+10-core host under that combined load and starved otherwise causal IndexedDB
+mutation completions past their test deadlines. The fixed upper bound leaves
+capacity for the sibling streams; it does not widen a timeout or replace an
+awaitable completion with polling.
+
 ## The seqfuzz/schemafuzz Family Lives Only in `make test-fuzz`
 
 A Jesse ruling: no fuzz-family test — including a smoke-depth iteration —
