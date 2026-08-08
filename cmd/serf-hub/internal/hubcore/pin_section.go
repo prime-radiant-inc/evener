@@ -95,13 +95,28 @@ CREATE TABLE IF NOT EXISTS session_pin (
 )`
 
 func (s *PinSectionStore) open() (*sql.DB, error) {
+	return s.openWithImmediateTransaction(false)
+}
+
+// openWriteAttempt keeps the optimistic first transaction deferred. A retry
+// begins IMMEDIATE so SQLite waits for the current writer before taking the
+// next read snapshot.
+func (s *PinSectionStore) openWriteAttempt(attempt int) (*sql.DB, error) {
+	return s.openWithImmediateTransaction(attempt > 0)
+}
+
+func (s *PinSectionStore) openWithImmediateTransaction(immediate bool) (*sql.DB, error) {
 	if s == nil || s.dbPath == "" {
 		return nil, nil
 	}
 	if err := s.fs.MkdirAll(filepath.Dir(s.dbPath), 0o700); err != nil {
 		return nil, err
 	}
-	db, err := s.openDB("sqlite", sqliteDSN(s.dbPath))
+	dataSourceName := sqliteDSN(s.dbPath)
+	if immediate {
+		dataSourceName += "&_txlock=immediate"
+	}
+	db, err := s.openDB("sqlite", dataSourceName)
 	if err != nil {
 		return nil, err
 	}
@@ -176,8 +191,8 @@ func (s *PinSectionStore) Assign(sectionID, sessionID string, now time.Time) (Pi
 	if s == nil || s.dbPath == "" {
 		return PinSection{}, false, nil
 	}
-	for range 8 {
-		db, err := s.open()
+	for attempt := range 8 {
+		db, err := s.openWriteAttempt(attempt)
 		if err != nil {
 			return PinSection{}, false, err
 		}
@@ -248,8 +263,8 @@ func (s *PinSectionStore) CreateOrReuseAndAssign(name, sessionID string, now tim
 	if err != nil {
 		return PinSection{}, false, err
 	}
-	for range 8 {
-		db, err := s.open()
+	for attempt := range 8 {
+		db, err := s.openWriteAttempt(attempt)
 		if err != nil {
 			return PinSection{}, false, err
 		}
@@ -319,8 +334,8 @@ func (s *PinSectionStore) Rename(sectionID, name string, now time.Time) (PinSect
 	if err != nil {
 		return PinSection{}, false, err
 	}
-	for range 8 {
-		db, err := s.open()
+	for attempt := range 8 {
+		db, err := s.openWriteAttempt(attempt)
 		if err != nil {
 			return PinSection{}, false, err
 		}
@@ -419,8 +434,8 @@ func (s *PinSectionStore) DeleteSection(sectionID string) (memberCount int, chan
 	if s == nil || s.dbPath == "" {
 		return 0, false, nil
 	}
-	for range 8 {
-		db, err := s.open()
+	for attempt := range 8 {
+		db, err := s.openWriteAttempt(attempt)
 		if err != nil {
 			return 0, false, err
 		}
@@ -482,8 +497,8 @@ func (s *PinSectionStore) DeleteSession(sessionID string) (bool, error) {
 	if s == nil || s.dbPath == "" {
 		return false, nil
 	}
-	for range 8 {
-		db, err := s.open()
+	for attempt := range 8 {
+		db, err := s.openWriteAttempt(attempt)
 		if err != nil {
 			return false, err
 		}
