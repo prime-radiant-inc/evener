@@ -5,7 +5,7 @@ import { AppwireClient } from "./protocol/client";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
 import { connectionStore } from "./stores/connection";
 import { resetThreadsStoreForTests } from "./stores/threads";
-import { resetTreeStoreForTests } from "./stores/tree";
+import { resetTreeStoreForTests, treeStore } from "./stores/tree";
 import { resetToastStoreForTests } from "./widgets/toast/store";
 
 // AppShell's default createClient constructs a REAL AppwireClient (no test
@@ -268,12 +268,15 @@ test("renders the app shell (welcome pane) at the default route", async () => {
 test("does not show a tree load error while rendering the welcome pane", async () => {
   render(<App />);
   await screen.findByText("No session open");
-  // Await the sidebar's SETTLED success state before asserting the error is
-  // absent - the welcome pane renders independently of the tree fetch, so
-  // asserting straight away could pass while the refresh was still in
-  // flight and about to fail.
-  await screen.findByText("No sessions yet");
-  expect(screen.queryByText("Couldn't load sessions")).toBeNull();
+  // The welcome pane renders independently of the tree fetch, and the
+  // sidebar that presents tree errors may be closed on mobile. Join the
+  // store's published in-flight load instead of waiting for incidental rail
+  // copy, then assert the settled state that drives every presentation.
+  expect(await treeStore.getState().ensureLoaded()).toBe(true);
+  const { tree, loading, error } = treeStore.getState();
+  expect(tree).not.toBeNull();
+  expect(loading).toBe(false);
+  expect(error).toBeNull();
 });
 
 test("does not escape a tree fetch before the test fake is installed", () => {
