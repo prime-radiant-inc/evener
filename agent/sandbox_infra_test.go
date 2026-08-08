@@ -20,6 +20,17 @@ func hermeticInfraEnv(t *testing.T) {
 	t.Setenv(envvars.XDGConfigHome.Name, t.TempDir())
 }
 
+func infraSandboxHost(t *testing.T) sandbox.HostFacts {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve test home: %v", err)
+	}
+	return (sandbox.FakeProber{Facts: sandbox.HostFacts{
+		OS: "linux", Home: home, BwrapPath: "/fixture/bwrap", BwrapCapable: true,
+	}}).Probe()
+}
+
 func writeInfraFile(t *testing.T, path, content string, mode os.FileMode) string {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -266,7 +277,7 @@ func TestSessionInfraRootsResolveIntoNothingOutsideTheWorktree(t *testing.T) {
 	net := true
 	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{
 		Mode: sandbox.ModeRestricted, Network: &net, InfraReadRoots: infra,
-	}, sandbox.RealProber{}.Probe(), root)
+	}, infraSandboxHost(t), root)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -287,13 +298,13 @@ func assertNoReadRootOutside(t *testing.T, worktree string, infra []string, rp s
 	net := true
 	baseline, err := sandbox.Resolve(sandbox.SandboxPolicy{
 		Mode: sandbox.ModeRestricted, Network: &net,
-	}, sandbox.RealProber{}.Probe(), worktree)
+	}, infraSandboxHost(t), worktree)
 	if err != nil {
 		t.Fatalf("Resolve baseline: %v", err)
 	}
 	canonRoot := canonInfra(t, worktree)
 	for _, r := range rp.Spawned.ReadRoots {
-		if slices.Contains(baseline.Spawned.ReadRoots, r) {
+		if readSurfaceAlreadyCovered(baseline.Spawned.ReadRoots, r) {
 			continue // granted regardless of this feature
 		}
 		if r == canonRoot || strings.HasPrefix(r, canonRoot+string(filepath.Separator)) {
@@ -301,6 +312,15 @@ func assertNoReadRootOutside(t *testing.T, worktree string, infra []string, rp s
 		}
 		t.Errorf("the hook/MCP derivation added read root %q outside the worktree\n  derived: %v\n  resolved: %v", r, infra, rp.Spawned.ReadRoots)
 	}
+}
+
+func readSurfaceAlreadyCovered(roots []string, candidate string) bool {
+	for _, root := range roots {
+		if candidate == root || strings.HasPrefix(candidate, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func runInfraGit(t *testing.T, dir string, args ...string) {
@@ -386,7 +406,7 @@ func TestTrustedConfigCannotReachOutsideTheWorktree(t *testing.T) {
 	net := true
 	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{
 		Mode: sandbox.ModeRestricted, Network: &net, InfraReadRoots: infra,
-	}, sandbox.RealProber{}.Probe(), root)
+	}, infraSandboxHost(t), root)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
