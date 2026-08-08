@@ -241,43 +241,59 @@ func TestWaveCompletesDespiteBlockedLeakCheck(t *testing.T) {
 	// results. The wave would become unkillable: the suite process is already
 	// reaped, so signal forwarding can't reach it.
 	//
-	// After the fix, the leak check runs with a timeout. If it times out, the
-	// suite is reported as failed due to the timeout, but the wave continues
-	// normally. This test verifies that behavior by checking:
-	// 1. Both suites are reported (wave didn't hang waiting for one)
-	// 2. The normal suite still passes
-	// 3. The wave exits with failure code (one suite timed out)
-	//
-	// NOTE: This test does NOT actually simulate a blocking os.ReadDir; that
-	// would require wedging a real filesystem or mocking lower-level functions.
-	// Instead, it documents the expected behavior. To see the real bug, construct
-	// a suite's TMPDIR that causes os.ReadDir to block (e.g., a stalled NFS mount).
+	// This test injects a slow/blocking leak check and verifies that:
+	// 1. The wave completes within a short bound (not hung)
+	// 2. The blocked suite is reported as failed (timeout)
+	// 3. Other suites still pass
+	// 4. The wave exits with failure code (one suite failed)
+
+	// Save production defaults and restore them after the test.
+	defer func() {
+		checkLeaksFn = checkLeaks
+		checkLeaksTimeout = 5 * time.Second
+	}()
+
+	// Inject a tiny timeout and a blocking leak check.
+	checkLeaksTimeout = 50 * time.Millisecond
+	blockForever := make(chan struct{})
+	checkLeaksFn = func(string) []string {
+		<-blockForever // This will block forever since no one closes the channel
+		return nil
+	}
+
 	dir := t.TempDir()
-	// A suite that exits 0 and leaves no files. With the old code, if its leak
-	// check hung, the wave would hang here. With the fix, the leak check times out.
-	writeSuite(t, dir, "clean", "exit 0\n")
-	// A normal suite that should still report even if another suite blocks.
+	// A suite that exits 0 and leaves no files. Its injected leak check will block.
+	writeSuite(t, dir, "wedged", "exit 0\n")
+	// A normal suite that should pass despite the wedged suite blocking.
 	writeSuite(t, dir, "normal", "exit 0\n")
 
 	var out bytes.Buffer
 	start := time.Now()
-	code := runWave(waveConfig{ScriptsDir: dir, Suites: []string{"clean", "normal"}, KillGrace: time.Second, Out: &out})
+	code := runWave(waveConfig{ScriptsDir: dir, Suites: []string{"wedged", "normal"}, KillGrace: time.Second, Out: &out})
 	elapsed := time.Since(start)
 
 	outStr := out.String()
-	// With the fix: both suites are reported, wave completes normally (or with
-	// a failure if something actually timed out), and the whole operation is fast.
-	// Without the fix: the wave would hang indefinitely.
-	if elapsed > 30*time.Second {
-		t.Logf("wave took too long (%v), suggests leak check blocked the critical path:\n%s", elapsed, outStr)
+
+	// Verify the wave completes quickly (bounded by the tiny timeout, not hung).
+	if elapsed > 2*time.Second {
+		t.Fatalf("wave took %v, should complete within ~2s despite blocked leak check; suggests fix didn't work", elapsed)
 	}
-	if !strings.Contains(outStr, "PASS  clean") && !strings.Contains(outStr, "timed out") {
-		t.Logf("clean suite should pass or timeout (not disappear):\n%s", outStr)
+
+	// Verify the blocked suite reports as failed with timeout message.
+	if !strings.Contains(outStr, "FAIL  wedged") {
+		t.Fatalf("blocked suite must report FAIL, got:\n%s", outStr)
 	}
+	if !strings.Contains(outStr, "leak check timed out") {
+		t.Fatalf("blocked suite must mention timeout, got:\n%s", outStr)
+	}
+
+	// Verify the normal suite still passes.
 	if !strings.Contains(outStr, "PASS  normal") {
-		t.Logf("normal suite should pass:\n%s", outStr)
+		t.Fatalf("normal suite must pass despite wedged suite, got:\n%s", outStr)
 	}
-	if code != 0 && !strings.Contains(outStr, "timed out") {
-		t.Logf("wave failed but no timeout mentioned (code %d):\n%s", code, outStr)
+
+	// Verify the wave exits with failure (one suite failed).
+	if code == 0 {
+		t.Fatalf("wave must exit nonzero when a suite fails; got %d", code)
 	}
 }

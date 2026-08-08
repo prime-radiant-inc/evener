@@ -14,6 +14,15 @@ import (
 	"primeradiant.com/serf/envvars"
 )
 
+// checkLeaksFn is the function used to check for leaked temp files. It can be
+// overridden in tests to inject a slow/blocking leak check without changing
+// production code.
+var checkLeaksFn = checkLeaks
+
+// checkLeaksTimeout is how long the wave waits for a leak check to complete
+// before timing out. It can be overridden in tests.
+var checkLeaksTimeout = 5 * time.Second
+
 // waveConfig describes one selftest wave: which suites to run, where their
 // scripts live, and how the wave reacts to signals. KillGrace is how long a
 // TERMed suite gets to exit before its process group is KILLed.
@@ -205,7 +214,7 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 	// ability to report this suite's result.
 	leakCheckDone := make(chan []string, 1)
 	go func() {
-		leakCheckDone <- checkLeaks(tmp)
+		leakCheckDone <- checkLeaksFn(tmp)
 	}()
 	select {
 	case leftovers := <-leakCheckDone:
@@ -216,7 +225,7 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 				seconds: seconds,
 			}
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(checkLeaksTimeout):
 		// Leak check timed out (e.g., wedged filesystem). Report as failure.
 		return suiteResult{
 			failure: fmt.Sprintf("serf-test-dev-tooling: %s passed but leak check timed out (possible wedged filesystem)",
