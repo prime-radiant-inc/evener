@@ -44,7 +44,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { evalInFreshChrome } from "./cdp.mjs";
+import { evalInFreshChrome, probeBrowserCapability } from "./cdp.mjs";
 import { resolveComposes } from "./resolve-composes.mjs";
 import { normalizeViewportSpec } from "./viewport.mjs";
 
@@ -102,6 +102,16 @@ async function main() {
   if (caseNames.length === 0) {
     console.error(requested ? `no case named ${requested} under ${CASES_DIR}` : `no cases found under ${CASES_DIR}`);
     process.exit(2);
+  }
+
+  // Perform a single preflight probe before running any cases. If Chrome startup
+  // fails here, fail fast once with diagnostic info rather than cascading the
+  // same error message once per case.
+  try {
+    await probeBrowserCapability();
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
   }
 
   let failed = 0;
