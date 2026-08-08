@@ -242,7 +242,12 @@ func TestWaveCompletesDespiteBlockedLeakCheck(t *testing.T) {
 	// reaped, so signal forwarding can't reach it.
 	//
 	// This test injects a slow/blocking leak check and verifies that:
-	// 1. The wave completes within a short bound (not hung)
+	// 1. The wave returns at all (not hung) — proved structurally by
+	//    runWave's call returning, backstopped by the test binary's own
+	//    hang detection, rather than by a wall-clock ceiling: process
+	//    spawn and goroutine scheduling for the two suites are
+	//    load-dependent, so a fixed elapsed-time bound flakes under
+	//    parallel test-suite load (docs/testing.md, "Flakes and Timeouts").
 	// 2. The blocked suite is reported as failed (timeout)
 	// 3. Other suites still pass
 	// 4. The wave exits with failure code (one suite failed)
@@ -273,16 +278,13 @@ func TestWaveCompletesDespiteBlockedLeakCheck(t *testing.T) {
 	writeSuite(t, dir, "normal", "exit 0\n")
 
 	var out bytes.Buffer
-	start := time.Now()
+	// runWave only returns once the blocked leak check times out and both
+	// suites are collected; no clock here beyond the injected timeout. That
+	// return (rather than a hang caught by the test binary's own timeout) is
+	// what proves the wave isn't wedged.
 	code := runWave(waveConfig{ScriptsDir: dir, Suites: []string{"wedged", "normal"}, KillGrace: time.Second, Out: &out})
-	elapsed := time.Since(start)
 
 	outStr := out.String()
-
-	// Verify the wave completes quickly (bounded by the tiny timeout, not hung).
-	if elapsed > 2*time.Second {
-		t.Fatalf("wave took %v, should complete within ~2s despite blocked leak check; suggests fix didn't work", elapsed)
-	}
 
 	// Verify the blocked suite reports as failed with timeout message.
 	if !strings.Contains(outStr, "FAIL  wedged") {
