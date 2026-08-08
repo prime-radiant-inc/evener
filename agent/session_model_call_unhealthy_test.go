@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -136,6 +137,61 @@ func TestFallbackChain_MidChainProviderUnhealthyAbortsWalk(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("streamed models = %v, want %v", got, want)
 		}
+	}
+}
+
+// TestFallbackChain_ResetsAssistantTextBetweenGroups: spec's "Group-transition
+// reset" — OnReset only fires between attempts WITHIN one group, so a chain
+// walk from a group that already delivered partial output leaves that
+// partial rendered above the next group's output. Before the fallback's
+// callModel runs, the session must emit EventAssistantTextReset exactly once
+// so the fallback's text replaces rather than appends to the primary's
+// dangling partial.
+func TestFallbackChain_ResetsAssistantTextBetweenGroups(t *testing.T) {
+	permErr := llm.ErrorFromHTTPStatus("openai", 403, "primary denied", nil, nil)
+	stop := llm.FinishReason{Reason: llm.FinishReasonStop, Raw: "stop"}
+	a := &scriptedStreamAdapter{
+		provider: "openai",
+		script: map[string]func(*llm.ChanStream){
+			"primary": streamThenFail("partial answer", permErr),
+			"fallback-b": func(st *llm.ChanStream) {
+				st.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "t0"})
+				st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: "t0", Delta: "fallback answered"})
+				st.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: "t0"})
+				st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &stop})
+			},
+		},
+	}
+	policy := llm.RetryPolicy{MaxRetries: 10, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond}
+	sess := newSession(t,
+		withAdapter(a),
+		withProfile(NewOpenAIProfile("primary")),
+		withConfig(SessionConfig{
+			LLMRetryPolicy: &policy,
+			LLMSleep:       func(context.Context, time.Duration) error { return nil },
+			ModelFallbacks: []string{"fallback-b"},
+		}),
+	)
+	evs, mu, done := collectEvents(sess)
+
+	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), "", 1)
+	if err != nil {
+		t.Fatalf("callModelWithFallback: %v, want nil (fallback should succeed)", err)
+	}
+
+	sess.Close()
+	<-done
+
+	mu.Lock()
+	var resets int
+	for _, ev := range *evs {
+		if ev.Kind == events.EventAssistantTextReset {
+			resets++
+		}
+	}
+	mu.Unlock()
+	if resets != 1 {
+		t.Fatalf("EventAssistantTextReset count = %d, want exactly 1 (once, before the fallback group runs)", resets)
 	}
 }
 

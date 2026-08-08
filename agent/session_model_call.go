@@ -853,6 +853,16 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq.PromptCacheKey = ""
 			fbReq.PromptCacheRetention = ""
 			s.applyModelRequestMetadata(profile, &fbReq)
+			// Group-transition reset (spec: "Group-transition reset"): OnReset
+			// only clears the screen between attempts WITHIN one callModel
+			// invocation, so a chain walk away from a group that already
+			// delivered partial output leaves that partial rendered above this
+			// fallback's output. Recomputed from the recorder rather than a
+			// local flag, so a later fallback that also streams and dies gets
+			// its own reset before the next one runs.
+			if _, from := recorder.BestSalvage(); from != nil {
+				s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
+			}
 			var fallbackRecord groupRecord
 			modelResp, err = s.callModel(callCtx, policy, fbProfile, fbReq, &fallbackRecord)
 			recorder.Groups = append(recorder.Groups, fallbackRecord)
