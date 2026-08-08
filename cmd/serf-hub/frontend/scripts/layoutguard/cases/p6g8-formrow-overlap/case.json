@@ -7,5 +7,11 @@
     "widgets/pathfield/pathfield.module.css",
     "widgets/formrow/formrow.module.css",
     "panes/spawn/spawn.module.css"
-  ]
+  ],
+  "viewport": {
+    "width": 1440,
+    "height": 900,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  }
 }
