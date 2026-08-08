@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -335,5 +336,109 @@ func TestProviderFailureE2E_CapShapePersistsDraftForTheResumedTurn(t *testing.T)
 	}
 	if !strings.Contains(modelVisibleText(sent), steeringText) {
 		t.Error("resumed turn did not show the model the steering that explains the draft")
+	}
+}
+
+// TestProviderFailureE2E_TrickleStallSalvagesFragmentWithoutDraftClaim is the
+// incident's third failing shape: unlike the first two tests, every attempt
+// streams a short trickle of content deltas — never enough to cross the
+// draft-reuse threshold — before dying mid-stream. Per the spec's resolution at
+// b411e7f69, "nothing salvageable" means literally zero bytes: a small nonzero
+// salvage is still salvage and must be persisted, but worded as a fragment
+// rather than promised to the model as a reusable draft.
+//
+// Reuses streamLongThenFail (deltas, then a mid-stream death) with a small
+// chunk count and no injected content clock, so the content window stays near
+// zero and the shape reads as a stall rather than a cap.
+func TestProviderFailureE2E_TrickleStallSalvagesFragmentWithoutDraftClaim(t *testing.T) {
+	t.Parallel()
+	const chunk = "plan step. "
+	const deltasPerAttempt = 3
+	trickle := strings.Repeat(chunk, deltasPerAttempt)
+	if len(trickle) == 0 || len(trickle) >= substantialSalvageBytes {
+		t.Fatalf("fixture trickle is %d bytes, want nonzero and well under the %d-byte draft threshold",
+			len(trickle), substantialSalvageBytes)
+	}
+	p := &recoveringProvider{
+		answer: "here is the plan, in pieces",
+		fail: func(int) func(*llm.ChanStream) {
+			return streamLongThenFail(chunk, deltasPerAttempt, midStreamDeath())
+		},
+	}
+	a := &scriptedStreamAdapter{
+		provider: "openai",
+		script:   map[string]func(*llm.ChanStream){"primary": p.stream},
+	}
+	sess := settlementSession(t, a)
+	drainSessionEvents(sess)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := sess.ProcessInput(ctx, "write the plan", nil)
+
+	verdict := unhealthyVerdict(t, err)
+	if verdict.Shape != "stall" || verdict.Attempts != modelRetryFailFastAfter {
+		t.Errorf("verdict = shape %q after %d attempts, want shape \"stall\" after %d",
+			verdict.Shape, verdict.Attempts, modelRetryFailFastAfter)
+	}
+
+	// A salvaged assistant turn IS persisted: nonzero salvage is salvage, never
+	// "too small to bother".
+	want := []schema.TurnKind{schema.TurnAssistant, schema.TurnSteering, schema.TurnFailure}
+	hist := sessionHistory(sess)
+	assertKinds(t, "history", settledKinds(hist), want)
+	assertKinds(t, "transcript", settledKinds(transcriptTurns(t, sess.TranscriptPath())), want)
+
+	salvaged := hist[len(hist)-3].Message.Text()
+	if salvaged != trickle {
+		t.Errorf("salvaged turn = %q, want the %d-byte trickle verbatim", salvaged, len(trickle))
+	}
+
+	// The steering uses the real production fragment wording — not the
+	// draft-reuse wording — and names the actual salvaged byte count.
+	steeringText := hist[len(hist)-2].Message.Text()
+	wantFragment := fmt.Sprintf(fragmentSteering, pluralizedUnit(len(trickle), "byte"))
+	if !strings.Contains(steeringText, wantFragment) {
+		t.Errorf("steering = %q, want the fragment wording %q", steeringText, wantFragment)
+	}
+	// No draft-reuse claim: a fragment this small is not a reusable draft, and
+	// the zero-salvage and fragment shapes must not promise the model one.
+	if strings.Contains(steeringText, "Treat it as your draft") || strings.Contains(steeringText, "Do not start over.") {
+		t.Errorf("steering = %q makes a draft-reuse claim for a %d-byte fragment", steeringText, len(trickle))
+	}
+
+	// What an operator reading the incident sees: the salvaged fragment standing
+	// as an assistant turn, the fragment steering, then the failure marker. The
+	// outline trims trailing whitespace when it renders a turn, so this checks
+	// for the trimmed fragment rather than the trickle's trailing space.
+	assertOrdered(t, "outline", transcriptOutline(t, sess),
+		"USER_INPUT", "ASSISTANT", strings.TrimSpace(trickle), "STEERING", wantFragment, "TURN_FAILURE")
+
+	// The user types "continue". The model must see its own fragment AND the
+	// steering that explains it, exactly as the other settled shapes do.
+	p.heal()
+	out, err := sess.ProcessInput(ctx, "continue", nil)
+	if err != nil {
+		t.Fatalf("resumed turn: %v, want it to succeed", err)
+	}
+	if out != "here is the plan, in pieces" {
+		t.Errorf("resumed turn output = %q, want the provider's answer", out)
+	}
+	if got := len(a.Models()); got != modelRetryFailFastAfter+1 {
+		t.Errorf("streamed %d attempts total, want %d: the resumed turn must take one healthy attempt",
+			got, modelRetryFailFastAfter+1)
+	}
+	sent := lastRequest(t, a)
+	seenFragment := false
+	for _, m := range sent.Messages {
+		if m.Role == llm.RoleAssistant && m.Text() == trickle {
+			seenFragment = true
+		}
+	}
+	if !seenFragment {
+		t.Error("resumed turn did not show the model its own salvaged fragment")
+	}
+	if !strings.Contains(modelVisibleText(sent), steeringText) {
+		t.Error("resumed turn did not show the model the steering that explains the fragment")
 	}
 }
