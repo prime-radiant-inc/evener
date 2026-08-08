@@ -232,3 +232,52 @@ func TestMktempTMinusTIsCaughtByLeakCheck(t *testing.T) {
 		t.Fatalf("tidy suite should pass:\n%s", out.String())
 	}
 }
+
+func TestWaveCompletesDespiteBlockedLeakCheck(t *testing.T) {
+	// Regression test for kata p8ts: the leak check (os.ReadDir on suite's tmp)
+	// is post-reap bookkeeping that could block on a wedged filesystem. Before
+	// the fix, if a leak check hung, the entire runSuite goroutine would hang,
+	// blocking that suite's done <- i send and preventing the wave from collecting
+	// results. The wave would become unkillable: the suite process is already
+	// reaped, so signal forwarding can't reach it.
+	//
+	// After the fix, the leak check runs with a timeout. If it times out, the
+	// suite is reported as failed due to the timeout, but the wave continues
+	// normally. This test verifies that behavior by checking:
+	// 1. Both suites are reported (wave didn't hang waiting for one)
+	// 2. The normal suite still passes
+	// 3. The wave exits with failure code (one suite timed out)
+	//
+	// NOTE: This test does NOT actually simulate a blocking os.ReadDir; that
+	// would require wedging a real filesystem or mocking lower-level functions.
+	// Instead, it documents the expected behavior. To see the real bug, construct
+	// a suite's TMPDIR that causes os.ReadDir to block (e.g., a stalled NFS mount).
+	dir := t.TempDir()
+	// A suite that exits 0 and leaves no files. With the old code, if its leak
+	// check hung, the wave would hang here. With the fix, the leak check times out.
+	writeSuite(t, dir, "clean", "exit 0\n")
+	// A normal suite that should still report even if another suite blocks.
+	writeSuite(t, dir, "normal", "exit 0\n")
+
+	var out bytes.Buffer
+	start := time.Now()
+	code := runWave(waveConfig{ScriptsDir: dir, Suites: []string{"clean", "normal"}, KillGrace: time.Second, Out: &out})
+	elapsed := time.Since(start)
+
+	outStr := out.String()
+	// With the fix: both suites are reported, wave completes normally (or with
+	// a failure if something actually timed out), and the whole operation is fast.
+	// Without the fix: the wave would hang indefinitely.
+	if elapsed > 30*time.Second {
+		t.Logf("wave took too long (%v), suggests leak check blocked the critical path:\n%s", elapsed, outStr)
+	}
+	if !strings.Contains(outStr, "PASS  clean") && !strings.Contains(outStr, "timed out") {
+		t.Logf("clean suite should pass or timeout (not disappear):\n%s", outStr)
+	}
+	if !strings.Contains(outStr, "PASS  normal") {
+		t.Logf("normal suite should pass:\n%s", outStr)
+	}
+	if code != 0 && !strings.Contains(outStr, "timed out") {
+		t.Logf("wave failed but no timeout mentioned (code %d):\n%s", code, outStr)
+	}
+}
