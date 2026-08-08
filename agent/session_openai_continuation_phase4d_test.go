@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/schema"
@@ -44,6 +46,7 @@ func TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnc
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
+			metaFS: afero.NewMemMapFs(),
 			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
 				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
 			},
@@ -124,6 +127,7 @@ func TestSession_OpenAIResponsesContinuationPhase9FallbackCapablePathProducesFul
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
+			metaFS: afero.NewMemMapFs(),
 			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
 				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
 			},
@@ -184,6 +188,7 @@ func TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
+			metaFS: afero.NewMemMapFs(),
 			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
 				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
 			},
@@ -298,6 +303,7 @@ func TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesFullHisto
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
+			metaFS: afero.NewMemMapFs(),
 			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
 				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
 			},

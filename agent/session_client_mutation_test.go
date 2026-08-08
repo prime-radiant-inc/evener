@@ -951,7 +951,7 @@ func TestClientMutation_StartTranscriptIOFailureProcessPathRemainsRunnable(t *te
 		client,
 		NewOpenAIProfile("gpt-5.2"),
 		execenv.NewLocalExecutionEnvironment(dir),
-		SessionConfig{StateDir: dir},
+		SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: afero.NewMemMapFs()}},
 	)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -1004,7 +1004,7 @@ func TestClientMutation_StartLifecycleTerminalizesAfterRunnerCompletion(t *testi
 		client,
 		NewOpenAIProfile("gpt-5.2"),
 		execenv.NewLocalExecutionEnvironment(dir),
-		SessionConfig{StateDir: dir},
+		SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: afero.NewMemMapFs()}},
 	)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

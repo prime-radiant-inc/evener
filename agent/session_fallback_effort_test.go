@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/llm"
@@ -77,6 +79,7 @@ func TestFallbackChain_ClampsToFallbackModelLevels(t *testing.T) {
 				LLMRetryPolicy:  &policy,
 				ModelFallbacks:  []string{tc.fallback},
 				ReasoningEffort: "max",
+				testOnly:        testConfig{metaFS: afero.NewMemMapFs()},
 			})
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)
@@ -136,6 +139,7 @@ func TestFallbackChain_ClampsQualifiedDatedFallbackToFamilyLevels(t *testing.T) 
 		LLMRetryPolicy:  &policy,
 		ModelFallbacks:  []string{"anthropic/claude-opus-4-5-20251101[1m]"},
 		ReasoningEffort: "max",
+		testOnly:        testConfig{metaFS: afero.NewMemMapFs()},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

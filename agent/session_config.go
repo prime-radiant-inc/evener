@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/envctx"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
@@ -370,6 +372,16 @@ type testConfig struct {
 	// for a deterministic clock (and nil/no-op pressure probes) instead of the
 	// real host clock and git subprocess. Nil in production.
 	envProbes *envctx.Probes
+
+	// metaFS, when non-nil, replaces the real OS filesystem for every
+	// session-meta read/write the Session performs directly (maybeAutoSave's
+	// schema.SaveSessionMeta, and the ownership-reload schema.LoadSessionMeta
+	// in RestoreSessionFromMetaWithConfig), routing them through the
+	// schema.*WithFS variants instead. Nil preserves today's behavior (the
+	// package-level OS filesystem schema.SaveSessionMeta/LoadSessionMeta
+	// already use). Tests inject afero.NewMemMapFs() to avoid real fsync-bearing
+	// meta-file IO; nil in production.
+	metaFS afero.Fs
 }
 
 // spawnConfig holds the SessionConfig fields that only spawnAgent (plus the

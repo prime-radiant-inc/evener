@@ -3,6 +3,8 @@ package agent
 import (
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
@@ -30,6 +32,7 @@ func TestChildRegistryKeepsDelegateWithAllowance(t *testing.T) {
 		cfg.spawn.depth = 1
 		cfg.spawn.parentSessionID = "parent-session"
 		cfg.spawn.delegationAllowance = 1
+		cfg.testOnly.metaFS = afero.NewMemMapFs()
 
 		child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), cfg)
 		if err != nil {
@@ -57,6 +60,7 @@ func TestChildRegistryKeepsDelegateWithAllowance(t *testing.T) {
 		cfg.spawn.depth = 1
 		cfg.spawn.parentSessionID = "parent-session"
 		cfg.spawn.delegationAllowance = 0 // leaf child — strip must still run
+		cfg.testOnly.metaFS = afero.NewMemMapFs()
 
 		child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), cfg)
 		if err != nil {

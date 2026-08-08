@@ -474,7 +474,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 		ownershipAcquired = true
 		if restoreCfg.StateDir != "" {
-			currentMeta, err := schema.LoadSessionMeta(restoreCfg.StateDir, meta.ID)
+			var currentMeta schema.SessionMeta
+			var err error
+			if fs := restoreCfg.testOnly.metaFS; fs != nil {
+				currentMeta, err = schema.LoadSessionMetaWithFS(fs, restoreCfg.StateDir, meta.ID)
+			} else {
+				currentMeta, err = schema.LoadSessionMeta(restoreCfg.StateDir, meta.ID)
+			}
 			if err != nil {
 				_ = client.ReleaseSessionAPILog(meta.ID)
 				return nil, fmt.Errorf("reload session metadata after ownership: %w", err)
