@@ -52,6 +52,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CASES_DIR = path.join(__dirname, "cases");
 const SRC_DIR = path.join(__dirname, "..", "..", "src");
 
+// kata eevs (docs/testing.md: "a guard that has never failed is a
+// decoration"): every case here was mutation-tested once by hand - its
+// governing CSS declaration reverted in a scratch copy, confirmed to fail
+// the case, then restored. That evidence is recorded in the case's own
+// case.json under "mutation" ({ declaration, verified, expect }) rather than
+// re-run automatically (a real mutation test needs a human to judge whether
+// the resulting FAIL reason is the right one, not just that something
+// failed). This just checks the evidence field exists, so a new case can't
+// be added silently without it.
+function mutationWarning(name, caseJson) {
+  const m = caseJson.mutation;
+  if (!m || typeof m !== "object") return `${name}: no "mutation" evidence in case.json - was this case ever mutation-tested? see docs/testing.md`;
+  const missing = ["declaration", "verified", "expect"].filter((k) => !m[k]);
+  if (missing.length > 0) return `${name}: "mutation" evidence is missing ${missing.join(", ")}`;
+  return null;
+}
+
 async function runCase(caseDir) {
   const name = path.basename(caseDir);
   const caseJson = JSON.parse(readFileSync(path.join(caseDir, "case.json"), "utf8"));
@@ -115,8 +132,13 @@ async function main() {
   }
 
   let failed = 0;
+  const warnings = [];
   for (const name of caseNames) {
     const caseDir = path.join(CASES_DIR, name);
+    const caseJson = JSON.parse(readFileSync(path.join(caseDir, "case.json"), "utf8"));
+    const warning = mutationWarning(name, caseJson);
+    if (warning) warnings.push(warning);
+
     process.stdout.write(`${name} ... `);
     try {
       const result = await runCase(caseDir);
@@ -130,6 +152,12 @@ async function main() {
       failed++;
       console.log(`ERROR - ${err.message}`);
     }
+  }
+
+  if (warnings.length > 0) {
+    console.warn("");
+    console.warn("WARN: mutation evidence missing (does not fail the run - see docs/testing.md):");
+    for (const w of warnings) console.warn(`  - ${w}`);
   }
 
   process.exit(failed > 0 ? 1 : 0);
