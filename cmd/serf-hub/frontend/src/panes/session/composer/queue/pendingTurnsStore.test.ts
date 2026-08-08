@@ -2,17 +2,12 @@
 
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
-import {
-  resetThreadsStoreForTests,
-  setMutationStorageForTests,
-  subscribeMutationPersistence,
-  threadsStore,
-} from "../../../../stores/threads";
+import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
 import { useColdStartSkeleton } from "../../coldStart";
 import {
   discardRecoveryPendingTurn,
@@ -35,17 +30,6 @@ async function settlePendingProjection(): Promise<void> {
     if (awaited === 0) return;
   }
   throw new Error("pending-turns projection never settled");
-}
-
-function nextMutationPersistence(targetRef: string): Promise<void> {
-  return new Promise((resolve) => {
-    const unsubscribe = subscribeMutationPersistence((targetRefs) => {
-      if (!targetRefs.includes(targetRef)) return;
-      unsubscribe();
-      resolve();
-    });
-    onTestFinished(unsubscribe);
-  });
 }
 
 function thread(overrides: Partial<Thread> = {}): Thread {
@@ -208,6 +192,8 @@ test("authoritative pendingMutations reconstruct accepted steering without a bro
 });
 
 test("an applied pending receipt settles transport without dropping optimistic send or cold-start state", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
   const fake = await connect();
   let applyReceipt!: () => void;
   const receiptGate = new Promise<void>((resolve) => {
@@ -231,11 +217,22 @@ test("an applied pending receipt settles transport without dropping optimistic s
   await settlePendingProjection();
   expect(pending.result.current).toEqual([expect.objectContaining({ method: "send", text: "hello" })]);
 
-  const receiptPersisted = nextMutationPersistence("ref_a");
+  const mutationId = pending.result.current[0]?.id;
+  expect(mutationId).toBeDefined();
+  if (!mutationId) return;
+  const settleReceipt = storage.settleReceipt.bind(storage);
+  let signalReceiptSettled!: () => void;
+  const receiptSettled = new Promise<void>((resolve) => {
+    signalReceiptSettled = resolve;
+  });
+  vi.spyOn(storage, "settleReceipt").mockImplementation(async (clientMutationId, projectionState) => {
+    const settled = await settleReceipt(clientMutationId, projectionState);
+    if (clientMutationId === mutationId) signalReceiptSettled();
+    return settled;
+  });
   applyReceipt();
-  await receiptPersisted;
-  await settlePendingProjection();
-  const storage = new MutationOutboxIndexedDB();
+  await receiptSettled;
+  await act(() => refreshPendingTurnsProjection("ref_a"));
   expect(await storage.listOutbox("ref_a")).toEqual([]);
 
   expect(pending.result.current).toEqual([expect.objectContaining({ method: "send", text: "hello" })]);
@@ -243,6 +240,8 @@ test("an applied pending receipt settles transport without dropping optimistic s
 });
 
 test("a replayed pending receipt keeps a long-running steer until its authoritative identity arrives", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
   const fake = await connect();
   let replayReceipt!: () => void;
   const receiptGate = new Promise<void>((resolve) => {
@@ -264,11 +263,22 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
   await act(() => threadsStore.getState().steer("ref_a", "patient steer"));
   await settlePendingProjection();
 
-  const storage = new MutationOutboxIndexedDB();
-  const receiptPersisted = nextMutationPersistence("ref_a");
+  const mutationId = pending.result.current[0]?.id;
+  expect(mutationId).toBeDefined();
+  if (!mutationId) return;
+  const settleReceipt = storage.settleReceipt.bind(storage);
+  let signalReceiptSettled!: () => void;
+  const receiptSettled = new Promise<void>((resolve) => {
+    signalReceiptSettled = resolve;
+  });
+  vi.spyOn(storage, "settleReceipt").mockImplementation(async (clientMutationId, projectionState) => {
+    const settled = await settleReceipt(clientMutationId, projectionState);
+    if (clientMutationId === mutationId) signalReceiptSettled();
+    return settled;
+  });
   replayReceipt();
-  await receiptPersisted;
-  await settlePendingProjection();
+  await receiptSettled;
+  await act(() => refreshPendingTurnsProjection("ref_a"));
   expect(await storage.listOutbox("ref_a")).toEqual([]);
   expect(pending.result.current).toEqual([
     expect.objectContaining({
@@ -279,7 +289,16 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
     }),
   ]);
 
-  const identityPersisted = nextMutationPersistence("ref_a");
+  const settleApplied = storage.settleApplied.bind(storage);
+  let signalIdentitySettled!: () => void;
+  const identitySettled = new Promise<void>((resolve) => {
+    signalIdentitySettled = resolve;
+  });
+  vi.spyOn(storage, "settleApplied").mockImplementation(async (clientMutationId) => {
+    const settled = await settleApplied(clientMutationId);
+    if (clientMutationId === mutationId) signalIdentitySettled();
+    return settled;
+  });
   act(() => {
     fake.emitNotification({
       method: "serf/steering/injected",
@@ -292,8 +311,8 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
       },
     });
   });
-  await identityPersisted;
-  await settlePendingProjection();
+  await identitySettled;
+  await act(() => refreshPendingTurnsProjection("ref_a"));
 
   expect(pending.result.current).toEqual([]);
   expect(await storage.listOptimistic("ref_a")).toEqual([]);
