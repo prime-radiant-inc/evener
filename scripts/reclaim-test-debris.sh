@@ -2,9 +2,9 @@
 # reclaim-test-debris.sh — delete accumulated per-run test scratch that no
 # gate or selftest cleans up on its own:
 #
-#   1) $TMPDIR/agent-test-shards.*  — one directory per sharded `make test`
-#      run (kept so a failing run's logs can be read; a green run's dir is
-#      pure debris at ~41MB each — measured 103 dirs / ~4.2GB on 2026-07-31).
+#   1) $TMPDIR/agent-test-shards.*  — stale directories from failed or
+#      interrupted historical sharded `make test` runs; current green runs
+#      remove their directories (measured 103 dirs / ~4.2GB on 2026-07-31).
 #   2) /tmp/serf-gocache-k3         — a one-off GOCACHE a session created to
 #      route around the external-volume stall and flagged for cleanup
 #      (recorded in kata r07s's filing).

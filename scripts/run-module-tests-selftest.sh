@@ -102,6 +102,9 @@ new_case() {
 set -u
 module="$(basename "$PWD")"
 [ "$PWD" = "$FAKE_REPO" ] && module=.
+mkdir -p "$TMPDIR"
+printf '%s\t%s\n' "$module" "$TMPDIR" >>"$FAKE_STATE/tmpdirs"
+: >"$TMPDIR/go-residue"
 case "${1:-}" in
 	env)
 		case "${2:-}" in
@@ -165,6 +168,9 @@ FAKE_GO
 #!/usr/bin/env bash
 set -u
 stream=web
+mkdir -p "$TMPDIR"
+printf '%s\t%s\n' "$stream" "$TMPDIR" >>"$FAKE_STATE/tmpdirs"
+: >"$TMPDIR/web-residue"
 printf '%s\t%s\n' "$stream" "$*" >>"$FAKE_STATE/calls"
 if [ "$stream" = "web" ] && [ "${FAKE_HOLD_STREAMS:-0}" -ne 0 ]; then
 	printf 'web-stdout: interrupted-run marker\n'
@@ -241,6 +247,10 @@ run_tests_default_modules() {
 
 started_streams() {
 	cut -f1 "$state/calls" 2>/dev/null | sort | tr '\n' ' ' | sed 's/ *$//'
+}
+
+recorded_tmpdirs() {
+	cut -f2 "$state/tmpdirs" 2>/dev/null | sort -u
 }
 
 runner_logdirs() {
@@ -320,6 +330,9 @@ if [ -f "$state/root.listed" ]; then ok "a root package-discovery success reache
 assert_not_has "$out" "=== failing module output ===" "all-passing run prints no failure section"
 assert_not_has "$out" "go-stdout:" "passing suite chatter stays hidden"
 assert_eq "$(runner_logdirs)" "" "a successful run removes its temporary logs"
+assert_eq "$(recorded_tmpdirs | wc -l | tr -d ' ')" "4" "every passing stream owns a distinct temporary root"
+leftovers="$(while IFS= read -r dir; do [ ! -e "$dir" ] || printf '%s\n' "$dir"; done < <(recorded_tmpdirs))"
+assert_eq "$leftovers" "" "a successful run removes every stream's temporary root"
 
 new_case
 out="$case_dir/ambient-overrides.out"

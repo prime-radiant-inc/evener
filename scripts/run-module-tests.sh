@@ -209,6 +209,7 @@ fail=0
 failed_modules=()
 
 logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
+tmppath() { printf '%s/%s/%s' "$logdir" tmp "$(printf '%s' "$1" | tr '/.' '__')"; }
 
 root_package_list_timeout_diagnostic() {
 	local package_list="$1" worktree gocache gomodcache
@@ -325,11 +326,12 @@ module_extra() {
 run_wave() {
 	[ "$#" -eq 0 ] && return 0
 	local -a names=() pids=()
-	local m log extra
+	local m log extra tmp
 	for m in "$@"; do
 		log="$(logpath "$m")"
 		extra="$(module_extra "$m")"
-		( cd "$m" && run_module "$m" "$extra" ) >"$log" 2>&1 &
+		tmp="$(tmppath "$m")"
+		( mkdir -p "$tmp" && cd "$m" && TMPDIR="$tmp" run_module "$m" "$extra" ) >"$log" 2>&1 &
 		pids+=("$!"); names+=("$m"); active_pids+=("$!")
 	done
 	local i status
@@ -371,7 +373,8 @@ finish_stream() {
 # after wave 2, so its cost is hidden unless it outlives the Go work.
 web_pid=""
 if [ "$WEB" -ne 0 ]; then
-	/usr/bin/time -p "${MAKE:-make}" test-web >"$(logpath web)" 2>&1 &
+	web_tmp="$(tmppath web)"
+	( mkdir -p "$web_tmp" && TMPDIR="$web_tmp" /usr/bin/time -p "${MAKE:-make}" test-web ) >"$(logpath web)" 2>&1 &
 	web_pid="$!"
 	active_pids+=("$web_pid")
 fi
