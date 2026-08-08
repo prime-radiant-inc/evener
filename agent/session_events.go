@@ -470,10 +470,7 @@ func (s *Session) settleFailedRound(terminalErr error) {
 		}
 		s.emitSalvagedTurn(salvaged, model)
 	}
-	// No steering kind: the enum that labels daemon steering has no entry for a
-	// provider failure yet, and mislabeling one would be worse than the
-	// unlabelled divider an empty kind renders as.
-	s.appendSteeringTurn(steering, "")
+	s.appendSteeringTurn(steering, events.SteeringKindProviderFailure)
 }
 
 // persistSalvagedTurn records the round's best partial as a normal assistant

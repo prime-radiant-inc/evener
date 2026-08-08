@@ -161,6 +161,11 @@ func TestSettlement_StallStreakPersistsSteeringOnly(t *testing.T) {
 	if !strings.Contains(steering.Message.Text(), "The provider stopped responding mid-stream") {
 		t.Errorf("steering text = %q, want the stall template", steering.Message.Text())
 	}
+	// The label rides the wire so a UI names the steer from data rather than
+	// pattern-matching its prose.
+	if steering.SteeringKind != events.SteeringKindProviderFailure {
+		t.Errorf("steering kind = %q, want %q", steering.SteeringKind, events.SteeringKindProviderFailure)
+	}
 	if strings.Contains(steering.Message.Text(), "draft") {
 		t.Errorf("steering text = %q must not reference a draft when nothing was salvaged", steering.Message.Text())
 	}
@@ -191,7 +196,7 @@ func TestSettlement_SalvagedDraftPersistsBeforeSteering(t *testing.T) {
 		},
 	}
 	sess := settlementSession(t, a)
-	evs, mu, _ := collectEvents(sess)
+	evs, mu, drained := collectEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -200,8 +205,12 @@ func TestSettlement_SalvagedDraftPersistsBeforeSteering(t *testing.T) {
 	}
 	tpath := sess.TranscriptPath()
 	hist := sessionHistory(sess)
-	captured := snapshotEvents(evs, mu)
+	// Close first, then wait for the collector to finish: ProcessInput returning
+	// does not mean the event consumer has caught up, and snapshotting before it
+	// has drained would race the tail of the sequence under assertion.
 	sess.Close()
+	<-drained
+	captured := snapshotEvents(evs, mu)
 
 	want := []schema.TurnKind{schema.TurnAssistant, schema.TurnSteering, schema.TurnFailure}
 	assertKinds(t, "history", settledKinds(hist), want)

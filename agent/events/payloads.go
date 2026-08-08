@@ -319,6 +319,7 @@ const (
 	SteeringKindCurrentTask       = "current-task"
 	SteeringKindTaskList          = "task-list"
 	SteeringKindNotification      = "notification"
+	SteeringKindProviderFailure   = "provider-failure"
 )
 
 // AllSteeringKinds is every kind a call site may emit. Task 3's coverage test
@@ -343,6 +344,7 @@ var AllSteeringKinds = []string{
 	SteeringKindCurrentTask,
 	SteeringKindTaskList,
 	SteeringKindNotification,
+	SteeringKindProviderFailure,
 }
 
 // SteeringInjectedData is the payload for an EventSteeringInjected event.

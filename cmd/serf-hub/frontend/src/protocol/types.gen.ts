@@ -1487,6 +1487,7 @@ export const STEERING_KINDS = [
   "current-task",
   "task-list",
   "notification",
+  "provider-failure",
 ] as const;
 
 export type SteeringKind = (typeof STEERING_KINDS)[number];

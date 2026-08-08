@@ -52,6 +52,7 @@ func TestSteeringKindConstants(t *testing.T) {
 		"current-task":       SteeringKindCurrentTask,
 		"task-list":          SteeringKindTaskList,
 		"notification":       SteeringKindNotification,
+		"provider-failure":   SteeringKindProviderFailure,
 	}
 	for literal, got := range want {
 		if got != literal {
