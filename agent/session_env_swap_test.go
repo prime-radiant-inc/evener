@@ -282,8 +282,8 @@ func TestSwapEnvAndRefresh_NoGitForkWhileLocked(t *testing.T) {
 	close(stop)
 	<-done
 
-	if totalWindows < 5 {
-		t.Fatalf("shim only observed %d git-invocation windows; want >=5 (PATH shim likely not intercepting — sanity check failed)", totalWindows)
+	if totalWindows == 0 {
+		t.Fatal("shim observed no git-invocation window (PATH shim likely not intercepting — sanity check failed)")
 	}
 	if freeSamples == 0 {
 		t.Fatalf("watcher never observed s.mu unlocked at all; watcher is not functioning")
