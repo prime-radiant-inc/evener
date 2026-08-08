@@ -400,6 +400,15 @@ type testConfig struct {
 	// window while the session stays on the real clock — so a cap-shaped round
 	// reproduces without also warping turn deadlines, retry backoff, and every
 	// watchdog in the job lifecycle.
+	//
+	// Independence runs the other way too, and that direction is why routing the
+	// window through clock.Clock would be a bug rather than a simplification.
+	// The fuzz harnesses inject agenttest.FakeClock as the session clock and
+	// jump virtual time in large steps at unrelated ops — the delegate sequence
+	// fuzzer draws advances of up to five virtual minutes — so any attempt
+	// straddling one would read as a 60-second-plus content window and be
+	// classified cap-shaped by a clock op that has nothing to do with the
+	// stream.
 	contentWindowClock func() time.Time
 }
 
