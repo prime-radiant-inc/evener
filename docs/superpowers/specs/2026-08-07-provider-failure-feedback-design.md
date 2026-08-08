@@ -1,7 +1,7 @@
 # Provider-Failure Feedback and Retry Resilience
 
 **Date:** 2026-08-07
-**Status:** Draft v4 — adds cross-provider fallbacks; awaiting review
+**Status:** Draft v5 — cross-provider fallbacks split into their own spec; awaiting review
 
 ## Context
 
@@ -58,6 +58,12 @@ from its own draft instead of starting over blind.
 
 - Cross-session or cross-turn provider health tracking (circuit breaker at
   the profile level). The early stop in component 2 is per retry group.
+- Cross-provider fallbacks. Directed by Jesse, but adversarial review
+  showed it is a spec-sized feature of its own (history re-projection,
+  response-path tool-name mapping, state isolation, credentials, window
+  disparity, meta-provider ref semantics). Requirements captured in
+  `2026-08-07-cross-provider-fallbacks-requirements.md`; this spec only
+  provides the eligibility extension point.
 - Automatic re-issue of the failed round after settlement. V1 settles the
   turn; the user resumes.
 - Fixing lunarouter's ~300s stream cap or mid-stream stalls (upstream issue,
@@ -134,61 +140,25 @@ Open-phase failures (rate limits with Retry-After, 5xx bursts) never count:
 riding those out on the full budget is existing, documented, correct
 behavior (`llm/retry.go:30-33`) and stays untouched.
 
-**`ProviderUnhealthyError` is fallback-eligible only to cross-provider
-entries** (component 4). An unhealthy verdict indicts the provider's
-endpoint and transport, so same-provider fallback entries — which share
-both — are skipped for this error class: they would multiply the grind for
-no route out. A fallback entry on a *different* provider is a genuine
-escape route and is tried, with its own early-stop-bounded group. When no
-cross-provider entry is configured, the error settles the round
-immediately. Other retryable-class failures keep the existing invariant:
-they never trigger the fallback chain. Permanent-class errors keep the
-existing chain over all entries, same- and cross-provider alike.
+**`ProviderUnhealthyError` settles the round immediately.** An unhealthy
+verdict indicts the provider's endpoint and transport, and serf's fallback
+chain cannot currently route around it: same-provider fallback entries
+share the transport, and cross-provider entries are rejected at session
+init. When cross-provider fallbacks land (separate spec:
+`2026-08-07-cross-provider-fallbacks-requirements.md`), the eligibility
+gate for this error consults them — the gate is written as an extension
+point, not hardcoded to settle. Everything else preserves existing
+behavior exactly: permanent-class errors walk the chain as today, and
+retryable-class errors keep their current eligibility — including the
+existing retry-after-declined exception (kata r128,
+`agent/session_init.go:1158-1190`), which does walk the chain today and
+must not regress.
 
 **Honest bounds:** the ~2-minute failure applies to the stall shape
 (4 × ~32s + short backoffs). Cap-shaped groups are bounded by the
 cap-detection rule at 2 long attempts (~10 minutes worst case), not 2
 minutes — better than today's ~20, and each attempt was streaming real
-output that becomes salvage. A configured cross-provider fallback adds at
-most one more early-stop-bounded group before settlement.
-
-## Component 4: cross-provider fallbacks
-
-**Now:** `model_fallbacks` entries that switch provider are rejected at
-session init (`agent/session_init.go:1127`, "cross-provider fallbacks are
-not supported because provider prompt/tool surfaces differ") — even though
-the ref resolver (`resolveProfileForRef` / `CrossProviderRef`) already
-resolves them. The consequence, exposed by this design: when a provider's
-transport is unhealthy, every configured fallback shares it, and there is
-no route out of the round.
-
-**Change:** lift the rejection and make cross-provider entries first-class:
-
-- **Validation** accepts `provider/model` entries that resolve; the error
-  at `session_init.go:1127` goes away. `revalidateModelFallbacksLocked`
-  keeps cross-provider entries valid across mid-session model switches
-  instead of dropping them.
-- **Request building:** a cross-provider fallback rebuilds the full request
-  against the resolved fallback profile — system prompt, tool defs,
-  provider options, reasoning-effort clamp — via the same per-profile
-  request path `buildRequest` uses, not the current same-profile
-  `WithModel` projection. This is the "prompt/tool surfaces differ"
-  objection, answered the way mid-session model switching already answers
-  it: the surfaces are rebuilt, not reused.
-- **History portability:** history is projected from serf's neutral turn
-  schema per request, so the fallback provider receives history rendered by
-  its own adapter. Provider-specific artifacts (reasoning blocks,
-  provider-tagged metadata) are handled exactly as the existing
-  mid-session model-switch path handles them; salvaged assistant turns are
-  plain text and portable by construction.
-- **Bookkeeping:** attempt metadata already records the request model per
-  attempt; the salvage recorder notes provider as well as model provenance
-  on cross-group selection, and the settlement steering names the provider
-  that ultimately failed.
-- **Eligibility matrix:** permanent-class errors walk the whole chain in
-  order (unchanged, now including cross-provider entries);
-  `ProviderUnhealthyError` skips to cross-provider entries only; other
-  retryable errors never fall back (unchanged).
+output that becomes salvage.
 
 ## Component 3: partial-preserving settlement
 
@@ -265,10 +235,10 @@ already streamed" — wrong: that group's attempts were stalls with trickle
 output; the large partials belonged to the resumed turn's group. This
 version is consistent with the recorded attempt stats.)
 
-With a cross-provider fallback configured (component 4), steps 1 and 2
-change shape: after the group goes unhealthy, the round continues on the
-fallback provider instead of settling — the turn completes without user
-intervention, and the salvage/steering path is never needed.
+Once cross-provider fallbacks exist (separate spec), a configured escape
+provider changes steps 1 and 2: the round continues there instead of
+settling. Until then, fast settlement + salvage + steering is the whole
+story.
 
 ## Testing
 
@@ -282,15 +252,9 @@ TDD throughout; per repo policy, all functionality covered.
   streak at 4 consume-phase failures; cap detection at 2 substantial
   (≥60s) consume-phase failures; disabled when 0; wrapper error references
   group stats; existing retry tests stay green.
-- **Fallback interaction:** `ProviderUnhealthyError` skips same-provider
-  entries and tries cross-provider entries only; settles immediately when
-  none are configured; other retryable errors still never fall back.
-- **Cross-provider fallbacks:** validation accepts resolvable
-  `provider/model` entries; the fallback request is rebuilt against the
-  fallback profile (system prompt, tool defs, provider options); history
-  renders through the fallback provider's adapter including a salvaged
-  turn; `revalidateModelFallbacksLocked` retains cross-provider entries
-  across model switches; provenance recorded on attempts and salvage.
+- **Fallback interaction:** `ProviderUnhealthyError` settles immediately
+  (via the extension-point gate); permanent-class and retry-after-declined
+  eligibility unchanged — existing kata r128 tests stay green.
 - **Salvage content:** all top-level string fields extracted from partial
   tool args, labeled, under never-executed marker; no broken tool calls; no
   reasoning content; largest-by-total-bytes selection.
