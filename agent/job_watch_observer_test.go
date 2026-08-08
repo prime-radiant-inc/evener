@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/agenttest"
+	"primeradiant.com/serf/agent/internal/clock"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
@@ -1320,4 +1321,73 @@ func completeSessionTurnWithProvenanceForTest(s *Session, p *provenance.Causal) 
 	s.mu.Unlock()
 	s.replaceActiveProvenance(p)
 	s.finishProcessingAtBoundary(context.Background(), SessionIdle)
+}
+
+// TestObserverLinkGoroutineWaitedOnDuringClose proves that Close() waits for
+// scheduled observer-link goroutines to complete before returning, ensuring
+// the ObservedBy stamp is durable before close finishes.
+func TestObserverLinkGoroutineWaitedOnDuringClose(t *testing.T) {
+	t.Parallel()
+
+	// Create a minimal jobManager without any complex restore logic.
+	// We'll create the directory structure and store directly.
+	stateDir := t.TempDir()
+	dir := jobsDir(stateDir, testOwnerSessionID)
+	if err := os.MkdirAll(filepath.Join(dir, "jobs"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	store, err := jobstore.OpenNoSync(filepath.Join(dir, "jobs.jsonl"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// Manually create a jobManager with minimal initialization
+	jm := &jobManager{
+		dir:                   dir,
+		stateDir:              stateDir,
+		sessionID:             testOwnerSessionID,
+		transcriptRef:         encodeRef("", testOwnerSessionID),
+		store:                 store,
+		running:               make(map[string]*runningJob),
+		watches:               make(map[watchKey]*watchConfig),
+		terminalFlush:         make(map[*watchConfig]bool),
+		lastFedOffset:         make(map[string]int64),
+		deliveredWatchSendIDs: make(map[string]struct{}),
+		watchLineage:          make(map[watchKey][]string),
+		appendEvent:           store.Append,
+		appendTeardown:        func(dropped []watchSendTerminalSnapshot, targets []watchConfigTerminalSnapshot) error { return nil },
+		now:                   time.Now,
+		clock:                 clock.Real(),
+		closeGrace:            1 * time.Second, // Short timeout for testing
+	}
+
+	// Set up the scheduleObserverLink hook (same as in newJobManagerWithRestore)
+	jm.scheduleObserverLink = func(fn func()) {
+		jm.observerLinkWG.Add(1)
+		go func() {
+			defer jm.observerLinkWG.Done()
+			fn()
+		}()
+	}
+
+	// Track whether the scheduled closure ran.
+	var closureRan atomic.Bool
+
+	// Schedule a closure via the async hook (not overridden to run synchronously).
+	jm.scheduleObserverLink(func() {
+		closureRan.Store(true)
+	})
+
+	// Close the job manager WITHOUT manually running the scheduled closure.
+	// With the fix, close() should wait for the scheduled goroutine to complete.
+	if err := jm.close(); err != nil {
+		t.Logf("close returned error: %v (expected if close times out waiting for jobs)", err)
+	}
+
+	// Assert that the closure actually ran before close() returned.
+	if !closureRan.Load() {
+		t.Fatal("scheduled closure did not run before close() returned")
+	}
 }

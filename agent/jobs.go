@@ -75,6 +75,10 @@ type jobManager struct {
 	running       map[string]*runningJob
 	watches       map[watchKey]*watchConfig
 	terminalFlush map[*watchConfig]bool
+	// observerLinkWG tracks scheduled observer-link goroutines so Close() can wait
+	// for them to complete before returning, ensuring observer-link stamps are
+	// durable before the job manager shuts down.
+	observerLinkWG sync.WaitGroup
 	// watchHistory is a bounded, latest-trimmed ring of watches that have left
 	// the active set, surfaced by job_list so a fired-then-removed watch stays
 	// legible. Guarded by jm.mu.
@@ -521,7 +525,7 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		createOutput:          createOutput,
 		newJobID:              identifier.NewJobID,
 		appendObservedBy:      schema.AppendSessionObservedBy,
-		scheduleObserverLink:  func(fn func()) { go fn() },
+		scheduleObserverLink:  nil, // Set below after jm is initialized
 		enqueue:               enqueue,
 		now:                   time.Now,
 		clock:                 clock.Real(),
@@ -533,6 +537,14 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 	jm.appendTeardown = jm.appendWatchTeardownBatch
 	jm.appendRegistry = jm.appendWatchRegistryEvents
 	jm.finalizeShellAsync = jm.finalizeShellUntilDurable
+	// Set up scheduleObserverLink to track goroutines with the WaitGroup.
+	jm.scheduleObserverLink = func(fn func()) {
+		jm.observerLinkWG.Add(1)
+		go func() {
+			defer jm.observerLinkWG.Done()
+			fn()
+		}()
+	}
 	if err := restorePending(jm); err != nil {
 		_ = store.Close()
 		return nil, err
@@ -665,6 +677,26 @@ waitLoop:
 			break waitLoop
 		}
 	}
+
+	// Wait for scheduled observer-link goroutines with an independent timeout.
+	// Create a separate timer so the observer-link wait is bounded even if the
+	// running-jobs wait already timed out (deadline timer was already consumed).
+	observerDeadline := jm.clock.NewTimer(jm.closeGrace)
+	defer observerDeadline.Stop()
+
+	observerLinkDone := make(chan struct{})
+	go func() {
+		jm.observerLinkWG.Wait()
+		close(observerLinkDone)
+	}()
+	select {
+	case <-observerLinkDone:
+		// Observer links completed in time.
+	case <-observerDeadline.C():
+		// Timeout waiting for observer links. This is best-effort, so we don't fail.
+		// Just log and continue.
+	}
+
 	return errors.Join(watchCleanupErr, waitErr)
 }
 
