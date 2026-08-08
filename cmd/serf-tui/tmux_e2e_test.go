@@ -1090,15 +1090,13 @@ func buildTUIBinary(t *testing.T) string {
 // connect/capture-pane/send-keys/kill-session churn at once, plus whatever
 // else on the machine happens to be talking to that same default socket — a
 // real shared-mutable-resource risk under load, independent of naming.
-// socket/socketPath give each test its own server process holding exactly
-// one session; socketPath is that server's own resolved socket file path
-// (see tmuxSocketPath), kept only so Close can remove the file tmux itself
-// leaks on exit (see Close).
+// socket gives each test its own server process holding exactly one session
+// (see closeTmuxServer for how that server and its socket file get torn
+// down again).
 type tmuxTUI struct {
-	t          *testing.T
-	session    string
-	socket     string
-	socketPath string
+	t       *testing.T
+	session string
+	socket  string
 }
 
 // runTmux runs a tmux subcommand against this session's dedicated socket.
@@ -1135,9 +1133,17 @@ func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmu
 	stateDir := t.TempDir()
 	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL) + " -state-dir " + shellQuote(stateDir)
 	runTmux(t, socket, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
+	// Register cleanup the instant the session (and its dedicated server)
+	// exist, before any later setup step below that can itself t.Fatalf: a
+	// Fatalf there returns before the tmuxTUI value — and the caller's own
+	// `defer app.Close()`, which only gets registered once this function
+	// actually returns one — ever exists, which would otherwise leak the
+	// whole dedicated server process and its socket file with nothing left
+	// to clean either up.
+	t.Cleanup(func() { closeTmuxServer(socket, session) })
 	runTmux(t, socket, "set-option", "-t", session, "remain-on-exit", "on")
 	pinTmuxWindowSize(t, socket, session, width, height)
-	app := &tmuxTUI{t: t, session: session, socket: socket, socketPath: tmuxSocketPath(t, socket)}
+	app := &tmuxTUI{t: t, session: session, socket: socket}
 	app.WaitFor("SERF LIVE")
 	return app
 }
@@ -1158,9 +1164,13 @@ func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) 
 	// test reads it via WaitForHistory and Close() tears the session down.
 	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL) + " -state-dir " + shellQuote(stateDir) + "; read _"
 	runTmux(t, socket, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
+	// See the matching comment in startTUITmuxSized: register cleanup as
+	// soon as the session/server exist, not only once the tmuxTUI value
+	// (and the caller's `defer app.Close()`) is constructed.
+	t.Cleanup(func() { closeTmuxServer(socket, session) })
 	runTmux(t, socket, "set-option", "-t", session, "remain-on-exit", "on")
 	pinTmuxWindowSize(t, socket, session, width, height)
-	app := &tmuxTUI{t: t, session: session, socket: socket, socketPath: tmuxSocketPath(t, socket)}
+	app := &tmuxTUI{t: t, session: session, socket: socket}
 	app.WaitFor("SERF LIVE")
 	return app
 }
@@ -1195,36 +1205,37 @@ func waitForTmuxPaneSize(t *testing.T, socket, session string, width, height int
 		}
 		time.Sleep(tuiE2EPollInterval)
 	}
-	t.Fatalf("tmux pane size for %s = %q, want %dx%d", session, last, width, height)
+	t.Fatalf("tmux (socket %s) pane size for %s = %q, want %dx%d", socket, session, last, width, height)
 }
 
-// tmuxSocketPath asks a just-started dedicated server for the resolved
-// filesystem path of its own listening socket, via tmux's own
-// #{socket_path} format variable. This is the only reliable way to learn it:
-// tmux's default socket directory depends on $TMUX_TMPDIR and platform
-// temp-dir conventions this file has no business guessing at. Used only so
-// Close can remove the file the server leaks on exit — see Close.
-func tmuxSocketPath(t *testing.T, socket string) string {
-	t.Helper()
-	out, err := exec.Command("tmux", "-L", socket, "display-message", "-p", "#{socket_path}").CombinedOutput()
-	if err != nil {
-		t.Fatalf("tmux socket path for %s: %v\n%s", socket, err, out)
+// closeTmuxServer kills the session on socket, then best-effort removes the
+// dedicated server's own socket file. tmux does not unlink its own socket
+// file when a dedicated server exits after its last session is killed —
+// verified empirically on this host (tmux 3.5a/macOS): the server process
+// exits, but a zero-byte socket file is left behind under the tmux socket
+// directory. Left alone, every test run would leak one such file forever.
+//
+// The socket's resolved path must be queried BEFORE kill-session: tmux's own
+// #{socket_path} format variable is the only reliable way to learn it (the
+// default socket directory depends on $TMUX_TMPDIR and platform temp-dir
+// conventions this file has no business guessing at), and once the session
+// is killed the dedicated server exits (exit-empty) and can no longer answer
+// the query. Every step here ignores errors: this is the single cleanup path
+// shared by both an early t.Cleanup (registered by startTUITmuxSized/
+// startTUITmuxAltScreen right after new-session, in case a later setup step
+// fails before a tmuxTUI value — and its own eventual Close() — ever exists)
+// and the ordinary (*tmuxTUI).Close(), so the session or server may
+// legitimately already be gone by the time this runs a second time.
+func closeTmuxServer(socket, session string) {
+	pathOut, _ := exec.Command("tmux", "-L", socket, "display-message", "-p", "#{socket_path}").CombinedOutput()
+	_ = exec.Command("tmux", "-L", socket, "kill-session", "-t", session).Run()
+	if path := strings.TrimSpace(string(pathOut)); path != "" {
+		_ = os.Remove(path)
 	}
-	return strings.TrimSpace(string(out))
 }
 
 func (a *tmuxTUI) Close() {
-	_ = exec.Command("tmux", "-L", a.socket, "kill-session", "-t", a.session).Run()
-	// tmux does not unlink its own socket file when a dedicated server exits
-	// after its last session is killed — verified empirically on this host
-	// (tmux 3.5a/macOS): the server process is gone, but a zero-byte socket
-	// file is left behind under the tmux socket directory. Left alone, every
-	// test run leaks one such file forever. Removing it here is safe even if
-	// the server's own shutdown hasn't fully settled yet: unlinking a bound
-	// Unix socket's directory entry only blocks future connect attempts, it
-	// does not affect a process still holding the listening fd open, and
-	// nothing ever reconnects to a name this unique again.
-	_ = os.Remove(a.socketPath)
+	closeTmuxServer(a.socket, a.session)
 }
 
 func (a *tmuxTUI) SendKeys(keys ...string) {
