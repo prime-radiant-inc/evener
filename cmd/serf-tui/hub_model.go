@@ -192,6 +192,11 @@ type hubModel struct {
 	// the model produces real output.
 	modelRetry *appwire.ThreadModelRetryParams
 
+	// modelRetryInProgress reports that the retried call has produced output
+	// since modelRetry was reported, so the wait modelRetry.DelayMS describes
+	// is over and the chip must stop counting down toward it.
+	modelRetryInProgress bool
+
 	// pendingAttachments holds image attachments staged by Ctrl+V or
 	// pasted-path detection. Each entry has a backing temp file at
 	// PastedImage.Path that the submit flow ships as an InputItem and

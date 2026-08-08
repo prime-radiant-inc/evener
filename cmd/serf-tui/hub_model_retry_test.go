@@ -50,7 +50,7 @@ func TestApplyHubNotificationRecordsModelRetry(t *testing.T) {
 	if m.modelRetry.Attempt != 9 || m.modelRetry.AttemptCap != 11 {
 		t.Errorf("attempt = %d/%d, want 9/11", m.modelRetry.Attempt, m.modelRetry.AttemptCap)
 	}
-	if got := composerRetryChip(m.modelRetry, ""); got != "rate limited · attempt 9/11 · 60s · 0m on this call" {
+	if got := composerRetryChip(m.modelRetry, "", false); got != "rate limited · attempt 9/11 · 60s · 0m on this call" {
 		t.Errorf("chip = %q, want %q", got, "rate limited · attempt 9/11 · 60s · 0m on this call")
 	}
 }
@@ -215,7 +215,7 @@ func TestModelRetryClearsOnTurnBoundaries(t *testing.T) {
 func TestComposerRetryChipNamesNonRateLimitCausesGenerically(t *testing.T) {
 	chip := composerRetryChip(&appwire.ThreadModelRetryParams{
 		Attempt: 2, MaxAttempts: 11, AttemptCap: 11, DelayMS: 4000, ErrorClass: "server", StatusCode: 503,
-	}, "")
+	}, "", false)
 	if want := "provider error · attempt 2/11 · 4s · 0m on this call"; chip != want {
 		t.Errorf("chip = %q, want %q", chip, want)
 	}
@@ -228,7 +228,7 @@ func TestComposerRetryChipNamesNonRateLimitCausesGenerically(t *testing.T) {
 func TestComposerRetryChipUsesAttemptCapAsDenominator(t *testing.T) {
 	chip := composerRetryChip(&appwire.ThreadModelRetryParams{
 		Attempt: 3, MaxAttempts: 11, AttemptCap: 4, DelayMS: 0, ErrorClass: "server", StatusCode: 503,
-	}, "")
+	}, "", false)
 	if !strings.Contains(chip, "attempt 3/4") {
 		t.Errorf("chip = %q, want it to contain %q", chip, "attempt 3/4")
 	}
@@ -241,7 +241,7 @@ func TestComposerRetryChipShowsModelTagOnFallback(t *testing.T) {
 	chip := composerRetryChip(&appwire.ThreadModelRetryParams{
 		Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 0, ErrorClass: "server", StatusCode: 503,
 		Model: "anthropic/claude-opus-4",
-	}, "openai/gpt-5")
+	}, "openai/gpt-5", false)
 	if !strings.Contains(chip, "· anthropic/claude-opus-4") {
 		t.Errorf("chip = %q, want it to contain the fallback model tag", chip)
 	}
@@ -253,7 +253,7 @@ func TestComposerRetryChipOmitsModelTagWhenSameAsPrimary(t *testing.T) {
 	chip := composerRetryChip(&appwire.ThreadModelRetryParams{
 		Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 0, ErrorClass: "server", StatusCode: 503,
 		Model: "openai/gpt-5",
-	}, "openai/gpt-5")
+	}, "openai/gpt-5", false)
 	if strings.Contains(chip, "gpt-5 ·") {
 		t.Errorf("chip = %q, want no model tag when retry.Model matches the primary model", chip)
 	}
@@ -266,8 +266,103 @@ func TestComposerRetryChipRendersElapsedMinutes(t *testing.T) {
 	chip := composerRetryChip(&appwire.ThreadModelRetryParams{
 		Attempt: 3, MaxAttempts: 11, AttemptCap: 11, DelayMS: 0, ErrorClass: "server", StatusCode: 503,
 		GroupElapsedMS: 14 * 60 * 1000,
-	}, "")
+	}, "", false)
 	if !strings.Contains(chip, "14m on this call") {
 		t.Errorf("chip = %q, want it to contain %q", chip, "14m on this call")
+	}
+}
+
+// While the chip is up and deltas are flowing, the reported delay has already
+// expired: rendering it asserts a countdown that is over, and GroupElapsedMS
+// is a frozen server snapshot, so "45s · 0m on this call" is a false statement
+// about a call that has been streaming for minutes. The wait reads "in
+// progress" instead — the same rule the web client applies.
+func TestComposerRetryChipReadsInProgressWhileStreaming(t *testing.T) {
+	retry := &appwire.ThreadModelRetryParams{
+		Attempt: 2, MaxAttempts: 11, AttemptCap: 4, DelayMS: 45000, ErrorClass: "server", StatusCode: 503,
+		GroupElapsedMS: 14 * 60 * 1000,
+	}
+	if want := "provider error · attempt 2/4 · 45s · 14m on this call"; composerRetryChip(retry, "", false) != want {
+		t.Errorf("waiting chip = %q, want %q", composerRetryChip(retry, "", false), want)
+	}
+	if want := "provider error · attempt 2/4 · in progress · 14m on this call"; composerRetryChip(retry, "", true) != want {
+		t.Errorf("in-progress chip = %q, want %q", composerRetryChip(retry, "", true), want)
+	}
+}
+
+// A delta is the retried call producing output again, which ends the wait the
+// delay describes. The chip stays up (clearing it is the vanishing-chip bug)
+// but must stop counting down.
+func TestModelRetryChipReadsInProgressAfterDelta(t *testing.T) {
+	for _, method := range []string{appwire.NotifyAgentMessageDelta, appwire.NotifyReasoningSummaryDelta, appwire.NotifyToolOutputDelta} {
+		m := newSessionHubModel(nil)
+		m.applyHubNotification(modelRetryNotification(t, appwire.ThreadModelRetryParams{
+			Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 45000, ErrorClass: "rate_limit", StatusCode: 429,
+		}))
+		if m.modelRetryInProgress {
+			t.Fatalf("a freshly reported retry is a wait, not progress (%s)", method)
+		}
+
+		var raw json.RawMessage
+		var err error
+		switch method {
+		case appwire.NotifyReasoningSummaryDelta:
+			raw, err = json.Marshal(appwire.ReasoningSummaryDeltaParams{TurnID: "turn_1", ItemID: "item_1", Delta: "thinking"})
+		case appwire.NotifyToolOutputDelta:
+			raw, err = json.Marshal(appwire.ToolOutputDeltaParams{TurnID: "turn_1", ItemID: "item_1", Delta: "output"})
+		default:
+			raw, err = json.Marshal(appwire.AgentMessageDeltaParams{TurnID: "turn_1", ItemID: "item_1", Delta: "hello"})
+		}
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		m.applyHubNotification(appwire.Notification{Method: method, Params: raw})
+
+		if m.modelRetry == nil {
+			t.Fatalf("modelRetry cleared on %s; deltas must not clear the chip", method)
+		}
+		if got := composerRetryChip(m.modelRetry, "", m.modelRetryInProgress); !strings.Contains(got, "in progress") {
+			t.Errorf("chip after %s = %q, want it to read %q", method, got, "in progress")
+		}
+	}
+}
+
+// A newly reported retry is a fresh wait: the countdown must come back even
+// though the previous attempt had started streaming.
+func TestModelRetryChipCountsDownAgainAfterANewRetry(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.applyHubNotification(modelRetryNotification(t, appwire.ThreadModelRetryParams{
+		Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 1000, ErrorClass: "rate_limit", StatusCode: 429,
+	}))
+	raw, err := json.Marshal(appwire.AgentMessageDeltaParams{TurnID: "turn_1", ItemID: "item_1", Delta: "hello"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	m.applyHubNotification(appwire.Notification{Method: appwire.NotifyAgentMessageDelta, Params: raw})
+	if !m.modelRetryInProgress {
+		t.Fatal("precondition: delta did not mark the retry in progress")
+	}
+
+	m.applyHubNotification(modelRetryNotification(t, appwire.ThreadModelRetryParams{
+		Attempt: 2, MaxAttempts: 11, AttemptCap: 11, DelayMS: 8000, ErrorClass: "rate_limit", StatusCode: 429,
+	}))
+
+	if m.modelRetryInProgress {
+		t.Error("a newly reported retry must read as a wait again, not as in progress")
+	}
+	if got := composerRetryChip(m.modelRetry, "", m.modelRetryInProgress); !strings.Contains(got, "· 8s ·") {
+		t.Errorf("chip = %q, want the new retry's countdown", got)
+	}
+}
+
+// A hub older than this client sends no AttemptCap at all; rendering the zero
+// value gives "attempt 2/0", the dishonest denominator the cap field exists to
+// eliminate. The policy budget is the honest fallback.
+func TestComposerRetryChipFallsBackToMaxAttemptsWhenCapMissing(t *testing.T) {
+	chip := composerRetryChip(&appwire.ThreadModelRetryParams{
+		Attempt: 2, MaxAttempts: 11, AttemptCap: 0, DelayMS: 4000, ErrorClass: "server", StatusCode: 503,
+	}, "", false)
+	if !strings.Contains(chip, "attempt 2/11") {
+		t.Errorf("chip = %q, want it to contain %q", chip, "attempt 2/11")
 	}
 }

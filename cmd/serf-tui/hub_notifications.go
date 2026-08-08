@@ -13,6 +13,7 @@ import (
 )
 
 func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.Cmd {
+	m.markModelRetryInProgress(notification)
 	m.clearModelRetryOnProgress(notification)
 	// Panel-refresh notifications fire regardless of current mode.
 	switch notification.Method {
@@ -130,6 +131,9 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		var params appwire.ThreadModelRetryParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			m.modelRetry = &params
+			// A newly reported retry is a fresh wait, whatever the previous
+			// attempt was doing when it failed.
+			m.modelRetryInProgress = false
 		}
 	case appwire.NotifySerfJobStarted, appwire.NotifySerfJobFinished:
 		var params appwire.SerfJobParams
@@ -566,6 +570,21 @@ func (m *hubModel) replaceSessionTranscript(messages []transcript.ChatMessage) {
 	m.browseSelected = -1
 	m.transcriptView = nil
 	m.session.refreshViewport()
+}
+
+// markModelRetryInProgress records that the retried model call is producing
+// output again. A delta is the one signal that the reported backoff has
+// elapsed, so the chip stops counting down toward a wait that is over — while
+// still standing (clearing it here is the vanishing-chip bug). Deltas drive a
+// re-render on their own, so the transition needs no timer.
+func (m *hubModel) markModelRetryInProgress(notification appwire.Notification) {
+	if m.modelRetry == nil {
+		return
+	}
+	switch notification.Method {
+	case appwire.NotifyAgentMessageDelta, appwire.NotifyReasoningSummaryDelta, appwire.NotifyToolOutputDelta:
+		m.modelRetryInProgress = true
+	}
 }
 
 // clearModelRetryOnProgress drops a pending model-call retry only once the

@@ -304,14 +304,24 @@ func renderChipStatus(ctx composerContext, th tuitheme.Theme, budget int) string
 // retryable reads as a generic provider error rather than leaking an
 // error-class token like "server" into the UI.
 //
+// inProgress reports that the retried call is producing output again, which
+// means the reported delay has already expired: rendering the countdown then
+// asserts a wait that is over. It reads "in progress" instead — and the chip
+// still does not vanish, since clearing it here is the vanishing-chip bug
+// this component exists to fix. The elapsed time stays as reported:
+// GroupElapsedMS is a snapshot taken when the retry was emitted, so it can
+// only understate how long the call has run, never overstate it.
+//
 // The denominator is AttemptCap, not the raw policy budget: once a retry
 // group has a consume-phase failure the effective bound drops to an
 // early-stop count, and rendering the untouched policy max would promise
-// patience the budget won't deliver. The model tag appears only when
+// patience the budget won't deliver. A hub too old to send AttemptCap falls
+// back to the policy budget, since "attempt 2/0" is exactly the dishonest
+// denominator the cap exists to eliminate. The model tag appears only when
 // retry.Model differs from primaryModel — a chain walk resets the attempt
 // count, and without the tag a user can't tell "still failing" from "now on
 // a fallback".
-func composerRetryChip(retry *appwire.ThreadModelRetryParams, primaryModel string) string {
+func composerRetryChip(retry *appwire.ThreadModelRetryParams, primaryModel string, inProgress bool) string {
 	if retry == nil {
 		return ""
 	}
@@ -319,8 +329,15 @@ func composerRetryChip(retry *appwire.ThreadModelRetryParams, primaryModel strin
 	if retry.ErrorClass == "rate_limit" {
 		cause = "rate limited"
 	}
-	seconds := max((retry.DelayMS+500)/1000, 0)
-	chip := fmt.Sprintf("%s · attempt %d/%d · %ds", cause, retry.Attempt, retry.AttemptCap, seconds)
+	wait := fmt.Sprintf("%ds", max((retry.DelayMS+500)/1000, 0))
+	if inProgress {
+		wait = "in progress"
+	}
+	attemptCap := retry.AttemptCap
+	if attemptCap <= 0 {
+		attemptCap = retry.MaxAttempts
+	}
+	chip := fmt.Sprintf("%s · attempt %d/%d · %s", cause, retry.Attempt, attemptCap, wait)
 	if model := strings.TrimSpace(retry.Model); model != "" && model != strings.TrimSpace(primaryModel) {
 		chip += " · " + model
 	}
