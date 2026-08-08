@@ -192,9 +192,20 @@ type hubModel struct {
 	// the model produces real output.
 	modelRetry *appwire.ThreadModelRetryParams
 
-	// modelRetryInProgress reports that the retried call has produced output
-	// since modelRetry was reported, so the wait modelRetry.DelayMS describes
-	// is over and the chip must stop counting down toward it.
+	// modelRetryReceivedAt is the client-stamped instant modelRetry was set —
+	// the TUI-side equivalent of the web client's ModelRetryState.receivedAt
+	// (cmd/serf-hub/frontend/src/protocol/model.ts). Not part of the wire
+	// params; applyModelRetryTick compares it against modelRetry.DelayMS to
+	// decide whether the reported wait has elapsed even without a delta
+	// (the timer half of modelRetryInProgress's OR — see that field's own
+	// doc comment for the delta half).
+	modelRetryReceivedAt time.Time
+
+	// modelRetryInProgress reports that the wait modelRetry.DelayMS describes
+	// is over, so the chip must stop counting down toward it — either because
+	// the retried call has produced output since modelRetry was reported (see
+	// markModelRetryInProgress), or because that much time has simply passed
+	// (see applyModelRetryTick). Whichever happens first.
 	modelRetryInProgress bool
 
 	// pendingAttachments holds image attachments staged by Ctrl+V or

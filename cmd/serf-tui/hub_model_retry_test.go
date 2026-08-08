@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/appwire"
 )
@@ -50,8 +51,8 @@ func TestApplyHubNotificationRecordsModelRetry(t *testing.T) {
 	if m.modelRetry.Attempt != 9 || m.modelRetry.AttemptCap != 11 {
 		t.Errorf("attempt = %d/%d, want 9/11", m.modelRetry.Attempt, m.modelRetry.AttemptCap)
 	}
-	if got := composerRetryChip(m.modelRetry, "", false); got != "rate limited — attempt 9/11 — retrying in 60s — 0m on this call" {
-		t.Errorf("chip = %q, want %q", got, "rate limited — attempt 9/11 — retrying in 60s — 0m on this call")
+	if got := composerRetryChip(m.modelRetry, "", false); got != "rate limited — attempt 9/11 — retrying in 60s — 0s on this call" {
+		t.Errorf("chip = %q, want %q", got, "rate limited — attempt 9/11 — retrying in 60s — 0s on this call")
 	}
 }
 
@@ -216,7 +217,7 @@ func TestComposerRetryChipNamesNonRateLimitCausesGenerically(t *testing.T) {
 	chip := composerRetryChip(&appwire.ThreadModelRetryParams{
 		Attempt: 2, MaxAttempts: 11, AttemptCap: 11, DelayMS: 4000, ErrorClass: "server", StatusCode: 503,
 	}, "", false)
-	if want := "provider error — attempt 2/11 — retrying in 4s — 0m on this call"; chip != want {
+	if want := "provider error — attempt 2/11 — retrying in 4s — 0s on this call"; chip != want {
 		t.Errorf("chip = %q, want %q", chip, want)
 	}
 }
@@ -242,8 +243,8 @@ func TestComposerRetryChipShowsModelTagOnFallback(t *testing.T) {
 		Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 0, ErrorClass: "server", StatusCode: 503,
 		Model: "anthropic/claude-opus-4",
 	}, "openai/gpt-5", false)
-	if !strings.Contains(chip, "— anthropic/claude-opus-4") {
-		t.Errorf("chip = %q, want it to contain the fallback model tag", chip)
+	if !strings.Contains(chip, "provider error (anthropic/claude-opus-4)") {
+		t.Errorf("chip = %q, want it to contain the fallback model tag immediately after the cause", chip)
 	}
 }
 
@@ -254,7 +255,7 @@ func TestComposerRetryChipOmitsModelTagWhenSameAsPrimary(t *testing.T) {
 		Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 0, ErrorClass: "server", StatusCode: 503,
 		Model: "openai/gpt-5",
 	}, "openai/gpt-5", false)
-	if strings.Contains(chip, "gpt-5 —") {
+	if strings.Contains(chip, "(openai/gpt-5)") {
 		t.Errorf("chip = %q, want no model tag when retry.Model matches the primary model", chip)
 	}
 }
@@ -269,6 +270,28 @@ func TestComposerRetryChipRendersElapsedMinutes(t *testing.T) {
 	}, "", false)
 	if !strings.Contains(chip, "14m on this call") {
 		t.Errorf("chip = %q, want it to contain %q", chip, "14m on this call")
+	}
+}
+
+// formatExactGap matches the web reference's own formatExactGap
+// (liveness.ts) case for case: whole seconds under a minute, whole minutes
+// with no trailing seconds on an exact minute, and whole minutes plus
+// remainder seconds otherwise — always floored, never rounded.
+func TestFormatExactGap(t *testing.T) {
+	cases := []struct {
+		gapMS int64
+		want  string
+	}{
+		{5_000, "5s"},
+		{59_000, "59s"},
+		{180_000, "3m"},
+		{185_000, "3m 5s"},
+		{185_999, "3m 5s"},
+	}
+	for _, tc := range cases {
+		if got := formatExactGap(tc.gapMS); got != tc.want {
+			t.Errorf("formatExactGap(%d) = %q, want %q", tc.gapMS, got, tc.want)
+		}
 	}
 }
 
@@ -406,5 +429,124 @@ func TestModelRetryInProgressIgnoresForeignSessionDeltas(t *testing.T) {
 	}
 	if got := composerRetryChip(m.modelRetry, "", m.modelRetryInProgress); !strings.Contains(got, "— retrying in 45s —") {
 		t.Errorf("chip = %q, want the countdown intact after a foreign delta", got)
+	}
+}
+
+// A freshly reported retry stamps modelRetryReceivedAt — the TUI-side
+// receivedAt applyModelRetryTick compares against DelayMS. Without a fresh
+// stamp on every retry, a chain-walk's new retry would inherit a stale
+// timestamp and could read as already elapsed the instant it arrives.
+func TestApplyHubNotificationStampsModelRetryReceivedAt(t *testing.T) {
+	m := newSessionHubModel(nil)
+	before := time.Now()
+	m.applyHubNotification(modelRetryNotification(t, appwire.ThreadModelRetryParams{
+		Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 45000, ErrorClass: "rate_limit", StatusCode: 429,
+	}))
+	after := time.Now()
+
+	if m.modelRetryReceivedAt.Before(before) || m.modelRetryReceivedAt.After(after) {
+		t.Errorf("modelRetryReceivedAt = %v, want between %v and %v", m.modelRetryReceivedAt, before, after)
+	}
+}
+
+// A newly reported retry must arm the timer half of the in-progress OR, or a
+// reader who watches a chain-walk's new retry with no further deltas would
+// never see the second retry's own wait resolve either.
+func TestApplyHubNotificationSchedulesModelRetryTick(t *testing.T) {
+	m := newSessionHubModel(nil)
+	cmd := m.applyHubNotification(modelRetryNotification(t, appwire.ThreadModelRetryParams{
+		Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 45000, ErrorClass: "rate_limit", StatusCode: 429,
+	}))
+	if cmd == nil {
+		t.Fatal("a newly reported retry did not schedule a re-check tick")
+	}
+}
+
+// This is the actual gap the tick exists to close: a reader who gets no
+// further deltas during the wait must still see the chip flip once DelayMS
+// has genuinely elapsed, not stay wedged on a stale countdown forever.
+func TestApplyModelRetryTickFlipsInProgressOnceDelayElapses(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.applyHubNotification(modelRetryNotification(t, appwire.ThreadModelRetryParams{
+		Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 1000, ErrorClass: "rate_limit", StatusCode: 429,
+	}))
+	// Back-date receivedAt past the reported delay instead of sleeping —
+	// same "set the timestamp directly" pattern hub_model_test.go already
+	// uses for lastCtrlC's window check.
+	m.modelRetryReceivedAt = time.Now().Add(-2 * time.Second)
+
+	cmd := m.applyModelRetryTick()
+
+	if !m.modelRetryInProgress {
+		t.Error("modelRetryInProgress still false after DelayMS elapsed with no delta")
+	}
+	if cmd != nil {
+		t.Error("tick rescheduled itself after the wait resolved; it should stop once flipped")
+	}
+}
+
+// While the delay has not yet elapsed, the tick must keep re-checking (return
+// a non-nil reschedule cmd) rather than giving up after one look.
+func TestApplyModelRetryTickReschedulesWhileWaitStillOpen(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.applyHubNotification(modelRetryNotification(t, appwire.ThreadModelRetryParams{
+		Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 60000, ErrorClass: "rate_limit", StatusCode: 429,
+	}))
+
+	cmd := m.applyModelRetryTick()
+
+	if m.modelRetryInProgress {
+		t.Error("modelRetryInProgress went true before DelayMS elapsed")
+	}
+	if cmd == nil {
+		t.Error("tick did not reschedule itself while the wait is still open")
+	}
+}
+
+// A retry already marked in progress by a delta (markModelRetryInProgress)
+// needs no further ticking — the tick loop must actually stop, not run
+// forever after the chip has resolved.
+func TestApplyModelRetryTickNoOpWhenAlreadyInProgress(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.applyHubNotification(modelRetryNotification(t, appwire.ThreadModelRetryParams{
+		Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 60000, ErrorClass: "rate_limit", StatusCode: 429,
+	}))
+	m.modelRetryInProgress = true
+
+	if cmd := m.applyModelRetryTick(); cmd != nil {
+		t.Error("tick rescheduled itself for a retry already marked in progress")
+	}
+}
+
+// With no pending retry at all, a stray tick (e.g. one already in flight when
+// the retry resolved through some other path) must be a harmless no-op.
+func TestApplyModelRetryTickNoOpWithoutPendingRetry(t *testing.T) {
+	m := newSessionHubModel(nil)
+
+	if cmd := m.applyModelRetryTick(); cmd != nil {
+		t.Error("tick rescheduled itself with no pending retry to watch")
+	}
+}
+
+// The tick must actually be wired into Update — modelRetryTickMsg is a real
+// tea.Msg some caller has to route, not just a function nothing ever calls.
+func TestHubModelUpdateAppliesModelRetryTick(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.applyHubNotification(modelRetryNotification(t, appwire.ThreadModelRetryParams{
+		Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 1000, ErrorClass: "rate_limit", StatusCode: 429,
+	}))
+	m.modelRetryReceivedAt = time.Now().Add(-2 * time.Second)
+
+	updated, cmd := m.Update(modelRetryTickMsg{})
+
+	next, ok := updated.(hubModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want hubModel", updated)
+	}
+	if !next.modelRetryInProgress {
+		t.Error("Update(modelRetryTickMsg{}) did not flip modelRetryInProgress once DelayMS elapsed")
+	}
+	if cmd != nil {
+		t.Error("Update(modelRetryTickMsg{}) rescheduled the tick after the wait resolved")
 	}
 }

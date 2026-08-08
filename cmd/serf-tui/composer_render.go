@@ -293,11 +293,34 @@ func renderChipStatus(ctx composerContext, th tuitheme.Theme, budget int) string
 	return result
 }
 
+// formatExactGap renders a millisecond gap as exact (not bucketed) whole
+// units, matching the web reference's own formatExactGap
+// (cmd/serf-hub/frontend/src/panes/session/transcript/flow/liveness.ts) byte
+// for byte: under 60s as whole seconds ("45s"), at or above 60s as whole
+// minutes plus a trailing " Ss" only when the remainder is non-zero ("3m" or
+// "3m 5s"). Both surfaces render the same "<gap> on this call" phrase from
+// this, so a divergence here is a divergence a reader sees switching
+// surfaces mid-session.
+func formatExactGap(gapMS int64) string {
+	totalSeconds := gapMS / 1000
+	if totalSeconds < 60 {
+		return fmt.Sprintf("%ds", totalSeconds)
+	}
+	minutes := gapMS / 60000
+	remainderSeconds := totalSeconds - minutes*60
+	if remainderSeconds == 0 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	return fmt.Sprintf("%dm %ds", minutes, remainderSeconds)
+}
+
 // composerRetryChip renders a pending model-call retry for the chip strip:
-// cause, position in the retry budget, the wait, and how long the current
-// call has been running. The wait is the load-bearing part — it is what
-// separates "back in 60s" from "wedged", which is the whole reason the retry
-// is surfaced at all.
+// cause, optional model tag, position in the retry budget, the wait, and how
+// long the current call has been running — field order and formatting match
+// the web reference's own formatRetryWait character for character:
+// "provider error — attempt 3/4 — retrying in 32s — 14m on this call". The
+// wait is the load-bearing part — it is what separates "back in 60s" from
+// "wedged", which is the whole reason the retry is surfaced at all.
 //
 // Only rate limiting gets its own wording; it is the one a user can act on
 // (wait, or switch model) and overwhelmingly the common case. Anything else
@@ -322,7 +345,9 @@ func renderChipStatus(ctx composerContext, th tuitheme.Theme, budget int) string
 // 3/0" is exactly as dishonest as the missing-cap case the fallback exists
 // to fix. The model tag appears only when retry.Model differs from
 // primaryModel — a chain walk resets the attempt count, and without the tag
-// a user can't tell "still failing" from "now on a fallback".
+// a user can't tell "still failing" from "now on a fallback" — rendered as
+// "(model)" immediately after cause, matching the web reference's own
+// modelTag placement.
 func composerRetryChip(retry *appwire.ThreadModelRetryParams, primaryModel string, inProgress bool) string {
 	if retry == nil {
 		return ""
@@ -330,6 +355,9 @@ func composerRetryChip(retry *appwire.ThreadModelRetryParams, primaryModel strin
 	cause := "provider error"
 	if retry.ErrorClass == "rate_limit" {
 		cause = "rate limited"
+	}
+	if model := strings.TrimSpace(retry.Model); model != "" && model != strings.TrimSpace(primaryModel) {
+		cause += " (" + model + ")"
 	}
 	wait := fmt.Sprintf("retrying in %ds", max((retry.DelayMS+500)/1000, 0))
 	if inProgress {
@@ -343,12 +371,8 @@ func composerRetryChip(retry *appwire.ThreadModelRetryParams, primaryModel strin
 	if attemptCap > 0 {
 		attempt = fmt.Sprintf("attempt %d/%d", retry.Attempt, attemptCap)
 	}
-	chip := fmt.Sprintf("%s — %s — %s", cause, attempt, wait)
-	if model := strings.TrimSpace(retry.Model); model != "" && model != strings.TrimSpace(primaryModel) {
-		chip += " — " + model
-	}
-	chip += fmt.Sprintf(" — %dm on this call", retry.GroupElapsedMS/60000)
-	return chip
+	elapsed := formatExactGap(retry.GroupElapsedMS)
+	return fmt.Sprintf("%s — %s — %s — %s on this call", cause, attempt, wait, elapsed)
 }
 
 // composeProviderModel returns "<provider>/<abbreviated-model>" when a

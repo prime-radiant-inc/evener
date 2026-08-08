@@ -148,6 +148,9 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmd := m.applyHubNotification(msg.notification)
 		return m, tea.Batch(cmd, waitHubNotification(m.frames))
+	case modelRetryTickMsg:
+		cmd := m.applyModelRetryTick()
+		return m, cmd
 	case hubReconnectMsg:
 		reconnected := m.applyHubReconnect(msg)
 		return m, reconnected

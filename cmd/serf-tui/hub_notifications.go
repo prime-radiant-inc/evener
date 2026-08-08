@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/appwire"
@@ -131,9 +132,15 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		var params appwire.ThreadModelRetryParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			m.modelRetry = &params
+			m.modelRetryReceivedAt = time.Now()
 			// A newly reported retry is a fresh wait, whatever the previous
 			// attempt was doing when it failed.
 			m.modelRetryInProgress = false
+			// Arm the timer half of the in-progress OR: without this, a
+			// session that gets no further deltas during the wait never
+			// re-renders once DelayMS actually elapses (applyModelRetryTick's
+			// own doc comment).
+			cmd = scheduleModelRetryTick()
 		}
 	case appwire.NotifySerfJobStarted, appwire.NotifySerfJobFinished:
 		var params appwire.SerfJobParams
@@ -575,8 +582,11 @@ func (m *hubModel) replaceSessionTranscript(messages []transcript.ChatMessage) {
 // markModelRetryInProgress records that the retried model call is producing
 // output again. A delta is the one signal that the reported backoff has
 // elapsed, so the chip stops counting down toward a wait that is over — while
-// still standing (clearing it here is the vanishing-chip bug). Deltas drive a
-// re-render on their own, so the transition needs no timer.
+// still standing (clearing it here is the vanishing-chip bug). This is the
+// delta half of modelRetryInProgress's OR; a delta drives a re-render on its
+// own, so this half needs no timer — but a session that gets no further
+// deltas still needs the wait to resolve once DelayMS actually elapses, which
+// is what the timer half (applyModelRetryTick) exists for.
 //
 // Its caller runs it below applyHubNotification's current-session filter: this
 // is a positive claim about the viewed session's call, and any other session
@@ -590,6 +600,52 @@ func (m *hubModel) markModelRetryInProgress(notification appwire.Notification) {
 	case appwire.NotifyAgentMessageDelta, appwire.NotifyReasoningSummaryDelta, appwire.NotifyToolOutputDelta:
 		m.modelRetryInProgress = true
 	}
+}
+
+// modelRetryTickMsg drives applyModelRetryTick — the timer half of
+// modelRetryInProgress's OR (see that field's own doc comment for the delta
+// half, markModelRetryInProgress). Without it, a session that receives no
+// further deltas during a reported wait shows a stale "retrying in Ns" chip
+// forever once Ns has actually elapsed, since nothing else re-renders the TUI
+// on a timer. Carries no payload: applyModelRetryTick re-reads m.modelRetry
+// itself when the tick lands, same as any other notification-driven Update
+// case reads m at apply time.
+type modelRetryTickMsg struct{}
+
+// modelRetryTickInterval is how often applyModelRetryTick re-checks a pending
+// retry's elapsed wait. One second matches the chip's own second-granularity
+// countdown ("retrying in 45s") — ticking faster would re-render without ever
+// changing what the reader sees.
+const modelRetryTickInterval = time.Second
+
+// scheduleModelRetryTick starts one leg of the tick loop that flips a pending
+// retry to "in progress" once its reported delay elapses without a delta
+// arriving. Each tea.Tick fires exactly once; applyModelRetryTick re-arms the
+// loop by returning another one of these while the wait is still open, so
+// there is only ever one timer in flight per retry, not one per tick.
+func scheduleModelRetryTick() tea.Cmd {
+	return tea.Tick(modelRetryTickInterval, func(time.Time) tea.Msg {
+		return modelRetryTickMsg{}
+	})
+}
+
+// applyModelRetryTick re-evaluates the pending retry against the current time
+// and reschedules itself while the wait is still open — the timer half of
+// modelRetryInProgress's OR (markModelRetryInProgress is the delta half).
+// Returns nil once there is nothing left to watch (no pending retry, or
+// already in progress) so the tick loop actually stops rather than ticking
+// forever after the chip has resolved — View() stays a pure function of model
+// state (docs/testing.md), so this time-based check lives here in the Update
+// path, never in rendering.
+func (m *hubModel) applyModelRetryTick() tea.Cmd {
+	if m.modelRetry == nil || m.modelRetryInProgress {
+		return nil
+	}
+	if time.Since(m.modelRetryReceivedAt) >= time.Duration(m.modelRetry.DelayMS)*time.Millisecond {
+		m.modelRetryInProgress = true
+		return nil
+	}
+	return scheduleModelRetryTick()
 }
 
 // clearModelRetryOnProgress drops a pending model-call retry only once the
