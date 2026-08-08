@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
@@ -244,20 +244,32 @@ test("an applied pending receipt settles transport without dropping optimistic s
 
 test("a replayed pending receipt keeps a long-running steer until its authoritative identity arrives", async () => {
   const fake = await connect();
-  fake.on("turn/steer", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "replayed",
-      threadId: "thread_a",
-      projectionState: "pending",
-    },
-  }));
+  let replayReceipt!: () => void;
+  const receiptGate = new Promise<void>((resolve) => {
+    replayReceipt = resolve;
+  });
+  fake.on("turn/steer", async (params) => {
+    await receiptGate;
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "replayed",
+        threadId: "thread_a",
+        projectionState: "pending",
+      },
+    };
+  });
   const pending = renderHook(() => usePendingTurnEntries("ref_a", "steer"));
 
   await act(() => threadsStore.getState().steer("ref_a", "patient steer"));
+  await settlePendingProjection();
 
   const storage = new MutationOutboxIndexedDB();
-  await waitFor(async () => expect(await storage.listOutbox("ref_a")).toEqual([]));
+  const receiptPersisted = nextMutationPersistence("ref_a");
+  replayReceipt();
+  await receiptPersisted;
+  await settlePendingProjection();
+  expect(await storage.listOutbox("ref_a")).toEqual([]);
   expect(pending.result.current).toEqual([
     expect.objectContaining({
       method: "steer",
@@ -267,6 +279,7 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
     }),
   ]);
 
+  const identityPersisted = nextMutationPersistence("ref_a");
   act(() => {
     fake.emitNotification({
       method: "serf/steering/injected",
@@ -279,9 +292,11 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
       },
     });
   });
+  await identityPersisted;
+  await settlePendingProjection();
 
-  await waitFor(() => expect(pending.result.current).toEqual([]));
-  await waitFor(async () => expect(await storage.listOptimistic("ref_a")).toEqual([]));
+  expect(pending.result.current).toEqual([]);
+  expect(await storage.listOptimistic("ref_a")).toEqual([]);
 });
 
 test("first-frame state derives from the identified active turn and needs no confirmation timer", async () => {
