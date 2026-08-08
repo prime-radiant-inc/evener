@@ -519,6 +519,68 @@ func TestAdapter_Stream_TranslatesToolUseAndThinkingBlocks(t *testing.T) {
 	}
 }
 
+// TestAdapter_Stream_FinishReason_ToolCallTruncatedByMaxTokens is the
+// streaming-path counterpart of
+// TestAdapter_Complete_FinishReason_ToolCallTruncatedByMaxTokens (kata
+// mmr2): a stream that hits the output-token cap mid tool-call still emits
+// a content_block_stop for the (truncated) tool_use block, so the presence
+// of a tool call must not stomp the message_delta's genuine "max_tokens"
+// stop_reason back down to "tool_calls".
+func TestAdapter_Stream_FinishReason_ToolCallTruncatedByMaxTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		write := func(event string, data string) {
+			_, _ = io.WriteString(w, "event: "+event+"\n")
+			_, _ = io.WriteString(w, "data: "+data+"\n\n")
+			if f != nil {
+				f.Flush()
+			}
+		}
+
+		write("content_block_start", `{"index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"write_file"}}`)
+		// Cut off mid-argument, exactly as a real max_tokens truncation does:
+		// the block still gets a content_block_stop even though the JSON never closed.
+		write("content_block_delta", `{"index":0,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"a.txt\",\"content\":\"partial"}}`)
+		write("content_block_stop", `{"index":0}`)
+
+		write("message_delta", `{"delta":{"stop_reason":"max_tokens"},"usage":{"input_tokens":1,"output_tokens":4096}}`)
+		write("message_stop", `{}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var finishResp *llm.Response
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventFinish && ev.Response != nil {
+			finishResp = ev.Response
+		}
+	}
+	if finishResp == nil {
+		t.Fatalf("expected finish response")
+	}
+	if finishResp.Finish.Reason != llm.FinishReasonLength {
+		t.Fatalf("Finish.Reason = %q, want %q (a tool call must not mask a real max_tokens stop_reason)", finishResp.Finish.Reason, llm.FinishReasonLength)
+	}
+	if finishResp.Finish.Raw != "max_tokens" {
+		t.Fatalf("Finish.Raw = %q, want %q", finishResp.Finish.Raw, "max_tokens")
+	}
+}
+
 // When extended thinking streams multiple separate thinking blocks, the
 // incremental reasoning deltas must be separated by a blank line so the live
 // "thinking" view stays readable (mirrors the OpenAI summary-part behavior).
@@ -1387,6 +1449,43 @@ func TestAdapter_Complete_FinishReason_ToolUse_Normalized(t *testing.T) {
 	}
 	if resp.Finish.Raw != "tool_use" {
 		t.Fatalf("Finish.Raw = %q, want %q", resp.Finish.Raw, "tool_use")
+	}
+}
+
+// TestAdapter_Complete_FinishReason_ToolCallTruncatedByMaxTokens covers the
+// case behind kata mmr2: a response that hit the output-token cap mid tool
+// call still has a (partial, unparseable) tool_use content block, so the
+// presence of a tool call must not stomp a genuine "max_tokens" stop_reason
+// down to "tool_calls" — the caller (agent/session_tool_repair.go) gates its
+// distinct truncation coaching (repair.ExplainTruncatedCall) on
+// Finish.Reason == llm.FinishReasonLength, and never sees it if this
+// misclassifies the response as a normal tool-calls finish.
+func TestAdapter_Complete_FinishReason_ToolCallTruncatedByMaxTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "msg_1",
+  "model": "claude-test",
+  "content": [{"type":"tool_use","id":"t1","name":"write_file","input":{"file_path":"a.txt"}}],
+  "stop_reason": "max_tokens",
+  "usage": {"input_tokens": 1, "output_tokens": 4096}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	resp, err := a.Complete(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Finish.Reason != llm.FinishReasonLength {
+		t.Fatalf("Finish.Reason = %q, want %q (a tool call must not mask a real max_tokens stop_reason)", resp.Finish.Reason, llm.FinishReasonLength)
+	}
+	if resp.Finish.Raw != "max_tokens" {
+		t.Fatalf("Finish.Raw = %q, want %q", resp.Finish.Raw, "max_tokens")
 	}
 }
 

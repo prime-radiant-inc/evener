@@ -75,6 +75,18 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		add("--bind", sessionTmp, sessionTmp)
 	}
 
+	// ModeReadOnly promises "all other writes are denied" (session_prompts.go),
+	// but the tmpfs above is writable by default. Remount /tmp itself read-only
+	// now that the session tmp is bound writable inside it — mirroring
+	// maskReadOnly's directory idiom (--tmpfs + --remount-ro) — so writes
+	// anywhere else under /tmp fail EROFS instead of silently landing on a
+	// tmpfs that vanishes at session end. --remount-ro is non-recursive: it
+	// only affects /tmp's own mount, leaving the sessionTmp bind (a separate
+	// mount on top) writable.
+	if rp.Mode == ModeReadOnly {
+		add("--remount-ro", "/tmp")
+	}
+
 	// A read-granted root that falls under /tmp was just shadowed by the /tmp
 	// tmpfs. Re-bind such roots read-only (mirroring the writable re-bind below) so
 	// a read-only worktree or read grant under /tmp survives — otherwise --chdir

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -98,6 +99,7 @@ type serveServer interface {
 	SetCancelFunc(context.CancelFunc)
 	SetRetrySafeTurnFunctions(server.RetrySafeTurnFunctions)
 	RecordDescendantAppEvent(string, events.SessionEvent)
+	SetDescendantTranscriptPathFunc(func(threadID string) string)
 	InputCh() <-chan server.InputMessage
 	SubmitContinuation(string)
 	SubmitNotification()
@@ -689,6 +691,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		ownerThreadID := s.ID()
 		s.SetDescendantEventFunc(func(event events.SessionEvent) {
 			srv.RecordDescendantAppEvent(ownerThreadID, event)
+		})
+		// A descendant's transcript lives alongside its owner's, under the same
+		// state dir convention every other session/transcript lookup in this
+		// codebase uses. RecordDescendantAppEvent consults this on a
+		// descendant's first observation to seed its persisted history before
+		// applying the event that triggered the lookup (ledger #110/#111).
+		stateDir := s.StateDir()
+		srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
+			return filepath.Join(stateDir, "sessions", threadID+".transcript.jsonl")
 		})
 		// The M7 sandbox-escalation gate blocks a denied tool call only when a human
 		// is actually watching this thread; the probe reads the live AppWire

@@ -1134,8 +1134,6 @@ func TestPastIndexOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
 // TestWeb_APITreeLiveRowsCarryTierPinSectionRename covers a wire gap: the Live
 // loop in handleAPITree used to call apiTreeNode directly, bypassing
 // apiTreeNodeTier — the path that stamps Tier/Branch/ClusterCount/Rename.
-// It also proves that a legacy session favorite migrates to explicit pin
-// membership rather than leaking through the project-only Favorite field.
 func TestWeb_APITreeLiveRowsCarryTierPinSectionRename(t *testing.T) {
 	const liveSessionID = "02wMz5Txv1C3Hut0M8GCeB"
 	root := t.TempDir()
@@ -1151,14 +1149,8 @@ func TestWeb_APITreeLiveRowsCarryTierPinSectionRename(t *testing.T) {
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 61, Address: "127.0.0.1:4061", WorkingDir: project.CanonicalPath, Model: "gpt-5"})
 	r := hubcore.NewRoster(runDir, fakeProber{sessionID: liveSessionID, status: appwire.ThreadStatusIdle})
 	r.Refresh()
-	dbPath := filepath.Join(root, "index.db")
-	favStore := hubcore.NewFavoriteStore(dbPath)
-	if err := favStore.Set("session", liveSessionID, true, time.Now()); err != nil {
-		t.Fatal(err)
-	}
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex(""),
-		Favorite: favStore, PinSections: hubcore.NewPinSectionStore(dbPath),
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
@@ -1178,12 +1170,6 @@ func TestWeb_APITreeLiveRowsCarryTierPinSectionRename(t *testing.T) {
 	node := got.Live[0]
 	if node.Tier != "live" {
 		t.Fatalf("live row Tier=%q, want %q: %+v", node.Tier, "live", node)
-	}
-	if node.Favorite {
-		t.Fatalf("live session row Favorite=true after flag-day migration: %+v", node)
-	}
-	if node.PinSectionID == "" {
-		t.Fatalf("live session row missing migrated pin section: %+v", node)
 	}
 	if !node.Rename {
 		t.Fatalf("live row Rename=false, want true (local session): %+v", node)
@@ -1213,17 +1199,11 @@ func TestWeb_APITreeOrphanLiveRowsCarryTierPinSectionRename(t *testing.T) {
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 62, Address: "127.0.0.1:4062", WorkingDir: project.CanonicalPath, Model: "gpt-5"})
 	r := hubcore.NewRoster(runDir, fakeProber{sessionID: liveSessionID, status: appwire.ThreadStatusIdle})
 	r.Refresh()
-	dbPath := filepath.Join(root, "index.db")
-	favStore := hubcore.NewFavoriteStore(dbPath)
-	if err := favStore.Set("session", liveSessionID, true, time.Now()); err != nil {
-		t.Fatal(err)
-	}
 	// No PastIndex entry for this session at all (nothing ever Rebuilt or
 	// seeded) — this is what routes it through the orphan-live fallback loop
 	// instead of the PastIndex-derived project walk.
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex(""),
-		Favorite: favStore, PinSections: hubcore.NewPinSectionStore(dbPath),
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
@@ -1252,17 +1232,8 @@ func TestWeb_APITreeOrphanLiveRowsCarryTierPinSectionRename(t *testing.T) {
 	if node.Tier != "live" {
 		t.Fatalf("orphan-live row Tier=%q, want %q: %+v", node.Tier, "live", *node)
 	}
-	if node.Favorite {
-		t.Fatalf("orphan-live session row Favorite=true after flag-day migration: %+v", *node)
-	}
-	if node.PinSectionID == "" {
-		t.Fatalf("orphan-live session row missing migrated pin section: %+v", *node)
-	}
 	if !node.Rename {
 		t.Fatalf("orphan-live row Rename=false, want true (local session): %+v", *node)
-	}
-	if len(got.PinSections) != 1 || len(got.PinSections[0].Sessions) != 1 || got.PinSections[0].Sessions[0].SessionID != liveSessionID {
-		t.Fatalf("orphan-live favorite pin = %+v, want the favorited orphan", got.PinSections)
 	}
 }
 

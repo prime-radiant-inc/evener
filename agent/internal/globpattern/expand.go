@@ -63,12 +63,32 @@ func expand(pattern string, depth int) ([]string, error) {
 
 // findExpandableGroup returns the first innermost brace group containing a
 // top-level comma. Scanning the complete pattern also validates unmatched
-// braces before returning a no-expansion result.
+// braces before returning a no-expansion result. Character classes [...]
+// are treated as opaque, so braces within them are not expanded.
 func findExpandableGroup(pattern string) (start, end int, alternatives bool, err error) {
 	stack := make([]int, 0, 2)
 	for i := 0; i < len(pattern); i++ {
 		if pattern[i] == '\\' {
 			i++
+			continue
+		}
+		// Skip over character classes; contents are literal, including braces
+		if pattern[i] == '[' {
+			i++
+			for i < len(pattern) {
+				if pattern[i] == '\\' {
+					i++
+					if i >= len(pattern) {
+						break
+					}
+					i++
+					continue
+				}
+				if pattern[i] == ']' {
+					break
+				}
+				i++
+			}
 			continue
 		}
 		switch pattern[i] {
@@ -98,6 +118,25 @@ func hasTopLevelComma(content string) bool {
 			i++
 			continue
 		}
+		// Skip over character classes; contents are literal, including commas
+		if content[i] == '[' {
+			i++
+			for i < len(content) {
+				if content[i] == '\\' {
+					i++
+					if i >= len(content) {
+						break
+					}
+					i++
+					continue
+				}
+				if content[i] == ']' {
+					break
+				}
+				i++
+			}
+			continue
+		}
 		switch content[i] {
 		case '{':
 			depth++
@@ -117,24 +156,33 @@ func hasTopLevelComma(content string) bool {
 func splitAlternatives(content string) []string {
 	parts := []string{}
 	start := 0
-	depth := 0
 	for i := 0; i < len(content); i++ {
 		if content[i] == '\\' {
 			i++
 			continue
 		}
-		switch content[i] {
-		case '{':
-			depth++
-		case '}':
-			if depth > 0 {
-				depth--
+		// Skip over character classes; contents are literal, including commas
+		if content[i] == '[' {
+			i++
+			for i < len(content) {
+				if content[i] == '\\' {
+					i++
+					if i >= len(content) {
+						break
+					}
+					i++
+					continue
+				}
+				if content[i] == ']' {
+					break
+				}
+				i++
 			}
-		case ',':
-			if depth == 0 {
-				parts = append(parts, content[start:i])
-				start = i + 1
-			}
+			continue
+		}
+		if content[i] == ',' {
+			parts = append(parts, content[start:i])
+			start = i + 1
 		}
 	}
 	return append(parts, content[start:])

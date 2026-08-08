@@ -233,6 +233,84 @@ func TestDelegateRestoreFailsClosedOnUnsatisfiableHost(t *testing.T) {
 	}
 }
 
+// TestDelegateRestoreReleasesLockOnLateFailure: a worktree-isolated restore
+// re-acquires the lane's serf:dlg: lock (the §7 revival re-lock) before it
+// re-resolves the delegate's sandbox. When that later resolution fails closed
+// (host can no longer enforce the persisted mode), the restore produces no
+// tracked delegate — so nothing will ever release the lock it just took unless
+// the failure path releases it itself. A leaked lock here permanently strands
+// the lane.
+func TestDelegateRestoreReleasesLockOnLateFailure(t *testing.T) {
+	cfg := worktreeTestSessionConfig()
+	cfg.testOnly.sandboxProber = sandbox.FakeProber{Facts: sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapCapable: false}}
+	r := newWorktreeRepoWithConfig(t, cfg)
+	delegateID, lanePath, _ := r.seedIsolationLane(t)
+	r.unlockLane(t, lanePath) // a kept (unlocked) lane, the shape restore revives
+
+	snap := sandboxSnapshotFromInputs(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted})
+	desc := &jobstore.DelegateRestoreDescriptor{
+		WorkingDir:     lanePath,
+		LocalEnvPolicy: "default",
+		Isolation:      "worktree",
+		Sandbox:        snap,
+	}
+
+	_, err := r.s.restoreDelegateChildEnvironment(desc, delegateID)
+	if err == nil {
+		t.Fatal("restore on a host that cannot enforce the mode must fail closed")
+	}
+	if !strings.Contains(err.Error(), notResumableSandboxUnsatisfiable) {
+		t.Errorf("restore error must name %q, got %v", notResumableSandboxUnsatisfiable, err)
+	}
+
+	_, locked, reason := r.laneLocked(t, lanePath)
+	if locked {
+		t.Errorf("failed restore left the lane locked (reason %q); the re-acquired lock was never released", reason)
+	}
+}
+
+// TestDiscardRestoredCandidateDisposesSandboxScratch: discardRestoredCandidate
+// tears down a restore candidate abandoned on one of restoreTerminalDelegateChildClaimed's
+// abort paths (tool validation, tracking collision, side-effect failure). Unlike
+// close() — whose subagent teardown loop RETAINS an owned env's sandbox scratch
+// for a human handoff — a discarded candidate was never adopted by anything, so
+// its fresh per-lane scratch has no owner left and must be disposed outright,
+// mirroring disposeUnadoptedSubagentSession's unadopted-env discipline on the
+// create-path twin of this abort.
+func TestDiscardRestoredCandidateDisposesSandboxScratch(t *testing.T) {
+	lane, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	child := newSession(t, withClient(c), withDir(lane), withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+		},
+	}))
+	le, ok := child.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("expected a local execution environment")
+	}
+	rp := sbxResolve(t, facts, lane, sandbox.ModeWorkspaceWrite)
+	if err := le.EnableSandbox(rp); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+	tmp := le.Wrapper.SessionTmp()
+	if _, err := os.Stat(tmp); err != nil {
+		t.Fatalf("session tmp must exist after EnableSandbox: %v", err)
+	}
+
+	child.discardRestoredCandidate()
+
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Errorf("discardRestoredCandidate must dispose the aborted restore's scratch, stat err = %v", err)
+	}
+}
+
 // TestSandboxHostFactsProbedOncePerSession: re-resolving a resumed delegate's
 // sandbox is what a jobs listing / watch does per delegate record; the host probe
 // (RealProber forks ~3 subprocesses) must be gathered ONCE per session and shared,

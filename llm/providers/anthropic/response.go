@@ -100,11 +100,17 @@ func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Respon
 	}
 
 	r.Message = msg
-	if len(r.ToolCalls()) > 0 {
-		r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: "tool_use"}
-	} else {
-		sr, _ := raw["stop_reason"].(string)
-		r.Finish = llm.NormalizeFinishReason("anthropic", sr)
+	sr, _ := raw["stop_reason"].(string)
+	r.Finish = llm.NormalizeFinishReason("anthropic", sr)
+	// A response can carry a tool_use content block even when stop_reason
+	// isn't "tool_use" — e.g. it can be missing/empty on some non-Anthropic
+	// wire-compatible backends. Only fill in "tool_calls" as a fallback when
+	// the real stop_reason normalized to nothing more specific than "stop";
+	// a genuine stop_reason like "max_tokens" (a tool call truncated by the
+	// output-token cap) must not be masked by the mere presence of a tool
+	// call (kata mmr2).
+	if len(r.ToolCalls()) > 0 && r.Finish.Reason == llm.FinishReasonStop {
+		r.Finish = llm.FinishReason{Reason: llm.FinishReasonToolCalls, Raw: "tool_use"}
 	}
 
 	// Claude 5+ attaches a stop_details object to a "refusal" stop reason

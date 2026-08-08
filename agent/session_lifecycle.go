@@ -328,6 +328,19 @@ func (s *Session) discardRestoredCandidate() {
 		for _, sub := range subs {
 			sub.sess.discardRestoredCandidate()
 		}
+		// restoreDelegateChildEnvironment always hands a restored delegate a
+		// FRESH environment (a re-rooted clone, and its own per-lane sandbox
+		// scratch when sandboxed) — never the parent's shared one. A discarded
+		// candidate was never adopted by anything, so unlike close()'s
+		// RetainSandboxScratch (which hands a normally torn-down delegate's
+		// scratch to a human), there is no one left to retain it for; dispose it
+		// outright, mirroring disposeUnadoptedSubagentSession's unadopted-env
+		// discipline on the create-path twin of this abort. A no-op on a shared
+		// or never-sandboxed env (DisposeSandboxScratch is a no-op without an
+		// owned tmp).
+		if le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
+			le.DisposeSandboxScratch()
+		}
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}

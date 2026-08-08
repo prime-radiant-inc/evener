@@ -444,3 +444,47 @@ func TestAPIPinSectionsNilStoreAndMethods(t *testing.T) {
 		}
 	}
 }
+
+// TestAPISessionPinSurvivesSubsequentTreeLoad proves a direct pin-API section
+// assignment is not disturbed by a later /api/tree read. Historically a
+// stored legacy favorite for the same session made handleAPITree's
+// migrate-on-read path (ensureLegacyPinsMigrated) silently reassign the
+// session into the "Pinned" section, clobbering the explicit assignment made
+// through /api/session-pin.
+func TestAPISessionPinSurvivesSubsequentTreeLoad(t *testing.T) {
+	const sessionID = "session-a"
+	past := hubcore.NewPastIndex("")
+	past.SeedForTest([]schema.SessionMeta{topLevelMeta(sessionID)})
+
+	dbPath := t.TempDir() + "/index.db"
+	favorite := hubcore.NewFavoriteStore(dbPath)
+	if err := favorite.Set("session", sessionID, true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+	store := hubcore.NewPinSectionStore(dbPath)
+	web := NewWebServer(hubcore.WebConfig{Past: past, PinSections: store, Favorite: favorite})
+
+	assigned := postJSON(t, web.Handler(), "/api/session-pin", `{"session_ref":"`+sessionID+`","section_name":"Research"}`)
+	if assigned.Code != http.StatusOK {
+		t.Fatalf("assign = %d: %s", assigned.Code, assigned.Body.String())
+	}
+	assignedBody := decodeJSON[hubapi.SessionPinMutationResponse](t, assigned)
+	wantSectionID := assignedBody.Assignment.Section.ID
+
+	tree := getJSON(t, web.Handler(), "/api/tree")
+	if tree.Code != http.StatusOK {
+		t.Fatalf("tree = %d: %s", tree.Code, tree.Body.String())
+	}
+
+	assignments, err := store.Assignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := assignments[sessionID]
+	if !ok {
+		t.Fatalf("assignment for %s vanished after tree load: %+v", sessionID, assignments)
+	}
+	if got.SectionID != wantSectionID {
+		t.Fatalf("assignment clobbered by tree load: got section %s, want %s (assignments=%+v)", got.SectionID, wantSectionID, assignments)
+	}
+}

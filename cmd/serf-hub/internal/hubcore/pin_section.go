@@ -9,29 +9,24 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/spf13/afero"
 	"golang.org/x/text/cases"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
-	"primeradiant.com/serf/hubapi"
 )
 
 const PinSectionNameMaxRunes = 80
 
 var (
-	ErrPinSectionName             = errors.New("invalid pin section name")
-	ErrPinSectionNotFound         = errors.New("pin section not found")
-	ErrPinSectionConflict         = errors.New("pin section name already exists")
-	errPinSectionMigrationApplied = errors.New("pin section migration already applied")
+	ErrPinSectionName     = errors.New("invalid pin section name")
+	ErrPinSectionNotFound = errors.New("pin section not found")
+	ErrPinSectionConflict = errors.New("pin section name already exists")
 
 	pinSectionRandRead                   = rand.Read
 	pinSectionBeforeSectionInsertHook    func()
 	pinSectionBeforeAssignmentCommitHook func()
-	pinSectionMigrationRetryWait         = time.Sleep
-	pinSectionMigrationLocks             sync.Map
 )
 
 // PinSection groups pinned sessions under a durable user-defined name.
@@ -48,13 +43,6 @@ type SessionPin struct {
 	SessionID  string
 	SectionID  string
 	AssignedAt time.Time
-}
-
-// LegacyPinDecision carries a legacy favorite row classification into the
-// pin-section migration.
-type LegacyPinDecision struct {
-	StoredID       string
-	Classification FavoriteDecisionClassification
 }
 
 // PinSectionStore persists named pin sections and their session assignments in
@@ -106,12 +94,6 @@ CREATE TABLE IF NOT EXISTS session_pin (
   assigned_at INTEGER NOT NULL
 )`
 
-const createHubSchemaMigrationTable = `
-CREATE TABLE IF NOT EXISTS hub_schema_migration (
-  name       TEXT    NOT NULL PRIMARY KEY,
-  applied_at INTEGER NOT NULL
-)`
-
 func (s *PinSectionStore) open() (*sql.DB, error) {
 	if s == nil || s.dbPath == "" {
 		return nil, nil
@@ -143,7 +125,7 @@ func (s *PinSectionStore) open() (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	for _, stmt := range []string{createPinSectionTable, createSessionPinTable, createHubSchemaMigrationTable, createFavoriteTable} {
+	for _, stmt := range []string{createPinSectionTable, createSessionPinTable, createFavoriteTable} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			_ = db.Close()
 			return nil, err
@@ -573,150 +555,6 @@ func (s *PinSectionStore) Assignments() (map[string]SessionPin, error) {
 	return out, rows.Err()
 }
 
-// MigrateLegacy promotes legacy session favorite rows into the Pinned section
-// and removes all legacy session favorites in one transaction.
-func (s *PinSectionStore) MigrateLegacy(decisions []LegacyPinDecision, now time.Time) (bool, error) {
-	if s == nil || s.dbPath == "" {
-		return false, nil
-	}
-	lockValue, _ := pinSectionMigrationLocks.LoadOrStore(s.dbPath, new(sync.Mutex))
-	lock := lockValue.(*sync.Mutex)
-	lock.Lock()
-	defer lock.Unlock()
-	for attempt := range 64 {
-		db, err := s.open()
-		if err != nil {
-			if isSQLiteRetryable(err) {
-				pinSectionMigrationRetryWait(pinSectionMigrationRetryDelay(attempt))
-				continue
-			}
-			return false, err
-		}
-		tx, err := db.BeginTx(context.Background(), nil)
-		if err != nil {
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				pinSectionMigrationRetryWait(pinSectionMigrationRetryDelay(attempt))
-				continue
-			}
-			return false, err
-		}
-		changed, err := migrateLegacyTx(tx, decisions, now)
-		if err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			switch {
-			case errors.Is(err, errPinSectionMigrationApplied):
-				return false, nil
-			case isSQLiteUniqueMigrationConflict(err):
-				return false, nil
-			case isSQLiteUniqueNameConflict(err) || isSQLiteRetryable(err):
-				pinSectionMigrationRetryWait(pinSectionMigrationRetryDelay(attempt))
-				continue
-			default:
-				return false, err
-			}
-		}
-		if err := tx.Commit(); err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			if isSQLiteRetryable(err) {
-				pinSectionMigrationRetryWait(pinSectionMigrationRetryDelay(attempt))
-				continue
-			}
-			return false, err
-		}
-		_ = db.Close()
-		return changed, nil
-	}
-	return false, errors.New("migrate legacy pin sections: retry limit reached")
-}
-
-func pinSectionMigrationRetryDelay(attempt int) time.Duration {
-	delay := time.Millisecond << min(attempt, 4)
-	return delay
-}
-
-func migrateLegacyTx(tx *sql.Tx, decisions []LegacyPinDecision, now time.Time) (bool, error) {
-	var applied int
-	if err := tx.QueryRowContext(context.Background(), `SELECT 1 FROM hub_schema_migration WHERE name = ?`, "named-pin-sections-v1").Scan(&applied); err == nil {
-		return false, errPinSectionMigrationApplied
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return false, err
-	}
-	classificationByID := make(map[string]LegacyPinDecision, len(decisions))
-	for _, decision := range decisions {
-		classificationByID[decision.StoredID] = decision
-	}
-	rows, err := tx.QueryContext(context.Background(), `SELECT id, favorited FROM favorite WHERE kind = 'session'`)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = rows.Close() }()
-	var assignments []struct {
-		sessionID string
-		sectionID string
-	}
-	for rows.Next() {
-		var sessionID string
-		var favorited int
-		if err := rows.Scan(&sessionID, &favorited); err != nil {
-			return false, err
-		}
-		if favorited != 1 {
-			continue
-		}
-		decision, ok := classificationByID[sessionID]
-		if !ok {
-			continue
-		}
-		switch decision.Classification.State {
-		case FavoriteDecisionValid:
-			if decision.Classification.CanonicalKey.ID != "" {
-				assignments = append(assignments, struct {
-					sessionID string
-					sectionID string
-				}{sessionID: decision.Classification.CanonicalKey.ID, sectionID: "Pinned"})
-			}
-		case FavoriteDecisionDormant:
-			if decision.Classification.CanonicalKey.ID != "" {
-				assignments = append(assignments, struct {
-					sessionID string
-					sectionID string
-				}{sessionID: decision.Classification.CanonicalKey.ID, sectionID: "Pinned"})
-			} else if ref, err := hubapi.ParseRef(decision.StoredID); err != nil || ref.HostID != "local" {
-				assignments = append(assignments, struct {
-					sessionID string
-					sectionID string
-				}{sessionID: decision.StoredID, sectionID: "Pinned"})
-			}
-		case FavoriteDecisionConfirmedInvalid:
-			// discarded
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return false, err
-	}
-	if len(assignments) > 0 {
-		section, _, err := ensureSectionTx(tx, "Pinned", cases.Fold().String("Pinned"), now)
-		if err != nil {
-			return false, err
-		}
-		for _, assignment := range assignments {
-			if _, err := upsertSessionPinTx(tx, assignment.sessionID, section.ID, now); err != nil {
-				return false, err
-			}
-		}
-	}
-	if _, err := tx.ExecContext(context.Background(), `DELETE FROM favorite WHERE kind = 'session'`); err != nil {
-		return false, err
-	}
-	if _, err := tx.ExecContext(context.Background(), `INSERT INTO hub_schema_migration(name, applied_at) VALUES (?, ?)`, "named-pin-sections-v1", now.Unix()); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
 func ensureSectionTx(tx *sql.Tx, display, key string, now time.Time) (PinSection, bool, error) {
 	section, ok, err := sectionByKeyTx(tx, key)
 	if err != nil {
@@ -825,12 +663,4 @@ func isSQLiteUniqueNameConflict(err error) bool {
 	}
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "unique constraint failed") && strings.Contains(s, "pin_section.name_key")
-}
-
-func isSQLiteUniqueMigrationConflict(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "unique constraint failed") && strings.Contains(s, "hub_schema_migration.name")
 }

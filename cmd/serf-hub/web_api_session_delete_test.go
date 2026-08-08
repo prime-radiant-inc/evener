@@ -433,57 +433,6 @@ func TestAPISessionDeleteRemovesPinAssignmentButKeepsEmptySection(t *testing.T) 
 	}
 }
 
-func TestAPISessionDeleteBeforeLegacyMigrationScrubsLocalAliasFavorite(t *testing.T) {
-	root := t.TempDir()
-	projectDir := filepath.Join(root, "project")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	project, err := identifier.ResolveProject(projectDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stateDir := filepath.Join(root, "projects", "session-delete-0123456789")
-	targetID := projectDeleteCanonicalSessionIDs[0]
-	writeSession(t, stateDir, targetID, project.CanonicalPath)
-	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	favorites := hubcore.NewFavoriteStore(dbPath)
-	if err := favorites.Set("session", "local:"+targetID, true, time.Unix(1, 0)); err != nil {
-		t.Fatal(err)
-	}
-	pins := hubcore.NewPinSectionStore(dbPath)
-	web := NewWebServer(hubcore.WebConfig{
-		StateDir: root, Past: past, Favorite: favorites, PinSections: pins, Roster: hubcore.NewRosterWithEntries(),
-	})
-	rec, _ := postSessionDelete(t, web, targetID)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("delete = %d: %s", rec.Code, rec.Body.String())
-	}
-	if decisions, err := favorites.Favorites(); err != nil {
-		t.Fatal(err)
-	} else if decisions[hubcore.ArchiveKey{Kind: "session", ID: "local:" + targetID}] {
-		t.Fatalf("legacy local alias favorite survived: %+v", decisions)
-	}
-	changed, err := pins.MigrateLegacy([]hubcore.LegacyPinDecision{{
-		StoredID: "local:" + targetID,
-		Classification: hubcore.FavoriteDecisionClassification{
-			State:        hubcore.FavoriteDecisionValid,
-			CanonicalKey: hubcore.ArchiveKey{Kind: "session", ID: targetID},
-		},
-	}}, time.Unix(2, 0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	assignments, err := pins.Assignments()
-	if err != nil || len(assignments) != 0 {
-		t.Fatalf("deleted favorite migrated into ghost pin: changed=%v assignments=%+v err=%v", changed, assignments, err)
-	}
-}
-
 func TestAPISessionDeleteRetryScrubsPinAfterArtifactsAreAlreadyGone(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")

@@ -166,6 +166,16 @@ func (s *Server) SetAppIdentity(sourceID, threadID string) {
 	s.ReplaceAppIdentity(prepared, nil)
 }
 
+// SetDescendantTranscriptPathFunc installs the resolver RecordDescendantAppEvent
+// consults on a descendant's first observation to seed its turn snapshot from
+// persisted history (ledger #110/#111). fn may return "" for a thread with no
+// backing transcript; nil disables seeding entirely (the historical behavior).
+func (s *Server) SetDescendantTranscriptPathFunc(fn func(threadID string) string) {
+	s.mu.Lock()
+	s.appDescendantTranscriptPathFunc = fn
+	s.mu.Unlock()
+}
+
 func (s *Server) AppNotificationsAfter(cursor uint64, threadID string) []appserver.SequencedNotification {
 	return s.appNotifier.ReplayAfter(cursor, threadID)
 }
@@ -261,6 +271,19 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 					Source:    sourceID,
 					Serf:      appwire.SerfThread{Ref: ref, Kind: "subagent"},
 				},
+			}
+			// Seed from the descendant's own transcript BEFORE this first event is
+			// applied, the same order PrepareAppIdentity uses for the ROOT thread:
+			// a resumed descendant's persisted history must already be in the
+			// snapshot when its first live event lands, or thread/read only ever
+			// answers from the restore point forward (ledger #110/#111).
+			if s.appDescendantTranscriptPathFunc != nil {
+				if path := strings.TrimSpace(s.appDescendantTranscriptPathFunc(threadID)); path != "" {
+					if turns, entries, err := appTurnsFromTranscriptFile(path); err == nil {
+						projection.turns.Seed(turns)
+						projection.projector.SeedPersistedTurns(entries)
+					}
+				}
 			}
 			s.appDescendants[threadID] = projection
 		}
@@ -593,10 +616,18 @@ func (s *Server) appThreadReadSnapshot(params appwire.ThreadReadParams) appwire.
 
 func (s *Server) appThreadIDForRead(params appwire.ThreadReadParams) string {
 	threadID := strings.TrimSpace(params.ThreadID)
-	if threadID == "" && strings.TrimSpace(params.Ref) != "" {
-		if ref, err := appwire.ParseRef(params.Ref); err == nil && ref.SourceID == "local" {
-			threadID = ref.ThreadID
+	rawRef := strings.TrimSpace(params.Ref)
+	if threadID == "" && rawRef != "" {
+		// A Ref was supplied but is either unparseable or names a source this
+		// daemon does not serve. Either way it is a caller error, not "no ref
+		// given" -- falling through to appProjectionThreadID here would answer
+		// with the ROOT thread's content for a request that named something
+		// else entirely (ledger #110/#111).
+		ref, err := appwire.ParseRef(rawRef)
+		if err != nil || ref.SourceID != "local" {
+			return ""
 		}
+		threadID = ref.ThreadID
 	}
 	if threadID == "" {
 		threadID = s.appProjectionThreadID()

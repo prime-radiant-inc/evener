@@ -16,6 +16,7 @@ func TestExpand(t *testing.T) {
 		{name: "nested alternatives", pattern: "src/{a,{b,c}}/*.go", want: []string{"src/a/*.go", "src/b/*.go", "src/c/*.go"}},
 		{name: "empty alternative", pattern: "report{,.md}", want: []string{"report", "report.md"}},
 		{name: "escaped braces", pattern: `literal\{name\}.go`, want: []string{`literal\{name\}.go`}},
+		{name: "braces in character class", pattern: "*.[{a,b}]", want: []string{"*.[{a,b}]"}},
 	}
 
 	for _, tt := range tests {

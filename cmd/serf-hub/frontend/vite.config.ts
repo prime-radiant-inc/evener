@@ -38,6 +38,7 @@ export default defineConfig({
   plugins: [react(), restoreDistPlaceholder()],
   build: { assetsDir: "webassets", outDir: "dist", emptyOutDir: true },
   server: {
+    host: "127.0.0.1",
     proxy: {
       "/rpc": { target: hub, ws: true },
       "/api": hub,

@@ -39,6 +39,7 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 				// threads, but are served by their owner's daemon endpoint.
 				for _, childID := range item.RunningSubagentIDs {
 					child := entry
+					child.OwnerSessionID = entry.SessionID
 					child.SessionID = childID
 					// The child's own projected status when the daemon carries
 					// it — inheriting the parent's status would render a

@@ -163,6 +163,20 @@ func escapeNotificationText(s string) string {
 	return s
 }
 
+// escapeNotificationBody makes text safe to interpolate into the body of a
+// <job-notification> wrapper, escaping only the characters that could
+// prematurely terminate the block (a literal </job-notification> substring).
+// Invalid UTF-8 is normalized to U+FFFD via strings.ToValidUTF8. Unlike
+// escapeNotificationText (used for attribute values), this function does NOT
+// escape & > or " because body text is not inside a quoted attribute wrapper.
+// The only structural hazard is a literal < which could forge a new tag or
+// prematurely close </job-notification>.
+func escapeNotificationBody(s string) string {
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	return s
+}
+
 // notificationAttr renders one key="value" wrapper attribute with value
 // escaped by escapeNotificationText, so a delimiter inside value cannot move
 // the opening tag's own boundary (the web parser's tag match is naive about
@@ -188,7 +202,7 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, 
 			notificationAttr("trigger", n.Reason),
 		}
 		return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>",
-			strings.Join(attrs, " "), escapeNotificationText(n.watchSendFrame))
+			strings.Join(attrs, " "), escapeNotificationBody(n.watchSendFrame))
 	}
 
 	event := n.Status
@@ -238,7 +252,7 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, 
 				"Watch event triggered: %s.\n"+
 				"</job-notification>",
 			strings.Join(attrs, " "),
-			escapeNotificationText(n.Reason),
+			escapeNotificationBody(n.Reason),
 		)
 	}
 
@@ -257,13 +271,13 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, 
 	}
 	body := strings.TrimSpace(fmt.Sprintf("Job %s %s. %s", n.JobID, event, instruction))
 	if excerpt.text != "" {
-		body += "\nexcerpt:\n" + escapeNotificationText(excerpt.text)
+		body += "\nexcerpt:\n" + escapeNotificationBody(excerpt.text)
 	}
 	// The spec §P2 completion nudge rides the same lane report as the inline
 	// tool result, gated identically (has-op AND owns-delegate) — the report's
 	// DisposalHint is non-empty only when both gates hold.
 	if wt := excerpt.worktree; wt != nil && wt.DisposalHint != "" {
-		body += "\n" + escapeNotificationText(wt.DisposalHint)
+		body += "\n" + escapeNotificationBody(wt.DisposalHint)
 	}
 	return fmt.Sprintf(
 		"<job-notification %s>\n%s\n</job-notification>",

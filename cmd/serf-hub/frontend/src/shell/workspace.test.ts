@@ -3,7 +3,7 @@
 import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { type PaneDescriptor, type PaneProps, registerPaneForTests } from "./paneRegistry";
+import { type PaneDescriptor, type PaneProps, type PaneTypeId, registerPaneForTests } from "./paneRegistry";
 import {
   cancelPaneFocus,
   consumePaneFocus,
@@ -19,9 +19,7 @@ import {
 // file's singleton fixture, "doc" its non-singleton fixture - both are real
 // PaneTypeId values (the union is locked/closed, so fixtures must be drawn
 // from it), but neither is the REAL settings/doc pane (those don't exist
-// yet); "transcript" is deliberately left UNREGISTERED, as this file's
-// stand-in for "a syntactically valid PaneTypeId that isn't actually
-// registered" (restoreLayout's own-registration-check tests below).
+// yet).
 function fixtureDescriptor<P>(
   id: PaneDescriptor<P>["id"],
   overrides: Partial<PaneDescriptor<P>> = {},
@@ -243,7 +241,17 @@ describe("openPane", () => {
   });
 
   test("throws for an unregistered pane type (mirrors paneFor's own contract)", () => {
-    expect(() => workspaceStore.getState().openPane("transcript", {})).toThrow(/transcript/);
+    // Every real PaneTypeId gets registered by its own production module at
+    // import time - under isolate:false, paneRegistry is a module singleton
+    // shared by every file in the worker, so any real id (like "transcript")
+    // may already be registered by an earlier-run file's own transitive
+    // imports (paneRegistry.test.ts hit this exact issue - see its own
+    // "paneFor throws a clear error for an id that was never registered").
+    // An id outside the closed union (cast past the type check) is the only
+    // one guaranteed to stay unregistered regardless of run order.
+    expect(() => workspaceStore.getState().openPane("not-a-real-pane-type" as PaneTypeId, {})).toThrow(
+      /not-a-real-pane-type/,
+    );
   });
 });
 
@@ -553,11 +561,15 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
   test("restoreLayout returns false and clears the api when a restored panel's paneType is a valid PaneTypeId but isn't registered", () => {
     const fake = new FakeDockviewApi();
     fake.fromJSONBehavior = () => {
-      // "transcript" is a real PaneTypeId (see the file header) but this
-      // test file never registers it - simulates a layout saved by a later
-      // build (once transcript panes ship) loaded by an older one that
-      // hasn't shipped them yet.
-      fake.panels = [{ id: "p1", params: { paneType: "transcript", paneParams: { ref: "a" } } }];
+      // Every real PaneTypeId gets registered by its own production module at
+      // import time - under isolate:false, paneRegistry is a module singleton
+      // shared by every file in the worker, so a real id here could already be
+      // registered by an earlier-run file's own transitive imports. An id
+      // outside the closed union (cast past the type check) simulates a
+      // layout saved by a build that shipped a pane type this one never
+      // registers, and is the only id guaranteed to stay unregistered
+      // regardless of run order.
+      fake.panels = [{ id: "p1", params: { paneType: "not-a-real-pane-type", paneParams: { ref: "a" } } }];
       fake.activePanel = { id: "p1" };
     };
     registerDockviewApi(asDockviewApi(fake));
