@@ -142,7 +142,7 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 			HubAddr:    m.hubURL,
 			Provider:   firstNonEmptyString(m.detail.Profile, providerFromModel(m.detail.Model)),
 			Width:      m.width,
-			Retry:      composerRetryChip(m.modelRetry),
+			Retry:      composerRetryChip(m.modelRetry, m.detail.Model),
 		},
 	}
 	switch m.sessionComposerMode() {

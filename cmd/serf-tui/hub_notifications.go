@@ -13,7 +13,7 @@ import (
 )
 
 func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.Cmd {
-	m.clearModelRetryOnProgress(notification.Method)
+	m.clearModelRetryOnProgress(notification)
 	// Panel-refresh notifications fire regardless of current mode.
 	switch notification.Method {
 	case appwire.NotifySerfAuthUpdated:
@@ -568,27 +568,41 @@ func (m *hubModel) replaceSessionTranscript(messages []transcript.ChatMessage) {
 	m.session.refreshViewport()
 }
 
-// clearModelRetryOnProgress drops a pending model-call retry once the model has
-// actually produced something, or the turn it belonged to has settled.
+// clearModelRetryOnProgress drops a pending model-call retry only once the
+// wait it describes has actually ended: a turn boundary, or the completion of
+// the model-output item (assistant message, reasoning, tool call) the retried
+// call was producing.
 //
-// The retry describes a wait in progress. Leaving it on the chip strip beside
-// live output would assert a wait that is over, and the reader has no way to
-// tell a current retry from a stale one. Enumerated rather than "any
-// notification": queue, task and job notifications all arrive while a model
-// call is genuinely still waiting, and clearing on those would hide the retry
-// exactly when it is true.
-func (m *hubModel) clearModelRetryOnProgress(method string) {
+// Deltas do NOT clear it. A user watching a provider grind through retries
+// still sees deltas arrive between attempts; clearing on the first one makes
+// the chip flicker away mid-grind and reads as "stuck" recovering, not
+// "still working" — the vanishing-chip bug this rule exists to fix. The same
+// reasoning excludes systemMessage and user-input item completions: a user
+// steering "are you stuck?" completes a systemMessage item mid-grind, and
+// that is not evidence the retried call finished.
+func (m *hubModel) clearModelRetryOnProgress(notification appwire.Notification) {
 	if m.modelRetry == nil {
 		return
 	}
-	switch method {
-	case appwire.NotifyAgentMessageDelta,
-		appwire.NotifyReasoningSummaryDelta,
-		appwire.NotifyToolOutputDelta,
-		appwire.NotifyItemStarted,
-		appwire.NotifyItemCompleted,
-		appwire.NotifyTurnCompleted,
-		appwire.NotifyTurnStarted:
+	switch notification.Method {
+	case appwire.NotifyTurnCompleted, appwire.NotifyTurnStarted:
 		m.modelRetry = nil
+	case appwire.NotifyItemCompleted:
+		var params appwire.ItemLifecycleParams
+		if json.Unmarshal(notification.Params, &params) == nil && isModelOutputItemType(params.Item.Type) {
+			m.modelRetry = nil
+		}
 	}
+}
+
+// isModelOutputItemType reports whether a thread item's type is model output
+// (as opposed to a systemMessage announcement or user input), matching the
+// cases transcript.TranscriptReducer.ApplyThreadItem treats as the model
+// speaking or acting.
+func isModelOutputItemType(itemType string) bool {
+	switch itemType {
+	case "agentMessage", "reasoning", "commandExecution":
+		return true
+	}
+	return false
 }

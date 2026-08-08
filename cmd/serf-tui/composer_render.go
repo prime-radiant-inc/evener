@@ -294,15 +294,24 @@ func renderChipStatus(ctx composerContext, th tuitheme.Theme, budget int) string
 }
 
 // composerRetryChip renders a pending model-call retry for the chip strip:
-// cause, position in the retry budget, and the wait. The wait is the
-// load-bearing part — it is what separates "back in 60s" from "wedged", which
-// is the whole reason the retry is surfaced at all.
+// cause, position in the retry budget, the wait, and how long the current
+// call has been running. The wait is the load-bearing part — it is what
+// separates "back in 60s" from "wedged", which is the whole reason the retry
+// is surfaced at all.
 //
 // Only rate limiting gets its own wording; it is the one a user can act on
 // (wait, or switch model) and overwhelmingly the common case. Anything else
 // retryable reads as a generic provider error rather than leaking an
 // error-class token like "server" into the UI.
-func composerRetryChip(retry *appwire.ThreadModelRetryParams) string {
+//
+// The denominator is AttemptCap, not the raw policy budget: once a retry
+// group has a consume-phase failure the effective bound drops to an
+// early-stop count, and rendering the untouched policy max would promise
+// patience the budget won't deliver. The model tag appears only when
+// retry.Model differs from primaryModel — a chain walk resets the attempt
+// count, and without the tag a user can't tell "still failing" from "now on
+// a fallback".
+func composerRetryChip(retry *appwire.ThreadModelRetryParams, primaryModel string) string {
 	if retry == nil {
 		return ""
 	}
@@ -311,7 +320,12 @@ func composerRetryChip(retry *appwire.ThreadModelRetryParams) string {
 		cause = "rate limited"
 	}
 	seconds := max((retry.DelayMS+500)/1000, 0)
-	return fmt.Sprintf("%s · retry %d/%d · %ds", cause, retry.Attempt, retry.MaxAttempts, seconds)
+	chip := fmt.Sprintf("%s · attempt %d/%d · %ds", cause, retry.Attempt, retry.AttemptCap, seconds)
+	if model := strings.TrimSpace(retry.Model); model != "" && model != strings.TrimSpace(primaryModel) {
+		chip += " · " + model
+	}
+	chip += fmt.Sprintf(" · %dm on this call", retry.GroupElapsedMS/60000)
+	return chip
 }
 
 // composeProviderModel returns "<provider>/<abbreviated-model>" when a
