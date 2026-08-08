@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/serf/llm"
@@ -137,6 +138,39 @@ type chatCompletionChunk struct {
 	Model   string            `json:"model"`
 	Choices []chatChunkChoice `json:"choices"`
 	Usage   map[string]any    `json:"usage"`
+	Error   *chatInbandError  `json:"error"`
+}
+
+// chatInbandError is the failure payload some OpenAI-compatible providers
+// deliver as a standalone chunk on an HTTP 200 stream: meta-providers
+// (OpenRouter, lunarouter) report upstream rejections this way with an
+// integer code, OpenAI/Moonshot with a string code plus type.
+type chatInbandError struct {
+	Message string          `json:"message"`
+	Type    string          `json:"type"`
+	Code    json.RawMessage `json:"code"`
+}
+
+// statusCode extracts an HTTP-like status from the payload's code field when
+// it carries one (bare integer, or a string of digits); 0 otherwise.
+func (e *chatInbandError) statusCode() int {
+	if len(e.Code) == 0 {
+		return 0
+	}
+	var n int
+	if err := json.Unmarshal(e.Code, &n); err == nil {
+		if n >= 400 && n <= 599 {
+			return n
+		}
+		return 0
+	}
+	var s string
+	if err := json.Unmarshal(e.Code, &s); err == nil {
+		if n, err := strconv.Atoi(s); err == nil && n >= 400 && n <= 599 {
+			return n
+		}
+	}
+	return 0
 }
 
 type chatChunkChoice struct {

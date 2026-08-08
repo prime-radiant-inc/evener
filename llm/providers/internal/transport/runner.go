@@ -8,11 +8,23 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/apilog"
 )
+
+// FatalStreamError marks an OnEvent error as the stream's terminal error in
+// its own right: the runner publishes the wrapped error verbatim instead of
+// folding it into the generic "stream ended without completion" epilogue.
+// Adapters use it when the provider reported a structured failure in-band on
+// an HTTP 200 stream (e.g. an OpenAI-compatible {"error": ...} chunk), where
+// the decoded, typed error is strictly more informative than the wrap.
+type FatalStreamError struct{ Err error }
+
+func (e *FatalStreamError) Error() string { return e.Err.Error() }
+func (e *FatalStreamError) Unwrap() error { return e.Err }
 
 // StreamRunner decodes a provider SSE response into stream events. It invokes
 // OnEvent for each SSE event and emits the terminal error event when the stream
@@ -57,8 +69,11 @@ func (r *StreamRunner) Run(ctx context.Context) {
 	}
 	var terminalErr error
 	if !*r.Finished {
+		var fatal *FatalStreamError
 		if err := ctx.Err(); err != nil {
 			terminalErr = llm.WrapContextError(r.Provider, err)
+		} else if errors.As(parseErr, &fatal) {
+			terminalErr = fatal.Err
 		} else {
 			terminalErr = llm.NewStreamError(r.Provider, r.IncompleteMsg, parseErr)
 		}
