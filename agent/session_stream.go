@@ -75,9 +75,15 @@ const modelRetryFailFastAfter = 4
 // retries the streak rule won't spend; and GroupElapsedMS, wall-clock time
 // since this call to emitModelRetry (made once per retry group), so a client
 // can render how long the current model call has been running.
+//
+// It also surfaces jobPhaseModelRetrying into the parent's job activity
+// (Component 3's delegate scope): without this, a delegate child grinding
+// through a retry storm reads to the parent as the same opaque
+// jobPhaseAwaitingModel it showed before the first attempt ever ran.
 func (s *Session) emitModelRetry(policy llm.RetryPolicy, req llm.Request, group *groupRecord) func(error, int, time.Duration) {
 	groupStart := time.Now()
 	return func(err error, attempt int, delay time.Duration) {
+		s.noteParentJobActivity(jobPhaseModelRetrying)
 		attemptCap := max(policy.MaxRetries, 0) + 1
 		if group != nil && group.hasConsumePhaseFailure() {
 			attemptCap = modelRetryFailFastAfter

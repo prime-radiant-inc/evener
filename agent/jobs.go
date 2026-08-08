@@ -230,17 +230,24 @@ func (jm *jobManager) currentCausalProvenance() *provenance.Causal {
 }
 
 type runningJob struct {
-	rec                             *jobstore.JobRecord
-	output                          *jobstore.OutputStore
-	signal                          func()
-	done                            chan struct{}
-	doneOnce                        sync.Once
-	durableStarted                  bool
-	stopStatus                      jobstore.Status
-	stopReason                      string
-	structured                      any
-	structuredCaptureFailed         bool
-	structuredCaptured              bool
+	rec                     *jobstore.JobRecord
+	output                  *jobstore.OutputStore
+	signal                  func()
+	done                    chan struct{}
+	doneOnce                sync.Once
+	durableStarted          bool
+	stopStatus              jobstore.Status
+	stopReason              string
+	structured              any
+	structuredCaptureFailed bool
+	structuredCaptured      bool
+	// salvagedDraft is captured once from the child session's
+	// hasSalvagedTurnPersisted latch in finalizeDelegateOnce's prepare(), the
+	// same "read once while the child is still live" shape structured uses —
+	// delegateTerminalResult reads it back to decide whether a failed
+	// delegate's result should point the parent at delegate_send instead of a
+	// fresh re-dispatch.
+	salvagedDraft                   bool
 	terminal                        *terminalJob
 	finalize                        *finalizeAttempt
 	delegateOutputAppended          bool

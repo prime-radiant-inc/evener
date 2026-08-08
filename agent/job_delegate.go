@@ -1889,6 +1889,22 @@ func sendMessageResultFromDelegateResult(target, resumedFromJobID, action string
 	}
 }
 
+// delegateSalvagedDraftNote tells a delegating parent that its failed child's
+// transcript already holds a Component 3 salvaged turn: resuming the child
+// via delegate_send lets it see that draft, where re-dispatching a fresh
+// child would regenerate everything the original child already paid for.
+const delegateSalvagedDraftNote = "partial draft salvaged in the child transcript — resume it with delegate_send rather than re-dispatching"
+
+// appendDelegateSalvagedDraftNote appends delegateSalvagedDraftNote to a
+// failed delegate's output, separated from any real output by a blank line so
+// it reads as a distinct footer rather than run-on prose.
+func appendDelegateSalvagedDraftNote(output string) string {
+	if output == "" {
+		return delegateSalvagedDraftNote
+	}
+	return output + "\n\n" + delegateSalvagedDraftNote
+}
+
 func delegateFinalizeFailedResult(run *runningJob, reason string, err error) delegateResult {
 	return delegateResult{
 		DelegateID:          run.rec.DelegateID,
@@ -2355,6 +2371,11 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 		runProvenance := provenance.Clone(sub.runProvenance)
 		sub.mu.Unlock()
 
+		// Read directly off the child's persisted-turn latch — never inferred
+		// from subErr's text — while childSess is still known live, the same
+		// "capture now, read back later" shape run.structured uses below.
+		salvagedDraft := childSess != nil && childSess.hasSalvagedTurnPersisted()
+
 		exhaustion, _ := budgetExhaustionFromError(subErr)
 		jm.mu.Lock()
 		persistFailed := run.delegateExhaustionPersistFailed
@@ -2406,6 +2427,7 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 			run.structured = structured
 			run.structuredCaptureFailed = structuredCaptureFailed
 			run.structuredCaptured = true
+			run.salvagedDraft = salvagedDraft
 			run.afterDurableFinish = func() {
 				sub.mu.Lock()
 				sub.resultConsumed = true
@@ -2619,8 +2641,12 @@ func delegateTerminalResult(s *Session, jm *jobManager, run *runningJob) delegat
 			structuredValid = &valid
 		}
 	}
+	salvagedDraft := run.salvagedDraft
 	jm.mu.Unlock()
 	valid := structuredValid != nil && *structuredValid
+	if rec.Status == jobstore.StatusFailed && salvagedDraft {
+		output = appendDelegateSalvagedDraftNote(output)
+	}
 	var wt *delegateWorktreeReport
 	if rec.Status.IsTerminal() {
 		wt = s.isolatedDelegateWorktreeReport(rec.DelegateRestore)

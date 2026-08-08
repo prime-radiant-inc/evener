@@ -891,6 +891,28 @@ func (s *Session) noteParentJobActivity(phase string) {
 	s.cfg.spawn.parentJobActivity(s.cfg.spawn.parentJobID, phase)
 }
 
+// markSalvagedTurnPersisted records that Component 3 settlement just appended
+// a salvaged assistant turn to this session's transcript. Called only from
+// persistSalvagedTurn, on the success path, so it can never latch true from a
+// draft that never actually reached the transcript.
+func (s *Session) markSalvagedTurnPersisted() {
+	s.mu.Lock()
+	s.salvagedTurnPersisted = true
+	s.mu.Unlock()
+}
+
+// hasSalvagedTurnPersisted reports whether this session's transcript holds a
+// Component 3 salvaged turn. A delegating parent calls this on a failed
+// child's session at finalize time to decide whether the failed delegate
+// result should point at resuming the draft (delegate_send) — reading the
+// materialized latch directly rather than guessing from the child's error
+// text.
+func (s *Session) hasSalvagedTurnPersisted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.salvagedTurnPersisted
+}
+
 func (s *Session) sendInput(ctx context.Context, agentID string, input string) (any, error) {
 	_ = ctx
 	sub := s.getSub(agentID)

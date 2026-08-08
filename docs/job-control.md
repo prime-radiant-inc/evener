@@ -667,7 +667,7 @@ Canonical return shape:
 Canonical behavior:
 
 - `kind` is the public job class: `shell` or `agent` (a delegate job's kind is `agent`; `type` in durable records stays `delegate`).
-- `phase` is the observable sub-state of a RUNNING job (`starting`, `awaiting_model`, `model_streaming`, `tool_running`, `process_running`). A terminal job omits `phase` and reports `duration_ms` instead of `running_for_ms`/`quiet_for_ms`.
+- `phase` is the observable sub-state of a RUNNING job (`starting`, `awaiting_model`, `model_streaming`, `model_retrying`, `tool_running`, `process_running`). A terminal job omits `phase` and reports `duration_ms` instead of `running_for_ms`/`quiet_for_ms`.
 - `last_event_at` is the most recent parent-observable activity for the job (an output append, or the job's start when nothing newer is observable; for a terminal record with no live stamp it falls back to `ended_at`, then `started_at`). It is a supervision hint for spotting a stalled or quiet job; it is not a substitute for terminal notifications.
 - `transcript_ref` is the delegate conversation's session ref for a delegate job, and `job:<job_id>` for a shell job. Hand it to `read_transcript`.
 - Completion is notification-driven. `job_status` is for orientation and recovery, not for waiting: it never blocks, and calling it in a loop is the polling anti-pattern.

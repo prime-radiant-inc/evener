@@ -531,12 +531,20 @@ func (s *Session) settleInterruptedRound() {
 // provider never finalized would poison every subsequent round with
 // previous_response_not_found. The zero ModelAttemptMetadata is what keeps every
 // one of those fields empty.
+//
+// On success it latches markSalvagedTurnPersisted, the signal a delegating
+// parent reads (hasSalvagedTurnPersisted) after this session fails as a child
+// to decide whether its result should point at resuming the draft.
 func (s *Session) persistSalvagedTurn(salvaged, model, provider string) error {
-	return s.appendAssistantTurn(llm.Response{
+	if err := s.appendAssistantTurn(llm.Response{
 		Message:  llm.Assistant(salvaged),
 		Model:    model,
 		Provider: provider,
-	}, ModelAttemptMetadata{})
+	}, ModelAttemptMetadata{}); err != nil {
+		return err
+	}
+	s.markSalvagedTurnPersisted()
+	return nil
 }
 
 // emitSalvagedTurn replays the salvaged draft on the event bus so a watching

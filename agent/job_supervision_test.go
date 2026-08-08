@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -378,6 +379,83 @@ func TestSubagentStreamEventsReportModelStreaming(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("consumeModelStream did not finish")
+	}
+}
+
+// TestSubagentModelRetrySurfacesJobPhaseModelRetrying: a child grinding
+// through a provider retry storm must not read as opaque "awaiting model" to
+// the parent (Component 3's delegate-scope addition) — emitModelRetry's
+// OnRetry hook, which fires once per retry before its backoff sleep, surfaces
+// jobPhaseModelRetrying into the parent's job activity the same way
+// consumeModelStream surfaces model_streaming.
+func TestSubagentModelRetrySurfacesJobPhaseModelRetrying(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	clk := newMutableClock(time.Unix(7400, 0).UTC())
+	parent.jobManager.now = clk.now
+
+	sub := completedDelegateSubagent(child, "report")
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parent.finalizeDelegate(run.rec.JobID, child.ID(), sub)
+		waitForShellDone(t, parent.jobManager, run.rec.JobID)
+	})
+	child.cfg.spawn.parentJobID = run.rec.JobID
+	child.cfg.spawn.parentJobActivity = parent.jobManager.noteJobActivity
+
+	policy := llm.RetryPolicy{MaxRetries: 10}
+	req := llm.Request{Model: "gpt-5.2"}
+	group := &groupRecord{}
+	onRetry := child.emitModelRetry(policy, req, group)
+	onRetry(errors.New("stream ended without completion"), 1, time.Millisecond)
+
+	waitForJobPhase(t, parent, run.rec.JobID, jobPhaseModelRetrying)
+}
+
+// TestDelegateTerminalResult_FailedChildWithSalvagedDraftNotesResume: a
+// failed delegate whose child transcript already holds a Component 3
+// salvaged turn must tell the parent to resume it via delegate_send rather
+// than re-dispatch a fresh child that regenerates the same work. Detection
+// reads the child session's persisted-turn latch directly (hasSalvagedTurnPersisted),
+// never sub.err's text.
+func TestDelegateTerminalResult_FailedChildWithSalvagedDraftNotesResume(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	clk := newMutableClock(time.Unix(7500, 0).UTC())
+	parent.jobManager.now = clk.now
+
+	if err := child.persistSalvagedTurn("the plan so far", "gpt-5.2", "openai"); err != nil {
+		t.Fatalf("persistSalvagedTurn: %v", err)
+	}
+
+	sub := &subagent{
+		id:     child.ID(),
+		sess:   child,
+		status: SubagentFailed,
+		err:    errors.New("provider unhealthy: repeated mid-stream stalls"),
+		done:   make(chan struct{}),
+	}
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+		t.Fatalf("finalizeDelegate: %v", err)
+	}
+	waitForShellDone(t, parent.jobManager, run.rec.JobID)
+
+	res := delegateTerminalResult(parent, parent.jobManager, run)
+	if res.Status != jobstore.StatusFailed {
+		t.Fatalf("res.Status = %q, want %q", res.Status, jobstore.StatusFailed)
+	}
+	const want = "partial draft salvaged in the child transcript — resume it with delegate_send rather than re-dispatching"
+	if !strings.Contains(res.Output, want) {
+		t.Fatalf("res.Output = %q, want it to contain %q", res.Output, want)
 	}
 }
 

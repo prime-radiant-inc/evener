@@ -33,6 +33,7 @@ const (
 	jobPhaseStarting            = "starting"
 	jobPhaseAwaitingModel       = "awaiting_model"
 	jobPhaseModelStreaming      = "model_streaming"
+	jobPhaseModelRetrying       = "model_retrying"
 	jobPhaseToolRunning         = "tool_running"
 	jobPhaseProcessRunning      = "process_running"
 )
