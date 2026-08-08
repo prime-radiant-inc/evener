@@ -1079,6 +1079,8 @@ _(no fields)_
 | `statusCode` | `int` | yes |  |
 | `message` | `string` | yes |  |
 | `model` | `string` | yes |  |
+| `groupElapsedMs` | `int64` |  |  |
+| `attemptCap` | `int` |  |  |
 
 
 ### `ThreadModelSetParams`

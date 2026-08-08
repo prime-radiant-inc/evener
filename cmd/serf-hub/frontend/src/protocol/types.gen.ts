@@ -1052,6 +1052,8 @@ export interface ThreadModelRetryParams {
   statusCode?: number;
   message?: string;
   model?: string;
+  groupElapsedMs: number;
+  attemptCap: number;
 }
 
 export interface ThreadModelSetParams {

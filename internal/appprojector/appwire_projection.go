@@ -425,16 +425,18 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// appwire.ThreadModelRetryParams on why 91 rows is the wrong answer).
 		data := eventData[events.ModelRetryData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifySerfThreadModelRetry, appwire.ThreadModelRetryParams{
-			ThreadID:    p.threadID,
-			Ref:         p.ref,
-			TurnID:      p.activeTurnID,
-			Attempt:     data.Attempt,
-			MaxAttempts: data.MaxAttempts,
-			DelayMS:     data.DelayMS,
-			ErrorClass:  data.ErrorClass,
-			StatusCode:  data.StatusCode,
-			Message:     data.Message,
-			Model:       data.Model,
+			ThreadID:       p.threadID,
+			Ref:            p.ref,
+			TurnID:         p.activeTurnID,
+			Attempt:        data.Attempt,
+			MaxAttempts:    data.MaxAttempts,
+			DelayMS:        data.DelayMS,
+			ErrorClass:     data.ErrorClass,
+			StatusCode:     data.StatusCode,
+			Message:        data.Message,
+			Model:          data.Model,
+			GroupElapsedMS: data.GroupElapsedMS,
+			AttemptCap:     data.AttemptCap,
 		})}
 	case events.EventCommunicate:
 		p.skillCandidate = skillActivationCandidate{}

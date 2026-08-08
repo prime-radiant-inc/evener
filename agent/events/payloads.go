@@ -93,14 +93,25 @@ type AssistantTextResetData struct{}
 // StatusCode carry why, so a reader can tell a rate limit from a 503. Message
 // is the provider's own text, already sanitized of credentials by the llm
 // error types.
+//
+// AttemptCap is the honest denominator: MaxAttempts (the full policy budget)
+// until the current retry group has a consume-phase failure, then the
+// early-stop bound the streak rule will actually enforce. Rendering
+// MaxAttempts once that has happened promises retries the early-stop rule
+// won't spend. GroupElapsedMS is wall-clock time since the retry group's
+// first attempt (one model call, spanning every retry within it), so a
+// client can render how long the current call has been running rather than
+// just an attempt count.
 type ModelRetryData struct {
-	Attempt     int    `json:"attempt"`
-	MaxAttempts int    `json:"max_attempts"`
-	DelayMS     int64  `json:"delay_ms"`
-	ErrorClass  string `json:"error_class,omitempty"`
-	StatusCode  int    `json:"status_code,omitempty"`
-	Message     string `json:"message,omitempty"`
-	Model       string `json:"model,omitempty"`
+	Attempt        int    `json:"attempt"`
+	MaxAttempts    int    `json:"max_attempts"`
+	DelayMS        int64  `json:"delay_ms"`
+	ErrorClass     string `json:"error_class,omitempty"`
+	StatusCode     int    `json:"status_code,omitempty"`
+	Message        string `json:"message,omitempty"`
+	Model          string `json:"model,omitempty"`
+	GroupElapsedMS int64  `json:"group_elapsed_ms"`
+	AttemptCap     int    `json:"attempt_cap"`
 }
 
 // ReasoningSummaryDeltaData is the payload for an EventReasoningSummaryDelta

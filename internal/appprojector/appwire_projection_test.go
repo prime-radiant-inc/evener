@@ -2816,13 +2816,15 @@ func TestProjectModelRetryEmitsThreadScopedNotice(t *testing.T) {
 	p.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hi"}})
 
 	out := p.Project(events.SessionEvent{Kind: events.EventModelRetry, SessionID: "th_1", Data: events.ModelRetryData{
-		Attempt:     9,
-		MaxAttempts: 11,
-		DelayMS:     60000,
-		ErrorClass:  "rate_limit",
-		StatusCode:  429,
-		Message:     "rate limit exceeded",
-		Model:       "k3",
+		Attempt:        9,
+		MaxAttempts:    11,
+		DelayMS:        60000,
+		ErrorClass:     "rate_limit",
+		StatusCode:     429,
+		Message:        "rate limit exceeded",
+		Model:          "k3",
+		GroupElapsedMS: 840000,
+		AttemptCap:     4,
 	}})
 
 	var got *appwire.ThreadModelRetryParams
@@ -2850,6 +2852,15 @@ func TestProjectModelRetryEmitsThreadScopedNotice(t *testing.T) {
 	}
 	if got.ErrorClass != "rate_limit" || got.StatusCode != http.StatusTooManyRequests {
 		t.Errorf("errorClass/status = %q/%d, want rate_limit/429", got.ErrorClass, got.StatusCode)
+	}
+	// The honest denominator (AttemptCap) and per-call elapsed time
+	// (GroupElapsedMS) must ride the wire unchanged — clients cannot render
+	// "9/11" against a budget the early-stop rule already cut to 4.
+	if got.GroupElapsedMS != 840000 {
+		t.Errorf("GroupElapsedMS = %d, want 840000", got.GroupElapsedMS)
+	}
+	if got.AttemptCap != 4 {
+		t.Errorf("AttemptCap = %d, want 4", got.AttemptCap)
 	}
 
 	// A retry must not manufacture a transcript item.

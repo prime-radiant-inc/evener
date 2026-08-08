@@ -1571,17 +1571,26 @@ type AgentMessageResetParams struct {
 // Attempt counts retries, so the first retry is 1. MaxAttempts is the whole
 // budget including the initial try, so "attempt 9 of 11" renders without the
 // client knowing the retry policy.
+//
+// AttemptCap is the honest denominator to render instead of MaxAttempts once
+// it differs: the full policy budget until the current retry group has a
+// consume-phase failure, then the early-stop bound that will actually govern
+// it. GroupElapsedMS is wall-clock time since the retry group's first
+// attempt (one model call), so a client can render how long the call has
+// been running.
 type ThreadModelRetryParams struct {
-	ThreadID    string `json:"threadId"`
-	Ref         string `json:"ref"`
-	TurnID      string `json:"turnId,omitempty"`
-	Attempt     int    `json:"attempt"`
-	MaxAttempts int    `json:"maxAttempts"`
-	DelayMS     int64  `json:"delayMs"`
-	ErrorClass  string `json:"errorClass,omitempty"`
-	StatusCode  int    `json:"statusCode,omitempty"`
-	Message     string `json:"message,omitempty"`
-	Model       string `json:"model,omitempty"`
+	ThreadID       string `json:"threadId"`
+	Ref            string `json:"ref"`
+	TurnID         string `json:"turnId,omitempty"`
+	Attempt        int    `json:"attempt"`
+	MaxAttempts    int    `json:"maxAttempts"`
+	DelayMS        int64  `json:"delayMs"`
+	ErrorClass     string `json:"errorClass,omitempty"`
+	StatusCode     int    `json:"statusCode,omitempty"`
+	Message        string `json:"message,omitempty"`
+	Model          string `json:"model,omitempty"`
+	GroupElapsedMS int64  `json:"groupElapsedMs"`
+	AttemptCap     int    `json:"attemptCap"`
 }
 
 // ToolOutputDeltaParams is the params shape for the item/toolOutput/delta

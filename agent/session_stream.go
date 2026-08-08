@@ -52,18 +52,44 @@ type attemptObservation struct {
 	SalvagedBytes int
 }
 
+// modelRetryFailFastAfter mirrors callModel's RetryStreamOptions.FailFastAfter
+// (llm/stream_retry.go's streak-rule budget). Duplicated as a named constant
+// here rather than read off callModel's literal because callModel's retry
+// closure is out of scope for this change; keep the two in sync by hand if
+// the streak budget ever changes.
+const modelRetryFailFastAfter = 4
+
 // emitModelRetry builds the RetryPolicy.OnRetry hook that reports each retry of
 // req on the session event bus. Attempt counts retries (the first retry is 1);
 // MaxAttempts is the full budget including the initial try, so a consumer can
 // render "attempt 9 of 11" without knowing the policy.
-func (s *Session) emitModelRetry(policy llm.RetryPolicy, req llm.Request) func(error, int, time.Duration) {
+//
+// group is the retry group the in-flight callModel invocation is building —
+// not yet appended to the round recorder's Groups slice, so reading it here
+// needs no lock: emitModelRetry runs synchronously on the turn goroutine
+// (RetryStream's own loop, no goroutines spawned), the same goroutine that
+// owns group until callModel returns it to its caller. It drives two honesty
+// fields: AttemptCap, the policy's full budget until a consume-phase failure
+// (PhaseConsume or PhaseSilentStall — both count toward the streak rule) has
+// landed in the group, then the early-stop bound, so the chip never promises
+// retries the streak rule won't spend; and GroupElapsedMS, wall-clock time
+// since this call to emitModelRetry (made once per retry group), so a client
+// can render how long the current model call has been running.
+func (s *Session) emitModelRetry(policy llm.RetryPolicy, req llm.Request, group *groupRecord) func(error, int, time.Duration) {
+	groupStart := time.Now()
 	return func(err error, attempt int, delay time.Duration) {
+		attemptCap := max(policy.MaxRetries, 0) + 1
+		if group != nil && group.hasConsumePhaseFailure() {
+			attemptCap = modelRetryFailFastAfter
+		}
 		data := events.ModelRetryData{
-			Attempt:     attempt,
-			MaxAttempts: max(policy.MaxRetries, 0) + 1,
-			DelayMS:     delay.Milliseconds(),
-			ErrorClass:  llm.Kind(err).String(),
-			Model:       req.Model,
+			Attempt:        attempt,
+			MaxAttempts:    max(policy.MaxRetries, 0) + 1,
+			DelayMS:        delay.Milliseconds(),
+			ErrorClass:     llm.Kind(err).String(),
+			Model:          req.Model,
+			GroupElapsedMS: time.Since(groupStart).Milliseconds(),
+			AttemptCap:     attemptCap,
 		}
 		if err != nil {
 			data.Message = err.Error()
@@ -86,7 +112,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 	// alike. Without it the whole retry chain is silent on the event bus: a
 	// rejection streams nothing, so the assistant-text reset (which needs partial
 	// output) never fires and a long rate limit is indistinguishable from a hang.
-	policy.OnRetry = s.emitModelRetry(policy, req)
+	policy.OnRetry = s.emitModelRetry(policy, req, group)
 	if profile.SupportsStreaming() {
 		// Retry the whole open+consume cycle: a retryable failure can surface
 		// at stream open (connect/4xx-5xx) OR mid-stream (truncation, after the
