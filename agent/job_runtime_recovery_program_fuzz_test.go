@@ -758,11 +758,11 @@ func jrrpAssertPrunedOutputLifecycle(t *testing.T, p jrrpProgram) {
 	t.Helper()
 	s := newTestSession(t)
 	jm := s.jobManager
-	origOpenOutput := jm.openOutput
-	jm.openOutput = func(path string, _ int64) (*jobstore.OutputStore, error) {
-		return jobstore.OpenOutputNoSync(path, 64)
+	origCreateOutput := jm.createOutput
+	jm.createOutput = func(path string, _ int64) (*jobstore.OutputStore, error) {
+		return jobstore.CreateOutputNoSync(path, 64)
 	}
-	defer func() { jm.openOutput = origOpenOutput }()
+	defer func() { jm.createOutput = origCreateOutput }()
 
 	rec, err := jm.createShell(createShellOpts{Command: "retained-tail"})
 	if err != nil {
@@ -848,7 +848,7 @@ func jrrpAssertStructuredProjection(t *testing.T, p jrrpProgram) {
 func jrrpAssertRestartReconciliation(t *testing.T, p jrrpProgram) {
 	t.Helper()
 	stateDir := t.TempDir()
-	original, err := newJobManagerNoSync(stateDir, "RESTART", nil)
+	original, err := newJobManagerNoSync(stateDir, testOwnerSessionID, nil)
 	if err != nil {
 		t.Fatalf("new original job manager: %v", err)
 	}
@@ -874,7 +874,7 @@ func jrrpAssertRestartReconciliation(t *testing.T, p jrrpProgram) {
 	}
 
 	var notifications []jobNotification
-	restarted, err := newJobManagerNoSync(stateDir, "RESTART", func(n jobNotification) {
+	restarted, err := newJobManagerNoSync(stateDir, testOwnerSessionID, func(n jobNotification) {
 		notifications = append(notifications, n)
 	})
 	if err != nil {
