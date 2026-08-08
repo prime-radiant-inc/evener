@@ -119,9 +119,9 @@ both UIs clear the chip on the first delta
   those arrive mid-grind (a user steering "are you stuck?" completes a
   systemMessage item), and clearing there re-creates the vanishing-chip
   bug this component exists to fix.
-- Rendering: `provider error · attempt 3/4 · retrying in 32s · 14m on
-  this call` (waiting) / `… · in progress · 14m on this call`
-  (streaming). The elapsed label is per retry group (one model call), not
+- Rendering (Jesse 2026-08-08: em-dash separators on both surfaces):
+  `provider error — attempt 3/4 — retrying in 32s — 14m on this call`
+  (waiting) / `… — in progress — 14m on this call` (streaming). The elapsed label is per retry group (one model call), not
   per turn. Two honesty rules:
   - **The denominator must be the effective bound.** `ModelRetryData`
     gains `AttemptCap`: the policy budget while the group has only
