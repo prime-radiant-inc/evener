@@ -1165,6 +1165,7 @@ func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestore
 	if !ok {
 		return nil, errors.New("invalid delegate restore working_dir")
 	}
+	lockedLane := false
 	if strings.TrimSpace(desc.Isolation) == "worktree" {
 		// §7 revival re-lock: a kept (unlocked) lane re-takes its serf:dlg:
 		// lock before the child resumes; a foreign lock (someone switched in
@@ -1174,6 +1175,7 @@ func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestore
 		if err := s.reacquireDelegateWorktreeLock(workDir, delegateID); err != nil {
 			return nil, err
 		}
+		lockedLane = true
 	}
 	childEnv := env
 	if le, ok := env.(*execenv.LocalExecutionEnvironment); ok {
@@ -1189,9 +1191,18 @@ func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestore
 		// session tmp.
 		rp, reason := s.resolveRestoredDelegateSandbox(desc, clone)
 		if reason != "" {
+			// A late failure after the §7 re-lock above leaves nothing to own the
+			// lock: this restore never produces a tracked delegate, so unless the
+			// lock is released here it is permanently orphaned.
+			if lockedLane {
+				s.releaseDelegateWorktreeLock(workDir, delegateID)
+			}
 			return nil, fmt.Errorf("delegate restore: %s", reason)
 		}
 		if err := enableRestoredDelegateSandbox(clone, rp); err != nil {
+			if lockedLane {
+				s.releaseDelegateWorktreeLock(workDir, delegateID)
+			}
 			return nil, fmt.Errorf("delegate restore: %s: %w", notResumableSandboxUnsatisfiable, err)
 		}
 		childEnv = clone
@@ -1212,23 +1223,10 @@ func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestore
 // if someone has switched in meanwhile") — never co-occupy a live delegate
 // resume the way a plain session restore's ActWarnCoOccupy does.
 func (s *Session) reacquireDelegateWorktreeLock(lanePath, delegateID string) error {
-	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
-	if !ok {
-		return errors.New("delegate isolation worktree revival requires a local execution environment")
-	}
-	rootedAtLane := local.WithWorkingDirectory(lanePath)
-	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
-	if mainRoot == "" {
-		return fmt.Errorf("delegate isolation worktree %s is no longer part of a git repository", lanePath)
-	}
-	controlEnv := local.WithWorkingDirectory(mainRoot)
-	if err := controlEnv.SandboxReRootError(); err != nil {
+	run, err := s.delegateWorktreeControlRunner(lanePath)
+	if err != nil {
 		return err
 	}
-	if err := s.useDelegateWorktreeControlPolicy(controlEnv, mainRoot); err != nil {
-		return err
-	}
-	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	locked, reason, lsErr := lockStateOf(run, lanePath)
 	if lsErr != nil {
 		return fmt.Errorf("delegate isolation worktree %s lock state could not be verified: %w", lanePath, lsErr)
@@ -1252,6 +1250,48 @@ func (s *Session) reacquireDelegateWorktreeLock(lanePath, delegateID string) err
 			occupant = "an unknown owner"
 		}
 		return fmt.Errorf("delegate isolation worktree %s is locked by %s; refusing to revive into it", lanePath, occupant)
+	}
+}
+
+// delegateWorktreeControlRunner resolves lanePath's main repo root and returns a
+// git runner rooted there, honoring the control-side sandbox re-root/policy
+// checks the delegate lock operations share. It is the common setup behind both
+// re-acquiring a lane's lock on revival and releasing it again on a restore
+// failure that leaves nothing to own it.
+func (s *Session) delegateWorktreeControlRunner(lanePath string) (worktree.GitRunner, error) {
+	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		return nil, errors.New("delegate isolation worktree revival requires a local execution environment")
+	}
+	rootedAtLane := local.WithWorkingDirectory(lanePath)
+	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
+	if mainRoot == "" {
+		return nil, fmt.Errorf("delegate isolation worktree %s is no longer part of a git repository", lanePath)
+	}
+	controlEnv := local.WithWorkingDirectory(mainRoot)
+	if err := controlEnv.SandboxReRootError(); err != nil {
+		return nil, err
+	}
+	if err := s.useDelegateWorktreeControlPolicy(controlEnv, mainRoot); err != nil {
+		return nil, err
+	}
+	return s.newWorktreeGitRunner(context.Background(), controlEnv), nil
+}
+
+// releaseDelegateWorktreeLock unlocks a lane this session just (re)acquired via
+// reacquireDelegateWorktreeLock, for a restore that re-locked the lane and then
+// failed at a later step: with no tracked delegate to hand the lock to, nothing
+// else will ever release it. Best-effort — a restore is already failing for a
+// different reason, so a release failure is reported as a warning rather than
+// added to that error.
+func (s *Session) releaseDelegateWorktreeLock(lanePath, delegateID string) {
+	run, err := s.delegateWorktreeControlRunner(lanePath)
+	if err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate isolation worktree %s lock could not be released after a failed restore: %v", lanePath, err)})
+		return
+	}
+	if _, err := run("worktree", "unlock", lanePath); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate isolation worktree %s lock could not be released after a failed restore: %v", lanePath, err)})
 	}
 }
 
