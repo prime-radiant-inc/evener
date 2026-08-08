@@ -91,7 +91,7 @@ func jdaf100CreateAttachRollback(t *testing.T) {
 	rig := newWtDlgRepo(t, client)
 	jm := rig.s.jobManager
 	openErr := errors.New("seed output open failure")
-	jm.openOutput = func(string, int64) (*jobstore.OutputStore, error) {
+	jm.createOutput = func(string, int64) (*jobstore.OutputStore, error) {
 		return nil, openErr
 	}
 
