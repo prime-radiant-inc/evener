@@ -2,6 +2,10 @@ package serf_test
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,6 +93,7 @@ func TestRuntimeBuildFixtureEnvironmentDropsAmbientHarnessControls(t *testing.T)
 		"SERF_TEST_NODE_READY",
 		"SERF_TEST_NODE_TERM",
 		"SERF_TEST_NODE_RELEASE",
+		"SERF_TEST_NODE_READY_FD",
 	}
 	for _, name := range controlNames {
 		t.Setenv(name, "ambient-value")
@@ -382,6 +387,8 @@ func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
 }
 
 func TestMakeTestWebBrowserInterruptWaitsForNodeCleanup(t *testing.T) {
+	const hangWatchdog = 30 * time.Second
+
 	fixture := newBuildWebFixture(t)
 	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
@@ -400,29 +407,59 @@ func TestMakeTestWebBrowserInterruptWaitsForNodeCleanup(t *testing.T) {
 		"SERF_TEST_NODE_PID="+pidPath,
 		"SERF_TEST_NODE_TERM="+termPath,
 		"SERF_TEST_NODE_RELEASE="+releasePath,
+		"SERF_TEST_NODE_READY_FD=3",
 	)
+	readyReader, readyWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create held Node readiness pipe: %v", err)
+	}
+	command.ExtraFiles = []*os.File{readyWriter}
 	var output bytes.Buffer
 	command.Stdout = &output
 	command.Stderr = &output
 	if err := command.Start(); err != nil {
+		_ = readyReader.Close()
+		_ = readyWriter.Close()
 		t.Fatalf("start make test-web-browser: %v", err)
 	}
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- command.Wait() }()
-	finished := false
+	readyDone, lifecycleDone := observeHeldBrowserFixtureLifecycle(readyReader)
+	if err := readyWriter.Close(); err != nil {
+		_, cleanupErr := cleanupHeldBrowserFixture(command, waitDone, false, lifecycleDone, releasePath, hangWatchdog)
+		readerErr := readyReader.Close()
+		if cleanupErr != nil {
+			cleanupErr = errors.Join(cleanupErr, readerErr)
+			t.Fatalf("close parent held Node readiness writer: %v; cleanup: %v", err, cleanupErr)
+		}
+		if readerErr != nil {
+			t.Fatalf("close parent held Node readiness writer: %v; close readiness reader: %v", err, readerErr)
+		}
+		t.Fatalf("close parent held Node readiness writer: %v", err)
+	}
+	t.Cleanup(func() { _ = readyReader.Close() })
+	makeWaited := false
+	lifecycleObserved := false
 	t.Cleanup(func() {
-		if finished {
+		if lifecycleObserved {
 			return
 		}
-		writeTestFile(t, releasePath, nil, 0o644)
-		_ = command.Process.Kill()
-		if pidData, err := os.ReadFile(pidPath); err == nil {
-			_ = exec.Command("kill", "-KILL", strings.TrimSpace(string(pidData))).Run()
+		observed, err := cleanupHeldBrowserFixture(command, waitDone, makeWaited, lifecycleDone, releasePath, hangWatchdog)
+		lifecycleObserved = observed
+		if err != nil {
+			t.Errorf("clean held browser fixture: %v; output = %s", err, output.String())
 		}
-		<-waitDone
 	})
-	if !waitForPath(readyPath, 5*time.Second) {
-		t.Fatalf("held browser Node process did not become ready; output = %s", output.String())
+	select {
+	case err := <-readyDone:
+		if err != nil {
+			t.Fatalf("receive held browser Node readiness: %v; output = %s", err, output.String())
+		}
+	case waitErr := <-waitDone:
+		makeWaited = true
+		t.Fatalf("make test-web-browser returned before Node became ready: %v; output = %s", waitErr, output.String())
+	case <-time.After(hangWatchdog):
+		t.Fatalf("held browser Node readiness did not arrive within hang watchdog %s; output = %s", hangWatchdog, output.String())
 	}
 
 	browserRoot := browserEvidenceRoot(t, fixture, heldCommand)
@@ -438,7 +475,7 @@ func TestMakeTestWebBrowserInterruptWaitsForNodeCleanup(t *testing.T) {
 	}
 	select {
 	case waitErr := <-waitDone:
-		finished = true
+		makeWaited = true
 		t.Fatalf("make test-web-browser returned before Node released cleanup: %v; output = %s", waitErr, output.String())
 	default:
 	}
@@ -446,12 +483,17 @@ func TestMakeTestWebBrowserInterruptWaitsForNodeCleanup(t *testing.T) {
 
 	select {
 	case waitErr := <-waitDone:
-		finished = true
+		makeWaited = true
 		if waitErr == nil {
 			t.Fatalf("interrupted make test-web-browser exited zero; output = %s", output.String())
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("make test-web-browser did not return after Node completed cleanup; output = %s", output.String())
+	case <-time.After(hangWatchdog):
+		t.Fatalf("make test-web-browser did not return within hang watchdog %s after Node completed cleanup; output = %s", hangWatchdog, output.String())
+	}
+	observed, err := cleanupHeldBrowserFixture(command, waitDone, makeWaited, lifecycleDone, releasePath, hangWatchdog)
+	lifecycleObserved = observed
+	if err != nil {
+		t.Fatalf("finish held browser fixture cleanup: %v; output = %s", err, output.String())
 	}
 	if retained := fullLogsPath(output.Bytes()); retained != browserRoot {
 		t.Errorf("interrupted browser logs = %q, want retained process-owned root %q; output = %s", retained, browserRoot, output.String())
@@ -466,6 +508,63 @@ func TestMakeTestWebBrowserInterruptWaitsForNodeCleanup(t *testing.T) {
 	nodePID := strings.TrimSpace(string(pidData))
 	if exec.Command("kill", "-0", nodePID).Run() == nil {
 		t.Errorf("interrupted browser Node pid %s is still alive", nodePID)
+	}
+}
+
+func TestFrontendToolchainStubHeldNodeHonorsPreexistingRelease(t *testing.T) {
+	fixture := newBuildWebFixture(t)
+	heldCommand := "scripts/layoutguard/run.mjs"
+	readyPath := filepath.Join(fixture.root, "held-node.ready")
+	pidPath := filepath.Join(fixture.root, "held-node.pid")
+	termPath := filepath.Join(fixture.root, "held-node.term")
+	releasePath := filepath.Join(fixture.root, "held-node.release")
+	writeTestFile(t, releasePath, nil, 0o644)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, filepath.Join(fixture.fakeBin, "node"), heldCommand)
+	command.Dir = fixture.root
+	command.Env = append(fixture.environment(""),
+		"SERF_TEST_NODE_HOLD_COMMAND="+heldCommand,
+		"SERF_TEST_NODE_READY="+readyPath,
+		"SERF_TEST_NODE_PID="+pidPath,
+		"SERF_TEST_NODE_TERM="+termPath,
+		"SERF_TEST_NODE_RELEASE="+releasePath,
+	)
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("held Node ignored a release that existed before startup; output = %s", output)
+	}
+	var exitError *exec.ExitError
+	if !errors.As(err, &exitError) || exitError.ExitCode() != 143 {
+		t.Fatalf("held Node exit = %v, want status 143 after preexisting release; output = %s", err, output)
+	}
+	if _, err := os.Stat(readyPath); err != nil {
+		t.Fatalf("held Node did not publish readiness before honoring release: %v", err)
+	}
+	if _, err := os.Stat(pidPath); err != nil {
+		t.Fatalf("held Node did not publish its pid before honoring release: %v", err)
+	}
+	if _, err := os.Stat(termPath); !os.IsNotExist(err) {
+		t.Fatalf("held Node recorded TERM without receiving it: stat err = %v", err)
+	}
+}
+
+func TestHeldBrowserFixtureLifecycleWithoutNode(t *testing.T) {
+	lifecycleReader, lifecycleWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create empty lifecycle pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = lifecycleReader.Close() })
+	readyDone, lifecycleDone := observeHeldBrowserFixtureLifecycle(lifecycleReader)
+	if err := lifecycleWriter.Close(); err != nil {
+		t.Fatalf("close empty lifecycle writer: %v", err)
+	}
+	if err := <-readyDone; !errors.Is(err, io.EOF) {
+		t.Fatalf("readiness without Node = %v, want EOF", err)
+	}
+	if err := <-lifecycleDone; err != nil {
+		t.Fatalf("lifecycle without Node = %v, want nil", err)
 	}
 }
 
@@ -851,7 +950,9 @@ printf 'browser chatter: %s\n' "$*"
   trap on_term TERM
   printf '%s\n' "$$" > "$SERF_TEST_NODE_PID"
   : > "$SERF_TEST_NODE_READY"
-  while :; do :; done
+  [ "${SERF_TEST_NODE_READY_FD:-}" != 3 ] || printf . >&3
+  while [ ! -f "$SERF_TEST_NODE_RELEASE" ]; do :; done
+  exit 143
 }
 [ "${SERF_TEST_NODE_FAIL_COMMAND:-}" = "$*" ] && {
   printf 'browser failure detail: %s\n' "$*" >&2
@@ -883,6 +984,51 @@ func waitForPath(path string, timeout time.Duration) bool {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return false
+}
+
+func observeHeldBrowserFixtureLifecycle(reader *os.File) (<-chan error, <-chan error) {
+	readyDone := make(chan error, 1)
+	lifecycleDone := make(chan error, 1)
+	go func() {
+		var signal [1]byte
+		_, err := io.ReadFull(reader, signal[:])
+		readyDone <- err
+		if err != nil {
+			lifecycleDone <- nil
+			return
+		}
+		_, err = io.Copy(io.Discard, reader)
+		lifecycleDone <- err
+	}()
+	return readyDone, lifecycleDone
+}
+
+func cleanupHeldBrowserFixture(command *exec.Cmd, waitDone <-chan error, makeWaited bool, lifecycleDone <-chan error, releasePath string, watchdog time.Duration) (bool, error) {
+	var cleanupErrors []error
+	lifecycleObserved := false
+	if err := os.WriteFile(releasePath, nil, 0o644); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("create release: %w", err))
+	}
+	if !makeWaited {
+		if err := command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("kill Make: %w", err))
+		}
+		select {
+		case <-waitDone:
+		case <-time.After(watchdog):
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("Make did not exit within cleanup watchdog %s", watchdog))
+		}
+	}
+	select {
+	case err := <-lifecycleDone:
+		lifecycleObserved = true
+		if err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("observe held Node lifecycle: %w", err))
+		}
+	case <-time.After(watchdog):
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("held Node lifecycle did not finish within cleanup watchdog %s", watchdog))
+	}
+	return lifecycleObserved, errors.Join(cleanupErrors...)
 }
 
 func runRuntimePairBuild(fixture runtimeBuildFixture, failPackage string) ([]byte, error) {
@@ -921,7 +1067,7 @@ func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 			"SERF_TEST_GO_LOG", "SERF_TEST_GO_FAIL_PACKAGE",
 			"SERF_TEST_NPM_FAIL_COMMAND", "SERF_TEST_NPM_HOLD_COMMAND", "SERF_TEST_NPM_PID", "SERF_TEST_NPM_READY",
 			"SERF_TEST_NPM_TRACK_COMMAND", "SERF_TEST_NPM_TRACK_PID", "SERF_TEST_SHELL_KILLED_REAPED", "SERF_TEST_SHELL_WAITED_REAPED",
-			"SERF_TEST_NODE_HOLD_COMMAND", "SERF_TEST_NODE_FAIL_COMMAND", "SERF_TEST_NODE_PID", "SERF_TEST_NODE_READY", "SERF_TEST_NODE_TERM", "SERF_TEST_NODE_RELEASE":
+			"SERF_TEST_NODE_HOLD_COMMAND", "SERF_TEST_NODE_FAIL_COMMAND", "SERF_TEST_NODE_PID", "SERF_TEST_NODE_READY", "SERF_TEST_NODE_TERM", "SERF_TEST_NODE_RELEASE", "SERF_TEST_NODE_READY_FD":
 			continue
 		}
 		environment = append(environment, assignment)
