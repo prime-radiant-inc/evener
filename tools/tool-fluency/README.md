@@ -243,7 +243,13 @@ Unavailable-by-design is not a failure. The report should distinguish:
 - `failed`;
 - `skipped_unavailable`;
 - `blocked_infra`;
+- `blocked_harness`;
 - `semantic_unverified`.
+
+`blocked_harness` means the harness itself failed to launch or run the probe
+(subprocess spawn failure, missing binary, environment issue) before the model
+had any chance to act. Never attribute a `blocked_harness` result to the model
+under test.
 
 ## Oracles
 

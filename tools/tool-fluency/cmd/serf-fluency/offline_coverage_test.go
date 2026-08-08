@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -287,6 +289,37 @@ func TestRunProbeOfflineStates(t *testing.T) {
 	cfg.serfBin = failBin
 	if res := runProbe(cfg, probeFile{ID: "infra"}, 1, nil); res.Status != "blocked_infra" {
 		t.Fatalf("infra result = %#v", res)
+	}
+}
+
+// TestClassifyProbeErrorDistinguishesHarnessFromModel covers kata 73cb(b):
+// a harness-side failure (the runner couldn't even spawn the probe
+// subprocess) must be classified distinctly from a genuine model/tool
+// runtime failure, so reporting never blames the model for plumbing.
+func TestClassifyProbeErrorDistinguishesHarnessFromModel(t *testing.T) {
+	// A spawn failure: the binary doesn't exist, so exec never started it.
+	_, lookErr := exec.LookPath(filepath.Join(t.TempDir(), "definitely-not-a-binary"))
+	if lookErr == nil {
+		t.Fatal("expected LookPath to fail for a nonexistent binary")
+	}
+	category, status := classifyProbeError(lookErr, nil, "")
+	if category != "harness" || status != "blocked_harness" {
+		t.Fatalf("spawn failure classified as category=%q status=%q, want harness/blocked_harness", category, status)
+	}
+
+	// A genuine model/tool runtime failure: the process ran and exited
+	// nonzero, or otherwise failed in a way that isn't a harness plumbing
+	// issue and isn't an infra signal.
+	modelErr := errors.New("exit status 1")
+	category, status = classifyProbeError(modelErr, nil, "")
+	if category != "runtime" || category == "harness" {
+		t.Fatalf("model failure classified as category=%q status=%q, want runtime (not harness)", category, status)
+	}
+
+	// Infra classification still takes precedence over harness/runtime.
+	category, status = classifyProbeError(modelErr, context.DeadlineExceeded, "")
+	if category != "infra" || status != "blocked_infra" {
+		t.Fatalf("timeout classified as category=%q status=%q, want infra/blocked_infra", category, status)
 	}
 }
 

@@ -417,10 +417,9 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 	}
 	if err != nil {
 		res.Error = err.Error()
-		category := "runtime"
-		if ctx.Err() != nil || looksInfraError(stderr.String()) {
-			category = "infra"
-			res.Status = "blocked_infra"
+		category, status := classifyProbeError(err, ctx.Err(), stderr.String())
+		if status != "" {
+			res.Status = status
 		}
 		res.Findings = append(res.Findings, finding{Category: category, Title: "probe command failed", Detail: err.Error()})
 	}
@@ -884,6 +883,30 @@ func resultContains(res probeResult, want string) bool {
 		}
 	}
 	return false
+}
+
+// classifyProbeError decides whether a probe command failure reflects the
+// model/tool under test, or a failure of the harness itself (subprocess
+// spawn failures, timeout/plumbing errors, environment issues). Harness
+// failures must never be attributed to the model in reporting.
+func classifyProbeError(err error, ctxErr error, stderr string) (category, status string) {
+	switch {
+	case ctxErr != nil || looksInfraError(stderr):
+		return "infra", "blocked_infra"
+	case isHarnessSpawnError(err):
+		return "harness", "blocked_harness"
+	default:
+		return "runtime", ""
+	}
+}
+
+// isHarnessSpawnError reports whether err came from the harness failing to
+// launch the probe subprocess at all (missing binary, permission denied,
+// etc.), as opposed to the subprocess running and exiting with a failure
+// that reflects the model/tool under test.
+func isHarnessSpawnError(err error) bool {
+	var execErr *exec.Error
+	return errors.As(err, &execErr)
 }
 
 func looksInfraError(text string) bool {
