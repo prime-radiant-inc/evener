@@ -12,6 +12,7 @@ import {
 import type { ConnectionState } from "../protocol/client";
 import { RequestTimeoutError, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
+import { hydrateThread } from "../protocol/reducer";
 import { FakeClient, type RequestHandler } from "../protocol/testing/fakeClient";
 import type {
   AnyNotification,
@@ -3870,7 +3871,9 @@ test("reset retires an in-flight pin refresh before it can repin the next runtim
   expect(listOptimistic).toHaveBeenCalledWith("stale_ref");
 
   resetThreadsStoreForTests();
-  threadsStore.setState({ threads: new Map([["stale_ref", testThread("stale_ref")]]) });
+  threadsStore.setState({
+    threads: new Map([["stale_ref", hydrateThread(readResponse("stale_ref"), "stale_ref", 1000)]]),
+  });
   finishOldRefresh([]);
   await settleCallerContinuations();
 
