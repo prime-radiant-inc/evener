@@ -214,6 +214,10 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  // Direct assignments are not spies, so restoreAllMocks cannot remove the
+  // mobile viewport fake from the final test in this shared worker.
+  // @ts-expect-error jsdom baseline has no matchMedia.
+  delete window.matchMedia;
   // Every test here writes real durable outbox records into this file's own
   // globalThis.indexedDB instance - the beforeEach above only replaces it
   // BEFORE each test, so whatever the LAST test wrote stays installed as the

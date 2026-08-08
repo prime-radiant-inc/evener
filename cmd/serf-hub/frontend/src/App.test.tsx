@@ -118,6 +118,32 @@ function stubTreeFetch(): void {
   });
 }
 
+function stubDeferredTreeFetch(): { requested: Promise<void>; release: () => void } {
+  let signalRequest!: () => void;
+  let releaseResponse!: (response: Response) => void;
+  const requested = new Promise<void>((resolve) => {
+    signalRequest = resolve;
+  });
+  const response = new Promise<Response>((resolve) => {
+    releaseResponse = resolve;
+  });
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+    if (input !== "/api/tree" || (init?.method ?? "GET") !== "GET" || init?.credentials !== "same-origin") {
+      throw new Error(`unexpected fetch in App.test: ${String(input)}`);
+    }
+    signalRequest();
+    return response;
+  });
+  return {
+    requested,
+    release: () => {
+      releaseResponse(
+        new Response(JSON.stringify(EMPTY_TREE_RESPONSE), { headers: { "Content-Type": "application/json" } }),
+      );
+    },
+  };
+}
+
 // Renders a route to completion so both halves of its lazy-loading cost are
 // already paid by the time a test measures it. The module cache is only the
 // first half: React.lazy keeps a payload of its own that stays uninitialized
@@ -265,13 +291,14 @@ test("renders the app shell (welcome pane) at the default route", async () => {
   expect(screen.queryByText(/connection:/i)).toBeNull();
 });
 
-test("does not show a tree load error while rendering the welcome pane", async () => {
+test("initiates and settles the welcome tree load without an error", async () => {
+  const treeFetch = stubDeferredTreeFetch();
   render(<App />);
-  await screen.findByText("No session open");
-  // The welcome pane renders independently of the tree fetch, and the
-  // sidebar that presents tree errors may be closed on mobile. Join the
-  // store's published in-flight load instead of waiting for incidental rail
-  // copy, then assert the settled state that drives every presentation.
+  // Prove App initiated the request before joining it: calling ensureLoaded()
+  // before this signal could start the request itself and let a boot that no
+  // longer loads the tree pass unnoticed.
+  await treeFetch.requested;
+  treeFetch.release();
   expect(await treeStore.getState().ensureLoaded()).toBe(true);
   const { tree, loading, error } = treeStore.getState();
   expect(tree).not.toBeNull();
