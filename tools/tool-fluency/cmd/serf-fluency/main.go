@@ -415,8 +415,16 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 		res.DurationMS = time.Since(start).Milliseconds()
 		return res
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
-	defer cancel()
+	// timeout <= 0 means no per-probe deadline: deterministic offline tests
+	// run under go test's own -timeout as the hang backstop instead of a
+	// wall-clock budget that load spikes can breach (supersedes the
+	// 2026-07-13 execenv-fixtures record's per-probe guard; kata 73cb).
+	ctx := context.Background()
+	if cfg.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.timeout)
+		defer cancel()
+	}
 	var stdout, stderr bytes.Buffer
 	var err error
 	if cfg.harness == "live" {

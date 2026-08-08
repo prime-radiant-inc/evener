@@ -75,6 +75,14 @@ infrastructure-result classification rather than timeout behavior.
 - Removing the offline probe deadline entirely would turn a broken child process
   into an unbounded test hang. Five seconds keeps the guard while matching other
   subprocess tests in the repository.
+  - **Superseded (Jesse, 2026-08-07, kata 73cb):** the five-second guard itself
+    flaked under host load — the child legitimately ran the whole budget and was
+    killed milliseconds past deadline. `runProbe` now treats `timeout <= 0` as
+    "no per-probe deadline," the deterministic offline test uses it, and `go
+    test`'s own `-timeout` is the hang backstop. The trade accepted: a truly
+    hung child now fails the whole test binary with a goroutine dump instead of
+    a tidy per-probe error. Production runs keep their real deadline (default 8
+    minutes) — the escape hatch is for deterministic offline tests only.
 
 ## Verification
 
