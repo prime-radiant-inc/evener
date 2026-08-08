@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/identifier"
 )
 
@@ -82,6 +84,21 @@ func TestLoadSessionJobOutputTail(t *testing.T) {
 	}
 	if _, found, err := LoadSessionJobOutputTail(dir, sessionID, "job_nope", 0, 4); err != nil || found {
 		t.Errorf("unknown job: found=%v err=%v", found, err)
+	}
+}
+
+// TestLoadSessionJobOutputTailRejectsUnsafeSessionID is a kata 1gc4 sibling
+// site: LoadSessionJobOutputTail joins sessionID into a jobsDir path with no
+// validation on the call, so a traversal-shaped ID must be refused before
+// that join.
+func TestLoadSessionJobOutputTailRejectsUnsafeSessionID(t *testing.T) {
+	dir := t.TempDir()
+	_, found, err := LoadSessionJobOutputTail(dir, "../escaped", "job_x", 0, 4)
+	if !errors.Is(err, schema.ErrInvalidSessionID) {
+		t.Fatalf("LoadSessionJobOutputTail(%q) error = %v, want schema.ErrInvalidSessionID", "../escaped", err)
+	}
+	if found {
+		t.Errorf("LoadSessionJobOutputTail(%q) found = true, want false", "../escaped")
 	}
 }
 

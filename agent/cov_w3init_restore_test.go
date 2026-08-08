@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,24 @@ func w3init_writeJobsJSONL(t *testing.T, stateDir, sessionID string, body []byte
 	}
 	if err := os.WriteFile(filepath.Join(dir, "jobs.jsonl"), body, 0o644); err != nil {
 		t.Fatalf("write jobs.jsonl: %v", err)
+	}
+}
+
+// TestW3Init_Restore_RejectsUnsafeMetaID is a kata 1gc4 sibling site:
+// RestoreSessionFromMetaWithConfig takes meta from the caller, not from a
+// load it performs itself, and joins meta.ID into a transcript path further
+// down (both the fresh-transcript-create and the resume-transcript-open
+// arms) before anything else in this function would validate it. A
+// traversal-shaped ID must be refused up front rather than reaching either
+// join.
+func TestW3Init_Restore_RejectsUnsafeMetaID(t *testing.T) {
+	t.Parallel()
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	meta := schema.SessionMeta{ID: "../escaped", ProfileID: "openai", Model: "gpt-5.2"}
+
+	_, err := RestoreSessionFromMetaWithConfig(w3init_restoreClient(), NewOpenAIProfile("gpt-5.2"), env, meta, RestoreSessionConfig{StateDir: t.TempDir()})
+	if !errors.Is(err, schema.ErrInvalidSessionID) {
+		t.Fatalf("RestoreSessionFromMetaWithConfig(meta.ID=%q) error = %v, want schema.ErrInvalidSessionID", meta.ID, err)
 	}
 }
 

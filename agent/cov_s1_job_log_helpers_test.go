@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/schema"
 )
 
 func s1cov_writeJobLog(t *testing.T, stateDir, sessID string, events ...jobstore.Event) string {
@@ -74,6 +76,19 @@ func TestS1Cov_LoadSessionHistoricalJobRecords_MissingLogEmpty(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(jobsDir(stateDir, "NOLOG"), "jobs.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("missing log created a file: %v", err)
+	}
+}
+
+// TestS1Cov_LoadSessionHistoricalJobRecords_RejectsUnsafeSessionID is a kata
+// 1gc4 sibling site: this exported entry point joins sessionID into a
+// jobsDir path (via jobsDir) with no upstream validator on the call, so a
+// traversal-shaped ID must be refused before that join rather than merely
+// failing to find a file.
+func TestS1Cov_LoadSessionHistoricalJobRecords_RejectsUnsafeSessionID(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	if _, err := LoadSessionHistoricalJobRecords(stateDir, "../escaped"); !errors.Is(err, schema.ErrInvalidSessionID) {
+		t.Fatalf("LoadSessionHistoricalJobRecords(%q) error = %v, want schema.ErrInvalidSessionID", "../escaped", err)
 	}
 }
 

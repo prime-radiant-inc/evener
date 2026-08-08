@@ -56,6 +56,14 @@ func LoadSessionJobActivityTree(stateDir, sessionID string, params appwire.JobsL
 }
 
 func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (activityLoadedBase, error) {
+	// sessionID can arrive here as a descendant ID read out of a persisted job
+	// record (buildActivityContinuationAt), not only as the already-indexed
+	// root, so it must be checked before any join into a path below — the
+	// meta load a couple of lines down validates too, but jobsPath is built
+	// unconditionally right after it regardless of metaErr.
+	if err := schema.ValidateSessionID(sessionID); err != nil {
+		return activityLoadedBase{}, err
+	}
 	meta, metaErr := schema.LoadSessionMeta(stateDir, sessionID)
 	jobsPath := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
 	if _, err := historicalJobsStat(jobsPath); err != nil {

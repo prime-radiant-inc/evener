@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -120,6 +121,22 @@ func TestLoadHistoricalActivityBaseUsageNilWithoutTokenData(t *testing.T) {
 	}
 	if loaded.snapshot.Usage != nil {
 		t.Errorf("snapshot.Usage = %+v, want nil for a transcript with no token data", loaded.snapshot.Usage)
+	}
+}
+
+// TestLoadHistoricalActivityBaseRejectsUnsafeSessionID is a kata 1gc4 sibling
+// site: sessionID here can arrive as a descendant ID pulled out of a
+// persisted job record (buildActivityContinuationAt), not only as an
+// already-indexed root, so it must be refused before either the meta load or
+// the jobs.jsonl path join below it — both of which happen unconditionally,
+// the second one even when the meta load itself fails.
+func TestLoadHistoricalActivityBaseRejectsUnsafeSessionID(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+
+	_, err := loadHistoricalActivityBase(stateDir, "../escaped", true)
+	if !errors.Is(err, schema.ErrInvalidSessionID) {
+		t.Fatalf("loadHistoricalActivityBase(%q) error = %v, want schema.ErrInvalidSessionID", "../escaped", err)
 	}
 }
 

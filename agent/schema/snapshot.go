@@ -47,7 +47,7 @@ var windowsReservedSessionIDs = map[string]bool{
 	"LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
 }
 
-// validateSessionID accepts a session ID only when it is safe to use directly as
+// ValidateSessionID accepts a session ID only when it is safe to use directly as
 // a filename component: 1 to 128 bytes, each an ASCII letter, an ASCII digit,
 // '-' or '_'. Everything else is refused, which is what makes the ID safe to
 // join into a path and safe to key the write lock on:
@@ -72,7 +72,7 @@ var windowsReservedSessionIDs = map[string]bool{
 // previous meta first and that load validates. Checking at each entry point
 // buys the stronger property: a refused ID takes no write lock and creates no
 // directory, so it leaves the filesystem untouched.
-func validateSessionID(id string) error {
+func ValidateSessionID(id string) error {
 	if id == "" {
 		return fmt.Errorf("session id is empty: %w", ErrInvalidSessionID)
 	}
@@ -114,7 +114,7 @@ var sessionMetaWriteMus [sessionMetaWriteStripes]sync.Mutex
 // The shard key is the session ID, deliberately not the resolved target path:
 // two callers can spell the same state directory differently and must still
 // land on the same lock. It is lowercased first, because a lock may only ever be
-// coarser than the file it guards, and validateSessionID admits "ABC" and "abc"
+// coarser than the file it guards, and ValidateSessionID admits "ABC" and "abc"
 // as distinct IDs that name one file on a case-insensitive filesystem. It needs
 // no path canonicalization: every caller validates first, so no ID reaching here
 // can carry a separator or a "." segment for filepath.Clean to collapse.
@@ -305,7 +305,7 @@ func SaveSessionMeta(dir string, meta SessionMeta) error {
 // in-memory or sandboxed filesystem to exercise persistence without touching
 // real disk.
 func SaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
-	if err := validateSessionID(meta.ID); err != nil {
+	if err := ValidateSessionID(meta.ID); err != nil {
 		return err
 	}
 	lock := sessionMetaWriteLock(meta.ID)
@@ -321,7 +321,7 @@ func AppendSessionObservedBy(dir, workerSessionID, observerSessionID string) err
 }
 
 func appendSessionObservedByWithFS(fs afero.Fs, dir, workerSessionID, observerSessionID string) error {
-	if err := validateSessionID(workerSessionID); err != nil {
+	if err := ValidateSessionID(workerSessionID); err != nil {
 		return err
 	}
 	lock := sessionMetaWriteLock(workerSessionID)
@@ -406,7 +406,7 @@ func stableUnion(existing, added []string) []string {
 
 // loadSessionMetaFS is the filesystem seam beneath LoadSessionMeta.
 func loadSessionMetaFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
-	if err := validateSessionID(id); err != nil {
+	if err := ValidateSessionID(id); err != nil {
 		return SessionMeta{}, err
 	}
 	path := filepath.Join(dir, sessionsSubdir, id+".meta.json")

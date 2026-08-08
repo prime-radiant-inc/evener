@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 )
 
@@ -72,6 +73,9 @@ func jobOutputTailFromWindow(w jobOutputWindow) JobOutputTail {
 // a found job with no output file yet is an empty tail, not an error.
 // beforeBytes has the same paging meaning as Session.JobOutputTail's.
 func LoadSessionJobOutputTail(stateDir, sessionID, jobID string, beforeBytes, maxBytes int64) (JobOutputTail, bool, error) {
+	if err := schema.ValidateSessionID(sessionID); err != nil {
+		return JobOutputTail{}, false, err
+	}
 	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
 	if _, err := historicalJobsStat(path); err != nil {
 		if os.IsNotExist(err) {
