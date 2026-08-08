@@ -473,6 +473,56 @@ func (s *Session) settleFailedRound(terminalErr error) {
 	s.appendSteeringTurn(steering, events.SteeringKindProviderFailure)
 }
 
+// interruptSalvageSteering explains a salvaged draft that a user interrupt, not
+// a provider failure, cut short. It is deliberately one line and deliberately
+// silent about causes and next steps: the user stopped the round, so claiming
+// the provider broke would be a lie, and pushing "continue" would override the
+// very decision the interrupt expressed.
+const interruptSalvageSteering = "This response was interrupted; the content above was produced before the interruption and was not delivered."
+
+// settleInterruptedRound preserves what the round had already produced when a
+// user interrupt cut it short: the salvaged draft plus the one-line interrupt
+// steering that says where it came from. See the spec's "Component 3:
+// partial-preserving settlement", interrupt carve-out.
+//
+// It runs on the turn goroutine — handleModelError's cancellation branch, which
+// is also the only goroutine that appends to the round recorder's groups — so
+// reading them here needs no further synchronization. The interrupt itself
+// arrives asynchronously as a context cancellation; the turn goroutine is where
+// it is OBSERVED, and that is the read this settlement does.
+//
+// A round with nothing salvaged persists nothing, leaving the round loop's own
+// interrupt marker as the sole record, exactly as before.
+func (s *Session) settleInterruptedRound() {
+	s.mu.Lock()
+	closed := s.closingOrClosedLocked()
+	s.mu.Unlock()
+	// A session being torn down has no next round to read the draft, and the
+	// round loop skips its own interrupt marker on the same grounds.
+	if closed {
+		return
+	}
+	// The group's model/provider are read out while BestSalvage's interior
+	// pointer is known live, so nothing downstream holds a pointer into the
+	// recorder's groups.
+	partial, from := s.roundSalvageRecorder().BestSalvage()
+	if from == nil {
+		return
+	}
+	salvaged, model, provider := salvageText(partial), from.Model, from.Provider
+	if salvaged == "" {
+		return
+	}
+	// A draft that did not reach the transcript is a draft the steering's "the
+	// content above" would point at nothing, so the pair settles together or
+	// not at all.
+	if err := s.persistSalvagedTurn(salvaged, model, provider); err != nil {
+		return
+	}
+	s.emitSalvagedTurn(salvaged, model)
+	s.appendSteeringTurn(interruptSalvageSteering, events.SteeringKindInterrupted)
+}
+
 // persistSalvagedTurn records the round's best partial as a normal assistant
 // turn stamped with model/provider provenance ONLY.
 //

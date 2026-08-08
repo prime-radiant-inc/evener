@@ -486,6 +486,11 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 
 	switch dec.Action {
 	case modelErrorCancel:
+		// The interrupt ends the turn, but the partial this round already
+		// streamed is real work; preserve it with interrupt wording that makes
+		// no provider-failure claim. Reaching here means the round produced no
+		// answer of its own, so the draft cannot duplicate a delivered response.
+		s.settleInterruptedRound()
 		return false, err
 	case modelErrorContentFilterRetry:
 		// Content filter recovery: compaction often removes the offending content,

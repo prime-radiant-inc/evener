@@ -304,20 +304,23 @@ func TestSettlement_SalvagedDraftPersistsBeforeSteering(t *testing.T) {
 	}
 }
 
-// TestSettlement_CancelledRoundPersistsNothing: a cancellation is not a provider
-// failure. Even holding a large partial, the round persists neither the salvaged
-// turn nor steering.
-func TestSettlement_CancelledRoundPersistsNothing(t *testing.T) {
+// wantInterruptSteering is the spec's interrupt carve-out wording, spelled out
+// here rather than read from the production constant so the test pins the text
+// a model actually reads.
+const wantInterruptSteering = "This response was interrupted; the content above was produced before the interruption and was not delivered."
+
+// TestSettlement_InterruptWithNoSalvagePersistsNothing: a cancellation is not a
+// provider failure, and one that left nothing salvageable persists nothing at
+// all beyond the round loop's own interrupt marker.
+func TestSettlement_InterruptWithNoSalvagePersistsNothing(t *testing.T) {
 	t.Parallel()
-	draft := strings.Repeat("plan step. ", 1000)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	a := &scriptedStreamAdapter{
 		provider: "openai",
 		script: map[string]func(*llm.ChanStream){
 			"primary": func(st *llm.ChanStream) {
-				st.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "t0"})
-				st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: "t0", Delta: draft})
+				st.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: "weighing options"})
 				cancel()
 				st.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: context.Canceled})
 			},
@@ -342,8 +345,123 @@ func TestSettlement_CancelledRoundPersistsNothing(t *testing.T) {
 		if turn.Kind == schema.TurnAssistant {
 			t.Fatal("cancelled round persisted a salvaged assistant turn")
 		}
+		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), wantInterruptSteering) {
+			t.Fatal("cancelled round persisted interrupt-salvage steering with nothing salvaged")
+		}
 		if turn.SteeringKind != events.SteeringKindInterrupted && turn.Kind == schema.TurnSteering {
 			t.Fatalf("cancelled round persisted steering %q", turn.Message.Text())
+		}
+	}
+}
+
+// TestSettlement_InterruptMidRetryGroupSalvagesPartial covers the spec's
+// interrupt carve-out: a user interrupt lands on a retry whose earlier attempt
+// had already streamed a partial, so the partial is persisted as a model-visible
+// draft followed by a one-line interrupt steering — no provider-failure claim,
+// no failure marker.
+func TestSettlement_InterruptMidRetryGroupSalvagesPartial(t *testing.T) {
+	t.Parallel()
+	draft := strings.Repeat("plan step. ", 500) // ~5.5KB
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var attempts int
+	a := &scriptedStreamAdapter{
+		provider: "openai",
+		script: map[string]func(*llm.ChanStream){
+			"primary": func(st *llm.ChanStream) {
+				attempts++
+				if attempts == 1 {
+					// The first attempt streams the draft and dies mid-stream, so
+					// the group retries with that partial already recorded.
+					streamTextThenFail(draft, llm.NewStreamError("openai", "stream ended without completion", nil))(st)
+					return
+				}
+				// The user interrupts the retry before it produces anything.
+				st.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "t1"})
+				cancel()
+				st.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: context.Canceled})
+			},
+		},
+	}
+	sess := settlementSession(t, a)
+	evs, mu, drained := collectEvents(sess)
+
+	if _, err := sess.ProcessInput(ctx, "write the plan", nil); err == nil {
+		t.Fatal("expected a cancellation error from ProcessInput")
+	}
+	tpath := sess.TranscriptPath()
+	hist := sessionHistory(sess)
+	// Close first, then wait for the collector: ProcessInput returning does not
+	// mean the event consumer has caught up.
+	sess.Close()
+	<-drained
+	captured := snapshotEvents(evs, mu)
+
+	// The salvaged draft, its interrupt steering, and the round loop's own
+	// interrupt marker — and no failure turn, because nothing failed.
+	want := []schema.TurnKind{schema.TurnAssistant, schema.TurnSteering, schema.TurnSteering}
+	assertKinds(t, "history", settledKinds(hist), want)
+	assertKinds(t, "transcript", settledKinds(transcriptTurns(t, tpath)), want)
+
+	salvaged := hist[len(hist)-3]
+	if salvaged.Message.Text() != draft {
+		t.Errorf("salvaged turn carried %d bytes, want the %d-byte draft verbatim", len(salvaged.Message.Text()), len(draft))
+	}
+	if salvaged.ResponseModel != "primary" || salvaged.ResponseProvider == "" {
+		t.Errorf("salvaged turn provenance = model %q provider %q, want the interrupted group's model/provider",
+			salvaged.ResponseModel, salvaged.ResponseProvider)
+	}
+	if salvaged.ResponseID != "" || salvaged.AttemptGroupID != "" || turnHasResponsesContinuationMetadata(salvaged) {
+		t.Error("salvaged turn carries continuation metadata; the next round would try to resume a dead stream")
+	}
+
+	steering := hist[len(hist)-2]
+	if steering.Message.Text() != wantInterruptSteering {
+		t.Errorf("interrupt steering = %q, want %q", steering.Message.Text(), wantInterruptSteering)
+	}
+	if steering.SteeringKind != events.SteeringKindInterrupted {
+		t.Errorf("interrupt steering kind = %q, want %q", steering.SteeringKind, events.SteeringKindInterrupted)
+	}
+	if strings.Contains(steering.Message.Text(), "provider") {
+		t.Errorf("interrupt steering = %q makes a provider-failure claim the user's interrupt does not support", steering.Message.Text())
+	}
+	if !strings.Contains(hist[len(hist)-1].Message.Text(), "The user interrupted the previous turn") {
+		t.Errorf("last turn = %q, want the round loop's interrupt marker", hist[len(hist)-1].Message.Text())
+	}
+
+	// The whole point of the salvaged turn: the model sees its own draft next turn.
+	seen := false
+	for _, m := range expandHistory(hist, replayScope{}) {
+		if m.Role == llm.RoleAssistant && m.Text() == draft {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Error("salvaged draft is not model-visible in the rebuilt history")
+	}
+
+	// Watching clients must end up rendering what the transcript stores.
+	gotEvents := eventKindsOfInterest(captured,
+		events.EventAssistantTextReset,
+		events.EventAssistantTextStart,
+		events.EventAssistantTextDelta,
+		events.EventAssistantTextEnd,
+		events.EventSteeringInjected,
+	)
+	tail := []events.EventKind{
+		events.EventAssistantTextReset,
+		events.EventAssistantTextStart,
+		events.EventAssistantTextDelta,
+		events.EventAssistantTextEnd,
+		events.EventSteeringInjected,
+		events.EventSteeringInjected,
+	}
+	if len(gotEvents) < len(tail) {
+		t.Fatalf("interrupt events = %v, want a tail of %v", gotEvents, tail)
+	}
+	for i, wantKind := range tail {
+		if got := gotEvents[len(gotEvents)-len(tail)+i]; got != wantKind {
+			t.Fatalf("interrupt events = %v, want a tail of %v", gotEvents, tail)
 		}
 	}
 }
