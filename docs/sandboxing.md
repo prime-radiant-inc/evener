@@ -369,10 +369,14 @@ tools that default to deny.)
 
 `--sandbox-net off` governs the **tool plane**:
 
-- Spawned processes get `--unshare-net` — no network interfaces at all, so no TCP,
-  UDP, or DNS.
-- Serf-process tool egress — `web_fetch`, `web_search`, and remote HTTP/SSE MCP
-  servers — is disabled with a legible error.
+- **Model-authored** spawned processes (the shell, `rg`, hook commands) get
+  `--unshare-net` — no network interfaces at all, so no TCP, UDP, or DNS. MCP server
+  subprocesses are the one exception: see "Hooks and MCP under a sandbox" below —
+  they are trusted infrastructure, not model-directed egress, and net=off does not
+  sever them (ruled by Jesse 2026-08-07, kata 83pm).
+- Serf-process tool egress — `web_fetch` and `web_search` — is disabled with a
+  legible error. These are model-directed egress and stay refused under net=off
+  regardless of the kata 83pm MCP carve-out.
 - Provider-native web egress (server-side web search or fetch the provider runs for
   the model) is disabled, and the provider-capability registry **fails closed** for
   unknown capabilities, so `net=off` can't be silently false through a path you
@@ -421,11 +425,20 @@ installed in the plugin cache died with exit 126, "Operation not permitted", and
 took the session's first steering input with it.
 
 - **Hook commands** (SessionStart, PreToolUse, PostToolUse, …) run under the session
-  sandbox, same as any spawned process, with their configured paths granted.
+  sandbox, same as any model-authored spawned process, with their configured paths
+  granted — including staying network-severed under `net=off`.
 - **stdio MCP servers** are spawned under the session sandbox, with the directories
-  holding their programs and script files granted.
-- **Remote (HTTP/SSE) MCP servers** require `--sandbox-net on`; under `net=off`
-  their egress is disabled.
+  holding their programs and script files granted. Unlike a model-authored spawn,
+  their subprocess keeps network access even under `net=off` — they are still
+  kernel-confined on every other axis (filesystem, exec floor, fd hygiene), just not
+  network-unshared.
+- **Remote (HTTP/SSE) MCP servers** are no longer refused under `net=off` — they
+  connect the same as under `net=on`.
+
+> Ruled by Jesse 2026-08-07 (kata 83pm): MCP servers are trusted infrastructure —
+> launched only from config layers the model cannot write (the per-project layer is
+> already excluded below) — so `net=off` does not sever them. Model-directed egress
+> (`web_fetch`/`web_search`) and model-spawned processes remain net-less.
 
 The grant is tightly bounded:
 

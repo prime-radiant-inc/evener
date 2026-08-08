@@ -105,3 +105,45 @@ func TestConfineNilIsIdentity(t *testing.T) {
 		t.Errorf("nil wrapper must be identity, got args=%v dir=%q", cmd.Args, cmd.Dir)
 	}
 }
+
+// TestConfineTrustedInfraKeepsNetworkUnderNetOff pins kata 83pm: MCP servers are
+// trusted infrastructure (launched only from config layers the model cannot
+// write), so under a net=off session policy Confine still severs the network
+// (--unshare-net) for an ordinary spawned process, but ConfineTrustedInfra does
+// NOT — while both retain identical filesystem confinement (the base hardening
+// flags and the worktree bind survive either path).
+func TestConfineTrustedInfraKeepsNetworkUnderNetOff(t *testing.T) {
+	rp, cwd, _ := resolveFixture(t, ModeWorkspaceWrite, false)
+	w, err := NewWrapper(rp, "/usr/bin/bwrap", "/tmp/serf-session")
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+
+	ordinary := exec.Command("/bin/bash", "-c", "echo hi") //nolint:noctx // test-only cmd, never run
+	w.Confine(ordinary, cwd)
+	if !slices.Contains(ordinary.Args, "--unshare-net") {
+		t.Errorf("model-authored spawn must be network-severed under net=off: %v", ordinary.Args)
+	}
+
+	infra := exec.Command("/bin/bash", "-c", "echo hi") //nolint:noctx // test-only cmd, never run
+	w.ConfineTrustedInfra(infra, cwd)
+	if slices.Contains(infra.Args, "--unshare-net") {
+		t.Errorf("trusted-infrastructure spawn (MCP) must keep network under net=off: %v", infra.Args)
+	}
+	// Filesystem confinement is unchanged by the network carve-out.
+	if !slices.Contains(infra.Args, "--unshare-pid") || !hasSeq(infra.Args, "--bind", cwd, cwd) {
+		t.Errorf("trusted-infrastructure spawn must keep filesystem confinement: %v", infra.Args)
+	}
+}
+
+// TestConfineTrustedInfraNilIsIdentity mirrors TestConfineNilIsIdentity for the
+// trusted-infra entry point.
+func TestConfineTrustedInfraNilIsIdentity(t *testing.T) {
+	var w *Wrapper
+	cmd := exec.Command("/bin/echo", "hi") //nolint:noctx // test-only cmd, never run
+	want := slices.Clone(cmd.Args)
+	w.ConfineTrustedInfra(cmd, "/somewhere")
+	if !slices.Equal(cmd.Args, want) || cmd.Dir != "" {
+		t.Errorf("nil wrapper must be identity, got args=%v dir=%q", cmd.Args, cmd.Dir)
+	}
+}
