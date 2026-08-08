@@ -17,6 +17,7 @@ import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer } from "./Composer";
 import { usePendingTurnEntries } from "./queue";
@@ -131,6 +132,7 @@ async function mountComposer(ref: string, overrides: Partial<Thread> = {}): Prom
 }
 
 beforeEach(() => {
+  resetToastStoreForTests();
   globalThis.indexedDB = new IDBFactory();
   localStorage.clear();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -142,6 +144,11 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  // This file mounts the singleton toast region and its relay-recovery test
+  // deliberately pushes an unavailable-send toast. Unmounting only cancels
+  // that toast's timer; it does not remove the queue entry, so retire it here
+  // before another isolate:false file mounts the same region.
+  resetToastStoreForTests();
   // Every test here calls ensureThread(ref) directly for setup - Composer
   // takes its ref as a prop and never calls ensureThread/releaseThread
   // itself, so cleanup()'s unmount leaves that ref refcounted after the LAST

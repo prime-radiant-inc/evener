@@ -91,6 +91,11 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // A mounted Toast owns only its auto-dismiss timer. Unmounting cancels the
+  // timer without removing the record, so the file that pushes model-action
+  // failures must retire its singleton queue before another isolate:false
+  // file mounts the notification region.
+  resetToastStoreForTests();
 });
 
 // The trigger is addressed by a stable testid rather than by its accessible
