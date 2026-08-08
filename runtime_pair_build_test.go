@@ -71,6 +71,10 @@ func TestRuntimePairBuildContainsProcessStateAndPreservesGoCaches(t *testing.T) 
 
 func TestRuntimeBuildFixtureEnvironmentDropsAmbientHarnessControls(t *testing.T) {
 	controlNames := []string{
+		"GNUMAKEFLAGS",
+		"MAKEFLAGS",
+		"MAKELEVEL",
+		"MFLAGS",
 		"SERF_TEST_NPM_FAIL_COMMAND",
 		"SERF_TEST_NPM_HOLD_COMMAND",
 		"SERF_TEST_NPM_PID",
@@ -913,6 +917,7 @@ func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 		name, _, _ := strings.Cut(assignment, "=")
 		switch name {
 		case "PATH", "TMPDIR", "LDFLAGS", "GOPATH", "GOCACHE", "NODE_DISABLE_COMPILE_CACHE",
+			"GNUMAKEFLAGS", "MAKEFLAGS", "MAKELEVEL", "MFLAGS",
 			"SERF_TEST_GO_LOG", "SERF_TEST_GO_FAIL_PACKAGE",
 			"SERF_TEST_NPM_FAIL_COMMAND", "SERF_TEST_NPM_HOLD_COMMAND", "SERF_TEST_NPM_PID", "SERF_TEST_NPM_READY",
 			"SERF_TEST_NPM_TRACK_COMMAND", "SERF_TEST_NPM_TRACK_PID", "SERF_TEST_SHELL_KILLED_REAPED", "SERF_TEST_SHELL_WAITED_REAPED",
