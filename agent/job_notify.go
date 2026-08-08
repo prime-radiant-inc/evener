@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provenance"
 )
@@ -63,6 +64,32 @@ func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 		ExitCode:         rec.ExitCode,
 		Provenance:       provenance.Clone(recordNotificationProvenance(rec)),
 	}
+}
+
+// jobFinishedEventIdentity stamps a job.notification watch's default (thin)
+// jobNotification with the concrete completed job's identity, read straight
+// off the triggering EventJobFinished payload rather than a store record — a
+// self/parent-target watch fires under jm.mu (job_watch.go's onSessionEvent),
+// where a jobNotificationFromRecord-style store read would deadlock against
+// jm.liveJobRecords. jobs.go's emitJobFinished builds that payload from the
+// same job record jobNotificationFromRecord reads at terminal-flush time, so
+// this mirrors that mapping instead of diverging into a second, thinner
+// notification shape (kata 673k: without it, self-watch JOB_FINISHED frames
+// carry job_id="" and no way to tell which of several concurrent jobs
+// finished).
+func jobFinishedEventIdentity(n jobNotification, data events.JobFinishedData) jobNotification {
+	n.JobID = data.JobID
+	n.JobType = data.JobType
+	n.Description = firstNonEmptyJobString(data.Task, data.Command)
+	n.Status = data.Status
+	n.Reason = data.Reason
+	n.ExhaustionBudget = data.ExhaustionBudget
+	n.ExhaustionLimit = data.ExhaustionLimit
+	n.Resumable = data.Resumable
+	n.TranscriptRef = data.TranscriptRef
+	n.OutputBytes = data.OutputBytes
+	n.ExitCode = data.ExitCode
+	return n
 }
 
 // notificationExcerpt is a rendered terminal-result excerpt plus whether it
