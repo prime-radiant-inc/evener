@@ -412,41 +412,8 @@ func partialJSONStringField(raw, field string) (string, bool) {
 	if !strings.HasPrefix(rest, `"`) {
 		return "", false
 	}
-	rest = rest[1:]
-
-	var b strings.Builder
-	for len(rest) > 0 {
-		ch := rest[0]
-		if ch == '"' {
-			return b.String(), true
-		}
-		if ch == '\\' {
-			if len(rest) >= 2 && rest[1] == '/' {
-				b.WriteByte('/')
-				rest = rest[2:]
-				continue
-			}
-			if strings.HasPrefix(rest, `\u`) {
-				r, tail, ok := unquoteJSONUnicodeEscape(rest)
-				if !ok {
-					return b.String(), true
-				}
-				b.WriteRune(r)
-				rest = tail
-				continue
-			}
-			r, _, tail, err := strconv.UnquoteChar(rest, '"')
-			if err != nil {
-				return b.String(), true
-			}
-			b.WriteRune(r)
-			rest = tail
-			continue
-		}
-		b.WriteByte(ch)
-		rest = rest[1:]
-	}
-	return b.String(), true
+	value, _, _ := scanPartialJSONStringBody(rest[1:])
+	return value, true
 }
 
 func unquoteJSONUnicodeEscape(rest string) (rune, string, bool) {
