@@ -3827,6 +3827,56 @@ test("reset retires an in-flight dispatcher's persistence callback", async () =>
   expect(persisted).toEqual([]);
 });
 
+test("reset retires an in-flight pin refresh before it can repin the next runtime", async () => {
+  const oldStorage = new MutationOutboxIndexedDB();
+  const realListOutbox = oldStorage.listOutbox.bind(oldStorage);
+  let holdRefresh = false;
+  let finishOldRefresh!: (records: Awaited<ReturnType<MutationOutboxIndexedDB["listOutbox"]>>) => void;
+  const oldRefresh = new Promise<Awaited<ReturnType<MutationOutboxIndexedDB["listOutbox"]>>>((resolve) => {
+    finishOldRefresh = resolve;
+  });
+  let oldRefreshStarted!: () => void;
+  const refreshStarted = new Promise<void>((resolve) => {
+    oldRefreshStarted = resolve;
+  });
+  const listOutbox = vi.spyOn(oldStorage, "listOutbox").mockImplementation((targetRef) => {
+    if (!holdRefresh) return realListOutbox(targetRef);
+    oldRefreshStarted();
+    return oldRefresh;
+  });
+  setMutationStorageForTests(oldStorage);
+  await readMutationPersistence();
+  const listOptimistic = vi.spyOn(oldStorage, "listOptimistic").mockResolvedValue([]);
+  const oldClient = connectFakeClient("connecting");
+  holdRefresh = true;
+  oldClient.emitNotification({
+    method: "item/completed",
+    params: {
+      threadId: "thr_stale_ref",
+      ref: "stale_ref",
+      turnId: "turn_1",
+      item: {
+        type: "commandExecution",
+        id: "item_1",
+        turnId: "turn_1",
+        clientMutationId: "old-mutation",
+        output: "done",
+        status: "completed",
+      },
+    },
+  });
+  await refreshStarted;
+  expect(listOutbox).toHaveBeenCalledWith("stale_ref");
+  expect(listOptimistic).toHaveBeenCalledWith("stale_ref");
+
+  resetThreadsStoreForTests();
+  threadsStore.setState({ threads: new Map([["stale_ref", testThread("stale_ref")]]) });
+  finishOldRefresh([]);
+  await settleCallerContinuations();
+
+  expect(threadsStore.getState().threads.has("stale_ref")).toBe(true);
+});
+
 test("reset retires a ready scan before it can pin refs in the next runtime", async () => {
   const oldStorage = new MutationOutboxIndexedDB();
   let finishOldReadyScan!: (targetRefs: string[]) => void;

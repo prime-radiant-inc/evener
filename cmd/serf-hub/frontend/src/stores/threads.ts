@@ -385,6 +385,7 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
       runtime.storage.listOutbox(targetRef),
       runtime.storage.listOptimistic(targetRef),
     ]);
+    if (!isCurrentMutationRuntime(runtime)) return;
     if (outbox.length > 0) {
       pinnedMutationRefs.add(targetRef);
       continue;
