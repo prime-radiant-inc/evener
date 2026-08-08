@@ -546,7 +546,7 @@ func (s *Session) settleInterruptedRound() {
 // one of those fields empty.
 //
 // On success it latches markSalvagedTurnPersisted, the signal a delegating
-// parent reads (hasSalvagedTurnPersisted) after this session fails as a child
+// parent reads (hasSalvageFromFinalRound) after this session fails as a child
 // to decide whether its result should point at resuming the draft.
 func (s *Session) persistSalvagedTurn(salvaged, model, provider string) error {
 	if err := s.appendAssistantTurn(llm.Response{

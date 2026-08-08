@@ -24,6 +24,14 @@ import (
 // budget — decide when a group gives up.
 func settlementSession(t *testing.T, a *scriptedStreamAdapter, fallbacks ...string) *Session {
 	t.Helper()
+	return settlementSessionWithContentClock(t, a, nil, fallbacks...)
+}
+
+// settlementSessionWithContentClock is settlementSession with the content-window
+// clock injected, so a test can present the ≥60s window the cap early-stop rule
+// keys on without waiting a real minute. A nil clock keeps the wall clock.
+func settlementSessionWithContentClock(t *testing.T, a *scriptedStreamAdapter, contentClock func() time.Time, fallbacks ...string) *Session {
+	t.Helper()
 	dir := t.TempDir()
 	policy := llm.RetryPolicy{MaxRetries: 10, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond}
 	return newSession(t,
@@ -36,7 +44,7 @@ func settlementSession(t *testing.T, a *scriptedStreamAdapter, fallbacks ...stri
 			LLMRetryPolicy:   &policy,
 			LLMSleep:         func(context.Context, time.Duration) error { return nil },
 			ModelFallbacks:   fallbacks,
-			testOnly:         testConfig{metaFS: afero.NewMemMapFs()},
+			testOnly:         testConfig{metaFS: afero.NewMemMapFs(), contentWindowClock: contentClock},
 		}),
 	)
 }

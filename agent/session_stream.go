@@ -249,8 +249,12 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	// actually discriminates a cap-shaped cutoff from a stall).
 	var firstContent, lastContent time.Time
 	contentSeen := false
+	contentClock := s.cfg.testOnly.contentWindowClock
+	if contentClock == nil {
+		contentClock = time.Now
+	}
 	noteContent := func() {
-		now := time.Now()
+		now := contentClock()
 		if !contentSeen {
 			firstContent = now
 			contentSeen = true

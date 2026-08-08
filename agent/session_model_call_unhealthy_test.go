@@ -13,16 +13,17 @@ import (
 )
 
 // scriptedStreamAdapter answers Stream per model: either a rejection at open or
-// a scripted event sequence. It records every model it was asked for, in order,
-// so a fallback-chain test can assert which groups ran and how many attempts
-// each burned.
+// a scripted event sequence. It records every request it was asked for, in
+// order, so a fallback-chain test can assert which groups ran and how many
+// attempts each burned, and an integration test can assert what history a later
+// turn actually sent.
 type scriptedStreamAdapter struct {
 	provider string
 	openErr  map[string]error
 	script   map[string]func(*llm.ChanStream)
 
-	mu     sync.Mutex
-	models []string
+	mu       sync.Mutex
+	requests []llm.Request
 }
 
 func (a *scriptedStreamAdapter) Name() string { return a.provider }
@@ -34,7 +35,7 @@ func (a *scriptedStreamAdapter) Complete(ctx context.Context, req llm.Request) (
 
 func (a *scriptedStreamAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	a.mu.Lock()
-	a.models = append(a.models, req.Model)
+	a.requests = append(a.requests, req)
 	openErr := a.openErr[req.Model]
 	script := a.script[req.Model]
 	a.mu.Unlock()
@@ -56,9 +57,19 @@ func (a *scriptedStreamAdapter) Stream(ctx context.Context, req llm.Request) (ll
 
 // Models returns the models streamed, in call order.
 func (a *scriptedStreamAdapter) Models() []string {
+	reqs := a.Requests()
+	models := make([]string, 0, len(reqs))
+	for _, req := range reqs {
+		models = append(models, req.Model)
+	}
+	return models
+}
+
+// Requests returns the requests streamed, in call order.
+func (a *scriptedStreamAdapter) Requests() []llm.Request {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return append([]string(nil), a.models...)
+	return append([]llm.Request(nil), a.requests...)
 }
 
 // streamThenFail scripts one attempt that emits text and then dies mid-stream —

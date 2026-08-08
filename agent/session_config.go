@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"time"
 
 	"github.com/spf13/afero"
 
@@ -382,6 +383,16 @@ type testConfig struct {
 	// already use). Tests inject afero.NewMemMapFs() to avoid real fsync-bearing
 	// meta-file IO; nil in production.
 	metaFS afero.Fs
+
+	// contentWindowClock, when non-nil, is the clock consumeModelStream reads
+	// to measure an attempt's content-event window (attemptObservation.
+	// ContentWindow). The cap early-stop rule keys on a window of 60 seconds or
+	// more, so reproducing a cap-shaped round against the real clock would cost
+	// a test a real minute per attempt; a stepped clock reproduces one in
+	// milliseconds. It moves nothing else — attempt durations, retry backoff,
+	// and the stall classification still read the wall clock. Nil in
+	// production, where the window is measured against time.Now.
+	contentWindowClock func() time.Time
 }
 
 // spawnConfig holds the SessionConfig fields that only spawnAgent (plus the

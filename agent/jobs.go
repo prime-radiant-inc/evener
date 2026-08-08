@@ -242,7 +242,7 @@ type runningJob struct {
 	structuredCaptureFailed bool
 	structuredCaptured      bool
 	// salvagedDraft is captured once from the child session's
-	// hasSalvagedTurnPersisted latch in finalizeDelegateOnce's prepare(), the
+	// hasSalvageFromFinalRound latch in finalizeDelegateOnce's prepare(), the
 	// same "read once while the child is still live" shape structured uses —
 	// delegateTerminalResult reads it back to decide whether a failed
 	// delegate's result should point the parent at delegate_send instead of a

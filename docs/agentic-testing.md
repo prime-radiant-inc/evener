@@ -841,7 +841,7 @@ do not hand-parse transcript JSONL for comprehension; use
 `serf-doctor transcript`. Raw `jsonl` reads are for byte-level replay
 or debugging the transcript format itself.
 
-Three forensics facts that have each closed an investigation:
+Five forensics facts that have each closed an investigation:
 
 - **The transcript is lossy for broken tool calls.** A tool call whose
   arguments failed JSON parsing is stored with `arguments: {}` — the raw
@@ -860,6 +860,30 @@ Three forensics facts that have each closed an investigation:
   reached the daemon — which localizes a "queued reply never sent" bug
   to the client (e.g. the web outbox) without reading a line of client
   code.
+- **An `ASSISTANT` turn is not proof the user was answered.** When a
+  provider grinds through failing attempts and serf stops early, the
+  round settles whatever the model had already streamed as a normal
+  assistant turn, followed by a `STEERING` turn explaining the failure
+  and the `TURN_FAILURE` marker. In `--format outline` that reads as
+  `ASSISTANT "…"` / `STEERING "The transport cut off your response
+  after ~90s of streaming, twice. …"` / `TURN_FAILURE "provider
+  unhealthy after 2 stream failures …"`. The draft was never delivered
+  to anyone — it is persisted so the NEXT turn's model can reuse it
+  instead of regenerating it. A scenario that counts assistant turns, or
+  reads the last one as the reply, has to skip these. The same trio with
+  no assistant turn (`STEERING "The provider stopped responding
+  mid-stream, 4 times over …"` / `TURN_FAILURE`) is the shape that
+  produced nothing worth keeping.
+- **A stream that died mid-flight still names its cause in
+  api.jsonl.** Meta-providers (openrouter, lunarouter) report upstream
+  rejections as an `{"error": ...}` chunk on an HTTP 200 SSE stream,
+  which the openai-compat adapter decodes into a typed error, so the
+  attempt's `error_message` carries the provider's own code and message
+  rather than the generic `stream ended without completion`. Read them
+  with `serf-doctor apilog "$SID" --errors`, or `--health` for the
+  per-session verdict (`errors_by_class`, `retry_storm_groups` — attempt
+  groups of three or more). The raw chunk is in `response.body.data` if
+  the decoded message is not enough.
 
 ## Falsification debugging — when an assertion fails
 
