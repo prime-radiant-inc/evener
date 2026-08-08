@@ -76,7 +76,11 @@ func (s *Session) emitModelRetry(policy llm.RetryPolicy, req llm.Request) func(e
 	}
 }
 
-func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile *provider.Profile, req llm.Request) (sessionModelResponse, error) {
+// callModel runs one retry group against req's model and records what every
+// attempt did into group, which the caller owns (one group per invocation).
+func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile *provider.Profile, req llm.Request, group *groupRecord) (sessionModelResponse, error) {
+	group.Model = req.Model
+	group.Provider = req.Provider
 	// Announce every retry before its backoff sleep. Both paths below share this
 	// policy, so a rejection at stream open and a mid-stream truncation report
 	// alike. Without it the whole retry chain is silent on the event bus: a
@@ -106,19 +110,33 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 			// RetryStream's non-agent callers, which see no behavior change.
 			FailFastAfter: 4,
 		}, func(ctx context.Context) (llm.AttemptReport, error) {
+			attemptStart := time.Now()
 			st, err := s.client.Stream(ctx, req)
 			if streamUnavailable(err) || (err == nil && st == nil) {
+				// Nothing was attempted against the provider: the call falls
+				// through to the non-streaming path below, so no attempt is
+				// recorded for it.
 				streamUnavailableForProfile = true
 				return llm.AttemptReport{}, nil
 			}
 			if err != nil {
 				// Rejected before or at stream open — open-phase by definition;
 				// consumeModelStream never runs, so it cannot classify this one.
+				group.observe(attemptRecord{Phase: llm.PhaseOpen, Err: err, Duration: time.Since(attemptStart)}, nil)
 				return llm.AttemptReport{Phase: llm.PhaseOpen}, err
 			}
 			var obs attemptObservation
 			var consumeErr error
 			result, obs, consumeErr = s.consumeModelStream(ctx, req, st)
+			// Recorded inside the closure, so the group keeps this attempt's
+			// partial before OnReset discards it ahead of the next one.
+			group.observe(attemptRecord{
+				Phase:         obs.Phase,
+				Err:           consumeErr,
+				Duration:      time.Since(attemptStart),
+				ContentWindow: obs.ContentWindow,
+				SalvagedBytes: obs.SalvagedBytes,
+			}, obs.Partial)
 			return llm.AttemptReport{
 				// obs.Partial != nil is the accumulator's "something was
 				// delivered to the caller" signal — text, communicate

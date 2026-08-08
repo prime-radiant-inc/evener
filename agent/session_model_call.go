@@ -754,11 +754,21 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	req, attempt := singleAttemptRequestMetadata(req)
 	group := llm.NewAPIAttemptGroup(attempt.AttemptGroupID)
 	callCtx := llm.WithAPIAttemptGroup(ctx, group)
-	modelResp, err := s.callModel(callCtx, policy, profile, req)
+	// Each callModel invocation is one retry group; the round's recorder keeps
+	// them all so settlement can see the largest partial the round produced,
+	// whichever group produced it. Groups are appended whole (never held by
+	// pointer across an append) so a later group's growth cannot relocate an
+	// earlier one under a caller holding it.
+	recorder := s.roundSalvageRecorder()
+	var primaryRecord groupRecord
+	modelResp, err := s.callModel(callCtx, policy, profile, req, &primaryRecord)
+	recorder.Groups = append(recorder.Groups, primaryRecord)
 	if err != nil && shouldRetryResponsesContinuationAsFullHistory(req, err) {
 		s.disableResponsesContinuationForRequest(req, profile.SupportsStreaming())
 		retryReq := responsesContinuationFullHistoryFallbackRequest(req)
-		modelResp, err = s.callModel(callCtx, policy, profile, retryReq)
+		var recoveryRecord groupRecord
+		modelResp, err = s.callModel(callCtx, policy, profile, retryReq, &recoveryRecord)
+		recorder.Groups = append(recorder.Groups, recoveryRecord)
 		if err == nil {
 			req = retryReq
 			attempt.RequestModel = retryReq.Model
@@ -830,7 +840,9 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq.PromptCacheKey = ""
 			fbReq.PromptCacheRetention = ""
 			s.applyModelRequestMetadata(profile, &fbReq)
-			modelResp, err = s.callModel(callCtx, policy, fbProfile, fbReq)
+			var fallbackRecord groupRecord
+			modelResp, err = s.callModel(callCtx, policy, fbProfile, fbReq, &fallbackRecord)
+			recorder.Groups = append(recorder.Groups, fallbackRecord)
 			if err == nil {
 				// Reflect the model that actually answered in the
 				// request used for downstream logging (transcript,
@@ -838,6 +850,15 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				req = fbReq
 				attempt.RequestModel = fbReq.Model
 				attempt.HistoryMode = llm.HistoryModeFullHistory
+				break
+			}
+			// An unhealthy verdict indicts the provider's endpoint and
+			// transport, which every same-provider fallback entry shares, so no
+			// remaining entry can route around it. Stopping here also preserves
+			// the verdict as the round's terminal error instead of letting a
+			// later entry's failure win.
+			var unhealthy *llm.ProviderUnhealthyError
+			if errors.As(err, &unhealthy) {
 				break
 			}
 		}

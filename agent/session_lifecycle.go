@@ -1012,6 +1012,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// robust, self-contained way to detect that (rather than trusting the
 		// global count, which a later round should never even reach).
 		askBefore := s.askPendingCount()
+		// Install this round's salvage recorder before anything can fail, so a
+		// round that never reaches its model call cannot settle on the previous
+		// round's partial output.
+		s.beginRoundRecorder()
 		var timings events.RoundTimings
 		timings.Round = round
 

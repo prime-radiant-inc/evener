@@ -234,7 +234,7 @@ type Session struct {
 	//   steeringQueue, activeProvenance, followups, inputQueue,
 	//   loopDetectionCount, the task* reminder counters, depth, the goalInTurn
 	//   flag and kickFunc callback, the naming name-state, envTracker,
-	//   envContextState, and the worktree
+	//   envContextState, currentRoundRecorder, and the worktree
 	//   occupancy fields (worktreeRestoreEnv, worktreeCurrentPath,
 	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub). It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
@@ -307,6 +307,13 @@ type Session struct {
 	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
 	history                       []schema.Turn
 	responsesContinuationDisabled map[responsesContinuationDisabledKey]bool
+
+	// currentRoundRecorder is the in-flight round's salvage recorder: per retry
+	// group, every attempt's stats and the best partial that group streamed.
+	// Installed fresh at each round's start (so a round that fails before its
+	// model call cannot settle on the previous round's partial) and read by the
+	// settlement path after a terminal failure. Guarded by mu.
+	currentRoundRecorder *roundRecorder
 
 	fork forkInfo
 

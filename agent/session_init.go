@@ -1167,6 +1167,14 @@ func (s *Session) revalidateModelFallbacksLocked() []string {
 }
 
 func modelFallbackEligible(err error, policy llm.RetryPolicy) bool {
+	// An unhealthy verdict settles the round: it indicts the provider's endpoint
+	// and transport, which every same-provider fallback entry shares. Decided
+	// here rather than left to llm.Classify, which would walk into the wrapped
+	// attempt error and land wherever that happens to classify.
+	var unhealthy *llm.ProviderUnhealthyError
+	if errors.As(err, &unhealthy) {
+		return false
+	}
 	switch llm.Classify(err) {
 	case llm.ErrorClassPermanent, llm.ErrorClassFallback:
 		return true
