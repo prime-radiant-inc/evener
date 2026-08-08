@@ -4,5 +4,10 @@
   "cssFiles": [
     "styles/tokens.css",
     "dev/theme-flip.module.css"
-  ]
+  ],
+  "mutation": {
+    "declaration": "styles/tokens.css: :root, [data-theme=\"dark\"] { ... } (reverted the selector to :root only, dropping nested-dark-pane scoping from 8b06eb411)",
+    "verified": "2026-08-07",
+    "expect": "fail"
+  }
 }

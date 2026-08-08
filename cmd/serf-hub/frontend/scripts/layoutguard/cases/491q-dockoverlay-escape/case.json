@@ -4,5 +4,10 @@
   "cssFiles": [
     "styles/tokens.css",
     "shell/dockview-theme.css"
-  ]
+  ],
+  "mutation": {
+    "declaration": "shell/dockview-theme.css: .dv-tabs-overflow-container { max-width: 380px }",
+    "verified": "2026-08-07",
+    "expect": "fail"
+  }
 }

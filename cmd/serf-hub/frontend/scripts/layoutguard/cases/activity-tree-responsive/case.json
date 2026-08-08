@@ -15,5 +15,10 @@
     "panes/session/chrome/activitypanel.module.css",
     "widgets/button/button.module.css",
     "widgets/statusdot/statusdot.module.css"
-  ]
+  ],
+  "mutation": {
+    "declaration": "panes/session/chrome/activitypanel.module.css: .panelColumn { overflow-x: hidden; overflow-y: auto } (reverted to overflow: auto)",
+    "verified": "2026-08-07",
+    "expect": "fail"
+  }
 }

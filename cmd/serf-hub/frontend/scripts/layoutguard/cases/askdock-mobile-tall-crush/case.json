@@ -6,5 +6,10 @@
     "widgets/chip/chip.module.css",
     "panes/session/composer/askDock/askquestioncard.module.css",
     "panes/session/composer/askDock/askdock.module.css"
-  ]
+  ],
+  "mutation": {
+    "declaration": "askquestioncard.module.css: .optionChip > span { white-space: nowrap } (chip one-line contract - NOT the .option flex-wrap/.optionChip flex:none pair the origin commit credits, which is decorative for this fixture); askdock.module.css: .dock { max-height: 100%; overflow-y: auto } (containment/scroll contract)",
+    "verified": "2026-08-07",
+    "expect": "fail"
+  }
 }

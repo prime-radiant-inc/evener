@@ -12,5 +12,10 @@
     "height": 900,
     "deviceScaleFactor": 1,
     "mobile": false
+  },
+  "mutation": {
+    "declaration": "widgets/panescaffold/panescaffold.module.css: .footer:has([data-ask-response-dock]) { flex: 0 1 auto } (reverted to flex: 0 1 70%) - askdock.module.css's own .dock { flex: 0 1 auto } (ea60007dd's original fix) is now inert/superseded for this case's assertions since 663f92e33 made the footer content-fit",
+    "verified": "2026-08-07",
+    "expect": "fail"
   }
 }

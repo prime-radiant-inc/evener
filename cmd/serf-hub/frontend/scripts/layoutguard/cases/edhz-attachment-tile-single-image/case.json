@@ -5,5 +5,10 @@
     "styles/tokens.css",
     "styles/global.css",
     "panes/session/composer/composer.module.css"
-  ]
+  ],
+  "mutation": {
+    "declaration": "composer.module.css: .imageThumbnail { height: 100% } (reverted to height: auto)",
+    "verified": "2026-08-07",
+    "expect": "fail"
+  }
 }

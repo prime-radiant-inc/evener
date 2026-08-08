@@ -10,5 +10,10 @@
     "height": 844,
     "deviceScaleFactor": 1,
     "mobile": true
+  },
+  "mutation": {
+    "declaration": "widgets/panescaffold/panescaffold.module.css: .body { flex: 1 1 0 } (reverted to flex: 1 1 auto)",
+    "verified": "2026-08-07",
+    "expect": "fail"
   }
 }

@@ -20,5 +20,10 @@
     { "selector": ".focusModel", "pseudoClasses": ["focus-visible"] },
     { "selector": ".focusGoal", "pseudoClasses": ["focus-visible"] },
     { "selector": ".focusActions", "pseudoClasses": ["focus-visible"] }
-  ]
+  ],
+  "mutation": {
+    "declaration": "statusrow.module.css: .identity > span:first-child { flex: 0 1 auto } (reverted to flex: 1 1 72px) plus modelswitch.module.css: .trigger { width: 100% } (re-verifies c3649a16b's shrink-to-fit fix)",
+    "verified": "2026-08-07",
+    "expect": "fail"
+  }
 }

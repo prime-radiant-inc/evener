@@ -4,5 +4,10 @@
   "cssFiles": [
     "styles/tokens.css",
     "widgets/diffblock/diffblock.module.css"
-  ]
+  ],
+  "mutation": {
+    "declaration": "diffblock.module.css: .content { min-width: 0; overflow: hidden } (BOTH removed together - each alone is independently sufficient via Chrome's flex auto-minimum-zero rule, so a single-property regression would not be caught; noted for Jesse, not fixed)",
+    "verified": "2026-08-07",
+    "expect": "fail"
+  }
 }

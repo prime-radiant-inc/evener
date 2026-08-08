@@ -4,5 +4,10 @@
   "cssFiles": [
     "styles/tokens.css",
     "panes/session/transcript/toolcallitem.module.css"
-  ]
+  ],
+  "mutation": {
+    "declaration": "toolcallitem.module.css: .demoted { color: var(--ink-mid) } (reverted to var(--ink-low))",
+    "verified": "2026-08-07",
+    "expect": "fail"
+  }
 }
