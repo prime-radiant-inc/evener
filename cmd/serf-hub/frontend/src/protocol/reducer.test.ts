@@ -3614,10 +3614,7 @@ test("serf/thread/modelRetry records retry state and leaves lastFrameAt alone", 
 // design.md): the retry state answers "what is happening now, in this retry
 // group" and must survive ordinary mid-grind progress (deltas, a
 // systemMessage announcement completing), clearing only on an actual turn
-// boundary or the completion of a real model-output item. The old rule -
-// clear on ANY frame - made a provider grinding through retries look like the
-// indicator had vanished for no reason (kata 4zn8's own follow-up bug); that
-// is the rule these tests pin the replacement for.
+// boundary or the completion of a real model-output item.
 function retryNotification(turnId: string): AnyNotification {
   return {
     method: "serf/thread/modelRetry",
