@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { probeBrowserCapability } from "./cdp.mjs";
 
 const chromeStartupSentinel = "injected CDP startup failure";
+const injectedChromeBinary = "/test-bin/chrome";
 
 function spawnChromeThatNeverStarts() {
   const proc = new EventEmitter();
@@ -16,12 +17,19 @@ async function failCdpProbe() {
   throw new Error(chromeStartupSentinel);
 }
 
+function probeInjectedChrome(spawnProcess = spawnChromeThatNeverStarts) {
+  return probeBrowserCapability(spawnProcess, failCdpProbe, injectedChromeBinary);
+}
+
 test("probeBrowserCapability includes Chrome binary path in error message on startup failure", async () => {
   await assert.rejects(
-    () => probeBrowserCapability(spawnChromeThatNeverStarts, failCdpProbe),
+    () => probeInjectedChrome(),
     (err) => {
       assert.ok(err.message.includes("Chrome startup failed"), "error should mention Chrome startup failed");
-      assert.ok(err.message.includes("Chrome binary:"), "error should include Chrome binary path");
+      assert.ok(
+        err.message.includes(`Chrome binary: ${injectedChromeBinary}`),
+        "error should include the injected Chrome binary path",
+      );
       assert.ok(err.message.includes(chromeStartupSentinel), "error should include CDP failure");
       return true;
     },
@@ -30,7 +38,7 @@ test("probeBrowserCapability includes Chrome binary path in error message on sta
 
 test("probeBrowserCapability includes launch arguments in error message", async () => {
   await assert.rejects(
-    () => probeBrowserCapability(spawnChromeThatNeverStarts, failCdpProbe),
+    () => probeInjectedChrome(),
     (err) => {
       assert.ok(err.message.includes("Launch args:"), "error should include launch arguments");
       // Verify specific args are included
@@ -43,7 +51,7 @@ test("probeBrowserCapability includes launch arguments in error message", async 
 
 test("probeBrowserCapability includes remediation guidance in error message", async () => {
   await assert.rejects(
-    () => probeBrowserCapability(spawnChromeThatNeverStarts, failCdpProbe),
+    () => probeInjectedChrome(),
     (err) => {
       assert.ok(err.message.includes("To remediate:"), "error should include remediation section");
       assert.ok(
@@ -68,7 +76,7 @@ test("probeBrowserCapability captures and includes stderr in error message when 
   };
 
   await assert.rejects(
-    () => probeBrowserCapability(spawnChromeWithStderr, failCdpProbe),
+    () => probeInjectedChrome(spawnChromeWithStderr),
     (err) => {
       assert.ok(err.message.includes("Chrome stderr:"), "error should include Chrome stderr section");
       assert.ok(err.message.includes("binary not found"), "error should contain captured stderr output");
@@ -79,7 +87,7 @@ test("probeBrowserCapability captures and includes stderr in error message when 
 
 test("probeBrowserCapability includes fallback message when no stderr is captured", async () => {
   await assert.rejects(
-    () => probeBrowserCapability(spawnChromeThatNeverStarts, failCdpProbe),
+    () => probeInjectedChrome(),
     (err) => {
       assert.ok(err.message.includes("no stderr captured"), "error should include fallback when no stderr");
       assert.ok(
@@ -93,7 +101,7 @@ test("probeBrowserCapability includes fallback message when no stderr is capture
 
 test("probeBrowserCapability distinguishes environment failure from test case failure in error", async () => {
   await assert.rejects(
-    () => probeBrowserCapability(spawnChromeThatNeverStarts, failCdpProbe),
+    () => probeInjectedChrome(),
     (err) => {
       assert.ok(
         err.message.includes("environment problem, not a test case failure"),

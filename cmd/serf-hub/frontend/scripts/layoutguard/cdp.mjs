@@ -36,11 +36,15 @@ function findChrome() {
  * identical environment-failure errors.
  * @param {Function} [spawnProcess=spawn] - injectable spawn function for testing
  * @param {Function} [waitForCdpProbe=waitForCdp] - injectable async CDP readiness probe for testing
+ * @param {string} [chromeBin=findChrome()] - injectable Chrome binary path for testing
  * @returns {Promise<{chromeBin: string, args: string[], launchStderr: string}>}
  *   diagnostic info to include if Chrome startup subsequently fails in a case
  */
-export async function probeBrowserCapability(spawnProcess = spawn, waitForCdpProbe = waitForCdp) {
-  const chromeBin = findChrome();
+export async function probeBrowserCapability(
+  spawnProcess = spawn,
+  waitForCdpProbe = waitForCdp,
+  chromeBin = findChrome(),
+) {
   const profileDir = mkdtempSync(path.join(tmpdir(), "layoutguard-chrome-probe-"));
   let port;
   do {
