@@ -133,10 +133,6 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "favorite store error: "+err.Error())
 		return
 	}
-	if err := s.ensureLegacyPinsMigrated(time.Now(), authority); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "pin section store error: "+err.Error())
-		return
-	}
 	revalidation := hubcore.ClassifyFavoriteDecisions(decisions, authority)
 	assignments, err := s.pinSectionAssignments()
 	if err != nil {
@@ -260,35 +256,6 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	annotateTreeResponsePinSections(&resp, bySession)
 
 	writeAPIJSON(w, http.StatusOK, resp)
-}
-
-func (s *WebServer) ensureLegacyPinsMigrated(now time.Time, authority hubcore.FavoriteAuthority) error {
-	if s.cfg.PinSections == nil {
-		return nil
-	}
-	decisions, err := s.favoriteDecisions()
-	if err != nil {
-		return err
-	}
-	classified := hubcore.ClassifyFavoriteDecisions(decisions, authority)
-	legacy := make([]hubcore.LegacyPinDecision, 0, len(decisions))
-	for key := range decisions {
-		if key.Kind != "session" {
-			continue
-		}
-		legacy = append(legacy, hubcore.LegacyPinDecision{
-			StoredID:       key.ID,
-			Classification: classified.Classifications[key],
-		})
-	}
-	changed, err := s.cfg.PinSections.MigrateLegacy(legacy, now)
-	if err != nil {
-		return err
-	}
-	if changed && s.cfg.Inputs != nil {
-		s.cfg.Inputs.Bump()
-	}
-	return nil
 }
 
 func (s *WebServer) pinSectionAssignments() (map[string]hubcore.SessionPin, error) {
@@ -520,10 +487,6 @@ func (s *WebServer) handleAPITreeProject(w http.ResponseWriter, r *http.Request)
 	decisions, err := s.favoriteDecisions()
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "favorite store error: "+err.Error())
-		return
-	}
-	if err := s.ensureLegacyPinsMigrated(time.Now(), authority); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "pin section store error: "+err.Error())
 		return
 	}
 	assignments, err := s.pinSectionAssignments()
