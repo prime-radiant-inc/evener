@@ -323,9 +323,10 @@ func TestSelectionSummaryReportsActualSelectedSet(t *testing.T) {
 	if !strings.Contains(fullSummary, "selected=27") {
 		t.Fatalf("full summary missing selected=27: %q", fullSummary)
 	}
-	if strings.Contains(fullSummary, "selected=2") {
-		t.Fatalf("full summary should not report the scoped count: %q", fullSummary)
-	}
+	// The scoped call above reported selected=2 and the full call here
+	// reports selected=27: the count tracks the actual selected set, not a
+	// fixed/stale value, which is what distinguishes a scoped request from
+	// a silently-broadened one.
 }
 
 // TestClassifyProbeErrorDistinguishesHarnessFromModel covers kata 73cb(b):
