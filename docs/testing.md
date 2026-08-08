@@ -160,6 +160,49 @@ beside the Go test waves. Vitest's host-sized default pool oversubscribed a
 mutation completions past their test deadlines. The fixed upper bound leaves
 capacity for the sibling streams; it does not widen a timeout or replace an
 awaitable completion with polling.
+Vitest file isolation prevents worker-count or file assignment from sharing
+module stores, panes, or mocks; per-file teardown is still required for timers,
+clients, and listeners.
+
+### Whole-system residue audit
+
+On 2026-08-08, Apple container 1.2.2 ran a cold and then warm
+`make build && make test` cycle in one disposable arm64 container from a
+committed-only source archive. The audit image used
+`golang:1.26.5-bookworm` and `node:26.5.0-bookworm`; every filesystem snapshot
+recorded path metadata and every file hash, excluding only the virtual kernel
+filesystems `/proc`, `/sys`, `/dev`, and `/run`.
+
+The cold cycle added 31,792 paths, all beneath these exact declared output and
+reusable-cache roots:
+
+```text
+/work/serf/serf
+/work/serf/serf-hub
+/work/serf/cmd/serf-hub/frontend/dist
+/work/serf/cmd/serf-hub/frontend/node_modules
+/root/.cache/go-build
+/root/.npm
+/go/pkg/mod
+```
+
+The warm comparison added 11 paths and changed 127 existing file hashes, all
+inside those roots. It removed no path, changed no path metadata, and found
+zero undeclared per-run paths. Before, after cold, and after warm, persistent
+processes were only the container init and its `sleep infinity` child (plus the
+ephemeral snapshot command); no listener or Unix socket remained. Explicit
+runtime-home scans also found no Chrome, Chromium, Crashpad, Vite, or browser
+profile residue.
+
+Scratch created by the build and default test streams is owned by the enclosing
+test process: each stream receives private home, temporary, and XDG roots, and
+the runner removes those roots only after its children exit. Browser profiles
+belong to the browser-guard application lifecycle and are removed only after
+the exact Chrome/Vite owners exit; failed cleanup retains that evidence. No
+resumable Serf session owned anything removed in this audit: the cycle launched
+no resumable application session, and continuation state created by tests lived
+inside their process-owned state root. Apple container is diagnostic evidence
+for this contract, not a local or CI gate dependency.
 
 ## The seqfuzz/schemafuzz Family Lives Only in `make test-fuzz`
 
