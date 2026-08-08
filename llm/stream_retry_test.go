@@ -238,3 +238,90 @@ func TestRetryStream_FastRejectTransparent(t *testing.T) {
 		t.Fatalf("calls=%d, want 8", *calls)
 	}
 }
+
+func TestRetryStream_CapStreakResetsOnNonCapAttempt(t *testing.T) {
+	// long, short(<60s consume), long, long: the short attempt in the middle
+	// breaks the cap streak's consecutive-attempt requirement, so the cap
+	// rule must not trip on the 2nd cap-shaped attempt (index 0) pairing with
+	// a later one — it only trips once two cap-shaped attempts land back to
+	// back, which first happens at attempts 3 and 4.
+	long := AttemptReport{Phase: PhaseConsume, ContentWindow: 70 * time.Second}
+	short := AttemptReport{Phase: PhaseConsume, ContentWindow: 10 * time.Second}
+	e := NewStreamError("p", "cut", nil)
+	attempt, calls := attemptScript(t,
+		[]AttemptReport{long, short, long, long}, []error{e, e, e, e})
+	err := RetryStream(context.Background(), RetryStreamOptions{
+		Policy:        RetryPolicy{MaxRetries: 10, BaseDelay: time.Nanosecond, BackoffMultiplier: 1},
+		FailFastAfter: 4,
+	}, attempt)
+	var pu *ProviderUnhealthyError
+	if !errors.As(err, &pu) {
+		t.Fatalf("want ProviderUnhealthyError, got %v", err)
+	}
+	if *calls != 4 || pu.Shape != "cap" {
+		t.Fatalf("calls=%d shape=%q, want 4 calls shape=cap", *calls, pu.Shape)
+	}
+}
+
+func TestRetryStream_CapStreakDoesNotTripAcrossReset(t *testing.T) {
+	// long, short, long: only 3 attempts, so if the cap streak wrongly
+	// survived the short attempt's reset, attempt 1 and attempt 3 would
+	// (wrongly) combine into a trip. The reset must hold, so this rides the
+	// retry budget instead (MaxRetries=2 -> exactly 3 attempts, raw error).
+	long := AttemptReport{Phase: PhaseConsume, ContentWindow: 70 * time.Second}
+	short := AttemptReport{Phase: PhaseConsume, ContentWindow: 10 * time.Second}
+	e := NewStreamError("p", "cut", nil)
+	attempt, calls := attemptScript(t,
+		[]AttemptReport{long, short, long}, []error{e, e, e})
+	err := RetryStream(context.Background(), RetryStreamOptions{
+		Policy:        RetryPolicy{MaxRetries: 2, BaseDelay: time.Nanosecond, BackoffMultiplier: 1},
+		FailFastAfter: 4,
+	}, attempt)
+	var pu *ProviderUnhealthyError
+	if errors.As(err, &pu) {
+		t.Fatalf("cap rule must not trip across a reset, got %v", err)
+	}
+	if *calls != 3 {
+		t.Fatalf("calls=%d, want 3", *calls)
+	}
+}
+
+func TestRetryStream_CapDetectionDisabledWhenZero(t *testing.T) {
+	// FailFastAfter=0 must disable the cap rule too, not just the streak
+	// rule — the earlier disabled-case test only used zero-value
+	// ContentWindow reports, which never exercised the cap-shaped path.
+	long := AttemptReport{Phase: PhaseConsume, ContentWindow: 70 * time.Second}
+	e := NewStreamError("p", "cut", nil)
+	attempt, calls := attemptScript(t, []AttemptReport{long, long, long, long}, []error{e, e, e, e})
+	err := RetryStream(context.Background(), RetryStreamOptions{
+		Policy: RetryPolicy{MaxRetries: 3, BaseDelay: time.Nanosecond, BackoffMultiplier: 1},
+	}, attempt)
+	var pu *ProviderUnhealthyError
+	if errors.As(err, &pu) {
+		t.Fatal("FailFastAfter=0 must not early-stop even for cap-shaped attempts")
+	}
+	if *calls != 4 {
+		t.Fatalf("calls=%d, want 4", *calls)
+	}
+}
+
+func TestRetryStream_UnhealthyWinsOverPartialOutputBlock(t *testing.T) {
+	// FailFastAfter=1 trips on the very first attempt. Partial output alone
+	// would otherwise end the chain immediately with the raw error (partial
+	// blocks retry by default) — the early-stop check must run first and win,
+	// since later salvage logic keys off ProviderUnhealthyError specifically.
+	rep := AttemptReport{Phase: PhaseConsume, PartialOutput: true}
+	e := NewStreamError("p", "cut", nil)
+	attempt, calls := attemptScript(t, []AttemptReport{rep}, []error{e})
+	err := RetryStream(context.Background(), RetryStreamOptions{
+		Policy:        RetryPolicy{MaxRetries: 10, BaseDelay: time.Nanosecond, BackoffMultiplier: 1},
+		FailFastAfter: 1,
+	}, attempt)
+	var pu *ProviderUnhealthyError
+	if !errors.As(err, &pu) {
+		t.Fatalf("want ProviderUnhealthyError (must win over partial-output block), got %v", err)
+	}
+	if *calls != 1 {
+		t.Fatalf("calls=%d, want 1", *calls)
+	}
+}
