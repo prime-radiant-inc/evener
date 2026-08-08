@@ -226,7 +226,7 @@ logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 tmppath() { printf '%s/%s/%s' "$logdir" tmp "$(printf '%s' "$1" | tr '/.' '__')"; }
 
 root_package_list_timeout_diagnostic() {
-	local package_list="$1" worktree gocache gomodcache
+	local package_list_log="$1" worktree gocache gomodcache
 	worktree="$(pwd -P)"
 	gocache="$(go env GOCACHE 2>/dev/null || printf '<unavailable>')"
 	gomodcache="$(go env GOMODCACHE 2>/dev/null || printf '<unavailable>')"
@@ -234,21 +234,22 @@ root_package_list_timeout_diagnostic() {
 	printf 'run-module-tests.sh: worktree/module: %s (.)\n' "$worktree" >&2
 	printf 'run-module-tests.sh: effective GOCACHE: %s\n' "$gocache" >&2
 	printf 'run-module-tests.sh: effective GOMODCACHE: %s\n' "$gomodcache" >&2
-	printf 'run-module-tests.sh: retained package-list log: %s\n' "$package_list" >&2
+	printf 'run-module-tests.sh: retained package-list log: %s\n' "$package_list_log" >&2
 	printf 'run-module-tests.sh: repair the configured caches and retry:\n' >&2
 	printf '  GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q scripts/run-module-tests.sh -short -count=1\n' \
 		"$gocache" "$gomodcache" "$gocache" "$gomodcache" >&2
 }
 
 run_root_package_list() {
-	local package_list="$1" list_pid started_at list_status
-	( go list ./... >"$package_list" 2>&1 ) &
+	local package_list="$1" package_list_stderr list_pid started_at list_status
+	package_list_stderr="${package_list}.stderr"
+	( go list ./... >"$package_list" 2>"$package_list_stderr" ) &
 	list_pid="$!"
 	started_at=$SECONDS
 	while kill -0 "$list_pid" 2>/dev/null; do
 		if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
 			stop_process_tree "$list_pid"
-			root_package_list_timeout_diagnostic "$package_list"
+			root_package_list_timeout_diagnostic "$package_list_stderr"
 			return 1
 		fi
 		sleep 0.1
@@ -257,7 +258,7 @@ run_root_package_list() {
 		return 0
 	else
 		list_status=$?
-		cat "$package_list" >&2
+		cat "$package_list_stderr" >&2
 		return "$list_status"
 	fi
 }

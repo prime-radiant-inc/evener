@@ -119,6 +119,9 @@ case "${1:-}" in
 		exit 0
 		;;
 	list)
+		if [ "${FAKE_LIST_DOWNLOAD_DIAGNOSTIC:-0}" -ne 0 ]; then
+			printf 'go: downloading example.com/dependency v1.2.3\n' >&2
+		fi
 		if [ "${FAKE_LIST_FAIL:-0}" -ne 0 ]; then
 			printf 'go: cannot load module\n' >&2
 			exit 1
@@ -346,6 +349,15 @@ leftovers="$(while IFS= read -r dir; do [ ! -e "$dir" ] || printf '%s\n' "$dir";
 assert_eq "$leftovers" "" "a successful run removes every stream's temporary root"
 
 new_case
+out="$case_dir/root-package-discovery-stderr.out"
+if FAKE_LIST_DOWNLOAD_DIAGNOSTIC=1 run_tests "." "$out"; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "root package-discovery stderr does not fail a successful run"
+root_args="$(arguments_for .)"
+assert_has_word "$root_args" "primeradiant.com/serf/." "root package-discovery stdout reaches go test"
+assert_not_has_word "$root_args" "go: downloading example.com/dependency v1.2.3" "root package-discovery stderr never becomes a go test package"
+assert_eq "$(runner_logdirs)" "" "a successful root package-discovery removes its stdout and stderr logs"
+
+new_case
 out="$case_dir/ambient-overrides.out"
 if MODULES="nosuch" WAVE1= WAVE2= run_tests ". agent" "$out"; then rc=0; else rc=$?; fi
 assert_eq "$rc" "0" "ambient module and wave overrides do not affect a fixture case"
@@ -450,6 +462,13 @@ assert_has "$out" "FAIL  ." "a root package-discovery failure contributes a root
 assert_has "$out" "----- . -----" "a root package-discovery failure is included in aggregate output"
 assert_has "$out" "go: cannot load module" "a root package-discovery diagnostic reaches the reader"
 assert_not_has "$out" "packages[@]: unbound variable" "a root package-discovery failure does not fall into an empty-array error"
+failure_logs="$(full_logs_path "$out")"
+if [ -n "$failure_logs" ] && [ -f "$failure_logs/root.packages.stderr" ]; then
+	ok "a root package-discovery failure retains its stderr log"
+	assert_has "$failure_logs/root.packages.stderr" "go: cannot load module" "the retained root package-discovery stderr log carries the failure"
+else
+	bad "a root package-discovery failure loses its stderr log"
+fi
 
 # Root package discovery happens before the root test command. A wedged cache
 # can therefore freeze the entire gate while the concurrent frontend stream
@@ -471,7 +490,7 @@ exec 9<"$ready_fifo"
 # spawn (integer SECONDS granularity), and at 1 the sweep raced the fixture's
 # own establishment under load — seen twice as "leaves its descendant alive".
 # 2 keeps the deliberate trip cheap while clearing the establishment window.
-run_tests_async "." "$out" FAKE_LIST_HOLD=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=2 FAKE_READY_FIFO="$ready_fifo"
+run_tests_async "." "$out" FAKE_LIST_HOLD=1 FAKE_LIST_DOWNLOAD_DIAGNOSTIC=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=2 FAKE_READY_FIFO="$ready_fifo"
 start_fixture_watchdog "$runner_pid" 5 "$state/root-list.watchdog" "$ready_fifo" startup-watchdog
 startup_watchdog_pid="$fixture_watchdog_pid"
 ready_signal=""
@@ -503,10 +522,11 @@ if [ "$startup_ready" -eq 1 ]; then
 	assert_has "$out" "retained package-list log:" "a root package-discovery timeout names the retained package-list log"
 	timeout_logs="$(full_logs_path "$out")"
 	timeout_package_list="$(awk '/^run-module-tests\.sh: retained package-list log: / { sub(/^run-module-tests\.sh: retained package-list log: /, ""); print; exit }' "$out")"
-	if [ -n "$timeout_logs" ] && [ "$timeout_package_list" = "$timeout_logs/root.packages" ] && [ -f "$timeout_package_list" ]; then
-		ok "a root package-discovery timeout retains the reported root package-list log"
+	if [ -n "$timeout_logs" ] && [ "$timeout_package_list" = "$timeout_logs/root.packages.stderr" ] && [ -f "$timeout_package_list" ]; then
+		ok "a root package-discovery timeout retains the reported root package-list stderr log"
+		assert_has "$timeout_package_list" "go: downloading example.com/dependency v1.2.3" "the timeout's retained stderr log carries package-discovery progress"
 	else
-		bad "a root package-discovery timeout names a missing or wrong package-list log (logs '$timeout_logs', package list '$timeout_package_list')"
+		bad "a root package-discovery timeout names a missing or wrong package-list stderr log (logs '$timeout_logs', package list '$timeout_package_list')"
 	fi
 	assert_has "$out" "go clean -cache -modcache" "a root package-discovery timeout gives a cache repair command"
 	assert_has "$out" "scripts/run-module-tests.sh -short -count=1" "a root package-discovery timeout gives an exact retry command"
