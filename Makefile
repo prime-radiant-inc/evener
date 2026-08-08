@@ -177,7 +177,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # aggregate lint runner. The six fuzz-*-selftest suites listed here are
 # fixture-contained: their git bisect, worktree, and go-test operations stay in
 # throwaway worlds rather than touching this repository.
-DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests reclaim-test-debris agent-test-shards merge-approval-gate setup-gocache web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation live-compaction-eval tmux-read tmux-send scenario-cite-migrate fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
+DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests reclaim-test-debris agent-test-shards merge-approval-gate setup-gocache web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation live-compaction-eval tmux-read tmux-send scenario-cite-migrate deploy-hub fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
 
 # test-dev-tooling tests tooling, not the product, so it runs in
 # `make merge-approval-gate` (where tooling regressions matter) and on demand

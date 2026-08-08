@@ -172,6 +172,12 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 // divergenceTurn indexing in ForkSession is 1-based into this entry list (all
 // turns, not just USER_INPUT).
 func readForkParent(fs afero.Fs, stateDir, parentID string, maxScanToken int) (transcript.Header, []transcript.Entry, error) {
+	// Validate before joining parentID into a path: the transcript read below
+	// happens before any meta load would catch an unsafe ID, so this is the
+	// earliest point that can refuse it.
+	if err := schema.ValidateSessionID(parentID); err != nil {
+		return transcript.Header{}, nil, err
+	}
 	transcriptPath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
 
 	// Read the raw transcript lines so we can replay entry lines into the child.

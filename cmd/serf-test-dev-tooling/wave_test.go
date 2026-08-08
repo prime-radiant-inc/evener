@@ -232,3 +232,73 @@ func TestMktempTMinusTIsCaughtByLeakCheck(t *testing.T) {
 		t.Fatalf("tidy suite should pass:\n%s", out.String())
 	}
 }
+
+func TestWaveCompletesDespiteBlockedLeakCheck(t *testing.T) {
+	// Regression test for kata p8ts: the leak check (os.ReadDir on suite's tmp)
+	// is post-reap bookkeeping that could block on a wedged filesystem. Before
+	// the fix, if a leak check hung, the entire runSuite goroutine would hang,
+	// blocking that suite's done <- i send and preventing the wave from collecting
+	// results. The wave would become unkillable: the suite process is already
+	// reaped, so signal forwarding can't reach it.
+	//
+	// This test injects a slow/blocking leak check and verifies that:
+	// 1. The wave completes within a short bound (not hung)
+	// 2. The blocked suite is reported as failed (timeout)
+	// 3. Other suites still pass
+	// 4. The wave exits with failure code (one suite failed)
+
+	// Save production defaults and restore them after the test.
+	defer func() {
+		checkLeaksFn = checkLeaks
+		checkLeaksTimeout = 5 * time.Second
+	}()
+
+	// Inject a tiny timeout and a selective blocking leak check.
+	// Only the "wedged" suite's leak check blocks; the "normal" suite
+	// gets the real (fast) leak check so it can pass despite the other timing out.
+	checkLeaksTimeout = 50 * time.Millisecond
+	blockForever := make(chan struct{})
+	checkLeaksFn = func(dir string) []string {
+		if strings.Contains(dir, "wedged") {
+			<-blockForever // Block only the wedged suite
+			return nil
+		}
+		return checkLeaks(dir) // Normal suites get real fast leak check
+	}
+
+	dir := t.TempDir()
+	// A suite that exits 0 and leaves no files. Its injected leak check will block.
+	writeSuite(t, dir, "wedged", "exit 0\n")
+	// A normal suite that should pass despite the wedged suite blocking.
+	writeSuite(t, dir, "normal", "exit 0\n")
+
+	var out bytes.Buffer
+	start := time.Now()
+	code := runWave(waveConfig{ScriptsDir: dir, Suites: []string{"wedged", "normal"}, KillGrace: time.Second, Out: &out})
+	elapsed := time.Since(start)
+
+	outStr := out.String()
+
+	// Verify the wave completes quickly (bounded by the tiny timeout, not hung).
+	if elapsed > 2*time.Second {
+		t.Fatalf("wave took %v, should complete within ~2s despite blocked leak check; suggests fix didn't work", elapsed)
+	}
+
+	// Verify the blocked suite reports as failed with timeout message.
+	if !strings.Contains(outStr, "FAIL  wedged") {
+		t.Fatalf("blocked suite must report FAIL, got:\n%s", outStr)
+	}
+	if !strings.Contains(outStr, "leak check timed out") {
+		t.Fatalf("blocked suite must mention timeout, got:\n%s", outStr)
+	}
+
+	// Verify the normal suite still passes.
+	if !strings.Contains(outStr, "PASS  normal") {
+		t.Fatalf("normal suite must pass despite wedged suite, got:\n%s", outStr)
+	}
+
+	// Verify the wave exits with failure (one suite failed).
+	if code == 0 {
+		t.Fatalf("wave must exit nonzero when a suite fails; got %d", code)
+	}
+}

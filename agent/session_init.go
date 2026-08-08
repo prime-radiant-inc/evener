@@ -465,6 +465,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if env == nil {
 		return nil, errors.New("execution environment is nil")
 	}
+	// meta arrives from a caller, not from a load this function performs itself,
+	// so validate before meta.ID is joined into any transcript path below.
+	if err := schema.ValidateSessionID(meta.ID); err != nil {
+		return nil, fmt.Errorf("invalid session id: %w", err)
+	}
 
 	restoreComplete := false
 	ownershipAcquired := false
@@ -474,7 +479,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 		ownershipAcquired = true
 		if restoreCfg.StateDir != "" {
-			currentMeta, err := schema.LoadSessionMeta(restoreCfg.StateDir, meta.ID)
+			var currentMeta schema.SessionMeta
+			var err error
+			if fs := restoreCfg.testOnly.metaFS; fs != nil {
+				currentMeta, err = schema.LoadSessionMetaWithFS(fs, restoreCfg.StateDir, meta.ID)
+			} else {
+				currentMeta, err = schema.LoadSessionMeta(restoreCfg.StateDir, meta.ID)
+			}
 			if err != nil {
 				_ = client.ReleaseSessionAPILog(meta.ID)
 				return nil, fmt.Errorf("reload session metadata after ownership: %w", err)

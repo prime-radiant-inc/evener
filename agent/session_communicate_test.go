@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
@@ -614,6 +616,7 @@ func TestCommunicate_ClientSteeringBeforeResultProjectsValidNextRequest(t *testi
 	sess, err := NewSession(client, newAnthropicProfile("k3"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 		testOnly: testConfig{
+			metaFS: afero.NewMemMapFs(),
 			execToolCheckpoint: func(name string) {
 				if name != "before_side_effects" || checkpointReached {
 					return

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/contextmgr"
@@ -78,6 +80,7 @@ func sessionRunningHook(t *testing.T, command string) string {
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:   dir,
 		PluginDirs: []string{hookPluginDir(t, command)},
+		testOnly:   testConfig{metaFS: afero.NewMemMapFs()},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -170,6 +173,7 @@ func TestMidSessionHookPersistsHookCompletedTurn(t *testing.T) {
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:   dir,
 		PluginDirs: []string{pluginDir},
+		testOnly:   testConfig{metaFS: afero.NewMemMapFs()},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -313,6 +317,7 @@ func TestPreToolUseHookDoesNotDuplicateResultInNextModelRequest(t *testing.T) {
 		SessionConfig{
 			StateDir:   dir,
 			PluginDirs: []string{hookPluginDirForEvent(t, "PreToolUse", "exit 0")},
+			testOnly:   testConfig{metaFS: afero.NewMemMapFs()},
 		},
 	)
 	if err != nil {

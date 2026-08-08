@@ -78,6 +78,91 @@ func (s *Session) clearAskPending() {
 	s.askPending = nil
 }
 
+// minimalExampleQuestionsArray returns a minimal valid example for error messages.
+func minimalExampleQuestionsArray() string {
+	ex := map[string]any{
+		"questions": []any{
+			map[string]any{
+				"question": "Which option?",
+				"options": []any{
+					map[string]any{"label": "Option A", "detail": "First choice"},
+					map[string]any{"label": "Option B", "detail": "Second choice"},
+				},
+			},
+		},
+	}
+	b, _ := json.MarshalIndent(ex, "", "  ")
+	return string(b)
+}
+
+// normalizeAskArgs normalizes ask_user arguments by wrapping the shorthand form
+// into the canonical batch form. When `questions` is absent but `question` +
+// `options` are present (plus optional `why`, `if_unanswered`, `multi_select`,
+// `header`), wraps them into a one-element `questions` array. Returns a
+// normalized copy of args, or an error if the shape is invalid.
+func normalizeAskArgs(args map[string]any) (map[string]any, error) {
+	_, hasQuestions := args["questions"]
+	question, hasQuestion := args["question"]
+	options, hasOptions := args["options"]
+
+	// Case 1: questions present, question/options absent → use as-is (batch form)
+	if hasQuestions && !hasQuestion && !hasOptions {
+		return args, nil
+	}
+
+	// Case 2: question + options present, questions absent → wrap into batch form
+	if !hasQuestions && hasQuestion && hasOptions {
+		// Collect optional fields
+		wrapped := map[string]any{
+			"question": question,
+			"options":  options,
+		}
+		if why, ok := args["why"].(string); ok && why != "" {
+			wrapped["why"] = why
+		}
+		if ifUnanswered, ok := args["if_unanswered"].(string); ok && ifUnanswered != "" {
+			wrapped["if_unanswered"] = ifUnanswered
+		}
+		if multiSelect, ok := args["multi_select"].(bool); ok && multiSelect {
+			wrapped["multi_select"] = multiSelect
+		}
+		if header, ok := args["header"].(string); ok && header != "" {
+			wrapped["header"] = header
+		}
+
+		// Create normalized args with wrapped questions
+		out := make(map[string]any, len(args))
+		for k, v := range args {
+			if k != "question" && k != "options" && k != "why" && k != "if_unanswered" &&
+				k != "multi_select" && k != "header" {
+				out[k] = v
+			}
+		}
+		out["questions"] = []any{wrapped}
+		return out, nil
+	}
+
+	// Case 3: distinguish sub-cases within invalid shapes
+	// Sub-case 3a: both questions and question/options present
+	if hasQuestions && hasQuestion {
+		errorMsg := fmt.Sprintf("ask_user: both 'questions' and 'question'/'options' given — supply exactly one form. Minimal example:\n%s",
+			minimalExampleQuestionsArray())
+		return nil, errors.New(errorMsg)
+	}
+
+	// Sub-case 3b: question present but options missing (shorthand attempted but incomplete)
+	if hasQuestion && !hasOptions {
+		errorMsg := fmt.Sprintf("ask_user: 'options' is required when using the 'question' shorthand. Minimal example:\n%s",
+			minimalExampleQuestionsArray())
+		return nil, errors.New(errorMsg)
+	}
+
+	// Sub-case 3c: neither questions nor question+options present
+	errorMsg := fmt.Sprintf("ask_user: 'questions' is required (or use the 'question'+'options' shorthand for a single question). Minimal example:\n%s",
+		minimalExampleQuestionsArray())
+	return nil, errors.New(errorMsg)
+}
+
 // parseAskQuestions extracts the askQuestions from an ask_user call's parsed
 // arguments. Schema-level shape (question/option counts, header maxLength,
 // required fields) is already enforced by the registry's JSON-Schema
@@ -105,7 +190,9 @@ func parseAskQuestions(args map[string]any) ([]askQuestion, error) {
 			om, _ := o.(map[string]any)
 			label := fmt.Sprint(om["label"])
 			if labelsSeen[label] {
-				return nil, errors.New("ask_user: option labels must be unique within a question")
+				errorMsg := fmt.Sprintf("ask_user: option labels must be unique within a question. Minimal example:\n%s",
+					minimalExampleQuestionsArray())
+				return nil, errors.New(errorMsg)
 			}
 			labelsSeen[label] = true
 			if rec, _ := om["recommended"].(bool); rec {
@@ -113,7 +200,9 @@ func parseAskQuestions(args map[string]any) ([]askQuestion, error) {
 			}
 		}
 		if recommendedCount > 1 {
-			return nil, errors.New("ask_user: at most one option may be recommended")
+			errorMsg := fmt.Sprintf("ask_user: at most one option may be recommended. Minimal example:\n%s",
+				minimalExampleQuestionsArray())
+			return nil, errors.New(errorMsg)
 		}
 		header, _ := qm["header"].(string)
 		parsed = append(parsed, askQuestion{
@@ -139,6 +228,8 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 				return nil, errors.New(askUserUnavailableErr)
 			}
 
+			// Args have already been normalized by the registry's ExecuteCall
+			// before schema validation, so we can parse directly.
 			parsed, err := parseAskQuestions(args)
 			if err != nil {
 				return nil, err
@@ -319,7 +410,12 @@ func questionsFromAskCalls(history []schema.Turn, toolResultsIdx int, wantCallID
 			if err := json.Unmarshal(call.Arguments, &args); err != nil {
 				continue // unparseable JSON; skip this call, never fail the restore
 			}
-			parsed, err := parseAskQuestions(args)
+			// Normalize shorthand form into batch form
+			normalized, err := normalizeAskArgs(args)
+			if err != nil {
+				continue // invalid shape; skip this call, never fail the restore
+			}
+			parsed, err := parseAskQuestions(normalized)
 			if err != nil {
 				continue // semantic violation on a hand-edited/drifted transcript; skip
 			}

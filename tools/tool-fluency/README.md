@@ -75,7 +75,12 @@ go run ./tools/tool-fluency/cmd/serf-fluency run \
   --out /tmp/serf-fluency-openai
 ```
 
-Use `--probe <id>` for a single probe. The runner writes per-repetition
+Use `--probe <id>` for a single probe; `--probe all` (the default) selects
+every probe manifest under `--probes-dir`. Before launching any live request,
+the runner prints the exact selected count and probe ids to stderr (e.g.
+`selected=7` plus the list), so a scoped run never silently expands to a
+larger set without you seeing it named — check that line if a run looks
+bigger or smaller than you expected. The runner writes per-repetition
 `result.json`, `stdout.txt`, `stderr.ndjson`, plus run-level `results.jsonl` and
 `summary.json`.
 
@@ -243,7 +248,13 @@ Unavailable-by-design is not a failure. The report should distinguish:
 - `failed`;
 - `skipped_unavailable`;
 - `blocked_infra`;
+- `blocked_harness`;
 - `semantic_unverified`.
+
+`blocked_harness` means the harness itself failed to launch or run the probe
+(subprocess spawn failure, missing binary, environment issue) before the model
+had any chance to act. Never attribute a `blocked_harness` result to the model
+under test.
 
 ## Oracles
 

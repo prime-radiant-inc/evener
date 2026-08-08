@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -44,6 +46,7 @@ func TestProviderErrorPersistsFailedTurn(t *testing.T) {
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:       dir,
 		LLMRetryPolicy: &policy,
+		testOnly:       testConfig{metaFS: afero.NewMemMapFs()},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -110,6 +113,7 @@ func TestCancelledTurnPersistsNoFailedTurn(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
+		testOnly: testConfig{metaFS: afero.NewMemMapFs()},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

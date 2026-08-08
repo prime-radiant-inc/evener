@@ -78,6 +78,33 @@ func TestRunMainHelpReturnsNil(t *testing.T) {
 	}
 }
 
+func TestPrintVersionInfo(t *testing.T) {
+	var buf bytes.Buffer
+	err := printVersionInfo(&buf)
+	if err != nil {
+		t.Fatalf("printVersionInfo err = %v, want nil", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "serf-hub version:") {
+		t.Fatalf("output missing version label: %q", output)
+	}
+	if !strings.Contains(output, "frontend hash:") {
+		t.Fatalf("output missing frontend hash label: %q", output)
+	}
+}
+
+func TestRunMainVersionFlag(t *testing.T) {
+	var stderr bytes.Buffer
+	err := runMain([]string{"--version"}, &stderr, defaultMainDeps())
+	if err != nil {
+		t.Fatalf("runMain(--version) err = %v, want nil", err)
+	}
+	output := stderr.String()
+	if !strings.Contains(output, "serf-hub version:") {
+		t.Fatalf("version output missing label: %q", output)
+	}
+}
+
 func TestResolveSerfBinaryPath(t *testing.T) {
 	t.Run("explicit wins", func(t *testing.T) {
 		got := resolveSerfBinaryPath("/usr/bin/serf", "", nil)

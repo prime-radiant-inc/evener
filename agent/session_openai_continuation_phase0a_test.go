@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -73,6 +75,7 @@ func TestSession_OpenAIResponsesContinuationOffUsesFullHistory(t *testing.T) {
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "off",
+		testOnly:                    testConfig{metaFS: afero.NewMemMapFs()},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

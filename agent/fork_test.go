@@ -507,3 +507,39 @@ func TestForkSession_RejectsMissingParent(t *testing.T) {
 		t.Error("ForkSession with missing parent should return an error")
 	}
 }
+
+// TestForkSession_RejectsUnsafeParentIDBeforeReadingTranscript is the kata
+// 1gc4 canonical case: readForkParent joins parentID into a transcript path
+// and reads it before schema.LoadSessionMetaWithFS ever gets a chance to
+// validate the ID, so a traversal-shaped parentID must be refused at
+// readForkParent itself, not merely reported as "not found" after an
+// attempted read outside the sessions dir.
+func TestForkSession_RejectsUnsafeParentIDBeforeReadingTranscript(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+
+	// A file a traversal parentID could reach if the join were not validated
+	// first: <stateDir>/sessions/../escaped.transcript.jsonl == <stateDir>/escaped.transcript.jsonl.
+	victim := filepath.Join(stateDir, "escaped.transcript.jsonl")
+	if err := os.WriteFile(victim, []byte("not a session's transcript"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ForkSession(stateDir, "../escaped", 1, "hello", "")
+	if !errors.Is(err, schema.ErrInvalidSessionID) {
+		t.Fatalf("ForkSession with traversal parentID error = %v, want schema.ErrInvalidSessionID", err)
+	}
+}
+
+// TestForkSession_RejectsReservedDeviceNameParentID pins the same guard
+// against a Windows reserved device name, which schema.ValidateSessionID
+// refuses regardless of platform (agent/schema/snapshot.go).
+func TestForkSession_RejectsReservedDeviceNameParentID(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+
+	_, err := ForkSession(stateDir, "CON", 1, "hello", "")
+	if !errors.Is(err, schema.ErrInvalidSessionID) {
+		t.Fatalf("ForkSession with reserved device name parentID error = %v, want schema.ErrInvalidSessionID", err)
+	}
+}

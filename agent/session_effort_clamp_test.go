@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/tool"
@@ -108,6 +110,7 @@ func TestDescribeImage_OmitsEffortWhenProfileDoesNotSupportReasoning(t *testing.
 	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:        dir,
 		ReasoningEffort: "high",
+		testOnly:        testConfig{metaFS: afero.NewMemMapFs()},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -179,6 +182,7 @@ func TestFallbackChain_OmitsEffortWhenFallbackProfileDoesNotSupportReasoning(t *
 		LLMRetryPolicy:  &policy,
 		ModelFallbacks:  []string{"tiny-chat"},
 		ReasoningEffort: "max",
+		testOnly:        testConfig{metaFS: afero.NewMemMapFs()},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -248,6 +252,7 @@ func TestFallbackChain_ConfiguredLevelsBeatCatalog(t *testing.T) {
 		LLMRetryPolicy:  &policy,
 		ModelFallbacks:  []string{"glm-5.2"},
 		ReasoningEffort: "max",
+		testOnly:        testConfig{metaFS: afero.NewMemMapFs()},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -310,6 +315,7 @@ func TestFallbackChain_OllamaSkipsCatalogLevels(t *testing.T) {
 		LLMRetryPolicy:  &policy,
 		ModelFallbacks:  []string{"glm-5.2"},
 		ReasoningEffort: "low",
+		testOnly:        testConfig{metaFS: afero.NewMemMapFs()},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

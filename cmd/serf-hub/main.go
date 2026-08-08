@@ -19,6 +19,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hostlock"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -130,6 +131,13 @@ func main() {
 }
 
 func runMain(args []string, stderr io.Writer, deps mainDeps) error {
+	// Handle --version flag before full parsing
+	for _, arg := range args {
+		if arg == "--version" || arg == "-version" {
+			return printVersionInfo(stderr)
+		}
+	}
+
 	opts, err := parseHubOptions(args, stderr)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -481,6 +489,19 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 		err = fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 	return opts, err
+}
+
+// printVersionInfo prints version information including backend git SHA and frontend hash.
+func printVersionInfo(w io.Writer) error {
+	fHash, _ := frontendDistHash(distFS())
+	fmt.Fprintf(w, "serf-hub version: %s\n", buildinfo.VersionLong())
+	if buildinfo.GitSHA != "" {
+		fmt.Fprintf(w, "backend git SHA: %s\n", buildinfo.GitSHA)
+	}
+	if fHash != "" {
+		fmt.Fprintf(w, "frontend hash: %s\n", fHash)
+	}
+	return nil
 }
 
 func advertisedHubHost(addr string, hostname func() (string, error)) string {

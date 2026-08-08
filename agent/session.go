@@ -1431,7 +1431,13 @@ func (s *Session) maybeAutoSave() {
 		return
 	}
 	meta := s.Meta()
-	if err := schema.SaveSessionMeta(s.stateDir, meta); err != nil {
+	var err error
+	if fs := s.cfg.testOnly.metaFS; fs != nil {
+		err = schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
+	} else {
+		err = schema.SaveSessionMeta(s.stateDir, meta)
+	}
+	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{
 			Message: fmt.Sprintf("auto-save failed: %v", err),
 		})

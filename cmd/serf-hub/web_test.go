@@ -3576,6 +3576,35 @@ func TestWeb_APIHealth(t *testing.T) {
 	}
 }
 
+func TestWeb_APIHealthExposesAssetIdentity(t *testing.T) {
+	// Verify /api/health includes frontend asset hash and backend git SHA.
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var got hubapi.HealthResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// FrontendHash should be present (12 hex chars from frontendDistHash).
+	if got.FrontendHash == "" {
+		t.Fatalf("FrontendHash is empty: %+v", got)
+	}
+	if len(got.FrontendHash) != 12 {
+		t.Fatalf("FrontendHash wrong length: got %q (len=%d), want 12 chars", got.FrontendHash, len(got.FrontendHash))
+	}
+	// BackendGitSha should be present when set via buildinfo (may be empty in dev builds).
+	// We just check it's a valid field without enforcing non-empty for now, since
+	// dev builds won't have GitSHA set.
+	_ = got.BackendGitSha // Field is present in struct, which is the main assertion.
+}
+
 func TestWeb_APIHealthReportsCodexLaunchSpawnCapability(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:       "127.0.0.1:9180",

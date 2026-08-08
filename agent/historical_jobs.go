@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/schema"
 )
 
 type historicalJobStore interface {
@@ -40,6 +41,9 @@ type HistoricalJobRecord struct {
 // returns the folded job records needed by cold UI projections. It is read-only:
 // a session with no jobs.jsonl yields an empty map and creates no file.
 func LoadSessionHistoricalJobRecords(stateDir, sessionID string) (map[string]HistoricalJobRecord, error) {
+	if err := schema.ValidateSessionID(sessionID); err != nil {
+		return nil, err
+	}
 	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
 	if _, err := historicalJobsStat(path); err != nil {
 		if os.IsNotExist(err) {

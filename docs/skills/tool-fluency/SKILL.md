@@ -124,6 +124,10 @@ Use these categories in reports:
   required channel.
 - `infra`: provider quota, hub crash, bad credentials, timeout unrelated to
   model behavior.
+- `harness`: the tool-fluency runner itself failed to launch or drive the
+  probe (subprocess spawn failure, missing binary, environment/plumbing
+  issue) before the model had any chance to act. Never attribute this to the
+  model.
 
 ## Reporting format
 

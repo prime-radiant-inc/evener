@@ -14,6 +14,15 @@ import (
 	"primeradiant.com/serf/envvars"
 )
 
+// checkLeaksFn is the function used to check for leaked temp files. It can be
+// overridden in tests to inject a slow/blocking leak check without changing
+// production code.
+var checkLeaksFn = checkLeaks
+
+// checkLeaksTimeout is how long the wave waits for a leak check to complete
+// before timing out. It can be overridden in tests.
+var checkLeaksTimeout = 5 * time.Second
+
 // waveConfig describes one selftest wave: which suites to run, where their
 // scripts live, and how the wave reacts to signals. KillGrace is how long a
 // TERMed suite gets to exit before its process group is KILLed.
@@ -115,6 +124,13 @@ func runWave(cfg waveConfig) int {
 	return fail
 }
 
+// checkLeaks verifies that directory dir is empty, returning the names of any
+// leftover files. This is extracted as a separate function to allow testing the
+// timeout behavior independently.
+func checkLeaks(dir string) []string {
+	return listDir(dir)
+}
+
 // runSuite runs one suite script in its own process group with a private
 // TMPDIR, capturing combined output to <runDir>/<name>.log, and leak-checks
 // the TMPDIR on success. On shutdown it TERMs the suite's process group so
@@ -193,10 +209,27 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 		}
 		return suiteResult{exitCode: code, seconds: seconds}
 	}
-	if leftovers := listDir(tmp); len(leftovers) > 0 {
+	// Leak check is post-reap bookkeeping that could block on a wedged
+	// filesystem. Run it with a timeout so it doesn't block the wave's
+	// ability to report this suite's result.
+	leakCheckDone := make(chan []string, 1)
+	go func() {
+		leakCheckDone <- checkLeaksFn(tmp)
+	}()
+	select {
+	case leftovers := <-leakCheckDone:
+		if len(leftovers) > 0 {
+			return suiteResult{
+				failure: fmt.Sprintf("serf-test-dev-tooling: %s passed but leaked temp files: %s",
+					name, strings.Join(leftovers, ", ")),
+				seconds: seconds,
+			}
+		}
+	case <-time.After(checkLeaksTimeout):
+		// Leak check timed out (e.g., wedged filesystem). Report as failure.
 		return suiteResult{
-			failure: fmt.Sprintf("serf-test-dev-tooling: %s passed but leaked temp files: %s",
-				name, strings.Join(leftovers, ", ")),
+			failure: fmt.Sprintf("serf-test-dev-tooling: %s passed but leak check timed out (possible wedged filesystem)",
+				name),
 			seconds: seconds,
 		}
 	}

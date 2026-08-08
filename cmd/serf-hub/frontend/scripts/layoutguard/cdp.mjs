@@ -31,6 +31,82 @@ function findChrome() {
 }
 
 /**
+ * Probes whether Chrome can start and CDP is reachable. Fails fast if not, with
+ * diagnostic info. Call this ONCE before iterating cases to avoid cascading
+ * identical environment-failure errors.
+ * @param {Function} [spawnProcess=spawn] - injectable spawn function for testing
+ * @returns {Promise<{chromeBin: string, args: string[], launchStderr: string}>}
+ *   diagnostic info to include if Chrome startup subsequently fails in a case
+ */
+export async function probeBrowserCapability(spawnProcess = spawn) {
+  const chromeBin = findChrome();
+  const profileDir = mkdtempSync(path.join(tmpdir(), "layoutguard-chrome-probe-"));
+  let port;
+  do {
+    port = 20000 + Math.floor(Math.random() * 20000);
+  } while (port === 9180);
+
+  const args = [
+    "--headless=new",
+    "--disable-gpu",
+    `--remote-debugging-port=${port}`,
+    `--user-data-dir=${profileDir}`,
+    "--no-first-run",
+    "--disable-extensions",
+    "about:blank",
+  ];
+
+  let launchStderr = "";
+  const chrome = spawnProcess(chromeBin, args, {
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+
+  const stderrChunks = [];
+  chrome.stderr.on("data", (chunk) => {
+    stderrChunks.push(chunk);
+  });
+
+  const cleanup = () => {
+    try {
+      chrome.kill();
+    } catch {
+      // already dead
+    }
+    try {
+      rmSync(profileDir, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  };
+
+  try {
+    await waitForCdp(port);
+    return {
+      chromeBin,
+      args,
+      launchStderr: Buffer.concat(stderrChunks).toString("utf8"),
+    };
+  } catch (err) {
+    launchStderr = Buffer.concat(stderrChunks).toString("utf8");
+    const stderrHint = launchStderr
+      ? `\n\nChrome stderr:\n${launchStderr}`
+      : "\n(no stderr captured; check Chrome binary permissions and system resources)";
+    throw new Error(
+      `Chrome startup failed (environment problem, not a test case failure).\n` +
+        `Chrome binary: ${chromeBin}\n` +
+        `Launch args: ${args.join(" ")}\n` +
+        `\nTo remediate:\n` +
+        `1. Verify Chrome/Chromium is installed and the binary is executable.\n` +
+        `2. Check system resources (memory, temp directory).\n` +
+        `3. Ensure no port conflict on ${port}.\n` +
+        `Diagnostic: ${err.message}${stderrHint}`,
+    );
+  } finally {
+    cleanup();
+  }
+}
+
+/**
  * @param {string} fileUrl - must start with file://
  * @param {string} expr - JS expression to evaluate in the page after load
  * @param {{selector: string, pseudoClasses: string[]}[]} [forcePseudoStates] - pseudo-classes

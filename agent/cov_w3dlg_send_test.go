@@ -188,3 +188,96 @@ func TestW3Dlg_SendStoreRunningNotInRuntimeStaysNonResumable(t *testing.T) {
 		t.Fatalf("err = %v, want target_not_resumable has status running", res.Err)
 	}
 }
+
+// TestW3Dlg_SendRetainedBusyActiveNotFoundStaysBusy covers kata 4gm9's
+// steady-state case: a retained child is running=true with no active job
+// record (findRunning fails with "active_delegate_not_found:"), and the
+// re-check confirms it is still running when the classification happens.
+// This must stay child_session_busy, not fall through to a resume attempt.
+func TestW3Dlg_SendRetainedBusyActiveNotFoundStaysBusy(t *testing.T) {
+	t.Parallel()
+	adapter := &fakeAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, sess)
+	childID := rec.DelegateRestore.ChildSessionID
+
+	liveChild := newDelegateTestSession(t, c)
+	sess.subagents.track(&subagent{
+		id:      childID,
+		sess:    liveChild,
+		running: true,
+		status:  SubagentRunning,
+		done:    make(chan struct{}),
+	})
+	sess.cfg.testOnly.delegateSend.findRunning = func(*jobManager, string) (*jobstore.JobRecord, error) {
+		return nil, errors.New("active_delegate_not_found: no matching job")
+	}
+
+	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  rec.DelegateID,
+		Message: "resume",
+	})
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "target_not_resumable:"+notResumableChildSessionBusy) {
+		t.Fatalf("err = %v, want target_not_resumable:%s", res.Err, notResumableChildSessionBusy)
+	}
+}
+
+// TestW3Dlg_SendRetainedBusyActiveNotFoundRaceFallsThroughToResume covers
+// kata 4gm9's residual TOCTOU: findRunning fails with
+// "active_delegate_not_found:" because the retained child finished its
+// notification turn between the top-of-block sub.running read and the
+// findRunning lookup. The re-check must observe the now-idle state and fall
+// through to the generic resume path instead of misclassifying a resumable
+// retained child as busy.
+func TestW3Dlg_SendRetainedBusyActiveNotFoundRaceFallsThroughToResume(t *testing.T) {
+	t.Parallel()
+	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("resumed complete") },
+	}}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, sess)
+	childID := rec.DelegateRestore.ChildSessionID
+
+	var sub *subagent
+	sub = &subagent{
+		id:      childID,
+		sess:    newDelegateTestSession(t, c),
+		running: true,
+		status:  SubagentRunning,
+		done:    make(chan struct{}),
+	}
+	sess.subagents.track(sub)
+	sess.cfg.testOnly.delegateSend.findRunning = func(*jobManager, string) (*jobstore.JobRecord, error) {
+		// Simulate the delegate's notification turn finishing concurrently
+		// with the lookup: by the time findRunning returns, the child is no
+		// longer running.
+		sub.mu.Lock()
+		sub.running = false
+		sub.mu.Unlock()
+		return nil, errors.New("active_delegate_not_found: no matching job")
+	}
+
+	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  rec.DelegateID,
+		Message: "resume",
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+	if res.Action != "started" || res.StartedJobID == "" || res.StartedJobID == rec.JobID || res.DelegateID != rec.DelegateID || res.Status != jobstore.StatusRunning {
+		t.Fatalf("result = %+v, want resumed delegate start", res)
+	}
+	waitForShellDone(t, sess.jobManager, res.StartedJobID)
+	started := loadShellRecord(t, sess.jobManager, res.StartedJobID)
+	output, _, _, err := sess.jobManager.readOutput(res.StartedJobID, shellInlineOutputBytes)
+	if err != nil {
+		t.Fatalf("read resumed output: %v", err)
+	}
+	if started.Status != jobstore.StatusCompleted || !strings.Contains(output, "resumed complete") {
+		t.Fatalf("started record = %+v, output should contain resumed completion", started)
+	}
+}
