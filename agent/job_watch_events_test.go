@@ -97,6 +97,72 @@ func TestWildcardJobEventWatchNotifiesConcreteJob(t *testing.T) {
 	}
 }
 
+// TestSelfWatchJobFinishedIdentifiesOwnJobConcurrently is kata 673k: a
+// self-target ("caller") job.notification watch with two jobs running
+// concurrently must deliver a JOB_FINISHED notification that carries the
+// concrete completed job's own job_id/job_type/status/transcript_ref — never
+// job_id="" and never another job's identity — so no job_list/job_status
+// round-trip is needed to disambiguate which job finished.
+func TestSelfWatchJobFinishedIdentifiesOwnJobConcurrently(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	first, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create first shell: %v", err)
+	}
+	second, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create second shell: %v", err)
+	}
+	t.Cleanup(func() {
+		finishRunningTestJob(t, jm, first.JobID)
+		finishRunningTestJob(t, jm, second.JobID)
+	})
+
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"job.notification"}})
+
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{
+		JobID:         first.JobID,
+		JobType:       "shell",
+		Status:        "completed",
+		TranscriptRef: "job:" + first.JobID,
+	})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{
+		JobID:         second.JobID,
+		JobType:       "shell",
+		Status:        "failed",
+		TranscriptRef: "job:" + second.JobID,
+	})
+
+	if len(notified) != 2 {
+		t.Fatalf("job.notification events must notify the self watch twice, got %d", len(notified))
+	}
+
+	byJobID := map[string]jobNotification{}
+	for _, n := range notified {
+		byJobID[n.JobID] = n
+	}
+
+	n1, ok := byJobID[first.JobID]
+	if !ok {
+		t.Fatalf("no notification carries job_id %q (notifications: %+v)", first.JobID, notified)
+	}
+	if n1.JobType != "shell" || n1.Status != "completed" || n1.TranscriptRef != "job:"+first.JobID {
+		t.Fatalf("first job notification = %+v, want job_type=shell status=completed transcript_ref=job:%s", n1, first.JobID)
+	}
+
+	n2, ok := byJobID[second.JobID]
+	if !ok {
+		t.Fatalf("no notification carries job_id %q (notifications: %+v)", second.JobID, notified)
+	}
+	if n2.JobType != "shell" || n2.Status != "failed" || n2.TranscriptRef != "job:"+second.JobID {
+		t.Fatalf("second job notification = %+v, want job_type=shell status=failed transcript_ref=job:%s", n2, second.JobID)
+	}
+}
+
 func TestConcreteJobEventWatchIgnoresOtherJobsBeforeEveryCount(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)

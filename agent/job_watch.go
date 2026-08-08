@@ -2171,7 +2171,17 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 		if dec.send {
 			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance)))
 		} else {
-			notifications = append(notifications, jm.watchNotificationFromWatch(cfg, dec.notifyJobID, fmt.Sprintf("event: %s", kind), ev.Provenance))
+			n := jm.watchNotificationFromWatch(cfg, dec.notifyJobID, fmt.Sprintf("event: %s", kind), ev.Provenance)
+			// A self/parent-target job.notification watch must deliver the
+			// concrete completed job's own identity (kata 673k), not the thin
+			// generic watch shape watchNotificationFromWatch builds by default —
+			// even though dec.notifyJobID is "" for a session-target watch (the
+			// send-coalescing key deliberately stays target-shaped; only the
+			// notify-branch frame identity is fixed here).
+			if data, ok := jobFinishedEventData(ev.Data); ok && data.JobID != "" {
+				n = jobFinishedEventIdentity(n, data)
+			}
+			notifications = append(notifications, n)
 			if jm.recordWatchDeliveryLocked(cfg) {
 				overBudget = append(overBudget, cfg)
 			}
@@ -3420,6 +3430,20 @@ func watchFrameJob(data events.EventData) (jobID, delegateID string, ok bool) {
 	default:
 		return "", "", false
 	}
+}
+
+// jobFinishedEventData extracts the EventJobFinished payload off a session
+// event's data, or ok=false for any other event kind.
+func jobFinishedEventData(data events.EventData) (events.JobFinishedData, bool) {
+	switch d := data.(type) {
+	case events.JobFinishedData:
+		return d, true
+	case *events.JobFinishedData:
+		if d != nil {
+			return *d, true
+		}
+	}
+	return events.JobFinishedData{}, false
 }
 
 // sendMessageFunc delivers a watch-send frame to its resolved target. The
