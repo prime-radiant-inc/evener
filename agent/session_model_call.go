@@ -471,6 +471,8 @@ func responsesContinuationRegistryHasEnabledSupport(registry map[llm.ResponsesEn
 // offending content (the next request often succeeds) and records that it has
 // tried once via *contentFilterRetried. Provider retryability governs request
 // retries elsewhere; every remaining provider failure is terminal for this turn.
+// A cancellation propagates verbatim, but not before settling any partial the
+// round had already streamed (settleInterruptedRound).
 // The terminal path emits the failure, terminates any active goal, and settles the
 // open session at idle before returning a "provider error"-wrapped value (so
 // callers can distinguish a provider failure from agent quiescence; the original
