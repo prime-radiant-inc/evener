@@ -315,6 +315,17 @@ skip this section. This is for a Hub that is only running — started ad hoc
 inherited from someone else's session — with no launch command written down
 anywhere.
 
+If Hub was submitted to launchd as its own job, `scripts/deploy-hub.sh`
+automates the rebuild-and-restart sequence below for the current worktree: it
+finds the job's label, confirms its binary matches this checkout, builds
+`serf-hub` (leaving the old process running untouched if the build fails),
+`kickstart -k`s only that job, and polls `/api/health` to confirm the restart
+actually took (an interrupted `kickstart` can report failure even when the
+restart succeeded, so the health probe — not `kickstart`'s exit status — is
+the real check). Run `scripts/deploy-hub.sh --help` for details. The rest of
+this section is the manual version of that recipe, and is also what a bare
+backgrounded process (no launchd job at all) needs.
+
 First rule out a forgotten `launchctl` job (a `launchctl submit` job, unlike a
 bare backgrounded process, is still discoverable even with no plist on disk):
 
