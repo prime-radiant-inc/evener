@@ -13,5 +13,10 @@
     "height": 900,
     "deviceScaleFactor": 1,
     "mobile": false
+  },
+  "mutation": {
+    "declaration": "widgets/formrow/formrow.module.css: .root { min-width: 0 } (deleted)",
+    "verified": "2026-08-07",
+    "expect": "fail"
   }
 }

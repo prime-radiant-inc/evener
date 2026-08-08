@@ -13,5 +13,10 @@
     "shell/AppShell.module.css",
     "shell/mobile/StackHost.module.css",
     "widgets/panescaffold/panescaffold.module.css"
-  ]
+  ],
+  "mutation": {
+    "declaration": "AppShell.module.css: @media (max-width:899px) .shell { position: fixed } (reverted to position: relative)",
+    "verified": "2026-08-07",
+    "expect": "fail"
+  }
 }

@@ -8,5 +8,10 @@
   "forcePseudoStates": [
     { "selector": "#hovered-tile", "pseudoClasses": ["hover"] },
     { "selector": "#focused-remove", "pseudoClasses": ["focus-visible"] }
-  ]
+  ],
+  "mutation": {
+    "declaration": "composer.module.css: .removeImageButton:focus-visible { opacity: 1; outline: ... } (rule deleted entirely)",
+    "verified": "2026-08-07",
+    "expect": "fail"
+  }
 }
