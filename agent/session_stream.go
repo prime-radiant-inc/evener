@@ -435,6 +435,14 @@ func salvagedContentBytes(r *llm.Response) int {
 	return n
 }
 
+// partialJSONStringField pulls ONE named string field out of possibly-truncated
+// JSON object text, for the streaming preview above: the communicate tool's
+// message field, rendered live as its arguments arrive.
+//
+// The scanner it runs on — scanPartialJSONStringBody, plus the all-fields
+// generalization partialJSONStringFields that settlement uses — lives in
+// agent/salvage.go. Salvage is where the partial-JSON extraction rules are
+// stated and tested; this function is the single-field preview caller of them.
 func partialJSONStringField(raw, field string) (string, bool) {
 	key := `"` + field + `"`
 	_, rest, ok := strings.Cut(raw, key)

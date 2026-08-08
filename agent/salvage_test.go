@@ -152,6 +152,40 @@ func TestPartialJSONStringFields_TruncatedMidKey(t *testing.T) {
 	assertFields(t, got, want)
 }
 
+// TestPartialJSONStringFields_BracesInsideStringsAreNotStructure: a model
+// writing about JSON puts braces inside string values, and the scanner walks
+// raw bytes rather than parsing. Braces inside a string must never be read as
+// object structure — in a string VALUE, where a stray '}' would look like the
+// end of the object, and inside a skipped nested object, where a stray '{'
+// would unbalance the brace-depth walk and swallow every field after it.
+func TestPartialJSONStringFields_BracesInsideStringsAreNotStructure(t *testing.T) {
+	t.Run("StringValue", func(t *testing.T) {
+		got := partialJSONStringFields(`{"a":"}{"}`)
+
+		assertFields(t, got, []struct{ Key, Value string }{{"a", "}{"}})
+	})
+	t.Run("SkippedNestedObject", func(t *testing.T) {
+		got := partialJSONStringFields(`{"nested":{"x":"}{"},"tag":"bar"}`)
+
+		assertFields(t, got, []struct{ Key, Value string }{{"tag", "bar"}})
+	})
+}
+
+// TestPartialJSONStringFields_DuplicateTopLevelKey: the scanner extracts ALL
+// top-level string fields in encounter order and does not deduplicate, so a
+// repeated key yields both occurrences. That is the honest rendering for
+// salvage: this is a truncated byte stream, not a decoded object, and silently
+// dropping one occurrence would hide bytes the model actually produced.
+func TestPartialJSONStringFields_DuplicateTopLevelKey(t *testing.T) {
+	got := partialJSONStringFields(`{"path":"a.md","path":"b.md"}`)
+
+	want := []struct{ Key, Value string }{
+		{"path", "a.md"},
+		{"path", "b.md"},
+	}
+	assertFields(t, got, want)
+}
+
 func assertFields(t *testing.T, got, want []struct{ Key, Value string }) {
 	t.Helper()
 	if len(got) != len(want) {
