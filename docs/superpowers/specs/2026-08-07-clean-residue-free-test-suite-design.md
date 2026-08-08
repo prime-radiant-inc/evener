@@ -33,6 +33,15 @@ per-run residue. The cycle may update those declared outputs and caches, but it
 must not leave per-run scratch directories, temporary homes, browser profiles,
 logs, sockets, listeners, child processes, services, or undeclared files.
 
+Cleanup has two owners. Serf itself removes scratch when the application
+lifecycle proves that ownership is over: aborted/unadopted construction,
+discarded candidates, disposed lanes, and other paths with no resumable or
+human-handoff owner. A normal session-end event alone does not prove that its
+scratch is disposable; sessions can be resumed, and intentionally handed-off
+artifacts must survive where that lifecycle requires it. The test runner owns
+the outer lifetime of its test processes and removes the remaining process-owned
+scratch only after a green process exit, when no test session can resume.
+
 Residue investigation uses an Apple container as a disposable whole-system
 boundary. It records the complete writable filesystem plus process, listener,
 and socket state before and after a cold cycle, then repeats the cycle from the
@@ -43,8 +52,10 @@ boundary.
 
 The resulting regression gate must be deterministic and local. It should test
 owned scratch cleanup directly with isolated filesystem roots and fake external
-dependencies where necessary. Apple container setup and whole-image comparison
-are diagnostic evidence, not a dependency of `make test` or CI.
+dependencies where necessary. Runner containment must not replace or conceal a
+missing application cleanup at a lifecycle that is known to be disposable.
+Apple container setup and whole-image comparison are diagnostic evidence, not a
+dependency of `make test` or CI.
 
 ## Existing Failures Found During Baseline
 

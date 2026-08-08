@@ -19,6 +19,7 @@
 - Default tests remain deterministic, offline, and independent of provider credentials or ambient developer-machine state.
 - Do not widen or hardcode a timeout to absorb awaitable work.
 - Failure diagnostics and their owned scratch may be retained; successful runs must remove per-run scratch, temporary homes, profiles, sockets, listeners, child processes, and undeclared files.
+- Cleanup follows ownership: Serf removes scratch at application lifecycle points that prove it is disposable; normal session end alone is insufficient because sessions can resume or hand artifacts to a human. The runner removes remaining test-process-owned scratch only after green process exit.
 - Reusable Go, npm, and dependency caches and intended repository build outputs are declared state, not silently ignored state; the whole-container audit must name them.
 - Before changing tests, follow `docs/testing.md`; before completing frontend work, run `npx biome check --write` on every touched frontend file, `make test-web`, and `make test-web-browser` on this Chrome-capable host.
 - Never skip, disable, or evade pre-commit hooks.
@@ -280,6 +281,13 @@ bound is ambient-machine state.
 - Consumes: the runner's existing `logdir`, `cleanup` trap, `logpath(name)`, and failure-log retention contract.
 - Produces: `tmppath(name)`, a private per-stream `TMPDIR` under `$logdir/tmp`; green cleanup removes it with `$logdir`, while failed/interrupted runs retain it beside their logs.
 
+This task deliberately does not change `Session.Close` or turn session end into
+an unconditional scratch deletion point. The private root is owned by the test
+process runner; removing it after every green child process exits cannot break a
+later session resume. If investigation finds scratch from an application path
+that already proves the session/candidate/lane is unadopted or disposed, fix
+that application's owner instead of relying on this outer cleanup.
+
 - [ ] **Step 1: Extend the real runner selftest with per-stream residue**
 
 In both fake executables in `run-module-tests-selftest.sh`, record the stream and
@@ -376,6 +384,8 @@ Gate discussion with these exact facts:
   beneath the runner's per-run log directory;
 - a green run removes the complete directory, including test-created process
   lifetime scratch and Node compile cache;
+- this process-exit cleanup is not a session-end policy and does not delete
+  scratch that a resumable live application still owns;
 - a failed or interrupted run retains that directory and prints its path so
   diagnostics are not destroyed; and
 - standard reusable caches outside `TMPDIR` are audited separately rather than
@@ -524,6 +534,9 @@ records:
 - that virtual kernel filesystems were the only filesystem exclusions;
 - whether the warm comparison found zero undeclared per-run paths;
 - whether process, listener, and socket state returned to the baseline; and
+- how each Serf-owned scratch finding was assigned either to an application
+  lifecycle owner or to the enclosing test-process owner, including why no
+  resumable session still owned anything removed; and
 - that Apple container remains diagnostic evidence rather than a local/CI gate dependency.
 
 Do not claim zero residue unless the saved manifests prove it.
