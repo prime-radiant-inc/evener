@@ -317,10 +317,12 @@ func renderChipStatus(ctx composerContext, th tuitheme.Theme, budget int) string
 // early-stop count, and rendering the untouched policy max would promise
 // patience the budget won't deliver. A hub too old to send AttemptCap falls
 // back to the policy budget, since "attempt 2/0" is exactly the dishonest
-// denominator the cap exists to eliminate. The model tag appears only when
-// retry.Model differs from primaryModel — a chain walk resets the attempt
-// count, and without the tag a user can't tell "still failing" from "now on
-// a fallback".
+// denominator the cap exists to eliminate. When even that fallback is zero —
+// a hub that sends neither field — the fraction is dropped entirely: "attempt
+// 3/0" is exactly as dishonest as the missing-cap case the fallback exists
+// to fix. The model tag appears only when retry.Model differs from
+// primaryModel — a chain walk resets the attempt count, and without the tag
+// a user can't tell "still failing" from "now on a fallback".
 func composerRetryChip(retry *appwire.ThreadModelRetryParams, primaryModel string, inProgress bool) string {
 	if retry == nil {
 		return ""
@@ -329,7 +331,7 @@ func composerRetryChip(retry *appwire.ThreadModelRetryParams, primaryModel strin
 	if retry.ErrorClass == "rate_limit" {
 		cause = "rate limited"
 	}
-	wait := fmt.Sprintf("%ds", max((retry.DelayMS+500)/1000, 0))
+	wait := fmt.Sprintf("retrying in %ds", max((retry.DelayMS+500)/1000, 0))
 	if inProgress {
 		wait = "in progress"
 	}
@@ -337,11 +339,15 @@ func composerRetryChip(retry *appwire.ThreadModelRetryParams, primaryModel strin
 	if attemptCap <= 0 {
 		attemptCap = retry.MaxAttempts
 	}
-	chip := fmt.Sprintf("%s · attempt %d/%d · %s", cause, retry.Attempt, attemptCap, wait)
-	if model := strings.TrimSpace(retry.Model); model != "" && model != strings.TrimSpace(primaryModel) {
-		chip += " · " + model
+	attempt := fmt.Sprintf("attempt %d", retry.Attempt)
+	if attemptCap > 0 {
+		attempt = fmt.Sprintf("attempt %d/%d", retry.Attempt, attemptCap)
 	}
-	chip += fmt.Sprintf(" · %dm on this call", retry.GroupElapsedMS/60000)
+	chip := fmt.Sprintf("%s — %s — %s", cause, attempt, wait)
+	if model := strings.TrimSpace(retry.Model); model != "" && model != strings.TrimSpace(primaryModel) {
+		chip += " — " + model
+	}
+	chip += fmt.Sprintf(" — %dm on this call", retry.GroupElapsedMS/60000)
 	return chip
 }
 

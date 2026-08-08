@@ -20,7 +20,7 @@ func realisticChipStripContext(width int) composerContext {
 		Connected:  true,
 		HubAddr:    "http://127.0.0.1:8420",
 		Mode:       "QUEUE 2",
-		Retry:      "rate limited · attempt 2/5 · 4s · 3m on this call",
+		Retry:      "rate limited — attempt 2/5 — retrying in 4s — 3m on this call",
 		Width:      width,
 	}
 }
