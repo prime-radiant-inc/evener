@@ -48,15 +48,21 @@ differ" — the rejection is honest; the feature is making it unnecessary.
    communicate schema overrides, must handle `SystemPromptAsUser` fusion,
    and must *skip* entries whose profile can't represent current history
    (documents/audio) rather than 400.
-4. **Meta-provider primaries need new ref semantics.** On
-   openrouter/lunarouter tags, `anthropic/...` etc. are upstream
-   namespaces (`prefixActionKeep`, `agent/provider/profile.go:601-638`) —
-   the same transport, correctly not a provider switch. There is currently
-   no syntax reaching a directly-configured instance from a meta-provider
-   session, so the users who most need an escape (the motivating incident
-   ran on lunarouter) cannot express one. Design needs an explicit
+4. **Meta-provider primaries need extended ref semantics — partially.**
+   On openrouter/lunarouter tags, `anthropic/...`, `openai/...`, etc. are
+   upstream namespaces (`prefixActionKeep`,
+   `agent/provider/profile.go:601-638`) — same transport, correctly not a
+   provider switch. But the serf-internal prefixes `ollama`, `kimi`,
+   `glm`, `openrouter`, `openrouter-anthropic` ARE `prefixActionSwitch`
+   even from meta-provider sessions (`profile.go:607-613`): `kimi/<model>`
+   from a lunarouter session reaches a directly-configured kimi instance —
+   the motivating incident's ideal escape (same model family, different
+   transport) is expressible today. The genuine gaps: targets whose
+   prefix collides with an upstream namespace (a directly-configured
+   `anthropic` instance is unreachable from openrouter tags) and
+   arbitrarily-named instances. Design needs an explicit
    instance-reference form (e.g. `instance:` prefix or configured-name
-   precedence) with the tag-dependent parsing documented.
+   precedence) for those, with the tag-dependent parsing documented.
 5. **Resolution ≠ callability.** `newFromProviders(allowPartial=true)`
    skips registering adapters for instances whose credentials fail
    (`llm/providers_config.go:100-111`); the runtime error is a Permanent
@@ -73,9 +79,11 @@ differ" — the rejection is honest; the feature is making it unnecessary.
    primary's window; a 1M-window primary falling back to a 200k profile
    413s every time (Permanent). Entries must be preflighted per round
    (window fit, `unrepresentableHistoryKinds`) and skipped with a
-   diagnostic, and the parent spec's settlement gate must key its
-   exclusions on the terminal error class so a fallback-induced
-   context-length error doesn't discard the primary group's salvage.
+   diagnostic. The parent spec (v6) already defines the settlement-gate
+   precedence this depends on: exclusions key on the
+   salvage-producing/consume-phase group's failure class, never the
+   round's last error, so a fallback-induced context-length or open-phase
+   error cannot discard the primary group's salvage.
 7. **Eligibility must be stated per group, not per round.** The chain
    loop advances on any fallback failure; "skip same-provider entries"
    must be evaluated against a per-round set of providers declared
@@ -106,10 +114,15 @@ differ" — the rejection is honest; the feature is making it unnecessary.
 
 ## Interface to the parent spec
 
-The parent spec's eligibility gate treats `ProviderUnhealthyError` as
-"settle immediately" via an extension point. This feature implements the
-extension: unhealthy → try entries that are (a) cross-provider per the new
-ref semantics, (b) callable, (c) representable, (d) not already declared
+The parent spec (v6) settles `ProviderUnhealthyError` immediately, with
+three commitments this feature builds on: the error has an explicit
+non-eligible arm in `modelFallbackEligible`; a mid-chain unhealthy verdict
+aborts the chain and survives as the terminal error; and the extension
+point is a **per-entry filter inside the chain loop with round state** —
+not the one-shot boolean gate at `session_model_call.go:782`, which cannot
+host per-entry predicates. This feature implements that filter: unhealthy
+→ try entries that are (a) cross-provider per the extended ref semantics,
+(b) callable, (c) representable, (d) not on a provider already declared
 unhealthy this round. The salvage recorder already spans groups and needs
 only provider provenance added.
 

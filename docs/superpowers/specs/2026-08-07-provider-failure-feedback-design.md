@@ -1,7 +1,7 @@
 # Provider-Failure Feedback and Retry Resilience
 
 **Date:** 2026-08-07
-**Status:** Draft v5 — cross-provider fallbacks split into their own spec; awaiting review
+**Status:** Draft v6 — after fourth adversarial round; awaiting review
 
 ## Context
 
@@ -87,8 +87,12 @@ Everything downstream needs data that today dies inside
   state the settlement path can read. Selection for salvage spans **all**
   groups in the round — a fallback group that fails with a trickle must not
   shadow the primary group's 10k-token partial (each salvaged turn notes
-  which model produced it). Steering stats describe the group that
-  ultimately failed.
+  which model produced it). Steering stats describe the
+  **salvage-producing (or consume-phase) group**, not whichever group
+  happened to fail last: when a chain walk ends on an open-phase fallback
+  rejection (the likely shape — an unauthenticated fallback entry), the
+  steering describes the consume-phase group's shape and provider, with
+  one added clause noting the configured fallback also failed and how.
 
 The recorder exists for every terminal error, not only the fail-fast path —
 settlements via permanent mid-stream errors or a too-long Retry-After abort
@@ -107,10 +111,14 @@ both UIs clear the chip on the first delta
   retry group's first attempt. No new event kind, no phase field: clients
   already receive `DelayMS` and can derive waiting-vs-in-progress locally
   (delay expired, or a delta arrived).
-- UI clearing rule changes: the retry state survives deltas and clears only
-  on round completion or turn settlement (`NotifyItemCompleted`,
-  `NotifyTurnCompleted`, `NotifyTurnStarted` — a failed turn does emit
-  `NotifyTurnCompleted`, so failure clears it too).
+- UI clearing rule changes: the retry state survives deltas and clears
+  only on turn boundaries (`NotifyTurnCompleted` — which failed turns do
+  emit — and `NotifyTurnStarted`) or on completion of a **model-output
+  item** (assistant message, reasoning, tool call). `NotifyItemCompleted`
+  from systemMessage announcements or user-input items must NOT clear it:
+  those arrive mid-grind (a user steering "are you stuck?" completes a
+  systemMessage item), and clearing there re-creates the vanishing-chip
+  bug this component exists to fix.
 - Rendering: `provider error · attempt 9/11 · retrying in 32s · 14m on this
   call` (waiting) / `… · in progress · 14m on this call` (streaming). The
   elapsed label is per retry group (one model call), not per turn.
@@ -127,32 +135,79 @@ truncation). This is positional knowledge the closure already has — no
 error-class taxonomy needed, which is why v2's `llm.Kind` keying (dropped:
 stall → `KindTimeout`, cap-cut → `KindUnknown`) isn't resurrected.
 
-Early-stop rules, both scoped to consume-phase failures only:
+One refinement to the binary: a consume-phase failure with **zero content
+events received** is treated as open-phase-equivalent for gating and
+steering. Meta-providers report upstream rejections as in-band error
+chunks on an HTTP 200 stream (the openai-compat adapter currently drops
+non-chunk lines, so these surface as "stream ended without completion" —
+positionally consume-phase, semantically a request rejection). Four fast
+in-band rejections must not produce "the provider repeatedly stopped
+responding mid-stream" steering. As part of this work the openai-compat
+adapter learns to decode in-band `{"error": ...}` chunks into typed stream
+errors instead of silently skipping them.
+
+Early-stop rules, both scoped to content-bearing consume-phase failures:
 
 - **Streak:** after `FailFastAfter` (serf passes 4) consecutive
   consume-phase failures, stop with `llm.ProviderUnhealthyError`.
 - **Cap detection:** after 2 consecutive consume-phase failures that each
-  ended after substantial streaming (≥60s), stop immediately — two long
-  streams cut in a row is strong evidence of a hard transport cap that
-  identical retries cannot beat, and each such attempt costs minutes.
+  ended after substantial streaming, stop immediately — two long streams
+  cut in a row is strong evidence of a hard transport cap that identical
+  retries cannot beat, and each such attempt costs minutes.
 
-Open-phase failures (rate limits with Retry-After, 5xx bursts) never count:
-riding those out on the full budget is existing, documented, correct
-behavior (`llm/retry.go:30-33`) and stays untouched.
+**Measurement.** "Substantial streaming" is measured on the
+**content-event window** — first content event to last content event —
+plus a minimum salvaged-bytes floor, both recorded by the agent-side
+closure (which sees the events), not by `RetryStream` (whose attempt
+contract carries no stats). Wall-clock is explicitly not the measure: a
+20s-stream-then-30s-stall attempt is stall-shaped, and SSE keep-alive
+comments reset the read timer (`llm/sse.go:169-170`) so an attempt can run
+minutes with zero output. A stall tail is discriminated by the existing
+`ErrSSEReadTimeout` marker rather than inferred from duration. The
+attempt-closure contract (or an options callback) is extended to carry
+phase + stats to `RetryStream`; both early-stop rules are disabled
+together when `FailFastAfter` is 0, so non-agent `RetryStream` users see
+no behavior change and existing retry tests stay green.
 
-**`ProviderUnhealthyError` settles the round immediately.** An unhealthy
-verdict indicts the provider's endpoint and transport, and serf's fallback
-chain cannot currently route around it: same-provider fallback entries
-share the transport, and cross-provider entries are rejected at session
-init. When cross-provider fallbacks land (separate spec:
-`2026-08-07-cross-provider-fallbacks-requirements.md`), the eligibility
-gate for this error consults them — the gate is written as an extension
-point, not hardcoded to settle. Everything else preserves existing
-behavior exactly: permanent-class errors walk the chain as today, and
-retryable-class errors keep their current eligibility — including the
-existing retry-after-declined exception (kata r128,
-`agent/session_init.go:1158-1190`), which does walk the chain today and
-must not regress.
+**Interleaving.** Open-phase failures (rate limits with Retry-After, 5xx
+bursts) are **transparent** to both rules: they neither count toward nor
+reset either streak. Riding them out on the full budget is existing,
+documented, correct behavior (`llm/retry.go:30-33`) and stays untouched —
+and a provider alternating stall/429 must still trip the streak on its
+4th stall rather than grinding the full budget.
+
+**`ProviderUnhealthyError` settles the round immediately — from any
+group.** An unhealthy verdict indicts the provider's endpoint and
+transport, and serf's fallback chain cannot currently route around it:
+same-provider fallback entries share the transport, and cross-provider
+entries are rejected at session init. Three mechanics make "immediately"
+real:
+
+- **Classification is explicit.** `modelFallbackEligible` gains a
+  dedicated arm returning false for `ProviderUnhealthyError` — the
+  verdict's class must not be derived by `llm.Classify` walking the
+  wrapped attempt error (which would land retryable and leave settlement
+  riding on a coincidence).
+- **Mid-chain verdicts abort the walk.** The eligibility gate runs once at
+  chain entry, but a fallback group (reachable via permanent-class or
+  retry-after-declined chain walks) runs the same early-stop machinery and
+  can produce its own unhealthy verdict. Any group ending in
+  `ProviderUnhealthyError` aborts the remaining chain, and the verdict is
+  preserved as the round's terminal error rather than being replaced by
+  last-error-wins.
+- **The extension point is a per-entry filter.** When cross-provider
+  fallbacks land (separate spec:
+  `2026-08-07-cross-provider-fallbacks-requirements.md`), eligibility for
+  this error is a filter evaluated per entry inside the chain loop with
+  round state (which providers are already unhealthy this round) — not a
+  new arm in the one-shot boolean gate, which structurally cannot host
+  per-entry, per-round-state predicates.
+
+Everything else preserves existing behavior exactly: permanent-class
+errors walk the chain as today, and retryable-class errors keep their
+current eligibility — including the existing retry-after-declined
+exception (kata r128, `agent/session_init.go:1158-1190`), which does walk
+the chain today and must not regress.
 
 **Honest bounds:** the ~2-minute failure applies to the stall shape
 (4 × ~32s + short backoffs). Cap-shaped groups are bounded by the
@@ -168,7 +223,18 @@ consume-phase failure. Explicitly excluded: user interrupts and
 cancellations; context-length failures (appending turns to an overflowing
 history makes it worse); and open-phase request rejections (auth, 4xx,
 quota — "the provider connection failed" would be false, and stacking
-steering on a misconfiguration helps nothing).
+steering on a misconfiguration helps nothing). Zero-content consume-phase
+failures (component 2's in-band-rejection subclass) count as open-phase
+here.
+
+**Precedence for mixed rounds.** The exclusions key on the class of the
+**salvage-producing (or consume-phase) group's** failure — never on the
+round's last error. A chain walk can end on an open-phase fallback
+rejection or a fallback-induced context-length error while the primary
+group holds consume-phase failures and a salvageable partial
+(last-error-wins, `agent/session_model_call.go:768-775`); that round
+settles WITH salvage and consume-phase steering. A round whose only
+failures are excluded classes persists nothing.
 
 When it fires, up to two turns are persisted, in order:
 
@@ -185,6 +251,13 @@ When it fires, up to two turns are persisted, in order:
      several providers). "Largest" compares total salvaged bytes across
      text blocks + extracted fields.
    - Reasoning deltas: never included.
+   - Metadata: model/provider provenance only. The turn must **never**
+     carry Responses-continuation metadata — continuation anchoring scans
+     backward to the most recent assistant turn
+     (`agent/responses_continuation_eligibility.go:36-55`), and stamping
+     IDs from a response the provider never finalized poisons every
+     subsequent round with `previous_response_not_found`. Post-settlement
+     rounds take the full-history path by design.
 2. **The steering turn** (always, when settlement fires). Model-visible,
    via the existing `appendSteeringTurn` mechanism, composed from recorder
    stats:
@@ -212,6 +285,13 @@ unchanged and remain model-invisible.
 
 No dedupe machinery: the transcript is append-only; with early stop,
 consecutive failure settlements are rare, bounded, and harmless to stack.
+
+**Compaction atomicity:** the salvaged turn + steering pair is
+compaction-atomic — kept or folded together, never split across a
+checkpoint boundary — and is protected as recent-tail for the immediately
+following turn, since the cap-failure scenario correlates with maximal
+context pressure and the steering's "the response above" must not point at
+content compaction just summarized away.
 
 ## How the incident would have played out
 
@@ -248,19 +328,36 @@ TDD throughout; per repo policy, all functionality covered.
   per-attempt capture before `OnReset`; best-of-group and cross-group
   selection (fallback trickle never shadows primary partial); stats present
   for non-fail-fast terminal errors.
-- **RetryStream:** open-phase failures never count toward either rule;
-  streak at 4 consume-phase failures; cap detection at 2 substantial
-  (≥60s) consume-phase failures; disabled when 0; wrapper error references
-  group stats; existing retry tests stay green.
-- **Fallback interaction:** `ProviderUnhealthyError` settles immediately
-  (via the extension-point gate); permanent-class and retry-after-declined
-  eligibility unchanged — existing kata r128 tests stay green.
+- **RetryStream:** open-phase failures are transparent (neither count nor
+  reset — alternating stall/429 still trips at the 4th stall); streak at 4
+  content-bearing consume-phase failures; zero-content consume failures
+  (in-band rejections) treated as open-phase-equivalent; cap detection at
+  2 substantial consume-phase failures measured on the content-event
+  window + bytes floor (keep-alive-only minutes and stream-then-stall
+  attempts do not qualify; `ErrSSEReadTimeout` discriminates the stall
+  tail); both rules disabled when `FailFastAfter` is 0; wrapper error
+  references group stats; existing retry tests stay green.
+- **Adapter:** openai-compat decodes in-band `{"error": ...}` chunks into
+  typed stream errors.
+- **Fallback interaction:** `ProviderUnhealthyError` has an explicit
+  non-eligible classification arm; a mid-chain unhealthy verdict aborts
+  the remaining chain and survives as the terminal error; permanent-class
+  and retry-after-declined eligibility unchanged — existing kata r128
+  tests stay green.
 - **Salvage content:** all top-level string fields extracted from partial
   tool args, labeled, under never-executed marker; no broken tool calls; no
   reasoning content; largest-by-total-bytes selection.
 - **Settlement gating:** fires for consume-phase rounds; absent for
   interrupts, cancellations, context-length, and open-phase rejections;
-  steering-only when nothing salvageable; wording matches failure shape.
+  mixed-round precedence — primary consume-phase salvage survives a chain
+  walk ending in an open-phase or context-length fallback error, and
+  steering describes the consume-phase group with a fallback-also-failed
+  clause; steering-only when nothing salvageable; wording matches failure
+  shape.
+- **Continuation:** the salvaged turn carries no continuation metadata;
+  post-settlement rounds take the full-history path cleanly.
+- **Compaction:** the salvaged turn + steering pair survives compaction
+  atomically and is retained for the immediately following turn.
 - **History:** salvaged turn + steering model-visible in `buildHistory`, in
   order, including after restore; `TurnFailure` stays model-invisible; a
   text-only assistant turn followed by steering forms valid provider
@@ -270,7 +367,9 @@ TDD throughout; per repo policy, all functionality covered.
   the last-attempt-on-screen vs largest-persisted case and previously
   shown-then-reset communicate text.
 - **Events/UI:** `GroupElapsedMS` plumbing; new clearing rules in TUI and
-  web reducer tests; chip survives deltas, clears on settlement.
+  web reducer tests; chip survives deltas AND systemMessage/user-item
+  completions (a mid-grind steering injection must not clear it), clears
+  on turn boundaries and model-output item completion.
 - **Integration:** end-to-end fake-provider scenarios for both failure
   shapes (stall streak → fast settle, steering only; cap shape → 2-attempt
   stop, partial + steering persisted; resumed turn carries both in model
