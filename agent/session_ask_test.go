@@ -1961,3 +1961,211 @@ func TestAskUser_PromptSectionHiddenForSubagent(t *testing.T) {
 		t.Fatal("system prompt contains ask-user guidance in a subagent session")
 	}
 }
+
+// --- Shorthand form (question + options) tests ---
+
+// askUserArgsShorthand builds a single ask_user call using the shorthand form
+// (question + options directly, not in questions array).
+func askUserArgsShorthand() map[string]any {
+	return map[string]any{
+		"question": "Which datastore for the ingest path?",
+		"options": []any{
+			map[string]any{"label": "Postgres", "detail": "matches prod; heavier local setup", "recommended": true},
+			map[string]any{"label": "SQLite", "detail": "zero setup; diverges from prod"},
+		},
+	}
+}
+
+// askUserArgsShorthandWithOptionals builds a shorthand form with all optional fields.
+func askUserArgsShorthandWithOptionals() map[string]any {
+	return map[string]any{
+		"header":        "DB choice",
+		"question":      "Which datastore for the ingest path?",
+		"options": []any{
+			map[string]any{"label": "Postgres", "detail": "matches prod"},
+			map[string]any{"label": "SQLite", "detail": "zero setup"},
+		},
+		"why":           "Determines the ingest pipeline dependencies.",
+		"if_unanswered": "Use Postgres to match production.",
+		"multi_select":  false,
+	}
+}
+
+// TestAskUser_ShorthandDecodesToBatchEquivalent verifies that shorthand and
+// batch forms, given identical inputs, normalize to the same internal
+// representation.
+func TestAskUser_ShorthandDecodesToBatchEquivalent(t *testing.T) {
+	t.Parallel()
+	sess := newAskTestSession(t, SessionConfig{})
+
+	// Execute the shorthand form
+	res1 := sess.reg.ExecuteCall(context.Background(), sess.env, askUserCall("c1", askUserArgsShorthand()))
+	if res1.IsError {
+		t.Fatalf("shorthand ask_user call errored: %s", res1.Output)
+	}
+	if res1.Output != askUserAckText {
+		t.Fatalf("shorthand ack = %q, want %q", res1.Output, askUserAckText)
+	}
+	shorthandCount := sess.askPendingCount()
+
+	sess.clearAskPending()
+
+	// Execute the equivalent batch form
+	batchArgs := map[string]any{
+		"questions": []any{
+			map[string]any{
+				"question": "Which datastore for the ingest path?",
+				"options": []any{
+					map[string]any{"label": "Postgres", "detail": "matches prod; heavier local setup", "recommended": true},
+					map[string]any{"label": "SQLite", "detail": "zero setup; diverges from prod"},
+				},
+			},
+		},
+	}
+	res2 := sess.reg.ExecuteCall(context.Background(), sess.env, askUserCall("c2", batchArgs))
+	if res2.IsError {
+		t.Fatalf("batch ask_user call errored: %s", res2.Output)
+	}
+	if res2.Output != askUserAckText {
+		t.Fatalf("batch ack = %q, want %q", res2.Output, askUserAckText)
+	}
+	batchCount := sess.askPendingCount()
+
+	if shorthandCount != batchCount {
+		t.Fatalf("pending counts differ: shorthand=%d, batch=%d", shorthandCount, batchCount)
+	}
+
+	// Verify the pending questions are equivalent
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if len(sess.askPending) < 1 {
+		t.Fatal("no pending questions after batch call")
+	}
+	lastPending := sess.askPending[len(sess.askPending)-1]
+	if lastPending.Question != "Which datastore for the ingest path?" {
+		t.Fatalf("pending question = %q", lastPending.Question)
+	}
+}
+
+// TestAskUser_ShorthandWithAllOptionals verifies shorthand form with all
+// optional fields (header, why, if_unanswered, multi_select) normalizes correctly.
+func TestAskUser_ShorthandWithAllOptionals(t *testing.T) {
+	t.Parallel()
+	sess := newAskTestSession(t, SessionConfig{})
+
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, askUserCall("c1", askUserArgsShorthandWithOptionals()))
+	if res.IsError {
+		t.Fatalf("shorthand with optionals errored: %s", res.Output)
+	}
+	if res.Output != askUserAckText {
+		t.Fatalf("ack = %q, want %q", res.Output, askUserAckText)
+	}
+
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if len(sess.askPending) < 1 {
+		t.Fatal("no pending questions after shorthand call")
+	}
+	if sess.askPending[0].Header != "DB choice" {
+		t.Fatalf("pending header = %q, want 'DB choice'", sess.askPending[0].Header)
+	}
+}
+
+// TestAskUser_ShorthandMissingOptionsErrors verifies that missing options
+// produces an error containing the minimal example.
+func TestAskUser_ShorthandMissingOptionsErrors(t *testing.T) {
+	t.Parallel()
+	sess := newAskTestSession(t, SessionConfig{})
+
+	// Shorthand without options
+	args := map[string]any{
+		"question": "Which one?",
+	}
+
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, askUserCall("c1", args))
+	if !res.IsError {
+		t.Fatalf("expected error for missing options, got ack: %s", res.Output)
+	}
+
+	if !strings.Contains(res.Output, "invalid arguments shape") {
+		t.Fatalf("error message = %q, want to contain 'invalid arguments shape'", res.Output)
+	}
+	if !strings.Contains(res.Output, "Minimal example") {
+		t.Fatalf("error message = %q, want to contain 'Minimal example'", res.Output)
+	}
+	if !strings.Contains(res.Output, "questions") {
+		t.Fatalf("error message = %q, want to contain 'questions'", res.Output)
+	}
+
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("askPendingCount = %d, want 0 (rejected call must post nothing)", got)
+	}
+}
+
+// TestAskUser_BothQuestionAndQuestionsErrors verifies that supplying both
+// questions and question/options produces an error.
+func TestAskUser_BothQuestionAndQuestionsErrors(t *testing.T) {
+	t.Parallel()
+	sess := newAskTestSession(t, SessionConfig{})
+
+	args := map[string]any{
+		"questions": []any{
+			map[string]any{
+				"question": "First question?",
+				"options": []any{
+					map[string]any{"label": "A", "detail": "Option A"},
+					map[string]any{"label": "B", "detail": "Option B"},
+				},
+			},
+		},
+		"question": "Second question?",
+		"options": []any{
+			map[string]any{"label": "X", "detail": "Option X"},
+			map[string]any{"label": "Y", "detail": "Option Y"},
+		},
+	}
+
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, askUserCall("c1", args))
+	if !res.IsError {
+		t.Fatalf("expected error for both forms present, got ack: %s", res.Output)
+	}
+
+	if !strings.Contains(res.Output, "invalid arguments shape") {
+		t.Fatalf("error message = %q, want to contain 'invalid arguments shape'", res.Output)
+	}
+
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("askPendingCount = %d, want 0 (rejected call must post nothing)", got)
+	}
+}
+
+// TestAskUser_DuplicateLabelsInShorthand verifies that duplicate labels in
+// shorthand form are caught with the minimal example in the error.
+func TestAskUser_DuplicateLabelsInShorthand(t *testing.T) {
+	t.Parallel()
+	sess := newAskTestSession(t, SessionConfig{})
+
+	args := map[string]any{
+		"question": "Which one?",
+		"options": []any{
+			map[string]any{"label": "Same", "detail": "First"},
+			map[string]any{"label": "Same", "detail": "Second"},
+		},
+	}
+
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, askUserCall("c1", args))
+	if !res.IsError {
+		t.Fatalf("expected error for duplicate labels, got ack: %s", res.Output)
+	}
+
+	if !strings.Contains(res.Output, "option labels must be unique") {
+		t.Fatalf("error message = %q, want to contain 'option labels must be unique'", res.Output)
+	}
+	if !strings.Contains(res.Output, "Minimal example") {
+		t.Fatalf("error message = %q, want to contain 'Minimal example'", res.Output)
+	}
+
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("askPendingCount = %d, want 0 (rejected call must post nothing)", got)
+	}
+}
