@@ -203,8 +203,7 @@ func isTurnCancellation(ctx context.Context, err error) bool {
 	if ctx.Err() != nil {
 		return true
 	}
-	var abort *llm.AbortError
-	if errors.As(err, &abort) {
+	if isAbortError(err) {
 		return true
 	}
 	// A typed llm error that merely wraps a context sentinel (e.g. a

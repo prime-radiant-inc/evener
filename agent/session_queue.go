@@ -667,8 +667,7 @@ func queuedInputDrainContext(ctx context.Context, err error) (context.Context, b
 	if !ok || cfg.rootCtx == nil {
 		return nil, false
 	}
-	var abort *llm.AbortError
-	isAbort := errors.As(err, &abort)
+	isAbort := isAbortError(err)
 	// A bare context.Canceled is this turn's own cancellation and always drains.
 	// An *AbortError wraps a cancellation that may have come from a sub-operation,
 	// so it drains only when THIS turn's context was the one canceled. Post

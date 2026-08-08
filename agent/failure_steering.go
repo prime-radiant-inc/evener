@@ -127,8 +127,7 @@ func contentFilterKilledGroup(g *groupRecord) bool {
 // roundWasCancelled reports whether the round ended because its context went away
 // rather than because the provider failed.
 func roundWasCancelled(err error) bool {
-	var abort *llm.AbortError
-	return errors.Is(err, context.Canceled) || errors.As(err, &abort)
+	return errors.Is(err, context.Canceled) || isAbortError(err)
 }
 
 // composeFailureSteering renders the model-visible steering turn for a settled
