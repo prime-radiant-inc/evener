@@ -111,12 +111,15 @@ function assertResult(result, expectedWidth) {
   const failures = [];
   const mobile = expectedWidth <= 899;
   const visible = (value) => !("error" in value) && value.display !== "none" && value.visibility !== "hidden";
-  if (result.viewport.width !== expectedWidth) failures.push(`viewport is ${result.viewport.width}px, expected ${expectedWidth}px`);
+  if (result.viewport.width !== expectedWidth)
+    failures.push(`viewport is ${result.viewport.width}px, expected ${expectedWidth}px`);
   if (visible(result.mobileConfig) !== mobile) failures.push(`mobile config visibility is wrong at ${expectedWidth}px`);
-  if (visible(result.desktopConfig) === mobile) failures.push(`desktop config visibility is wrong at ${expectedWidth}px`);
+  if (visible(result.desktopConfig) === mobile)
+    failures.push(`desktop config visibility is wrong at ${expectedWidth}px`);
   if (visible(result.mobileTitle) !== mobile) failures.push(`mobile title visibility is wrong at ${expectedWidth}px`);
   if (visible(result.desktopTitle) === mobile) failures.push(`desktop title visibility is wrong at ${expectedWidth}px`);
-  if (visible(result.mobileIntro) !== mobile) failures.push(`prompt orientation visibility is wrong at ${expectedWidth}px`);
+  if (visible(result.mobileIntro) !== mobile)
+    failures.push(`prompt orientation visibility is wrong at ${expectedWidth}px`);
 
   if (mobile) {
     const action = result.actionBand;
@@ -129,7 +132,8 @@ function assertResult(result, expectedWidth) {
     }
     if (result.rows.length !== 6) failures.push(`expected 6 mobile setting rows, found ${result.rows.length}`);
     for (const row of result.rows) {
-      if (row.minHeight !== "48px" || row.height < 48) failures.push(`row ${row.label} is below 48px: ${JSON.stringify(row)}`);
+      if (row.minHeight !== "48px" || row.height < 48)
+        failures.push(`row ${row.label} is below 48px: ${JSON.stringify(row)}`);
     }
     const prompt = result.accessiblePrompt;
     if (
@@ -184,7 +188,9 @@ function assertResult(result, expectedWidth) {
   // a width where one line is the right answer.
   const tooNarrowForOneLine = staged.row !== null && staged.row.width < staged.tiles.length * TILE_PX;
   if (tooNarrowForOneLine && staged.rowCount < 2) {
-    failures.push(`${staged.tiles.length} tiles sit on one line inside a ${staged.row.width}px row instead of wrapping`);
+    failures.push(
+      `${staged.tiles.length} tiles sit on one line inside a ${staged.row.width}px row instead of wrapping`,
+    );
   }
 
   if (result.overflow.length > 0) failures.push(`horizontal overflow: ${result.overflow.join("; ")}`);
@@ -220,12 +226,17 @@ async function main() {
       }
     }
   } finally {
-    cleanup();
+    await cleanup();
   }
-  process.exit(failed > 0 ? 1 : 0);
+  return failed > 0 ? 1 : 0;
 }
 
-main().catch((error) => {
-  console.error(error.message);
-  process.exit(2);
-});
+main().then(
+  (status) => {
+    if (process.exitCode === undefined) process.exitCode = status;
+  },
+  (error) => {
+    console.error(error.message);
+    if (process.exitCode === undefined) process.exitCode = 2;
+  },
+);

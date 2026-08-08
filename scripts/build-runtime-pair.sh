@@ -2,8 +2,11 @@
 set -eu
 
 repo_root=$(pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+. "$script_dir/private-go-home.sh"
 stage=$(mktemp -d "${TMPDIR:-/tmp}/serf-runtime-build.XXXXXX")
 trap 'rm -rf "$stage"' EXIT HUP INT TERM
+serf_prepare_private_go_home "$stage"
 
 build_one() {
 	output=$1

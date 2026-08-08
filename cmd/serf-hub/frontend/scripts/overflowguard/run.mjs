@@ -312,7 +312,9 @@ async function main() {
       }
       if (result.footer.queueLabel !== "12 queued") {
         widthFailed = true;
-        console.log(`${width}px ... FAIL - pressured footer queue label is ${JSON.stringify(result.footer.queueLabel)}`);
+        console.log(
+          `${width}px ... FAIL - pressured footer queue label is ${JSON.stringify(result.footer.queueLabel)}`,
+        );
       }
       if (result.footer.statusScrollWidth > result.footer.statusClientWidth + 1) {
         widthFailed = true;
@@ -389,12 +391,17 @@ async function main() {
       if (widthFailed) failed++;
     }
   } finally {
-    cleanup();
+    await cleanup();
   }
-  process.exit(failed > 0 ? 1 : 0);
+  return failed > 0 ? 1 : 0;
 }
 
-main().catch((err) => {
-  console.error(err.message);
-  process.exit(2);
-});
+main().then(
+  (status) => {
+    if (process.exitCode === undefined) process.exitCode = status;
+  },
+  (err) => {
+    console.error(err.message);
+    if (process.exitCode === undefined) process.exitCode = 2;
+  },
+);

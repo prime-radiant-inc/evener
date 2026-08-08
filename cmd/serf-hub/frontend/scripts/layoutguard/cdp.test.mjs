@@ -9,7 +9,15 @@ const injectedChromeBinary = "/test-bin/chrome";
 function spawnChromeThatNeverStarts() {
   const proc = new EventEmitter();
   proc.stderr = new EventEmitter();
-  proc.kill = () => {};
+  proc.exitCode = null;
+  proc.signalCode = null;
+  proc.kill = (signal) => {
+    queueMicrotask(() => {
+      proc.signalCode = signal;
+      proc.emit("exit", null, signal);
+    });
+    return true;
+  };
   return proc;
 }
 
@@ -44,6 +52,10 @@ test("probeBrowserCapability includes launch arguments in error message", async 
       // Verify specific args are included
       assert.ok(err.message.includes("--headless=new"), "error should contain --headless=new");
       assert.ok(err.message.includes("--disable-gpu"), "error should contain --disable-gpu");
+      assert.ok(
+        err.message.includes("--disable-crash-reporter"),
+        "error should contain the switch that prevents ambient crashpad state",
+      );
       return true;
     },
   );

@@ -63,7 +63,8 @@ const SRC_DIR = path.join(__dirname, "..", "..", "src");
 // be added silently without it.
 function mutationWarning(name, caseJson) {
   const m = caseJson.mutation;
-  if (!m || typeof m !== "object") return `${name}: no "mutation" evidence in case.json - was this case ever mutation-tested? see docs/testing.md`;
+  if (!m || typeof m !== "object")
+    return `${name}: no "mutation" evidence in case.json - was this case ever mutation-tested? see docs/testing.md`;
   const missing = ["declaration", "verified", "expect"].filter((k) => !m[k]);
   if (missing.length > 0) return `${name}: "mutation" evidence is missing ${missing.join(", ")}`;
   return null;
@@ -108,7 +109,7 @@ async function main() {
   const requested = process.argv[2];
   if (!existsSync(CASES_DIR)) {
     console.error(`no cases directory at ${CASES_DIR}`);
-    process.exit(2);
+    return 2;
   }
   const { readdirSync } = await import("node:fs");
   const caseNames = readdirSync(CASES_DIR, { withFileTypes: true })
@@ -118,7 +119,7 @@ async function main() {
 
   if (caseNames.length === 0) {
     console.error(requested ? `no case named ${requested} under ${CASES_DIR}` : `no cases found under ${CASES_DIR}`);
-    process.exit(2);
+    return 2;
   }
 
   // Perform a single preflight probe before running any cases. If Chrome startup
@@ -128,7 +129,7 @@ async function main() {
     await probeBrowserCapability();
   } catch (err) {
     console.error(err.message);
-    process.exit(1);
+    return 1;
   }
 
   let failed = 0;
@@ -160,7 +161,15 @@ async function main() {
     for (const w of warnings) console.warn(`  - ${w}`);
   }
 
-  process.exit(failed > 0 ? 1 : 0);
+  return failed > 0 ? 1 : 0;
 }
 
-main();
+main().then(
+  (status) => {
+    if (process.exitCode === undefined) process.exitCode = status;
+  },
+  (error) => {
+    console.error(error.message);
+    if (process.exitCode === undefined) process.exitCode = 2;
+  },
+);

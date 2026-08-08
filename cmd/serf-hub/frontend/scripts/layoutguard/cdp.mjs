@@ -9,9 +9,15 @@
 // a gate. This never touches that shared instance, and never touches the
 // serf-hub dev server's port (9180) because it never navigates to http(s).
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import {
+  chromeProfileEnvironment,
+  chromeProfileIsolationArgs,
+  createBrowserProcessCleanup,
+  requestBrowserClose,
+} from "../browserGuardProcess.mjs";
 import { diagnoseRealizedViewport } from "./viewport.mjs";
 
 const CHROME_CANDIDATES = [
@@ -54,6 +60,7 @@ export async function probeBrowserCapability(
   const args = [
     "--headless=new",
     "--disable-gpu",
+    ...chromeProfileIsolationArgs(),
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${profileDir}`,
     "--no-first-run",
@@ -62,29 +69,23 @@ export async function probeBrowserCapability(
   ];
 
   let launchStderr = "";
-  const chrome = spawnProcess(chromeBin, args, {
-    stdio: ["ignore", "ignore", "pipe"],
-  });
-
   const stderrChunks = [];
-  chrome.stderr.on("data", (chunk) => {
-    stderrChunks.push(chunk);
-  });
-
-  const cleanup = () => {
-    try {
-      chrome.kill();
-    } catch {
-      // already dead
-    }
-    try {
-      rmSync(profileDir, { recursive: true, force: true });
-    } catch {
-      // best-effort
-    }
-  };
+  const lifecycle = createBrowserProcessCleanup({ profileDir });
+  const useProcessGroup = process.platform !== "win32";
 
   try {
+    const chrome = spawnProcess(chromeBin, args, {
+      stdio: ["ignore", "ignore", "pipe"],
+      env: chromeProfileEnvironment(profileDir),
+      detached: useProcessGroup,
+    });
+    lifecycle.addChild(chrome, {
+      processGroupId: useProcessGroup && Number.isInteger(chrome.pid) ? chrome.pid : null,
+      gracefulClose: () => requestBrowserClose(port),
+    });
+    chrome.stderr.on("data", (chunk) => {
+      stderrChunks.push(chunk);
+    });
     await waitForCdpProbe(port);
     return {
       chromeBin,
@@ -107,7 +108,7 @@ export async function probeBrowserCapability(
         `Diagnostic: ${err.message}${stderrHint}`,
     );
   } finally {
-    cleanup();
+    await lifecycle.cleanup();
   }
 }
 
@@ -142,38 +143,36 @@ export async function evalInFreshChrome(fileUrl, expr, forcePseudoStates = [], v
     port = 20000 + Math.floor(Math.random() * 20000);
   } while (port === 9180);
 
-  const chrome = spawn(
-    chromeBin,
-    [
-      "--headless=new",
-      "--disable-gpu",
-      `--remote-debugging-port=${port}`,
-      `--user-data-dir=${profileDir}`,
-      "--no-first-run",
-      "--disable-extensions",
-      "about:blank",
-    ],
-    { stdio: "ignore" },
-  );
-
-  const cleanup = () => {
-    try {
-      chrome.kill();
-    } catch {
-      // already dead
-    }
-    try {
-      rmSync(profileDir, { recursive: true, force: true });
-    } catch {
-      // best-effort
-    }
-  };
+  const lifecycle = createBrowserProcessCleanup({ profileDir });
+  const useProcessGroup = process.platform !== "win32";
 
   try {
+    const chrome = spawn(
+      chromeBin,
+      [
+        "--headless=new",
+        "--disable-gpu",
+        ...chromeProfileIsolationArgs(),
+        `--remote-debugging-port=${port}`,
+        `--user-data-dir=${profileDir}`,
+        "--no-first-run",
+        "--disable-extensions",
+        "about:blank",
+      ],
+      {
+        stdio: "ignore",
+        env: chromeProfileEnvironment(profileDir),
+        detached: useProcessGroup,
+      },
+    );
+    lifecycle.addChild(chrome, {
+      processGroupId: useProcessGroup && Number.isInteger(chrome.pid) ? chrome.pid : null,
+      gracefulClose: () => requestBrowserClose(port),
+    });
     await waitForCdp(port);
     return await withPage(port, fileUrl, expr, forcePseudoStates, viewport);
   } finally {
-    cleanup();
+    await lifecycle.cleanup();
   }
 }
 

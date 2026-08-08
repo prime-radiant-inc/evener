@@ -565,6 +565,149 @@ git commit -m "docs(test): record whole-system residue audit"
 The detailed commit body must list the cold declared state, warm diff verdict,
 runtime-state verdict, and exact image/tool versions.
 
+### Task 5A: Remediate the First Whole-System Audit
+
+The first cold/warm audit passed both cycles with concise output, but its
+filesystem comparison was red. It found Go telemetry and Serf state under the
+ambient user directories, Node and Biome state outside the stream `TMPDIR`, a
+WSL clipboard test-created `/mnt/t`, repeated Git index refreshes, and an audit
+image whose copied Go toolchain had lost `GOPATH=/go`. These findings may not be
+added to the declared cache list merely to make the comparison green.
+
+A host run of the canonical browser gate exposed a second residue mechanism:
+layoutguard printed PASS while Chrome main/crashpad children remained parented
+to PID 1, overflowguard did not finish, and interrupting Make left Vite and
+Chrome alive. The browser helpers only called `child.kill()` without awaiting
+exit, deleted profiles immediately, and the runners forced `process.exit`;
+Make also signalled the npm wrapper instead of the Node process that owned
+cleanup. Chrome crashpad independently wrote beneath the ambient application
+support directory despite the private browser profile.
+
+On macOS with Chrome 151, the fresh-profile overflow guard also blocked before
+its first network socket: CDP `Page.navigate` remained pending until Chrome was
+terminated because the network service was waiting on the real keychain.
+Adding only `--use-mock-keychain` made the same navigation return in 14 ms and
+the complete overflow sweep finish in 2.49 seconds. Separately,
+`--disable-crash-reporter` did not prevent Chrome from advancing the ambient
+Crashpad `settings.dat` mtime; setting `BREAKPAD_DUMP_LOCATION` beneath the
+owned profile kept the ambient file unchanged and created the 40-byte settings
+database only inside the disposable root.
+
+That redirect then exposed the last lifecycle race: macOS Crashpad double-forks
+to PID 1 in a process group separate from Chrome, then briefly keeps writing the
+private database after the browser group disappears. Immediate profile removal
+therefore intermittently failed with `ENOTEMPTY`. The browser owner must
+request `Browser.close` over the browser CDP endpoint and give that orderly
+shutdown the existing bounded grace window. An unreachable, rejected, or
+still-pending CDP close falls back to TERM and then KILL through the same
+lifecycle. On POSIX, Chrome and Vite launch in detached process groups, and
+profile removal waits until each exact group no longer exists. On macOS,
+cleanup captures before shutdown and rescans after the groups disappear for
+only the Crashpad handler whose command contains the canonical random profile's
+exact `--database=.../Crashpad` argument. It observes that escaped identity for
+a bounded grace period without signaling the reusable numeric PID. If the
+handler remains, cleanup fails and retains the private profile as evidence.
+
+**Files:**
+- Modify: `Makefile`
+- Modify: `scripts/build-runtime-pair.sh`
+- Create: `scripts/private-go-home.sh`
+- Create: `scripts/private-go-home-selftest.sh`
+- Modify: `scripts/run-module-tests.sh`
+- Modify: `scripts/run-module-tests-selftest.sh`
+- Modify: `runtime_pair_build_test.go`
+- Modify: `cmd/serf-hub/frontend/scripts/browserGuardProcess.mjs`
+- Modify: `cmd/serf-hub/frontend/scripts/browserGuardProcess.test.mjs`
+- Modify: `cmd/serf-hub/frontend/scripts/layoutguard/cdp.mjs`
+- Modify: `cmd/serf-hub/frontend/scripts/layoutguard/cdp.test.mjs`
+- Modify: `cmd/serf-hub/frontend/scripts/layoutguard/run.mjs`
+- Modify: `cmd/serf-hub/frontend/scripts/overflowguard/run.mjs`
+- Modify: `cmd/serf-hub/frontend/scripts/spawnguard/run.mjs`
+- Modify: `cmd/llmcall/coverage_test.go`
+- Modify: `cmd/serf-tui/internal/clipboard/clipboard_paste_test.go`
+- Modify: `docs/testing.md`
+- Modify only in ignored audit evidence: `audit/Dockerfile`
+
+- [ ] **Step 1: Contain Go process state without discarding reusable caches**
+
+Use one sourced POSIX helper to create a private `HOME` and XDG roots beneath
+the build stage or module-stream `TMPDIR`. Copy the caller's GOENV file into
+that owned root so subprocess writes cannot mutate ambient configuration, and
+preserve explicit, configured, or platform-default `GOPATH` and `GOCACHE`
+locations. Prove green removal and failed/interrupted retention with the real
+runner selftest and prove the helper behavior directly.
+
+- [ ] **Step 2: Contain frontend process state**
+
+Disable Node's automatic compile cache for preflight/build/browser commands and
+give each concurrent `test-web` check its own private `HOME`, temporary, and XDG
+roots. Exercise the real Make targets with fake npm so the test observes
+structured environment inputs and verifies successful cleanup.
+
+For the browser gate, use one reusable async child lifecycle that sends TERM,
+awaits the owned process lifetime, escalates to KILL only after a bounded grace
+period, removes the Chrome profile after every owned process is gone, and is
+idempotent. POSIX Chrome and Vite children launch in detached process groups;
+cleanup observes each exact group until `kill(-pgid, 0)` reports `ESRCH`, while
+Win32 and test fakes retain direct-child exit handling.
+Chrome owners first await a CDP `Browser.close`; successful close receives that
+same grace window to finish orderly shutdown, while failed or pending close
+causally enters the TERM-to-KILL fallback.
+Because macOS Crashpad escapes Chrome's process group, scan both before closing
+Chrome and after its process group disappears. Capture a PID only when its
+command names `chrome_crashpad_handler` and the canonical random profile's
+exact `--database=.../Crashpad` argument, then deduplicate the two scans.
+Observe that exact identity for a bounded grace period but never signal its
+numeric PID; if it remains, reject cleanup and retain the profile rather than
+risk targeting a reused process.
+Install temporary SIGINT/SIGTERM handlers that await that same cleanup before
+exit; every layoutguard, overflowguard, and spawnguard runner must await cleanup
+and set an exit code instead of forcing early process exit. Invoke those Node
+entrypoints directly from Make, give each one private HOME/TMPDIR/XDG roots,
+disable Chrome crash reporting in every launch argument set, add
+`--use-mock-keychain` for Darwin fresh profiles, and set
+`BREAKPAD_DUMP_LOCATION` to the private profile's `Crashpad` directory for
+every Chrome child. Capture each guard's output separately: green prints only
+the three verdicts and removes its owned root, while red replays only failed
+guard logs and retains and names the root. Clear tracked PIDs after Make waits
+so an EXIT trap cannot signal an already-reaped or reused PID.
+
+The RED contracts are behavior-level fake-child tests for profile-removal
+ordering, TERM-to-KILL escalation, idempotence, signal-handler cleanup, and
+crash-reporting arguments, Darwin mock-keychain arguments, the Chrome child's
+private `BREAKPAD_DUMP_LOCATION`, exact escaped-helper discovery before and
+after group shutdown, stuck-helper profile retention, and PID-reuse rejection,
+plus real Make fixtures whose fake direct Node process causally acknowledges
+TERM and withholds exit until released and whose guard output proves concise
+green verdicts versus failed-log replay and retention. The focused Node command is
+`node --test scripts/browserGuardProcess.test.mjs scripts/layoutguard/cdp.test.mjs`
+(27 tests after these contracts). GREEN requires those focused Node and Go
+tests, `make test-web`, and the canonical `make test-web-browser` gate on a
+Chrome-capable host; a printed browser PASS is not sufficient unless the
+process and filesystem residue audits are also clean.
+
+- [ ] **Step 3: Remove the two direct test leaks at their causal boundaries**
+
+Make `TestPasteClipboardImage_FallsBackToWSL` fake only the filesystem stat for
+the exact converted path while retaining the real path conversion and result
+assertions; it must not write under `/mnt`. Make
+`TestLLMCallProfilesAndOptions` inject an empty client and assert the intended
+unknown-provider failure instead of constructing ambient provider state before
+the behavior under test.
+
+- [ ] **Step 4: Prevent a read-only build metadata query from refreshing Git state**
+
+Use a no-optional-locks `diff-files --quiet` dirty probe and prove the index
+hash is unchanged across `make build`; keep the same tracked-worktree dirty
+semantics as the existing build metadata.
+
+- [ ] **Step 5: Correct the audit image and repeat Task 5 from a clean image**
+
+Set `GOPATH=/go` and include it in `PATH` in the audit image, rebuild it, create
+a new container from the reviewed committed HEAD, and replace every cold/warm
+manifest. Only a new comparison with zero undeclared paths may proceed to Task
+5 documentation and cleanup.
+
 ### Task 6: Final Canonical Verification
 
 **Files:**
@@ -580,7 +723,7 @@ Run:
 
 ```bash
 cd cmd/serf-hub/frontend
-npx biome check --write package.json scripts/layoutguard/cdp.mjs scripts/layoutguard/cdp.test.mjs
+npx biome check --write package.json scripts/browserGuardProcess.mjs scripts/browserGuardProcess.test.mjs scripts/layoutguard/cdp.mjs scripts/layoutguard/cdp.test.mjs scripts/layoutguard/run.mjs scripts/overflowguard/run.mjs scripts/spawnguard/run.mjs
 ```
 
 Expected: exit zero and no uncommitted formatting change.

@@ -65,13 +65,18 @@ func TestLLMCallMainParserBranches(t *testing.T) {
 }
 
 func TestLLMCallProfilesAndOptions(t *testing.T) {
+	originalNewClient := newLLMClientFromEnv
+	t.Cleanup(func() { newLLMClientFromEnv = originalNewClient })
+	newLLMClientFromEnv = func(...llm.EnvOption) (*llm.Client, error) {
+		return llm.NewClient(), nil
+	}
 	var out, errOut bytes.Buffer
 	cpu := filepath.Join(t.TempDir(), "cpu.pprof")
 	trace := filepath.Join(t.TempDir(), "trace.out")
 	// Provider lookup will fail after both profilers have started and deferred stops run.
 	err := llmcallMain([]string{"--provider", "missing", "--model", "m", "--cpu-profile", cpu, "--trace", trace, "--timeout", "1s", "p"}, &out, &errOut)
-	if err == nil {
-		t.Fatal("provider failure")
+	if err == nil || !strings.Contains(err.Error(), "unknown provider: missing") {
+		t.Fatalf("provider failure = %v, want missing-provider error", err)
 	}
 	for _, p := range []string{cpu, trace} {
 		if info, e := os.Stat(p); e != nil || info.Size() == 0 {

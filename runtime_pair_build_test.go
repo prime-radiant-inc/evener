@@ -1,9 +1,12 @@
 package serf_test
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,8 +29,72 @@ func TestRuntimePairBuildPublishesBothWithSameLinkerFlags(t *testing.T) {
 		t.Fatalf("fake go calls = %d, want 2; log = %q", len(lines), logData)
 	}
 	for _, line := range lines {
-		if !strings.Contains(line, "ldflags=same-checkout-flags") {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 9 || fields[0] != "go-env" || fields[2] != "same-checkout-flags" {
 			t.Fatalf("fake go call = %q, want shared linker flags", line)
+		}
+	}
+}
+
+func TestRuntimePairBuildContainsProcessStateAndPreservesGoCaches(t *testing.T) {
+	fixture := newRuntimeBuildFixture(t)
+	if output, err := runRuntimePairBuild(fixture, ""); err != nil {
+		t.Fatalf("build runtime pair: %v\n%s", err, output)
+	}
+
+	logData, err := os.ReadFile(fixture.logPath)
+	if err != nil {
+		t.Fatalf("read fake go log: %v", err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(logData)), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 9 || fields[0] != "go-env" {
+			t.Fatalf("fake go environment record = %q, want 9 tab-separated fields", line)
+		}
+		for i, name := range []string{"home", "xdg-config", "xdg-cache", "xdg-state"} {
+			path := fields[i+3]
+			if !strings.HasPrefix(path, fixture.root+string(os.PathSeparator)) {
+				t.Fatalf("fake go %s = %q, want build-owned path beneath %q; log = %q", name, path, fixture.root, logData)
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("build-owned %s survived successful build: stat err = %v; log = %q", name, err, logData)
+			}
+		}
+		if got, want := fields[7], filepath.Join(fixture.root, "shared-gopath"); got != want {
+			t.Fatalf("fake go GOPATH = %q, want reusable cache %q", got, want)
+		}
+		if got, want := fields[8], filepath.Join(fixture.root, "shared-gocache"); got != want {
+			t.Fatalf("fake go GOCACHE = %q, want reusable cache %q", got, want)
+		}
+	}
+}
+
+func TestRuntimeBuildFixtureEnvironmentDropsAmbientHarnessControls(t *testing.T) {
+	controlNames := []string{
+		"SERF_TEST_NPM_FAIL_COMMAND",
+		"SERF_TEST_NPM_HOLD_COMMAND",
+		"SERF_TEST_NPM_PID",
+		"SERF_TEST_NPM_READY",
+		"SERF_TEST_NPM_TRACK_COMMAND",
+		"SERF_TEST_NPM_TRACK_PID",
+		"SERF_TEST_SHELL_KILLED_REAPED",
+		"SERF_TEST_SHELL_WAITED_REAPED",
+		"SERF_TEST_NODE_HOLD_COMMAND",
+		"SERF_TEST_NODE_FAIL_COMMAND",
+		"SERF_TEST_NODE_PID",
+		"SERF_TEST_NODE_READY",
+		"SERF_TEST_NODE_TERM",
+		"SERF_TEST_NODE_RELEASE",
+	}
+	for _, name := range controlNames {
+		t.Setenv(name, "ambient-value")
+	}
+
+	fixture := newRuntimeBuildFixture(t)
+	for _, assignment := range fixture.environment("") {
+		name, _, _ := strings.Cut(assignment, "=")
+		if slices.Contains(controlNames, name) {
+			t.Errorf("fixture environment inherited %s", name)
 		}
 	}
 }
@@ -226,6 +293,452 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 	}
 }
 
+func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
+	fixture := newBuildWebFixture(t)
+	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+
+	for _, target := range []string{"build-web", "test-web", "test-web-browser"} {
+		command := exec.Command("make", target)
+		command.Dir = fixture.root
+		command.Env = fixture.environment("")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("make %s: %v\n%s", target, err, output)
+		}
+	}
+
+	logData, err := os.ReadFile(fixture.logPath)
+	if err != nil {
+		t.Fatalf("read fake frontend process log: %v", err)
+	}
+	wantNPMCommands := map[string]bool{
+		"ci":            false,
+		"run build":     false,
+		"run typecheck": false,
+		"run test":      false,
+		"run lint":      false,
+	}
+	wantNodeCommands := map[string]bool{
+		"scripts/layoutguard/run.mjs":   false,
+		"scripts/overflowguard/run.mjs": false,
+		"scripts/spawnguard/run.mjs":    false,
+	}
+	assertProcessState := func(tool, command string, fields []string, wantPrivateRoots bool) {
+		t.Helper()
+		if fields[2] != "1" {
+			t.Errorf("%s %s NODE_DISABLE_COMPILE_CACHE = %q, want 1", tool, command, fields[2])
+		}
+		if !wantPrivateRoots {
+			return
+		}
+		for i, name := range []string{"HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"} {
+			path := fields[i+3]
+			if path == "" {
+				t.Errorf("%s %s %s is empty, want check-owned directory", tool, command, name)
+				continue
+			}
+			if !strings.HasPrefix(path, fixture.root+string(os.PathSeparator)) {
+				t.Errorf("%s %s %s = %q, want path beneath inherited TMPDIR %q", tool, command, name, path, fixture.root)
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Errorf("%s %s left %s %q after success: stat err = %v", tool, command, name, path, err)
+			}
+		}
+	}
+	for line := range strings.SplitSeq(strings.TrimSpace(string(logData)), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 8 {
+			continue
+		}
+		command := fields[1]
+		switch fields[0] {
+		case "npm-env":
+			if _, expected := wantNPMCommands[command]; expected {
+				wantNPMCommands[command] = true
+				assertProcessState("npm", command, fields, strings.HasPrefix(command, "run ") && command != "run build")
+			}
+		case "node-env":
+			if _, expected := wantNodeCommands[command]; expected {
+				wantNodeCommands[command] = true
+				assertProcessState("node", command, fields, true)
+			}
+		}
+	}
+	for command, seen := range wantNPMCommands {
+		if !seen {
+			t.Errorf("npm %s was not observed; log = %q", command, logData)
+		}
+	}
+	for command, seen := range wantNodeCommands {
+		if !seen {
+			t.Errorf("node %s was not observed; log = %q", command, logData)
+		}
+	}
+}
+
+func TestMakeTestWebBrowserInterruptWaitsForNodeCleanup(t *testing.T) {
+	fixture := newBuildWebFixture(t)
+	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+	heldCommand := "scripts/layoutguard/run.mjs"
+	readyPath := filepath.Join(fixture.root, "held-node.ready")
+	pidPath := filepath.Join(fixture.root, "held-node.pid")
+	termPath := filepath.Join(fixture.root, "held-node.term")
+	releasePath := filepath.Join(fixture.root, "held-node.release")
+
+	command := exec.Command("make", "test-web-browser")
+	command.Dir = fixture.root
+	command.Env = append(fixture.environment(""),
+		"SERF_TEST_NODE_HOLD_COMMAND="+heldCommand,
+		"SERF_TEST_NODE_READY="+readyPath,
+		"SERF_TEST_NODE_PID="+pidPath,
+		"SERF_TEST_NODE_TERM="+termPath,
+		"SERF_TEST_NODE_RELEASE="+releasePath,
+	)
+	var output bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Start(); err != nil {
+		t.Fatalf("start make test-web-browser: %v", err)
+	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- command.Wait() }()
+	finished := false
+	t.Cleanup(func() {
+		if finished {
+			return
+		}
+		writeTestFile(t, releasePath, nil, 0o644)
+		_ = command.Process.Kill()
+		if pidData, err := os.ReadFile(pidPath); err == nil {
+			_ = exec.Command("kill", "-KILL", strings.TrimSpace(string(pidData))).Run()
+		}
+		<-waitDone
+	})
+	if !waitForPath(readyPath, 5*time.Second) {
+		t.Fatalf("held browser Node process did not become ready; output = %s", output.String())
+	}
+
+	browserRoot := browserEvidenceRoot(t, fixture, heldCommand)
+	if _, err := os.Stat(browserRoot); err != nil {
+		t.Fatalf("private browser root %q was absent while its Node owner was running: %v", browserRoot, err)
+	}
+
+	if err := exec.Command("kill", "-TERM", strconv.Itoa(command.Process.Pid)).Run(); err != nil {
+		t.Fatalf("signal make test-web-browser: %v", err)
+	}
+	if !waitForPath(termPath, 5*time.Second) {
+		t.Fatalf("Make did not deliver TERM to the browser Node owner; output = %s", output.String())
+	}
+	select {
+	case waitErr := <-waitDone:
+		finished = true
+		t.Fatalf("make test-web-browser returned before Node released cleanup: %v; output = %s", waitErr, output.String())
+	default:
+	}
+	writeTestFile(t, releasePath, nil, 0o644)
+
+	select {
+	case waitErr := <-waitDone:
+		finished = true
+		if waitErr == nil {
+			t.Fatalf("interrupted make test-web-browser exited zero; output = %s", output.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("make test-web-browser did not return after Node completed cleanup; output = %s", output.String())
+	}
+	if retained := fullLogsPath(output.Bytes()); retained != browserRoot {
+		t.Errorf("interrupted browser logs = %q, want retained process-owned root %q; output = %s", retained, browserRoot, output.String())
+	}
+	if _, err := os.Stat(browserRoot); err != nil {
+		t.Errorf("interrupted browser root %q was not retained: %v", browserRoot, err)
+	}
+	pidData, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("read held Node pid: %v", err)
+	}
+	nodePID := strings.TrimSpace(string(pidData))
+	if exec.Command("kill", "-0", nodePID).Run() == nil {
+		t.Errorf("interrupted browser Node pid %s is still alive", nodePID)
+	}
+}
+
+func TestMakeTestWebBrowserSuccessIsConciseAndRemovesEvidence(t *testing.T) {
+	fixture := newBuildWebFixture(t)
+	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+
+	command := exec.Command("make", "test-web-browser")
+	command.Dir = fixture.root
+	command.Env = fixture.environment("")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make test-web-browser: %v\n%s", err, output)
+	}
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("successful browser output has %d nonempty lines, want 3 verdicts; output = %q", len(lines), output)
+	}
+	for index, guard := range []string{"layoutguard", "overflowguard", "spawnguard"} {
+		fields := strings.Fields(lines[index])
+		if len(fields) != 2 || fields[0] != "PASS" || fields[1] != "web-"+guard {
+			t.Errorf("browser verdict %d fields = %q, want PASS for %s", index, fields, guard)
+		}
+	}
+	browserRoot := browserEvidenceRoot(t, fixture, "scripts/layoutguard/run.mjs")
+	if _, err := os.Stat(browserRoot); !os.IsNotExist(err) {
+		t.Fatalf("successful browser evidence root %q survived: stat err = %v", browserRoot, err)
+	}
+}
+
+func TestMakeTestWebBrowserFailureReplaysLogAndRetainsEvidence(t *testing.T) {
+	fixture := newBuildWebFixture(t)
+	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+	failedCommand := "scripts/overflowguard/run.mjs"
+
+	command := exec.Command("make", "test-web-browser")
+	command.Dir = fixture.root
+	command.Env = append(fixture.environment(""), "SERF_TEST_NODE_FAIL_COMMAND="+failedCommand)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("make test-web-browser succeeded despite injected guard failure; output = %s", output)
+	}
+	if !strings.Contains(string(output), "browser failure detail: "+failedCommand) {
+		t.Fatalf("failed guard log was not replayed; output = %s", output)
+	}
+	if strings.Contains(string(output), "browser chatter: scripts/layoutguard/run.mjs") {
+		t.Fatalf("successful guard chatter leaked into failure output; output = %s", output)
+	}
+	retained := fullLogsPath(output)
+	if retained == "" {
+		t.Fatalf("failed browser gate did not name retained evidence; output = %s", output)
+	}
+	if got := browserEvidenceRoot(t, fixture, failedCommand); got != retained {
+		t.Fatalf("named browser evidence root = %q, process-owned root = %q", retained, got)
+	}
+	for _, relative := range []string{"layoutguard.log", "overflowguard.log", "spawnguard.log", filepath.Join("overflowguard", "tmp")} {
+		if _, statErr := os.Stat(filepath.Join(retained, relative)); statErr != nil {
+			t.Errorf("retained browser evidence %s: %v", relative, statErr)
+		}
+	}
+}
+
+func TestMakeTestWebRetainsFailedProcessStateWithinTMPDIR(t *testing.T) {
+	fixture := newBuildWebFixture(t)
+	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+
+	command := exec.Command("make", "test-web")
+	command.Dir = fixture.root
+	command.Env = append(fixture.environment(""), "SERF_TEST_NPM_FAIL_COMMAND=run test")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("make test-web succeeded despite injected npm failure; output = %s", output)
+	}
+
+	retained := fullLogsPath(output)
+	if retained == "" {
+		t.Fatalf("make test-web did not name retained evidence; output = %s", output)
+	}
+	if !strings.HasPrefix(retained, fixture.root+string(os.PathSeparator)) {
+		t.Fatalf("retained web root = %q, want child of inherited TMPDIR %q", retained, fixture.root)
+	}
+	for _, relative := range []string{"test.log", filepath.Join("test", "home"), filepath.Join("test", "xdg-cache")} {
+		if _, statErr := os.Stat(filepath.Join(retained, relative)); statErr != nil {
+			t.Errorf("retained web evidence %s: %v", relative, statErr)
+		}
+	}
+}
+
+func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
+	fixture := newBuildWebFixture(t)
+	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+	readyPath := filepath.Join(fixture.root, "held-npm.ready")
+	pidPath := filepath.Join(fixture.root, "held-npm.pid")
+
+	command := exec.Command("make", "test-web")
+	command.Dir = fixture.root
+	command.Env = append(fixture.environment(""),
+		"SERF_TEST_NPM_HOLD_COMMAND=run test",
+		"SERF_TEST_NPM_READY="+readyPath,
+		"SERF_TEST_NPM_PID="+pidPath,
+	)
+	var output bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Start(); err != nil {
+		t.Fatalf("start make test-web: %v", err)
+	}
+	t.Cleanup(func() {
+		if command.ProcessState == nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	})
+	if !waitForPath(readyPath, 5*time.Second) {
+		t.Fatalf("held npm check did not become ready; output = %s", output.String())
+	}
+	if err := exec.Command("kill", "-TERM", strconv.Itoa(command.Process.Pid)).Run(); err != nil {
+		t.Fatalf("signal make test-web: %v", err)
+	}
+	if err := command.Wait(); err == nil {
+		t.Fatalf("interrupted make test-web exited zero; output = %s", output.String())
+	}
+
+	retained := fullLogsPath(output.Bytes())
+	if retained == "" || !strings.HasPrefix(retained, fixture.root+string(os.PathSeparator)) {
+		t.Fatalf("interrupted web logs = %q, want retained path beneath %q; output = %s", retained, fixture.root, output.String())
+	}
+	pidData, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("read held npm pid: %v", err)
+	}
+	heldPID := strings.TrimSpace(string(pidData))
+	deadline := time.Now().Add(2 * time.Second)
+	for exec.Command("kill", "-0", heldPID).Run() == nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if exec.Command("kill", "-0", heldPID).Run() == nil {
+		t.Fatalf("interrupted web check pid %s is still alive", heldPID)
+	}
+}
+
+func TestMakeTestWebInterruptDoesNotSignalReapedCheck(t *testing.T) {
+	fixture := newBuildWebFixture(t)
+	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+	heldReady := filepath.Join(fixture.root, "held-npm.ready")
+	heldPID := filepath.Join(fixture.root, "held-npm.pid")
+	reapedPID := filepath.Join(fixture.root, "reaped-npm.pid")
+	waitedReaped := filepath.Join(fixture.root, "waited-reaped.ready")
+	killedReaped := filepath.Join(fixture.root, "killed-reaped")
+	recordingShell := filepath.Join(filepath.Dir(fixture.root), "recording-shell")
+	writeTestFile(t, recordingShell, []byte(`#!/bin/sh
+if [ "${1:-}" = "-c" ]; then
+  exec /bin/sh -c '
+    wait() {
+      command wait "$@"
+      wait_status=$?
+      tracked_pid=$(cat "$SERF_TEST_NPM_TRACK_PID")
+      [ "${1:-}" != "$tracked_pid" ] || : > "$SERF_TEST_SHELL_WAITED_REAPED"
+      return "$wait_status"
+    }
+    kill() {
+      tracked_pid=$(cat "$SERF_TEST_NPM_TRACK_PID")
+      for kill_arg in "$@"; do
+        [ "$kill_arg" != "$tracked_pid" ] || : > "$SERF_TEST_SHELL_KILLED_REAPED"
+      done
+      command kill "$@"
+    }
+    eval "$1"
+  ' serf-recording-shell "$2"
+fi
+exec /bin/sh "$@"
+`), 0o755)
+
+	command := exec.Command("make", "SHELL="+recordingShell, "test-web")
+	command.Dir = fixture.root
+	command.Env = append(fixture.environment(""),
+		"SERF_TEST_NPM_HOLD_COMMAND=run test",
+		"SERF_TEST_NPM_READY="+heldReady,
+		"SERF_TEST_NPM_PID="+heldPID,
+		"SERF_TEST_NPM_TRACK_COMMAND=run typecheck",
+		"SERF_TEST_NPM_TRACK_PID="+reapedPID,
+		"SERF_TEST_SHELL_WAITED_REAPED="+waitedReaped,
+		"SERF_TEST_SHELL_KILLED_REAPED="+killedReaped,
+	)
+	var output bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Start(); err != nil {
+		t.Fatalf("start make test-web: %v", err)
+	}
+	t.Cleanup(func() {
+		if command.ProcessState == nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	})
+	if !waitForPath(heldReady, 5*time.Second) {
+		t.Fatalf("held npm check did not become ready; output = %s", output.String())
+	}
+	if !waitForPath(waitedReaped, 5*time.Second) {
+		t.Fatalf("Make did not reap the completed typecheck before waiting on the held check; output = %s", output.String())
+	}
+	if err := exec.Command("kill", "-TERM", strconv.Itoa(command.Process.Pid)).Run(); err != nil {
+		t.Fatalf("signal make test-web: %v", err)
+	}
+	if err := command.Wait(); err == nil {
+		t.Fatalf("interrupted make test-web exited zero; output = %s", output.String())
+	}
+	if _, err := os.Stat(killedReaped); !os.IsNotExist(err) {
+		t.Fatalf("interrupt signaled a PID after its npm check was reaped: stat err = %v; output = %s", err, output.String())
+	}
+}
+
+func TestMakeBuildMetadataPreservesIndexAndTracksDirtyWorktree(t *testing.T) {
+	fixture := newBuildWebFixture(t)
+	if err := os.Remove(filepath.Join(fixture.fakeBin, "git")); err != nil {
+		t.Fatalf("remove fake git: %v", err)
+	}
+	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+	marker := filepath.Join(fixture.root, "tracked-marker.txt")
+	writeTestFile(t, marker, []byte("clean\n"), 0o644)
+	runGit(t, fixture.root, "init", "-q")
+	runGit(t, fixture.root, "add", ".")
+	runGit(t, fixture.root, "-c", "user.name=Serf Test", "-c", "user.email=serf-test@example.invalid", "commit", "-qm", "fixture")
+
+	indexPath := filepath.Join(fixture.root, ".git", "index")
+	indexBefore, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("read fixture index: %v", err)
+	}
+	runMakeBuild(t, fixture)
+	indexAfterClean, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("read fixture index after clean build: %v", err)
+	}
+	if !bytes.Equal(indexBefore, indexAfterClean) {
+		t.Fatal("clean make build changed Git index bytes")
+	}
+	cleanLog, err := os.ReadFile(fixture.logPath)
+	if err != nil {
+		t.Fatalf("read clean build log: %v", err)
+	}
+	if strings.Contains(string(cleanLog), "GitDirty=true") {
+		t.Fatalf("clean build marked checkout dirty; log = %q", cleanLog)
+	}
+
+	writeTestFile(t, marker, []byte("dirty\n"), 0o644)
+	writeTestFile(t, fixture.logPath, nil, 0o644)
+	runMakeBuild(t, fixture)
+	indexAfterDirty, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("read fixture index after dirty build: %v", err)
+	}
+	if !bytes.Equal(indexBefore, indexAfterDirty) {
+		t.Fatal("dirty make build changed Git index bytes")
+	}
+	dirtyLog, err := os.ReadFile(fixture.logPath)
+	if err != nil {
+		t.Fatalf("read dirty build log: %v", err)
+	}
+	if !strings.Contains(string(dirtyLog), "GitDirty=true") {
+		t.Fatalf("dirty build did not mark tracked worktree dirty; log = %q", dirtyLog)
+	}
+}
+
 // newBuildWebFixture prepares a runtimeBuildFixture whose fixture root has
 // the frontend toolchain stubbed and the Makefile plus the scripts its
 // recipes invoke copied in, ready for any make target that reaches
@@ -236,6 +749,7 @@ func newBuildWebFixture(t *testing.T) runtimeBuildFixture {
 	installFrontendToolchainStubs(t, fixture)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "Makefile", 0o644)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/build-runtime-pair.sh", 0o755)
+	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/private-go-home.sh", 0o644)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web-preflight.sh", 0o755)
 	return fixture
 }
@@ -253,7 +767,10 @@ func newRuntimeBuildFixture(t *testing.T) runtimeBuildFixture {
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "fixture with spaces")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir fixture root: %v", err)
+	}
 	fakeBin := filepath.Join(root, "fake-bin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
 		t.Fatalf("mkdir fake bin: %v", err)
@@ -271,7 +788,8 @@ while [ "$#" -gt 0 ]; do
     *) package=$1; shift ;;
   esac
 done
-printf 'package=%s ldflags=%s\n' "$package" "$ldflags" >> "$SERF_TEST_GO_LOG"
+printf 'go-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  "$package" "$ldflags" "$HOME" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" "${GOPATH:-}" "${GOCACHE:-}" >> "$SERF_TEST_GO_LOG"
 if [ "${SERF_TEST_GO_FAIL_PACKAGE:-}" = "$package" ]; then
   exit 17
 fi
@@ -287,7 +805,7 @@ printf '%s\n' "$package" > "$output"
 
 // installFrontendToolchainStubs equips the fixture for make targets that
 // reach build-web (Makefile:40-51): it creates the frontend directory the
-// recipe cd's into, and shadows npm and git on the fixture PATH so the REAL
+// recipe cd's into, and shadows npm, Node, and git on the fixture PATH so the REAL
 // build-web recipe runs end to end without touching the network or the
 // checkout's actual git state.
 func installFrontendToolchainStubs(t *testing.T, fixture runtimeBuildFixture) {
@@ -301,17 +819,66 @@ func installFrontendToolchainStubs(t *testing.T, fixture runtimeBuildFixture) {
 	// broken state the preflight exists to catch, so a stub that only mkdir'd
 	// the directory would (correctly) fail the build.
 	writeTestFile(t, filepath.Join(fixture.fakeBin, "npm"), []byte(`#!/bin/sh
+printf 'npm-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$SERF_TEST_GO_LOG"
 printf 'npm %s\n' "$*" >> "$SERF_TEST_GO_LOG"
 if [ "$1" = "ci" ]; then
   mkdir -p node_modules/.bin
   printf '#!/bin/sh\necho "Version 6.0.3"\n' > node_modules/.bin/tsc
   chmod +x node_modules/.bin/tsc
 fi
+[ "${SERF_TEST_NPM_HOLD_COMMAND:-}" != "$*" ] || {
+  printf '%s\n' "$$" > "$SERF_TEST_NPM_PID"
+  : > "$SERF_TEST_NPM_READY"
+  exec sleep 1000
+}
+[ "${SERF_TEST_NPM_TRACK_COMMAND:-}" != "$*" ] || printf '%s\n' "$$" > "$SERF_TEST_NPM_TRACK_PID"
+[ "${SERF_TEST_NPM_FAIL_COMMAND:-}" = "$*" ] && exit 17
+exit 0
+`), 0o755)
+	writeTestFile(t, filepath.Join(fixture.fakeBin, "node"), []byte(`#!/bin/sh
+printf 'node-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$SERF_TEST_GO_LOG"
+printf 'browser chatter: %s\n' "$*"
+[ "${SERF_TEST_NODE_HOLD_COMMAND:-}" != "$*" ] || {
+  on_term() {
+    : > "$SERF_TEST_NODE_TERM"
+    while [ ! -f "$SERF_TEST_NODE_RELEASE" ]; do :; done
+    exit 143
+  }
+  trap on_term TERM
+  printf '%s\n' "$$" > "$SERF_TEST_NODE_PID"
+  : > "$SERF_TEST_NODE_READY"
+  while :; do :; done
+}
+[ "${SERF_TEST_NODE_FAIL_COMMAND:-}" = "$*" ] && {
+  printf 'browser failure detail: %s\n' "$*" >&2
+  exit 23
+}
 exit 0
 `), 0o755)
 	writeTestFile(t, filepath.Join(fixture.fakeBin, "git"), []byte(`#!/bin/sh
 exit 0
 `), 0o755)
+}
+
+func fullLogsPath(output []byte) string {
+	const prefix = "full logs: "
+	for line := range strings.SplitSeq(string(output), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix)
+		}
+	}
+	return ""
+}
+
+func waitForPath(path string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }
 
 func runRuntimePairBuild(fixture runtimeBuildFixture, failPackage string) ([]byte, error) {
@@ -321,21 +888,64 @@ func runRuntimePairBuild(fixture runtimeBuildFixture, failPackage string) ([]byt
 	return command.CombinedOutput()
 }
 
+func runMakeBuild(t *testing.T, fixture runtimeBuildFixture) {
+	t.Helper()
+	command := exec.Command("make", "build")
+	command.Dir = fixture.root
+	command.Env = fixture.environment("")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("make build: %v\n%s", err, output)
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+}
+
 func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 	environment := make([]string, 0, len(os.Environ())+4)
 	for _, assignment := range os.Environ() {
 		name, _, _ := strings.Cut(assignment, "=")
-		if name == "PATH" || name == "LDFLAGS" || name == "SERF_TEST_GO_LOG" || name == "SERF_TEST_GO_FAIL_PACKAGE" {
+		switch name {
+		case "PATH", "TMPDIR", "LDFLAGS", "GOPATH", "GOCACHE", "NODE_DISABLE_COMPILE_CACHE",
+			"SERF_TEST_GO_LOG", "SERF_TEST_GO_FAIL_PACKAGE",
+			"SERF_TEST_NPM_FAIL_COMMAND", "SERF_TEST_NPM_HOLD_COMMAND", "SERF_TEST_NPM_PID", "SERF_TEST_NPM_READY",
+			"SERF_TEST_NPM_TRACK_COMMAND", "SERF_TEST_NPM_TRACK_PID", "SERF_TEST_SHELL_KILLED_REAPED", "SERF_TEST_SHELL_WAITED_REAPED",
+			"SERF_TEST_NODE_HOLD_COMMAND", "SERF_TEST_NODE_FAIL_COMMAND", "SERF_TEST_NODE_PID", "SERF_TEST_NODE_READY", "SERF_TEST_NODE_TERM", "SERF_TEST_NODE_RELEASE":
 			continue
 		}
 		environment = append(environment, assignment)
 	}
 	return append(environment,
 		"PATH="+fixture.fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"TMPDIR="+fixture.root,
 		"LDFLAGS=same-checkout-flags",
+		"GOPATH="+filepath.Join(fixture.root, "shared-gopath"),
+		"GOCACHE="+filepath.Join(fixture.root, "shared-gocache"),
 		"SERF_TEST_GO_LOG="+fixture.logPath,
 		"SERF_TEST_GO_FAIL_PACKAGE="+failPackage,
 	)
+}
+
+func browserEvidenceRoot(t *testing.T, fixture runtimeBuildFixture, command string) string {
+	t.Helper()
+	logData, err := os.ReadFile(fixture.logPath)
+	if err != nil {
+		t.Fatalf("read browser process log: %v", err)
+	}
+	for line := range strings.SplitSeq(strings.TrimSpace(string(logData)), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) == 8 && fields[0] == "node-env" && fields[1] == command {
+			return filepath.Dir(filepath.Dir(fields[4]))
+		}
+	}
+	t.Fatalf("browser Node command %q was not recorded; log = %q", command, logData)
+	return ""
 }
 
 func copyRepositoryFile(t *testing.T, repoRoot, fixtureRoot, relativePath string, mode os.FileMode) {
@@ -395,7 +1005,7 @@ func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
 
 	hubBuildLine := -1
 	for i, line := range lines {
-		if strings.HasPrefix(line, "package=./cmd/serf-hub/ ") {
+		if strings.HasPrefix(line, "go-env\t./cmd/serf-hub/\t") {
 			hubBuildLine = i
 			break
 		}

@@ -29,6 +29,9 @@
 # failure.
 set -uo pipefail
 
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+. "$script_dir/private-go-home.sh"
+
 MODULES=${MODULES:-". agent llm auth envvars invariant identifier"}
 ROOT_FULL=${ROOT_FULL:-0}
 
@@ -346,7 +349,7 @@ run_wave() {
 		log="$(logpath "$m")"
 		extra="$(module_extra "$m")"
 		tmp="$(tmppath "$m")"
-		( mkdir -p "$tmp" && cd "$m" && TMPDIR="$tmp" run_module "$m" "$extra" ) >"$log" 2>&1 &
+		( mkdir -p "$tmp" && export TMPDIR="$tmp" && serf_prepare_private_go_home "$tmp" && cd "$m" && run_module "$m" "$extra" ) >"$log" 2>&1 &
 		pids+=("$!"); names+=("$m"); active_pids+=("$!")
 	done
 	local i status
@@ -389,7 +392,7 @@ finish_stream() {
 web_pid=""
 if [ "$WEB" -ne 0 ]; then
 	web_tmp="$(tmppath web)"
-	( mkdir -p "$web_tmp" && TMPDIR="$web_tmp" /usr/bin/time -p "${MAKE:-make}" test-web ) >"$(logpath web)" 2>&1 &
+	( mkdir -p "$web_tmp" && TMPDIR="$web_tmp" XDG_CONFIG_HOME="$web_tmp/xdg-config" XDG_CACHE_HOME="$web_tmp/xdg-cache" XDG_STATE_HOME="$web_tmp/xdg-state" /usr/bin/time -p "${MAKE:-make}" test-web ) >"$(logpath web)" 2>&1 &
 	web_pid="$!"
 	active_pids+=("$web_pid")
 fi

@@ -284,25 +284,22 @@ func TestPasteClipboardImage_DefaultsMediaTypeWhenEmpty(t *testing.T) {
 }
 
 func TestPasteClipboardImage_FallsBackToWSL(t *testing.T) {
-	// Stage the image at the WSL mount path that ConvertWindowsPathToWSL would
-	// produce for the fake Windows path below.  The paths are paired by
-	// construction: ConvertWindowsPathToWSL(`T:\serf-wsl-clip\clip.png`) ==
-	// "/mnt/t/serf-wsl-clip/clip.png".  This requires /mnt to be writable,
-	// which is only true on WSL; the test skips otherwise.
 	const (
 		fakeWinPath = `T:\serf-wsl-clip\clip.png`
 		wslClipPath = "/mnt/t/serf-wsl-clip/clip.png"
-		wslClipDir  = "/mnt/t/serf-wsl-clip"
 	)
 	payload := []byte("wsl image payload")
-
-	if err := os.MkdirAll(wslClipDir, 0o755); err != nil {
-		t.Skipf("cannot create WSL mount path %s: %v (test requires WSL or /mnt write access)", wslClipDir, err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(wslClipDir) })
-
-	if err := os.WriteFile(wslClipPath, payload, 0o644); err != nil {
+	stagedPath := filepath.Join(t.TempDir(), "clip.png")
+	if err := os.WriteFile(stagedPath, payload, 0o644); err != nil {
 		t.Fatalf("write WSL clip file: %v", err)
+	}
+	originalStat := clipboardStat
+	t.Cleanup(func() { clipboardStat = originalStat })
+	clipboardStat = func(path string) (os.FileInfo, error) {
+		if path != wslClipPath {
+			t.Fatalf("clipboard stat path = %q, want converted WSL path %q", path, wslClipPath)
+		}
+		return os.Stat(stagedPath)
 	}
 
 	src := &fakeClipboard{
@@ -318,6 +315,9 @@ func TestPasteClipboardImage_FallsBackToWSL(t *testing.T) {
 	}
 	if got.Origin != "wsl" {
 		t.Fatalf("Origin = %q, want wsl", got.Origin)
+	}
+	if got.Path != wslClipPath {
+		t.Fatalf("Path = %q, want %q", got.Path, wslClipPath)
 	}
 	if got.MediaType != "image/png" {
 		t.Fatalf("MediaType = %q, want image/png", got.MediaType)

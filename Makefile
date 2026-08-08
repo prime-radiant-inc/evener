@@ -1,7 +1,7 @@
 .PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
-           -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
+           -X primeradiant.com/serf/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
            -X primeradiant.com/serf/buildinfo.BuildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
            -X primeradiant.com/serf/buildinfo.Channel=$(BUILD_CHANNEL)
 
@@ -42,7 +42,7 @@ build-hub: build-runtime
 # The install rules and the two guards they exist for live in the script;
 # scripts/web-preflight-selftest.sh exercises them against throwaway trees.
 web-preflight:
-	@scripts/web-preflight.sh
+	@NODE_DISABLE_COMPILE_CACHE=1 scripts/web-preflight.sh
 
 # build-web builds the frontend TypeScript/React app (cmd/serf-hub/frontend)
 # into frontend/dist, which build-hub embeds via go:embed. The vite build
@@ -52,7 +52,7 @@ web-preflight:
 # closeBundle, so no recipe here restores it and `git status` stays clean
 # after a build however vite was invoked (kata 88nn).
 build-web: web-preflight
-	cd cmd/serf-hub/frontend && npm run build
+	cd cmd/serf-hub/frontend && NODE_DISABLE_COMPILE_CACHE=1 npm run build
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint (mirrors the Go test+lint split, but the frontend toolchain
@@ -63,19 +63,47 @@ build-web: web-preflight
 # check's output.
 test-web: web-preflight
 	@set -u; cd cmd/serf-hub/frontend && \
-	dir="$$(mktemp -d -t serf-test-web.XXXXXX)" || exit 1; \
+	dir="$$(mktemp -d "$${TMPDIR:-/tmp}/serf-test-web.XXXXXX")" || exit 1; \
+	pids=""; started=""; fail=0; complete=0; \
+	stop_checks() { \
+		for pid in $$pids; do kill -TERM "$$pid" 2>/dev/null || :; done; \
+		for pid in $$pids; do wait "$$pid" 2>/dev/null || :; done; \
+		pids=""; \
+	}; \
+	finish() { \
+		finish_status=$$?; \
+		[ "$$complete" -eq 1 ] || stop_checks; \
+		if [ "$$complete" -eq 1 ] && [ "$$fail" -eq 0 ] && [ "$$finish_status" -eq 0 ]; then \
+			rm -rf "$$dir" || finish_status=1; \
+		else \
+			printf 'full logs: %s\n' "$$dir" >&2; \
+		fi; \
+		trap - 0; exit "$$finish_status"; \
+	}; \
+	interrupted() { stop_checks; exit "$$1"; }; \
+	trap finish 0; \
+	trap 'interrupted 129' 1; trap 'interrupted 130' 2; trap 'interrupted 143' 15; \
 	for c in typecheck test lint; do \
-		{ npm run $$c >"$$dir/$$c.log" 2>&1; echo $$? >"$$dir/$$c.status"; } & \
+		check_dir="$$dir/$$c"; \
+		if ! mkdir -p "$$check_dir/home" "$$check_dir/tmp" "$$check_dir/xdg-config" "$$check_dir/xdg-cache" "$$check_dir/xdg-state"; then fail=1; break; fi; \
+		HOME="$$check_dir/home" TMPDIR="$$check_dir/tmp" XDG_CONFIG_HOME="$$check_dir/xdg-config" XDG_CACHE_HOME="$$check_dir/xdg-cache" XDG_STATE_HOME="$$check_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 npm run $$c >"$$dir/$$c.log" 2>&1 & \
+		pids="$$pids $$!"; started="$$started $$c"; \
 	done; \
-	wait; fail=0; \
+	set -- $$pids; \
+	for c in $$started; do \
+		pid=$$1; shift; \
+		if wait "$$pid"; then check_status=0; else check_status=$$?; fi; \
+		pids="$$*"; \
+		printf '%s\n' "$$check_status" >"$$dir/$$c.status"; \
+	done; \
 	for c in typecheck test lint; do \
 		if [ "$$(cat "$$dir/$$c.status" 2>/dev/null || echo 1)" = 0 ]; then \
 			printf 'PASS  web-%s\n' "$$c"; \
 		else \
-			printf 'FAIL  web-%s\n' "$$c"; cat "$$dir/$$c.log"; fail=1; \
+			printf 'FAIL  web-%s\n' "$$c"; [ ! -f "$$dir/$$c.log" ] || cat "$$dir/$$c.log"; fail=1; \
 		fi; \
 	done; \
-	rm -rf "$$dir"; \
+	complete=1; \
 	exit $$fail
 
 # test-web-browser runs the real browser-only frontend guards. They stay out
@@ -84,16 +112,38 @@ test-web: web-preflight
 # remaining guard's verdict; return the first nonzero status.
 test-web-browser: web-preflight
 	@set -u; cd cmd/serf-hub/frontend && \
-	status=0; \
+	dir="$$(mktemp -d "$${TMPDIR:-/tmp}/serf-test-web-browser.XXXXXX")" || exit 1; \
+	guard_pid=""; status=0; complete=0; \
+	stop_guard() { [ -z "$$guard_pid" ] || { kill -TERM "$$guard_pid" 2>/dev/null || :; wait "$$guard_pid" 2>/dev/null || :; guard_pid=""; }; }; \
+	finish_browser() { \
+		finish_status=$$?; stop_guard; \
+		if [ "$$complete" -eq 1 ] && [ "$$status" -eq 0 ] && [ "$$finish_status" -eq 0 ]; then \
+			rm -rf "$$dir" || { finish_status=1; printf 'full logs: %s\n' "$$dir" >&2; }; \
+		else \
+			printf 'full logs: %s\n' "$$dir" >&2; \
+		fi; \
+		trap - 0; exit "$$finish_status"; \
+	}; \
+	interrupted_browser() { stop_guard; exit "$$1"; }; \
+	trap finish_browser 0; \
+	trap 'interrupted_browser 129' 1; trap 'interrupted_browser 130' 2; trap 'interrupted_browser 143' 15; \
 	for guard in layoutguard overflowguard spawnguard; do \
-		if npm run $$guard; then \
+		guard_dir="$$dir/$$guard"; \
+		mkdir -p "$$guard_dir/home" "$$guard_dir/tmp" "$$guard_dir/xdg-config" "$$guard_dir/xdg-cache" "$$guard_dir/xdg-state" || exit 1; \
+		HOME="$$guard_dir/home" TMPDIR="$$guard_dir/tmp" XDG_CONFIG_HOME="$$guard_dir/xdg-config" XDG_CACHE_HOME="$$guard_dir/xdg-cache" XDG_STATE_HOME="$$guard_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 node "scripts/$$guard/run.mjs" >"$$dir/$$guard.log" 2>&1 & \
+		guard_pid=$$!; \
+		if wait "$$guard_pid"; then \
+			guard_pid=""; \
 			printf 'PASS  web-%s\n' "$$guard"; \
 		else \
 			guard_status=$$?; \
+			guard_pid=""; \
 			printf 'FAIL  web-%s (exit %s)\n' "$$guard" "$$guard_status" >&2; \
+			cat "$$dir/$$guard.log"; \
 			[ "$$status" -ne 0 ] || status="$$guard_status"; \
 		fi; \
 	done; \
+	complete=1; \
 	exit "$$status"
 
 build-tui:
@@ -177,7 +227,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # aggregate lint runner. The six fuzz-*-selftest suites listed here are
 # fixture-contained: their git bisect, worktree, and go-test operations stay in
 # throwaway worlds rather than touching this repository.
-DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests reclaim-test-debris agent-test-shards merge-approval-gate setup-gocache web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation live-compaction-eval tmux-read tmux-send scenario-cite-migrate deploy-hub fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
+DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests private-go-home reclaim-test-debris agent-test-shards merge-approval-gate setup-gocache web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation live-compaction-eval tmux-read tmux-send scenario-cite-migrate deploy-hub fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
 
 # test-dev-tooling tests tooling, not the product, so it runs in
 # `make merge-approval-gate` (where tooling regressions matter) and on demand

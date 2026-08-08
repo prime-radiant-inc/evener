@@ -97,6 +97,8 @@ new_case() {
 	state="$case_dir/state"
 	bin="$case_dir/bin"
 	mkdir -p "$repo/scripts" "$repo/cmd/serf-hub/frontend" "$state" "$bin"
+	mkdir -p "$case_dir/ambient-home" "$case_dir/ambient-xdg-config/go" "$case_dir/ambient-xdg-cache" "$case_dir/ambient-xdg-state"
+	printf 'SERF_SELFTEST_GOENV=preserved\n' >"$case_dir/ambient-xdg-config/go/env"
 	write_fake_mktemp "$bin"
 	for module in agent llm auth envvars invariant identifier; do
 		mkdir -p "$repo/$module"
@@ -106,6 +108,35 @@ new_case() {
 set -u
 module="$(basename "$PWD")"
 [ "$PWD" = "$FAKE_REPO" ] && module=.
+case "$HOME" in
+	"$TMPDIR"/home) ;;
+	*) printf 'fake go HOME %s is not owned by TMPDIR %s\n' "$HOME" "$TMPDIR" >&2; exit 9 ;;
+esac
+for assignment in \
+	"XDG_CONFIG_HOME:${XDG_CONFIG_HOME:-}:xdg-config" \
+	"XDG_CACHE_HOME:${XDG_CACHE_HOME:-}:xdg-cache" \
+	"XDG_STATE_HOME:${XDG_STATE_HOME:-}:xdg-state"; do
+	name="${assignment%%:*}"
+	rest="${assignment#*:}"
+	value="${rest%:*}"
+	want="${assignment##*:}"
+	if [ "$value" != "$TMPDIR/$want" ]; then
+		printf 'fake go %s %s is not %s/%s\n' "$name" "$value" "$TMPDIR" "$want" >&2
+		exit 9
+	fi
+	mkdir -p "$value"
+	: >"$value/go-residue"
+done
+if [ "${GOENV:-}" != "off" ]; then
+	case "${GOENV:-}" in
+		"$TMPDIR"/go-env) ;;
+		*) printf 'fake go GOENV %s is not an owned copy\n' "${GOENV:-}" >&2; exit 9 ;;
+	esac
+	grep -q '^SERF_SELFTEST_GOENV=preserved$' "$GOENV" || {
+		printf 'fake go GOENV copy lost ambient settings\n' >&2
+		exit 9
+	}
+fi
 mkdir -p "$TMPDIR"
 printf '%s\t%s\n' "$module" "$TMPDIR" >>"$FAKE_STATE/tmpdirs"
 : >"$TMPDIR/go-residue"
@@ -175,6 +206,21 @@ FAKE_GO
 #!/usr/bin/env bash
 set -u
 stream=web
+for assignment in \
+	"XDG_CONFIG_HOME:${XDG_CONFIG_HOME:-}:xdg-config" \
+	"XDG_CACHE_HOME:${XDG_CACHE_HOME:-}:xdg-cache" \
+	"XDG_STATE_HOME:${XDG_STATE_HOME:-}:xdg-state"; do
+	name="${assignment%%:*}"
+	rest="${assignment#*:}"
+	value="${rest%:*}"
+	want="${assignment##*:}"
+	if [ "$value" != "$TMPDIR/$want" ]; then
+		printf 'fake make %s %s is not %s/%s\n' "$name" "$value" "$TMPDIR" "$want" >&2
+		exit 9
+	fi
+	mkdir -p "$value"
+	: >"$value/web-residue"
+done
 mkdir -p "$TMPDIR"
 printf '%s\t%s\n' "$stream" "$TMPDIR" >>"$FAKE_STATE/tmpdirs"
 : >"$TMPDIR/web-residue"
@@ -208,6 +254,7 @@ run_tests() {
 	(
 		cd "$repo" || exit 1
 		env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+			HOME="$case_dir/ambient-home" GOENV="$case_dir/ambient-xdg-config/go/env" XDG_CONFIG_HOME="$case_dir/ambient-xdg-config" XDG_CACHE_HOME="$case_dir/ambient-xdg-cache" XDG_STATE_HOME="$case_dir/ambient-xdg-state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
 			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
 	) >"$output" 2>&1
@@ -228,6 +275,7 @@ run_tests_async() {
 		if [ -n "$ready_fifo" ]; then
 			printf 'runner-started\n' >"$ready_fifo"
 			env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+				HOME="$case_dir/ambient-home" GOENV="$case_dir/ambient-xdg-config/go/env" XDG_CONFIG_HOME="$case_dir/ambient-xdg-config" XDG_CACHE_HOME="$case_dir/ambient-xdg-cache" XDG_STATE_HOME="$case_dir/ambient-xdg-state" \
 				GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
 				MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
 			runner_status="$?"
@@ -235,6 +283,7 @@ run_tests_async() {
 			exit "$runner_status"
 		fi
 		exec env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+			HOME="$case_dir/ambient-home" GOENV="$case_dir/ambient-xdg-config/go/env" XDG_CONFIG_HOME="$case_dir/ambient-xdg-config" XDG_CACHE_HOME="$case_dir/ambient-xdg-cache" XDG_STATE_HOME="$case_dir/ambient-xdg-state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
 			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
 	) >"$output" 2>&1 &
@@ -247,6 +296,7 @@ run_tests_default_modules() {
 	(
 		cd "$repo" || exit 1
 		env -u MODULES -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+			HOME="$case_dir/ambient-home" GOENV="$case_dir/ambient-xdg-config/go/env" XDG_CONFIG_HOME="$case_dir/ambient-xdg-config" XDG_CACHE_HOME="$case_dir/ambient-xdg-cache" XDG_STATE_HOME="$case_dir/ambient-xdg-state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
 			AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
 	) >"$output" 2>&1
@@ -599,5 +649,21 @@ for stream in agent web; do
 		ok "an interrupted run reaps the $stream child"
 	fi
 done
+
+cdpath_out="$work/cdpath.out"
+if (
+	cd "$script_dir/.." || exit 1
+	CDPATH="$PWD" WAVE1= WAVE2= WEB=0 scripts/run-module-tests.sh
+) >"$cdpath_out" 2>&1; then
+	if [ -s "$cdpath_out" ]; then
+		bad "relative runner lookup emitted a CDPATH-corrupted helper diagnostic"
+		sed 's/^/    | /' "$cdpath_out"
+	else
+		ok "relative runner lookup ignores ambient CDPATH output"
+	fi
+else
+	bad "relative runner lookup was corrupted by ambient CDPATH"
+	sed 's/^/    | /' "$cdpath_out"
+fi
 
 selftest_summary
