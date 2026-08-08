@@ -142,8 +142,23 @@ func normalizeAskArgs(args map[string]any) (map[string]any, error) {
 		return out, nil
 	}
 
-	// Case 3: any other combination (both present, neither present, etc.) → error
-	errorMsg := fmt.Sprintf("ask_user: invalid arguments shape. Supply either 'questions' (batch form) OR 'question'+'options' (shorthand form), with optional 'header', 'why', 'if_unanswered', 'multi_select'. Minimal example:\n%s",
+	// Case 3: distinguish sub-cases within invalid shapes
+	// Sub-case 3a: both questions and question/options present
+	if hasQuestions && hasQuestion {
+		errorMsg := fmt.Sprintf("ask_user: both 'questions' and 'question'/'options' given — supply exactly one form. Minimal example:\n%s",
+			minimalExampleQuestionsArray())
+		return nil, errors.New(errorMsg)
+	}
+
+	// Sub-case 3b: question present but options missing (shorthand attempted but incomplete)
+	if hasQuestion && !hasOptions {
+		errorMsg := fmt.Sprintf("ask_user: 'options' is required when using the 'question' shorthand. Minimal example:\n%s",
+			minimalExampleQuestionsArray())
+		return nil, errors.New(errorMsg)
+	}
+
+	// Sub-case 3c: neither questions nor question+options present
+	errorMsg := fmt.Sprintf("ask_user: 'questions' is required (or use the 'question'+'options' shorthand for a single question). Minimal example:\n%s",
 		minimalExampleQuestionsArray())
 	return nil, errors.New(errorMsg)
 }

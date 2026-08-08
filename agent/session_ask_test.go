@@ -2071,8 +2071,8 @@ func TestAskUser_ShorthandWithAllOptionals(t *testing.T) {
 	}
 }
 
-// TestAskUser_ShorthandMissingOptionsErrors verifies that missing options
-// produces an error containing the minimal example.
+// TestAskUser_ShorthandMissingOptionsErrors verifies that question without
+// options produces a specific error naming the missing field.
 func TestAskUser_ShorthandMissingOptionsErrors(t *testing.T) {
 	t.Parallel()
 	sess := newAskTestSession(t, SessionConfig{})
@@ -2087,14 +2087,11 @@ func TestAskUser_ShorthandMissingOptionsErrors(t *testing.T) {
 		t.Fatalf("expected error for missing options, got ack: %s", res.Output)
 	}
 
-	if !strings.Contains(res.Output, "invalid arguments shape") {
-		t.Fatalf("error message = %q, want to contain 'invalid arguments shape'", res.Output)
+	if !strings.Contains(res.Output, "'options' is required when using the 'question' shorthand") {
+		t.Fatalf("error message = %q, want to contain field-specific text about 'options' being required", res.Output)
 	}
 	if !strings.Contains(res.Output, "Minimal example") {
 		t.Fatalf("error message = %q, want to contain 'Minimal example'", res.Output)
-	}
-	if !strings.Contains(res.Output, "questions") {
-		t.Fatalf("error message = %q, want to contain 'questions'", res.Output)
 	}
 
 	if got := sess.askPendingCount(); got != 0 {
@@ -2103,7 +2100,7 @@ func TestAskUser_ShorthandMissingOptionsErrors(t *testing.T) {
 }
 
 // TestAskUser_BothQuestionAndQuestionsErrors verifies that supplying both
-// questions and question/options produces an error.
+// questions and question/options produces a specific error naming the conflict.
 func TestAskUser_BothQuestionAndQuestionsErrors(t *testing.T) {
 	t.Parallel()
 	sess := newAskTestSession(t, SessionConfig{})
@@ -2130,8 +2127,11 @@ func TestAskUser_BothQuestionAndQuestionsErrors(t *testing.T) {
 		t.Fatalf("expected error for both forms present, got ack: %s", res.Output)
 	}
 
-	if !strings.Contains(res.Output, "invalid arguments shape") {
-		t.Fatalf("error message = %q, want to contain 'invalid arguments shape'", res.Output)
+	if !strings.Contains(res.Output, "both 'questions' and 'question'/'options' given") {
+		t.Fatalf("error message = %q, want to contain field-specific text about both forms being given", res.Output)
+	}
+	if !strings.Contains(res.Output, "Minimal example") {
+		t.Fatalf("error message = %q, want to contain 'Minimal example'", res.Output)
 	}
 
 	if got := sess.askPendingCount(); got != 0 {
@@ -2160,6 +2160,32 @@ func TestAskUser_DuplicateLabelsInShorthand(t *testing.T) {
 
 	if !strings.Contains(res.Output, "option labels must be unique") {
 		t.Fatalf("error message = %q, want to contain 'option labels must be unique'", res.Output)
+	}
+	if !strings.Contains(res.Output, "Minimal example") {
+		t.Fatalf("error message = %q, want to contain 'Minimal example'", res.Output)
+	}
+
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("askPendingCount = %d, want 0 (rejected call must post nothing)", got)
+	}
+}
+
+// TestAskUser_NeitherFormPresentErrors verifies that omitting both questions
+// and question/options produces a specific error naming the required field.
+func TestAskUser_NeitherFormPresentErrors(t *testing.T) {
+	t.Parallel()
+	sess := newAskTestSession(t, SessionConfig{})
+
+	// Empty args or args with only unrelated fields
+	args := map[string]any{}
+
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, askUserCall("c1", args))
+	if !res.IsError {
+		t.Fatalf("expected error for neither form present, got ack: %s", res.Output)
+	}
+
+	if !strings.Contains(res.Output, "'questions' is required") {
+		t.Fatalf("error message = %q, want to contain field-specific text about 'questions' being required", res.Output)
 	}
 	if !strings.Contains(res.Output, "Minimal example") {
 		t.Fatalf("error message = %q, want to contain 'Minimal example'", res.Output)
