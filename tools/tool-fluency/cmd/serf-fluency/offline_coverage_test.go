@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -289,6 +290,41 @@ func TestRunProbeOfflineStates(t *testing.T) {
 	cfg.serfBin = failBin
 	if res := runProbe(cfg, probeFile{ID: "infra"}, 1, nil); res.Status != "blocked_infra" {
 		t.Fatalf("infra result = %#v", res)
+	}
+}
+
+// TestSelectionSummaryReportsActualSelectedSet covers kata 73cb(a): a
+// scoped "--probe" request must never silently broaden without the caller
+// seeing exactly what was selected. "all" still means every probe under
+// --probes-dir, but the runner must name the resulting count and the exact
+// probe ids before launching any live request, so a seven-probe request that
+// somehow resolves against a directory holding twenty-seven probes is
+// visible in the output rather than silently expanding.
+func TestSelectionSummaryReportsActualSelectedSet(t *testing.T) {
+	scoped := []probeFile{{ID: "shell.a"}, {ID: "shell.b"}}
+	cfg := runConfig{model: "openai/m", probeFilter: "all", probesDir: "probes/shell-only", outDir: "/tmp/out"}
+	summary := selectionSummary(cfg, scoped)
+	if !strings.Contains(summary, "selected=2") {
+		t.Fatalf("summary missing selected count: %q", summary)
+	}
+	if !strings.Contains(summary, "shell.a") || !strings.Contains(summary, "shell.b") {
+		t.Fatalf("summary missing selected probe ids: %q", summary)
+	}
+	if !strings.Contains(summary, "probes-dir=probes/shell-only") {
+		t.Fatalf("summary missing source probes-dir: %q", summary)
+	}
+
+	full := make([]probeFile, 0, 27)
+	for i := 0; i < 27; i++ {
+		full = append(full, probeFile{ID: fmt.Sprintf("probe-%02d", i)})
+	}
+	fullCfg := runConfig{model: "openai/m", probeFilter: "all", probesDir: "probes", outDir: "/tmp/out"}
+	fullSummary := selectionSummary(fullCfg, full)
+	if !strings.Contains(fullSummary, "selected=27") {
+		t.Fatalf("full summary missing selected=27: %q", fullSummary)
+	}
+	if strings.Contains(fullSummary, "selected=2") {
+		t.Fatalf("full summary should not report the scoped count: %q", fullSummary)
 	}
 }
 

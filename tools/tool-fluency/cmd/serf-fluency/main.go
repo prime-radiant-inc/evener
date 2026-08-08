@@ -249,6 +249,12 @@ func runSuite(args []string) error {
 	if len(probes) == 0 {
 		return errors.New("no probes selected")
 	}
+	// Report the actual selected set, honestly, before any live request is
+	// launched (including the catalog session below). "--probe all" always
+	// selects every probe under --probes-dir; this makes that scope visible
+	// so a scoped request never silently balloons into the full set without
+	// the caller seeing it named. See kata 73cb(a).
+	fmt.Fprint(os.Stderr, selectionSummary(cfg, probes))
 	catalog, err := catalogTools(cfg.model)
 	if err != nil {
 		return err
@@ -257,7 +263,6 @@ func runSuite(args []string) error {
 	for _, tool := range catalog {
 		available[tool.Name] = true
 	}
-	fmt.Fprintf(os.Stderr, "[serf-fluency] model=%s probes=%d out=%s\n", cfg.model, len(probes), cfg.outDir)
 	var results []probeResult
 	for _, probe := range probes {
 		for rep := 1; rep <= cfg.repetitions; rep++ {
@@ -328,6 +333,21 @@ func loadProbes(dir, filter string) ([]probeFile, error) {
 	}
 	sort.Slice(probes, func(i, j int) bool { return probes[i].ID < probes[j].ID })
 	return probes, nil
+}
+
+// selectionSummary reports exactly which probes "--probe" selected and from
+// where, so a caller who scoped a request (e.g. to a subset of probes) never
+// silently gets a broader set than they asked for without seeing it named.
+// "all" always means every probe under --probes-dir; this makes that source
+// set and its size explicit rather than changing what "all" means.
+func selectionSummary(cfg runConfig, probes []probeFile) string {
+	ids := make([]string, 0, len(probes))
+	for _, p := range probes {
+		ids = append(ids, p.ID)
+	}
+	sort.Strings(ids)
+	return fmt.Sprintf("[serf-fluency] model=%s probe-filter=%q probes-dir=%s selected=%d out=%s\n  probes: %s\n",
+		cfg.model, cfg.probeFilter, cfg.probesDir, len(ids), cfg.outDir, strings.Join(ids, ", "))
 }
 
 type probeResult struct {
