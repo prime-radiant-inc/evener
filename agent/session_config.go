@@ -393,13 +393,13 @@ type testConfig struct {
 	// and the stall classification still read the wall clock. Nil in
 	// production, where the window is measured against time.Now.
 	//
-	// It is a seam of its own rather than the session's clock.Clock because
-	// the window measures a provider stream, not session lifecycle time: the
-	// fuzz harnesses that inject agenttest.FakeClock as the session clock hold
-	// virtual time still except at explicit Advance ops (the delegate sequence
-	// fuzzer draws jumps of up to five virtual minutes), so routing the window
-	// through it would let unrelated clock ops, not the stream, decide whether
-	// an attempt looks cap-shaped to the 60-second rule.
+	// It is a seam of its own rather than the session's clock.Clock because the
+	// window measures a provider stream, not session lifecycle time; the two
+	// are controlled independently on purpose. The cap-shape e2e case steps
+	// this clock 45 virtual seconds per content event, building a 90-second
+	// window while the session stays on the real clock — so a cap-shaped round
+	// reproduces without also warping turn deadlines, retry backoff, and every
+	// watchdog in the job lifecycle.
 	contentWindowClock func() time.Time
 }
 
