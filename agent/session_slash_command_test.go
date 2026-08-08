@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
@@ -185,13 +186,16 @@ func TestExpandSlashCommand_ExpandsKnownCommand(t *testing.T) {
 
 // execRecordingEnv wraps a local execution environment and records
 // ExecCommand calls, so tests can assert a !` span never executed.
+// probeCapabilities legitimately calls ExecCommand from two goroutines at
+// once (its git probe and tool probe run concurrently by design), so calls
+// is an atomic counter rather than a plain int.
 type execRecordingEnv struct {
 	execenv.ExecutionEnvironment
-	calls int
+	calls atomic.Int64
 }
 
 func (e *execRecordingEnv) ExecCommand(ctx context.Context, command string, timeoutMs int, dir string, env map[string]string) (execenv.ExecResult, error) {
-	e.calls++
+	e.calls.Add(1)
 	return e.ExecutionEnvironment.ExecCommand(ctx, command, timeoutMs, dir, env)
 }
 
@@ -211,14 +215,14 @@ func TestExpandSlashCommand_SerfwideDoesNotExecute(t *testing.T) {
 	t.Cleanup(sess.Close)
 	// NewSession may inspect the workspace through ExecCommand; only calls
 	// made while expanding the slash command are relevant to this assertion.
-	env.calls = 0
+	env.calls.Store(0)
 
 	got, ok := sess.expandSlashCommand(context.Background(), "/deploy v2")
 	if !ok {
 		t.Fatal("expected ok=true for a serf-wide command")
 	}
-	if env.calls != 0 {
-		t.Errorf("ExecCommand called %d times; serf-wide expansion must never execute", env.calls)
+	if calls := env.calls.Load(); calls != 0 {
+		t.Errorf("ExecCommand called %d times; serf-wide expansion must never execute", calls)
 	}
 	if !strings.Contains(got, "!`touch SHOULD_NOT_EXIST`") || !strings.Contains(got, "for v2") {
 		t.Errorf("expanded %q, want the !` span kept as text with $1 substituted", got)
