@@ -1084,6 +1084,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 		clock:                   s.clock,
 		testOnly:                s.cfg.testOnly,
 		ForceRealIO:             s.cfg.ForceRealIO,
+		artifactStore:           s.artifactStore,
 		spawn: spawnConfig{
 			parentSessionID:          desc.ParentSessionID,
 			parentToolCallID:         desc.OriginToolCallID,

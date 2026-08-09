@@ -449,6 +449,7 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	s.mu.Lock()
 	subCfg := s.cfg
 	s.mu.Unlock()
+	subCfg.artifactStore = s.artifactStore
 	subCfg.MCPConfigFiles = nil
 	subCfg.MCPInline = nil
 	subCfg.spawn.parentJobID = ""
