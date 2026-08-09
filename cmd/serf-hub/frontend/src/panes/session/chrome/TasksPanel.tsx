@@ -136,7 +136,8 @@ const CLASS = {
   promptBody: requireClass(styles.promptBody, "taskspanel.module.css", "promptBody"),
   notesHead: requireClass(styles.notesHead, "taskspanel.module.css", "notesHead"),
   noNotes: requireClass(styles.noNotes, "taskspanel.module.css", "noNotes"),
-  notesList: requireClass(styles.notesList, "taskspanel.module.css", "notesList"),
+  notesRail: requireClass(styles.notesRail, "taskspanel.module.css", "notesRail"),
+  note: requireClass(styles.note, "taskspanel.module.css", "note"),
 };
 
 // Mirrors the legacy sidebar/inline task-row grammar (cmd/serf-hub/assets/
@@ -322,10 +323,12 @@ function TaskNotesTimeline({ task }: { task: TaskRow }) {
   return (
     <div data-testid="task-notes">
       <div className={CLASS.notesHead}>Updates · {notes.length}</div>
-      <ol className={CLASS.notesList}>
+      <ol className={CLASS.notesRail}>
         {notes.map((note, i) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: notes only ever append over a task's life (agent/task/task_store.go's update handling) - position is stable identity
-          <li key={i}>{note}</li>
+          <li key={i} className={CLASS.note} data-latest={i === notes.length - 1 ? "true" : undefined}>
+            {note}
+          </li>
         ))}
       </ol>
     </div>

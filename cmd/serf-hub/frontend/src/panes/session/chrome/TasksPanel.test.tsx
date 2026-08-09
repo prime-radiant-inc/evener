@@ -328,6 +328,23 @@ test("a task row starts collapsed; clicking its summary expands its meta and upd
   expect(body.querySelector("[data-testid='task-notes']")?.textContent).toContain("blocked on #1");
 });
 
+test("notes render as a timeline with the latest note marked", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: [RICH_TASK] }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByText("Wire up expand/collapse"));
+
+  const notes = screen.getByTestId("task-notes");
+  const items = notes.querySelectorAll("li");
+  expect(items).toHaveLength(2);
+  expect(items[0]?.getAttribute("data-latest")).toBeNull();
+  expect(items[1]?.getAttribute("data-latest")).toBe("true");
+  expect(notes.textContent).toContain("Updates · 2");
+});
+
 test("the prompt disclosure shows a one-line markdown preview collapsed and the full markdown body open", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
