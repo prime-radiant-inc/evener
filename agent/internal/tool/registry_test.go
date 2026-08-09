@@ -484,7 +484,7 @@ func TestToolRegistry_TruncatedResultsKeepRecoverableSource(t *testing.T) {
 			name:       "head count",
 			model:      "l0\nl1\nl2\nl3\nl4\nl5",
 			limit:      schema.ToolOutputLimit{MaxChars: 1000, MaxLines: 2, Strategy: schema.TruncHeadCount},
-			wantMarker: "[6 total lines; showing first 2; narrow the pattern to see the rest]",
+			wantMarker: "[6 total lines; showing first 2; 4 lines omitted]",
 		},
 		{
 			name:       "head count character cap",
@@ -522,8 +522,60 @@ func TestToolRegistry_TruncatedResultsKeepRecoverableSource(t *testing.T) {
 			if !strings.Contains(got.Output, tt.wantMarker) {
 				t.Fatalf("Output missing neutral count marker %q: %q", tt.wantMarker, got.Output)
 			}
-			if strings.Contains(got.Output, "event stream") || strings.Contains(got.Output, "re-run") {
-				t.Fatalf("Output claims unavailable recovery behavior: %q", got.Output)
+			lowerOutput := strings.ToLower(got.Output)
+			for _, forbidden := range []string{"event stream", "re-run", "rerun", "narrow", "target"} {
+				if strings.Contains(lowerOutput, forbidden) {
+					t.Fatalf("Output contains forbidden recovery recommendation %q: %q", forbidden, got.Output)
+				}
+			}
+		})
+	}
+}
+
+func TestToolRegistry_TruncatedMarkerCollisionsStillReportLimiting(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		limit schema.ToolOutputLimit
+	}{
+		{
+			name:  "tail",
+			model: "[Output truncated: 63 characters removed from the beginning.]\n\nZ",
+			limit: schema.ToolOutputLimit{MaxChars: 1, Strategy: schema.TruncTail},
+		},
+		{
+			name:  "head-tail",
+			model: "A\n\n[Output truncated: 62 characters removed from the middle.]\n\nZ",
+			limit: schema.ToolOutputLimit{MaxChars: 2, Strategy: schema.TruncHeadTail},
+		},
+		{
+			name:  "lines",
+			model: "a\n[... 1 lines omitted ...]\nz",
+			limit: schema.ToolOutputLimit{MaxChars: 1000, MaxLines: 2, Strategy: schema.TruncHeadTail},
+		},
+		{
+			name:  "head count",
+			model: "a\nb\n[3 total lines; showing first 2; narrow the pattern to see the rest]",
+			limit: schema.ToolOutputLimit{MaxChars: 1000, MaxLines: 2, Strategy: schema.TruncHeadCount},
+		},
+		{
+			name:  "head count secondary cap",
+			model: "\n[Output truncated: 56 characters removed from the end.]",
+			limit: schema.ToolOutputLimit{MaxChars: 55, MaxLines: 2, Strategy: schema.TruncHeadCount},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := NewRegistry()
+			registerTextResultTool(t, reg, TextResult{Output: tt.model, FullOutput: "event-facing body"}, tt.limit)
+
+			got := executeTestTool(t, reg)
+			if !got.Truncated {
+				t.Fatal("limiter transformed source but Truncated is false")
+			}
+			if got.RecoverableOutput != tt.model {
+				t.Fatalf("RecoverableOutput changed: got %q, want %q", got.RecoverableOutput, tt.model)
 			}
 		})
 	}

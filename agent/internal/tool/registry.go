@@ -741,12 +741,17 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 
 func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOutputLimit) ExecResult {
 	out := full
+	truncated := false
 	if lim.Strategy == schema.TruncHeadCount {
-		out = truncateHeadCount(out, lim.MaxLines, lim.MaxChars)
+		out, truncated = truncateHeadCountWithStatus(out, lim.MaxLines, lim.MaxChars)
 	} else {
-		out = truncateChars(out, lim.MaxChars, lim.Strategy)
+		var charTruncated bool
+		out, charTruncated = truncateCharsWithStatus(out, lim.MaxChars, lim.Strategy)
+		truncated = charTruncated
 		if lim.MaxLines > 0 {
-			out = truncateLines(out, lim.MaxLines)
+			var lineTruncated bool
+			out, lineTruncated = truncateLinesWithStatus(out, lim.MaxLines)
+			truncated = truncated || lineTruncated
 		}
 	}
 	return ExecResult{
@@ -755,36 +760,40 @@ func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOu
 		Output:            out,
 		FullOutput:        full,
 		RecoverableOutput: full,
-		Truncated:         out != full,
+		Truncated:         truncated,
 		IsError:           isErr,
 	}
 }
 
 func truncateChars(s string, limit int, strategy schema.TruncationStrategy) string {
+	out, _ := truncateCharsWithStatus(s, limit, strategy)
+	return out
+}
+
+func truncateCharsWithStatus(s string, limit int, strategy schema.TruncationStrategy) (string, bool) {
 	runes := []rune(s)
 	if limit <= 0 || len(runes) <= limit {
-		return s
+		return s, false
 	}
 	removed := len(runes) - limit
 	switch strategy {
 	case schema.TruncTail:
 		// Spec: keep the last max_chars characters and prepend a warning.
 		marker := fmt.Sprintf("[Output truncated: %d characters removed from the beginning.]\n\n", removed)
-		return marker + string(runes[len(runes)-limit:])
+		return marker + string(runes[len(runes)-limit:]), true
 	default:
 		// Spec: head/tail split plus an explicit warning about omitted middle.
 		headCount := limit / 2
 		tailCount := limit - headCount
 		marker := fmt.Sprintf("\n\n[Output truncated: %d characters removed from the middle.]\n\n", removed)
-		return string(runes[:headCount]) + marker + string(runes[len(runes)-tailCount:])
+		return string(runes[:headCount]) + marker + string(runes[len(runes)-tailCount:]), true
 	}
 }
 
 // truncateHeadCount bounds glob/grep-shaped output (one match per line, though
 // grep's context_lines can add several output lines per match plus "--" group
 // separators, so this counts LINES, not matches) by keeping the first
-// maxEntries lines and appending a structural summary — total line count,
-// shown count, and a hint to narrow the search. Unlike truncateChars'
+// maxEntries lines and appending a count-only structural summary. Unlike truncateChars'
 // TruncTail case, this never drops the head of the result: an agent scanning
 // an unscoped search always sees the earliest (and, per Glob/Grep's own
 // ordering, most relevant) matches, with an explicit count of what was
@@ -796,21 +805,30 @@ func truncateChars(s string, limit int, strategy schema.TruncationStrategy) stri
 // reserved for by the budget) is always preserved, so a single enormous
 // matched line still cannot balloon the result past both bounds.
 func truncateHeadCount(s string, maxEntries, maxChars int) string {
+	out, _ := truncateHeadCountWithStatus(s, maxEntries, maxChars)
+	return out
+}
+
+func truncateHeadCountWithStatus(s string, maxEntries, maxChars int) (string, bool) {
 	if maxEntries <= 0 || s == "" {
-		return s
+		return s, false
 	}
 	out := s
+	truncated := false
 	lines := strings.Split(s, "\n")
 	total := len(lines)
 	if total > maxEntries {
 		shown := lines[:maxEntries]
-		summary := fmt.Sprintf("\n[%d total lines; showing first %d; narrow the pattern to see the rest]", total, maxEntries)
+		summary := fmt.Sprintf("\n[%d total lines; showing first %d; %d lines omitted]", total, maxEntries, total-maxEntries)
 		out = strings.Join(shown, "\n") + summary
+		truncated = true
 	}
 	if maxChars > 0 {
-		out = truncateCharsFromTail(out, maxChars)
+		var charTruncated bool
+		out, charTruncated = truncateCharsFromTailWithStatus(out, maxChars)
+		truncated = truncated || charTruncated
 	}
-	return out
+	return out, truncated
 }
 
 // truncateCharsFromTail bounds s to at most limit characters by dropping
@@ -818,9 +836,14 @@ func truncateHeadCount(s string, maxEntries, maxChars int) string {
 // whatever head content the caller already assembled (e.g. truncateHeadCount's
 // earliest-first matches and their summary line).
 func truncateCharsFromTail(s string, limit int) string {
+	out, _ := truncateCharsFromTailWithStatus(s, limit)
+	return out
+}
+
+func truncateCharsFromTailWithStatus(s string, limit int) (string, bool) {
 	runes := []rune(s)
 	if limit <= 0 || len(runes) <= limit {
-		return s
+		return s, false
 	}
 	removed := len(runes) - limit
 	for {
@@ -831,19 +854,24 @@ func truncateCharsFromTail(s string, limit int) string {
 		}
 		actualRemoved := len(runes) - keep
 		if actualRemoved == removed {
-			return string(runes[:keep]) + marker
+			return string(runes[:keep]) + marker, true
 		}
 		removed = actualRemoved
 	}
 }
 
 func truncateLines(s string, limit int) string {
+	out, _ := truncateLinesWithStatus(s, limit)
+	return out
+}
+
+func truncateLinesWithStatus(s string, limit int) (string, bool) {
 	if limit <= 0 {
-		return s
+		return s, false
 	}
 	lines := strings.Split(s, "\n")
 	if len(lines) <= limit {
-		return s
+		return s, false
 	}
 	headCount := limit / 2
 	tailCount := limit - headCount
@@ -851,7 +879,7 @@ func truncateLines(s string, limit int) string {
 	marker := fmt.Sprintf("\n[... %d lines omitted ...]\n", omitted)
 	head := strings.Join(lines[:headCount], "\n")
 	tail := strings.Join(lines[len(lines)-tailCount:], "\n")
-	return head + marker + tail
+	return head + marker + tail, true
 }
 
 func defaultToolLimit(toolName string) schema.ToolOutputLimit {
