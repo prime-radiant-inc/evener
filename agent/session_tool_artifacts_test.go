@@ -22,6 +22,30 @@ type recordingArtifactStore struct {
 	onClose    func()
 }
 
+type fakeArtifactStore struct {
+	puts   [][]byte
+	ref    string
+	putErr error
+}
+
+func newFakeArtifactStore() *fakeArtifactStore {
+	return &fakeArtifactStore{ref: "artifact:abc"}
+}
+
+func (s *fakeArtifactStore) Put(data []byte) (string, error) {
+	s.puts = append(s.puts, append([]byte(nil), data...))
+	if s.putErr != nil {
+		return "", s.putErr
+	}
+	return s.ref, nil
+}
+
+func (s *fakeArtifactStore) Open(string) (*os.File, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *fakeArtifactStore) Close() error { return nil }
+
 func (s *recordingArtifactStore) Put([]byte) (string, error) {
 	return "", errors.New("not implemented")
 }
@@ -101,6 +125,178 @@ func newArtifactTestClient() *llm.Client {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	return client
+}
+
+func TestRetainToolArtifactUsesRecoverableOutput(t *testing.T) {
+	store := newFakeArtifactStore()
+	s := &Session{artifactStore: store}
+	res := tool.ExecResult{
+		Output:            "preview",
+		FullOutput:        "event",
+		RecoverableOutput: "model full",
+		Truncated:         true,
+	}
+
+	ref := s.retainToolArtifact(&res)
+
+	if ref != "artifact:abc" {
+		t.Fatalf("ref = %q, want artifact:abc", ref)
+	}
+	if len(store.puts) != 1 || string(store.puts[0]) != "model full" {
+		t.Fatalf("stored = %q, want exact recoverable output", store.puts)
+	}
+	if !strings.Contains(res.Output, "Full output: "+ref) {
+		t.Fatalf("output = %q, want artifact handle footer", res.Output)
+	}
+	if !strings.Contains(res.Output, `read_transcript(transcript_ref="artifact:abc")`) {
+		t.Fatalf("output = %q, want read_transcript instruction", res.Output)
+	}
+	if res.FullOutput != "event" {
+		t.Fatalf("FullOutput = %q, want event text unchanged", res.FullOutput)
+	}
+}
+
+func TestRetainToolArtifactFailureIsAvailabilityNeutralAndPreservesError(t *testing.T) {
+	store := newFakeArtifactStore()
+	store.putErr = errors.New("disk full\ninternal detail")
+	s := &Session{artifactStore: store}
+	res := tool.ExecResult{
+		Output:            "preview",
+		FullOutput:        "event error",
+		RecoverableOutput: "model error",
+		Truncated:         true,
+		IsError:           true,
+	}
+
+	ref := s.retainToolArtifact(&res)
+
+	if ref != "" {
+		t.Fatalf("ref = %q, want no handle after failed retention", ref)
+	}
+	if !res.IsError {
+		t.Fatal("retention failure cleared tool error state")
+	}
+	if !strings.Contains(res.Output, "retention_failed") {
+		t.Fatalf("output = %q, want retention_failed warning", res.Output)
+	}
+	for _, unavailableClaim := range []string{"artifact:", "event stream", "Full output:", "Read with:"} {
+		if strings.Contains(res.Output, unavailableClaim) {
+			t.Fatalf("output = %q, must not claim unavailable output via %q", res.Output, unavailableClaim)
+		}
+	}
+	if strings.Contains(res.Output, "\ninternal detail") {
+		t.Fatalf("output = %q, want concise one-line retention error", res.Output)
+	}
+	if res.FullOutput != "event error" {
+		t.Fatalf("FullOutput = %q, want original error event text", res.FullOutput)
+	}
+}
+
+func TestRetainToolArtifactLeavesUntruncatedResultAlone(t *testing.T) {
+	store := newFakeArtifactStore()
+	s := &Session{artifactStore: store}
+	res := tool.ExecResult{
+		Output:            "complete",
+		FullOutput:        "complete",
+		RecoverableOutput: "complete",
+	}
+
+	if ref := s.retainToolArtifact(&res); ref != "" {
+		t.Fatalf("ref = %q, want no handle for untruncated output", ref)
+	}
+	if len(store.puts) != 0 {
+		t.Fatalf("Put called %d times for untruncated output", len(store.puts))
+	}
+	if res.Output != "complete" {
+		t.Fatalf("Output = %q, want unchanged untruncated output", res.Output)
+	}
+}
+
+func TestRetainToolArtifactExecToolPublishesSplitTextResultHandle(t *testing.T) {
+	modelOutput := strings.Repeat("model text ", 2_001)
+	const eventOutput = "event-facing text remains complete and separate"
+	sess, stop := imageToolSession(t, "retain_split", func() (any, error) {
+		return tool.TextResult{Output: modelOutput, FullOutput: eventOutput}, nil
+	})
+	store := newFakeArtifactStore()
+	replaceRootArtifactStore(t, sess, store)
+
+	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "call_split", Name: "retain_split", Arguments: []byte(`{}`)}, "")
+	end := toolCallEndData(t, stop(), "call_split")
+
+	if len(store.puts) != 1 {
+		t.Fatalf("Put called %d times, want once", len(store.puts))
+	}
+	if string(store.puts[0]) != modelOutput {
+		t.Fatalf("stored split output length = %d, want exact %d-byte model output", len(store.puts[0]), len(modelOutput))
+	}
+	if res.FullOutput != eventOutput || end.Output != eventOutput {
+		t.Fatalf("full outputs = result %q, event %q; want %q", res.FullOutput, end.Output, eventOutput)
+	}
+	if end.Error != "" {
+		t.Fatalf("event Error = %q for successful split result", end.Error)
+	}
+	if end.OutputRef != "artifact:abc" {
+		t.Fatalf("event OutputRef = %q, want artifact:abc", end.OutputRef)
+	}
+	if !strings.Contains(res.Output, "Full output: artifact:abc") {
+		t.Fatalf("model Output = %q, want artifact footer", res.Output)
+	}
+}
+
+func TestRetainToolArtifactExecToolPreservesErrorEvent(t *testing.T) {
+	errorOutput := "tool failed: " + strings.Repeat("error text ", 2_001)
+	sess, stop := imageToolSession(t, "retain_error", func() (any, error) {
+		return nil, errors.New(errorOutput)
+	})
+	store := newFakeArtifactStore()
+	replaceRootArtifactStore(t, sess, store)
+
+	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "call_error", Name: "retain_error", Arguments: []byte(`{}`)}, "")
+	end := toolCallEndData(t, stop(), "call_error")
+
+	if !res.IsError {
+		t.Fatal("truncated error result lost IsError")
+	}
+	if len(store.puts) != 1 {
+		t.Fatalf("Put called %d times, want once", len(store.puts))
+	}
+	if string(store.puts[0]) != errorOutput {
+		t.Fatalf("stored error output length = %d, want exact %d bytes", len(store.puts[0]), len(errorOutput))
+	}
+	if res.FullOutput != errorOutput || end.Error != errorOutput {
+		t.Fatalf("full error output changed: result length %d, event length %d, want %d", len(res.FullOutput), len(end.Error), len(errorOutput))
+	}
+	if end.Output != "" {
+		t.Fatalf("event Output = %q for error result", end.Output)
+	}
+	if end.OutputRef != "artifact:abc" {
+		t.Fatalf("event OutputRef = %q, want artifact:abc", end.OutputRef)
+	}
+}
+
+func TestRetainToolArtifactExecToolRetentionFailureOmitsOutputRef(t *testing.T) {
+	modelOutput := strings.Repeat("model text ", 2_001)
+	const eventOutput = "event-facing text"
+	sess, stop := imageToolSession(t, "retain_failure", func() (any, error) {
+		return tool.TextResult{Output: modelOutput, FullOutput: eventOutput}, nil
+	})
+	store := newFakeArtifactStore()
+	store.putErr = errors.New("retention unavailable")
+	replaceRootArtifactStore(t, sess, store)
+
+	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "call_failure", Name: "retain_failure", Arguments: []byte(`{}`)}, "")
+	end := toolCallEndData(t, stop(), "call_failure")
+
+	if end.OutputRef != "" {
+		t.Fatalf("event OutputRef = %q after failed retention", end.OutputRef)
+	}
+	if end.Output != eventOutput || end.Error != "" {
+		t.Fatalf("event payload changed after retention failure: Output=%q Error=%q", end.Output, end.Error)
+	}
+	if !strings.Contains(res.Output, "retention_failed") || strings.Contains(res.Output, "artifact:") {
+		t.Fatalf("model Output = %q, want availability-neutral retention warning", res.Output)
+	}
 }
 
 type restoredArtifactCandidateCapture struct {

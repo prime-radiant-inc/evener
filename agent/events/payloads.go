@@ -221,6 +221,7 @@ type ToolCallEndData struct {
 	ArgumentsJSON string        `json:"arguments_json,omitempty"`
 	Output        string        `json:"output,omitempty"`
 	Error         string        `json:"error,omitempty"`
+	OutputRef     string        `json:"output_ref,omitempty"`
 	OutputImages  []OutputImage `json:"output_images,omitempty"`
 	// PrevalOnly is true when Error came from prepareToolCall's pre-dispatch
 	// repair step (an unknown tool name, or arguments that still fail schema
