@@ -78,7 +78,9 @@ import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 import { parseTaskListData, type TaskRow, type TaskStatus } from "./taskData";
+import { groupTasks } from "./taskGroups";
 import styles from "./taskspanel.module.css";
+import { absoluteTime, relativeTime } from "./taskTime";
 
 export interface TasksPanelProps {
   sessionRef: string;
@@ -106,6 +108,17 @@ const CLASS = {
   count: requireClass(styles.count, "taskspanel.module.css", "count"),
   list: requireClass(styles.list, "taskspanel.module.css", "list"),
   description: requireClass(styles.description, "taskspanel.module.css", "description"),
+  groupHead: requireClass(styles.groupHead, "taskspanel.module.css", "groupHead"),
+  groupCount: requireClass(styles.groupCount, "taskspanel.module.css", "groupCount"),
+  settledSummary: requireClass(styles.settledSummary, "taskspanel.module.css", "settledSummary"),
+  summaryMain: requireClass(styles.summaryMain, "taskspanel.module.css", "summaryMain"),
+  summaryLine: requireClass(styles.summaryLine, "taskspanel.module.css", "summaryLine"),
+  descDim: requireClass(styles.descDim, "taskspanel.module.css", "descDim"),
+  descStruck: requireClass(styles.descStruck, "taskspanel.module.css", "descStruck"),
+  time: requireClass(styles.time, "taskspanel.module.css", "time"),
+  latest: requireClass(styles.latest, "taskspanel.module.css", "latest"),
+  latestLabel: requireClass(styles.latestLabel, "taskspanel.module.css", "latestLabel"),
+  latestText: requireClass(styles.latestText, "taskspanel.module.css", "latestText"),
   stale: requireClass(styles.stale, "taskspanel.module.css", "stale"),
   staleMessage: requireClass(styles.staleMessage, "taskspanel.module.css", "staleMessage"),
   staleHint: requireClass(styles.staleHint, "taskspanel.module.css", "staleHint"),
@@ -263,19 +276,36 @@ function TaskDetails({ task }: { task: TaskRow }) {
   );
 }
 
-// TaskRowView wraps the row's existing glyph+description line as a
-// widgets/disclosure summary - the same store-backed disclosure primitive
-// the design spec named as "the natural home" for every disclosure in this
-// app (docs/superpowers/specs/2026-07-23-webui-ux-round2-design.md §6), and
-// the transcript's ThinkBlock/SteeringItem/SystemNoticeItem already use the
-// same idiom by hand. Reusing the component directly - rather than a fourth
-// hand-rolled copy - is deliberate: no other call site does yet, so this is
-// its first real consumer.
-function TaskRowView({ task, sessionRef }: { task: TaskRow; sessionRef: string }) {
+// Settled rows (the collapsed history group) render one line, dimmed, with
+// no latest-update excerpt: history costs one line per task. Live rows earn
+// their second line with the most recent note.
+function TaskRowView({ task, sessionRef, settled = false }: { task: TaskRow; sessionRef: string; settled?: boolean }) {
+  const notes = task.notes ?? [];
+  const latest = !settled && notes.length > 0 ? notes[notes.length - 1] : null;
+  const descClass = task.status === "cancelled" ? CLASS.descStruck : settled ? CLASS.descDim : CLASS.description;
   const summary = (
     <>
       <Chip tone={STATUS_TONE[task.status]}>{STATUS_GLYPH[task.status]}</Chip>
-      <span className={CLASS.description}>{task.description}</span>
+      <span className={CLASS.summaryMain}>
+        <span className={CLASS.summaryLine}>
+          <span className={descClass} data-struck={task.status === "cancelled" ? "true" : undefined}>
+            {task.description}
+          </span>
+          {task.updatedAt && (
+            <span className={CLASS.time} data-testid="task-row-time" title={absoluteTime(task.updatedAt)}>
+              {relativeTime(task.updatedAt)}
+            </span>
+          )}
+        </span>
+        {latest && (
+          <span className={CLASS.latest} data-testid="task-latest">
+            <span className={CLASS.latestLabel}>latest</span>
+            <span className={CLASS.latestText} title={latest}>
+              {latest}
+            </span>
+          </span>
+        )}
+      </span>
     </>
   );
   return (
@@ -287,6 +317,59 @@ function TaskRowView({ task, sessionRef }: { task: TaskRow; sessionRef: string }
         <TaskDetails task={task} />
       </Disclosure>
     </li>
+  );
+}
+
+function LiveGroup({
+  label,
+  status,
+  tasks,
+  sessionRef,
+}: {
+  label: string;
+  status: string;
+  tasks: TaskRow[];
+  sessionRef: string;
+}) {
+  if (tasks.length === 0) return null;
+  return (
+    <section data-testid="task-group-live" data-status={status}>
+      <h4 className={CLASS.groupHead}>
+        {label} <span className={CLASS.groupCount}>{tasks.length}</span>
+      </h4>
+      <ul className={CLASS.list}>
+        {tasks.map((row) => (
+          <TaskRowView key={row.id} task={row} sessionRef={sessionRef} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: string }) {
+  const groups = groupTasks(rows);
+  return (
+    <>
+      <LiveGroup label="In progress" status="in_progress" tasks={groups.inProgress} sessionRef={sessionRef} />
+      <LiveGroup label="Open" status="open" tasks={groups.open} sessionRef={sessionRef} />
+      {groups.settled.length > 0 && (
+        <Disclosure
+          id={`${sessionRef}\0settled-group`}
+          summary={
+            <span className={CLASS.settledSummary} data-testid="task-settled-group-summary">
+              Done · settled <span className={CLASS.groupCount}>{groups.settled.length}</span>
+            </span>
+          }
+          data-testid="task-settled-group"
+        >
+          <ul className={CLASS.list}>
+            {groups.settled.map((row) => (
+              <TaskRowView key={row.id} task={row} sessionRef={sessionRef} settled />
+            ))}
+          </ul>
+        </Disclosure>
+      )}
+    </>
   );
 }
 
@@ -441,11 +524,7 @@ export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
         {rows.length === 0 ? (
           <EmptyState title="No tasks yet" hint="The agent's task list is empty for this session." />
         ) : (
-          <ul className={CLASS.list}>
-            {rows.map((row) => (
-              <TaskRowView key={row.id} task={row} sessionRef={sessionRef} />
-            ))}
-          </ul>
+          <TaskListGroups rows={rows} sessionRef={sessionRef} />
         )}
       </>
     );

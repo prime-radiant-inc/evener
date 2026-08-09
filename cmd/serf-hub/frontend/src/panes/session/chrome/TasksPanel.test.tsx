@@ -71,6 +71,49 @@ const TASKS_DATA = [
   { id: 3, type: "verify", description: "Gate green", prompt: "", status: "open" },
 ];
 
+const DATED_TASKS = [
+  {
+    id: 1,
+    type: "implement",
+    description: "Implement artifact store",
+    prompt: "",
+    status: "done",
+    notes: ["Implemented secure artifact store in commits 9853cf561 and 162d0d41e."],
+    created_at: "2026-08-08T22:03:48-07:00",
+    updated_at: "2026-08-09T10:53:57-07:00",
+    completed_at: "2026-08-09T10:53:57-07:00",
+  },
+  {
+    id: 2,
+    type: "implement",
+    description: "Extend transcript API",
+    prompt: "Execute Task 6.",
+    status: "in_progress",
+    created_at: "2026-08-08T22:03:48-07:00",
+    updated_at: "2026-08-09T13:02:17-07:00",
+  },
+  {
+    id: 3,
+    type: "implement",
+    description: "Transition to implementation plan",
+    prompt: "",
+    status: "cancelled",
+    notes: ["Cancelled at the user's request."],
+    created_at: "2026-08-08T20:25:33-07:00",
+    updated_at: "2026-08-08T21:49:49-07:00",
+  },
+  {
+    id: 4,
+    type: "implement",
+    description: "Prepare release notes",
+    prompt: "",
+    status: "open",
+    notes: ["Captured the compatibility changes for the release notes."],
+    created_at: "2026-08-09T11:00:00-07:00",
+    updated_at: "2026-08-09T13:15:00-07:00",
+  },
+];
+
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
@@ -145,7 +188,7 @@ test("opening the panel fetches via listTasks(ref) and shows a loading state unt
   await waitFor(() => expect(screen.queryByText(/loading tasks/i)).toBeNull());
 });
 
-test("renders every fetched task as a row, in the SAME order the wire returned them (no client-side re-sort)", async () => {
+test("rows group by status: in progress, then open, then the collapsed settled group; wire order holds within a group", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("serf/tasks/list", () => ({ data: TASKS_DATA }));
@@ -153,13 +196,71 @@ test("renders every fetched task as a row, in the SAME order the wire returned t
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
-  const rows = await screen.findAllByTestId("task-row");
-  expect(rows).toHaveLength(3);
-  expect(rows.map((r) => r.textContent)).toEqual([
-    expect.stringContaining("Wire up the status row"),
-    expect.stringContaining("Wire up session actions"),
-    expect.stringContaining("Gate green"),
-  ]);
+  await waitFor(() => expect(screen.getAllByTestId("task-row")).toHaveLength(2));
+  const liveGroups = screen.getAllByTestId("task-group-live");
+  expect(liveGroups.map((group) => group.getAttribute("data-status"))).toEqual(["in_progress", "open"]);
+  expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
+
+  await user.click(screen.getByTestId("task-settled-group-summary"));
+  await waitFor(() => expect(screen.getAllByTestId("task-row")).toHaveLength(3));
+});
+
+test("a live row shows its latest note inline; a settled row does not", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: DATED_TASKS }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  expect((await screen.findByTestId("task-latest")).textContent).toContain(
+    "Captured the compatibility changes for the release notes.",
+  );
+
+  await user.click(screen.getByTestId("task-settled-group-summary"));
+  const settledRow = screen
+    .getAllByTestId("task-row")
+    .find((row) => row.textContent?.includes("Implement artifact store"));
+  expect(settledRow?.querySelector("[data-testid='task-latest']")).toBeNull();
+});
+
+test("a cancelled row renders struck-through inside the settled group", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: DATED_TASKS }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByTestId("task-settled-group-summary"));
+
+  expect(screen.getByText("Transition to implementation plan").getAttribute("data-struck")).toBe("true");
+});
+
+test("a live row shows a relative updated time", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: DATED_TASKS }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  const row = (await screen.findByText("Extend transcript API")).closest("[data-testid='task-row']");
+
+  expect(row?.querySelector("[data-testid='task-row-time']")).toBeTruthy();
+});
+
+test("the settled group defaults to collapsed and remembers being opened per session", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: DATED_TASKS }));
+
+  const first = render(<TasksPanelBody sessionRef="ref_remember" model={testModel({ ref: "ref_remember" })} />);
+  await screen.findByTestId("task-settled-group");
+  expect(screen.queryByText("Implement artifact store")).toBeNull();
+  await user.click(screen.getByTestId("task-settled-group-summary"));
+  expect(await screen.findByText("Implement artifact store")).toBeTruthy();
+
+  first.unmount();
+  render(<TasksPanelBody sessionRef="ref_remember" model={testModel({ ref: "ref_remember" })} />);
+  expect(await screen.findByText("Implement artifact store")).toBeTruthy();
 });
 
 test("the body header shows the meter and count when the aggregate is known", async () => {
@@ -187,7 +288,7 @@ test("the body header is absent while no aggregate has arrived", async () => {
       <Toast />
     </>,
   );
-  await waitFor(() => expect(screen.getByTestId("task-row")).toBeTruthy());
+  await waitFor(() => expect(screen.getByTestId("task-settled-group")).toBeTruthy());
   expect(screen.queryByTestId("tasks-body-head")).toBeNull();
 });
 
@@ -227,8 +328,8 @@ test("a task row starts collapsed; clicking its summary expands it to show the f
   expect(screen.getByTestId("task-detail-depends-on").textContent).toContain("#1, #3");
   expect(screen.getByTestId("task-detail-reasoning").textContent).toContain("high");
   expect(screen.getByText("Follow the transcript's existing disclosure idiom.")).toBeTruthy();
-  expect(screen.getByText("started")).toBeTruthy();
-  expect(screen.getByText("blocked on #1")).toBeTruthy();
+  expect(screen.getByTestId("task-detail-notes").textContent).toContain("started");
+  expect(screen.getByTestId("task-detail-notes").textContent).toContain("blocked on #1");
 });
 
 test("clicking an expanded row's summary again collapses it", async () => {
@@ -256,6 +357,7 @@ test("a task with none of the optional fields still shows status and type, omitt
   await user.click(screen.getByRole("button", { name: "Tasks" }));
   // TASKS_DATA's first row: status "done", type "implement", prompt "",
   // no dependsOn/notes/reasoningEffort.
+  await user.click(await screen.findByTestId("task-settled-group-summary"));
   await user.click(await screen.findByText("Wire up the status row"));
 
   expect(screen.getByTestId("task-detail-status").textContent).toContain("done");
@@ -273,6 +375,7 @@ test("each row's expand state is independent - opening one row leaves its siblin
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByTestId("task-settled-group-summary"));
   await user.click(await screen.findByText("Wire up the status row"));
 
   expect(screen.getAllByTestId("task-detail-status")).toHaveLength(1);
@@ -428,11 +531,11 @@ test("a stale overlapping failure does not toast after a newer fetch succeeded",
   await waitFor(() => expect(calls).toHaveLength(2));
 
   await act(async () => calls[1]?.resolve({ data: TASKS_DATA }));
-  await screen.findByText("Wire up the status row");
+  await screen.findByText("Wire up session actions");
   await act(async () => calls[0]?.reject(new Error("tasks boom")));
 
   expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
-  expect(screen.getByText("Wire up the status row")).toBeTruthy();
+  expect(screen.getByText("Wire up session actions")).toBeTruthy();
 });
 
 // The hub resumes a cold session before it can list anything
@@ -526,8 +629,9 @@ test("a re-fetch that fails keeps the rows already on screen", async () => {
   await openThenPush(fake);
 
   await screen.findByTestId("tasks-stale");
-  expect(screen.getAllByTestId("task-row")).toHaveLength(3);
-  expect(screen.getByText("Wire up the status row")).toBeTruthy();
+  expect(screen.getAllByTestId("task-row")).toHaveLength(2);
+  expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
+  expect(screen.getByText("Wire up session actions")).toBeTruthy();
 });
 
 // A retained list is one push behind by construction - the push is what
@@ -597,7 +701,8 @@ test("Try again re-fetches the list and clears the stale notice once it succeeds
 
   await waitFor(() => expect(screen.queryByTestId("tasks-stale")).toBeNull());
   expect(fake.calls.filter((c) => c.method === "serf/tasks/list")).toHaveLength(3);
-  expect(screen.getAllByTestId("task-row")).toHaveLength(3);
+  expect(screen.getAllByTestId("task-row")).toHaveLength(2);
+  expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
 });
 
 // --- dead-daemon "thread not found": must not contradict the trigger -------
@@ -646,7 +751,8 @@ test("closing then re-opening after the daemon exits keeps the rows already show
   await user.click(screen.getByRole("button", { name: "Tasks 1/3" }));
 
   await screen.findByTestId("tasks-daemon-gone");
-  expect(screen.getAllByTestId("task-row")).toHaveLength(3);
+  expect(screen.getAllByTestId("task-row")).toHaveLength(2);
+  expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
   expect(screen.queryByText("No tasks yet")).toBeNull();
 });
 
@@ -717,6 +823,7 @@ test("a first fetch that fails offers Try again, which fetches again", async () 
 
   await user.click(screen.getByRole("button", { name: "Try again" }));
 
-  expect(await screen.findAllByTestId("task-row")).toHaveLength(3);
+  expect(await screen.findAllByTestId("task-row")).toHaveLength(2);
+  expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
   expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
 });

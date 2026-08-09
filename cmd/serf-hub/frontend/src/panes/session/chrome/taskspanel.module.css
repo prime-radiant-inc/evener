@@ -35,6 +35,91 @@
   color: var(--ink-hi);
 }
 
+.groupHead {
+  margin: var(--space-3) 0 var(--space-1);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-mid);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.groupCount {
+  color: var(--ink-low);
+}
+
+.settledSummary {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+}
+
+/* The two-line live-row summary: line 1 is glyph + description + time,
+ * line 2 (live rows with notes only) is the latest update excerpt. */
+.summaryMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.summaryLine {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.descDim {
+  composes: description;
+  color: var(--ink-mid);
+}
+
+.descStruck {
+  composes: description;
+  color: var(--ink-low);
+  text-decoration: line-through;
+}
+
+.description,
+.descDim,
+.descStruck {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.time {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  white-space: nowrap;
+  flex: none;
+}
+
+.latest {
+  display: flex;
+  gap: var(--space-2);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+.latestLabel {
+  color: var(--ink-low);
+  flex: none;
+}
+
+.latestText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
 /* A refresh that failed with the previous list still on screen. Not an error
  * state and not coloured like one: the list below is intact and merely out of
  * date, so tinting this strip would say a failure is sitting where the tasks
