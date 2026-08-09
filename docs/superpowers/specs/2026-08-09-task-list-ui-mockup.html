@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tasks panel redesign — mockups</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* --- tokens (verbatim from src/styles/tokens.css) -------------------- */
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #10151C; --surface-1: #171E28; --surface-2: #1F2833;
+  --edge: #2A3542;
+  --ink-hi: #E5ECF4; --ink-mid: #93A3B5; --ink-low: #5E6E80;
+  --attention: #E8B04B; --alive: #4FBF9A; --danger: #E06C75; --accent: #81B4E8;
+  --attention-bg: color-mix(in oklab, var(--attention) 15%, var(--surface-1));
+  --attention-edge: color-mix(in oklab, var(--attention) 40%, var(--edge));
+  --alive-bg: color-mix(in oklab, var(--alive) 15%, var(--surface-1));
+  --alive-edge: color-mix(in oklab, var(--alive) 40%, var(--edge));
+  --danger-bg: color-mix(in oklab, var(--danger) 15%, var(--surface-1));
+  --danger-edge: color-mix(in oklab, var(--danger) 40%, var(--edge));
+  --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
+  --accent-edge: color-mix(in oklab, var(--accent) 40%, var(--edge));
+  --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --font-weight-regular: 400; --font-weight-medium: 500; --font-weight-semibold: 600;
+  --line-height-body: 1.5; --line-height-title: 1.3;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 24px; --space-6: 32px;
+  --radius-control: 4px; --radius-pane: 8px;
+  --font-size-caption: 12px; --font-size-ui: 13px; --font-size-body: 14px;
+  --font-size-pane-title: 16px;
+}
+[data-theme="light"] {
+  color-scheme: light;
+  --surface-0: #F4F1EC; --surface-1: #FBFAF7; --surface-2: #FFFFFF;
+  --edge: #E0DACF;
+  --ink-hi: #1F1B16; --ink-mid: #5C554A; --ink-low: #8A8172;
+  --attention: #8A5A0B; --alive: #2E6E4E; --danger: #B3382C; --accent: #2450B8;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--surface-0); color: var(--ink-hi);
+  font-family: var(--font-sans); font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  padding: var(--space-6);
+}
+button { font: inherit; color: inherit; }
+
+/* --- page chrome (NOT part of the mockups) --------------------------- */
+.page-head { max-width: 1320px; margin: 0 auto var(--space-5); }
+.page-head h1 { font-size: 20px; font-weight: var(--font-weight-semibold); margin: 0 0 var(--space-1); }
+.page-head p { margin: 0; color: var(--ink-mid); font-size: var(--font-size-ui); }
+.page-head code { font-family: var(--font-mono); font-size: var(--font-size-caption); color: var(--ink-mid); }
+.theme-toggle {
+  margin-top: var(--space-3); padding: var(--space-1) var(--space-3);
+  background: var(--surface-2); border: 1px solid var(--edge);
+  border-radius: var(--radius-control); cursor: pointer; font-size: var(--font-size-ui);
+}
+.variant { max-width: 1320px; margin: 0 auto var(--space-6); }
+.variant > h2 { font-size: var(--font-size-pane-title); font-weight: var(--font-weight-semibold); margin: 0 0 var(--space-1); }
+.variant > .trade { color: var(--ink-mid); font-size: var(--font-size-ui); margin: 0 0 var(--space-3); max-width: 720px; }
+.variant > .trade b { color: var(--ink-hi); font-weight: var(--font-weight-medium); }
+
+/* --- the panel frame: stands in for the Sheet / desktop pane --------- */
+.frame {
+  width: 400px; height: 640px; overflow-y: auto;
+  background: var(--surface-1); border: 1px solid var(--edge);
+  border-radius: var(--radius-pane); padding: var(--space-3);
+}
+.panel-head { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3); }
+.panel-head h3 { margin: 0; font-size: var(--font-size-pane-title); font-weight: var(--font-weight-semibold); flex: 1; }
+.panel-head .count { font-size: var(--font-size-caption); color: var(--ink-mid); white-space: nowrap; }
+.meter { width: 72px; height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+.meter > i { display: block; height: 100%; background: var(--ink-low); }
+
+/* --- shared bits ------------------------------------------------------ */
+.chip {
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  height: 20px; padding: 0 var(--space-2);
+  border-radius: var(--radius-control); border: 1px solid transparent;
+  font-size: var(--font-size-caption); line-height: 1; white-space: nowrap;
+}
+.chip.neutral { background: var(--surface-2); border-color: var(--edge); color: var(--ink-hi); }
+.chip.alive { background: var(--alive-bg); border-color: var(--alive-edge); color: var(--alive); }
+.glyph { display: inline-flex; width: 20px; height: 20px; align-items: center; justify-content: center;
+  border-radius: var(--radius-control); border: 1px solid var(--edge); background: var(--surface-2);
+  font-size: 11px; color: var(--ink-mid); flex: none; }
+.glyph.alive { background: var(--alive-bg); border-color: var(--alive-edge); color: var(--alive); }
+.glyph.done { color: var(--ink-low); }
+.glyph.cancelled { color: var(--ink-low); }
+.chev { display: inline-flex; width: 14px; flex: none; color: var(--ink-low); transition: transform 120ms ease-out; }
+details[open] > summary .chev { transform: rotate(90deg); }
+.mono { font-family: var(--font-mono); }
+.time { font-size: var(--font-size-caption); color: var(--ink-low); white-space: nowrap; flex: none; }
+.id { font-family: var(--font-mono); font-size: var(--font-size-caption); color: var(--ink-low); flex: none; }
+details.task > summary { list-style: none; cursor: pointer; }
+details.task > summary::-webkit-details-marker { display: none; }
+.promptbox {
+  margin: 0; font-family: var(--font-mono); font-size: var(--font-size-ui); color: var(--ink-hi);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+/* === CURRENT (baseline, what ships today) ============================ */
+.cur-list { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.cur-list summary { display: flex; align-items: center; gap: var(--space-2); color: var(--ink-mid); }
+.cur-desc { font-size: var(--font-size-ui); color: var(--ink-hi); }
+.cur-body { margin-top: var(--space-1); }
+.cur-dl { display: flex; flex-direction: column; gap: var(--space-3); margin: var(--space-2) 0 var(--space-2); }
+.cur-dl .row { display: flex; flex-direction: column; gap: var(--space-1); }
+.cur-dl dt { font-size: var(--font-size-caption); color: var(--ink-mid); }
+.cur-dl dd { margin: 0; font-family: var(--font-mono); font-size: var(--font-size-ui); color: var(--ink-hi); }
+.cur-dl ol { margin: 0; padding-left: var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); }
+
+/* === VARIANT A — two-line live rows + meta strip + timeline ========== */
+.a-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.a-list > li { border-top: 1px solid var(--edge); }
+.a-list > li:first-child { border-top: none; }
+.a-row { padding: var(--space-2) var(--space-1); }
+.a-row summary { display: flex; align-items: flex-start; gap: var(--space-2); }
+.a-row summary .chev, .a-row summary .glyph { margin-top: 2px; }
+.a-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.a-line1 { display: flex; align-items: center; gap: var(--space-2); }
+.a-desc { font-size: var(--font-size-ui); color: var(--ink-hi); font-weight: var(--font-weight-medium);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.a-desc.struck { text-decoration: line-through; color: var(--ink-low); }
+.a-latest { display: flex; gap: var(--space-2);
+  font-size: var(--font-size-caption); color: var(--ink-mid); }
+.a-latest .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.a-latest .k { color: var(--ink-low); flex: none; }
+.a-body { margin: var(--space-2) 0 var(--space-2) calc(14px + 20px + var(--space-2) * 2); display: flex; flex-direction: column; gap: var(--space-3); }
+.a-meta { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); align-items: center; }
+.a-meta .k { color: var(--ink-low); font-size: var(--font-size-caption); }
+.a-meta .v { color: var(--ink-mid); font-size: var(--font-size-caption); font-family: var(--font-mono); }
+.a-times { font-size: var(--font-size-caption); color: var(--ink-low); display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); }
+.a-times b { font-weight: var(--font-weight-regular); color: var(--ink-mid); }
+.a-prompt summary { font-size: var(--font-size-caption); color: var(--ink-mid); display: flex; align-items: center; gap: var(--space-1); }
+.a-prompt .promptbox { margin-top: var(--space-1); max-height: 8.5em; overflow-y: auto; }
+.a-notes-head { font-size: var(--font-size-caption); color: var(--ink-mid); margin-bottom: var(--space-1); }
+.a-notes { border-left: 2px solid var(--edge); margin-left: 3px; padding-left: var(--space-3);
+  display: flex; flex-direction: column; gap: var(--space-2); }
+.a-note { position: relative; font-size: var(--font-size-ui); color: var(--ink-hi); }
+.a-note::before { content: ""; position: absolute; left: calc(-1 * var(--space-3) - 5px); top: 7px;
+  width: 8px; height: 8px; border-radius: 50%; background: var(--surface-1); border: 2px solid var(--ink-low); }
+.a-note.latest::before { border-color: var(--alive); }
+.a-none { font-size: var(--font-size-caption); color: var(--ink-low); }
+
+/* === VARIANT B — dense single-line rows + two-column grid ============ */
+.b-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.b-list > li { border-top: 1px solid var(--edge); }
+.b-list > li:first-child { border-top: none; }
+.b-row summary { display: flex; align-items: center; gap: var(--space-2); padding: 6px var(--space-1); }
+.b-desc { font-size: var(--font-size-ui); color: var(--ink-hi); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.b-desc.struck { text-decoration: line-through; color: var(--ink-low); }
+.b-hasnote { color: var(--ink-low); flex: none; font-size: 11px; }
+.b-body { margin: 0 0 var(--space-2) calc(14px + 20px + var(--space-2) * 2); }
+.b-grid { display: grid; grid-template-columns: 76px 1fr; gap: var(--space-1) var(--space-3); align-items: baseline; }
+.b-grid .k { font-size: var(--font-size-caption); color: var(--ink-low); }
+.b-grid .v { font-size: var(--font-size-ui); color: var(--ink-hi); min-width: 0; }
+.b-grid .v.mono { font-family: var(--font-mono); font-size: var(--font-size-caption); }
+.b-grid .v .promptbox { font-size: var(--font-size-caption); max-height: 8.5em; overflow-y: auto; }
+.b-notes { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--space-1); }
+.b-notes li { font-size: var(--font-size-ui); color: var(--ink-hi); padding-left: var(--space-3); position: relative; }
+.b-notes li::before { content: "–"; position: absolute; left: 0; color: var(--ink-low); }
+
+/* === VARIANT C — status groups, done collapsed ======================= */
+.c-group { margin-bottom: var(--space-2); }
+.c-group-head { display: flex; align-items: baseline; gap: var(--space-2); margin: var(--space-2) 0 var(--space-1);
+  font-size: var(--font-size-caption); color: var(--ink-mid); text-transform: uppercase; letter-spacing: 0.04em; }
+.c-group-head .n { color: var(--ink-low); }
+.c-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.c-list > li { border-top: 1px solid var(--edge); }
+.c-list > li:first-child { border-top: none; }
+.c-list.dim .c-desc { color: var(--ink-mid); font-weight: var(--font-weight-regular); }
+.c-row { padding: var(--space-2) var(--space-1); }
+.c-row summary { display: flex; align-items: flex-start; gap: var(--space-2); }
+.c-row summary .chev, .c-row summary .glyph { margin-top: 2px; }
+.c-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.c-line1 { display: flex; align-items: center; gap: var(--space-2); }
+.c-desc { font-size: var(--font-size-ui); color: var(--ink-hi); font-weight: var(--font-weight-medium);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.c-desc.struck { text-decoration: line-through; color: var(--ink-low); }
+.c-latest { font-size: var(--font-size-caption); color: var(--ink-mid);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-body { margin: var(--space-2) 0 var(--space-2) calc(14px + 20px + var(--space-2) * 2); display: flex; flex-direction: column; gap: var(--space-3); }
+.c-done-toggle summary { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-1); color: var(--ink-mid); font-size: var(--font-size-ui); }
+
+/* === FINAL — prompt inline disclosure (session pattern) ============== */
+.pm-prompt { font-size: var(--font-size-caption); }
+.pm-prompt > summary { display: flex; align-items: baseline; gap: var(--space-1); list-style: none; cursor: pointer; color: var(--ink-mid); }
+.pm-prompt > summary::-webkit-details-marker { display: none; }
+.pm-prompt .pm-label { flex: none; }
+.pm-prompt .chev { display: inline-flex; width: 12px; flex: none; color: var(--ink-low); }
+.pm-prompt .pm-preview { font-family: var(--font-mono); color: var(--ink-low);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.pm-prompt .promptbox { margin-top: var(--space-1); max-height: 12em; overflow-y: auto; }
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>Tasks panel — redesign mockups</h1>
+  <p>Real data: session <code>local:0343wE3LB14m5xoC2CBMiD</code> (recoverable tool output), 20 tasks, 16 done, snapshot 2026-08-09 13:02 PDT. Timestamps use the wire's <code>created_at / updated_at / completed_at</code>, which the current parser drops.</p>
+  <button class="theme-toggle" id="themeToggle">Switch to light theme</button>
+</div>
+
+<div class="variant" id="v-current">
+  <h2>Current (baseline)</h2>
+  <p class="trade">What ships today. Every expanded field is a stacked caption-over-mono pair at full width — five fields ≈ ten lines before notes. Collapsed rows carry no signal about recency or updates.</p>
+  <div class="frame" id="frame-current"></div>
+</div>
+
+<div class="variant" id="v-a">
+  <h2>A — Live rows <span style="color:var(--ink-low);font-weight:400">(recommended base)</span></h2>
+  <p class="trade"><b>Collapsed:</b> two-line rows — title + relative time on line one, latest update excerpt on line two. <b>Expanded:</b> one wrap-able meta strip (type · reasoning · deps), one timestamps line, prompt behind its own fold, updates as a timeline with the latest marked. <b>Trade-off:</b> rows are two lines instead of one, so the collapsed list is taller — but every row now earns its height.</p>
+  <div class="frame" id="frame-a"></div>
+</div>
+
+<div class="variant" id="v-b">
+  <h2>B — Dense grid</h2>
+  <p class="trade"><b>Collapsed:</b> strict single-line rows (a <b>¶</b> marks tasks with updates). <b>Expanded:</b> a two-column label/value grid — roughly half the vertical cost of today's stacked list. <b>Trade-off:</b> the least air; long prompts and notes squeeze into the value column, and the latest update is invisible until expanded.</p>
+  <div class="frame" id="frame-b"></div>
+</div>
+
+<div class="variant" id="v-c">
+  <h2>C — Focus groups</h2>
+  <p class="trade"><b>A's rows, grouped by status:</b> in-progress up top, open next, the 16 done behind one collapsed line. The live 20% of the list stops drowning in settled history. <b>Trade-off:</b> creation order is lost (ids jump within groups), and "what happened recently" across statuses needs the done group opened. Compose-able with A.</p>
+  <div class="frame" id="frame-c"></div>
+</div>
+
+<div class="variant" id="v-final">
+  <h2>FINAL — Live rows + focus groups</h2>
+  <p class="trade"><b>Chosen direction:</b> A's two-line live rows, grouped C-style — in-progress up top, open next, settled (done + cancelled) behind one collapsed line. The prompt is a session-style inline disclosure: <b>Prompt ▸</b> then however much of the prompt fits on the line; opening reveals the full text below. Expanded rows keep the meta strip, timestamps line, and updates timeline. Settled rows stay single-line so history costs one line per task.</p>
+  <div class="frame" id="frame-final"></div>
+</div>
+
+<script id="task-data" type="application/json">{
+  "source": "local:0343wE3LB14m5xoC2CBMiD turn 811 tool_state (2026-08-09T20:02:17Z), 16/20 complete",
+  "tasks": [
+    {"id":1,"type":"research","description":"Explore project context","prompt":"Read read-transcript-feedback-2026-08-08.md, inspect relevant read_transcript tool implementation/docs/tests, and review recent related commits. Summarize concrete problems, constraints, and existing architecture.","status":"done","notes":["Read the feedback and current code. Key findings: read_transcript still rejects range/expand_turn/offset_bytes for job refs and reads one retained tail; however jobstore already has backward Window, Head, and GrepFileLimitAt primitives over an 8 MiB retained tail. Grep has max_results (default 100), registry head-count truncation (200 lines/20k chars), and a structural count summary, but the later character truncation can cut that summary and no retained handle exists. Generic registry truncation occurs after tool execution and has no persistence dependency, so a cross-tool handle requires architectural work, not just wording. Feedback file is untracked."],"reasoning_effort":"high","created_at":"2026-08-08T20:25:33.199441-07:00","updated_at":"2026-08-08T20:27:31.665992-07:00","completed_at":"2026-08-08T20:27:31.665992-07:00"},
+    {"id":2,"type":"research","description":"Clarify desired outcome","prompt":"Ask one focused question at a time to determine scope, priorities, constraints, and success criteria for fixing the tools.","status":"done","depends_on":[1],"notes":["User chose a cross-tool invariant. Generic truncated outputs should be retained in full without a size cap until process cleanup. Ephemeral handles may expire after restart, provided reads return an explicit artifact_expired error. Existing durable job logs remain distinct."],"reasoning_effort":"medium","created_at":"2026-08-08T20:25:33.199442-07:00","updated_at":"2026-08-08T20:43:35.931778-07:00","completed_at":"2026-08-08T20:43:35.931778-07:00"},
+    {"id":3,"type":"research","description":"Compare solution approaches","prompt":"Propose 2-3 focused approaches with trade-offs and a recommendation, grounded in the feedback and existing architecture.","status":"done","depends_on":[2],"notes":["Compared three approaches: (1) central process-lifetime artifact store in the registry plus new read_artifact, with native job paging/search added to read_transcript; (2) overload read_transcript with artifact refs; (3) per-tool artifact awareness. Recommended (1) because it enforces the cross-tool invariant centrally while keeping durable job and ephemeral artifact semantics separate."],"reasoning_effort":"high","created_at":"2026-08-08T20:25:33.199445-07:00","updated_at":"2026-08-08T20:44:05.198606-07:00","completed_at":"2026-08-08T20:44:05.198606-07:00"},
+    {"id":4,"type":"research","description":"Present tool design","prompt":"Present the proposed design in appropriately sized sections covering architecture, components, data flow, error handling, compatibility, and testing; get user approval.","status":"done","depends_on":[3],"notes":["User approved the complete design. Final decisions: one read_transcript tool handles session/job/artifact refs; reuse ExecResult.FullOutput; add explicit Truncated flag; capture at common session completion seam into a minimal process-owned temp-file store; fixed 16 KiB paging; RE2 output_match with context_lines 0-10; exact process-lifetime recovery; explicit artifact_expired after restart; job reads remain honest about 8 MiB tail retention."],"reasoning_effort":"high","created_at":"2026-08-08T20:25:33.199466-07:00","updated_at":"2026-08-08T20:50:11.652118-07:00","completed_at":"2026-08-08T20:50:11.652118-07:00"},
+    {"id":5,"type":"implement","description":"Write design specification","prompt":"After user approval, use the clear-writing skill and write the validated design to docs/superpowers/specs/2026-08-09-read-transcript-tools-design.md, then commit that file only.","status":"done","depends_on":[4],"notes":["Wrote docs/superpowers/specs/2026-08-09-read-transcript-tools-design.md and committed that file only as d97c4faf6 (docs: design recoverable tool output). The pre-existing feedback file remains untracked and untouched."],"reasoning_effort":"high","created_at":"2026-08-08T20:25:33.199467-07:00","updated_at":"2026-08-08T20:52:15.11727-07:00","completed_at":"2026-08-08T20:52:15.11727-07:00"},
+    {"id":6,"type":"verify","description":"Review design specification","prompt":"Self-review the written spec for placeholders, contradictions, scope creep, and ambiguity; fix issues and update the commit without amending unless explicitly approved (make a follow-up commit if needed).","status":"done","depends_on":[5],"notes":["Self-review found and fixed ambiguity about default job behavior, delegate structured results, store ownership, raw response naming, search offsets, oversized-line reporting, and invalid format combinations. Preserved existing no-argument job markdown reads; raw paging requires explicit offset_bytes. Committed fixes in follow-up commit 8588fd73a without amending."],"reasoning_effort":"high","created_at":"2026-08-08T20:25:33.199469-07:00","updated_at":"2026-08-08T20:54:03.531644-07:00","completed_at":"2026-08-08T20:54:03.531644-07:00"},
+    {"id":7,"type":"verify","description":"Request spec review","prompt":"Ask the user to review the committed spec and wait for approval or changes.","status":"done","depends_on":[6],"notes":["User reviewed the revised spec and chose to stop here rather than approve it for implementation planning. The spec remains marked as awaiting approval."],"reasoning_effort":"low","created_at":"2026-08-08T20:25:33.199469-07:00","updated_at":"2026-08-08T21:49:49.60272-07:00","completed_at":"2026-08-08T21:49:49.60272-07:00"},
+    {"id":8,"type":"implement","description":"Transition to implementation plan","prompt":"Once the user approves the spec, invoke superpowers:writing-plans and create an implementation plan.","status":"cancelled","depends_on":[7],"notes":["Cancelled at the user's request; no implementation plan will be created."],"reasoning_effort":"high","created_at":"2026-08-08T20:25:33.199469-07:00","updated_at":"2026-08-08T21:49:49.60272-07:00"},
+    {"id":9,"type":"research","description":"Inspect revised spec and code","prompt":"Read the user-revised recoverable tool output spec, inspect its git diff and current relevant implementation/tests, and map exact files, interfaces, and dependencies. Read docs/testing.md before planning test changes.","status":"done","notes":["Read revised spec commit b73b3422c, full spec, docs/testing.md, and current ownership, registry, transcript, jobstore, event, and tool-policy seams."],"reasoning_effort":"high","created_at":"2026-08-08T21:51:14.809925-07:00","updated_at":"2026-08-08T21:56:22.828248-07:00","completed_at":"2026-08-08T21:56:22.828248-07:00"},
+    {"id":10,"type":"implement","description":"Draft implementation plan","prompt":"Write a comprehensive TDD implementation plan with exact files, interfaces, code snippets, test commands, expected failures/passes, and named-path commits. Save it to docs/superpowers/plans/2026-08-09-recoverable-tool-output.md.","status":"done","depends_on":[9],"notes":["Drafted docs/superpowers/plans/2026-08-09-recoverable-tool-output.md with 8 TDD tasks, exact files/interfaces, commands, expected results, and named-path commits."],"reasoning_effort":"high","created_at":"2026-08-08T21:51:14.809925-07:00","updated_at":"2026-08-08T21:56:22.828248-07:00","completed_at":"2026-08-08T21:56:22.828248-07:00"},
+    {"id":11,"type":"verify","description":"Self-review plan","prompt":"Review the plan against every spec requirement, scan for placeholders, verify type/signature consistency and task ordering, and fix all gaps inline.","status":"done","depends_on":[10],"notes":["Beginning spec coverage, placeholder, and type consistency review.","Completed spec coverage, placeholder, and type consistency review. Applied fixes for fuzz-file assumptions, policy dependency flow, and placeholder-free final gates."],"reasoning_effort":"high","created_at":"2026-08-08T21:51:14.809927-07:00","updated_at":"2026-08-08T22:03:29.907864-07:00","completed_at":"2026-08-08T22:03:29.907864-07:00"},
+    {"id":12,"type":"verify","description":"Deliver plan options","prompt":"Report the saved plan and offer subagent-driven or inline execution options without starting implementation.","status":"done","depends_on":[11],"notes":["User selected subagent-driven development; implementation plan handed off for execution in isolated worktree recoverable-tool-output."],"reasoning_effort":"low","created_at":"2026-08-08T21:51:14.809931-07:00","updated_at":"2026-08-08T22:03:29.907864-07:00","completed_at":"2026-08-08T22:03:29.907864-07:00"},
+    {"id":13,"type":"implement","description":"Implement artifact store","prompt":"Execute Task 1 in docs/superpowers/plans/2026-08-09-recoverable-tool-output.md using subagent-driven development: process-lifetime artifact storage, tests first, task review, and named-path commit. Record evidence and commit hash.","status":"done","notes":["Implemented secure artifact store in commits 9853cf561 and 162d0d41e. Focused and race tests passed. Initial review found 3 Important gaps; fix round 1 addressed exact 0600 under restrictive umask, exact ref/post-close coverage, and concurrent Open/Close coverage. Scoped re-review found all addressed and no new breakage."],"reasoning_effort":"high","created_at":"2026-08-08T22:03:48.707842-07:00","updated_at":"2026-08-09T10:53:57.291059-07:00","completed_at":"2026-08-09T10:53:57.291059-07:00"},
+    {"id":14,"type":"implement","description":"Add recovery metadata","prompt":"Execute Task 2 from the implementation plan: registry-level RecoverableOutput metadata, tests first, task review, and named-path commit. Record evidence and commit hash.","status":"done","depends_on":[13],"notes":["Implemented recovery metadata in commits a7ec95e73, 6387a1cad, and 718c416bd. Focused tests passed. Review fix rounds addressed marker wording and the stale/unchecked head-count collision fixture; final scoped re-review found no Critical/Important regressions."],"reasoning_effort":"high","created_at":"2026-08-08T22:03:48.707845-07:00","updated_at":"2026-08-09T11:17:05.315295-07:00","completed_at":"2026-08-09T11:17:05.315295-07:00"},
+    {"id":15,"type":"implement","description":"Wire store ownership","prompt":"Execute Task 3 from the implementation plan: process/tree ownership and cleanup wiring, tests first, task review, and named-path commit. Record evidence and commit hash.","status":"done","depends_on":[14],"notes":["Implemented one artifact store per root session tree with descendant/restored-delegate inheritance and cleanup in commits 4a86a5100, 9431fab0c, and 921e1b456. Focused lifecycle/restore tests passed. Two review fix rounds strengthened mutation-sensitive coverage for production child wiring, descendant-before-store shutdown, constructor failures, restored inheritance, and rejection/collision candidate discard. Final scoped re-review found both remaining findings addressed and no new Critical/Important breakage."],"reasoning_effort":"high","created_at":"2026-08-08T22:03:48.707849-07:00","updated_at":"2026-08-09T12:02:22.237482-07:00","completed_at":"2026-08-09T12:02:22.237482-07:00"},
+    {"id":16,"type":"implement","description":"Capture truncated output","prompt":"Execute Task 4 from the implementation plan: common completion-seam capture and event reference, tests first, task review, and named-path commit. Record evidence and commit hash.","status":"done","depends_on":[15],"notes":["Implemented common-seam retention and `TOOL_CALL_END.output_ref` in commits b7e7c1a9b and f412c78a9. Focused agent/events tests passed. Review fix round removed raw retention-error leakage and added mutation-sensitive exactly-one failed Put assertions. Final re-review approved with no Critical/Important findings. Deferred Minor: untruncated event wiring lacks end-to-end assertion."],"reasoning_effort":"high","created_at":"2026-08-08T22:03:48.707859-07:00","updated_at":"2026-08-09T12:25:20.925719-07:00","completed_at":"2026-08-09T12:25:20.925719-07:00"},
+    {"id":17,"type":"implement","description":"Add raw job reads","prompt":"Execute Task 5 from the implementation plan: job raw windowing/search, tests first, task review, and named-path commit. Record evidence and commit hash.","status":"done","depends_on":[16],"notes":["Implemented fixed 16 KiB pages, bounded retained-output search, and stable lifetime-offset job windows in commits 537cd2e50 and 77863dace. Required focused and race gates passed. Review fix round corrected same-offset serialized-cap loops and running partial-prefix deferral. Final re-review approved with no Critical/Important findings. Five test-coverage Minors are deferred in the ledger."],"reasoning_effort":"high","created_at":"2026-08-08T22:03:48.707859-07:00","updated_at":"2026-08-09T13:02:17.288919-07:00","completed_at":"2026-08-09T13:02:17.288919-07:00"},
+    {"id":18,"type":"implement","description":"Extend transcript API","prompt":"Execute Task 6 from the implementation plan: read_transcript job/artifact API and errors, tests first, task review, and named-path commit. Record evidence and commit hash.","status":"in_progress","depends_on":[17],"reasoning_effort":"high","created_at":"2026-08-08T22:03:48.707862-07:00","updated_at":"2026-08-09T13:02:17.290292-07:00"},
+    {"id":19,"type":"implement","description":"Enforce recovery policy","prompt":"Execute Task 7 from the implementation plan: output-recovery policy and end-to-end coverage, tests first, task review, and named-path commit. Record evidence and commit hash.","status":"open","depends_on":[18],"reasoning_effort":"high","created_at":"2026-08-08T22:03:48.707862-07:00","updated_at":"2026-08-08T22:03:48.707862-07:00"},
+    {"id":20,"type":"verify","description":"Run final verification","prompt":"Execute Task 8 from the implementation plan: all final gates, final code review, clean status verification, and documentation of results. Fix any issue at its root before completion.","status":"open","depends_on":[19],"reasoning_effort":"high","created_at":"2026-08-08T22:03:48.707862-07:00","updated_at":"2026-08-08T22:03:48.707862-07:00"}
+  ]
+}</script>
+<script>
+const DATA = JSON.parse(document.getElementById("task-data").textContent);
+const TASKS = DATA.tasks;
+const NOW = new Date("2026-08-09T13:02:17-07:00");
+
+const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const GLYPH = { open: "○", in_progress: "●", done: "✓", cancelled: "✕" };
+const WORD = { open: "open", in_progress: "in progress", done: "done", cancelled: "cancelled" };
+
+function rel(iso) {
+  const t = new Date(iso);
+  const mins = Math.round((NOW - t) / 60000);
+  if (mins < 1) return "now";
+  if (mins < 60) return mins + "m ago";
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return hrs + "h ago";
+  return Math.round(hrs / 24) + "d ago";
+}
+function abs(iso) {
+  return new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+}
+function lastNote(t) { return t.notes && t.notes.length ? t.notes[t.notes.length - 1] : null; }
+function excerpt(s, n = 90) { return s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s; }
+function glyphCls(t) { return t.status === "in_progress" ? "glyph alive" : "glyph " + t.status; }
+function deps(t) { return (t.depends_on || []).map((d) => "#" + d).join(" "); }
+
+function timesLine(t, cls) {
+  const parts = [`<span>created <b>${abs(t.created_at)}</b></span>`];
+  if (t.updated_at !== t.created_at) parts.push(`<span>updated <b title="${abs(t.updated_at)}">${rel(t.updated_at)}</b></span>`);
+  if (t.completed_at) parts.push(`<span>completed <b title="${abs(t.completed_at)}">${rel(t.completed_at)}</b></span>`);
+  return `<div class="${cls}">${parts.join("")}</div>`;
+}
+function metaStrip(t) {
+  const bits = [`<span class="k">type</span><span class="v">${esc(t.type)}</span>`];
+  if (t.reasoning_effort) bits.push(`<span class="k">reasoning</span><span class="v">${t.reasoning_effort}</span>`);
+  if (t.depends_on && t.depends_on.length) bits.push(`<span class="k">depends</span><span class="v">${deps(t)}</span>`);
+  return `<div class="a-meta">${bits.join("")}</div>`;
+}
+function notesTimeline(t, headCls, listCls, noteCls) {
+  if (!t.notes || !t.notes.length) return `<div class="a-none">No updates yet.</div>`;
+  const items = t.notes.map((n, i) =>
+    `<div class="${noteCls}${i === t.notes.length - 1 ? " latest" : ""}">${esc(n)}</div>`).join("");
+  return `<div><div class="${headCls}">Updates · ${t.notes.length}</div><div class="${listCls}">${items}</div></div>`;
+}
+function promptFold(t, cls) {
+  if (!t.prompt || !t.prompt.trim()) return "";
+  return `<details class="${cls}"><summary><span class="chev">▸</span>Prompt</summary><pre class="promptbox">${esc(t.prompt)}</pre></details>`;
+}
+function panelHead() {
+  const done = TASKS.filter((t) => t.status === "done").length;
+  const pct = Math.round((done / TASKS.length) * 100);
+  return `<div class="panel-head"><h3>Tasks</h3><div class="meter"><i style="width:${pct}%"></i></div><span class="count">${done}/${TASKS.length} done</span></div>`;
+}
+
+/* --- current baseline ------------------------------------------------ */
+function curTask(t, open) {
+  const fields = [
+    ["status", t.status], ["type", t.type],
+    t.depends_on && t.depends_on.length ? ["depends on", deps(t)] : null,
+    t.reasoning_effort ? ["reasoning", t.reasoning_effort] : null,
+    t.prompt.trim() ? ["prompt", `<pre class="promptbox">${esc(t.prompt)}</pre>`] : null,
+    t.notes && t.notes.length ? ["notes", `<ol>${t.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ol>`] : null,
+  ].filter(Boolean);
+  return `<li><details class="task"${open ? " open" : ""}>
+    <summary><span class="chev">▸</span><span class="${glyphCls(t)}">${GLYPH[t.status]}</span><span class="cur-desc">${esc(t.description)}</span></summary>
+    <div class="cur-body"><dl class="cur-dl">${fields.map(([k, v]) =>
+      `<div class="row"><dt>${k}</dt><dd>${v.startsWith("<") ? v : esc(v)}</dd></div>`).join("")}</dl></div>
+  </details></li>`;
+}
+document.getElementById("frame-current").innerHTML =
+  panelHead() + `<ul class="cur-list">${TASKS.map((t) => curTask(t, t.id === 17 || t.id === 18)).join("")}</ul>`;
+
+/* --- variant A -------------------------------------------------------- */
+function aTask(t, open) {
+  const note = lastNote(t);
+  const struck = t.status === "cancelled" ? " struck" : "";
+  const latest = note
+    ? `<span class="a-latest"><span class="k">latest</span><span class="txt" title="${esc(note).replace(/"/g, "&quot;")}">${esc(excerpt(note))}</span></span>` : "";
+  return `<li><details class="task a-row"${open ? " open" : ""}>
+    <summary><span class="chev">▸</span><span class="${glyphCls(t)}">${GLYPH[t.status]}</span>
+      <span class="a-main"><span class="a-line1"><span class="a-desc${struck}">${esc(t.description)}</span>
+      <span class="time" title="updated ${abs(t.updated_at)}">${rel(t.updated_at)}</span></span>${latest}</span></summary>
+    <div class="a-body">
+      ${metaStrip(t)}
+      ${timesLine(t, "a-times")}
+      ${promptFold(t, "a-prompt")}
+      ${notesTimeline(t, "a-notes-head", "a-notes", "a-note")}
+    </div>
+  </details></li>`;
+}
+document.getElementById("frame-a").innerHTML =
+  panelHead() + `<ul class="a-list">${TASKS.map((t) => aTask(t, t.id === 17 || t.id === 18)).join("")}</ul>`;
+
+/* --- variant B -------------------------------------------------------- */
+function bTask(t, open) {
+  const struck = t.status === "cancelled" ? " struck" : "";
+  const rows = [
+    ["status", `${GLYPH[t.status]} ${WORD[t.status]}`, 0],
+    ["type", esc(t.type), 1],
+    t.depends_on && t.depends_on.length ? ["depends", deps(t), 1] : null,
+    t.reasoning_effort ? ["reasoning", t.reasoning_effort, 1] : null,
+    ["created", abs(t.created_at), 1],
+    t.completed_at ? ["completed", `${rel(t.completed_at)} · ${abs(t.completed_at)}`, 1] : ["updated", `${rel(t.updated_at)} · ${abs(t.updated_at)}`, 1],
+    t.prompt.trim() ? ["prompt", `<pre class="promptbox">${esc(t.prompt)}</pre>`, 2] : null,
+    t.notes && t.notes.length ? [`updates · ${t.notes.length}`, `<ul class="b-notes">${t.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>`, 2] : null,
+  ].filter(Boolean);
+  return `<li><details class="task b-row"${open ? " open" : ""}>
+    <summary><span class="chev">▸</span><span class="${glyphCls(t)}">${GLYPH[t.status]}</span>
+      <span class="b-desc${struck}">${esc(t.description)}</span>
+      ${t.notes && t.notes.length ? `<span class="b-hasnote" title="${t.notes.length} update(s)">¶</span>` : ""}
+      <span class="time" title="updated ${abs(t.updated_at)}">${rel(t.updated_at)}</span></summary>
+    <div class="b-body"><div class="b-grid">${rows.map(([k, v, mode]) =>
+      `<span class="k">${k}</span><span class="v${mode === 1 ? " mono" : ""}">${mode === 0 ? v : mode === 2 ? v : esc(String(v)).startsWith("#") ? v : v}</span>`).join("")}</div></div>
+  </details></li>`;
+}
+document.getElementById("frame-b").innerHTML =
+  panelHead() + `<ul class="b-list">${TASKS.map((t) => bTask(t, t.id === 17 || t.id === 18)).join("")}</ul>`;
+
+/* --- variant C -------------------------------------------------------- */
+function cTask(t, open, dim) {
+  const note = lastNote(t);
+  const struck = t.status === "cancelled" ? " struck" : "";
+  const latest = !dim && note
+    ? `<span class="c-latest" title="${esc(note).replace(/"/g, "&quot;")}">${esc(excerpt(note))}</span>` : "";
+  return `<li><details class="task c-row"${open ? " open" : ""}>
+    <summary><span class="chev">▸</span><span class="${glyphCls(t)}">${GLYPH[t.status]}</span>
+      <span class="c-main"><span class="c-line1"><span class="c-desc${struck}">${esc(t.description)}</span>
+      <span class="time" title="updated ${abs(t.updated_at)}">${rel(t.updated_at)}</span></span>${latest}</span></summary>
+    <div class="c-body">
+      ${metaStrip(t)}
+      ${timesLine(t, "a-times")}
+      ${promptFold(t, "a-prompt")}
+      ${notesTimeline(t, "a-notes-head", "a-notes", "a-note")}
+    </div>
+  </details></li>`;
+}
+const live = TASKS.filter((t) => t.status === "in_progress");
+const openT = TASKS.filter((t) => t.status === "open");
+const settled = TASKS.filter((t) => t.status === "done" || t.status === "cancelled");
+document.getElementById("frame-c").innerHTML =
+  panelHead() +
+  `<div class="c-group"><div class="c-group-head">In progress <span class="n">${live.length}</span></div>
+     <ul class="c-list">${live.map((t) => cTask(t, true, false)).join("")}</ul></div>` +
+  `<div class="c-group"><div class="c-group-head">Open <span class="n">${openT.length}</span></div>
+     <ul class="c-list">${openT.map((t) => cTask(t, false, false)).join("")}</ul></div>` +
+  `<details class="c-group c-done-toggle"><summary><span class="chev">▸</span>Done · settled <span class="n">${settled.length}</span></summary>
+     <ul class="c-list dim">${settled.map((t) => cTask(t, t.id === 17, true)).join("")}</ul></details>`;
+
+/* --- FINAL: live rows + focus groups + inline prompt disclosure ------- */
+function promptInline(t, open) {
+  if (!t.prompt || !t.prompt.trim()) return "";
+  const oneLine = t.prompt.replace(/\s+/g, " ").trim();
+  return `<details class="pm-prompt"${open ? " open" : ""}>
+    <summary><span class="pm-label">Prompt</span><span class="chev">▸</span><span class="pm-preview">${esc(oneLine)}</span></summary>
+    <pre class="promptbox">${esc(t.prompt)}</pre>
+  </details>`;
+}
+function fTask(t, open, dim, promptOpen) {
+  const note = lastNote(t);
+  const struck = t.status === "cancelled" ? " struck" : "";
+  const latest = !dim && note
+    ? `<span class="c-latest" title="${esc(note).replace(/"/g, "&quot;")}">${esc(excerpt(note))}</span>` : "";
+  return `<li><details class="task c-row"${open ? " open" : ""}>
+    <summary><span class="chev">▸</span><span class="${glyphCls(t)}">${GLYPH[t.status]}</span>
+      <span class="c-main"><span class="c-line1"><span class="c-desc${struck}">${esc(t.description)}</span>
+      <span class="time" title="updated ${abs(t.updated_at)}">${rel(t.updated_at)}</span></span>${latest}</span></summary>
+    <div class="c-body">
+      ${metaStrip(t)}
+      ${timesLine(t, "a-times")}
+      ${promptInline(t, promptOpen)}
+      ${notesTimeline(t, "a-notes-head", "a-notes", "a-note")}
+    </div>
+  </details></li>`;
+}
+document.getElementById("frame-final").innerHTML =
+  panelHead() +
+  `<div class="c-group"><div class="c-group-head">In progress <span class="n">${live.length}</span></div>
+     <ul class="c-list">${live.map((t) => fTask(t, true, false, false)).join("")}</ul></div>` +
+  `<div class="c-group"><div class="c-group-head">Open <span class="n">${openT.length}</span></div>
+     <ul class="c-list">${openT.map((t) => fTask(t, false, false, false)).join("")}</ul></div>` +
+  `<details class="c-group c-done-toggle" open><summary><span class="chev">▸</span>Done · settled <span class="n">${settled.length}</span></summary>
+     <ul class="c-list dim">${settled.map((t) => fTask(t, t.id === 17, true, t.id === 17)).join("")}</ul></details>`;
+
+/* --- theme toggle ----------------------------------------------------- */
+const btn = document.getElementById("themeToggle");
+btn.addEventListener("click", () => {
+  const html = document.documentElement;
+  const next = html.getAttribute("data-theme") === "dark" ? "light" : "dark";
+  html.setAttribute("data-theme", next);
+  btn.textContent = next === "dark" ? "Switch to light theme" : "Switch to dark theme";
+});
+
+/* --- single-variant mode: index.html#a shows only variant A ---------- */
+const solo = location.hash.replace("#", "");
+if (solo) {
+  document.querySelector(".page-head").style.display = "none";
+  document.querySelectorAll(".variant").forEach((v) => {
+    if (v.id !== "v-" + solo) v.style.display = "none";
+  });
+}
+</script>
+</body>
+</html>

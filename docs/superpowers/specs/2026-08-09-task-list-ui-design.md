@@ -14,7 +14,7 @@ The tasks panel wastes the space it occupies and hides the information readers w
 
 ## Decisions (from mockup review, 2026-08-09)
 
-The user reviewed four mockups rendered with a real 20-task session list (`mockups-draft/index.html`, session `local:0343wE3LB14m5xoC2CBMiD`) and chose:
+The user reviewed four mockups rendered with a real 20-task session list ([interactive mockup](2026-08-09-task-list-ui-mockup.html), [final screenshot](2026-08-09-task-list-ui-mockup.png), session `local:0343wE3LB14m5xoC2CBMiD`) and chose:
 
 1. **Live rows** (variant A): two-line collapsed rows that show the latest update inline.
 2. **Focus groups** (variant C): group rows by status; collapse settled tasks behind one line.
