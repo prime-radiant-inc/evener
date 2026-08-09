@@ -842,7 +842,7 @@ function childThreadRead(params: unknown, childStatus: string) {
   };
 }
 
-test("a delegate card body shows the Mandate, a live Activity feed, and the Summary", async () => {
+test("a delegate card body shows the Prompt, a live Activity feed, and the Summary", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (params) => childThreadRead(params, "active"));
   connectionStore.getState().connect(fake);
@@ -856,8 +856,10 @@ test("a delegate card body shows the Mandate, a live Activity feed, and the Summ
   });
   render(<Body item={running} live={false} />);
 
-  // Mandate is the delegation task.
+  // Prompt is the delegation task, labeled "Prompt" (not "Mandate").
   const mandate = await screen.findByTestId("subagent-mandate");
+  expect(within(mandate).getByText("Prompt")).toBeTruthy();
+  expect(within(mandate).queryByText("Mandate")).toBeNull();
   expect(within(mandate).getByText("audit the reducer")).toBeTruthy();
 
   // Activity feed maps the child's tool-call description/purpose fields.
@@ -932,7 +934,7 @@ test("mhcf: the Activity feed caps to the 5 most recent steps, not the first 5",
   for (const n of [1, 2, 14, 15]) expect(within(activity).queryByText(`step ${n}`)).toBeNull();
 });
 
-test("mhcf: the capped window renders newest-first, the live step is still (correctly) emphasized, and each <li> keeps its true ordinal", async () => {
+test("mhcf: the capped window renders chronologically (most recent last), the live step is still (correctly) emphasized, and each <li> keeps its true ordinal", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (params) => manyStepsThreadRead(params, 20));
   connectionStore.getState().connect(fake);
@@ -949,20 +951,128 @@ test("mhcf: the capped window renders newest-first, the live step is still (corr
   const activity = await screen.findByTestId("subagent-activity");
   const items = within(activity).getAllByRole("listitem") as HTMLLIElement[];
 
-  // Newest-first: step 20 (the true latest) leads, counting down to step 16 -
-  // "reachable without scrolling" regardless of section height (mhcf).
-  expect(items.map((li) => li.textContent)).toEqual(["step 20", "step 19", "step 18", "step 17", "step 16"]);
+  // Chronological: step 16 leads, counting up to step 20 (the true latest)
+  // last - the feed reads the way the child's own transcript does, top to
+  // bottom, with the live step at the natural reading end.
+  expect(items.map((li) => li.textContent)).toEqual(["step 16", "step 17", "step 18", "step 19", "step 20"]);
 
   // The live-step emphasis must land on the true latest step (step 20) by
   // CONTENT, not merely on whichever <li> a stale idx===length-1 formula
-  // (written against the old oldest-first, uncapped array) would still hit.
-  expect(items[0]!.classList.contains(styles.activityLatest)).toBe(true);
-  for (const li of items.slice(1)) expect(li.classList.contains(styles.activityLatest)).toBe(false);
+  // (written against the old uncapped array) would still hit.
+  expect(items[4]!.classList.contains(styles.activityLatest)).toBe(true);
+  for (const li of items.slice(0, 4)) expect(li.classList.contains(styles.activityLatest)).toBe(false);
 
-  // list-style:decimal must read the TRUE step numbers (20 down to 16), not
-  // "1." through "5." just because these are the first five <li>s rendered -
+  // list-style:decimal must read the TRUE step numbers (16 up to 20), not
+  // "1." through "5." just because these are the five <li>s rendered -
   // that would understate how much the child has actually done.
-  expect(items.map((li) => li.value)).toEqual([20, 19, 18, 17, 16]);
+  expect(items.map((li) => li.value)).toEqual([16, 17, 18, 19, 20]);
+});
+
+// A timing annotation is not an action: round_timings items carry a purpose-
+// like description ("Round timings") that would otherwise flood the feed -
+// one per round - and crowd real steps out of the five-slot window. They are
+// elided by eventKind, and the remaining steps keep contiguous true ordinals
+// (the elided items never counted as steps at all).
+test("the Activity feed elides round_timings items and ordinals count only real steps", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => {
+    const base = manyStepsThreadRead(params, 6);
+    const includeTurns = (params as { includeTurns: boolean }).includeTurns;
+    if (includeTurns) {
+      // Intersperse round_timings items the way the projector emits them:
+      // a systemMessage with the round_timings eventKind and a "Round
+      // timings" description (internal/appprojector/appwire_projection.go's
+      // EventRoundTimings case). The fixture's items array is typed off the
+      // tool-call shape manyStepsThreadRead pushes, so widen it for these
+      // systemMessage entries.
+      (base.thread.turns[0]!.items as object[]).splice(
+        2,
+        0,
+        {
+          id: "item_rt_1",
+          turnId: "turn_c1",
+          type: "systemMessage",
+          eventKind: "round_timings",
+          description: "Round timings",
+          text: "Round 1 total=1.5s llm=1.2s",
+          status: "completed",
+        },
+        {
+          id: "item_rt_2",
+          turnId: "turn_c1",
+          type: "systemMessage",
+          eventKind: "round_timings",
+          description: "Round timings",
+          text: "Round 2 total=1.4s llm=1.1s",
+          status: "completed",
+        },
+      );
+    }
+    return base;
+  });
+  connectionStore.getState().connect(fake);
+
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_rt",
+    callId: "call_rt",
+    argumentsJSON: JSON.stringify({ task: "timing audit" }),
+    output: JSON.stringify({ job_id: "job_rt", status: "running", transcript_ref: "ref_rt_child" }),
+  });
+  render(<Body item={running} live={false} />);
+
+  const activity = await screen.findByTestId("subagent-activity");
+  expect(within(activity).queryByText("Round timings")).toBeNull();
+  const items = within(activity).getAllByRole("listitem") as HTMLLIElement[];
+  // Six real steps, capped to the five most recent (2-6); the two
+  // round_timings items never entered the count, so ordinals run 2..6, not
+  // 4..8.
+  expect(items.map((li) => li.textContent)).toEqual(["step 2", "step 3", "step 4", "step 5", "step 6"]);
+  expect(items.map((li) => li.value)).toEqual([2, 3, 4, 5, 6]);
+});
+
+// The Prompt renders as markdown with only its FIRST line visible; the rest
+// folds behind a disclosure so a long delegation brief doesn't push the
+// Activity feed and Summary off the card.
+test("the Prompt shows its first line as markdown and folds the rest behind a disclosure", async () => {
+  const task = "**Inspect** the parser\nand report the `task` field.\nKeep the report concise.";
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_prompt_fold",
+    callId: "call_prompt_fold",
+    argumentsJSON: JSON.stringify({ task }),
+    output: JSON.stringify({ job_id: "job_pf", status: "running" }),
+  });
+  render(<Body item={running} live={false} />);
+
+  const mandate = await screen.findByTestId("subagent-mandate");
+  // First line is rendered AS markdown: **Inspect** became a <strong>.
+  const strong = mandate.querySelector("strong");
+  expect(strong?.textContent).toBe("Inspect");
+  // The remaining lines are absent until the disclosure opens.
+  expect(within(mandate).queryByText(/report the/)).toBeNull();
+  expect(within(mandate).queryByText(/Keep the report concise/)).toBeNull();
+
+  const user = userEvent.setup();
+  await user.click(within(mandate).getByText("Show more"));
+  expect(within(mandate).getByText(/report the/)).toBeTruthy();
+  expect(within(mandate).getByText(/Keep the report concise/)).toBeTruthy();
+});
+
+test("a single-line Prompt renders in full with no disclosure", async () => {
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_prompt_single",
+    callId: "call_prompt_single",
+    argumentsJSON: JSON.stringify({ task: "audit the reducer" }),
+    output: JSON.stringify({ job_id: "job_ps", status: "running" }),
+  });
+  render(<Body item={running} live={false} />);
+
+  const mandate = await screen.findByTestId("subagent-mandate");
+  expect(within(mandate).getByText("audit the reducer")).toBeTruthy();
+  expect(within(mandate).queryByText("Show more")).toBeNull();
+  expect(mandate.querySelectorAll("details")).toHaveLength(0);
 });
 
 test("the collapsed pill reads the LIVE watched status, not the frozen tool-output value", async () => {
@@ -1197,14 +1307,14 @@ test("a multi-row aggregate updates its tally from the watched live kind", async
   expect(failedRow).toBeTruthy();
 });
 
-// --- 7f7c: the Mandate must not be clipped ----------------------------------
+// --- 7f7c: the Prompt must not be clipped -----------------------------------
 //
 // The one-line row summary clips the task to TASK_CLIP (80 chars) - correct
 // for a single line - but rowFromDelegateItem fed that SAME clipped string
-// into the Mandate section, so even the "read more" affordance never showed
-// the rest of the delegated prompt. The Mandate is the deliberate expanded
+// into the Prompt section, so even the "read more" affordance never showed
+// the rest of the delegated prompt. The Prompt is the deliberate expanded
 // view; it must carry the full, untruncated task text.
-test("7f7c: the Mandate section shows the full, unclipped task text past the 80-char summary clip", async () => {
+test("7f7c: the Prompt section shows the full, unclipped task text past the 80-char summary clip", async () => {
   const Body = toolRendererFor("delegate").body!;
   const longTask =
     "Please test delegation by inspecting the current working directory. Report the directory contents without changing any files.";

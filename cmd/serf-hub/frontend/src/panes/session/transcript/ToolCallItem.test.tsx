@@ -915,7 +915,7 @@ test("task-only delegate purpose previews preserve an emoji at the Unicode clipp
   expect(within(asciiTool!).getByTestId("tool-row-purpose").textContent).toBe(exactAsciiTask);
 });
 
-test("task-only delegates show a bounded purpose preview while keeping the full Mandate in one disclosure", () => {
+test("task-only delegates show a bounded purpose preview and fold the multi-line Prompt behind one disclosure", () => {
   const task =
     "**Inspect** the parser\n\nand report the `task` field. Keep the full mandate available for the reader. This suffix makes the preview bounded and honest.";
   const { container } = render(
@@ -940,9 +940,13 @@ test("task-only delegates show a bounded purpose preview while keeping the full 
   );
   expect(purpose.textContent).not.toBe(task);
   const mandate = screen.getByTestId("subagent-mandate");
-  expect(mandate.lastElementChild?.textContent).toBe(task);
-  expect(tool.querySelectorAll("details > summary")).toHaveLength(1);
-  expect(module.querySelectorAll("details > summary")).toHaveLength(0);
+  // The Prompt renders as markdown, first line visible: **Inspect** -> <strong>.
+  expect(mandate.querySelector("strong")?.textContent).toBe("Inspect");
+  // The remaining lines sit behind the module's one disclosure, unrendered
+  // until it opens.
+  expect(within(mandate).queryByText(/Keep the full mandate available/)).toBeNull();
+  expect(tool.querySelectorAll("details > summary")).toHaveLength(2); // the row's own + the Prompt fold
+  expect(module.querySelectorAll("details > summary")).toHaveLength(1);
   expect(within(tool).getByTestId("tool-row-status").querySelector('[role="img"]')).toBeTruthy();
 
   const openTranscript = within(module).getByRole("button", { name: "Open transcript" });

@@ -32,7 +32,9 @@ import { useEffect, useLayoutEffect, useState } from "react";
 import type { ItemModel } from "../../../../protocol/model";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, type CadenceState, StatusDot } from "../../../../widgets";
+import { Disclosure } from "../../../../widgets/disclosure";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { Markdown } from "../../../../widgets/markdown";
 import { cadenceStateForStatus } from "../../liveness";
 import { OpenTranscriptButton } from "../openTranscript";
 import { statedPurposeOf } from "../ToolRow";
@@ -173,9 +175,11 @@ function durationLabel(row: SubagentRow): string | undefined {
 }
 
 // ChildActivityBody is the expanded card's three-layer body (qb8e, tv5k,
-// §4.1/§4.2): Mandate (the delegation task), a live Activity feed (the child's
-// tool-call purpose/description fields, capped and ordered per mhcf below),
-// and Summary (the child's last agentMessage). It opens its OWN rich watch
+// §4.1/§4.2): Prompt (the delegation task, rendered as markdown with the
+// first line visible and the rest behind a disclosure), a live Activity feed
+// (the child's tool-call purpose/description fields, capped and ordered per
+// mhcf below), and Summary (the child's last agentMessage). It opens its OWN
+// rich watch
 // (Task 9's { includeTurns: true } upgrade) so the Activity feed has the
 // child's turn history, and reads that turn content back out of
 // watchedThreads. Mounted only while the card is expanded, so the row-dot's
@@ -188,18 +192,19 @@ function durationLabel(row: SubagentRow): string | undefined {
 //
 // mhcf: the feed used to render EVERY purpose-bearing item since the child's
 // first turn, oldest-first, unbounded - a long-running child produces dozens
-// or hundreds of lines, and the live-step emphasis (idx === length-1) sat at
-// the BOTTOM of that list: the right idea, at the least reachable position in
-// it. Fixed two ways: (1) capped to RECENT_ACTIVITY_CAP, since a reader doesn't
+// or hundreds of lines. Capped to RECENT_ACTIVITY_CAP, since a reader doesn't
 // need the full inline history when "Open transcript" already exists for
-// exactly that (7f7c's same reasoning for the Mandate's full task text vs. the
-// row's clipped one); (2) rendered newest-first within that window, so the
-// live step is reachable with zero scrolling regardless of section height -
-// oldest-first would still land it at the visual bottom, just of a shorter
-// list. Each <li>'s `value` is its TRUE 1-based ordinal into the full history,
-// not its position in the truncated/reversed window, so list-style:decimal
-// reads e.g. "43." rather than relabeling the 43rd step "1." merely because it
-// renders first - which would understate how much the child has actually done.
+// exactly that (7f7c's same reasoning for the Prompt's full task text vs. the
+// row's clipped one). Within that window the order is chronological - oldest
+// of the five first, the most recent LAST - so the feed reads as the child's
+// own transcript does, top to bottom, and the live-step emphasis lands at the
+// natural reading end. Each <li>'s `value` is its TRUE 1-based ordinal into
+// the full history, not its position in the truncated window, so
+// list-style:decimal reads e.g. "16." through "20." rather than relabeling
+// the 16th step "1." merely because it renders first - which would understate
+// how much the child has actually done. round_timings items are elided
+// outright: a timing annotation is not an action, and a chatty child's feed
+// otherwise drowns real steps in them (every round produces one).
 // JobDetailSection surfaces the exhaustion/resumable detail a
 // serf/job/finished notification carries that no other UI shows (dr7e) -
 // reason is already visible in the collapsed one-liner via row.resultPreview/
@@ -256,30 +261,48 @@ function ChildActivityBody({
   // uses (ToolRow.tsx's statedPurposeOf) - the PRESENTATION differs deliberately
   // (a numbered feed of a child's steps here, a leading line on the row there),
   // but a whitespace-only description must not be a step in one and nothing in
-  // the other.
+  // the other. round_timings items are excluded by eventKind (not by matching
+  // the "Round timings" description text): the kind is the stable typed
+  // discriminator, and a timing annotation is not an action.
   const activity = items.flatMap((it) => {
+    if (it.eventKind === "round_timings") return [];
     const purpose = statedPurposeOf(it);
     return purpose === undefined ? [] : [{ id: it.id, purpose }];
   });
-  // The RECENT_ACTIVITY_CAP most recent items, newest-first, each keeping its
-  // TRUE 1-based ordinal into the full (oldest-first) `activity` array - see
-  // this function's own header comment for why both the cap and the reversal
-  // exist, and why the ordinal travels with the item rather than being
-  // re-derived from its position in this windowed/reversed copy.
+  // The RECENT_ACTIVITY_CAP most recent items in chronological order (most
+  // recent LAST), each keeping its TRUE 1-based ordinal into the full
+  // (oldest-first) `activity` array - see this function's own header comment
+  // for why both the cap and the ordering exist, and why the ordinal travels
+  // with the item rather than being re-derived from its position in this
+  // windowed copy.
   const windowStart = Math.max(0, activity.length - RECENT_ACTIVITY_CAP);
-  const recentActivity = activity
-    .slice(windowStart)
-    .map((it, i) => ({ ...it, ordinal: windowStart + i + 1 }))
-    .reverse();
+  const recentActivity = activity.slice(windowStart).map((it, i) => ({ ...it, ordinal: windowStart + i + 1 }));
   const summaryText = items.filter((it) => it.type === "agentMessage").at(-1)?.text;
   const childRunning = model ? rowKindFromChildStatus(model.status.type) === "running" : false;
+
+  // The Prompt shows its first line as markdown; anything past it folds behind
+  // a disclosure (the same Markdown+Disclosure pattern ActivityRowDetail uses
+  // for a delegate's mandate in the activity panel), so a long delegation
+  // brief doesn't push the Activity feed and Summary off the card. The
+  // disclosure id is scoped to this row so open/closed state survives remount
+  // (disclosureStore) without leaking across rows, turns, or sessions.
+  const promptNewline = row.task.indexOf("\n");
+  const promptFirstLine = promptNewline === -1 ? row.task : row.task.slice(0, promptNewline);
+  const promptRest = promptNewline === -1 ? "" : row.task.slice(promptNewline + 1).trim();
 
   const details = (
     <>
       {showMandate && (
         <section className={CLASS.section} data-testid="subagent-mandate">
-          <div className={CLASS.sectionLabel}>Mandate</div>
-          <div className={CLASS.mandate}>{row.task}</div>
+          <div className={CLASS.sectionLabel}>Prompt</div>
+          <div className={CLASS.mandate}>
+            <Markdown source={promptFirstLine} />
+            {promptRest && (
+              <Disclosure id={`subagent-prompt-${scopeKey}-${row.rowKey}`} summary="Show more">
+                <Markdown source={promptRest} />
+              </Disclosure>
+            )}
+          </div>
         </section>
       )}
       <JobDetailSection row={row} />
@@ -295,8 +318,8 @@ function ChildActivityBody({
           <ol className={CLASS.activity}>
             {recentActivity.map((it) => {
               // "latest" is the chronologically LAST item (ordinal ===
-              // activity.length), independent of where it renders within the
-              // newest-first window above.
+              // activity.length), which now also renders last within the
+              // chronological window above.
               const latest = childRunning && it.ordinal === activity.length;
               return (
                 <li
