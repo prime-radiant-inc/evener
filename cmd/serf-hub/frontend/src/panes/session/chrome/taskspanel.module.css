@@ -4,6 +4,22 @@
   color: var(--ink-mid);
 }
 
+/* The body header repeats the trigger's aggregate so an open panel reads as
+ * a whole: the same done/total the trigger badge shows, plus the meter. */
+.bodyHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.count {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+  white-space: nowrap;
+}
+
 .list {
   display: flex;
   flex-direction: column;
@@ -17,6 +33,91 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   color: var(--ink-hi);
+}
+
+.groupHead {
+  margin: var(--space-3) 0 var(--space-1);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-mid);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.groupCount {
+  color: var(--ink-low);
+}
+
+.settledSummary {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+}
+
+/* The two-line live-row summary: line 1 is glyph + description + time,
+ * line 2 (live rows with notes only) is the latest update excerpt. */
+.summaryMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.summaryLine {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.descDim {
+  composes: description;
+  color: var(--ink-mid);
+}
+
+.descStruck {
+  composes: description;
+  color: var(--ink-low);
+  text-decoration: line-through;
+}
+
+.description,
+.descDim,
+.descStruck {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.time {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  white-space: nowrap;
+  flex: none;
+}
+
+.latest {
+  display: flex;
+  gap: var(--space-2);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+.latestLabel {
+  color: var(--ink-low);
+  flex: none;
+}
+
+.latestText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 /* A refresh that failed with the previous list still on screen. Not an error
@@ -55,60 +156,155 @@
   color: var(--ink-mid);
 }
 
-/* A task row's full-detail <dl>, revealed by its disclosure (TaskRowView).
- * Label/value grammar matches DetailsPanel's own dl (chrome/detailspanel.
- * module.css: .list/.row/.label/.value) - the sibling Sheet already sets
- * this app's convention for "a labeled list of one entity's facts", so the
- * task detail list reuses its tokens rather than inventing new ones. */
-.detailList {
+.expandedBody {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  margin: 0;
+  margin: var(--space-2) 0 var(--space-2);
 }
 
-.detailRow {
+.metaStrip {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  align-items: baseline;
 }
 
-.detailLabel {
+.metaKey {
   font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
+.metaValue {
+  font-family: var(--font-mono);
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
 }
 
-.detailValue {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-ui);
-  color: var(--ink-hi);
+.times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
 }
 
-/* The prompt is the one field long enough to wrap across lines - pre-wrap
- * keeps the daemon's own line breaks instead of collapsing them, and
- * overflow-wrap guards a single unbroken run longer than the sheet is wide
- * (legacy's identical .task-prompt treatment, cmd/serf-hub/assets/style.css
- * pre-deletion). font/size/color repeat .detailValue's rather than
- * inherit: every browser's UA stylesheet declares `pre { font-family:
- * monospace }` directly on the element, which wins the cascade over an
- * ancestor's inherited font-family - SteeringItem's own <pre> body
- * (steeringitem.module.css's .body) hits the same UA rule and states its
- * font explicitly for the same reason. */
-.detailPrompt {
+.promptDetails {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
+
+.promptSummary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  list-style: none;
+  cursor: pointer;
+  color: var(--ink-mid);
+}
+
+.promptSummary::-webkit-details-marker {
+  display: none;
+}
+
+.promptLabel {
+  flex: none;
+}
+
+.promptChevron {
+  display: inline-flex;
+  flex: none;
+  color: var(--ink-low);
+}
+
+.promptChevron[data-open="true"] {
+  transform: rotate(90deg);
+}
+
+.promptPreview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-low);
+}
+
+/* Flatten the Markdown widget's block structure into the single preview
+ * line: paragraphs and headings go inline, margins die, the ellipsis comes
+ * from the parent's nowrap+overflow. */
+.promptPreview p,
+.promptPreview h1,
+.promptPreview h2,
+.promptPreview h3,
+.promptPreview h4,
+.promptPreview ul,
+.promptPreview ol,
+.promptPreview blockquote,
+.promptPreview pre {
+  display: inline;
   margin: 0;
-  font-family: var(--font-mono);
+  padding: 0;
+  border: none;
+  background: none;
+}
+
+.promptBody {
+  margin-top: var(--space-1);
   font-size: var(--font-size-ui);
   color: var(--ink-hi);
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.notesList {
-  margin: 0;
-  padding-left: var(--space-4);
+.notesHead {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+  margin-bottom: var(--space-1);
+}
+
+.noNotes {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
+/* The updates rail: a neutral 2px spine with one dot per note. The LATEST
+ * note's dot is the one --alive reach in this file (see the exact-path
+ * exception in token-contract.test.ts): position, not colour, is already
+ * the signal, so every other marker and all text stay on the ink scale. */
+.notesRail {
+  margin: 0 0 0 3px;
+  padding: 0 0 0 var(--space-3);
+  border-left: 2px solid var(--edge);
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-2);
+  list-style: none;
+}
+
+.note {
+  position: relative;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+  overflow-wrap: anywhere;
+}
+
+.note::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--space-3) - 5px);
+  top: 7px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--surface-1);
+  border: 2px solid var(--ink-low);
+}
+
+.note[data-latest="true"]::before {
+  border-color: var(--alive);
 }

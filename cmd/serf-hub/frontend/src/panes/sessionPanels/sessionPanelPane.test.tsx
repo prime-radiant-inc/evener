@@ -347,7 +347,7 @@ test("retains Tasks rows and disclosure state across a pane remount", async () =
   const first = render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-tasks" focused kind="tasks" />);
   const summary = await screen.findByText("Retain the first task");
   await userEvent.click(summary);
-  expect(screen.getByTestId("task-detail-prompt")).toBeTruthy();
+  expect(screen.getByTestId("task-prompt")).toBeTruthy();
   first.unmount();
 
   expect(tasksPanelStore.getState().entries.get(model.ref)?.rows).toHaveLength(1);
@@ -355,7 +355,7 @@ test("retains Tasks rows and disclosure state across a pane remount", async () =
   render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-tasks-remount" focused kind="tasks" />);
 
   expect(await screen.findByText("Retain the first task")).toBeTruthy();
-  expect(screen.getByTestId("task-detail-prompt")).toBeTruthy();
+  expect(screen.getByTestId("task-prompt")).toBeTruthy();
 });
 
 test("renders retained Activity rows and expanded fold state after a pane remount", () => {

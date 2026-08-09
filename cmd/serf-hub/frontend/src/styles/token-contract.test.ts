@@ -458,12 +458,22 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // suffix and the fold row's "· M failed" count), which the 2026-08-05
 // activity-view redesign spec assigns to the danger hue exactly the way
 // Rail.module.css's failure signals already established.
+//
+// task-list-ui task 8: panes/session/chrome/taskspanel.module.css earns the
+// same exception for the same structural reason - it lives under
+// panes/session/chrome/, not widgets/<name>/, so it can never match
+// WIDGET_STYLESHEET_RE either. Its one semantic reach is --alive on the
+// latest-update dot of the tasks panel's notes rail (docs/superpowers/
+// specs/2026-08-09-task-list-ui-design.md): position already marks the
+// latest note, the hue is a glyph-level accent, and all panel text stays
+// on the ink scale.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "shell/rail/Rail.module.css",
   "panes/session/transcript/tools/subagentmodule.module.css",
   "panes/session/composer/askDock/askdock.module.css",
   "panes/session/transcript/tools/taskcheck.module.css",
   "panes/session/chrome/activitypanel.module.css",
+  "panes/session/chrome/taskspanel.module.css",
 ]);
 
 for (const [path, text] of OTHER_STYLESHEETS) {
@@ -490,6 +500,11 @@ test("the askdock.module.css semantic-var exception is scoped to its exact path,
   // widget-allowlist check, exactly like the dockview-theme.css precedent.
   expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/askdock.module.css")).toBe(false);
   expect(SEMANTIC_PATH_EXCEPTIONS.has("askdock.module.css")).toBe(false);
+});
+
+test("the taskspanel.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("panes/session/chrome/taskspanel.module.css")).toBe(true);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/taskspanel.module.css")).toBe(false);
 });
 
 // --- (c) dark and light blocks declare the same color tokens -----------

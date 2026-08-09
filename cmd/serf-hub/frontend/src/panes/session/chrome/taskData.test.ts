@@ -65,6 +65,9 @@ test("parses the real daemon shape into display-ready rows, camelCasing the snak
       description: "Wire up the status row",
       prompt: "Build the status row per the design doc.",
       status: "done",
+      createdAt: "2026-07-20T10:00:00Z",
+      updatedAt: "2026-07-20T10:05:00Z",
+      completedAt: "2026-07-20T10:05:00Z",
     },
     {
       id: 2,
@@ -75,8 +78,18 @@ test("parses the real daemon shape into display-ready rows, camelCasing the snak
       dependsOn: [1],
       reasoningEffort: "high",
       notes: ["started the menu"],
+      createdAt: "2026-07-20T10:05:00Z",
+      updatedAt: "2026-07-20T10:06:00Z",
     },
-    { id: 3, type: "verify", description: "Gate green", prompt: "", status: "open" },
+    {
+      id: 3,
+      type: "verify",
+      description: "Gate green",
+      prompt: "",
+      status: "open",
+      createdAt: "2026-07-20T10:06:00Z",
+      updatedAt: "2026-07-20T10:06:00Z",
+    },
   ]);
 });
 
@@ -89,6 +102,58 @@ test("preserves the explicit task-start marker from a mutation snapshot", () => 
     { id: 1, started: false },
     { id: 2, started: true },
   ]);
+});
+
+test("carries created_at/updated_at/completed_at onto the row", () => {
+  const rows = parseTaskListData([
+    {
+      id: 1,
+      type: "implement",
+      description: "Wire store ownership",
+      prompt: "",
+      status: "done",
+      created_at: "2026-08-08T22:03:48.707849-07:00",
+      updated_at: "2026-08-09T12:02:22.237482-07:00",
+      completed_at: "2026-08-09T12:02:22.237482-07:00",
+    },
+  ]);
+  expect(rows).toEqual([
+    {
+      id: 1,
+      type: "implement",
+      description: "Wire store ownership",
+      prompt: "",
+      status: "done",
+      createdAt: "2026-08-08T22:03:48.707849-07:00",
+      updatedAt: "2026-08-09T12:02:22.237482-07:00",
+      completedAt: "2026-08-09T12:02:22.237482-07:00",
+    },
+  ]);
+});
+
+test("a row without timestamp fields still parses, with the fields absent", () => {
+  const rows = parseTaskListData([{ id: 1, type: "implement", description: "Gate green", prompt: "", status: "open" }]);
+  expect(rows).toHaveLength(1);
+  expect(rows?.[0]?.createdAt).toBeUndefined();
+  expect(rows?.[0]?.updatedAt).toBeUndefined();
+  expect(rows?.[0]?.completedAt).toBeUndefined();
+});
+
+test("non-string timestamp values are ignored, not carried", () => {
+  const rows = parseTaskListData([
+    {
+      id: 1,
+      type: "implement",
+      description: "Gate green",
+      prompt: "",
+      status: "open",
+      created_at: 42,
+      updated_at: null,
+    },
+  ]);
+  expect(rows).toHaveLength(1);
+  expect(rows?.[0]?.createdAt).toBeUndefined();
+  expect(rows?.[0]?.updatedAt).toBeUndefined();
 });
 
 test("an empty array (a real daemon with zero tasks - TaskStore.View's own always-non-nil empty slice) parses to an empty, non-null array", () => {

@@ -68,17 +68,20 @@
 // neither a live daemon nor a past-index record exists for the thread, so
 // nothing - not Try again, not closing and re-opening, not reloading the
 // whole app - can make the next attempt succeed.
-import { forwardRef, type ReactNode, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { errorText, sessionActionError, sessionActionHeadline } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { EMPTY_TASKS_PANEL_ENTRY, tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
 import { threadsStore } from "../../../stores/threads";
-import { Button, Chip, type ChipTone, EmptyState, Sheet, useToasts } from "../../../widgets";
+import { Button, Chip, type ChipTone, EmptyState, Markdown, Meter, Sheet, useToasts } from "../../../widgets";
 import { Disclosure } from "../../../widgets/disclosure";
+import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 import { parseTaskListData, type TaskRow, type TaskStatus } from "./taskData";
+import { groupTasks } from "./taskGroups";
 import styles from "./taskspanel.module.css";
+import { absoluteTime, relativeTime } from "./taskTime";
 
 export interface TasksPanelProps {
   sessionRef: string;
@@ -102,17 +105,39 @@ export interface TasksPanelHandle {
 
 const CLASS = {
   state: requireClass(styles.state, "taskspanel.module.css", "state"),
+  bodyHead: requireClass(styles.bodyHead, "taskspanel.module.css", "bodyHead"),
+  count: requireClass(styles.count, "taskspanel.module.css", "count"),
   list: requireClass(styles.list, "taskspanel.module.css", "list"),
   description: requireClass(styles.description, "taskspanel.module.css", "description"),
+  groupHead: requireClass(styles.groupHead, "taskspanel.module.css", "groupHead"),
+  groupCount: requireClass(styles.groupCount, "taskspanel.module.css", "groupCount"),
+  settledSummary: requireClass(styles.settledSummary, "taskspanel.module.css", "settledSummary"),
+  summaryMain: requireClass(styles.summaryMain, "taskspanel.module.css", "summaryMain"),
+  summaryLine: requireClass(styles.summaryLine, "taskspanel.module.css", "summaryLine"),
+  descDim: requireClass(styles.descDim, "taskspanel.module.css", "descDim"),
+  descStruck: requireClass(styles.descStruck, "taskspanel.module.css", "descStruck"),
+  time: requireClass(styles.time, "taskspanel.module.css", "time"),
+  latest: requireClass(styles.latest, "taskspanel.module.css", "latest"),
+  latestLabel: requireClass(styles.latestLabel, "taskspanel.module.css", "latestLabel"),
+  latestText: requireClass(styles.latestText, "taskspanel.module.css", "latestText"),
   stale: requireClass(styles.stale, "taskspanel.module.css", "stale"),
   staleMessage: requireClass(styles.staleMessage, "taskspanel.module.css", "staleMessage"),
   staleHint: requireClass(styles.staleHint, "taskspanel.module.css", "staleHint"),
-  detailList: requireClass(styles.detailList, "taskspanel.module.css", "detailList"),
-  detailRow: requireClass(styles.detailRow, "taskspanel.module.css", "detailRow"),
-  detailLabel: requireClass(styles.detailLabel, "taskspanel.module.css", "detailLabel"),
-  detailValue: requireClass(styles.detailValue, "taskspanel.module.css", "detailValue"),
-  detailPrompt: requireClass(styles.detailPrompt, "taskspanel.module.css", "detailPrompt"),
-  notesList: requireClass(styles.notesList, "taskspanel.module.css", "notesList"),
+  expandedBody: requireClass(styles.expandedBody, "taskspanel.module.css", "expandedBody"),
+  metaStrip: requireClass(styles.metaStrip, "taskspanel.module.css", "metaStrip"),
+  metaKey: requireClass(styles.metaKey, "taskspanel.module.css", "metaKey"),
+  metaValue: requireClass(styles.metaValue, "taskspanel.module.css", "metaValue"),
+  times: requireClass(styles.times, "taskspanel.module.css", "times"),
+  promptDetails: requireClass(styles.promptDetails, "taskspanel.module.css", "promptDetails"),
+  promptSummary: requireClass(styles.promptSummary, "taskspanel.module.css", "promptSummary"),
+  promptLabel: requireClass(styles.promptLabel, "taskspanel.module.css", "promptLabel"),
+  promptChevron: requireClass(styles.promptChevron, "taskspanel.module.css", "promptChevron"),
+  promptPreview: requireClass(styles.promptPreview, "taskspanel.module.css", "promptPreview"),
+  promptBody: requireClass(styles.promptBody, "taskspanel.module.css", "promptBody"),
+  notesHead: requireClass(styles.notesHead, "taskspanel.module.css", "notesHead"),
+  noNotes: requireClass(styles.noNotes, "taskspanel.module.css", "noNotes"),
+  notesRail: requireClass(styles.notesRail, "taskspanel.module.css", "notesRail"),
+  note: requireClass(styles.note, "taskspanel.module.css", "note"),
 };
 
 // Mirrors the legacy sidebar/inline task-row grammar (cmd/serf-hub/assets/
@@ -195,85 +220,151 @@ function taskDisclosureId(sessionRef: string, taskId: number): string {
   return `${sessionRef}\0${taskId}`;
 }
 
-// One label/value row in a task's detail list - the same grammar
-// DetailsPanel.tsx's own DetailRow uses (the sibling Sheet's convention for
-// "a labeled list of one entity's facts"): caption label above a mono
-// value, omitted by the caller entirely when the field has nothing to show
-// rather than rendered empty.
-function TaskDetailField({ label, testId, children }: { label: string; testId: string; children: ReactNode }) {
+// The expanded body: dense, one line per concern (spec §Expanded row). Each
+// part omits itself when its data is absent rather than rendering an empty
+// shell - a freshly appended task with no deps, no reasoning override, no
+// notes and no prompt shows the meta strip and "No updates yet." only.
+function TaskExpandedBody({ task, sessionRef }: { task: TaskRow; sessionRef: string }) {
   return (
-    <div className={CLASS.detailRow} data-testid={testId}>
-      <dt className={CLASS.detailLabel}>{label}</dt>
-      <dd className={CLASS.detailValue}>{children}</dd>
+    <div className={CLASS.expandedBody} data-testid="task-expanded">
+      <TaskMetaStrip task={task} />
+      <TaskTimestamps task={task} />
+      <TaskPromptDisclosure task={task} sessionRef={sessionRef} />
+      <TaskNotesTimeline task={task} />
     </div>
   );
 }
 
-// The task's full details, revealed by TaskRowView's disclosure. status and
-// type are always present on the wire so always render; the rest are
-// omitted when absent (DetailsPanel's own rule) rather than shown empty - a
-// freshly appended task with no dependents, no reasoning override and no
-// notes yet is common, not malformed.
-//
-// insert/created_at/updated_at/completed_at are real wire fields
-// (agent/task/task_store.go) that never reach TaskRow at all (taskData.ts's
-// own comment) - "full details" here means every field TaskRow carries, not
-// literally everything the daemon knows about the task. Recorded as a gap
-// on kata rb74 rather than invented here.
-function TaskDetails({ task }: { task: TaskRow }) {
-  const dependsOn = task.dependsOn ?? [];
-  const notes = task.notes ?? [];
-  const hasPrompt = task.prompt.trim() !== "";
+function TaskMetaStrip({ task }: { task: TaskRow }) {
+  const deps = task.dependsOn ?? [];
   return (
-    <dl className={CLASS.detailList}>
-      <TaskDetailField label="status" testId="task-detail-status">
-        {task.status}
-      </TaskDetailField>
-      <TaskDetailField label="type" testId="task-detail-type">
-        {task.type}
-      </TaskDetailField>
-      {dependsOn.length > 0 && (
-        <TaskDetailField label="depends on" testId="task-detail-depends-on">
-          {dependsOn.map((id) => `#${id}`).join(", ")}
-        </TaskDetailField>
-      )}
+    <div className={CLASS.metaStrip} data-testid="task-meta">
+      <span className={CLASS.metaKey}>type</span>
+      <span className={CLASS.metaValue}>{task.type}</span>
       {task.reasoningEffort && (
-        <TaskDetailField label="reasoning" testId="task-detail-reasoning">
-          {task.reasoningEffort}
-        </TaskDetailField>
+        <>
+          <span className={CLASS.metaKey}>reasoning</span>
+          <span className={CLASS.metaValue}>{task.reasoningEffort}</span>
+        </>
       )}
-      {hasPrompt && (
-        <TaskDetailField label="prompt" testId="task-detail-prompt">
-          <pre className={CLASS.detailPrompt}>{task.prompt}</pre>
-        </TaskDetailField>
+      {deps.length > 0 && (
+        <>
+          <span className={CLASS.metaKey}>depends</span>
+          <span className={CLASS.metaValue}>{deps.map((id) => `#${id}`).join(" ")}</span>
+        </>
       )}
-      {notes.length > 0 && (
-        <TaskDetailField label="notes" testId="task-detail-notes">
-          <ol className={CLASS.notesList}>
-            {notes.map((note, i) => (
-              // biome-ignore lint/suspicious/noArrayIndexKey: notes only ever append over a task's life (agent/task/task_store.go's update handling) - position is stable identity, same reasoning as ThinkBlock.tsx's summaryIndex
-              <li key={i}>{note}</li>
-            ))}
-          </ol>
-        </TaskDetailField>
-      )}
-    </dl>
+    </div>
   );
 }
 
-// TaskRowView wraps the row's existing glyph+description line as a
-// widgets/disclosure summary - the same store-backed disclosure primitive
-// the design spec named as "the natural home" for every disclosure in this
-// app (docs/superpowers/specs/2026-07-23-webui-ux-round2-design.md §6), and
-// the transcript's ThinkBlock/SteeringItem/SystemNoticeItem already use the
-// same idiom by hand. Reusing the component directly - rather than a fourth
-// hand-rolled copy - is deliberate: no other call site does yet, so this is
-// its first real consumer.
-function TaskRowView({ task, sessionRef }: { task: TaskRow; sessionRef: string }) {
+function TaskTimestamps({ task }: { task: TaskRow }) {
+  if (!task.createdAt) return null;
+  const updatedAt = task.updatedAt;
+  const showUpdated = updatedAt && updatedAt !== task.createdAt;
+  return (
+    <div className={CLASS.times} data-testid="task-times">
+      <span>created {absoluteTime(task.createdAt)}</span>
+      {showUpdated && (
+        <span>
+          updated <span title={absoluteTime(updatedAt)}>{relativeTime(updatedAt)}</span>
+        </span>
+      )}
+      {task.status === "done" && task.completedAt && (
+        <span>
+          completed <span title={absoluteTime(task.completedAt)}>{relativeTime(task.completedAt)}</span>
+        </span>
+      )}
+    </div>
+  );
+}
+
+function TaskPromptDisclosure({ task, sessionRef }: { task: TaskRow; sessionRef: string }) {
+  const id = `${taskDisclosureId(sessionRef, task.id)}\0prompt`;
+  const open = isDisclosureOpen(id, false);
+  if (task.prompt.trim() === "") return null;
+  const firstLine = task.prompt.split("\n").find((line) => line.trim() !== "") ?? "";
+  return (
+    <details className={CLASS.promptDetails} data-testid="task-prompt" open={open}>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; see SteeringItem.tsx */}
+      <summary
+        className={CLASS.promptSummary}
+        data-testid="task-prompt-summary"
+        onClick={(e) => {
+          e.preventDefault();
+          toggleDisclosure(id, false);
+        }}
+      >
+        <span className={CLASS.promptLabel}>Prompt</span>
+        <span className={CLASS.promptChevron} aria-hidden="true" data-open={open ? "true" : "false"}>
+          ▸
+        </span>
+        <span className={CLASS.promptPreview}>
+          <Markdown source={firstLine} />
+        </span>
+      </summary>
+      {open && (
+        <div className={CLASS.promptBody} data-testid="task-prompt-body">
+          <Markdown source={task.prompt} />
+        </div>
+      )}
+    </details>
+  );
+}
+
+function TaskNotesTimeline({ task }: { task: TaskRow }) {
+  const notes = task.notes ?? [];
+  if (notes.length === 0) {
+    return (
+      <div className={CLASS.noNotes} data-testid="task-notes-empty">
+        No updates yet.
+      </div>
+    );
+  }
+  return (
+    <div data-testid="task-notes">
+      <div className={CLASS.notesHead}>Updates · {notes.length}</div>
+      <ol className={CLASS.notesRail}>
+        {notes.map((note, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: notes only ever append over a task's life (agent/task/task_store.go's update handling) - position is stable identity
+          <li key={i} className={CLASS.note} data-latest={i === notes.length - 1 ? "true" : undefined}>
+            {note}
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+// Settled rows (the collapsed history group) render one line, dimmed, with
+// no latest-update excerpt: history costs one line per task. Live rows earn
+// their second line with the most recent note.
+function TaskRowView({ task, sessionRef, settled = false }: { task: TaskRow; sessionRef: string; settled?: boolean }) {
+  const notes = task.notes ?? [];
+  const latest = !settled && notes.length > 0 ? notes[notes.length - 1] : null;
+  const descClass = task.status === "cancelled" ? CLASS.descStruck : settled ? CLASS.descDim : CLASS.description;
   const summary = (
     <>
       <Chip tone={STATUS_TONE[task.status]}>{STATUS_GLYPH[task.status]}</Chip>
-      <span className={CLASS.description}>{task.description}</span>
+      <span className={CLASS.summaryMain}>
+        <span className={CLASS.summaryLine}>
+          <span className={descClass} data-struck={task.status === "cancelled" ? "true" : undefined}>
+            {task.description}
+          </span>
+          {task.updatedAt && (
+            <span className={CLASS.time} data-testid="task-row-time" title={absoluteTime(task.updatedAt)}>
+              {relativeTime(task.updatedAt)}
+            </span>
+          )}
+        </span>
+        {latest && (
+          <span className={CLASS.latest} data-testid="task-latest">
+            <span className={CLASS.latestLabel}>latest</span>
+            <span className={CLASS.latestText} title={latest}>
+              {latest}
+            </span>
+          </span>
+        )}
+      </span>
     </>
   );
   return (
@@ -282,9 +373,62 @@ function TaskRowView({ task, sessionRef }: { task: TaskRow; sessionRef: string }
     // children real <li>s, the list semantics screen readers rely on.
     <li data-testid="task-row">
       <Disclosure id={taskDisclosureId(sessionRef, task.id)} summary={summary}>
-        <TaskDetails task={task} />
+        <TaskExpandedBody task={task} sessionRef={sessionRef} />
       </Disclosure>
     </li>
+  );
+}
+
+function LiveGroup({
+  label,
+  status,
+  tasks,
+  sessionRef,
+}: {
+  label: string;
+  status: string;
+  tasks: TaskRow[];
+  sessionRef: string;
+}) {
+  if (tasks.length === 0) return null;
+  return (
+    <section data-testid="task-group-live" data-status={status}>
+      <h4 className={CLASS.groupHead}>
+        {label} <span className={CLASS.groupCount}>{tasks.length}</span>
+      </h4>
+      <ul className={CLASS.list}>
+        {tasks.map((row) => (
+          <TaskRowView key={row.id} task={row} sessionRef={sessionRef} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: string }) {
+  const groups = groupTasks(rows);
+  return (
+    <>
+      <LiveGroup label="In progress" status="in_progress" tasks={groups.inProgress} sessionRef={sessionRef} />
+      <LiveGroup label="Open" status="open" tasks={groups.open} sessionRef={sessionRef} />
+      {groups.settled.length > 0 && (
+        <Disclosure
+          id={`${sessionRef}\0settled-group`}
+          summary={
+            <span className={CLASS.settledSummary} data-testid="task-settled-group-summary">
+              Done · settled <span className={CLASS.groupCount}>{groups.settled.length}</span>
+            </span>
+          }
+          data-testid="task-settled-group"
+        >
+          <ul className={CLASS.list}>
+            {groups.settled.map((row) => (
+              <TaskRowView key={row.id} task={row} sessionRef={sessionRef} settled />
+            ))}
+          </ul>
+        </Disclosure>
+      )}
+    </>
   );
 }
 
@@ -423,14 +567,23 @@ export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
             {retry}
           </div>
         )}
+        {model.tasks && (
+          <div className={CLASS.bodyHead} data-testid="tasks-body-head">
+            <Meter
+              label={`Task progress: ${model.tasks.done} of ${model.tasks.total} complete`}
+              value={model.tasks.done}
+              max={model.tasks.total}
+              tone="neutral"
+            />
+            <span className={CLASS.count}>
+              {model.tasks.done}/{model.tasks.total} done
+            </span>
+          </div>
+        )}
         {rows.length === 0 ? (
           <EmptyState title="No tasks yet" hint="The agent's task list is empty for this session." />
         ) : (
-          <ul className={CLASS.list}>
-            {rows.map((row) => (
-              <TaskRowView key={row.id} task={row} sessionRef={sessionRef} />
-            ))}
-          </ul>
+          <TaskListGroups rows={rows} sessionRef={sessionRef} />
         )}
       </>
     );

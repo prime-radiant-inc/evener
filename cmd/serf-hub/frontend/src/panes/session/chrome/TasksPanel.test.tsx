@@ -11,6 +11,7 @@ import { Toast } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { STATUS_TONE, TasksPanel, TasksPanelBody } from "./TasksPanel";
+import { absoluteTime } from "./taskTime";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -69,6 +70,53 @@ const TASKS_DATA = [
   { id: 1, type: "implement", description: "Wire up the status row", prompt: "", status: "done" },
   { id: 2, type: "implement", description: "Wire up session actions", prompt: "", status: "in_progress" },
   { id: 3, type: "verify", description: "Gate green", prompt: "", status: "open" },
+];
+
+const DATED_TASK_CREATED_AT = new Date(2026, 7, 8, 22, 3, 48).toISOString();
+
+const DATED_TASKS = [
+  {
+    id: 1,
+    type: "implement",
+    description: "Implement artifact store",
+    prompt: "",
+    status: "done",
+    depends_on: [14],
+    reasoning_effort: "high",
+    notes: ["Implemented secure artifact store in commits 9853cf561 and 162d0d41e."],
+    created_at: DATED_TASK_CREATED_AT,
+    updated_at: "2026-08-09T10:53:57-07:00",
+    completed_at: "2026-08-09T10:53:57-07:00",
+  },
+  {
+    id: 2,
+    type: "implement",
+    description: "Extend transcript API",
+    prompt: "Execute Task 6.",
+    status: "in_progress",
+    created_at: "2026-08-08T22:03:48-07:00",
+    updated_at: "2026-08-09T13:02:17-07:00",
+  },
+  {
+    id: 3,
+    type: "implement",
+    description: "Transition to implementation plan",
+    prompt: "",
+    status: "cancelled",
+    notes: ["Cancelled at the user's request."],
+    created_at: "2026-08-08T20:25:33-07:00",
+    updated_at: "2026-08-08T21:49:49-07:00",
+  },
+  {
+    id: 4,
+    type: "implement",
+    description: "Prepare release notes",
+    prompt: "",
+    status: "open",
+    notes: ["Captured the compatibility changes for the release notes."],
+    created_at: "2026-08-09T11:00:00-07:00",
+    updated_at: "2026-08-09T13:15:00-07:00",
+  },
 ];
 
 beforeEach(() => {
@@ -145,7 +193,7 @@ test("opening the panel fetches via listTasks(ref) and shows a loading state unt
   await waitFor(() => expect(screen.queryByText(/loading tasks/i)).toBeNull());
 });
 
-test("renders every fetched task as a row, in the SAME order the wire returned them (no client-side re-sort)", async () => {
+test("rows group by status: in progress, then open, then the collapsed settled group; wire order holds within a group", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("serf/tasks/list", () => ({ data: TASKS_DATA }));
@@ -153,21 +201,130 @@ test("renders every fetched task as a row, in the SAME order the wire returned t
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
-  const rows = await screen.findAllByTestId("task-row");
-  expect(rows).toHaveLength(3);
-  expect(rows.map((r) => r.textContent)).toEqual([
-    expect.stringContaining("Wire up the status row"),
-    expect.stringContaining("Wire up session actions"),
-    expect.stringContaining("Gate green"),
-  ]);
+  await waitFor(() => expect(screen.getAllByTestId("task-row")).toHaveLength(2));
+  const liveGroups = screen.getAllByTestId("task-group-live");
+  expect(liveGroups.map((group) => group.getAttribute("data-status"))).toEqual(["in_progress", "open"]);
+  expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
+
+  await user.click(screen.getByTestId("task-settled-group-summary"));
+  await waitFor(() => expect(screen.getAllByTestId("task-row")).toHaveLength(3));
 });
 
-// --- row disclosure: expand a task row to see its full details -------------
-// TaskRow already carries every field the daemon's Task struct exposes to
-// the frontend (taskData.ts's own comment: created_at/updated_at/
-// completed_at/insert are deliberately dropped, matching the legacy
-// sidebar's buildTaskDetailList - kata rb74's own comment records that
-// gap). "Full details" here means every field TaskRow actually carries.
+test("empty groups render nothing, so Open leads when there are no in-progress tasks", async () => {
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: [TASKS_DATA[2]] }));
+
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
+
+  const liveGroups = await screen.findAllByTestId("task-group-live");
+  expect(liveGroups).toHaveLength(1);
+  expect(liveGroups[0]?.getAttribute("data-status")).toBe("open");
+  expect(screen.queryByText(/in progress/i)).toBeNull();
+  expect(screen.queryByTestId("task-settled-group")).toBeNull();
+});
+
+test("an all-settled list shows only the collapsed settled disclosure line", async () => {
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: [DATED_TASKS[0], DATED_TASKS[2]] }));
+
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
+
+  const settled = await screen.findByTestId("task-settled-group");
+  expect(settled.textContent).toContain("Done · settled 2");
+  expect(screen.queryByTestId("task-group-live")).toBeNull();
+  expect(screen.queryByTestId("task-row")).toBeNull();
+});
+
+test("a live row shows its latest note inline; a settled row does not", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: DATED_TASKS }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  expect((await screen.findByTestId("task-latest")).textContent).toContain(
+    "Captured the compatibility changes for the release notes.",
+  );
+
+  await user.click(screen.getByTestId("task-settled-group-summary"));
+  const settledRow = screen
+    .getAllByTestId("task-row")
+    .find((row) => row.textContent?.includes("Implement artifact store"));
+  expect(settledRow?.querySelector("[data-testid='task-latest']")).toBeNull();
+});
+
+test("a cancelled row renders struck-through inside the settled group", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: DATED_TASKS }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByTestId("task-settled-group-summary"));
+
+  const cancelled = screen.getByText("Transition to implementation plan");
+  expect(cancelled.getAttribute("data-struck")).toBe("true");
+  expect(cancelled.closest("[data-testid='task-row']")?.textContent).toContain("✕");
+});
+
+test("a live row shows a relative updated time", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: DATED_TASKS }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  const row = (await screen.findByText("Extend transcript API")).closest("[data-testid='task-row']");
+
+  expect(row?.querySelector("[data-testid='task-row-time']")).toBeTruthy();
+});
+
+test("the settled group defaults to collapsed and remembers being opened per session", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: DATED_TASKS }));
+
+  const first = render(<TasksPanelBody sessionRef="ref_remember" model={testModel({ ref: "ref_remember" })} />);
+  await screen.findByTestId("task-settled-group");
+  expect(screen.queryByText("Implement artifact store")).toBeNull();
+  await user.click(screen.getByTestId("task-settled-group-summary"));
+  expect(await screen.findByText("Implement artifact store")).toBeTruthy();
+
+  first.unmount();
+  render(<TasksPanelBody sessionRef="ref_remember" model={testModel({ ref: "ref_remember" })} />);
+  expect(await screen.findByText("Implement artifact store")).toBeTruthy();
+});
+
+test("the body header shows the meter and count when the aggregate is known", async () => {
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: [TASKS_DATA[0]] }));
+
+  render(
+    <>
+      <TasksPanelBody sessionRef="ref_a" model={testModel({ tasks: { total: 20, done: 16 } })} />
+      <Toast />
+    </>,
+  );
+  await waitFor(() => expect(screen.getByTestId("tasks-body-head")).toBeTruthy());
+  expect(screen.getByTestId("tasks-body-head").textContent).toContain("16/20 done");
+  expect(screen.getByRole("meter", { name: "Task progress: 16 of 20 complete" })).toBeTruthy();
+});
+
+test("the body header is absent while no aggregate has arrived", async () => {
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: [TASKS_DATA[0]] }));
+
+  render(
+    <>
+      <TasksPanelBody sessionRef="ref_a" model={testModel({ tasks: null })} />
+      <Toast />
+    </>,
+  );
+  await waitFor(() => expect(screen.getByTestId("task-settled-group")).toBeTruthy());
+  expect(screen.queryByTestId("tasks-body-head")).toBeNull();
+});
+
+// --- row disclosure: expand a task row to see its dense detail body ---------
 
 const RICH_TASK = {
   id: 5,
@@ -180,7 +337,7 @@ const RICH_TASK = {
   notes: ["started", "blocked on #1"],
 };
 
-test("a task row starts collapsed; clicking its summary expands it to show the full detail fields", async () => {
+test("a task row starts collapsed; clicking its summary expands its meta and updates", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("serf/tasks/list", () => ({ data: [RICH_TASK] }));
@@ -189,17 +346,71 @@ test("a task row starts collapsed; clicking its summary expands it to show the f
   await user.click(screen.getByRole("button", { name: "Tasks" }));
   const summary = await screen.findByText("Wire up expand/collapse");
 
-  expect(screen.queryByTestId("task-detail-status")).toBeNull();
+  expect(screen.queryByTestId("task-expanded")).toBeNull();
 
   await user.click(summary);
 
-  expect(screen.getByTestId("task-detail-status").textContent).toContain("in_progress");
-  expect(screen.getByTestId("task-detail-type").textContent).toContain("implement");
-  expect(screen.getByTestId("task-detail-depends-on").textContent).toContain("#1, #3");
-  expect(screen.getByTestId("task-detail-reasoning").textContent).toContain("high");
-  expect(screen.getByText("Follow the transcript's existing disclosure idiom.")).toBeTruthy();
-  expect(screen.getByText("started")).toBeTruthy();
-  expect(screen.getByText("blocked on #1")).toBeTruthy();
+  const body = screen.getByTestId("task-expanded");
+  expect(body.querySelector("[data-testid='task-meta']")?.textContent).toContain("implement");
+  expect(body.querySelector("[data-testid='task-meta']")?.textContent).toContain("#1 #3");
+  expect(body.querySelector("[data-testid='task-meta']")?.textContent).toContain("high");
+  expect(body.querySelector("[data-testid='task-notes']")?.textContent).toContain("started");
+  expect(body.querySelector("[data-testid='task-notes']")?.textContent).toContain("blocked on #1");
+});
+
+test("notes render as a timeline with the latest note marked", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: [RICH_TASK] }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByText("Wire up expand/collapse"));
+
+  const notes = screen.getByTestId("task-notes");
+  const items = notes.querySelectorAll("li");
+  expect(items).toHaveLength(2);
+  expect(items[0]?.getAttribute("data-latest")).toBeNull();
+  expect(items[1]?.getAttribute("data-latest")).toBe("true");
+  expect(notes.textContent).toContain("Updates · 2");
+});
+
+test("the prompt disclosure shows a one-line markdown preview collapsed and the full markdown body open", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({
+    data: [
+      {
+        ...RICH_TASK,
+        prompt: "Execute **Task 6** from the plan:\nread_transcript `job/artifact` API and errors.",
+      },
+    ],
+  }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByText("Wire up expand/collapse"));
+
+  const prompt = screen.getByTestId("task-prompt");
+  expect(prompt.querySelector(".promptPreview strong, [class*='promptPreview'] strong")).toBeTruthy();
+  expect(prompt.textContent).not.toContain("**");
+
+  await user.click(screen.getByTestId("task-prompt-summary"));
+
+  const body = await screen.findByTestId("task-prompt-body");
+  expect(body.querySelector("code")?.textContent).toBe("job/artifact");
+});
+
+test("a task with a blank prompt renders no prompt disclosure", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: [{ ...RICH_TASK, prompt: "" }] }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByText("Wire up expand/collapse"));
+
+  expect(screen.queryByTestId("task-prompt")).toBeNull();
 });
 
 test("clicking an expanded row's summary again collapses it", async () => {
@@ -211,30 +422,105 @@ test("clicking an expanded row's summary again collapses it", async () => {
   await user.click(screen.getByRole("button", { name: "Tasks" }));
   const summary = await screen.findByText("Wire up expand/collapse");
   await user.click(summary);
-  expect(screen.getByTestId("task-detail-status")).toBeTruthy();
+  expect(screen.getByTestId("task-expanded")).toBeTruthy();
 
   await user.click(summary);
 
-  expect(screen.queryByTestId("task-detail-status")).toBeNull();
+  expect(screen.queryByTestId("task-expanded")).toBeNull();
 });
 
-test("a task with none of the optional fields still shows status and type, omitting depends-on/reasoning/prompt/notes entirely", async () => {
+test("an expanded bare task shows only the type meta and 'No updates yet.'", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("serf/tasks/list", () => ({ data: TASKS_DATA }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
-  // TASKS_DATA's first row: status "done", type "implement", prompt "",
-  // no dependsOn/notes/reasoningEffort.
+  // TASKS_DATA's first row: type "implement", prompt "", and no timestamps,
+  // dependsOn, notes, or reasoningEffort.
+  await user.click(await screen.findByTestId("task-settled-group-summary"));
   await user.click(await screen.findByText("Wire up the status row"));
 
-  expect(screen.getByTestId("task-detail-status").textContent).toContain("done");
-  expect(screen.getByTestId("task-detail-type").textContent).toContain("implement");
-  expect(screen.queryByTestId("task-detail-depends-on")).toBeNull();
-  expect(screen.queryByTestId("task-detail-reasoning")).toBeNull();
-  expect(screen.queryByTestId("task-detail-prompt")).toBeNull();
-  expect(screen.queryByTestId("task-detail-notes")).toBeNull();
+  const body = screen.getByTestId("task-expanded");
+  expect(body.querySelector("[data-testid='task-meta']")?.textContent).toContain("implement");
+  expect(body.querySelector("[data-testid='task-meta']")?.textContent).not.toContain("reasoning");
+  expect(body.querySelector("[data-testid='task-times']")).toBeNull();
+  expect(body.querySelector("[data-testid='task-prompt']")).toBeNull();
+  expect(body.textContent).toContain("No updates yet.");
+});
+
+test("an expanded task shows the meta strip and timestamps line", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: DATED_TASKS }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByTestId("task-settled-group-summary"));
+  await user.click(await screen.findByText("Implement artifact store"));
+
+  const meta = screen.getByTestId("task-meta");
+  expect(meta.textContent).toContain("implement");
+  expect(meta.textContent).toContain("high");
+  expect(meta.textContent).toContain("#14");
+  const times = screen.getByTestId("task-times");
+  expect(times.textContent).toContain(`created ${absoluteTime(DATED_TASK_CREATED_AT)}`);
+  expect(times.textContent).toContain("updated");
+  expect(times.textContent).toContain("completed");
+});
+
+test("the timestamps line omits updated when it equals created", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({
+    data: [
+      {
+        id: 6,
+        type: "verify",
+        description: "Check unchanged timestamps",
+        prompt: "",
+        status: "open",
+        created_at: "2026-08-09T12:00:00-07:00",
+        updated_at: "2026-08-09T12:00:00-07:00",
+      },
+    ],
+  }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByText("Check unchanged timestamps"));
+
+  const times = screen.getByTestId("task-times");
+  expect(times.textContent).toContain("created");
+  expect(times.textContent).not.toContain("updated");
+  expect(times.textContent).not.toContain("completed");
+});
+
+test("the timestamps line omits completed for a non-done task even when completed_at is present", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({
+    data: [
+      {
+        id: 7,
+        type: "verify",
+        description: "Ignore stale completed timestamp",
+        prompt: "",
+        status: "cancelled",
+        created_at: "2026-08-09T12:00:00-07:00",
+        completed_at: "2026-08-09T12:30:00-07:00",
+      },
+    ],
+  }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByTestId("task-settled-group-summary"));
+  await user.click(await screen.findByText("Ignore stale completed timestamp"));
+
+  const times = screen.getByTestId("task-times");
+  expect(times.textContent).toContain("created");
+  expect(times.textContent).not.toContain("completed");
 });
 
 test("each row's expand state is independent - opening one row leaves its siblings collapsed", async () => {
@@ -244,9 +530,10 @@ test("each row's expand state is independent - opening one row leaves its siblin
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByTestId("task-settled-group-summary"));
   await user.click(await screen.findByText("Wire up the status row"));
 
-  expect(screen.getAllByTestId("task-detail-status")).toHaveLength(1);
+  expect(screen.getAllByTestId("task-expanded")).toHaveLength(1);
 });
 
 test("the expanded row is a real native disclosure (<details open>), not just conditionally-rendered markup", async () => {
@@ -399,11 +686,11 @@ test("a stale overlapping failure does not toast after a newer fetch succeeded",
   await waitFor(() => expect(calls).toHaveLength(2));
 
   await act(async () => calls[1]?.resolve({ data: TASKS_DATA }));
-  await screen.findByText("Wire up the status row");
+  await screen.findByText("Wire up session actions");
   await act(async () => calls[0]?.reject(new Error("tasks boom")));
 
   expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
-  expect(screen.getByText("Wire up the status row")).toBeTruthy();
+  expect(screen.getByText("Wire up session actions")).toBeTruthy();
 });
 
 // The hub resumes a cold session before it can list anything
@@ -497,8 +784,9 @@ test("a re-fetch that fails keeps the rows already on screen", async () => {
   await openThenPush(fake);
 
   await screen.findByTestId("tasks-stale");
-  expect(screen.getAllByTestId("task-row")).toHaveLength(3);
-  expect(screen.getByText("Wire up the status row")).toBeTruthy();
+  expect(screen.getAllByTestId("task-row")).toHaveLength(2);
+  expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
+  expect(screen.getByText("Wire up session actions")).toBeTruthy();
 });
 
 // A retained list is one push behind by construction - the push is what
@@ -568,7 +856,8 @@ test("Try again re-fetches the list and clears the stale notice once it succeeds
 
   await waitFor(() => expect(screen.queryByTestId("tasks-stale")).toBeNull());
   expect(fake.calls.filter((c) => c.method === "serf/tasks/list")).toHaveLength(3);
-  expect(screen.getAllByTestId("task-row")).toHaveLength(3);
+  expect(screen.getAllByTestId("task-row")).toHaveLength(2);
+  expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
 });
 
 // --- dead-daemon "thread not found": must not contradict the trigger -------
@@ -617,7 +906,8 @@ test("closing then re-opening after the daemon exits keeps the rows already show
   await user.click(screen.getByRole("button", { name: "Tasks 1/3" }));
 
   await screen.findByTestId("tasks-daemon-gone");
-  expect(screen.getAllByTestId("task-row")).toHaveLength(3);
+  expect(screen.getAllByTestId("task-row")).toHaveLength(2);
+  expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
   expect(screen.queryByText("No tasks yet")).toBeNull();
 });
 
@@ -688,6 +978,7 @@ test("a first fetch that fails offers Try again, which fetches again", async () 
 
   await user.click(screen.getByRole("button", { name: "Try again" }));
 
-  expect(await screen.findAllByTestId("task-row")).toHaveLength(3);
+  expect(await screen.findAllByTestId("task-row")).toHaveLength(2);
+  expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
   expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
 });
