@@ -250,6 +250,7 @@ func TestCommandEnvironment_UnsandboxedSessionExportsScratchVars(t *testing.T) {
 func TestCommandEnvironment_SandboxedSessionScratchUnchanged(t *testing.T) {
 	worktree := t.TempDir()
 	env := NewLocalExecutionEnvironment(worktree)
+	env.inheritedEnv = func() []string { return []string{"PATH=/usr/bin:/bin"} }
 	w, err := sandbox.NewWrapper(
 		sandbox.ResolvedPolicy{Mode: sandbox.ModeWorkspaceWrite, Backend: sandbox.BackendBwrap},
 		"/usr/bin/bwrap", t.TempDir())
