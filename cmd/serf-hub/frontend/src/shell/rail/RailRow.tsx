@@ -48,6 +48,7 @@ import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { isPaneOpen, useWorkspaceStore } from "../workspace";
 import styles from "./Rail.module.css";
 import {
+  displayState,
   type InactiveFoldRailNode,
   needsYouDescendantCount,
   type OverflowRailNode,
@@ -412,7 +413,7 @@ function rowTooltip(session: ApiTreeNode, showsGloss: boolean, saysNotStarted: b
   // instead: "idle" is true of it but tells the reader nothing they don't
   // already believe, and it is the very confusion this line exists to end.
   if (saysNotStarted) parts.push("not started");
-  else if (!showsGloss) parts.push(humanizeState(session.state, session.ask_pending === true));
+  else if (!showsGloss) parts.push(humanizeState(displayState(session), session.ask_pending === true));
   // "current" is the unremarkable default state of a session - the same
   // exclusion the visible line used to make.
   if (session.tier !== undefined && session.tier !== "" && session.tier !== "current") parts.push(session.tier);
@@ -476,6 +477,11 @@ function SessionMenuRow({ session, actions }: { session: ApiTreeNode; actions: R
 function SessionRow({ node, info, actions }: { node: SessionRailNode; info: TreeRowInfo; actions: RailRowActions }) {
   const { session } = node;
   const needsYouCount = needsYouDescendantCount(session);
+  // The state this row PRESENTS (railNodes' displayState): a turn-ended
+  // subagent presents as idle, not "your move", because its next input comes
+  // from its parent session, never from the user. Dot, gloss, tint, and
+  // tooltip all read this one value so they can never disagree about a row.
+  const presented = displayState(session);
   // A quiet row (idle, ended, notLoaded, unknown) is title + age, one line: the
   // empty signal gutter and a grey age already say "nothing is happening here",
   // so a second line restating "idle" in words was the state living at two
@@ -483,7 +489,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // gloss, and with it its second line - which makes signal rows physically
   // taller than quiet ones. That is the point: the rows worth finding are bigger
   // than the rows that aren't, and the list's evenness is worth less than that.
-  const showsGloss = SIGNAL_STATES.has(cadenceStateFor(session.state));
+  const showsGloss = SIGNAL_STATES.has(cadenceStateFor(presented));
   const hasWorkingDescendants = workingDescendantCount(session) > 0;
   // kata hxjn: a row at depth 0 is a top-level entry in a flat, cross-project
   // tier (Live/Pinned - see toSessionNode/sessionNodes; a Projects/Test-runs/
@@ -501,7 +507,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // depth-0-only "just the project name" line (showsProject with no signal)
   // has no state family to color, so it stays the plain --ink-low default.
   const activityClass = showsGloss
-    ? `${CLASS.activity} ${ACTIVITY_FAMILY_CLASS[cadenceStateFor(session.state)] ?? ""}`.trim()
+    ? `${CLASS.activity} ${ACTIVITY_FAMILY_CLASS[cadenceStateFor(presented)] ?? ""}`.trim()
     : CLASS.activity;
   return (
     // data-session-ref is the scroll target Rail's reveal effect (the palette's
@@ -509,7 +515,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
     // into view - the ref is stable and unique per session, unlike the label.
     <span className={CLASS.row} data-session-ref={session.ref}>
       <ChevronGutter info={info} />
-      <Signal wireState={session.state} />
+      <Signal wireState={presented} />
       {/* The text column: the title, and - on a signal row only - a second line
           glossing why it wants attention. Row anatomy for the subagent tree's
           already-existing recursion (toSessionNode/Tree), not new recursion of

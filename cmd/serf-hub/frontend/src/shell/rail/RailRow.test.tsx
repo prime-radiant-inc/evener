@@ -615,6 +615,53 @@ describe("session row", () => {
     expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/question waiting/i);
   });
 
+  // --- a turn-ended subagent is quiet, never "your move" -------------------
+  //
+  // "awaiting" means "the turn ended; the next input comes from this session's
+  // owner". For a TOP-LEVEL session that owner is the user, so the row says
+  // "your move". A subagent's owner is its parent session - the user never
+  // steers a subagent directly - so a turn-ended subagent is simply idle, and
+  // glossing it "your move" made every finished delegate read as attention it
+  // does not need. Only a genuine ask_user (ask_pending) still reaches the
+  // user, so that one keeps its signal treatment.
+
+  test("a turn-ended subagent row shows no dot, no gloss - just title + age", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ kind: "subagent", state: "awaiting", age: "4m" }))}
+        info={info({ depth: 1 })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.queryByTestId("cadence-dot")).toBeNull();
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+    expect(screen.queryByTestId("rail-row-activity")).toBeNull();
+    expect(screen.getByText("Fix flaky test")).toBeTruthy();
+    expect(screen.getByTestId("rail-row-time").textContent).toBe("4m");
+  });
+
+  test("a turn-ended subagent's title tooltip reports idle, never your move", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ kind: "subagent", state: "awaiting" }))}
+        info={info({ depth: 1 })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · idle");
+  });
+
+  test("a subagent blocked on ask_user still glosses as a question, not idle", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ kind: "subagent", state: "awaiting", ask_pending: true }))}
+        info={info({ depth: 1 })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/question waiting/i);
+  });
+
   test.each(["idle", "ended", "notLoaded", ""] as const)(
     "a quiet, nested row (%s, depth > 0) is title + age on one line, with no gloss at all",
     (state) => {

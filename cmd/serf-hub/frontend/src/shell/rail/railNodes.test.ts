@@ -260,6 +260,24 @@ describe("needsYouDescendantCount", () => {
   test("a leaf node (no children) counts zero", () => {
     expect(needsYouDescendantCount(node({ row_id: "leaf", state: "awaiting" }))).toBe(0);
   });
+
+  // A turn-ended subagent waits on its PARENT, not the user - the user never
+  // steers a subagent directly - so it is not needs-you, and the badge and
+  // sort this count backs must not count it (the row itself renders quiet
+  // too - see RailRow.test.tsx's turn-ended subagent block).
+  test("a turn-ended subagent child does not count as needs-you", () => {
+    const root = node({
+      children: [
+        node({ row_id: "s1", ref: "r1", kind: "subagent", state: "awaiting" }),
+        node({ row_id: "s2", ref: "r2", kind: "subagent", state: "awaiting", ask_pending: true }),
+        node({ row_id: "s3", ref: "r3", kind: "subagent", state: "warning" }),
+        node({ row_id: "s4", ref: "r4", kind: "session", state: "awaiting" }),
+      ],
+    });
+    // s2's question and s3's warning and s4 (not a subagent) count; s1's
+    // finished turn does not.
+    expect(needsYouDescendantCount(root)).toBe(3);
+  });
 });
 
 describe("workingDescendantCount", () => {

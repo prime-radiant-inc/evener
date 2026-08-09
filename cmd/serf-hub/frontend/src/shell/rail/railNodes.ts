@@ -206,13 +206,31 @@ function stateNeedsYou(state: string): boolean {
   return state === "awaiting" || state === "warning";
 }
 
+// The state a row PRESENTS, which is not always the wire state. "awaiting"
+// means "the turn ended; the next input comes from this session's owner" -
+// and a subagent's owner is its PARENT session, not the user (the user never
+// steers a subagent directly). So a turn-ended subagent is, on this triage
+// surface, simply idle: glossing it "your move" made every finished delegate
+// read as attention it does not need. Only a genuine ask_user (ask_pending)
+// keeps a subagent needs-you, because that question does reach the user.
+// Every per-node attention judgment (the row's dot and gloss in RailRow, the
+// badge count and sort below) reads this one helper, so they can never
+// disagree about the same row.
+export function displayState(node: ApiTreeNode): string {
+  if (node.kind === "subagent" && node.state === "awaiting" && node.ask_pending !== true) return "idle";
+  return node.state;
+}
+
 /** Count of nodes in `node.children` (recursed through the whole subtree,
  * not just direct children) whose own state is needs-you - i.e. how many
  * things under this session need attention, excluding the node itself.
  * Backs both the session row's derived attention Badge (vbh8, §2.2) and
  * the needs-you-first sort below. */
 export function needsYouDescendantCount(node: ApiTreeNode): number {
-  return node.children.reduce((sum, c) => sum + (stateNeedsYou(c.state) ? 1 : 0) + needsYouDescendantCount(c), 0);
+  return node.children.reduce(
+    (sum, c) => sum + (stateNeedsYou(displayState(c)) ? 1 : 0) + needsYouDescendantCount(c),
+    0,
+  );
 }
 
 export function workingDescendantCount(node: ApiTreeNode): number {
@@ -226,7 +244,7 @@ export function workingDescendantCount(node: ApiTreeNode): number {
 // needs-you descendant) - either way it should sort ahead of a quiet
 // sibling within the same project.
 function sessionWantsYou(n: ApiTreeNode): boolean {
-  return stateNeedsYou(n.state) || needsYouDescendantCount(n) > 0;
+  return stateNeedsYou(displayState(n)) || needsYouDescendantCount(n) > 0;
 }
 
 // Namespaced so a project branch's own id can never collide with a
