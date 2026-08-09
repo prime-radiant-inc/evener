@@ -230,7 +230,6 @@ function TaskExpandedBody({ task, sessionRef }: { task: TaskRow; sessionRef: str
       <TaskMetaStrip task={task} />
       <TaskTimestamps task={task} />
       <TaskPromptDisclosure task={task} sessionRef={sessionRef} />
-      {/* Task 8 replaces the notes fallback with TaskNotesTimeline */}
       <TaskNotesTimeline task={task} />
     </div>
   );
@@ -260,13 +259,14 @@ function TaskMetaStrip({ task }: { task: TaskRow }) {
 
 function TaskTimestamps({ task }: { task: TaskRow }) {
   if (!task.createdAt) return null;
-  const showUpdated = task.updatedAt && task.updatedAt !== task.createdAt;
+  const updatedAt = task.updatedAt;
+  const showUpdated = updatedAt && updatedAt !== task.createdAt;
   return (
     <div className={CLASS.times} data-testid="task-times">
       <span>created {absoluteTime(task.createdAt)}</span>
-      {showUpdated && task.updatedAt && (
+      {showUpdated && (
         <span>
-          updated <span title={absoluteTime(task.updatedAt)}>{relativeTime(task.updatedAt)}</span>
+          updated <span title={absoluteTime(updatedAt)}>{relativeTime(updatedAt)}</span>
         </span>
       )}
       {task.status === "done" && task.completedAt && (
@@ -279,9 +279,9 @@ function TaskTimestamps({ task }: { task: TaskRow }) {
 }
 
 function TaskPromptDisclosure({ task, sessionRef }: { task: TaskRow; sessionRef: string }) {
-  if (task.prompt.trim() === "") return null;
   const id = `${taskDisclosureId(sessionRef, task.id)}\0prompt`;
   const open = isDisclosureOpen(id, false);
+  if (task.prompt.trim() === "") return null;
   const firstLine = task.prompt.split("\n").find((line) => line.trim() !== "") ?? "";
   return (
     <details className={CLASS.promptDetails} data-testid="task-prompt" open={open}>

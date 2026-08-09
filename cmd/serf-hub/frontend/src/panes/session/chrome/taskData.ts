@@ -17,7 +17,8 @@
 // created_at/updated_at/completed_at ARE carried (as createdAt/updatedAt/
 // completedAt): the 2026-08-09 panel redesign (docs/superpowers/specs/
 // 2026-08-09-task-list-ui-design.md) shows per-task recency and completion
-// times, which the legacy panel's field set predates.
+// times, which the legacy panel's field set predates; `insert` remains
+// intentionally uncarried because the panel has no consumer for it.
 
 export type TaskStatus = "open" | "in_progress" | "done" | "cancelled";
 

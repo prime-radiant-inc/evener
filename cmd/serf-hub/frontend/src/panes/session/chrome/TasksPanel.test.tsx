@@ -11,6 +11,7 @@ import { Toast } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { STATUS_TONE, TasksPanel, TasksPanelBody } from "./TasksPanel";
+import { absoluteTime } from "./taskTime";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -71,6 +72,8 @@ const TASKS_DATA = [
   { id: 3, type: "verify", description: "Gate green", prompt: "", status: "open" },
 ];
 
+const DATED_TASK_CREATED_AT = new Date(2026, 7, 8, 22, 3, 48).toISOString();
+
 const DATED_TASKS = [
   {
     id: 1,
@@ -81,7 +84,7 @@ const DATED_TASKS = [
     depends_on: [14],
     reasoning_effort: "high",
     notes: ["Implemented secure artifact store in commits 9853cf561 and 162d0d41e."],
-    created_at: "2026-08-08T22:03:48-07:00",
+    created_at: DATED_TASK_CREATED_AT,
     updated_at: "2026-08-09T10:53:57-07:00",
     completed_at: "2026-08-09T10:53:57-07:00",
   },
@@ -461,7 +464,7 @@ test("an expanded task shows the meta strip and timestamps line", async () => {
   expect(meta.textContent).toContain("high");
   expect(meta.textContent).toContain("#14");
   const times = screen.getByTestId("task-times");
-  expect(times.textContent).toContain("created Aug 8, 22:03");
+  expect(times.textContent).toContain(`created ${absoluteTime(DATED_TASK_CREATED_AT)}`);
   expect(times.textContent).toContain("updated");
   expect(times.textContent).toContain("completed");
 });
