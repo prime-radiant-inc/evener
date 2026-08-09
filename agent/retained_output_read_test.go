@@ -204,6 +204,171 @@ func TestSearchRetainedHonorsSmallerSuppliedSerializedCap(t *testing.T) {
 	}
 }
 
+func TestSearchRetainedSerializedCapBelowFirstRecordSkipsAndProgresses(t *testing.T) {
+	data := []byte("HIT-first-record\nHIT-second-record\n")
+	const capBytes = 8
+	envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
+		Regexp:        regexp.MustCompile(`^HIT-`),
+		SearchOptions: jobstore.SearchOptions{MaxSerializedBytes: capBytes},
+	})
+	if err != nil {
+		t.Fatalf("searchRetainedOutput: %v", err)
+	}
+	if len(envelope.Matches) != 0 || len(envelope.SkippedOversized) != 2 || !envelope.SearchComplete || envelope.Continuation != nil {
+		t.Fatalf("envelope = %+v, want both individually unrepresentable matches skipped with complete progress", envelope)
+	}
+	if envelope.SkippedOversized[0].StartByte != 0 || envelope.SkippedOversized[0].EndByte != int64(len("HIT-first-record\n")) {
+		t.Fatalf("first skipped interval = %+v", envelope.SkippedOversized[0])
+	}
+}
+
+func TestSearchRetainedSerializedCapCountsJSONEscapingForProgress(t *testing.T) {
+	line := "HIT-" + strings.Repeat("\"\\\t", 80)
+	expected := retainedSearchMatch{LineStartByte: 0, Line: line}
+	serialized := mustMarshalRetainedMatches(t, []retainedSearchMatch{expected})
+	capBytes := len(line) + 32
+	if capBytes >= len(serialized) {
+		t.Fatalf("fixture does not require JSON escaping: raw=%d cap=%d serialized=%d", len(line), capBytes, len(serialized))
+	}
+
+	envelope, err := searchRetainedOutput(newMemorySearchSource([]byte(line+"\n"), 0), retainedSearchOptions{
+		Regexp:        regexp.MustCompile(`^HIT-`),
+		SearchOptions: jobstore.SearchOptions{MaxSerializedBytes: capBytes},
+	})
+	if err != nil {
+		t.Fatalf("searchRetainedOutput: %v", err)
+	}
+	if len(envelope.Matches) != 0 || len(envelope.SkippedOversized) != 1 || !envelope.SearchComplete || envelope.Continuation != nil {
+		t.Fatalf("escaped envelope = %+v, want one skipped match and forward completion", envelope)
+	}
+}
+
+func TestSearchRetainedSerializedCapRepeatedContinuationCannotLoop(t *testing.T) {
+	firstLine := "HIT-first"
+	oversizedLine := "HIT-" + strings.Repeat("\"\\\t", 80)
+	lastLine := "HIT-last"
+	data := []byte(firstLine + "\n" + oversizedLine + "\n" + lastLine + "\n")
+	lastAt := int64(len(firstLine) + 1 + len(oversizedLine) + 1)
+	firstBytes := len(mustMarshalRetainedMatches(t, []retainedSearchMatch{{LineStartByte: 0, Line: firstLine}}))
+	lastBytes := len(mustMarshalRetainedMatches(t, []retainedSearchMatch{{LineStartByte: lastAt, Line: lastLine}}))
+	capBytes := max(firstBytes, lastBytes)
+	source := newMemorySearchSource(data, 0)
+
+	var (
+		offset  int64
+		got     []string
+		skipped int
+	)
+	seenOffsets := map[int64]bool{}
+	for call := 0; call < 5; call++ {
+		if seenOffsets[offset] {
+			t.Fatalf("continuation looped at offset %d", offset)
+		}
+		seenOffsets[offset] = true
+		envelope, err := searchRetainedOutput(source, retainedSearchOptions{
+			Regexp: regexp.MustCompile(`^HIT-`),
+			SearchOptions: jobstore.SearchOptions{
+				StartOffset:        offset,
+				MaxSerializedBytes: capBytes,
+			},
+		})
+		if err != nil {
+			t.Fatalf("search call %d: %v", call, err)
+		}
+		if serialized := len(mustMarshalRetainedMatches(t, envelope.Matches)); serialized > capBytes {
+			t.Fatalf("search call %d serialized %d bytes over cap %d", call, serialized, capBytes)
+		}
+		for _, match := range envelope.Matches {
+			got = append(got, match.Line)
+		}
+		skipped += len(envelope.SkippedOversized)
+		if envelope.Continuation == nil {
+			if !envelope.SearchComplete {
+				t.Fatalf("search call %d ended without completion or continuation", call)
+			}
+			break
+		}
+		if envelope.Continuation.OffsetBytes <= offset {
+			t.Fatalf("search call %d continuation=%d did not advance past %d", call, envelope.Continuation.OffsetBytes, offset)
+		}
+		offset = envelope.Continuation.OffsetBytes
+	}
+	if fmt.Sprint(got) != fmt.Sprint([]string{firstLine, lastLine}) || skipped != 1 {
+		t.Fatalf("matches=%v skipped=%d, want [%s %s] and one skipped record", got, skipped, firstLine, lastLine)
+	}
+}
+
+func TestSearchRetainedSerializedCapExactJSONBoundaries(t *testing.T) {
+	firstLine := "HIT-quote=\" slash=\\ tab=\t"
+	secondLine := "HIT-\b\f\rx"
+	first := retainedSearchMatch{LineStartByte: 0, Line: firstLine}
+	secondAt := int64(len(firstLine) + 1)
+	second := retainedSearchMatch{LineStartByte: secondAt, Line: secondLine}
+	oneBytes := len(mustMarshalRetainedMatches(t, []retainedSearchMatch{first}))
+	bothBytes := len(mustMarshalRetainedMatches(t, []retainedSearchMatch{first, second}))
+	data := []byte(firstLine + "\n" + secondLine + "\n")
+
+	for _, tc := range []struct {
+		name             string
+		capBytes         int
+		wantMatches      int
+		wantContinuation *int64
+	}{
+		{name: "exact first record", capBytes: oneBytes, wantMatches: 1, wantContinuation: &secondAt},
+		{name: "one byte below two records", capBytes: bothBytes - 1, wantMatches: 1, wantContinuation: &secondAt},
+		{name: "exact two records", capBytes: bothBytes, wantMatches: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
+				Regexp:        regexp.MustCompile(`^HIT-`),
+				SearchOptions: jobstore.SearchOptions{MaxSerializedBytes: tc.capBytes},
+			})
+			if err != nil {
+				t.Fatalf("searchRetainedOutput: %v", err)
+			}
+			if len(envelope.Matches) != tc.wantMatches {
+				t.Fatalf("matches = %+v, want %d", envelope.Matches, tc.wantMatches)
+			}
+			gotBytes := len(mustMarshalRetainedMatches(t, envelope.Matches))
+			if gotBytes > tc.capBytes {
+				t.Fatalf("serialized matches = %d, cap = %d", gotBytes, tc.capBytes)
+			}
+			if tc.wantContinuation == nil {
+				if envelope.Continuation != nil || !envelope.SearchComplete {
+					t.Fatalf("completion=%v continuation=%+v", envelope.SearchComplete, envelope.Continuation)
+				}
+			} else if envelope.Continuation == nil || envelope.Continuation.OffsetBytes != *tc.wantContinuation || envelope.Continuation.OffsetBytes <= envelope.OffsetBytes {
+				t.Fatalf("continuation=%+v, want strict progress to %d", envelope.Continuation, *tc.wantContinuation)
+			}
+		})
+	}
+}
+
+func TestSearchRetainedContextRecordOver64KiBSkipsAndProgresses(t *testing.T) {
+	contextLine := strings.Repeat("\"\\", 4000)
+	context := make([]string, 10)
+	for i := range context {
+		context[i] = fmt.Sprintf("context-%02d-%s", i, contextLine)
+	}
+	expected := retainedSearchMatch{LineStartByte: 0, Line: "HIT", After: context}
+	serialized := mustMarshalRetainedMatches(t, []retainedSearchMatch{expected})
+	if len(serialized) <= retainedSearchMaxSerializedBytes {
+		t.Fatalf("fixture serialized size = %d, want > %d", len(serialized), retainedSearchMaxSerializedBytes)
+	}
+	data := []byte("HIT\n" + strings.Join(context, "\n") + "\n")
+
+	envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
+		Regexp:        regexp.MustCompile(`^HIT$`),
+		SearchOptions: jobstore.SearchOptions{ContextLines: 10},
+	})
+	if err != nil {
+		t.Fatalf("searchRetainedOutput: %v", err)
+	}
+	if len(envelope.Matches) != 0 || len(envelope.SkippedOversized) != 1 || envelope.SkippedOversized[0].StartByte != 0 || envelope.SkippedOversized[0].EndByte != int64(len("HIT\n")) || !envelope.SearchComplete || envelope.Continuation != nil {
+		t.Fatalf("context envelope = %+v, want oversized match record skipped with complete progress", envelope)
+	}
+}
+
 func TestSearchRetainedStopsBefore64KiBOfSerializedMatchContext(t *testing.T) {
 	contextLine := strings.Repeat("x", 1800)
 	var lines []string
@@ -344,6 +509,37 @@ func TestSearchRetainedRunningDefersEOFFragment(t *testing.T) {
 	}
 }
 
+func TestSearchRetainedRunningPrunedUnterminatedPrefixDefersUntilNewline(t *testing.T) {
+	const retainedStart = int64(100)
+	source := newMemorySearchSource([]byte("HIT-growing"), retainedStart)
+	opts := retainedSearchOptions{
+		Regexp: regexp.MustCompile(`HIT`),
+		SearchOptions: jobstore.SearchOptions{
+			StartOffset:       retainedStart,
+			SkipPartialPrefix: true,
+			DeferEOFFragment:  true,
+		},
+	}
+
+	deferred, err := searchRetainedOutput(source, opts)
+	if err != nil {
+		t.Fatalf("deferred search: %v", err)
+	}
+	if deferred.SkippedPartialPrefix || len(deferred.Matches) != 0 || !deferred.SearchComplete || deferred.Continuation == nil || deferred.Continuation.OffsetBytes != retainedStart {
+		t.Fatalf("deferred envelope = %+v, want unconsumed continuation at %d", deferred, retainedStart)
+	}
+
+	source.data = append(source.data, []byte("\nHIT-next\n")...)
+	completed, err := searchRetainedOutput(source, opts)
+	if err != nil {
+		t.Fatalf("completed search: %v", err)
+	}
+	wantNextAt := retainedStart + int64(len("HIT-growing\n"))
+	if !completed.SkippedPartialPrefix || len(completed.Matches) != 1 || completed.Matches[0].Line != "HIT-next" || completed.Matches[0].LineStartByte != wantNextAt || !completed.SearchComplete || completed.Continuation != nil {
+		t.Fatalf("completed envelope = %+v, want skipped completed prefix then HIT-next at %d", completed, wantNextAt)
+	}
+}
+
 func TestSearchRetainedTerminalEvaluatesUnterminatedEOF(t *testing.T) {
 	data := []byte("ignore\nHIT-terminal")
 	envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
@@ -415,6 +611,15 @@ func lineStartOffset(lines []string, index int) int64 {
 		offset += int64(len(line) + 1)
 	}
 	return offset
+}
+
+func mustMarshalRetainedMatches(t *testing.T, matches []retainedSearchMatch) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(matches)
+	if err != nil {
+		t.Fatalf("marshal retained matches: %v", err)
+	}
+	return encoded
 }
 
 type memorySearchSource struct {

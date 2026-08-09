@@ -169,8 +169,12 @@ func searchRetainedOutput(source searchSource, opts retainedSearchOptions) (reta
 			return retainedSearchEnvelope{}, err
 		}
 		if ok {
+			if !line.complete && opts.DeferEOFFragment {
+				envelope.SearchComplete = true
+				envelope.Continuation = &retainedContinuation{OffsetBytes: line.start}
+				return envelope, nil
+			}
 			envelope.SkippedPartialPrefix = true
-			_ = line
 		}
 	}
 
@@ -224,10 +228,11 @@ func searchRetainedOutput(source searchSource, opts retainedSearchOptions) (reta
 		if err != nil {
 			return retainedSearchEnvelope{}, fmt.Errorf("marshal retained search match: %w", err)
 		}
-		// A line whose match record cannot fit even without prior matches is an
-		// oversized skipped line. Reporting it makes continuation progress rather
-		// than returning the same impossible match forever.
-		if len(candidateBytes)+2 > retainedSearchMaxSerializedBytes && opts.ContextLines == 0 {
+		// A match/context record that cannot fit in an otherwise empty response
+		// under the effective cap cannot be recovered by returning continuation at
+		// the same line. Report its interval as oversized and evaluate later lines
+		// so every call either finishes or advances.
+		if retainedMatchesSerializedSize(nil, len(candidateBytes)) > maxSerialized {
 			if len(envelope.SkippedOversized) >= retainedSearchMaxSkippedLines {
 				envelope.Continuation = &retainedContinuation{OffsetBytes: line.start}
 				return envelope, nil
