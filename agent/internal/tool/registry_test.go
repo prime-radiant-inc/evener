@@ -555,7 +555,7 @@ func TestToolRegistry_TruncatedMarkerCollisionsStillReportLimiting(t *testing.T)
 		},
 		{
 			name:  "head count",
-			model: "a\nb\n[3 total lines; showing first 2; narrow the pattern to see the rest]",
+			model: "a\nb\n[3 total lines; showing first 2; 1 lines omitted]",
 			limit: schema.ToolOutputLimit{MaxChars: 1000, MaxLines: 2, Strategy: schema.TruncHeadCount},
 		},
 		{
@@ -573,6 +573,9 @@ func TestToolRegistry_TruncatedMarkerCollisionsStillReportLimiting(t *testing.T)
 			got := executeTestTool(t, reg)
 			if !got.Truncated {
 				t.Fatal("limiter transformed source but Truncated is false")
+			}
+			if got.Output != tt.model {
+				t.Fatalf("fixture is not a marker collision: Output = %q, source = %q", got.Output, tt.model)
 			}
 			if got.RecoverableOutput != tt.model {
 				t.Fatalf("RecoverableOutput changed: got %q, want %q", got.RecoverableOutput, tt.model)
