@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
@@ -98,6 +101,56 @@ func newArtifactTestClient() *llm.Client {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	return client
+}
+
+type restoredArtifactCandidateCapture struct {
+	session *Session
+}
+
+func captureRestoredArtifactCandidate(t *testing.T, mutate func(*Session)) *restoredArtifactCandidateCapture {
+	t.Helper()
+	capture := &restoredArtifactCandidateCapture{}
+	previous := delegateRestoreSession
+	delegateRestoreSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, cfg RestoreSessionConfig) (*Session, error) {
+		child, err := RestoreSessionFromMetaWithConfig(client, profile, env, meta, cfg)
+		capture.session = child
+		if child != nil && mutate != nil {
+			mutate(child)
+		}
+		return child, err
+	}
+	t.Cleanup(func() { delegateRestoreSession = previous })
+	return capture
+}
+
+func assertInheritedRestoredCandidate(t *testing.T, root *Session, capture *restoredArtifactCandidateCapture) *Session {
+	t.Helper()
+	if capture.session == nil {
+		t.Fatal("restore path did not produce a candidate")
+	}
+	if capture.session.artifactStore != root.artifactStore {
+		t.Fatal("restored candidate did not inherit parent store")
+	}
+	if capture.session.ownsArtifactStore {
+		t.Fatal("restored candidate owns inherited store")
+	}
+	return capture.session
+}
+
+func assertDiscardedRestoredCandidate(t *testing.T, candidate *Session) {
+	t.Helper()
+	candidate.mu.Lock()
+	state := candidate.state
+	candidate.mu.Unlock()
+	if state != SessionClosed {
+		t.Fatalf("discarded candidate state = %s, want %s", state, SessionClosed)
+	}
+	candidate.eventsMu.RLock()
+	eventsClosed := candidate.eventsClosed
+	candidate.eventsMu.RUnlock()
+	if !eventsClosed {
+		t.Fatal("discarded candidate events channel remains open")
+	}
 }
 
 func TestSessionArtifactStoreSharedByDescendantsOnly(t *testing.T) {
@@ -266,15 +319,37 @@ func TestSessionArtifactStoreInheritedRestoredConstructorFailurePreservesStore(t
 	}
 }
 
+func TestRestoredDelegateArtifactStoreInheritance(t *testing.T) {
+	root, rec, childID, preflight := w3dlg_restoreFixture(t)
+	store := &recordingArtifactStore{}
+	replaceRootArtifactStore(t, root, store)
+	capture := captureRestoredArtifactCandidate(t, nil)
+
+	sub, err := root.restoreTerminalDelegateChildClaimed(rec, childID, preflight)
+	if err != nil {
+		t.Fatalf("restore delegate: %v", err)
+	}
+	if sub == nil || sub.sess == nil {
+		t.Fatal("restore delegate did not return a session")
+	}
+	candidate := assertInheritedRestoredCandidate(t, root, capture)
+	if candidate != sub.sess {
+		t.Fatal("captured candidate differs from tracked restored delegate")
+	}
+}
+
 func TestSessionArtifactStoreRestoredCandidateRejectionPreservesInheritedStore(t *testing.T) {
 	root, rec, childID, preflight := w3dlg_restoreFixture(t)
 	store := &recordingArtifactStore{}
 	replaceRootArtifactStore(t, root, store)
-	rec.DelegateRestore.FrozenToolNames = []string{"artifact-test-missing-tool"}
+	rec.DelegateRestore.FrozenToolNames = []string{"read_file"}
+	capture := captureRestoredArtifactCandidate(t, func(child *Session) { child.reg = tool.NewRegistry() })
 
-	if _, err := root.restoreTerminalDelegateChildClaimed(rec, childID, preflight); err == nil {
-		t.Fatal("restored candidate rejection unexpectedly succeeded")
+	if _, err := root.restoreTerminalDelegateChildClaimed(rec, childID, preflight); err == nil || !strings.Contains(err.Error(), "restored delegate required tool(s) unavailable: read_file") {
+		t.Fatalf("restored candidate rejection error = %v, want deliberate missing frozen-tool error", err)
 	}
+	candidate := assertInheritedRestoredCandidate(t, root, capture)
+	assertDiscardedRestoredCandidate(t, candidate)
 	if got := store.closeCount.Load(); got != 0 {
 		t.Fatalf("inherited store closed while rejecting candidate %d times", got)
 	}
@@ -288,6 +363,7 @@ func TestSessionArtifactStoreRestoredCandidateCollisionPreservesInheritedStore(t
 	root, rec, childID, preflight := w3dlg_restoreFixture(t)
 	store := &recordingArtifactStore{}
 	replaceRootArtifactStore(t, root, store)
+	capture := captureRestoredArtifactCandidate(t, nil)
 	incumbent := &subagent{id: childID, sess: newTestSession(t), status: SubagentCompleted, done: make(chan struct{})}
 	root.delegateRestoreBeforeTrack = func() { root.subagents.track(incumbent) }
 	t.Cleanup(func() {
@@ -300,6 +376,8 @@ func TestSessionArtifactStoreRestoredCandidateCollisionPreservesInheritedStore(t
 	if err != nil || got != incumbent {
 		t.Fatalf("collision restore = (%v, %v), want incumbent", got, err)
 	}
+	candidate := assertInheritedRestoredCandidate(t, root, capture)
+	assertDiscardedRestoredCandidate(t, candidate)
 	if got := store.closeCount.Load(); got != 0 {
 		t.Fatalf("inherited store closed while discarding collision candidate %d times", got)
 	}
