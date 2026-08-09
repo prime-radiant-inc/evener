@@ -58,6 +58,10 @@ func (s *Store) Put(data []byte) (string, error) {
 		_ = os.Remove(path)
 		return "", err
 	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
 	s.refs[ref] = path
 	return ref, nil
 }

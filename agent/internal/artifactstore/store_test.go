@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -24,6 +26,14 @@ func TestStorePutOpenRoundTrip(t *testing.T) {
 	}
 	if !strings.HasPrefix(ref, "artifact:") {
 		t.Fatalf("ref=%q", ref)
+	}
+	if len(ref) != len("artifact:")+32 {
+		t.Fatalf("ref length = %d, want %d: %q", len(ref), len("artifact:")+32, ref)
+	}
+	for _, c := range ref[len("artifact:"):] {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			t.Fatalf("ref contains non-lowercase-hex ID: %q", ref)
+		}
 	}
 
 	f, err := s.Open(ref)
@@ -92,6 +102,58 @@ func TestStorePermissionsAndClose(t *testing.T) {
 	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStoreFileModeUnderRestrictiveUmask(t *testing.T) {
+	if os.Getenv("ARTIFACTSTORE_UMASK_HELPER") == "1" {
+		s, err := New(os.Getenv("ARTIFACTSTORE_UMASK_BASE"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		ref, err := s.Put([]byte("restrictive umask"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(s.refs[ref])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("file mode under umask 0777 = %o, want 600", got)
+		}
+		return
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no process umask")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("restrictive-umask shell helper unavailable: %v", err)
+	}
+
+	cmd := exec.Command("sh", "-c", "umask 0777; exec \"$1\" -test.run '^TestStoreFileModeUnderRestrictiveUmask$' -test.v", "artifactstore-umask", os.Args[0])
+	cmd.Env = append(os.Environ(), "ARTIFACTSTORE_UMASK_HELPER=1", "ARTIFACTSTORE_UMASK_BASE="+t.TempDir())
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("restrictive-umask helper: %v\n%s", err, output)
+	}
+}
+
+func TestStorePutAfterClose(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Put([]byte("must not be written")); !errors.Is(err, ErrExpired) {
+		t.Fatalf("Put after Close: %v", err)
+	}
+	if _, err := os.Stat(s.dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("directory after Put following Close: %v", err)
 	}
 }
 
@@ -171,5 +233,78 @@ func TestStorePutCloseRaceDoesNotLeak(t *testing.T) {
 		if _, err := os.Stat(s.dir); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("directory after race: %v", err)
 		}
+	}
+}
+
+func TestStoreOpenCloseRaceIsLinearizable(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte("mapped bytes\x00\n")
+	ref, err := s.Put(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const openers = 32
+	start := make(chan struct{})
+	ready := make(chan struct{}, openers+1)
+	type openResult struct {
+		data []byte
+		err  error
+	}
+	results := make(chan openResult, openers)
+	var wg sync.WaitGroup
+	wg.Add(openers)
+	for i := 0; i < openers; i++ {
+		go func() {
+			defer wg.Done()
+			ready <- struct{}{}
+			<-start
+			f, err := s.Open(ref)
+			if err != nil {
+				results <- openResult{err: err}
+				return
+			}
+			data, readErr := io.ReadAll(f)
+			closeErr := f.Close()
+			if readErr != nil {
+				results <- openResult{err: readErr}
+				return
+			}
+			if closeErr != nil {
+				results <- openResult{err: closeErr}
+				return
+			}
+			results <- openResult{data: data}
+		}()
+	}
+	closeResult := make(chan error, 1)
+	go func() {
+		ready <- struct{}{}
+		<-start
+		closeResult <- s.Close()
+	}()
+	for i := 0; i < openers+1; i++ {
+		<-ready
+	}
+	close(start)
+	wg.Wait()
+	if err := <-closeResult; err != nil {
+		t.Fatal(err)
+	}
+	close(results)
+	for result := range results {
+		if result.err != nil && !errors.Is(result.err, ErrExpired) {
+			t.Errorf("Open during Close: %v", result.err)
+			continue
+		}
+		if result.err == nil && !bytes.Equal(result.data, want) {
+			t.Errorf("opened bytes = %q, want %q", result.data, want)
+		}
+	}
+	if _, err := os.Stat(s.dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("directory after Open/Close race: %v", err)
 	}
 }
