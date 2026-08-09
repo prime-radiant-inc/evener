@@ -73,8 +73,9 @@ import { errorText, sessionActionError, sessionActionHeadline } from "../../../p
 import type { ThreadModel } from "../../../protocol/model";
 import { EMPTY_TASKS_PANEL_ENTRY, tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
 import { threadsStore } from "../../../stores/threads";
-import { Button, Chip, type ChipTone, EmptyState, Meter, Sheet, useToasts } from "../../../widgets";
+import { Button, Chip, type ChipTone, EmptyState, Markdown, Meter, Sheet, useToasts } from "../../../widgets";
 import { Disclosure } from "../../../widgets/disclosure";
+import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 import { parseTaskListData, type TaskRow, type TaskStatus } from "./taskData";
@@ -127,6 +128,12 @@ const CLASS = {
   metaKey: requireClass(styles.metaKey, "taskspanel.module.css", "metaKey"),
   metaValue: requireClass(styles.metaValue, "taskspanel.module.css", "metaValue"),
   times: requireClass(styles.times, "taskspanel.module.css", "times"),
+  promptDetails: requireClass(styles.promptDetails, "taskspanel.module.css", "promptDetails"),
+  promptSummary: requireClass(styles.promptSummary, "taskspanel.module.css", "promptSummary"),
+  promptLabel: requireClass(styles.promptLabel, "taskspanel.module.css", "promptLabel"),
+  promptChevron: requireClass(styles.promptChevron, "taskspanel.module.css", "promptChevron"),
+  promptPreview: requireClass(styles.promptPreview, "taskspanel.module.css", "promptPreview"),
+  promptBody: requireClass(styles.promptBody, "taskspanel.module.css", "promptBody"),
   notesHead: requireClass(styles.notesHead, "taskspanel.module.css", "notesHead"),
   noNotes: requireClass(styles.noNotes, "taskspanel.module.css", "noNotes"),
   notesList: requireClass(styles.notesList, "taskspanel.module.css", "notesList"),
@@ -216,12 +223,13 @@ function taskDisclosureId(sessionRef: string, taskId: number): string {
 // part omits itself when its data is absent rather than rendering an empty
 // shell - a freshly appended task with no deps, no reasoning override, no
 // notes and no prompt shows the meta strip and "No updates yet." only.
-function TaskExpandedBody({ task }: { task: TaskRow }) {
+function TaskExpandedBody({ task, sessionRef }: { task: TaskRow; sessionRef: string }) {
   return (
     <div className={CLASS.expandedBody} data-testid="task-expanded">
       <TaskMetaStrip task={task} />
       <TaskTimestamps task={task} />
-      {/* Task 7 inserts TaskPromptDisclosure here; Task 8 replaces the notes fallback with TaskNotesTimeline */}
+      <TaskPromptDisclosure task={task} sessionRef={sessionRef} />
+      {/* Task 8 replaces the notes fallback with TaskNotesTimeline */}
       <TaskNotesTimeline task={task} />
     </div>
   );
@@ -266,6 +274,39 @@ function TaskTimestamps({ task }: { task: TaskRow }) {
         </span>
       )}
     </div>
+  );
+}
+
+function TaskPromptDisclosure({ task, sessionRef }: { task: TaskRow; sessionRef: string }) {
+  if (task.prompt.trim() === "") return null;
+  const id = `${taskDisclosureId(sessionRef, task.id)}\0prompt`;
+  const open = isDisclosureOpen(id, false);
+  const firstLine = task.prompt.split("\n").find((line) => line.trim() !== "") ?? "";
+  return (
+    <details className={CLASS.promptDetails} data-testid="task-prompt" open={open}>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; see SteeringItem.tsx */}
+      <summary
+        className={CLASS.promptSummary}
+        data-testid="task-prompt-summary"
+        onClick={(e) => {
+          e.preventDefault();
+          toggleDisclosure(id, false);
+        }}
+      >
+        <span className={CLASS.promptLabel}>Prompt</span>
+        <span className={CLASS.promptChevron} aria-hidden="true" data-open={open ? "true" : "false"}>
+          ▸
+        </span>
+        <span className={CLASS.promptPreview}>
+          <Markdown source={firstLine} />
+        </span>
+      </summary>
+      {open && (
+        <div className={CLASS.promptBody} data-testid="task-prompt-body">
+          <Markdown source={task.prompt} />
+        </div>
+      )}
+    </details>
   );
 }
 
@@ -329,7 +370,7 @@ function TaskRowView({ task, sessionRef, settled = false }: { task: TaskRow; ses
     // children real <li>s, the list semantics screen readers rely on.
     <li data-testid="task-row">
       <Disclosure id={taskDisclosureId(sessionRef, task.id)} summary={summary}>
-        <TaskExpandedBody task={task} />
+        <TaskExpandedBody task={task} sessionRef={sessionRef} />
       </Disclosure>
     </li>
   );

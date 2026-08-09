@@ -328,6 +328,44 @@ test("a task row starts collapsed; clicking its summary expands its meta and upd
   expect(body.querySelector("[data-testid='task-notes']")?.textContent).toContain("blocked on #1");
 });
 
+test("the prompt disclosure shows a one-line markdown preview collapsed and the full markdown body open", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({
+    data: [
+      {
+        ...RICH_TASK,
+        prompt: "Execute **Task 6** from the plan:\nread_transcript `job/artifact` API and errors.",
+      },
+    ],
+  }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByText("Wire up expand/collapse"));
+
+  const prompt = screen.getByTestId("task-prompt");
+  expect(prompt.querySelector(".promptPreview strong, [class*='promptPreview'] strong")).toBeTruthy();
+  expect(prompt.textContent).not.toContain("**");
+
+  await user.click(screen.getByTestId("task-prompt-summary"));
+
+  const body = await screen.findByTestId("task-prompt-body");
+  expect(body.querySelector("code")?.textContent).toBe("job/artifact");
+});
+
+test("a task with a blank prompt renders no prompt disclosure", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: [{ ...RICH_TASK, prompt: "" }] }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByText("Wire up expand/collapse"));
+
+  expect(screen.queryByTestId("task-prompt")).toBeNull();
+});
+
 test("clicking an expanded row's summary again collapses it", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();

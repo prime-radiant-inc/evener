@@ -191,6 +191,72 @@
   color: var(--ink-low);
 }
 
+.promptDetails {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
+
+.promptSummary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  list-style: none;
+  cursor: pointer;
+  color: var(--ink-mid);
+}
+
+.promptSummary::-webkit-details-marker {
+  display: none;
+}
+
+.promptLabel {
+  flex: none;
+}
+
+.promptChevron {
+  display: inline-flex;
+  flex: none;
+  color: var(--ink-low);
+}
+
+.promptChevron[data-open="true"] {
+  transform: rotate(90deg);
+}
+
+.promptPreview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-low);
+}
+
+/* Flatten the Markdown widget's block structure into the single preview
+ * line: paragraphs and headings go inline, margins die, the ellipsis comes
+ * from the parent's nowrap+overflow. */
+.promptPreview p,
+.promptPreview h1,
+.promptPreview h2,
+.promptPreview h3,
+.promptPreview h4,
+.promptPreview ul,
+.promptPreview ol,
+.promptPreview blockquote,
+.promptPreview pre {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+}
+
+.promptBody {
+  margin-top: var(--space-1);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+}
+
 .notesHead {
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
