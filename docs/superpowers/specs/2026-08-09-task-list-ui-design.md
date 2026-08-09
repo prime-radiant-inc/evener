@@ -25,7 +25,7 @@ The user reviewed four mockups rendered with a real 20-task session list (`mocku
 
 `chrome/taskData.ts`:
 
-- `TaskRow` gains `createdAt: string`, `updatedAt: string`, and `completedAt?: string` (ISO strings from the wire, kept as strings; formatting is a view concern).
+- `TaskRow` gains `createdAt?: string`, `updatedAt?: string`, and `completedAt?: string` (ISO strings from the wire, kept as strings; formatting is a view concern). They are optional in the type because the parser stays tolerant: it carries them when present, never drops a row for lacking them. `created_at` / `updated_at` are always present on the real wire; `completed_at` exists only for done tasks. Views omit time displays for absent fields.
 - `parseRow` carries them across. `created_at` / `updated_at` are always present on the wire; `completed_at` exists only for done tasks.
 - The file's header comment currently records that these fields are intentionally not carried. Update it: the redesign consumes them, and the reference to the legacy panel's field set no longer applies.
 
@@ -89,7 +89,7 @@ All in `cmd/serf-hub/frontend/src/panes/session/chrome/`, styles in `taskspanel.
 - `taskGroups.ts` (new) — `groupTasks(rows): { inProgress, open, settled }`. Pure, unit-tested. Presentational only; never reorders within a group.
 - `TasksPanel.tsx` —
   - `TaskRowView` restructured: two-line summary for live rows, one-line for settled; `dim` and `cancelled` presentation flags passed down from the group renderer.
-  - `TaskDetails` replaced by `TaskExpandedBody`, composed from `TaskMetaStrip`, `TaskTimestamps`, `TaskPromptDisclosure` (uses `Disclosure` + `Markdown`), and `TaskNotesTimeline`.
+  - `TaskDetails` replaced by `TaskExpandedBody`, composed from `TaskMetaStrip`, `TaskTimestamps`, `TaskPromptDisclosure`, and `TaskNotesTimeline`. `TaskPromptDisclosure` is hand-rolled on `isDisclosureOpen`/`toggleDisclosure` exactly the way `SteeringItem.tsx` does (the shared `Disclosure` widget renders its chevron before the summary content; the session inline grammar this design copies puts the chevron after the label) and renders through the `Markdown` widget.
   - `TasksPanelBody`'s list render maps over `groupTasks(rows)` instead of `rows`; adds the body header row.
   - The old `detailList`/`detailRow`/`detailLabel`/`detailValue`/`detailPrompt` CSS leaves with the `dl`; new classes follow the same token discipline (no color literals; token-contract test gates this in CI).
 
