@@ -229,7 +229,6 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("artifact store close incomplete: %v", err)})
 			}
 		}
-
 		// Native worktree tools spec §9 step 4 + §5 close-unlock: dispose the
 		// isolation delegate lanes this session created and unlock its own
 		// occupied managed worktree. Both run AFTER child sessions close (a

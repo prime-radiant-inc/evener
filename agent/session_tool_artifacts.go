@@ -14,6 +14,10 @@ type artifactStore interface {
 
 var _ artifactStore = (*artifactstore.Store)(nil)
 
-func newSessionArtifactStore() (artifactStore, error) {
+var sessionArtifactStoreFactory = func() (artifactStore, error) {
 	return artifactstore.New("")
+}
+
+func newSessionArtifactStore() (artifactStore, error) {
+	return sessionArtifactStoreFactory()
 }
