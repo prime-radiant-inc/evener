@@ -50,7 +50,7 @@ The tool keeps its current name for compatibility. Its description changes from 
 
 ## Minimal artifact store
 
-The Serf process owns one concurrency-safe artifact store and shares it with all root and child sessions in that process. The top-level process creates the store; child sessions inherit the same pointer. Process shutdown closes the store and removes its temporary directory.
+The Serf host owns one concurrency-safe artifact store and shares it with all root and child sessions in that process. The host creates the store beside its session manager; child sessions inherit the same pointer. `Session.Close` does not close the shared store. Host shutdown closes it and removes its temporary directory.
 
 The store uses ordinary temporary files. It needs only these operations:
 
@@ -111,7 +111,7 @@ Broaden `offset_bytes`:
 - Session refs: unchanged; it still requires `expand_turn`.
 - `job:` and `artifact:` refs: the zero-based raw byte offset of a fixed 16 KiB page.
 
-The default read for `job:` and `artifact:` starts at byte offset 0 of the available data. This removes the present tail-only surprise. The response includes a continuation when more bytes remain.
+An `artifact:` read with no operation returns its first page at offset 0. A `job:` read with an explicit `offset_bytes` returns a raw page; the caller uses `offset_bytes: 0` to request the lifetime head. A `job:` read with neither `offset_bytes` nor `output_match` keeps the existing rendered markdown view. This rule preserves delegate structured results and all existing callers while adding an exact paging path.
 
 Do not add these features in the first version:
 
@@ -126,12 +126,12 @@ Byte offsets already express head reads and continuation. Search results include
 
 ## Page response
 
-A `job:` or `artifact:` page returns a small JSON envelope:
+A `job:` page requested with `offset_bytes`, or an `artifact:` page requested with or without it, returns a small JSON envelope:
 
 ```json
 {
   "transcript_ref": "artifact:…",
-  "format": "raw",
+  "representation": "raw_bytes",
   "content_type": "text/plain",
   "page": {
     "offset_bytes": 0,
@@ -151,7 +151,7 @@ Use the existing UTF-8/base64 rule from transcript expansion: return UTF-8 when 
 
 For an `artifact:` ref, `retained_start_bytes` is always 0. For a pruned `job:` ref, it is the lifetime offset of the first retained byte. Job-page offsets are lifetime offsets, not offsets relative to the retained file. The first available job page therefore begins at `retained_start_bytes`.
 
-If a caller omits `offset_bytes` for a pruned job, the read begins at `retained_start_bytes` and reports that value. It never pretends to begin at lifetime offset 0.
+If a caller requests a job offset before `retained_start_bytes`, including `offset_bytes: 0` after pruning, the read returns `output_unavailable` and names the first available offset. The caller can then start at `retained_start_bytes`. A raw job page never pretends that retained output begins at lifetime offset 0.
 
 ## Search response
 
@@ -166,8 +166,7 @@ If a caller omits `offset_bytes` for a pruned job, the read begins at `retained_
   "total_bytes": 42000,
   "matches": [
     {
-      "start_byte": 18201,
-      "end_byte": 18234,
+      "line_start_byte": 18201,
       "before": ["…"],
       "line": "FAIL package/example",
       "after": ["…"]
@@ -176,7 +175,7 @@ If a caller omits `offset_bytes` for a pruned job, the read begins at `retained_
 }
 ```
 
-Search uses RE2 and the repository's existing bounded line-reading primitives. `context_lines` follows the grep tool's existing 0–10 convention.
+Search uses RE2 and the repository's existing bounded line-reading primitives. `line_start_byte` is the absolute offset of the returned matching line. `context_lines` follows the grep tool's existing 0–10 convention. If the bounded scanner skips an oversized line, the response reports the skip; search never silently claims that it scanned every retained line.
 
 The search result remains subject to normal tool-output limits. If many matches make the search result itself too large, the generic invariant retains that exact result and returns another `artifact:` ref. This avoids a second search-specific paging system.
 
@@ -191,7 +190,9 @@ The reader rejects unsupported combinations instead of ignoring them.
 - Invalid RE2 → `invalid_request` with the compile error.
 - `output_match` on a session ref → `invalid_request`; session search is out of scope.
 - `range` or `expand_turn` on `job:` or `artifact:` → `invalid_request`.
-- `format=outline` or `format=jsonl` on `job:` or `artifact:` → `invalid_request`.
+- Any explicit `format` on an `artifact:` ref → `invalid_request`; artifact reads use the raw page or search envelope.
+- `format=outline` or `format=jsonl` on a `job:` ref → `invalid_request`.
+- `offset_bytes` or `output_match` combined with any explicit `format` on a `job:` ref → `invalid_request`.
 - Offset before a job's `retained_start_bytes` → `output_unavailable` with the first available offset.
 - Offset beyond EOF → `invalid_request` with the valid byte interval.
 - Malformed artifact ref → `invalid_request`.
@@ -203,9 +204,7 @@ A ref from an earlier process is expected to expire. Persisted transcripts may c
 
 Existing session-ref reads do not change. Their formats, ranges, turn expansion, fixed page size, and continuation behavior remain intact.
 
-Existing `job:` calls without new arguments change from a rendered markdown tail to a raw page from the first retained byte. This is an intentional behavior change. It fixes the tail-only default and makes continuation possible. The tool description and tests must call it out.
-
-If preserving the old rendered job view proves necessary during implementation, keep it behind `format=markdown` and make raw paging the default only when `offset_bytes` or `output_match` is present. Prefer the simpler raw-page default unless a current caller test demonstrates a compatibility need.
+Existing `job:` calls without `offset_bytes` or `output_match` keep the rendered markdown view. This preserves the current shell-log presentation and the delegate job's appended `structured_result`. Passing `offset_bytes`, including zero, selects raw paging. Passing `output_match` selects search.
 
 Generic tools need no schema or executor changes. Their only visible change occurs on truncation: the warning gains an exact byte count, an artifact ref, and a concrete next call.
 
@@ -252,7 +251,7 @@ Read `docs/testing.md` before changing tests. All tests use synthetic output and
 - Page a pruned job from `retained_start_bytes` and report the dropped prefix.
 - Reject an offset in a pruned prefix.
 - Search retained job output with context and absolute lifetime offsets.
-- Keep delegate-job structured result coverage or expose it through a documented page representation.
+- Keep the default delegate-job markdown view and its appended structured result unchanged. Raw paging and search cover the retained delegate report bytes only.
 
 ### Receipt replay
 
