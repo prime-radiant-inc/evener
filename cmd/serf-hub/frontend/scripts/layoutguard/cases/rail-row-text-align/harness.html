@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>rail-row-text-align layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+  }
+  /* The rail's own column width at its default 280px; any container inset
+     applies equally to every row, so only the width matters for fidelity. */
+  .railBox {
+    width: 280px;
+    box-sizing: border-box;
+  }
+  /* Collision correction, NOT component CSS: layoutguard loads every
+     .module.css unscoped (resolve-composes.mjs), so tree.module.css's `.row`
+     and Rail.module.css's `.row` both land on BOTH the treeitem div and
+     RailRow's inner content span. In the real build the two are different
+     hashed classes; production gives the treeitem tree's `padding: 0
+     --space-2` only, and the inner span Rail's `padding-left: 14px` only.
+     resolved.css concatenates tree.module.css BEFORE Rail.module.css, so
+     without correction the span would inherit tree's right padding and the
+     treeitem would inherit Rail's 14px left padding. The element+class
+     selectors below (specificity 0-1-1) outrank the bare `.row` (0-1-0) and
+     restore each side's production padding. The span keeps its padding-left:
+     that is Rail.module.css's outdent home, the property under test. */
+  span.row {
+    min-height: 0;
+    border-radius: 0;
+    padding-top: 0;
+    padding-right: 0;
+    padding-bottom: 0;
+  }
+  div.row {
+    padding-left: var(--space-2);
+  }
+</style>
+</head>
+<body data-font-size="m">
+<!-- Reproduces the rail tree's real DOM (widgets/tree/index.tsx's
+     treeitem-then-role=group sibling structure; RailRow.tsx's SessionRow and
+     InactiveFoldRow content spans) against the REAL class names from
+     tree.module.css and Rail.module.css. The geometry under test:
+       - a dotted row's label and a quiet row's label start at the same x
+         (the dot outdents into the row's leading padding);
+       - the dot hangs fully INSIDE the row's box, left of the label;
+       - the inactive fold's label lines up with its sibling session row's;
+       - a branch row's chevron trails its label text. -->
+<div class="railBox">
+  <div class="section">
+    <div class="tree">
+
+      <div role="treeitem" class="row" id="ti-dotted" aria-expanded="true" aria-level="1">
+        <span class="row">
+          <span class="textCol">
+            <span class="titleLine">
+              <span class="signal" id="sig-dotted" data-testid="rail-row-signal"></span>
+              <span class="label" id="label-dotted">Verify Vite Build</span>
+              <button type="button" class="chevronButton" id="chev-dotted" aria-hidden="true" tabindex="-1">&#8250;</button>
+            </span>
+            <span class="activity">working &middot; task-list-ui</span>
+          </span>
+        </span>
+      </div>
+      <div role="group" class="group">
+        <div role="treeitem" class="row" aria-level="2">
+          <span class="row">
+            <span class="textCol">
+              <span class="titleLine">
+                <span class="label" id="label-child">Fix round 1</span>
+              </span>
+            </span>
+          </span>
+        </div>
+        <div role="treeitem" class="row" aria-expanded="false" aria-level="2">
+          <span class="row" data-testid="rail-row-inactive-fold">
+            <span class="textCol">
+              <span class="titleLine">
+                <span class="label" id="label-fold">Inactive subagents (3)</span>
+                <button type="button" class="chevronButton" aria-hidden="true" tabindex="-1">&#8250;</button>
+              </span>
+            </span>
+          </span>
+        </div>
+      </div>
+
+      <div role="treeitem" class="row" id="ti-quiet" aria-level="1">
+        <span class="row">
+          <span class="textCol">
+            <span class="titleLine">
+              <span class="label" id="label-quiet">Rename Session Gloss</span>
+            </span>
+          </span>
+        </span>
+      </div>
+
+    </div>
+  </div>
+</div>
+<script>
+window.measure = () => {
+  const rect = (id) => {
+    const r = document.getElementById(id).getBoundingClientRect();
+    return { left: r.left, right: r.right };
+  };
+  return {
+    dottedLabel: rect("label-dotted"),
+    quietLabel: rect("label-quiet"),
+    signal: rect("sig-dotted"),
+    dottedTreeitem: rect("ti-dotted"),
+    chevron: rect("chev-dotted"),
+    childLabel: rect("label-child"),
+    foldLabel: rect("label-fold"),
+  };
+};
+</script>
+</body>
+</html>

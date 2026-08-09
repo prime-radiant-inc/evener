@@ -349,37 +349,37 @@ describe("inactive-subagent fold row", () => {
     expect(toggle).toHaveBeenCalled();
   });
 
-  // The chevron is the PARENT's affordance, so the row carries the class whose
-  // padding-left (pinned by the two CSS-source tests below) left-justifies the
-  // chevron gutter at the parent session's label x, rather than leaving it one
-  // raw nesting level in from the parent's own row edge.
-  test("carries the alignment class on its root", () => {
-    const inactiveFoldClass = railStyles.inactiveFold;
-    if (inactiveFoldClass === undefined) throw new Error('Rail.module.css is missing the "inactiveFold" class');
+  // The fold's text lines up with every other row at its nesting depth: it
+  // carries no alignment class of its own (the old .inactiveFold padding
+  // overrides existed to left-justify a LEADING chevron at the parent's
+  // label x - the chevron trails the label now, so there is nothing to
+  // align but the text itself, which the shared .row rule already does).
+  test("carries no alignment class - its text lines up with its depth's rows", () => {
     render(<RailRow node={inactiveFoldRailNode(2)} info={info({ hasChildren: true })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-inactive-fold").classList.contains(inactiveFoldClass)).toBe(true);
+    expect(screen.getByTestId("rail-row-inactive-fold").className).toBe(railStyles.row as string);
   });
 
-  // Quiet parent (no signal dot): parent label x = chevron (--space-4) + gap
-  // (--space-2); the fold already starts one group step (1px border + --space-2
-  // padding) in from the parent's content edge, so the row owes the difference.
-  test("the fold chevron aligns to a quiet parent's label x", () => {
+  test("the stylesheet carries no inactiveFold override at all", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const css = readFileSync(join(here, "Rail.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(css).toMatch(/\.inactiveFold\s*\{\s*padding-left:\s*calc\(var\(--space-4\)\s*-\s*1px\);\s*\}/);
+    expect(css).not.toMatch(/\.inactiveFold/);
   });
 
-  // Dotted parent: the label moves one signal column (6px dot + --space-2 gap)
-  // right, so the override - keyed off the parent treeitem's own .signal, via
-  // the role="group" sibling widgets/tree renders - adds exactly that column.
-  // The child combinators matter: a deeper fold must take its OWN parent's
-  // alignment, never an ancestor's.
-  test("the fold chevron aligns to a dotted parent's label x", () => {
+  // The outdented-dot contract the whole list's alignment rests on: .row
+  // reserves the leading padding the dot hangs in, and .signal's negative
+  // margin exactly cancels the dot's own width (6px) plus the title line's
+  // gap (--space-1), so a dotted row's title and a quiet row's title start
+  // at the same x.
+  test("the row reserves the dot's outdent padding", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const css = readFileSync(join(here, "Rail.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(css).toMatch(
-      /\[role="treeitem"\]:has\(>\s*\.row\s*>\s*\.signal\)\s*\+\s*\[role="group"\]\s*>\s*\[role="treeitem"\]\s*>\s*\.inactiveFold\s*\{\s*padding-left:\s*calc\(var\(--space-4\)\s*\+\s*var\(--space-2\)\s*\+\s*6px\s*-\s*1px\);\s*\}/,
-    );
+    expect(css).toMatch(/\.row\s*\{[^}]*padding-left:\s*14px;/);
+  });
+
+  test("the signal dot outdents by exactly its own advance", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const css = readFileSync(join(here, "Rail.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(css).toMatch(/\.signal\s*\{[^}]*width:\s*6px;[^}]*margin-left:\s*-10px;/);
   });
 });
 
@@ -405,15 +405,15 @@ describe("session row", () => {
     expect(screen.queryByTestId("rail-chevron")).toBeNull();
   });
 
-  // The chevron gutter is reserved on EVERY row, filled only on a branch: a
-  // leaf that rendered nothing here gained no chevron width, so its title
-  // started further left than its branch siblings' and rows with children read
-  // as a weird extra indent.
-  test("a leaf session still reserves the chevron's gutter, empty", () => {
+  // The chevron trails the title text, so a leaf row renders nothing for it
+  // and reserves nothing either: unlike the old leading gutter (whose
+  // conditional fill moved every title after it), a missing TRAILING chevron
+  // leaves no hole - the label is the title line's first text either way.
+  test("a leaf session renders no chevron and holds no slot for one", () => {
     render(<RailRow node={sessionRailNode(apiNode())} info={info({ hasChildren: false })} actions={actions()} />);
-    const gutter = screen.getByTestId("rail-row-chevron-gutter");
-    expect(gutter).toBeTruthy();
-    expect(gutter.querySelector("*")).toBeNull();
+    expect(screen.queryByTestId("rail-chevron")).toBeNull();
+    const label = screen.getByText("Fix flaky test");
+    expect(label.nextElementSibling).toBeNull();
   });
 
   test("shows a chevron for a branch session (subagent cluster) that calls info.toggle", async () => {
@@ -426,12 +426,14 @@ describe("session row", () => {
     expect(rowInfo.toggle).toHaveBeenCalledTimes(1);
   });
 
-  // Same leading structure, same order, whether or not a row has children -
-  // which is what makes one title x-position hold across a mixed tree. The
-  // signal slot participates only when there is a dot (state "active" here);
-  // a quiet row's text column follows the chevron gutter directly.
+  // The title line's anatomy is signal-dot (outdented) then label then
+  // trailing chevron, in that order, whether or not the row has children -
+  // the chevron is simply absent on a leaf. This is what keeps one title
+  // x-position across a mixed tree: the dot hangs in the row's leading
+  // padding (see .signal in Rail.module.css), so it participates in the DOM
+  // order without shifting the label.
   test.each([true, false])(
-    "the leading slots are chevron-gutter then signal-gutter (hasChildren %s)",
+    "the title line is signal-dot, label, then trailing chevron (hasChildren %s)",
     (hasChildren) => {
       render(
         <RailRow
@@ -440,21 +442,20 @@ describe("session row", () => {
           actions={actions()}
         />,
       );
-      const chevronGutter = screen.getByTestId("rail-row-chevron-gutter");
       const signal = screen.getByTestId("rail-row-signal");
-      const row = chevronGutter.parentElement;
-      expect(row).toBeTruthy();
-      expect([...(row?.children ?? [])].slice(0, 2)).toEqual([chevronGutter, signal]);
+      const label = screen.getByText("Fix flaky test");
+      const titleLine = signal.parentElement;
+      expect(titleLine).toBeTruthy();
+      const expected = hasChildren ? [signal, label, screen.getByTestId("rail-chevron")] : [signal, label];
+      expect([...(titleLine?.children ?? [])]).toEqual(expected);
     },
   );
 
-  test("a quiet row holds no signal slot between the chevron gutter and the text", () => {
+  test("a quiet row holds no signal slot; its title line leads with the label", () => {
     render(<RailRow node={sessionRailNode(apiNode({ state: "idle" }))} info={info()} actions={actions()} />);
     expect(screen.queryByTestId("rail-row-signal")).toBeNull();
-    const chevronGutter = screen.getByTestId("rail-row-chevron-gutter");
-    const row = chevronGutter.parentElement;
-    expect(row).toBeTruthy();
-    expect(row?.children[1]?.textContent).toContain("Fix flaky test");
+    const label = screen.getByText("Fix flaky test");
+    expect(label.parentElement?.firstElementChild).toBe(label);
   });
 
   test("shows a pin star on a nested row with a section assignment, and hides it on flat Live/pinned rows", () => {
@@ -1142,12 +1143,14 @@ describe("session row", () => {
 
     expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/main/);
     // The row's main line holds the title and the age, and nothing else
-    // that reserves width: every other text node lives on line two.
+    // that reserves width: every other text node lives on line two. The
+    // walk is label -> titleLine -> textCol -> row.
     const title = screen.getByText("Fix flaky test");
-    const mainLine = title.parentElement?.parentElement;
+    const textCol = title.parentElement?.parentElement;
+    const mainLine = textCol?.parentElement;
     expect(mainLine).toBeTruthy();
     const mainLineText = [...(mainLine?.children ?? [])]
-      .filter((child) => child !== title.parentElement)
+      .filter((child) => child !== textCol)
       .map((child) => child.textContent)
       .join(" ");
     expect(mainLineText).not.toMatch(/main/);
@@ -1255,14 +1258,17 @@ describe("project row", () => {
     expect(acts.onDeleteProjectRequest).toHaveBeenCalledWith(project);
   });
 
-  test("a childless project reserves the chevron gutter too, so its name lines up with a parent project's", () => {
+  test("a childless project renders no chevron; a parent project's chevron trails its name", () => {
     const { rerender } = render(
       <RailRow node={projectRailNode(apiProject())} info={info({ hasChildren: false })} actions={actions()} />,
     );
-    expect(screen.getByTestId("rail-row-chevron-gutter").querySelector("*")).toBeNull();
+    expect(screen.queryByTestId("rail-chevron")).toBeNull();
 
     rerender(<RailRow node={projectRailNode(apiProject())} info={info({ hasChildren: true })} actions={actions()} />);
-    expect(within(screen.getByTestId("rail-row-chevron-gutter")).getByTestId("rail-chevron")).toBeTruthy();
+    // Inline, right after the project name - the same trailing position a
+    // session row's chevron takes, before the star/Badge slots.
+    const name = screen.getByText("Proj");
+    expect(name.nextElementSibling).toBe(screen.getByTestId("rail-chevron"));
   });
 
   test("menu never offers Rename for a project row - only sessions can be renamed", async () => {
@@ -1467,12 +1473,13 @@ describe("row actions overlay (Rail.module.css)", () => {
     expect(actionsRule).toMatch(/padding-left:\s*var\(--space-\d\)/);
   });
 
-  // Both leading gutters reserve a FIXED width and refuse to flex, which is
-  // what makes a title's x-position a constant across a mixed tree. jsdom
-  // applies no stylesheet, so this is only checkable against the (comment-
-  // stripped) stylesheet text.
-  test.each([".chevron", ".signal"])("the %s gutter reserves a fixed width and never flexes", (selector) => {
-    const rule = ruleFor(selector);
+  // The signal dot keeps a FIXED width and refuses to flex: its outdent
+  // arithmetic (margin-left cancels width + the title line's gap) only
+  // holds if the box it cancels is a constant. jsdom applies no stylesheet,
+  // so this is only checkable against the (comment-stripped) stylesheet
+  // text.
+  test("the .signal slot reserves a fixed width and never flexes", () => {
+    const rule = ruleFor(".signal");
     expect(rule).not.toBeNull();
     expect(rule).toMatch(/width:\s*(var\(--space-\d+\)|\d+px)/);
     expect(rule).toMatch(/flex:\s*none|flex-shrink:\s*0/);
