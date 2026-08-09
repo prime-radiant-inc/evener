@@ -162,6 +162,35 @@ test("renders every fetched task as a row, in the SAME order the wire returned t
   ]);
 });
 
+test("the body header shows the meter and count when the aggregate is known", async () => {
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: [TASKS_DATA[0]] }));
+
+  render(
+    <>
+      <TasksPanelBody sessionRef="ref_a" model={testModel({ tasks: { total: 20, done: 16 } })} />
+      <Toast />
+    </>,
+  );
+  await waitFor(() => expect(screen.getByTestId("tasks-body-head")).toBeTruthy());
+  expect(screen.getByTestId("tasks-body-head").textContent).toContain("16/20 done");
+  expect(screen.getByRole("meter", { name: "Task progress: 16 of 20 complete" })).toBeTruthy();
+});
+
+test("the body header is absent while no aggregate has arrived", async () => {
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: [TASKS_DATA[0]] }));
+
+  render(
+    <>
+      <TasksPanelBody sessionRef="ref_a" model={testModel({ tasks: null })} />
+      <Toast />
+    </>,
+  );
+  await waitFor(() => expect(screen.getByTestId("task-row")).toBeTruthy());
+  expect(screen.queryByTestId("tasks-body-head")).toBeNull();
+});
+
 // --- row disclosure: expand a task row to see its full details -------------
 // TaskRow already carries every field the daemon's Task struct exposes to
 // the frontend (taskData.ts's own comment: created_at/updated_at/

@@ -4,6 +4,22 @@
   color: var(--ink-mid);
 }
 
+/* The body header repeats the trigger's aggregate so an open panel reads as
+ * a whole: the same done/total the trigger badge shows, plus the meter. */
+.bodyHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.count {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+  white-space: nowrap;
+}
+
 .list {
   display: flex;
   flex-direction: column;

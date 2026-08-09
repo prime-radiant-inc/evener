@@ -73,7 +73,7 @@ import { errorText, sessionActionError, sessionActionHeadline } from "../../../p
 import type { ThreadModel } from "../../../protocol/model";
 import { EMPTY_TASKS_PANEL_ENTRY, tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
 import { threadsStore } from "../../../stores/threads";
-import { Button, Chip, type ChipTone, EmptyState, Sheet, useToasts } from "../../../widgets";
+import { Button, Chip, type ChipTone, EmptyState, Meter, Sheet, useToasts } from "../../../widgets";
 import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
@@ -102,6 +102,8 @@ export interface TasksPanelHandle {
 
 const CLASS = {
   state: requireClass(styles.state, "taskspanel.module.css", "state"),
+  bodyHead: requireClass(styles.bodyHead, "taskspanel.module.css", "bodyHead"),
+  count: requireClass(styles.count, "taskspanel.module.css", "count"),
   list: requireClass(styles.list, "taskspanel.module.css", "list"),
   description: requireClass(styles.description, "taskspanel.module.css", "description"),
   stale: requireClass(styles.stale, "taskspanel.module.css", "stale"),
@@ -421,6 +423,19 @@ export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
             </p>
             <p className={CLASS.staleHint}>Showing the last list that loaded.</p>
             {retry}
+          </div>
+        )}
+        {model.tasks && (
+          <div className={CLASS.bodyHead} data-testid="tasks-body-head">
+            <Meter
+              label={`Task progress: ${model.tasks.done} of ${model.tasks.total} complete`}
+              value={model.tasks.done}
+              max={model.tasks.total}
+              tone="neutral"
+            />
+            <span className={CLASS.count}>
+              {model.tasks.done}/{model.tasks.total} done
+            </span>
           </div>
         )}
         {rows.length === 0 ? (
