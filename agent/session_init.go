@@ -1087,9 +1087,10 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	if err := s.initMCP(); err != nil {
 		return nil, fmt.Errorf("MCP initialization: %w", err)
 	}
-	if len(s.cfg.spawn.allowedToolNames) > 0 {
-		allowed := make(map[string]bool, len(s.cfg.spawn.allowedToolNames))
-		for _, name := range s.cfg.spawn.allowedToolNames {
+	effectiveAllowedToolNames := ensureRecoveryReader(s.cfg.spawn.allowedToolNames, reg)
+	if len(effectiveAllowedToolNames) > 0 {
+		allowed := make(map[string]bool, len(effectiveAllowedToolNames))
+		for _, name := range effectiveAllowedToolNames {
 			allowed[name] = true
 		}
 		s.reg.RestrictKeepingResultTool(allowed, s.resultToolName())

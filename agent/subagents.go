@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
@@ -185,6 +186,13 @@ func appendUniqueStrings(items []string, extras ...string) []string {
 		items = append(items, extra)
 	}
 	return items
+}
+
+func ensureRecoveryReader(names []string, reg *tool.Registry) []string {
+	if reg != nil && reg.RequiresOutputRecovery(names) {
+		return appendUniqueStrings(append([]string(nil), names...), "read_transcript")
+	}
+	return names
 }
 
 func removeStrings(items, removals []string) []string {
@@ -590,6 +598,9 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 				allowedTools = appendUniqueStrings(allowedTools, toolName)
 			}
 		}
+	}
+	if !allTools {
+		allowedTools = ensureRecoveryReader(allowedTools, s.reg)
 	}
 
 	if allTools {

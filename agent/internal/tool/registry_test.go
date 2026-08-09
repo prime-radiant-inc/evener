@@ -45,6 +45,45 @@ func TestWithPurposeParameter_DescriptionGuidesGerundForm(t *testing.T) {
 	}
 }
 
+func TestToolRegistryRequiresOutputRecoveryUsesRegisteredGenericLimits(t *testing.T) {
+	reg := NewRegistry()
+	register := func(name string, limit schema.ToolOutputLimit) {
+		t.Helper()
+		if err := reg.Register(RegisteredTool{
+			Tool:  llm.Tool{Definition: llm.ToolDefinition{Name: name, Description: "test tool"}},
+			Limit: limit,
+			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+				return "ok", nil
+			},
+		}); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	register("limited_chars", schema.ToolOutputLimit{MaxChars: 7})
+	register("limited_lines", schema.ToolOutputLimit{MaxChars: -1, MaxLines: 2})
+	register("unlimited_control", schema.ToolOutputLimit{MaxChars: -1})
+	register("read_transcript", schema.ToolOutputLimit{MaxChars: 1})
+
+	for _, tc := range []struct {
+		name  string
+		names []string
+		want  bool
+	}{
+		{name: "character limited", names: []string{"limited_chars"}, want: true},
+		{name: "line limited", names: []string{"limited_lines"}, want: true},
+		{name: "unlimited", names: []string{"unlimited_control"}},
+		{name: "unknown", names: []string{"not_registered"}},
+		{name: "reader itself", names: []string{"read_transcript"}},
+		{name: "already present beside limited", names: []string{"read_transcript", "limited_chars"}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reg.RequiresOutputRecovery(tc.names); got != tc.want {
+				t.Fatalf("RequiresOutputRecovery(%v) = %v, want %v", tc.names, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestToolRegistry_ToolStateResult_CarriesStateAsSideChannel(t *testing.T) {
 	r := NewRegistry()
 	if err := r.Register(RegisteredTool{

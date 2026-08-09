@@ -517,6 +517,28 @@ func (r *Registry) RegisteredNames() map[string]bool {
 	return names
 }
 
+// RequiresOutputRecovery reports whether names includes a registered tool whose
+// generic registry limit can omit model-facing text. Unknown names and the
+// recovery reader itself do not create a recovery requirement.
+func (r *Registry) RequiresOutputRecovery(names []string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, name := range names {
+		registered, ok := r.tools[name]
+		if !ok || name == "read_transcript" {
+			continue
+		}
+		lim := registered.Limit
+		if lim.MaxChars > 0 || lim.MaxLines > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // Unregister deletes the named tool from the registry.
 func (r *Registry) Unregister(name string) {
 	r.mu.Lock()
@@ -753,6 +775,9 @@ func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOu
 			out, lineTruncated = truncateLinesWithStatus(out, lim.MaxLines)
 			truncated = truncated || lineTruncated
 		}
+	}
+	if truncated && out != full {
+		out += "\n[Tool output was truncated.]"
 	}
 	return ExecResult{
 		ToolName:          toolName,
