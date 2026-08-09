@@ -353,10 +353,10 @@ describe("inactive-subagent fold row", () => {
   // carries no alignment class of its own (the old .inactiveFold padding
   // overrides existed to left-justify a LEADING chevron at the parent's
   // label x - the chevron trails the label now, so there is nothing to
-  // align but the text itself, which the shared .row rule already does).
+  // align but the text itself, which the shared .railRow rule already does).
   test("carries no alignment class - its text lines up with its depth's rows", () => {
     render(<RailRow node={inactiveFoldRailNode(2)} info={info({ hasChildren: true })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-inactive-fold").className).toBe(railStyles.row as string);
+    expect(screen.getByTestId("rail-row-inactive-fold").className).toBe(railStyles.railRow as string);
   });
 
   test("the stylesheet carries no inactiveFold override at all", () => {
@@ -365,7 +365,7 @@ describe("inactive-subagent fold row", () => {
     expect(css).not.toMatch(/\.inactiveFold/);
   });
 
-  // The outdented-dot contract the whole list's alignment rests on: .row
+  // The outdented-dot contract the whole list's alignment rests on: .railRow
   // reserves the leading padding the dot hangs in, and .signal's negative
   // margin exactly cancels the dot's own width (6px) plus the title line's
   // gap (--space-1), so a dotted row's title and a quiet row's title start
@@ -373,7 +373,7 @@ describe("inactive-subagent fold row", () => {
   test("the row reserves the dot's outdent padding", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const css = readFileSync(join(here, "Rail.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(css).toMatch(/\.row\s*\{[^}]*padding-left:\s*14px;/);
+    expect(css).toMatch(/\.railRow\s*\{[^}]*padding-left:\s*14px;/);
   });
 
   test("the signal dot outdents by exactly its own advance", () => {
@@ -1425,10 +1425,10 @@ describe("row actions overlay (Rail.module.css)", () => {
     expect(actionsRule).not.toBeNull();
     expect(actionsRule).toMatch(/position:\s*absolute/);
     expect(actionsRule).toMatch(/right:\s*0/);
-    // Absolute positioning only resolves against .row if .row is itself a
+    // Absolute positioning only resolves against .railRow if .railRow is itself a
     // containing block; without this the overlay escapes to the nearest
     // positioned ancestor (the scrolling rail body, or the viewport).
-    expect(ruleFor(".row")).toMatch(/position:\s*relative/);
+    expect(ruleFor(".railRow")).toMatch(/position:\s*relative/);
   });
 
   test("the reveal drives the actions container, not just its buttons - the mask has to hide too", () => {
@@ -1438,15 +1438,15 @@ describe("row actions overlay (Rail.module.css)", () => {
     expect(ruleFor(".actions")).toMatch(/opacity:\s*0/);
     const reveal = /([^{}]*)\{\s*opacity:\s*1;?\s*\}/g;
     const revealRules = [...CSS.matchAll(reveal)].map((m) => m[1]!.trim());
-    const rule = revealRules.find((s) => s.includes(".row:hover"));
+    const rule = revealRules.find((s) => s.includes(".railRow:hover"));
     expect(rule, "row hover must reveal the actions").toBeTruthy();
     // Split on commas and require each of the three reveal paths to TARGET
-    // `.actions` itself. A trailing descendant (`.row:hover .actions button`)
+    // `.actions` itself. A trailing descendant (`.railRow:hover .actions button`)
     // fails these: the container - and so its mask - would stay at opacity 0.
     const targets = rule!.split(",").map((s) => s.trim());
     expect(targets).toEqual(
       expect.arrayContaining([
-        ".row:hover .actions",
+        ".railRow:hover .actions",
         '[role="treeitem"]:focus .actions',
         '.actions:has(button[aria-expanded="true"])',
       ]),

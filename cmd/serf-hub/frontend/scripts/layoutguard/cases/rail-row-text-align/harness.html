@@ -17,28 +17,13 @@
     width: 280px;
     box-sizing: border-box;
   }
-  /* Collision correction, NOT component CSS: layoutguard loads every
-     .module.css unscoped (resolve-composes.mjs), so tree.module.css's `.row`
-     and Rail.module.css's `.row` both land on BOTH the treeitem div and
-     RailRow's inner content span. In the real build the two are different
-     hashed classes; production gives the treeitem tree's `padding: 0
-     --space-2` only, and the inner span Rail's `padding-left: 14px` only.
-     resolved.css concatenates tree.module.css BEFORE Rail.module.css, so
-     without correction the span would inherit tree's right padding and the
-     treeitem would inherit Rail's 14px left padding. The element+class
-     selectors below (specificity 0-1-1) outrank the bare `.row` (0-1-0) and
-     restore each side's production padding. The span keeps its padding-left:
-     that is Rail.module.css's outdent home, the property under test. */
-  span.row {
-    min-height: 0;
-    border-radius: 0;
-    padding-top: 0;
-    padding-right: 0;
-    padding-bottom: 0;
-  }
-  div.row {
-    padding-left: var(--space-2);
-  }
+  /* No collision correction needed here: Rail.module.css's content wrapper
+     is `.railRow`, deliberately distinct from tree.module.css's `.row` (see
+     the section comment above Rail.module.css's .railRow rule), so loading
+     both modules unscoped puts each rule on exactly the element production
+     scopes it to. A harness over modules that DO share a bare class name
+     needs its own corrective style block here - the pre-rename version of
+     this harness carried one. */
 </style>
 </head>
 <body data-font-size="m">
@@ -56,7 +41,7 @@
     <div class="tree">
 
       <div role="treeitem" class="row" id="ti-dotted" aria-expanded="true" aria-level="1">
-        <span class="row">
+        <span class="railRow">
           <span class="textCol">
             <span class="titleLine">
               <span class="signal" id="sig-dotted" data-testid="rail-row-signal"></span>
@@ -69,7 +54,7 @@
       </div>
       <div role="group" class="group">
         <div role="treeitem" class="row" aria-level="2">
-          <span class="row">
+          <span class="railRow">
             <span class="textCol">
               <span class="titleLine">
                 <span class="label" id="label-child">Fix round 1</span>
@@ -78,7 +63,7 @@
           </span>
         </div>
         <div role="treeitem" class="row" aria-expanded="false" aria-level="2">
-          <span class="row" data-testid="rail-row-inactive-fold">
+          <span class="railRow" data-testid="rail-row-inactive-fold">
             <span class="textCol">
               <span class="titleLine">
                 <span class="label" id="label-fold">Inactive subagents (3)</span>
@@ -90,7 +75,7 @@
       </div>
 
       <div role="treeitem" class="row" id="ti-quiet" aria-level="1">
-        <span class="row">
+        <span class="railRow">
           <span class="textCol">
             <span class="titleLine">
               <span class="label" id="label-quiet">Rename Session Gloss</span>
