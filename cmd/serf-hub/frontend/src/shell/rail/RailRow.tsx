@@ -1,14 +1,15 @@
 // RailRow is the Tree widget's renderRow implementation for the sidebar:
 // given one RailNode (railNodes.ts) and the TreeRowInfo the Tree widget
 // computed for it (depth/expanded/hasChildren/toggle/activate), it renders
-// a reserved chevron gutter (filled only on a branch row), a signal dot
-// rendered only for the states worth spotting (SIGNAL_STATES - no slot is
-// held when there is no dot, see Signal), a text column, a favorite star /
-// attention Badge as applicable, a right-aligned relative timestamp (session
-// rows only, when there's no Badge to show instead), and an actions Menu
-// overlaid on that timestamp. Pure presentation: every mutation goes back
-// out through the `actions` prop, which Rail.tsx implements against
-// actions.ts + the tree store's refresh().
+// a title line (an outdented signal dot rendered only for the states worth
+// spotting - SIGNAL_STATES, no slot is held when there is no dot, see
+// Signal - the title, and a trailing expand/collapse chevron on branch
+// rows, transcript-style), a gloss second line on signal rows, a favorite
+// star / attention Badge as applicable, a right-aligned relative timestamp
+// (session rows only, when there's no Badge to show instead), and an
+// actions Menu overlaid on that timestamp. Pure presentation: every
+// mutation goes back out through the `actions` prop, which Rail.tsx
+// implements against actions.ts + the tree store's refresh().
 //
 // The rail is a TRIAGE surface: who needs me, nothing else. A quiet session
 // (idle, ended, notLoaded) is one line - title + age - because the empty signal
@@ -64,11 +65,10 @@ export { isTopLevelSession } from "./sessionKind";
 const CLASS = {
   row: requireClass(styles.row, "Rail.module.css", "row"),
   actions: requireClass(styles.actions, "Rail.module.css", "actions"),
-  chevron: requireClass(styles.chevron, "Rail.module.css", "chevron"),
   chevronButton: requireClass(styles.chevronButton, "Rail.module.css", "chevronButton"),
-  inactiveFold: requireClass(styles.inactiveFold, "Rail.module.css", "inactiveFold"),
   signal: requireClass(styles.signal, "Rail.module.css", "signal"),
   textCol: requireClass(styles.textCol, "Rail.module.css", "textCol"),
+  titleLine: requireClass(styles.titleLine, "Rail.module.css", "titleLine"),
   label: requireClass(styles.label, "Rail.module.css", "label"),
   activity: requireClass(styles.activity, "Rail.module.css", "activity"),
   activityAlive: requireClass(styles.activityAlive, "Rail.module.css", "activityAlive"),
@@ -188,13 +188,11 @@ const ACTIVITY_FAMILY_CLASS: Partial<Record<CadenceState, string>> = {
   failed: CLASS.activityDanger,
 };
 
-// RowGutter is a leading slot on a row. The CHEVRON gutter is always
-// rendered, empty whenever this row has nothing to put in it: it is
-// conditionally FILLED, and a slot that disappears when empty moves every
-// title after it. Reserving the chevron width unconditionally is what makes
-// one x-position hold for every title in the list, at every nesting depth,
-// regardless of whether a row has children. (The signal slot is different -
-// it renders only when it has a dot, by explicit request: see Signal.)
+// RowGutter is the wrapper the row's signal dot renders inside. The dot is
+// conditionally rendered (see Signal) and OUTDENTED by stylesheet: .signal's
+// negative margin pulls it left of the title line's text, into the leading
+// padding .row reserves for it, so every row's text starts at the same x
+// whether or not a dot hangs beside it.
 function RowGutter({ className, testId, children }: { className: string; testId: string; children?: ReactNode }) {
   return (
     <span data-testid={testId} className={className}>
@@ -203,13 +201,13 @@ function RowGutter({ className, testId, children }: { className: string; testId:
   );
 }
 
-// The row's leading signal dot, shared by session and project rows. Renders
-// ONLY for a signal state - working / needs-you / failed - and holds no
-// space otherwise: the 2026-07-31 sidebar-density pass ended the old
-// always-reserved 6px slot, so a quiet row's title now starts one slot
-// further left than a signal row's (state already moves the row's height via
-// the gloss line; letting it move the title's x too is the density trade the
-// reserved slot used to prevent, made deliberately).
+// The title line's leading signal dot, shared by session and project rows.
+// Renders ONLY for a signal state - working / needs-you / failed - and holds
+// no space otherwise. It sits INSIDE the title line as its first item,
+// outdented by .signal's negative margin (Rail.module.css has the
+// arithmetic): the dot hangs in the row's leading padding, left of the text,
+// so a dotted row's title and a quiet row's title start at exactly the same
+// x instead of state moving the title's position.
 function Signal({ wireState }: { wireState: string }) {
   const state = cadenceStateFor(wireState);
   if (!SIGNAL_STATES.has(state)) return null;
@@ -287,33 +285,34 @@ export interface RailRowProps {
   actions: RailRowActions;
 }
 
-// The row's leading chevron slot: a toggle on a branch row, an empty reserved
-// gutter on a leaf. The GUTTER is unconditional and the BUTTON is not, for the
-// same reason Signal's dot is conditional inside an unconditional slot - a leaf
-// row that rendered nothing at all here gained no chevron width, so its title
-// started a chevron further left than its branch siblings' and the list read as
-// a ragged extra indent on whichever rows happened to have children.
-function ChevronGutter({ info }: { info: TreeRowInfo }) {
+// The row's trailing chevron: a toggle rendered INLINE, right after the
+// title text (before any star/Badge/timestamp), on branch rows only - the
+// same trailing position the transcript's disclosure rows use. A leaf row
+// renders nothing here: the chevron trails the text, so its absence leaves
+// no hole to reserve (unlike the old leading gutter, whose conditional fill
+// moved every title after it). stopPropagation keeps the click from also
+// reaching the text column's activate handler it sits inside.
+function TrailingChevron({ info }: { info: TreeRowInfo }) {
+  if (!info.hasChildren) return null;
   return (
-    <RowGutter className={CLASS.chevron} testId="rail-row-chevron-gutter">
-      {info.hasChildren && (
-        // Decorative mouse shortcut for the same action Left/Right arrow
-        // already performs on the treeitem itself (see widgets/tree's own doc
-        // comment and dev/gallery-sections/tree.tsx's identical convention) -
-        // out of tab order and hidden from assistive tech so it isn't a second,
-        // redundant "toggle" announcement.
-        <button
-          type="button"
-          data-testid="rail-chevron"
-          className={CLASS.chevronButton}
-          aria-hidden="true"
-          tabIndex={-1}
-          onClick={info.toggle}
-        >
-          <Chevron direction={info.expanded ? "down" : "right"} />
-        </button>
-      )}
-    </RowGutter>
+    // Decorative mouse shortcut for the same action Left/Right arrow
+    // already performs on the treeitem itself (see widgets/tree's own doc
+    // comment and dev/gallery-sections/tree.tsx's identical convention) -
+    // out of tab order and hidden from assistive tech so it isn't a second,
+    // redundant "toggle" announcement.
+    <button
+      type="button"
+      data-testid="rail-chevron"
+      className={CLASS.chevronButton}
+      aria-hidden="true"
+      tabIndex={-1}
+      onClick={(event) => {
+        event.stopPropagation();
+        info.toggle();
+      }}
+    >
+      <Chevron direction={info.expanded ? "down" : "right"} size={12} />
+    </button>
   );
 }
 
@@ -514,12 +513,11 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
     // /project command via railController) queries to bring a session's row
     // into view - the ref is stable and unique per session, unlike the label.
     <span className={CLASS.row} data-session-ref={session.ref}>
-      <ChevronGutter info={info} />
-      <Signal wireState={presented} />
-      {/* The text column: the title, and - on a signal row only - a second line
-          glossing why it wants attention. Row anatomy for the subagent tree's
-          already-existing recursion (toSessionNode/Tree), not new recursion of
-          its own. */}
+      {/* The text column: the title line (outdented signal dot, title,
+          trailing chevron on branch rows), and - on a signal row only - a
+          second line glossing why it wants attention. Row anatomy for the
+          subagent tree's already-existing recursion (toSessionNode/Tree),
+          not new recursion of its own. */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see below */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see below */}
       <span className={CLASS.textCol} onClick={info.activate}>
@@ -531,8 +529,12 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             native tooltip - nothing a narrow rail cuts off becomes
             unreachable. The title's tooltip also carries what the visible row
             drops (rowTooltip). */}
-        <span className={CLASS.label} title={rowTooltip(session, showsGloss, notStarted)}>
-          {session.title}
+        <span className={CLASS.titleLine}>
+          <Signal wireState={presented} />
+          <span className={CLASS.label} title={rowTooltip(session, showsGloss, notStarted)}>
+            {session.title}
+          </span>
+          <TrailingChevron info={info} />
         </span>
         {showsSecondLine && (
           <span data-testid="rail-row-activity" className={activityClass} title={gloss}>
@@ -593,13 +595,19 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
   const attentionCount = project.rollup_attn ?? 0;
   return (
     <span className={CLASS.row}>
-      <ChevronGutter info={info} />
-      <Signal wireState={project.rollup_state ?? "idle"} />
-      {/* Same reasoning as SessionRow's own label above. */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
-      <span className={CLASS.label} onClick={info.activate}>
-        {project.name}
+      {/* Same title-line anatomy as SessionRow: outdented signal dot, name,
+          trailing chevron on a branch row. */}
+      <span className={CLASS.textCol}>
+        <span className={CLASS.titleLine}>
+          <Signal wireState={project.rollup_state ?? "idle"} />
+          {/* Same reasoning as SessionRow's own label above. */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
+          <span className={CLASS.label} onClick={info.activate}>
+            {project.name}
+          </span>
+          <TrailingChevron info={info} />
+        </span>
       </span>
       {project.favorite === true && (
         <span data-testid="favorite-star" aria-hidden="true" className={CLASS.star}>
@@ -628,41 +636,38 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
 // No signal slot at all, matching Signal's own render-only-when-dotted
 // contract (a group of finished sessions has no state to report). No actions
 // menu either: it stands for rows rather than being one, and the rows it
-// hides carry their own.
-//
-// The row nests one group level under the session it belongs to, but its
-// chevron is the PARENT's affordance, so .inactiveFold pads the row's left
-// edge until the chevron gutter starts exactly where the parent session's
-// LABEL starts (Rail.module.css has the arithmetic, incl. the signal-dot
-// case) - the fold reads as hanging off the parent's title rather than as a
-// sibling row that happens to have a toggle.
+// hides carry their own. Its label sits at the same x as every other row at
+// its nesting depth - the trailing chevron after the label is its toggle,
+// the same inline affordance session and project rows use.
 function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: TreeRowInfo }) {
   const label = `${node.count === 1 ? "Inactive subagent" : "Inactive subagents"} (${node.count})`;
   return (
-    <span className={`${CLASS.row} ${CLASS.inactiveFold}`} data-testid="rail-row-inactive-fold">
-      <ChevronGutter info={info} />
-      {/* Same mouse-only shortcut for the toggle the chevron already offers,
-          and the same a11y reasoning as SessionRow's own label: this text is
-          the treeitem's accessible name, so it can't be aria-hidden. */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
-      <span className={CLASS.label} onClick={info.toggle}>
-        {label}
+    <span className={CLASS.row} data-testid="rail-row-inactive-fold">
+      <span className={CLASS.textCol}>
+        <span className={CLASS.titleLine}>
+          {/* Same mouse-only shortcut for the toggle the chevron already offers,
+              and the same a11y reasoning as SessionRow's own label: this text is
+              the treeitem's accessible name, so it can't be aria-hidden. */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
+          <span className={CLASS.label} onClick={info.toggle}>
+            {label}
+          </span>
+          <TrailingChevron info={info} />
+        </span>
       </span>
     </span>
   );
 }
 
 // The "+N older" note for rows the server capped away (hubcore's
-// maxSidebarSessionsPerTier). Reserves the chevron gutter like every other
-// row so it lines up with the list it belongs to; no signal slot (Signal's
-// contract: no dot, no space). Project overflow rows activate a bounded
-// fetch for the capped-away tier rows; synthetic child overflow remains an
-// honest non-actionable count.
+// maxSidebarSessionsPerTier). Its text starts at the same x as every other
+// row's, with no dot or chevron of its own. Project overflow rows activate a
+// bounded fetch for the capped-away tier rows; synthetic child overflow
+// remains an honest non-actionable count.
 function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo }) {
   return (
     <span className={CLASS.row}>
-      <RowGutter className={CLASS.chevron} testId="rail-row-chevron-gutter" />
       {/* The treeitem's Enter handler is the keyboard path; this click makes
           the visible affordance usable with a mouse as well. */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: treeitem owns keyboard activation and accessible semantics */}
