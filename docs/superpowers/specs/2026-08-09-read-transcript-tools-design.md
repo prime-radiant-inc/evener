@@ -1,30 +1,30 @@
 # Recoverable Tool Output — Design
 
 Date: 2026-08-09
-Status: Approved
+Status: Revised after adversarial review; awaiting approval
 Source: `read-transcript-feedback-2026-08-08.md`
 
 ## Purpose
 
-Make every truncated text tool result recoverable without rerunning the tool. An agent must be able to inspect any omitted byte in one additional `read_transcript` call during the current Serf process.
+Make every truncated text tool result recoverable without rerunning the tool. During the current root session tree, an agent must be able to retrieve any targeted omitted line in one additional `read_transcript` search call and reconstruct every omitted byte by paging.
 
 The first implementation stays small. It reuses the full output and job-log readers that Serf already has. It adds one temporary output store, one truncation flag, one capture hook, and two read operations.
 
 ## Current behavior
 
-The registry already returns both forms of a text result:
+The registry already returns two forms of most text results:
 
 - `tool.ExecResult.Output` is the bounded result sent to the model.
-- `tool.ExecResult.FullOutput` is the exact result before generic truncation.
+- `tool.ExecResult.FullOutput` is the unbounded event-facing result. For `TextResult`, a tool may override it with text that differs from the pre-limit model-facing result.
 
-`Session.execTool` emits `FullOutput` through `TOOL_CALL_END`, but the model cannot query that event stream. The truncation warning therefore points to data without giving the model an address.
+The registry does not preserve the exact pre-limit model-facing result in a distinct field. `Session.execTool` emits `FullOutput` through `TOOL_CALL_END`, but the model cannot query that event stream. The truncation warning therefore points to data without giving the model an address.
 
 `read_transcript` also limits `job:` refs to one rendered tail. The job store already implements head reads, backward windows, and regex scans over the retained log. The missing work is chiefly an API bridge.
 
 Job output and generic tool output have different retention contracts:
 
 - A `job:` log persists across restarts but retains at most the existing 8 MiB tail. Earlier bytes may be gone.
-- An `artifact:` result retains every byte but expires when the current Serf process ends.
+- An `artifact:` result retains every byte but expires when its root session tree closes.
 
 The reader must state this difference plainly.
 
@@ -32,7 +32,7 @@ The reader must state this difference plainly.
 
 1. **Every generic truncation returns a handle.** A warning without an address is a defect.
 2. **One reader handles retained evidence.** Keep `read_transcript`; dispatch by ref kind.
-3. **Store exact bytes once.** Reuse `ExecResult.FullOutput`; do not rerun or reserialize a tool.
+3. **Store exact bytes once.** Carry the pre-limit model-facing bytes through `ExecResult.RecoverableOutput`; do not rerun or reserialize a tool.
 4. **Keep the first API narrow.** Add fixed byte paging and regex search with line context. Defer convenience grammars.
 5. **Report loss honestly.** `artifact:` means complete output. `job:` means complete retained output and may report a dropped prefix.
 
@@ -44,13 +44,13 @@ The reader must state this difference plainly.
 | --- | --- | --- | --- |
 | Session ref | Semantic transcript | Durable | Existing transcript contract |
 | `job:<job_id>` | Shell or delegate job output | Durable | Existing retained 8 MiB tail |
-| `artifact:<id>` | Generic truncated tool result | Current process | Exact full result |
+| `artifact:<id>` | Generic truncated tool result | Current root session tree | Exact full result |
 
 The tool keeps its current name for compatibility. Its description changes from “read transcript” to “read retained evidence by reference.”
 
 ## Minimal artifact store
 
-The Serf host owns one concurrency-safe artifact store and shares it with all root and child sessions in that process. The host creates the store beside its session manager; child sessions inherit the same pointer. `Session.Close` does not close the shared store. Host shutdown closes it and removes its temporary directory.
+Each root session owns one concurrency-safe artifact store. Every descendant inherits the same pointer through private spawn configuration. Root shutdown closes the store only after descendant shutdown finishes, then removes its temporary directory. Independent root sessions never share stores.
 
 The store uses ordinary temporary files. It needs only these operations:
 
@@ -64,17 +64,17 @@ type ArtifactStore interface {
 
 The concrete store may use narrower internal methods, but it must not grow a metadata database, retention scheduler, or per-tool adapter. The file length supplies `total_bytes`. The ref contains an opaque, unguessable identifier and no path or tool argument.
 
-The store has no size cap. This is an explicit product decision: generic tool output remains complete until process cleanup. A later disk policy requires a separate design because any cap weakens the invariant.
+The store has no size cap. This is an explicit product decision: generic tool output remains complete until root-tree cleanup. A later disk policy requires a separate design because any cap weakens the invariant.
 
 ## Capture point
 
-Add `Truncated bool` to `tool.ExecResult`. `truncateResult` sets it when its bounded `Output` differs because a configured line or character limit removed bytes.
+Add `Truncated bool` and `RecoverableOutput string` to `tool.ExecResult`. `truncateResult` sets `RecoverableOutput` to its exact input before applying limits and sets `Truncated` when a configured line or character limit removes bytes.
 
-The explicit flag matters. `TextResult` may intentionally use different `Output` and `FullOutput` strings even when no truncation occurred. Comparing those fields would create false artifacts.
+The separate fields matter. `TextResult` may intentionally use different model-facing `Output` and event-facing `FullOutput` strings. `RecoverableOutput` always preserves the pre-limit model-facing bytes; later `FullOutput` overrides do not change it.
 
 After common tool dispatch and before `TOOL_CALL_END`, `Session.execTool` handles a truncated result:
 
-1. Write `[]byte(res.FullOutput)` to the shared artifact store.
+1. Write `[]byte(res.RecoverableOutput)` to the shared artifact store.
 2. Append a short recovery footer to `res.Output`:
 
    ```text
@@ -85,19 +85,19 @@ After common tool dispatch and before `TOOL_CALL_END`, `Session.execTool` handle
 3. Add the same ref to `ToolCallEndData` as an optional `output_ref` field.
 4. Return the augmented `res.Output` to the model.
 
-This one hook covers grep, glob, web fetch, file reads, plugin tools, and future registered text tools. Individual executors remain unaware of artifacts.
+This one hook covers grep, glob, web fetch, file reads, plugin tools, and future registered text tools. Individual executors remain unaware of artifacts. Any session policy that exposes a generically truncatable text tool must also expose `read_transcript`; tool-policy construction enforces this recovery dependency for built-in and plugin-defined agent allowlists.
 
 The store captures only results that generic limits truncated. Untruncated results create no file and gain no footer.
 
 ### Retention failure
 
-If `Put` fails, Serf returns the bounded tool result and appends:
+Generic truncation markers describe only what was removed; they make no availability claim. If `Put` fails, Serf returns the bounded tool result and appends:
 
 ```text
 [retention_failed: full output could not be retained: <concise error>]
 ```
 
-Serf must not print “full output is available” or invent a ref after a failed write. The tool call itself keeps its original success or error status; retention failure is a separate warning.
+Serf must not print “full output is available,” mention the event stream, or invent a ref after a failed write. The tool call itself keeps its original success or error status; retention failure is a separate warning.
 
 ## `read_transcript` API
 
@@ -109,7 +109,8 @@ Add two public arguments:
 Broaden `offset_bytes`:
 
 - Session refs: unchanged; it still requires `expand_turn`.
-- `job:` and `artifact:` refs: the zero-based raw byte offset of a fixed 16 KiB page.
+- `job:` and `artifact:` refs without `output_match`: the zero-based raw byte offset of a fixed 16 KiB page.
+- `job:` and `artifact:` refs with `output_match`: the byte offset where a bounded search begins. Omit it to begin at the first available byte.
 
 An `artifact:` read with no operation returns its first page at offset 0. A `job:` read with an explicit `offset_bytes` returns a raw page; the caller uses `offset_bytes: 0` to request the lifetime head. A `job:` read with neither `offset_bytes` nor `output_match` keeps the existing rendered markdown view. This rule preserves delegate structured results and all existing callers while adding an exact paging path.
 
@@ -117,7 +118,6 @@ Do not add these features in the first version:
 
 - `head:` or `tail:` range grammar;
 - configurable page size;
-- search result paging tokens;
 - content-type negotiation;
 - artifact listing;
 - persistent artifact metadata.
@@ -155,15 +155,18 @@ If a caller requests a job offset before `retained_start_bytes`, including `offs
 
 ## Search response
 
-`output_match` searches the available bytes and returns matching lines, byte offsets, and requested context:
+`output_match` scans complete lines from `offset_bytes` and returns matching lines, byte offsets, and requested context:
 
 ```json
 {
   "transcript_ref": "job:…",
   "output_match": "FAIL|panic",
   "context_lines": 3,
+  "offset_bytes": 0,
   "retained_start_bytes": 0,
   "total_bytes": 42000,
+  "search_complete": true,
+  "skipped_partial_prefix": false,
   "matches": [
     {
       "line_start_byte": 18201,
@@ -175,11 +178,15 @@ If a caller requests a job offset before `retained_start_bytes`, including `offs
 }
 ```
 
-Search uses RE2 and the repository's existing bounded line-reading primitives. `line_start_byte` is the absolute offset of the returned matching line. `context_lines` follows the grep tool's existing 0–10 convention. If the bounded scanner skips an oversized line, the response reports the skip; search never silently claims that it scanned every retained line.
+Search uses RE2 and the repository's existing bounded line-reading primitives. `line_start_byte` is the absolute offset of the returned complete line. `context_lines` follows the grep tool's existing 0–10 convention.
 
-The search result remains subject to normal tool-output limits. If many matches make the search result itself too large, the generic invariant retains that exact result and returns another `artifact:` ref. This avoids a second search-specific paging system.
+Each call stops before either 100 matches or 64 KiB of serialized match data. If unevaluated lines remain, `search_complete` is false and `continuation.offset_bytes` names the first line not yet evaluated for a match. Context lookahead may read that line, but it does not advance the continuation; the next call may repeat context but cannot skip a match. These pre-materialization bounds prevent regex or context amplification from building an unbounded in-memory response. The 64 KiB bound also keeps the envelope below `read_transcript`'s existing backstop, so search never relies on recursive generic truncation.
 
-For a pruned job, search covers only retained bytes and reports nonzero `retained_start_bytes`. It must not describe the result as a scan of the full lifetime log.
+If the bounded scanner skips an oversized line, the response reports the skip and its byte interval. Search never silently claims that it scanned every retained line.
+
+For a pruned job, search covers only retained bytes and reports nonzero `retained_start_bytes`. Because retention may start mid-line, search skips bytes through the first retained newline and sets `skipped_partial_prefix=true`; raw paging still exposes those bytes. Search never labels a retained suffix as a complete line or describes the result as a scan of the full lifetime log.
+
+Raw paging and search apply only to terminal jobs. A running job can append and prune between calls, which would invalidate offsets and continuations. The existing no-argument markdown snapshot remains available while a job runs.
 
 ## Validation and errors
 
@@ -193,12 +200,13 @@ The reader rejects unsupported combinations instead of ignoring them.
 - Any explicit `format` on an `artifact:` ref → `invalid_request`; artifact reads use the raw page or search envelope.
 - `format=outline` or `format=jsonl` on a `job:` ref → `invalid_request`.
 - `offset_bytes` or `output_match` combined with any explicit `format` on a `job:` ref → `invalid_request`.
+- Raw paging or search on a nonterminal `job:` ref → `job_not_terminal` with the current status.
 - Offset before a job's `retained_start_bytes` → `output_unavailable` with the first available offset.
 - Offset beyond EOF → `invalid_request` with the valid byte interval.
 - Malformed artifact ref → `invalid_request`.
 - Well-formed but unknown artifact ref → `artifact_expired`.
 
-A ref from an earlier process is expected to expire. Persisted transcripts may contain such refs; the explicit `artifact_expired` error is the contract.
+A ref from a closed or different root session tree is expected to expire. Persisted transcripts may contain such refs; the explicit `artifact_expired` error is the contract.
 
 ## Compatibility
 
@@ -218,9 +226,9 @@ with:
 
 ## Security
 
-Artifact refs must be unguessable. A reader may resolve only refs in the artifact store supplied to its process. Never accept a path as a ref, and never derive a path from unchecked ref text.
+Artifact refs must be unguessable. A reader may resolve only refs in its root session tree's artifact store. Never accept a path as a ref, and never derive a path from unchecked ref text.
 
-The store writes exact tool output, which may contain secrets. Create its directory and files with owner-only permissions. Do not record tool arguments or duplicate output in metadata. Cleanup removes the whole directory on normal process shutdown.
+The store writes exact tool output, which may contain secrets. Create its directory and files with owner-only permissions. Do not record tool arguments or duplicate output in metadata. Root-tree cleanup removes the whole directory after descendant shutdown.
 
 Sandboxed tools do not gain filesystem access through artifact refs. The Serf host reads artifacts and returns bounded content through `read_transcript`, as it already does for durable job logs.
 
@@ -233,17 +241,19 @@ Read `docs/testing.md` before changing tests. All tests use synthetic output and
 - A result below its limits sets `Truncated=false`, creates no artifact, and keeps its output unchanged.
 - Character, line, head-tail, and tail truncation set `Truncated=true`.
 - An intentional `TextResult{Output, FullOutput}` difference without generic truncation creates no artifact.
-- A truncated result stores bytes exactly equal to `FullOutput` and appends one valid handle.
-- A store failure produces `retention_failed`, no false handle, and no change to the tool's original error status.
+- A truncated `TextResult` whose `Output` and `FullOutput` differ stores bytes exactly equal to the pre-limit `Output` in `RecoverableOutput` and appends one valid handle.
+- A store failure produces `retention_failed`, no false handle, no event-stream availability claim, and no change to the tool's original error status.
+- Built-in and plugin agent policies cannot expose a generically truncatable text tool without also exposing `read_transcript`.
 
 ### Artifact reads
 
 - Page a multi-page artifact from offset 0 to EOF and reconstruct the exact original bytes with no gaps or overlap.
 - Preserve valid UTF-8 boundaries; use base64 for invalid UTF-8 pages.
 - Search returns matching lines, absolute byte offsets, and 0, 1, and 10 lines of context.
+- Search stops before 100 matches or 64 KiB, then returns a gap-free continuation at the next complete line.
 - Invalid refs, stale refs, invalid RE2, invalid context, and invalid offsets return the specified errors.
 - Concurrent puts and reads pass under the race detector.
-- Closing the store removes its temporary directory.
+- Root close waits for descendant shutdown, then closes the store and removes its temporary directory without affecting another root tree.
 
 ### Job reads
 
@@ -251,38 +261,41 @@ Read `docs/testing.md` before changing tests. All tests use synthetic output and
 - Page a pruned job from `retained_start_bytes` and report the dropped prefix.
 - Reject an offset in a pruned prefix.
 - Search retained job output with context and absolute lifetime offsets.
+- Skip and report the first retained fragment when pruning starts mid-line.
+- Reject paging and search on a running job; keep its existing markdown snapshot available.
 - Keep the default delegate-job markdown view and its appended structured result unchanged. Raw paging and search cover the retained delegate report bytes only.
 
 ### Receipt replay
 
-Run a real workspace grep whose result exceeds the inline limit. Choose a known match omitted from the preview. Assert that one additional call,
+Run a real workspace grep whose broad pattern produces enough output to exceed the inline limit while its matching lines fit within one bounded search response. Assert that one additional call using the same broad pattern,
 
 ```text
 read_transcript(
   transcript_ref="artifact:…",
-  output_match="KNOWN_OMITTED_MATCH",
+  output_match="ORIGINAL_BROAD_PATTERN",
   context_lines=3
 )
 ```
 
-returns that match without rerunning grep or narrowing the original pattern.
+returns every expected matching line, including lines omitted from the preview, without rerunning grep or narrowing the original pattern. A separate stress test searches more than 100 matches and verifies bounded, gap-free continuation rather than one-call materialization.
 
 ## Acceptance criteria
 
 The change is complete when all these statements hold:
 
 1. Every generic text result truncated by Serf returns an `artifact:` handle or an honest `retention_failed` warning.
-2. During the current process, paging an artifact can reconstruct every original byte exactly.
+2. During the current root session tree, paging an artifact can reconstruct every original byte exactly.
 3. `read_transcript` can page and search `artifact:` and retained `job:` output.
 4. Search supports 0–10 context lines and returns byte offsets.
 5. A pruned job reports its unavailable prefix; it never claims complete lifetime output.
-6. The grep failure from the source report is solvable in one additional tool call without rerunning the search.
+6. The grep failure from the source report is solvable in one additional search call using the original broad pattern, without rerunning or narrowing the search.
 7. Existing session transcript behavior remains unchanged.
+8. Every session that can receive an artifact handle can call `read_transcript`.
 
 ## Out of scope
 
-- Persisting artifacts across process restart.
-- Limiting artifact disk use or pruning artifacts before process exit.
+- Persisting artifacts after the root session tree closes.
+- Limiting artifact disk use or pruning artifacts before root-tree cleanup.
 - Searching semantic session transcripts.
 - Changing the 8 MiB job-retention cap.
 - Adding head/tail line-range syntax.
