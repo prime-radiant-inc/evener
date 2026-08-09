@@ -67,6 +67,7 @@ const KIND_LABELS: Record<LabelledKind, string> = {
   "note-handoff": "Note to self",
   "goal-objective": "Goal objective",
   "transcript-pointer": "Transcript pointer",
+  "provider-failure": "Provider failure",
 };
 
 // item.steeringKind is a plain string | undefined on the wire (a running

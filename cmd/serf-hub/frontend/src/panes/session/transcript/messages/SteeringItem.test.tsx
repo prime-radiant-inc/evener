@@ -166,6 +166,17 @@ test("labels a steer from its wire kind", () => {
   expect(screen.getByTestId("steering-glyph")).toBeTruthy();
 });
 
+test("labels provider-failure steering from the wire kind", () => {
+  render(
+    <SteeringItem
+      item={item({ text: "The provider stopped responding", steeringKind: "provider-failure" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByText("System steered: Provider failure")).toBeTruthy();
+});
+
 // No kind means the daemon did not say. A colon promises a value.
 test("claims nothing when the wire carries no kind", () => {
   render(<SteeringItem item={item({ text: "unclassifiable" })} turn={turn} live={false} />);
