@@ -14,10 +14,10 @@
 // this parser reports as `null` ("no data"), distinct from a real empty
 // list (`[]`, "zero tasks").
 //
-// insert/created_at/updated_at/completed_at are intentionally not carried
-// into TaskRow: the legacy tasks panel (cmd/serf-hub/assets/renderer-panels.js,
-// buildTaskDetailList) never displays them, only type/status/depends_on/
-// reasoning_effort/prompt/notes alongside id/description.
+// created_at/updated_at/completed_at ARE carried (as createdAt/updatedAt/
+// completedAt): the 2026-08-09 panel redesign (docs/superpowers/specs/
+// 2026-08-09-task-list-ui-design.md) shows per-task recency and completion
+// times, which the legacy panel's field set predates.
 
 export type TaskStatus = "open" | "in_progress" | "done" | "cancelled";
 
@@ -34,6 +34,13 @@ export interface TaskRow {
   // into that status. Ordinary task-list responses omit this side-channel
   // field.
   started?: boolean;
+  // Wire timestamps (agent/task/task_store.go), carried as ISO strings.
+  // Optional: the parser never drops a row for lacking them, and views omit
+  // time displays for absent fields. created_at/updated_at are always present
+  // on the real wire; completed_at exists only for done tasks.
+  createdAt?: string;
+  updatedAt?: string;
+  completedAt?: string;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -47,7 +54,20 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // dropped rather than fabricated or allowed to crash the whole parse.
 function parseRow(raw: unknown): TaskRow | null {
   if (!isPlainObject(raw)) return null;
-  const { id, type, description, prompt, status, depends_on, notes, reasoning_effort, started } = raw;
+  const {
+    id,
+    type,
+    description,
+    prompt,
+    status,
+    depends_on,
+    notes,
+    reasoning_effort,
+    started,
+    created_at,
+    updated_at,
+    completed_at,
+  } = raw;
   if (typeof id !== "number" || typeof type !== "string" || typeof description !== "string") return null;
   if (typeof prompt !== "string" || typeof status !== "string") return null;
 
@@ -64,6 +84,9 @@ function parseRow(raw: unknown): TaskRow | null {
   if (typeof started === "boolean") {
     row.started = started;
   }
+  if (typeof created_at === "string" && created_at !== "") row.createdAt = created_at;
+  if (typeof updated_at === "string" && updated_at !== "") row.updatedAt = updated_at;
+  if (typeof completed_at === "string" && completed_at !== "") row.completedAt = completed_at;
   return row;
 }
 
