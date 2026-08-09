@@ -27,6 +27,14 @@ import (
 // invalid JSON. It is a backstop, not a participant.
 const transcriptToolMaxChars = 600_000
 
+// retainedOutputMatchMaxChars leaves ample room for the bounded 64 KiB match
+// payload even when JSON escaping expands every pattern character. The final
+// envelope check below remains the authoritative backstop for the complete
+// serialized response.
+const retainedOutputMatchMaxChars = 64 << 10
+
+const artifactUnavailableReadError = "artifact_unavailable: retained artifact could not be read"
+
 // transcriptTools returns the read-only transcript inspection tools. read_transcript
 // is always available for job:<job_id> refs; archived session lookup tools are
 // advertised only when state persistence is enabled.
@@ -330,6 +338,9 @@ func parseRetainedReadArgs(args map[string]any) (retainedReadArgs, retainedReadO
 	if parsed.ContextLines < 0 || parsed.ContextLines > 10 {
 		return retainedReadArgs{}, retainedReadDefault, errors.New("invalid_request: context_lines must be between 0 and 10")
 	}
+	if utf8.RuneCountInString(parsed.OutputMatch) > retainedOutputMatchMaxChars {
+		return retainedReadArgs{}, retainedReadDefault, fmt.Errorf("invalid_request: output_match must be at most %d characters", retainedOutputMatchMaxChars)
+	}
 	if value := optionalIntArg(args, "offset_bytes"); value != nil {
 		parsed.OffsetSet = true
 		parsed.OffsetBytes = int64(*value)
@@ -438,7 +449,7 @@ func pageArtifactTranscript(deps *toolDeps, args retainedReadArgs) (any, error) 
 		if errors.Is(err, errRetainedOffsetOutOfRange) {
 			return nil, fmt.Errorf("invalid_request: offset_bytes %d is beyond EOF %d; valid byte interval is [0,%d]", offset, total, total)
 		}
-		return nil, err
+		return nil, errors.New(artifactUnavailableReadError)
 	}
 	return retainedPageResult(args.Ref, 0, "", page), nil
 }
@@ -496,9 +507,9 @@ func searchArtifactTranscript(deps *toolDeps, args retainedReadArgs) (any, error
 		},
 	})
 	if err != nil {
-		return nil, err
+		return nil, errors.New(artifactUnavailableReadError)
 	}
-	return retainedSearchResultFor(args, "", result), nil
+	return boundedRetainedSearchResult(args, "", result)
 }
 
 func pageJobTranscript(deps *toolDeps, args retainedReadArgs) (any, error) {
@@ -572,7 +583,7 @@ func searchJobTranscript(deps *toolDeps, args retainedReadArgs) (any, error) {
 		return nil, err
 	}
 	args.OffsetBytes = offset
-	return retainedSearchResultFor(args, localJobEnvelopeStatus(target.Record), result), nil
+	return boundedRetainedSearchResult(args, localJobEnvelopeStatus(target.Record), result)
 }
 
 func parseJobTranscriptID(ref string) (string, error) {
@@ -624,6 +635,18 @@ func retainedSearchResultFor(args retainedReadArgs, jobStatus string, result ret
 		SkippedOversizedLines: result.SkippedOversized,
 		Continuation:          result.Continuation,
 	}
+}
+
+func boundedRetainedSearchResult(args retainedReadArgs, jobStatus string, result retainedSearchEnvelope) (retainedSearchResult, error) {
+	response := retainedSearchResultFor(args, jobStatus, result)
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return retainedSearchResult{}, errors.New("retained search response could not be encoded")
+	}
+	if utf8.RuneCount(encoded) >= transcriptToolMaxChars {
+		return retainedSearchResult{}, errors.New("invalid_request: output_match is too large for a bounded search response")
+	}
+	return response, nil
 }
 
 // execReadSessionTranscript validates the source-specific arguments before it

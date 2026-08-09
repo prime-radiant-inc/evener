@@ -1,13 +1,18 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/internal/artifactstore"
+	"primeradiant.com/serf/llm"
 )
 
 func artifactTranscriptFixture(t *testing.T, output string) (*toolDeps, string) {
@@ -168,5 +173,97 @@ func TestReadTranscriptArtifactExpiredWhenNoStoreIsAvailable(t *testing.T) {
 	_, err := execReadTranscript(nil, map[string]any{"transcript_ref": ref})
 	if err == nil || !strings.Contains(err.Error(), "artifact_expired:") {
 		t.Fatalf("nil dependency error = %v, want artifact_expired", err)
+	}
+}
+
+const privateArtifactPathSentinel = "/Users/operator/.serf/private/artifacts/sentinel-output"
+
+type failingArtifactReadSeekCloser struct {
+	total int64
+}
+
+func (r *failingArtifactReadSeekCloser) ReadAt([]byte, int64) (int, error) {
+	return 0, &os.PathError{Op: "read", Path: privateArtifactPathSentinel, Err: errors.New("sentinel raw I/O detail")}
+}
+
+func (r *failingArtifactReadSeekCloser) Seek(_ int64, whence int) (int64, error) {
+	if whence != io.SeekEnd {
+		return 0, errors.New("unexpected seek")
+	}
+	return r.total, nil
+}
+
+func (*failingArtifactReadSeekCloser) Close() error { return nil }
+
+func TestReadTranscriptArtifactPostOpenReadErrorsArePathFree(t *testing.T) {
+	ref := "artifact:" + strings.Repeat("a", 32)
+	deps := &toolDeps{openArtifact: func(string) (artifactReadSeekCloser, error) {
+		return &failingArtifactReadSeekCloser{total: int64(len("retained bytes\n"))}, nil
+	}}
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "page", args: map[string]any{"transcript_ref": ref}},
+		{name: "search", args: map[string]any{"transcript_ref": ref, "output_match": "needle"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := execReadTranscript(deps, tc.args)
+			if err == nil || err.Error() != "artifact_unavailable: retained artifact could not be read" {
+				t.Fatalf("error = %v, want stable artifact_unavailable read error", err)
+			}
+			for _, forbidden := range []string{privateArtifactPathSentinel, "sentinel raw I/O detail", "read artifact", "read retained output"} {
+				if strings.Contains(err.Error(), forbidden) {
+					t.Fatalf("error leaked %q: %v", forbidden, err)
+				}
+			}
+		})
+	}
+}
+
+func TestReadTranscriptSearchEnvelopeStaysBelowRegistryBackstop(t *testing.T) {
+	const maxPatternChars = 65_536
+	s := newArtifactTestRoot(t)
+	ref, err := s.artifactStore.Put([]byte("short retained line\n"))
+	if err != nil {
+		t.Fatalf("put artifact: %v", err)
+	}
+	pattern := strings.Repeat("<", maxPatternChars) // Go's JSON encoder expands each rune to \\u003c.
+	args, err := json.Marshal(map[string]any{"transcript_ref": ref, "output_match": pattern})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	result := s.execTool(context.Background(), llm.ToolCallData{
+		ID: "large-read-transcript-search", Name: "read_transcript", Type: "function", Arguments: args,
+	}, "")
+	if result.IsError {
+		t.Fatalf("large valid RE2 search failed: %s", result.Output)
+	}
+	if result.Truncated || strings.Contains(result.Output, "Full output: artifact:") {
+		t.Fatalf("search relied on generic truncation: %#v", result)
+	}
+	if !json.Valid([]byte(result.Output)) {
+		t.Fatalf("search response is not exact JSON: %q", result.Output)
+	}
+	if got := len([]rune(result.Output)); got >= transcriptToolMaxChars {
+		t.Fatalf("serialized search response = %d characters, want < %d", got, transcriptToolMaxChars)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(result.Output), &envelope); err != nil {
+		t.Fatalf("decode exact response: %v", err)
+	}
+	if envelope["output_match"] != pattern || envelope["transcript_ref"] != ref {
+		t.Fatalf("search envelope lost fixed fields: keys=%v", envelope)
+	}
+}
+
+func TestReadTranscriptRejectsOutputMatchOverEnvelopeBound(t *testing.T) {
+	deps, ref := artifactTranscriptFixture(t, "line\n")
+	_, err := execReadTranscript(deps, map[string]any{
+		"transcript_ref": ref,
+		"output_match":   strings.Repeat("a", 65_537),
+	})
+	if err == nil || err.Error() != "invalid_request: output_match must be at most 65536 characters" {
+		t.Fatalf("error = %v, want exact output_match bound", err)
 	}
 }

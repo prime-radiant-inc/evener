@@ -602,6 +602,9 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 	if outputMatch["type"] != "string" || !strings.Contains(outputMatch["description"].(string), "RE2") {
 		t.Errorf("output_match schema = %#v, want RE2 string", outputMatch)
 	}
+	if outputMatch["maxLength"] != 65_536 || !strings.Contains(outputMatch["description"].(string), "65,536") {
+		t.Errorf("output_match schema = %#v, want documented 65,536-character envelope bound", outputMatch)
+	}
 	contextLines := rp["context_lines"].(map[string]any)
 	if contextLines["type"] != "integer" || contextLines["minimum"] != 0 || contextLines["maximum"] != 10 {
 		t.Errorf("context_lines schema = %#v, want integer 0..10", contextLines)
