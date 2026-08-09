@@ -713,27 +713,31 @@ func DefManageWorktreeDisposeOnly() llm.ToolDefinition {
 	}
 }
 
-// DefReadTranscript defines the generic transcript reader. It accepts archived
-// session refs and job:<job_id> refs, so callers can use one evidence reader for
-// both agent and shell jobs. The description carries the whole job: contract —
-// where a ref comes from, that it serves delegate jobs as well as shell ones,
-// and which session-only parameters it rejects — because an observer
-// reaching this tool from a watch frame has no job_status to ask instead.
+// DefReadTranscript defines the retained-evidence reader for session, job, and
+// artifact references. Its descriptions mirror the executor's ref-specific
+// operation and compatibility rules.
 func DefReadTranscript() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "read_transcript",
-		Description: "Read raw evidence by transcript_ref. A `job:<job_id>` ref is one snapshot of a locally persisted job's output; refs come from `job_status`/`job_list` rows, from a windowed `shell` result, and from the `read with:` line of a watch frame. Job-control tools remain scoped even when an exact local `job:` ref is readable. It serves BOTH job kinds: a shell job renders its process log, and a delegate job renders its report plus a trailing `structured_result (valid=<bool>)` line when the invocation captured one — that is how you read a delegate's result. On a `job:` ref `format` must be markdown, and `range`/`expand_turn`/`offset_bytes` fail `invalid_request` because they apply only to session refs; there is no paging, no head/tail, and no grep. You get the tail of retained output, and `job_watch(output_match=...)` is how you are told when watched output matches. A session ref (from find_session_transcripts or a delegate result) also supports outline and jsonl, and session markdown can expand any semantic turn as byte-paged exact transcript_v2_jsonl in fixed 16 KiB pages; continue with offset_bytes from the returned handle. API-log selectors are not part of this tool. Completion is notification-driven; do not poll this waiting for job completion.",
+		Description: "Read retained evidence by transcript_ref. A session ref (from find_session_transcripts or a delegate result) keeps the existing semantic transcript contract: markdown by default, optional outline/jsonl, range windows, and expand_turn as exact transcript_v2_jsonl in fixed 16 KiB pages continued with offset_bytes. Session refs do not support output_match. A `job:<job_id>` ref comes from job_status/job_list, a windowed shell result, or the `read with:` line of a watch frame; job-control tools remain scoped even when the ref is readable. With no offset_bytes or output_match, a job: ref keeps the existing markdown view: shell process log, or delegate job report plus structured_result. Explicit offset_bytes selects a fixed 16 KiB raw page in lifetime byte coordinates; output_match selects bounded RE2 line search with 0–10 context_lines. Job page/search responses include job_status and honest total_bytes/retained_start_bytes; output_unavailable means retention pruned the requested prefix. range and expand_turn are session-only; outline/jsonl are invalid for job: refs, and any explicit format cannot accompany job paging/search. An `artifact:<id>` ref is exact generic truncated tool output retained only for the current root session tree; an expired or unknown capability returns artifact_expired. Artifact reads default to raw page 0, also support offset_bytes or output_match/context_lines, always have retained_start_bytes 0, omit job_status, and reject every explicit format plus range/expand_turn with invalid_request. Page and search continuations carry lifetime offset_bytes. API-log selectors are not part of this tool. Completion is notification-driven; do not poll this waiting for job completion.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"transcript_ref": map[string]any{"type": "string", "description": "Opaque session ref, bare session id, current, or job:<job_id>."},
+				"transcript_ref": map[string]any{"type": "string", "description": "Opaque session ref, bare session id, current, job:<job_id>, or artifact:<id>."},
 				"format":         map[string]any{"type": "string", "enum": []string{"outline", "markdown", "jsonl"}, "description": "markdown (default) = readable evidence. Session refs also support outline and jsonl."},
 				"range":          map[string]any{"type": "string", "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". Omit for the default last 40."},
 				"expand_turn":    map[string]any{"type": "integer", "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Continue with offset_bytes from the returned handle."},
-				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Session expansion byte offset from a continuation handle."},
+				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Ref-specific byte offset: session expansion continuation, or job:/artifact: raw page start or search start. Job offsets are lifetime offsets."},
+				"output_match":   map[string]any{"type": "string", "description": "RE2 expression for bounded complete-line search of job: or artifact: retained output."},
+				"context_lines": map[string]any{
+					"type":        "integer",
+					"minimum":     0,
+					"maximum":     10,
+					"description": "Lines before and after each output_match; requires output_match. Default 0.",
+				},
 			},
 		},
 	}

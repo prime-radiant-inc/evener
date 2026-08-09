@@ -7,24 +7,20 @@ import (
 	"primeradiant.com/serf/agent/internal/tool"
 )
 
-// TestReadTranscriptDescriptionNamesEveryJobRefRejection keys the tool's own
-// words to the code that enforces them. A model reads the description, not
-// session_tools_transcript.go: a rejection the description does not name is a
-// call the model makes once, gets invalid_request for, and has to repair — and
-// for a watch observer, with no job_status to fall back on, there is nothing else
-// to try. Adding a fifth entry to jobRefRejectedParams fails this test until
-// the description admits it (kata w2fk).
-func TestReadTranscriptDescriptionNamesEveryJobRefRejection(t *testing.T) {
+// TestReadTranscriptDescriptionNamesRetainedOperationRules keys the tool's own
+// words to the ref-kind dispatch rules. A model reads the description, not the
+// executor, so every operation and compatibility exception must be explicit.
+func TestReadTranscriptDescriptionNamesRetainedOperationRules(t *testing.T) {
 	t.Parallel()
 	desc := tool.DefReadTranscript().Description
-	for _, name := range jobRefRejectedParams {
-		if !strings.Contains(desc, name) {
-			t.Fatalf("read_transcript description does not name the rejected job: parameter %q:\n%s", name, desc)
+	for _, want := range []string{
+		"artifact:", "job:", "session ref", "output_match", "context_lines",
+		"offset_bytes", "range", "expand_turn", "format", "16 KiB",
+		"retained_start_bytes", "job_status", "structured_result",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("read_transcript description does not name %q:\n%s", want, desc)
 		}
-	}
-	if !strings.Contains(desc, "invalid_request") {
-		t.Fatalf("read_transcript description names the rejected parameters without naming the error they raise (%q):\n%s",
-			"invalid_request", desc)
 	}
 }
 

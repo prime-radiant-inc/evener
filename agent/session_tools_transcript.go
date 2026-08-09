@@ -1,16 +1,20 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/artifactstore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
@@ -221,14 +225,54 @@ func readTranscriptTool(deps *toolDeps) tool.RegisteredTool {
 
 var readTranscriptPublicRejectedParams = []string{"source", "attempt_id", "body", "max_bytes"}
 
-// jobRefRejectedParams are read_transcript parameters that shape a SESSION
-// transcript read and have no meaning for a job: ref: a job read is one
-// snapshot of the retained tail, with no turns to window and no byte paging.
-// Passing one fails invalid_request rather than being quietly ignored, so a
-// model that guesses learns the shape instead of getting an unexplained
-// result. DefReadTranscript's description must name every entry — that is what
-// keeps the model from guessing in the first place.
-var jobRefRejectedParams = []string{"range", "expand_turn", "offset_bytes"}
+type retainedReadArgs struct {
+	Ref          string
+	OffsetSet    bool
+	OffsetBytes  int64
+	OutputMatch  string
+	ContextLines int
+}
+
+type retainedReadOperation uint8
+
+const (
+	retainedReadDefault retainedReadOperation = iota
+	retainedReadPage
+	retainedReadSearch
+)
+
+type retainedPageBody struct {
+	OffsetBytes   int64  `json:"offset_bytes"`
+	BytesReturned int64  `json:"bytes_returned"`
+	TotalBytes    int64  `json:"total_bytes"`
+	Encoding      string `json:"encoding"`
+	Data          string `json:"data"`
+}
+
+type retainedPageEnvelope struct {
+	TranscriptRef     string                `json:"transcript_ref"`
+	Representation    string                `json:"representation"`
+	ContentType       string                `json:"content_type"`
+	Page              retainedPageBody      `json:"page"`
+	RetainedStartByte int64                 `json:"retained_start_bytes"`
+	JobStatus         string                `json:"job_status,omitempty"`
+	Continuation      *retainedContinuation `json:"continuation,omitempty"`
+}
+
+type retainedSearchResult struct {
+	TranscriptRef         string                      `json:"transcript_ref"`
+	OutputMatch           string                      `json:"output_match"`
+	ContextLines          int                         `json:"context_lines"`
+	OffsetBytes           int64                       `json:"offset_bytes"`
+	RetainedStartBytes    int64                       `json:"retained_start_bytes"`
+	TotalBytes            int64                       `json:"total_bytes"`
+	JobStatus             string                      `json:"job_status,omitempty"`
+	SearchComplete        bool                        `json:"search_complete"`
+	SkippedPartialPrefix  bool                        `json:"skipped_partial_prefix"`
+	Matches               []retainedSearchMatch       `json:"matches"`
+	SkippedOversizedLines []retainedSearchSkippedLine `json:"skipped_oversized_lines,omitempty"`
+	Continuation          *retainedContinuation       `json:"continuation,omitempty"`
+}
 
 func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 	for _, name := range readTranscriptPublicRejectedParams {
@@ -239,18 +283,347 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 			return nil, errors.New("invalid_request: max_bytes is not supported by read_transcript; expansion pages are fixed at 16 KiB and continue with offset_bytes")
 		}
 	}
-	selector := strings.TrimSpace(stringArg(args, "transcript_ref"))
-	rangeArg := strings.TrimSpace(stringArg(args, "range"))
-	format := strings.TrimSpace(stringArg(args, "format"))
-	if strings.HasPrefix(selector, "job:") {
-		for _, name := range jobRefRejectedParams {
-			if _, present := args[name]; present {
-				return nil, fmt.Errorf("invalid_request: %s applies only to session transcript refs", name)
-			}
+	parsed, operation, err := parseRetainedReadArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	if strings.HasPrefix(parsed.Ref, "artifact:") {
+		if err := validateArtifactReadArgs(args, operation); err != nil {
+			return nil, err
 		}
-		return readJobTranscript(deps, selector, rangeArg, format)
+		if operation == retainedReadSearch {
+			return searchArtifactTranscript(deps, parsed)
+		}
+		return pageArtifactTranscript(deps, parsed)
+	}
+	if strings.HasPrefix(parsed.Ref, "job:") {
+		if err := validateJobReadArgs(args, operation); err != nil {
+			return nil, err
+		}
+		if operation == retainedReadPage {
+			return pageJobTranscript(deps, parsed)
+		}
+		if operation == retainedReadSearch {
+			return searchJobTranscript(deps, parsed)
+		}
+		return readJobTranscript(deps, parsed.Ref, strings.TrimSpace(stringArg(args, "range")), strings.TrimSpace(stringArg(args, "format")))
+	}
+	if operation == retainedReadSearch {
+		return nil, errors.New("invalid_request: output_match applies only to job: and artifact: refs")
 	}
 	return execReadSessionTranscript(deps, args)
+}
+
+func parseRetainedReadArgs(args map[string]any) (retainedReadArgs, retainedReadOperation, error) {
+	parsed := retainedReadArgs{
+		Ref:         strings.TrimSpace(stringArg(args, "transcript_ref")),
+		OutputMatch: stringArg(args, "output_match"),
+	}
+	_, outputMatchSet := args["output_match"]
+	_, contextSet := args["context_lines"]
+	if contextSet && !outputMatchSet {
+		return retainedReadArgs{}, retainedReadDefault, errors.New("invalid_request: context_lines requires output_match")
+	}
+	if value := optionalIntArg(args, "context_lines"); value != nil {
+		parsed.ContextLines = *value
+	}
+	if parsed.ContextLines < 0 || parsed.ContextLines > 10 {
+		return retainedReadArgs{}, retainedReadDefault, errors.New("invalid_request: context_lines must be between 0 and 10")
+	}
+	if value := optionalIntArg(args, "offset_bytes"); value != nil {
+		parsed.OffsetSet = true
+		parsed.OffsetBytes = int64(*value)
+	}
+	if parsed.OffsetSet && parsed.OffsetBytes < 0 {
+		return retainedReadArgs{}, retainedReadDefault, errors.New("invalid_request: offset_bytes must be non-negative")
+	}
+	if outputMatchSet {
+		return parsed, retainedReadSearch, nil
+	}
+	if parsed.OffsetSet {
+		return parsed, retainedReadPage, nil
+	}
+	return parsed, retainedReadDefault, nil
+}
+
+func validateArtifactReadArgs(args map[string]any, operation retainedReadOperation) error {
+	_ = operation
+	for _, name := range []string{"range", "expand_turn"} {
+		if _, present := args[name]; present {
+			return fmt.Errorf("invalid_request: %s applies only to session transcript refs", name)
+		}
+	}
+	if _, present := args["format"]; present {
+		return errors.New("invalid_request: format is not supported for artifact: refs")
+	}
+	return nil
+}
+
+func validateJobReadArgs(args map[string]any, operation retainedReadOperation) error {
+	for _, name := range []string{"range", "expand_turn"} {
+		if _, present := args[name]; present {
+			return fmt.Errorf("invalid_request: %s applies only to session transcript refs", name)
+		}
+	}
+	format, formatSet := args["format"]
+	if !formatSet {
+		return nil
+	}
+	if operation != retainedReadDefault {
+		return errors.New("invalid_request: format cannot be combined with offset_bytes or output_match on job: refs")
+	}
+	if strings.TrimSpace(fmt.Sprint(format)) != formatMarkdown {
+		return errors.New("invalid_request: job: refs support only format=markdown")
+	}
+	return nil
+}
+
+func compileOutputMatch(expression string) (*regexp.Regexp, error) {
+	compiled, err := regexp.Compile(expression)
+	if err != nil {
+		return nil, fmt.Errorf("invalid_request: output_match is not valid RE2: %w", err)
+	}
+	return compiled, nil
+}
+
+func validArtifactTranscriptRef(ref string) bool {
+	const prefix = "artifact:"
+	const hexLength = 32
+	if len(ref) != len(prefix)+hexLength || !strings.HasPrefix(ref, prefix) {
+		return false
+	}
+	for _, c := range ref[len(prefix):] {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func openArtifactTranscript(deps *toolDeps, ref string) (artifactReadSeekCloser, int64, error) {
+	if !validArtifactTranscriptRef(ref) {
+		return nil, 0, errors.New("invalid_request: artifact transcript_ref must be a valid artifact:<id>")
+	}
+	if deps == nil || deps.openArtifact == nil {
+		return nil, 0, errors.New("artifact_expired: artifact is not available in this root session tree")
+	}
+	reader, err := deps.openArtifact(ref)
+	if err != nil {
+		switch {
+		case errors.Is(err, artifactstore.ErrInvalidRef):
+			return nil, 0, errors.New("invalid_request: artifact transcript_ref must be a valid artifact:<id>")
+		case errors.Is(err, artifactstore.ErrExpired):
+			return nil, 0, errors.New("artifact_expired: artifact is not available in this root session tree")
+		default:
+			return nil, 0, errors.New("artifact_unavailable: retained artifact could not be opened")
+		}
+	}
+	total, err := reader.Seek(0, io.SeekEnd)
+	if err != nil || total < 0 {
+		_ = reader.Close()
+		return nil, 0, errors.New("artifact_unavailable: retained artifact size could not be read")
+	}
+	return reader, total, nil
+}
+
+func pageArtifactTranscript(deps *toolDeps, args retainedReadArgs) (any, error) {
+	reader, total, err := openArtifactTranscript(deps, args.Ref)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = reader.Close() }()
+	offset := args.OffsetBytes
+	page, err := readRetainedPage(reader, 0, total, offset)
+	if err != nil {
+		if errors.Is(err, errRetainedOffsetOutOfRange) {
+			return nil, fmt.Errorf("invalid_request: offset_bytes %d is beyond EOF %d; valid byte interval is [0,%d]", offset, total, total)
+		}
+		return nil, err
+	}
+	return retainedPageResult(args.Ref, 0, "", page), nil
+}
+
+type artifactSearchSource struct {
+	reader io.ReaderAt
+	total  int64
+}
+
+func (s artifactSearchSource) ReadWindow(offset int64, maxBytes int) (jobstore.OutputWindowSnapshot, error) {
+	snapshot := jobstore.OutputWindowSnapshot{Start: offset, End: offset, TotalBytes: s.total}
+	if offset < 0 || offset > s.total {
+		return snapshot, jobstore.ErrInvalidOffset
+	}
+	if maxBytes < 0 {
+		return snapshot, jobstore.ErrInvalidLimit
+	}
+	end := min(s.total, offset+int64(maxBytes))
+	if end < offset {
+		end = s.total
+	}
+	snapshot.End = end
+	snapshot.Content = make([]byte, int(end-offset))
+	if len(snapshot.Content) > 0 {
+		read, err := s.reader.ReadAt(snapshot.Content, offset)
+		if err != nil && !(errors.Is(err, io.EOF) && read == len(snapshot.Content)) {
+			return jobstore.OutputWindowSnapshot{}, fmt.Errorf("read artifact search window: %w", err)
+		}
+		if read != len(snapshot.Content) {
+			return jobstore.OutputWindowSnapshot{}, io.ErrUnexpectedEOF
+		}
+	}
+	snapshot.Truncated = offset > 0 || end < s.total
+	return snapshot, nil
+}
+
+func searchArtifactTranscript(deps *toolDeps, args retainedReadArgs) (any, error) {
+	compiled, err := compileOutputMatch(args.OutputMatch)
+	if err != nil {
+		return nil, err
+	}
+	reader, total, err := openArtifactTranscript(deps, args.Ref)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = reader.Close() }()
+	if args.OffsetBytes > total {
+		return nil, fmt.Errorf("invalid_request: offset_bytes %d is beyond EOF %d; valid byte interval is [0,%d]", args.OffsetBytes, total, total)
+	}
+	result, err := searchRetainedOutput(artifactSearchSource{reader: reader, total: total}, retainedSearchOptions{
+		Regexp: compiled,
+		SearchOptions: jobstore.SearchOptions{
+			StartOffset:  args.OffsetBytes,
+			ContextLines: args.ContextLines,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return retainedSearchResultFor(args, "", result), nil
+}
+
+func pageJobTranscript(deps *toolDeps, args retainedReadArgs) (any, error) {
+	if deps == nil {
+		// Preserve the legacy nil-dependency validation contract used by callers
+		// that have no job reader at all. Real registered tools always provide deps.
+		return nil, errors.New("invalid_request: offset_bytes applies only to session transcript refs when the job transcript reader is unavailable")
+	}
+	jobID, err := parseJobTranscriptID(args.Ref)
+	if err != nil {
+		return nil, err
+	}
+	target, err := locateLocalJobRetainedTarget(deps.stateDir, jobID)
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := (localJobSearchSource{target: target}).ReadWindow(args.OffsetBytes, retainedOutputPageBytes)
+	if err != nil {
+		return nil, err
+	}
+	page, err := readRetainedPage(bytes.NewReader(snapshot.Content), snapshot.Start, snapshot.TotalBytes, args.OffsetBytes)
+	if err != nil {
+		return nil, err
+	}
+	return retainedPageResult(args.Ref, snapshot.RetainedStart, localJobEnvelopeStatus(target.Record), page), nil
+}
+
+func searchJobTranscript(deps *toolDeps, args retainedReadArgs) (any, error) {
+	if deps == nil {
+		return nil, errors.New("job transcript unavailable: job manager is not available")
+	}
+	jobID, err := parseJobTranscriptID(args.Ref)
+	if err != nil {
+		return nil, err
+	}
+	compiled, err := compileOutputMatch(args.OutputMatch)
+	if err != nil {
+		return nil, err
+	}
+	target, err := locateLocalJobRetainedTarget(deps.stateDir, jobID)
+	if err != nil {
+		return nil, err
+	}
+	metadata, err := readLocalJobRetainedMetadata(target)
+	if err != nil {
+		return nil, err
+	}
+	offset := args.OffsetBytes
+	if !args.OffsetSet {
+		offset = metadata.RetainedStart
+	}
+	if offset < metadata.RetainedStart {
+		return nil, fmt.Errorf("output_unavailable: job %q offset %d is no longer retained; first available offset is %d", jobID, offset, metadata.RetainedStart)
+	}
+	if offset > metadata.TotalBytes {
+		return nil, fmt.Errorf(
+			"invalid_request: offset_bytes %d is beyond EOF %d; valid byte interval is [%d,%d]; job_status=%s",
+			offset, metadata.TotalBytes, metadata.RetainedStart, metadata.TotalBytes, localJobEnvelopeStatus(target.Record),
+		)
+	}
+	result, err := searchRetainedOutput(localJobSearchSource{target: target}, retainedSearchOptions{
+		Regexp: compiled,
+		SearchOptions: jobstore.SearchOptions{
+			StartOffset:       offset,
+			ContextLines:      args.ContextLines,
+			SkipPartialPrefix: metadata.RetainedStart > 0 && offset == metadata.RetainedStart,
+			DeferEOFFragment:  target.Record != nil && !target.Record.Status.IsTerminal(),
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	args.OffsetBytes = offset
+	return retainedSearchResultFor(args, localJobEnvelopeStatus(target.Record), result), nil
+}
+
+func parseJobTranscriptID(ref string) (string, error) {
+	jobID := strings.TrimSpace(strings.TrimPrefix(ref, "job:"))
+	if jobID == "" {
+		return "", errors.New("invalid_request: job transcript_ref must be job:<job_id>")
+	}
+	return jobID, nil
+}
+
+func retainedPageResult(ref string, retainedStart int64, jobStatus string, page retainedPage) retainedPageEnvelope {
+	return retainedPageEnvelope{
+		TranscriptRef:  ref,
+		Representation: "raw_bytes",
+		ContentType:    "text/plain",
+		Page: retainedPageBody{
+			OffsetBytes:   page.OffsetBytes,
+			BytesReturned: page.BytesReturned,
+			TotalBytes:    page.TotalBytes,
+			Encoding:      page.Encoding,
+			Data:          page.Data,
+		},
+		RetainedStartByte: retainedStart,
+		JobStatus:         jobStatus,
+		Continuation:      page.Continuation,
+	}
+}
+
+func retainedSearchResultFor(args retainedReadArgs, jobStatus string, result retainedSearchEnvelope) retainedSearchResult {
+	for i := range result.Matches {
+		if result.Matches[i].Before == nil {
+			result.Matches[i].Before = make([]string, 0)
+		}
+		if result.Matches[i].After == nil {
+			result.Matches[i].After = make([]string, 0)
+		}
+	}
+	return retainedSearchResult{
+		TranscriptRef:         args.Ref,
+		OutputMatch:           args.OutputMatch,
+		ContextLines:          args.ContextLines,
+		OffsetBytes:           result.OffsetBytes,
+		RetainedStartBytes:    result.RetainedStartBytes,
+		TotalBytes:            result.TotalBytes,
+		JobStatus:             jobStatus,
+		SearchComplete:        result.SearchComplete,
+		SkippedPartialPrefix:  result.SkippedPartialPrefix,
+		Matches:               result.Matches,
+		SkippedOversizedLines: result.SkippedOversized,
+		Continuation:          result.Continuation,
+	}
 }
 
 // execReadSessionTranscript validates the source-specific arguments before it
