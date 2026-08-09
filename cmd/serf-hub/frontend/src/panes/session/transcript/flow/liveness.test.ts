@@ -338,7 +338,13 @@ test("describeLiveness: renders 'in progress' instead of a delay countdown once 
 // in 32s — 14m on this call" (waiting) / "... — in progress — 14m on this
 // call" (streaming). This is the literal contract, not a paraphrase.
 test("describeLiveness: matches the spec's exact waiting chip string, character for character", () => {
-  const retry = retryWait({ attempt: 3, attemptCap: 4, delayMs: 32_000, errorClass: "server", groupElapsedMs: 14 * 60_000 });
+  const retry = retryWait({
+    attempt: 3,
+    attemptCap: 4,
+    delayMs: 32_000,
+    errorClass: "server",
+    groupElapsedMs: 14 * 60_000,
+  });
   expect(describeLiveness(30_000, true, 0, retry).text).toBe(
     "provider error — attempt 3/4 — retrying in 32s — 14m on this call",
   );
