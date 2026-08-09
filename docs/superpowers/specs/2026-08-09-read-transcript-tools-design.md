@@ -147,7 +147,7 @@ A `job:` page requested with `offset_bytes`, or an `artifact:` page requested wi
 }
 ```
 
-Use the existing UTF-8/base64 rule from transcript expansion: return UTF-8 when the page is valid UTF-8; otherwise return base64. A continuation always names the next raw byte offset.
+Use the existing UTF-8/base64 rule from transcript expansion: return UTF-8 when the page is valid UTF-8; otherwise return base64. A continuation always names the next raw byte offset. A `job:` envelope also carries `job_status`; an `artifact:` envelope does not, because an artifact is always complete.
 
 For an `artifact:` ref, `retained_start_bytes` is always 0. For a pruned `job:` ref, it is the lifetime offset of the first retained byte. Job-page offsets are lifetime offsets, not offsets relative to the retained file. The first available job page therefore begins at `retained_start_bytes`.
 
@@ -186,7 +186,11 @@ If the bounded scanner skips an oversized line, the response reports the skip an
 
 For a pruned job, search covers only retained bytes and reports nonzero `retained_start_bytes`. Because retention may start mid-line, search skips bytes through the first retained newline and sets `skipped_partial_prefix=true`; raw paging still exposes those bytes. Search never labels a retained suffix as a complete line or describes the result as a scan of the full lifetime log.
 
-Raw paging and search apply only to terminal jobs. A running job can append and prune between calls, which would invalidate offsets and continuations. The existing no-argument markdown snapshot remains available while a job runs.
+Raw paging and search also apply to running jobs. Job offsets are lifetime offsets, so an append never invalidates a page or a continuation; it only extends EOF. Each call is a point-in-time snapshot taken under the store lock. Every job envelope reports `job_status` (`running` or `terminal`) so the caller knows whether more output may follow; `total_bytes` is the snapshot value at read time. If pruning outruns a reader between calls, the next call fails `output_unavailable` and names the first available offset, exactly as after any other pruning.
+
+A running job's retained output may end in an incomplete line. Search never evaluates that trailing fragment — it may still be growing and could match differently once complete. Instead the continuation names the fragment's start, so a later call evaluates the completed line without a gap. On a terminal job the trailing unterminated line counts as complete and is evaluated. The existing bounded grep primitive evaluates the EOF fragment unconditionally, so the bridge adds an option to defer it while the job runs. Raw paging has no such rule; it returns whatever bytes exist. For a running job, `search_complete=true` means every complete retained line at snapshot time was evaluated.
+
+The existing no-argument markdown snapshot remains available while a job runs.
 
 ## Validation and errors
 
@@ -200,9 +204,8 @@ The reader rejects unsupported combinations instead of ignoring them.
 - Any explicit `format` on an `artifact:` ref → `invalid_request`; artifact reads use the raw page or search envelope.
 - `format=outline` or `format=jsonl` on a `job:` ref → `invalid_request`.
 - `offset_bytes` or `output_match` combined with any explicit `format` on a `job:` ref → `invalid_request`.
-- Raw paging or search on a nonterminal `job:` ref → `job_not_terminal` with the current status.
 - Offset before a job's `retained_start_bytes` → `output_unavailable` with the first available offset.
-- Offset beyond EOF → `invalid_request` with the valid byte interval.
+- Offset beyond EOF → `invalid_request` with the valid byte interval and, for a running job, its status — the byte may simply not exist yet, and `job_watch` covers waiting for it.
 - Malformed artifact ref → `invalid_request`.
 - Well-formed but unknown artifact ref → `artifact_expired`.
 
@@ -262,7 +265,10 @@ Read `docs/testing.md` before changing tests. All tests use synthetic output and
 - Reject an offset in a pruned prefix.
 - Search retained job output with context and absolute lifetime offsets.
 - Skip and report the first retained fragment when pruning starts mid-line.
-- Reject paging and search on a running job; keep its existing markdown snapshot available.
+- Page a running job, append more output, then continue from the returned offset without gaps or overlap; pass under the race detector with a concurrent writer.
+- Search a running job whose retained output ends mid-line: the fragment is not evaluated, the continuation names its start, and a later call evaluates the completed line exactly once.
+- Search a terminal job evaluates its trailing unterminated line.
+- A running job's envelopes report `job_status`; the no-argument markdown snapshot remains available throughout.
 - Keep the default delegate-job markdown view and its appended structured result unchanged. Raw paging and search cover the retained delegate report bytes only.
 
 ### Receipt replay
@@ -285,12 +291,13 @@ The change is complete when all these statements hold:
 
 1. Every generic text result truncated by Serf returns an `artifact:` handle or an honest `retention_failed` warning.
 2. During the current root session tree, paging an artifact can reconstruct every original byte exactly.
-3. `read_transcript` can page and search `artifact:` and retained `job:` output.
-4. Search supports 0–10 context lines and returns byte offsets.
-5. A pruned job reports its unavailable prefix; it never claims complete lifetime output.
-6. The grep failure from the source report is solvable in one additional search call using the original broad pattern, without rerunning or narrowing the search.
-7. Existing session transcript behavior remains unchanged.
-8. Every session that can receive an artifact handle can call `read_transcript`.
+3. `read_transcript` can page and search `artifact:` and retained `job:` output, including output of running jobs, with snapshot semantics and reported `job_status`.
+4. Search on a running job never evaluates a growing partial line; continuation guarantees it is evaluated once complete.
+5. Search supports 0–10 context lines and returns byte offsets.
+6. A pruned job reports its unavailable prefix; it never claims complete lifetime output.
+7. The grep failure from the source report is solvable in one additional search call using the original broad pattern, without rerunning or narrowing the search.
+8. Existing session transcript behavior remains unchanged.
+9. Every session that can receive an artifact handle can call `read_transcript`.
 
 ## Out of scope
 
