@@ -484,6 +484,66 @@ func TestOutputWindowRealignsAMidRuneCut(t *testing.T) {
 	}
 }
 
+func TestReadOutputWindowSnapshotLiveUsesLifetimeOffsetsWithoutRuneTrimming(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutputNoSync(path, 7)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = o.Close() })
+	appendOutput(t, o, "abc😀xyz") // lifetime 10, retained bytes begin at offset 3
+
+	got, err := o.ReadWindow(3, 5)
+	if err != nil {
+		t.Fatalf("ReadWindow: %v", err)
+	}
+	want := []byte("😀x")
+	if !bytes.Equal(got.Content, want) || got.Start != 3 || got.End != 8 || got.TotalBytes != 10 || got.RetainedStart != 3 || !got.Truncated {
+		t.Fatalf("window = %+v content=%x, want raw %x at lifetime [3,8)", got, got.Content, want)
+	}
+}
+
+func TestReadOutputWindowSnapshotRunningConcurrentAppendAndPrune(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutputNoSync(path, 128)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = o.Close() })
+	appendOutput(t, o, "seed\n")
+
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		for i := 0; i < 200; i++ {
+			if _, err := o.Append([]byte("append-line\n")); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	<-started
+
+	for i := 0; i < 300; i++ {
+		offset := o.RetainedStart()
+		got, err := o.ReadWindow(offset, 31)
+		if errors.Is(err, ErrOutputPruned) {
+			continue // pruning advanced between the two independently locked calls
+		}
+		if err != nil {
+			t.Fatalf("ReadWindow: %v", err)
+		}
+		if got.Start < got.RetainedStart || got.End < got.Start || got.End > got.TotalBytes || int64(len(got.Content)) != got.End-got.Start {
+			t.Fatalf("inconsistent live snapshot = %+v", got)
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("append: %v", err)
+	}
+}
+
 func TestOutputEnforcesCapAndReportsLifetimeBytes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "job_A.log")
 	o, err := OpenOutput(path, 6)

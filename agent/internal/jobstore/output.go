@@ -26,6 +26,21 @@ var ErrOutputPruned = errors.New("jobstore: output pruned")
 // ErrInvalidLimit is returned when an output read limit is negative.
 var ErrInvalidLimit = errors.New("jobstore: invalid limit")
 
+// ErrInvalidOffset is returned when an output read offset is negative or past
+// the lifetime end of the output stream.
+var ErrInvalidOffset = errors.New("jobstore: invalid offset")
+
+// SearchOptions bounds a retained-output line search. All offsets are lifetime
+// byte offsets, even when the retained file begins after offset zero.
+type SearchOptions struct {
+	StartOffset        int64
+	MaxMatches         int
+	MaxSerializedBytes int
+	ContextLines       int
+	SkipPartialPrefix  bool
+	DeferEOFFragment   bool
+}
+
 // Match is one grep hit: the matching line and its byte offset in the log.
 type Match struct {
 	ByteOffset int64  `json:"byte_offset"`
@@ -277,6 +292,78 @@ func (o *OutputStore) Window(beforeBytes int64, maxBytes int) (buf []byte, start
 		start += int64(before - len(buf))
 	}
 	return buf, start, end, total, nil
+}
+
+// ReadWindow returns a raw forward window beginning at lifetime offset. Unlike
+// Window, it does not realign UTF-8 boundaries: callers can concatenate
+// successive End offsets to reconstruct the retained bytes exactly. The
+// content and all metadata are captured while holding the store mutex.
+func (o *OutputStore) ReadWindow(offset int64, maxBytes int) (snapshot OutputWindowSnapshot, err error) {
+	if maxBytes < 0 {
+		return OutputWindowSnapshot{}, fmt.Errorf("%w: maxBytes=%d", ErrInvalidLimit, maxBytes)
+	}
+	if offset < 0 {
+		return OutputWindowSnapshot{}, fmt.Errorf("%w: offset=%d", ErrInvalidOffset, offset)
+	}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	snapshot.TotalBytes = o.total
+	snapshot.RetainedStart = o.retainedStart
+	snapshot.Start = offset
+	snapshot.End = offset
+	if offset < o.retainedStart {
+		return snapshot, fmt.Errorf("%w: offset=%d first_available=%d", ErrOutputPruned, offset, o.retainedStart)
+	}
+	if offset > o.total {
+		return snapshot, fmt.Errorf("%w: offset=%d total=%d", ErrInvalidOffset, offset, o.total)
+	}
+
+	end := addWindowLimit(offset, maxBytes, o.total)
+	snapshot.End = end
+	snapshot.Truncated = o.retainedStart > 0 || offset > o.retainedStart || end < o.total
+	if end == offset {
+		return snapshot, nil
+	}
+	info, err := o.fs.Stat(o.path)
+	if err != nil {
+		return OutputWindowSnapshot{}, fmt.Errorf("jobstore: stat output: %w", err)
+	}
+	fileStart := offset - o.retainedStart
+	fileEnd := end - o.retainedStart
+	if fileStart < 0 || fileEnd < fileStart || fileEnd > info.Size() {
+		return OutputWindowSnapshot{}, errors.New("jobstore: retained output coordinates do not match output file")
+	}
+	f, err := o.fs.Open(o.path)
+	if err != nil {
+		return OutputWindowSnapshot{}, fmt.Errorf("jobstore: open output: %w", err)
+	}
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("jobstore: close output: %w", closeErr)
+		}
+	}()
+	if fileStart > 0 {
+		if _, err := f.Seek(fileStart, io.SeekStart); err != nil {
+			return OutputWindowSnapshot{}, fmt.Errorf("jobstore: seek output: %w", err)
+		}
+	}
+	snapshot.Content = make([]byte, int(fileEnd-fileStart))
+	if _, err := io.ReadFull(f, snapshot.Content); err != nil {
+		return OutputWindowSnapshot{}, fmt.Errorf("jobstore: read output: %w", err)
+	}
+	return snapshot, nil
+}
+
+func addWindowLimit(offset int64, maxBytes int, total int64) int64 {
+	if maxBytes == 0 || offset == total {
+		return offset
+	}
+	limit := int64(maxBytes)
+	if limit > total-offset {
+		return total
+	}
+	return offset + limit
 }
 
 // Tail returns the last maxBytes bytes of the log, the total byte count, and

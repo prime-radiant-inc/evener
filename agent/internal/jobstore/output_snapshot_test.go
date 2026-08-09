@@ -1,6 +1,7 @@
 package jobstore
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -306,6 +308,149 @@ func TestReadOutputSnapshotKeepsInnerCoordinateChangeWhenObservationFails(t *tes
 	}
 	if attempts != 2 || string(got.Content) != "BBBB" || got.TotalBytes != 8 || got.RetainedStart != 4 {
 		t.Fatalf("snapshot=%+v attempts=%d, want retry from inner coordinate change", got, attempts)
+	}
+}
+
+func TestReadOutputWindowSnapshotReadsRawLifetimeRange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job.log")
+	o, err := CreateOutputNoSync(path, 5)
+	if err != nil {
+		t.Fatalf("create output: %v", err)
+	}
+	appendOutput(t, o, "abcdefgh") // retained "defgh" at lifetime offset 3
+	if err := o.Close(); err != nil {
+		t.Fatalf("close output: %v", err)
+	}
+
+	got, err := ReadOutputWindowSnapshot(path, 4, 3)
+	if err != nil {
+		t.Fatalf("ReadOutputWindowSnapshot: %v", err)
+	}
+	if string(got.Content) != "efg" || got.Start != 4 || got.End != 7 || got.TotalBytes != 8 || got.RetainedStart != 3 || !got.Truncated {
+		t.Fatalf("snapshot = %+v, want efg at lifetime [4,7) of retained [3,8)", got)
+	}
+}
+
+func TestReadOutputWindowSnapshotPreservesExactInvalidUTF8Bytes(t *testing.T) {
+	base := afero.NewMemMapFs()
+	const path = "/job.log"
+	want := []byte{0xf0, 0x9f, 0x98}
+	mustWriteSnapshotFixture(t, base, path, want, 3, 0)
+
+	got, err := readOutputWindowSnapshotFs(base, path, 0, len(want))
+	if err != nil {
+		t.Fatalf("readOutputWindowSnapshotFs: %v", err)
+	}
+	if !bytes.Equal(got.Content, want) || got.Start != 0 || got.End != 3 {
+		t.Fatalf("snapshot = %+v content=%x, want exact invalid UTF-8 bytes %x", got, got.Content, want)
+	}
+}
+
+func TestReadOutputWindowSnapshotValidatesOffsetAndLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job.log")
+	o, err := CreateOutputNoSync(path, 3)
+	if err != nil {
+		t.Fatalf("create output: %v", err)
+	}
+	appendOutput(t, o, "abcdef") // retained "def" at lifetime offset 3
+	if err := o.Close(); err != nil {
+		t.Fatalf("close output: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		offset    int64
+		maxBytes  int
+		wantError error
+	}{
+		{name: "negative offset", offset: -1, maxBytes: 1, wantError: ErrInvalidOffset},
+		{name: "pruned offset", offset: 2, maxBytes: 1, wantError: ErrOutputPruned},
+		{name: "beyond EOF", offset: 7, maxBytes: 1, wantError: ErrInvalidOffset},
+		{name: "negative limit", offset: 3, maxBytes: -1, wantError: ErrInvalidLimit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ReadOutputWindowSnapshot(path, tc.offset, tc.maxBytes)
+			if !errors.Is(err, tc.wantError) {
+				t.Fatalf("error = %v, want %v", err, tc.wantError)
+			}
+		})
+	}
+
+	eof, err := ReadOutputWindowSnapshot(path, 6, 16)
+	if err != nil {
+		t.Fatalf("EOF window: %v", err)
+	}
+	if len(eof.Content) != 0 || eof.Start != 6 || eof.End != 6 || eof.TotalBytes != 6 || eof.RetainedStart != 3 {
+		t.Fatalf("EOF snapshot = %+v", eof)
+	}
+}
+
+func TestReadOutputWindowSnapshotRetriesOnceAndReturnsChangedError(t *testing.T) {
+	t.Run("one change", func(t *testing.T) {
+		attempts := 0
+		got, err := readOutputWindowSnapshotWithRetry(func() (OutputWindowSnapshot, error) {
+			attempts++
+			if attempts == 1 {
+				return OutputWindowSnapshot{}, errOutputChanged
+			}
+			return OutputWindowSnapshot{Content: []byte("stable"), Start: 4, End: 10, TotalBytes: 10, RetainedStart: 4}, nil
+		})
+		if err != nil || attempts != 2 || string(got.Content) != "stable" || got.Start != 4 || got.End != 10 {
+			t.Fatalf("snapshot=%+v attempts=%d err=%v", got, attempts, err)
+		}
+	})
+
+	t.Run("two changes", func(t *testing.T) {
+		attempts := 0
+		_, err := readOutputWindowSnapshotWithRetry(func() (OutputWindowSnapshot, error) {
+			attempts++
+			return OutputWindowSnapshot{}, errOutputChanged
+		})
+		if !errors.Is(err, ErrOutputChangedDuringRead) || attempts != 2 {
+			t.Fatalf("attempts=%d error=%v, want two attempts and ErrOutputChangedDuringRead", attempts, err)
+		}
+	})
+}
+
+func TestReadOutputWindowSnapshotConcurrentAppendAndPrune(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job.log")
+	o, err := CreateOutputNoSync(path, 128)
+	if err != nil {
+		t.Fatalf("create output: %v", err)
+	}
+	t.Cleanup(func() { _ = o.Close() })
+	appendOutput(t, o, "seed\n")
+
+	var finished atomic.Bool
+	done := make(chan error, 1)
+	go func() {
+		defer finished.Store(true)
+		for i := 0; i < 150; i++ {
+			if _, err := o.Append([]byte("append-line\n")); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+
+	successes := 0
+	for !finished.Load() || successes == 0 {
+		retainedStart := o.RetainedStart()
+		got, err := ReadOutputWindowSnapshot(path, retainedStart, 31)
+		if errors.Is(err, ErrOutputChangedDuringRead) || errors.Is(err, ErrOutputPruned) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("ReadOutputWindowSnapshot: %v", err)
+		}
+		successes++
+		if got.Start < got.RetainedStart || got.End < got.Start || got.End > got.TotalBytes || int64(len(got.Content)) != got.End-got.Start {
+			t.Fatalf("inconsistent file snapshot = %+v", got)
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("append: %v", err)
 	}
 }
 
