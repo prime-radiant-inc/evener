@@ -30,5 +30,6 @@ test("invalid input falls back to the raw string", () => {
 });
 
 test("absolute renders month-day and 24-hour time", () => {
-  expect(absoluteTime("2026-08-08T22:03:48-07:00")).toBe("Aug 8, 22:03");
+  const localTimestamp = new Date(2026, 7, 8, 22, 3, 48).toISOString();
+  expect(absoluteTime(localTimestamp)).toBe("Aug 8, 22:03");
 });
