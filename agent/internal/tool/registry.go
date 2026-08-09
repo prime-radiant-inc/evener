@@ -221,6 +221,15 @@ type ExecResult struct {
 	// FullOutput is the untruncated output (available via TOOL_CALL_END).
 	FullOutput string
 
+	// RecoverableOutput is the exact model-facing text before the registry's
+	// generic output limit is applied. Unlike FullOutput, it is not replaced by
+	// a TextResult's event-facing FullOutput override.
+	RecoverableOutput string
+
+	// Truncated reports whether the registry's generic output limit changed the
+	// model-facing text.
+	Truncated bool
+
 	IsError bool
 
 	// PrevalOnly is true when this result came from execTool's pre-dispatch
@@ -741,11 +750,13 @@ func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOu
 		}
 	}
 	return ExecResult{
-		ToolName:   toolName,
-		CallID:     callID,
-		Output:     out,
-		FullOutput: full,
-		IsError:    isErr,
+		ToolName:          toolName,
+		CallID:            callID,
+		Output:            out,
+		FullOutput:        full,
+		RecoverableOutput: full,
+		Truncated:         out != full,
+		IsError:           isErr,
 	}
 }
 
@@ -758,13 +769,13 @@ func truncateChars(s string, limit int, strategy schema.TruncationStrategy) stri
 	switch strategy {
 	case schema.TruncTail:
 		// Spec: keep the last max_chars characters and prepend a warning.
-		marker := fmt.Sprintf("[WARNING: Tool output was truncated. First %d characters were removed. The full output is available in the event stream.]\n\n", removed)
+		marker := fmt.Sprintf("[Output truncated: %d characters removed from the beginning.]\n\n", removed)
 		return marker + string(runes[len(runes)-limit:])
 	default:
 		// Spec: head/tail split plus an explicit warning about omitted middle.
 		headCount := limit / 2
 		tailCount := limit - headCount
-		marker := fmt.Sprintf("\n\n[WARNING: Tool output was truncated. %d characters were removed from the middle. The full output is available in the event stream. If you need to see specific parts, re-run the tool with more targeted parameters.]\n\n", removed)
+		marker := fmt.Sprintf("\n\n[Output truncated: %d characters removed from the middle.]\n\n", removed)
 		return string(runes[:headCount]) + marker + string(runes[len(runes)-tailCount:])
 	}
 }
@@ -811,13 +822,19 @@ func truncateCharsFromTail(s string, limit int) string {
 	if limit <= 0 || len(runes) <= limit {
 		return s
 	}
-	marker := "\n[WARNING: Tool output was truncated. The remaining characters were removed from the end. The full output is available in the event stream. If you need to see specific parts, re-run the tool with more targeted parameters.]"
-	markerLen := len([]rune(marker))
-	keep := limit - markerLen
-	if keep < 0 {
-		keep = 0
+	removed := len(runes) - limit
+	for {
+		marker := fmt.Sprintf("\n[Output truncated: %d characters removed from the end.]", removed)
+		keep := limit - len([]rune(marker))
+		if keep < 0 {
+			keep = 0
+		}
+		actualRemoved := len(runes) - keep
+		if actualRemoved == removed {
+			return string(runes[:keep]) + marker
+		}
+		removed = actualRemoved
 	}
-	return string(runes[:keep]) + marker
 }
 
 func truncateLines(s string, limit int) string {
