@@ -158,7 +158,12 @@ func TestRetainToolArtifactUsesRecoverableOutput(t *testing.T) {
 
 func TestRetainToolArtifactFailureIsAvailabilityNeutralAndPreservesError(t *testing.T) {
 	store := newFakeArtifactStore()
-	store.putErr = errors.New("disk full\ninternal detail")
+	const sensitivePath = "/Users/operator/.serf/private/session-artifacts/model-output"
+	store.putErr = &os.PathError{
+		Op:   "write",
+		Path: sensitivePath,
+		Err:  errors.New("permission denied: storage detail secret=fixture"),
+	}
 	s := &Session{artifactStore: store}
 	res := tool.ExecResult{
 		Output:            "preview",
@@ -173,19 +178,25 @@ func TestRetainToolArtifactFailureIsAvailabilityNeutralAndPreservesError(t *test
 	if ref != "" {
 		t.Fatalf("ref = %q, want no handle after failed retention", ref)
 	}
+	if len(store.puts) != 1 {
+		t.Fatalf("Put called %d times after retention failure, want exactly once", len(store.puts))
+	}
 	if !res.IsError {
 		t.Fatal("retention failure cleared tool error state")
 	}
-	if !strings.Contains(res.Output, "retention_failed") {
-		t.Fatalf("output = %q, want retention_failed warning", res.Output)
+	const wantOutput = "preview\n[retention_failed: full output could not be retained]"
+	if res.Output != wantOutput {
+		t.Fatalf("output = %q, want stable generic warning %q", res.Output, wantOutput)
 	}
 	for _, unavailableClaim := range []string{"artifact:", "event stream", "Full output:", "Read with:"} {
 		if strings.Contains(res.Output, unavailableClaim) {
 			t.Fatalf("output = %q, must not claim unavailable output via %q", res.Output, unavailableClaim)
 		}
 	}
-	if strings.Contains(res.Output, "\ninternal detail") {
-		t.Fatalf("output = %q, want concise one-line retention error", res.Output)
+	for _, sensitiveDetail := range []string{sensitivePath, "permission denied", "storage detail", "secret=fixture"} {
+		if strings.Contains(res.Output, sensitiveDetail) {
+			t.Fatalf("output = %q leaked sensitive retention detail %q", res.Output, sensitiveDetail)
+		}
 	}
 	if res.FullOutput != "event error" {
 		t.Fatalf("FullOutput = %q, want original error event text", res.FullOutput)
@@ -288,6 +299,9 @@ func TestRetainToolArtifactExecToolRetentionFailureOmitsOutputRef(t *testing.T) 
 	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "call_failure", Name: "retain_failure", Arguments: []byte(`{}`)}, "")
 	end := toolCallEndData(t, stop(), "call_failure")
 
+	if len(store.puts) != 1 {
+		t.Fatalf("Put called %d times after common-seam retention failure, want exactly once", len(store.puts))
+	}
 	if end.OutputRef != "" {
 		t.Fatalf("event OutputRef = %q after failed retention", end.OutputRef)
 	}
