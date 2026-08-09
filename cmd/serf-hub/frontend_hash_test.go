@@ -9,7 +9,7 @@ import (
 func TestFrontendDistHash_Deterministic(t *testing.T) {
 	// Same FS hashed twice should produce identical hashes.
 	fs := fstest.MapFS{
-		"index.html":      &fstest.MapFile{Data: []byte("<html>app</html>")},
+		"index.html":       &fstest.MapFile{Data: []byte("<html>app</html>")},
 		"webassets/app.js": &fstest.MapFile{Data: []byte("console.log('hi');")},
 	}
 	hash1, err1 := frontendDistHash(fs)
