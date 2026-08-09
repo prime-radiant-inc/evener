@@ -207,6 +207,31 @@ test("rows group by status: in progress, then open, then the collapsed settled g
   await waitFor(() => expect(screen.getAllByTestId("task-row")).toHaveLength(3));
 });
 
+test("empty groups render nothing, so Open leads when there are no in-progress tasks", async () => {
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: [TASKS_DATA[2]] }));
+
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
+
+  const liveGroups = await screen.findAllByTestId("task-group-live");
+  expect(liveGroups).toHaveLength(1);
+  expect(liveGroups[0]?.getAttribute("data-status")).toBe("open");
+  expect(screen.queryByText(/in progress/i)).toBeNull();
+  expect(screen.queryByTestId("task-settled-group")).toBeNull();
+});
+
+test("an all-settled list shows only the collapsed settled disclosure line", async () => {
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: [DATED_TASKS[0], DATED_TASKS[2]] }));
+
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
+
+  const settled = await screen.findByTestId("task-settled-group");
+  expect(settled.textContent).toContain("Done · settled 2");
+  expect(screen.queryByTestId("task-group-live")).toBeNull();
+  expect(screen.queryByTestId("task-row")).toBeNull();
+});
+
 test("a live row shows its latest note inline; a settled row does not", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
@@ -234,7 +259,9 @@ test("a cancelled row renders struck-through inside the settled group", async ()
   await user.click(screen.getByRole("button", { name: "Tasks" }));
   await user.click(await screen.findByTestId("task-settled-group-summary"));
 
-  expect(screen.getByText("Transition to implementation plan").getAttribute("data-struck")).toBe("true");
+  const cancelled = screen.getByText("Transition to implementation plan");
+  expect(cancelled.getAttribute("data-struck")).toBe("true");
+  expect(cancelled.closest("[data-testid='task-row']")?.textContent).toContain("✕");
 });
 
 test("a live row shows a relative updated time", async () => {

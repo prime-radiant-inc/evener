@@ -255,6 +255,7 @@
   margin-top: var(--space-1);
   font-size: var(--font-size-ui);
   color: var(--ink-hi);
+  overflow-wrap: anywhere;
 }
 
 .notesHead {
@@ -289,6 +290,7 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   color: var(--ink-hi);
+  overflow-wrap: anywhere;
 }
 
 .note::before {
