@@ -29,6 +29,10 @@ var openLocalJobProjectDirectory = func(path string) (localJobProjectDirectory, 
 	return os.Open(path)
 }
 
+var readLocalJobOutputSnapshot = jobstore.ReadOutputSnapshot
+
+var readLocalJobOutputWindowSnapshot = jobstore.ReadOutputWindowSnapshot
+
 func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
 	ownerSessionID, err := identifier.JobOwnerSessionID(jobID)
 	if err != nil {
@@ -177,6 +181,18 @@ func validateLocalJobRetainedTotal(target localJobRetainedTarget, total int64) e
 	return nil
 }
 
+func localJobRetainedMissingError(jobID string) error {
+	return fmt.Errorf("output_unavailable: job %q retained output is missing or pruned", jobID)
+}
+
+func localJobRetainedUnreadableError(jobID string) error {
+	return fmt.Errorf("output_unavailable: job %q retained output could not be read", jobID)
+}
+
+func localJobRetainedChangedError(jobID string) error {
+	return fmt.Errorf("output_changed_during_read: job %q", jobID)
+}
+
 func localJobRetainedReadError(target localJobRetainedTarget, offset int64, snapshot jobstore.OutputWindowSnapshot, err error) error {
 	status := localJobEnvelopeStatus(target.Record)
 	switch {
@@ -191,24 +207,24 @@ func localJobRetainedReadError(target localJobRetainedTarget, offset int64, snap
 			offset, snapshot.TotalBytes, snapshot.RetainedStart, snapshot.TotalBytes, status,
 		)
 	case errors.Is(err, jobstore.ErrOutputChangedDuringRead):
-		return fmt.Errorf("output_changed_during_read: job %q: %w", target.JobID, err)
+		return localJobRetainedChangedError(target.JobID)
 	case errors.Is(err, os.ErrNotExist):
-		return fmt.Errorf("output_unavailable: job %q retained output is missing or pruned: %w", target.JobID, err)
+		return localJobRetainedMissingError(target.JobID)
 	default:
-		return err
+		return localJobRetainedUnreadableError(target.JobID)
 	}
 }
 
 func readLocalJobRetainedMetadata(target localJobRetainedTarget) (jobstore.OutputSnapshot, error) {
-	snapshot, err := jobstore.ReadOutputSnapshot(target.OutputPath, 0, true)
+	snapshot, err := readLocalJobOutputSnapshot(target.OutputPath, 0, true)
 	if errors.Is(err, jobstore.ErrOutputChangedDuringRead) {
-		return jobstore.OutputSnapshot{}, fmt.Errorf("output_changed_during_read: job %q: %w", target.JobID, err)
+		return jobstore.OutputSnapshot{}, localJobRetainedChangedError(target.JobID)
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		return jobstore.OutputSnapshot{}, fmt.Errorf("output_unavailable: job %q retained output is missing or pruned: %w", target.JobID, err)
+		return jobstore.OutputSnapshot{}, localJobRetainedMissingError(target.JobID)
 	}
 	if err != nil {
-		return jobstore.OutputSnapshot{}, err
+		return jobstore.OutputSnapshot{}, localJobRetainedUnreadableError(target.JobID)
 	}
 	if err := validateLocalJobRetainedTotal(target, snapshot.TotalBytes); err != nil {
 		return jobstore.OutputSnapshot{}, err
@@ -221,7 +237,7 @@ type localJobSearchSource struct {
 }
 
 func (s localJobSearchSource) ReadWindow(offset int64, maxBytes int) (jobstore.OutputWindowSnapshot, error) {
-	snapshot, err := jobstore.ReadOutputWindowSnapshot(s.target.OutputPath, offset, maxBytes)
+	snapshot, err := readLocalJobOutputWindowSnapshot(s.target.OutputPath, offset, maxBytes)
 	if err != nil {
 		return snapshot, localJobRetainedReadError(s.target, offset, snapshot, err)
 	}
@@ -238,13 +254,13 @@ func readLocalJobSnapshot(currentStateDir, jobID string, readBytes int) (localJo
 	}
 	snapshot, err := jobstore.ReadOutputSnapshot(target.OutputPath, readBytes, false)
 	if errors.Is(err, jobstore.ErrOutputChangedDuringRead) {
-		return localJobSnapshot{}, fmt.Errorf("output_changed_during_read: job %q: %w", jobID, err)
+		return localJobSnapshot{}, localJobRetainedChangedError(jobID)
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		return localJobSnapshot{}, fmt.Errorf("output_unavailable: job %q retained output is missing or pruned: %w", jobID, err)
+		return localJobSnapshot{}, localJobRetainedMissingError(jobID)
 	}
 	if err != nil {
-		return localJobSnapshot{}, err
+		return localJobSnapshot{}, localJobRetainedUnreadableError(jobID)
 	}
 	if err := validateLocalJobRetainedTotal(target, snapshot.TotalBytes); err != nil {
 		return localJobSnapshot{}, err

@@ -47,8 +47,8 @@ import (
 // harnesses and are outside this tool-contract surface.
 
 // FuzzReadTranscriptRetainedContracts replays deterministic seeds across the
-// public artifact/job page and search operations. The helper also pins the
-// legacy no-operation job markdown view in the same fixture.
+// public artifact page and job page/search operations. The helper also pins
+// the legacy no-operation job markdown view in the same fixture.
 func FuzzReadTranscriptRetainedContracts(f *testing.F) {
 	for _, seed := range [][]byte{
 		nil,

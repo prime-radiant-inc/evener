@@ -59,13 +59,17 @@ type OutputStore struct {
 	capBytes      int64
 	total         int64
 	retainedStart int64
-	disableSync   bool
+	// retainedStartPartial says the first retained byte continues a line whose
+	// prefix was pruned. It is persisted so durable readers need not guess.
+	retainedStartPartial bool
+	disableSync          bool
 }
 
 type outputMeta struct {
-	TotalBytes     int64  `json:"total_bytes"`
-	RetainedStart  int64  `json:"retained_start"`
-	RetainedSHA256 string `json:"retained_sha256"`
+	TotalBytes           int64  `json:"total_bytes"`
+	RetainedStart        int64  `json:"retained_start"`
+	RetainedStartPartial *bool  `json:"retained_start_partial,omitempty"`
+	RetainedSHA256       string `json:"retained_sha256"`
 }
 
 // OpenOutput opens (creating if needed) the per-job log at path and enforces the
@@ -132,14 +136,15 @@ func openOutputFsWithSync(fs afero.Fs, path string, capBytes int64, disableSync 
 	metaPath := outputMetaPath(path)
 	total := info.Size()
 	retainedStart := int64(0)
+	retainedStartPartial := false
 	if !created {
-		total, retainedStart, err = readOutputMetaForFile(fs, metaPath, path, info.Size())
+		total, retainedStart, retainedStartPartial, err = readOutputMetaForFile(fs, metaPath, path, info.Size())
 		if err != nil {
 			cleanupCreated()
 			return nil, err
 		}
 	}
-	o := &OutputStore{path: path, metaPath: metaPath, fs: fs, f: f, capBytes: capBytes, total: total, retainedStart: retainedStart, disableSync: disableSync}
+	o := &OutputStore{path: path, metaPath: metaPath, fs: fs, f: f, capBytes: capBytes, total: total, retainedStart: retainedStart, retainedStartPartial: retainedStartPartial, disableSync: disableSync}
 	if err := o.pruneLocked(); err != nil {
 		cleanupCreated()
 		return nil, err
@@ -220,6 +225,14 @@ func (o *OutputStore) RetainedStart() int64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.retainedStart
+}
+
+// RetainedStartPartial reports whether the retained file starts with a
+// fragment of a line that began before RetainedStart.
+func (o *OutputStore) RetainedStartPartial() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.retainedStartPartial
 }
 
 // WindowBounds maps a paged read onto the lifetime offset space [start, end):
@@ -310,6 +323,7 @@ func (o *OutputStore) ReadWindow(offset int64, maxBytes int) (snapshot OutputWin
 	defer o.mu.Unlock()
 	snapshot.TotalBytes = o.total
 	snapshot.RetainedStart = o.retainedStart
+	snapshot.RetainedStartPartial = o.retainedStartPartial
 	snapshot.Start = offset
 	snapshot.End = offset
 	if offset < o.retainedStart {
@@ -554,7 +568,7 @@ func OutputFileStats(path string) (total int64, retainedStart int64, err error) 
 	if err != nil {
 		return 0, 0, fmt.Errorf("jobstore: stat output: %w", err)
 	}
-	total, retainedStart, err = readOutputMetaForFile(afero.NewOsFs(), outputMetaPath(path), path, info.Size())
+	total, retainedStart, _, err = readOutputMetaForFile(afero.NewOsFs(), outputMetaPath(path), path, info.Size())
 	if err != nil {
 		return 0, 0, err
 	}
@@ -600,13 +614,33 @@ func (o *OutputStore) pruneLocked() error {
 	// continuation bytes too: what survives here becomes the file's OWN first byte,
 	// which readers pass through untouched rather than realigning — only a reader's
 	// own window cut gets realigned.
-	tail = runetrim.TrimLeadingPartial(tail)
+	rawTail := tail
+	tail = runetrim.TrimLeadingPartial(rawTail)
+	droppedLeading := len(rawTail) - len(tail)
 	keep = int64(len(tail))
 	retainedStart := o.total - keep
+	retainedStartPartial := false
+	if keep > 0 && retainedStart > 0 {
+		var previous byte
+		if droppedLeading > 0 {
+			previous = rawTail[droppedLeading-1]
+		} else {
+			if _, err := o.f.Seek(info.Size()-int64(len(rawTail))-1, io.SeekStart); err != nil {
+				return fmt.Errorf("jobstore: seek output prune boundary: %w", err)
+			}
+			var previousByte [1]byte
+			if _, err := io.ReadFull(o.f, previousByte[:]); err != nil {
+				return fmt.Errorf("jobstore: read output prune boundary: %w", err)
+			}
+			previous = previousByte[0]
+		}
+		retainedStartPartial = previous != '\n'
+	}
 	if err := writeOutputMetaFileFsSync(o.fs, outputPendingMetaPath(o.metaPath), outputMeta{
-		TotalBytes:     o.total,
-		RetainedStart:  retainedStart,
-		RetainedSHA256: outputBytesSHA256(tail),
+		TotalBytes:           o.total,
+		RetainedStart:        retainedStart,
+		RetainedStartPartial: &retainedStartPartial,
+		RetainedSHA256:       outputBytesSHA256(tail),
 	}, !o.disableSync); err != nil {
 		return err
 	}
@@ -628,6 +662,7 @@ func (o *OutputStore) pruneLocked() error {
 		return fmt.Errorf("jobstore: seek output eof: %w", err)
 	}
 	o.retainedStart = retainedStart
+	o.retainedStartPartial = retainedStartPartial
 	return nil
 }
 
@@ -655,8 +690,9 @@ func (o *OutputStore) outputMetaLocked() (outputMeta, error) {
 		}
 	}
 	meta := outputMeta{
-		TotalBytes:    o.total,
-		RetainedStart: o.retainedStart,
+		TotalBytes:           o.total,
+		RetainedStart:        o.retainedStart,
+		RetainedStartPartial: boolPointer(o.retainedStartPartial),
 	}
 	hash, err := outputFileSHA256(o.fs, o.path)
 	if err != nil {
@@ -665,6 +701,8 @@ func (o *OutputStore) outputMetaLocked() (outputMeta, error) {
 	meta.RetainedSHA256 = hash
 	return meta, nil
 }
+
+func boolPointer(v bool) *bool { return &v }
 
 // writeOutputMetaFile atomically writes meta on the OS filesystem.
 // writeOutputMetaFileFs carries the injectable seam; this preserves the
@@ -753,22 +791,31 @@ func outputPendingMetaPath(metaPath string) string {
 	return metaPath + ".pending"
 }
 
-func readOutputMetaForFile(fs afero.Fs, path string, outputPath string, retained int64) (total int64, retainedStart int64, err error) {
+// readOutputMetaForFile conservatively treats legacy retained metadata that
+// lacks RetainedStartPartial as a partial prefix whenever it has pruned bytes.
+func readOutputMetaForFile(fs afero.Fs, path string, outputPath string, retained int64) (total int64, retainedStart int64, retainedStartPartial bool, err error) {
 	pending, ok, err := readValidPendingOutputMeta(fs, outputPendingMetaPath(path), path, outputPath, retained)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, false, err
 	}
 	if ok {
-		return pending.TotalBytes, pending.RetainedStart, nil
+		return pending.TotalBytes, pending.RetainedStart, outputMetaRetainedStartPartial(pending), nil
 	}
 	meta, ok, err := readValidOutputMetaFs(fs, path, outputPath, retained)
 	if ok {
-		return meta.TotalBytes, meta.RetainedStart, nil
+		return meta.TotalBytes, meta.RetainedStart, outputMetaRetainedStartPartial(meta), nil
 	}
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, false, err
 	}
-	return retained, 0, nil
+	return retained, 0, false, nil
+}
+
+func outputMetaRetainedStartPartial(meta outputMeta) bool {
+	if meta.RetainedStartPartial != nil {
+		return *meta.RetainedStartPartial
+	}
+	return meta.RetainedStart > 0
 }
 
 func readOutputMeta(fs afero.Fs, path string) (outputMeta, bool, error) {

@@ -575,7 +575,7 @@ func searchJobTranscript(deps *toolDeps, args retainedReadArgs) (any, error) {
 		SearchOptions: jobstore.SearchOptions{
 			StartOffset:       offset,
 			ContextLines:      args.ContextLines,
-			SkipPartialPrefix: metadata.RetainedStart > 0 && offset == metadata.RetainedStart,
+			SkipPartialPrefix: metadata.RetainedStartPartial && offset == metadata.RetainedStart,
 			DeferEOFFragment:  target.Record != nil && !target.Record.Status.IsTerminal(),
 		},
 	})

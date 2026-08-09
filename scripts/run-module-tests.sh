@@ -221,7 +221,7 @@ trap 'interrupted 129 SIGHUP' HUP
 trap 'interrupted 130 SIGINT' INT
 trap 'interrupted 143 SIGTERM' TERM
 
-logdir="$(mktemp -d -t serf-module-tests.XXXXXX)"
+logdir="$(mktemp -d "${TMPDIR:-/tmp}/serf-module-tests.XXXXXX")"
 fail=0
 failed_modules=()
 

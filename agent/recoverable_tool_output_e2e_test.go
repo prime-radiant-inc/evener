@@ -110,7 +110,14 @@ func TestRecoverableGrepReceiptReplayEndToEnd(t *testing.T) {
 	if !grep.Truncated {
 		t.Fatalf("grep was not generically truncated; output lines=%d", strings.Count(grep.Output, "\n")+1)
 	}
-	receiptOccurrences := regexp.MustCompile(`artifact:[0-9a-f]{32}`).FindAllString(grep.Output, -1)
+	receiptPattern := regexp.MustCompile(`(artifact:[0-9a-f]{32})(?:[^0-9a-f]|$)`)
+	if matches := receiptPattern.FindAllStringSubmatch("artifact:"+strings.Repeat("a", 33), -1); len(matches) != 0 {
+		t.Fatalf("receipt matcher accepted longer token: %#v", matches)
+	}
+	var receiptOccurrences []string
+	for _, match := range receiptPattern.FindAllStringSubmatch(grep.Output, -1) {
+		receiptOccurrences = append(receiptOccurrences, match[1])
+	}
 	receipts := compactToolNames(receiptOccurrences)
 	if len(receipts) != 1 {
 		t.Fatalf("grep unique receipt count = %d from %d occurrences, want exactly one; output tail=%q", len(receipts), len(receiptOccurrences), grep.Output[max(0, len(grep.Output)-500):])

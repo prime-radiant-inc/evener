@@ -19,21 +19,23 @@ var errOutputChanged = errors.New("jobstore: output snapshot changed")
 
 // OutputSnapshot is a point-in-time window over a job's retained output.
 type OutputSnapshot struct {
-	Content       []byte
-	TotalBytes    int64
-	RetainedStart int64
-	Truncated     bool
+	Content              []byte
+	TotalBytes           int64
+	RetainedStart        int64
+	RetainedStartPartial bool
+	Truncated            bool
 }
 
 // OutputWindowSnapshot is a stable raw forward window over retained job
 // output. Start, End, TotalBytes, and RetainedStart all use lifetime offsets.
 type OutputWindowSnapshot struct {
-	Content       []byte
-	Start         int64
-	End           int64
-	TotalBytes    int64
-	RetainedStart int64
-	Truncated     bool
+	Content              []byte
+	Start                int64
+	End                  int64
+	TotalBytes           int64
+	RetainedStart        int64
+	RetainedStartPartial bool
+	Truncated            bool
 }
 
 // outputSnapshotObservation is the comparable state changed by OutputStore's
@@ -139,15 +141,16 @@ func readOutputWindowSnapshotOnce(fs afero.Fs, path string, offset int64, maxByt
 }
 
 func readOutputWindowSnapshotAttempt(fs afero.Fs, path string, retainedBytes int64, offset int64, maxBytes int) (OutputWindowSnapshot, error) {
-	totalBytes, retainedStart, err := readOutputMetaForFile(fs, outputMetaPath(path), path, retainedBytes)
+	totalBytes, retainedStart, retainedStartPartial, err := readOutputMetaForFile(fs, outputMetaPath(path), path, retainedBytes)
 	if err != nil {
 		return OutputWindowSnapshot{}, err
 	}
 	snapshot := OutputWindowSnapshot{
-		Start:         offset,
-		End:           offset,
-		TotalBytes:    totalBytes,
-		RetainedStart: retainedStart,
+		Start:                offset,
+		End:                  offset,
+		TotalBytes:           totalBytes,
+		RetainedStart:        retainedStart,
+		RetainedStartPartial: retainedStartPartial,
 	}
 	if offset < retainedStart {
 		return snapshot, fmt.Errorf("%w: offset=%d first_available=%d", ErrOutputPruned, offset, retainedStart)
@@ -172,11 +175,11 @@ func readOutputWindowSnapshotAttempt(fs afero.Fs, path string, retainedBytes int
 	if err != nil {
 		return OutputWindowSnapshot{}, fmt.Errorf("jobstore: stat output window snapshot: %w", err)
 	}
-	afterTotal, afterRetainedStart, err := readOutputMetaForFile(fs, outputMetaPath(path), path, afterInfo.Size())
+	afterTotal, afterRetainedStart, afterRetainedStartPartial, err := readOutputMetaForFile(fs, outputMetaPath(path), path, afterInfo.Size())
 	if err != nil {
 		return OutputWindowSnapshot{}, err
 	}
-	if afterInfo.Size() != retainedBytes || afterTotal != totalBytes || afterRetainedStart != retainedStart {
+	if afterInfo.Size() != retainedBytes || afterTotal != totalBytes || afterRetainedStart != retainedStart || afterRetainedStartPartial != retainedStartPartial {
 		return OutputWindowSnapshot{}, errOutputChanged
 	}
 	return snapshot, nil
@@ -233,7 +236,7 @@ func readOutputSnapshotOnce(fs afero.Fs, path string, maxBytes int, fromHead boo
 }
 
 func readOutputSnapshotAttempt(fs afero.Fs, path string, retainedBytes int64, maxBytes int, fromHead bool) (OutputSnapshot, error) {
-	totalBytes, retainedStart, err := readOutputMetaForFile(fs, outputMetaPath(path), path, retainedBytes)
+	totalBytes, retainedStart, retainedStartPartial, err := readOutputMetaForFile(fs, outputMetaPath(path), path, retainedBytes)
 	if err != nil {
 		return OutputSnapshot{}, err
 	}
@@ -247,18 +250,19 @@ func readOutputSnapshotAttempt(fs afero.Fs, path string, retainedBytes int64, ma
 	if err != nil {
 		return OutputSnapshot{}, fmt.Errorf("jobstore: stat output snapshot: %w", err)
 	}
-	afterTotal, afterRetainedStart, err := readOutputMetaForFile(fs, outputMetaPath(path), path, afterInfo.Size())
+	afterTotal, afterRetainedStart, afterRetainedStartPartial, err := readOutputMetaForFile(fs, outputMetaPath(path), path, afterInfo.Size())
 	if err != nil {
 		return OutputSnapshot{}, err
 	}
-	if afterInfo.Size() != retainedBytes || afterTotal != totalBytes || afterRetainedStart != retainedStart {
+	if afterInfo.Size() != retainedBytes || afterTotal != totalBytes || afterRetainedStart != retainedStart || afterRetainedStartPartial != retainedStartPartial {
 		return OutputSnapshot{}, errOutputChanged
 	}
 	return OutputSnapshot{
-		Content:       content,
-		TotalBytes:    totalBytes,
-		RetainedStart: retainedStart,
-		Truncated:     retainedStart > 0 || int64(maxBytes) < retainedBytes,
+		Content:              content,
+		TotalBytes:           totalBytes,
+		RetainedStart:        retainedStart,
+		RetainedStartPartial: retainedStartPartial,
+		Truncated:            retainedStart > 0 || int64(maxBytes) < retainedBytes,
 	}, nil
 }
 

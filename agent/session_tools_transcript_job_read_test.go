@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -425,6 +426,122 @@ func TestReadTranscriptJobSearchEvaluatesTerminalUnterminatedEOF(t *testing.T) {
 	requireMatch(t, search, int64(len("head\n")), nil, "needle", nil)
 	if search["job_status"] != "terminal" || search["search_complete"] != true {
 		t.Fatalf("terminal search = %#v", search)
+	}
+}
+
+func TestReadTranscriptJobSearchPruneBoundaryHonesty(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		output              string
+		retention           int64
+		match               string
+		wantLines           []string
+		wantSkippedFragment bool
+	}{
+		{
+			name:                "line aligned retained start includes first matching line",
+			output:              "discard\nMATCH\n",
+			retention:           int64(len("MATCH\n")),
+			match:               `^MATCH$`,
+			wantLines:           []string{"MATCH"},
+			wantSkippedFragment: false,
+		},
+		{
+			name:                "mid line retained start skips fragment",
+			output:              "discard\nPARTIAL-MATCH\nHIT\n",
+			retention:           int64(len("MATCH\nHIT\n")),
+			match:               `MATCH|HIT`,
+			wantLines:           []string{"HIT"},
+			wantSkippedFragment: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			owner := identifier.MustNewSessionID()
+			jobID := identifier.MustNewJobID(owner)
+			seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", tc.output, tc.retention, jobstore.JobShell, true, int64(len(tc.output)), nil)
+
+			search := execRead(t, &toolDeps{stateDir: stateDir, sessionID: owner}, map[string]any{
+				"transcript_ref": "job:" + jobID,
+				"output_match":   tc.match,
+			})
+			matches := search["matches"].([]any)
+			if len(matches) != len(tc.wantLines) {
+				t.Fatalf("matches = %#v, want lines %q", matches, tc.wantLines)
+			}
+			for i, want := range tc.wantLines {
+				if got := matches[i].(map[string]any)["line"]; got != want {
+					t.Fatalf("match %d line = %q, want %q", i, got, want)
+				}
+			}
+			if got := search["skipped_partial_prefix"]; got != tc.wantSkippedFragment {
+				t.Fatalf("skipped_partial_prefix = %v, want %t; search = %#v", got, tc.wantSkippedFragment, search)
+			}
+		})
+	}
+}
+
+func TestReadTranscriptJobPageAndSearchRetainedFailuresArePathFree(t *testing.T) {
+	stateDir := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, jobstore.JobShell, true, int64(len("ready\n")), nil)
+	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
+	outputPath := filepath.Join(jobsDir(stateDir, owner), "jobs", jobID+".log")
+
+	assertFailure := func(t *testing.T, args map[string]any, want string, forbidden string) {
+		t.Helper()
+		_, err := execReadTranscript(deps, args)
+		if err == nil {
+			t.Fatal("read succeeded, want retained-output failure")
+		}
+		if got := err.Error(); got != want {
+			t.Fatalf("error = %q, want %q", got, want)
+		}
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("error leaked path %q: %q", forbidden, err)
+		}
+	}
+
+	t.Run("deleted output", func(t *testing.T) {
+		t.Cleanup(func() {
+			if err := os.WriteFile(outputPath, []byte("ready\n"), 0o644); err != nil {
+				t.Errorf("restore output: %v", err)
+			}
+		})
+		if err := os.Remove(outputPath); err != nil {
+			t.Fatal(err)
+		}
+		want := fmt.Sprintf("output_unavailable: job %q retained output is missing or pruned", jobID)
+		for _, args := range []map[string]any{
+			{"transcript_ref": "job:" + jobID, "offset_bytes": float64(0)},
+			{"transcript_ref": "job:" + jobID, "output_match": "ready"},
+		} {
+			assertFailure(t, args, want, outputPath)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "open failure", err: &os.PathError{Op: "open", Path: "/sentinel/absolute/job-output.log", Err: os.ErrPermission}},
+		{name: "read failure", err: &os.PathError{Op: "read", Path: "/sentinel/absolute/job-output.log", Err: io.ErrUnexpectedEOF}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oldWindow := readLocalJobOutputWindowSnapshot
+			readLocalJobOutputWindowSnapshot = func(string, int64, int) (jobstore.OutputWindowSnapshot, error) {
+				return jobstore.OutputWindowSnapshot{}, tc.err
+			}
+			t.Cleanup(func() { readLocalJobOutputWindowSnapshot = oldWindow })
+			want := fmt.Sprintf("output_unavailable: job %q retained output could not be read", jobID)
+			for _, args := range []map[string]any{
+				{"transcript_ref": "job:" + jobID, "offset_bytes": float64(0)},
+				{"transcript_ref": "job:" + jobID, "output_match": "ready"},
+			} {
+				assertFailure(t, args, want, "/sentinel/absolute/job-output.log")
+			}
+		})
 	}
 }
 

@@ -493,7 +493,7 @@ fuzz-corpus-scan:
 # struct tag and TOML file in the repo. Fast (well under a second) and
 # safe to run as a separate `go vet`-style gate.
 define run_quiet_lint
-	@set -u; log="$$(mktemp -t serf-lint-check.XXXXXX)" || exit 1; \
+	@set -u; log="$$(mktemp "$${TMPDIR:-/tmp}/serf-lint-check.XXXXXX")" || exit 1; \
 	trap 'rm -f "$$log"' EXIT HUP INT TERM; \
 	if ( $(1) ) >"$$log" 2>&1; then \
 		if [ "$(2)" = preserve-gitleaks-warning ]; then \
