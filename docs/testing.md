@@ -370,6 +370,22 @@ real regression in code committed minutes earlier. A guard is only worth its
 run time once it has been mutation-tested: break the thing on purpose and
 confirm it fails, naming the right element.
 
+Do the break-and-restore with a path-scoped stash, never with `git checkout
+--` on a file that carries your own uncommitted work — checkout discards
+everything in the file, mutation and real edits alike (learned the hard way,
+2026-08-09; the mistake was caught and repaired, but only by re-doing the
+work):
+
+```sh
+git stash push -- path/to/file   # set your real work aside; file returns to HEAD
+# revert the declaration, run the guard, confirm it fails for the right reason
+git checkout -- path/to/file     # now safe: drops only the mutation, your work is in the stash
+git stash pop                    # your work returns exactly as it was
+```
+
+`git stash pop` restores the most recent stash, so run the cycle straight
+through without interleaving other stash operations.
+
 Three more things about writing a layoutguard case, each learned by watching a
 case pass when it should not have (katas hk8v, edhz):
 

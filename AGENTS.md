@@ -23,8 +23,13 @@ requests.
 
 ## Frontend gates
 
-Before the gate, run `npx biome check --write` on touched frontend files. Use
-`make test-web` as the canonical frontend unit, typecheck, and Biome gate; on
-Chrome-capable hosts, also run `make test-web-browser` for real geometry and
-browser guards. CI checks Biome formatting. Avoid `noNonNullAssertion` and
-array-index-key violations.
+Before the gate, run `npx biome check --write` on touched frontend files
+under `src/`. Biome's enforced scope is `src/` only (the gate runs `biome ci
+src`; see cmd/serf-hub/frontend/package.json) — files outside it, such as the
+`scripts/layoutguard` harness HTML, deliberately reproduce component markup
+that trips a11y lint rules, so an explicit-path Biome run over them reports
+violations the gate does not enforce. Do not "fix" those to satisfy an
+out-of-scope invocation. Use `make test-web` as the canonical frontend unit,
+typecheck, and Biome gate; on Chrome-capable hosts, also run `make
+test-web-browser` for real geometry and browser guards. CI checks Biome
+formatting. Avoid `noNonNullAssertion` and array-index-key violations.

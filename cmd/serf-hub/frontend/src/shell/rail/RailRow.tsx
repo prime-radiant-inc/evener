@@ -63,7 +63,7 @@ import { isTopLevelSession } from "./sessionKind";
 export { isTopLevelSession } from "./sessionKind";
 
 const CLASS = {
-  row: requireClass(styles.row, "Rail.module.css", "row"),
+  railRow: requireClass(styles.railRow, "Rail.module.css", "railRow"),
   actions: requireClass(styles.actions, "Rail.module.css", "actions"),
   chevronButton: requireClass(styles.chevronButton, "Rail.module.css", "chevronButton"),
   signal: requireClass(styles.signal, "Rail.module.css", "signal"),
@@ -191,7 +191,7 @@ const ACTIVITY_FAMILY_CLASS: Partial<Record<CadenceState, string>> = {
 // RowGutter is the wrapper the row's signal dot renders inside. The dot is
 // conditionally rendered (see Signal) and OUTDENTED by stylesheet: .signal's
 // negative margin pulls it left of the title line's text, into the leading
-// padding .row reserves for it, so every row's text starts at the same x
+// padding .railRow reserves for it, so every row's text starts at the same x
 // whether or not a dot hangs beside it.
 function RowGutter({ className, testId, children }: { className: string; testId: string; children?: ReactNode }) {
   return (
@@ -512,7 +512,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
     // data-session-ref is the scroll target Rail's reveal effect (the palette's
     // /project command via railController) queries to bring a session's row
     // into view - the ref is stable and unique per session, unlike the label.
-    <span className={CLASS.row} data-session-ref={session.ref}>
+    <span className={CLASS.railRow} data-session-ref={session.ref}>
       {/* The text column: the title line (outdented signal dot, title,
           trailing chevron on branch rows), and - on a signal row only - a
           second line glossing why it wants attention. Row anatomy for the
@@ -594,7 +594,7 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
   const { project } = node;
   const attentionCount = project.rollup_attn ?? 0;
   return (
-    <span className={CLASS.row}>
+    <span className={CLASS.railRow}>
       {/* Same title-line anatomy as SessionRow: outdented signal dot, name,
           trailing chevron on a branch row. */}
       <span className={CLASS.textCol}>
@@ -642,7 +642,7 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
 function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: TreeRowInfo }) {
   const label = `${node.count === 1 ? "Inactive subagent" : "Inactive subagents"} (${node.count})`;
   return (
-    <span className={CLASS.row} data-testid="rail-row-inactive-fold">
+    <span className={CLASS.railRow} data-testid="rail-row-inactive-fold">
       <span className={CLASS.textCol}>
         <span className={CLASS.titleLine}>
           {/* Same mouse-only shortcut for the toggle the chevron already offers,
@@ -667,7 +667,7 @@ function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: Tre
 // remains an honest non-actionable count.
 function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo }) {
   return (
-    <span className={CLASS.row}>
+    <span className={CLASS.railRow}>
       {/* The treeitem's Enter handler is the keyboard path; this click makes
           the visible affordance usable with a mouse as well. */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: treeitem owns keyboard activation and accessible semantics */}
