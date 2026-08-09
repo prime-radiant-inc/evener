@@ -411,6 +411,33 @@ test("the timestamps line omits updated when it equals created", async () => {
   expect(times.textContent).not.toContain("completed");
 });
 
+test("the timestamps line omits completed for a non-done task even when completed_at is present", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({
+    data: [
+      {
+        id: 7,
+        type: "verify",
+        description: "Ignore stale completed timestamp",
+        prompt: "",
+        status: "cancelled",
+        created_at: "2026-08-09T12:00:00-07:00",
+        completed_at: "2026-08-09T12:30:00-07:00",
+      },
+    ],
+  }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByTestId("task-settled-group-summary"));
+  await user.click(await screen.findByText("Ignore stale completed timestamp"));
+
+  const times = screen.getByTestId("task-times");
+  expect(times.textContent).toContain("created");
+  expect(times.textContent).not.toContain("completed");
+});
+
 test("each row's expand state is independent - opening one row leaves its siblings collapsed", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();

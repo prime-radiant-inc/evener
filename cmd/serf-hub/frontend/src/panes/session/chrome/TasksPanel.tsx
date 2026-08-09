@@ -260,7 +260,7 @@ function TaskTimestamps({ task }: { task: TaskRow }) {
           updated <span title={absoluteTime(task.updatedAt)}>{relativeTime(task.updatedAt)}</span>
         </span>
       )}
-      {task.completedAt && (
+      {task.status === "done" && task.completedAt && (
         <span>
           completed <span title={absoluteTime(task.completedAt)}>{relativeTime(task.completedAt)}</span>
         </span>
