@@ -174,7 +174,7 @@ func TestFormatJobNotificationExcerptBodyKeepsQuotesUnescaped(t *testing.T) {
 	jsonExcerpt := `{"message":"hello \"world\"","status":"ok"}`
 	excerpt := notificationExcerpt{text: jsonExcerpt, complete: true}
 	block := formatJobNotificationBlock(jobNotification{
-		JobID:  "job_X",
+		JobID:   "job_X",
 		JobType: "delegate",
 		Status:  "completed",
 	}, excerpt, true)

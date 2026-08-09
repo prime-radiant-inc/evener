@@ -129,7 +129,7 @@ func TestServeVerboseSurvivesAnUnreadStderr(t *testing.T) {
 	}
 
 	if stalled {
-		t.Fatalf("the daemon made no progress with its stderr unread: the authoritative "+
+		t.Fatalf("the daemon did not reach the progress target with its stderr unread: the authoritative "+
 			"consumer is coupled to whatever reads the logs.\nchild stderr:\n%s", tailOf(childStderr))
 	}
 	if strings.Contains(childStderr, "send on closed channel") {
@@ -177,22 +177,33 @@ func runVerboseE2EChild(t *testing.T) {
 	deps.newSession = newSession
 	deps.newClearSession = newSession
 
-	// The REAL bridge, with latency added to the observer call and nothing else.
-	// Everything under test still runs: ConsumeEventsLossless, BridgeEvent, the
-	// tee serve.go itself built, and serve.go's own teardown.
-	//
-	// The latency is what makes the ordering OBSERVABLE rather than a race. The
-	// drain empties a closed session's buffered tail in microseconds, so an
-	// unsynchronised teardown usually wins by luck; a loaded daemon does not
-	// have that luck, and neither should the test. With ~0.3ms per event a full
-	// 256-event tail takes ~75ms, which is an eternity next to the microseconds
-	// between Session.Close and serve's teardown defer.
+	// The REAL bridge, with exactly one post-liveness observer call parked until
+	// serve's teardown starts. Everything under test still runs:
+	// ConsumeEventsLossless, BridgeEvent, the tee serve.go itself built, and
+	// serve.go's own teardown. The channel handshake makes the buffered shutdown
+	// tail deterministic without rate-limiting the liveness phase.
+	gateNextObserver := make(chan struct{}, 1)
+	teardownObserverParked := make(chan struct{})
+	releaseTeardownObserver := make(chan struct{})
+	teardownObserverDelivered := make(chan struct{})
 	realBridge := defaultServeDeps().bridge
 	deps.bridge = func(s serveServer, sess *agent.Session, observer func(events.SessionEvent), onDrained func()) {
 		realBridge(s, sess, func(ev events.SessionEvent) {
-			time.Sleep(300 * time.Microsecond)
-			observer(ev)
+			select {
+			case <-gateNextObserver:
+				close(teardownObserverParked)
+				<-releaseTeardownObserver
+				observer(ev)
+				close(teardownObserverDelivered)
+			default:
+				observer(ev)
+			}
 		}, onDrained)
+	}
+	realDrainWaitExpiry := deps.drainWaitExpiry
+	deps.drainWaitExpiry = func() <-chan time.Time {
+		close(releaseTeardownObserver)
+		return realDrainWaitExpiry()
 	}
 
 	serveCtx, cancelServe := context.WithCancel(context.Background())
@@ -200,6 +211,7 @@ func runVerboseE2EChild(t *testing.T) {
 		return serveCtx, cancelServe
 	}
 
+	var teardownObserverArmed bool
 	deps.serveHTTP = func(*http.Server, net.Listener) error {
 		// Emit CONCURRENTLY with shutdown rather than before it. A burst that
 		// finishes first lets the drain catch up, and then there is no buffered
@@ -236,17 +248,29 @@ func runVerboseE2EChild(t *testing.T) {
 		for emitted.Load() < verboseE2EEmitTarget && time.Now().Before(deadline) {
 			time.Sleep(5 * time.Millisecond)
 		}
-		if emitted.Load() >= verboseE2EEmitTarget {
+		reachedTarget := emitted.Load() >= verboseE2EEmitTarget
+		if reachedTarget {
+			// Stop the hot producer before parking the bridge. A producer blocked on
+			// the full lossless event channel holds the session's event read lock,
+			// which would prevent shutdown from closing the session. With the bridge
+			// still unimpeded here, the producer always joins.
+			close(stop)
+			<-emitting
+
+			gateNextObserver <- struct{}{}
+			teardownObserverArmed = true
+			live.SetReasoningEffort("high")
+			<-teardownObserverParked
 			fmt.Fprintln(os.Stdout, verboseE2EProgress)
 		}
-		// Cancel while the emitter is still in flight so shutdown still has a
-		// buffered tail to drain. Then stop and join the producer here: once
-		// Session.Close marks the session closing, SetReasoningEffort is a no-op,
-		// so leaving this loop alive until test cleanup creates a hot spin that
-		// competes with the drain whose lifetime the test is measuring.
+		// Once the post-liveness observer is parked, cancel. Teardown's drain wait
+		// releases that observer, proving the tee remains live until the
+		// authoritative tail is delivered.
 		cancelServe()
-		close(stop)
-		<-emitting
+		if !reachedTarget {
+			close(stop)
+			<-emitting
+		}
 		return http.ErrServerClosed
 	}
 
@@ -261,6 +285,14 @@ func runVerboseE2EChild(t *testing.T) {
 	}
 	if err := runServeWithDeps(args, deps); err != nil {
 		t.Fatalf("serve: %v", err)
+	}
+	if teardownObserverArmed {
+		select {
+		case <-teardownObserverDelivered:
+		default:
+			t.Fatal("serve returned before delivering the gated teardown event: the verbose sink " +
+				"was torn down without waiting for the authoritative bridge drain")
+		}
 	}
 }
 

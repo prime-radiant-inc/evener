@@ -69,3 +69,21 @@ func TestCoordinatorWorkflowCoordinatorCanReadAJob(t *testing.T) {
 		}
 	}
 }
+
+func TestBundledExplicitToolSurfaceIncludesRecoveryReader(t *testing.T) {
+	s := newTestSession(t)
+	var findings []string
+	for source, agentDef := range bundledTypedAgentsForTest(t) {
+		if len(agentDef.Tools) == 0 || !s.reg.RequiresOutputRecovery(agentDef.Tools) {
+			continue
+		}
+		effective := ensureRecoveryReader(agentDef.Tools, s.reg)
+		if !hasString(effective, "read_transcript") {
+			findings = append(findings, source)
+		}
+	}
+	if len(findings) > 0 {
+		sort.Strings(findings)
+		t.Fatalf("explicit bundled tool surfaces can truncate output without read_transcript:\n%s", strings.Join(findings, "\n"))
+	}
+}

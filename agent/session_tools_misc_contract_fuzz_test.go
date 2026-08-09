@@ -46,6 +46,24 @@ import (
 // delegate, worktree, web, or job-control handlers; those have dedicated safe
 // harnesses and are outside this tool-contract surface.
 
+// FuzzReadTranscriptRetainedContracts replays deterministic seeds across the
+// public artifact page and job page/search operations. The helper also pins
+// the legacy no-operation job markdown view in the same fixture.
+func FuzzReadTranscriptRetainedContracts(f *testing.F) {
+	for _, seed := range [][]byte{
+		nil,
+		{0},
+		{1, 2, 3, 4},
+		{5, 8, 13, 21, 34},
+		{255, 0, 255, 0, 255, 0},
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, program []byte) {
+		stmRunJobTranscriptContracts(t, program)
+	})
+}
+
 func stmRunRestoreContracts(t *testing.T, program []byte) {
 	t.Helper()
 	r := &stmReader{data: program}
@@ -329,7 +347,8 @@ func stmRunJobTranscriptContracts(t *testing.T, program []byte) {
 	}); err != nil {
 		t.Fatalf("seed job start: %v", err)
 	}
-	output := "line one " + r.word() + "\nline two " + r.word()
+	matchWord := r.word()
+	output := "line one prefix\nline two " + matchWord
 	logPath := filepath.Join(jm.dir, "jobs", jobID+".log")
 	if err := os.WriteFile(logPath, []byte(output), 0o644); err != nil {
 		t.Fatalf("write job output fixture: %v", err)
@@ -365,8 +384,58 @@ func stmRunJobTranscriptContracts(t *testing.T, program []byte) {
 		t.Fatalf("job transcript content lost shell facts: %q", content)
 	}
 
+	raw := stmExec(t, s, context.Background(), "job-raw", "read_transcript", map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": float64(0)})
+	if raw.IsError {
+		t.Fatalf("read raw job output: %#v", raw)
+	}
+	var rawEnvelope map[string]any
+	if err := json.Unmarshal([]byte(raw.Output), &rawEnvelope); err != nil {
+		t.Fatalf("raw job output is not JSON: %v\n%s", err, raw.Output)
+	}
+	rawPage, _ := rawEnvelope["page"].(map[string]any)
+	if rawEnvelope["job_status"] != "terminal" || rawPage["data"] != output || rawPage["total_bytes"] != float64(len(output)) {
+		t.Fatalf("raw job envelope = %#v", rawEnvelope)
+	}
+
+	search := stmExec(t, s, context.Background(), "job-search", "read_transcript", map[string]any{
+		"transcript_ref": "job:" + jobID,
+		"output_match":   matchWord,
+		"context_lines":  float64(1),
+	})
+	if search.IsError {
+		t.Fatalf("search job output: %#v", search)
+	}
+	var searchEnvelope map[string]any
+	if err := json.Unmarshal([]byte(search.Output), &searchEnvelope); err != nil {
+		t.Fatalf("job search output is not JSON: %v\n%s", err, search.Output)
+	}
+	matches, _ := searchEnvelope["matches"].([]any)
+	if len(matches) != 1 || searchEnvelope["job_status"] != "terminal" {
+		t.Fatalf("job search envelope = %#v", searchEnvelope)
+	}
+
+	artifactRef, err := s.artifactStore.Put([]byte(output))
+	if err != nil {
+		t.Fatalf("put fuzz artifact: %v", err)
+	}
+	artifact := stmExec(t, s, context.Background(), "artifact-read", "read_transcript", map[string]any{"transcript_ref": artifactRef})
+	if artifact.IsError {
+		t.Fatalf("read artifact: %#v", artifact)
+	}
+	var artifactEnvelope map[string]any
+	if err := json.Unmarshal([]byte(artifact.Output), &artifactEnvelope); err != nil {
+		t.Fatalf("artifact output is not JSON: %v\n%s", err, artifact.Output)
+	}
+	artifactPage, _ := artifactEnvelope["page"].(map[string]any)
+	if artifactPage["data"] != output || artifactPage["total_bytes"] != float64(len(output)) {
+		t.Fatalf("artifact envelope = %#v", artifactEnvelope)
+	}
+	if _, ok := artifactEnvelope["job_status"]; ok {
+		t.Fatalf("artifact envelope carries job status: %#v", artifactEnvelope)
+	}
+
 	unsupported := stmExec(t, s, context.Background(), "job-unsupported", "read_transcript", map[string]any{"transcript_ref": "job:" + jobID, "format": formatJSONL})
-	if !unsupported.IsError || !strings.Contains(unsupported.Output, "not supported") {
+	if !unsupported.IsError || !strings.Contains(unsupported.Output, "invalid_request") {
 		t.Fatalf("unsupported job transcript format = %#v", unsupported)
 	}
 }

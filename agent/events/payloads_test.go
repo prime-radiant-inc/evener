@@ -31,6 +31,28 @@ func TestJobFinishedData_ExhaustionMetadata(t *testing.T) {
 	}
 }
 
+func TestToolCallEndDataMarshalsOutputRef(t *testing.T) {
+	encoded, err := json.Marshal(ToolCallEndData{OutputRef: "artifact:abc"})
+	if err != nil {
+		t.Fatalf("marshal ToolCallEndData: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal ToolCallEndData: %v", err)
+	}
+	if got := payload["output_ref"]; got != "artifact:abc" {
+		t.Fatalf("output_ref = %#v, want artifact:abc (JSON: %s)", got, encoded)
+	}
+
+	empty, err := json.Marshal(ToolCallEndData{})
+	if err != nil {
+		t.Fatalf("marshal empty ToolCallEndData: %v", err)
+	}
+	if strings.Contains(string(empty), "output_ref") {
+		t.Fatalf("empty OutputRef was not omitted: %s", empty)
+	}
+}
+
 // Every kind the UI can label must exist as a constant. This list is the
 // contract Task 3's call sites are checked against.
 func TestSteeringKindConstants(t *testing.T) {

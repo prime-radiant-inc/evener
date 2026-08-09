@@ -560,7 +560,7 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 
 	rp := read.Parameters["properties"].(map[string]any)
 	for _, k := range []string{
-		"transcript_ref", "format", "range", "expand_turn", "offset_bytes",
+		"transcript_ref", "format", "range", "expand_turn", "offset_bytes", "output_match", "context_lines",
 	} {
 		if _, ok := rp[k]; !ok {
 			t.Errorf("read missing param %q", k)
@@ -596,6 +596,23 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 	}
 	if !strings.Contains(read.Description, "fixed 16 KiB") {
 		t.Errorf("read description does not explain fixed expansion pages: %q", read.Description)
+	}
+
+	outputMatch := rp["output_match"].(map[string]any)
+	if outputMatch["type"] != "string" || !strings.Contains(outputMatch["description"].(string), "RE2") {
+		t.Errorf("output_match schema = %#v, want RE2 string", outputMatch)
+	}
+	if outputMatch["maxLength"] != 65_536 || !strings.Contains(outputMatch["description"].(string), "65,536") {
+		t.Errorf("output_match schema = %#v, want documented 65,536-character envelope bound", outputMatch)
+	}
+	contextLines := rp["context_lines"].(map[string]any)
+	if contextLines["type"] != "integer" || contextLines["minimum"] != 0 || contextLines["maximum"] != 10 {
+		t.Errorf("context_lines schema = %#v, want integer 0..10", contextLines)
+	}
+	for _, want := range []string{"session ref", "job:", "artifact:", "output_match", "context_lines", "retained_start_bytes", "job_status"} {
+		if !strings.Contains(read.Description, want) {
+			t.Errorf("read description does not name retained evidence contract %q: %s", want, read.Description)
+		}
 	}
 }
 

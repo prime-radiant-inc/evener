@@ -12,8 +12,10 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -26,6 +28,90 @@ func newTestSession(t *testing.T) *Session {
 		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
+}
+
+func TestEnsureRecoveryReaderPreservesPolicyShape(t *testing.T) {
+	reg := tool.NewRegistry()
+	register := func(name string, limit schema.ToolOutputLimit) {
+		t.Helper()
+		if err := reg.Register(tool.RegisteredTool{
+			Tool:  llm.Tool{Definition: llm.ToolDefinition{Name: name, Description: "test tool"}},
+			Limit: limit,
+			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+				return "ok", nil
+			},
+		}); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	register("limited_text", schema.ToolOutputLimit{MaxChars: 10})
+	register("control_only", schema.ToolOutputLimit{MaxChars: -1})
+	register("read_transcript", schema.ToolOutputLimit{MaxChars: 10})
+
+	storage := []string{"first", "limited_text", "hidden-sentinel", "second-sentinel"}
+	backing := storage[:2]
+	got := ensureRecoveryReader(backing, reg)
+	if !slices.Equal(got, []string{"first", "limited_text", "read_transcript"}) {
+		t.Fatalf("limited policy = %v", got)
+	}
+	if !slices.Equal(backing, []string{"first", "limited_text"}) {
+		t.Fatalf("caller-owned input mutated: %v", backing)
+	}
+	if !slices.Equal(storage, []string{"first", "limited_text", "hidden-sentinel", "second-sentinel"}) {
+		t.Fatalf("caller backing storage mutated: %v", storage)
+	}
+	if &got[0] == &backing[0] {
+		t.Fatal("injected result aliases caller-owned backing storage")
+	}
+
+	already := []string{"limited_text", "read_transcript"}
+	if got := ensureRecoveryReader(already, reg); !slices.Equal(got, already) {
+		t.Fatalf("existing reader changed policy: %v", got)
+	}
+	control := []string{"control_only", "unknown"}
+	if got := ensureRecoveryReader(control, reg); !slices.Equal(got, control) {
+		t.Fatalf("unlimited/control-only policy changed: %v", got)
+	}
+	if got := ensureRecoveryReader(control, nil); !slices.Equal(got, control) {
+		t.Fatalf("nil registry changed policy: %v", got)
+	}
+}
+
+func TestExplicitAllowedToolsInjectRecoveryReaderOnly(t *testing.T) {
+	s := newSession(t, withConfig(SessionConfig{
+		NoProjectPrompts: true,
+		spawn:            spawnConfig{allowedToolNames: []string{"grep"}},
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	registered := s.reg.RegisteredNames()
+	for _, want := range []string{"grep", "read_transcript", "communicate"} {
+		if !registered[want] {
+			t.Fatalf("explicit tools = %v, want %q", s.reg.Names(), want)
+		}
+	}
+	if registered["read_file"] || registered["shell"] {
+		t.Fatalf("recovery policy broadened unrelated tools: %v", s.reg.Names())
+	}
+}
+
+func TestFrozenSubagentToolNamesIncludeRecoveryReader(t *testing.T) {
+	s := newTestSession(t)
+	s.pluginAgents["task7-reader"] = plugin.Agent{
+		Name:         "task7-reader",
+		PluginName:   "test",
+		SystemPrompt: "Read the requested files.",
+		Tools:        []string{"read_file"},
+	}
+	prepared, err := s.prepareSubagentRun(context.Background(), "inspect", "", "", 1, "task7-reader", "", nil, nil)
+	if err != nil {
+		t.Fatalf("prepareSubagentRun: %v", err)
+	}
+	releasePreparedTreeSlot(prepared)
+	defer prepared.sub.sess.Close()
+	got := prepared.frozenToolNames
+	if !slices.Equal(got, []string{"read_file", "task_list", "compact_context", "read_transcript"}) {
+		t.Fatalf("frozen names = %v", got)
+	}
 }
 
 func TestSubagentFollowUpProvenanceUnionsLaunchActiveAndCompleted(t *testing.T) {

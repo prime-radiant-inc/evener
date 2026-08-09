@@ -1,7 +1,7 @@
 # Recoverable Tool Output — Design
 
 Date: 2026-08-09
-Status: Revised after adversarial review; awaiting approval
+Status: Approved final design
 Source: `read-transcript-feedback-2026-08-08.md`
 
 ## Purpose
@@ -94,7 +94,7 @@ The store captures only results that generic limits truncated. Untruncated resul
 Generic truncation markers describe only what was removed; they make no availability claim. If `Put` fails, Serf returns the bounded tool result and appends:
 
 ```text
-[retention_failed: full output could not be retained: <concise error>]
+[retention_failed: full output could not be retained]
 ```
 
 Serf must not print “full output is available,” mention the event stream, or invent a ref after a failed write. The tool call itself keeps its original success or error status; retention failure is a separate warning.
@@ -184,7 +184,7 @@ Each call stops before either 100 matches or 64 KiB of serialized match data. If
 
 If the bounded scanner skips an oversized line, the response reports the skip and its byte interval. Search never silently claims that it scanned every retained line.
 
-For a pruned job, search covers only retained bytes and reports nonzero `retained_start_bytes`. Because retention may start mid-line, search skips bytes through the first retained newline and sets `skipped_partial_prefix=true`; raw paging still exposes those bytes. Search never labels a retained suffix as a complete line or describes the result as a scan of the full lifetime log.
+For a pruned job, search covers only retained bytes and reports nonzero `retained_start_bytes`. Retention persists whether the retained start follows a newline: only a suffix marked mid-line skips bytes through its first retained newline and sets `skipped_partial_prefix=true`; a line-aligned retained first line remains searchable. Raw paging always exposes the retained bytes. Legacy retained metadata that lacks this boundary marker is conservatively treated as mid-line when it has a pruned prefix. Search never labels a retained suffix as a complete line or describes the result as a scan of the full lifetime log.
 
 Raw paging and search also apply to running jobs. Job offsets are lifetime offsets, so an append never invalidates a page or a continuation; it only extends EOF. Each call is a point-in-time snapshot taken under the store lock. Every job envelope reports `job_status` (`running` or `terminal`) so the caller knows whether more output may follow; `total_bytes` is the snapshot value at read time. If pruning outruns a reader between calls, the next call fails `output_unavailable` and names the first available offset, exactly as after any other pruning.
 
@@ -217,7 +217,7 @@ Existing session-ref reads do not change. Their formats, ranges, turn expansion,
 
 Existing `job:` calls without `offset_bytes` or `output_match` keep the rendered markdown view. This preserves the current shell-log presentation and the delegate job's appended `structured_result`. Passing `offset_bytes`, including zero, selects raw paging. Passing `output_match` selects search.
 
-Generic tools need no schema or executor changes. Their only visible change occurs on truncation: the warning gains an exact byte count, an artifact ref, and a concrete next call.
+Generic tools need no schema or executor changes. Their only visible change occurs on truncation: existing structural truncation markers, including `[Tool output was truncated.]`, remain intact; the result additionally gains an exact byte count, an artifact ref, and a concrete next call. The structural marker describes the inline truncation, while the separate artifact receipt describes recovery.
 
 Replace vague text such as:
 

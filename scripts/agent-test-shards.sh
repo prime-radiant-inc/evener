@@ -60,7 +60,7 @@ shards=${AGENT_SHARD_COUNT:-4}
 par=${AGENT_SHARD_PARALLEL:-3}
 skip=${AGENT_SHARD_SKIP:-}
 noSurvey=${AGENT_SHARD_NO_SURVEY:-0}
-logdir="$(mktemp -d -t agent-test-shards.XXXXXX)"
+logdir="$(mktemp -d "${TMPDIR:-/tmp}/agent-test-shards.XXXXXX")"
 logdir="$(cd "$logdir" && pwd -P)"
 
 # The reclaimer cannot use the shard directory mtime as a liveness signal:

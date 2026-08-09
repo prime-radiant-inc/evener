@@ -1084,6 +1084,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 		clock:                   s.clock,
 		testOnly:                s.cfg.testOnly,
 		ForceRealIO:             s.cfg.ForceRealIO,
+		artifactStore:           s.artifactStore,
 		spawn: spawnConfig{
 			parentSessionID:          desc.ParentSessionID,
 			parentToolCallID:         desc.OriginToolCallID,
@@ -1103,7 +1104,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 			treeCounter:              s.treeCounter,
 			rolePromptOverride:       desc.FrozenRolePrompt,
 			activatedSkillBodies:     activatedSkillBodies,
-			allowedToolNames:         restoredDelegateAllowedTools(desc),
+			allowedToolNames:         ensureRecoveryReader(restoredDelegateAllowedTools(desc), s.reg),
 			isolation:                desc.Isolation,
 			communicateOutputSchema:  cloneMap(resultSchema),
 		},
@@ -1446,23 +1447,29 @@ func restoredDelegateAllowedTools(desc *jobstore.DelegateRestoreDescriptor) []st
 }
 
 func validateRestoredDelegateTools(child *Session, desc *jobstore.DelegateRestoreDescriptor) error {
-	required := restoredDelegateRequiredTools(desc)
+	if child == nil || child.reg == nil {
+		if len(restoredDelegateRequiredTools(desc)) == 0 {
+			return nil
+		}
+		return errors.New("restored delegate tool registry unavailable")
+	}
+	required := ensureRecoveryReader(restoredDelegateRequiredTools(desc), child.reg)
 	if len(required) == 0 {
 		return nil
-	}
-	if child == nil || child.reg == nil {
-		return errors.New("restored delegate tool registry unavailable")
 	}
 	return validateRestoredDelegateRequiredToolNames(child.reg.RegisteredNames(), required)
 }
 
 func (s *Session) validateRestoredDelegateRequiredTools(desc *jobstore.DelegateRestoreDescriptor) error {
-	required := restoredDelegateRequiredTools(desc)
+	if s == nil || s.reg == nil {
+		if len(restoredDelegateRequiredTools(desc)) == 0 {
+			return nil
+		}
+		return errors.New("restored delegate tool registry unavailable")
+	}
+	required := ensureRecoveryReader(restoredDelegateRequiredTools(desc), s.reg)
 	if len(required) == 0 {
 		return nil
-	}
-	if s == nil || s.reg == nil {
-		return errors.New("restored delegate tool registry unavailable")
 	}
 	registered := s.reg.RegisteredNames()
 	if desc.DelegationAllowance <= 0 {

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -315,5 +316,304 @@ func TestReadTranscriptLocalJobReportsMissingOutput(t *testing.T) {
 	_, err := readLocalJobTranscriptForTest(t, flat, owner, jobID)
 	if err == nil || !strings.Contains(err.Error(), "output_unavailable") {
 		t.Fatalf("missing-output error = %v, want output_unavailable", err)
+	}
+}
+
+func appendLocalJobOutputForTranscriptTest(t *testing.T, stateDir, owner, jobID string, retention int64, output string) {
+	t.Helper()
+	path := filepath.Join(jobsDir(stateDir, owner), "jobs", jobID+".log")
+	store, err := jobstore.OpenOutputNoSync(path, retention)
+	if err != nil {
+		t.Fatalf("open output for append: %v", err)
+	}
+	if _, err := store.Append([]byte(output)); err != nil {
+		_ = store.Close()
+		t.Fatalf("append output: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close appended output: %v", err)
+	}
+}
+
+func TestReadTranscriptJobRawPageRunningAppendContinuation(t *testing.T) {
+	stateDir := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	initial := strings.Repeat("x", retainedOutputPageBytes) + "before"
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", initial, maxJobOutputRetentionBytes, jobstore.JobShell, false, 0, nil)
+	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
+
+	first := execRead(t, deps, map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": float64(0)})
+	requireExactKeys(t, first, "transcript_ref", "representation", "content_type", "page", "retained_start_bytes", "job_status", "continuation")
+	requirePage(t, first, 0, initial[:retainedOutputPageBytes])
+	if first["job_status"] != "running" || first["retained_start_bytes"] != float64(0) {
+		t.Fatalf("running page metadata = %#v", first)
+	}
+	page := first["page"].(map[string]any)
+	if page["total_bytes"] != float64(len(initial)) {
+		t.Fatalf("first snapshot total_bytes = %v, want %d", page["total_bytes"], len(initial))
+	}
+	continuation := first["continuation"].(map[string]any)["offset_bytes"]
+
+	appendLocalJobOutputForTranscriptTest(t, stateDir, owner, jobID, maxJobOutputRetentionBytes, "-after")
+	second := execRead(t, deps, map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": continuation})
+	requirePage(t, second, retainedOutputPageBytes, "before-after")
+	if second["job_status"] != "running" || second["page"].(map[string]any)["total_bytes"] != float64(len(initial)+len("-after")) {
+		t.Fatalf("continued running snapshot = %#v", second)
+	}
+
+	markdown, err := readLocalJobTranscriptForTest(t, stateDir, owner, jobID)
+	if err != nil || !strings.Contains(markdown.Content, "before-after") || !strings.Contains(markdown.Content, "status: running") {
+		t.Fatalf("no-argument markdown changed: envelope=%#v err=%v", markdown, err)
+	}
+}
+
+func TestReadTranscriptJobContinuationOutrunByPruning(t *testing.T) {
+	stateDir := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	const retention = int64(20 << 10)
+	initial := strings.Repeat("a", int(retention))
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", initial, retention, jobstore.JobShell, false, 0, nil)
+	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
+	first := execRead(t, deps, map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": float64(0)})
+	continuation := first["continuation"].(map[string]any)["offset_bytes"]
+
+	appendLocalJobOutputForTranscriptTest(t, stateDir, owner, jobID, retention, strings.Repeat("b", int(retention)))
+	_, err := execReadTranscript(deps, map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": continuation})
+	if err == nil || !strings.Contains(err.Error(), "output_unavailable") || !strings.Contains(err.Error(), "first available offset is 20480") {
+		t.Fatalf("pruned continuation error = %v", err)
+	}
+}
+
+func TestReadTranscriptJobSearchDefersRunningEOFThenMatchesAfterAppend(t *testing.T) {
+	stateDir := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	const output = "head\nneedle"
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, maxJobOutputRetentionBytes, jobstore.JobShell, false, 0, nil)
+	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
+
+	deferred := execRead(t, deps, map[string]any{"transcript_ref": "job:" + jobID, "output_match": "needle"})
+	requireExactKeys(t, deferred,
+		"transcript_ref", "output_match", "context_lines", "offset_bytes",
+		"retained_start_bytes", "total_bytes", "job_status", "search_complete",
+		"skipped_partial_prefix", "matches", "continuation",
+	)
+	if deferred["job_status"] != "running" || len(deferred["matches"].([]any)) != 0 || deferred["search_complete"] != true {
+		t.Fatalf("deferred search = %#v", deferred)
+	}
+	continuation := deferred["continuation"].(map[string]any)["offset_bytes"]
+	if continuation != float64(len("head\n")) {
+		t.Fatalf("deferred continuation = %v, want %d", continuation, len("head\n"))
+	}
+
+	appendLocalJobOutputForTranscriptTest(t, stateDir, owner, jobID, maxJobOutputRetentionBytes, " complete\n")
+	completed := execRead(t, deps, map[string]any{"transcript_ref": "job:" + jobID, "output_match": "needle", "offset_bytes": continuation})
+	requireMatch(t, completed, int64(len("head\n")), nil, "needle complete", nil)
+	if completed["job_status"] != "running" || completed["search_complete"] != true || completed["total_bytes"] != float64(len(output)+len(" complete\n")) {
+		t.Fatalf("completed running search = %#v", completed)
+	}
+}
+
+func TestReadTranscriptJobSearchEvaluatesTerminalUnterminatedEOF(t *testing.T) {
+	stateDir := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	const output = "head\nneedle"
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, maxJobOutputRetentionBytes, jobstore.JobShell, true, int64(len(output)), nil)
+	search := execRead(t, &toolDeps{stateDir: stateDir, sessionID: owner}, map[string]any{"transcript_ref": "job:" + jobID, "output_match": "needle"})
+	requireMatch(t, search, int64(len("head\n")), nil, "needle", nil)
+	if search["job_status"] != "terminal" || search["search_complete"] != true {
+		t.Fatalf("terminal search = %#v", search)
+	}
+}
+
+func TestReadTranscriptJobSearchPruneBoundaryHonesty(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		output              string
+		retention           int64
+		match               string
+		wantLines           []string
+		wantSkippedFragment bool
+	}{
+		{
+			name:                "line aligned retained start includes first matching line",
+			output:              "discard\nMATCH\n",
+			retention:           int64(len("MATCH\n")),
+			match:               `^MATCH$`,
+			wantLines:           []string{"MATCH"},
+			wantSkippedFragment: false,
+		},
+		{
+			name:                "mid line retained start skips fragment",
+			output:              "discard\nPARTIAL-MATCH\nHIT\n",
+			retention:           int64(len("MATCH\nHIT\n")),
+			match:               `MATCH|HIT`,
+			wantLines:           []string{"HIT"},
+			wantSkippedFragment: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			owner := identifier.MustNewSessionID()
+			jobID := identifier.MustNewJobID(owner)
+			seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", tc.output, tc.retention, jobstore.JobShell, true, int64(len(tc.output)), nil)
+
+			search := execRead(t, &toolDeps{stateDir: stateDir, sessionID: owner}, map[string]any{
+				"transcript_ref": "job:" + jobID,
+				"output_match":   tc.match,
+			})
+			matches := search["matches"].([]any)
+			if len(matches) != len(tc.wantLines) {
+				t.Fatalf("matches = %#v, want lines %q", matches, tc.wantLines)
+			}
+			for i, want := range tc.wantLines {
+				if got := matches[i].(map[string]any)["line"]; got != want {
+					t.Fatalf("match %d line = %q, want %q", i, got, want)
+				}
+			}
+			if got := search["skipped_partial_prefix"]; got != tc.wantSkippedFragment {
+				t.Fatalf("skipped_partial_prefix = %v, want %t; search = %#v", got, tc.wantSkippedFragment, search)
+			}
+		})
+	}
+}
+
+func TestReadTranscriptJobPageAndSearchRetainedFailuresArePathFree(t *testing.T) {
+	stateDir := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, jobstore.JobShell, true, int64(len("ready\n")), nil)
+	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
+	outputPath := filepath.Join(jobsDir(stateDir, owner), "jobs", jobID+".log")
+
+	assertFailure := func(t *testing.T, args map[string]any, want string, forbidden string) {
+		t.Helper()
+		_, err := execReadTranscript(deps, args)
+		if err == nil {
+			t.Fatal("read succeeded, want retained-output failure")
+		}
+		if got := err.Error(); got != want {
+			t.Fatalf("error = %q, want %q", got, want)
+		}
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("error leaked path %q: %q", forbidden, err)
+		}
+	}
+
+	t.Run("deleted output", func(t *testing.T) {
+		t.Cleanup(func() {
+			if err := os.WriteFile(outputPath, []byte("ready\n"), 0o644); err != nil {
+				t.Errorf("restore output: %v", err)
+			}
+		})
+		if err := os.Remove(outputPath); err != nil {
+			t.Fatal(err)
+		}
+		want := fmt.Sprintf("output_unavailable: job %q retained output is missing or pruned", jobID)
+		for _, args := range []map[string]any{
+			{"transcript_ref": "job:" + jobID, "offset_bytes": float64(0)},
+			{"transcript_ref": "job:" + jobID, "output_match": "ready"},
+		} {
+			assertFailure(t, args, want, outputPath)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "open failure", err: &os.PathError{Op: "open", Path: "/sentinel/absolute/job-output.log", Err: os.ErrPermission}},
+		{name: "read failure", err: &os.PathError{Op: "read", Path: "/sentinel/absolute/job-output.log", Err: io.ErrUnexpectedEOF}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oldWindow := readLocalJobOutputWindowSnapshot
+			readLocalJobOutputWindowSnapshot = func(string, int64, int) (jobstore.OutputWindowSnapshot, error) {
+				return jobstore.OutputWindowSnapshot{}, tc.err
+			}
+			t.Cleanup(func() { readLocalJobOutputWindowSnapshot = oldWindow })
+			want := fmt.Sprintf("output_unavailable: job %q retained output could not be read", jobID)
+			for _, args := range []map[string]any{
+				{"transcript_ref": "job:" + jobID, "offset_bytes": float64(0)},
+				{"transcript_ref": "job:" + jobID, "output_match": "ready"},
+			} {
+				assertFailure(t, args, want, "/sentinel/absolute/job-output.log")
+			}
+		})
+	}
+}
+
+func TestReadTranscriptJobPageAndSearchValidation(t *testing.T) {
+	stateDir := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	const output = "line\n"
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, maxJobOutputRetentionBytes, jobstore.JobShell, false, 0, nil)
+	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
+	tests := []struct {
+		name string
+		args map[string]any
+		want []string
+	}{
+		{name: "outline format", args: map[string]any{"transcript_ref": "job:" + jobID, "format": "outline"}, want: []string{"invalid_request", "format"}},
+		{name: "markdown plus page", args: map[string]any{"transcript_ref": "job:" + jobID, "format": "markdown", "offset_bytes": float64(0)}, want: []string{"invalid_request", "format", "offset_bytes"}},
+		{name: "markdown plus search", args: map[string]any{"transcript_ref": "job:" + jobID, "format": "markdown", "output_match": "line"}, want: []string{"invalid_request", "format", "output_match"}},
+		{name: "range", args: map[string]any{"transcript_ref": "job:" + jobID, "range": "1-2"}, want: []string{"invalid_request", "range", "session"}},
+		{name: "expand turn", args: map[string]any{"transcript_ref": "job:" + jobID, "expand_turn": float64(0)}, want: []string{"invalid_request", "expand_turn", "session"}},
+		{name: "invalid re2", args: map[string]any{"transcript_ref": "job:" + jobID, "output_match": "["}, want: []string{"invalid_request", "output_match"}},
+		{name: "beyond eof", args: map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": float64(6)}, want: []string{"invalid_request", "valid byte interval is [0,5]", "job_status=running"}},
+		{name: "empty job ref", args: map[string]any{"transcript_ref": "job:"}, want: []string{"invalid_request", "job:<job_id>"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := execReadTranscript(deps, tc.args)
+			if err == nil {
+				t.Fatal("read succeeded, want error")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %v, want substring %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestReadTranscriptJobOffsetBeforeRetentionReportsFirstAvailable(t *testing.T) {
+	stateDir := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	const output = "DROP_ME:RETAINED"
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, int64(len("RETAINED")), jobstore.JobShell, true, int64(len(output)), nil)
+	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
+	_, err := execReadTranscript(deps, map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": float64(0)})
+	if err == nil || !strings.Contains(err.Error(), "output_unavailable") || !strings.Contains(err.Error(), "first available offset is 8") {
+		t.Fatalf("before-retention error = %v", err)
+	}
+	page := execRead(t, deps, map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": float64(8)})
+	requirePage(t, page, 8, "RETAINED")
+	if page["retained_start_bytes"] != float64(8) || page["job_status"] != "terminal" {
+		t.Fatalf("retained page = %#v", page)
+	}
+}
+
+func TestReadTranscriptDelegateMarkdownCompatibilityAndRawIsolation(t *testing.T) {
+	stateDir := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	const report = "delegate report\n"
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", report, maxJobOutputRetentionBytes, jobstore.JobDelegate, true, int64(len(report)), map[string]any{"verdict": "clean"})
+	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
+
+	markdown, err := readLocalJobTranscriptForTest(t, stateDir, owner, jobID)
+	if err != nil || !strings.Contains(markdown.Content, report) || !strings.Contains(markdown.Content, `structured_result (valid=true): {"verdict":"clean"}`) {
+		t.Fatalf("delegate markdown compatibility: envelope=%#v err=%v", markdown, err)
+	}
+	raw := execRead(t, deps, map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": float64(0)})
+	requirePage(t, raw, 0, report)
+	if strings.Contains(raw["page"].(map[string]any)["data"].(string), "structured_result") {
+		t.Fatalf("raw delegate output synthesized structured result: %#v", raw)
 	}
 }

@@ -42,6 +42,31 @@ func newDelegateRestorePreflightSession(t *testing.T, c *llm.Client) *Session {
 	}))
 }
 
+func TestRestoredDelegateAllowedToolsInjectRecoveryReader(t *testing.T) {
+	s, rec, childID, preflight := w3dlg_restoreFixture(t)
+	rec.DelegateRestore.FrozenToolNames = []string{"grep"}
+
+	sub, err := s.restoreTerminalDelegateChildClaimed(rec, childID, preflight)
+	if err != nil {
+		t.Fatalf("restore delegate: %v", err)
+	}
+	if sub == nil || sub.sess == nil {
+		t.Fatal("restore returned no child session")
+	}
+	registered := sub.sess.reg.RegisteredNames()
+	for _, want := range []string{"grep", "read_transcript", "communicate"} {
+		if !registered[want] {
+			t.Fatalf("restored tools = %v, want %q", sub.sess.reg.Names(), want)
+		}
+	}
+	if registered["read_file"] || registered["shell"] {
+		t.Fatalf("restored recovery policy broadened unrelated tools: %v", sub.sess.reg.Names())
+	}
+	if err := validateRestoredDelegateTools(sub.sess, rec.DelegateRestore); err != nil {
+		t.Fatalf("restored effective tool validation: %v", err)
+	}
+}
+
 func newLeanDelegateRestorePreflightSession(t *testing.T, _ *llm.Client) *Session {
 	t.Helper()
 	stateDir := t.TempDir()

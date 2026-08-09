@@ -45,6 +45,45 @@ func TestWithPurposeParameter_DescriptionGuidesGerundForm(t *testing.T) {
 	}
 }
 
+func TestToolRegistryRequiresOutputRecoveryUsesRegisteredGenericLimits(t *testing.T) {
+	reg := NewRegistry()
+	register := func(name string, limit schema.ToolOutputLimit) {
+		t.Helper()
+		if err := reg.Register(RegisteredTool{
+			Tool:  llm.Tool{Definition: llm.ToolDefinition{Name: name, Description: "test tool"}},
+			Limit: limit,
+			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+				return "ok", nil
+			},
+		}); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	register("limited_chars", schema.ToolOutputLimit{MaxChars: 7})
+	register("limited_lines", schema.ToolOutputLimit{MaxChars: -1, MaxLines: 2})
+	register("unlimited_control", schema.ToolOutputLimit{MaxChars: -1})
+	register("read_transcript", schema.ToolOutputLimit{MaxChars: 1})
+
+	for _, tc := range []struct {
+		name  string
+		names []string
+		want  bool
+	}{
+		{name: "character limited", names: []string{"limited_chars"}, want: true},
+		{name: "line limited", names: []string{"limited_lines"}, want: true},
+		{name: "unlimited", names: []string{"unlimited_control"}},
+		{name: "unknown", names: []string{"not_registered"}},
+		{name: "reader itself", names: []string{"read_transcript"}},
+		{name: "already present beside limited", names: []string{"read_transcript", "limited_chars"}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reg.RequiresOutputRecovery(tc.names); got != tc.want {
+				t.Fatalf("RequiresOutputRecovery(%v) = %v, want %v", tc.names, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestToolRegistry_ToolStateResult_CarriesStateAsSideChannel(t *testing.T) {
 	r := NewRegistry()
 	if err := r.Register(RegisteredTool{
@@ -405,11 +444,204 @@ func TestToolRegistry_TruncationMarkers(t *testing.T) {
 	if len(res.FullOutput) != 2000 {
 		t.Fatalf("full output length: got %d want 2000", len(res.FullOutput))
 	}
-	if !strings.Contains(res.Output, "Tool output was truncated") || !strings.Contains(res.Output, "event stream") {
-		t.Fatalf("expected truncation marker, got: %q", res.Output)
+	if !strings.Contains(res.Output, "[Output truncated: 1800 characters removed from the beginning.]") {
+		t.Fatalf("expected neutral count marker, got: %q", res.Output)
+	}
+	if strings.Contains(res.Output, "event stream") || strings.Contains(res.Output, "re-run") {
+		t.Fatalf("truncation marker claims unavailable recovery behavior: %q", res.Output)
 	}
 	if len(res.Output) > 400 {
 		t.Fatalf("expected truncated output to be small, got %d chars", len(res.Output))
+	}
+}
+
+func registerTextResultTool(t *testing.T, reg *Registry, result TextResult, limit schema.ToolOutputLimit) {
+	t.Helper()
+	if err := reg.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "t"}},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			return result, nil
+		},
+		Limit: limit,
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+}
+
+func executeTestTool(t *testing.T, reg *Registry) ExecResult {
+	t.Helper()
+	got := reg.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
+		ID:        "c1",
+		Name:      "t",
+		Arguments: json.RawMessage(`{}`),
+	})
+	if got.IsError {
+		t.Fatalf("unexpected error: %q", got.Output)
+	}
+	return got
+}
+
+func TestToolRegistry_TruncatedTextResultKeepsModelSource(t *testing.T) {
+	reg := NewRegistry()
+	large := strings.Repeat("model-facing\n", 3000)
+	event := "different event-facing body"
+	registerTextResultTool(t, reg, TextResult{Output: large, FullOutput: event},
+		schema.ToolOutputLimit{MaxChars: 100, Strategy: schema.TruncHeadTail})
+
+	got := executeTestTool(t, reg)
+	if !got.Truncated {
+		t.Fatal("expected Truncated")
+	}
+	if got.RecoverableOutput != large {
+		t.Fatal("recoverable bytes changed")
+	}
+	if got.FullOutput != event {
+		t.Fatal("event-facing output changed")
+	}
+}
+
+func TestToolRegistry_TruncatedResultsKeepRecoverableSource(t *testing.T) {
+	tests := []struct {
+		name       string
+		model      string
+		limit      schema.ToolOutputLimit
+		wantMarker string
+	}{
+		{
+			name:       "head-tail characters",
+			model:      "0123456789abcdef",
+			limit:      schema.ToolOutputLimit{MaxChars: 10, Strategy: schema.TruncHeadTail},
+			wantMarker: "[Output truncated: 6 characters removed from the middle.]",
+		},
+		{
+			name:       "tail characters",
+			model:      "0123456789abcdef",
+			limit:      schema.ToolOutputLimit{MaxChars: 10, Strategy: schema.TruncTail},
+			wantMarker: "[Output truncated: 6 characters removed from the beginning.]",
+		},
+		{
+			name:       "head count",
+			model:      "l0\nl1\nl2\nl3\nl4\nl5",
+			limit:      schema.ToolOutputLimit{MaxChars: 1000, MaxLines: 2, Strategy: schema.TruncHeadCount},
+			wantMarker: "[6 total lines; showing first 2; 4 lines omitted]",
+		},
+		{
+			name:       "head count character cap",
+			model:      strings.Repeat("x", 100),
+			limit:      schema.ToolOutputLimit{MaxChars: 80, MaxLines: 10, Strategy: schema.TruncHeadCount},
+			wantMarker: "[Output truncated: 76 characters removed from the end.]",
+		},
+		{
+			name:       "lines",
+			model:      "l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7",
+			limit:      schema.ToolOutputLimit{MaxChars: 1000, MaxLines: 4, Strategy: schema.TruncHeadTail},
+			wantMarker: "[... 4 lines omitted ...]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := NewRegistry()
+			event := "event-facing " + tt.name
+			registerTextResultTool(t, reg, TextResult{Output: tt.model, FullOutput: event}, tt.limit)
+
+			got := executeTestTool(t, reg)
+			if !got.Truncated {
+				t.Fatal("expected Truncated")
+			}
+			if got.Output == tt.model {
+				t.Fatal("model-facing output was not truncated")
+			}
+			if got.RecoverableOutput != tt.model {
+				t.Fatalf("RecoverableOutput changed: got %q, want %q", got.RecoverableOutput, tt.model)
+			}
+			if got.FullOutput != event {
+				t.Fatalf("FullOutput = %q, want %q", got.FullOutput, event)
+			}
+			if !strings.Contains(got.Output, tt.wantMarker) {
+				t.Fatalf("Output missing neutral count marker %q: %q", tt.wantMarker, got.Output)
+			}
+			lowerOutput := strings.ToLower(got.Output)
+			for _, forbidden := range []string{"event stream", "re-run", "rerun", "narrow", "target"} {
+				if strings.Contains(lowerOutput, forbidden) {
+					t.Fatalf("Output contains forbidden recovery recommendation %q: %q", forbidden, got.Output)
+				}
+			}
+		})
+	}
+}
+
+func TestToolRegistry_TruncatedMarkerCollisionsStillReportLimiting(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		limit schema.ToolOutputLimit
+	}{
+		{
+			name:  "tail",
+			model: "[Output truncated: 63 characters removed from the beginning.]\n\nZ",
+			limit: schema.ToolOutputLimit{MaxChars: 1, Strategy: schema.TruncTail},
+		},
+		{
+			name:  "head-tail",
+			model: "A\n\n[Output truncated: 62 characters removed from the middle.]\n\nZ",
+			limit: schema.ToolOutputLimit{MaxChars: 2, Strategy: schema.TruncHeadTail},
+		},
+		{
+			name:  "lines",
+			model: "a\n[... 1 lines omitted ...]\nz",
+			limit: schema.ToolOutputLimit{MaxChars: 1000, MaxLines: 2, Strategy: schema.TruncHeadTail},
+		},
+		{
+			name:  "head count",
+			model: "a\nb\n[3 total lines; showing first 2; 1 lines omitted]",
+			limit: schema.ToolOutputLimit{MaxChars: 1000, MaxLines: 2, Strategy: schema.TruncHeadCount},
+		},
+		{
+			name:  "head count secondary cap",
+			model: "\n[Output truncated: 56 characters removed from the end.]",
+			limit: schema.ToolOutputLimit{MaxChars: 55, MaxLines: 2, Strategy: schema.TruncHeadCount},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := NewRegistry()
+			registerTextResultTool(t, reg, TextResult{Output: tt.model, FullOutput: "event-facing body"}, tt.limit)
+
+			got := executeTestTool(t, reg)
+			if !got.Truncated {
+				t.Fatal("limiter transformed source but Truncated is false")
+			}
+			if got.Output != tt.model {
+				t.Fatalf("fixture is not a marker collision: Output = %q, source = %q", got.Output, tt.model)
+			}
+			if got.RecoverableOutput != tt.model {
+				t.Fatalf("RecoverableOutput changed: got %q, want %q", got.RecoverableOutput, tt.model)
+			}
+		})
+	}
+}
+
+func TestToolRegistry_UntruncatedSplitTextResultKeepsModelSource(t *testing.T) {
+	reg := NewRegistry()
+	model := "model-facing body"
+	event := "different event-facing body"
+	registerTextResultTool(t, reg, TextResult{Output: model, FullOutput: event},
+		schema.ToolOutputLimit{MaxChars: 100, Strategy: schema.TruncHeadTail})
+
+	got := executeTestTool(t, reg)
+	if got.Truncated {
+		t.Fatal("intentional TextResult split must not report generic truncation")
+	}
+	if got.Output != model {
+		t.Fatalf("Output = %q, want %q", got.Output, model)
+	}
+	if got.RecoverableOutput != model {
+		t.Fatalf("RecoverableOutput = %q, want %q", got.RecoverableOutput, model)
+	}
+	if got.FullOutput != event {
+		t.Fatalf("FullOutput = %q, want %q", got.FullOutput, event)
 	}
 }
 
@@ -463,7 +695,7 @@ func TestToolRegistry_TruncationOrder_CharsFirstThenLines(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("unexpected error")
 	}
-	if !strings.Contains(res.Output, "characters were removed") {
+	if !strings.Contains(res.Output, "characters removed from the beginning") {
 		t.Fatalf("expected character truncation marker (chars-first), got:\n%s", res.Output)
 	}
 	if !strings.Contains(res.Output, "lines omitted") {

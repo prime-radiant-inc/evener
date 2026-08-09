@@ -467,6 +467,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		closeToolEvent()
 		return skippedToolResult(call, err)
 	}
+	outputRef := s.retainToolArtifact(&res)
 	// Emit output deltas (best-effort). Even for non-streaming tools, this gives consumers a uniform
 	// incremental event pattern that mirrors provider LLM streaming.
 	full := res.FullOutput
@@ -485,6 +486,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		CallID:        res.CallID,
 		ArgumentsJSON: string(call.Arguments),
 		ToolState:     res.ToolState,
+		OutputRef:     outputRef,
 	}
 	// A tool that returned image bytes says so here, by sha. The bytes
 	// themselves ride to the transcript with the tool-result turn and are never

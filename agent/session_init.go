@@ -173,6 +173,15 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if profileTimeout := profile.DefaultCommandTimeoutMS(); profileTimeout > 0 && cfg.DefaultCommandTimeoutMS == 10_000 {
 		cfg.DefaultCommandTimeoutMS = profileTimeout
 	}
+	store := cfg.artifactStore
+	ownsArtifactStore := false
+	if store == nil {
+		store, err = newSessionArtifactStore()
+		if err != nil {
+			return nil, fmt.Errorf("create artifact store: %w", err)
+		}
+		ownsArtifactStore = true
+	}
 
 	sessCtx, sessCancel := context.WithCancel(context.Background())
 	initComplete := false
@@ -182,6 +191,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			sessCancel()
 			if ownedSessionID != "" {
 				_ = client.ReleaseSessionAPILog(ownedSessionID)
+			}
+			if ownsArtifactStore {
+				_ = store.Close()
 			}
 		}
 	}()
@@ -247,6 +259,8 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		sessionCtx:                    sessCtx,
 		cancelFunc:                    sessCancel,
 		clientMutations:               clientMutations,
+		artifactStore:                 store,
+		ownsArtifactStore:             ownsArtifactStore,
 	}
 	s.createdAt = s.sclock().Now().UTC()
 	s.initEnvContext(nil)
@@ -443,7 +457,8 @@ type RestoreSessionConfig struct {
 	// See SessionConfig.ForceRealIO's own comment (session_config.go) - the
 	// same exported escape valve for a black-box/live test in another
 	// package that cannot reach the unexported testOnly.forceRealIO field.
-	ForceRealIO bool
+	ForceRealIO   bool
+	artifactStore artifactStore
 }
 
 // RestoreSessionFromMeta creates a Session from a SessionMeta, recovering
@@ -504,6 +519,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg.Project = restoreCfg.Project
 	cfg.ResolveProfile = restoreCfg.ResolveProfile
 	cfg.AcquireSessionOwnership = restoreCfg.AcquireSessionOwnership
+	cfg.artifactStore = restoreCfg.artifactStore
 	if restoreCfg.spawn.parentSessionID != "" {
 		cfg.spawn = restoreCfg.spawn
 	}
@@ -522,6 +538,21 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg.ForceRealIO = restoreCfg.ForceRealIO
 	cfg.SessionStartKind = plugin.SessionStartKindResume
 	cfg.applyDefaults()
+	store := cfg.artifactStore
+	ownsArtifactStore := false
+	if store == nil {
+		var storeErr error
+		store, storeErr = newSessionArtifactStore()
+		if storeErr != nil {
+			return nil, fmt.Errorf("create artifact store: %w", storeErr)
+		}
+		ownsArtifactStore = true
+	}
+	defer func() {
+		if !restoreComplete && ownsArtifactStore {
+			_ = store.Close()
+		}
+	}()
 	clientMutations, err := newClientMutationStore(cfg.StateDir, meta.ID)
 	if err != nil {
 		return nil, fmt.Errorf("load client mutation state: %w", err)
@@ -666,6 +697,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		clientMutations:             clientMutations,
 		restoredClientMutationTurns: restoredClientMutationTurns,
 		restoredClientMutationItems: restoredClientMutationItems,
+		artifactStore:               store,
+		ownsArtifactStore:           ownsArtifactStore,
 	}
 	s.initEnvContext(meta.EnvContext)
 	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
@@ -1054,9 +1087,10 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	if err := s.initMCP(); err != nil {
 		return nil, fmt.Errorf("MCP initialization: %w", err)
 	}
-	if len(s.cfg.spawn.allowedToolNames) > 0 {
-		allowed := make(map[string]bool, len(s.cfg.spawn.allowedToolNames))
-		for _, name := range s.cfg.spawn.allowedToolNames {
+	effectiveAllowedToolNames := ensureRecoveryReader(s.cfg.spawn.allowedToolNames, reg)
+	if len(effectiveAllowedToolNames) > 0 {
+		allowed := make(map[string]bool, len(effectiveAllowedToolNames))
+		for _, name := range effectiveAllowedToolNames {
 			allowed[name] = true
 		}
 		s.reg.RestrictKeepingResultTool(allowed, s.resultToolName())

@@ -3,6 +3,7 @@ package jobstore
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -481,6 +482,161 @@ func TestOutputWindowRealignsAMidRuneCut(t *testing.T) {
 	}
 	if string(buf) != "cd" || start != 4 || end != 6 || total != 6 {
 		t.Fatalf("window = %q [%d,%d) of %d, want cd [4,6) of 6", buf, start, end, total)
+	}
+}
+
+func TestReadOutputWindowSnapshotLiveUsesLifetimeOffsetsWithoutRuneTrimming(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutputNoSync(path, 7)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = o.Close() })
+	appendOutput(t, o, "abc😀xyz") // lifetime 10, retained bytes begin at offset 3
+
+	got, err := o.ReadWindow(3, 5)
+	if err != nil {
+		t.Fatalf("ReadWindow: %v", err)
+	}
+	want := []byte("😀x")
+	if !bytes.Equal(got.Content, want) || got.Start != 3 || got.End != 8 || got.TotalBytes != 10 || got.RetainedStart != 3 || !got.Truncated {
+		t.Fatalf("window = %+v content=%x, want raw %x at lifetime [3,8)", got, got.Content, want)
+	}
+}
+
+func TestOutputRetainedStartPartialPersistsAcrossPruneAndSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		output      string
+		retention   int64
+		wantStart   int64
+		wantPartial bool
+	}{
+		{
+			name:        "line aligned",
+			output:      "discard\nMATCH\n",
+			retention:   int64(len("MATCH\n")),
+			wantStart:   int64(len("discard\n")),
+			wantPartial: false,
+		},
+		{
+			name:        "mid line",
+			output:      "discard\nPARTIAL-MATCH\n",
+			retention:   int64(len("MATCH\n")),
+			wantStart:   int64(len("discard\nPARTIAL-")),
+			wantPartial: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "job.log")
+			store, err := CreateOutputNoSync(path, tc.retention)
+			if err != nil {
+				t.Fatalf("CreateOutputNoSync: %v", err)
+			}
+			appendOutput(t, store, tc.output)
+			if got := store.RetainedStart(); got != tc.wantStart {
+				t.Fatalf("live retained start = %d, want %d", got, tc.wantStart)
+			}
+			if got := store.RetainedStartPartial(); got != tc.wantPartial {
+				t.Fatalf("live retained partial = %t, want %t", got, tc.wantPartial)
+			}
+			live, err := store.ReadWindow(tc.wantStart, len("MATCH\n"))
+			if err != nil {
+				t.Fatalf("live ReadWindow: %v", err)
+			}
+			if live.RetainedStartPartial != tc.wantPartial {
+				t.Fatalf("live snapshot = %+v, want partial=%t", live, tc.wantPartial)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatalf("close: %v", err)
+			}
+
+			durable, err := ReadOutputWindowSnapshot(path, tc.wantStart, len("MATCH\n"))
+			if err != nil {
+				t.Fatalf("ReadOutputWindowSnapshot: %v", err)
+			}
+			if durable.RetainedStartPartial != tc.wantPartial {
+				t.Fatalf("durable snapshot = %+v, want partial=%t", durable, tc.wantPartial)
+			}
+		})
+	}
+}
+
+func TestOutputLegacyMetadataConservativelyMarksPrunedStartPartial(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job.log")
+	store, err := CreateOutputNoSync(path, int64(len("MATCH\n")))
+	if err != nil {
+		t.Fatalf("CreateOutputNoSync: %v", err)
+	}
+	appendOutput(t, store, "discard\nMATCH\n")
+	if err := store.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	metaPath := outputMetaPath(path)
+	metaBytes, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	var legacy map[string]any
+	if err := json.Unmarshal(metaBytes, &legacy); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	delete(legacy, "retained_start_partial")
+	legacyBytes, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("encode legacy metadata: %v", err)
+	}
+	if err := os.WriteFile(metaPath, append(legacyBytes, '\n'), 0o644); err != nil {
+		t.Fatalf("write legacy metadata: %v", err)
+	}
+
+	snapshot, err := ReadOutputWindowSnapshot(path, int64(len("discard\n")), len("MATCH\n"))
+	if err != nil {
+		t.Fatalf("ReadOutputWindowSnapshot: %v", err)
+	}
+	if !snapshot.RetainedStartPartial {
+		t.Fatalf("legacy snapshot = %+v, want conservative partial prefix", snapshot)
+	}
+}
+
+func TestReadOutputWindowSnapshotRunningConcurrentAppendAndPrune(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutputNoSync(path, 128)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = o.Close() })
+	appendOutput(t, o, "seed\n")
+
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		for i := 0; i < 200; i++ {
+			if _, err := o.Append([]byte("append-line\n")); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	<-started
+
+	for i := 0; i < 300; i++ {
+		offset := o.RetainedStart()
+		got, err := o.ReadWindow(offset, 31)
+		if errors.Is(err, ErrOutputPruned) {
+			continue // pruning advanced between the two independently locked calls
+		}
+		if err != nil {
+			t.Fatalf("ReadWindow: %v", err)
+		}
+		if got.Start < got.RetainedStart || got.End < got.Start || got.End > got.TotalBytes || int64(len(got.Content)) != got.End-got.Start {
+			t.Fatalf("inconsistent live snapshot = %+v", got)
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("append: %v", err)
 	}
 }
 

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"sync"
 	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/artifactstore"
 	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/provider"
@@ -115,6 +117,17 @@ type toolDeps struct {
 	// the render metadata when a transcript read resolves to the current session
 	// (a non-current session's meta is loaded from its meta.json instead).
 	currentMeta func() schema.SessionMeta
+
+	// openArtifact resolves only opaque capabilities in this root session tree.
+	// The store, its paths, and the owning Session remain hidden behind this
+	// read-only closure.
+	openArtifact func(ref string) (artifactReadSeekCloser, error)
+}
+
+type artifactReadSeekCloser interface {
+	io.ReaderAt
+	io.Seeker
+	io.Closer
 }
 
 // readGuard wraps the read-before-write guardrail. It forwards to the
@@ -254,6 +267,12 @@ func newToolDeps(s *Session) *toolDeps {
 		stateDir:              s.stateDir,
 		sessionID:             s.id,
 		currentMeta:           s.Meta,
+		openArtifact: func(ref string) (artifactReadSeekCloser, error) {
+			if s.artifactStore == nil {
+				return nil, artifactstore.ErrExpired
+			}
+			return s.artifactStore.Open(ref)
+		},
 	}
 }
 

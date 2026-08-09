@@ -74,9 +74,10 @@ type retryTracker struct {
 // closeOnce). It marks the session closing/closed, cancels in-flight
 // LLM calls, cleans up the environment (killing child processes), runs the
 // SessionEnd hooks, emits EventSessionEnd with the final state, closes
-// subagents, the MCP manager, and the transcript, exports the ATIF trajectory
-// when configured for the root session, removes any embedded skills directory,
-// waits for in-flight event emitters to finish, and closes the events channel.
+// subagents, the MCP manager, and the transcript, closes the root-owned artifact
+// store after descendant shutdown, exports the ATIF trajectory when configured
+// for the root session, removes any embedded skills directory, waits for
+// in-flight event emitters to finish, and closes the events channel.
 func (s *Session) Close() {
 	s.close(context.Background(), true)
 }
@@ -223,7 +224,11 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 				}
 			}
 		}
-
+		if s.ownsArtifactStore && s.artifactStore != nil {
+			if err := s.artifactStore.Close(); err != nil {
+				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("artifact store close incomplete: %v", err)})
+			}
+		}
 		// Native worktree tools spec §9 step 4 + §5 close-unlock: dispose the
 		// isolation delegate lanes this session created and unlock its own
 		// occupied managed worktree. Both run AFTER child sessions close (a
@@ -327,6 +332,9 @@ func (s *Session) discardRestoredCandidate() {
 		}
 		for _, sub := range subs {
 			sub.sess.discardRestoredCandidate()
+		}
+		if s.ownsArtifactStore && s.artifactStore != nil {
+			_ = s.artifactStore.Close()
 		}
 		// restoreDelegateChildEnvironment always hands a restored delegate a
 		// FRESH environment (a re-rooted clone, and its own per-lane sandbox
