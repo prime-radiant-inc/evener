@@ -78,6 +78,8 @@ const DATED_TASKS = [
     description: "Implement artifact store",
     prompt: "",
     status: "done",
+    depends_on: [14],
+    reasoning_effort: "high",
     notes: ["Implemented secure artifact store in commits 9853cf561 and 162d0d41e."],
     created_at: "2026-08-08T22:03:48-07:00",
     updated_at: "2026-08-09T10:53:57-07:00",
@@ -292,12 +294,7 @@ test("the body header is absent while no aggregate has arrived", async () => {
   expect(screen.queryByTestId("tasks-body-head")).toBeNull();
 });
 
-// --- row disclosure: expand a task row to see its full details -------------
-// TaskRow already carries every field the daemon's Task struct exposes to
-// the frontend (taskData.ts's own comment: created_at/updated_at/
-// completed_at/insert are deliberately dropped, matching the legacy
-// sidebar's buildTaskDetailList - kata rb74's own comment records that
-// gap). "Full details" here means every field TaskRow actually carries.
+// --- row disclosure: expand a task row to see its dense detail body ---------
 
 const RICH_TASK = {
   id: 5,
@@ -310,7 +307,7 @@ const RICH_TASK = {
   notes: ["started", "blocked on #1"],
 };
 
-test("a task row starts collapsed; clicking its summary expands it to show the full detail fields", async () => {
+test("a task row starts collapsed; clicking its summary expands its meta and updates", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("serf/tasks/list", () => ({ data: [RICH_TASK] }));
@@ -319,17 +316,16 @@ test("a task row starts collapsed; clicking its summary expands it to show the f
   await user.click(screen.getByRole("button", { name: "Tasks" }));
   const summary = await screen.findByText("Wire up expand/collapse");
 
-  expect(screen.queryByTestId("task-detail-status")).toBeNull();
+  expect(screen.queryByTestId("task-expanded")).toBeNull();
 
   await user.click(summary);
 
-  expect(screen.getByTestId("task-detail-status").textContent).toContain("in_progress");
-  expect(screen.getByTestId("task-detail-type").textContent).toContain("implement");
-  expect(screen.getByTestId("task-detail-depends-on").textContent).toContain("#1, #3");
-  expect(screen.getByTestId("task-detail-reasoning").textContent).toContain("high");
-  expect(screen.getByText("Follow the transcript's existing disclosure idiom.")).toBeTruthy();
-  expect(screen.getByTestId("task-detail-notes").textContent).toContain("started");
-  expect(screen.getByTestId("task-detail-notes").textContent).toContain("blocked on #1");
+  const body = screen.getByTestId("task-expanded");
+  expect(body.querySelector("[data-testid='task-meta']")?.textContent).toContain("implement");
+  expect(body.querySelector("[data-testid='task-meta']")?.textContent).toContain("#1 #3");
+  expect(body.querySelector("[data-testid='task-meta']")?.textContent).toContain("high");
+  expect(body.querySelector("[data-testid='task-notes']")?.textContent).toContain("started");
+  expect(body.querySelector("[data-testid='task-notes']")?.textContent).toContain("blocked on #1");
 });
 
 test("clicking an expanded row's summary again collapses it", async () => {
@@ -341,31 +337,78 @@ test("clicking an expanded row's summary again collapses it", async () => {
   await user.click(screen.getByRole("button", { name: "Tasks" }));
   const summary = await screen.findByText("Wire up expand/collapse");
   await user.click(summary);
-  expect(screen.getByTestId("task-detail-status")).toBeTruthy();
+  expect(screen.getByTestId("task-expanded")).toBeTruthy();
 
   await user.click(summary);
 
-  expect(screen.queryByTestId("task-detail-status")).toBeNull();
+  expect(screen.queryByTestId("task-expanded")).toBeNull();
 });
 
-test("a task with none of the optional fields still shows status and type, omitting depends-on/reasoning/prompt/notes entirely", async () => {
+test("an expanded bare task shows only the type meta and 'No updates yet.'", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("serf/tasks/list", () => ({ data: TASKS_DATA }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
-  // TASKS_DATA's first row: status "done", type "implement", prompt "",
-  // no dependsOn/notes/reasoningEffort.
+  // TASKS_DATA's first row: type "implement", prompt "", and no timestamps,
+  // dependsOn, notes, or reasoningEffort.
   await user.click(await screen.findByTestId("task-settled-group-summary"));
   await user.click(await screen.findByText("Wire up the status row"));
 
-  expect(screen.getByTestId("task-detail-status").textContent).toContain("done");
-  expect(screen.getByTestId("task-detail-type").textContent).toContain("implement");
-  expect(screen.queryByTestId("task-detail-depends-on")).toBeNull();
-  expect(screen.queryByTestId("task-detail-reasoning")).toBeNull();
-  expect(screen.queryByTestId("task-detail-prompt")).toBeNull();
-  expect(screen.queryByTestId("task-detail-notes")).toBeNull();
+  const body = screen.getByTestId("task-expanded");
+  expect(body.querySelector("[data-testid='task-meta']")?.textContent).toContain("implement");
+  expect(body.querySelector("[data-testid='task-meta']")?.textContent).not.toContain("reasoning");
+  expect(body.querySelector("[data-testid='task-times']")).toBeNull();
+  expect(body.querySelector("[data-testid='task-prompt']")).toBeNull();
+  expect(body.textContent).toContain("No updates yet.");
+});
+
+test("an expanded task shows the meta strip and timestamps line", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: DATED_TASKS }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByTestId("task-settled-group-summary"));
+  await user.click(await screen.findByText("Implement artifact store"));
+
+  const meta = screen.getByTestId("task-meta");
+  expect(meta.textContent).toContain("implement");
+  expect(meta.textContent).toContain("high");
+  expect(meta.textContent).toContain("#14");
+  const times = screen.getByTestId("task-times");
+  expect(times.textContent).toContain("created Aug 8, 22:03");
+  expect(times.textContent).toContain("updated");
+  expect(times.textContent).toContain("completed");
+});
+
+test("the timestamps line omits updated when it equals created", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({
+    data: [
+      {
+        id: 6,
+        type: "verify",
+        description: "Check unchanged timestamps",
+        prompt: "",
+        status: "open",
+        created_at: "2026-08-09T12:00:00-07:00",
+        updated_at: "2026-08-09T12:00:00-07:00",
+      },
+    ],
+  }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByText("Check unchanged timestamps"));
+
+  const times = screen.getByTestId("task-times");
+  expect(times.textContent).toContain("created");
+  expect(times.textContent).not.toContain("updated");
+  expect(times.textContent).not.toContain("completed");
 });
 
 test("each row's expand state is independent - opening one row leaves its siblings collapsed", async () => {
@@ -378,7 +421,7 @@ test("each row's expand state is independent - opening one row leaves its siblin
   await user.click(await screen.findByTestId("task-settled-group-summary"));
   await user.click(await screen.findByText("Wire up the status row"));
 
-  expect(screen.getAllByTestId("task-detail-status")).toHaveLength(1);
+  expect(screen.getAllByTestId("task-expanded")).toHaveLength(1);
 });
 
 test("the expanded row is a real native disclosure (<details open>), not just conditionally-rendered markup", async () => {
