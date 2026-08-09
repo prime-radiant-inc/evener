@@ -134,9 +134,9 @@ test("carries created_at/updated_at/completed_at onto the row", () => {
 test("a row without timestamp fields still parses, with the fields absent", () => {
   const rows = parseTaskListData([{ id: 1, type: "implement", description: "Gate green", prompt: "", status: "open" }]);
   expect(rows).toHaveLength(1);
-  expect(rows[0]?.createdAt).toBeUndefined();
-  expect(rows[0]?.updatedAt).toBeUndefined();
-  expect(rows[0]?.completedAt).toBeUndefined();
+  expect(rows?.[0]?.createdAt).toBeUndefined();
+  expect(rows?.[0]?.updatedAt).toBeUndefined();
+  expect(rows?.[0]?.completedAt).toBeUndefined();
 });
 
 test("non-string timestamp values are ignored, not carried", () => {
@@ -152,8 +152,8 @@ test("non-string timestamp values are ignored, not carried", () => {
     },
   ]);
   expect(rows).toHaveLength(1);
-  expect(rows[0]?.createdAt).toBeUndefined();
-  expect(rows[0]?.updatedAt).toBeUndefined();
+  expect(rows?.[0]?.createdAt).toBeUndefined();
+  expect(rows?.[0]?.updatedAt).toBeUndefined();
 });
 
 test("an empty array (a real daemon with zero tasks - TaskStore.View's own always-non-nil empty slice) parses to an empty, non-null array", () => {
