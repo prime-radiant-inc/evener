@@ -48,13 +48,20 @@ func TestEnsureRecoveryReaderPreservesPolicyShape(t *testing.T) {
 	register("control_only", schema.ToolOutputLimit{MaxChars: -1})
 	register("read_transcript", schema.ToolOutputLimit{MaxChars: 10})
 
-	backing := []string{"first", "limited_text"}
+	storage := []string{"first", "limited_text", "hidden-sentinel", "second-sentinel"}
+	backing := storage[:2]
 	got := ensureRecoveryReader(backing, reg)
 	if !slices.Equal(got, []string{"first", "limited_text", "read_transcript"}) {
 		t.Fatalf("limited policy = %v", got)
 	}
 	if !slices.Equal(backing, []string{"first", "limited_text"}) {
 		t.Fatalf("caller-owned input mutated: %v", backing)
+	}
+	if !slices.Equal(storage, []string{"first", "limited_text", "hidden-sentinel", "second-sentinel"}) {
+		t.Fatalf("caller backing storage mutated: %v", storage)
+	}
+	if &got[0] == &backing[0] {
+		t.Fatal("injected result aliases caller-owned backing storage")
 	}
 
 	already := []string{"limited_text", "read_transcript"}

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
@@ -59,6 +60,24 @@ func task7ExecTool(t *testing.T, s *Session, name string, args map[string]any) t
 		t.Fatalf("%s failed: %s", name, res.Output)
 	}
 	return res
+}
+
+func task7ExecutedToolStarts(s *Session, toolName string) int {
+	count := 0
+	for {
+		select {
+		case event := <-s.events:
+			if event.Kind != events.EventToolCallStart {
+				continue
+			}
+			data, ok := event.Data.(events.ToolCallStartData)
+			if ok && data.ToolName == toolName {
+				count++
+			}
+		default:
+			return count
+		}
+	}
 }
 
 func TestRecoverableGrepReceiptReplayEndToEnd(t *testing.T) {
@@ -119,13 +138,27 @@ func TestRecoverableGrepReceiptReplayEndToEnd(t *testing.T) {
 		t.Fatalf("artifact replay matches = %d, want %d", len(search.Matches), matchCount)
 	}
 	for i, match := range search.Matches {
-		want := fmt.Sprintf("RECOVER_%03d", i)
-		if !strings.HasSuffix(match.Line, ":"+want) || len(match.Before) != 3 || len(match.After) != 3 {
-			t.Fatalf("match %d = %+v, want %q with three context lines each side", i, match, want)
+		firstLine := i*7 + 1
+		wantLine := fmt.Sprintf("%d:RECOVER_%03d", firstLine+3, i)
+		wantBefore := []string{
+			fmt.Sprintf("%d-before-%03d-0", firstLine, i),
+			fmt.Sprintf("%d-before-%03d-1", firstLine+1, i),
+			fmt.Sprintf("%d-before-%03d-2", firstLine+2, i),
+		}
+		wantAfter := []string{
+			fmt.Sprintf("%d-after-%03d-0", firstLine+4, i),
+			fmt.Sprintf("%d-after-%03d-1", firstLine+5, i),
+			fmt.Sprintf("%d-after-%03d-2", firstLine+6, i),
+		}
+		if match.Line != wantLine || !slices.Equal(match.Before, wantBefore) || !slices.Equal(match.After, wantAfter) {
+			t.Fatalf("match %d = %+v, want line %q before %v after %v", i, match, wantLine, wantBefore, wantAfter)
 		}
 	}
-	if !strings.HasSuffix(search.Matches[matchCount-1].Line, ":RECOVER_069") {
+	if search.Matches[matchCount-1].Line != "487:RECOVER_069" {
 		t.Fatalf("omitted grep match was not recovered: last=%+v", search.Matches[matchCount-1])
+	}
+	if got := task7ExecutedToolStarts(s, "grep"); got != 1 {
+		t.Fatalf("executed grep calls = %d, want exactly one after artifact replay", got)
 	}
 }
 
@@ -178,8 +211,10 @@ func TestRecoverableRunningJobEndToEnd(t *testing.T) {
 	initialPath := filepath.Join(dir, "initial")
 	appendRelease := filepath.Join(dir, "append-release")
 	exitRelease := filepath.Join(dir, "exit-release")
-	initial := strings.Repeat("x", retainedOutputPageBytes) + "before\nneedle"
+	const priorMatch = "needle complete\n"
+	initial := priorMatch + strings.Repeat("x", retainedOutputPageBytes-len(priorMatch)) + "before\nneedle"
 	const appended = " complete\n"
+	partialLineStart := int64(retainedOutputPageBytes + len("before\n"))
 	if err := os.WriteFile(initialPath, []byte(initial), 0o600); err != nil {
 		t.Fatalf("write initial output: %v", err)
 	}
@@ -206,7 +241,7 @@ func TestRecoverableRunningJobEndToEnd(t *testing.T) {
 		"transcript_ref": ref,
 		"offset_bytes":   0,
 	}))
-	if first.JobStatus != "running" || first.Page.Data != initial[:retainedOutputPageBytes] || first.Continuation == nil {
+	if first.JobStatus != "running" || first.Page.Data != initial[:retainedOutputPageBytes] || first.Continuation == nil || first.Continuation.OffsetBytes != retainedOutputPageBytes {
 		t.Fatalf("first running page = %+v", first)
 	}
 	continuation := first.Continuation.OffsetBytes
@@ -219,7 +254,9 @@ func TestRecoverableRunningJobEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(toolResultJSON(deferredRes), &deferred); err != nil {
 		t.Fatalf("decode deferred search: %v", err)
 	}
-	if deferred.JobStatus != "running" || len(deferred.Matches) != 0 || deferred.Continuation == nil {
+	if deferred.JobStatus != "running" || deferred.OffsetBytes != 0 || deferred.TotalBytes != int64(len(initial)) ||
+		!deferred.SearchComplete || len(deferred.Matches) != 1 || deferred.Matches[0].Line != "needle complete" ||
+		deferred.Matches[0].LineStartByte != 0 || deferred.Continuation == nil || deferred.Continuation.OffsetBytes != partialLineStart {
 		t.Fatalf("partial-line search was not deferred: %+v", deferred)
 	}
 	searchContinuation := deferred.Continuation.OffsetBytes
@@ -232,7 +269,8 @@ func TestRecoverableRunningJobEndToEnd(t *testing.T) {
 		"transcript_ref": ref,
 		"offset_bytes":   continuation,
 	}))
-	if second.JobStatus != "running" || second.Page.Data != initial[continuation:]+appended {
+	if second.JobStatus != "running" || second.Page.OffsetBytes != continuation || second.Page.TotalBytes != int64(len(initial)+len(appended)) ||
+		second.Page.Data != initial[continuation:]+appended || second.Continuation != nil {
 		t.Fatalf("continued page = %+v, want exact appended suffix", second)
 	}
 	if reconstructed := first.Page.Data + second.Page.Data; reconstructed != initial+appended {
@@ -248,7 +286,10 @@ func TestRecoverableRunningJobEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(toolResultJSON(completedLineRes), &completedLine); err != nil {
 		t.Fatalf("decode completed-line search: %v", err)
 	}
-	if completedLine.JobStatus != "running" || len(completedLine.Matches) != 1 || completedLine.Matches[0].Line != "needle complete" {
+	if completedLine.JobStatus != "running" || completedLine.OffsetBytes != partialLineStart ||
+		completedLine.TotalBytes != int64(len(initial)+len(appended)) || !completedLine.SearchComplete || completedLine.Continuation != nil ||
+		len(completedLine.Matches) != 1 || completedLine.Matches[0].Line != "needle complete" ||
+		completedLine.Matches[0].LineStartByte != partialLineStart {
 		t.Fatalf("completed partial line was not evaluated exactly once: %+v", completedLine)
 	}
 	if status := readJobStatus(t, s, started.JobID); status.Status != "running" {
@@ -266,7 +307,9 @@ func TestRecoverableRunningJobEndToEnd(t *testing.T) {
 		"transcript_ref": ref,
 		"offset_bytes":   int64(len(initial) + len(appended)),
 	}))
-	if terminal.JobStatus != "terminal" || terminal.Page.Data != "" {
+	if terminal.JobStatus != "terminal" || terminal.Page.OffsetBytes != int64(len(initial)+len(appended)) ||
+		terminal.Page.TotalBytes != int64(len(initial)+len(appended)) || terminal.Page.BytesReturned != 0 ||
+		terminal.Page.Data != "" || terminal.Continuation != nil {
 		t.Fatalf("terminal EOF page = %+v", terminal)
 	}
 	if !slices.Equal([]string{first.JobStatus, second.JobStatus, terminal.JobStatus}, []string{"running", "running", "terminal"}) {
