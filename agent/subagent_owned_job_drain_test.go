@@ -255,6 +255,45 @@ func TestSubagentDrainRestoresParentDriveAfterTerminalStatePublication(t *testin
 	}
 }
 
+func TestSubagentOwnedJobDrainGatesMessagesWithoutBlockingNotifications(t *testing.T) {
+	fixture := newOwnedJobDrainFixture(t)
+	fixture.child.mu.Lock()
+	finalizing := fixture.child.finalizing
+	running := fixture.child.running
+	fixture.child.mu.Unlock()
+	if !running || !finalizing {
+		t.Fatalf("active drain state = running %v finalizing %v, want running finalization gate", running, finalizing)
+	}
+
+	plain := fixture.parent.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  fixture.result.DelegateID,
+		Message: "plain send during owned-job drain",
+	})
+	if plain.Err == nil || !strings.Contains(plain.Err.Error(), "target_busy") {
+		t.Fatalf("plain delegate_send during owned-job drain = %+v, want target_busy", plain)
+	}
+	watch := fixture.parent.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:    fixture.result.DelegateID,
+		Message:   "watch send during owned-job drain",
+		FromWatch: true,
+	})
+	if watch.Err != nil || !watch.WatchSendDeliveryClassSet || watch.WatchSendDeliveryClass != watchSendBusy {
+		t.Fatalf("watch delegate_send during owned-job drain = %+v, want retryable busy", watch)
+	}
+	if queue := fixture.child.sess.SteeringQueueSnapshot(); len(queue) != 0 {
+		t.Fatalf("steering queue during owned-job drain = %+v, want empty", queue)
+	}
+
+	fixture.releaseAndWait(t)
+	fixture.requireHandledResult(t)
+	fixture.child.mu.Lock()
+	finalizing = fixture.child.finalizing
+	fixture.child.mu.Unlock()
+	if finalizing {
+		t.Fatal("finalization gate remained set after owned-job drain published terminal state")
+	}
+}
+
 func TestSubagentDrainReturnHandoffRefusesMessagesBeforeTerminalPublication(t *testing.T) {
 	fixture := newOwnedJobDrainFixture(t)
 	type handoffResult struct {
