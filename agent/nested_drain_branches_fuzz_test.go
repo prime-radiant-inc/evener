@@ -130,8 +130,8 @@ func nbdExerciseOutstandingCounts(t *testing.T) {
 		}
 	}
 
-	if got, err := jm.outstandingDelegateCount(); err != nil || got != 2 {
-		t.Fatalf("outstanding delegate count = %d, %v; want 2", got, err)
+	if got, err := jm.outstandingDrainJobCount(); err != nil || got != 3 {
+		t.Fatalf("outstanding managed-job count = %d, %v; want 3", got, err)
 	}
 	if outstanding, err := sess.treeHasOutstandingWork(); err != nil || !outstanding {
 		t.Fatalf("tree outstanding = %v, %v; want true", outstanding, err)
@@ -145,7 +145,7 @@ func nbdExerciseOutstandingCounts(t *testing.T) {
 	if err := jm.store.Close(); err != nil {
 		t.Fatalf("close job store: %v", err)
 	}
-	if _, err := jm.outstandingDelegateCount(); err == nil {
+	if _, err := jm.outstandingDrainJobCount(); err == nil {
 		t.Fatal("closed store outstanding count succeeded, want error")
 	}
 	if _, err := sess.treeHasOutstandingWork(); err == nil {

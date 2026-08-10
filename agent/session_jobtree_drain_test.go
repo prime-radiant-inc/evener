@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -40,85 +41,85 @@ func TestDrainJobTreeNoJobsReturnsImmediately(t *testing.T) {
 	}
 }
 
-// TestDrainJobTreeIgnoresBackgroundShell verifies the drain does not block on a
-// long-lived background shell job: only delegates hold it open. A one-shot run
-// whose model leaves a background shell running (e.g. a dev server) and then
-// communicates must still exit promptly rather than hang until the shell dies.
-func TestDrainJobTreeIgnoresBackgroundShell(t *testing.T) {
+// TestOutstandingDrainJobCountIncludesRunningManagedJobs verifies every owned
+// managed job keeps the drain open while it remains in the running map. Shell
+// execution mode is not part of that durable drain contract.
+func TestOutstandingDrainJobCountIncludesRunningManagedJobs(t *testing.T) {
 	t.Parallel()
-	sess := newSession(t)
-
-	// Inject a running background shell job into the manager's running map, then
-	// remove it before the session closes (the bare record has none of the
-	// lifecycle channels Close() would touch).
-	jm := sess.jobManager
-	jm.mu.Lock()
-	jm.running["sh-1"] = &runningJob{rec: &jobstore.JobRecord{
-		JobID:  "sh-1",
-		Type:   jobstore.JobShell,
-		Status: jobstore.StatusRunning,
-	}}
-	jm.mu.Unlock()
-	defer func() {
-		jm.mu.Lock()
-		delete(jm.running, "sh-1")
-		jm.mu.Unlock()
-	}()
-
-	if n, err := jm.outstandingDelegateCount(); err != nil || n != 0 {
-		t.Fatalf("background shell must not count as an in-flight delegate, got %d (err %v)", n, err)
+	tests := []struct {
+		name string
+		rec  *jobstore.JobRecord
+	}{
+		{name: "delegate", rec: &jobstore.JobRecord{JobID: "del-live", Type: jobstore.JobDelegate, Status: jobstore.StatusRunning}},
+		{name: "explicit background shell", rec: &jobstore.JobRecord{JobID: "sh-bg", Type: jobstore.JobShell, Status: jobstore.StatusRunning, Background: true}},
+		{name: "foreground-promoted shell", rec: &jobstore.JobRecord{JobID: "sh-promoted", Type: jobstore.JobShell, Status: jobstore.StatusRunning, Background: false}},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := newSession(t)
+			jm := sess.jobManager
+			tt.rec.OwnerSessionID = sess.ID()
+			jm.mu.Lock()
+			jm.running[tt.rec.JobID] = &runningJob{rec: tt.rec}
+			jm.mu.Unlock()
+			defer func() {
+				jm.mu.Lock()
+				delete(jm.running, tt.rec.JobID)
+				jm.mu.Unlock()
+			}()
 
-	done := make(chan struct{})
-	go func() {
-		_, _ = sess.DrainJobTree(context.Background())
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("DrainJobTree blocked on a background shell job; expected immediate return")
+			if n, err := jm.outstandingDrainJobCount(); err != nil || n != 1 {
+				t.Fatalf("owned running managed job count = %d (err %v), want 1", n, err)
+			}
+		})
 	}
 }
 
 // TestDrainJobTreeReturnsOnContextCancel verifies the wait is bounded: a
-// delegate that never completes (never signals, never leaves the running map)
-// must not hang the drain forever — a cancelled context releases it. This is
-// the hang-safety backstop for a one-shot run whose delegated work stalls.
+// managed job that never completes (never signals, never leaves the running
+// map) must not hang the drain forever — a cancelled context releases it.
 func TestDrainJobTreeReturnsOnContextCancel(t *testing.T) {
 	t.Parallel()
-	sess := newSession(t)
+	for _, tt := range []struct {
+		name string
+		typ  jobstore.JobType
+	}{
+		{name: "delegate", typ: jobstore.JobDelegate},
+		{name: "shell", typ: jobstore.JobShell},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := newSession(t)
+			jm := sess.jobManager
+			rec := &jobstore.JobRecord{JobID: "stuck-" + tt.name, Type: tt.typ, Status: jobstore.StatusRunning, OwnerSessionID: sess.ID()}
+			jm.mu.Lock()
+			jm.running[rec.JobID] = &runningJob{rec: rec}
+			jm.mu.Unlock()
+			defer func() {
+				jm.mu.Lock()
+				delete(jm.running, rec.JobID)
+				jm.mu.Unlock()
+			}()
 
-	// A delegate that will never signal completion.
-	jm := sess.jobManager
-	jm.mu.Lock()
-	jm.running["del-stuck"] = &runningJob{rec: &jobstore.JobRecord{
-		JobID:  "del-stuck",
-		Type:   jobstore.JobDelegate,
-		Status: jobstore.StatusRunning,
-	}}
-	jm.mu.Unlock()
-	defer func() {
-		jm.mu.Lock()
-		delete(jm.running, "del-stuck")
-		jm.mu.Unlock()
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := sess.DrainJobTree(ctx)
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("expected a context error when the delegate never completes, got nil")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("DrainJobTree did not return after context cancellation; hang-safety backstop failed")
+			if n, err := jm.outstandingDrainJobCount(); err != nil || n != 1 {
+				t.Fatalf("precondition: owned running managed job count = %d (err %v), want 1", n, err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				_, err := sess.DrainJobTree(ctx)
+				done <- err
+			}()
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("DrainJobTree error = %v, want context.Canceled", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("DrainJobTree did not return after context cancellation; hang-safety backstop failed")
+			}
+		})
 	}
 }
 
@@ -154,7 +155,7 @@ func TestOutstandingDelegateCountCoversPendingNotifyWindow(t *testing.T) {
 	if p := sess.peekNotifications(); p != 0 {
 		t.Fatalf("precondition: expected empty in-memory queue, got %d", p)
 	}
-	if n, err := jm.outstandingDelegateCount(); err != nil || n != 1 {
+	if n, err := jm.outstandingDrainJobCount(); err != nil || n != 1 {
 		t.Fatalf("a NotifyPending delegate absent from the running map must still count as outstanding, got %d (err %v)", n, err)
 	}
 }
@@ -210,40 +211,46 @@ func TestTreeHasOutstandingWorkSkipsStopGatedChild(t *testing.T) {
 	}
 }
 
-// TestOutstandingDelegateCountIgnoresForwardedDescendantPending verifies the
-// count only holds the drain open for THIS session's own delegate notifications.
+// TestOutstandingDrainJobCountIgnoresForwardedDescendantPending verifies the
+// count only holds the drain open for THIS session's own managed-job notifications.
 // A forwarded descendant pending copy (a drive signal owned by a child session)
 // must not count here — the descendant is covered by the recursive tree walk,
 // and counting the forwarded copy would hang the drain when that child is
 // stop-gated and nothing settles the copy.
-func TestOutstandingDelegateCountIgnoresForwardedDescendantPending(t *testing.T) {
+func TestOutstandingDrainJobCountIgnoresForwardedDescendantPending(t *testing.T) {
 	t.Parallel()
-	sess := newSession(t)
-	jm := sess.jobManager
-
-	started := frozenTestTime.Add(-time.Second)
-	ended := frozenTestTime
-	// A pending delegate record owned by another (child) session, forwarded into
-	// this session's store as a drive signal.
-	for _, ev := range []jobstore.Event{
-		{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_fwd", Type: jobstore.JobDelegate, OwnerSessionID: "CHILD-SESSION", VisibleToSession: sess.ID(), TranscriptRef: encodeRef("", "grandchild"), StartedAt: &started},
-		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_fwd", Status: jobstore.StatusCompleted, Reason: "communicated", EndedAt: &ended, TerminalGen: "gen_fwd"},
-		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "job_fwd", TerminalGen: "gen_fwd"},
+	for _, tt := range []struct {
+		name string
+		typ  jobstore.JobType
+	}{
+		{name: "delegate", typ: jobstore.JobDelegate},
+		{name: "shell", typ: jobstore.JobShell},
 	} {
-		if err := jm.appendEvent(ev); err != nil {
-			t.Fatalf("append %s: %v", ev.Kind, err)
-		}
-	}
-
-	if n, err := jm.outstandingDelegateCount(); err != nil || n != 0 {
-		t.Fatalf("a forwarded descendant pending copy must not count as this session's own outstanding delegate, got %d (err %v)", n, err)
+		t.Run(tt.name, func(t *testing.T) {
+			sess := newSession(t)
+			jm := sess.jobManager
+			started := frozenTestTime.Add(-time.Second)
+			ended := frozenTestTime
+			for _, ev := range []jobstore.Event{
+				{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_fwd", Type: tt.typ, OwnerSessionID: "CHILD-SESSION", VisibleToSession: sess.ID(), TranscriptRef: encodeRef("", "grandchild"), StartedAt: &started},
+				{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_fwd", Status: jobstore.StatusCompleted, Reason: "communicated", EndedAt: &ended, TerminalGen: "gen_fwd"},
+				{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "job_fwd", TerminalGen: "gen_fwd"},
+			} {
+				if err := jm.appendEvent(ev); err != nil {
+					t.Fatalf("append %s: %v", ev.Kind, err)
+				}
+			}
+			if n, err := jm.outstandingDrainJobCount(); err != nil || n != 0 {
+				t.Fatalf("a forwarded descendant pending copy must not count as this session's own outstanding managed job, got %d (err %v)", n, err)
+			}
+		})
 	}
 }
 
 // TestDrainSettlesRootDurableOnlyPending is the kata h8mq regression: a
 // delegate whose owner notification survives ONLY in the durable ledger
 // (NotifyState==NotifyPending) with nothing queued in memory (peek==0) must not
-// wedge the drain. outstandingDelegateCount reads the durable ledger, so it
+// wedge the drain. outstandingDrainJobCount reads the durable ledger, so it
 // counts the delegate as outstanding forever; but the loop's delivery gate is
 // the in-memory queue, so without re-materializing the durable pending the drain
 // never runs a notification turn and blocks until ctx cancellation. This state
@@ -273,7 +280,7 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 	if p := sess.peekNotifications(); p != 0 {
 		t.Fatalf("precondition: expected empty in-memory queue, got %d", p)
 	}
-	if n, err := jm.outstandingDelegateCount(); err != nil || n != 1 {
+	if n, err := jm.outstandingDrainJobCount(); err != nil || n != 1 {
 		t.Fatalf("precondition: expected 1 outstanding, got %d (err %v)", n, err)
 	}
 
@@ -282,7 +289,7 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 	if _, err := sess.DrainJobTree(ctx); err != nil {
 		t.Fatalf("DrainJobTree wedged on a durable-only pending: %v", err)
 	}
-	if n, err := jm.outstandingDelegateCount(); err != nil || n != 0 {
+	if n, err := jm.outstandingDrainJobCount(); err != nil || n != 0 {
 		t.Fatalf("expected 0 outstanding after drain, got %d (err %v)", n, err)
 	}
 	if p := sess.peekNotifications(); p != 0 {
@@ -328,7 +335,7 @@ func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
 	if p := sess.peekNotifications(); p != 0 {
 		t.Fatalf("precondition: expected empty in-memory queue, got %d", p)
 	}
-	if n, err := jm.outstandingDelegateCount(); err != nil || n != 1 {
+	if n, err := jm.outstandingDrainJobCount(); err != nil || n != 1 {
 		t.Fatalf("precondition: expected 1 outstanding, got %d (err %v)", n, err)
 	}
 
@@ -339,7 +346,7 @@ func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
 	if _, err := sess.DrainJobTree(ctx); err != nil {
 		t.Fatalf("DrainJobTree wedged on an already-injected durable pending: %v", err)
 	}
-	if n, err := jm.outstandingDelegateCount(); err != nil || n != 0 {
+	if n, err := jm.outstandingDrainJobCount(); err != nil || n != 0 {
 		t.Fatalf("expected 0 outstanding after drain, got %d (err %v)", n, err)
 	}
 	if blocksAfter := countHistoryNeedle(sess, `job_id="del-r"`); blocksAfter != blocksBefore {
@@ -416,7 +423,7 @@ func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
 	if _, err := root.DrainJobTree(ctx); err != nil {
 		t.Fatalf("DrainJobTree wedged on a child's durable-only pending: %v", err)
 	}
-	if n, err := child.jobManager.outstandingDelegateCount(); err != nil || n != 0 {
+	if n, err := child.jobManager.outstandingDrainJobCount(); err != nil || n != 0 {
 		t.Fatalf("expected child's pending settled after drain, got %d (err %v)", n, err)
 	}
 }
@@ -455,7 +462,7 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 	}
 
 	// After draining, no delegate may remain in flight and nothing may be pending.
-	if n, err := sess.jobManager.outstandingDelegateCount(); err != nil || n != 0 {
+	if n, err := sess.jobManager.outstandingDrainJobCount(); err != nil || n != 0 {
 		t.Fatalf("expected 0 in-flight delegates after drain, got %d (err %v)", n, err)
 	}
 	if p := sess.peekNotifications(); p != 0 {

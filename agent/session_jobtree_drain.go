@@ -30,9 +30,27 @@ var drainStallTimeout = 2 * time.Minute
 // under jm.mu more often than necessary.
 const drainRecheckInterval = 250 * time.Millisecond
 
-// outstandingDelegateCount reports how many delegate jobs still owe this session
-// a completion notification turn. A delegate counts while it is either still in
-// the running map (not yet finalized) or recorded terminal with an owner
+// isOwnedDrainJob reports whether rec is a managed job owned by sessionID. The
+// durable record does not reliably preserve a shell's original execution mode,
+// so ownership and job type are the complete drain contract.
+func isOwnedDrainJob(rec *jobstore.JobRecord, sessionID string) bool {
+	if rec == nil {
+		return false
+	}
+	if rec.OwnerSessionID != "" && rec.OwnerSessionID != sessionID {
+		return false
+	}
+	switch rec.Type {
+	case jobstore.JobDelegate, jobstore.JobShell:
+		return true
+	default:
+		return false
+	}
+}
+
+// outstandingDrainJobCount reports how many managed jobs still owe this session
+// a completion notification turn. A managed job counts while it is either still
+// in the running map (not yet finalized) or recorded terminal with an owner
 // notification that is pending but not yet delivered.
 //
 // Both halves are needed to be race-free against the finalization sequence
@@ -42,29 +60,28 @@ const drainRecheckInterval = 250 * time.Millisecond
 // running map but before its in-memory notification is enqueued. A suppressed
 // (watch-origin) notification never reaches NotifyPending, so it correctly stops
 // counting once the job leaves the running map — the drain must not wait on a
-// notification that will never arrive. Background shell jobs are excluded
-// entirely: a one-shot run must not block on a long-lived shell.
+// notification that will never arrive.
 //
 // The durable snapshot and the running-map read are taken under the SAME jm.mu
 // hold. armFinalizedJob deletes from the running map under jm.mu and appends
 // EventJobNotificationPending before that delete, so while this holds jm.mu a
-// finalizing delegate is either still in the running map (delete blocked) or its
+// finalizing managed job is either still in the running map (delete blocked) or its
 // NotifyPending record is already durable (delete done, its earlier append
 // visible to Load). Loading the store outside the lock would reopen the
 // stale-snapshot window. Store never acquires jm.mu, so jm.mu -> store.mu is a
 // consistent order with no inverse. A store read error is returned, never
 // folded into a zero count: an unreadable store is not quiescence.
-func (jm *jobManager) outstandingDelegateCount() (int, error) {
-	ids, err := jm.outstandingDelegateIDs()
+func (jm *jobManager) outstandingDrainJobCount() (int, error) {
+	ids, err := jm.outstandingDrainJobIDs()
 	return len(ids), err
 }
 
-// outstandingDelegateIDs lists the job ids outstandingDelegateCount counts: this
-// session's own delegates still in the running map, plus its own delegates
+// outstandingDrainJobIDs lists the job ids outstandingDrainJobCount counts: this
+// session's own managed jobs still in the running map, plus its own managed jobs
 // recorded terminal with a NotifyPending owner notification. The stall watchdog
-// uses the ids to name the stuck delegate(s) in its warning; the count is just
+// uses the ids to name the stuck managed job(s) in its warning; the count is just
 // len() of this list, so the two can never disagree.
-func (jm *jobManager) outstandingDelegateIDs() ([]string, error) {
+func (jm *jobManager) outstandingDrainJobIDs() ([]string, error) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	recs, err := jm.store.Load()
@@ -74,7 +91,7 @@ func (jm *jobManager) outstandingDelegateIDs() ([]string, error) {
 	counted := make(map[string]bool)
 	var ids []string
 	for id, run := range jm.running {
-		if run.rec != nil && run.rec.Type == jobstore.JobDelegate {
+		if isOwnedDrainJob(run.rec, jm.sessionID) {
 			counted[id] = true
 			ids = append(ids, id)
 		}
@@ -83,32 +100,29 @@ func (jm *jobManager) outstandingDelegateIDs() ([]string, error) {
 		if counted[id] {
 			continue
 		}
-		// Only this session's OWN delegate notifications hold the drain open. A
+		// Only this session's OWN managed-job notifications hold the drain open. A
 		// forwarded descendant copy (OwnerSessionID names a child, not this
 		// session) is a drive signal for that child's attention; the child is
 		// covered by the recursive tree walk — and skipped there when stop-gated.
 		// Counting the forwarded copy here would hang the drain on a stop-gated
 		// child that nothing will ever settle (matches the owned-records filter in
 		// armPendingTerminalNotifications).
-		if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
-			continue
-		}
-		if rec.Type == jobstore.JobDelegate && rec.NotifyState == jobstore.NotifyPending {
+		if isOwnedDrainJob(rec, jm.sessionID) && rec.NotifyState == jobstore.NotifyPending {
 			ids = append(ids, id)
 		}
 	}
 	return ids, nil
 }
 
-// hasRunningDelegate reports whether any delegate job is still in the running
-// map — a delegate that has not finalized is LIVE work (a long build, a slow
-// tool), never a stall. The drain stall watchdog treats a running delegate
+// hasRunningDrainJob reports whether any managed job is still in the running
+// map — a managed job that has not finalized is LIVE work (a long build, a slow
+// tool), never a stall. The drain stall watchdog treats a running managed job
 // anywhere in the subtree as a reason to keep waiting.
-func (jm *jobManager) hasRunningDelegate() bool {
+func (jm *jobManager) hasRunningDrainJob() bool {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	for _, run := range jm.running {
-		if run.rec != nil && run.rec.Type == jobstore.JobDelegate {
+		if isOwnedDrainJob(run.rec, jm.sessionID) {
 			return true
 		}
 	}
@@ -116,13 +130,13 @@ func (jm *jobManager) hasRunningDelegate() bool {
 }
 
 // treeHasOutstandingWork reports whether this session or any live descendant in
-// its delegate subtree still owes drain work: an outstanding delegate job, a
+// its managed-job subtree still owes drain work: an outstanding managed job, a
 // pending job notification, a pending caller-targeted watch send, or an
 // in-flight drive turn. These are the same "undelivered attention" signals
 // driveChildrenWithUndeliveredAttention acts on, so the drain settles exactly
 // what the drive machinery can still deliver. Close() cancels the whole subtree,
-// so the one-shot drain must settle all of it — a root whose direct delegate
-// finished after spawning its own fire-and-return delegate is not quiescent
+// so the one-shot drain must settle all of it — a root whose direct managed job
+// finished after spawning its own fire-and-return managed job is not quiescent
 // until that descendant's work drains too.
 //
 // A store read error is propagated (not folded into quiescence): the drain must
@@ -130,7 +144,7 @@ func (jm *jobManager) hasRunningDelegate() bool {
 // surfaces the failure instead.
 func (s *Session) treeHasOutstandingWork() (bool, error) {
 	if s.jobManager != nil {
-		n, err := s.jobManager.outstandingDelegateCount()
+		n, err := s.jobManager.outstandingDrainJobCount()
 		if err != nil {
 			return false, err
 		}
@@ -177,7 +191,7 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 //
 // The four live/deliverable components — any of them anywhere in the subtree
 // means NOT stalled — are:
-//   - a delegate still in some jm.running (hasRunningDelegate): live work such
+//   - a managed job still in some jm.running (hasRunningDrainJob): live work such
 //     as a long build produces no drain progress for minutes yet is not wedged;
 //   - a driving child (sub.driving): a drive turn is in flight;
 //   - a pending caller-targeted watch send (hasPendingWatchSends): deliverable;
@@ -209,7 +223,7 @@ func (s *Session) drainSubtreeIsStalled() (bool, error) {
 // non-stop-gated descendant.
 func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	if s.jobManager != nil {
-		if s.jobManager.hasRunningDelegate() || s.jobManager.hasPendingWatchSends() {
+		if s.jobManager.hasRunningDrainJob() || s.jobManager.hasPendingWatchSends() {
 			return true, nil
 		}
 	}
@@ -240,13 +254,13 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	return false, nil
 }
 
-// subtreeOutstandingDelegateIDs collects the outstanding delegate job ids across
+// subtreeOutstandingDrainJobIDs collects the outstanding managed job ids across
 // this session and every live, non-stop-gated descendant, so a stall warning can
-// name the stuck delegate(s). It walks the same path as treeHasOutstandingWork.
-func (s *Session) subtreeOutstandingDelegateIDs() []string {
+// name the stuck managed job(s). It walks the same path as treeHasOutstandingWork.
+func (s *Session) subtreeOutstandingDrainJobIDs() []string {
 	var ids []string
 	if s.jobManager != nil {
-		if got, err := s.jobManager.outstandingDelegateIDs(); err == nil {
+		if got, err := s.jobManager.outstandingDrainJobIDs(); err == nil {
 			ids = append(ids, got...)
 		}
 	}
@@ -257,23 +271,23 @@ func (s *Session) subtreeOutstandingDelegateIDs() []string {
 		if child == nil || s.childStopGated(child.id) {
 			continue
 		}
-		ids = append(ids, child.subtreeOutstandingDelegateIDs()...)
+		ids = append(ids, child.subtreeOutstandingDrainJobIDs()...)
 	}
 	return ids
 }
 
-// DrainJobTree keeps re-driving the coordinator on delegate completions until no
-// delegate anywhere in the subtree still owes a notification turn, then returns
+// DrainJobTree keeps re-driving the coordinator on managed-job completions until no
+// managed job anywhere in the subtree still owes a notification turn, then returns
 // the last notification turn's result (empty when no drain turn ran). It is the
 // one-shot analogue of the serve loop's notification pump: a coordinator that
-// fires a fire-and-return delegate (max_wait_ms=0) ends its turn while the child
+// fires a fire-and-return managed job (max_wait_ms=0) ends its turn while the child
 // is still running, so without this drain the caller's Close() would SIGKILL the
 // child (and any descendant) before it finishes (PRI-2441).
 //
-// The wait is bounded by ctx: a subtree whose delegated work never completes
-// blocks until the caller's context is cancelled. Individual delegate turns
+// The wait is bounded by ctx: a subtree whose managed work never completes
+// blocks until the caller's context is cancelled. Individual managed-job turns
 // carry their own round/time caps, so a well-formed tree always quiesces on its
-// own. Only delegate jobs hold the drain open; background shell jobs do not.
+// own. Every owned managed job holds the drain open.
 func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 	if s.jobManager == nil {
 		return "", nil
@@ -340,7 +354,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// deliverable component anywhere is a genuine wedge (drainSubtreeIsStalled);
 		// track how long that condition holds continuously on the injected clock and
 		// give up once it exceeds drainStallTimeout so Close() can proceed. Live work
-		// (a running delegate, a driving child, a pending watch send, a queued
+		// (a running managed job, a driving child, a pending watch send, a queued
 		// notification) resets the stall clock, so legitimate long work is never cut.
 		stalled, err := s.drainSubtreeIsStalled()
 		if err != nil {
@@ -354,12 +368,12 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 				stallStart = now
 			} else if now.Sub(stallStart) >= drainStallTimeout {
 				// The drain is wedged on undelivered work the machinery is not
-				// converting. Warn (naming the stuck delegate(s)) and return the last
+				// converting. Warn (naming the stuck managed job(s)) and return the last
 				// result with nil error so cmd/serf/run.go prints the coordinator's
 				// last answer and proceeds to Close(), rather than aborting the run.
-				ids := s.subtreeOutstandingDelegateIDs()
+				ids := s.subtreeOutstandingDrainJobIDs()
 				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
-					"job-tree drain stalled for %s with no live work; giving up so shutdown can proceed (stuck delegates: %s)",
+					"job-tree drain stalled for %s with no live work; giving up so shutdown can proceed (stuck managed jobs: %s)",
 					drainStallTimeout, strings.Join(ids, ", "))})
 				return lastResult, nil
 			}
@@ -378,16 +392,16 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 // the next notification/drive turn can deliver and settle them.
 //
 // It closes a gap between the drain's two signals: quiescence is measured on the
-// durable ledger (outstandingDelegateCount reads NotifyPending records) while
+// durable ledger (outstandingDrainJobCount reads NotifyPending records) while
 // delivery is driven off the in-memory queue (the loop's peekNotifications gate,
 // and driveChildrenWithUndeliveredAttention only drives a child whose queue is
 // non-empty). A pending that survives only in the durable store — a revived
-// delegate whose deferred restore side effects were interrupted before
+// managed job whose deferred restore side effects were interrupted before
 // arm_notifications ran, or a finalize whose in-memory enqueue never landed —
 // would otherwise hold the drain open forever: counted as outstanding, but never
 // materialized for any turn to deliver.
 //
-// It re-enqueues exactly the records outstandingDelegateCount holds the drain
+// It re-enqueues exactly the records outstandingDrainJobCount holds the drain
 // open on (same owned-record filter), so counted == re-materializable and no
 // stranded pending is left behind. Like armPendingTerminalNotifications it does
 // NOT skip an already-injected record: an owned pending whose <job-notification>
@@ -414,10 +428,7 @@ func (s *Session) rematerializeDurablePendings() error {
 		return err
 	}
 	for _, rec := range recs {
-		if rec == nil || rec.Type != jobstore.JobDelegate {
-			continue
-		}
-		if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
+		if !isOwnedDrainJob(rec, jm.sessionID) {
 			continue
 		}
 		if rec.NotifyState != jobstore.NotifyPending || rec.TerminalGen == "" {
@@ -452,7 +463,7 @@ func waitDrainWake(ctx context.Context, wake <-chan struct{}, recheck <-chan tim
 }
 
 // kickDriveTree delivers pending watch sends and kicks drive-down at every level
-// of the live delegate subtree, skipping stop-gated children (which are never
+// of the live managed-job subtree, skipping stop-gated children (which are never
 // driven). drainPendingWatchSends already drives THIS session's direct children
 // (its trailing driveChildrenWithUndeliveredAttention pass), and recursing into
 // each child repeats that at every level — so outstanding work isolated in a

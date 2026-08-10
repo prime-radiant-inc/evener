@@ -27,13 +27,13 @@ func TestW2Dlg_CreateDelegate_NoJobManager(t *testing.T) {
 	}
 }
 
-// outstandingDelegateCount propagates a store read error rather than reporting a
+// outstandingDrainJobCount propagates a store read error rather than reporting a
 // quiescent zero count.
 func TestW2Dlg_OutstandingDelegateCount_StoreError(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	s1cov_corruptJobLog(t, filepath.Join(jm.dir, "jobs.jsonl"))
-	if _, err := jm.outstandingDelegateCount(); err == nil {
+	if _, err := jm.outstandingDrainJobCount(); err == nil {
 		t.Fatal("corrupt store: want error")
 	}
 }

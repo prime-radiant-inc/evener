@@ -552,7 +552,7 @@ func findDelegateLaneRecord(recs map[string]*jobstore.JobRecord, id string) (*jo
 // to retire — and disposal destroys neither the job record, nor the queued
 // notification, nor the output store its excerpt is read from, so the render
 // still lands on the session's next notification turn (the drain keeps waiting
-// on it via outstandingDelegateCount, which is unchanged). What the render DOES
+// on it via outstandingDrainJobCount). What the render DOES
 // lose is its lane block: isolatedDelegateWorktreeReport reads the lane and its
 // sidecar, both of which dispose deletes, so it returns nil and the block is
 // omitted — the intended outcome, since reporting a lane's HEAD and dirty state
@@ -586,7 +586,7 @@ func (jm *jobManager) delegateRecordQuiescent(id string) (bool, error) {
 		}
 		// Only this session's OWN delegate records hold quiescence open; a
 		// forwarded descendant copy is the child's own ledger, covered by the
-		// subtree walk (matching outstandingDelegateCount's owner filter).
+		// subtree walk (matching outstandingDrainJobCount's owner filter).
 		if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
 			continue
 		}

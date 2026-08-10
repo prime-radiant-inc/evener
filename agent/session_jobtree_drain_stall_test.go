@@ -168,31 +168,36 @@ func (d *stallDriver) assertParked(t *testing.T, msg string) {
 	}
 }
 
-// TestDrainStallWatchdogSpareRunningDelegate verifies a delegate still in the
-// running map (live work — a long build) is NEVER cut, even well past the
-// timeout: the drain keeps waiting.
-func TestDrainStallWatchdogSpareRunningDelegate(t *testing.T) {
-	clk := agenttest.NewFakeClock()
-	sess := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true}))
+// TestDrainStallWatchdogSparesRunningDrainJob verifies an owned running managed
+// job remains live work even well past the timeout, so the drain keeps waiting.
+func TestDrainStallWatchdogSparesRunningDrainJob(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		typ  jobstore.JobType
+	}{
+		{name: "delegate", typ: jobstore.JobDelegate},
+		{name: "shell", typ: jobstore.JobShell},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			clk := agenttest.NewFakeClock()
+			sess := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true}))
+			jm := sess.jobManager
+			rec := &jobstore.JobRecord{JobID: "live-" + tt.name, Type: tt.typ, Status: jobstore.StatusRunning, OwnerSessionID: sess.ID()}
+			jm.mu.Lock()
+			jm.running[rec.JobID] = &runningJob{rec: rec}
+			jm.mu.Unlock()
+			defer func() {
+				jm.mu.Lock()
+				delete(jm.running, rec.JobID)
+				jm.mu.Unlock()
+			}()
 
-	jm := sess.jobManager
-	jm.mu.Lock()
-	jm.running["del-live"] = &runningJob{rec: &jobstore.JobRecord{
-		JobID:  "del-live",
-		Type:   jobstore.JobDelegate,
-		Status: jobstore.StatusRunning,
-	}}
-	jm.mu.Unlock()
-	defer func() {
-		jm.mu.Lock()
-		delete(jm.running, "del-live")
-		jm.mu.Unlock()
-	}()
-
-	if stalled, err := sess.drainSubtreeIsStalled(); err != nil || stalled {
-		t.Fatalf("a running delegate must not be a stall, got stalled=%v err=%v", stalled, err)
+			if stalled, err := sess.drainSubtreeIsStalled(); err != nil || stalled {
+				t.Fatalf("an owned running managed job must not be a stall, got stalled=%v err=%v", stalled, err)
+			}
+			assertDrainNotCut(t, sess, clk)
+		})
 	}
-	assertDrainNotCut(t, sess, clk)
 }
 
 // TestDrainStallWatchdogSpareDrivingChild verifies a driving child keeps the
