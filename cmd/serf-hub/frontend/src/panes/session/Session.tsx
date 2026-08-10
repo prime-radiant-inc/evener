@@ -9,7 +9,7 @@
 //
 // Column layout: PaneScaffold's `body` slot (the transcript, scrollable) is
 // the ONLY part of this pane that grows/shrinks with content - composer and
-// status row sit in the `footer` slot instead, which PaneScaffold keeps
+// inline session controls sit in the `footer` slot instead, which PaneScaffold keeps
 // after the body; when AskDock is active, that footer can shrink to the
 // pane's actual allocation. LivenessLine lives
 // here too now (kata x47h): FlowOverlay's `top` slot is a non-reserved
@@ -19,14 +19,12 @@
 // PendingChips travels with the composer (it's contextually
 // "chips beside the composer", per its own doc comment) and shares its
 // 76rem measure so the input aligns with the transcript's own content
-// column; SessionChrome (the status row) stays full-width beneath, reading
-// like a status bar.
+// column; SessionChrome now lives in the composer's own PromptCard control row.
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { Cadence, EmptyState, PaneScaffold, RadioGroup, VirtualList, type VirtualListHandle } from "../../widgets";
-import { SessionChrome } from "./chrome/SessionChrome";
 import { modelLabel } from "./chrome/statusFormat";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { Composer } from "./composer/Composer";
@@ -423,7 +421,6 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
             <PendingChips sessionRef={ref} />
             <Composer ref={ref} />
           </div>
-          <SessionChrome ref={ref} />
         </div>
       }
     >

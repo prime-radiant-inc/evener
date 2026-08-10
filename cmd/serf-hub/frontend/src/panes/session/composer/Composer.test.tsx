@@ -436,10 +436,28 @@ test("focusing the message field lights the shared prompt card's own focus affor
 
 // The composer and the spawn form are the SAME object: both render
 // widgets/promptcard, not two components that merely resemble each other. The
-// class on the rendered card is the proof that reaches across both files.
-test("the composer's card IS the shared PromptCard widget, not a lookalike", async () => {
-  await mountComposer("ref_a");
-  expect(screen.getByTestId("composer-input-card").className.split(" ")).toContain(promptCardStyles.card);
+// class on the rendered card is the proof that reaches across both files. The
+// session chrome shares PromptCard's leading run with the attachment control,
+// after the paperclip, so there is exactly one status row in this surface.
+test("the composer's shared PromptCard leads with the attachment and inline session controls", async () => {
+  await mountComposer("ref_a", {
+    serf: {
+      ref: "ref_a",
+      capabilities: FULL_CAPABILITIES,
+      queue: { revision: 0 },
+      contextUsed: 64_000,
+      contextWindow: 128_000,
+      contextPressure: 0.5,
+    },
+  });
+  const card = screen.getByTestId("composer-input-card");
+  const attach = within(card).getByTestId("composer-attach");
+  const inline = within(card).getByTestId("session-chrome-inline");
+
+  expect(card.className.split(" ")).toContain(promptCardStyles.card);
+  expect(attach.compareDocumentPosition(inline) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(within(card).getByTestId("status-row-context")).toBeTruthy();
+  expect(screen.queryAllByTestId("status-row")).toHaveLength(1);
 });
 
 // The chords moved out of the buttons into their tooltips, so each control's
@@ -543,7 +561,7 @@ test("the cluster order is Stop, Send, Steer left to right", async () => {
   const card = screen.getByTestId("composer-input-card");
   const order = [...card.querySelectorAll("button")]
     .map((b) => b.getAttribute("data-testid"))
-    .filter((id) => id !== null && id !== "composer-attach");
+    .filter((id) => id?.startsWith("composer-") && id !== "composer-attach");
   expect(order).toEqual(["composer-stop", "composer-submit", "composer-steer"]);
 });
 
@@ -1456,6 +1474,7 @@ test.each(ENDED_STATUSES)("a %s session's card rests as a bare invitation with n
   expect(textarea().getAttribute("placeholder")).toBe("Send a follow-up…");
   expect(card.querySelectorAll("button")).toHaveLength(0);
   expect(screen.queryByTestId("composer-attach")).toBeNull();
+  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
   expect(screen.queryByTestId("composer-submit")).toBeNull();
 });
 

@@ -42,10 +42,12 @@ class MemoryStorage {
   }
 }
 
-// The two wave-5 T1 slots are swapped for a visible stub here ONLY to prove
-// Session.tsx actually mounts them with the right ref prop - their own
-// placeholder behavior (renders nothing) is covered by
-// composer/Composer.test.tsx and chrome/SessionChrome.test.tsx directly.
+// The session footer's composer boundary is swapped for a visible stub here
+// ONLY to prove Session.tsx mounts it with the right ref and no longer adds a
+// standalone SessionChrome sibling. Composer.test.tsx proves the real composer
+// owns the inline SessionChrome; its marker is mirrored inside this boundary so
+// this suite can pin the Session-level placement without duplicating Composer's
+// own behavior tests.
 //
 // A pair of hoisted vi.mock(...) calls used to sit here, swapping each whole
 // module in the shared module registry - under isolate:false that registry
@@ -65,10 +67,13 @@ class MemoryStorage {
 // (see shell/palette/commands.test.ts's own comment on the same hazard).
 function stubSessionSlots(): void {
   vi.spyOn(ComposerModule, "Composer").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="composer-slot">{ref}</div>
+    <div data-testid="composer-slot">
+      {ref}
+      <div data-testid="session-chrome-inline" />
+    </div>
   ));
   vi.spyOn(SessionChromeModule, "SessionChrome").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="session-chrome-slot">{ref}</div>
+    <div data-testid="session-chrome">{ref}</div>
   ));
 }
 stubSessionSlots();
@@ -1541,9 +1546,9 @@ test("older turns load with no click at all once the paging sentinel is in view"
   expect(await screen.findByText("older history")).toBeTruthy();
 });
 
-// --- Composer / SessionChrome slots (wave 5 T1) --------------------------
+// --- Composer / SessionChrome placement ----------------------------------
 
-test("mounts Composer below the transcript and SessionChrome at the PaneScaffold footer, both with the pane's ref", async () => {
+test("mounts Composer with inline session controls and no standalone footer chrome", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
 
@@ -1553,12 +1558,11 @@ test("mounts Composer below the transcript and SessionChrome at the PaneScaffold
     </ClientProvider>,
   );
 
-  await waitFor(() => expect(screen.getByTestId("composer-slot").textContent).toBe("ref_a"));
-  expect(screen.getByTestId("session-chrome-slot").textContent).toBe("ref_a");
-  // SessionChrome is mounted at PaneScaffold's real footer surface, not
-  // just anywhere in the tree - its slot must be a descendant of the
-  // footer's own testid.
-  expect(within(screen.getByTestId("pane-footer")).getByTestId("session-chrome-slot")).toBeTruthy();
+  const composer = await screen.findByTestId("composer-slot");
+  const footer = screen.getByTestId("pane-footer");
+  expect(composer.textContent).toBe("ref_a");
+  expect(within(composer).getByTestId("session-chrome-inline")).toBeTruthy();
+  expect(within(footer).queryByTestId("session-chrome")).toBeNull();
 });
 
 test("mounts Composer even when the transcript is empty (no turns yet) - the composer is always available to send the first message", async () => {
