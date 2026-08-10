@@ -126,11 +126,10 @@ This relation replaces `parent_job_id` in tool results, list rows, events, AppWi
 
 The child session's `transcript_ref` is the archival handle for the delegate conversation. The transcript contains every activation's messages, tool calls, terminal results, and validation metadata.
 
-Each private activation outcome persists an exact locator only after the accepted terminal tool result is durable:
+Each private activation outcome persists a tagged exact locator only after its terminal record is durable:
 
-- transcript/session ID;
-- stable turn or entry sequence;
-- tool-call ID.
+- accepted communicate: transcript/session ID, stable entry sequence, and tool-call ID;
+- synthetic terminal error: transcript/session ID, stable entry sequence, and private synthetic-entry ID.
 
 Notification replay resolves the result from this locator. It must never search for “the last communicate.” The locator is private metadata and is not a control handle.
 
@@ -178,7 +177,7 @@ When the child successfully commits `communicate(end_turn=true)`, the result sto
 }
 ```
 
-Serf does not normalize custom output into the default envelope. Validation metadata is a sibling and does not alter the raw call.
+Serf does not normalize custom output into the default envelope. A syntactically accepted, bounded terminal call ends the activation even when its custom output fails `result_schema` validation. Serf preserves the exact raw call and reports `structured_result_validation: {"valid": false, "reason": "..."}`; it does not drop the invalid value. Raw arguments preserve JSON field presence, so an explicit `null` remains distinct from an omitted required `output`, which fails tool validation and does not end the activation. Validation metadata is a sibling and does not alter the raw call.
 
 ### Abnormal terminal result
 
@@ -208,10 +207,10 @@ The message is sanitized diagnostic prose. This envelope is explicitly Serf-gene
 A real terminal communicate notification is complete: no delegate-specific excerpting, truncation, or summarization is allowed. To make that implementable:
 
 1. The maximum serialized raw `communicate` arguments are 16 KiB. The lifecycle wrapper has a separate fixed allowance.
-2. Every parent profile allowed to create a delegate must reserve that packet allowance plus protocol overhead.
-3. Delegate creation persists the bound with the restore descriptor.
+2. Delegate creation measures the parent's fixed system/tool content, conservative provider tokenization, output allowance, wrapper overhead, and minimum supported context window. It fails synchronously if one full packet cannot be reserved after compaction.
+3. Delegate creation persists the admitted bound and parent capacity requirement with the restore descriptor. Model switch, fallback, or profile replacement is rejected while any resumable delegate or unsettled delegate delivery can still produce a packet if the new profile cannot preserve that requirement.
 4. `communicate(end_turn=true)` serializes and validates the whole raw call before acceptance. An oversized call returns a typed `terminal_packet_too_large` tool error and does not end the activation; the child must retry with a smaller call or store large evidence as artifacts and reference it from the bounded call.
-5. The parent continuation builder reserves the required capacity. It compacts parent history before injection when necessary and does not consume the delivery intent until the exact packet can be committed.
+5. The parent continuation builder reserves the required capacity and compacts parent history before injection. It injects at most one full delegate terminal packet per continuation; additional intents remain armed for later turns. It never drains or concatenates more packets than the measured request can fit.
 
 The same 16 KiB bound applies to default and custom-schema output. Serf-generated terminal errors use bounded sanitized diagnostics and fit the same reserved delivery capacity. This preserves the user's full-call guarantee without allowing a valid but permanently undeliverable packet. Exact larger evidence remains available through transcript or artifact references chosen by the child; Serf does not silently substitute those references.
 
@@ -328,7 +327,7 @@ Input:
 }
 ```
 
-Both target types preserve the existing expressive stop result:
+Shell targets preserve the existing expressive stop result:
 
 - `id`, `type`, and current `status`;
 - `previous_status`;
@@ -341,14 +340,17 @@ Shell semantics remain unchanged. `include_children` is a shell opt-in.
 
 Stopping a delegate is conversation/subtree control and always:
 
+- durably closes a new subtree stop epoch before traversing descendants;
 - requests cancellation of its active activation, if any;
 - recursively requests cancellation of active descendant shell and delegate work;
 - discards queued, undelivered steering from before the stop;
 - durably closes the pre-stop attention wake gate so queued descendant attention cannot resurrect the coordinator.
 
-This cascade occurs even if the target delegate is already idle. A later explicit `delegate_send` to a resumable delegate reopens the wake gate for the new activation. For delegate targets, `include_children: false` does not disable the mandatory cascade; the result states that delegate cascade semantics applied.
+Every descendant shell start, delegate create, idle resume, and steering delivery that could start work checks the inherited stop epoch before admission. Stop cancels and drains earlier-epoch work to a fixed point, so a concurrent spawn cannot escape after its branch was visited. This cascade occurs even if the target delegate is already idle. A later explicit `delegate_send` to a resumable delegate opens a new epoch and wake gate for that new activation; it does not revive discarded old-epoch attention. For delegate targets, `include_children: false` does not disable the mandatory cascade.
 
-A positive `max_wait_ms` performs one bounded wait. If settlement remains pending, the terminal delivery intent stays armed. Stopping does not delete transcript, history, worktrees, branches, or files.
+Delegate stop outcomes describe the whole subtree: `already_terminal` means the delegate was idle and no active descendant or queued earlier-epoch work required action; `cancelled_by_request` means requested subtree work settled as cancelled; `completed_during_stop` means all affected work settled independently during the race; and `stop_requested` means settlement remains pending. The result includes a bounded `cascade` summary with requested, settled, pending, and failed counts. Failure to persist any stop request returns a partial-failure error with that summary and leaves the closed epoch in force.
+
+A positive `max_wait_ms` performs one bounded wait over subtree settlement. If settlement remains pending, terminal delivery intents stay armed. Stopping does not delete transcript, history, worktrees, branches, or files.
 
 ### `job_watch`
 
@@ -373,6 +375,8 @@ Target behavior:
 Delegate-target watches accept only `events`, `event_filter`, and `every`. They reject raw output and progress predicates. They remain active while the delegate is idle and across runtime unload/restore and process restart.
 
 All continuation state required by the predicate, including the matching-occurrence counter for `every`, is durable under the watch generation. Match-state advancement and delivery intent creation are atomic. A delivery is settled only by the existing receiver-commit acknowledgement path; restart neither resets the count nor duplicates a settled frame.
+
+The directly controlling owner's durable store is the inventory and routing authority for receiver-visible delegate watches. It stores the watch ID, delegate target, child descriptor/session ref, predicate state, and delivery state. `job_list` and `job_watch` list/inspect/clear use this index while the child is unloaded; they do not restore the child model runtime merely to manage a watch.
 
 ### `job_list`
 
@@ -424,15 +428,14 @@ A running delegate has one steering queue and one activation. An idle resume obt
 
 Finalization follows this order:
 
-1. determine whether the activation has an accepted communicate or requires a synthetic terminal error;
-2. commit the exact raw communicate tool result or canonical terminal-error entry to the child transcript;
-3. persist the exact transcript locator, validation metadata, activation outcome, and delivery intent under the private key;
-4. project `last_outcome`, lifecycle `idle`, and resumability;
-5. durably request runtime unload;
-6. if the descendant subtree is quiescent, unload now; otherwise retain only the existing coordinator runtime required for descendant routing and mark unload deferred;
-7. queue inline, callback, or background delivery independently.
+1. use the terminal record already durably committed by an accepted communicate, or durably append a canonical synthetic terminal-error record;
+2. persist the tagged exact locator, validation metadata, activation outcome, and delivery intent under the private key;
+3. project `last_outcome`, lifecycle `idle`, and resumability;
+4. durably request runtime unload;
+5. if the descendant subtree is quiescent, unload now; otherwise retain only the existing coordinator runtime required for descendant routing and mark unload deferred;
+6. queue inline, callback, or background delivery independently.
 
-Serf must not publish a terminal result or release runtime state before the transcript locator and delivery intent are durable.
+The `communicate` handler itself is the linearization point for real results: it validates and bounds the raw arguments, appends a dedicated terminal record with canonical arguments, validation, tool-call ID, and stable entry sequence through the transcript's durable/fsync path, and only then returns accepted or triggers callback state. Finalization only folds that committed record. Serf must not publish a terminal result or release runtime state before the locator and delivery intent are durable.
 
 ### Descendant-aware runtime unload
 
@@ -445,11 +448,11 @@ This design does not detach descendants into a new supervisor. If active descend
 
 The deferred ancestor may continue to block occupancy only to the extent the existing subtree requires it. When the last active descendant settles and queued descendant attention is durably routed, Serf automatically completes the pending unload. No caller flag or close tool is required.
 
-A quiescent unload removes the child from live execution and occupancy scans while preserving transcript, identity, descriptor, policy, watches, outcome, delivery state, and filesystem contents.
+A quiescent unload uses a dedicated `unloadDelegateRuntime` transition, not `Session.Close`. It durably flushes and closes transcript/store/provider/runtime handles, releases environment locks and occupancy, and detaches the child from the live parent manager. It deliberately skips recursive child cancellation, isolation-lane disposal, `SessionEnd` filesystem cleanup, and deletion of descriptors, watches, outcomes, or delivery state. A normal root/session close retains its existing stronger teardown semantics.
 
 ### Restart
 
-On process restart:
+On root process restart, before lazy model restoration, Serf runs one durable post-order reconciliation pass over delegate descriptors and child session IDs. It opens child stores and transcripts without constructing model runtimes, settles every private activation recorded as running without a live runtime, folds descendant outcomes upward, and then reapplies deferred-unload state. Specifically:
 
 - a private activation recorded as running without a live runtime receives a canonical `terminal_error` with outcome `stopped` and reason `runtime_lost`;
 - the exact synthetic-entry locator, outcome, and pending delivery are persisted;
@@ -459,19 +462,19 @@ On process restart:
 - pending deliveries and durable watch counters remain intact;
 - later `delegate_send` restores only if resumable.
 
-No public recovery flow uses a private activation key.
+This one-shot reconciliation prevents a crashed grandchild from remaining permanently `running` merely because its parent runtime is unloaded. It is not a detached live supervisor. No public recovery flow uses a private activation key.
 
 ## Results, Delivery, and Notifications
 
 ### Durable delivery intent and acknowledgement
 
-Every notification-armed activation has one durable delivery intent keyed privately and pointing to the exact terminal transcript entry. Delivery is at-least-once until receiver commit and exactly-once after commit through durable deduplication.
+Every notification-armed activation has one durable delivery intent with a private `delivery_id` and exact terminal locator. Every receiver transcript entry created for an inline result, callback, or background notification stores that hidden ID as entry metadata; it is never rendered as a public handle. Delivery is at-least-once until receiver commit and exactly-once after commit through durable deduplication.
 
-- Background notification settles only after the parent transcript durably contains the injected notification.
-- Inline completion settles only after the parent transcript durably contains the initiating tool result.
-- Observer callback settles only after the parent transcript durably contains the callback/steering result.
-- Queue persistence failure is delivery failure, not success.
-- On restart, any unsettled intent is replayed; the receiver checks its committed delivery ID before appending.
+- Background notification settles only after `AppendDurable` commits the parent notification entry.
+- Inline completion settles only after `AppendDurable` commits the parent initiating-tool result with the hidden delivery ID.
+- Observer callback settles only after `AppendDurable` commits the parent callback entry with the hidden delivery ID.
+- Steering-queue or daemon-queue persistence is not acknowledgement.
+- On restart, any unsettled intent is replayed; the receiver indexes committed hidden delivery IDs before appending. Rendered target text is never used for deduplication.
 
 This avoids losing a result in the crash window between child finalization and parent transcript persistence.
 
@@ -519,6 +522,8 @@ The durable delegate projection owns:
 
 Private activation records may remain in the existing job store. Public folds project them into their owning delegate and never list them as jobs.
 
+The directly controlling owner store also indexes unloaded child delegate summaries, receiver-visible watches, typed lineage, and routing descriptors needed by list/status/watch/stop without a live child model runtime. Child stores remain canonical for child transcript and activation data; the owner index contains only bounded projection and routing metadata.
+
 Full result content has one authoritative durable copy in the child transcript. The delivery intent stores a locator, not a second full copy. Bounded display metadata is allowed.
 
 Shell records retain their behavior but adopt public `id` and typed parent projections.
@@ -529,7 +534,8 @@ Knowledge of an ID does not grant control. This work adds no new grant type.
 
 | Operation | Shell target | Delegate target |
 |---|---|---|
-| list/status | Direct owner, plus visible descendants only through existing `include_nested`/`include_descendants` scope | Direct owner, plus visible descendants only through existing `include_nested`/`include_descendants` scope |
+| list | Direct owner; visible descendants only when the list request enables existing `include_nested`/`include_descendants` scope | Direct owner; visible descendants only when the list request enables existing `include_nested`/`include_descendants` scope |
+| status | Direct owner, or an ancestor resolving a known visible concrete descendant through the existing forwarding policy; no list flag is required | Direct owner, or an ancestor resolving a known visible concrete descendant through the existing forwarding policy; no list flag is required |
 | transcript read | Existing transcript resolution policy | Existing visible child-session transcript policy; visibility is not created by the ref |
 | watch | Direct owner, or an ancestor forwarding to a visible concrete descendant through the existing forwarded-watch path; no sibling/unrelated access | Direct owner, or an ancestor forwarding to a visible concrete descendant through the existing forwarded-watch path; no sibling/unrelated access |
 | send | Not applicable | Direct owner only |
@@ -568,7 +574,20 @@ Old fields fail schema validation. `job_status` and `job_stop` require `target`;
 
 ## Public Surfaces
 
-The identity, typed lineage, lifecycle, resumability, operational metadata, and terminal-result union apply consistently to:
+Public projections follow this matrix:
+
+| Surface | Identity and lineage | Result content |
+|---|---|---|
+| `delegate` / `delegate_send` inline result | `delegate_id`, typed `parent` where applicable | Full canonical terminal union when observed inline, plus operational metadata |
+| terminal notification / observer callback | `target: dlg_...`, typed `parent` in metadata | Full canonical terminal union, plus operational metadata |
+| child transcript read | session `transcript_ref` | Authoritative full terminal records and activation history |
+| `job_list` / `job_status` | neutral `id`, `type`, typed `parent` | Lifecycle, outcome, resumability, timings, validation summary, and bounded operational metadata only |
+| AppWire / TUI / web / doctor | neutral `id`, `type`, typed `parent` | The same metadata-only stable delegate projection; no delegate `Turns` activation rows and no child session ID as a second public identity |
+| public lifecycle events / audit | neutral `target`, `type`, typed `parent` | Lifecycle, outcome, reason, validation summary, and bounded operational metadata only |
+
+Only inline delegate results, terminal delivery, and transcript reads carry the full terminal-result union. Metadata surfaces may carry its private-locator presence/status but never the private locator value or a second full-result copy. AppWire removes delegate activation rows and bumps its protocol version; older clients fail the existing handshake instead of decoding the breaking schema.
+
+The identity, typed lineage, lifecycle, resumability, and operational metadata rules apply consistently to:
 
 - tool definitions and renderers;
 - prompts and agent instructions;
@@ -585,11 +604,13 @@ UI rows key delegates by delegate ID. Activation history appears through the chi
 
 ## Clean Cutover
 
-The new contract uses a new durable-state epoch. Startup must refuse to load a nonempty incompatible job/delegate store. Deployment must stop the old process, archive or remove the old state root, and start the new runtime with fresh state.
+The new contract uses one versioned marker at the state-root/project boundary. Before any session create/restore/discovery, transcript read, mutation-store access, job-store access, hub retained-state read, or doctor read, Serf acquires a root-wide lock and validates the marker. It atomically creates the new marker only when the permitted root contains no durable Serf artifacts. An absent or different marker with any transcript, metadata, mutation, job, delegate, or session artifact is incompatible and rejected before read or mutation, including transcript-only roots and mixed per-session roots.
+
+Deployment must stop the old process, archive or remove the old state root, and start the new runtime with fresh state. AppWire increments `ProtocolVersion`; old client/server pairs fail initialization through the existing mismatch contract.
 
 This is intentional YAGNI: Serf will not add legacy folds, control aliases, read aliases, parent-link translation, transcript rewriting, dual writes, or migration branches.
 
-Old state and transcripts may remain operator-managed archival bytes, but the new runtime does not load or promise API access to them. Tests must prove both fresh-epoch startup and explicit refusal of mixed or old durable state. Historical transcript text is never re-rendered as live new-epoch control data.
+Old state and transcripts may remain operator-managed archival bytes, but the new runtime does not load or promise API access to them. Tests must prove fresh creation plus refusal of unmarked, wrong-epoch, transcript-only, metadata-only, empty-log-with-other-artifacts, mixed-session, hub fallback, doctor, and old-AppWire-client cases. Historical transcript text is never re-rendered as live new-epoch control data.
 
 ## Verification
 
@@ -607,51 +628,56 @@ Before completion, the implementation must pass normal deterministic gates and p
 ### Terminal results and delivery
 
 7. Default-envelope and custom-schema communicate calls persist and deliver exact raw `output:any` values with separate validation metadata.
-8. Failure, exhaustion, cancellation, panic recovery, and runtime loss append canonical terminal-error entries.
-9. Each activation persists an exact terminal turn/entry and tool-call locator; replay never selects a later activation's result.
-10. Accepted communicate packets are complete and never excerpted.
-11. Oversized packets are rejected before terminal acceptance and can be retried.
-12. Parent continuation construction reserves packet capacity and compacts before injection.
-13. Inline, callback, and background delivery intents survive crashes until the parent transcript commit acknowledges them.
-14. Receiver deduplication prevents duplicate committed delivery.
-15. Metadata-only status does not consume pending delivery.
-16. Observer callback delivery produces no duplicate owner notification.
+8. Schema-invalid but syntactically accepted bounded calls preserve raw scalar, array, object, and explicit-null output with `valid: false`; missing required output does not end the activation.
+9. Failure, exhaustion, cancellation, panic recovery, and runtime loss append canonical terminal-error entries.
+10. Real results persist entry/tool-call locators and synthetic results persist entry/synthetic-entry locators; replay never selects a later activation's result.
+11. The communicate handler durably commits the canonical terminal record before returning accepted.
+12. Accepted communicate packets are complete and never excerpted.
+13. Oversized packets are rejected before terminal acceptance and can be retried.
+14. Creation and model switching enforce measured packet capacity; each continuation injects at most the measured fit and leaves remaining intents armed.
+15. Inline, callback, and background delivery intents survive crashes until `AppendDurable` commits a parent entry carrying the hidden delivery ID.
+16. Hidden-ID receiver deduplication prevents duplicate committed delivery and does not inspect rendered target text.
+17. Metadata-only status does not consume pending delivery.
+18. Observer callback delivery produces no duplicate owner notification.
 
 ### Lifecycle, stop, and resume
 
-17. Create, steering, resume, completion, abnormal outcomes, and restart preserve one delegate ID.
-18. Concurrent resume attempts create one activation.
-19. Delegate stop always cascades through active descendants, including when the delegate is idle.
-20. Stop durably gates pre-stop attention; explicit later send reopens the gate.
-21. Stop results distinguish cancellation, prior completion, completion race, and pending stop.
-22. Permanent disposal/pruning/exhaustion produces `resumable: false`; transient restore failure does not.
-23. Send to a non-resumable delegate returns the durable typed error.
+19. Create, steering, resume, completion, abnormal outcomes, and restart preserve one delegate ID.
+20. Concurrent resume attempts create one activation.
+21. Delegate stop closes a durable subtree epoch before traversal and always cascades through active descendants, including when the delegate is idle.
+22. Spawn, shell start, resume, and delivery races cannot admit old-epoch work after stop; explicit later send opens a new epoch.
+23. Stop results classify whole-subtree cancellation/races and report requested, settled, pending, and failed cascade counts.
+24. Permanent disposal/pruning/exhaustion produces `resumable: false`; transient restore failure does not.
+25. Send to a non-resumable delegate returns the durable typed error.
 
 ### Listing, visibility, and watches
 
-24. A delegate appears once after multiple activations and is reordered on activity.
-25. List responses retain count/total/offset plus watch, delegation, and occupancy orientation.
-26. Nested/descendant views preserve typed lineage, depth, and per-operation authorization.
-27. Visibility never grants delegate send authority.
-28. `job_watch list`, inspect, and clear discover and manage unloaded delegate watches.
-29. Delegate watches survive two unload/restore cycles and process restart.
-30. An `every` threshold crossed across activation/restart fires exactly once.
-31. Delegate targets reject output/progress predicates; shell predicates retain behavior.
+26. A delegate appears once after multiple activations and is reordered on activity.
+27. List responses retain count/total/offset plus watch, delegation, and occupancy orientation.
+28. Nested/descendant views preserve typed lineage, depth, and per-operation authorization; status of a visible concrete descendant does not depend on list-only flags.
+29. Visibility never grants delegate send authority.
+30. The owner-store index lets `job_watch` list, inspect, and clear manage unloaded delegate watches without model restoration.
+31. Delegate watches survive two unload/restore cycles and process restart.
+32. An `every` threshold crossed across activation/restart fires exactly once.
+33. Delegate targets reject output/progress predicates; shell predicates retain behavior.
+34. AppWire, events, doctor, TUI, and web use metadata-only stable delegate projections without activation rows or child-session identity aliases.
 
 ### Runtime and worktrees
 
-32. A quiescent terminal delegate unloads and releases occupancy automatically.
-33. An ancestor with active descendants defers unload while preserving descendant routing, callback drive-down, listing, stop, watches, and blockers.
-34. Deferred unload completes automatically after the subtree and queued attention become quiescent.
-35. Runtime unload never deletes lanes/files or bypasses dirty/unmerged gates.
-36. Disposal is monotonic and makes the delegate non-resumable.
+35. A quiescent terminal delegate unloads and releases occupancy automatically through the dedicated non-disposing unload path, never `Session.Close`.
+36. An ancestor with active descendants defers unload while preserving descendant routing, callback drive-down, listing, stop, watches, and blockers.
+37. Deferred unload completes automatically after the subtree and queued attention become quiescent.
+38. Root restart performs post-order store/transcript reconciliation and settles lost grandchildren without constructing model runtimes.
+39. Runtime unload never deletes lanes/files, runs close-time filesystem cleanup, or bypasses dirty/unmerged gates.
+40. Disposal is monotonic and makes the delegate non-resumable.
 
 ### Cutover and robustness
 
-37. New runtime starts with fresh-epoch state.
-38. Startup refuses mixed or old nonempty durable state instead of translating it.
-39. Race tests cover send/stop/finalize, delivery/parent commit, descendant settlement/unload, watch counter/delivery, and concurrent resume.
-40. Fuzz/program tests cover malformed targets, dispatch, old-field rejection, typed lineage, terminal unions, packet bounds, and projection invariants.
+41. The root-wide locked epoch marker is validated before every state entry point and created only for a truly fresh permitted root.
+42. Runtime, hub, doctor, and transcript paths refuse unmarked, wrong-epoch, transcript-only, metadata-only, and mixed roots instead of translating them.
+43. AppWire protocol mismatch rejects old clients and servers.
+44. Race tests cover communicate commit/finalize, receiver commit/replay, spawn/stop epochs, descendant settlement/unload, watch counter/delivery, and concurrent resume.
+45. Fuzz/program tests cover malformed targets, dispatch, old-field rejection, typed lineage, terminal unions, packet bounds, epoch admission, and projection invariants.
 
 ## Acceptance Criteria
 
