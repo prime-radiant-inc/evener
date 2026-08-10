@@ -190,9 +190,14 @@ func (c *systemCommandRuntime) Wait() error {
 		}
 		return commandWaitError(processErr, outputErr, pipeErr)
 	}
-	if !pipeClosed {
-		c.Kill()
+	if pipeClosed {
+		if !outputDone {
+			outputErr = <-c.outputDone
+		}
+		_ = c.outputReader.Close()
+		return commandWaitError(processErr, outputErr, nil)
 	}
+	c.Kill()
 	_ = c.outputReader.Close()
 	if !outputDone {
 		outputErr = <-c.outputDone
