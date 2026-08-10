@@ -240,7 +240,7 @@ TARGETS=(
 	"native:agent:.:FuzzJobManagerErrorRecoveryProgram::jobs.go"
 	"native:agent:.:FuzzStoolCommunicationDispatch::session_tools_communicate.go"
 	"native:agent:.:FuzzStwebRegistrationEgress::session_tools_web.go"
-	"native:agent:.:FuzzNdbNestedDrainBranches::jobs_nested.go#keepIncomingDescendantRow;jobs_nested.go#liveSubagentSessions;jobs_nested.go#liveDirectSubagents;jobs_nested.go#liveSubagentSession;session_jobtree_drain.go#outstandingDelegateCount;session_jobtree_drain.go#DrainJobTree"
+	"native:agent:.:FuzzNdbNestedDrainBranches::jobs_nested.go#keepIncomingDescendantRow;jobs_nested.go#liveSubagentSessions;jobs_nested.go#liveDirectSubagents;jobs_nested.go#liveSubagentSession;session_jobtree_drain.go#outstandingDrainJobCount;session_jobtree_drain.go#DrainJobTree"
 	"native:agent:.:FuzzDelegateFinalizeReportProgram::job_delegate.go"
 	"native:agent:.:FuzzWatchPendingFrameProgram::job_watch.go"
 	"native:agent:.:FuzzResponsesContinuationEligibility::responses_continuation_eligibility.go"

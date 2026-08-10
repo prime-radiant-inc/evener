@@ -30,21 +30,19 @@ func seedDurableOnlyPending(t *testing.T, jm *jobManager, jobID string) {
 	}
 }
 
-// collectWarnings drains the buffered event channel and returns every warning
-// message currently queued. The stall warning is emitted synchronously before
-// the drain returns, so once the drain has returned it is already in the buffer.
-func collectWarnings(sess *Session) []string {
-	var msgs []string
+// collectStallWarnings drains the buffered event channel and returns warning
+// events. The stall warning is emitted synchronously before the drain returns,
+// so once the drain has returned it is already in the buffer.
+func collectStallWarnings(sess *Session) []events.SessionEvent {
+	var collected []events.SessionEvent
 	for {
 		select {
 		case ev := <-sess.Events():
 			if ev.Kind == events.EventWarning {
-				if w, ok := ev.Data.(events.WarningData); ok {
-					msgs = append(msgs, w.Message)
-				}
+				collected = append(collected, ev)
 			}
 		default:
-			return msgs
+			return collected
 		}
 	}
 }
@@ -142,17 +140,19 @@ func TestDrainStallWatchdogFiresOnGenuineStall(t *testing.T) {
 		t.Fatalf("expected empty last result (no drain turn ran), got %q", d.res)
 	}
 
-	var found string
-	for _, m := range collectWarnings(sess) {
-		if strings.Contains(m, "drain stalled") {
-			found = m
-		}
+	gotEvents := collectStallWarnings(sess)
+	if len(gotEvents) != 1 {
+		t.Fatalf("stall watchdog events = %d, want 1", len(gotEvents))
 	}
-	if found == "" {
-		t.Fatal("expected a stall warning naming the stuck delegate")
+	if gotEvents[0].Kind != events.EventWarning {
+		t.Fatalf("stall watchdog event kind = %q, want warning", gotEvents[0].Kind)
 	}
-	if !strings.Contains(found, "del-wedge") {
-		t.Fatalf("stall warning must name the stuck delegate del-wedge, got %q", found)
+	warning, ok := gotEvents[0].Data.(events.WarningData)
+	if !ok {
+		t.Fatalf("stall watchdog warning data = %T, want WarningData", gotEvents[0].Data)
+	}
+	if !strings.Contains(warning.Message, "del-wedge") {
+		t.Fatalf("stall warning must name the stuck job del-wedge, got %q", warning.Message)
 	}
 }
 
@@ -271,8 +271,8 @@ func assertDrainNotCut(t *testing.T, sess *Session, clk *agenttest.FakeClock) {
 	d.releaseKick(t)
 	d.assertParked(t, "live work must never be cut even past the timeout")
 
-	if warnings := collectWarnings(sess); len(warnings) != 0 {
-		t.Fatalf("live work must emit no stall warning, got %v", warnings)
+	if gotEvents := collectStallWarnings(sess); len(gotEvents) != 0 {
+		t.Fatalf("live work must emit no stall warning, got %v", gotEvents)
 	}
 
 	cancel()
