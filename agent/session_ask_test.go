@@ -1979,8 +1979,8 @@ func askUserArgsShorthand() map[string]any {
 // askUserArgsShorthandWithOptionals builds a shorthand form with all optional fields.
 func askUserArgsShorthandWithOptionals() map[string]any {
 	return map[string]any{
-		"header":        "DB choice",
-		"question":      "Which datastore for the ingest path?",
+		"header":   "DB choice",
+		"question": "Which datastore for the ingest path?",
 		"options": []any{
 			map[string]any{"label": "Postgres", "detail": "matches prod"},
 			map[string]any{"label": "SQLite", "detail": "zero setup"},
