@@ -35,7 +35,7 @@ is asserted in depth by job-nested-visibility.md.
 2. Turn 1 — arms (a) and (b), shell stop:
 
    > Do these steps in order.
-   > 1. Run the shell tool with background true and command:
+   > 1. Run the shell tool with mode: "background" and command:
    >    `sh -c 'echo STOP_RETAIN_TOKEN; sleep 300'`. Capture the
    >    job_id.
    > 2. Run the foreground shell command `sleep 3` so the token has
@@ -50,7 +50,7 @@ is asserted in depth by job-nested-visibility.md.
 
    > Do these steps in order.
    > 1. Call delegate with this exact task: "Run the shell tool with
-   >    background true and this command:
+   >    mode: "background" and this command:
    >    `sh -c 'echo CHILD_NEST_TOKEN; sleep 300'` with description
    >    nested-probe. Report its job_id. Then run the foreground shell
    >    command `sleep 240` and finally communicate DONE." Capture the

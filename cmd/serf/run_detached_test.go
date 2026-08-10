@@ -29,6 +29,23 @@ func TestRunDetachedCommandSurvivesExit(t *testing.T) {
 		"printf '%%s' $$ > %s; while [ ! -f %s ]; do sleep 0.01; done; printf completed > %s",
 		strconv.Quote(pidPath), strconv.Quote(releasePath), strconv.Quote(completedPath),
 	)
+	released := false
+	t.Cleanup(func() {
+		if released || !t.Failed() {
+			return
+		}
+		pidData, ok := waitForFileContent(pidPath, time.Second)
+		if !ok {
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(pidData))
+		if err != nil {
+			return
+		}
+		if process, err := os.FindProcess(pid); err == nil {
+			_ = process.Kill()
+		}
+	})
 
 	adapter := &scriptedProvider{
 		name: "openai",
@@ -67,25 +84,19 @@ func TestRunDetachedCommandSurvivesExit(t *testing.T) {
 	if toolResult.IsError {
 		t.Fatalf("detached shell result is an error: %#v", toolResult)
 	}
+	resultContent, ok := toolResult.Content.(string)
+	if !ok {
+		t.Fatalf("detached shell result content = %T, want string", toolResult.Content)
+	}
 	var detachedResult struct {
 		PID int `json:"pid"`
 	}
-	if err := json.Unmarshal([]byte(fmt.Sprint(toolResult.Content)), &detachedResult); err != nil {
+	if err := json.Unmarshal([]byte(resultContent), &detachedResult); err != nil {
 		t.Fatalf("decode detached shell result %q: %v", toolResult.Content, err)
 	}
 	if detachedResult.PID <= 0 {
 		t.Fatalf("detached shell result PID = %d, want positive PID", detachedResult.PID)
 	}
-
-	released := false
-	t.Cleanup(func() {
-		if released || !t.Failed() {
-			return
-		}
-		if process, err := os.FindProcess(detachedResult.PID); err == nil {
-			_ = process.Kill()
-		}
-	})
 
 	pidData, ok := waitForFileContent(pidPath, 5*time.Second)
 	if !ok {

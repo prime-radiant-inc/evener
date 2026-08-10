@@ -38,11 +38,11 @@ func scriptedAskUserCall(id, header, question string, options ...serveAskOption)
 	return llm.ToolCallData{ID: id, Name: "ask_user", Arguments: args, Type: "function"}
 }
 
-// scriptedBackgroundShellCall builds a shell tool call with background:true
+// scriptedBackgroundShellCall builds a shell tool call with mode:"background"
 // (agent/internal/tool/definitions.go's DefShell schema), matching the shape
 // scripted throughout agent/job_watch_observer_test.go.
 func scriptedBackgroundShellCall(id, command string) llm.ToolCallData {
-	args, _ := json.Marshal(map[string]any{"command": command, "background": true})
+	args, _ := json.Marshal(map[string]any{"command": command, "mode": "background"})
 	return llm.ToolCallData{ID: id, Name: "shell", Arguments: args, Type: "function"}
 }
 

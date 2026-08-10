@@ -111,7 +111,7 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count communicate
 
 ## Sharp edges
 
-- The command must run in the FOREGROUND. A `background: true` shell
+- The command must run in the FOREGROUND. A `mode: "background"` shell
   call returns a job handle immediately, so the `assistant.tool` frame
   carries the handle rather than the failure text, and the output only
   ever exists inside a job this observer never gains a grant on — an

@@ -326,7 +326,7 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   without consuming or hiding it.
 - `job-shell-lifecycle.md` — the shell tool's whole job-capable
   lifecycle: foreground inline result, a nonzero exit reported honestly
-  rather than hidden, `background: true` launch-and-return,
+  rather than hidden, `mode: "background"` launch-and-return,
   `max_runtime_ms` killing a runaway into `stopped`/`run_timeout`, and
   the complete-or-handle output window.
 - `job-stop-and-children.md` — `job_stop` lands `cancelled` /

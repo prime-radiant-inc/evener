@@ -232,9 +232,9 @@ Ephemeral foreground terminal return shape:
 ```json
 {
   "type": "shell",
+  "mode": "foreground",
   "status": "completed",
   "reason": "exit_zero",
-  "running_in_background": false,
   "timed_out": false,
   "exit_code": 0,
   "output": "bounded output text",
@@ -248,9 +248,9 @@ Explicit background return shape:
 {
   "job_id": "job_...",
   "type": "shell",
+  "mode": "background",
   "status": "running",
   "reason": null,
-  "running_in_background": true,
   "timed_out": false
 }
 ```
@@ -261,9 +261,9 @@ Foreground timeout / promotion return shape:
 {
   "job_id": "job_...",
   "type": "shell",
+  "mode": "background",
   "status": "running",
   "reason": "foreground_timeout",
-  "running_in_background": true,
   "timed_out": true,
   "output": "bounded output text",
   "truncated": false
