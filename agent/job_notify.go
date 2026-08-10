@@ -283,18 +283,27 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, 
 		)
 	}
 
-	// A complete excerpt makes a transcript read redundant. Otherwise,
-	// present output inspection as an available follow-up instead of the next
-	// required action.
+	// A resumable exhaustion needs an explicit recovery cue even when its
+	// short report fits in the excerpt. Otherwise, the complete-output wording
+	// hides that the delegate stopped before reporting completion.
 	instruction := ""
-	if canReadTranscript {
-		instruction = "Output is available through read_transcript if needed."
-		if ref := notificationTranscriptRef(n); ref != "" {
-			instruction = fmt.Sprintf("Output is available through read_transcript(transcript_ref=%q) if needed.", ref)
+	resumableExhaustion := n.Status == string(jobstore.StatusExhausted) && n.Resumable != nil && *n.Resumable
+	if resumableExhaustion {
+		instruction = fmt.Sprintf(
+			"Delegate stopped after reaching %s=%d and did not report completion. Inspect the delegate's progress and current state, then either ask it to continue its work or send a course correction. Treat this as an incomplete, resumable checkpoint—not success.",
+			n.ExhaustionBudget,
+			n.ExhaustionLimit,
+		)
+	} else {
+		if canReadTranscript {
+			instruction = "Output is available through read_transcript if needed."
+			if ref := notificationTranscriptRef(n); ref != "" {
+				instruction = fmt.Sprintf("Output is available through read_transcript(transcript_ref=%q) if needed.", ref)
+			}
 		}
-	}
-	if excerpt.text != "" && excerpt.complete {
-		instruction = "Complete output below."
+		if excerpt.text != "" && excerpt.complete {
+			instruction = "Complete output below."
+		}
 	}
 	body := strings.TrimSpace(fmt.Sprintf("Job %s %s. %s", n.JobID, event, instruction))
 	if excerpt.text != "" {

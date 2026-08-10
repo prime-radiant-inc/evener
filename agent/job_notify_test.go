@@ -222,6 +222,32 @@ func TestJobNotification_ExhaustedNamesBudgetLimitAndResumability(t *testing.T) 
 	}
 }
 
+func TestJobNotification_ResumableExhaustionProvidesRecoveryGuidance(t *testing.T) {
+	t.Parallel()
+	resumable := true
+	block := formatJobNotificationBlock(jobNotification{
+		JobID:            "job_exhausted",
+		JobType:          "delegate",
+		Status:           "exhausted",
+		ExhaustionBudget: "max_tool_rounds_per_input",
+		ExhaustionLimit:  200,
+		Resumable:        &resumable,
+	}, notificationExcerpt{text: "max_tool_rounds_per_input exhausted at limit 200", complete: true}, true)
+	for _, want := range []string{
+		"Delegate stopped after reaching max_tool_rounds_per_input=200 and did not report completion.",
+		"Inspect the delegate's progress and current state, then either ask it to continue its work or send a course correction.",
+		"Treat this as an incomplete, resumable checkpoint—not success.",
+		"max_tool_rounds_per_input exhausted at limit 200",
+	} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("notification %q missing %s", block, want)
+		}
+	}
+	if strings.Contains(block, "subagent") {
+		t.Fatalf("exhaustion notification must use delegate terminology:\n%s", block)
+	}
+}
+
 func TestJobNotification_ExhaustedPendingReplayIsDeduplicated(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
