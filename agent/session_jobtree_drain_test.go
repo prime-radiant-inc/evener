@@ -146,11 +146,7 @@ func TestDrainJobTreeReturnsOnContextCancel(t *testing.T) {
 }
 
 func TestCancelledManagedShellDrainStopsOnSessionClose(t *testing.T) {
-	drainClock := newOwnedJobDrainClock()
-	sess := newSession(t, withConfig(SessionConfig{
-		MaxSubagentDepth: 1,
-		clock:            drainClock,
-	}))
+	sess := newSession(t)
 	executor := newSignalCompletesStreamingExecutor()
 	result := runShell(context.Background(), sess.jobManager, executor, shellArgs{
 		Command:    "held managed shell",
@@ -164,22 +160,71 @@ func TestCancelledManagedShellDrainStopsOnSessionClose(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	recheck := make(chan time.Time)
+	kickEntered := make(chan int)
+	releaseSecondKick := make(chan struct{})
+	secondKickReleased := false
+	releaseSecond := func() {
+		if !secondKickReleased {
+			close(releaseSecondKick)
+			secondKickReleased = true
+		}
+	}
+	t.Cleanup(releaseSecond)
+	kickCount := 0
 	drainDone := make(chan error, 1)
 	go func() {
-		_, err := sess.DrainJobTree(ctx)
+		_, err := sess.drainJobTreeWith(ctx, recheck, func(ctx context.Context) error {
+			kickCount++
+			select {
+			case kickEntered <- kickCount:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			if kickCount == 2 {
+				<-releaseSecondKick
+			}
+			return sess.kickDriveTree(ctx)
+		}, sess.ProcessInputKind)
 		drainDone <- err
 	}()
 	select {
-	case <-drainClock.drainEntered:
+	case kick := <-kickEntered:
+		if kick != 1 {
+			t.Fatalf("first drain kick = %d, want 1", kick)
+		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("DrainJobTree did not enter the managed-job drain")
+		t.Fatal("managed-job drain did not enter its first cycle")
+	}
+	tickConsumed := make(chan struct{})
+	go func() {
+		select {
+		case recheck <- time.Time{}:
+			close(tickConsumed)
+		case <-ctx.Done():
+		}
+	}()
+	select {
+	case <-tickConsumed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("managed-job drain did not consume the controlled recheck")
+	}
+	select {
+	case kick := <-kickEntered:
+		if kick != 2 {
+			t.Fatalf("second drain kick = %d, want 2", kick)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("managed-job drain did not re-enter after consuming its wait")
 	}
 	select {
 	case err := <-drainDone:
-		t.Fatalf("DrainJobTree returned before caller cancellation: %v", err)
+		t.Fatalf("managed-job drain returned before caller cancellation: %v", err)
 	default:
 	}
 	cancel()
+	releaseSecond()
 	select {
 	case err := <-drainDone:
 		if !errors.Is(err, context.Canceled) {
