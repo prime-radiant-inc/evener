@@ -398,7 +398,7 @@ Delegate-target watches accept only `events`, `event_filter`, and `every`. They 
 
 All continuation state required by the predicate, including the matching-occurrence counter for `every`, is durable under the watch generation. Match-state advancement and delivery intent creation are atomic. A delivery is settled only by the existing receiver-commit acknowledgement path; restart neither resets the count nor duplicates a settled frame.
 
-Every watchable public source event receives a private monotonically increasing source sequence and is appended durably before publication. Each owner-store watch record persists the last processed source cursor. For one occurrence, advancing the cursor, updating the `every` counter, and creating any delivery intent happen in one owner-store batch. The source sequence is private event identity, not a delegate activation ID or public control handle.
+Every watchable public source event receives a private monotonically increasing source sequence and is appended durably before publication. Allocating that sequence and appending the event are one gap-free source-store transaction: the durable counter advances only when the append commits. If the append fails, the counter does not advance and the same next sequence remains available for retry. Each owner-store watch record persists the last processed source cursor. For one occurrence, advancing the cursor, updating the `every` counter, and creating any delivery intent happen in one owner-store batch. The source sequence is private event identity, not a delegate activation ID or public control handle.
 
 Watch create, replacement, runtime restore, live reattachment, and steady-state delivery use one strict per-source sequencer. Live publication only records the durable event and wakes that sequencer; it never mutates a watch predicate directly. The sequencer processes durable events contiguously (`cursor+1`, then `cursor+2`, and so on), waiting at gaps even if a later event publishes first. It atomically advances each watch's cursor/counter/delivery state before taking the next sequence.
 
@@ -557,7 +557,7 @@ The durable delegate projection owns:
 
 Private activation records may remain in the existing job store. Public folds project them into their owning delegate and never list them as jobs.
 
-The directly controlling owner store also indexes unloaded child delegate summaries, receiver-visible watches, typed lineage, and routing descriptors needed by list/status/watch/stop without a live child model runtime. It atomically batches watch cursor/counter/delivery transitions. Child stores remain canonical for child transcript, activation data, and durable source-event sequence; the owner index contains only bounded projection and routing metadata.
+The directly controlling owner store also indexes unloaded child delegate summaries, receiver-visible watches, typed lineage, and routing descriptors needed by list/status/watch/stop without a live child model runtime. It atomically batches watch cursor/counter/delivery transitions. Child stores remain canonical for child transcript, activation data, and the gap-free source-event append/counter transaction; the owner index contains only bounded projection and routing metadata.
 
 Full result content has one authoritative durable copy in the child transcript. The delivery intent stores a locator, not a second full copy. Bounded display metadata is allowed.
 
@@ -697,7 +697,7 @@ Before completion, the implementation must pass normal deterministic gates and p
 33. Visibility never grants delegate send authority.
 34. The owner-store index lets `job_watch` list, inspect, and clear manage unloaded delegate watches without model restoration.
 35. Delegate watches survive two unload/restore cycles and process restart.
-36. Watchable source events are durable before publication and carry a private stable sequence.
+36. Watchable source events are durable before publication and carry a private stable sequence allocated in the same source-store transaction as the event append; injected append failure leaves the durable counter unchanged, and retry reuses the missing sequence across restart.
 37. Create, replace, restore, reattach, steady-state, and restart all use one per-source sequencer that processes durable events strictly in contiguous sequence order; out-of-order live publication cannot skip or repeat an `every` occurrence.
 38. Delegate targets reject output/progress predicates; shell predicates retain behavior.
 39. AppWire, events, doctor, TUI, and web use metadata-only stable delegate projections without activation rows or child-session identity aliases.
@@ -717,7 +717,7 @@ Before completion, the implementation must pass normal deterministic gates and p
 47. The root-wide locked epoch marker is validated before every state entry point and created only for a truly fresh permitted root.
 48. Runtime, hub, doctor, and transcript paths refuse unmarked, wrong-epoch, transcript-only, metadata-only, and mixed roots instead of translating them.
 49. AppWire protocol mismatch rejects old clients and servers.
-50. Race tests cover raw communicate dispatch/preparation, receiver commit/replay, model/tool/prompt mutation versus packet admission, whole-batch inline fallback, spawn/stop mixed outcomes, quiet model drive/unload, and out-of-order `N+1`/`N` watch publication during create/replace/reattach, steady state, and restart.
+50. Race and fault tests cover raw communicate dispatch/preparation, receiver commit/replay, model/tool/prompt mutation versus packet admission, whole-batch inline fallback, spawn/stop mixed outcomes, quiet model drive/unload, failed source-event append followed by retry/restart, and out-of-order `N+1`/`N` watch publication during create/replace/reattach, steady state, and restart.
 51. Fuzz/program tests cover malformed targets, dispatch, old-field rejection, typed lineage, terminal unions, packet/wrapper bounds, epoch admission, and projection invariants.
 
 ## Acceptance Criteria
