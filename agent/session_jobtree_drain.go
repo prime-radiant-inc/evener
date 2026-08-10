@@ -290,12 +290,23 @@ func (s *Session) subtreeOutstandingDrainJobIDs() []string {
 // carry their own round/time caps, so a well-formed tree always quiesces on its
 // own. Every owned managed job holds the drain open.
 func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
+	return s.drainJobTreeBeforeNotifyHandoff(ctx, nil)
+}
+
+// drainJobTreeBeforeNotifyHandoff runs beforeNotifyHandoff after draining but
+// before the drain releases its temporary notification callback. Retained
+// subagent runs use this boundary to stop accepting input before their parent
+// notification callback and terminal state are restored.
+func (s *Session) drainJobTreeBeforeNotifyHandoff(ctx context.Context, beforeNotifyHandoff func()) (string, error) {
 	if s.jobManager == nil {
+		if beforeNotifyHandoff != nil {
+			beforeNotifyHandoff()
+		}
 		return "", nil
 	}
 	ticker := s.clock.NewTicker(drainRecheckInterval)
 	defer ticker.Stop()
-	return s.drainJobTree(ctx, ticker.C())
+	return s.drainJobTreeWithNotifyHandoff(ctx, ticker.C(), s.kickDriveTree, s.ProcessInputKind, beforeNotifyHandoff)
 }
 
 // drainJobTree contains the drain loop behind an injectable recheck channel.
@@ -307,9 +318,16 @@ func (s *Session) drainJobTree(ctx context.Context, recheck <-chan time.Time) (s
 }
 
 func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time, kick func(context.Context) error, process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) (string, error) {
+	return s.drainJobTreeWithNotifyHandoff(ctx, recheck, kick, process, nil)
+}
+
+func (s *Session) drainJobTreeWithNotifyHandoff(ctx context.Context, recheck <-chan time.Time, kick func(context.Context) error, process func(context.Context, string, []ImageAttachment, EntryKind) (string, error), beforeNotifyHandoff func()) (string, error) {
 	wake, notify := newDrainWake()
 	s.SetNotifyFunc(notify)
 	defer s.SetNotifyFunc(nil)
+	if beforeNotifyHandoff != nil {
+		defer beforeNotifyHandoff()
+	}
 
 	lastResult := ""
 	var stallStart time.Time

@@ -255,6 +255,80 @@ func TestSubagentDrainRestoresParentDriveAfterTerminalStatePublication(t *testin
 	}
 }
 
+func TestSubagentDrainReturnHandoffRefusesMessagesBeforeTerminalPublication(t *testing.T) {
+	fixture := newOwnedJobDrainFixture(t)
+	type handoffResult struct {
+		finalizing bool
+		running    bool
+		launched   bool
+		resumeErr  error
+		plain      sendMessageResult
+		watch      sendMessageResult
+		queue      []SteeringEntry
+		pending    int
+	}
+	handoffDone := make(chan handoffResult, 1)
+	fixture.drainClock.onDrainStop = func() {
+		fixture.child.mu.Lock()
+		finalizing := fixture.child.finalizing
+		running := fixture.child.running
+		fixture.child.mu.Unlock()
+		launched, resumeErr := fixture.parent.startOrSteerSubagentRun(fixture.child, "resume during drain return")
+		plain := fixture.parent.sendDelegateMessage(context.Background(), sendMessageArgs{
+			Target:  fixture.result.DelegateID,
+			Message: "plain send during drain return",
+		})
+		watch := fixture.parent.sendDelegateMessage(context.Background(), sendMessageArgs{
+			Target:    fixture.result.DelegateID,
+			Message:   "watch send during drain return",
+			FromWatch: true,
+		})
+		handoffDone <- handoffResult{
+			finalizing: finalizing,
+			running:    running,
+			launched:   launched,
+			resumeErr:  resumeErr,
+			plain:      plain,
+			watch:      watch,
+			queue:      fixture.child.sess.SteeringQueueSnapshot(),
+			pending:    fixture.child.sess.peekNotifications(),
+		}
+	}
+
+	fixture.env.releaseJob()
+	var got handoffResult
+	select {
+	case got = <-handoffDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("subagent did not reach the drain-return handoff")
+	}
+	if !got.running || !got.finalizing {
+		t.Fatalf("drain-return state = running %v finalizing %v, want running finalization gate", got.running, got.finalizing)
+	}
+	if got.launched || got.resumeErr == nil || !strings.Contains(got.resumeErr.Error(), "target_busy") {
+		t.Fatalf("startOrSteer during drain return = launched %v err %v, want target_busy", got.launched, got.resumeErr)
+	}
+	if got.plain.Err == nil || !strings.Contains(got.plain.Err.Error(), "target_busy") {
+		t.Fatalf("plain delegate_send during drain return = %+v, want target_busy", got.plain)
+	}
+	if got.watch.Err != nil || !got.watch.WatchSendDeliveryClassSet || got.watch.WatchSendDeliveryClass != watchSendBusy {
+		t.Fatalf("watch delegate_send during drain return = %+v, want retryable busy", got.watch)
+	}
+	if len(got.queue) != 0 {
+		t.Fatalf("steering queue after drain-return sends = %+v, want empty", got.queue)
+	}
+	if got.pending != 0 {
+		t.Fatalf("notifications during drain-return sends = %d, want none", got.pending)
+	}
+
+	select {
+	case <-fixture.runDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("delegate did not publish terminal state after drain return")
+	}
+	fixture.requireHandledResult(t)
+}
+
 func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testing.T) {
 	for _, action := range []string{"explicit resume", "delegate send", "watch delegate send"} {
 		t.Run(action, func(t *testing.T) {

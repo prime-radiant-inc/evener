@@ -103,7 +103,7 @@ type subagent struct {
 	closeTimedOut   bool               // session-close wait exceeded its bound; close not confirmed
 	driving         bool               // a drive-down notification turn (§3) is in flight on this idle child
 	fatalRunGated   bool               // terminal run error freezes automatic drives until an explicit resume
-	finalizing      bool               // terminal state is published but the retained parent notify callback is not restored yet
+	finalizing      bool               // the run no longer accepts input while terminal state and retained notify ownership are handed off
 	// disposeGated freezes a quiescent, retained TERMINAL child while a dispose op
 	// (spec §P1 step 4) evaluates and evicts it: no wake-edge drive may launch and
 	// no delegate_send may resume the child while it is set. Guarded by sub.mu; set
@@ -1314,7 +1314,11 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		a.sess.mu.Lock()
 		parentDriveNotify := a.sess.notifyFunc
 		a.sess.mu.Unlock()
-		drained, drainErr := a.sess.DrainJobTree(ctx)
+		drained, drainErr := a.sess.drainJobTreeBeforeNotifyHandoff(ctx, func() {
+			a.mu.Lock()
+			a.finalizing = true
+			a.mu.Unlock()
+		})
 		restoreParentDriveNotify = parentDriveNotify
 		if drainErr != nil {
 			err = drainErr
