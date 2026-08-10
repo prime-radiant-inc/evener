@@ -145,6 +145,47 @@ func TestDrainJobTreeReturnsOnContextCancel(t *testing.T) {
 	}
 }
 
+func TestCancelledManagedShellDrainStopsOnSessionClose(t *testing.T) {
+	sess := newSession(t)
+	executor := newSignalCompletesStreamingExecutor()
+	result := runShell(context.Background(), sess.jobManager, executor, shellArgs{
+		Command:    "held managed shell",
+		Background: true,
+	})
+	if result.JobID == "" || !result.RunningInBackground {
+		t.Fatalf("background shell result = %+v, want a managed running job", result)
+	}
+	if n, err := sess.jobManager.outstandingDrainJobCount(); err != nil || n != 1 {
+		t.Fatalf("outstanding managed jobs = %d (err %v), want 1", n, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	drainDone := make(chan error, 1)
+	go func() {
+		_, err := sess.DrainJobTree(ctx)
+		drainDone <- err
+	}()
+	cancel()
+	select {
+	case err := <-drainDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("DrainJobTree error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainJobTree did not return after caller cancellation")
+	}
+
+	sess.Close()
+	if signals := executor.signals.Load(); signals != 1 {
+		t.Fatalf("shutdown signals = %d, want 1", signals)
+	}
+	select {
+	case <-executor.done:
+	default:
+		t.Fatal("managed shell remained running after session shutdown")
+	}
+}
+
 // TestOutstandingDelegateCountCoversPendingNotifyWindow is the roborev
 // regression: finalization deletes a delegate from the running map (jobs.go
 // armFinalizedJob) BEFORE enqueueing its in-memory owner notification, leaving a
@@ -190,11 +231,14 @@ func TestOutstandingDelegateCountCoversPendingNotifyWindow(t *testing.T) {
 func TestTreeHasOutstandingWorkSkipsStopGatedChild(t *testing.T) {
 	t.Parallel()
 	root := newSession(t)
-	child := newSession(t)
+	childAdapter := &fakeAdapter{name: "openai"}
+	child := newSession(t, withAdapter(childAdapter))
 	childID := child.ID()
 
-	// Give the child leftover child-local attention.
-	child.enqueueJobNotification(jobNotification{JobID: "leftover"})
+	// Give the child an owned shell completion that exists only in its durable
+	// ledger. A drain kick must not materialize or deliver it after the parent
+	// deliberately stop-gates the child.
+	seedOwnedDurablePending(t, child.jobManager, "shell-leftover", jobstore.JobShell)
 
 	// Track it as a live direct subagent of root, and untrack before close.
 	root.subagents.mu.Lock()
@@ -226,10 +270,23 @@ func TestTreeHasOutstandingWorkSkipsStopGatedChild(t *testing.T) {
 		t.Fatal("precondition: child should be stop-gated after Cancelled/stopped_by_parent")
 	}
 
-	// The stop-gated child's leftover attention must no longer count as
-	// outstanding — the drain would otherwise never deliver it and hang.
+	requestsBefore := len(childAdapter.Requests())
+	queuedBefore := child.peekNotifications()
+	if err := root.kickDriveTree(context.Background()); err != nil {
+		t.Fatalf("kickDriveTree: %v", err)
+	}
+
+	// The stop-gated child's leftover durable attention must stay outside the
+	// live drain tree: it is neither re-materialized nor delivered, and it no
+	// longer counts as outstanding.
 	if out, err := root.treeHasOutstandingWork(); err != nil || out {
 		t.Fatalf("stop-gated child must not count as outstanding, got out=%v err=%v", out, err)
+	}
+	if requestsAfter := len(childAdapter.Requests()); requestsAfter != requestsBefore {
+		t.Fatalf("child provider requests changed across stop-gated drain kick: before=%d after=%d", requestsBefore, requestsAfter)
+	}
+	if queuedAfter := child.peekNotifications(); queuedAfter != queuedBefore {
+		t.Fatalf("child notification queue changed across stop-gated drain kick: before=%d after=%d", queuedBefore, queuedAfter)
 	}
 }
 
