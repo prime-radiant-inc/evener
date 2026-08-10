@@ -21,8 +21,8 @@ import (
 
 func scriptedForegroundShellCall(id, command string) llm.ToolCallData {
 	args, _ := json.Marshal(map[string]any{
-		"command":    command,
-		"background": false,
+		"command": command,
+		"mode":    "foreground",
 	})
 	return llm.ToolCallData{ID: id, Name: "shell", Arguments: args, Type: "function"}
 }
