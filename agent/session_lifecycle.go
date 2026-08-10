@@ -1228,6 +1228,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.finishProcessingAtBoundary(ctx, SessionIdle)
 			return "", progressed, nil
 		}
+		// A managed job can finish while this tool batch is running. Yield before
+		// another ordinary model round so the outer drain delivers that completion
+		// as an EntryNotification turn. Notification turns already own their current
+		// batch and leave any later arrivals for the next wake.
+		if kind != EntryNotification && s.peekNotifications() > 0 {
+			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			return "", progressed, nil
+		}
 	}
 
 	s.emit(events.EventTurnLimit, events.TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})

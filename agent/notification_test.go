@@ -179,6 +179,50 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	}
 }
 
+func TestNotificationPendingAfterToolRunsBeforeAnotherNormalRound(t *testing.T) {
+	t.Parallel()
+	const jobID = "job_finished_during_tool"
+	enqueue := llm.ToolCallData{
+		ID:        "enqueue-notification",
+		Name:      "enqueue_test_notification",
+		Arguments: []byte(`{}`),
+		Type:      "function",
+	}
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response { return toolCallResponse(enqueue) },
+			func(llm.Request) llm.Response { return finalResponse("notification handled") },
+			func(llm.Request) llm.Response { return finalResponse("late ordinary round") },
+		},
+	}
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{NoProjectPrompts: true}))
+	sess.RegisterTool(
+		"enqueue_test_notification",
+		"test-only: finish a managed job while another tool round is running",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(context.Context, any) (any, error) {
+			enqueueCompletedDelegateNotification(t, sess, jobID)
+			return "queued", nil
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "start work", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	requests := adapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want 2 (tool round then notification turn before another ordinary round)", len(requests))
+	}
+	if !lastMessageIsNotification(requests[1]) {
+		t.Fatal("second model request was an ordinary round; want the pending job notification delivered first")
+	}
+	requireNotificationState(t, sess.jobManager, jobID, jobstore.NotifyDelivered)
+}
+
 // TestAcceptNotificationInput_PersistsNotificationKind verifies the durable
 // notification reminder turn carries SteeringKind on schema.Turn, not only on
 // the live SteeringInjectedData event, so a reload labels it the same way the
