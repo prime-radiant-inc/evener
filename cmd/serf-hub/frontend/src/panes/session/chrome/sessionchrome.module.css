@@ -25,11 +25,10 @@
 }
 
 /* Composer placement is the same single-owner status/actions run without the
- * footer-only cadence and goal. It owns the inline-size container so
- * StatusRow's existing meter/percent thresholds continue to respond to the
- * actual space available beside the non-shrinking menu trigger. */
+ * footer-only cadence and goal. Its StatusRow stays inside a .body sibling of
+ * the non-shrinking menu trigger, so the existing meter/percent thresholds
+ * measure only the space actually available to status content. */
 .inline {
-  container-type: inline-size;
   display: flex;
   align-items: center;
   flex-wrap: nowrap;

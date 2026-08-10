@@ -133,3 +133,58 @@ This report is committed separately so it can contain the final implementation c
 - No Task 1 implementation concerns.
 - `npm ci` reported 4 existing dependency vulnerabilities (2 moderate, 2 high). They predate and are unrelated to this task; changing dependencies would be out of scope.
 - Task 2 still needs to opt the composer caller into `placement="composer"`; the default remains footer intentionally.
+
+## Fix Round 1: Preserve the StatusRow query-container boundary
+
+### Review findings addressed
+
+1. The initial composer topology made `.inline` both the row and the inline-size query container. Because `.inline` also contained the fixed, non-shrinking `.right` actions group, `StatusRow` container queries measured the total cluster width rather than the flex width available to status content.
+2. The initial CSS-source test incorrectly required `container-type: inline-size` on `.inline`, codifying that shifted boundary.
+
+### Root cause and fix
+
+The footer topology already had the correct pattern: shrinkable status content inside `.body` (the query container), with `.right` as its fixed sibling. Composer placement had omitted the `.body` wrapper.
+
+The fix is intentionally minimal:
+
+- Wrapped the composer `StatusRow` in the existing `.body` class and added `data-testid="session-chrome-inline-status"` for deterministic topology coverage.
+- Kept `.right` as the second direct child of `.inline`, outside the status query container.
+- Removed `container-type` from `.inline`.
+- Replaced the incorrect CSS expectation with assertions that `.inline` is not a query container and `.body` is.
+- Added DOM assertions that the inline cluster is exactly `[status query container, fixed actions]`, that `StatusRow` is inside the first child, and that `Session actions` is only inside the second child.
+- Did not change the existing 560/480/400px StatusRow thresholds.
+
+### TDD evidence
+
+After adding the regression assertions and before the production fix:
+
+```bash
+cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/SessionChrome.test.tsx
+```
+
+Result: exit 1; `1 failed` test file; `2 failed | 22 passed` tests. Expected failures:
+
+- missing `[data-testid="session-chrome-inline-status"]` because the status-only wrapper did not exist;
+- `.inline` still contained `container-type: inline-size`.
+
+After wrapping `StatusRow` in `.body` and removing `container-type` from `.inline`, the same command returned exit 0 with `1 passed` test file and `24 passed (24)` tests.
+
+### Final fix-round verification
+
+```bash
+cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/chrome/SessionChrome.tsx src/panes/session/chrome/sessionchrome.module.css src/panes/session/chrome/SessionChrome.test.tsx && npx vitest run src/panes/session/chrome/SessionChrome.test.tsx && npm run typecheck
+```
+
+Result: exit 0.
+
+- Biome: `Checked 3 files in 15ms. No fixes applied.`
+- Vitest: `1 passed` test file; `24 passed (24)` tests; duration `1.16s`.
+- TypeScript: `tsc --noEmit --incremental false`; no diagnostics.
+
+### Fix-round self-review
+
+- The nearest inline-size query container for composer `StatusRow` is now the shrinkable `.body` wrapper.
+- The fixed `.right` actions group is a sibling, so its width is excluded from the queried content box.
+- Footer topology and behavior are unchanged.
+- Menu/panel ownership, callbacks, focus treatment, and native control accessibility are unchanged.
+- No concerns remain from the two review findings.

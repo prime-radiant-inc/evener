@@ -207,6 +207,7 @@ test("composer placement renders one ordered inline status and actions cluster w
   render(<SessionChrome ref="ref_composer" placement="composer" />);
 
   const cluster = screen.getByTestId("session-chrome-inline");
+  const statusContainer = within(cluster).getByTestId("session-chrome-inline-status");
   const statusRow = within(cluster).getByTestId("status-row");
   const identity = within(cluster).getByTestId("status-row-identity");
   const context = within(cluster).getByTestId("status-row-context");
@@ -215,6 +216,11 @@ test("composer placement renders one ordered inline status and actions cluster w
   expect(within(identity).getByRole("combobox", { name: "Reasoning effort" })).toBeTruthy();
   expect(statusRow.contains(identity)).toBe(true);
   expect(statusRow.contains(context)).toBe(true);
+  expect(cluster.children).toHaveLength(2);
+  expect(cluster.children[0]).toBe(statusContainer);
+  expect(statusContainer.contains(statusRow)).toBe(true);
+  expect(statusContainer.contains(actions)).toBe(false);
+  expect(cluster.children[1]?.contains(actions)).toBe(true);
   expect(identity.compareDocumentPosition(context) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   expect(context.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   expect(screen.getAllByTestId("status-row")).toHaveLength(1);
@@ -614,11 +620,13 @@ test("the chrome CSS makes body a non-wrapping inline-size query container", () 
   expect(right?.[1]).toContain("flex: none");
 });
 
-test("the inline chrome CSS is a non-wrapping min-width-safe status query container", () => {
+test("the inline chrome keeps its fixed actions outside the shrinkable status query container", () => {
   const css = readFileSync(join(here, "sessionchrome.module.css"), "utf8");
   const inline = css.match(/\.inline \{([^}]*)\}/);
+  const body = css.match(/\.body \{([^}]*)\}/);
   expect(inline?.[1]).toContain("display: flex");
   expect(inline?.[1]).toContain("flex-wrap: nowrap");
   expect(inline?.[1]).toContain("min-width: 0");
-  expect(inline?.[1]).toContain("container-type: inline-size");
+  expect(inline?.[1]).not.toContain("container-type");
+  expect(body?.[1]).toContain("container-type: inline-size");
 });

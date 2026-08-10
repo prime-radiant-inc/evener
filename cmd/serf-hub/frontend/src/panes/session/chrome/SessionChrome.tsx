@@ -112,7 +112,9 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
       data-testid={placement === "composer" ? "session-chrome-inline" : "session-chrome"}
     >
       {placement === "composer" ? (
-        <StatusRow sessionRef={sessionRef} model={model} now={now} />
+        <div className={CLASS.body} data-testid="session-chrome-inline-status">
+          <StatusRow sessionRef={sessionRef} model={model} now={now} />
+        </div>
       ) : (
         /* .body owns compression (sessionchrome.module.css says why): its
            inline-size container progressively simplifies status content, so
