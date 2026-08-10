@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -151,6 +153,125 @@ func (e *bufferedShellEnv) ExecCommand(_ context.Context, _ string, timeoutMS in
 		DurationMS: int64(timeoutMS),
 		TimedOut:   true,
 	}, nil
+}
+
+type detachedShellEnv struct {
+	agenttest.FakeEnv
+	command    string
+	workingDir string
+	calls      int
+	process    execenv.DetachedProcess
+	err        error
+}
+
+func (e *detachedShellEnv) DetachCommand(_ context.Context, command, workingDir string, _ map[string]string) (execenv.DetachedProcess, error) {
+	e.calls++
+	e.command = command
+	e.workingDir = workingDir
+	return e.process, e.err
+}
+
+type streamingShellEnv struct {
+	agenttest.FakeEnv
+}
+
+func (streamingShellEnv) StreamCommand(context.Context, string, string, map[string]string, io.Writer) (*execenv.StreamHandle, error) {
+	return nil, errors.New("unexpected streaming shell dispatch")
+}
+
+func TestShellDetachedBypassesJobManager(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	workDir := t.TempDir()
+	env := &detachedShellEnv{
+		FakeEnv: agenttest.FakeEnv{WorkDir: workDir},
+		process: execenv.DetachedProcess{PID: 4242},
+	}
+
+	res := s.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"serve","mode":"detached"}`),
+	})
+	if res.IsError {
+		t.Fatalf("detached shell returned error: %s", res.Output)
+	}
+	var got detachedShellToolResult
+	if err := json.Unmarshal(toolResultJSON(res), &got); err != nil {
+		t.Fatalf("unmarshal detached shell state: %v (output: %s)", err, res.Output)
+	}
+	want := detachedShellToolResult{Type: "shell", Mode: "detached", Status: "started", PID: 4242}
+	if got != want {
+		t.Fatalf("detached shell state = %+v, want %+v", got, want)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(toolResultJSON(res), &fields); err != nil {
+		t.Fatalf("unmarshal detached shell fields: %v", err)
+	}
+	if len(fields) != 4 {
+		t.Fatalf("detached shell fields = %+v, want only type, mode, status, and pid", fields)
+	}
+	if env.calls != 1 || env.command != "serve" || env.workingDir != workDir {
+		t.Fatalf("DetachCommand calls = %d command = %q cwd = %q, want 1, serve, %q", env.calls, env.command, env.workingDir, workDir)
+	}
+	if jobs := s.jobManager.list(listFilter{}); len(jobs) != 0 {
+		t.Fatalf("detached shell created jobs: %+v", jobs)
+	}
+	events, err := s.jobManager.store.LoadEvents()
+	if err != nil {
+		t.Fatalf("load job-store events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("detached shell appended job-store events: %+v", events)
+	}
+}
+
+func TestShellDetachedRejectsUnsupportedExecutor(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	env := &streamingShellEnv{FakeEnv: agenttest.FakeEnv{WorkDir: t.TempDir()}}
+
+	res := s.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"serve","mode":"detached"}`),
+	})
+	if !res.IsError || !errors.Is(res.Err, execenv.ErrDetachUnsupported) {
+		t.Fatalf("detached shell error = %v, want ErrDetachUnsupported", res.Err)
+	}
+}
+
+func TestShellDetachedRejectsZeroPID(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	env := &detachedShellEnv{FakeEnv: agenttest.FakeEnv{WorkDir: t.TempDir()}}
+
+	res := s.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"serve","mode":"detached"}`),
+	})
+	if !res.IsError || res.Err == nil || res.Err.Error() != "detached command started without a valid pid" {
+		t.Fatalf("detached shell error = %v, want invalid pid error", res.Err)
+	}
+}
+
+func TestShellDetachedRejectsInvalidCwdBeforeDetach(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	env := &detachedShellEnv{FakeEnv: agenttest.FakeEnv{WorkDir: t.TempDir()}, process: execenv.DetachedProcess{PID: 4242}}
+
+	res := s.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"serve","mode":"detached","cwd":"does-not-exist"}`),
+	})
+	if !res.IsError {
+		t.Fatalf("detached shell with invalid cwd succeeded: %s", res.Output)
+	}
+	if env.calls != 0 {
+		t.Fatalf("DetachCommand calls = %d, want 0 after cwd rejection", env.calls)
+	}
 }
 
 func TestShellToolBackgroundReturnsJobID(t *testing.T) {

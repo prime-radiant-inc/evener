@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -145,9 +146,6 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if err != nil {
 				return "", err
 			}
-			if shellArgs.Mode == shellModeDetached {
-				return "", errors.New("invalid_request: detached execution is not yet available")
-			}
 			// Resolve shellArgs.WorkingDir (the raw, possibly-relative model-supplied
 			// cwd, or "" if omitted) against env now, once, for both the streaming and
 			// buffered dispatch paths below. Recorded on the job (see
@@ -158,6 +156,9 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				return "", err
 			}
 			shellArgs.WorkingDir = resolvedWorkingDir
+			if shellArgs.Mode == shellModeDetached {
+				return runDetachedShell(ctx, env, shellArgs)
+			}
 			if se, ok := env.(execenv.StreamingExecutor); ok {
 				if s == nil || s.jobManager == nil {
 					return "", errors.New("shell jobs require an initialized JobManager")
@@ -357,6 +358,30 @@ func resolveShellWorkingDir(env execenv.ExecutionEnvironment, raw string) (strin
 		return "", fmt.Errorf("cwd %q resolves to %s, which does not exist or is not a directory", raw, abs)
 	}
 	return abs, nil
+}
+
+type detachedShellToolResult struct {
+	Type   string `json:"type"`
+	Mode   string `json:"mode"`
+	Status string `json:"status"`
+	PID    int    `json:"pid"`
+}
+
+func runDetachedShell(ctx context.Context, env execenv.ExecutionEnvironment, args shellArgs) (tool.StateResult, error) {
+	detacher, ok := env.(execenv.DetachedExecutor)
+	if !ok {
+		return tool.StateResult{}, execenv.ErrDetachUnsupported
+	}
+	started, err := detacher.DetachCommand(ctx, args.Command, args.WorkingDir, nil)
+	if err != nil {
+		return tool.StateResult{}, err
+	}
+	if started.PID <= 0 {
+		return tool.StateResult{}, errors.New("detached command started without a valid pid")
+	}
+	state := detachedShellToolResult{Type: "shell", Mode: string(shellModeDetached), Status: "started", PID: started.PID}
+	b, _ := json.Marshal(state)
+	return tool.StateResult{Output: string(b), State: state}, nil
 }
 
 func shellBoolArg(args map[string]any, key string) bool {
