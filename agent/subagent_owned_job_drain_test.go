@@ -368,6 +368,103 @@ func TestSubagentDrainReturnHandoffRefusesMessagesBeforeTerminalPublication(t *t
 	fixture.requireHandledResult(t)
 }
 
+func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T) {
+	releaseInitial := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseInitial) }) })
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				<-releaseInitial
+				return communicateWithStructured("original delegate result", map[string]any{
+					"message": "original delegate result",
+					"summary": "original structured result",
+				})
+			},
+			func(llm.Request) llm.Response {
+				return communicateWithStructured("late notification handled", map[string]any{
+					"message": "late notification handled",
+					"summary": "late structured overwrite",
+				})
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	var child *subagent
+	parent, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			subagentAfterFinalStatePublish: func(got *subagent) {
+				if got != child {
+					t.Errorf("finalization hook child = %p, want %p", got, child)
+				}
+				enqueueCompletedDelegateNotification(t, got.sess, "late-structured-job")
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { parent.Close() })
+
+	result := parent.createDelegate(context.Background(), delegateArgs{
+		Task:       "return structured output before a late notification",
+		Background: true,
+		ResultSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"message": map[string]any{"type": "string"},
+				"summary": map[string]any{"type": "string"},
+			},
+			"required": []string{"message", "summary"},
+		},
+	})
+	if result.Err != nil {
+		t.Fatalf("createDelegate: %v", result.Err)
+	}
+	_, childID, err := decodeRef(result.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decodeRef(%q): %v", result.TranscriptRef, err)
+	}
+	child = parent.subagents.get(childID)
+	if child == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+
+	lateDriveDone := make(chan error, 1)
+	child.sess.SetNotifyFunc(func() {
+		_, driveErr := child.sess.ProcessInputKind(context.Background(), "", nil, EntryNotification)
+		lateDriveDone <- driveErr
+	})
+	releaseOnce.Do(func() { close(releaseInitial) })
+
+	waitForShellDone(t, parent.jobManager, result.JobID)
+	select {
+	case driveErr := <-lateDriveDone:
+		if driveErr != nil {
+			t.Fatalf("late notification drive: %v", driveErr)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("late notification drive did not finish")
+	}
+	liveStructured, ok := child.sess.CommunicateStructured().(map[string]any)
+	if !ok || liveStructured["summary"] != "late structured overwrite" {
+		t.Fatalf("live child structured result = %#v, want the late notification overwrite", child.sess.CommunicateStructured())
+	}
+	rec := loadShellRecord(t, parent.jobManager, result.JobID)
+	structured, ok := rec.StructuredResult.(map[string]any)
+	if !ok || structured["summary"] != "original structured result" {
+		t.Fatalf("durable delegate structured result = %#v, want original run snapshot", rec.StructuredResult)
+	}
+}
+
 func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testing.T) {
 	for _, action := range []string{"explicit resume", "delegate send", "watch delegate send"} {
 		t.Run(action, func(t *testing.T) {

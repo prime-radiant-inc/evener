@@ -2439,6 +2439,8 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 		}
 		childSess := sub.sess
 		runProvenance := provenance.Clone(sub.runProvenance)
+		runStructured := sub.runStructured
+		runStructuredCaptured := sub.runStructuredCaptured
 		sub.mu.Unlock()
 
 		// Read directly off the child's round-scoped salvage signal — never
@@ -2461,16 +2463,13 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 			return jobstore.StatusFailed, "exhausted_persist_failed", nil, nil
 		}
 
-		// Capture the child's live communicate-structured state exactly once per
-		// job, not on every retry: finalizeDelegateOnce's prepare() runs again
-		// whenever a durable append fails and the outer loop retries (kata
-		// nbb2). If the child session processes another turn in the retry
-		// window — e.g. driveSubagentNotificationTurn draining a late,
-		// unrelated notification and ending with a second, empty terminal
-		// communicate — a fresh read here would silently replace the already-
-		// captured substantive result with that later, empty one. run.structured
-		// is this job's one authoritative capture, set on the first attempt and
-		// reused by every retry after it.
+		// Transfer the completed run's communicate-structured snapshot to the job
+		// exactly once, not on every finalize retry. Retained runs capture it before
+		// releasing their finalization gate, so a later notification turn cannot
+		// replace this job's result before the bridge reaches here. Restored and
+		// legacy subagents have no per-run snapshot and fall back to the live child
+		// session read. run.structured then remains authoritative across durable
+		// append retries (kata nbb2).
 		jm.mu.Lock()
 		structured := run.structured
 		structuredCaptureFailed := run.structuredCaptureFailed
@@ -2479,7 +2478,9 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 		if !alreadyCaptured {
 			structured = nil
 			structuredCaptureFailed = false
-			if childSess != nil {
+			if runStructuredCaptured {
+				structured = runStructured
+			} else if childSess != nil {
 				structured = childSess.CommunicateStructured()
 			} else if delegateResultSchema(run.rec) != nil {
 				structuredCaptureFailed = true

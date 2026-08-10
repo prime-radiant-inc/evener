@@ -81,29 +81,31 @@ type subagent struct {
 	sess *Session
 	emit func(events.EventKind, events.EventData)
 
-	mu              sync.Mutex
-	running         bool
-	status          SubagentStatus
-	turnsUsed       int
-	done            chan struct{}
-	result          string
-	err             error
-	resultConsumed  bool // true after the first wait returns this run's result
-	endEmitted      bool
-	runProvenance   *provenance.Causal // immutable causal provenance for the completed run result
-	runFromWatch    bool               // true for a run resumed by job_watch.send; suppresses observer feedback loops
-	nudgeEnabled    bool               // true for default subagents that should be nudged to communicate
-	cancel          context.CancelFunc // cancels the current run's context
-	cancelRequested bool               // set by parent stop so finalize maps a context.Canceled run to cancelled
-	agentType       string             // plugin agent type name; empty for default subagents
-	createdAt       time.Time          // set once at spawn; never reset on resume
-	startedAt       time.Time          // set at spawn; re-stamped at each idle-resume
-	endedAt         *time.Time         // set at run finalize; cleared to nil at idle-resume
-	closed          bool               // session torn down; record retained as terminal history
-	closeTimedOut   bool               // session-close wait exceeded its bound; close not confirmed
-	driving         bool               // a drive-down notification turn (§3) is in flight on this idle child
-	fatalRunGated   bool               // terminal run error freezes automatic drives until an explicit resume
-	finalizing      bool               // the run accepts no input while owned work drains and terminal state/notify ownership are handed off
+	mu                    sync.Mutex
+	running               bool
+	status                SubagentStatus
+	turnsUsed             int
+	done                  chan struct{}
+	result                string
+	err                   error
+	resultConsumed        bool // true after the first wait returns this run's result
+	endEmitted            bool
+	runProvenance         *provenance.Causal // immutable causal provenance for the completed run result
+	runStructured         any                // communicate structured result captured before this run releases its finalization gate
+	runStructuredCaptured bool               // runStructured was captured, including an authoritative nil result
+	runFromWatch          bool               // true for a run resumed by job_watch.send; suppresses observer feedback loops
+	nudgeEnabled          bool               // true for default subagents that should be nudged to communicate
+	cancel                context.CancelFunc // cancels the current run's context
+	cancelRequested       bool               // set by parent stop so finalize maps a context.Canceled run to cancelled
+	agentType             string             // plugin agent type name; empty for default subagents
+	createdAt             time.Time          // set once at spawn; never reset on resume
+	startedAt             time.Time          // set at spawn; re-stamped at each idle-resume
+	endedAt               *time.Time         // set at run finalize; cleared to nil at idle-resume
+	closed                bool               // session torn down; record retained as terminal history
+	closeTimedOut         bool               // session-close wait exceeded its bound; close not confirmed
+	driving               bool               // a drive-down notification turn (§3) is in flight on this idle child
+	fatalRunGated         bool               // terminal run error freezes automatic drives until an explicit resume
+	finalizing            bool               // the run accepts no input while owned work drains and terminal state/notify ownership are handed off
 	// disposeGated freezes a quiescent, retained TERMINAL child while a dispose op
 	// (spec §P1 step 4) evaluates and evicts it: no wake-edge drive may launch and
 	// no delegate_send may resume the child while it is set. Guarded by sub.mu; set
@@ -1191,6 +1193,8 @@ func resetSubagentForRunLockedFromWatch(sub *subagent, cancel context.CancelFunc
 	sub.resultConsumed = false
 	sub.endEmitted = false
 	sub.runProvenance = nil
+	sub.runStructured = nil
+	sub.runStructuredCaptured = false
 	sub.runFromWatch = fromWatch
 	sub.cancel = cancel
 	sub.cancelRequested = false
@@ -1335,12 +1339,15 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	a.sess.mu.Unlock()
 
 	runProvenance := a.followUpProvenance(inputProvenance)
+	runStructured := a.sess.CommunicateStructured()
 	finalizeTime := a.sess.sclock().Now()
 	a.mu.Lock()
 	a.finalizing = true
 	a.result = res
 	a.err = err
 	a.runProvenance = provenance.Clone(runProvenance)
+	a.runStructured = runStructured
+	a.runStructuredCaptured = true
 	a.running = false
 	a.turnsUsed = turns
 	a.endedAt = &finalizeTime
