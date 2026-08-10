@@ -55,7 +55,7 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 	}
 	writeMeta(pending, outputMeta{TotalBytes: 6, RetainedStart: 2, RetainedSHA256: hash([]byte("cdef"))})
 	writeMeta(final, outputMeta{TotalBytes: 6, RetainedStart: 0, RetainedSHA256: hash([]byte("abcdef"))})
-	if total, start, err := readOutputMetaForFile(base, final, output, 6); err != nil || total != 6 || start != 0 {
+	if total, start, _, err := readOutputMetaForFile(base, final, output, 6); err != nil || total != 6 || start != 0 {
 		t.Fatalf("pending recovery = %d/%d/%v", total, start, err)
 	}
 
@@ -77,7 +77,7 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 		if tc.final.TotalBytes != 0 {
 			writeMeta(final, tc.final)
 		}
-		_, _, _ = readOutputMetaForFile(base, final, output, tc.retained)
+		_, _, _, _ = readOutputMetaForFile(base, final, output, tc.retained)
 	}
 
 	for _, meta := range []outputMeta{
@@ -87,11 +87,11 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 	} {
 		_ = base.Remove(pending)
 		writeMeta(final, meta)
-		_, _, _ = readOutputMetaForFile(base, final, output, 6)
+		_, _, _, _ = readOutputMetaForFile(base, final, output, 6)
 	}
 
 	fault := &jcpHookFS{Fs: base, openErr: jcpInjectedErr}
-	_, _, _ = readOutputMetaForFile(fault, final, output, 6)
+	_, _, _, _ = readOutputMetaForFile(fault, final, output, 6)
 	_, _, _ = readValidPendingOutputMeta(fault, pending, final, output, 6)
 	_, _, _ = readValidOutputMetaFs(fault, final, output, 6)
 	_, _ = outputFileHasSuffixSHA256(fault, output, 0, 1, "")
@@ -113,11 +113,11 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 		if tc.failAt > 0 {
 			fs = &jobstorePackageOpenFaultFS{Fs: base, path: output, failAt: tc.failAt}
 		}
-		_, _, _ = readOutputMetaForFile(fs, final, output, 6)
+		_, _, _, _ = readOutputMetaForFile(fs, final, output, 6)
 	}
 	writeMeta(pending, outputMeta{TotalBytes: 6, RetainedStart: 2, RetainedSHA256: hash([]byte("cdef"))})
 	writeMeta(final, outputMeta{TotalBytes: 6, RetainedSHA256: hash([]byte("abcdef"))})
-	_, _, _ = readOutputMetaForFile(&jobstorePackageOpenFaultFS{Fs: base, path: final, failAt: 1}, final, output, 6)
+	_, _, _, _ = readOutputMetaForFile(&jobstorePackageOpenFaultFS{Fs: base, path: final, failAt: 1}, final, output, 6)
 	writeMeta(pending, outputMeta{TotalBytes: 6, RetainedSHA256: hash([]byte("abcdef"))})
 	_, _, _ = readValidPendingOutputMeta(&jobstorePackageOpenFaultFS{Fs: base, path: output, failAt: 1}, pending, final, output, 6)
 	for _, tc := range []struct {
@@ -130,7 +130,7 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 	} {
 		_ = base.Remove(pending)
 		writeMeta(final, tc.meta)
-		_, _, _ = readOutputMetaForFile(&jobstorePackageOpenFaultFS{Fs: base, path: output, failAt: tc.failAt}, final, output, 6)
+		_, _, _, _ = readOutputMetaForFile(&jobstorePackageOpenFaultFS{Fs: base, path: output, failAt: tc.failAt}, final, output, 6)
 	}
 
 	// Keep the prefix-mismatch arm independent from the fault-sweep state above.
@@ -148,7 +148,7 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 	}, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := readOutputMetaForFile(prefixFS, final, output, 6); err == nil {
+	if _, _, _, err := readOutputMetaForFile(prefixFS, final, output, 6); err == nil {
 		t.Fatal("mismatched final prefix hash was accepted")
 	}
 	if err := writeOutputMetaFileFsSync(prefixFS, final, outputMeta{
@@ -156,7 +156,7 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 	}, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := readOutputMetaForFile(&jobstorePackageOpenFaultFS{
+	if _, _, _, err := readOutputMetaForFile(&jobstorePackageOpenFaultFS{
 		Fs: prefixFS, path: output, failAt: 2,
 	}, final, output, 6); err == nil {
 		t.Fatal("prefix hash open fault was ignored")
