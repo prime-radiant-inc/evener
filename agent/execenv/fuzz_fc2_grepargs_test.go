@@ -1,8 +1,8 @@
 package execenv
 
 import (
-	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -102,8 +102,8 @@ func FuzzFc2BuildRipgrepArgs(f *testing.F) {
 				if j+1 >= len(mid) {
 					t.Fatalf("-C without a following count value: %v", mid)
 				}
-				if mid[j+1] != fmt.Sprintf("%d", contextLines) {
-					t.Fatalf("-C value=%q, want %q", mid[j+1], fmt.Sprintf("%d", contextLines))
+				if mid[j+1] != strconv.Itoa(contextLines) {
+					t.Fatalf("-C value=%q, want %q", mid[j+1], strconv.Itoa(contextLines))
 				}
 				j++ // skip the count value
 			}

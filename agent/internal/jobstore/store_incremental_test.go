@@ -560,10 +560,10 @@ func referenceFieldPaths(t reflect.Type, prefix string, seen map[reflect.Type]bo
 		path := prefix + "." + f.Name
 		ft := f.Type
 		switch ft.Kind() {
-		case reflect.Ptr, reflect.Slice, reflect.Map, reflect.Interface:
+		case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Interface:
 			out = append(out, path)
 			elem := ft
-			for elem.Kind() == reflect.Ptr || elem.Kind() == reflect.Slice || elem.Kind() == reflect.Map {
+			for elem.Kind() == reflect.Pointer || elem.Kind() == reflect.Slice || elem.Kind() == reflect.Map {
 				elem = elem.Elem()
 			}
 			if elem.Kind() == reflect.Struct && elem != reflect.TypeFor[time.Time]() {

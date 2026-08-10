@@ -162,7 +162,7 @@ func TestSessionInfraRootsRefuseHomeAncestorsAndShallowRoots(t *testing.T) {
 		// /System/Volumes/Data. Firmlinks are not symlinks, so EvalSymlinks does not
 		// collapse them: the alias is deeper than the plain path and is not an
 		// ancestor of the canonical home, and would walk past both guards.
-		alias := filepath.Join("/System/Volumes/Data", root)
+		alias := "/System/Volumes/Data" + root
 		if _, err := os.Stat(alias); err == nil {
 			unsafe = append(unsafe, alias)
 		}

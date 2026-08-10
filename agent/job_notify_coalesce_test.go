@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -116,12 +117,18 @@ func TestWatchedJobCompletionWakesTheSessionOnce(t *testing.T) {
 }
 
 func describeWakes(wakes [][]jobNotification) string {
-	out := ""
+	var out strings.Builder
 	for i, w := range wakes {
-		out += "\n  wake " + strconv.Itoa(i) + ":"
+		out.WriteString("\n  wake ")
+		out.WriteString(strconv.Itoa(i))
+		out.WriteString(":")
 		for _, n := range w {
-			out += " {job=" + n.JobID + " status=" + n.Status + "}"
+			out.WriteString(" {job=")
+			out.WriteString(n.JobID)
+			out.WriteString(" status=")
+			out.WriteString(n.Status)
+			out.WriteString("}")
 		}
 	}
-	return out
+	return out.String()
 }

@@ -145,21 +145,18 @@ func normalizeAskArgs(args map[string]any) (map[string]any, error) {
 	// Case 3: distinguish sub-cases within invalid shapes
 	// Sub-case 3a: both questions and question/options present
 	if hasQuestions && hasQuestion {
-		errorMsg := fmt.Sprintf("ask_user: both 'questions' and 'question'/'options' given — supply exactly one form. Minimal example:\n%s",
-			minimalExampleQuestionsArray())
+		errorMsg := "ask_user: both 'questions' and 'question'/'options' given — supply exactly one form. Minimal example:\n" + minimalExampleQuestionsArray()
 		return nil, errors.New(errorMsg)
 	}
 
 	// Sub-case 3b: question present but options missing (shorthand attempted but incomplete)
 	if hasQuestion && !hasOptions {
-		errorMsg := fmt.Sprintf("ask_user: 'options' is required when using the 'question' shorthand. Minimal example:\n%s",
-			minimalExampleQuestionsArray())
+		errorMsg := "ask_user: 'options' is required when using the 'question' shorthand. Minimal example:\n" + minimalExampleQuestionsArray()
 		return nil, errors.New(errorMsg)
 	}
 
 	// Sub-case 3c: neither questions nor question+options present
-	errorMsg := fmt.Sprintf("ask_user: 'questions' is required (or use the 'question'+'options' shorthand for a single question). Minimal example:\n%s",
-		minimalExampleQuestionsArray())
+	errorMsg := "ask_user: 'questions' is required (or use the 'question'+'options' shorthand for a single question). Minimal example:\n" + minimalExampleQuestionsArray()
 	return nil, errors.New(errorMsg)
 }
 
@@ -190,8 +187,7 @@ func parseAskQuestions(args map[string]any) ([]askQuestion, error) {
 			om, _ := o.(map[string]any)
 			label := fmt.Sprint(om["label"])
 			if labelsSeen[label] {
-				errorMsg := fmt.Sprintf("ask_user: option labels must be unique within a question. Minimal example:\n%s",
-					minimalExampleQuestionsArray())
+				errorMsg := "ask_user: option labels must be unique within a question. Minimal example:\n" + minimalExampleQuestionsArray()
 				return nil, errors.New(errorMsg)
 			}
 			labelsSeen[label] = true
@@ -200,8 +196,7 @@ func parseAskQuestions(args map[string]any) ([]askQuestion, error) {
 			}
 		}
 		if recommendedCount > 1 {
-			errorMsg := fmt.Sprintf("ask_user: at most one option may be recommended. Minimal example:\n%s",
-				minimalExampleQuestionsArray())
+			errorMsg := "ask_user: at most one option may be recommended. Minimal example:\n" + minimalExampleQuestionsArray()
 			return nil, errors.New(errorMsg)
 		}
 		header, _ := qm["header"].(string)
@@ -291,8 +286,8 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 // No decisive turn anywhere in the (possibly compacted) history defaults to
 // idle, matching a fresh session.
 func deriveRestoredState(history []schema.Turn) SessionState {
-	for i := len(history) - 1; i >= 0; i-- {
-		turn := history[i]
+	for _, v := range slices.Backward(history) {
+		turn := v
 		switch turn.Kind {
 		case schema.TurnUserInput:
 			return SessionIdle

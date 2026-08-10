@@ -242,8 +242,7 @@ func TestW3Dlg_SendRetainedBusyActiveNotFoundRaceFallsThroughToResume(t *testing
 	rec := seedStoppedDelegateRestoreRecord(t, sess)
 	childID := rec.DelegateRestore.ChildSessionID
 
-	var sub *subagent
-	sub = &subagent{
+	sub := &subagent{
 		id:      childID,
 		sess:    newDelegateTestSession(t, c),
 		running: true,

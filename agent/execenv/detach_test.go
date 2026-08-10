@@ -52,7 +52,7 @@ func TestDetachCommandRejectsSandboxWrapperBeforeStart(t *testing.T) {
 	markerPath := filepath.Join(root, "started")
 	env := NewLocalExecutionEnvironment(root)
 	env.Wrapper = &sandbox.Wrapper{}
-	command := fmt.Sprintf("printf started > %s", strconv.Quote(markerPath))
+	command := "printf started > " + strconv.Quote(markerPath)
 
 	got, err := env.DetachCommand(context.Background(), command, "", nil)
 	if !errors.Is(err, ErrDetachUnsupported) || got.PID != 0 {

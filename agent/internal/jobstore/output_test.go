@@ -612,7 +612,7 @@ func TestReadOutputWindowSnapshotRunningConcurrentAppendAndPrune(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		close(started)
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			if _, err := o.Append([]byte("append-line\n")); err != nil {
 				done <- err
 				return
@@ -622,7 +622,7 @@ func TestReadOutputWindowSnapshotRunningConcurrentAppendAndPrune(t *testing.T) {
 	}()
 	<-started
 
-	for i := 0; i < 300; i++ {
+	for range 300 {
 		offset := o.RetainedStart()
 		got, err := o.ReadWindow(offset, 31)
 		if errors.Is(err, ErrOutputPruned) {

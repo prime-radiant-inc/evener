@@ -489,7 +489,7 @@ func TestSeatbeltLiveGoTestTelemetryDenialIsTheOnlyStderr(t *testing.T) {
 	if runErr != nil {
 		t.Errorf("go test must exit 0, got %v\nstdout:\n%s\nstderr:\n%s", runErr, stdout.String(), stderr.String())
 	}
-	for _, line := range strings.Split(strings.TrimRight(stderr.String(), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(stderr.String(), "\n"), "\n") {
 		if line == "" {
 			continue
 		}
@@ -530,7 +530,7 @@ const realConfigGit = "git -c user.email=t@e -c user.name=t "
 // directory. See ResolvedPolicy.ToolchainBinDir.
 func unexpectedStderr(stderr string) []string {
 	var out []string
-	for _, line := range strings.Split(strings.TrimRight(stderr, "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(stderr, "\n"), "\n") {
 		if line == "" {
 			continue
 		}

@@ -404,7 +404,7 @@ func validArtifactTranscriptRef(ref string) bool {
 		return false
 	}
 	for _, c := range ref[len(prefix):] {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}
@@ -475,7 +475,7 @@ func (s artifactSearchSource) ReadWindow(offset int64, maxBytes int) (jobstore.O
 	snapshot.Content = make([]byte, int(end-offset))
 	if len(snapshot.Content) > 0 {
 		read, err := s.reader.ReadAt(snapshot.Content, offset)
-		if err != nil && !(errors.Is(err, io.EOF) && read == len(snapshot.Content)) {
+		if err != nil && (!errors.Is(err, io.EOF) || read != len(snapshot.Content)) {
 			return jobstore.OutputWindowSnapshot{}, fmt.Errorf("read artifact search window: %w", err)
 		}
 		if read != len(snapshot.Content) {

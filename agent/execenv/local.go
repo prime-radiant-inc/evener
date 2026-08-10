@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -335,9 +337,8 @@ func (e *LocalExecutionEnvironment) overlaySessionEnv(extra map[string]string) m
 	if len(overlay) == 0 {
 		return extra
 	}
-	for k, v := range extra {
-		overlay[k] = v // caller-supplied extra stays authoritative
-	}
+	// caller-supplied extra stays authoritative
+	maps.Copy(overlay, extra)
 	return overlay
 }
 
@@ -815,8 +816,8 @@ func resolveLoginShellPATH() string {
 // any such noise.
 func lastNonEmptyLine(s string) string {
 	lines := strings.Split(s, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if line := strings.TrimSpace(lines[i]); line != "" {
+	for _, v := range slices.Backward(lines) {
+		if line := strings.TrimSpace(v); line != "" {
 			return line
 		}
 	}
@@ -1375,7 +1376,7 @@ func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFi
 	// and count report per-file, not per-line, so surrounding lines have nothing
 	// to attach to there.
 	if contextLines > 0 && (outputMode == "" || outputMode == "content") {
-		args = append(args, "-C", fmt.Sprintf("%d", contextLines))
+		args = append(args, "-C", strconv.Itoa(contextLines))
 	}
 	// A literal "--" ends rg's option parsing, so a pattern that itself looks
 	// like a flag (e.g. "--font-size-body") is treated as the positional search

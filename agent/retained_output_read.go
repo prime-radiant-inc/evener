@@ -64,7 +64,7 @@ func readRetainedPage(r io.ReaderAt, retainedStart, total, offset int64) (retain
 	content := make([]byte, int(n))
 	if n > 0 {
 		read, err := r.ReadAt(content, offset-retainedStart)
-		if err != nil && !(errors.Is(err, io.EOF) && read == len(content)) {
+		if err != nil && (!errors.Is(err, io.EOF) || read != len(content)) {
 			return retainedPage{}, fmt.Errorf("read retained output page: %w", err)
 		}
 		if read != len(content) {

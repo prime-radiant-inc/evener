@@ -137,7 +137,7 @@ func globMatchIsDir(fsys fs.FS, m string) bool {
 // standing hidden-file skip) for hiding VCS internals, worktree scratch
 // dirs (.claude/worktrees/x), and other dotfiles from unscoped search.
 func isDotPath(relPath string) bool {
-	for _, part := range strings.Split(relPath, "/") {
+	for part := range strings.SplitSeq(relPath, "/") {
 		if part != "." && strings.HasPrefix(part, ".") {
 			return true
 		}

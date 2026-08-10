@@ -220,10 +220,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			}
 			contextLines := 0
 			if v, ok := args["context_lines"].(float64); ok && int(v) > 0 {
-				contextLines = int(v)
-				if contextLines > 10 {
-					contextLines = 10
-				}
+				contextLines = min(int(v), 10)
 			}
 			return env.Grep(pat, path, glob, ci, maxRes, outputMode, contextLines)
 		},

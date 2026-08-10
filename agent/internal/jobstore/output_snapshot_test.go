@@ -425,7 +425,7 @@ func TestReadOutputWindowSnapshotConcurrentAppendAndPrune(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		defer finished.Store(true)
-		for i := 0; i < 150; i++ {
+		for range 150 {
 			if _, err := o.Append([]byte("append-line\n")); err != nil {
 				done <- err
 				return

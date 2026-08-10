@@ -99,7 +99,7 @@ func TestReadRetainedPageValidatesEOFAndLifetimeOffsets(t *testing.T) {
 
 func TestSearchRetainedContextLinesZeroOneAndTen(t *testing.T) {
 	var lines []string
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		line := fmt.Sprintf("line-%02d", i)
 		if i == 12 {
 			line += " HIT"
@@ -138,7 +138,7 @@ func TestSearchRetainedContextLinesZeroOneAndTen(t *testing.T) {
 
 func TestSearchRetainedStopsBeforeThe101stMatch(t *testing.T) {
 	var b strings.Builder
-	for i := 0; i < 101; i++ {
+	for i := range 101 {
 		fmt.Fprintf(&b, "hit-%03d\n", i)
 	}
 	data := []byte(b.String())
@@ -260,7 +260,7 @@ func TestSearchRetainedSerializedCapRepeatedContinuationCannotLoop(t *testing.T)
 		skipped int
 	)
 	seenOffsets := map[int64]bool{}
-	for call := 0; call < 5; call++ {
+	for call := range 5 {
 		if seenOffsets[offset] {
 			t.Fatalf("continuation looped at offset %d", offset)
 		}
@@ -372,16 +372,16 @@ func TestSearchRetainedContextRecordOver64KiBSkipsAndProgresses(t *testing.T) {
 func TestSearchRetainedStopsBefore64KiBOfSerializedMatchContext(t *testing.T) {
 	contextLine := strings.Repeat("x", 1800)
 	var lines []string
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		lines = append(lines, fmt.Sprintf("before-%02d-%s", i, contextLine))
 	}
 	lines = append(lines, "HIT-one")
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		lines = append(lines, fmt.Sprintf("middle-%02d-%s", i, contextLine))
 	}
 	secondIndex := len(lines)
 	lines = append(lines, "HIT-two")
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		lines = append(lines, fmt.Sprintf("after-%02d-%s", i, contextLine))
 	}
 	data := []byte(strings.Join(lines, "\n") + "\n")
@@ -434,7 +434,7 @@ func TestSearchRetainedLookaheadContextDoesNotSkipLaterMatches(t *testing.T) {
 	source := newMemorySearchSource(data, 0)
 	var got []string
 	var offset int64
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		envelope, err := searchRetainedOutput(source, retainedSearchOptions{
 			Regexp:        regexp.MustCompile(`^hit-`),
 			SearchOptions: jobstore.SearchOptions{StartOffset: offset, MaxMatches: 1, ContextLines: 1},

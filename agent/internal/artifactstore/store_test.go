@@ -166,7 +166,7 @@ func TestStoreConcurrentPutOpen(t *testing.T) {
 	const workers = 32
 	var wg sync.WaitGroup
 	wg.Add(workers)
-	for i := 0; i < workers; i++ {
+	for i := range workers {
 		go func(i int) {
 			defer wg.Done()
 			want := []byte{byte(i), 0, '\n', byte(255 - i)}
@@ -201,7 +201,7 @@ func TestStoreConcurrentPutOpen(t *testing.T) {
 }
 
 func TestStorePutCloseRaceDoesNotLeak(t *testing.T) {
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		s, err := New(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
@@ -257,7 +257,7 @@ func TestStoreOpenCloseRaceIsLinearizable(t *testing.T) {
 	results := make(chan openResult, openers)
 	var wg sync.WaitGroup
 	wg.Add(openers)
-	for i := 0; i < openers; i++ {
+	for range openers {
 		go func() {
 			defer wg.Done()
 			ready <- struct{}{}
@@ -286,7 +286,7 @@ func TestStoreOpenCloseRaceIsLinearizable(t *testing.T) {
 		<-start
 		closeResult <- s.Close()
 	}()
-	for i := 0; i < openers+1; i++ {
+	for range openers + 1 {
 		<-ready
 	}
 	close(start)

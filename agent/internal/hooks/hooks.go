@@ -551,7 +551,7 @@ func hookIdentityParts(hook plugin.RegisteredHook) []string {
 // maxHookFailureDetail RUNES (never bytes — a byte cut would split a multi-byte
 // rune and emit mojibake in the warning), or "" when there is nothing to show.
 func firstLine(text string) string {
-	for _, l := range strings.Split(text, "\n") {
+	for l := range strings.SplitSeq(text, "\n") {
 		l = strings.TrimSpace(l)
 		if l == "" {
 			continue

@@ -136,11 +136,9 @@ func TestPrepareGitSurfacesIsConcurrencySafe(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make([]error, 8)
 	for i := range errs {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			errs[i] = prepareGitSurfaces(rp)
-		}()
+		})
 	}
 	wg.Wait()
 	for i, err := range errs {

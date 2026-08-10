@@ -1365,11 +1365,9 @@ func TestObserverLinkGoroutineWaitedOnDuringClose(t *testing.T) {
 
 	// Set up the scheduleObserverLink hook (same as in newJobManagerWithRestore)
 	jm.scheduleObserverLink = func(fn func()) {
-		jm.observerLinkWG.Add(1)
-		go func() {
-			defer jm.observerLinkWG.Done()
+		jm.observerLinkWG.Go(func() {
 			fn()
-		}()
+		})
 	}
 
 	// Track whether the scheduled closure ran.

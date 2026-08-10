@@ -546,11 +546,9 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 	jm.finalizeShellAsync = jm.finalizeShellUntilDurable
 	// Set up scheduleObserverLink to track goroutines with the WaitGroup.
 	jm.scheduleObserverLink = func(fn func()) {
-		jm.observerLinkWG.Add(1)
-		go func() {
-			defer jm.observerLinkWG.Done()
+		jm.observerLinkWG.Go(func() {
 			fn()
-		}()
+		})
 	}
 	if err := restorePending(jm); err != nil {
 		_ = store.Close()

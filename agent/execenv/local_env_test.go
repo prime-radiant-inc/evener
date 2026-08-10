@@ -277,7 +277,7 @@ func TestUnsandboxedScratchDirConcurrentProvisioning(t *testing.T) {
 	results := make([]string, n)
 	var wg sync.WaitGroup
 	wg.Add(n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(i int) {
 			defer wg.Done()
 			results[i] = env.unsandboxedScratchDir()

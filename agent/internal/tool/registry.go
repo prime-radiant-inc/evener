@@ -190,21 +190,18 @@ func normalizeAskUserArgs(args map[string]any) (map[string]any, error) {
 
 	// Sub-case 3a: both questions and question/options present
 	if hasQuestions && hasQuestion {
-		errorMsg := fmt.Sprintf("ask_user: both 'questions' and 'question'/'options' given — supply exactly one form. Minimal example:\n%s",
-			string(exBytes))
+		errorMsg := "ask_user: both 'questions' and 'question'/'options' given — supply exactly one form. Minimal example:\n" + string(exBytes)
 		return nil, errors.New(errorMsg)
 	}
 
 	// Sub-case 3b: question present but options missing (shorthand attempted but incomplete)
 	if hasQuestion && !hasOptions {
-		errorMsg := fmt.Sprintf("ask_user: 'options' is required when using the 'question' shorthand. Minimal example:\n%s",
-			string(exBytes))
+		errorMsg := "ask_user: 'options' is required when using the 'question' shorthand. Minimal example:\n" + string(exBytes)
 		return nil, errors.New(errorMsg)
 	}
 
 	// Sub-case 3c: neither questions nor question+options present
-	errorMsg := fmt.Sprintf("ask_user: 'questions' is required (or use the 'question'+'options' shorthand for a single question). Minimal example:\n%s",
-		string(exBytes))
+	errorMsg := "ask_user: 'questions' is required (or use the 'question'+'options' shorthand for a single question). Minimal example:\n" + string(exBytes)
 	return nil, errors.New(errorMsg)
 }
 
@@ -856,15 +853,10 @@ func truncateHeadCountWithStatus(s string, maxEntries, maxChars int) (string, bo
 	return out, truncated
 }
 
-// truncateCharsFromTail bounds s to at most limit characters by dropping
+// truncateCharsFromTailWithStatus bounds s to at most limit characters by dropping
 // characters from the END and appending a warning marker, preserving
 // whatever head content the caller already assembled (e.g. truncateHeadCount's
-// earliest-first matches and their summary line).
-func truncateCharsFromTail(s string, limit int) string {
-	out, _ := truncateCharsFromTailWithStatus(s, limit)
-	return out
-}
-
+// earliest-first matches and their summary line), and reports whether it did so.
 func truncateCharsFromTailWithStatus(s string, limit int) (string, bool) {
 	runes := []rune(s)
 	if limit <= 0 || len(runes) <= limit {
@@ -873,10 +865,7 @@ func truncateCharsFromTailWithStatus(s string, limit int) (string, bool) {
 	removed := len(runes) - limit
 	for {
 		marker := fmt.Sprintf("\n[Output truncated: %d characters removed from the end.]", removed)
-		keep := limit - len([]rune(marker))
-		if keep < 0 {
-			keep = 0
-		}
+		keep := max(limit-len([]rune(marker)), 0)
 		actualRemoved := len(runes) - keep
 		if actualRemoved == removed {
 			return string(runes[:keep]) + marker, true
