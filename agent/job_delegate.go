@@ -1727,6 +1727,9 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 		return nil, nil, nil, err
 	}
 	relinkDelegateChildToJob(sub.sess, run.rec.JobID)
+	if !fromWatch {
+		sub.fatalRunGated = false
+	}
 	resetSubagentForRunLockedFromWatch(sub, runCancel, resumeTime, fromWatch)
 	done := sub.done
 	sub.mu.Unlock()

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -20,6 +21,8 @@ type ownedJobDrainEnvironment struct {
 	started     chan struct{}
 	release     chan struct{}
 	releaseOnce sync.Once
+	signaled    chan struct{}
+	signalOnce  sync.Once
 }
 
 func newOwnedJobDrainEnvironment(dir string) *ownedJobDrainEnvironment {
@@ -27,6 +30,7 @@ func newOwnedJobDrainEnvironment(dir string) *ownedJobDrainEnvironment {
 		ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(dir),
 		started:              make(chan struct{}),
 		release:              make(chan struct{}),
+		signaled:             make(chan struct{}),
 	}
 }
 
@@ -42,7 +46,10 @@ func (e *ownedJobDrainEnvironment) StreamCommand(_ context.Context, _, _ string,
 			_, _ = out.Write([]byte("child shell complete"))
 			return 0, nil
 		},
-		Signal: e.releaseJob,
+		Signal: func() {
+			e.signalOnce.Do(func() { close(e.signaled) })
+			e.releaseJob()
+		},
 	}, nil
 }
 
@@ -68,18 +75,20 @@ func (c *ownedJobDrainClock) NewTicker(d time.Duration) clock.Ticker {
 }
 
 type ownedJobDrainFixture struct {
-	parent  *Session
-	child   *subagent
-	env     *ownedJobDrainEnvironment
-	adapter *fakeAdapter
-	result  delegateResult
-	runDone <-chan struct{}
+	parent       *Session
+	child        *subagent
+	env          *ownedJobDrainEnvironment
+	adapter      *fakeAdapter
+	freshHandled chan struct{}
+	result       delegateResult
+	runDone      <-chan struct{}
 }
 
 func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 	t.Helper()
 
 	idleReported := make(chan struct{})
+	freshHandled := make(chan struct{})
 	drainClock := newOwnedJobDrainClock()
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -98,6 +107,10 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 			},
 			func(llm.Request) llm.Response {
 				return finalResponse("owned shell handled")
+			},
+			func(llm.Request) llm.Response {
+				close(freshHandled)
+				return finalResponse("fresh notification handled")
 			},
 		},
 	}
@@ -161,12 +174,173 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 	}
 
 	return &ownedJobDrainFixture{
-		parent:  parent,
-		child:   child,
-		env:     env,
-		adapter: adapter,
-		result:  result,
-		runDone: run.done,
+		parent:       parent,
+		child:        child,
+		env:          env,
+		adapter:      adapter,
+		freshHandled: freshHandled,
+		result:       result,
+		runDone:      run.done,
+	}
+}
+
+func TestSubagentDrainRestoresParentDriveCallbackForFreshChildNotification(t *testing.T) {
+	fixture := newOwnedJobDrainFixture(t)
+	fixture.env.releaseJob()
+	select {
+	case <-fixture.runDone:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("delegate job %s did not finish after its owned shell exited", fixture.result.JobID)
+	}
+	fixture.requireHandledResult(t)
+
+	enqueueCompletedDelegateNotification(t, fixture.child.sess, "fresh-child-job")
+	fixture.child.sess.notify()
+	select {
+	case <-fixture.freshHandled:
+	case <-time.After(30 * time.Second):
+		t.Fatal("fresh child notification did not reach the restored parent drive callback")
+	}
+	requests := fixture.adapter.Requests()
+	if len(requests) != 4 {
+		t.Fatalf("provider requests = %d, want exactly one fresh notification turn after the drained run", len(requests))
+	}
+	if !requestsContain(requests[3:], "fresh-child-job") {
+		t.Fatalf("fresh notification request did not contain the child job: %+v", requests[3:])
+	}
+}
+
+func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) {
+	fatalErr := errors.New("provider failed after shell launch")
+	adapter := &fakeErrAdapter{
+		name: "openai",
+		steps: []func(llm.Request) (llm.Response, error){
+			func(llm.Request) (llm.Response, error) {
+				return toolCallResponse(llm.ToolCallData{
+					ID:        "fatal-owned-shell",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"fatal owned shell","mode":"background"}`),
+					Type:      "function",
+				}), nil
+			},
+			func(llm.Request) (llm.Response, error) {
+				return llm.Response{}, fatalErr
+			},
+			func(llm.Request) (llm.Response, error) {
+				return finalResponse("explicit resume succeeded"), nil
+			},
+			func(llm.Request) (llm.Response, error) {
+				return finalResponse("stopped shell notification handled"), nil
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	env := newOwnedJobDrainEnvironment(t.TempDir())
+	parent, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { parent.Close() })
+	t.Cleanup(env.releaseJob)
+
+	result := parent.createDelegate(context.Background(), delegateArgs{
+		Task:       "fail after launching an owned shell",
+		Background: true,
+	})
+	if result.Err != nil {
+		t.Fatalf("createDelegate: %v", result.Err)
+	}
+	_, childID, err := decodeRef(result.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decodeRef(%q): %v", result.TranscriptRef, err)
+	}
+	child := parent.subagents.get(childID)
+	if child == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+	select {
+	case <-env.started:
+	case <-time.After(30 * time.Second):
+		t.Fatal("child shell did not start")
+	}
+
+	parent.jobManager.mu.Lock()
+	run := parent.jobManager.running[result.JobID]
+	parent.jobManager.mu.Unlock()
+	if run == nil {
+		t.Fatalf("delegate job %s finalized before fatal child run completed", result.JobID)
+	}
+	select {
+	case <-run.done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("parent delegate did not finalize after fatal child run")
+	}
+	select {
+	case <-env.signaled:
+	case <-time.After(30 * time.Second):
+		t.Fatal("fatal child run did not signal its owned shell")
+	}
+
+	requests := adapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests after fatal run = %d, want exactly shell launch and fatal model turn", len(requests))
+	}
+	child.mu.Lock()
+	status := child.status
+	childErr := child.err
+	fatalRunGated := child.fatalRunGated
+	childDone := child.done
+	child.mu.Unlock()
+	if status != SubagentFailed || !errors.Is(childErr, fatalErr) {
+		t.Fatalf("child terminal state = %s, err %v; want failed with original provider error", status, childErr)
+	}
+	if !fatalRunGated {
+		t.Fatal("fatal child run did not retain its automatic-drive gate")
+	}
+	select {
+	case <-childDone:
+	default:
+		t.Fatal("child done channel remained open after parent delegate finalized")
+	}
+	rec := loadShellRecord(t, parent.jobManager, result.JobID)
+	if rec.Status != jobstore.StatusFailed || rec.Reason == "stopped_by_parent" {
+		t.Fatalf("delegate record = status %s reason %q, want failed without stopped_by_parent", rec.Status, rec.Reason)
+	}
+	stored, _, _, err := parent.jobManager.readOutput(result.JobID, shellInlineOutputBytes)
+	if err != nil {
+		t.Fatalf("read delegate output: %v", err)
+	}
+	if !strings.Contains(stored, fatalErr.Error()) {
+		t.Fatalf("delegate output = %q, want original fatal error", stored)
+	}
+
+	if _, err := parent.sendInput(context.Background(), child.id, "resume after fatal run"); err != nil {
+		t.Fatalf("explicit child resume: %v", err)
+	}
+	child.mu.Lock()
+	resumedDone := child.done
+	child.mu.Unlock()
+	select {
+	case <-resumedDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("explicit child resume did not finish")
+	}
+	child.mu.Lock()
+	resumedStatus := child.status
+	resumedGate := child.fatalRunGated
+	child.mu.Unlock()
+	if resumedStatus != SubagentCompleted || resumedGate {
+		t.Fatalf("child after explicit resume = status %s fatal gate %v; want completed/false", resumedStatus, resumedGate)
 	}
 }
 

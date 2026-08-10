@@ -102,6 +102,7 @@ type subagent struct {
 	closed          bool               // session torn down; record retained as terminal history
 	closeTimedOut   bool               // session-close wait exceeded its bound; close not confirmed
 	driving         bool               // a drive-down notification turn (§3) is in flight on this idle child
+	fatalRunGated   bool               // terminal run error freezes automatic drives until an explicit resume
 	// disposeGated freezes a quiescent, retained TERMINAL child while a dispose op
 	// (spec §P1 step 4) evaluates and evicts it: no wake-edge drive may launch and
 	// no delegate_send may resume the child while it is set. Guarded by sub.mu; set
@@ -978,6 +979,7 @@ func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, er
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 
+	sub.fatalRunGated = false
 	resetSubagentForRunLocked(sub, runCancel, resumeTime)
 	sub.mu.Unlock()
 
@@ -1046,7 +1048,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		return false
 	}
 	sub.mu.Lock()
-	if sub.sess == nil || sub.closed || sub.running || sub.driving || sub.disposeGated {
+	if sub.sess == nil || sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated {
 		sub.mu.Unlock()
 		return false
 	}
@@ -1119,6 +1121,12 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 // driveRedriveMinInterval (or drive cancel) before launching so a child whose
 // attention never drains cannot hot-loop its budget slot.
 func (s *Session) redriveChildIfAttentionRemains(driveCtx context.Context, sub *subagent, childSess *Session) {
+	if sub == nil || childSess == nil {
+		return
+	}
+	if sub.fatalRunGatedSnapshot() {
+		return
+	}
 	stopGated := s.childStopGated(childSess.id)
 	if hook := s.cfg.testOnly.subagentStopGated; hook != nil {
 		if stopped, handled := hook(s, childSess.id); handled {
@@ -1212,6 +1220,23 @@ func (s *Session) getSub(agentID string) *subagent {
 	return s.subagents.get(agentID)
 }
 
+func (a *subagent) fatalRunGatedSnapshot() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.fatalRunGated
+}
+
+func (s *Session) childFatalRunGated(childSessionID string) bool {
+	if s == nil || s.subagents == nil || childSessionID == "" {
+		return false
+	}
+	sub := s.getSub(childSessionID)
+	return sub != nil && sub.fatalRunGatedSnapshot()
+}
+
 // communicateNudge returns the message sent to a subagent that stops without
 // calling the result tool. Sent at most once.
 func communicateNudge(toolName string) string {
@@ -1272,6 +1297,15 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		} else if drained != "" {
 			res = drained
 		}
+	}
+	if err != nil {
+		a.mu.Lock()
+		a.fatalRunGated = true
+		a.mu.Unlock()
+		// A failed run must not leave owned managed work alive. Preserve the
+		// original run error for the parent delegate result even if a stop races
+		// with a job-manager failure.
+		_, _ = a.sess.stopDelegateSubtree(a.sess)
 	}
 	exhaustion, budgetExhausted := budgetExhaustionFromError(err)
 

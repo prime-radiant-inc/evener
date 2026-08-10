@@ -160,9 +160,10 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 		driving := sub.driving
 		child := sub.sess
 		sub.mu.Unlock()
-		if child != nil && s.childStopGated(child.id) {
-			// A deliberately stopped child is never driven — driveChildrenWithUndeliveredAttention
-			// skips stop-gated children — so its pre-stop attention will never be
+		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id)) {
+			// A deliberately stopped or fatally failed child is never driven —
+			// driveChildrenWithUndeliveredAttention skips both gates — so its
+			// attention will never be
 			// delivered. Counting it (or its subtree) would hang the drain forever,
 			// so match the drive gate and skip it.
 			continue
@@ -200,9 +201,9 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 // When outstanding is true but none of those exist, the outstanding work is
 // composed entirely of terminal-but-undelivered notifications that the
 // drive/recheck machinery is not converting — a stranded wedge. It walks the
-// same liveDirectSubagents / childStopGated path treeHasOutstandingWork does,
-// skipping stop-gated children identically (they are never driven, so their
-// leftover state is not a stall the drain can act on).
+// same liveDirectSubagents / child gate path treeHasOutstandingWork does,
+// skipping stop-gated and fatally failed children identically (they are never
+// driven, so their leftover state is not a stall the drain can act on).
 func (s *Session) drainSubtreeIsStalled() (bool, error) {
 	outstanding, err := s.treeHasOutstandingWork()
 	if err != nil {
@@ -220,7 +221,7 @@ func (s *Session) drainSubtreeIsStalled() (bool, error) {
 
 // subtreeHasLiveComponent reports whether any live or deliverable drain
 // component (see drainSubtreeIsStalled) exists in this session or any live,
-// non-stop-gated descendant.
+// non-gated descendant.
 func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	if s.jobManager != nil {
 		if s.jobManager.hasRunningDrainJob() || s.jobManager.hasPendingWatchSends() {
@@ -235,7 +236,7 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 		driving := sub.driving
 		child := sub.sess
 		sub.mu.Unlock()
-		if child != nil && s.childStopGated(child.id) {
+		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id)) {
 			continue
 		}
 		if driving {
@@ -255,7 +256,7 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 }
 
 // subtreeOutstandingDrainJobIDs collects the outstanding managed job ids across
-// this session and every live, non-stop-gated descendant, so a stall warning can
+// this session and every live, non-gated descendant, so a stall warning can
 // name the stuck managed job(s). It walks the same path as treeHasOutstandingWork.
 func (s *Session) subtreeOutstandingDrainJobIDs() []string {
 	var ids []string
@@ -268,7 +269,7 @@ func (s *Session) subtreeOutstandingDrainJobIDs() []string {
 		sub.mu.Lock()
 		child := sub.sess
 		sub.mu.Unlock()
-		if child == nil || s.childStopGated(child.id) {
+		if child == nil || s.childStopGated(child.id) || s.childFatalRunGated(child.id) {
 			continue
 		}
 		ids = append(ids, child.subtreeOutstandingDrainJobIDs()...)
@@ -485,7 +486,7 @@ func (s *Session) kickDriveTreeWith(ctx context.Context, drain func(*Session, co
 	}
 	for _, sub := range s.liveDirectSubagents() {
 		child := sub.sess
-		if child == nil || s.childStopGated(child.id) {
+		if child == nil || s.childStopGated(child.id) || s.childFatalRunGated(child.id) {
 			continue
 		}
 		if err := child.kickDriveTreeWith(ctx, drain); err != nil {
