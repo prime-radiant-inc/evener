@@ -1104,7 +1104,10 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 			s.redriveChildIfAttentionRemains(driveCtx, sub, childSess)
 		}()
 		defer treeSlot.release()
-		_, _ = childSess.ProcessInputKind(driveCtx, "", nil, EntryNotification)
+		_, err := childSess.ProcessInputKind(driveCtx, "", nil, EntryNotification)
+		if err != nil {
+			sub.gateFatalRun(err)
+		}
 	}()
 	return true
 }
@@ -1145,6 +1148,20 @@ func (s *Session) redriveChildIfAttentionRemains(driveCtx context.Context, sub *
 		if s.driveSubagentNotificationTurn(sub) {
 			s.settleDrivenChildForwardedPendings(childSess.id)
 		}
+	}
+}
+
+func (a *subagent) gateFatalRun(err error) {
+	if a == nil || err == nil {
+		return
+	}
+	a.mu.Lock()
+	a.fatalRunGated = true
+	a.mu.Unlock()
+	// A failed child turn must not leave owned managed work alive. Preserve the
+	// retained run's error/state even if stopping races with a job-manager error.
+	if a.sess != nil {
+		_, _ = a.sess.stopDelegateSubtree(a.sess)
 	}
 }
 
@@ -1283,6 +1300,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	if !cancelRequested && !budgetExhausted {
 		res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
 	}
+	var restoreParentDriveNotify func()
 	if err == nil {
 		// DrainJobTree temporarily owns the session's notification callback. A
 		// retained child still needs its parent-drive callback after this run so
@@ -1291,7 +1309,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		parentDriveNotify := a.sess.notifyFunc
 		a.sess.mu.Unlock()
 		drained, drainErr := a.sess.DrainJobTree(ctx)
-		a.sess.SetNotifyFunc(parentDriveNotify)
+		restoreParentDriveNotify = parentDriveNotify
 		if drainErr != nil {
 			err = drainErr
 		} else if drained != "" {
@@ -1299,13 +1317,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		}
 	}
 	if err != nil {
-		a.mu.Lock()
-		a.fatalRunGated = true
-		a.mu.Unlock()
-		// A failed run must not leave owned managed work alive. Preserve the
-		// original run error for the parent delegate result even if a stop races
-		// with a job-manager failure.
-		_, _ = a.sess.stopDelegateSubtree(a.sess)
+		a.gateFatalRun(err)
 	}
 	exhaustion, budgetExhausted := budgetExhaustionFromError(err)
 
@@ -1336,6 +1348,9 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	done := a.done
 	a.endEmitted = true
 	a.mu.Unlock()
+	if restoreParentDriveNotify != nil {
+		a.sess.SetNotifyFunc(restoreParentDriveNotify)
+	}
 
 	if done != nil {
 		close(done)

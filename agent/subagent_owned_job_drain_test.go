@@ -57,7 +57,22 @@ type ownedJobDrainClock struct {
 	clock.Clock
 	drainEntered chan struct{}
 	drainOnce    sync.Once
+	onDrainStop  func()
 }
+
+type ownedJobDrainTicker struct {
+	clock.Ticker
+	onStop func()
+}
+
+func (t *ownedJobDrainTicker) Stop() {
+	if t.onStop != nil {
+		t.onStop()
+	}
+	t.Ticker.Stop()
+}
+
+func (t *ownedJobDrainTicker) Reset(d time.Duration) { t.Ticker.Reset(d) }
 
 func newOwnedJobDrainClock() *ownedJobDrainClock {
 	return &ownedJobDrainClock{
@@ -70,6 +85,14 @@ func (c *ownedJobDrainClock) NewTicker(d time.Duration) clock.Ticker {
 	ticker := c.Clock.NewTicker(d)
 	if d == drainRecheckInterval {
 		c.drainOnce.Do(func() { close(c.drainEntered) })
+		return &ownedJobDrainTicker{
+			Ticker: ticker,
+			onStop: func() {
+				if c.onDrainStop != nil {
+					c.onDrainStop()
+				}
+			},
+		}
 	}
 	return ticker
 }
@@ -80,6 +103,7 @@ type ownedJobDrainFixture struct {
 	env          *ownedJobDrainEnvironment
 	adapter      *fakeAdapter
 	freshHandled chan struct{}
+	drainClock   *ownedJobDrainClock
 	result       delegateResult
 	runDone      <-chan struct{}
 }
@@ -179,6 +203,7 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 		env:          env,
 		adapter:      adapter,
 		freshHandled: freshHandled,
+		drainClock:   drainClock,
 		result:       result,
 		runDone:      run.done,
 	}
@@ -210,8 +235,28 @@ func TestSubagentDrainRestoresParentDriveCallbackForFreshChildNotification(t *te
 	}
 }
 
+func TestSubagentDrainRestoresParentDriveAfterTerminalStatePublication(t *testing.T) {
+	fixture := newOwnedJobDrainFixture(t)
+	fixture.drainClock.onDrainStop = func() {
+		enqueueCompletedDelegateNotification(t, fixture.child.sess, "restore-order-job")
+	}
+	fixture.env.releaseJob()
+	select {
+	case <-fixture.freshHandled:
+	case <-time.After(30 * time.Second):
+		t.Fatal("notification queued at drain return did not drive after terminal state publication")
+	}
+	requests := fixture.adapter.Requests()
+	if len(requests) != 4 {
+		t.Fatalf("provider requests = %d, want exactly one post-drain drive turn", len(requests))
+	}
+	if !requestsContain(requests[3:], "restore-order-job") {
+		t.Fatalf("post-drain drive request did not contain the queued notification: %+v", requests[3:])
+	}
+}
+
 func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) {
-	fatalErr := errors.New("provider failed after shell launch")
+	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "provider failed after shell launch", nil, nil)
 	adapter := &fakeErrAdapter{
 		name: "openai",
 		steps: []func(llm.Request) (llm.Response, error){
@@ -341,6 +386,107 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	child.mu.Unlock()
 	if resumedStatus != SubagentCompleted || resumedGate {
 		t.Fatalf("child after explicit resume = status %s fatal gate %v; want completed/false", resumedStatus, resumedGate)
+	}
+}
+
+func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T) {
+	driveErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal notification turn", nil, nil)
+	adapter := &fakeErrAdapter{
+		name: "openai",
+		steps: []func(llm.Request) (llm.Response, error){
+			func(llm.Request) (llm.Response, error) {
+				return finalResponse("idle before notification"), nil
+			},
+			func(llm.Request) (llm.Response, error) {
+				return toolCallResponse(llm.ToolCallData{
+					ID:        "fatal-drive-shell",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"fatal drive shell","mode":"background"}`),
+					Type:      "function",
+				}), nil
+			},
+			func(llm.Request) (llm.Response, error) {
+				return llm.Response{}, driveErr
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	env := newOwnedJobDrainEnvironment(t.TempDir())
+	parent, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { parent.Close() })
+	t.Cleanup(env.releaseJob)
+
+	result := parent.createDelegate(context.Background(), delegateArgs{
+		Task:       "idle before a fatal notification turn",
+		Background: true,
+	})
+	if result.Err != nil {
+		t.Fatalf("createDelegate: %v", result.Err)
+	}
+	waitForShellDone(t, parent.jobManager, result.JobID)
+	_, childID, err := decodeRef(result.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decodeRef(%q): %v", result.TranscriptRef, err)
+	}
+	child := parent.subagents.get(childID)
+	if child == nil || child.sess == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+	child.mu.Lock()
+	statusBeforeDrive := child.status
+	resultBeforeDrive := child.result
+	errBeforeDrive := child.err
+	doneBeforeDrive := child.done
+	child.mu.Unlock()
+	enqueueCompletedDelegateNotification(t, child.sess, "fatal-drive-notification")
+	child.sess.notify()
+	select {
+	case <-env.started:
+	case <-time.After(30 * time.Second):
+		t.Fatal("automatic notification drive did not launch its owned shell")
+	}
+	select {
+	case <-env.signaled:
+	case <-time.After(30 * time.Second):
+		t.Fatal("fatal automatic notification drive did not stop its owned shell")
+	}
+	waitForCondition(t, 5*time.Second, "stopped shell notification to remain gated", func() bool {
+		child.mu.Lock()
+		driving := child.driving
+		child.mu.Unlock()
+		return !driving && child.sess.peekNotifications() > 0
+	})
+	child.sess.notify()
+	requests := adapter.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("provider requests after fatal drive = %d, want initial, shell launch, and fatal turns only", len(requests))
+	}
+	if !child.fatalRunGatedSnapshot() {
+		t.Fatal("fatal notification drive did not retain the automatic-drive gate")
+	}
+	child.mu.Lock()
+	statusAfterDrive := child.status
+	resultAfterDrive := child.result
+	errAfterDrive := child.err
+	doneAfterDrive := child.done
+	child.mu.Unlock()
+	if statusAfterDrive != statusBeforeDrive || resultAfterDrive != resultBeforeDrive || !errors.Is(errAfterDrive, errBeforeDrive) || doneAfterDrive != doneBeforeDrive {
+		t.Fatalf("fatal drive changed retained state from (%s, %q, %v, %p) to (%s, %q, %v, %p)",
+			statusBeforeDrive, resultBeforeDrive, errBeforeDrive, doneBeforeDrive,
+			statusAfterDrive, resultAfterDrive, errAfterDrive, doneAfterDrive)
 	}
 }
 
