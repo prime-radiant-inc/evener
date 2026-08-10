@@ -31,7 +31,7 @@ func TestStorePutOpenRoundTrip(t *testing.T) {
 		t.Fatalf("ref length = %d, want %d: %q", len(ref), len("artifact:")+32, ref)
 	}
 	for _, c := range ref[len("artifact:"):] {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Fatalf("ref contains non-lowercase-hex ID: %q", ref)
 		}
 	}
