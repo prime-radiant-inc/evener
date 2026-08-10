@@ -89,7 +89,7 @@ func stpReplayRegistrationContracts(t *testing.T) {
 	run("format-dir-listing", TestFormatDirListing)
 	run("paginate-dir-entries", TestPaginateDirEntries)
 	run("paginate-dir-budget", TestPaginateDirEntriesStaysUnderToolCap)
-	run("parse-shell-args", TestParseShellToolArgsBackground)
+	run("parse-shell-args", TestParseShellToolArgsMode)
 	run("shell-result-status", TestShellOutputStatus)
 	run("shell-result-format", TestShellResultReportsOutputBytes)
 	run("shell-timeout-policy", TestShellToolStreamingPathHonorsSessionTimeouts)
