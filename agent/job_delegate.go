@@ -659,7 +659,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 			return delegateSendBusyRefusal(target, rec, args.FromWatch, "finalizing")
 		}
 		if fatalRunGated && (running || args.FromWatch) {
-			return delegateSendBusyRefusal(target, rec, args.FromWatch, "recovering from a fatal run")
+			return fatalRunGatedSendRefusal(target, rec, args.FromWatch, running)
 		}
 		if running {
 			// A driving child is in flight: steer into the drive turn (spec §3, A7).
@@ -721,7 +721,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 			return delegateSendBusyRefusal(target, rec, args.FromWatch, "finalizing")
 		}
 		if fatalRunGated && (running || driving || args.FromWatch) {
-			return delegateSendBusyRefusal(target, rec, args.FromWatch, "recovering from a fatal run")
+			return fatalRunGatedSendRefusal(target, rec, args.FromWatch, running || driving)
 		}
 		if driving && !running {
 			return s.sendRunningDelegateMessage(target, message, rec, args.FromWatch, args.Provenance)
@@ -755,7 +755,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 					return delegateSendBusyRefusal(target, rec, args.FromWatch, "finalizing")
 				}
 				if fatalRunGated && (stillBusy || args.FromWatch) {
-					return delegateSendBusyRefusal(target, rec, args.FromWatch, "recovering from a fatal run")
+					return fatalRunGatedSendRefusal(target, rec, args.FromWatch, stillBusy)
 				}
 				if stillBusy {
 					return sendMessageFailed(target, notResumableSendError(notResumableChildSessionBusy))
@@ -787,7 +787,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return delegateSendBusyRefusal(target, rec, args.FromWatch, "finalizing")
 	}
 	if fatalRunGated && (running || driving || args.FromWatch) {
-		return delegateSendBusyRefusal(target, rec, args.FromWatch, "recovering from a fatal run")
+		return fatalRunGatedSendRefusal(target, rec, args.FromWatch, running || driving)
 	}
 	if driving && !running {
 		// A drive turn is in flight (sub.driving==true) but mints no running job
@@ -1665,15 +1665,15 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 		sub.mu.Unlock()
 		return delegateSendBusyRefusal(target, rec, fromWatch, "finalizing")
 	}
-	if sub.fatalRunGated {
-		sub.mu.Unlock()
-		return delegateSendBusyRefusal(target, rec, fromWatch, "recovering from a fatal run")
-	}
 	// A mid-drive child (sub.driving) is in flight just like a running one: steer
 	// the message into the single in-flight (drive) turn rather than reject it
 	// (spec §3, A7 steer-into-drive decision).
 	driving := sub.driving
 	running := sub.running || driving
+	if sub.fatalRunGated {
+		sub.mu.Unlock()
+		return fatalRunGatedSendRefusal(target, rec, fromWatch, running)
+	}
 	if !running {
 		sub.mu.Unlock()
 		return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but session %q is not live", target, childID))
@@ -1807,6 +1807,13 @@ func relinkDelegateChildToJob(child *Session, jobID string) {
 // error naming the state.
 func disposeGatedSendRefusal(target string, rec *jobstore.JobRecord, fromWatch bool) sendMessageResult {
 	return delegateSendBusyRefusal(target, rec, fromWatch, "being disposed")
+}
+
+func fatalRunGatedSendRefusal(target string, rec *jobstore.JobRecord, fromWatch, inFlight bool) sendMessageResult {
+	if fromWatch && !inFlight {
+		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate %q requires explicit resume after a fatal run", target))
+	}
+	return delegateSendBusyRefusal(target, rec, fromWatch, "recovering from a fatal run")
 }
 
 func delegateSendBusyRefusal(target string, rec *jobstore.JobRecord, fromWatch bool, reason string) sendMessageResult {

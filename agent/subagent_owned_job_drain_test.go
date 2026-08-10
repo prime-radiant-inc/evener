@@ -474,8 +474,8 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 		Message:   "automatic resume after fatal run",
 		FromWatch: true,
 	})
-	if watchResume.Err != nil || !watchResume.WatchSendDeliveryClassSet || watchResume.WatchSendDeliveryClass != watchSendBusy {
-		t.Fatalf("watch resume after fatal run = %+v, want retryable busy", watchResume)
+	if watchResume.Err == nil || !watchResume.WatchSendDeliveryClassSet || watchResume.WatchSendDeliveryClass != watchSendHardFailure {
+		t.Fatalf("watch resume after fatal run = %+v, want hard failure requiring explicit resume", watchResume)
 	}
 	if requests := adapter.Requests(); len(requests) != 2 {
 		t.Fatalf("provider requests after refused watch resume = %d, want 2", len(requests))
@@ -501,6 +501,136 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	child.mu.Unlock()
 	if resumedStatus != SubagentCompleted || resumedGate {
 		t.Fatalf("child after explicit resume = status %s fatal gate %v; want completed/false", resumedStatus, resumedGate)
+	}
+}
+
+func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
+	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal before watch delivery", nil, nil)
+	adapter := &fakeErrAdapter{
+		name: "openai",
+		steps: []func(llm.Request) (llm.Response, error){
+			func(llm.Request) (llm.Response, error) {
+				return llm.Response{}, fatalErr
+			},
+			func(llm.Request) (llm.Response, error) {
+				return finalResponse("failed delegate notification handled"), nil
+			},
+			func(llm.Request) (llm.Response, error) {
+				return finalResponse("dropped watch diagnostic handled"), nil
+			},
+			func(llm.Request) (llm.Response, error) {
+				return finalResponse("explicit recovery completed"), nil
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	parent, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { parent.Close() })
+
+	result := parent.createDelegate(context.Background(), delegateArgs{
+		Task:       "fail before a persisted watch send",
+		Background: true,
+	})
+	if result.Err != nil {
+		t.Fatalf("createDelegate: %v", result.Err)
+	}
+	waitForShellDone(t, parent.jobManager, result.JobID)
+	_, childID, err := decodeRef(result.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decodeRef(%q): %v", result.TranscriptRef, err)
+	}
+	child := parent.subagents.get(childID)
+	if child == nil || !child.fatalRunGatedSnapshot() {
+		t.Fatalf("retained child %q is not fatal-gated", childID)
+	}
+	if _, err := parent.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("handle failed delegate notification: %v", err)
+	}
+
+	now := parent.jobManager.now()
+	for _, event := range restoredWatchSendPendingEvents(parent.ID(), "job_observed", result.DelegateID, now) {
+		if err := parent.jobManager.appendEvent(event); err != nil {
+			t.Fatalf("append %s: %v", event.Kind, err)
+		}
+	}
+	if err := parent.jobManager.restoreWatchSendPending(); err != nil {
+		t.Fatalf("restore persisted watch send: %v", err)
+	}
+	if pending := loadWatchSendRecord(t, parent.jobManager).Pending; len(pending) != 1 {
+		t.Fatalf("persisted watch sends before drain = %+v, want one", pending)
+	}
+
+	recheck := make(chan time.Time)
+	drainCtx, cancelDrain := context.WithCancel(context.Background())
+	t.Cleanup(cancelDrain)
+	type drainResult struct {
+		output string
+		err    error
+	}
+	drainDone := make(chan drainResult, 1)
+	go func() {
+		output, err := parent.drainJobTree(drainCtx, recheck)
+		drainDone <- drainResult{output: output, err: err}
+	}()
+	select {
+	case got := <-drainDone:
+		if got.err != nil {
+			t.Fatalf("DrainJobTree: %v", got.err)
+		}
+		if got.output != "dropped watch diagnostic handled" {
+			t.Fatalf("DrainJobTree output = %q, want dropped-watch diagnostic result", got.output)
+		}
+	case recheck <- now.Add(time.Second):
+		cancelDrain()
+		<-drainDone
+		t.Fatal("DrainJobTree waited with an idle fatal-gated watch send still pending")
+	}
+	if parent.jobManager.hasPendingWatchSends() {
+		t.Fatal("fatal-gated watch send remained pending after drain")
+	}
+	if pending := loadWatchSendRecord(t, parent.jobManager).Pending; len(pending) != 0 {
+		t.Fatalf("persisted watch sends after drain = %+v, want dropped", pending)
+	}
+	var dropped bool
+	for _, event := range loadJobStoreEvents(t, parent.jobManager) {
+		if event.Kind == jobstore.EventWatchSendDropped && event.WatchSend != nil && event.WatchSend.DeliveryID == "delivery_restore_pending" {
+			dropped = true
+		}
+	}
+	if !dropped {
+		t.Fatal("watch send drop was not persisted")
+	}
+
+	recovered := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  result.DelegateID,
+		Message: "explicitly recover after dropped watch send",
+	})
+	if recovered.Err != nil || recovered.Action != "started" {
+		t.Fatalf("explicit recovery = %+v, want started", recovered)
+	}
+	child.mu.Lock()
+	recoveredDone := child.done
+	child.mu.Unlock()
+	select {
+	case <-recoveredDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("explicit recovery did not finish")
+	}
+	if child.fatalRunGatedSnapshot() {
+		t.Fatal("explicit recovery did not clear fatal gate")
 	}
 }
 
