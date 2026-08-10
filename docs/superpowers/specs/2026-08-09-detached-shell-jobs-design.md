@@ -10,7 +10,7 @@ Serf background shell jobs are owned by their launching session. An agent may en
 
 ## Goals
 
-- Add one explicit shell option for a process that survives launching-session teardown.
+- Give shell execution one mutually exclusive mode for foreground, managed-background, or detached execution.
 - Return the launched process ID for inspection outside Serf.
 - Keep ordinary foreground and background execution unchanged.
 - Keep the facility small: detachment, not durable service management.
@@ -28,28 +28,29 @@ Serf background shell jobs are owned by their launching session. An agent may en
 
 ## Public API
 
-The shell tool gains one optional boolean:
+The shell tool uses one optional execution mode:
 
 ```json
 {
   "command": "python3 app.py",
-  "background": true,
-  "detach": true
+  "mode": "detached"
 }
 ```
 
 Rules:
 
-- `detach` defaults to `false`.
-- `detach: true` requires `background: true`.
-- Supplying `detach: true` without `background: true` returns `invalid_request` before starting a process.
-- `background` controls whether the tool call waits.
-- `detach` means session teardown leaves the process running.
+- `mode` is one of `foreground`, `background`, or `detached`.
+- Omitted `mode` defaults to `foreground`.
+- `foreground` waits inline and retains the existing automatic-promotion behavior for a long-running command.
+- `background` immediately creates a session-owned managed job.
+- `detached` immediately disowns the process and leaves it running after session teardown.
 - An execution environment that cannot detach a process rejects the request before starting it.
+
+The previous `background` boolean is removed. Backward compatibility for that request shape is explicitly out of scope.
 
 The model-facing description is:
 
-> `detach: true` leaves a background command running after this Serf session closes. Serf returns its PID, but later sessions do not discover or control it. Use only with `background: true`.
+> `mode` chooses foreground execution, a session-owned background job, or a detached process. A detached process continues after this Serf session closes; Serf returns its PID, but current and later sessions do not discover or control it.
 
 ## Result
 
@@ -58,9 +59,8 @@ A successful detached launch returns:
 ```json
 {
   "type": "shell",
+  "mode": "detached",
   "status": "started",
-  "running_in_background": true,
-  "detached": true,
   "pid": 12345
 }
 ```
@@ -76,7 +76,7 @@ Serf launches a detached command with:
 - Standard output and standard error disconnected from the launching session. The command may perform its own explicit redirection when retained logs are required.
 - A live PID returned only after process creation succeeds.
 
-The detached process must never be enrolled in either cleanup path that stops session-owned jobs: the session job manager or the execution environment's tracked-process set. If launch fails, Serf stops any partial process tree and returns an error. The tool must never return `detached: true` for a process that any Serf cleanup path still owns.
+The detached process must never be enrolled in either cleanup path that stops session-owned jobs: the session job manager or the execution environment's tracked-process set. If launch fails, Serf stops any partial process tree and returns an error. The tool must never return `mode: "detached"` for a process that any Serf cleanup path still owns.
 
 The command remains a normal foreground process inside its detached process group. Serf does not support commands that escape that group after launch.
 
@@ -92,7 +92,7 @@ The command remains a normal foreground process inside its detached process grou
 
 On supported Unix-like hosts, the command is started without terminal-owned standard streams and outside the session cleanup process group. Serf must not leave a pipe whose reader exits with the shell call or session, because subsequent process output could otherwise block or terminate the detached command.
 
-On Windows, detachment requires a process-creation mode that lets the child survive Serf process exit without inheriting terminal/control handles. If the execution environment cannot provide that behavior, it rejects `detach: true` before launch.
+On Windows, detachment requires a process-creation mode that lets the child survive Serf process exit without inheriting terminal/control handles. If the execution environment cannot provide that behavior, it rejects `mode: "detached"` before launch.
 
 The guarantee covers ordinary Serf session and client-process teardown. It cannot override container runtimes, service managers, or operating-system policies that kill the client's complete cgroup or execution unit.
 
@@ -102,15 +102,17 @@ Before changing tests, implementation work must follow `docs/testing.md`.
 
 Default tests use the scripted provider boundary and real Serf process plumbing below it. They must exercise behavior rather than matching rendered shell commands.
 
-1. `detach: true` without `background: true` fails before process creation.
-2. Unsupported execution environments fail before process creation.
-3. Successful launch returns `detached: true` and a positive PID, with no `job_id` or transcript ref.
-4. A detached process survives `Session.Close`.
-5. The detached process is never enrolled in session or execution-environment cleanup tracking.
-6. An ordinary background process is still stopped by `Session.Close`.
-7. Launch failure leaves no process behind.
-8. Detached execution creates no job record, notification, or session-owned output log.
-9. No current or later session discovers or controls the detached process through job tools.
-10. A detached command whose original Serf process exits continues without blocking on inherited pipes.
+1. Omitted `mode` selects foreground execution.
+2. Invalid `mode` values fail before process creation.
+3. Unsupported execution environments reject `mode: "detached"` before process creation.
+4. Successful detached launch returns `mode: "detached"` and a positive PID, with no `job_id` or transcript ref.
+5. A detached process survives `Session.Close`.
+6. The detached process is never enrolled in session or execution-environment cleanup tracking.
+7. A `mode: "background"` process is stopped by `Session.Close`.
+8. Foreground automatic promotion still creates a session-owned managed job.
+9. Detached launch failure leaves no process behind.
+10. Detached execution creates no job record, notification, or session-owned output log.
+11. No current or later session discovers or controls the detached process through job tools.
+12. A detached command whose original Serf process exits continues without blocking on inherited pipes.
 
 Any live-model scenario remains explicitly opt-in under the repository's live-test policy.
