@@ -48,26 +48,32 @@ func TestCommandRuntimeFactoryDrivesExecArgvWithoutForking(t *testing.T) {
 
 // TestSystemCommandRuntimeConfigurationMatchesDirectCommandSetup locks the
 // production adapter to the direct *exec.Cmd configuration it replaced. It does
-// not start a command: argv, cwd, environment, process-group, and fd hygiene are
-// all inspectable before exec, which keeps this regression deterministic. The
-// comparison target is exec.Command, not exec.CommandContext: Argv must not
-// carry its own ctx-triggered kill (see Argv's doc comment) — this pins that
-// exec.Command, not exec.CommandContext, is what actually gets built.
+// not start a command: argv, cwd, environment, stdin, process attributes, and fd
+// hygiene are all inspectable before exec, which keeps this regression
+// deterministic. The comparison target is exec.Command, not
+// exec.CommandContext: Argv must not carry its own ctx-triggered kill (see
+// Argv's doc comment) — this pins that exec.Command, not exec.CommandContext,
+// is what actually gets built.
 func TestSystemCommandRuntimeConfigurationMatchesDirectCommandSetup(t *testing.T) {
 	root := t.TempDir()
 	command := "printf runtime"
 	configured := systemCommandRuntimeFactory{}.Argv("/fixture/shell", "-c", command).(*systemCommandRuntime)
 	direct := exec.Command("/fixture/shell", "-c", command)
+	stdin := strings.NewReader("runtime input")
+	sysProcAttr := &syscall.SysProcAttr{Setsid: true}
 
 	config := commandRuntimeConfig{
 		Dir:            root,
 		Env:            []string{"PATH=/fixture/bin", "VISIBLE=yes"},
 		ExecutablePath: "/fixture/bin/sh",
+		Stdin:          stdin,
+		SysProcAttr:    sysProcAttr,
 	}
 	configured.Configure(config)
 
 	direct.Dir = config.Dir
-	direct.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	direct.Stdin = config.Stdin
+	direct.SysProcAttr = config.SysProcAttr
 	direct.Env = config.Env
 	direct.Path = config.ExecutablePath
 	direct.Err = nil
@@ -77,11 +83,24 @@ func TestSystemCommandRuntimeConfigurationMatchesDirectCommandSetup(t *testing.T
 	if got.Path != direct.Path || got.Dir != direct.Dir || !reflect.DeepEqual(got.Args, direct.Args) || !reflect.DeepEqual(got.Env, direct.Env) {
 		t.Fatalf("runtime command differs from direct setup:\n got=%+v\nwant=%+v", got, direct)
 	}
-	if got.SysProcAttr == nil || direct.SysProcAttr == nil || got.SysProcAttr.Setpgid != direct.SysProcAttr.Setpgid {
+	if got.Stdin != direct.Stdin {
+		t.Fatalf("runtime stdin = %v, want %v", got.Stdin, direct.Stdin)
+	}
+	if !reflect.DeepEqual(got.SysProcAttr, direct.SysProcAttr) {
 		t.Fatalf("runtime SysProcAttr = %#v, want %#v", got.SysProcAttr, direct.SysProcAttr)
 	}
 	if got.ExtraFiles != nil || direct.ExtraFiles != nil {
 		t.Fatalf("runtime fd hygiene got=%v want=%v", got.ExtraFiles, direct.ExtraFiles)
+	}
+}
+
+func TestSystemCommandRuntimeConfigurationDefaultsToManagedProcessGroup(t *testing.T) {
+	configured := systemCommandRuntimeFactory{}.Argv("/fixture/shell").(*systemCommandRuntime)
+	configured.Configure(commandRuntimeConfig{})
+
+	want := processGroupSysProcAttr()
+	if !reflect.DeepEqual(configured.cmd.SysProcAttr, want) {
+		t.Fatalf("runtime default SysProcAttr = %#v, want %#v", configured.cmd.SysProcAttr, want)
 	}
 }
 

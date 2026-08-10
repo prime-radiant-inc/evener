@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"syscall"
 
 	"primeradiant.com/serf/agent/sandbox"
 )
@@ -27,8 +28,10 @@ type commandRuntimeConfig struct {
 	Dir            string
 	Env            []string
 	ExecutablePath string
+	Stdin          io.Reader
 	Stdout         io.Writer
 	Stderr         io.Writer
+	SysProcAttr    *syscall.SysProcAttr
 	Wrapper        *sandbox.Wrapper
 }
 
@@ -65,7 +68,12 @@ func (c *systemCommandRuntime) Args() []string { return c.cmd.Args }
 
 func (c *systemCommandRuntime) Configure(config commandRuntimeConfig) {
 	c.cmd.Dir = config.Dir
-	c.cmd.SysProcAttr = processGroupSysProcAttr()
+	c.cmd.Stdin = config.Stdin
+	if config.SysProcAttr != nil {
+		c.cmd.SysProcAttr = config.SysProcAttr
+	} else {
+		c.cmd.SysProcAttr = processGroupSysProcAttr()
+	}
 	c.cmd.Env = config.Env
 	if config.ExecutablePath != "" {
 		c.cmd.Path = config.ExecutablePath

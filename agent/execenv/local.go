@@ -1532,10 +1532,7 @@ func (e *LocalExecutionEnvironment) ExecArgv(ctx context.Context, name string, a
 	return e.execPreparedCommand(ctx, cmd, timeoutMS, workingDir, envVars)
 }
 
-func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd commandRuntime, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
-	if timeoutMS <= 0 {
-		timeoutMS = 10_000
-	}
+func (e *LocalExecutionEnvironment) resolveCommandWorkingDir(workingDir string) (string, error) {
 	dir := strings.TrimSpace(workingDir)
 	if dir == "" {
 		dir = e.RootDir
@@ -1544,7 +1541,18 @@ func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd
 		dir = filepath.Join(e.RootDir, dir)
 	}
 	if err := e.ensureUnderRoot(dir); err != nil {
-		return ExecResult{ExitCode: 127}, fmt.Errorf("working directory %w", err)
+		return "", fmt.Errorf("working directory %w", err)
+	}
+	return dir, nil
+}
+
+func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd commandRuntime, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
+	if timeoutMS <= 0 {
+		timeoutMS = 10_000
+	}
+	dir, err := e.resolveCommandWorkingDir(workingDir)
+	if err != nil {
+		return ExecResult{ExitCode: 127}, err
 	}
 
 	start := time.Now()
@@ -1634,15 +1642,9 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 	if e.runningPIDs == nil {
 		e.runningPIDs = &sync.Map{}
 	}
-	dir := strings.TrimSpace(workingDir)
-	if dir == "" {
-		dir = e.RootDir
-	}
-	if !filepath.IsAbs(dir) {
-		dir = filepath.Join(e.RootDir, dir)
-	}
-	if err := e.ensureUnderRoot(dir); err != nil {
-		return nil, fmt.Errorf("working directory %w", err)
+	dir, err := e.resolveCommandWorkingDir(workingDir)
+	if err != nil {
+		return nil, err
 	}
 
 	if ctx != nil {
@@ -1736,6 +1738,58 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 		Wait:   wait,
 		Signal: signal,
 	}, nil
+}
+
+// DetachCommand starts command outside the environment's managed process set
+// with its standard streams disconnected from the launching session.
+func (e *LocalExecutionEnvironment) DetachCommand(ctx context.Context, command, workingDir string, envVars map[string]string) (DetachedProcess, error) {
+	dir, err := e.resolveCommandWorkingDir(workingDir)
+	if err != nil {
+		return DetachedProcess{}, err
+	}
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return DetachedProcess{}, ctx.Err()
+		default:
+		}
+	}
+
+	sysProcAttr, ok := detachedProcessSysProcAttr()
+	if !ok || e.Wrapper != nil {
+		return DetachedProcess{}, ErrDetachUnsupported
+	}
+
+	nullDevice, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return DetachedProcess{}, err
+	}
+	cmd := e.commands().Shell(command)
+	env := injectLocalVenvPath(e.commandEnvironment(envVars), []string{dir, e.RootDir})
+	config := commandRuntimeConfig{
+		Dir:         dir,
+		Env:         env,
+		Stdin:       nullDevice,
+		Stdout:      nullDevice,
+		Stderr:      nullDevice,
+		SysProcAttr: sysProcAttr,
+	}
+	if args := cmd.Args(); len(args) > 0 {
+		if resolved, found := lookPathInEnv(args[0], env); found {
+			config.ExecutablePath = resolved
+		}
+	}
+	cmd.Configure(config)
+
+	if err := cmd.Start(); err != nil {
+		_ = nullDevice.Close()
+		return DetachedProcess{}, err
+	}
+	pid := cmd.PID()
+	_ = nullDevice.Close()
+	go func() { _ = cmd.Wait() }()
+
+	return DetachedProcess{PID: pid}, nil
 }
 
 func lookPathInEnv(name string, env []string) (string, bool) {
