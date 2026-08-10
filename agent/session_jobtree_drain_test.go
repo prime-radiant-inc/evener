@@ -146,7 +146,11 @@ func TestDrainJobTreeReturnsOnContextCancel(t *testing.T) {
 }
 
 func TestCancelledManagedShellDrainStopsOnSessionClose(t *testing.T) {
-	sess := newSession(t)
+	drainClock := newOwnedJobDrainClock()
+	sess := newSession(t, withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		clock:            drainClock,
+	}))
 	executor := newSignalCompletesStreamingExecutor()
 	result := runShell(context.Background(), sess.jobManager, executor, shellArgs{
 		Command:    "held managed shell",
@@ -165,6 +169,16 @@ func TestCancelledManagedShellDrainStopsOnSessionClose(t *testing.T) {
 		_, err := sess.DrainJobTree(ctx)
 		drainDone <- err
 	}()
+	select {
+	case <-drainClock.drainEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainJobTree did not enter the managed-job drain")
+	}
+	select {
+	case err := <-drainDone:
+		t.Fatalf("DrainJobTree returned before caller cancellation: %v", err)
+	default:
+	}
 	cancel()
 	select {
 	case err := <-drainDone:
