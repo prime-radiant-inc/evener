@@ -173,8 +173,8 @@ func TestBuiltinAgents_LoadsExplorer(t *testing.T) {
 	if explorer.Name != "explorer" {
 		t.Errorf("Name = %q, want %q", explorer.Name, "explorer")
 	}
-	if explorer.Model != "openai/gpt-5.4-mini" {
-		t.Errorf("Model = %q, want %q", explorer.Model, "openai/gpt-5.4-mini")
+	if explorer.Model != "inherit" {
+		t.Errorf("Model = %q, want %q", explorer.Model, "inherit")
 	}
 	if explorer.PluginName != "builtin" {
 		t.Errorf("PluginName = %q, want %q", explorer.PluginName, "builtin")

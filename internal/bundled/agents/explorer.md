@@ -1,7 +1,6 @@
 ---
 name: explorer
 description: "Fast workspace scout. Reports what files, tools, and tests exist."
-model: openai/gpt-5.4-mini
 color: cyan
 tools: [glob, grep, read_file, shell]
 tasks:

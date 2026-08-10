@@ -11,7 +11,7 @@ Remove two artificial harness constraints that have already caused Terminal-Benc
 
 The Harbor adapter will pass `--max-rounds 0`, using Serf's existing zero-means-unlimited contract. This keeps the setting explicit in run evidence without adding a second timeout mechanism.
 
-The bundled explorer definition will omit its `model` field. Existing subagent model selection already treats an absent model as inheritance and honors an explicit delegate model. No selection code or compatibility path is needed.
+The bundled explorer definition will omit its `model` field. The loader normalizes an absent model to its existing `inherit` sentinel, and subagent model selection honors an explicit delegate model. No selection code or compatibility path is needed.
 
 ## Validation
 

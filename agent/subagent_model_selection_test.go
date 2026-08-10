@@ -42,6 +42,55 @@ func (a *pluginModelListAdapter) resetListCalls() {
 	a.calls = 0
 }
 
+func TestSelectSubagentModel_BuiltinExplorerUsesSelectedModel(t *testing.T) {
+	t.Parallel()
+
+	adapter := &pluginModelListAdapter{
+		fakeAdapter: fakeAdapter{name: "openai"},
+		models: []llm.ModelInfo{
+			{ID: "gpt-5.6-luna"},
+			{ID: "gpt-5.6-sol"},
+			{ID: "gpt-5.4-mini"},
+		},
+	}
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.6-luna")),
+		withAdapter(adapter),
+		withConfig(SessionConfig{
+			MaxSubagentDepth: 1,
+			testOnly:         testConfig{skipGitSnapshot: true},
+		}),
+	)
+	agents, err := builtinAgents()
+	if err != nil {
+		t.Fatalf("builtinAgents: %v", err)
+	}
+	sess.pluginAgents = agents
+
+	tests := []struct {
+		name          string
+		explicitModel string
+		wantModel     string
+	}{
+		{name: "inherits parent", wantModel: "gpt-5.6-luna"},
+		{name: "honors explicit model", explicitModel: "gpt-5.6-sol", wantModel: "gpt-5.6-sol"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			selected, err := sess.selectSubagentModel(context.Background(), tc.explicitModel, "explorer")
+			if err != nil {
+				t.Fatalf("selectSubagentModel: %v", err)
+			}
+			if selected.profile.Model() != tc.wantModel {
+				t.Errorf("selected model = %q, want %q", selected.profile.Model(), tc.wantModel)
+			}
+			if selected.warning != nil {
+				t.Errorf("unexpected model selection warning: %#v", selected.warning)
+			}
+		})
+	}
+}
+
 func TestSelectSubagentModel_PluginAvailabilityPrecedence(t *testing.T) {
 	t.Parallel()
 
