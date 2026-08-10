@@ -135,6 +135,13 @@ serf --model openai/gpt-5.2 "add input validation to the signup handler"
 echo "refactor auth to use JWT" | serf --model anthropic/claude-opus-4-6
 ```
 
+For a shell command that must outlive the current Serf session, use detached
+mode. Detached commands are not jobs; redirect their own logs when needed:
+
+```json
+{"command":"long-task > /tmp/long-task.log 2>&1","mode":"detached"}
+```
+
 ## llmcall (One-Shot LLM Client)
 
 This repo also includes `llmcall`, a minimal CLI wrapper around the unified `llm` library for single “throwaway” calls.

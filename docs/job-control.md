@@ -15,7 +15,7 @@ Two public job types are in scope:
 
 The default model-facing posture is:
 
-> Shell work runs foreground by default (set `background: true` to launch-and-return) and is promoted to a durable background job when the foreground wait times out. Delegate work returns a `job_id` immediately by default; use `max_wait_ms` to wait inline. Rely on automatic terminal notifications plus one-off `job_status`/`job_list` inspection for follow-up, and read a job's own output with `read_transcript(transcript_ref="job:<job_id>")`. Do not poll.
+> `mode="foreground"` (default) waits inline; a long-running command may promote to a session-owned job. `mode="background"` immediately creates a session-owned job with `job_id`, output, notification, and stop control. `mode="detached"` immediately disowns the process and returns only its PID; it is not a job and is not discoverable or controllable through job tools. Delegate work returns a `job_id` immediately by default; use `max_wait_ms` to wait inline. Rely on automatic terminal notifications plus one-off `job_status`/`job_list` inspection for follow-up, and read a job's own output with `read_transcript(transcript_ref="job:<job_id>")`. Do not poll.
 
 The target model intentionally does **not** expose:
 
@@ -25,13 +25,13 @@ The target model intentionally does **not** expose:
 - `close_agent`
 - external `agent_id`
 
-Stopping is handled by `job_stop`. Retention is policy-based, not model-acknowledgement-based. Waiting, when needed, is bounded — `max_wait_ms` on `delegate`/`job_stop`, or `background` on shell — not a separate wait tool. Reads never wait: no job-output read blocks.
+Stopping is handled by `job_stop`. Retention is policy-based, not model-acknowledgement-based. Waiting, when needed, is bounded — `max_wait_ms` on `delegate`/`job_stop`, or `mode` on shell — not a separate wait tool. Reads never wait: no job-output read blocks.
 
 ## Model-facing guidance requirements
 
 This reference contract is not itself the runtime system prompt, but the following guidance **must** be reflected in the tool descriptions and in Serf's `Background jobs` system-prompt section. These bullets are normative for model-facing documentation because they shape whether agents use jobs correctly:
 
-- Shell commands run foreground by default and return inline output for quick commands. Set `background: true` to launch-and-return immediately; omit `background` (or set it `false`) for the session-default foreground wait. Foreground shell commands that exceed that wait are promoted to durable background jobs and return a `job_id`.
+- Shell commands run in `mode="foreground"` by default and return inline output for quick commands. Set `mode="background"` to launch-and-return as a session-owned job; foreground commands that exceed the session-default wait are promoted to durable background jobs and return a `job_id`. Set `mode="detached"` only to immediately disown a process that does not need Serf job visibility, output, notification, or stop control; it returns only a PID.
 - Delegate work starts in the background by default (no `job_id` wait); use `max_wait_ms` when you want to wait inline for up to N ms. Shell and delegate defaults differ deliberately: shell commands are usually short decision-producing calls, while delegates are independent agentic work.
 - Use `delegate` to start a new delegate conversation/job. It returns both a concrete `job_id` for that turn and a durable `delegate_id` for conversation follow-up. It does not continue an existing conversation.
 - Use `delegate_send` for follow-up on a durable delegate conversation: if the delegate is running, it steers the active turn; if the delegate is idle, the same call starts or resumes the next job automatically when the delegate remains resumable.
@@ -62,7 +62,8 @@ Several tools can wait, but they wait on different things. Pick by intent, and d
 | Intent | Use |
 | --- | --- |
 | Run a command and use its output | `shell` — foreground; promoted to a background job if it exceeds the session timeout |
-| Launch a long command without waiting | `shell(background=true)` — returns a `job_id` immediately |
+| Launch a long command without waiting | `shell(mode="background")` — returns a `job_id` immediately |
+| Disown a command that must outlive this session | `shell(mode="detached")` — returns only a PID; no job tools apply |
 | Start a delegate and wait up to N ms for its result | `delegate(max_wait_ms=N)` — a timeout leaves it running |
 | Learn when a backgrounded job finishes | the automatic terminal notification — nothing to call |
 | Learn when a job's output contains X | `job_watch(operation="create", source=<job_id>, output_match=X)` to be notified |
@@ -181,14 +182,14 @@ Canonical foreground shape for ordinary commands:
 }
 ```
 
-Shell defaults to foreground because most shell calls are short and decision-producing. Omit `background` (or set it to `false`) for ordinary commands whose output determines the next step — the call waits up to the session command timeout (120s standard), then promotes the command to a durable background job if it is still running. Set `background: true` to launch-and-return immediately for deliberate background work such as a dev server or a long command the agent should not wait on.
+Shell defaults to `mode="foreground"` because most shell calls are short and decision-producing. It waits up to the session command timeout (120s standard), then promotes the command to a durable background job if it is still running. Set `mode="background"` to launch-and-return immediately for deliberate background work such as a dev server or a long command the agent should not wait on. Set `mode="detached"` to immediately disown a process; it returns only a PID and cannot be discovered or controlled through job tools.
 
 Launch-and-return (immediate background) shape:
 
 ```json
 {
   "command": "npm run dev",
-  "background": true,
+  "mode": "background",
   "description": "start dev server"
 }
 ```
@@ -205,18 +206,19 @@ Foreground with an explicit process-runtime cap:
 
 Defaults and timeout semantics:
 
-- `background` unset (or `false`): the call runs the command in the foreground and waits up to the session command timeout (120s in stock provider profiles) for it to finish.
+- `mode="foreground"` (the default): the call runs the command in the foreground and waits up to the session command timeout (120s in stock provider profiles) for it to finish.
 - A foreground shell command that completes within that wait returns inline output and is ephemeral by default: no durable `job_id` is required and it does not appear in `job_list`.
 - A foreground shell command still running at the session command timeout is promoted to a durable background job: Serf returns the current bounded output/status with a `job_id`, and the normal terminal notification remains armed for the eventual terminal state.
-- `background: true`: Serf starts the command and returns a `job_id` immediately without waiting. The terminal notification fires when it finishes.
+- `mode="background"`: Serf starts the command and returns a `job_id` immediately without waiting. The terminal notification fires when it finishes.
+- `mode="detached"`: Serf starts a disowned process and returns only its PID immediately. It is not a job, so Serf neither retains output nor sends notifications nor offers job control for it.
 - `max_runtime_ms` is an optional process runtime limit for shell jobs. If the process is still running after `max_runtime_ms`, Serf stops it and finalizes the job as `stopped` with reason `run_timeout`. It bounds how long the process may *run*, distinct from the foreground wait.
-- Omitted `max_runtime_ms` means implementation-defined shell runtime policy. Recommended policy: default finite runtime for foreground/promoted shell jobs, no default runtime limit for `background: true` shell jobs unless configured by the user/tool call.
+- Omitted `max_runtime_ms` means implementation-defined shell runtime policy. Recommended policy: default finite runtime for foreground/promoted shell jobs, no default runtime limit for `mode="background"` shell jobs unless configured by the user/tool call.
 - A shell command that completes before the tool returns does not inject a terminal notification; the terminal result is already in the tool result. Return field `timed_out`, when present, means the foreground wait expired; it never means the process hit `max_runtime_ms`.
 - To learn when a launch-and-return command reaches a state (e.g. a server printing "ready"), use `job_watch(operation="create", source=<job_id>, output_match=...)` and continue from the notification — an output-match watch catch-up-scans a job's retained output even if it already finished.
 
 Normative foreground-wait bounds:
 
-- The foreground wait is the session command timeout (`DefaultCommandTimeoutMS`, 120000 in stock provider profiles), clamped to `MaxCommandTimeoutMS`. Shell has no per-call wait parameter; `background` chooses foreground (wait, then promote) vs. immediate return.
+- The foreground wait is the session command timeout (`DefaultCommandTimeoutMS`, 120000 in stock provider profiles), clamped to `MaxCommandTimeoutMS`. Shell has no per-call wait parameter; `mode` selects foreground (wait, then promote), session-owned background, or immediate detached return.
 
 Normative runtime timeout bounds:
 
@@ -1327,7 +1329,7 @@ The contract-level requirements are:
 
 - generic jobs for shell and delegate work;
 - globally unique opaque `job_id` as primary handle;
-- foreground shell default (`background:false` waits the session timeout) with promotion to a durable background job on timeout; delegate default returns the job immediately (unset `max_wait_ms`);
+- foreground shell default (`mode="foreground"` waits the session timeout) with promotion to a durable background job on timeout; delegate default returns the job immediately (unset `max_wait_ms`);
 - automatic terminal notification with durable no-loss/dedupe semantics;
 - `job_watch` for source-owned condition-triggered notifications and v1 observer sidecar event/frame delivery;
 - bounded output inspection through the `job:<job_id>` transcript read;
