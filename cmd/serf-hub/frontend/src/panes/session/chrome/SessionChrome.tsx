@@ -1,11 +1,12 @@
-// SessionChrome: the session pane's chrome surface - ONE quiet status-bar
-// row (cadence where needed, model · effort, context, live work, queue depth,
-// and the goal chip when a goal is set) with the session "⋯" menu pinned to
-// the trailing edge - mounted by Session.tsx at PaneScaffold's footer
-// slot. The locked contract stays exactly `{ ref: string }` - every real
-// value (the ThreadModel, capabilities, ...) is read from the threads store
-// internally via useThreadsStore, same as every other pane-level component
-// in this app (mirrors Session.tsx's own model lookup).
+// SessionChrome: the session pane's chrome surface. Its default footer
+// presentation is ONE quiet status-bar row (cadence where needed, model ·
+// effort, context, live work, queue depth, and the goal chip when a goal is
+// set) with the session "⋯" menu pinned to the trailing edge. Its composer
+// presentation keeps the same StatusRow and menu owner but omits the
+// footer-only cadence and goal controls. Every real value (the ThreadModel,
+// capabilities, ...) is read from the threads store internally via
+// useThreadsStore, same as every other pane-level component in this app
+// (mirrors Session.tsx's own model lookup).
 //
 // The menu is the shared SessionMenu (2026-08-05-unified-session-context-
 // menu-design): Details/Tasks/Activity lead it at every width (there are no
@@ -39,12 +40,16 @@ import styles from "./sessionchrome.module.css";
 import { TasksPanel, type TasksPanelHandle } from "./TasksPanel";
 import "../../sessionPanels";
 
+export type SessionChromePlacement = "footer" | "composer";
+
 export interface SessionChromeProps {
   ref: string;
+  placement?: SessionChromePlacement;
 }
 
 const CLASS = {
   chrome: requireClass(styles.chrome, "sessionchrome.module.css", "chrome"),
+  inline: requireClass(styles.inline, "sessionchrome.module.css", "inline"),
   body: requireClass(styles.body, "sessionchrome.module.css", "body"),
   cadenceSlot: requireClass(styles.cadenceSlot, "sessionchrome.module.css", "cadenceSlot"),
   right: requireClass(styles.right, "sessionchrome.module.css", "right"),
@@ -55,7 +60,7 @@ const CLASS = {
 // the same for the header cadence).
 const EMPTY_FRAME_TIMES: number[] = [];
 
-export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
+export function SessionChrome({ ref: sessionRef, placement = "footer" }: SessionChromeProps) {
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
   const isMobile = useIsMobile();
   const toasts = useToasts();
@@ -102,17 +107,24 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
   const activityLabel = activitySummary?.counts?.complete ? `Activity · ${activitySummary.counts.active}` : "Activity";
 
   return (
-    <div className={CLASS.chrome} data-testid="session-chrome">
-      {/* .body owns compression (sessionchrome.module.css says why): its
-          inline-size container progressively simplifies status content, so
-          .right - and with it the "..." menu - always shares this one line. */}
-      <div className={CLASS.body} data-testid="session-chrome-body">
-        <span className={CLASS.cadenceSlot} data-testid="session-chrome-cadence">
-          <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />
-        </span>
+    <div
+      className={placement === "composer" ? CLASS.inline : CLASS.chrome}
+      data-testid={placement === "composer" ? "session-chrome-inline" : "session-chrome"}
+    >
+      {placement === "composer" ? (
         <StatusRow sessionRef={sessionRef} model={model} now={now} />
-        <GoalControl sessionRef={sessionRef} model={model} />
-      </div>
+      ) : (
+        /* .body owns compression (sessionchrome.module.css says why): its
+           inline-size container progressively simplifies status content, so
+           .right - and with it the "..." menu - always shares this one line. */
+        <div className={CLASS.body} data-testid="session-chrome-body">
+          <span className={CLASS.cadenceSlot} data-testid="session-chrome-cadence">
+            <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />
+          </span>
+          <StatusRow sessionRef={sessionRef} model={model} now={now} />
+          <GoalControl sessionRef={sessionRef} model={model} />
+        </div>
+      )}
       <div className={CLASS.right}>
         <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger />
         <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger />

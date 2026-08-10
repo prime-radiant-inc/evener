@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
@@ -182,6 +182,57 @@ test("composes the status row, the session menu, and the goal control once the r
   expect(screen.getByRole("button", { name: /session actions/i })).toBeTruthy();
   // Goal control: the goal chip, once a goal is set.
   expect(screen.getByRole("button", { name: /goal: active/i })).toBeTruthy();
+});
+
+test("composer placement renders one ordered inline status and actions cluster without footer-only controls", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_composer", {
+      serf: {
+        ref: "ref_composer",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        goal: { status: "active", iterations: 2 },
+        contextUsed: 64_000,
+        contextWindow: 128_000,
+        contextPressure: 0.5,
+        reasoningEffort: "medium",
+        reasoningEffortLevels: ["low", "medium", "high"],
+        supportsReasoning: true,
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_composer");
+
+  render(<SessionChrome ref="ref_composer" placement="composer" />);
+
+  const cluster = screen.getByTestId("session-chrome-inline");
+  const statusRow = within(cluster).getByTestId("status-row");
+  const identity = within(cluster).getByTestId("status-row-identity");
+  const context = within(cluster).getByTestId("status-row-context");
+  const actions = within(cluster).getByRole("button", { name: "Session actions" });
+  expect(within(identity).getByRole("button", { name: /change model/i })).toBeTruthy();
+  expect(within(identity).getByRole("combobox", { name: "Reasoning effort" })).toBeTruthy();
+  expect(statusRow.contains(identity)).toBe(true);
+  expect(statusRow.contains(context)).toBe(true);
+  expect(identity.compareDocumentPosition(context) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(context.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(screen.getAllByTestId("status-row")).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: "Session actions" })).toHaveLength(1);
+  expect(screen.queryByTestId("session-chrome")).toBeNull();
+  expect(within(cluster).queryByTestId("session-chrome-cadence")).toBeNull();
+  expect(within(cluster).queryByRole("button", { name: /goal: active/i })).toBeNull();
+});
+
+test("default placement preserves the standalone session chrome presentation", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_footer"));
+  await threadsStore.getState().ensureThread("ref_footer");
+
+  render(<SessionChrome ref="ref_footer" />);
+
+  expect(screen.getByTestId("session-chrome")).toBeTruthy();
+  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
 });
 
 test("status row has no inline Details/Tasks/Activity buttons; they live in the menu", async () => {
@@ -561,4 +612,13 @@ test("the chrome CSS makes body a non-wrapping inline-size query container", () 
   expect(body?.[1]).toContain("min-width: 0");
   expect(body?.[1]).toContain("container-type: inline-size");
   expect(right?.[1]).toContain("flex: none");
+});
+
+test("the inline chrome CSS is a non-wrapping min-width-safe status query container", () => {
+  const css = readFileSync(join(here, "sessionchrome.module.css"), "utf8");
+  const inline = css.match(/\.inline \{([^}]*)\}/);
+  expect(inline?.[1]).toContain("display: flex");
+  expect(inline?.[1]).toContain("flex-wrap: nowrap");
+  expect(inline?.[1]).toContain("min-width: 0");
+  expect(inline?.[1]).toContain("container-type: inline-size");
 });
