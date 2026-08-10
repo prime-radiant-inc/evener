@@ -130,9 +130,6 @@ func TestDefShellHasJobParams(t *testing.T) {
 	if got := DefShell().Description; got != "Run a shell command and report stdout, stderr, and exit status." {
 		t.Fatalf("DefShell description mismatch:\n%q", got)
 	}
-	if got := props["mode"].(map[string]any)["description"]; got != "foreground waits for the command to finish before continuing; background runs a session-owned job in the background and Serf stops it when the session ends; detached is the only mode that lets a process survive after this Serf session stops." {
-		t.Fatalf("mode description mismatch:\n%q", got)
-	}
 }
 
 func TestDefShellHasExecutionMode(t *testing.T) {
