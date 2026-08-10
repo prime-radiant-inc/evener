@@ -5,6 +5,7 @@ import (
 	"io"
 	"os/exec"
 	"syscall"
+	"time"
 
 	"primeradiant.com/serf/agent/sandbox"
 )
@@ -33,6 +34,7 @@ type commandRuntimeConfig struct {
 	Stderr         io.Writer
 	SysProcAttr    *syscall.SysProcAttr
 	Wrapper        *sandbox.Wrapper
+	WaitDelay      time.Duration
 }
 
 type commandRuntimeFactory interface {
@@ -82,6 +84,7 @@ func (c *systemCommandRuntime) Configure(config commandRuntimeConfig) {
 	wrapCommandForSandbox(c.cmd, config.Wrapper, config.Dir)
 	c.cmd.Stdout = config.Stdout
 	c.cmd.Stderr = config.Stderr
+	c.cmd.WaitDelay = config.WaitDelay
 }
 
 func (c *systemCommandRuntime) Start() error { return c.cmd.Start() }

@@ -56,6 +56,67 @@ func TestStreamCommandCapturesOutputAndExit(t *testing.T) {
 	}
 }
 
+func TestStreamCommandWaitStopsDescendantsAfterLeaderExit(t *testing.T) {
+	grace := 20 * time.Millisecond
+	env := &LocalExecutionEnvironment{
+		RootDir:          t.TempDir(),
+		terminationGrace: &grace,
+	}
+	if err := env.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+
+	out := newReadyWriter("READY")
+	h, err := env.StreamCommand(context.Background(), "sleep 300 & printf 'CHILD=%s READY\\n' $!", "", nil, out)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	type waitResult struct {
+		code int
+		err  error
+	}
+	waitDone := make(chan waitResult, 1)
+	go func() {
+		code, waitErr := h.Wait()
+		waitDone <- waitResult{code: code, err: waitErr}
+	}()
+
+	select {
+	case <-out.ready:
+	case <-time.After(5 * time.Second):
+		h.Signal()
+		<-waitDone
+		t.Fatalf("child did not start; output: %q", out.String())
+	}
+
+	var childPID int
+	if _, err := fmt.Sscanf(out.String(), "CHILD=%d READY", &childPID); err != nil || childPID <= 0 {
+		h.Signal()
+		<-waitDone
+		t.Fatalf("child pid missing from output %q: %v", out.String(), err)
+	}
+
+	select {
+	case result := <-waitDone:
+		if result.err != nil || result.code != 0 {
+			t.Fatalf("wait = (%d, %v), want successful leader exit", result.code, result.err)
+		}
+	case <-time.After(time.Second):
+		h.Signal()
+		<-waitDone
+		t.Fatal("Wait remained blocked after the command leader exited")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for syscall.Kill(-h.Pid, 0) != syscall.ESRCH && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := syscall.Kill(-h.Pid, 0); err != syscall.ESRCH {
+		t.Fatalf("process group %d remains alive after Wait: %v", h.Pid, err)
+	}
+}
+
 func TestStreamCommandSignalStops(t *testing.T) {
 	env := &LocalExecutionEnvironment{RootDir: t.TempDir()}
 	_ = env.Initialize()
@@ -217,6 +278,35 @@ func TestStreamCommandWaitReturnsStreamErrors(t *testing.T) {
 type lockedWriter struct {
 	mu *sync.Mutex
 	b  *bytes.Buffer
+}
+
+type readyWriter struct {
+	mu     sync.Mutex
+	buf    bytes.Buffer
+	marker string
+	ready  chan struct{}
+	once   sync.Once
+}
+
+func newReadyWriter(marker string) *readyWriter {
+	return &readyWriter{marker: marker, ready: make(chan struct{})}
+}
+
+func (w *readyWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	n, err := w.buf.Write(p)
+	ready := strings.Contains(w.buf.String(), w.marker)
+	w.mu.Unlock()
+	if ready {
+		w.once.Do(func() { close(w.ready) })
+	}
+	return n, err
+}
+
+func (w *readyWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
 }
 
 func (w *lockedWriter) Write(p []byte) (int, error) {
