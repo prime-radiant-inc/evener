@@ -42,10 +42,12 @@ class MemoryStorage {
   }
 }
 
-// The two wave-5 T1 slots are swapped for a visible stub here ONLY to prove
-// Session.tsx actually mounts them with the right ref prop - their own
-// placeholder behavior (renders nothing) is covered by
-// composer/Composer.test.tsx and chrome/SessionChrome.test.tsx directly.
+// The session footer's composer boundary is swapped for a visible stub here
+// ONLY to prove Session.tsx mounts it with the right ref and no longer adds a
+// standalone SessionChrome sibling. Composer.test.tsx proves the real composer
+// owns the inline SessionChrome; its marker is mirrored inside this boundary so
+// this suite can pin the Session-level placement without duplicating Composer's
+// own behavior tests.
 //
 // A pair of hoisted vi.mock(...) calls used to sit here, swapping each whole
 // module in the shared module registry - under isolate:false that registry
@@ -65,10 +67,13 @@ class MemoryStorage {
 // (see shell/palette/commands.test.ts's own comment on the same hazard).
 function stubSessionSlots(): void {
   vi.spyOn(ComposerModule, "Composer").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="composer-slot">{ref}</div>
+    <div data-testid="composer-slot">
+      {ref}
+      <div data-testid="session-chrome-inline" />
+    </div>
   ));
   vi.spyOn(SessionChromeModule, "SessionChrome").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="session-chrome-slot">{ref}</div>
+    <div data-testid="session-chrome">{ref}</div>
   ));
 }
 stubSessionSlots();
@@ -605,7 +610,7 @@ test("renders turns via VirtualList/TurnBlock once hydrated", async () => {
   expect(screen.getByText("hi")).toBeTruthy();
 });
 
-test("switches between Everything, Conversation, and Intent transcript views", async () => {
+test("switches between Everything and Intent transcript views", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
@@ -674,7 +679,7 @@ test("switches between Everything, Conversation, and Intent transcript views", a
 
   const viewSelector = await screen.findByRole("radiogroup", { name: /session view/i });
   const radios = within(viewSelector).getAllByRole("radio");
-  expect(radios.map((radio) => radio.textContent)).toEqual(["Everything", "Conversation", "Intent"]);
+  expect(radios.map((radio) => radio.textContent)).toEqual(["Everything", "Intent"]);
   expect(screen.getByRole("radio", { name: "Everything" }).getAttribute("aria-checked")).toBe("true");
   expect(screen.getByText("RAW_TOOL_RESULT_ALPHA")).toBeTruthy();
   const everythingAgentAnchor = document.querySelector<HTMLElement>('[data-view-anchor-id="agent_1"]');
@@ -682,19 +687,14 @@ test("switches between Everything, Conversation, and Intent transcript views", a
   expect(everythingAgentAnchor?.dataset.viewAnchorSourceIndex).toBe("4");
   expect(everythingAgentAnchor?.dataset.viewAnchorMessage).toBe("true");
 
-  await user.click(screen.getByRole("radio", { name: "Conversation" }));
-  expect(screen.getByRole("radio", { name: "Conversation" }).getAttribute("aria-checked")).toBe("true");
-  expect(screen.getByText("Please inspect the project")).toBeTruthy();
-  expect(screen.getByText("The project is ready")).toBeTruthy();
-  expect(screen.getByText("3 tool calls")).toBeTruthy();
-  expect(screen.queryByText("RAW_TOOL_RESULT_ALPHA")).toBeNull();
-  const conversationAgentAnchor = document.querySelector<HTMLElement>('[data-view-anchor-id="agent_1"]');
-  expect(conversationAgentAnchor?.dataset.viewAnchorIndex).toBe("0");
-  expect(conversationAgentAnchor?.dataset.viewAnchorSourceIndex).toBe("4");
-  expect(conversationAgentAnchor?.dataset.viewAnchorMessage).toBe("true");
-
   await user.click(screen.getByRole("radio", { name: "Intent" }));
   expect(screen.getByRole("radio", { name: "Intent" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByText("Please inspect the project")).toBeTruthy();
+  expect(screen.getByText("The project is ready")).toBeTruthy();
+  const summary = screen.getByText("3 actions");
+  const group = summary.closest("details");
+  expect(group).not.toBeNull();
+  expect(group?.hasAttribute("open")).toBe(false);
   expect(screen.getByText("Find the relevant source files")).toBeTruthy();
   expect(screen.getByText("Check the current behavior")).toBeTruthy();
   expect(screen.getByText("Verify the intended change")).toBeTruthy();
@@ -703,7 +703,7 @@ test("switches between Everything, Conversation, and Intent transcript views", a
 
   screen.getByRole("radio", { name: "Intent" }).focus();
   await user.keyboard("{ArrowLeft}");
-  expect(screen.getByRole("radio", { name: "Conversation" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByRole("radio", { name: "Everything" }).getAttribute("aria-checked")).toBe("true");
   expect(screen.getByRole("radio", { name: "Intent" }).getAttribute("aria-checked")).toBe("false");
 });
 
@@ -1301,7 +1301,6 @@ test("a real mode switch preserves the top-visible message inside a mixed turn",
     const box = focused
       ? {
           mixed_user: { top: -130, height: 60 },
-          "tools:mixed_tool:mixed_tool": { top: -70, height: 40 },
           mixed_agent: { top: -30, height: 96 },
         }[element.dataset.viewAnchorId ?? ""]
       : {
@@ -1324,7 +1323,7 @@ test("a real mode switch preserves the top-visible message inside a mixed turn",
     };
   });
 
-  await user.click(screen.getByRole("radio", { name: "Conversation" }));
+  await user.click(screen.getByRole("radio", { name: "Intent" }));
 
   await waitFor(() => expect(root.scrollTop).toBe(288));
   expect(container.querySelector('[data-view-anchor-id="mixed_agent"]')).toBeTruthy();
@@ -1547,9 +1546,9 @@ test("older turns load with no click at all once the paging sentinel is in view"
   expect(await screen.findByText("older history")).toBeTruthy();
 });
 
-// --- Composer / SessionChrome slots (wave 5 T1) --------------------------
+// --- Composer / SessionChrome placement ----------------------------------
 
-test("mounts Composer below the transcript and SessionChrome at the PaneScaffold footer, both with the pane's ref", async () => {
+test("mounts Composer with inline session controls and no standalone footer chrome", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
 
@@ -1559,12 +1558,11 @@ test("mounts Composer below the transcript and SessionChrome at the PaneScaffold
     </ClientProvider>,
   );
 
-  await waitFor(() => expect(screen.getByTestId("composer-slot").textContent).toBe("ref_a"));
-  expect(screen.getByTestId("session-chrome-slot").textContent).toBe("ref_a");
-  // SessionChrome is mounted at PaneScaffold's real footer surface, not
-  // just anywhere in the tree - its slot must be a descendant of the
-  // footer's own testid.
-  expect(within(screen.getByTestId("pane-footer")).getByTestId("session-chrome-slot")).toBeTruthy();
+  const composer = await screen.findByTestId("composer-slot");
+  const footer = screen.getByTestId("pane-footer");
+  expect(composer.textContent).toBe("ref_a");
+  expect(within(composer).getByTestId("session-chrome-inline")).toBeTruthy();
+  expect(within(footer).queryByTestId("session-chrome")).toBeNull();
 });
 
 test("mounts Composer even when the transcript is empty (no turns yet) - the composer is always available to send the first message", async () => {

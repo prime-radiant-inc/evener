@@ -9,7 +9,7 @@
 //
 // Column layout: PaneScaffold's `body` slot (the transcript, scrollable) is
 // the ONLY part of this pane that grows/shrinks with content - composer and
-// status row sit in the `footer` slot instead, which PaneScaffold keeps
+// inline session controls sit in the `footer` slot instead, which PaneScaffold keeps
 // after the body; when AskDock is active, that footer can shrink to the
 // pane's actual allocation. LivenessLine lives
 // here too now (kata x47h): FlowOverlay's `top` slot is a non-reserved
@@ -19,14 +19,12 @@
 // PendingChips travels with the composer (it's contextually
 // "chips beside the composer", per its own doc comment) and shares its
 // 76rem measure so the input aligns with the transcript's own content
-// column; SessionChrome (the status row) stays full-width beneath, reading
-// like a status bar.
+// column; SessionChrome now lives in the composer's own PromptCard control row.
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { Cadence, EmptyState, PaneScaffold, RadioGroup, VirtualList, type VirtualListHandle } from "../../widgets";
-import { SessionChrome } from "./chrome/SessionChrome";
 import { modelLabel } from "./chrome/statusFormat";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { Composer } from "./composer/Composer";
@@ -175,10 +173,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const now = useNowTick(NOW_TICK_MS);
   const openers = useMemo(() => (model ? exchangeOpenersFor(model.turns) : undefined), [model]);
   const agentLabel = model ? modelLabel(model.modelProvider, model.model) : undefined;
-  const focused = useMemo(
-    () => (model && viewMode !== "everything" ? focusedEntries(model.turns, viewMode) : []),
-    [model, viewMode],
-  );
+  const focused = useMemo(() => (model && viewMode === "intent" ? focusedEntries(model.turns) : []), [model, viewMode]);
   const itemSourceIndexes = useMemo(() => {
     const indexes = new Map<string, number>();
     let sourceIndex = 0;
@@ -344,18 +339,18 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
                         "data-view-anchor-source-index": entry.sourceIndex,
                         "data-view-anchor-message": entry.kind === "message",
                       } as const;
-                      if (entry.kind === "tool-count") {
+                      if (entry.kind === "action-group") {
                         return (
-                          <div key={entry.id} className={styles.toolCount} {...anchor}>
-                            {entry.label}
-                          </div>
-                        );
-                      }
-                      if (entry.kind === "intent") {
-                        return (
-                          <div key={entry.id} className={styles.intent} {...anchor}>
-                            {entry.rationale}
-                          </div>
+                          <details key={entry.id} className={styles.actionGroup} {...anchor}>
+                            <summary className={styles.actionGroupSummary}>{entry.label}</summary>
+                            <div className={styles.actionGroupIntents}>
+                              {entry.intents.map((intent) => (
+                                <div key={intent.id} className={styles.intent}>
+                                  {intent.rationale}
+                                </div>
+                              ))}
+                            </div>
+                          </details>
                         );
                       }
                       const turn = model.turns[row.sourceIndex];
@@ -426,7 +421,6 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
             <PendingChips sessionRef={ref} />
             <Composer ref={ref} />
           </div>
-          <SessionChrome ref={ref} />
         </div>
       }
     >

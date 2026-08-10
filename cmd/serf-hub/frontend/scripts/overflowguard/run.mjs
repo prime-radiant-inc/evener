@@ -166,7 +166,8 @@ async function measureAt(cdpPort, url) {
 // the shared SessionMenu ("Session actions") lists the panes at EVERY width
 // with a check adornment for open ones. This fixture therefore drives the
 // menu directly: open Tasks, wait for the dock split to squeeze the main
-// chrome below 640px, then re-open the menu and confirm "Tasks ✓".
+// composer's inline session chrome below 640px, then re-open the menu and
+// confirm "Tasks ✓".
 async function verifyPanelCollapse(cdpPort, url) {
   const targets = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
   const target = targets.find((t) => t.type === "page");
@@ -210,7 +211,10 @@ async function verifyPanelCollapse(cdpPort, url) {
         );
         tasksItem.click();
         const panel = await until(() => document.querySelector('[data-pane-scaffold="session-panel:tasks:overflowharness"]'), 'tasks pane');
-        const chrome = await until(() => document.querySelector('[data-testid="session-chrome"]'), 'session chrome');
+        const chrome = await until(
+          () => document.querySelector('[data-testid="session-chrome-inline"]'),
+          'inline session chrome',
+        );
         await until(() => chrome.clientWidth > 0 && chrome.clientWidth < 640, 'narrowed chrome');
         const actionsAgain = actionsTrigger();
         if (!actionsAgain) throw new Error('session actions trigger missing');

@@ -37,6 +37,7 @@ import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, chordLabel, Dropzone, IconButton, PromptCard, Textarea, Tooltip, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { SessionChrome } from "../chrome/SessionChrome";
 import { AttachmentTile } from "./AttachmentTile";
 import { AskDock, useAskDockPending } from "./askDock";
 import { AttachIcon } from "./attachments/AttachIcon";
@@ -62,6 +63,7 @@ export interface ComposerProps {
 const CLASS = {
   composer: requireClass(styles.composer, "composer.module.css", "composer"),
   attachments: requireClass(styles.attachments, "composer.module.css", "attachments"),
+  leading: requireClass(styles.leading, "composer.module.css", "leading"),
   visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
 };
 
@@ -803,17 +805,20 @@ export function Composer({ ref }: ComposerProps) {
                      controls by a stable hook instead of navigating by
                      accessible name - the naming style follows StatusRow's
                      own status-row-* testids. */
-                  <Tooltip label="Attach an image">
-                    <IconButton
-                      label="Attach image"
-                      icon={<AttachIcon />}
-                      variant="quiet"
-                      size="xs"
-                      type="button"
-                      data-testid="composer-attach"
-                      onClick={() => fileInputRef.current?.click()}
-                    />
-                  </Tooltip>
+                  <div className={CLASS.leading}>
+                    <Tooltip label="Attach an image">
+                      <IconButton
+                        label="Attach image"
+                        icon={<AttachIcon />}
+                        variant="quiet"
+                        size="xs"
+                        type="button"
+                        data-testid="composer-attach"
+                        onClick={() => fileInputRef.current?.click()}
+                      />
+                    </Tooltip>
+                    <SessionChrome ref={ref} placement="composer" />
+                  </div>
                 )
               }
               actions={

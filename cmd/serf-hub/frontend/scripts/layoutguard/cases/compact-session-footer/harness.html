@@ -3,207 +3,93 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=1200, initial-scale=1">
-<title>compact session footer layoutguard harness</title>
+<title>inline composer controls layoutguard harness</title>
 <link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="resolved.css">
 <style>
   * { transition: none !important; animation: none !important; }
-  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 20px; padding: 20px; }
+  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px; }
   .fixture { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
   .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); }
-  .standIn { appearance: none; border: 0; background: transparent; color: inherit; font: var(--font-size-caption)/1.5 var(--font-sans); padding: var(--space-1); }
+  /* PromptCard always owns a field before its controls. Textarea's vertical
+     details are outside this horizontal guard, but keeping the field node here
+     makes the card hierarchy honest and exercises the real card gap. */
+  .fieldStandIn { display: block; width: 100%; height: 24px; min-height: 0; padding: 0; border: 0; resize: none; background: transparent; color: var(--ink-hi); }
+  /* IconButton composes Button's classes at build time. The layout guard loads
+     CSS modules directly, so this one declaration supplies only its production
+     xs square override without introducing the raw `.xs` module-name collision. */
+  .attachmentControl { width: 24px; height: 24px; padding: 0; flex: none; }
+  /* SessionMenu's trigger is intentionally a stand-in: menu.module.css and
+     modelswitch.module.css both own a local `.trigger` class that CSS Modules
+     keeps distinct in production but a raw stylesheet harness cannot. Its size
+     is fixed here; SessionChrome's real `.right` owns its placement and focus. */
+  .sessionActionControl { appearance: none; width: 32px; height: 32px; padding: 0; border: 1px solid transparent; border-radius: var(--radius-control); background: transparent; color: inherit; font: var(--font-size-ui) var(--font-sans); }
 </style>
 </head>
 <body>
-<main class="fixtures">
-  <section class="fixture" data-width="320">
-    <div class="fixtureLabel">320px body</div>
-    <div class="chrome">
-      <div class="body" style="width: 320px; flex: none">
-        <span class="cadenceSlot" aria-hidden="true">●</span>
-        <div class="row" data-status>
-          <span class="identity">
-            <span class="model"><button class="trigger focusModel" type="button"><span class="value">openrouter/anthropic/claude-sonnet-4.5-extended-thinking</span><span class="chevron">⌄</span></button></span>
-            <span class="effortTrigger" data-effort><span class="separator">·</span><span class="effortValue">high</span><span class="effortChevron">⌄</span><select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select></span>
-          </span>
-          <meter class="srOnly" aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter><span class="context" aria-hidden="true"><span class="contextMeter" data-context-meter><span class="track"><span class="fill neutral" style="--fill: 67%"></span></span></span><span class="contextPercent mono" data-context-percent>67%</span></span>
-          <span class="item mono workTime" data-work>12m 34s</span>
-          <span class="item mono queue"><span class="queueFull" data-queue-full>12 queued</span><span class="queueCompact" data-queue-compact>Q12</span></span>
-        </div>
-        <div class="anchor" data-goal><button class="chipButton" type="button"><span class="chip">Goal: awaiting stakeholder approval for compact session footer geometry</span></button></div>
-      </div>
-      <div class="right"><button class="standIn focusActions" data-actions type="button" aria-label="Session actions">⋯</button></div>
-    </div>
-  </section>
+<main class="fixtures"></main>
 
-  <section class="fixture" data-width="360">
-    <div class="fixtureLabel">360px body</div>
-    <div class="chrome">
-      <div class="body" style="width: 360px; flex: none">
-        <span class="cadenceSlot" aria-hidden="true">●</span>
-        <div class="row" data-status>
-          <span class="identity">
-            <span class="model"><button class="trigger" type="button"><span class="value">openrouter/anthropic/claude-sonnet-4.5-extended-thinking</span><span class="chevron">⌄</span></button></span>
-            <span class="effortTrigger" data-effort><span class="separator">·</span><span class="effortValue">high</span><span class="effortChevron">⌄</span><select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select></span>
-          </span>
-          <meter class="srOnly" aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter><span class="context" aria-hidden="true"><span class="contextMeter" data-context-meter><span class="track"><span class="fill neutral" style="--fill: 67%"></span></span></span><span class="contextPercent mono" data-context-percent>67%</span></span>
-          <span class="item mono workTime" data-work>12m 34s</span>
-          <span class="item mono queue"><span class="queueFull" data-queue-full>12 queued</span><span class="queueCompact" data-queue-compact>Q12</span></span>
+<template id="fixture-template">
+  <section class="fixture">
+    <div class="fixtureLabel"></div>
+    <div class="card" data-card>
+      <textarea class="fieldStandIn" rows="1" aria-label="Message">Message the agent</textarea>
+      <div class="controls" data-controls>
+        <div class="leading" data-leading>
+          <span class="wrapper"><button class="button quiet xs attachmentControl focusAttach" data-attachment type="button" aria-label="Attach image">+</button></span>
+          <div class="inline" data-session-chrome-inline>
+            <div class="body" data-status-body>
+              <div class="row" data-status>
+                <span class="identity">
+                  <span class="model"><button class="trigger focusModel" type="button"><span class="value" data-model-value></span><span class="chevron">⌄</span></button></span>
+                  <span class="effortTrigger focusEffort" data-effort><span class="separator">·</span><span class="effortValue">high</span><span class="effortChevron">⌄</span><select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select></span>
+                </span>
+                <meter class="srOnly" aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter><span class="context" aria-hidden="true"><span class="contextMeter" data-context-meter><span class="track"><span class="fill neutral" style="--fill: 67%"></span></span></span><span class="contextPercent mono" data-context-percent>67%</span></span>
+                <span class="item mono workTime" data-work>12m 34s</span>
+                <span class="item mono queue"><span class="queueFull" data-queue-full>12 queued</span><span class="queueCompact" data-queue-compact>Q12</span></span>
+              </div>
+            </div>
+            <div class="right"><button class="sessionActionControl focusActions" data-session-actions type="button" aria-label="Session actions">⋯</button></div>
+          </div>
         </div>
-        <div class="anchor" data-goal><button class="chipButton" type="button"><span class="chip">Goal: awaiting stakeholder approval for compact session footer geometry</span></button></div>
+        <div class="actions" data-submit-actions><span class="wrapper"><button class="button primary xs focusSend" data-send type="button">Send</button></span></div>
       </div>
-      <div class="right"><button class="standIn" data-actions type="button" aria-label="Session actions">⋯</button></div>
     </div>
   </section>
+</template>
 
-  <section class="fixture" data-width="400">
-    <div class="fixtureLabel">400px body</div>
-    <div class="chrome">
-      <div class="body" style="width: 400px; flex: none">
-        <span class="cadenceSlot" aria-hidden="true">●</span>
-        <div class="row" data-status>
-          <span class="identity">
-            <span class="model"><button class="trigger" type="button"><span class="value">openrouter/anthropic/claude-sonnet-4.5-extended-thinking</span><span class="chevron">⌄</span></button></span>
-            <span class="effortTrigger" data-effort><span class="separator">·</span><span class="effortValue">high</span><span class="effortChevron">⌄</span><select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select></span>
-          </span>
-          <meter class="srOnly" aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter><span class="context" aria-hidden="true"><span class="contextMeter" data-context-meter><span class="track"><span class="fill neutral" style="--fill: 67%"></span></span></span><span class="contextPercent mono" data-context-percent>67%</span></span>
-          <span class="item mono workTime" data-work>12m 34s</span>
-          <span class="item mono queue"><span class="queueFull" data-queue-full>12 queued</span><span class="queueCompact" data-queue-compact>Q12</span></span>
-        </div>
-        <div class="anchor" data-goal><button class="chipButton" type="button"><span class="chip">Goal: awaiting stakeholder approval for compact session footer geometry</span></button></div>
-      </div>
-      <div class="right"><button class="standIn" data-actions type="button" aria-label="Session actions">⋯</button></div>
-    </div>
-  </section>
-
-  <section class="fixture" data-width="479">
-    <div class="fixtureLabel">479px body</div>
-    <div class="chrome">
-      <div class="body" style="width: 479px; flex: none">
-        <span class="cadenceSlot" aria-hidden="true">●</span>
-        <div class="row" data-status>
-          <span class="identity">
-            <span class="model"><button class="trigger" type="button"><span class="value">openrouter/anthropic/claude-sonnet-4.5-extended-thinking</span><span class="chevron">⌄</span></button></span>
-            <span class="effortTrigger" data-effort><span class="separator">·</span><span class="effortValue">high</span><span class="effortChevron">⌄</span><select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select></span>
-          </span>
-          <meter class="srOnly" aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter><span class="context" aria-hidden="true"><span class="contextMeter" data-context-meter><span class="track"><span class="fill neutral" style="--fill: 67%"></span></span></span><span class="contextPercent mono" data-context-percent>67%</span></span>
-          <span class="item mono workTime" data-work>12m 34s</span>
-          <span class="item mono queue"><span class="queueFull" data-queue-full>12 queued</span><span class="queueCompact" data-queue-compact>Q12</span></span>
-        </div>
-        <div class="anchor" data-goal><button class="chipButton" type="button"><span class="chip">Goal: awaiting stakeholder approval for compact session footer geometry</span></button></div>
-      </div>
-      <div class="right"><button class="standIn" data-actions type="button" aria-label="Session actions">⋯</button></div>
-    </div>
-  </section>
-
-  <section class="fixture" data-width="480">
-    <div class="fixtureLabel">480px body</div>
-    <div class="chrome">
-      <div class="body" style="width: 480px; flex: none">
-        <span class="cadenceSlot" aria-hidden="true">●</span>
-        <div class="row" data-status>
-          <span class="identity">
-            <span class="model"><button class="trigger" type="button"><span class="value">openrouter/anthropic/claude-sonnet-4.5-extended-thinking</span><span class="chevron">⌄</span></button></span>
-            <span class="effortTrigger" data-effort><span class="separator">·</span><span class="effortValue">high</span><span class="effortChevron">⌄</span><select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select></span>
-          </span>
-          <meter class="srOnly" aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter><span class="context" aria-hidden="true"><span class="contextMeter" data-context-meter><span class="track"><span class="fill neutral" style="--fill: 67%"></span></span></span><span class="contextPercent mono" data-context-percent>67%</span></span>
-          <span class="item mono workTime" data-work>12m 34s</span>
-          <span class="item mono queue"><span class="queueFull" data-queue-full>12 queued</span><span class="queueCompact" data-queue-compact>Q12</span></span>
-        </div>
-        <div class="anchor" data-goal><button class="chipButton" type="button"><span class="chip">Goal: awaiting stakeholder approval for compact session footer geometry</span></button></div>
-      </div>
-      <div class="right"><button class="standIn" data-actions type="button" aria-label="Session actions">⋯</button></div>
-    </div>
-  </section>
-
-  <section class="fixture" data-width="559">
-    <div class="fixtureLabel">559px body</div>
-    <div class="chrome">
-      <div class="body" style="width: 559px; flex: none">
-        <span class="cadenceSlot" aria-hidden="true">●</span>
-        <div class="row" data-status>
-          <span class="identity">
-            <span class="model"><button class="trigger" type="button"><span class="value">openrouter/anthropic/claude-sonnet-4.5-extended-thinking</span><span class="chevron">⌄</span></button></span>
-            <span class="effortTrigger" data-effort><span class="separator">·</span><span class="effortValue">high</span><span class="effortChevron">⌄</span><select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select></span>
-          </span>
-          <meter class="srOnly" aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter><span class="context" aria-hidden="true"><span class="contextMeter" data-context-meter><span class="track"><span class="fill neutral" style="--fill: 67%"></span></span></span><span class="contextPercent mono" data-context-percent>67%</span></span>
-          <span class="item mono workTime" data-work>12m 34s</span>
-          <span class="item mono queue"><span class="queueFull" data-queue-full>12 queued</span><span class="queueCompact" data-queue-compact>Q12</span></span>
-        </div>
-        <div class="anchor" data-goal><button class="chipButton" type="button"><span class="chip">Goal: awaiting stakeholder approval for compact session footer geometry</span></button></div>
-      </div>
-      <div class="right"><button class="standIn" data-actions type="button" aria-label="Session actions">⋯</button></div>
-    </div>
-  </section>
-
-  <section class="fixture" data-width="560">
-    <div class="fixtureLabel">560px body</div>
-    <div class="chrome">
-      <div class="body" style="width: 560px; flex: none">
-        <span class="cadenceSlot" aria-hidden="true">●</span>
-        <div class="row" data-status>
-          <span class="identity">
-            <span class="model"><button class="trigger" type="button"><span class="value">openrouter/anthropic/claude-sonnet-4.5-extended-thinking</span><span class="chevron">⌄</span></button></span>
-            <span class="effortTrigger" data-effort><span class="separator">·</span><span class="effortValue">high</span><span class="effortChevron">⌄</span><select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select></span>
-          </span>
-          <meter class="srOnly" aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter><span class="context" aria-hidden="true"><span class="contextMeter" data-context-meter><span class="track"><span class="fill neutral" style="--fill: 67%"></span></span></span><span class="contextPercent mono" data-context-percent>67%</span></span>
-          <span class="item mono workTime" data-work>12m 34s</span>
-          <span class="item mono queue"><span class="queueFull" data-queue-full>12 queued</span><span class="queueCompact" data-queue-compact>Q12</span></span>
-        </div>
-        <div class="anchor" data-goal><button class="chipButton focusGoal" type="button"><span class="chip">Goal: awaiting stakeholder approval for compact session footer geometry</span></button></div>
-      </div>
-      <div class="right"><button class="standIn" data-actions type="button" aria-label="Session actions">⋯</button></div>
-    </div>
-  </section>
-
-  <section class="fixture" data-width="900">
-    <div class="fixtureLabel">900px body</div>
-    <div class="chrome">
-      <div class="body" style="width: 900px; flex: none">
-        <span class="cadenceSlot" aria-hidden="true">●</span>
-        <div class="row" data-status>
-          <span class="identity">
-            <span class="model"><button class="trigger" type="button"><span class="value">openrouter/anthropic/claude-sonnet-4.5-extended-thinking</span><span class="chevron">⌄</span></button></span>
-            <span class="effortTrigger" data-effort><span class="separator">·</span><span class="effortValue">high</span><span class="effortChevron">⌄</span><select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select></span>
-          </span>
-          <meter class="srOnly" aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter><span class="context" aria-hidden="true"><span class="contextMeter" data-context-meter><span class="track"><span class="fill neutral" style="--fill: 67%"></span></span></span><span class="contextPercent mono" data-context-percent>67%</span></span>
-          <span class="item mono workTime" data-work>12m 34s</span>
-          <span class="item mono queue"><span class="queueFull" data-queue-full>12 queued</span><span class="queueCompact" data-queue-compact>Q12</span></span>
-        </div>
-        <div class="anchor" data-goal><button class="chipButton" type="button"><span class="chip">Goal: awaiting stakeholder approval for compact session footer geometry</span></button></div>
-      </div>
-      <div class="right"><button class="standIn" type="button">Details</button><button class="standIn" type="button">Tasks</button><button class="standIn" type="button">Jobs</button><button class="standIn" data-actions type="button" aria-label="Session actions">⋯</button></div>
-    </div>
-  </section>
-  <!-- Short label at a wide body: the ONLY geometry where shrink-to-fit is
-       falsifiable. Every fixture above uses a label longer than its row ever
-       affords, so the value ellipsizes to fill the trigger and a grow-to-fill
-       trigger is indistinguishable from a hugging one (measured: trigger =
-       value + ~20px under BOTH contracts). Here the label fits with room to
-       spare, so a grow-to-fill trigger runs hundreds of px past the value
-       while a shrink-to-fit trigger hugs it - this is the fixture the
-       assert.mjs shrink-to-fit assertion fails on. -->
-  <section class="fixture" data-width="900">
-    <div class="fixtureLabel">900px body, short model label</div>
-    <div class="chrome">
-      <div class="body" style="width: 900px; flex: none">
-        <span class="cadenceSlot" aria-hidden="true">●</span>
-        <div class="row" data-status>
-          <span class="identity">
-            <span class="model"><button class="trigger" type="button"><span class="value">gpt-5.2</span><span class="chevron">⌄</span></button></span>
-            <span class="effortTrigger" data-effort><span class="separator">·</span><span class="effortValue">high</span><span class="effortChevron">⌄</span><select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select></span>
-          </span>
-          <meter class="srOnly" aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter><span class="context" aria-hidden="true"><span class="contextMeter" data-context-meter><span class="track"><span class="fill neutral" style="--fill: 67%"></span></span></span><span class="contextPercent mono" data-context-percent>67%</span></span>
-          <span class="item mono workTime" data-work>12m 34s</span>
-          <span class="item mono queue"><span class="queueFull" data-queue-full>12 queued</span><span class="queueCompact" data-queue-compact>Q12</span></span>
-        </div>
-        <div class="anchor" data-goal><button class="chipButton" type="button"><span class="chip">Goal: awaiting stakeholder approval for compact session footer geometry</span></button></div>
-      </div>
-      <div class="right"><button class="standIn" type="button">Details</button><button class="standIn" type="button">Tasks</button><button class="standIn" type="button">Jobs</button><button class="standIn" data-actions type="button" aria-label="Session actions">⋯</button></div>
-    </div>
-  </section>
-</main>
 <script>
+const fixtures = [
+  { width: 320 },
+  // The composer's fixed controls consume 139.625px in this rendered
+  // hierarchy. Fractional outer widths are deliberate: they make StatusRow's
+  // actual query-container rect exactly 399/400, 479/480, and 559/560px rather
+  // than relying on integer clientWidth rounding around a fractional box.
+  { width: 538.625, expectedStatusWidth: 399 },
+  { width: 539.625, expectedStatusWidth: 400 },
+  { width: 618.625, expectedStatusWidth: 479 },
+  { width: 619.625, expectedStatusWidth: 480 },
+  { width: 698.625, expectedStatusWidth: 559 },
+  { width: 699.625, expectedStatusWidth: 560 },
+  { width: 900 },
+  { width: 900, shortModel: true },
+];
+const template = document.querySelector("#fixture-template");
+const fixtureRoot = document.querySelector(".fixtures");
+for (const spec of fixtures) {
+  const fragment = template.content.cloneNode(true);
+  const fixture = fragment.querySelector(".fixture");
+  fixture.dataset.width = String(spec.width);
+  if (spec.expectedStatusWidth !== undefined) fixture.dataset.expectedStatusWidth = String(spec.expectedStatusWidth);
+  if (spec.shortModel) fixture.dataset.shortModel = "true";
+  fixture.querySelector(".fixtureLabel").textContent = `${spec.width}px composer${spec.expectedStatusWidth === undefined ? "" : ` / ${spec.expectedStatusWidth}px status container`}${spec.shortModel ? ", short model label" : ""}`;
+  fixture.querySelector("[data-card]").style.width = `${spec.width}px`;
+  fixture.querySelector("[data-model-value]").textContent = spec.shortModel
+    ? "gpt-5.2"
+    : "openrouter/anthropic/claude-sonnet-4.5-extended-thinking";
+  fixtureRoot.append(fragment);
+}
+
 function box(el) {
   const r = el.getBoundingClientRect();
   return {
@@ -224,23 +110,23 @@ function visibleBox(el) {
     : box(el);
 }
 
-for (const fixture of document.querySelectorAll(".fixture")) {
-  const width = Number(fixture.dataset.width);
-  const chrome = fixture.querySelector(".chrome");
-  const right = fixture.querySelector(".right");
-  const gap = parseFloat(getComputedStyle(chrome).columnGap) || 0;
-  chrome.style.width = `${width + right.getBoundingClientRect().width + gap}px`;
-}
-
 window.measure = function () {
-  const focusedModel = document.querySelector(".focusModel");
-  const focusedGoal = document.querySelector(".focusGoal");
-  const focusedActions = document.querySelector(".focusActions");
+  // CDP forcePseudoState applies to the first matching node for each selector.
+  // Focus is a style contract, not a per-width contract, so measure those four
+  // deliberately forced controls once and attach the result to every fixture.
+  const focusedAttachStyle = getComputedStyle(document.querySelector(".focusAttach"));
+  const focusedModelStyle = getComputedStyle(document.querySelector(".focusModel"));
+  const focusedEffortStyle = getComputedStyle(document.querySelector(".focusEffort"));
+  const focusedActionsStyle = getComputedStyle(document.querySelector(".focusActions"));
+  const focusedSendStyle = getComputedStyle(document.querySelector(".focusSend"));
   return [...document.querySelectorAll(".fixture")].map((fixture) => {
-    const chrome = fixture.querySelector(".chrome");
-    const body = fixture.querySelector(".body");
-    const right = fixture.querySelector(".right");
+    const card = fixture.querySelector("[data-card]");
+    const controls = fixture.querySelector("[data-controls]");
+    const leading = fixture.querySelector("[data-leading]");
+    const inlineChrome = fixture.querySelector("[data-session-chrome-inline]");
+    const statusBody = fixture.querySelector("[data-status-body]");
     const status = fixture.querySelector("[data-status]");
+    const attachment = fixture.querySelector("[data-attachment]");
     const effort = fixture.querySelector("[data-effort]");
     const contextSemantic = fixture.querySelector("meter.srOnly");
     const contextVisual = fixture.querySelector(".context");
@@ -250,17 +136,24 @@ window.measure = function () {
     const queue = fixture.querySelector(".queue");
     const queueFull = fixture.querySelector("[data-queue-full]");
     const queueCompact = fixture.querySelector("[data-queue-compact]");
-    const goal = fixture.querySelector("[data-goal]");
-    const actions = fixture.querySelector("[data-actions]");
+    const sessionActions = fixture.querySelector("[data-session-actions]");
+    const submitActions = fixture.querySelector("[data-submit-actions]");
+    const send = fixture.querySelector("[data-send]");
     const modelValue = fixture.querySelector(".value");
     const modelTrigger = fixture.querySelector(".trigger");
-    const goalButton = fixture.querySelector(".chipButton");
     return {
       width: Number(fixture.dataset.width),
-      chrome: box(chrome),
-      body: box(body),
-      right: box(right),
+      expectedStatusWidth:
+        fixture.dataset.expectedStatusWidth === undefined ? null : Number(fixture.dataset.expectedStatusWidth),
+      shortModel: fixture.dataset.shortModel === "true",
+      card: box(card),
+      controls: box(controls),
+      leading: box(leading),
+      inlineChrome: box(inlineChrome),
+      statusBody: box(statusBody),
       status: box(status),
+      attachment: box(attachment),
+      modelTrigger: box(modelTrigger),
       identity: box(fixture.querySelector(".identity")),
       effort: visibleBox(effort),
       contextStructure: {
@@ -279,10 +172,9 @@ window.measure = function () {
       queueFullDisplay: getComputedStyle(queueFull).display,
       queueCompactDisplay: getComputedStyle(queueCompact).display,
       queue: visibleBox(queue),
-      goalDisplay: getComputedStyle(goal).display,
-      goal: visibleBox(goal),
-      goalButton: visibleBox(goalButton),
-      actions: box(actions),
+      sessionActions: box(sessionActions),
+      submitActions: box(submitActions),
+      send: box(send),
       model: {
         triggerWidth: modelTrigger.getBoundingClientRect().width,
         clientWidth: modelValue.clientWidth,
@@ -290,11 +182,17 @@ window.measure = function () {
         textOverflow: getComputedStyle(modelValue).textOverflow,
         whiteSpace: getComputedStyle(modelValue).whiteSpace,
       },
-      focusedModelBoxShadow: getComputedStyle(focusedModel).boxShadow,
-      focusedGoalBoxShadow: getComputedStyle(focusedGoal).boxShadow,
-      focusedGoalOutline: getComputedStyle(focusedGoal).outlineStyle,
-      focusedActionsBoxShadow: getComputedStyle(focusedActions).boxShadow,
-      focusedActionsOutline: getComputedStyle(focusedActions).outlineStyle,
+      focus: {
+        attachOutlineStyle: focusedAttachStyle.outlineStyle,
+        attachOutlineWidth: focusedAttachStyle.outlineWidth,
+        modelBoxShadow: focusedModelStyle.boxShadow,
+        modelOutlineStyle: focusedModelStyle.outlineStyle,
+        effortBoxShadow: focusedEffortStyle.boxShadow,
+        actionsBoxShadow: focusedActionsStyle.boxShadow,
+        actionsOutlineStyle: focusedActionsStyle.outlineStyle,
+        sendOutlineStyle: focusedSendStyle.outlineStyle,
+        sendOutlineWidth: focusedSendStyle.outlineWidth,
+      },
     };
   });
 };

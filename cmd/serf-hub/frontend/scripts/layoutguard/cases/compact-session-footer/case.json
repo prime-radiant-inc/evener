@@ -1,13 +1,15 @@
 {
   "name": "compact-session-footer",
-  "description": "the complete session footer stays on one line and compresses status facts in priority order",
+  "description": "inline composer controls stay on one row and compress status facts in priority order",
   "cssFiles": [
     "styles/global.css",
+    "widgets/promptcard/promptcard.module.css",
+    "widgets/button/button.module.css",
+    "widgets/tooltip/tooltip.module.css",
+    "panes/session/composer/composer.module.css",
     "panes/session/chrome/sessionchrome.module.css",
     "panes/session/chrome/statusrow.module.css",
     "panes/session/chrome/modelswitch.module.css",
-    "panes/session/chrome/goalcontrol.module.css",
-    "widgets/chip/chip.module.css",
     "widgets/meter/meter.module.css"
   ],
   "viewport": {
@@ -17,13 +19,15 @@
     "mobile": false
   },
   "forcePseudoStates": [
+    { "selector": ".focusAttach", "pseudoClasses": ["focus-visible"] },
     { "selector": ".focusModel", "pseudoClasses": ["focus-visible"] },
-    { "selector": ".focusGoal", "pseudoClasses": ["focus-visible"] },
-    { "selector": ".focusActions", "pseudoClasses": ["focus-visible"] }
+    { "selector": ".focusEffort", "pseudoClasses": ["focus-within"] },
+    { "selector": ".focusActions", "pseudoClasses": ["focus-visible"] },
+    { "selector": ".focusSend", "pseudoClasses": ["focus-visible"] }
   ],
   "mutation": {
-    "declaration": "statusrow.module.css: .identity > span:first-child { flex: 0 1 auto } (reverted to flex: 1 1 72px) plus modelswitch.module.css: .trigger { width: 100% } (re-verifies c3649a16b's shrink-to-fit fix)",
-    "verified": "2026-08-07",
-    "expect": "fail"
+    "declaration": "Six manual probes against fresh production CSS: (1) statusrow .context { order: -1 }; (2) 399/479/559 max-width and 560 min-width query boundaries shifted +20px; (3) composer .leading flex changed to 0 1 auto and promptcard .actions margin-left changed to 0; (4) composer/session/status min-width:0 changed to max-content and overflow:hidden changed to visible; (5) Button outline plus model/effort/session-actions inset focus shadows removed; (6) model trigger width:100% plus model wrapper flex:1 1 72px",
+    "verified": "2026-08-10",
+    "expect": "Each probe exits 1 with, respectively: effort-to-context order failure; 400/480/560 visibility failures; Send trailing-edge failure; scroll-width/containment failures; all five focus-ring failures; model shrink-to-fit failure"
   }
 }

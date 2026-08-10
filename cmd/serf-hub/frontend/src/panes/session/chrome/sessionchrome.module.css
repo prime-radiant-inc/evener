@@ -24,6 +24,20 @@
   flex: none;
 }
 
+/* Composer placement is the same single-owner status/actions run without the
+ * footer-only cadence and goal. Its StatusRow stays inside a .body sibling of
+ * the non-shrinking menu trigger, so the existing meter/percent thresholds
+ * measure only the space actually available to status content. */
+.inline {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: var(--space-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
 .body {
   container-type: inline-size;
   display: flex;
@@ -43,10 +57,10 @@
   flex: none;
 }
 
-/* Every trailing trigger lives inside .chrome's final overflow boundary. An
- * outside outline would be cut off when the actions menu sits flush with that
- * boundary, so the complete trailing group uses the same inset focus recipe as
- * the model and effort controls. */
+/* Every trailing trigger lives inside its presentation's final overflow
+ * boundary. An outside outline would be cut off when the actions menu sits
+ * flush with that boundary, so the complete trailing group uses the same inset
+ * focus recipe as the model and effort controls. */
 .right button:focus-visible {
   outline: none;
   box-shadow: inset 0 0 0 2px var(--accent);

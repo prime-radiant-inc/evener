@@ -921,7 +921,7 @@ describe("view-mode anchor preservation", () => {
 
     act(() => result.current.captureViewAnchor());
     positions = [{ id: "turn-4", sourceIndex: 4, index: 2, offset: -70, height: 96, isMessage: true }];
-    rerender({ viewKey: "conversation" });
+    rerender({ viewKey: "intent" });
 
     expect(ref.current?.getScrollElement()?.scrollTop).toBe(448);
   });
@@ -978,7 +978,7 @@ describe("view-mode anchor preservation", () => {
 
     act(() => result.current.captureViewAnchor());
     positions = [{ id: "turn-4", sourceIndex: 4, index: 1, offset: -82, isMessage: true }];
-    rerender({ viewKey: "conversation" });
+    rerender({ viewKey: "intent" });
 
     expect(scrollToIndex).not.toHaveBeenCalled();
     expect(el.scrollTop).toBe(200);
@@ -1020,7 +1020,7 @@ describe("view-mode anchor preservation", () => {
       { id: "tools:tool-1:tool-1", sourceIndex: 9, index: 3, offset: -70, height: 40, isMessage: false },
       { id: "agent-1", sourceIndex: 10, index: 3, offset: -30, height: 96, isMessage: true },
     ];
-    rerender({ viewKey: "conversation" });
+    rerender({ viewKey: "intent" });
 
     expect(scrollToIndex).not.toHaveBeenCalled();
     expect(el.scrollTop).toBe(288);
@@ -1078,7 +1078,7 @@ describe("view-mode anchor preservation", () => {
 
     act(() => result.current.captureViewAnchor());
     positions = [];
-    rerender({ viewKey: "conversation" });
+    rerender({ viewKey: "intent" });
     expect(scrollToIndex).toHaveBeenCalledWith(5, { align: "start" });
 
     el.scrollTop = 480;
