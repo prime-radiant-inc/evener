@@ -13,11 +13,11 @@ Serf will expose one public identity per kind of work:
 
 Delegate activations will no longer have public job IDs. Serf may retain private activation keys inside the supervisor, but no tool, result, notification, event, transcript rendering, UI payload, error, or prompt may expose or accept them.
 
-The existing `job_` tools will control both kinds of work through neutral targets. `job_status`, `job_stop`, and `job_watch` will accept shell job IDs or delegate IDs where their operation supports that target. `job_list` will return one unified item array. A delegate will appear once, regardless of how many times it has run.
+The existing job-control tools will control both resource types through neutral targets. `job_status`, `job_stop`, and `job_watch` will accept shell job IDs or delegate IDs where supported. `job_list` will return one unified item array, with each delegate appearing once regardless of activation count.
 
-When a delegate activation becomes terminal, Serf will persist its result, make the delegate idle, and unload its runtime automatically. Idle delegates will not retain working-directory or worktree occupancy. `delegate_send` will restore an idle delegate from its transcript and durable descriptor when new work arrives.
+A terminal delegate activation will persist an exact terminal result, make the delegate idle, and request automatic runtime unload. If the delegate has no active descendants, unload occurs immediately. If descendants remain active, Serf keeps the minimum existing coordinator runtime needed for routing and unloads it automatically when the subtree becomes quiescent. This deliberately avoids a new detached subtree-supervisor architecture.
 
-This is a clean contract cutover. The implementation will provide no aliases, dual schemas, legacy delegate-job lookups, or migration behavior.
+This is a clean contract and durable-state cutover. The implementation will provide no aliases, dual schemas, legacy delegate-job lookups, state migration, or mixed-epoch loading.
 
 ## Problem
 
@@ -26,35 +26,39 @@ The current public API assigns two handles to a delegate:
 - a stable `delegate_id` for the conversation;
 - a fresh `job_id` for each activation.
 
-A delegate permits only one active activation. The per-activation job ID therefore provides no concurrency distinction for public control. It forces callers to remember which operations use `delegate_id` and which use the latest `job_id`, creates multiple list rows for one delegate, complicates watch and notification identity, and leaves completed delegate sessions resident in their working directories.
+A delegate permits only one active activation. The activation job ID therefore provides no public concurrency distinction. It forces callers to remember which operations use which handle, creates duplicate list rows, complicates lineage, watches, and notifications, and keeps completed child sessions resident.
 
-The activation ID remains useful inside the supervisor for event folding, cancellation races, notification deduplication, and restart reconciliation. Those are implementation concerns. They do not justify a second public handle.
+The activation key remains useful internally for event folding, cancellation races, notification deduplication, and restart reconciliation. Those are supervisor concerns, not a second public resource.
 
 ## Goals
 
 1. Give each delegate one stable public identity.
-2. Reuse the existing job-control tools instead of adding delegate-specific lifecycle tools.
+2. Reuse existing job-control tools instead of adding delegate-specific lifecycle tools.
 3. Show each delegate once in `job_list` and user interfaces.
-4. Preserve shell execution semantics and `job_...` identities while adopting the neutral `target` and `id` field names.
-5. Keep delegate activations serial: at most one may run per delegate.
-6. Preserve full delegate reports and structured results in the child transcript.
-7. Deliver the complete terminal `communicate` call to the parent when a background delegate finishes.
-8. Unload terminal delegate runtimes automatically so idle delegates do not block worktree removal.
-9. Keep conversation-lifetime delegate watches active across unload and restore.
-10. Retain private activation supervision without creating a public contract for its key.
+4. Preserve shell execution behavior while adopting neutral public identity and relation fields.
+5. Keep delegate activations serial.
+6. Preserve exact real `communicate` calls and canonical abnormal terminal errors in the child transcript.
+7. Deliver the complete accepted terminal `communicate` call to the parent, never an excerpt.
+8. Make that full-packet guarantee safe through an acceptance bound and reserved parent continuation capacity.
+9. Unload terminal delegate runtimes automatically once their descendant subtree is quiescent.
+10. Keep conversation-lifetime delegate watches active across unload and restore.
+11. Retain private activation supervision without creating a public contract for its key.
+12. Preserve current operational metadata not tied to activation identity.
 
 ## Non-goals
 
 - Do not add `delegate_status`, `delegate_stop`, `delegate_watch`, or `delegate_close`.
 - Do not expose activation numbers, run IDs, generations, or aliases for private activation keys.
-- Do not preserve compatibility with public delegate job IDs or old tool argument names.
+- Do not preserve compatibility with public delegate job IDs, old argument names, or old durable job-store state.
+- Do not build a detached durable subtree supervisor merely to unload an ancestor early.
 - Do not delete transcripts when runtimes unload.
 - Do not delete worktrees, branches, or dirty files as part of runtime release.
 - Do not create a raw cross-activation output stream for delegates.
 - Do not move full delegate results into `job_status`.
 - Do not rewrite the supervisor merely to remove its private activation key.
+- Do not add snapshot pagination, a `last_outcome` filter, or a new authorization grant system.
 
-## Identity Model
+## Identity and Relation Model
 
 ### Shell jobs
 
@@ -62,12 +66,12 @@ A shell job is one execution. Its public identity is `job_...`. Its lifecycle is
 
 ### Delegates
 
-A delegate is one durable child conversation. Its public identity is `dlg_...`. It alternates between two lifecycle states:
+A delegate is one durable child conversation. Its public identity is `dlg_...`. Its lifecycle is:
 
 - `running`: one activation is processing;
 - `idle`: no activation is processing.
 
-The most recent activation has a separate outcome:
+The latest activation has a separate outcome:
 
 - `completed`;
 - `failed`;
@@ -75,137 +79,232 @@ The most recent activation has a separate outcome:
 - `cancelled`;
 - `stopped`.
 
-Lifecycle and outcome must remain separate. A delegate whose last activation failed is still idle and may receive another message.
+Lifecycle and outcome remain separate. A delegate whose latest activation failed is idle and may still be resumable.
+
+Resumability is separate metadata:
+
+```json
+{
+  "resumable": false,
+  "not_resumable_reason": "isolation_disposed"
+}
+```
+
+Permanent causes include disposed isolation, missing or pruned transcript state, exhausted conversation limits, and policy revocation. Transient restore failures leave `resumable: true` and do not change lifecycle. This avoids adding a third lifecycle state while preventing endless retries against a permanently unusable delegate.
 
 ### Private activation keys
 
-The supervisor may mint a private key each time an idle delegate starts processing. It may use that key to:
+The supervisor may mint a private key whenever an idle delegate starts processing. It may use that key to:
 
 - associate cancellation with the active runtime;
 - fold start and terminal events;
 - order and deduplicate terminal notifications;
 - reconcile a lost runtime after restart;
-- capture one activation's terminal result exactly once;
+- bind one activation to its exact terminal transcript entry;
 - prevent concurrent resume races.
 
-Private activation keys have no stable format or public lifetime. Serf must strip them from every public boundary. Tests must fail if a delegate activation key appears in model-facing JSON, rendered tool output, notifications, public events, UI data, doctor reports, or prompts.
+Private activation keys have no stable format or public lifetime. Tests must fail if one appears in model-facing JSON, rendered output, notifications, public events, UI data, doctor reports, prompts, or errors.
 
-### Transcript identity
+### Typed public lineage
 
-The child session's `transcript_ref` is the archival handle for the delegate conversation. The transcript contains every activation's messages, tool calls, terminal `communicate` call, and structured output envelope.
+Public lineage must not use activation job IDs. Every public parent edge uses the neutral typed relation:
 
-The transcript, not a per-activation output log, is the authoritative full-result source.
+```json
+{
+  "parent": {
+    "id": "dlg_...",
+    "type": "delegate"
+  }
+}
+```
 
-`read_transcript` accepts that session ref through its existing session-read path. The `job:<job_id>` form names shell output only. It does not accept `job:<delegate_id>`, a bare delegate ID, or a private activation key.
+or the corresponding shell relation with `id: "job_..."` and `type: "shell"`.
+
+This relation replaces `parent_job_id` in tool results, list rows, events, AppWire, doctor output, UI projections, transcript renderings, nested-depth calculations, and scenarios. Internal records may retain private linkage, but every public fold resolves it to the owning shell or delegate resource before rendering.
+
+### Transcript identity and terminal locator
+
+The child session's `transcript_ref` is the archival handle for the delegate conversation. The transcript contains every activation's messages, tool calls, terminal results, and validation metadata.
+
+Each private activation outcome persists an exact locator only after the accepted terminal tool result is durable:
+
+- transcript/session ID;
+- stable turn or entry sequence;
+- tool-call ID.
+
+Notification replay resolves the result from this locator. It must never search for “the last communicate.” The locator is private metadata and is not a control handle.
+
+`read_transcript` accepts the session ref through its session-read path. `job:<job_id>` names shell output only. It does not accept a delegate ID or private activation key.
+
+## Terminal Result Model
+
+Every activation has exactly one canonical terminal result after finalization.
+
+### Accepted communicate result
+
+When the child successfully commits `communicate(end_turn=true)`, the result stores the exact raw tool arguments:
+
+```json
+{
+  "kind": "communicate",
+  "communicate": {
+    "end_turn": true,
+    "message": "...",
+    "output": {
+      "message": "...",
+      "data": {},
+      "artifacts": []
+    }
+  },
+  "structured_result_validation": {
+    "valid": true
+  }
+}
+```
+
+`communicate.output` is `any`. With a custom `result_schema`, it may instead be the schema-shaped value, for example:
+
+```json
+{
+  "kind": "communicate",
+  "communicate": {
+    "end_turn": true,
+    "message": "...",
+    "output": {"verdict": "pass", "count": 3}
+  },
+  "structured_result_validation": {
+    "valid": true
+  }
+}
+```
+
+Serf does not normalize custom output into the default envelope. Validation metadata is a sibling and does not alter the raw call.
+
+### Abnormal terminal result
+
+Cancellation, provider failure, model exhaustion, panic recovery, or restart reconciliation may end an activation before a terminal communicate call exists. Serf then appends a canonical synthetic terminal entry:
+
+```json
+{
+  "kind": "terminal_error",
+  "terminal_error": {
+    "outcome": "stopped",
+    "reason": "runtime_lost",
+    "message": "...",
+    "ended_at": "...",
+    "transcript_ref": "local:..."
+  },
+  "structured_result_validation": {
+    "valid": false,
+    "reason": "no_terminal_communicate"
+  }
+}
+```
+
+The message is sanitized diagnostic prose. This envelope is explicitly Serf-generated; it must never be described as the child's communicate call.
+
+### Full-packet safety bound
+
+A real terminal communicate notification is complete: no delegate-specific excerpting, truncation, or summarization is allowed. To make that implementable:
+
+1. The maximum serialized raw `communicate` arguments are 16 KiB. The lifecycle wrapper has a separate fixed allowance.
+2. Every parent profile allowed to create a delegate must reserve that packet allowance plus protocol overhead.
+3. Delegate creation persists the bound with the restore descriptor.
+4. `communicate(end_turn=true)` serializes and validates the whole raw call before acceptance. An oversized call returns a typed `terminal_packet_too_large` tool error and does not end the activation; the child must retry with a smaller call or store large evidence as artifacts and reference it from the bounded call.
+5. The parent continuation builder reserves the required capacity. It compacts parent history before injection when necessary and does not consume the delivery intent until the exact packet can be committed.
+
+The same 16 KiB bound applies to default and custom-schema output. Serf-generated terminal errors use bounded sanitized diagnostics and fit the same reserved delivery capacity. This preserves the user's full-call guarantee without allowing a valid but permanently undeliverable packet. Exact larger evidence remains available through transcript or artifact references chosen by the child; Serf does not silently substitute those references.
 
 ## Public Tool Contract
 
 ### `delegate`
 
-`delegate` starts a new durable delegate conversation and its first private activation.
+Inputs remain unchanged. This includes `task`, profile/model fields, `max_wait_ms`, delegation allowance, observation, isolation, sandbox fields, and `result_schema`.
 
-Inputs remain unchanged:
-
-- `task`;
-- `agent_type`;
-- `model`;
-- `reasoning_effort`;
-- `max_wait_ms`;
-- `delegation_allowance`;
-- `watch_parent`;
-- `isolation`;
-- `sandbox`;
-- `sandbox_net`;
-- `result_schema`.
-
-The result contains:
+A running result contains the stable identity and all applicable existing non-identity operational metadata:
 
 ```json
 {
   "delegate_id": "dlg_...",
   "type": "delegate",
   "status": "running",
+  "resumable": true,
   "running_in_background": true,
   "timed_out": false,
-  "transcript_ref": "local:..."
+  "transcript_ref": "local:...",
+  "model": "...",
+  "sandbox": {},
+  "worktree": {}
 }
 ```
 
-If a positive `max_wait_ms` observes terminal completion, the result instead reports `status: "idle"` and includes the complete observed result:
+If a positive `max_wait_ms` observes terminal completion, the result reports `status: "idle"`, `last_outcome`, resumability, and:
 
 ```json
 {
-  "delegate_id": "dlg_...",
-  "type": "delegate",
-  "status": "idle",
-  "running_in_background": false,
-  "timed_out": false,
-  "last_outcome": {
-    "status": "completed",
-    "ended_at": "..."
-  },
-  "transcript_ref": "local:...",
-  "output": "...",
-  "structured_result": {},
-  "structured_result_valid": true
+  "terminal_result": {
+    "kind": "communicate",
+    "communicate": {
+      "end_turn": true,
+      "message": "...",
+      "output": {}
+    },
+    "structured_result_validation": {"valid": true}
+  }
 }
 ```
 
-Fields that do not apply may be omitted. The result never contains `job_id`, `started_job_id`, `current_job_id`, `latest_job_id`, or `resumed_from_job_id`.
+For an abnormal result, `terminal_result.kind` is `terminal_error` and contains the canonical error envelope. Applicable operational metadata remains alongside `terminal_result`.
 
-An activation that remains running when the tool returns is notification-armed. An activation whose terminal result is returned inline does not later emit a duplicate terminal notification.
+Observer readiness fields such as `watching` and `watches`, isolated-worktree path/branch/HEAD/ahead/dirty/disposal metadata, model/sandbox echoes, and existing warning fields remain present when applicable. The identity cutover removes activation-ID fields only.
+
+The result never contains `job_id`, `started_job_id`, `current_job_id`, `latest_job_id`, or `resumed_from_job_id`.
+
+An activation that remains running when the tool returns is notification-armed. Inline observation does not settle that delivery intent until the parent transcript durably commits the tool result.
 
 ### `delegate_send`
 
-`delegate_send` accepts `to: <delegate_id>` and a message.
+`delegate_send` accepts `to: <delegate_id>`, a message, and `max_wait_ms`.
 
-If the delegate is running, Serf steers the message into the active activation:
+If the delegate is running, Serf delivers steering into the active activation and returns:
 
 ```json
 {
   "delegate_id": "dlg_...",
   "action": "steered",
   "status": "running",
-  "transcript_ref": "local:..."
+  "transcript_ref": "local:...",
+  "wait_ignored_reason": "live_steer_returns_on_delivery"
 }
 ```
 
-If the delegate is idle, Serf restores its runtime and starts another private activation:
+A live steer does not wait for a reply and does not create another activation.
 
-```json
-{
-  "delegate_id": "dlg_...",
-  "action": "started",
-  "status": "running",
-  "transcript_ref": "local:..."
-}
-```
+If the delegate is idle and resumable, Serf restores it and starts one activation. A positive `max_wait_ms` applies only to the activation started by that call and may return the same canonical inline terminal result as `delegate`.
 
-A positive `max_wait_ms` applies only to an activation started by that call. If it observes terminal completion, the result becomes idle and includes the same inline result fields as `delegate`.
+If `resumable: false`, the call returns `target_not_resumable` and the durable reason. Transient restore failure returns a retryable restore error without changing resumability.
 
-A live steer returns when delivery succeeds. It does not wait for a later reply and does not create another activation.
-
-`delegate_send` never accepts or returns a job ID.
+`delegate_send` never accepts or returns a job ID. Applicable model, sandbox, worktree, observer, validation, and warning metadata remains preserved.
 
 ### `job_status`
 
-The input is:
+Input:
 
 ```json
 {"target": "job_... or dlg_..."}
 ```
 
-Serf dispatches by prefix.
+Both target types return `id`, `type`, and `status`. Shell status otherwise retains current fields.
 
-Both target types return the common identity fields `id`, `type`, and `status`. A shell result uses `id: "job_..."` and otherwise retains its current lifecycle, phase, timing, exit, output-size, and transcript fields.
-
-For a delegate, the result is metadata-only:
+Delegate status is metadata-only:
 
 ```json
 {
   "id": "dlg_...",
   "type": "delegate",
   "status": "idle",
+  "resumable": false,
+  "not_resumable_reason": "isolation_disposed",
   "transcript_ref": "local:...",
   "last_outcome": {
     "status": "failed",
@@ -215,13 +314,11 @@ For a delegate, the result is metadata-only:
 }
 ```
 
-A running delegate may also report `phase`, `running_for_ms`, and `quiet_for_ms`. `job_status` does not return full result prose or structured result data. Callers read the child transcript for durable evidence.
-
-Completion remains notification-driven. Callers must not poll `job_status`.
+A running delegate may report phase and timing metadata. Status does not return full result prose or structured data and does not consume or acknowledge a pending terminal delivery.
 
 ### `job_stop`
 
-The input is:
+Input:
 
 ```json
 {
@@ -231,18 +328,27 @@ The input is:
 }
 ```
 
-Both target types return `id`, `type`, `status`, `stopped`, and any applicable reason. A shell result uses `id: "job_..."`; its cancellation and bounded-wait semantics remain unchanged.
+Both target types preserve the existing expressive stop result:
 
-For a delegate, `job_stop` atomically targets its sole active activation:
+- `id`, `type`, and current `status`;
+- `previous_status`;
+- `outcome`: `cancelled_by_request`, `already_terminal`, `completed_during_stop`, or `stop_requested`;
+- reason and bounded-wait metadata.
 
-- running: request cancellation;
-- idle: return a successful no-op with `status: "idle"` and `stopped: false`;
-- `include_children: true`: also stop active descendant work;
-- `max_wait_ms > 0`: wait only up to the supplied bound for terminal settlement.
+`stopped` may remain only as a derived convenience boolean; callers use `outcome` to distinguish races.
 
-Once the delegate becomes terminal, normal finalization unloads its runtime. `job_stop` needs no release flag.
+Shell semantics remain unchanged. `include_children` is a shell opt-in.
 
-Stopping does not delete the transcript, delegate record, result history, worktree, branch, or files.
+Stopping a delegate is conversation/subtree control and always:
+
+- requests cancellation of its active activation, if any;
+- recursively requests cancellation of active descendant shell and delegate work;
+- discards queued, undelivered steering from before the stop;
+- durably closes the pre-stop attention wake gate so queued descendant attention cannot resurrect the coordinator.
+
+This cascade occurs even if the target delegate is already idle. A later explicit `delegate_send` to a resumable delegate reopens the wake gate for the new activation. For delegate targets, `include_children: false` does not disable the mandatory cascade; the result states that delegate cascade semantics applied.
+
+A positive `max_wait_ms` performs one bounded wait. If settlement remains pending, the terminal delivery intent stays armed. Stopping does not delete transcript, history, worktrees, branches, or files.
 
 ### `job_watch`
 
@@ -255,347 +361,313 @@ Stopping does not delete the transcript, delegate record, result history, worktr
 }
 ```
 
-`inspect` and `clear` continue to use `watch_id`.
+`list`, `inspect`, and `clear` remain supported. Every watch projection consistently uses `target`.
 
 Target behavior:
 
 - `self`: public session-event predicates;
 - granted `parent`: public parent-session-event predicates;
-- `job_...`: shell `output_match` or `progress_interval_ms` predicates;
+- `job_...`: shell output, progress, or event predicates;
 - `dlg_...`: conversation-lifetime public session-event predicates.
 
-A delegate-target watch supports only:
+Delegate-target watches accept only `events`, `event_filter`, and `every`. They reject raw output and progress predicates. They remain active while the delegate is idle and across runtime unload/restore and process restart.
 
-- `events`;
-- `event_filter`;
-- `every`.
-
-It rejects `output_match` and `progress_interval_ms`. Serf will not invent a delegate raw-output stream across activations.
-
-A delegate-target watch remains active while the delegate is idle, survives runtime unload and process restart, and resumes observation when the delegate runs again. It ends only when cleared, exhausted by its own policy, or made invalid by owner/session teardown.
-
-Watch delivery remains implicit to the session that created the watch.
+All continuation state required by the predicate, including the matching-occurrence counter for `every`, is durable under the watch generation. Match-state advancement and delivery intent creation are atomic. A delivery is settled only by the existing receiver-commit acknowledgement path; restart neither resets the count nor duplicates a settled frame.
 
 ### `job_list`
 
-`job_list` returns one unified, newest-activity-first `items` array. Every item contains:
+`job_list` returns one newest-activity-first `items` array while retaining the current top-level orientation and supervision inventory:
 
-- `id`;
-- `type` (`shell` or `delegate`);
-- `status`;
-- owner/visibility fields required by the caller's tree view;
-- timestamps needed for ordering and orientation.
+```json
+{
+  "items": [],
+  "count": 0,
+  "total": 0,
+  "offset": 0,
+  "delegation_allowance": 2,
+  "turn_slots": {},
+  "watches": [],
+  "recent_watches": []
+}
+```
 
-Shell items retain existing shell execution metadata and use `id: job_...`; they do not also expose a `job_id` field.
+Fields are present where applicable under the existing contract; the identity work does not remove watch discovery, delegation allowance, turn-slot orientation, or occupancy evidence.
 
-Delegate items use `id: dlg_...` and contain:
+Every item contains `id`, `type`, `status`, typed `parent` when applicable, visibility/depth metadata, and timestamps. Shell items retain existing execution metadata and use `id: job_...` without a duplicate `job_id`.
 
-- `status: running|idle`;
-- `transcript_ref`;
-- `phase`, `running_for_ms`, and `quiet_for_ms` when running;
-- `last_outcome` when an activation has ended;
-- parent delegate/session identity when visible;
-- the original task or concise description.
+Delegate items use `id: dlg_...` and contain lifecycle, resumability, transcript ref, current phase/timings, latest outcome, original task/description, typed parent, and applicable operational metadata.
 
-A delegate appears exactly once. Resuming it updates that item and moves it according to latest activity; it never appends a second public row.
+A delegate appears exactly once. Resume updates and reorders that item. Type and status filters operate on projected lifecycle; `status: ["failed"]` matches failed shell jobs, not idle delegates whose latest outcome failed. No `last_outcome` filter or pagination snapshot is added.
 
-`type` and `status` filters operate on projected items. The status enum is the union of shell execution statuses and delegate lifecycle statuses. Filtering `status: ["failed"]` matches failed shell jobs, not idle delegates whose `last_outcome` failed. The contract adds no `last_outcome` filter.
-
-`include_nested`, `include_descendants`, `limit`, and `offset` retain their existing purpose. Ordering is descending by latest activity time, then ascending by public `id` for deterministic ties. As with the current live inventory, concurrent activity may move rows between paginated calls; no snapshot token is added.
+`include_nested`, `include_descendants`, `limit`, and `offset` retain their existing purpose. Ordering is descending latest activity, then ascending public ID.
 
 ## Delegate Lifecycle
 
 ### Creation
 
-Creation performs these durable steps before exposing success:
+Before exposing success, creation:
 
-1. mint `delegate_id`;
-2. create the child session and transcript;
-3. persist the delegate descriptor and ownership links;
-4. reserve the delegate's active state;
-5. start the private activation;
-6. return the stable delegate projection.
+1. mints `delegate_id`;
+2. creates the child session and transcript;
+3. persists descriptor, packet bound, ownership, authorization, and typed public lineage;
+4. reserves active state and private activation metadata;
+5. starts the activation;
+6. returns the stable delegate projection.
 
-A failure before the activation starts removes partial runtime state. Durable failure records must not expose a private activation key.
+Partial failure removes partial runtime state and exposes no private key.
 
-### Steering
+### Steering and idle resume
 
-Only one activation may exist. A message arriving while the delegate is running enters that activation's steering queue. It cannot start another activation.
-
-### Idle resume
-
-A message arriving while the delegate is idle obtains the delegate's generation lock, restores the child runtime from the transcript and descriptor, and starts one activation. Concurrent resume attempts serialize: one starts the activation, and later attempts steer it or fail with a typed delivery error. They never create parallel runs.
+A running delegate has one steering queue and one activation. An idle resume obtains the generation lock, checks resumability, restores from transcript and descriptor, and starts one activation. Concurrent resumes serialize: one starts; later calls steer or return a typed delivery error. Parallel activations are impossible.
 
 ### Terminal transition
 
 Finalization follows this order:
 
-1. capture the activation's terminal `communicate` call exactly once;
-2. commit that call and its structured output envelope to the child transcript;
-3. persist activation outcome and terminal notification intent under the private key;
-4. project `last_outcome` and set the delegate lifecycle to `idle`;
-5. detach the execution environment and release cwd/worktree occupancy;
-6. deliver or queue the parent notification independently.
+1. determine whether the activation has an accepted communicate or requires a synthetic terminal error;
+2. commit the exact raw communicate tool result or canonical terminal-error entry to the child transcript;
+3. persist the exact transcript locator, validation metadata, activation outcome, and delivery intent under the private key;
+4. project `last_outcome`, lifecycle `idle`, and resumability;
+5. durably request runtime unload;
+6. if the descendant subtree is quiescent, unload now; otherwise retain only the existing coordinator runtime required for descendant routing and mark unload deferred;
+7. queue inline, callback, or background delivery independently.
 
-Serf must not release the runtime before transcript and terminal intent are durable. It must not retain working-directory occupancy merely to keep an idle session warm.
+Serf must not publish a terminal result or release runtime state before the transcript locator and delivery intent are durable.
 
-### Runtime unload
+### Descendant-aware runtime unload
 
-Runtime unload removes the idle child from live execution and worktree-occupancy scans. It preserves:
+This design does not detach descendants into a new supervisor. If active descendants exist, the ancestor's model turn is over and no new activation runs, but the current child session/job-manager shell remains reachable for:
 
-- child transcript;
-- delegate identity and ownership;
-- restore descriptor and policy inputs;
-- delegate watches;
-- terminal outcome and notification state;
-- worktree and filesystem contents.
+- descendant listing and control routing;
+- callback and notification drive-down;
+- watch grants and event forwarding;
+- worktree occupancy and safety scans.
 
-Running descendants retain their own runtime identity and continue to block unsafe worktree removal. An idle ancestor does not add another blocker.
+The deferred ancestor may continue to block occupancy only to the extent the existing subtree requires it. When the last active descendant settles and queued descendant attention is durably routed, Serf automatically completes the pending unload. No caller flag or close tool is required.
 
-Runtime restoration failure is a retryable invocation error. It does not delete the transcript or create a permanent close state. Generic transcript-based session resume remains independent of the delegate runtime handle.
+A quiescent unload removes the child from live execution and occupancy scans while preserving transcript, identity, descriptor, policy, watches, outcome, delivery state, and filesystem contents.
 
 ### Restart
 
 On process restart:
 
-- a private activation recorded as running without a live runtime settles as `stopped` with reason `runtime_lost`;
-- its delegate becomes idle and releases occupancy;
-- pending notifications remain pending and deduplicated;
-- delegate-target watches remain durable;
-- later `delegate_send` restores from the transcript and descriptor.
+- a private activation recorded as running without a live runtime receives a canonical `terminal_error` with outcome `stopped` and reason `runtime_lost`;
+- the exact synthetic-entry locator, outcome, and pending delivery are persisted;
+- the delegate becomes idle;
+- resumability is recomputed only from durable monotonic facts;
+- descendant-aware unload rules are re-applied;
+- pending deliveries and durable watch counters remain intact;
+- later `delegate_send` restores only if resumable.
 
-No public recovery flow requires a private activation key.
+No public recovery flow uses a private activation key.
 
-## Results and Notifications
+## Results, Delivery, and Notifications
 
-### Authoritative result
+### Durable delivery intent and acknowledgement
 
-The child's terminal `communicate` call is the authoritative delegate result. It includes:
+Every notification-armed activation has one durable delivery intent keyed privately and pointing to the exact terminal transcript entry. Delivery is at-least-once until receiver commit and exactly-once after commit through durable deduplication.
 
-```json
-{
-  "end_turn": true,
-  "message": "...",
-  "output": {
-    "message": "...",
-    "data": {},
-    "artifacts": []
-  }
-}
-```
+- Background notification settles only after the parent transcript durably contains the injected notification.
+- Inline completion settles only after the parent transcript durably contains the initiating tool result.
+- Observer callback settles only after the parent transcript durably contains the callback/steering result.
+- Queue persistence failure is delivery failure, not success.
+- On restart, any unsettled intent is replayed; the receiver checks its committed delivery ID before appending.
 
-When `result_schema` is present, Serf also persists and reports validation metadata according to the existing structured-result contract.
-
-### Inline result
-
-If `delegate` or `delegate_send` observes terminal completion inside `max_wait_ms`, the tool result includes the full report and structured-result fields. It does not also arm a terminal notification.
+This avoids losing a result in the crash window between child finalization and parent transcript persistence.
 
 ### Background terminal notification
 
-If an activation remains running when its initiating tool returns, terminal completion injects one `<job-notification>` block:
+A real communicate result injects one packet:
 
 ```text
 <job-notification target="dlg_..." job_type="delegate"
   event="completed" status="idle" outcome="completed"
   transcript_ref="local:...">
-{"communicate":{"end_turn":true,"message":"...","output":{"message":"...","data":{},"artifacts":[]}}}
+{"kind":"communicate","communicate":{"end_turn":true,"message":"...","output":{"message":"...","data":{},"artifacts":[]}},"structured_result_validation":{"valid":true}}
 </job-notification>
 ```
 
-The payload contains the complete terminal `communicate` call. Serf applies no delegate-notification-specific truncation, summarization, or excerpting. The parent must not need a second read to receive the delegate's report.
+The communicate arguments are complete and byte-for-byte equivalent after canonical JSON serialization. Serf performs no delegate-specific excerpting, truncation, or summarization. The notification wrapper also preserves applicable parent-generated operational metadata that the child cannot authoritatively report, including final isolated-worktree state and disposal hint, model/sandbox echoes, observer readiness (`watching`/`watches`), and structured-result validation. None of those fields may carry an activation ID.
 
-The lifecycle attributes surround the full packet and include `delegate_id` through `target`, outcome, and transcript ref. They expose no activation key.
+An abnormal result injects the same lifecycle and operational wrapper with the canonical `kind: "terminal_error"` envelope instead of claiming a child call existed.
 
-Shell notifications use `target="job_..."` and retain their bounded output-excerpt behavior.
+Shell notifications retain their bounded output-excerpt behavior.
 
-Private activation generation provides exact ordering and duplicate suppression. It is not serialized into the notification. If several delegate notifications queue at one parent boundary, Serf preserves their durable order and emits each full packet once.
-
-Watch-origin observer callbacks retain their special delivery path: the observer's terminal `communicate` packet is the callback, and Serf does not add a duplicate owner notification for the same activation.
+Watch-origin observer callbacks retain their special presentation path, but use the same durable acknowledgement rule. They do not also emit a duplicate owner notification.
 
 ### Public event identity
 
-Public shell lifecycle events identify `target: "job_..."`. Public delegate lifecycle and session events identify `target: "dlg_..."`. Delegate events may include lifecycle status, outcome, reason, transcript ref, and public provenance, but never a private activation key.
+Public shell lifecycle events identify `target: job_...`; delegate events identify `target: dlg_...`. Events contain typed public parent relations and preserve applicable outcome, reason, transcript, timing, model, sandbox, worktree, observation, and validation metadata. They never contain a private activation key.
 
-Event consumers deduplicate and order delegate events from durable envelope metadata that the runtime does not expose as a control handle. A model-facing watch frame therefore needs only its `watch_id`, delegate target, event kind, and bounded public event payload.
+Internal envelope generation may order and deduplicate events but is not serialized as a public control handle.
 
 ## Persistence Model
 
 The durable delegate projection owns:
 
-- `delegate_id`;
-- child session ID and `transcript_ref`;
-- owner, visible owner, and parent delegate links;
-- original task and agent/profile configuration;
-- restore descriptor, sandbox inputs, and isolation policy;
-- lifecycle status (`running|idle`);
+- delegate ID, child session ID, and transcript ref;
+- owner, visible owner, and typed parent links;
+- original task and profile configuration;
+- restore descriptor, packet bound, sandbox, isolation, and worktree metadata;
+- lifecycle, resumability, and permanent reason;
 - private generation/current-activation state;
-- latest activity time;
-- `last_outcome`;
-- terminal notification state;
-- durable watch relationships.
+- latest activity and latest outcome;
+- exact terminal transcript locator and validation metadata per private activation;
+- durable delivery intent/acknowledgement state;
+- durable watch relationships and predicate counters;
+- pending descendant-aware unload state.
 
-The implementation may continue storing private activation records in the existing job store. Those records are supervisor internals. Public folds and APIs must project them into the owning delegate record and must never list them as jobs.
+Private activation records may remain in the existing job store. Public folds project them into their owning delegate and never list them as jobs.
 
-Delegate result prose and structured communicate data live in the child transcript. The delegate projection may store bounded display metadata but must not create a second authoritative full-result copy.
+Full result content has one authoritative durable copy in the child transcript. The delivery intent stores a locator, not a second full copy. Bounded display metadata is allowed.
 
-Shell job records remain unchanged.
+Shell records retain their behavior but adopt public `id` and typed parent projections.
 
 ## Authorization and Tree Visibility
 
-Knowledge of a `job_` or `dlg_` string does not grant control.
+Knowledge of an ID does not grant control. This work adds no new grant type.
 
-- Shell control follows existing job ownership and visibility rules.
-- Delegate status, stop, send, and watch operations require direct ownership or an existing explicit tree grant.
-- A parent may list visible descendant delegates when `include_descendants` is enabled.
-- Nested delegates appear as stable delegate items, not as activation rows.
-- `parent` remains available as a watch target only to delegates created with `watch_parent=true`.
+| Operation | Shell target | Delegate target |
+|---|---|---|
+| list/status | Direct owner, plus visible descendants only through existing `include_nested`/`include_descendants` scope | Direct owner, plus visible descendants only through existing `include_nested`/`include_descendants` scope |
+| transcript read | Existing transcript resolution policy | Existing visible child-session transcript policy; visibility is not created by the ref |
+| watch | Direct owner, or an ancestor forwarding to a visible concrete descendant through the existing forwarded-watch path; no sibling/unrelated access | Direct owner, or an ancestor forwarding to a visible concrete descendant through the existing forwarded-watch path; no sibling/unrelated access |
+| send | Not applicable | Direct owner only |
+| stop | Direct shell control; recursive only when requested | Direct owner control; an ancestor reaches descendants only through mandatory cascade from a delegate it directly controls |
+| `parent` watch target | Not applicable | Only a delegate created with `watch_parent: true` |
 
-Errors must not reveal hidden target existence across ownership boundaries.
+Visibility is not send authority. No “explicit tree grant” is invented. Nested routing uses existing ownership paths and typed public lineage. Unauthorized and hidden targets use the existing non-disclosing error policy.
 
 ## Worktree and Sandbox Semantics
 
 Runtime unload releases occupancy; it does not perform filesystem cleanup.
 
-For a shared worktree:
-
-- a running delegate blocks removal;
-- an idle delegate does not;
-- running descendant work still blocks removal;
-- terminal finalization removes the idle delegate's live environment from occupancy scans.
-
-For an isolated delegate lane:
-
-- terminal finalization releases runtime occupancy;
-- the lane remains until `manage_worktree dispose` or another authorized cleanup path removes it;
-- dirty and unmerged safety gates remain unchanged;
-- runtime unload never implies lane deletion.
-
-Restore re-applies the delegate's persisted sandbox policy inputs. A restore error leaves the transcript intact and returns a typed error to the invocation.
+- A running delegate blocks removal.
+- An idle delegate with active descendants may retain the minimum coordinator blocker until subtree quiescence.
+- A quiescent idle delegate does not block removal.
+- Active descendant work always blocks unsafe removal.
+- An isolated lane remains until authorized disposal.
+- Dirty/unmerged safety gates remain unchanged.
+- Disposal makes the delegate permanently non-resumable; unload never implies disposal.
+- Restore re-applies persisted sandbox policy. Transient setup failure leaves the delegate resumable; missing/disposed required state does not.
 
 ## Error Contract
 
-Tools reject targets synchronously and specifically:
+Tools reject targets synchronously and without hidden-resource disclosure:
 
-- malformed prefix: `invalid_request`;
-- well-formed target that does not resolve within the caller's visible scope: `target_not_found`;
-- known but unauthorized target when policy permits disclosure: `not_controllable`; otherwise use the same non-disclosing `target_not_found` response;
-- transcript or watch ref passed as lifecycle target: `invalid_request`;
-- `self` or `parent` passed to status/stop: `invalid_request`;
+- malformed prefix or wrong target kind: `invalid_request`;
+- unresolved or hidden target: `target_not_found`;
+- disclosed but unauthorized target: `not_controllable`;
+- permanently unusable delegate: `target_not_resumable` with durable reason;
+- transient runtime setup failure: retryable restore error;
 - delegate watch with output/progress predicate: `invalid_request`;
-- stop of idle delegate: successful no-op, not an error;
-- concurrent restore loss: typed delivery/restore error with no second activation;
-- missing runtime environment: retryable restore failure; transcript remains available.
+- oversized terminal communicate: `terminal_packet_too_large`, activation remains running;
+- concurrent restore loss: typed delivery error with no second activation.
 
-Tool schemas remove:
-
-- `job_id` from `job_status` and `job_stop`, replaced by `target`;
-- `source` from `job_watch`, replaced by `target`;
-- every delegate job-ID result field.
-
-The cutover provides no aliases. Old field names fail schema validation.
+Old fields fail schema validation. `job_status` and `job_stop` require `target`; `job_watch` create requires `target`; delegate results contain no activation job-ID fields.
 
 ## Public Surfaces
 
-The following surfaces must adopt the same identity model:
+The identity, typed lineage, lifecycle, resumability, operational metadata, and terminal-result union apply consistently to:
 
-- tool definitions and result renderers;
-- system prompts and bundled agent prompts;
-- `docs/job-control.md` and scenario documentation;
-- terminal notification rendering;
-- TUI and web activity/session-tree projections;
-- appwire/RPC job-list and status payloads;
-- doctor job, watch, and tree reports;
-- transcript markdown/outline rendering;
-- event payloads and audit output;
+- tool definitions and renderers;
+- prompts and agent instructions;
+- job-control, scenario, architecture, and worktree docs;
+- terminal notifications;
+- TUI and web projections;
+- AppWire/RPC payloads;
+- doctor reports;
+- transcript renderings;
+- events and audit output;
 - tests, fuzz fixtures, and live scenarios.
 
-UI rows key delegates by `delegate_id`. Activation history appears through the child transcript, not duplicate activity rows.
+UI rows key delegates by delegate ID. Activation history appears through the child transcript, not duplicate activity rows.
 
 ## Clean Cutover
 
-This design requires no backward compatibility.
+The new contract uses a new durable-state epoch. Startup must refuse to load a nonempty incompatible job/delegate store. Deployment must stop the old process, archive or remove the old state root, and start the new runtime with fresh state.
 
-The implementation must not:
+This is intentional YAGNI: Serf will not add legacy folds, control aliases, read aliases, parent-link translation, transcript rewriting, dual writes, or migration branches.
 
-- accept old delegate job IDs;
-- translate old IDs into delegate IDs;
-- accept both `job_id` and `target` fields;
-- accept both `source` and `target` watch fields;
-- dual-write old and new public payloads;
-- retain legacy delegate activation rows in new `job_list` output;
-- add migration-only branches to model-facing tools.
-
-Old transcripts and raw state files remain archival bytes, but the new runtime does not promise that their delegate job handles remain controllable or readable through job tools. Deployment must stop old active delegates before cutover. Tests use fresh state for the new contract.
+Old state and transcripts may remain operator-managed archival bytes, but the new runtime does not load or promise API access to them. Tests must prove both fresh-epoch startup and explicit refusal of mixed or old durable state. Historical transcript text is never re-rendered as live new-epoch control data.
 
 ## Verification
 
-Before completion, the implementation must pass the repository's normal deterministic gates and prove the following behavior.
+Before completion, the implementation must pass normal deterministic gates and prove:
 
-### Tool schemas and results
+### Identity, schemas, and lineage
 
-1. `delegate` and `delegate_send` never emit any delegate job-ID field.
-2. `job_status` and `job_stop` require `target` and reject `job_id`.
-3. `job_watch` create requires `target` and rejects `source`.
-4. `job_status`, `job_stop`, and `job_list` return the common public identity field `id`; shell items do not duplicate it as `job_id`.
-5. Shell targets retain their existing status, stop, output, and progress behavior.
-6. No tool description or bundled prompt tells the model to retain a delegate job ID.
+1. Delegate tools never emit or accept an activation job ID.
+2. Status/stop/watch use `target`; old argument names fail validation.
+3. Shell resources alone expose `job_...`; delegates expose `dlg_...`.
+4. Every public nested relation uses typed `parent`, never `parent_job_id`.
+5. Private activation keys do not escape any public surface.
+6. Existing non-identity model, sandbox, worktree, observer, warning, and validation metadata remains present where applicable.
 
-### Delegate lifecycle
+### Terminal results and delivery
 
-7. Create, inline completion, background completion, live steering, idle resume, failure, exhaustion, cancellation, and restart preserve one stable `delegate_id`.
-8. Concurrent resume attempts produce one activation.
-9. Stopping an idle delegate is an explicit successful no-op.
-10. Terminal finalization commits the full communicate packet before runtime unload.
-11. A stopped or completed delegate can be restored from its durable transcript and descriptor.
+7. Default-envelope and custom-schema communicate calls persist and deliver exact raw `output:any` values with separate validation metadata.
+8. Failure, exhaustion, cancellation, panic recovery, and runtime loss append canonical terminal-error entries.
+9. Each activation persists an exact terminal turn/entry and tool-call locator; replay never selects a later activation's result.
+10. Accepted communicate packets are complete and never excerpted.
+11. Oversized packets are rejected before terminal acceptance and can be retried.
+12. Parent continuation construction reserves packet capacity and compacts before injection.
+13. Inline, callback, and background delivery intents survive crashes until the parent transcript commit acknowledges them.
+14. Receiver deduplication prevents duplicate committed delivery.
+15. Metadata-only status does not consume pending delivery.
+16. Observer callback delivery produces no duplicate owner notification.
 
-### Listing and status
+### Lifecycle, stop, and resume
 
-12. A delegate appears once in `job_list` after multiple activations.
-13. Resume updates and reorders the stable delegate item without appending another item.
-14. Delegate `status` reports running or idle; `last_outcome` reports the previous activation independently.
-15. Status and type filtering obey the unified projection rules.
-16. Nested and descendant views contain stable delegate items with correct ownership and depth.
+17. Create, steering, resume, completion, abnormal outcomes, and restart preserve one delegate ID.
+18. Concurrent resume attempts create one activation.
+19. Delegate stop always cascades through active descendants, including when the delegate is idle.
+20. Stop durably gates pre-stop attention; explicit later send reopens the gate.
+21. Stop results distinguish cancellation, prior completion, completion race, and pending stop.
+22. Permanent disposal/pruning/exhaustion produces `resumable: false`; transient restore failure does not.
+23. Send to a non-resumable delegate returns the durable typed error.
 
-### Notifications and results
+### Listing, visibility, and watches
 
-17. A background delegate terminal notification names only `dlg_...` and carries no activation key.
-18. The notification contains the complete final `communicate` call, including full output data and artifacts.
-19. Inline completion does not produce a duplicate later notification.
-20. Notification ordering and exactly-once delivery survive restart.
-21. Observer callback delivery does not produce a duplicate owner notification.
-22. The full prose and structured result remain readable from the child transcript after unload and restart.
+24. A delegate appears once after multiple activations and is reordered on activity.
+25. List responses retain count/total/offset plus watch, delegation, and occupancy orientation.
+26. Nested/descendant views preserve typed lineage, depth, and per-operation authorization.
+27. Visibility never grants delegate send authority.
+28. `job_watch list`, inspect, and clear discover and manage unloaded delegate watches.
+29. Delegate watches survive two unload/restore cycles and process restart.
+30. An `every` threshold crossed across activation/restart fires exactly once.
+31. Delegate targets reject output/progress predicates; shell predicates retain behavior.
 
-### Watches
+### Runtime and worktrees
 
-23. A delegate-target watch survives at least two idle unload/restore cycles and observes public events from both activations.
-24. Delegate targets reject output and progress predicates.
-25. Shell targets retain output/progress watches.
-26. Clearing a delegate watch while its runtime is unloaded prevents future delivery.
+32. A quiescent terminal delegate unloads and releases occupancy automatically.
+33. An ancestor with active descendants defers unload while preserving descendant routing, callback drive-down, listing, stop, watches, and blockers.
+34. Deferred unload completes automatically after the subtree and queued attention become quiescent.
+35. Runtime unload never deletes lanes/files or bypasses dirty/unmerged gates.
+36. Disposal is monotonic and makes the delegate non-resumable.
 
-### Runtime release and worktrees
+### Cutover and robustness
 
-27. A completed, failed, exhausted, cancelled, or stopped delegate releases shared-worktree occupancy.
-28. A running delegate still blocks worktree removal.
-29. Running descendant work still blocks removal after its idle ancestor unloads.
-30. Runtime unload never removes an isolated lane, discards dirty files, or bypasses merge gates.
-31. Restore reapplies sandbox policy and reports failures without deleting transcript history.
-
-### Concurrency and durability
-
-32. Race tests cover send versus stop, send versus finalization, unload versus watch delivery, notification versus restart, and concurrent resume.
-33. Private activation keys never escape public JSON, text renderers, notifications, events, doctor reports, UI payloads, or prompts.
-34. Fuzz and program tests cover malformed target prefixes, target-type dispatch, old-field rejection, and projection invariants.
+37. New runtime starts with fresh-epoch state.
+38. Startup refuses mixed or old nonempty durable state instead of translating it.
+39. Race tests cover send/stop/finalize, delivery/parent commit, descendant settlement/unload, watch counter/delivery, and concurrent resume.
+40. Fuzz/program tests cover malformed targets, dispatch, old-field rejection, typed lineage, terminal unions, packet bounds, and projection invariants.
 
 ## Acceptance Criteria
 
 The design is complete when:
 
 - shell executions are the only public `job_...` resources;
-- delegates expose only `dlg_...` and `transcript_ref`;
-- all lifecycle tools use neutral `target` where applicable;
-- `job_list` shows one item per delegate;
-- terminal delegate notifications carry the complete final `communicate` call;
-- terminal delegates unload automatically and stop blocking worktree removal;
-- lifetime delegate watches survive unload and resume;
-- no backward-compatibility path remains;
+- delegates expose one `dlg_...` identity plus transcript and operational metadata;
+- all lifecycle tools use neutral targets;
+- public nested lineage is typed and contains no activation key;
+- `job_list` shows one item per delegate without losing supervision inventory;
+- every activation has an exact real communicate or canonical terminal-error result;
+- accepted delegate communicate notifications are complete and receiver-safe;
+- delivery survives crashes until durable parent acknowledgement;
+- delegate stop safely controls its subtree;
+- quiescent terminal delegates unload automatically, while active descendants defer unload without being orphaned;
+- lifetime delegate watches retain exact predicate state across unload/restart;
+- permanent non-resumability is explicit;
+- the new runtime refuses incompatible state rather than carrying compatibility code;
 - deterministic unit, integration, race, fuzz-seed, frontend, and scenario gates pass.
