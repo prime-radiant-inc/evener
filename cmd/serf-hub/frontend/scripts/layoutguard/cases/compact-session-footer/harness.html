@@ -8,9 +8,13 @@
 <link rel="stylesheet" href="resolved.css">
 <style>
   * { transition: none !important; animation: none !important; }
-  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 20px; padding: 20px; }
+  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px; }
   .fixture { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
   .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); }
+  /* PromptCard always owns a field before its controls. Textarea's vertical
+     details are outside this horizontal guard, but keeping the field node here
+     makes the card hierarchy honest and exercises the real card gap. */
+  .fieldStandIn { display: block; width: 100%; height: 24px; min-height: 0; padding: 0; border: 0; resize: none; background: transparent; color: var(--ink-hi); }
   /* IconButton composes Button's classes at build time. The layout guard loads
      CSS modules directly, so this one declaration supplies only its production
      xs square override without introducing the raw `.xs` module-name collision. */
@@ -29,9 +33,10 @@
   <section class="fixture">
     <div class="fixtureLabel"></div>
     <div class="card" data-card>
+      <textarea class="fieldStandIn" rows="1" aria-label="Message">Message the agent</textarea>
       <div class="controls" data-controls>
         <div class="leading" data-leading>
-          <button class="button quiet xs attachmentControl focusAttach" data-attachment type="button" aria-label="Attach image">+</button>
+          <span class="wrapper"><button class="button quiet xs attachmentControl focusAttach" data-attachment type="button" aria-label="Attach image">+</button></span>
           <div class="inline" data-session-chrome-inline>
             <div class="body" data-status-body>
               <div class="row" data-status>
@@ -47,7 +52,7 @@
             <div class="right"><button class="sessionActionControl focusActions" data-session-actions type="button" aria-label="Session actions">⋯</button></div>
           </div>
         </div>
-        <div class="actions" data-submit-actions><button class="button primary xs focusSend" data-send type="button">Send</button></div>
+        <div class="actions" data-submit-actions><span class="wrapper"><button class="button primary xs focusSend" data-send type="button">Send</button></span></div>
       </div>
     </div>
   </section>
@@ -56,11 +61,16 @@
 <script>
 const fixtures = [
   { width: 320 },
-  { width: 400 },
-  { width: 480 },
-  { width: 560 },
-  { width: 640 },
-  { width: 720 },
+  // The composer's fixed controls consume 139.625px in this rendered
+  // hierarchy. Fractional outer widths are deliberate: they make StatusRow's
+  // actual query-container rect exactly 399/400, 479/480, and 559/560px rather
+  // than relying on integer clientWidth rounding around a fractional box.
+  { width: 538.625, expectedStatusWidth: 399 },
+  { width: 539.625, expectedStatusWidth: 400 },
+  { width: 618.625, expectedStatusWidth: 479 },
+  { width: 619.625, expectedStatusWidth: 480 },
+  { width: 698.625, expectedStatusWidth: 559 },
+  { width: 699.625, expectedStatusWidth: 560 },
   { width: 900 },
   { width: 900, shortModel: true },
 ];
@@ -70,8 +80,9 @@ for (const spec of fixtures) {
   const fragment = template.content.cloneNode(true);
   const fixture = fragment.querySelector(".fixture");
   fixture.dataset.width = String(spec.width);
+  if (spec.expectedStatusWidth !== undefined) fixture.dataset.expectedStatusWidth = String(spec.expectedStatusWidth);
   if (spec.shortModel) fixture.dataset.shortModel = "true";
-  fixture.querySelector(".fixtureLabel").textContent = `${spec.width}px composer${spec.shortModel ? ", short model label" : ""}`;
+  fixture.querySelector(".fixtureLabel").textContent = `${spec.width}px composer${spec.expectedStatusWidth === undefined ? "" : ` / ${spec.expectedStatusWidth}px status container`}${spec.shortModel ? ", short model label" : ""}`;
   fixture.querySelector("[data-card]").style.width = `${spec.width}px`;
   fixture.querySelector("[data-model-value]").textContent = spec.shortModel
     ? "gpt-5.2"
@@ -132,6 +143,8 @@ window.measure = function () {
     const modelTrigger = fixture.querySelector(".trigger");
     return {
       width: Number(fixture.dataset.width),
+      expectedStatusWidth:
+        fixture.dataset.expectedStatusWidth === undefined ? null : Number(fixture.dataset.expectedStatusWidth),
       shortModel: fixture.dataset.shortModel === "true",
       card: box(card),
       controls: box(controls),
