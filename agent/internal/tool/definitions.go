@@ -88,7 +88,7 @@ func DefShell() llm.ToolDefinition {
 				"mode": map[string]any{
 					"type":        "string",
 					"enum":        []any{"foreground", "background", "detached"},
-					"description": "foreground (default) waits inline, background creates a session-owned job, and detached starts an unmanaged process that survives this Serf session and returns only its PID.",
+					"description": "foreground waits for the command to finish before continuing; background runs a session-owned job in the background and Serf stops it when the session ends; detached is the only mode that lets a process survive after this Serf session stops.",
 				},
 				"cwd": map[string]any{"type": "string", "description": "Optional working directory for the command. Relative paths resolve against your current working directory; absolute paths must stay inside it. Must already exist. Default: your current working directory."},
 			},
