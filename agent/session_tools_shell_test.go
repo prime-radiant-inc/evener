@@ -163,24 +163,31 @@ func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 	res := s.reg.ExecuteCall(ctx, s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
 	}
 	var out struct {
-		JobID               string `json:"job_id"`
-		Type                string `json:"type"`
-		Status              string `json:"status"`
-		RunningInBackground bool   `json:"running_in_background"`
+		JobID  string `json:"job_id"`
+		Type   string `json:"type"`
+		Status string `json:"status"`
+		Mode   string `json:"mode"`
 	}
 	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
 	}
+	var state map[string]any
+	if err := json.Unmarshal(toolResultJSON(res), &state); err != nil {
+		t.Fatalf("unmarshal shell state: %v (output: %s)", err, res.Output)
+	}
+	if _, exists := state["running_in_background"]; exists {
+		t.Fatal("legacy running_in_background result property is still exposed")
+	}
 	if out.JobID == "" ||
 		out.Type != string(jobstore.JobShell) ||
 		out.Status != string(jobstore.StatusRunning) ||
-		!out.RunningInBackground {
+		out.Mode != "background" {
 		t.Fatalf("shell output = %+v, want running background shell job", out)
 	}
 	t.Cleanup(func() {
@@ -206,7 +213,7 @@ func TestShellBackgroundCompletionRetainsUnterminatedOutput(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf done","background":true}`),
+		Arguments: json.RawMessage(`{"command":"printf done","mode":"background"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -342,10 +349,10 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 				t.Fatalf("shell returned error: %s", res.Output)
 			}
 			var out struct {
-				JobID               string `json:"job_id"`
-				Status              string `json:"status"`
-				Reason              string `json:"reason"`
-				RunningInBackground bool   `json:"running_in_background"`
+				JobID  string `json:"job_id"`
+				Status string `json:"status"`
+				Reason string `json:"reason"`
+				Mode   string `json:"mode"`
 			}
 			if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 				t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
@@ -353,7 +360,7 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 			if out.JobID == "" ||
 				out.Status != string(jobstore.StatusRunning) ||
 				out.Reason != "foreground_timeout" ||
-				!out.RunningInBackground {
+				out.Mode != "background" {
 				t.Fatalf("shell output = %+v, want foreground timeout promoted to background", out)
 			}
 			_, _ = s.jobManager.stop(out.JobID)
@@ -371,7 +378,7 @@ func TestSessionCloseMarksBackgroundShellCancelledBeforeEnvCleanup(t *testing.T)
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -436,7 +443,7 @@ func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(
 	res := child.reg.ExecuteCall(context.Background(), child.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
 	})
 	if res.IsError {
 		t.Fatalf("child shell returned error: %s", res.Output)
@@ -497,7 +504,7 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 							ToolCall: &llm.ToolCallData{
 								ID:        "late-shell",
 								Name:      "shell",
-								Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+								Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
 								Type:      "function",
 							},
 						}},
@@ -748,32 +755,39 @@ func TestShellToolCwdNonexistentRejected(t *testing.T) {
 	}
 }
 
-// TestParseShellToolArgsBackground covers the wait-knob decode at the tool
-// boundary: `background` decodes to shellArgs.Background; absent is false
-// (strict-provider safe). max_runtime_ms keeps its negative check.
-func TestParseShellToolArgsBackground(t *testing.T) {
+func TestParseShellToolArgsMode(t *testing.T) {
 	t.Parallel()
-	args, err := parseShellToolArgs(map[string]any{
-		"command":    "echo hi",
-		"background": true,
-	})
-	if err != nil {
-		t.Fatalf("parseShellToolArgs with background=true: want success, got %v", err)
+	tests := []struct {
+		name    string
+		args    map[string]any
+		want    shellMode
+		wantErr string
+	}{
+		{name: "omitted", args: map[string]any{"command": "true"}, want: shellModeForeground},
+		{name: "foreground", args: map[string]any{"command": "true", "mode": "foreground"}, want: shellModeForeground},
+		{name: "background", args: map[string]any{"command": "true", "mode": "background"}, want: shellModeBackground},
+		{name: "detached", args: map[string]any{"command": "true", "mode": "detached"}, want: shellModeDetached},
+		{name: "unknown", args: map[string]any{"command": "true", "mode": "daemon"}, wantErr: `mode must be one of "foreground", "background", or "detached"`},
+		{name: "boolean", args: map[string]any{"command": "true", "mode": true}, wantErr: `mode must be one of "foreground", "background", or "detached"`},
 	}
-	if !args.Background {
-		t.Fatal("Background = false, want true")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseShellToolArgs(tt.args)
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || got.Mode != tt.want {
+				t.Fatalf("parse = (%q, %v), want (%q, nil)", got.Mode, err, tt.want)
+			}
+		})
 	}
+}
 
-	// Absent background is false (the strict-provider-forced default).
-	args, err = parseShellToolArgs(map[string]any{"command": "echo hi"})
-	if err != nil {
-		t.Fatalf("parseShellToolArgs with absent background: want success, got %v", err)
-	}
-	if args.Background {
-		t.Fatal("Background = true, want false for absent background")
-	}
-
-	// Negative max_runtime_ms still errors.
+func TestParseShellToolArgsRejectsNegativeMaxRuntime(t *testing.T) {
+	t.Parallel()
 	if _, err := parseShellToolArgs(map[string]any{
 		"command":        "echo hi",
 		"max_runtime_ms": -1,
@@ -1077,13 +1091,13 @@ func TestFormatShellResultPromotionFooter(t *testing.T) {
 	reason := "foreground_timeout"
 	output := "partial output\n"
 	got := formatShellResult(shellToolResult{
-		JobID:               "job_promoted",
-		Type:                "shell",
-		Status:              string(jobstore.StatusRunning),
-		Reason:              &reason,
-		RunningInBackground: true,
-		TimedOut:            true,
-		Output:              &output,
+		JobID:    "job_promoted",
+		Type:     "shell",
+		Status:   string(jobstore.StatusRunning),
+		Reason:   &reason,
+		Mode:     "background",
+		TimedOut: true,
+		Output:   &output,
 	})
 	for _, want := range []string{
 		"still running",
@@ -1112,13 +1126,13 @@ func TestFormatShellResultRunTimeoutFooter(t *testing.T) {
 	output := "built most of the way\n"
 	exitCode := -1
 	got := formatShellResult(shellToolResult{
-		Type:                "shell",
-		Status:              string(jobstore.StatusStopped),
-		Reason:              &reason,
-		RunningInBackground: false,
-		TimedOut:            false,
-		ExitCode:            &exitCode,
-		Output:              &output,
+		Type:     "shell",
+		Status:   string(jobstore.StatusStopped),
+		Reason:   &reason,
+		Mode:     "foreground",
+		TimedOut: false,
+		ExitCode: &exitCode,
+		Output:   &output,
 	})
 	for _, want := range []string{"serf", "runtime limit"} {
 		if !strings.Contains(got, want) {
@@ -1141,12 +1155,12 @@ func TestFormatShellResultRunTimeoutZeroOutputFooter(t *testing.T) {
 	reason := "run_timeout"
 	exitCode := -1
 	got := formatShellResult(shellToolResult{
-		Type:                "shell",
-		Status:              string(jobstore.StatusStopped),
-		Reason:              &reason,
-		RunningInBackground: false,
-		TimedOut:            false,
-		ExitCode:            &exitCode,
+		Type:     "shell",
+		Status:   string(jobstore.StatusStopped),
+		Reason:   &reason,
+		Mode:     "foreground",
+		TimedOut: false,
+		ExitCode: &exitCode,
 	})
 	for _, want := range []string{"serf", "runtime limit", "no output"} {
 		if !strings.Contains(got, want) {

@@ -531,6 +531,10 @@ func stpRunProgram(t *testing.T, p stpProgram) stpRunResult {
 	}
 
 	result := stpRunResult{}
+	mode := string(shellModeForeground)
+	if p.background {
+		mode = string(shellModeBackground)
+	}
 	// max_runtime_ms was removed from the model-facing shell schema (commit
 	// 429e22d68, "fix: hide shell runtime cap from models"); p.maxRuntime is
 	// still decoded to keep the byte-program layout stable for existing seeds,
@@ -538,7 +542,7 @@ func stpRunProgram(t *testing.T, p stpProgram) stpRunResult {
 	result.shell = call("shell", map[string]any{
 		"command":     p.command,
 		"description": p.description,
-		"background":  p.background,
+		"mode":        mode,
 	})
 	result.list = call("list_dir", map[string]any{
 		"path":   p.listPath,

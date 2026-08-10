@@ -67,7 +67,7 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'ready-line\n'; sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"printf 'ready-line\n'; sleep 30","mode":"background"}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -225,7 +225,7 @@ func TestJobStopDefaultReturnsRequestedCancellation(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -773,7 +773,7 @@ func TestDelegateSendToShellJobIDRejectsJobHandle(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -948,7 +948,7 @@ func TestJobStopSchemaRejectsUnsupportedSignal(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -985,7 +985,7 @@ func TestJobStopAcceptsIncludeChildrenThroughRegistry(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -1458,7 +1458,7 @@ func TestJobStopReportsOutcomeAndPreviousStatus(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)

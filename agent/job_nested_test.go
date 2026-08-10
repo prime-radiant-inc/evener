@@ -2489,7 +2489,7 @@ func TestNestedShellEndToEndThroughTools(t *testing.T) {
 	shellCall := child.reg.ExecuteCall(context.Background(), child.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'nested-e2e-ready\n'; sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"printf 'nested-e2e-ready\n'; sleep 30","mode":"background"}`),
 	})
 	if shellCall.IsError {
 		t.Fatalf("child shell tool returned error: %s", shellCall.Output)
@@ -2498,7 +2498,7 @@ func TestNestedShellEndToEndThroughTools(t *testing.T) {
 	if err := json.Unmarshal(toolResultJSON(shellCall), &shell); err != nil {
 		t.Fatalf("unmarshal shell result: %v (output: %s)", err, shellCall.Output)
 	}
-	if shell.JobID == "" || !shell.RunningInBackground || shell.Status != string(jobstore.StatusRunning) {
+	if shell.JobID == "" || shell.Mode != string(shellModeBackground) || shell.Status != string(jobstore.StatusRunning) {
 		t.Fatalf("shell result = %+v, want running background nested job", shell)
 	}
 	nestedID := shell.JobID

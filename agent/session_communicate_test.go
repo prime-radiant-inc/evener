@@ -1034,7 +1034,7 @@ func TestCommunicate_EndTurnWarnsAboutRunningJobs(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)

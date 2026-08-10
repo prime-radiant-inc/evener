@@ -34,9 +34,10 @@ func containsString(values []string, want string) bool {
 	return slices.Contains(values, want)
 }
 
-// TestSchemaWaitKnobs asserts the one-wait-knob-per-tool invariant: shell's wait
-// knob is a `background` boolean; the other three wait-capable tools use
-// `max_wait_ms`. No tool carries both, and `block`/`block_timeout_ms` are gone
+// TestSchemaWaitKnobs asserts the one-wait-knob-per-tool invariant: shell's
+// execution mode replaces its former background boolean; the other three
+// wait-capable tools use `max_wait_ms`. No tool carries both, and
+// `block`/`block_timeout_ms` are gone
 // everywhere. (Supersedes the all-five max_wait_ms unification for shell — see
 // docs/superpowers/specs/2026-06-13-max-wait-unification.md.)
 func TestSchemaWaitKnobs(t *testing.T) {
@@ -91,8 +92,8 @@ func TestSchemaWaitKnobs(t *testing.T) {
 		})
 	}
 
-	// shell is the exception: its single wait knob is `background` (bool); it must
-	// NOT carry max_wait_ms/block/block_timeout_ms.
+	// shell is the exception: its execution mode replaces the old background
+	// boolean and it must NOT carry max_wait_ms/block/block_timeout_ms.
 	t.Run("shell", func(t *testing.T) {
 		params := DefShell().Parameters
 		if ap, ok := params["additionalProperties"]; !ok || ap != false {
@@ -104,19 +105,19 @@ func TestSchemaWaitKnobs(t *testing.T) {
 				t.Errorf("shell: property %q must not exist", banned)
 			}
 		}
-		bg, ok := props["background"].(map[string]any)
+		mode, ok := props["mode"].(map[string]any)
 		if !ok {
-			t.Fatalf("shell: missing required property background")
+			t.Fatal("shell: missing required property mode")
 		}
-		if typ, _ := bg["type"].(string); typ != "boolean" {
-			t.Errorf("shell: background type = %q, want boolean", typ)
+		if typ, _ := mode["type"].(string); typ != "string" {
+			t.Errorf("shell: mode type = %q, want string", typ)
 		}
 	})
 }
 
 func TestDefShellHasJobParams(t *testing.T) {
 	props := DefShell().Parameters["properties"].(map[string]any)
-	for _, p := range []string{"command", "description", "background"} {
+	for _, p := range []string{"command", "description", "mode"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("DefShell missing param %q", p)
 		}
@@ -129,8 +130,26 @@ func TestDefShellHasJobParams(t *testing.T) {
 	if got := DefShell().Description; got != "Run a shell command and report stdout, stderr, and exit status." {
 		t.Fatalf("DefShell description mismatch:\n%q", got)
 	}
-	if got := props["background"].(map[string]any)["description"]; got != "Choose foreground execution (false, default) for inline results, or background execution (true) for an immediate job_id. Foreground commands still running at ~120s continue as background jobs." {
-		t.Fatalf("background description mismatch:\n%q", got)
+	if got := props["mode"].(map[string]any)["description"]; got != "foreground (default) waits inline, background creates a session-owned job, and detached starts an unmanaged process that survives this Serf session and returns only its PID." {
+		t.Fatalf("mode description mismatch:\n%q", got)
+	}
+}
+
+func TestDefShellHasExecutionMode(t *testing.T) {
+	props := DefShell().Parameters["properties"].(map[string]any)
+	mode, ok := props["mode"].(map[string]any)
+	if !ok {
+		t.Fatal("DefShell missing mode property")
+	}
+	if got := mode["type"]; got != "string" {
+		t.Fatalf("mode type = %v, want string", got)
+	}
+	want := []any{"foreground", "background", "detached"}
+	if got := mode["enum"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("mode enum = %#v, want %#v", got, want)
+	}
+	if _, exists := props["background"]; exists {
+		t.Fatal("legacy background property is still exposed")
 	}
 }
 

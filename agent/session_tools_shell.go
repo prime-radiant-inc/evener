@@ -145,6 +145,9 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if err != nil {
 				return "", err
 			}
+			if shellArgs.Mode == shellModeDetached {
+				return "", errors.New("invalid_request: detached execution is not yet available")
+			}
 			// Resolve shellArgs.WorkingDir (the raw, possibly-relative model-supplied
 			// cwd, or "" if omitted) against env now, once, for both the streaming and
 			// buffered dispatch paths below. Recorded on the job (see
@@ -279,12 +282,15 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 }
 
 func parseShellToolArgs(args map[string]any) (shellArgs, error) {
+	mode, err := parseShellMode(args)
+	if err != nil {
+		return shellArgs{}, err
+	}
 	parsed := shellArgs{
 		Command:     fmt.Sprint(args["command"]),
 		Description: stringArg(args, "description"),
-		// background false (the strict-provider-forced default) runs foreground and
-		// returns when the command finishes; true starts it and returns the job_id now.
-		Background: shellBoolArg(args, "background"),
+		Mode:        mode,
+		Background:  mode == shellModeBackground,
 		// WorkingDir is the raw model-supplied cwd, if any; "" means omitted. It is
 		// resolved (relative paths joined against env.WorkingDirectory(), validated
 		// against the sandbox root) by resolveShellWorkingDir before dispatch, which
@@ -302,6 +308,23 @@ func parseShellToolArgs(args map[string]any) (shellArgs, error) {
 		parsed.MaxRuntimeMS = minShellMaxRuntimeMS
 	}
 	return parsed, nil
+}
+
+func parseShellMode(args map[string]any) (shellMode, error) {
+	raw, exists := args["mode"]
+	if !exists {
+		return shellModeForeground, nil
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return "", errors.New(`mode must be one of "foreground", "background", or "detached"`)
+	}
+	switch shellMode(value) {
+	case shellModeForeground, shellModeBackground, shellModeDetached:
+		return shellMode(value), nil
+	default:
+		return "", errors.New(`mode must be one of "foreground", "background", or "detached"`)
+	}
 }
 
 // resolveShellWorkingDir resolves the shell tool's raw `cwd` argument against
@@ -396,13 +419,16 @@ func marshalShellToolResult(res shellResult, maxChars int) (tool.StateResult, er
 	}
 
 	out := shellToolResult{
-		JobID:               res.JobID,
-		Type:                res.Type,
-		Status:              res.Status,
-		Reason:              shellStringPtrOrNil(res.Reason),
-		RunningInBackground: res.RunningInBackground,
-		TimedOut:            res.TimedOut,
-		ExitCode:            res.ExitCode,
+		JobID:    res.JobID,
+		Type:     res.Type,
+		Status:   res.Status,
+		Reason:   shellStringPtrOrNil(res.Reason),
+		Mode:     string(shellModeForeground),
+		TimedOut: res.TimedOut,
+		ExitCode: res.ExitCode,
+	}
+	if res.RunningInBackground {
+		out.Mode = string(shellModeBackground)
 	}
 	if !res.RunningInBackground || res.Output != "" {
 		out.Output = &res.Output
@@ -430,6 +456,7 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.StateRes
 		Type:         res.Type,
 		Status:       res.Status,
 		Reason:       shellStringPtrOrNil(res.Reason),
+		Mode:         string(shellModeForeground),
 		TimedOut:     res.TimedOut,
 		ExitCode:     res.ExitCode,
 		Output:       &res.Output,
@@ -453,6 +480,7 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.StateRes
 	// Keep: output cannot ride whole inline. Commit + finalize the delayed job.
 	jobID := res.settle(true)
 	out.JobID = jobID
+	out.Mode = string(shellModeBackground)
 	out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, true)
 
 	// The model sees only a small head+tail digest + the job_id; it reads the rest
@@ -528,10 +556,10 @@ func formatShellResult(out shellToolResult) string {
 	// promoted is the foreground-wait-timeout promotion (job-control.md:210,214):
 	// the command itself did not time out — the foreground wait did, and the
 	// command keeps running as a durable background job.
-	promoted := out.RunningInBackground && out.TimedOut && out.JobID != ""
+	promoted := out.Mode == string(shellModeBackground) && out.TimedOut && out.JobID != ""
 
 	var foot []string
-	if out.ExitCode != nil && !out.RunningInBackground && !runTimeout {
+	if out.ExitCode != nil && out.Mode != string(shellModeBackground) && !runTimeout {
 		foot = append(foot, fmt.Sprintf("exit %d", *out.ExitCode))
 	}
 	if out.TimedOut && !promoted {
@@ -549,7 +577,7 @@ func formatShellResult(out shellToolResult) string {
 			fmt.Sprintf("output accumulates durably; read it with read_transcript(transcript_ref=%q)", "job:"+out.JobID),
 			"completion arrives by notification — do not relaunch or poll",
 		)
-	case out.RunningInBackground && out.JobID != "":
+	case out.Mode == string(shellModeBackground) && out.JobID != "":
 		foot = append(foot, "running in background as "+out.JobID)
 	case out.JobID != "":
 		foot = append(foot, fmt.Sprintf("output windowed — read more with read_transcript(transcript_ref=%q)", "job:"+out.JobID))
@@ -566,18 +594,18 @@ func formatShellResult(out shellToolResult) string {
 }
 
 type shellToolResult struct {
-	JobID               string  `json:"job_id,omitempty"`
-	Type                string  `json:"type"`
-	Status              string  `json:"status"`
-	Reason              *string `json:"reason"`
-	RunningInBackground bool    `json:"running_in_background"`
-	TimedOut            bool    `json:"timed_out"`
-	ExitCode            *int    `json:"exit_code,omitempty"`
-	Output              *string `json:"output,omitempty"`
-	Truncated           *bool   `json:"truncated,omitempty"`
-	TotalBytes          int64   `json:"total_bytes,omitempty"`
-	DroppedBytes        int64   `json:"dropped_bytes,omitempty"`
-	OutputStatus        string  `json:"output_status,omitempty"`
+	JobID        string  `json:"job_id,omitempty"`
+	Type         string  `json:"type"`
+	Status       string  `json:"status"`
+	Reason       *string `json:"reason"`
+	Mode         string  `json:"mode"`
+	TimedOut     bool    `json:"timed_out"`
+	ExitCode     *int    `json:"exit_code,omitempty"`
+	Output       *string `json:"output,omitempty"`
+	Truncated    *bool   `json:"truncated,omitempty"`
+	TotalBytes   int64   `json:"total_bytes,omitempty"`
+	DroppedBytes int64   `json:"dropped_bytes,omitempty"`
+	OutputStatus string  `json:"output_status,omitempty"`
 }
 
 func shellStringPtrOrNil(s string) *string {
@@ -604,6 +632,9 @@ func applyShellTimeoutPolicy(deps *toolDeps, args shellArgs) shellArgs {
 }
 
 func runBufferedShell(ctx context.Context, env execenv.ExecutionEnvironment, deps *toolDeps, args shellArgs) (string, error) {
+	if args.Mode == shellModeDetached {
+		return "", errors.New("invalid_request: detached execution is not yet available")
+	}
 	// A non-streaming environment has no job manager, so it cannot background a
 	// command; making that explicit beats silently running it in the foreground.
 	if args.Background {

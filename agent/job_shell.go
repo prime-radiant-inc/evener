@@ -37,9 +37,18 @@ const (
 var errDelayedShellStartForwardFailed = errors.New("delayed shell start forward failed")
 var errDelayedShellStartForwardTerminalFailed = errors.New("delayed shell start forward terminal append failed")
 
+type shellMode string
+
+const (
+	shellModeForeground shellMode = "foreground"
+	shellModeBackground shellMode = "background"
+	shellModeDetached   shellMode = "detached"
+)
+
 type shellArgs struct {
 	Command        string
 	Description    string
+	Mode           shellMode
 	Background     bool
 	BlockTimeoutMS int
 	MaxRuntimeMS   int
