@@ -2,32 +2,29 @@
 
 ## Status
 
-Approved design for a shell job that remains supervised after its launching Serf session exits. This document defines behavior, not an implementation plan.
+Approved design for a deliberately disowned shell process that survives its launching Serf session. This document defines behavior, not an implementation plan.
 
 ## Problem
 
-Serf background shell jobs are owned by their launching session. The agent may end a turn while a job continues, but `Session.Close` stops the job. A one-shot `serf run` deliberately excludes shell jobs from its delegate drain and then closes the session, so a background service cannot survive the invocation without escaping Serf through shell-specific techniques such as `setsid nohup`.
-
-Agents need a general way to launch a background command whose lifetime is independent of the launching session while retaining truthful Serf supervision, logs, status, and stop control.
+Serf background shell jobs are owned by their launching session. An agent may end a turn while a job continues, but `Session.Close` stops it. Agents sometimes need to launch a service and leave it running after the session ends without spelling out platform-specific `setsid nohup` command lines.
 
 ## Goals
 
-- Allow an explicitly detached background command to survive the launching agent turn, session, and one-shot CLI process.
-- Keep `job_id` as the stable public identity and reuse existing job-control tools.
-- Return the live process ID for diagnostics without using it for recovery or control.
-- Preserve current behavior for foreground and ordinary background shell commands.
-- Ensure failed launch or custody transfer leaves no process behind.
+- Add one explicit shell option for a process that survives launching-session teardown.
+- Return the launched process ID for inspection outside Serf.
+- Keep ordinary foreground and background execution unchanged.
+- Keep the facility small: detachment, not durable service management.
 
 ## Non-goals
 
-- Readiness or health checks.
-- Automatic restart.
-- Desired-state service management.
-- Survival across machine reboot or container teardown.
-- Adoption or control of arbitrary existing processes.
-- Inferring lifetime from command text, elapsed time, or shell syntax.
-- Supporting commands that daemonize, double-fork, call `setsid`, or otherwise escape the supervised process tree.
-- Adding service-specific status, log, or stop tools.
+- Discovery or control from later Serf sessions.
+- Durable job history after the launching session closes.
+- Readiness, health checks, restart, or desired-state management.
+- Terminal notifications after the launching session closes.
+- Runtime adoption or reconciliation after Serf restarts.
+- Survival across machine reboot, container teardown, or a host facility that kills the entire execution cgroup.
+- Supporting processes that subsequently daemonize, double-fork, or move themselves into another process group.
+- Preserving hidden or historical shell parameters as part of this new contract.
 
 ## Public API
 
@@ -41,163 +38,79 @@ The shell tool gains one optional boolean:
 }
 ```
 
-`background` and `detach` describe independent concerns:
-
-- `background` controls whether the tool call waits for command completion.
-- `detach` transfers command lifetime out of the launching session while retaining Serf supervision.
-
 Rules:
 
 - `detach` defaults to `false`.
 - `detach: true` requires `background: true`.
 - Supplying `detach: true` without `background: true` returns `invalid_request` before starting a process.
-- Foreground commands and existing `background: true` calls retain their current behavior.
-- Execution environments that cannot provide detached custody reject the request before starting a process.
+- `background` controls whether the tool call waits.
+- `detach` means session teardown leaves the process running.
+- An execution environment that cannot detach a process rejects the request before starting it.
 
 The model-facing description is:
 
-> `detach: true` transfers a background command out of the launching session's lifetime. The command remains supervised and accessible through its `job_id` after the session closes. Use only with `background: true`.
+> `detach: true` leaves a background command running after this Serf session closes. Serf returns its PID, but later sessions do not discover or control it. Use only with `background: true`.
 
-## Result and status
+## Result
 
-A successful detached launch returns the ordinary shell result with two additional fields:
+A successful detached launch returns:
 
 ```json
 {
-  "job_id": "job_123",
   "type": "shell",
-  "status": "running",
+  "status": "started",
   "running_in_background": true,
   "detached": true,
-  "pid": 12345,
-  "transcript_ref": "job:job_123"
+  "pid": 12345
 }
 ```
 
-`job_status` and `job_list` expose `detached`. They expose `pid` only while a live supervisor has a verified handle to the current process. Terminal records may retain a launch PID as diagnostic history only if it is clearly distinguished from a live PID; omitting it is the preferred initial behavior.
+The process is disowned before the tool returns. It never becomes a Serf job, receives no `job_id` or transcript ref, does not appear in `job_list`, emits no notification, and cannot be targeted by `job_status` or `job_stop`. The returned PID is the caller's only process reference; operating-system PID reuse rules apply. No Serf tool accepts it as a control handle.
 
-`job_id` remains the only public control identity. No tool accepts PID as a target. PID is never used for authorization, recovery, reconciliation, or later signaling.
+## Launch behavior
 
-Existing tools remain the complete control surface:
+Serf launches a detached command with:
 
-- `job_status(job_id)` reads lifecycle and diagnostics.
-- `job_list(...)` discovers detached jobs visible in the current Serf state boundary.
-- `read_transcript("job:<job_id>")` reads retained output.
-- `job_stop(job_id)` stops the supervised process tree.
+- A process group or platform-equivalent execution unit separate from the Serf session's cleanup group.
+- Standard input disconnected from the launching terminal.
+- Standard output and standard error disconnected from the launching session. The command may perform its own explicit redirection when retained logs are required.
+- A live PID returned only after process creation succeeds.
 
-## Runtime architecture
+The detached process must never be enrolled in either cleanup path that stops session-owned jobs: the session job manager or the execution environment's tracked-process set. If launch fails, Serf stops any partial process tree and returns an error. The tool must never return `detached: true` for a process that any Serf cleanup path still owns.
 
-Each detached job is owned by a small Serf runner outside the launching session and one-shot CLI lifetime:
+The command remains a normal foreground process inside its detached process group. Serf does not support commands that escape that group after launch.
 
-```text
-launching session --> detached runner --> command process group
-       exits               |                    |
-                           |                    +-- descendants
-                           +-- output log
-                           +-- terminal status
-                           +-- stop control
-```
+## Session lifecycle
 
-The detached runner is a Serf component, not user shell text. It is responsible for:
+- Ending an agent turn has no special effect; the detached command continues.
+- Natural process exit produces no Serf notification or durable result.
+- `Session.Close` has no reference to or effect on the detached process.
+- One-shot `serf run` does not wait for a detached process after the launch has succeeded.
+- No asynchronous callback is attempted after the shell call returns.
 
-- Establishing a new supervised process group or the platform-equivalent containment unit.
-- Starting the requested command inside that unit before user code can fork descendants.
-- Draining stdout and stderr continuously into bounded Serf job output.
-- Retaining the live process handle needed for safe wait and termination.
-- Recording natural exit status and output completion.
-- Receiving authenticated stop requests keyed by `job_id`.
-- Terminating the complete supervised process tree on an explicit stop.
-- Exiting after the command tree and its output streams terminate.
+## Platform behavior
 
-The runner must inherit no terminal input or client-owned output/control descriptors. Output goes only to runner-owned job storage. A user command must remain in the foreground of its supervised unit. Serf documents self-daemonization and process-group escape as unsupported rather than attempting unreliable descendant adoption.
+On supported Unix-like hosts, the command is started without terminal-owned standard streams and outside the session cleanup process group. Serf must not leave a pipe whose reader exits with the shell call or session, because subsequent process output could otherwise block or terminate the detached command.
 
-The implementation may use a per-job runner or a shared supervisor, but the public contract and custody invariants are identical. The implementation plan must choose the smallest mechanism that works with the existing state directory and platform execution abstractions.
+On Windows, detachment requires a process-creation mode that lets the child survive Serf process exit without inheriting terminal/control handles. If the execution environment cannot provide that behavior, it rejects `detach: true` before launch.
 
-## Custody transfer
-
-Detached launch is transactional:
-
-1. Validate arguments, execution-environment capability, working directory, and sandbox policy.
-2. Allocate `job_id` and create the runner's durable launch record.
-3. Start the runner and command containment unit.
-4. The runner durably acknowledges that it owns the live process handle, output streams, and stop endpoint.
-5. The launching session removes the process from its own cleanup ownership.
-6. The shell tool returns success.
-
-If any step before durable acknowledgement fails, the launching process stops the created process tree, removes incomplete custody state, and returns an error. A shell result must never claim `detached: true` while session cleanup can still kill the job.
-
-## Lifecycle
-
-- An agent may end its turn immediately after a detached launch. The detached job continues without holding the session active.
-- `Session.Close` and execution-environment cleanup do not signal a successfully transferred detached job.
-- Natural command exit records the normal completed or failed status and exit code.
-- `job_stop(job_id)` requests runner-owned process-tree termination and remains idempotent under the existing stop contract.
-- If the originating session is live when the job terminates, it receives the existing terminal notification.
-- If the originating session is gone, terminal state and output remain durable for later inspection.
-- Detached jobs do not participate in the one-shot delegate drain and do not keep `serf run` alive after custody acknowledgement.
-
-## Visibility and authorization
-
-Detached jobs use the existing Serf state-directory and operating-system user boundary. This design does not introduce project-global or user-global service ownership.
-
-Because the launching session may no longer exist, detached job lookup and control cannot depend on its live `jobManager`. The durable record and runner endpoint must be resolvable through the enclosing state directory. Existing session-owned job visibility remains unchanged; only detached records gain post-session resolution.
-
-The stop endpoint must authenticate the local caller and bind requests to the exact job record. An unguessable `job_id` is not sufficient authorization by itself.
-
-## Reconciliation and failure behavior
-
-- A runner that loses its command records the observed terminal state when possible.
-- A command that outlives a crashed runner is not adopted by persisted PID.
-- A Serf process that finds a detached job without an authenticated live runner marks it `runtime_lost`.
-- Reconciliation never signals a PID loaded from disk because PID and process-group identifiers can be reused.
-- A runner or control-channel failure must not cause an unrelated process to be signaled.
-- Log retention remains bounded. The implementation must drain process output independently of model or UI readers so a slow reader cannot backpressure the command.
-- Detached jobs lease any Serf-managed temporary directory or worktree required for their execution. Disposal either refuses while the job is live or explicitly stops the job first under the existing destructive-operation contract.
-
-## Platform contract
-
-On Unix-like systems, the runner owns a separate process group and stops the complete group. The runner, not a persisted numeric PID, retains the live process handle.
-
-On Windows, detached jobs require an equivalent process-tree containment primitive such as a Job Object. Killing only the direct shell child is not equivalent and must not be advertised as support.
-
-If an execution environment or platform cannot uphold custody, output draining, and process-tree stop semantics, `detach: true` fails before launch. Ordinary shell execution remains available.
+The guarantee covers ordinary Serf session and client-process teardown. It cannot override container runtimes, service managers, or operating-system policies that kill the client's complete cgroup or execution unit.
 
 ## Testing
 
-Tests must exercise real lifecycle behavior rather than matching rendered shell commands.
+Before changing tests, implementation work must follow `docs/testing.md`.
 
-### Deterministic contract tests
+Default tests use the scripted provider boundary and real Serf process plumbing below it. They must exercise behavior rather than matching rendered shell commands.
 
 1. `detach: true` without `background: true` fails before process creation.
-2. An execution environment without detached custody support fails before process creation.
-3. Custody-transfer failure terminates the entire partial process tree and leaves no running job.
-4. Successful transfer removes the command from session cleanup ownership.
-5. `Session.Close` stops an ordinary background job but not a detached job.
-6. Detached job metadata remains resolvable after the launching session is closed.
-7. Natural exit records terminal status, exit code, and complete retained output.
-8. `job_stop(job_id)` stops the process tree and is idempotent.
-9. No public control path accepts PID.
-10. Reconciliation never trusts a persisted PID and reports `runtime_lost` when runner custody is absent.
-11. Existing foreground and ordinary background shell behavior is unchanged.
+2. Unsupported execution environments fail before process creation.
+3. Successful launch returns `detached: true` and a positive PID, with no `job_id` or transcript ref.
+4. A detached process survives `Session.Close`.
+5. The detached process is never enrolled in session or execution-environment cleanup tracking.
+6. An ordinary background process is still stopped by `Session.Close`.
+7. Launch failure leaves no process behind.
+8. Detached execution creates no job record, notification, or session-owned output log.
+9. No current or later session discovers or controls the detached process through job tools.
+10. A detached command whose original Serf process exits continues without blocking on inherited pipes.
 
-### Process integration tests
-
-1. A detached command survives the launching `serf run` process exiting.
-2. Its stdout and stderr remain readable through `job:<job_id>`.
-3. A command with a child process is fully terminated by `job_stop`.
-4. A noisy command cannot block because no UI or transcript reader is attached.
-5. A running detached job prevents removal of a leased worktree or working directory.
-
-Live provider behavior is not part of default tests. Any model-driven end-to-end scenario must remain explicitly opt-in under the repository's live-test policy.
-
-## Deferred extensions
-
-The following require separate designs if future use demonstrates a need:
-
-- Output-, TCP-, HTTP-, or command-based readiness checks.
-- Automatic or manual restart with multiple process generations.
-- Health monitoring and desired-state reconciliation.
-- Machine-reboot survival.
-- Cross-user or cross-project sharing.
-- Native `systemd`, `launchd`, or Windows Service Manager integration.
-
+Any live-model scenario remains explicitly opt-in under the repository's live-test policy.
