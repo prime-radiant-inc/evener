@@ -37,7 +37,7 @@ grant a `job.notification` delivery mints — is covered by
 2. Turn 1 — a delegate starts a background shell job and finishes:
 
    > Call delegate with this exact task: "Run the shell tool with
-   > background true, description nested-probe, and this command:
+   > mode: "background", description nested-probe, and this command:
    > `sh -c 'echo NEST_TOKEN_1; sleep 300; echo NEST_TOKEN_2'`.
    > Then communicate exactly 'NESTED_JOB <its job_id>' and finish."
    > Report the delegate's job_id, then end your turn and wait for its

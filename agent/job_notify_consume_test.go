@@ -19,7 +19,7 @@ func startBackgroundShellJob(t *testing.T, s *Session, command string) string {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "bg1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":` + mustJSONString(command) + `,"background":true}`),
+		Arguments: json.RawMessage(`{"command":` + mustJSONString(command) + `,"mode":"background"}`),
 	})
 	if res.IsError {
 		t.Fatalf("background shell returned error: %s", res.Output)

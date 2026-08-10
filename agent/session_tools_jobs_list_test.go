@@ -330,7 +330,7 @@ func TestJobListRowIsLean(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)

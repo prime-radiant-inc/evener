@@ -2,9 +2,13 @@ package execenv
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 )
+
+// ErrDetachUnsupported reports that an environment cannot disown commands.
+var ErrDetachUnsupported = errors.New("detached commands are not supported by this execution environment")
 
 // ExecResult holds the outcome of a command executed in an ExecutionEnvironment.
 type ExecResult struct {
@@ -22,6 +26,16 @@ type DirEntry struct {
 	IsSymlink bool   `json:"is_symlink,omitempty"`
 	IsExec    bool   `json:"is_exec,omitempty"`
 	Size      int64  `json:"size,omitempty"`
+}
+
+// DetachedProcess identifies a command disowned by its execution environment.
+type DetachedProcess struct {
+	PID int `json:"pid"`
+}
+
+// DetachedExecutor is an optional capability for immediately disowned commands.
+type DetachedExecutor interface {
+	DetachCommand(ctx context.Context, command, workingDir string, envVars map[string]string) (DetachedProcess, error)
 }
 
 // StreamingExecutor is an optional capability: a long-running command whose

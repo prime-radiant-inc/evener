@@ -2,13 +2,13 @@
 
 **What this covers**: the shell tool's whole job-capable lifecycle
 (`docs/job-control.md`, "Existing shell/bash tool"). Shell's wait knob is
-`background` (bool), not `max_wait_ms` — false (default) runs foreground and
-returns when the command finishes (promoting to a durable job only if it
-outlives the session command timeout); true starts it and returns a `job_id`
-immediately.
+`mode`, not `max_wait_ms` — omitted `mode` defaults to foreground and returns
+when the command finishes (promoting to a durable job only if it outlives the
+session command timeout); `mode: "background"` starts it and returns a
+`job_id` immediately.
 (a) Foreground inline result with stdout+stderr+exit code, ephemeral — no
 durable record; (b) nonzero exit reported honestly as a normal tool result, not
-hidden (`failed` / `exit_nonzero`); (c) `background: true` launch-and-return —
+hidden (`failed` / `exit_nonzero`); (c) `mode: "background"` launch-and-return —
 `job_id` returned immediately, process keeps running, later output readable;
 (d) `max_runtime_ms` kills a runaway and finalizes `stopped` / `run_timeout`;
 (e) complete-or-handle + the output window (spec §0.6 + the
@@ -33,11 +33,11 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
    > Do these steps in order.
    > 1. Run the shell tool with command:
    >    `sh -c 'echo INLINE_OUT_OK; echo INLINE_ERR_OK >&2; exit 0'`
-   >    (foreground, no background). Report the full result JSON verbatim.
+   >    (foreground, default mode). Report the full result JSON verbatim.
    > 2. Run the shell tool with command:
    >    `sh -c 'echo FAIL_OUT_7; echo FAIL_ERR_7 >&2; exit 7'`.
    >    Report the full result JSON verbatim.
-   > 3. Run the shell tool with background true and command:
+   > 3. Run the shell tool with mode: "background" and command:
    >    `sh -c 'echo BG_START_MARK; exec sleep 27182'`. Report the
    >    full result JSON verbatim.
    > 4. Call job_list with no filters and report the jobs array.
@@ -45,7 +45,7 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
 3. Turn 2 — `max_runtime_ms` kill arm (d) (new user prompt):
 
    > Do these steps in order.
-   > 1. Run the shell tool with background true, max_runtime_ms 5000, and
+   > 1. Run the shell tool with mode: "background", max_runtime_ms 5000, and
    >    command: `sh -c 'echo RUNAWAY_START_71; exec sleep 31415'`.
    >    Report the full result JSON verbatim.
    > 2. Run the foreground shell command `sleep 30` to let the job settle.
@@ -81,7 +81,7 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
 ## Expected
 
 - Arm (a): the step-1 result JSON has `status` `"completed"`,
-  `reason` `"exit_zero"`, `exit_code` `0`, `running_in_background` `false`,
+  `reason` `"exit_zero"`, `exit_code` `0`, `mode` `"foreground"`,
   `timed_out` `false`, NO `job_id`, `output_status` `"all_retained"`, and
   `output` containing BOTH `INLINE_OUT_OK` and `INLINE_ERR_OK`.
 - Arm (b): step 2 is a normal tool result (not a tool error) with
@@ -94,13 +94,13 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
   and `jobs.jsonl` has no `job_started` for them. It DOES contain the
   step-3 background job as `running`.
 - Arm (c): step 3 returns immediately (not after `sleep 27182`) with a
-  `job_id`, `status` `"running"`, `running_in_background` `true`, and NO
+  `job_id`, `status` `"running"`, `mode` `"background"`, and NO
   `timed_out` / `reason:"foreground_timeout"` (background return is a clean
   launch-and-return, not a foreground-wait timeout). Falsification: no
   `job_id`, the result blocks until the sleep finishes, or it carries the
   `timed_out:true` foreground-timeout promotion shape.
 - Arm (d): the step-1 result is the background launch shape (`job_id`,
-  `running`, `running_in_background:true`). The `max_runtime_ms 5000` kills
+  `running`, `mode:"background"`). The `max_runtime_ms 5000` kills
   the command ~5s after it started; the step-3 reads of that job show
   `- status: stopped` (the `job:` read) and `"status":"stopped"` /
   `"reason":"run_timeout"` (`job_status`). The runaway is actually
@@ -135,7 +135,7 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
     retention window — presence or absence both acceptable. Forbidden: the
     step-3 job_id in any listing.
 - `timed_out` discipline: `timed_out` means the foreground WAIT expired,
-  never the `max_runtime_ms` kill. With `background:true` (arms c, d) the
+  never the `max_runtime_ms` kill. With `mode:"background"` (arms c, d) the
   initial result has no foreground wait, so `timed_out` is `false`/absent.
   In arm (d)'s terminal reads the record shows the finalized
   `stopped`/`run_timeout` state (`- status: stopped` in the `job:` read,
@@ -154,7 +154,7 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
   command waits the session command timeout (120s in stock profiles) before
   promoting. This card does not exercise promotion-at-timeout (it would need
   a >120s command or a configured-short `DefaultCommandTimeoutMS`); that path
-  is unit-tested. Launch-and-return is `background:true`.
+  is unit-tested. Launch-and-return is `mode:"background"`.
 - Arm (d) uses `exec sleep` so the runaway is a single recognizable process;
   without `exec` the `sh` wrapper dies but the sleep can be orphaned by a
   process-group miss — if the exact-args liveness check still finds it, that

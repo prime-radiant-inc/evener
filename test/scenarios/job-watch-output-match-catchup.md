@@ -30,7 +30,7 @@ Phase 5.2.
 2. Turn 1 — arm (a), attach after the tokens already printed:
 
    > Do these steps in order.
-   > 1. Run the shell tool with background true and command:
+   > 1. Run the shell tool with mode: "background" and command:
    >    `sh -c 'echo LEVEL_TOKEN_A; echo LEVEL_TOKEN_B; sleep 30; echo LEVEL_TOKEN_C; sleep 240'`.
    >    Capture the job_id.
    > 2. Call read_transcript on this session and confirm the shell
@@ -48,7 +48,7 @@ Phase 5.2.
 
    > Do these steps in order. Steps 3 and 4 may return tool errors —
    > report everything verbatim.
-   > 1. Run the shell tool with background true and command:
+   > 1. Run the shell tool with mode: "background" and command:
    >    `sh -c 'echo CATCHUP_TOKEN_OK'`. Capture the job_id, then call
    >    job_status for it and confirm status is completed.
    > 2. Call job_watch with operation "create", source that job_id,

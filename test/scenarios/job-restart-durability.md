@@ -35,7 +35,7 @@ is not command failure. It is supervision loss").
 1. Spawn a session via `/api/spawn` with `working_dir=$tmpdir`.
    Capture `SID`. Prompt:
 
-   > Run the shell tool with background true and this command:
+   > Run the shell tool with mode: "background" and this command:
    > `sh -c 'i=0; while [ "$i" -lt 60 ]; do i=$((i+1)); echo "TICK_$i"; sleep 1; done; echo PRODUCER_DONE'`.
    > Report the job_id verbatim, then end your turn. Do not read or
    > wait on it.
