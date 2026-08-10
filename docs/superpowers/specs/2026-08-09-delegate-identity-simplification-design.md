@@ -216,7 +216,7 @@ A real terminal communicate notification is complete: no delegate-specific excer
 
 1. The maximum serialized raw `communicate` arguments are 16 KiB. The complete canonical lifecycle/operational wrapper is at most 8 KiB.
 2. Delegate creation measures the parent's fixed system/tool content, conservative provider tokenization, output allowance, wrapper overhead, and minimum supported context window. It fails synchronously if one full packet cannot be reserved after compaction.
-3. A parent-scoped packet-admission lock and generation linearize delegate creation, delivery settlement, and model/fallback/profile replacement. External model resolution may occur outside the lock, but every operation revalidates and commits its capacity decision under the same generation. Delegate creation persists the admitted bound and parent capacity requirement with the restore descriptor. A switch is rejected while any resumable delegate or unsettled delivery can still produce a packet if the new profile cannot preserve that requirement.
+3. A parent-scoped packet-admission lock and generation cover every mutation of noncompactable request overhead: delegate creation and settlement, model/fallback/profile replacement, runtime tool registration/removal, and system-prompt, plugin, MCP, or tool-set changes. External resolution may occur outside the lock, but each operation remeasures and commits under the same generation. A mutation is rejected before commit if any running/resumable delegate or unsettled delivery requirement would no longer fit. Delegate creation persists the admitted bound and parent capacity requirement with the restore descriptor.
 4. `communicate(end_turn=true)` serializes and validates the whole raw call before acceptance. An oversized call returns a typed `terminal_packet_too_large` tool error and does not end the activation; the child must retry with a smaller call or store large evidence as artifacts and reference it from the bounded call.
 5. The parent continuation builder reserves the required capacity and compacts parent history before injection. It injects at most one full delegate terminal packet per continuation; additional intents remain armed for later turns. It never drains or concatenates more packets than the measured request can fit.
 
@@ -400,7 +400,9 @@ All continuation state required by the predicate, including the matching-occurre
 
 Every watchable public source event receives a private monotonically increasing source sequence and is appended durably before publication. Each owner-store watch record persists the last processed source cursor. For one occurrence, advancing the cursor, updating the `every` counter, and creating any delivery intent happen in one owner-store batch. The source sequence is private event identity, not a delegate activation ID or public control handle.
 
-Watch create, replacement, runtime restore, and live reattachment use one catch-up protocol: sample and persist the source cursor/generation, attach live routing, then replay durable source events after the cursor until caught up, deduplicating by source sequence. Events appended between sampling and attachment are therefore processed by catch-up; events concurrently seen live are deduplicated. The operation does not report `watching: true` until catch-up reaches the live frontier. Process restart uses the same protocol rather than a separate recovery path.
+Watch create, replacement, runtime restore, live reattachment, and steady-state delivery use one strict per-source sequencer. Live publication only records the durable event and wakes that sequencer; it never mutates a watch predicate directly. The sequencer processes durable events contiguously (`cursor+1`, then `cursor+2`, and so on), waiting at gaps even if a later event publishes first. It atomically advances each watch's cursor/counter/delivery state before taking the next sequence.
+
+Attachment samples and persists the source cursor/generation, attaches the wake route, and drives the same sequencer until it catches the live frontier. Events appended between sampling and attachment are processed in order; events concurrently observed live merely wake the sequencer and are deduplicated by sequence. The operation does not report `watching: true` until catch-up reaches the frontier. Process restart uses this same path.
 
 The directly controlling owner's durable store is the inventory and routing authority for receiver-visible delegate watches. It stores the watch ID, delegate target, child descriptor/session ref, predicate state, and delivery state. `job_list` and `job_watch` list/inspect/clear use this index while the child is unloaded; they do not restore the child model runtime merely to manage a watch.
 
@@ -667,8 +669,8 @@ Before completion, the implementation must pass normal deterministic gates and p
 11. The communicate handler durably commits the activation-tagged canonical terminal record and `terminal_prepared(locator, delivery_id)` before returning accepted.
 12. Accepted communicate packets are complete and never excerpted; admitted inline delegate results bypass generic truncation or use a non-truncating bound large enough for the canonical maximum.
 13. Oversized packets are rejected before terminal acceptance and can be retried.
-14. Creation, settlement, and model switching revalidate and commit measured packet capacity under one parent generation lock.
-15. Concurrent model switch/delegate creation cannot admit a packet against a stale profile.
+14. Every mutation of noncompactable request overhead—including delegate lifecycle, model/profile, runtime tools, system prompt, plugin, MCP, and tool-set changes—remeasures and commits packet capacity under one parent generation lock.
+15. Concurrent model/tool/prompt mutation and delegate creation cannot commit against a stale packet-capacity generation.
 16. Each continuation injects at most one full packet and leaves remaining intents armed.
 17. A multi-tool batch returns at most one inline full delegate result; final construction fit-tests the complete sibling result batch and falls back to bounded metadata-only deferral while leaving delivery armed when necessary.
 18. Inline, callback, and background delivery intents survive crashes until `AppendDurable` commits a parent entry carrying the hidden delivery ID.
@@ -696,7 +698,7 @@ Before completion, the implementation must pass normal deterministic gates and p
 34. The owner-store index lets `job_watch` list, inspect, and clear manage unloaded delegate watches without model restoration.
 35. Delegate watches survive two unload/restore cycles and process restart.
 36. Watchable source events are durable before publication and carry a private stable sequence.
-37. Create, replace, restore, and reattach use cursor sampling plus deduplicated catch-up before reporting watching; an `every` threshold crossed across that seam or restart fires exactly once without lost or repeated occurrences.
+37. Create, replace, restore, reattach, steady-state, and restart all use one per-source sequencer that processes durable events strictly in contiguous sequence order; out-of-order live publication cannot skip or repeat an `every` occurrence.
 38. Delegate targets reject output/progress predicates; shell predicates retain behavior.
 39. AppWire, events, doctor, TUI, and web use metadata-only stable delegate projections without activation rows or child-session identity aliases.
 
@@ -715,7 +717,7 @@ Before completion, the implementation must pass normal deterministic gates and p
 47. The root-wide locked epoch marker is validated before every state entry point and created only for a truly fresh permitted root.
 48. Runtime, hub, doctor, and transcript paths refuse unmarked, wrong-epoch, transcript-only, metadata-only, and mixed roots instead of translating them.
 49. AppWire protocol mismatch rejects old clients and servers.
-50. Race tests cover raw communicate dispatch/preparation, receiver commit/replay, model switch/admission, whole-batch inline fallback, spawn/stop mixed outcomes, quiet model drive/unload, watch create/replace/reattach cursor catch-up, source counter/delivery, and concurrent resume.
+50. Race tests cover raw communicate dispatch/preparation, receiver commit/replay, model/tool/prompt mutation versus packet admission, whole-batch inline fallback, spawn/stop mixed outcomes, quiet model drive/unload, and out-of-order `N+1`/`N` watch publication during create/replace/reattach, steady state, and restart.
 51. Fuzz/program tests cover malformed targets, dispatch, old-field rejection, typed lineage, terminal unions, packet/wrapper bounds, epoch admission, and projection invariants.
 
 ## Acceptance Criteria
