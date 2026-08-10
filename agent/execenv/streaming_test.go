@@ -57,63 +57,78 @@ func TestStreamCommandCapturesOutputAndExit(t *testing.T) {
 }
 
 func TestStreamCommandWaitStopsDescendantsAfterLeaderExit(t *testing.T) {
-	grace := 20 * time.Millisecond
-	env := &LocalExecutionEnvironment{
-		RootDir:          t.TempDir(),
-		terminationGrace: &grace,
-	}
-	if err := env.Initialize(); err != nil {
-		t.Fatal(err)
-	}
+	for _, tc := range []struct {
+		name     string
+		exitCode int
+		grace    time.Duration
+	}{
+		{name: "success", exitCode: 0, grace: 20 * time.Millisecond},
+		{name: "failure", exitCode: 42, grace: 20 * time.Millisecond},
+		{name: "immediate cleanup", exitCode: 0, grace: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := &LocalExecutionEnvironment{
+				RootDir:          t.TempDir(),
+				terminationGrace: &tc.grace,
+			}
+			if err := env.Initialize(); err != nil {
+				t.Fatal(err)
+			}
 
-	out := newReadyWriter("READY")
-	h, err := env.StreamCommand(context.Background(), "sleep 300 & printf 'CHILD=%s READY\\n' $!", "", nil, out)
-	if err != nil {
-		t.Fatalf("stream: %v", err)
-	}
+			out := newReadyWriter("READY")
+			command := fmt.Sprintf("sleep 300 & printf 'CHILD=%%s READY\\n' $!; exit %d", tc.exitCode)
+			h, err := env.StreamCommand(context.Background(), command, "", nil, out)
+			if err != nil {
+				t.Fatalf("stream: %v", err)
+			}
 
-	type waitResult struct {
-		code int
-		err  error
-	}
-	waitDone := make(chan waitResult, 1)
-	go func() {
-		code, waitErr := h.Wait()
-		waitDone <- waitResult{code: code, err: waitErr}
-	}()
+			type waitResult struct {
+				code int
+				err  error
+			}
+			waitDone := make(chan waitResult, 1)
+			go func() {
+				code, waitErr := h.Wait()
+				waitDone <- waitResult{code: code, err: waitErr}
+			}()
 
-	select {
-	case <-out.ready:
-	case <-time.After(5 * time.Second):
-		h.Signal()
-		<-waitDone
-		t.Fatalf("child did not start; output: %q", out.String())
-	}
+			select {
+			case <-out.ready:
+			case <-time.After(5 * time.Second):
+				h.Signal()
+				<-waitDone
+				t.Fatalf("child did not start; output: %q", out.String())
+			}
 
-	var childPID int
-	if _, err := fmt.Sscanf(out.String(), "CHILD=%d READY", &childPID); err != nil || childPID <= 0 {
-		h.Signal()
-		<-waitDone
-		t.Fatalf("child pid missing from output %q: %v", out.String(), err)
-	}
+			var childPID int
+			if _, err := fmt.Sscanf(out.String(), "CHILD=%d READY", &childPID); err != nil || childPID <= 0 {
+				h.Signal()
+				<-waitDone
+				t.Fatalf("child pid missing from output %q: %v", out.String(), err)
+			}
 
-	select {
-	case result := <-waitDone:
-		if result.err != nil || result.code != 0 {
-			t.Fatalf("wait = (%d, %v), want successful leader exit", result.code, result.err)
-		}
-	case <-time.After(time.Second):
-		h.Signal()
-		<-waitDone
-		t.Fatal("Wait remained blocked after the command leader exited")
-	}
+			select {
+			case result := <-waitDone:
+				if result.err != nil || result.code != tc.exitCode {
+					t.Fatalf("wait = (%d, %v), want leader exit %d", result.code, result.err, tc.exitCode)
+				}
+			case <-time.After(time.Second):
+				h.Signal()
+				<-waitDone
+				t.Fatal("Wait remained blocked after the command leader exited")
+			}
 
-	deadline := time.Now().Add(time.Second)
-	for syscall.Kill(-h.Pid, 0) != syscall.ESRCH && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if err := syscall.Kill(-h.Pid, 0); err != syscall.ESRCH {
-		t.Fatalf("process group %d remains alive after Wait: %v", h.Pid, err)
+			deadline := time.Now().Add(time.Second)
+			groupGone := func() bool { return syscall.Kill(-h.Pid, 0) == syscall.ESRCH }
+			childGone := func() bool { return syscall.Kill(childPID, 0) == syscall.ESRCH }
+			for (!groupGone() || !childGone()) && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			if !groupGone() || !childGone() {
+				t.Fatalf("processes remain alive after Wait: group %d gone=%v, child %d gone=%v",
+					h.Pid, groupGone(), childPID, childGone())
+			}
+		})
 	}
 }
 

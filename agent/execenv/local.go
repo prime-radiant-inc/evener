@@ -1657,13 +1657,18 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 	}
 
 	cmd := e.commands().Shell(command)
+	combinedOutput := out
+	if combinedOutput == nil {
+		combinedOutput = io.Discard
+	}
 	cmd.Configure(commandRuntimeConfig{
-		Dir:       dir,
-		Env:       injectLocalVenvPath(e.commandEnvironment(envVars), []string{dir, e.RootDir}),
-		Stdout:    out,
-		Stderr:    out,
-		Wrapper:   e.Wrapper,
-		WaitDelay: e.terminationGraceDuration(),
+		Dir:              dir,
+		Env:              injectLocalVenvPath(e.commandEnvironment(envVars), []string{dir, e.RootDir}),
+		Stdout:           out,
+		Stderr:           out,
+		CombinedOutput:   combinedOutput,
+		Wrapper:          e.Wrapper,
+		TerminationGrace: e.terminationGraceDuration(),
 	})
 
 	if err := cmd.Start(); err != nil {
@@ -1726,12 +1731,7 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 	wait := func() (int, error) {
 		defer doneOnce.Do(func() { close(done) })
 		defer e.runningPIDs.Delete(pid)
-		err := cmd.Wait()
-		cmd.Kill()
-		if errors.Is(err, exec.ErrWaitDelay) {
-			return 0, nil
-		}
-		if err != nil {
+		if err := cmd.Wait(); err != nil {
 			if code, ok := cmd.ExitCode(err); ok {
 				return code, nil
 			}

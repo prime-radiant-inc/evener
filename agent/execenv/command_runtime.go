@@ -3,6 +3,7 @@ package execenv
 import (
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -26,15 +27,16 @@ type commandRuntime interface {
 }
 
 type commandRuntimeConfig struct {
-	Dir            string
-	Env            []string
-	ExecutablePath string
-	Stdin          io.Reader
-	Stdout         io.Writer
-	Stderr         io.Writer
-	SysProcAttr    *syscall.SysProcAttr
-	Wrapper        *sandbox.Wrapper
-	WaitDelay      time.Duration
+	Dir              string
+	Env              []string
+	ExecutablePath   string
+	Stdin            io.Reader
+	Stdout           io.Writer
+	Stderr           io.Writer
+	CombinedOutput   io.Writer
+	SysProcAttr      *syscall.SysProcAttr
+	Wrapper          *sandbox.Wrapper
+	TerminationGrace time.Duration
 }
 
 type commandRuntimeFactory interface {
@@ -61,7 +63,31 @@ func (systemCommandRuntimeFactory) Argv(name string, args ...string) commandRunt
 }
 
 type systemCommandRuntime struct {
-	cmd *exec.Cmd
+	cmd              *exec.Cmd
+	combinedOutput   io.Writer
+	outputReader     *os.File
+	outputDone       chan error
+	terminationGrace time.Duration
+}
+
+type commandOutputWriteError struct {
+	err error
+}
+
+func (e *commandOutputWriteError) Error() string { return e.err.Error() }
+
+func (e *commandOutputWriteError) Unwrap() error { return e.err }
+
+type commandOutputWriter struct {
+	destination io.Writer
+}
+
+func (w commandOutputWriter) Write(p []byte) (int, error) {
+	n, err := w.destination.Write(p)
+	if err != nil {
+		return n, &commandOutputWriteError{err: err}
+	}
+	return n, nil
 }
 
 var processExitCode = (*exec.ExitError).ExitCode
@@ -82,14 +108,127 @@ func (c *systemCommandRuntime) Configure(config commandRuntimeConfig) {
 		c.cmd.Err = nil
 	}
 	wrapCommandForSandbox(c.cmd, config.Wrapper, config.Dir)
-	c.cmd.Stdout = config.Stdout
-	c.cmd.Stderr = config.Stderr
-	c.cmd.WaitDelay = config.WaitDelay
+	if config.CombinedOutput == nil {
+		c.cmd.Stdout = config.Stdout
+		c.cmd.Stderr = config.Stderr
+	} else {
+		c.combinedOutput = config.CombinedOutput
+		c.terminationGrace = config.TerminationGrace
+	}
 }
 
-func (c *systemCommandRuntime) Start() error { return c.cmd.Start() }
+func (c *systemCommandRuntime) Start() error {
+	if c.combinedOutput == nil {
+		return c.cmd.Start()
+	}
 
-func (c *systemCommandRuntime) Wait() error { return c.cmd.Wait() }
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	c.cmd.Stdout = writer
+	c.cmd.Stderr = writer
+	if err := c.cmd.Start(); err != nil {
+		_ = reader.Close()
+		_ = writer.Close()
+		return err
+	}
+	_ = writer.Close()
+
+	c.outputReader = reader
+	c.outputDone = make(chan error, 1)
+	go func() {
+		_, copyErr := io.Copy(commandOutputWriter{destination: c.combinedOutput}, reader)
+		c.outputDone <- copyErr
+	}()
+	return nil
+}
+
+func (c *systemCommandRuntime) Wait() error {
+	processErr := c.cmd.Wait()
+	if c.outputDone == nil {
+		return processErr
+	}
+
+	outputErr, outputDone := c.outputResult()
+	if outputDone && outputErr == nil {
+		_ = c.outputReader.Close()
+		return processErr
+	}
+
+	pipeClosed, canSignalGroup, pipeErr := waitForStreamPipeClose(c.outputReader, 0)
+	if pipeErr != nil {
+		_ = c.outputReader.Close()
+		if !outputDone {
+			outputErr = <-c.outputDone
+		}
+		return commandWaitError(processErr, outputErr, pipeErr)
+	}
+	if pipeClosed {
+		if !outputDone {
+			outputErr = <-c.outputDone
+		}
+		_ = c.outputReader.Close()
+		return commandWaitError(processErr, outputErr, nil)
+	}
+	if !canSignalGroup {
+		_ = c.outputReader.Close()
+		if !outputDone {
+			outputErr = <-c.outputDone
+		}
+		return commandWaitError(processErr, c.forcedCloseOutputError(outputErr), nil)
+	}
+
+	// Background commands remain owned by Serf. A live pipe writer after the
+	// leader exits is a managed descendant; only DetachCommand disowns one.
+	c.Terminate()
+	pipeClosed, _, pipeErr = waitForStreamPipeClose(c.outputReader, c.terminationGrace)
+	if pipeErr != nil {
+		_ = c.outputReader.Close()
+		if !outputDone {
+			outputErr = <-c.outputDone
+		}
+		return commandWaitError(processErr, outputErr, pipeErr)
+	}
+	if !pipeClosed {
+		c.Kill()
+	}
+	_ = c.outputReader.Close()
+	if !outputDone {
+		outputErr = <-c.outputDone
+	}
+	return commandWaitError(processErr, c.forcedCloseOutputError(outputErr), nil)
+}
+
+func (c *systemCommandRuntime) outputResult() (error, bool) {
+	select {
+	case err := <-c.outputDone:
+		return err, true
+	default:
+		return nil, false
+	}
+}
+
+func (c *systemCommandRuntime) forcedCloseOutputError(err error) error {
+	var writeErr *commandOutputWriteError
+	if errors.As(err, &writeErr) {
+		return err
+	}
+	if errors.Is(err, os.ErrClosed) {
+		return nil
+	}
+	return err
+}
+
+func commandWaitError(processErr, outputErr, lifecycleErr error) error {
+	if outputErr != nil {
+		return outputErr
+	}
+	if lifecycleErr != nil {
+		return lifecycleErr
+	}
+	return processErr
+}
 
 func (c *systemCommandRuntime) PID() int {
 	if c.cmd.Process == nil {
