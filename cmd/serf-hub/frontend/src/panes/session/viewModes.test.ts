@@ -39,95 +39,77 @@ const fixtures: readonly TurnModel[] = [
 
 describe("session view modes", () => {
   test("exposes the approved modes in order", () => {
-    expect(SESSION_VIEW_MODES.map((mode) => mode.label)).toEqual(["Everything", "Conversation", "Intent"]);
-    expect(SESSION_VIEW_MODES.map((mode) => mode.value)).toEqual(["everything", "conversation", "intent"]);
+    expect(SESSION_VIEW_MODES.map((mode) => mode.label)).toEqual(["Everything", "Intent"]);
+    expect(SESSION_VIEW_MODES.map((mode) => mode.value)).toEqual(["everything", "intent"]);
   });
 
-  test("conversation preserves messages and collapses contiguous tool calls", () => {
-    expect(focusedEntries(fixtures, "conversation")).toEqual([
+  test("collapses contiguous intents into a labeled action group", () => {
+    expect(focusedEntries(fixtures)).toEqual([
       expect.objectContaining({ kind: "message", role: "user", id: "user-1" }),
       expect.objectContaining({
-        kind: "tool-count",
+        kind: "action-group",
         count: 2,
-        label: "2 tool calls",
-        id: "tools:tool-1:tool-2",
+        label: "2 actions",
+        id: "actions:tool-1:tool-2",
+        intents: [
+          { id: "intent:tool-1", rationale: "Inspect the first input" },
+          { id: "intent:tool-2", rationale: "Find the relevant references" },
+        ],
       }),
       expect.objectContaining({ kind: "message", role: "agent", id: "agent-1" }),
     ]);
   });
 
-  test("conversation coalesces tool calls across adjacent turns", () => {
+  test("coalesces intents across adjacent turns", () => {
     const adjacent = [
-      turn("turn-a", [item({ id: "tool-a", turnId: "turn-a", type: "commandExecution" })]),
-      turn("turn-b", [item({ id: "tool-b", turnId: "turn-b", type: "commandExecution" })]),
+      turn("turn-a", [item({ id: "tool-a", turnId: "turn-a", type: "commandExecution", description: "One" })]),
+      turn("turn-b", [item({ id: "tool-b", turnId: "turn-b", type: "commandExecution", description: "Two" })]),
       turn("turn-c", [
-        item({ id: "tool-c", turnId: "turn-c", type: "commandExecution" }),
+        item({ id: "tool-c", turnId: "turn-c", type: "commandExecution", description: "Three" }),
         item({ id: "agent-c", turnId: "turn-c", type: "agentMessage", text: "done" }),
       ]),
     ];
 
-    expect(focusedEntries(adjacent, "conversation")).toEqual([
+    expect(focusedEntries(adjacent)).toEqual([
       expect.objectContaining({
-        kind: "tool-count",
+        kind: "action-group",
         turnId: "turn-a",
         count: 3,
-        label: "3 tool calls",
-        id: "tools:tool-a:tool-c",
+        label: "3 actions",
+        id: "actions:tool-a:tool-c",
       }),
       expect.objectContaining({ kind: "message", role: "agent", id: "agent-c" }),
     ]);
   });
 
-  test("a visible message splits tool-call groups", () => {
+  test("a visible message splits action groups", () => {
     const split = [
-      turn("turn-2", [item({ id: "tool-a", turnId: "turn-2", type: "commandExecution" })]),
+      turn("turn-2", [item({ id: "tool-a", turnId: "turn-2", type: "commandExecution", description: "Solo" })]),
       turn("turn-3", [
         item({ id: "agent-a", turnId: "turn-3", type: "agentMessage", text: "between" }),
-        item({ id: "tool-b", turnId: "turn-3", type: "commandExecution" }),
+        item({ id: "tool-b", turnId: "turn-3", type: "commandExecution", description: "After" }),
       ]),
-      turn("turn-4", [item({ id: "tool-c", turnId: "turn-4", type: "commandExecution" })]),
-      turn("turn-5", [item({ id: "tool-d", turnId: "turn-5", type: "commandExecution" })]),
+      turn("turn-4", [item({ id: "tool-c", turnId: "turn-4", type: "commandExecution", description: "Next" })]),
+      turn("turn-5", [item({ id: "tool-d", turnId: "turn-5", type: "commandExecution", description: "Last" })]),
     ];
 
-    expect(focusedEntries(split, "conversation")).toEqual([
-      expect.objectContaining({ kind: "tool-count", count: 1, label: "1 tool call" }),
+    expect(focusedEntries(split)).toEqual([
+      expect.objectContaining({ kind: "action-group", count: 1, label: "1 action" }),
       expect.objectContaining({ kind: "message", role: "agent" }),
-      expect.objectContaining({ kind: "tool-count", count: 3, label: "3 tool calls" }),
-    ]);
-  });
-
-  test("intent replaces tools with non-empty rationales in source order", () => {
-    const entries = focusedEntries(fixtures, "intent");
-
-    expect(entries.map((entry) => entry.kind)).toEqual(["message", "intent", "intent", "message"]);
-    expect(entries).toEqual([
-      expect.objectContaining({ kind: "message", role: "user", id: "user-1" }),
-      expect.objectContaining({
-        kind: "intent",
-        id: "intent:tool-1",
-        rationale: "Inspect the first input",
-      }),
-      expect.objectContaining({
-        kind: "intent",
-        id: "intent:tool-2",
-        rationale: "Find the relevant references",
-      }),
-      expect.objectContaining({ kind: "message", role: "agent", id: "agent-1" }),
+      expect.objectContaining({ kind: "action-group", count: 3, label: "3 actions" }),
     ]);
   });
 
   test("focused entries expose no raw tool fields", () => {
-    for (const mode of ["conversation", "intent"] as const) {
-      for (const entry of focusedEntries(fixtures, mode)) {
-        expect(entry).not.toHaveProperty("toolName");
-        expect(entry).not.toHaveProperty("argumentsJSON");
-        expect(entry).not.toHaveProperty("output");
-        expect(entry).not.toHaveProperty("tool");
-      }
+    for (const entry of focusedEntries(fixtures)) {
+      expect(entry).not.toHaveProperty("toolName");
+      expect(entry).not.toHaveProperty("argumentsJSON");
+      expect(entry).not.toHaveProperty("output");
+      expect(entry).not.toHaveProperty("tool");
     }
   });
 
-  test("omits missing or blank rationales and tolerates missing tool metadata", () => {
+  test("omits missing or blank rationales and drops empty groups", () => {
     const sparse = [
       turn("turn-3", [
         item({ id: "user-3", turnId: "turn-3", type: "userMessage", text: "Keep me" }),
@@ -142,23 +124,15 @@ describe("session view modes", () => {
       ]),
     ];
 
-    expect(focusedEntries(sparse, "conversation")).toEqual([
-      expect.objectContaining({ kind: "message", role: "user" }),
-      expect.objectContaining({ kind: "tool-count", count: 2 }),
-      expect.objectContaining({ kind: "message", role: "agent" }),
-    ]);
-    expect(focusedEntries(sparse, "intent").map((entry) => entry.kind)).toEqual(["message", "message"]);
+    expect(focusedEntries(sparse).map((entry) => entry.kind)).toEqual(["message", "message"]);
   });
 
   test("returns stable IDs without mutating source turns", () => {
     const before = structuredClone(fixtures);
-    const first = focusedEntries(fixtures, "conversation").map((entry) => entry.id);
-    const second = focusedEntries(fixtures, "conversation").map((entry) => entry.id);
-    const intentFirst = focusedEntries(fixtures, "intent").map((entry) => entry.id);
-    const intentSecond = focusedEntries(fixtures, "intent").map((entry) => entry.id);
+    const first = focusedEntries(fixtures).map((entry) => entry.id);
+    const second = focusedEntries(fixtures).map((entry) => entry.id);
 
     expect(second).toEqual(first);
-    expect(intentSecond).toEqual(intentFirst);
     expect(fixtures).toEqual(before);
   });
 });

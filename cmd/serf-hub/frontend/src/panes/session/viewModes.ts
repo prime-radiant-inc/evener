@@ -1,15 +1,19 @@
 import type { ItemModel, TurnModel } from "../../protocol/model";
 
-export type SessionViewMode = "everything" | "conversation" | "intent";
+export type SessionViewMode = "everything" | "intent";
 
 export const SESSION_VIEW_MODES = [
   { value: "everything", label: "Everything" },
-  { value: "conversation", label: "Conversation" },
   { value: "intent", label: "Intent" },
 ] as const satisfies readonly {
   value: SessionViewMode;
-  label: "Everything" | "Conversation" | "Intent";
+  label: "Everything" | "Intent";
 }[];
+
+export interface IntentLine {
+  id: string;
+  rationale: string;
+}
 
 export type FocusedEntry =
   | {
@@ -21,22 +25,14 @@ export type FocusedEntry =
       message: ItemModel;
     }
   | {
-      kind: "tool-count";
+      kind: "action-group";
       id: string;
       turnId: string;
       sourceIndex: number;
       count: number;
       label: string;
-    }
-  | {
-      kind: "intent";
-      id: string;
-      turnId: string;
-      sourceIndex: number;
-      rationale: string;
+      intents: IntentLine[];
     };
-
-type FocusedViewMode = Exclude<SessionViewMode, "everything">;
 
 function messageRole(item: ItemModel): "user" | "agent" | undefined {
   if (item.type === "userMessage") return "user";
@@ -44,41 +40,42 @@ function messageRole(item: ItemModel): "user" | "agent" | undefined {
   return undefined;
 }
 
-function toolCountLabel(count: number): string {
-  return `${count} tool call${count === 1 ? "" : "s"}`;
+function actionGroupLabel(count: number): string {
+  return `${count} action${count === 1 ? "" : "s"}`;
 }
 
-export function focusedEntries(turns: readonly TurnModel[], mode: FocusedViewMode): FocusedEntry[] {
+export function focusedEntries(turns: readonly TurnModel[]): FocusedEntry[] {
   const entries: FocusedEntry[] = [];
-  let firstToolId: string | undefined;
-  let lastToolId: string | undefined;
-  let firstToolTurnId: string | undefined;
-  let firstToolSourceIndex: number | undefined;
-  let toolCount = 0;
+  let groupFirstId: string | undefined;
+  let groupLastId: string | undefined;
+  let groupTurnId: string | undefined;
+  let groupSourceIndex: number | undefined;
+  let groupIntents: IntentLine[] = [];
   let sourceIndex = 0;
 
-  const flushToolCount = () => {
+  const flushActionGroup = () => {
     if (
-      toolCount === 0 ||
-      firstToolId === undefined ||
-      lastToolId === undefined ||
-      firstToolTurnId === undefined ||
-      firstToolSourceIndex === undefined
+      groupIntents.length === 0 ||
+      groupFirstId === undefined ||
+      groupLastId === undefined ||
+      groupTurnId === undefined ||
+      groupSourceIndex === undefined
     )
       return;
     entries.push({
-      kind: "tool-count",
-      id: `tools:${firstToolId}:${lastToolId}`,
-      turnId: firstToolTurnId,
-      sourceIndex: firstToolSourceIndex,
-      count: toolCount,
-      label: toolCountLabel(toolCount),
+      kind: "action-group",
+      id: `actions:${groupFirstId}:${groupLastId}`,
+      turnId: groupTurnId,
+      sourceIndex: groupSourceIndex,
+      count: groupIntents.length,
+      label: actionGroupLabel(groupIntents.length),
+      intents: groupIntents,
     });
-    firstToolId = undefined;
-    lastToolId = undefined;
-    firstToolTurnId = undefined;
-    firstToolSourceIndex = undefined;
-    toolCount = 0;
+    groupFirstId = undefined;
+    groupLastId = undefined;
+    groupTurnId = undefined;
+    groupSourceIndex = undefined;
+    groupIntents = [];
   };
 
   for (const turn of turns) {
@@ -86,30 +83,20 @@ export function focusedEntries(turns: readonly TurnModel[], mode: FocusedViewMod
       const itemSourceIndex = sourceIndex;
       sourceIndex += 1;
       if (item.type === "commandExecution") {
-        if (mode === "conversation") {
-          firstToolId ??= item.id;
-          firstToolTurnId ??= turn.id;
-          firstToolSourceIndex ??= itemSourceIndex;
-          lastToolId = item.id;
-          toolCount += 1;
-        } else {
-          const rationale = item.description?.trim();
-          if (rationale) {
-            entries.push({
-              kind: "intent",
-              id: `intent:${item.id}`,
-              turnId: turn.id,
-              sourceIndex: itemSourceIndex,
-              rationale,
-            });
-          }
+        const rationale = item.description?.trim();
+        if (rationale) {
+          groupFirstId ??= item.id;
+          groupTurnId ??= turn.id;
+          groupSourceIndex ??= itemSourceIndex;
+          groupLastId = item.id;
+          groupIntents.push({ id: `intent:${item.id}`, rationale });
         }
         continue;
       }
 
       const role = messageRole(item);
       if (role) {
-        if (mode === "conversation") flushToolCount();
+        flushActionGroup();
         entries.push({
           kind: "message",
           id: item.id,
@@ -122,7 +109,7 @@ export function focusedEntries(turns: readonly TurnModel[], mode: FocusedViewMod
     }
   }
 
-  if (mode === "conversation") flushToolCount();
+  flushActionGroup();
 
   return entries;
 }
