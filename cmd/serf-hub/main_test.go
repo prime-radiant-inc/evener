@@ -93,6 +93,22 @@ func TestPrintVersionInfo(t *testing.T) {
 	}
 }
 
+type failingVersionWriter struct {
+	err error
+}
+
+func (w failingVersionWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+func TestPrintVersionInfoReturnsWriteError(t *testing.T) {
+	want := errors.New("write failed")
+	err := printVersionInfo(failingVersionWriter{err: want})
+	if !errors.Is(err, want) {
+		t.Fatalf("printVersionInfo error = %v, want %v", err, want)
+	}
+}
+
 func TestRunMainVersionFlag(t *testing.T) {
 	var stderr bytes.Buffer
 	err := runMain([]string{"--version"}, &stderr, defaultMainDeps())

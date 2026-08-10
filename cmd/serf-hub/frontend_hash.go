@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -43,5 +44,5 @@ func frontendDistHash(distFS fs.FS) (string, error) {
 		_, _ = h.Write(b)
 	}
 
-	return fmt.Sprintf("%x", h.Sum(nil))[:12], nil // Return first 12 hex chars
+	return hex.EncodeToString(h.Sum(nil))[:12], nil // Return first 12 hex chars
 }

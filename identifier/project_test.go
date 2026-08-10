@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -73,7 +74,7 @@ func independentProjectSuffix(path string) string {
 	const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 	out := make([]byte, 10)
 	base := big.NewInt(62)
-	for i := len(out) - 1; i >= 0; i-- {
+	for i := range slices.Backward(out) {
 		var remainder big.Int
 		n.QuoRem(n, base, &remainder)
 		out[i] = alphabet[remainder.Int64()]

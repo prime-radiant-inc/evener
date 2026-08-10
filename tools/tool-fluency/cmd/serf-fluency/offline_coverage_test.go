@@ -319,7 +319,7 @@ func TestSelectionSummaryReportsActualSelectedSet(t *testing.T) {
 	}
 
 	full := make([]probeFile, 0, 27)
-	for i := 0; i < 27; i++ {
+	for i := range 27 {
 		full = append(full, probeFile{ID: fmt.Sprintf("probe-%02d", i)})
 	}
 	fullCfg := runConfig{model: "openai/m", probeFilter: "all", probesDir: "probes", outDir: "/tmp/out"}

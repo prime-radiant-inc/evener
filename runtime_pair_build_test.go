@@ -50,7 +50,7 @@ func TestRuntimePairBuildContainsProcessStateAndPreservesGoCaches(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read fake go log: %v", err)
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(logData)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(logData)), "\n") {
 		fields := strings.Split(line, "\t")
 		if len(fields) != 9 || fields[0] != "go-env" {
 			t.Fatalf("fake go environment record = %q, want 9 tab-separated fields", line)
@@ -968,8 +968,8 @@ exit 0
 func fullLogsPath(output []byte) string {
 	const prefix = "full logs: "
 	for line := range strings.SplitSeq(string(output), "\n") {
-		if strings.HasPrefix(line, prefix) {
-			return strings.TrimPrefix(line, prefix)
+		if after, ok := strings.CutPrefix(line, prefix); ok {
+			return after
 		}
 	}
 	return ""

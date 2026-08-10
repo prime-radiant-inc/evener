@@ -494,12 +494,18 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 // printVersionInfo prints version information including backend git SHA and frontend hash.
 func printVersionInfo(w io.Writer) error {
 	fHash, _ := frontendDistHash(distFS())
-	fmt.Fprintf(w, "serf-hub version: %s\n", buildinfo.VersionLong())
+	if _, err := fmt.Fprintf(w, "serf-hub version: %s\n", buildinfo.VersionLong()); err != nil {
+		return err
+	}
 	if buildinfo.GitSHA != "" {
-		fmt.Fprintf(w, "backend git SHA: %s\n", buildinfo.GitSHA)
+		if _, err := fmt.Fprintf(w, "backend git SHA: %s\n", buildinfo.GitSHA); err != nil {
+			return err
+		}
 	}
 	if fHash != "" {
-		fmt.Fprintf(w, "frontend hash: %s\n", fHash)
+		if _, err := fmt.Fprintf(w, "frontend hash: %s\n", fHash); err != nil {
+			return err
+		}
 	}
 	return nil
 }

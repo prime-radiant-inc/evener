@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -209,7 +210,7 @@ func base62Digest(path string, width int) string {
 	n.Mod(n, modulus)
 	result := make([]byte, width)
 	base := big.NewInt(62)
-	for i := len(result) - 1; i >= 0; i-- {
+	for i := range slices.Backward(result) {
 		var remainder big.Int
 		n.QuoRem(n, base, &remainder)
 		result[i] = base62Alphabet[remainder.Int64()]
