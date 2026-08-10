@@ -405,8 +405,12 @@ assert_eq "$rc" "0" "a trailing-slash TMPDIR run exits zero"
 normalized=1
 while IFS= read -r dir; do
 	case "$dir" in
-		"$case_dir"/serf-module-tests.*/tmp/*) ;;
+		"$case_dir"/*) ;;
 		*) normalized=0 ;;
+	esac
+	relative="${dir#"$case_dir"/}"
+	case "$relative" in
+		*//*) normalized=0 ;;
 	esac
 done < <(recorded_tmpdirs)
 assert_eq "$normalized" "1" "a trailing-slash TMPDIR gives every stream a normalized owned temporary root"
