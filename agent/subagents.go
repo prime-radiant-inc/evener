@@ -103,6 +103,7 @@ type subagent struct {
 	closeTimedOut   bool               // session-close wait exceeded its bound; close not confirmed
 	driving         bool               // a drive-down notification turn (§3) is in flight on this idle child
 	fatalRunGated   bool               // terminal run error freezes automatic drives until an explicit resume
+	finalizing      bool               // terminal state is published but the retained parent notify callback is not restored yet
 	// disposeGated freezes a quiescent, retained TERMINAL child while a dispose op
 	// (spec §P1 step 4) evaluates and evicts it: no wake-edge drive may launch and
 	// no delegate_send may resume the child while it is set. Guarded by sub.mu; set
@@ -953,6 +954,10 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 
 func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, error) {
 	sub.mu.Lock()
+	if sub.finalizing || (sub.fatalRunGated && (sub.running || sub.driving)) {
+		sub.mu.Unlock()
+		return false, fmt.Errorf("target_busy: delegate %q is completing its current run; retry", sub.id)
+	}
 	if sub.running || sub.driving {
 		subSess := sub.sess
 		sub.mu.Unlock()
@@ -1048,7 +1053,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		return false
 	}
 	sub.mu.Lock()
-	if sub.sess == nil || sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated {
+	if sub.sess == nil || sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing {
 		sub.mu.Unlock()
 		return false
 	}
@@ -1179,6 +1184,7 @@ func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, started
 func resetSubagentForRunLockedFromWatch(sub *subagent, cancel context.CancelFunc, startedAt time.Time, fromWatch bool) {
 	sub.done = make(chan struct{})
 	sub.running = true
+	sub.finalizing = false
 	sub.status = SubagentRunning
 	sub.result = ""
 	sub.err = nil
@@ -1328,6 +1334,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	runProvenance := a.followUpProvenance(inputProvenance)
 	finalizeTime := a.sess.sclock().Now()
 	a.mu.Lock()
+	a.finalizing = true
 	a.result = res
 	a.err = err
 	a.runProvenance = provenance.Clone(runProvenance)
@@ -1348,8 +1355,17 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	done := a.done
 	a.endEmitted = true
 	a.mu.Unlock()
+	if hook := a.sess.cfg.testOnly.subagentAfterFinalStatePublish; hook != nil {
+		hook(a)
+	}
 	if restoreParentDriveNotify != nil {
 		a.sess.SetNotifyFunc(restoreParentDriveNotify)
+	}
+	a.mu.Lock()
+	a.finalizing = false
+	a.mu.Unlock()
+	if restoreParentDriveNotify != nil && a.sess.peekNotifications() > 0 {
+		a.sess.notify()
 	}
 
 	if done != nil {

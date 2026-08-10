@@ -82,6 +82,8 @@ const (
 	notResumableTurnBudgetExhausted           = "turn_budget_exhausted"
 )
 
+var errSubagentLifecycleBusy = errors.New("subagent lifecycle is busy")
+
 type delegateResumability struct {
 	Resumable bool
 	Reason    string
@@ -650,7 +652,15 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		}
 		sub.mu.Lock()
 		running := sub.running || sub.driving
+		fatalRunGated := sub.fatalRunGated
+		finalizing := sub.finalizing
 		sub.mu.Unlock()
+		if finalizing {
+			return delegateSendBusyRefusal(target, rec, args.FromWatch, "finalizing")
+		}
+		if fatalRunGated && (running || args.FromWatch) {
+			return delegateSendBusyRefusal(target, rec, args.FromWatch, "recovering from a fatal run")
+		}
 		if running {
 			// A driving child is in flight: steer into the drive turn (spec §3, A7).
 			// sendRunningDelegateMessage takes the StatusRunning rec directly (no
@@ -696,6 +706,8 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		running := sub.running
 		driving := sub.driving
 		gated := sub.disposeGated
+		fatalRunGated := sub.fatalRunGated
+		finalizing := sub.finalizing
 		sub.mu.Unlock()
 		if gated {
 			// The child is frozen for disposal (spec §P1 step 4): refuse the send
@@ -704,6 +716,12 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 			// not permanently dropped by sendMessageFailed's watchSendHardFailure
 			// (finding N2).
 			return disposeGatedSendRefusal(target, rec, args.FromWatch)
+		}
+		if finalizing {
+			return delegateSendBusyRefusal(target, rec, args.FromWatch, "finalizing")
+		}
+		if fatalRunGated && (running || driving || args.FromWatch) {
+			return delegateSendBusyRefusal(target, rec, args.FromWatch, "recovering from a fatal run")
 		}
 		if driving && !running {
 			return s.sendRunningDelegateMessage(target, message, rec, args.FromWatch, args.Provenance)
@@ -730,7 +748,15 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 				// below, which re-derives fresh state and resumes it.
 				sub.mu.Lock()
 				stillBusy := sub.running || sub.driving
+				fatalRunGated := sub.fatalRunGated
+				finalizing := sub.finalizing
 				sub.mu.Unlock()
+				if finalizing {
+					return delegateSendBusyRefusal(target, rec, args.FromWatch, "finalizing")
+				}
+				if fatalRunGated && (stillBusy || args.FromWatch) {
+					return delegateSendBusyRefusal(target, rec, args.FromWatch, "recovering from a fatal run")
+				}
 				if stillBusy {
 					return sendMessageFailed(target, notResumableSendError(notResumableChildSessionBusy))
 				}
@@ -754,7 +780,15 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	sub.mu.Lock()
 	running := sub.running
 	driving := sub.driving
+	fatalRunGated := sub.fatalRunGated
+	finalizing := sub.finalizing
 	sub.mu.Unlock()
+	if finalizing {
+		return delegateSendBusyRefusal(target, rec, args.FromWatch, "finalizing")
+	}
+	if fatalRunGated && (running || driving || args.FromWatch) {
+		return delegateSendBusyRefusal(target, rec, args.FromWatch, "recovering from a fatal run")
+	}
 	if driving && !running {
 		// A drive turn is in flight (sub.driving==true) but mints no running job
 		// record (the EntryNotification turn is not a watch-tracked job), so the
@@ -789,6 +823,9 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		run, finalizeErr, active, err = s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef, delegateID, delegateResultSchema(rec), rec.DelegateRestore, args.FromWatch, messageProvenance)
 	}
 	if err != nil {
+		if errors.Is(err, errSubagentLifecycleBusy) {
+			return delegateSendBusyRefusal(target, rec, args.FromWatch, "finalizing")
+		}
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: resume delegate session %q: %w", childID, err))
 	}
 	if active != nil {
@@ -1624,6 +1661,14 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 	}
 
 	sub.mu.Lock()
+	if sub.finalizing {
+		sub.mu.Unlock()
+		return delegateSendBusyRefusal(target, rec, fromWatch, "finalizing")
+	}
+	if sub.fatalRunGated {
+		sub.mu.Unlock()
+		return delegateSendBusyRefusal(target, rec, fromWatch, "recovering from a fatal run")
+	}
 	// A mid-drive child (sub.driving) is in flight just like a running one: steer
 	// the message into the single in-flight (drive) turn rather than reject it
 	// (spec §3, A7 steer-into-drive decision).
@@ -1698,6 +1743,10 @@ func delegateControlOwnedBySession(ownerSessionID, sessionID string) bool {
 
 func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message string, sub *subagent, transcriptRef, delegateID string, resultSchema any, restore *jobstore.DelegateRestoreDescriptor, fromWatch bool, watchProvenance *provenance.Causal) (*runningJob, <-chan error, *jobstore.JobRecord, error) {
 	sub.mu.Lock()
+	if sub.finalizing || (sub.fatalRunGated && (sub.running || sub.driving || fromWatch)) {
+		sub.mu.Unlock()
+		return nil, nil, nil, errSubagentLifecycleBusy
+	}
 	if sub.running {
 		sub.mu.Unlock()
 		active, err := findRunningDelegateByTranscriptRef(jm, transcriptRef)
@@ -1757,6 +1806,10 @@ func relinkDelegateChildToJob(child *Session, jobID string) {
 // from the undelivered-steer busy site above). A plain model send gets a normal
 // error naming the state.
 func disposeGatedSendRefusal(target string, rec *jobstore.JobRecord, fromWatch bool) sendMessageResult {
+	return delegateSendBusyRefusal(target, rec, fromWatch, "being disposed")
+}
+
+func delegateSendBusyRefusal(target string, rec *jobstore.JobRecord, fromWatch bool, reason string) sendMessageResult {
 	if fromWatch {
 		return sendMessageResult{
 			Target:                    target,
@@ -1771,7 +1824,7 @@ func disposeGatedSendRefusal(target string, rec *jobstore.JobRecord, fromWatch b
 			WatchSendDeliveryClassSet: true,
 		}
 	}
-	return sendMessageFailed(target, fmt.Errorf("target_busy: delegate %q is being disposed; retry or start a new delegate", target))
+	return sendMessageFailed(target, fmt.Errorf("target_busy: delegate %q is %s; retry or start a new delegate", target, reason))
 }
 
 func sendMessageFailed(target string, err error) sendMessageResult {

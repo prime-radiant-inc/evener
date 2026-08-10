@@ -774,6 +774,71 @@ func TestWatchOriginatedRunningSendRejectedByClosingChildStaysBusy(t *testing.T)
 	}
 }
 
+func TestFatalGatedDelegateSendRefusesRunningAndDrivingChild(t *testing.T) {
+	for _, state := range []struct {
+		name    string
+		running bool
+		driving bool
+	}{
+		{name: "running", running: true},
+		{name: "driving", driving: true},
+	} {
+		t.Run(state.name, func(t *testing.T) {
+			for _, fromWatch := range []bool{false, true} {
+				name := "plain"
+				if fromWatch {
+					name = "watch"
+				}
+				t.Run(name, func(t *testing.T) {
+					parent := newTestSession(t)
+					child := newTestSession(t)
+					sub := &subagent{
+						id:            child.ID(),
+						sess:          child,
+						running:       state.running,
+						driving:       state.driving,
+						fatalRunGated: true,
+						status:        SubagentRunning,
+						done:          make(chan struct{}),
+					}
+					parent.subagents.track(sub)
+					rec := &jobstore.JobRecord{
+						JobID:         jobstore.NewJobID(parent.ID()),
+						DelegateID:    jobstore.NewDelegateID(),
+						Type:          jobstore.JobDelegate,
+						Status:        jobstore.StatusRunning,
+						TranscriptRef: encodeRef("", child.ID()),
+					}
+					run := &runningJob{rec: rec, done: make(chan struct{})}
+					parent.jobManager.mu.Lock()
+					parent.jobManager.running[rec.JobID] = run
+					parent.jobManager.mu.Unlock()
+					t.Cleanup(func() {
+						parent.jobManager.mu.Lock()
+						delete(parent.jobManager.running, rec.JobID)
+						parent.jobManager.mu.Unlock()
+					})
+
+					res := parent.sendRunningDelegateMessage(rec.DelegateID, "must wait", rec, fromWatch, nil)
+					if fromWatch {
+						if res.Err != nil || res.Delivered || !res.WatchSendDeliveryClassSet || res.WatchSendDeliveryClass != watchSendBusy {
+							t.Fatalf("watch send result = %+v, want retryable busy refusal", res)
+						}
+					} else if res.Err == nil || !strings.Contains(res.Err.Error(), "target_busy") {
+						t.Fatalf("plain send error = %v, want target_busy", res.Err)
+					}
+					if queue := child.SteeringQueueSnapshot(); len(queue) != 0 {
+						t.Fatalf("fatal-gated child steering queue = %+v, want no delivery", queue)
+					}
+					if run.fromWatch.Load() || sub.runFromWatch {
+						t.Fatalf("fatal-gated refusal marked watch delivery: run=%v sub=%v", run.fromWatch.Load(), sub.runFromWatch)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestWatchOriginatedResumeMarksJobStartedFromWatch(t *testing.T) {
 	t.Parallel()
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}

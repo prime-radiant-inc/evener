@@ -259,6 +259,9 @@ type testConfig struct {
 	subagentReserveTreeSlot func(*Session) (*treeReservation, bool)
 	// subagentStopGated overrides child stop-gating when handled is true.
 	subagentStopGated func(*Session, string) (stopped, handled bool)
+	// subagentAfterFinalStatePublish observes the interval after a retained child
+	// publishes terminal state and before it restores its parent notify callback.
+	subagentAfterFinalStatePublish func(*subagent)
 
 	// delegateSend holds delegate_send injection seams for this session only;
 	// see delegateSendTestSeams for why they must not be package globals.

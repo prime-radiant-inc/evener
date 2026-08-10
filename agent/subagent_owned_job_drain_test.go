@@ -255,6 +255,106 @@ func TestSubagentDrainRestoresParentDriveAfterTerminalStatePublication(t *testin
 	}
 }
 
+func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testing.T) {
+	for _, action := range []string{"explicit resume", "delegate send", "watch delegate send"} {
+		t.Run(action, func(t *testing.T) {
+			fixture := newOwnedJobDrainFixture(t)
+			finalizationEntered := make(chan struct{})
+			finalizationRelease := make(chan struct{})
+			var releaseOnce sync.Once
+			t.Cleanup(func() { releaseOnce.Do(func() { close(finalizationRelease) }) })
+			fixture.child.sess.cfg.testOnly.subagentAfterFinalStatePublish = func(got *subagent) {
+				if got != fixture.child {
+					t.Errorf("finalization hook child = %p, want %p", got, fixture.child)
+				}
+				close(finalizationEntered)
+				<-finalizationRelease
+			}
+			fixture.drainClock.onDrainStop = func() {
+				enqueueCompletedDelegateNotification(t, fixture.child.sess, "finalization-window-job")
+			}
+			fixture.env.releaseJob()
+			select {
+			case <-finalizationEntered:
+			case <-time.After(30 * time.Second):
+				t.Fatal("subagent did not reach the post-publication finalization window")
+			}
+
+			fixture.child.mu.Lock()
+			running := fixture.child.running
+			fixture.child.mu.Unlock()
+			if running {
+				t.Fatal("finalization hook ran before running=false was published")
+			}
+			if fixture.parent.driveSubagentNotificationTurn(fixture.child) {
+				t.Fatal("automatic notification drive launched during callback restoration")
+			}
+
+			switch action {
+			case "explicit resume":
+				if _, err := fixture.parent.startOrSteerSubagentRun(fixture.child, "resume too early"); err == nil || !strings.Contains(err.Error(), "target_busy") {
+					t.Fatalf("early explicit resume error = %v, want target_busy", err)
+				}
+			case "delegate send":
+				res := fixture.parent.sendDelegateMessage(context.Background(), sendMessageArgs{
+					Target:  fixture.result.DelegateID,
+					Message: "resume too early",
+				})
+				if res.Err == nil || !strings.Contains(res.Err.Error(), "target_busy") {
+					t.Fatalf("early delegate_send result = %+v, want target_busy", res)
+				}
+			case "watch delegate send":
+				res := fixture.parent.sendDelegateMessage(context.Background(), sendMessageArgs{
+					Target:    fixture.result.DelegateID,
+					Message:   "resume too early",
+					FromWatch: true,
+				})
+				if res.Err != nil || !res.WatchSendDeliveryClassSet || res.WatchSendDeliveryClass != watchSendBusy {
+					t.Fatalf("early watch delegate_send result = %+v, want retryable busy", res)
+				}
+			}
+			if queue := fixture.child.sess.SteeringQueueSnapshot(); len(queue) != 0 {
+				t.Fatalf("child steering queue during finalization = %+v, want no delivery", queue)
+			}
+			if requests := fixture.adapter.Requests(); len(requests) != 3 {
+				t.Fatalf("provider requests during finalization = %d, want no resumed or automatic turn", len(requests))
+			}
+
+			releaseOnce.Do(func() { close(finalizationRelease) })
+			select {
+			case <-fixture.freshHandled:
+			case <-time.After(30 * time.Second):
+				t.Fatal("pending notification was not driven after callback restoration")
+			}
+			select {
+			case <-fixture.runDone:
+			case <-time.After(30 * time.Second):
+				t.Fatal("delegate did not finish after callback restoration")
+			}
+			if action == "explicit resume" {
+				waitForCondition(t, 5*time.Second, "post-finalization notification drive to finish", func() bool {
+					fixture.child.mu.Lock()
+					defer fixture.child.mu.Unlock()
+					return !fixture.child.driving
+				})
+				fixture.child.sess.cfg.testOnly.subagentAfterFinalStatePublish = nil
+				launched, err := fixture.parent.startOrSteerSubagentRun(fixture.child, "resume after finalization")
+				if err != nil || !launched {
+					t.Fatalf("explicit resume after finalization = launched %v err %v, want launched", launched, err)
+				}
+				fixture.child.mu.Lock()
+				resumedDone := fixture.child.done
+				fixture.child.mu.Unlock()
+				select {
+				case <-resumedDone:
+				case <-time.After(30 * time.Second):
+					t.Fatal("explicit resume after finalization did not finish")
+				}
+			}
+		})
+	}
+}
+
 func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) {
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "provider failed after shell launch", nil, nil)
 	adapter := &fakeErrAdapter{
@@ -369,8 +469,23 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 		t.Fatalf("delegate output = %q, want original fatal error", stored)
 	}
 
-	if _, err := parent.sendInput(context.Background(), child.id, "resume after fatal run"); err != nil {
-		t.Fatalf("explicit child resume: %v", err)
+	watchResume := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:    result.DelegateID,
+		Message:   "automatic resume after fatal run",
+		FromWatch: true,
+	})
+	if watchResume.Err != nil || !watchResume.WatchSendDeliveryClassSet || watchResume.WatchSendDeliveryClass != watchSendBusy {
+		t.Fatalf("watch resume after fatal run = %+v, want retryable busy", watchResume)
+	}
+	if requests := adapter.Requests(); len(requests) != 2 {
+		t.Fatalf("provider requests after refused watch resume = %d, want 2", len(requests))
+	}
+	explicitResume := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  result.DelegateID,
+		Message: "resume after fatal run",
+	})
+	if explicitResume.Err != nil || explicitResume.Action != "started" {
+		t.Fatalf("explicit child resume = %+v, want started", explicitResume)
 	}
 	child.mu.Lock()
 	resumedDone := child.done
