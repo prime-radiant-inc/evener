@@ -126,12 +126,14 @@ This relation replaces `parent_job_id` in tool results, list rows, events, AppWi
 
 The child session's `transcript_ref` is the archival handle for the delegate conversation. The transcript contains every activation's messages, tool calls, terminal results, and validation metadata.
 
-Each private activation outcome persists a tagged exact locator only after its terminal record is durable:
+Each terminal record carries its private activation tag. Before an accepted communicate returns, Serf atomically persists `terminal_prepared` under that activation with a private delivery ID and tagged locator:
 
 - accepted communicate: transcript/session ID, stable entry sequence, and tool-call ID;
 - synthetic terminal error: transcript/session ID, stable entry sequence, and private synthetic-entry ID.
 
 Notification replay resolves the result from this locator. It must never search for “the last communicate.” The locator is private metadata and is not a control handle.
+
+`terminal_prepared` is the durable bridge between communicate acceptance and finalization. Restart folds a prepared real terminal before considering `runtime_lost`; it synthesizes `runtime_lost` only when the running activation has no prepared record.
 
 `read_transcript` accepts the session ref through its session-read path. `job:<job_id>` names shell output only. It does not accept a delegate ID or private activation key.
 
@@ -206,13 +208,19 @@ The message is sanitized diagnostic prose. This envelope is explicitly Serf-gene
 
 A real terminal communicate notification is complete: no delegate-specific excerpting, truncation, or summarization is allowed. To make that implementable:
 
-1. The maximum serialized raw `communicate` arguments are 16 KiB. The lifecycle wrapper has a separate fixed allowance.
+1. The maximum serialized raw `communicate` arguments are 16 KiB. The complete canonical lifecycle/operational wrapper is at most 8 KiB.
 2. Delegate creation measures the parent's fixed system/tool content, conservative provider tokenization, output allowance, wrapper overhead, and minimum supported context window. It fails synchronously if one full packet cannot be reserved after compaction.
-3. Delegate creation persists the admitted bound and parent capacity requirement with the restore descriptor. Model switch, fallback, or profile replacement is rejected while any resumable delegate or unsettled delegate delivery can still produce a packet if the new profile cannot preserve that requirement.
+3. A parent-scoped packet-admission lock and generation linearize delegate creation, delivery settlement, and model/fallback/profile replacement. External model resolution may occur outside the lock, but every operation revalidates and commits its capacity decision under the same generation. Delegate creation persists the admitted bound and parent capacity requirement with the restore descriptor. A switch is rejected while any resumable delegate or unsettled delivery can still produce a packet if the new profile cannot preserve that requirement.
 4. `communicate(end_turn=true)` serializes and validates the whole raw call before acceptance. An oversized call returns a typed `terminal_packet_too_large` tool error and does not end the activation; the child must retry with a smaller call or store large evidence as artifacts and reference it from the bounded call.
 5. The parent continuation builder reserves the required capacity and compacts parent history before injection. It injects at most one full delegate terminal packet per continuation; additional intents remain armed for later turns. It never drains or concatenates more packets than the measured request can fit.
 
-The same 16 KiB bound applies to default and custom-schema output. Serf-generated terminal errors use bounded sanitized diagnostics and fit the same reserved delivery capacity. This preserves the user's full-call guarantee without allowing a valid but permanently undeliverable packet. Exact larger evidence remains available through transcript or artifact references chosen by the child; Serf does not silently substitute those references.
+The same 16 KiB bound applies to default and custom-schema output. Every variable wrapper field has a canonical byte bound. Watch metadata uses a deterministic prefix whose canonical JSON is at most 2 KiB, followed by `watch_count` and `watches_truncated`; watch creation itself remains unlimited by this design. Worktree, diagnostic, model, sandbox, validation, and observer fields fit the remainder of the 8 KiB wrapper allowance. Serf-generated terminal errors use bounded sanitized diagnostics. This preserves the full-call guarantee without allowing a valid but permanently undeliverable packet. Exact larger evidence remains available through transcript or artifact references chosen by the child; Serf does not silently substitute those references.
+
+### Inline result admission
+
+A parent tool-call batch has one inline delegate-packet token. Before dispatch, at most one `delegate` or idle-starting `delegate_send` call may use positive `max_wait_ms` to return a full terminal result. Additional positive-wait calls still start their work but do not wait; they return a bounded result with `inline_result_deferred: true` and `defer_reason: "inline_packet_slot_unavailable"`.
+
+If a deferred activation has already settled by result construction, the tool returns metadata-only `status: "idle"`, `last_outcome`, transcript ref, and `result_delivery: "notification_pending"`; it omits `terminal_result`. Its durable delivery intent remains armed and later emits the full packet through ordinary notification delivery. Provider protocols therefore receive one bounded result for every tool call while at most one tool result contains a full delegate packet.
 
 ## Public Tool Contract
 
@@ -255,11 +263,13 @@ If a positive `max_wait_ms` observes terminal completion, the result reports `st
 
 For an abnormal result, `terminal_result.kind` is `terminal_error` and contains the canonical error envelope. Applicable operational metadata remains alongside `terminal_result`.
 
-Observer readiness fields such as `watching` and `watches`, isolated-worktree path/branch/HEAD/ahead/dirty/disposal metadata, model/sandbox echoes, and existing warning fields remain present when applicable. The identity cutover removes activation-ID fields only.
+Observer readiness fields such as `watching` and the bounded watch projection, isolated-worktree path/branch/HEAD/ahead/dirty/disposal metadata, model/sandbox echoes, and existing warning fields remain present when applicable within the 8 KiB wrapper allowance. The identity cutover removes activation-ID fields only.
 
 The result never contains `job_id`, `started_job_id`, `current_job_id`, `latest_job_id`, or `resumed_from_job_id`.
 
 An activation that remains running when the tool returns is notification-armed. Inline observation does not settle that delivery intent until the parent transcript durably commits the tool result.
+
+Inline waiting is also subject to the parent tool-batch's single packet token. A call denied that token follows the bounded deferral result defined above; it never embeds a second full terminal packet in the same tool-result turn.
 
 ### `delegate_send`
 
@@ -280,6 +290,8 @@ If the delegate is running, Serf delivers steering into the active activation an
 A live steer does not wait for a reply and does not create another activation.
 
 If the delegate is idle and resumable, Serf restores it and starts one activation. A positive `max_wait_ms` applies only to the activation started by that call and may return the same canonical inline terminal result as `delegate`.
+
+That positive wait requires the same single inline-packet token. Without the token, `delegate_send` starts normally, returns the bounded deferral result, and leaves full-result delivery armed.
 
 If `resumable: false`, the call returns `target_not_resumable` and the durable reason. Transient restore failure returns a retryable restore error without changing resumability.
 
@@ -376,6 +388,8 @@ Delegate-target watches accept only `events`, `event_filter`, and `every`. They 
 
 All continuation state required by the predicate, including the matching-occurrence counter for `every`, is durable under the watch generation. Match-state advancement and delivery intent creation are atomic. A delivery is settled only by the existing receiver-commit acknowledgement path; restart neither resets the count nor duplicates a settled frame.
 
+Every watchable public source event receives a private monotonically increasing source sequence and is appended durably before publication. Each owner-store watch record persists the last processed source cursor. For one occurrence, advancing the cursor, updating the `every` counter, and creating any delivery intent happen in one owner-store batch. Restart replays durable source events strictly after the cursor. The source sequence is private event identity, not a delegate activation ID or public control handle.
+
 The directly controlling owner's durable store is the inventory and routing authority for receiver-visible delegate watches. It stores the watch ID, delegate target, child descriptor/session ref, predicate state, and delivery state. `job_list` and `job_watch` list/inspect/clear use this index while the child is unloaded; they do not restore the child model runtime merely to manage a watch.
 
 ### `job_list`
@@ -428,33 +442,36 @@ A running delegate has one steering queue and one activation. An idle resume obt
 
 Finalization follows this order:
 
-1. use the terminal record already durably committed by an accepted communicate, or durably append a canonical synthetic terminal-error record;
+1. use the activation's durably prepared real terminal record, or durably append a canonical synthetic terminal-error record only when no prepared record exists;
 2. persist the tagged exact locator, validation metadata, activation outcome, and delivery intent under the private key;
 3. project `last_outcome`, lifecycle `idle`, and resumability;
 4. durably request runtime unload;
 5. if the descendant subtree is quiescent, unload now; otherwise retain only the existing coordinator runtime required for descendant routing and mark unload deferred;
 6. queue inline, callback, or background delivery independently.
 
-The `communicate` handler itself is the linearization point for real results: it validates and bounds the raw arguments, appends a dedicated terminal record with canonical arguments, validation, tool-call ID, and stable entry sequence through the transcript's durable/fsync path, and only then returns accepted or triggers callback state. Finalization only folds that committed record. Serf must not publish a terminal result or release runtime state before the locator and delivery intent are durable.
+The `communicate` handler itself is the linearization point for real results: it validates and bounds the raw arguments, appends a dedicated activation-tagged terminal record with canonical arguments, validation, tool-call ID, and stable entry sequence through the transcript's durable/fsync path, and commits `terminal_prepared(locator, delivery_id)` before returning accepted or triggering callback state. Those writes are one durable acceptance transaction or an ordered idempotent protocol whose recovery cannot expose the transcript record without reconstructing `terminal_prepared`. Finalization only folds the prepared record. Serf must not publish a terminal result or release runtime state before the locator and delivery intent are durable.
 
 ### Descendant-aware runtime unload
 
-This design does not detach descendants into a new supervisor. If active descendants exist, the ancestor's model turn is over and no new activation runs, but the current child session/job-manager shell remains reachable for:
+This design does not detach descendants into a new supervisor. If active descendants exist, the ancestor's terminal model turn is over, but the current child session/job-manager shell remains reachable for:
 
 - descendant listing and control routing;
 - callback and notification drive-down;
 - watch grants and event forwarding;
 - worktree occupancy and safety scans.
 
-The deferred ancestor may continue to block occupancy only to the extent the existing subtree requires it. When the last active descendant settles and queued descendant attention is durably routed, Serf automatically completes the pending unload. No caller flag or close tool is required.
+Pure durable routing, indexing, and acknowledgement do not open an activation. Any descendant notification or callback that requires model processing atomically opens a normal serial private activation, changes lifecycle to `running`, acquires the ordinary drive slot, and holds the unload barrier. That activation may steer, call tools, or communicate only under normal activation supervision and finalizes through the same terminal protocol. Pending attention after restart may restore the model runtime only through this activation path; recordless model-bearing drive turns are forbidden.
+
+The deferred ancestor may continue to block occupancy only to the extent the existing subtree or model-bearing drive activation requires it. When the last active descendant and any drive activation settle and queued attention is durably routed or acknowledged, Serf automatically completes the pending unload. No caller flag or close tool is required.
 
 A quiescent unload uses a dedicated `unloadDelegateRuntime` transition, not `Session.Close`. It durably flushes and closes transcript/store/provider/runtime handles, releases environment locks and occupancy, and detaches the child from the live parent manager. It deliberately skips recursive child cancellation, isolation-lane disposal, `SessionEnd` filesystem cleanup, and deletion of descriptors, watches, outcomes, or delivery state. A normal root/session close retains its existing stronger teardown semantics.
 
 ### Restart
 
-On root process restart, before lazy model restoration, Serf runs one durable post-order reconciliation pass over delegate descriptors and child session IDs. It opens child stores and transcripts without constructing model runtimes, settles every private activation recorded as running without a live runtime, folds descendant outcomes upward, and then reapplies deferred-unload state. Specifically:
+On root process restart, before lazy model restoration, Serf runs one durable post-order reconciliation pass over delegate descriptors and child session IDs. It opens child stores and transcripts without constructing model runtimes, first folds every activation-tagged `terminal_prepared` record, then settles each remaining private activation recorded as running without a live runtime, folds descendant outcomes upward, and reapplies deferred-unload state. Specifically:
 
-- a private activation recorded as running without a live runtime receives a canonical `terminal_error` with outcome `stopped` and reason `runtime_lost`;
+- a running activation with `terminal_prepared` completes from that exact real terminal record;
+- only a running activation without `terminal_prepared` receives a canonical `terminal_error` with outcome `stopped` and reason `runtime_lost`;
 - the exact synthetic-entry locator, outcome, and pending delivery are persisted;
 - the delegate becomes idle;
 - resumability is recomputed only from durable monotonic facts;
@@ -490,13 +507,13 @@ A real communicate result injects one packet:
 </job-notification>
 ```
 
-The communicate arguments are complete and byte-for-byte equivalent after canonical JSON serialization. Serf performs no delegate-specific excerpting, truncation, or summarization. The notification wrapper also preserves applicable parent-generated operational metadata that the child cannot authoritatively report, including final isolated-worktree state and disposal hint, model/sandbox echoes, observer readiness (`watching`/`watches`), and structured-result validation. None of those fields may carry an activation ID.
+The communicate arguments are complete and byte-for-byte equivalent after canonical JSON serialization. Serf performs no delegate-specific excerpting, truncation, or summarization. The byte-bounded notification wrapper also preserves applicable parent-generated operational metadata that the child cannot authoritatively report, including final isolated-worktree state and disposal hint, model/sandbox echoes, bounded observer readiness/watch projection, and structured-result validation. None of those fields may carry an activation ID.
 
 An abnormal result injects the same lifecycle and operational wrapper with the canonical `kind: "terminal_error"` envelope instead of claiming a child call existed.
 
 Shell notifications retain their bounded output-excerpt behavior.
 
-Watch-origin observer callbacks retain their special presentation path, but use the same durable acknowledgement rule. They do not also emit a duplicate owner notification.
+Watch-origin observer callbacks may retain distinct outer `Observer callback` presentation markup, but the payload inside that markup is the same complete canonical terminal union and byte-bounded operational wrapper as every other delegate terminal delivery. The legacy formatter that accepts only normalized `message`/`output` prose is removed. Scalar, array, explicit-null, and schema-invalid custom output remains exact. Observer callbacks use the same durable acknowledgement rule and do not also emit a duplicate owner notification.
 
 ### Public event identity
 
@@ -516,13 +533,15 @@ The durable delegate projection owns:
 - private generation/current-activation state;
 - latest activity and latest outcome;
 - exact terminal transcript locator and validation metadata per private activation;
+- durable `terminal_prepared` locator/delivery state;
 - durable delivery intent/acknowledgement state;
-- durable watch relationships and predicate counters;
+- durable watch relationships, source-event cursors, and predicate counters;
+- parent packet-admission requirement and generation;
 - pending descendant-aware unload state.
 
 Private activation records may remain in the existing job store. Public folds project them into their owning delegate and never list them as jobs.
 
-The directly controlling owner store also indexes unloaded child delegate summaries, receiver-visible watches, typed lineage, and routing descriptors needed by list/status/watch/stop without a live child model runtime. Child stores remain canonical for child transcript and activation data; the owner index contains only bounded projection and routing metadata.
+The directly controlling owner store also indexes unloaded child delegate summaries, receiver-visible watches, typed lineage, and routing descriptors needed by list/status/watch/stop without a live child model runtime. It atomically batches watch cursor/counter/delivery transitions. Child stores remain canonical for child transcript, activation data, and durable source-event sequence; the owner index contains only bounded projection and routing metadata.
 
 Full result content has one authoritative durable copy in the child transcript. The delivery intent stores a locator, not a second full copy. Bounded display metadata is allowed.
 
@@ -631,53 +650,59 @@ Before completion, the implementation must pass normal deterministic gates and p
 8. Schema-invalid but syntactically accepted bounded calls preserve raw scalar, array, object, and explicit-null output with `valid: false`; missing required output does not end the activation.
 9. Failure, exhaustion, cancellation, panic recovery, and runtime loss append canonical terminal-error entries.
 10. Real results persist entry/tool-call locators and synthetic results persist entry/synthetic-entry locators; replay never selects a later activation's result.
-11. The communicate handler durably commits the canonical terminal record before returning accepted.
+11. The communicate handler durably commits the activation-tagged canonical terminal record and `terminal_prepared(locator, delivery_id)` before returning accepted.
 12. Accepted communicate packets are complete and never excerpted.
 13. Oversized packets are rejected before terminal acceptance and can be retried.
-14. Creation and model switching enforce measured packet capacity; each continuation injects at most the measured fit and leaves remaining intents armed.
-15. Inline, callback, and background delivery intents survive crashes until `AppendDurable` commits a parent entry carrying the hidden delivery ID.
-16. Hidden-ID receiver deduplication prevents duplicate committed delivery and does not inspect rendered target text.
-17. Metadata-only status does not consume pending delivery.
-18. Observer callback delivery produces no duplicate owner notification.
+14. Creation, settlement, and model switching revalidate and commit measured packet capacity under one parent generation lock.
+15. Concurrent model switch/delegate creation cannot admit a packet against a stale profile.
+16. Each continuation injects at most one full packet and leaves remaining intents armed.
+17. A multi-tool batch returns at most one inline full delegate result; additional positive-wait calls return bounded deferral results and remain delivery-armed, including when they settle before result construction.
+18. Inline, callback, and background delivery intents survive crashes until `AppendDurable` commits a parent entry carrying the hidden delivery ID.
+19. Hidden-ID receiver deduplication prevents duplicate committed delivery and does not inspect rendered target text.
+20. Metadata-only status does not consume pending delivery.
+21. Observer callbacks preserve the full canonical raw union for scalar, array, null, and schema-invalid output and produce no duplicate owner notification.
+22. Every terminal wrapper fits the 8 KiB allowance; its deterministic watch prefix fits 2 KiB and reports total/truncation without limiting watch creation.
 
 ### Lifecycle, stop, and resume
 
-19. Create, steering, resume, completion, abnormal outcomes, and restart preserve one delegate ID.
-20. Concurrent resume attempts create one activation.
-21. Delegate stop closes a durable subtree epoch before traversal and always cascades through active descendants, including when the delegate is idle.
-22. Spawn, shell start, resume, and delivery races cannot admit old-epoch work after stop; explicit later send opens a new epoch.
-23. Stop results classify whole-subtree cancellation/races and report requested, settled, pending, and failed cascade counts.
-24. Permanent disposal/pruning/exhaustion produces `resumable: false`; transient restore failure does not.
-25. Send to a non-resumable delegate returns the durable typed error.
+23. Create, steering, resume, completion, abnormal outcomes, and restart preserve one delegate ID.
+24. Concurrent resume attempts create one activation.
+25. Delegate stop closes a durable subtree epoch before traversal and always cascades through active descendants, including when the delegate is idle.
+26. Spawn, shell start, resume, and delivery races cannot admit old-epoch work after stop; explicit later send opens a new epoch.
+27. Stop results classify whole-subtree cancellation/races and report requested, settled, pending, and failed cascade counts.
+28. Permanent disposal/pruning/exhaustion produces `resumable: false`; transient restore failure does not.
+29. Send to a non-resumable delegate returns the durable typed error.
 
 ### Listing, visibility, and watches
 
-26. A delegate appears once after multiple activations and is reordered on activity.
-27. List responses retain count/total/offset plus watch, delegation, and occupancy orientation.
-28. Nested/descendant views preserve typed lineage, depth, and per-operation authorization; status of a visible concrete descendant does not depend on list-only flags.
-29. Visibility never grants delegate send authority.
-30. The owner-store index lets `job_watch` list, inspect, and clear manage unloaded delegate watches without model restoration.
-31. Delegate watches survive two unload/restore cycles and process restart.
-32. An `every` threshold crossed across activation/restart fires exactly once.
-33. Delegate targets reject output/progress predicates; shell predicates retain behavior.
-34. AppWire, events, doctor, TUI, and web use metadata-only stable delegate projections without activation rows or child-session identity aliases.
+30. A delegate appears once after multiple activations and is reordered on activity.
+31. List responses retain count/total/offset plus watch, delegation, and occupancy orientation.
+32. Nested/descendant views preserve typed lineage, depth, and per-operation authorization; status of a visible concrete descendant does not depend on list-only flags.
+33. Visibility never grants delegate send authority.
+34. The owner-store index lets `job_watch` list, inspect, and clear manage unloaded delegate watches without model restoration.
+35. Delegate watches survive two unload/restore cycles and process restart.
+36. Watchable source events are durable before publication and carry a private stable sequence.
+37. Cursor/counter/delivery batching makes an `every` threshold crossed across activation/restart fire exactly once without lost or repeated occurrences.
+38. Delegate targets reject output/progress predicates; shell predicates retain behavior.
+39. AppWire, events, doctor, TUI, and web use metadata-only stable delegate projections without activation rows or child-session identity aliases.
 
 ### Runtime and worktrees
 
-35. A quiescent terminal delegate unloads and releases occupancy automatically through the dedicated non-disposing unload path, never `Session.Close`.
-36. An ancestor with active descendants defers unload while preserving descendant routing, callback drive-down, listing, stop, watches, and blockers.
-37. Deferred unload completes automatically after the subtree and queued attention become quiescent.
-38. Root restart performs post-order store/transcript reconciliation and settles lost grandchildren without constructing model runtimes.
-39. Runtime unload never deletes lanes/files, runs close-time filesystem cleanup, or bypasses dirty/unmerged gates.
-40. Disposal is monotonic and makes the delegate non-resumable.
+40. A quiescent terminal delegate unloads and releases occupancy automatically through the dedicated non-disposing unload path, never `Session.Close`.
+41. An ancestor with active descendants defers unload while preserving descendant routing, callback drive-down, listing, stop, watches, and blockers.
+42. Pure routing remains activation-free, while every model-bearing notification/callback drive opens and finalizes a normal private activation and holds unload.
+43. Deferred unload completes automatically after descendants, drive activations, and queued attention become quiescent.
+44. Root restart folds prepared real terminals before synthesizing runtime loss and settles lost grandchildren without constructing model runtimes.
+45. Runtime unload never deletes lanes/files, runs close-time filesystem cleanup, or bypasses dirty/unmerged gates.
+46. Disposal is monotonic and makes the delegate non-resumable.
 
 ### Cutover and robustness
 
-41. The root-wide locked epoch marker is validated before every state entry point and created only for a truly fresh permitted root.
-42. Runtime, hub, doctor, and transcript paths refuse unmarked, wrong-epoch, transcript-only, metadata-only, and mixed roots instead of translating them.
-43. AppWire protocol mismatch rejects old clients and servers.
-44. Race tests cover communicate commit/finalize, receiver commit/replay, spawn/stop epochs, descendant settlement/unload, watch counter/delivery, and concurrent resume.
-45. Fuzz/program tests cover malformed targets, dispatch, old-field rejection, typed lineage, terminal unions, packet bounds, epoch admission, and projection invariants.
+47. The root-wide locked epoch marker is validated before every state entry point and created only for a truly fresh permitted root.
+48. Runtime, hub, doctor, and transcript paths refuse unmarked, wrong-epoch, transcript-only, metadata-only, and mixed roots instead of translating them.
+49. AppWire protocol mismatch rejects old clients and servers.
+50. Race tests cover terminal preparation/finalize recovery, receiver commit/replay, model switch/admission, multi-tool inline admission, spawn/stop epochs, model drive/unload, source cursor/counter/delivery, and concurrent resume.
+51. Fuzz/program tests cover malformed targets, dispatch, old-field rejection, typed lineage, terminal unions, packet/wrapper bounds, epoch admission, and projection invariants.
 
 ## Acceptance Criteria
 
