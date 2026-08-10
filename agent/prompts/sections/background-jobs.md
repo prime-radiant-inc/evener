@@ -5,6 +5,10 @@ Shell commands and delegates can run as durable background jobs identified by a
 background job finishes. Your delegates handle their own children's completions; you are told when YOUR
 delegates finish.
 
+Background jobs outlive a turn, but not their Serf session. Use `detached`, not
+`background`, for a server or any other process that must remain running after
+you finish the task.
+
 Pick the waiting primitive by how many answers you need: one look now →
 `job_status` (or `job_list` for the current set) — a single check, never a wait
 loop. One future signal or a recurring condition → `job_watch`; the watch
