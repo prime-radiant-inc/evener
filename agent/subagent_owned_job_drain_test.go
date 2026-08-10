@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/clock"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/llm"
 )
@@ -46,20 +46,25 @@ func (e *ownedJobDrainEnvironment) StreamCommand(_ context.Context, _, _ string,
 	}, nil
 }
 
-func waitForOwnedJobDrainSessionEnd(t *testing.T, sess *Session) {
-	t.Helper()
-	timer := time.NewTimer(30 * time.Second)
-	defer timer.Stop()
-	for {
-		select {
-		case ev := <-sess.Events():
-			if ev.Kind == events.EventSessionEnd {
-				return
-			}
-		case <-timer.C:
-			t.Fatal("child initial turn did not reach its terminal boundary")
-		}
+type ownedJobDrainClock struct {
+	clock.Clock
+	drainEntered chan struct{}
+	drainOnce    sync.Once
+}
+
+func newOwnedJobDrainClock() *ownedJobDrainClock {
+	return &ownedJobDrainClock{
+		Clock:        clock.Real(),
+		drainEntered: make(chan struct{}),
 	}
+}
+
+func (c *ownedJobDrainClock) NewTicker(d time.Duration) clock.Ticker {
+	ticker := c.Clock.NewTicker(d)
+	if d == drainRecheckInterval {
+		c.drainOnce.Do(func() { close(c.drainEntered) })
+	}
+	return ticker
 }
 
 type ownedJobDrainFixture struct {
@@ -75,6 +80,7 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 	t.Helper()
 
 	idleReported := make(chan struct{})
+	drainClock := newOwnedJobDrainClock()
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
@@ -102,6 +108,7 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
+		clock:            drainClock,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -140,7 +147,11 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 	case <-time.After(30 * time.Second):
 		t.Fatal("child did not report its interim result")
 	}
-	waitForOwnedJobDrainSessionEnd(t, child.sess)
+	select {
+	case <-drainClock.drainEntered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("subagent did not enter its owned job-tree drain")
+	}
 
 	parent.jobManager.mu.Lock()
 	run := parent.jobManager.running[result.JobID]
