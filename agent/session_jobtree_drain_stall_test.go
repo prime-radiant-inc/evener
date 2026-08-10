@@ -11,25 +11,6 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
-// seedDurableOnlyPending writes an owned delegate whose owner notification
-// survives ONLY in the durable ledger (NotifyPending) with nothing queued in
-// memory — the h8mq-style stranded state. With no re-materialize kick this stays
-// outstanding forever, so it is a genuine stall the watchdog must eventually cut.
-func seedDurableOnlyPending(t *testing.T, jm *jobManager, jobID string) {
-	t.Helper()
-	started := frozenTestTime.Add(-time.Second)
-	ended := frozenTestTime
-	for _, ev := range []jobstore.Event{
-		{Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobDelegate, OwnerSessionID: jm.sessionID, VisibleToSession: jm.sessionID, StartedAt: &started},
-		{Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID, Status: jobstore.StatusCompleted, Reason: "communicated", EndedAt: &ended, TerminalGen: "gen-" + jobID},
-		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: jobID, TerminalGen: "gen-" + jobID},
-	} {
-		if err := jm.appendEvent(ev); err != nil {
-			t.Fatalf("append %s: %v", ev.Kind, err)
-		}
-	}
-}
-
 // collectStallWarnings drains the buffered event channel and returns warning
 // events. The stall warning is emitted synchronously before the drain returns,
 // so once the drain has returned it is already in the buffer.
@@ -104,55 +85,56 @@ func (d *stallDriver) releaseKick(t *testing.T) {
 // backstop: a subtree that stays outstanding with no live/deliverable component
 // (h8mq-style durable-only pending, self-heal disabled) is cut once it has been
 // continuously stalled past drainStallTimeout. The drain must RETURN (not hang),
-// emit ONE warning naming the stuck delegate, and yield the last result.
+// emit ONE warning naming the stuck job, and yield the last result.
 func TestDrainStallWatchdogFiresOnGenuineStall(t *testing.T) {
-	clk := agenttest.NewFakeClock()
-	sess := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true}))
-	seedDurableOnlyPending(t, sess.jobManager, "del-wedge")
+	for _, tt := range []struct {
+		name  string
+		jobID string
+		typ   jobstore.JobType
+	}{
+		{name: "delegate", jobID: "del-wedge", typ: jobstore.JobDelegate},
+		{name: "shell", jobID: "shell-wedge", typ: jobstore.JobShell},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			clk := agenttest.NewFakeClock()
+			sess := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true}))
+			seedOwnedDurablePending(t, sess.jobManager, tt.jobID, tt.typ)
 
-	if stalled, err := sess.drainSubtreeIsStalled(); err != nil || !stalled {
-		t.Fatalf("precondition: expected a genuine stall, got stalled=%v err=%v", stalled, err)
-	}
+			if stalled, err := sess.drainSubtreeIsStalled(); err != nil || !stalled {
+				t.Fatalf("precondition: expected a genuine stall, got stalled=%v err=%v", stalled, err)
+			}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	d := newStallDriver(ctx, sess)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			d := newStallDriver(ctx, sess)
+			d.releaseKick(t)
+			d.assertParked(t, "iteration 1 must park, not fire before the timeout")
 
-	// Iteration 1 (clock at T0): establishes the stall start, then parks on recheck.
-	d.releaseKick(t)
-	d.assertParked(t, "iteration 1 must park, not fire before the timeout")
+			clk.Advance(drainStallTimeout + time.Second)
+			d.recheck <- time.Time{}
+			d.releaseKick(t)
 
-	// Advance past the timeout, then wake and run iteration 2, which reads the
-	// advanced clock and must fire the watchdog.
-	clk.Advance(drainStallTimeout + time.Second)
-	d.recheck <- time.Time{}
-	d.releaseKick(t)
+			select {
+			case <-d.done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("drain did not return after the stall timeout; watchdog failed to fire")
+			}
+			if d.err != nil {
+				t.Fatalf("stall watchdog must return nil error so run.go keeps the result, got %v", d.err)
+			}
+			if d.res != "" {
+				t.Fatalf("expected empty last result (no drain turn ran), got %q", d.res)
+			}
 
-	select {
-	case <-d.done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("drain did not return after the stall timeout; watchdog failed to fire")
-	}
-	if d.err != nil {
-		t.Fatalf("stall watchdog must return nil error so run.go keeps the result, got %v", d.err)
-	}
-	if d.res != "" {
-		t.Fatalf("expected empty last result (no drain turn ran), got %q", d.res)
-	}
-
-	gotEvents := collectStallWarnings(sess)
-	if len(gotEvents) != 1 {
-		t.Fatalf("stall watchdog events = %d, want 1", len(gotEvents))
-	}
-	if gotEvents[0].Kind != events.EventWarning {
-		t.Fatalf("stall watchdog event kind = %q, want warning", gotEvents[0].Kind)
-	}
-	warning, ok := gotEvents[0].Data.(events.WarningData)
-	if !ok {
-		t.Fatalf("stall watchdog warning data = %T, want WarningData", gotEvents[0].Data)
-	}
-	if !strings.Contains(warning.Message, "del-wedge") {
-		t.Fatalf("stall warning must name the stuck job del-wedge, got %q", warning.Message)
+			gotEvents := collectStallWarnings(sess)
+			if len(gotEvents) != 1 {
+				t.Fatalf("stall watchdog events = %d, want 1", len(gotEvents))
+			}
+			warning, ok := gotEvents[0].Data.(events.WarningData)
+			if !ok || !strings.Contains(warning.Message, tt.jobID) {
+				t.Fatalf("stall warning must name the stuck job %s, got %+v", tt.jobID, gotEvents[0])
+			}
+		})
 	}
 }
 
@@ -210,7 +192,7 @@ func TestDrainStallWatchdogSpareDrivingChild(t *testing.T) {
 
 	// The root owes work (a durable-only pending) AND has a driving child: the
 	// driving child is live, so the tree is not stalled.
-	seedDurableOnlyPending(t, root.jobManager, "del-root")
+	seedOwnedDurablePending(t, root.jobManager, "del-root", jobstore.JobDelegate)
 	root.subagents.mu.Lock()
 	root.subagents.subs[childID] = &subagent{id: childID, sess: child, driving: true}
 	root.subagents.mu.Unlock()

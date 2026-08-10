@@ -12,6 +12,27 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// seedOwnedDurablePending writes an owned terminal job whose notification
+// survives only in the durable ledger, with nothing queued in memory.
+func seedOwnedDurablePending(t *testing.T, jm *jobManager, jobID string, jobType jobstore.JobType) {
+	t.Helper()
+	started := frozenTestTime.Add(-time.Second)
+	ended := frozenTestTime
+	reason := "communicated"
+	if jobType == jobstore.JobShell {
+		reason = "exit_zero"
+	}
+	for _, ev := range []jobstore.Event{
+		{Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobType, OwnerSessionID: jm.sessionID, VisibleToSession: jm.sessionID, StartedAt: &started},
+		{Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID, Status: jobstore.StatusCompleted, Reason: reason, EndedAt: &ended, TerminalGen: "gen-" + jobID},
+		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: jobID, TerminalGen: "gen-" + jobID},
+	} {
+		if err := jm.appendEvent(ev); err != nil {
+			t.Fatalf("append %s: %v", ev.Kind, err)
+		}
+	}
+}
+
 // TestDrainJobTreeNoJobsReturnsImmediately verifies the drain is a no-op when
 // the session never delegated: no pending notifications and no in-flight
 // delegates means the tree is already terminal, so DrainJobTree returns at once
@@ -247,58 +268,92 @@ func TestOutstandingDrainJobCountIgnoresForwardedDescendantPending(t *testing.T)
 	}
 }
 
-// TestDrainSettlesRootDurableOnlyPending is the kata h8mq regression: a
-// delegate whose owner notification survives ONLY in the durable ledger
-// (NotifyState==NotifyPending) with nothing queued in memory (peek==0) must not
-// wedge the drain. outstandingDrainJobCount reads the durable ledger, so it
-// counts the delegate as outstanding forever; but the loop's delivery gate is
-// the in-memory queue, so without re-materializing the durable pending the drain
-// never runs a notification turn and blocks until ctx cancellation. This state
-// arises when a finalize's in-memory enqueue never lands or a revived delegate's
-// deferred restore side effects are interrupted before arm_notifications.
-func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
+// TestRematerializeOwnedDrainJobPendings verifies the queue reconstruction uses
+// the same ownership and managed-job eligibility as durable drain accounting.
+// Reverting rematerialization to its former delegate-only filter would strand
+// the owned shell and fail this test.
+func TestRematerializeOwnedDrainJobPendings(t *testing.T) {
 	t.Parallel()
-	steps := make([]func(llm.Request) llm.Response, 6)
-	for i := range steps {
-		steps[i] = func(llm.Request) llm.Response { return finalResponse("ack") }
-	}
-	sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+	sess := newSession(t)
 	jm := sess.jobManager
+	seedOwnedDurablePending(t, jm, "del-owned", jobstore.JobDelegate)
+	seedOwnedDurablePending(t, jm, "shell-owned", jobstore.JobShell)
 
-	// Durable owned delegate whose notification is Pending, absent from memory.
 	started := frozenTestTime.Add(-time.Second)
 	ended := frozenTestTime
 	for _, ev := range []jobstore.Event{
-		{Kind: jobstore.EventJobStarted, TS: started, JobID: "del-r", Type: jobstore.JobDelegate, OwnerSessionID: sess.ID(), VisibleToSession: sess.ID(), StartedAt: &started},
-		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "del-r", Status: jobstore.StatusCompleted, Reason: "communicated", EndedAt: &ended, TerminalGen: "rgen"},
-		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "del-r", TerminalGen: "rgen"},
+		{Kind: jobstore.EventJobStarted, TS: started, JobID: "shell-forwarded", Type: jobstore.JobShell, OwnerSessionID: "child-session", VisibleToSession: sess.ID(), StartedAt: &started},
+		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "shell-forwarded", Status: jobstore.StatusCompleted, Reason: "exit_zero", EndedAt: &ended, TerminalGen: "gen-shell-forwarded"},
+		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "shell-forwarded", TerminalGen: "gen-shell-forwarded"},
 	} {
 		if err := jm.appendEvent(ev); err != nil {
 			t.Fatalf("append %s: %v", ev.Kind, err)
 		}
 	}
-	if p := sess.peekNotifications(); p != 0 {
-		t.Fatalf("precondition: expected empty in-memory queue, got %d", p)
-	}
-	if n, err := jm.outstandingDrainJobCount(); err != nil || n != 1 {
-		t.Fatalf("precondition: expected 1 outstanding, got %d (err %v)", n, err)
-	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := sess.DrainJobTree(ctx); err != nil {
-		t.Fatalf("DrainJobTree wedged on a durable-only pending: %v", err)
+	if err := sess.rematerializeDurablePendings(); err != nil {
+		t.Fatalf("rematerializeDurablePendings: %v", err)
 	}
-	if n, err := jm.outstandingDrainJobCount(); err != nil || n != 0 {
-		t.Fatalf("expected 0 outstanding after drain, got %d (err %v)", n, err)
+	sess.pendingJobNotifsMu.Lock()
+	got := append([]jobNotification(nil), sess.pendingJobNotifs...)
+	sess.pendingJobNotifsMu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("rematerialized notifications = %+v, want two owned jobs", got)
 	}
-	if p := sess.peekNotifications(); p != 0 {
-		t.Fatalf("expected 0 pending notifications after drain, got %d", p)
+	gotTypes := make(map[string]string, len(got))
+	for _, notification := range got {
+		gotTypes[notification.JobID] = notification.JobType
+	}
+	if gotTypes["del-owned"] != "delegate" || gotTypes["shell-owned"] != "shell" {
+		t.Fatalf("rematerialized job ids and types = %v, want del-owned delegate and shell-owned shell", gotTypes)
+	}
+}
+
+// TestDrainSettlesRootDurableOnlyPending is the kata h8mq regression: a
+// managed job whose owner notification survives ONLY in the durable ledger
+// (NotifyState==NotifyPending) with nothing queued in memory (peek==0) must not
+// wedge the drain. outstandingDrainJobCount reads the durable ledger, so it
+// counts the delegate as outstanding forever; but the loop's delivery gate is
+// the in-memory queue, so without re-materializing the durable pending the drain
+// never runs a notification turn and blocks until ctx cancellation. This state
+// arises when a finalize's in-memory enqueue never lands or a revived job's
+// deferred restore side effects are interrupted before arm_notifications.
+func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		jobID string
+		typ   jobstore.JobType
+	}{
+		{name: "delegate", jobID: "del-root", typ: jobstore.JobDelegate},
+		{name: "shell", jobID: "shell-root", typ: jobstore.JobShell},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			steps := make([]func(llm.Request) llm.Response, 6)
+			for i := range steps {
+				steps[i] = func(llm.Request) llm.Response { return finalResponse("ack") }
+			}
+			sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+			jm := sess.jobManager
+			seedOwnedDurablePending(t, jm, tt.jobID, tt.typ)
+			if p := sess.peekNotifications(); p != 0 {
+				t.Fatalf("precondition: expected empty in-memory queue, got %d", p)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, err := sess.DrainJobTree(ctx); err != nil {
+				t.Fatalf("DrainJobTree wedged on a durable-only pending: %v", err)
+			}
+			requireNotificationState(t, jm, tt.jobID, jobstore.NotifyDelivered)
+			if p := sess.peekNotifications(); p != 0 {
+				t.Fatalf("expected 0 pending notifications after drain, got %d", p)
+			}
+		})
 	}
 }
 
 // TestDrainSettlesAlreadyInjectedDurablePending is the adversarial-review
-// regression for kata h8mq: an owned NotifyPending delegate whose
+// regression for kata h8mq: an owned NotifyPending managed job whose
 // <job-notification> block is ALREADY in history (a crash between
 // appendSteeringTurnDurably and markJobNotificationsDelivered left it injected but
 // unmarked) with an empty in-memory queue is still counted outstanding, so the
@@ -306,51 +361,52 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 // injectedJobNotifs path, which marks it Delivered WITHOUT re-appending to
 // history — so the drain settles and the block is not duplicated.
 func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
-	t.Parallel()
-	steps := make([]func(llm.Request) llm.Response, 6)
-	for i := range steps {
-		steps[i] = func(llm.Request) llm.Response { return finalResponse("ack") }
-	}
-	sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{NoProjectPrompts: true}))
-	jm := sess.jobManager
-
-	started := frozenTestTime.Add(-time.Second)
-	ended := frozenTestTime
-	for _, ev := range []jobstore.Event{
-		{Kind: jobstore.EventJobStarted, TS: started, JobID: "del-r", Type: jobstore.JobDelegate, OwnerSessionID: sess.ID(), VisibleToSession: sess.ID(), StartedAt: &started},
-		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "del-r", Status: jobstore.StatusCompleted, Reason: "communicated", EndedAt: &ended, TerminalGen: "rgen"},
-		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "del-r", TerminalGen: "rgen"},
+	for _, tt := range []struct {
+		name  string
+		jobID string
+		typ   jobstore.JobType
+	}{
+		{name: "delegate", jobID: "del-injected", typ: jobstore.JobDelegate},
+		{name: "shell", jobID: "shell-injected", typ: jobstore.JobShell},
 	} {
-		if err := jm.appendEvent(ev); err != nil {
-			t.Fatalf("append %s: %v", ev.Kind, err)
-		}
-	}
+		t.Run(tt.name, func(t *testing.T) {
+			steps := make([]func(llm.Request) llm.Response, 6)
+			for i := range steps {
+				steps[i] = func(llm.Request) llm.Response { return finalResponse("ack") }
+			}
+			sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+			jm := sess.jobManager
+			seedOwnedDurablePending(t, jm, tt.jobID, tt.typ)
 
-	// The notification block is already in history but was never marked Delivered.
-	injected := `<job-notification job_id="del-r" status="completed">\ndelegate del-r completed\n</job-notification>`
-	sess.appendTurn(schema.TurnSteering, llm.User(injected))
-	if !sess.jobNotificationAlreadyInjected("del-r") {
-		t.Fatal("precondition: del-r must be detected as already injected in history")
-	}
-	if p := sess.peekNotifications(); p != 0 {
-		t.Fatalf("precondition: expected empty in-memory queue, got %d", p)
-	}
-	if n, err := jm.outstandingDrainJobCount(); err != nil || n != 1 {
-		t.Fatalf("precondition: expected 1 outstanding, got %d (err %v)", n, err)
-	}
+			injected := `<job-notification job_id="` + tt.jobID + `" status="completed"></job-notification>`
+			sess.appendTurn(schema.TurnSteering, llm.User(injected))
+			if !sess.jobNotificationAlreadyInjected(tt.jobID) {
+				t.Fatalf("precondition: %s must be detected as already injected in history", tt.jobID)
+			}
+			blocksBefore := countHistoryNeedle(sess, `job_id="`+tt.jobID+`"`)
 
-	blocksBefore := countHistoryNeedle(sess, `job_id="del-r"`)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, err := sess.DrainJobTree(ctx); err != nil {
+				t.Fatalf("DrainJobTree wedged on an already-injected durable pending: %v", err)
+			}
+			requireNotificationState(t, jm, tt.jobID, jobstore.NotifyDelivered)
+			if blocksAfter := countHistoryNeedle(sess, `job_id="`+tt.jobID+`"`); blocksAfter != blocksBefore {
+				t.Fatalf("already-injected block must not be re-appended: had %d, now %d", blocksBefore, blocksAfter)
+			}
+		})
+	}
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := sess.DrainJobTree(ctx); err != nil {
-		t.Fatalf("DrainJobTree wedged on an already-injected durable pending: %v", err)
+func requireNotificationState(t *testing.T, jm *jobManager, jobID string, want jobstore.NotifyState) {
+	t.Helper()
+	records, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load records: %v", err)
 	}
-	if n, err := jm.outstandingDrainJobCount(); err != nil || n != 0 {
-		t.Fatalf("expected 0 outstanding after drain, got %d (err %v)", n, err)
-	}
-	if blocksAfter := countHistoryNeedle(sess, `job_id="del-r"`); blocksAfter != blocksBefore {
-		t.Fatalf("already-injected block must not be re-appended: had %d, now %d", blocksBefore, blocksAfter)
+	record := records[jobID]
+	if record == nil || record.NotifyState != want {
+		t.Fatalf("record %s notification state = %v, want %v", jobID, record, want)
 	}
 }
 
@@ -375,57 +431,82 @@ func countHistoryNeedle(s *Session, needle string) int {
 // re-materialize the child's stranded pending so the existing drive-down path
 // delivers it.
 func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
-	t.Parallel()
-	rootSteps := make([]func(llm.Request) llm.Response, 8)
-	for i := range rootSteps {
-		rootSteps[i] = func(llm.Request) llm.Response { return finalResponse("root-ack") }
-	}
-	root := newSession(t, withSteps(rootSteps...), withConfig(SessionConfig{NoProjectPrompts: true}))
-
-	childSteps := make([]func(llm.Request) llm.Response, 8)
-	for i := range childSteps {
-		childSteps[i] = func(llm.Request) llm.Response { return finalResponse("child-ack") }
-	}
-	child := newSession(t, withSteps(childSteps...), withConfig(SessionConfig{NoProjectPrompts: true}))
-	childID := child.ID()
-
-	root.subagents.mu.Lock()
-	root.subagents.subs[childID] = &subagent{id: childID, sess: child}
-	root.subagents.mu.Unlock()
-	defer func() {
-		root.subagents.mu.Lock()
-		delete(root.subagents.subs, childID)
-		root.subagents.mu.Unlock()
-	}()
-
-	// The child owns a durable delegate whose notification is Pending, absent
-	// from the child's in-memory queue.
-	started := frozenTestTime.Add(-time.Second)
-	ended := frozenTestTime
-	for _, ev := range []jobstore.Event{
-		{Kind: jobstore.EventJobStarted, TS: started, JobID: "gc-job", Type: jobstore.JobDelegate, OwnerSessionID: child.ID(), VisibleToSession: child.ID(), StartedAt: &started},
-		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "gc-job", Status: jobstore.StatusCompleted, Reason: "communicated", EndedAt: &ended, TerminalGen: "gcgen"},
-		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "gc-job", TerminalGen: "gcgen"},
+	for _, tt := range []struct {
+		name  string
+		jobID string
+		typ   jobstore.JobType
+	}{
+		{name: "delegate", jobID: "del-child", typ: jobstore.JobDelegate},
+		{name: "shell", jobID: "shell-child", typ: jobstore.JobShell},
 	} {
-		if err := child.jobManager.appendEvent(ev); err != nil {
-			t.Fatalf("append %s: %v", ev.Kind, err)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			rootSteps := make([]func(llm.Request) llm.Response, 8)
+			for i := range rootSteps {
+				rootSteps[i] = func(llm.Request) llm.Response { return finalResponse("root-ack") }
+			}
+			root := newSession(t, withSteps(rootSteps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+
+			childSteps := make([]func(llm.Request) llm.Response, 8)
+			for i := range childSteps {
+				childSteps[i] = func(llm.Request) llm.Response { return finalResponse("child-ack") }
+			}
+			child := newSession(t, withSteps(childSteps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+			childID := child.ID()
+
+			root.subagents.mu.Lock()
+			root.subagents.subs[childID] = &subagent{id: childID, sess: child}
+			root.subagents.mu.Unlock()
+			defer func() {
+				root.subagents.mu.Lock()
+				delete(root.subagents.subs, childID)
+				root.subagents.mu.Unlock()
+			}()
+
+			seedOwnedDurablePending(t, child.jobManager, tt.jobID, tt.typ)
+			if p := child.peekNotifications(); p != 0 {
+				t.Fatalf("precondition: child in-memory queue must be empty, got %d", p)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, err := root.DrainJobTree(ctx); err != nil {
+				t.Fatalf("DrainJobTree wedged on a child's durable-only pending: %v", err)
+			}
+			requireNotificationState(t, child.jobManager, tt.jobID, jobstore.NotifyDelivered)
+		})
 	}
-	if p := child.peekNotifications(); p != 0 {
-		t.Fatalf("precondition: child in-memory queue must be empty, got %d", p)
+}
+
+func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response { return finalResponse("batch handled") },
+		},
 	}
-	if out, err := root.treeHasOutstandingWork(); err != nil || !out {
-		t.Fatalf("precondition: expected outstanding work from child durable pending, got out=%v err=%v", out, err)
-	}
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{NoProjectPrompts: true}))
+	jm := sess.jobManager
+	seedOwnedDurablePending(t, jm, "shell-batch-one", jobstore.JobShell)
+	seedOwnedDurablePending(t, jm, "shell-batch-two", jobstore.JobShell)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := root.DrainJobTree(ctx); err != nil {
-		t.Fatalf("DrainJobTree wedged on a child's durable-only pending: %v", err)
+	result, err := sess.DrainJobTree(ctx)
+	if err != nil {
+		t.Fatalf("DrainJobTree: %v", err)
 	}
-	if n, err := child.jobManager.outstandingDrainJobCount(); err != nil || n != 0 {
-		t.Fatalf("expected child's pending settled after drain, got %d (err %v)", n, err)
+	if result != "batch handled" {
+		t.Fatalf("DrainJobTree result = %q, want batch handled", result)
 	}
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("model requests = %d, want one batched notification turn", len(requests))
+	}
+	if !requestsContain(requests, `job_id="shell-batch-one"`, `job_id="shell-batch-two"`) {
+		t.Fatalf("batched request did not contain both shell notifications: %+v", requests)
+	}
+	requireNotificationState(t, jm, "shell-batch-one", jobstore.NotifyDelivered)
+	requireNotificationState(t, jm, "shell-batch-two", jobstore.NotifyDelivered)
 }
 
 // TestDrainJobTreeWaitsForRunningDelegate verifies the drain re-drives the
