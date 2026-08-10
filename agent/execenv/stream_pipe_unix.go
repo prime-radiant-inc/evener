@@ -4,7 +4,6 @@ package execenv
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"time"
 
@@ -37,7 +36,7 @@ func waitForStreamPipeCloseWithPoll(
 		break
 	}
 	if pollFD[0].Revents&unix.POLLNVAL != 0 {
-		return false, true, fmt.Errorf("poll streamed command output: invalid pipe")
+		return false, true, errors.New("poll streamed command output: invalid pipe")
 	}
 	return pollFD[0].Revents&unix.POLLHUP != 0, true, nil
 }

@@ -150,7 +150,7 @@ func (c *systemCommandRuntime) Wait() error {
 		return processErr
 	}
 
-	outputErr, outputDone := c.outputResult()
+	outputDone, outputErr := c.outputResult()
 	if outputDone && outputErr == nil {
 		_ = c.outputReader.Close()
 		return processErr
@@ -205,12 +205,12 @@ func (c *systemCommandRuntime) Wait() error {
 	return commandWaitError(processErr, c.forcedCloseOutputError(outputErr), nil)
 }
 
-func (c *systemCommandRuntime) outputResult() (error, bool) {
+func (c *systemCommandRuntime) outputResult() (bool, error) {
 	select {
 	case err := <-c.outputDone:
-		return err, true
+		return true, err
 	default:
-		return nil, false
+		return false, nil
 	}
 }
 
