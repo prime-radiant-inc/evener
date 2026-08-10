@@ -39,7 +39,7 @@ func TestRunSkipsDrainAfterFatalModelError(t *testing.T) {
 		stdout:                &stdout,
 		stderr:                &stderr,
 	})
-	if err != processErr || !errors.Is(err, processErr) {
+	if err != processErr || !errors.Is(err, processErr) { //nolint:errorlint // Exact error identity is the contract under test.
 		t.Fatalf("run error = %v, want original process error %v", err, processErr)
 	}
 	if drainCalls != 0 {
