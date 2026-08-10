@@ -182,6 +182,14 @@ func scriptedWriteFileCall(id, path, content string) llm.ToolCallData {
 	return llm.ToolCallData{ID: id, Name: "write_file", Arguments: args, Type: "function"}
 }
 
+func scriptedShellCall(id, command, mode string) llm.ToolCallData {
+	args, _ := json.Marshal(map[string]any{
+		"command": command,
+		"mode":    mode,
+	})
+	return llm.ToolCallData{ID: id, Name: "shell", Arguments: args, Type: "function"}
+}
+
 func scriptedUpdateGoalCall(id, status string) llm.ToolCallData {
 	args, _ := json.Marshal(map[string]any{"status": status})
 	return llm.ToolCallData{ID: id, Name: "update_goal", Arguments: args, Type: "function"}

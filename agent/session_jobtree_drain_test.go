@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -548,5 +549,81 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 	}
 	if p := sess.peekNotifications(); p != 0 {
 		t.Fatalf("expected 0 pending notifications after drain, got %d", p)
+	}
+}
+
+func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
+	clk := agenttest.NewFakeClock()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response { return finalResponse("foreground shell handled") },
+		},
+	}
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
+		NoProjectPrompts: true,
+		clock:            clk,
+	}))
+	sess.stopLaneResidueSweepTimer()
+	se := newDelayedSuccessStreamingExecutor()
+	releaseShell := func() {
+		select {
+		case <-se.release:
+		default:
+			close(se.release)
+		}
+	}
+	t.Cleanup(releaseShell)
+	resultCh := make(chan shellResult, 1)
+	go func() {
+		resultCh <- runShell(context.Background(), sess.jobManager, se, shellArgs{
+			Command:        "delayed foreground success",
+			BlockTimeoutMS: 1,
+		})
+	}()
+	clk.BlockUntil(1)
+	clk.Advance(time.Duration(clampShellBlockTimeoutMS(1)+1) * time.Millisecond)
+
+	var shell shellResult
+	select {
+	case shell = <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runShell did not return after the foreground wait bound")
+	}
+	if shell.JobID == "" || shell.Status != string(jobstore.StatusRunning) || shell.Reason != "foreground_timeout" {
+		t.Fatalf("runShell result = %+v, want durable running foreground_timeout job", shell)
+	}
+	sess.jobManager.mu.Lock()
+	live := sess.jobManager.running[shell.JobID]
+	sess.jobManager.mu.Unlock()
+	if live == nil {
+		t.Fatalf("promoted shell %s missing from live jobs", shell.JobID)
+	}
+	if live.rec.Background {
+		t.Fatal("foreground-promoted shell live record has Background=true, want false")
+	}
+	if n, err := sess.jobManager.outstandingDrainJobCount(); err != nil || n != 1 {
+		t.Fatalf("outstanding drain jobs = %d (err %v), want 1", n, err)
+	}
+
+	releaseShell()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := sess.DrainJobTree(ctx)
+	if err != nil {
+		t.Fatalf("DrainJobTree: %v", err)
+	}
+	if result != "foreground shell handled" {
+		t.Fatalf("DrainJobTree result = %q, want foreground shell handled", result)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 || !requestsContain(requests, "<job-notification", `job_id="`+shell.JobID+`"`, `status="completed"`) {
+		t.Fatalf("notification-turn requests = %+v, want one completed notification for %s", requests, shell.JobID)
+	}
+	if n, err := sess.jobManager.outstandingDrainJobCount(); err != nil || n != 0 {
+		t.Fatalf("outstanding drain jobs after drain = %d (err %v), want 0", n, err)
+	}
+	if pending := sess.peekNotifications(); pending != 0 {
+		t.Fatalf("queued notifications after drain = %d, want 0", pending)
 	}
 }

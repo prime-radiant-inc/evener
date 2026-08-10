@@ -309,8 +309,8 @@ func run(ctx context.Context, cfg runConfig) error {
 
 	result, err := runProcessInput(sess, ctx, prompt)
 	if err == nil {
-		// Drain any fire-and-return delegates before Close() SIGKILLs them: keep
-		// re-driving the coordinator on child completions until the job tree is
+		// Drain every session-owned managed job before Close() SIGKILLs it: keep
+		// re-driving the coordinator on job completions until the job tree is
 		// terminal. The coordinator's real final answer is produced on the
 		// post-completion notification turn, so prefer it over the "waiting on
 		// delegate" turn that ended ProcessInput (PRI-2441).

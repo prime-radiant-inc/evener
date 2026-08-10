@@ -5,11 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
+	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/llm"
 )
 
@@ -39,6 +45,68 @@ func requestFullText(req llm.Request) string {
 func scriptedDelegateCall(id, task string) llm.Response {
 	args, _ := json.Marshal(map[string]any{"task": task, "max_wait_ms": 0})
 	return scriptedToolCalls(llm.ToolCallData{ID: id, Name: "delegate", Arguments: args, Type: "function"})
+}
+
+type heldShellExecutor struct {
+	command string
+	output  string
+	exit    int
+	release chan struct{}
+	once    sync.Once
+}
+
+func newHeldShellExecutor(command, output string, exit int) *heldShellExecutor {
+	return &heldShellExecutor{
+		command: command,
+		output:  output,
+		exit:    exit,
+		release: make(chan struct{}),
+	}
+}
+
+func (e *heldShellExecutor) StreamCommand(_ context.Context, command, _ string, _ map[string]string, out io.Writer) (*execenv.StreamHandle, error) {
+	if command != e.command {
+		return nil, fmt.Errorf("shell command = %q, want %q", command, e.command)
+	}
+	return &execenv.StreamHandle{
+		Wait: func() (int, error) {
+			<-e.release
+			_, _ = io.WriteString(out, e.output)
+			return e.exit, nil
+		},
+		Signal: e.releaseShell,
+	}, nil
+}
+
+func (e *heldShellExecutor) releaseShell() {
+	e.once.Do(func() { close(e.release) })
+}
+
+type shellExecutorEnvironment struct {
+	execenv.ExecutionEnvironment
+	executor execenv.StreamingExecutor
+}
+
+func (e *shellExecutorEnvironment) StreamCommand(ctx context.Context, command, workingDir string, envVars map[string]string, out io.Writer) (*execenv.StreamHandle, error) {
+	return e.executor.StreamCommand(ctx, command, workingDir, envVars, out)
+}
+
+func installHeldRunShell(t *testing.T, executor *heldShellExecutor) {
+	t.Helper()
+	oldNewSession := runNewSession
+	oldDrainJobTree := runDrainJobTree
+	runNewSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		return oldNewSession(client, profile, &shellExecutorEnvironment{ExecutionEnvironment: env, executor: executor}, cfg)
+	}
+	runDrainJobTree = func(sess *agent.Session, ctx context.Context) (string, error) {
+		executor.releaseShell()
+		return oldDrainJobTree(sess, ctx)
+	}
+	t.Cleanup(func() {
+		executor.releaseShell()
+		runNewSession = oldNewSession
+		runDrainJobTree = oldDrainJobTree
+	})
 }
 
 // TestRunDrainsDelegatedJobTreeBeforeExit is the PRI-2441 B1 regression: a
@@ -111,5 +179,127 @@ func TestRunDrainsDelegatedJobTreeBeforeExit(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), "stopped_by_parent") {
 		t.Fatalf("child was SIGKILLed by Close() (stopped_by_parent) instead of draining to completion; stderr=%s", stderr.String())
+	}
+}
+
+func TestRunDrainsManagedShellBeforeExit(t *testing.T) {
+	tests := []struct {
+		name       string
+		command    string
+		wantStatus string
+	}{
+		{name: "completed", command: "printf shell-ok", wantStatus: "completed"},
+		{name: "failed", command: "printf shell-failed >&2; exit 7", wantStatus: "failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := "shell-ok"
+			exit := 0
+			if tt.wantStatus == "failed" {
+				output = "shell-failed"
+				exit = 7
+			}
+			installHeldRunShell(t, newHeldShellExecutor(tt.command, output, exit))
+			adapter := &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
+				func(req llm.Request) llm.Response {
+					if strings.Contains(requestFullText(req), "<job-notification") {
+						t.Fatal("initial request unexpectedly contained a job notification")
+					}
+					return scriptedToolCalls(scriptedShellCall("shell_1", tt.command, "background"))
+				},
+				func(req llm.Request) llm.Response {
+					if strings.Contains(requestFullText(req), "<job-notification") {
+						t.Fatal("tool-result request unexpectedly contained a job notification")
+					}
+					return scriptedCommunicate("waiting for shell")
+				},
+				func(req llm.Request) llm.Response {
+					text := requestFullText(req)
+					if !strings.Contains(text, "<job-notification") || !strings.Contains(text, `job_type="shell"`) || !strings.Contains(text, `status="`+tt.wantStatus+`"`) {
+						t.Fatalf("notification request missing terminal shell status %q:\n%s", tt.wantStatus, text)
+					}
+					return scriptedCommunicate("shell notification handled")
+				},
+			}}
+			installRunScriptedProvider(t, adapter)
+
+			var stdout, stderr bytes.Buffer
+			err := run(context.Background(), runConfig{
+				prompt:  "run the managed shell and handle its completion",
+				model:   "openai/gpt-test",
+				workDir: t.TempDir(),
+				stdout:  &stdout,
+				stderr:  &stderr,
+			})
+			if err != nil {
+				t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+			}
+			if got := stdout.String(); !strings.Contains(got, "shell notification handled") {
+				t.Fatalf("stdout = %q, want final notification-turn result", got)
+			}
+			if got := len(adapter.Requests()); got != 3 {
+				t.Fatalf("model requests = %d, want exactly three", got)
+			}
+		})
+	}
+}
+
+func TestRunDrainContinuesWhenNotificationTurnStartsAnotherShell(t *testing.T) {
+	jobIDPattern := regexp.MustCompile(`job_id="([^"]+)"`)
+	adapter := &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			if got := strings.Count(requestFullText(req), "<job-notification"); got != 0 {
+				t.Fatalf("initial request notification count = %d, want 0", got)
+			}
+			return scriptedToolCalls(scriptedShellCall("shell_a", "printf shell-a", "background"))
+		},
+		func(req llm.Request) llm.Response {
+			if got := strings.Count(requestFullText(req), "<job-notification"); got != 0 {
+				t.Fatalf("shell A tool-result request notification count = %d, want 0", got)
+			}
+			return scriptedCommunicate("waiting for A")
+		},
+		func(req llm.Request) llm.Response {
+			if got := strings.Count(requestFullText(req), "<job-notification"); got != 1 {
+				t.Fatalf("shell A notification request count = %d, want 1", got)
+			}
+			return scriptedToolCalls(scriptedShellCall("shell_b", "printf shell-b", "background"))
+		},
+		func(req llm.Request) llm.Response {
+			if got := strings.Count(requestFullText(req), "<job-notification"); got != 1 {
+				t.Fatalf("shell B tool-result request notification count = %d, want only A's notification", got)
+			}
+			return scriptedCommunicate("waiting for B")
+		},
+		func(req llm.Request) llm.Response {
+			text := requestFullText(req)
+			if got := strings.Count(text, "<job-notification"); got != 2 {
+				t.Fatalf("shell B notification request count = %d, want A and B", got)
+			}
+			matches := jobIDPattern.FindAllStringSubmatch(text, -1)
+			if len(matches) != 2 || matches[0][1] == matches[1][1] {
+				t.Fatalf("notification job ids = %v, want two distinct ids", matches)
+			}
+			return scriptedCommunicate("all shell work complete")
+		},
+	}}
+	installRunScriptedProvider(t, adapter)
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), runConfig{
+		prompt:  "run chained managed shells and handle both completions",
+		model:   "openai/gpt-test",
+		workDir: t.TempDir(),
+		stdout:  &stdout,
+		stderr:  &stderr,
+	})
+	if err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	}
+	if got := stdout.String(); got != "all shell work complete\n" {
+		t.Fatalf("stdout = %q, want only the post-B completion result", got)
+	}
+	if got := len(adapter.Requests()); got != 5 {
+		t.Fatalf("model requests = %d, want exactly five", got)
 	}
 }
