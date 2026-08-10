@@ -1258,6 +1258,21 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	if !cancelRequested && !budgetExhausted {
 		res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
 	}
+	if err == nil {
+		// DrainJobTree temporarily owns the session's notification callback. A
+		// retained child still needs its parent-drive callback after this run so
+		// later idle notifications and resumed work remain deliverable.
+		a.sess.mu.Lock()
+		parentDriveNotify := a.sess.notifyFunc
+		a.sess.mu.Unlock()
+		drained, drainErr := a.sess.DrainJobTree(ctx)
+		a.sess.SetNotifyFunc(parentDriveNotify)
+		if drainErr != nil {
+			err = drainErr
+		} else if drained != "" {
+			res = drained
+		}
+	}
 	exhaustion, budgetExhausted := budgetExhaustionFromError(err)
 
 	a.sess.mu.Lock()
