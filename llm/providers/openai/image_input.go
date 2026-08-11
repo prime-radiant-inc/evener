@@ -7,11 +7,21 @@ import (
 	"image/gif"
 	_ "image/jpeg"
 	"image/png"
+	"strings"
 
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
+	"primeradiant.com/serf/llm"
 )
+
+func toolResultHasProviderImage(result *llm.ToolResultData) bool {
+	if result == nil || len(result.ImageData) == 0 {
+		return false
+	}
+	mediaType := strings.ToLower(strings.TrimSpace(result.ImageMediaType))
+	return mediaType == "" || strings.HasPrefix(mediaType, "image/")
+}
 
 func normalizeImageInput(data []byte, claimedMediaType string) ([]byte, string, error) {
 	decoded, format, err := image.Decode(bytes.NewReader(data))

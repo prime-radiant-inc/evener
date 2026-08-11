@@ -520,7 +520,7 @@ func requestHasToolResultImages(req llm.Request) bool {
 			continue
 		}
 		for _, p := range m.Content {
-			if p.Kind == llm.ContentToolResult && p.ToolResult != nil && len(p.ToolResult.ImageData) > 0 {
+			if p.Kind == llm.ContentToolResult && toolResultHasProviderImage(p.ToolResult) {
 				return true
 			}
 		}

@@ -78,17 +78,7 @@ func TestToResponsesInputTranscodesAnimatedGIFToolResultToPNG(t *testing.T) {
 }
 
 func TestToResponsesInputKeepsPDFToolResultTextOnly(t *testing.T) {
-	messages := []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{{
-		Kind: llm.ContentToolResult,
-		ToolResult: &llm.ToolResultData{
-			ToolCallID:     "call_pdf",
-			Content:        "document content was extracted separately",
-			ImageData:      []byte("%PDF-1.7"),
-			ImageMediaType: "application/pdf",
-		},
-	}}}}
-
-	_, items, err := toResponsesInput(messages, "gpt-5.6-luna")
+	_, items, err := toResponsesInput(pdfToolResultMessages(), "gpt-5.6-luna")
 	if err != nil {
 		t.Fatalf("toResponsesInput: %v", err)
 	}
@@ -98,6 +88,16 @@ func TestToResponsesInputKeepsPDFToolResultTextOnly(t *testing.T) {
 	item, _ := items[0].(map[string]any)
 	if got := item["output"]; got != "document content was extracted separately" {
 		t.Fatalf("tool output = %#v, want text-only content", got)
+	}
+}
+
+func TestChatFallbackAllowsTextOnlyPDFToolResult(t *testing.T) {
+	_, err := buildChatCompletionsBody(llm.Request{
+		Model:    "gpt-5.6-luna",
+		Messages: pdfToolResultMessages(),
+	}, false)
+	if err != nil {
+		t.Fatalf("buildChatCompletionsBody: %v", err)
 	}
 }
 
@@ -219,6 +219,18 @@ func toolResultImageURL(t *testing.T, mediaType string, data []byte) string {
 	}
 	t.Fatalf("no image-bearing tool result in %#v", items)
 	return ""
+}
+
+func pdfToolResultMessages() []llm.Message {
+	return []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{{
+		Kind: llm.ContentToolResult,
+		ToolResult: &llm.ToolResultData{
+			ToolCallID:     "call_pdf",
+			Content:        "document content was extracted separately",
+			ImageData:      []byte("%PDF-1.7"),
+			ImageMediaType: "application/pdf",
+		},
+	}}}}
 }
 
 func onePixelBMP() []byte {
