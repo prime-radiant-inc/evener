@@ -804,15 +804,14 @@ func (a *Adapter) decodeStream(out context.Context, proxy *llm.ChanStream, respo
 		return nil, false
 	}
 
-	responsesErr, retry := forwardResponses(responsesStream)
+	_, retry := forwardResponses(responsesStream)
 	if !retry {
 		return
 	}
 
 	retryStream, retryErr := a.streamResponses(out, req)
-	if retryErr != nil {
-		responsesErr = retryErr
-	} else {
+	responsesErr := retryErr
+	if retryErr == nil {
 		responsesErr, retry = forwardResponses(retryStream)
 		if !retry {
 			return
