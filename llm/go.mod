@@ -7,6 +7,7 @@ require (
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/spf13/afero v1.15.0
+	golang.org/x/image v0.44.0
 	golang.org/x/sys v0.43.0
 	primeradiant.com/serf/auth v0.1.0
 	primeradiant.com/serf/envvars v0.0.0

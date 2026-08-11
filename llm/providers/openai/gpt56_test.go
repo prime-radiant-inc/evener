@@ -58,7 +58,8 @@ func collectInputImages(t *testing.T, body map[string]any) []map[string]any {
 
 // imageRequest builds a request carrying an image at both sites: a user-message
 // image (with an explicit detail hint) and a tool-result image.
-func imageRequest(model string) llm.Request {
+func imageRequest(t testing.TB, model string) llm.Request {
+	t.Helper()
 	return llm.Request{
 		Model: model,
 		Messages: []llm.Message{
@@ -66,7 +67,7 @@ func imageRequest(model string) llm.Request {
 				{Kind: llm.ContentText, Text: "look"},
 				{Kind: llm.ContentImage, Image: &llm.ImageData{
 					MediaType: "image/png",
-					Data:      []byte{0x01, 0x02},
+					Data:      encodeImageInputPNG(t),
 					Detail:    "high",
 				}},
 			}},
@@ -77,7 +78,7 @@ func imageRequest(model string) llm.Request {
 				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
 					ToolCallID:     "call_1",
 					Content:        "captured",
-					ImageData:      []byte{0x03, 0x04},
+					ImageData:      encodeImageInputPNG(t),
 					ImageMediaType: "image/png",
 				}},
 			}},
@@ -92,7 +93,7 @@ func imageRequest(model string) llm.Request {
 func TestGPT56_ImageDetailOmitted(t *testing.T) {
 	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6"} {
 		t.Run(model, func(t *testing.T) {
-			body := buildBodyForTest(t, imageRequest(model))
+			body := buildBodyForTest(t, imageRequest(t, model))
 			images := collectInputImages(t, body)
 			if len(images) != 2 {
 				t.Fatalf("expected 2 input_image items (user + tool result), got %d: %#v", len(images), images)
@@ -110,7 +111,7 @@ func TestGPT56_ImageDetailOmitted(t *testing.T) {
 // detail passes through on the user site, and the tool-result site gets the
 // model default ("original" on gpt-5.4+).
 func TestGPT55_ImageDetailUnchanged(t *testing.T) {
-	body := buildBodyForTest(t, imageRequest("gpt-5.5"))
+	body := buildBodyForTest(t, imageRequest(t, "gpt-5.5"))
 	images := collectInputImages(t, body)
 	if len(images) != 2 {
 		t.Fatalf("expected 2 input_image items, got %d: %#v", len(images), images)

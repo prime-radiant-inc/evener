@@ -187,7 +187,7 @@ func responsesCoverageRemainingBranches(t testing.TB) {
 		}},
 		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("pdf")}}}},
 		{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
-			ToolCallID: "call", Content: map[string]any{"ok": true}, ImageData: []byte("png"),
+			ToolCallID: "call", Content: map[string]any{"ok": true}, ImageData: encodeImageInputPNG(t),
 		}}}},
 	}, "gpt-test")
 	if err != nil {

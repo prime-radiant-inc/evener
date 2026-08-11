@@ -3611,7 +3611,7 @@ func TestComplete_ToolResultIsError_OmittedWhenFalse(t *testing.T) {
 }
 
 func TestToResponsesInput_ToolResultWithImage(t *testing.T) {
-	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a} // PNG header
+	imgBytes := encodeImageInputPNG(t)
 	msgs := []llm.Message{
 		llm.User("read this file"),
 		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
@@ -3697,7 +3697,7 @@ func TestBuildChatCompletionsBodyRejectsToolResultImage(t *testing.T) {
 }
 
 func TestToResponsesInput_ToolResultWithImage_DefaultMediaType(t *testing.T) {
-	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47}
+	imgBytes := encodeImageInputPNG(t)
 	msgs := []llm.Message{
 		llm.User("read this"),
 		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
@@ -3753,7 +3753,7 @@ func TestToResponsesInput_ErrorToolResultWithImagePreservesWrappedText(t *testin
 			ToolCallID:     "call_error_image",
 			Content:        "connection refused",
 			IsError:        true,
-			ImageData:      []byte("png"),
+			ImageData:      encodeImageInputPNG(t),
 			ImageMediaType: "image/png",
 		},
 	}}}}

@@ -1227,13 +1227,13 @@ func toResponsesInput(msgs []llm.Message, model string) (instructions string, it
 				}
 
 				if len(p.ToolResult.ImageData) > 0 {
-					mt := p.ToolResult.ImageMediaType
-					if mt == "" {
-						mt = "image/png"
+					data, mt, err := normalizeImageInput(p.ToolResult.ImageData, p.ToolResult.ImageMediaType)
+					if err != nil {
+						return "", nil, &llm.ConfigurationError{Message: err.Error()}
 					}
 					img := map[string]any{
 						"type":      "input_image",
-						"image_url": llm.DataURI(mt, p.ToolResult.ImageData),
+						"image_url": llm.DataURI(mt, data),
 					}
 					// Responses-lite models reject/mishandle detail; omit it there.
 					if !responsesLiteModel(model) {
