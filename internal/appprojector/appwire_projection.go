@@ -1600,6 +1600,13 @@ func (p *AppEventProjector) ReserveTurnID() string {
 	return p.reservedTurnID
 }
 
+// ReserveStableTurnID makes the durable client-mutation turn identity the ID
+// consumed by the next real turn projection.
+func (p *AppEventProjector) ReserveStableTurnID(turnID string) {
+	invariant.Hold(strings.TrimSpace(turnID) != "", "appprojector: stable turn id is empty")
+	p.reservedTurnID = turnID
+}
+
 func (p *AppEventProjector) ReleaseReservedTurnID(turnID string) {
 	if p.reservedTurnID == turnID {
 		p.reservedTurnID = ""

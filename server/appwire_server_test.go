@@ -59,47 +59,16 @@ func TestServerAppWireTurnStartQueuesInput(t *testing.T) {
 	}
 }
 
-// TestServerAppWireProcessingWithoutReservedTurnIDReadsActiveWithNoTurnID
-// (kata c2ty) proves the wire-level mechanism behind the reported bug:
-// SetProcessing(true) and reserveAppTurnIDForStart's ActiveTurnID stamp are
-// two SEPARATE writes to two separate fields (server/appwire_runtime.go's
-// reserveAppTurnIDForStart sets appActiveTurnID; server/server.go's
-// SetProcessing sets processing, which alone drives Status.Type via
-// appStatus - see appThread's own status/activeTurnID assembly, both read
-// from ONE RLock snapshot so a single thread/read call is internally
-// self-consistent with WHATEVER the two fields currently hold, but nothing
-// enforces that the two fields are written together).
-//
-// cmd/serf/serve.go's input-processing loop has exactly one caller that
-// writes the first without the second: handleAppTurnStart (a fresh
-// turn/start RPC) calls reserveAppTurnIDForStart before ever queuing the
-// input, so ActiveTurnID is already stamped before SetProcessing(true) can
-// run. But nextTurnCtx - the queued-input auto-continuation path that fires
-// when a turn finishes with input already queued behind it - calls
-// SetProcessing(true) directly with no turnID reservation at all; the next
-// turn's ID is only learned later, asynchronously, once its SessionStart
-// event reaches RecordAppEvent (appwire_runtime.go) via the buffered event
-// channel + bridge goroutine. A thread/read landing in that window - which
-// is exactly what navigating straight to a session URL does - reads
-// Status.Type "active" with Serf.ActiveTurnID empty: the composer's own
-// isTurnActive gate (panes/session/composer/submitRouting.ts) requires
-// both, so it renders the idle Send-only controls Composer.test.tsx's own
-// "the timing caption is absent while status reads active but no turn has
-// actually started yet" test already documents as the INTENTIONAL
-// behavior for a turn that hasn't truly started - except here a real turn
-// HAS started, just not yet reflected. This is not the vybn/SessionChrome
-// shape (no null-ref, no ResizeObserver, no first-pass-null render): it is
-// a two-signal write-ordering gap between two independently-mutated server
-// fields, reachable without RecordAppEvent ever running (proven below by
-// calling SetProcessing(true) alone, mirroring nextTurnCtx exactly).
-func TestServerAppWireProcessingWithoutReservedTurnIDReadsActiveWithNoTurnID(t *testing.T) {
+// TestServerAppWireSetProcessingPublishesActiveTurnID proves generic processing
+// paths atomically publish an active identity even before a SessionStart event
+// reaches the projector. Durable client-mutation turns use SetProcessingTurn
+// to publish their already-authoritative stable identity instead.
+func TestServerAppWireSetProcessingPublishesActiveTurnID(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 
-	// Mirrors nextTurnCtx (cmd/serf/serve.go): the queued-continuation path
-	// flips processing straight away, with no prior reserveAppTurnIDForStart
-	// call - RecordAppEvent (which would populate appActiveTurnID from the
-	// next turn's SessionStart event) has not run yet.
+	// Mirrors nextTurnCtx (cmd/serf/serve.go): RecordAppEvent has not yet
+	// populated appActiveTurnID from the next turn's SessionStart event.
 	srv.SetProcessing(true)
 
 	conn := srv.AppServer().NewConnection("test")

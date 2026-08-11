@@ -365,12 +365,13 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 
 // ProcessClientMutationStart claims and processes the next durable start using
 // the payload and identity stored by AcceptClientMutationStart.
-func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable func()) (string, bool, error) {
-	if !s.hasRunnableClientMutationStart() {
+func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable func(string)) (string, bool, error) {
+	turnID, runnable := s.runnableClientMutationStartTurnID()
+	if !runnable {
 		return "", false, nil
 	}
 	if onRunnable != nil {
-		onRunnable()
+		onRunnable(turnID)
 	}
 	claimed, ok, err := s.claimClientMutationStart()
 	if err != nil || !ok {
@@ -615,29 +616,38 @@ func (s *Session) wakeClientMutationStart() {
 }
 
 func (s *Session) hasRunnableClientMutationStart() bool {
+	_, runnable := s.runnableClientMutationStartTurnID()
+	return runnable
+}
+
+func (s *Session) runnableClientMutationStartTurnID() (string, bool) {
 	if s == nil || s.clientMutations == nil {
-		return false
+		return "", false
 	}
 	snapshot := s.clientMutations.snapshot()
 	for _, pending := range snapshot.PendingExecutions {
 		if pending.Method == clientMutationMethodStart &&
 			(pending.ExecutionState == "accepted" || pending.ExecutionState == "incorporated") {
-			return true
+			if snapshot.InterruptFence != nil && snapshot.InterruptFence.ExpectedTurnID == pending.TurnID {
+				continue
+			}
+			return pending.TurnID, pending.TurnID != ""
 		}
 		if pending.Method == clientMutationMethodQueue &&
 			pending.ExecutionState == "incorporated" &&
 			pending.TurnID != "" &&
 			snapshot.ActiveTurnID == pending.TurnID {
-			return true
+			return pending.TurnID, true
 		}
 	}
 	if len(snapshot.InputQueue) > 0 {
 		record := snapshot.Journal[snapshot.InputQueue[0].ClientMutationID]
-		return record.Method == clientMutationMethodQueue &&
+		runnable := record.Method == clientMutationMethodQueue &&
 			record.StableTurnID != "" &&
 			snapshot.ActiveTurnID == record.StableTurnID
+		return record.StableTurnID, runnable
 	}
-	return false
+	return "", false
 }
 
 type clientMutationFaults struct {

@@ -74,6 +74,15 @@ func newIdlePublicationServer(cfg server.ServerConfig) *idlePublicationServer {
 
 func (s *idlePublicationServer) SetProcessing(processing bool) {
 	s.Server.SetProcessing(processing)
+	s.observeProcessing(processing)
+}
+
+func (s *idlePublicationServer) SetProcessingTurn(turnID string) {
+	s.Server.SetProcessingTurn(turnID)
+	s.observeProcessing(true)
+}
+
+func (s *idlePublicationServer) observeProcessing(processing bool) {
 	s.mu.Lock()
 	if processing {
 		s.sawProcessing = true

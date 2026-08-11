@@ -95,6 +95,7 @@ type serveServer interface {
 	SetWorkingDir(string)
 	SetShutdownFunc(func())
 	SetProcessing(bool)
+	SetProcessingTurn(string)
 	SetState(string)
 	SetCancelFunc(context.CancelFunc)
 	SetRetrySafeTurnFunctions(server.RetrySafeTurnFunctions)
@@ -1018,10 +1019,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			var processErr error
 			processed := true
 			if msg.ClientMutationStart {
-				result, processed, processErr = sess.ProcessClientMutationStart(turnCtx, func() {
+				result, processed, processErr = sess.ProcessClientMutationStart(turnCtx, func(turnID string) {
 					srv.SetCancelFunc(cancelTurn)
 					setMutationRunner(cancelTurn, runnerDone)
-					srv.SetProcessing(true)
+					srv.SetProcessingTurn(turnID)
 					srv.SetState(string(agent.SessionProcessing))
 				})
 			} else {
