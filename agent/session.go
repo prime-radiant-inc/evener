@@ -1311,6 +1311,20 @@ func (s *Session) appendTurnWithTranscriptMessage(kind schema.TurnKind, live, pe
 	s.recordTurn(t, persistedTurn)
 }
 
+func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
+	t := schema.NewTurn(kind, live)
+	persistedTurn := t
+	persistedTurn.Message = persisted
+	if err := s.writeTranscriptDurable(persistedTurn); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		return err
+	}
+	s.mu.Lock()
+	s.history = append(s.history, t)
+	s.mu.Unlock()
+	return nil
+}
+
 // recordTurn adds a turn to the live model history and writes its persisted
 // counterpart to the durable transcript. The two differ only when a tool
 // exposes explicitly private evidence; every other caller passes the same turn

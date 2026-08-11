@@ -432,7 +432,11 @@ func consumeTerminalJobNotification(s *Session, jm *jobManager, rec *jobstore.Jo
 	if !rec.Status.IsTerminal() || rec.NotifyState != jobstore.NotifyPending {
 		return
 	}
-	if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
+	ownerSessionID := rec.OwnerSessionID
+	if ownerSessionID == "" {
+		ownerSessionID = jm.sessionID
+	}
+	if ownerSessionID != s.id {
 		return
 	}
 	consumed := jobstore.Event{

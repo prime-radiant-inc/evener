@@ -288,13 +288,39 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 	return nil
 }
 
-func (s *Session) consumePersistedTerminalJobStatusNotifications(calls []llm.ToolCallData, results []tool.ExecResult) {
+func hasSuccessfulTerminalJobStatusResult(calls []llm.ToolCallData, results []tool.ExecResult) bool {
+	if len(calls) != len(results) {
+		return false
+	}
 	for i, call := range calls {
-		if call.Name != "job_status" || i >= len(results) || results[i].IsError {
+		if call.Name != "job_status" {
 			continue
 		}
-		var status jobStatusResult
-		if err := json.Unmarshal(results[i].ToolState, &status); err != nil || !jobstore.Status(status.Status).IsTerminal() {
+		if _, ok := decodeTerminalJobStatusResult(results[i]); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func decodeTerminalJobStatusResult(result tool.ExecResult) (jobStatusResult, bool) {
+	if result.IsError {
+		return jobStatusResult{}, false
+	}
+	var status jobStatusResult
+	if err := json.Unmarshal(result.ToolState, &status); err != nil || !jobstore.Status(status.Status).IsTerminal() {
+		return jobStatusResult{}, false
+	}
+	return status, true
+}
+
+func (s *Session) consumePersistedTerminalJobStatusNotifications(calls []llm.ToolCallData, results []tool.ExecResult) {
+	for i, call := range calls {
+		if call.Name != "job_status" || i >= len(results) {
+			continue
+		}
+		status, ok := decodeTerminalJobStatusResult(results[i])
+		if !ok {
 			continue
 		}
 		jm, rec, err := s.nestedOrLocalJobManager(status.JobID)

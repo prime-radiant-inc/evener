@@ -650,13 +650,19 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 }
 
 func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallData, results []tool.ExecResult, parts []llm.ContentPart) error {
+	var persistErr error
 	if abortErr := s.withResponseSideEffects(ctx, func() {
 		persistedParts := projectToolResultsForTranscript(calls, results, parts)
-		s.appendTurnWithTranscriptMessage(
-			schema.TurnToolResults,
-			llm.Message{Role: llm.RoleTool, Content: parts},
-			llm.Message{Role: llm.RoleTool, Content: persistedParts},
-		)
+		live := llm.Message{Role: llm.RoleTool, Content: parts}
+		persisted := llm.Message{Role: llm.RoleTool, Content: persistedParts}
+		if hasSuccessfulTerminalJobStatusResult(calls, results) {
+			persistErr = s.appendTurnWithDurableTranscriptMessage(schema.TurnToolResults, live, persisted)
+		} else {
+			s.appendTurnWithTranscriptMessage(schema.TurnToolResults, live, persisted)
+		}
+		if persistErr != nil {
+			return
+		}
 		// Persist the completed tool round so resumed sessions always include
 		// tool_result turns for any prior assistant tool calls.
 		s.maybeAutoSave()
@@ -667,7 +673,7 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		}
 		return abortErr
 	}
-	return nil
+	return persistErr
 }
 
 // announceReadableToolResultImages names the round's tool calls whose result

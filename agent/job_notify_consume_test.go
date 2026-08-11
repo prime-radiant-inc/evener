@@ -3,12 +3,16 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/spf13/afero"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	tooldefs "primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -98,6 +102,91 @@ func TestPersistedTerminalJobStatusReadConsumesPendingNotification(t *testing.T)
 	// nothing left to tell it about this job.
 	if s.acceptNotificationInput(context.Background()) {
 		t.Fatal("a notification turn ran after the caller already read the terminal status")
+	}
+}
+
+func TestTerminalJobStatusTranscriptFailureLeavesNotificationPending(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	jobID := startBackgroundShellJob(t, s, "printf 'persist me\\n'")
+
+	waitForCondition(t, 30*time.Second, "terminal notification queued", func() bool {
+		return s.peekNotifications() > 0
+	})
+
+	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
+	writer, err := transcript.NewWriterWithFS(fs, "/session.jsonl", transcript.Header{SessionID: s.ID()})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	s.transcript = writer
+	fs.fail = true
+
+	call := llm.ToolCallData{
+		ID:        "status",
+		Name:      "job_status",
+		Arguments: json.RawMessage(`{"job_id":` + mustJSONString(jobID) + `}`),
+	}
+	result := s.reg.ExecuteCall(context.Background(), s.env, call)
+	if result.IsError {
+		t.Fatalf("job_status: %s", result.Output)
+	}
+
+	historyLen := len(s.history)
+	err = s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result})
+	if !errors.Is(err, errInjectedTranscriptWrite) {
+		t.Errorf("persistToolResults error = %v, want %v", err, errInjectedTranscriptWrite)
+	}
+
+	rec := loadShellRecord(t, s.jobManager, jobID)
+	if rec.NotifyState != jobstore.NotifyPending {
+		t.Errorf("terminal_notification_state = %q, want %q after transcript failure",
+			rec.NotifyState, jobstore.NotifyPending)
+	}
+	if got := s.peekNotifications(); got != 1 {
+		t.Errorf("pending notifications = %d, want 1 after transcript failure", got)
+	}
+	if got := len(s.history); got != historyLen {
+		t.Errorf("history turns = %d, want %d after transcript failure", got, historyLen)
+	}
+	if _, ok := findToolResultInHistory(s.history, call.ID); ok {
+		t.Error("failed terminal job_status result entered live history")
+	}
+}
+
+func TestParentTerminalJobStatusReadLeavesChildNotificationPending(t *testing.T) {
+	t.Parallel()
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	child.jobManager.forward = parent.jobManager.forwardEvent
+	child.jobManager.setParentJobID("job_PARENT")
+	parent.subagents.track(&subagent{id: child.ID(), sess: child, status: SubagentRunning})
+
+	jobID := startBackgroundShellJob(t, child, "printf 'child done\\n'")
+	waitForCondition(t, 30*time.Second, "child terminal notification queued", func() bool {
+		return child.peekNotifications() > 0
+	})
+
+	call := llm.ToolCallData{
+		ID:        "status",
+		Name:      "job_status",
+		Arguments: json.RawMessage(`{"job_id":` + mustJSONString(jobID) + `}`),
+	}
+	result := parent.reg.ExecuteCall(context.Background(), parent.env, call)
+	if result.IsError {
+		t.Fatalf("parent job_status: %s", result.Output)
+	}
+	if err := parent.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result}); err != nil {
+		t.Fatalf("persistToolResults: %v", err)
+	}
+
+	rec := loadShellRecord(t, child.jobManager, jobID)
+	if rec.NotifyState != jobstore.NotifyPending {
+		t.Errorf("child terminal_notification_state = %q, want %q after parent status read",
+			rec.NotifyState, jobstore.NotifyPending)
+	}
+	if got := child.peekNotifications(); got != 1 {
+		t.Errorf("child pending notifications = %d, want 1 after parent status read", got)
 	}
 }
 
