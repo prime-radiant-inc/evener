@@ -46,6 +46,10 @@ func TestToResponsesInputPreservesWebPToolResult(t *testing.T) {
 	}
 }
 
+func TestToResponsesInputTranscodesTIFFToolResultToPNG(t *testing.T) {
+	assertPNGDataURI(t, toolResultImageURL(t, "image/tiff", onePixelTIFF()))
+}
+
 func TestToResponsesInputKeepsPDFToolResultTextOnly(t *testing.T) {
 	messages := []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{{
 		Kind: llm.ContentToolResult,
@@ -207,6 +211,43 @@ func onePixelBMP() []byte {
 	binary.LittleEndian.PutUint16(data[28:30], 24)
 	binary.LittleEndian.PutUint32(data[34:38], pixelDataSize)
 	copy(data[fileHeaderSize+dibHeaderSize:], []byte{0x30, 0x20, 0x10, 0})
+	return data
+}
+
+func onePixelTIFF() []byte {
+	const (
+		entryCount          = 9
+		ifdOffset           = 8
+		bitsPerSampleOffset = ifdOffset + 2 + entryCount*12 + 4
+		pixelOffset         = bitsPerSampleOffset + 6
+	)
+	data := make([]byte, pixelOffset+3)
+	copy(data, "II")
+	binary.LittleEndian.PutUint16(data[2:4], 42)
+	binary.LittleEndian.PutUint32(data[4:8], ifdOffset)
+	binary.LittleEndian.PutUint16(data[ifdOffset:ifdOffset+2], entryCount)
+
+	entries := data[ifdOffset+2:]
+	putEntry := func(index int, tag, fieldType uint16, count, value uint32) {
+		entry := entries[index*12 : (index+1)*12]
+		binary.LittleEndian.PutUint16(entry[0:2], tag)
+		binary.LittleEndian.PutUint16(entry[2:4], fieldType)
+		binary.LittleEndian.PutUint32(entry[4:8], count)
+		binary.LittleEndian.PutUint32(entry[8:12], value)
+	}
+	putEntry(0, 256, 3, 1, 1)
+	putEntry(1, 257, 3, 1, 1)
+	putEntry(2, 258, 3, 3, bitsPerSampleOffset)
+	putEntry(3, 259, 3, 1, 1)
+	putEntry(4, 262, 3, 1, 2)
+	putEntry(5, 273, 4, 1, pixelOffset)
+	putEntry(6, 277, 3, 1, 3)
+	putEntry(7, 278, 4, 1, 1)
+	putEntry(8, 279, 4, 1, 3)
+	binary.LittleEndian.PutUint16(data[bitsPerSampleOffset:bitsPerSampleOffset+2], 8)
+	binary.LittleEndian.PutUint16(data[bitsPerSampleOffset+2:bitsPerSampleOffset+4], 8)
+	binary.LittleEndian.PutUint16(data[bitsPerSampleOffset+4:bitsPerSampleOffset+6], 8)
+	copy(data[pixelOffset:], []byte{0x10, 0x20, 0x30})
 	return data
 }
 
