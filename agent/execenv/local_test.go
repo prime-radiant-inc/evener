@@ -295,6 +295,23 @@ func TestReadFile_ImageReturnsBase64(t *testing.T) {
 	}
 }
 
+func TestReadFile_TIFFReturnsBase64(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	tiffHeader := []byte{'I', 'I', 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00}
+	if err := os.WriteFile(filepath.Join(dir, "frame.data"), tiffHeader, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := env.ReadFile("frame.data", nil, nil)
+	if err != nil {
+		t.Fatalf("ReadFile for TIFF should not error: %v", err)
+	}
+	if !strings.HasPrefix(result, "[image: tiff,") {
+		t.Fatalf("expected TIFF image result, got: %q", result)
+	}
+}
+
 func TestReadFile_NonImageBinaryStillErrors(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)

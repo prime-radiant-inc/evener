@@ -778,6 +778,17 @@ func TestDetectImageFormat_MagicBytes(t *testing.T) {
 	if got := detectImageFormat("blob.dat", []byte("GIF87a---")); got != "gif" {
 		t.Fatalf("gif87a magic = %q, want gif", got)
 	}
+	if got := detectImageFormat("blob.dat", []byte("BMbinary")); got != "bmp" {
+		t.Fatalf("bmp magic = %q, want bmp", got)
+	}
+	if got := detectImageFormat("blob.dat", []byte("RIFF\x04\x00\x00\x00WEBP")); got != "webp" {
+		t.Fatalf("webp magic = %q, want webp", got)
+	}
+	for _, data := range [][]byte{{'I', 'I', 0x2a, 0x00}, {'M', 'M', 0x00, 0x2a}} {
+		if got := detectImageFormat("blob.dat", data); got != "tiff" {
+			t.Fatalf("tiff magic = %q, want tiff", got)
+		}
+	}
 	if got := detectImageFormat("blob.dat", []byte("not an image at all")); got != "" {
 		t.Fatalf("non-image = %q, want empty", got)
 	}
@@ -787,6 +798,14 @@ func TestDetectImageFormatDoesNotClassifyUnsupportedImageExtensions(t *testing.T
 	for _, path := range []string{"drawing.svg", "favicon.ico"} {
 		if got := detectImageFormat(path, []byte("unsupported image payload")); got != "" {
 			t.Fatalf("detectImageFormat(%q) = %q, want no provider image", path, got)
+		}
+	}
+}
+
+func TestDetectImageFormatRecognizesTIFFExtensions(t *testing.T) {
+	for _, path := range []string{"frame.tif", "frame.tiff"} {
+		if got := detectImageFormat(path, []byte("short fixture")); got != "tiff" {
+			t.Fatalf("detectImageFormat(%q) = %q, want tiff", path, got)
 		}
 	}
 }

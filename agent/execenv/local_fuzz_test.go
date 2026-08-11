@@ -290,11 +290,12 @@ func FuzzDetectImageFormat(f *testing.F) {
 
 	known := map[string]bool{
 		"": true, "png": true, "jpeg": true, "gif": true,
-		"webp": true, "bmp": true,
+		"webp": true, "bmp": true, "tiff": true,
 	}
 	extMap := map[string]string{
 		".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg",
 		".gif": "gif", ".webp": "webp", ".bmp": "bmp",
+		".tif": "tiff", ".tiff": "tiff",
 	}
 
 	f.Fuzz(func(t *testing.T, path string, data []byte) {

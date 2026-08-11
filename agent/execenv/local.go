@@ -1155,6 +1155,7 @@ func detectImageFormat(path string, data []byte) string {
 	imageExts := map[string]string{
 		".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg",
 		".gif": "gif", ".webp": "webp", ".bmp": "bmp",
+		".tif": "tiff", ".tiff": "tiff",
 	}
 	if format, ok := imageExts[ext]; ok {
 		return format
@@ -1168,6 +1169,15 @@ func detectImageFormat(path string, data []byte) string {
 	}
 	if len(data) >= 6 && (string(data[:6]) == "GIF87a" || string(data[:6]) == "GIF89a") {
 		return "gif"
+	}
+	if len(data) >= 2 && string(data[:2]) == "BM" {
+		return "bmp"
+	}
+	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
+		return "webp"
+	}
+	if len(data) >= 4 && (string(data[:4]) == "II*\x00" || string(data[:4]) == "MM\x00*") {
+		return "tiff"
 	}
 	return ""
 }
