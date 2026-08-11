@@ -102,6 +102,286 @@ func (s *idlePublicationServer) postTurnState() string {
 	return s.publishedState
 }
 
+type sessionControlIdentityServer struct {
+	*server.Server
+
+	mu                   sync.Mutex
+	processing           bool
+	processingStarted    chan struct{}
+	releaseProcessing    chan struct{}
+	processingFinished   chan struct{}
+	userInputProjected   chan struct{}
+	interruptEntered     chan struct{}
+	processingStartOnce  sync.Once
+	processingFinishOnce sync.Once
+	userInputOnce        sync.Once
+	interruptOnce        sync.Once
+	releaseOnce          sync.Once
+}
+
+func newSessionControlIdentityServer(cfg server.ServerConfig) *sessionControlIdentityServer {
+	return &sessionControlIdentityServer{
+		Server:             server.NewServer(cfg),
+		processingStarted:  make(chan struct{}),
+		releaseProcessing:  make(chan struct{}),
+		processingFinished: make(chan struct{}),
+		userInputProjected: make(chan struct{}),
+		interruptEntered:   make(chan struct{}),
+	}
+}
+
+func (s *sessionControlIdentityServer) SetState(state string) {
+	s.Server.SetState(state)
+	if state != string(agent.SessionProcessing) {
+		return
+	}
+	s.mu.Lock()
+	s.processing = true
+	s.mu.Unlock()
+	s.processingStartOnce.Do(func() { close(s.processingStarted) })
+	<-s.releaseProcessing
+}
+
+func (s *sessionControlIdentityServer) SetProcessing(processing bool) {
+	s.Server.SetProcessing(processing)
+	if processing {
+		return
+	}
+	s.mu.Lock()
+	finishing := s.processing
+	s.processing = false
+	s.mu.Unlock()
+	if finishing {
+		s.processingFinishOnce.Do(func() { close(s.processingFinished) })
+	}
+}
+
+func (s *sessionControlIdentityServer) SetRetrySafeTurnFunctions(functions server.RetrySafeTurnFunctions) {
+	interrupt := functions.Interrupt
+	functions.Interrupt = func(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+		s.interruptOnce.Do(func() { close(s.interruptEntered) })
+		return interrupt(ctx, params)
+	}
+	s.Server.SetRetrySafeTurnFunctions(functions)
+}
+
+func (s *sessionControlIdentityServer) release() {
+	s.releaseOnce.Do(func() { close(s.releaseProcessing) })
+}
+
+type sessionControlLifecycle struct {
+	server *sessionControlIdentityServer
+	client *appwire.Client
+	ctx    context.Context
+	ref    string
+}
+
+func startSessionControlLifecycle(t *testing.T) *sessionControlLifecycle {
+	t.Helper()
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func() error { return nil }
+	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+		client := llm.NewClient()
+		client.Register(&closedStreamAdapter{})
+		cfg := providercfg.Config{
+			Default: "openai",
+			Instances: []providercfg.InstanceConfig{
+				{Name: "openai", Type: "openai"},
+			},
+		}
+		return client, cfg, true, func() error { return nil }, nil
+	}
+	deps.newSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		cfg.LLMRetryPolicy = &llm.RetryPolicy{MaxRetries: 0}
+		return agent.NewSession(client, profile, env, cfg)
+	}
+	var observedServer *sessionControlIdentityServer
+	deps.newServer = func(cfg server.ServerConfig) serveServer {
+		observedServer = newSessionControlIdentityServer(cfg)
+		return observedServer
+	}
+	deps.bridge = func(_ serveServer, session *agent.Session, observer func(events.SessionEvent), onDrained func()) {
+		session.ConsumeEventsLossless(func(ev events.SessionEvent) {
+			server.BridgeEvent(observedServer.Server, ev, observer)
+			if ev.Kind == events.EventUserInput {
+				observedServer.userInputOnce.Do(func() { close(observedServer.userInputProjected) })
+			}
+		}, onDrained)
+	}
+	deps.subscriberCount = func(_ serveServer, id string) int {
+		return observedServer.AppServer().SubscriberCount(id)
+	}
+
+	runDir := t.TempDir()
+	done := make(chan error, 1)
+	go func() {
+		done <- runServeWithDeps([]string{
+			"--model", "openai/gpt-test",
+			"--addr", "127.0.0.1:0",
+			"--dir", t.TempDir(),
+			"--state-dir", t.TempDir(),
+			"--run-dir", runDir,
+		}, deps)
+	}()
+
+	entry := waitForServeTestRendezvous(t, runDir)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
+	if err != nil {
+		cancel()
+		t.Fatalf("DialWebSocket: %v", err)
+	}
+	client := appwire.NewClient(transport)
+	client.Start(context.WithoutCancel(ctx))
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{
+		ClientInfo: appwire.ClientInfo{Name: "session-control-test", Version: "test"},
+	}); err != nil {
+		client.Close()
+		cancel()
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	lifecycle := &sessionControlLifecycle{
+		server: observedServer,
+		client: client,
+		ctx:    ctx,
+		ref:    appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String(),
+	}
+	t.Cleanup(func() {
+		observedServer.release()
+		client.Close()
+		shutdownResp, shutdownErr := http.Post("http://"+entry.Address+"/shutdown", "", nil)
+		if shutdownErr == nil {
+			shutdownResp.Body.Close()
+		}
+		select {
+		case runErr := <-done:
+			if runErr != nil {
+				t.Errorf("runServeWithDeps: %v", runErr)
+			}
+		case <-ctx.Done():
+			t.Errorf("runServeWithDeps did not exit: %v", ctx.Err())
+		}
+		cancel()
+	})
+	return lifecycle
+}
+
+func awaitSessionControlLifecycle(t *testing.T, lifecycle *sessionControlLifecycle, ch <-chan struct{}, label string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-lifecycle.ctx.Done():
+		t.Fatalf("%s: %v", label, lifecycle.ctx.Err())
+	}
+}
+
+func startHeldClientMutationTurn(t *testing.T, lifecycle *sessionControlLifecycle, mutationID, text string) appwire.TurnStartResponse {
+	t.Helper()
+	response, err := lifecycle.client.TurnStart(lifecycle.ctx, appwire.TurnStartParams{
+		ClientMutationID: mutationID,
+		Ref:              lifecycle.ref,
+		Input:            []appwire.InputItem{{Type: "text", Text: text}},
+	})
+	if err != nil {
+		t.Fatalf("TurnStart: %v", err)
+	}
+	awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.processingStarted, "processing start")
+	return response
+}
+
+func readSessionControlThread(t *testing.T, lifecycle *sessionControlLifecycle, includeTurns bool) appwire.Thread {
+	t.Helper()
+	response, err := lifecycle.client.ThreadRead(lifecycle.ctx, appwire.ThreadReadParams{
+		Ref:          lifecycle.ref,
+		IncludeTurns: includeTurns,
+	})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	return response.Thread
+}
+
+func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) {
+	t.Run("steer and incorporate", func(t *testing.T) {
+		lifecycle := startSessionControlLifecycle(t)
+		start := startHeldClientMutationTurn(t, lifecycle, "stable-start", "pending user input")
+		thread := readSessionControlThread(t, lifecycle, false)
+		activeTurnID := thread.Serf.ActiveTurnID
+		if activeTurnID == "" {
+			t.Fatal("thread/read published no active turn while processing")
+		}
+		if err := lifecycle.client.TurnSteer(lifecycle.ctx, appwire.TurnSteerParams{
+			ClientMutationID: "stable-steer",
+			Ref:              lifecycle.ref,
+			ExpectedTurnID:   activeTurnID,
+			Input:            []appwire.InputItem{{Type: "text", Text: "steer accepted"}},
+		}); err != nil {
+			t.Fatalf("TurnSteer with published active ID %q: %v", activeTurnID, err)
+		}
+		if activeTurnID != start.Turn.ID {
+			t.Fatalf("published active turn = %q, durable start turn = %q", activeTurnID, start.Turn.ID)
+		}
+
+		lifecycle.server.RecordAppEvent(events.SessionEvent{
+			Kind:      events.EventWarning,
+			SessionID: strings.TrimPrefix(lifecycle.ref, "local:"),
+			Data:      events.WarningData{Message: "pre-input projection"},
+		})
+		if afterWarning := readSessionControlThread(t, lifecycle, false).Serf.ActiveTurnID; afterWarning != start.Turn.ID {
+			t.Fatalf("active turn after intervening projection = %q, want %q", afterWarning, start.Turn.ID)
+		}
+
+		lifecycle.server.release()
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.userInputProjected, "user input projection")
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.processingFinished, "processing finish")
+		projected := readSessionControlThread(t, lifecycle, true)
+		for _, turn := range projected.Turns {
+			for _, item := range turn.Items {
+				if item.Type == "userMessage" && item.ClientMutationID == "stable-start" && item.Text == "pending user input" {
+					return
+				}
+			}
+		}
+		t.Fatalf("projected turns do not contain incorporated pending input: %#v", projected.Turns)
+	})
+
+	t.Run("stop", func(t *testing.T) {
+		lifecycle := startSessionControlLifecycle(t)
+		start := startHeldClientMutationTurn(t, lifecycle, "stop-start", "stop this turn")
+		activeTurnID := readSessionControlThread(t, lifecycle, false).Serf.ActiveTurnID
+		if activeTurnID == "" {
+			t.Fatal("thread/read published no active turn while processing")
+		}
+		stopDone := make(chan error, 1)
+		go func() {
+			stopDone <- lifecycle.client.TurnInterrupt(lifecycle.ctx, appwire.TurnInterruptParams{
+				ClientMutationID: "stable-stop",
+				Ref:              lifecycle.ref,
+				ExpectedTurnID:   activeTurnID,
+			})
+		}()
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.interruptEntered, "interrupt handler entry")
+		lifecycle.server.release()
+		select {
+		case err := <-stopDone:
+			if err != nil {
+				t.Fatalf("TurnInterrupt with published active ID %q: %v", activeTurnID, err)
+			}
+		case <-lifecycle.ctx.Done():
+			t.Fatalf("TurnInterrupt: %v", lifecycle.ctx.Err())
+		}
+		if activeTurnID != start.Turn.ID {
+			t.Fatalf("published active turn = %q, durable start turn = %q", activeTurnID, start.Turn.ID)
+		}
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.processingFinished, "processing finish")
+		if status := readSessionControlThread(t, lifecycle, false).Status.Type; status != appwire.ThreadStatusIdle {
+			t.Fatalf("thread status after Stop = %q, want idle", status)
+		}
+	})
+}
+
 // TestRunServe_StreamErrorPublishesIdleStatus proves the real serve input loop
 // publishes owning Session state after an exhausted streaming failure. The
 // wrapper observes the production true -> false -> SetState boundary while
