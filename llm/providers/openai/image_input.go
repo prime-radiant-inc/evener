@@ -14,7 +14,7 @@ import (
 )
 
 func normalizeImageInput(data []byte, claimedMediaType string) ([]byte, string, error) {
-	_, format, err := image.DecodeConfig(bytes.NewReader(data))
+	decoded, format, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, "", fmt.Errorf("invalid OpenAI image input %q: %w", claimedMediaType, err)
 	}
@@ -32,10 +32,6 @@ func normalizeImageInput(data []byte, claimedMediaType string) ([]byte, string, 
 		return data, mediaType, nil
 	}
 
-	decoded, _, err := image.Decode(bytes.NewReader(data))
-	if err != nil {
-		return nil, "", fmt.Errorf("decode OpenAI image input %q: %w", claimedMediaType, err)
-	}
 	return encodeImageInputAsPNG(decoded)
 }
 

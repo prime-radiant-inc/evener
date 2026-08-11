@@ -47,6 +47,19 @@ func TestToResponsesInputPreservesWebPToolResult(t *testing.T) {
 	}
 }
 
+func TestNormalizeImageInputRejectsTruncatedNativeImage(t *testing.T) {
+	valid := encodeImageInputPNG(t)
+	const pngHeaderLength = 33
+	truncated := valid[:pngHeaderLength]
+	if _, _, err := image.DecodeConfig(bytes.NewReader(truncated)); err != nil {
+		t.Fatalf("fixture must have a decodable PNG header: %v", err)
+	}
+
+	if _, _, err := normalizeImageInput(truncated, "image/png"); err == nil {
+		t.Fatal("normalizeImageInput accepted truncated PNG pixel data")
+	}
+}
+
 func TestToResponsesInputTranscodesTIFFToolResultToPNG(t *testing.T) {
 	assertPNGDataURI(t, toolResultImageURL(t, "image/tiff", onePixelTIFF()))
 }
