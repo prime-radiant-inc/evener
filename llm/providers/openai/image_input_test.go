@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"image"
 	"image/color"
+	"image/gif"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -48,6 +49,19 @@ func TestToResponsesInputPreservesWebPToolResult(t *testing.T) {
 
 func TestToResponsesInputTranscodesTIFFToolResultToPNG(t *testing.T) {
 	assertPNGDataURI(t, toolResultImageURL(t, "image/tiff", onePixelTIFF()))
+}
+
+func TestToResponsesInputTranscodesAnimatedGIFToolResultToPNG(t *testing.T) {
+	var data bytes.Buffer
+	palette := color.Palette{color.Black, color.White}
+	first := image.NewPaletted(image.Rect(0, 0, 1, 1), palette)
+	second := image.NewPaletted(image.Rect(0, 0, 1, 1), palette)
+	second.SetColorIndex(0, 0, 1)
+	if err := gif.EncodeAll(&data, &gif.GIF{Image: []*image.Paletted{first, second}, Delay: []int{1, 1}}); err != nil {
+		t.Fatalf("encode animated GIF fixture: %v", err)
+	}
+
+	assertPNGDataURI(t, toolResultImageURL(t, "image/gif", data.Bytes()))
 }
 
 func TestToResponsesInputKeepsPDFToolResultTextOnly(t *testing.T) {

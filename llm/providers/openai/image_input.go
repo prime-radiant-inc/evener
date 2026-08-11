@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
-	_ "image/gif"
+	"image/gif"
 	_ "image/jpeg"
 	"image/png"
 
@@ -19,6 +19,15 @@ func normalizeImageInput(data []byte, claimedMediaType string) ([]byte, string, 
 		return nil, "", fmt.Errorf("invalid OpenAI image input %q: %w", claimedMediaType, err)
 	}
 
+	if format == "gif" {
+		decoded, err := gif.DecodeAll(bytes.NewReader(data))
+		if err != nil {
+			return nil, "", fmt.Errorf("decode OpenAI GIF input %q: %w", claimedMediaType, err)
+		}
+		if len(decoded.Image) > 1 {
+			return encodeImageInputAsPNG(decoded.Image[0])
+		}
+	}
 	if mediaType := openAIImageMediaType(format); mediaType != "" {
 		return data, mediaType, nil
 	}
@@ -27,6 +36,10 @@ func normalizeImageInput(data []byte, claimedMediaType string) ([]byte, string, 
 	if err != nil {
 		return nil, "", fmt.Errorf("decode OpenAI image input %q: %w", claimedMediaType, err)
 	}
+	return encodeImageInputAsPNG(decoded)
+}
+
+func encodeImageInputAsPNG(decoded image.Image) ([]byte, string, error) {
 	var normalized bytes.Buffer
 	if err := png.Encode(&normalized, decoded); err != nil {
 		return nil, "", fmt.Errorf("encode OpenAI image input as PNG: %w", err)
