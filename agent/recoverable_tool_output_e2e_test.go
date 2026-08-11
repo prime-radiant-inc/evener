@@ -229,7 +229,7 @@ func TestRecoverableRunningJobEndToEnd(t *testing.T) {
 		"; while [ ! -e " + shellQuote(appendRelease) + " ]; do sleep 0.01; done" +
 		"; printf ' complete\\n'" +
 		"; while [ ! -e " + shellQuote(exitRelease) + " ]; do sleep 0.01; done"
-	startedRes := task7ExecTool(t, s, "shell", map[string]any{"command": command, "background": true})
+	startedRes := task7ExecTool(t, s, "shell", map[string]any{"command": command, "mode": "background"})
 	var started struct {
 		JobID string `json:"job_id"`
 	}
