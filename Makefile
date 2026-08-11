@@ -32,7 +32,7 @@ build-runtime: build-web
 # Cross-compile for Linux (eval deployments). Invalidates the agent package
 # cache to ensure embedded files (templates, sections, agent .md) are fresh.
 build-linux:
-	go clean -cache -x ./agent/ 2>/dev/null; \
+	go clean -cache 2>/dev/null && \
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o serf-linux-amd64 ./cmd/serf/
 
 build-hub: build-runtime
