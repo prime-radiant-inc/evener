@@ -33,6 +33,17 @@ func TestToResponsesInputTranscodesBMPToolResultToPNG(t *testing.T) {
 	}
 }
 
+func TestToResponsesInputPreservesWebPToolResult(t *testing.T) {
+	data, err := base64.StdEncoding.DecodeString("UklGRjAAAABXRUJQVlA4ICQAAABwAQCdASoBAAEAAgA0JYwCdAGIQAD++ZNsGW2xURhNJHYAAAA=")
+	if err != nil {
+		t.Fatalf("decode WebP fixture: %v", err)
+	}
+
+	if got := toolResultImageURL(t, "image/webp", data); got != llm.DataURI("image/webp", data) {
+		t.Fatalf("WebP image URL was changed: %q", got)
+	}
+}
+
 func toolResultImageURL(t *testing.T, mediaType string, data []byte) string {
 	t.Helper()
 	messages := []llm.Message{

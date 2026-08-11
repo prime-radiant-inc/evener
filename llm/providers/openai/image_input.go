@@ -9,6 +9,7 @@ import (
 	"image/png"
 
 	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/webp"
 )
 
 func normalizeImageInput(data []byte, claimedMediaType string) ([]byte, string, error) {
@@ -40,6 +41,8 @@ func openAIImageMediaType(format string) string {
 		return "image/jpeg"
 	case "gif":
 		return "image/gif"
+	case "webp":
+		return "image/webp"
 	default:
 		return ""
 	}
