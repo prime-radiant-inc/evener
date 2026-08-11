@@ -1155,7 +1155,6 @@ func detectImageFormat(path string, data []byte) string {
 	imageExts := map[string]string{
 		".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg",
 		".gif": "gif", ".webp": "webp", ".bmp": "bmp",
-		".svg": "svg", ".ico": "ico",
 	}
 	if format, ok := imageExts[ext]; ok {
 		return format

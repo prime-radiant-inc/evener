@@ -783,6 +783,14 @@ func TestDetectImageFormat_MagicBytes(t *testing.T) {
 	}
 }
 
+func TestDetectImageFormatDoesNotClassifyUnsupportedImageExtensions(t *testing.T) {
+	for _, path := range []string{"drawing.svg", "favicon.ico"} {
+		if got := detectImageFormat(path, []byte("unsupported image payload")); got != "" {
+			t.Fatalf("detectImageFormat(%q) = %q, want no provider image", path, got)
+		}
+	}
+}
+
 func TestShellEscape(t *testing.T) {
 	if got := shellEscape(""); got != "''" {
 		t.Fatalf("empty = %q, want ''", got)
