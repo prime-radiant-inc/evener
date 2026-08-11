@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"primeradiant.com/serf/llm"
@@ -11,7 +12,8 @@ import (
 // Completions request builder that flattens text/image/document parts into the
 // OpenAI content array. The fuzzer routes adversarial bytes into image/document
 // payloads but never feeds a local-filesystem path (which would trigger a real
-// os.ReadFile), so it validates wire-shape construction without touching disk.
+// os.ReadFile), so it validates image rejection and wire-shape construction
+// without touching disk.
 //
 // Oracles beyond no-panic:
 //   - on success, every emitted entry re-marshals to valid JSON and carries a
@@ -23,6 +25,7 @@ import (
 //     case), never silently emitted.
 func FuzzOpenAIChatMultimodalParts(f *testing.F) {
 	f.Add("hello", []byte{1, 2, 3}, "image/jpeg", "high", []byte("PDFDATA"), "doc.pdf", uint8(0))
+	f.Add("valid", encodeImageInputPNG(f), "image/png", "auto", []byte("PDFDATA"), "doc.pdf", uint8(0))
 	f.Add("", []byte{}, "", "", []byte{}, "", uint8(7))
 	f.Add("text\x00with nul", []byte("\xff\xfe"), "image/png", "low", []byte{}, "", uint8(3))
 
@@ -39,7 +42,11 @@ func FuzzOpenAIChatMultimodalParts(f *testing.F) {
 
 		out, err := buildChatMultimodalParts(parts)
 		if err != nil {
-			t.Fatalf("buildChatMultimodalParts errored on text+inline-image+inline-doc: %v", err)
+			var configErr *llm.ConfigurationError
+			if len(imgData) == 0 || !errors.As(err, &configErr) {
+				t.Fatalf("buildChatMultimodalParts error = %v, want invalid-image configuration error", err)
+			}
+			return
 		}
 
 		// Exactly: one text entry, one image entry (data present makes it non-empty),

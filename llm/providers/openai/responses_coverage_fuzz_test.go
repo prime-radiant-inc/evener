@@ -92,7 +92,7 @@ func responsesCoverageSchemaInputAndDecodeBranches(t testing.TB) {
 	msgs := []llm.Message{
 		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: " "}, {Kind: llm.ContentDocument, Document: &llm.DocumentData{}}}},
 		{Role: llm.RoleUser, Content: []llm.ContentPart{
-			{Kind: llm.ContentText, Text: " "}, {Kind: llm.ContentImage}, {Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte("x")}},
+			{Kind: llm.ContentText, Text: " "}, {Kind: llm.ContentImage}, {Kind: llm.ContentImage, Image: &llm.ImageData{Data: encodeImageInputPNG(t)}},
 			{Kind: llm.ContentDocument}, {Kind: llm.ContentDocument, Document: &llm.DocumentData{URL: "https://example.invalid/a.pdf"}},
 		}},
 		{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentText}, {Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c", IsError: true, Content: make(chan int)}}}},
@@ -103,7 +103,7 @@ func responsesCoverageSchemaInputAndDecodeBranches(t testing.TB) {
 	}
 	msgs[0].Content = nil
 	local := filepath.Join(t.TempDir(), "image.unknown")
-	if err := os.WriteFile(local, []byte("x"), 0o600); err != nil {
+	if err := os.WriteFile(local, encodeImageInputPNG(t), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	msgs[1].Content = append(msgs[1].Content, llm.ContentPart{Kind: llm.ContentImage, Image: &llm.ImageData{URL: local}})

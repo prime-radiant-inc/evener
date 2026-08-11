@@ -1085,25 +1085,26 @@ func toResponsesInput(msgs []llm.Message, model string) (instructions string, it
 						}
 						url := strings.TrimSpace(p.Image.URL)
 						if len(p.Image.Data) > 0 {
-							mt := strings.TrimSpace(p.Image.MediaType)
-							if mt == "" {
-								mt = "image/png"
+							data, mt, err := normalizeImageInput(p.Image.Data, p.Image.MediaType)
+							if err != nil {
+								return "", nil, &llm.ConfigurationError{Message: err.Error()}
 							}
-							url = llm.DataURI(mt, p.Image.Data)
+							url = llm.DataURI(mt, data)
 						} else if llm.IsLocalPath(url) {
 							path := llm.ExpandTilde(url)
 							b, err := os.ReadFile(path)
 							if err != nil {
 								return "", nil, err
 							}
-							mt := strings.TrimSpace(p.Image.MediaType)
-							if mt == "" {
-								mt = llm.InferMimeTypeFromPath(path)
+							claimed := strings.TrimSpace(p.Image.MediaType)
+							if claimed == "" {
+								claimed = llm.InferMimeTypeFromPath(path)
 							}
-							if mt == "" {
-								mt = "image/png"
+							data, mt, err := normalizeImageInput(b, claimed)
+							if err != nil {
+								return "", nil, &llm.ConfigurationError{Message: err.Error()}
 							}
-							url = llm.DataURI(mt, b)
+							url = llm.DataURI(mt, data)
 						}
 						if url != "" {
 							img := map[string]any{

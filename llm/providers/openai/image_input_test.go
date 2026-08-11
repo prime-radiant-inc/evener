@@ -7,6 +7,8 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -65,6 +67,83 @@ func TestToResponsesInputKeepsPDFToolResultTextOnly(t *testing.T) {
 	item, _ := items[0].(map[string]any)
 	if got := item["output"]; got != "document content was extracted separately" {
 		t.Fatalf("tool output = %#v, want text-only content", got)
+	}
+}
+
+func TestOpenAIRequestBuildersNormalizeByteBackedBMP(t *testing.T) {
+	imagePart := llm.ContentPart{Kind: llm.ContentImage, Image: &llm.ImageData{
+		Data:      onePixelBMP(),
+		MediaType: "image/bmp",
+	}}
+
+	t.Run("Responses", func(t *testing.T) {
+		body, err := (&Adapter{}).buildRequestBody(llm.Request{
+			Model:    "gpt-5.6-luna",
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{imagePart}}},
+		})
+		if err != nil {
+			t.Fatalf("buildRequestBody: %v", err)
+		}
+		images := collectInputImages(t, body)
+		if len(images) != 1 {
+			t.Fatalf("input images = %#v, want one", images)
+		}
+		assertPNGDataURI(t, images[0]["image_url"])
+	})
+
+	t.Run("ChatCompletions", func(t *testing.T) {
+		parts, err := buildChatMultimodalParts([]llm.ContentPart{imagePart})
+		if err != nil {
+			t.Fatalf("buildChatMultimodalParts: %v", err)
+		}
+		if len(parts) != 1 {
+			t.Fatalf("parts = %#v, want one", parts)
+		}
+		imageURL, _ := parts[0]["image_url"].(map[string]any)
+		assertPNGDataURI(t, imageURL["url"])
+	})
+}
+
+func TestOpenAIRequestBuildersNormalizeLocalBMP(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "frame.bmp")
+	if err := os.WriteFile(path, onePixelBMP(), 0o600); err != nil {
+		t.Fatalf("write BMP fixture: %v", err)
+	}
+	imagePart := llm.ContentPart{Kind: llm.ContentImage, Image: &llm.ImageData{URL: path}}
+
+	t.Run("Responses", func(t *testing.T) {
+		body, err := (&Adapter{}).buildRequestBody(llm.Request{
+			Model:    "gpt-5.6-luna",
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{imagePart}}},
+		})
+		if err != nil {
+			t.Fatalf("buildRequestBody: %v", err)
+		}
+		images := collectInputImages(t, body)
+		if len(images) != 1 {
+			t.Fatalf("input images = %#v, want one", images)
+		}
+		assertPNGDataURI(t, images[0]["image_url"])
+	})
+
+	t.Run("ChatCompletions", func(t *testing.T) {
+		parts, err := buildChatMultimodalParts([]llm.ContentPart{imagePart})
+		if err != nil {
+			t.Fatalf("buildChatMultimodalParts: %v", err)
+		}
+		if len(parts) != 1 {
+			t.Fatalf("parts = %#v, want one", parts)
+		}
+		imageURL, _ := parts[0]["image_url"].(map[string]any)
+		assertPNGDataURI(t, imageURL["url"])
+	})
+}
+
+func assertPNGDataURI(t *testing.T, value any) {
+	t.Helper()
+	url, _ := value.(string)
+	if !strings.HasPrefix(url, "data:image/png;base64,") {
+		t.Fatalf("image URL = %q, want PNG data URI", url)
 	}
 }
 

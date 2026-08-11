@@ -1243,7 +1243,8 @@ func TestAdapter_Complete_ImageInput_URL_Data_AndFilePath(t *testing.T) {
 
 	dir := t.TempDir()
 	imgPath := filepath.Join(dir, "img.png")
-	_ = os.WriteFile(imgPath, []byte{0x89, 0x50, 0x4e, 0x47}, 0o644)
+	pngBytes := encodeImageInputPNG(t)
+	_ = os.WriteFile(imgPath, pngBytes, 0o644)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1254,7 +1255,7 @@ func TestAdapter_Complete_ImageInput_URL_Data_AndFilePath(t *testing.T) {
 		Content: []llm.ContentPart{
 			{Kind: llm.ContentText, Text: "see"},
 			{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.com/x.png"}},
-			{Kind: llm.ContentImage, Image: &llm.ImageData{MediaType: "image/png", Data: []byte{0x01, 0x02, 0x03}}},
+			{Kind: llm.ContentImage, Image: &llm.ImageData{MediaType: "image/png", Data: pngBytes}},
 			{Kind: llm.ContentImage, Image: &llm.ImageData{URL: imgPath}},
 		},
 	}
@@ -2732,7 +2733,7 @@ func TestStream_ResponsesAPI_404_FallbackPreservesChatRequestSemantics(t *testin
 	defer cancel()
 
 	localImage := filepath.Join(t.TempDir(), "local.png")
-	if err := os.WriteFile(localImage, []byte("png bytes"), 0o600); err != nil {
+	if err := os.WriteFile(localImage, encodeImageInputPNG(t), 0o600); err != nil {
 		t.Fatalf("write local image: %v", err)
 	}
 
