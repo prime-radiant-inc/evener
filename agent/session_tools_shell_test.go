@@ -989,6 +989,47 @@ func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
 
 }
 
+func TestCompleteOrHandleKeptForegroundOutputPreservesTerminalLifecycle(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"head -c 9000 </dev/zero | tr '\\0' 'x'"}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID        string `json:"job_id"`
+		Mode         string `json:"mode"`
+		Status       string `json:"status"`
+		ExitCode     *int   `json:"exit_code"`
+		Output       string `json:"output"`
+		Truncated    bool   `json:"truncated"`
+		OutputStatus string `json:"output_status"`
+	}
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+	}
+	if out.Mode != string(shellModeForeground) {
+		t.Fatalf("mode = %q, want foreground for a command that completed during the foreground wait", out.Mode)
+	}
+	if out.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want completed", out.Status)
+	}
+	if out.ExitCode == nil || *out.ExitCode != 0 {
+		t.Fatalf("exit_code = %v, want 0", out.ExitCode)
+	}
+	if out.JobID == "" {
+		t.Fatal("job_id is empty, want retained output to remain navigable")
+	}
+	if out.Output == "" || !out.Truncated || out.OutputStatus != "windowed" {
+		t.Fatalf("output window = {bytes:%d truncated:%v status:%q}, want a non-empty windowed digest", len(out.Output), out.Truncated, out.OutputStatus)
+	}
+}
+
 // TestShellRideWholeThresholdIs8KiB pins the context-managed default: completed
 // output above shellRideWholeBytes (8 KiB) becomes a navigable handle (job_id)
 // rather than being auto-injected inline. A ~9 KiB command must return a job_id;

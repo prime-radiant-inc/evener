@@ -502,7 +502,6 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.StateRes
 	// Keep: output cannot ride whole inline. Commit + finalize the delayed job.
 	jobID := res.settle(true)
 	out.JobID = jobID
-	out.Mode = string(shellModeBackground)
 	out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, true)
 
 	// The model sees only a small head+tail digest + the job_id; it reads the rest
