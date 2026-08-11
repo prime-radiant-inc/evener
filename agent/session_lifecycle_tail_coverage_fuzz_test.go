@@ -105,7 +105,7 @@ func FuzzSessionLifecycleNotificationFaultCoverage(f *testing.F) {
 		if _, retry, _ := loadSession.filterDeliverableJobNotifications([]jobNotification{{JobID: "closed"}}); len(retry) != 1 {
 			t.Fatalf("closed-store retry count = %d, want 1", len(retry))
 		}
-		if got, retry, injected := loadSession.filterDeliverableJobNotifications([]jobNotification{{Status: jobNotificationEventWatch}}); len(got) != 1 || len(retry) != 0 || len(injected) != 0 {
+		if got, retry, injected := loadSession.filterDeliverableJobNotifications([]jobNotification{{Kind: jobNotificationKindWatch, Status: jobNotificationEventWatch}}); len(got) != 1 || len(retry) != 0 || len(injected) != 0 {
 			t.Fatalf("watch-only filtering = (%d,%d,%d)", len(got), len(retry), len(injected))
 		}
 		loadSession.jobManager = nil
@@ -133,7 +133,7 @@ func FuzzSessionLifecycleNotificationFaultCoverage(f *testing.F) {
 		markSession.jobManager = nil
 
 		appendSession := sltcNewSession(t, false, false)
-		appendSession.enqueueJobNotification(jobNotification{JobID: "watch", Status: jobNotificationEventWatch})
+		appendSession.enqueueJobNotification(jobNotification{Kind: jobNotificationKindWatch, JobID: "watch", Status: jobNotificationEventWatch})
 		appendCtx := context.WithValue(context.Background(), sessionLifecycleFaultsKey{}, map[string]error{"append_notification": errors.New("append failed")})
 		if appendSession.acceptNotificationInput(appendCtx) {
 			t.Fatal("notification proceeded after durable append failure")

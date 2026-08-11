@@ -1459,7 +1459,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
 	if sessionLifecycleFault(ctx, "inject_watch_notification") != nil {
 		jobNotifs = append(jobNotifs, deliverableJobNotification{
-			notification: jobNotification{JobID: "injected-watch", Status: jobNotificationEventWatch},
+			notification: jobNotification{Kind: jobNotificationKindWatch, JobID: "injected-watch", Status: jobNotificationEventWatch},
 			watchJM:      &jobManager{},
 		})
 	}
@@ -1556,7 +1556,7 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 			survivors = append(survivors, deliverableJobNotification{notification: n, watchJM: jm, watchCfg: cfg, watchState: state})
 			continue
 		}
-		if n.Status == jobNotificationEventWatch {
+		if n.isWatch() {
 			survivors = append(survivors, deliverableJobNotification{notification: n})
 			continue
 		}

@@ -435,8 +435,18 @@ type jobRuntimeHandle struct {
 	output    *jobstore.OutputStore
 }
 
+type jobNotificationKind uint8
+
+const (
+	jobNotificationKindTerminal jobNotificationKind = iota
+	jobNotificationKindWatch
+)
+
 // jobNotification is the in-memory wake record for a durable job notification.
 type jobNotification struct {
+	// Kind distinguishes terminal wakes from watch deliveries. Status remains
+	// payload: a job.notification watch carries the completed job's status.
+	Kind                                                       jobNotificationKind
 	JobID, JobType, Status, Reason, Description, TranscriptRef string
 	ExhaustionBudget                                           string
 	ExhaustionLimit                                            int
@@ -460,6 +470,10 @@ type jobNotification struct {
 	// watchSendFrame is the rendered frame, populated only between filter and
 	// format inside one accept pass (never persisted, never enqueued).
 	watchSendFrame string
+}
+
+func (n jobNotification) isWatch() bool {
+	return n.Kind == jobNotificationKindWatch
 }
 
 type createShellOpts struct {

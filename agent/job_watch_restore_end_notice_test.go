@@ -31,7 +31,7 @@ func restartJobManager(t *testing.T, stateDir, sessionID string, enqueue func(jo
 	}
 	jm.notifySystem = func(_ string, message string) bool {
 		if enqueue != nil {
-			enqueue(jobNotification{Status: jobNotificationEventWatch, Reason: message})
+			enqueue(jobNotification{Kind: jobNotificationKindWatch, Status: jobNotificationEventWatch, Reason: message})
 		}
 		return true
 	}

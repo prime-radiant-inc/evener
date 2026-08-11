@@ -362,6 +362,7 @@ type watchSendToken struct {
 
 func watchSendTokenNotification(childSessionID string, state jobstore.WatchSendState) jobNotification {
 	return jobNotification{
+		Kind:       jobNotificationKindWatch,
 		JobID:      state.Key.ResolvedWatchedIdentity,
 		Status:     jobNotificationEventWatch,
 		Reason:     state.TriggerReason,
@@ -2906,7 +2907,7 @@ func (jm *jobManager) notifyRestartCancelledCallbackWatches() error {
 			errs = append(errs, fmt.Errorf("route callback cancellation notification to session %q: no system-notification route", receiver))
 			continue
 		}
-		jm.enqueue(jobNotification{Status: jobNotificationEventWatch, Reason: callbackWatchesCancelledAtRestartMessage})
+		jm.enqueue(jobNotification{Kind: jobNotificationKindWatch, Status: jobNotificationEventWatch, Reason: callbackWatchesCancelledAtRestartMessage})
 	}
 	return errors.Join(errs...)
 }
@@ -3055,6 +3056,7 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 
 func watchNotification(jobID, reason string) jobNotification {
 	return jobNotification{
+		Kind:    jobNotificationKindWatch,
 		JobID:   jobID,
 		JobType: jobNotificationEventWatch,
 		Status:  jobNotificationEventWatch,

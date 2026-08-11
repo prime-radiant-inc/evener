@@ -68,7 +68,7 @@ func seed100JobtreeDrainMore(t *testing.T) {
 		t.Fatalf("kick-fault drain = %q, %v; want empty, fault", result, err)
 	}
 
-	faulted.enqueueJobNotification(jobNotification{Status: jobNotificationEventWatch})
+	faulted.enqueueJobNotification(jobNotification{Kind: jobNotificationKindWatch, Status: jobNotificationEventWatch})
 	if result, err := faulted.drainJobTreeWith(context.Background(), make(chan time.Time), func(context.Context) error {
 		return nil
 	}, func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {

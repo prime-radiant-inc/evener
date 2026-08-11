@@ -682,7 +682,7 @@ func (s *Session) consumeJobNotification(jobID string) {
 	s.pendingJobNotifsMu.Lock()
 	kept := s.pendingJobNotifs[:0]
 	for _, notification := range s.pendingJobNotifs {
-		if notification.JobID == jobID && notification.WatchSend == nil && notification.Status != jobNotificationEventWatch {
+		if notification.JobID == jobID && !notification.isWatch() {
 			continue
 		}
 		kept = append(kept, notification)

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	tooldefs "primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
@@ -102,6 +105,70 @@ func TestPersistedTerminalJobStatusReadConsumesPendingNotification(t *testing.T)
 	// nothing left to tell it about this job.
 	if s.acceptNotificationInput(context.Background()) {
 		t.Fatal("a notification turn ran after the caller already read the terminal status")
+	}
+}
+
+func TestPersistedTerminalJobStatusPreservesQueuedSelfWatchNotification(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	if _, err := jobWatchTool(s, map[string]any{
+		"operation": "create",
+		"source":    "self",
+		"events":    []any{"job.notification"},
+	}, jobToolResultDefaultMaxChar); err != nil {
+		t.Fatalf("job_watch create: %v", err)
+	}
+
+	gate := filepath.Join(t.TempDir(), "release")
+	jobID := startBackgroundShellJob(t, s, "while [ ! -f "+gate+" ]; do sleep 0.02; done; printf 'watched done\\n'")
+	if err := os.WriteFile(gate, []byte("go\n"), 0o600); err != nil {
+		t.Fatalf("release job: %v", err)
+	}
+	waitForShellDone(t, s.jobManager, jobID)
+	waitForCondition(t, 30*time.Second, "self watch and terminal notification queued", func() bool {
+		s.pendingJobNotifsMu.Lock()
+		defer s.pendingJobNotifsMu.Unlock()
+		if len(s.pendingJobNotifs) != 2 {
+			return false
+		}
+		for _, notification := range s.pendingJobNotifs {
+			if notification.JobID != jobID {
+				return false
+			}
+		}
+		return true
+	})
+
+	call := llm.ToolCallData{
+		ID:        "status",
+		Name:      "job_status",
+		Arguments: json.RawMessage(`{"job_id":` + mustJSONString(jobID) + `}`),
+	}
+	result := s.reg.ExecuteCall(context.Background(), s.env, call)
+	if result.IsError {
+		t.Fatalf("job_status: %s", result.Output)
+	}
+	if err := s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result}); err != nil {
+		t.Fatalf("persistToolResults: %v", err)
+	}
+
+	rec := loadShellRecord(t, s.jobManager, jobID)
+	if rec.NotifyState != jobstore.NotifyConsumed {
+		t.Errorf("terminal_notification_state = %q, want %q after owner status read",
+			rec.NotifyState, jobstore.NotifyConsumed)
+	}
+	if got := s.peekNotifications(); got != 1 {
+		t.Errorf("pending notifications = %d, want the self-watch notification to remain", got)
+	}
+
+	historyLen := len(s.history)
+	if proceed := s.acceptNotificationInput(context.Background()); !proceed {
+		t.Error("self-watch notification was not accepted after terminal status consumption")
+	}
+	if got := len(s.history); got != historyLen+1 {
+		t.Errorf("history turns = %d, want %d after self-watch delivery", got, historyLen+1)
+	} else if s.history[got-1].Kind != schema.TurnSteering {
+		t.Errorf("delivered self-watch turn kind = %q, want %q", s.history[got-1].Kind, schema.TurnSteering)
 	}
 }
 
