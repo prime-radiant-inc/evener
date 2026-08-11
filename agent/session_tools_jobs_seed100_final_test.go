@@ -5,8 +5,9 @@ package agent
 import (
 	"context"
 	"errors"
-	"primeradiant.com/serf/agent/internal/jobstore"
 	"testing"
+
+	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
 func seed100ToolsFinal(t *testing.T) {

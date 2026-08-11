@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"image"
 	"image/gif"
+
+	// Register JPEG decoding at the shared image normalization boundary.
 	_ "image/jpeg"
 	"image/png"
 	"strings"
 
+	// Register additional raster decoders before enforcing OpenAI's wire formats.
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"

@@ -42,7 +42,7 @@ func FuzzWorkspacePromptProgram(f *testing.F) {
 		{0},
 		{1, 2, 3, 4},
 		[]byte("workspace prompt fixture"),
-		[]byte{0xff, 0x00, 0x7f, 0x41},
+		{0xff, 0x00, 0x7f, 0x41},
 	} {
 		f.Add(seed)
 	}
