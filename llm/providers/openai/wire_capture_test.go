@@ -448,8 +448,8 @@ func TestStreamFallbackWaitsForResponsesAttemptAppend(t *testing.T) {
 		t.Fatalf("stream fallback result = %#v, %v", result.response, result.err)
 	}
 	attempts := sink.snapshot()
-	if len(attempts) != 2 || attempts[0].AttemptIndex != 1 || attempts[1].AttemptIndex != 2 ||
-		attempts[0].Outcome != apilog.AttemptDecodeFail || attempts[1].Outcome != apilog.AttemptSuccess {
+	if len(attempts) != 3 || attempts[0].AttemptIndex != 1 || attempts[1].AttemptIndex != 2 || attempts[2].AttemptIndex != 3 ||
+		attempts[0].Outcome != apilog.AttemptDecodeFail || attempts[1].Outcome != apilog.AttemptDecodeFail || attempts[2].Outcome != apilog.AttemptSuccess {
 		t.Fatalf("stream fallback attempt sequence = %+v", attempts)
 	}
 }

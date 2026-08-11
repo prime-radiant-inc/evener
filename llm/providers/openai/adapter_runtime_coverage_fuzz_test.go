@@ -175,7 +175,7 @@ func adapterRuntimeExerciseStreams(t *testing.T) {
 	}
 	for range s.Events() {
 	}
-	if err := s.Close(); err != nil || calls != 2 {
+	if err := s.Close(); err != nil || calls != 3 {
 		t.Fatalf("empty fallback close=%v calls=%d", err, calls)
 	}
 

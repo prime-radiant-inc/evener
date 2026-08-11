@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2161,6 +2162,141 @@ func TestStream_EmptyResponsesStream_FallsBackToChatCompletions(t *testing.T) {
 	}
 	if gotText.String() != "Hello world" {
 		t.Fatalf("text: got %q want %q", gotText.String(), "Hello world")
+	}
+}
+
+func TestStream_EmptyResponsesStream_RetriesResponsesBeforeFallback(t *testing.T) {
+	var responsesHits atomic.Int32
+	var chatHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "text/event-stream")
+			if responsesHits.Add(1) == 1 {
+				return
+			}
+			_, _ = fmt.Fprintln(w, `event: response.output_text.delta`)
+			_, _ = fmt.Fprintln(w, `data: {"type":"response.output_text.delta","delta":"recovered"}`)
+			_, _ = fmt.Fprintln(w)
+			_, _ = fmt.Fprintln(w, `event: response.completed`)
+			_, _ = fmt.Fprintln(w, `data: {"type":"response.completed","response":{"id":"resp_recovered","model":"gpt-4.1-mini","output":[{"type":"message","content":[{"type":"output_text","text":"recovered"}]}],"status":"completed"}}`)
+			_, _ = fmt.Fprintln(w)
+		case "/v1/chat/completions":
+			chatHits.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{Model: "gpt-4.1-mini", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	text, streamErr := collectStreamEvents(t, stream)
+	if streamErr != nil {
+		t.Fatalf("stream error: %v", streamErr)
+	}
+	if text != "recovered" {
+		t.Fatalf("text = %q, want recovered", text)
+	}
+	if got := responsesHits.Load(); got != 2 {
+		t.Fatalf("Responses hits = %d, want 2", got)
+	}
+	if got := chatHits.Load(); got != 0 {
+		t.Fatalf("Chat Completions hits = %d, want 0", got)
+	}
+}
+
+func TestStream_EmptyResponsesStream_TwiceFallsBackToChatCompletions(t *testing.T) {
+	var responsesHits atomic.Int32
+	var chatHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			responsesHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+		case "/v1/chat/completions":
+			chatHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			writeChatCompletionsTextStream(t, w, "chat fallback")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{Model: "gpt-4.1-mini", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	text, streamErr := collectStreamEvents(t, stream)
+	if streamErr != nil {
+		t.Fatalf("stream error: %v", streamErr)
+	}
+	if text != "chat fallback" {
+		t.Fatalf("text = %q, want chat fallback", text)
+	}
+	if got := responsesHits.Load(); got != 2 {
+		t.Fatalf("Responses hits = %d, want 2", got)
+	}
+	if got := chatHits.Load(); got != 1 {
+		t.Fatalf("Chat Completions hits = %d, want 1", got)
+	}
+}
+
+func TestStream_EmptyResponsesStream_TwiceWithToolResultImageDoesNotFallback(t *testing.T) {
+	var responsesHits atomic.Int32
+	var chatHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			responsesHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+		case "/v1/chat/completions":
+			chatHits.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model: "gpt-4.1-mini",
+		Messages: []llm.Message{{
+			Role: llm.RoleTool,
+			Content: []llm.ContentPart{{
+				Kind:       llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{ToolCallID: "call_image", Content: "image", ImageData: encodeImageInputPNG(t), ImageMediaType: "image/png"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	text, streamErr := collectStreamEvents(t, stream)
+	if text != "" {
+		t.Fatalf("text = %q, want empty", text)
+	}
+	if !errors.Is(streamErr, errEmptyResponsesStream) {
+		t.Fatalf("stream error = %v, want empty Responses stream error", streamErr)
+	}
+	if got := responsesHits.Load(); got != 2 {
+		t.Fatalf("Responses hits = %d, want 2", got)
+	}
+	if got := chatHits.Load(); got != 0 {
+		t.Fatalf("Chat Completions hits = %d, want 0", got)
 	}
 }
 
