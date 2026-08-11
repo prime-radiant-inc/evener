@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/crc32"
+	"image"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,10 +19,30 @@ import (
 )
 
 func TestInvalidRasterToolResultRemainsRecoverable(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		data []byte
+	}{
+		{name: "PNGWithMisleadingExtension", path: "frame.txt", data: pngWithExtraScanline(t)},
+		{name: "TruncatedBMP", path: "frame.bmp", data: bmpWithoutPixels()},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			testInvalidRasterToolResultRemainsRecoverable(t, test.path, test.data)
+		})
+	}
+}
+
+func testInvalidRasterToolResultRemainsRecoverable(t *testing.T, name string, data []byte) {
+	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "frame.png")
-	if err := os.WriteFile(path, pngWithExtraScanline(t), 0o600); err != nil {
-		t.Fatalf("write malformed PNG: %v", err)
+	path := filepath.Join(dir, name)
+	if _, _, err := image.DecodeConfig(bytes.NewReader(data)); err != nil {
+		t.Fatalf("malformed raster fixture must have a valid header: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write malformed raster: %v", err)
 	}
 
 	var requestErr error
@@ -33,7 +54,7 @@ func TestInvalidRasterToolResultRemainsRecoverable(t *testing.T) {
 					ID:        "read_invalid_image",
 					Name:      "read_file",
 					Type:      "function",
-					Arguments: json.RawMessage(`{"file_path":"frame.png","purpose":"inspect it"}`),
+					Arguments: json.RawMessage(fmt.Sprintf(`{"file_path":%q,"purpose":"inspect it"}`, name)),
 				})
 			},
 			func(req llm.Request) llm.Response {
@@ -66,7 +87,7 @@ func TestInvalidRasterToolResultRemainsRecoverable(t *testing.T) {
 	t.Cleanup(sess.Close)
 	drainSessionEvents(sess)
 
-	out, err := sess.ProcessInput(context.Background(), "inspect frame.png", nil)
+	out, err := sess.ProcessInput(context.Background(), "inspect "+name, nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -76,6 +97,20 @@ func TestInvalidRasterToolResultRemainsRecoverable(t *testing.T) {
 	if strings.TrimSpace(out) != "recovered" {
 		t.Fatalf("output = %q, want recovered", out)
 	}
+}
+
+func bmpWithoutPixels() []byte {
+	data := make([]byte, 54)
+	copy(data, "BM")
+	binary.LittleEndian.PutUint32(data[2:6], 58)
+	binary.LittleEndian.PutUint32(data[10:14], 54)
+	binary.LittleEndian.PutUint32(data[14:18], 40)
+	binary.LittleEndian.PutUint32(data[18:22], 1)
+	binary.LittleEndian.PutUint32(data[22:26], 1)
+	binary.LittleEndian.PutUint16(data[26:28], 1)
+	binary.LittleEndian.PutUint16(data[28:30], 24)
+	binary.LittleEndian.PutUint32(data[34:38], 4)
+	return data
 }
 
 func findRequestToolResult(messages []llm.Message, callID string) *llm.ToolResultData {

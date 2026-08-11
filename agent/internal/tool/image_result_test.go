@@ -15,16 +15,18 @@ import (
 
 func TestDispatchedResultAcceptsReadableRasterFormats(t *testing.T) {
 	tests := []struct {
-		name      string
-		mediaType string
-		data      []byte
+		name          string
+		mediaType     string
+		wantMediaType string
+		data          []byte
 	}{
-		{name: "PNG", mediaType: "image/png", data: encodeRasterFixture(t, "png")},
-		{name: "JPEG", mediaType: "image/jpeg", data: encodeRasterFixture(t, "jpeg")},
-		{name: "GIF", mediaType: "image/gif", data: encodeRasterFixture(t, "gif")},
-		{name: "WebP", mediaType: "image/webp", data: decodeRasterFixture(t, "UklGRjAAAABXRUJQVlA4ICQAAABwAQCdASoBAAEAAgA0JYwCdAGIQAD++ZNsGW2xURhNJHYAAAA=")},
-		{name: "BMP", mediaType: "image/bmp", data: decodeRasterFixture(t, "Qk06AAAAAAAAADYAAAAoAAAAAQAAAAEAAAABABgAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAMCAQAA==")},
-		{name: "TIFF", mediaType: "image/tiff", data: decodeRasterFixture(t, "SUkqAAgAAAAJAAABAwABAAAAAQAAAAEBAwABAAAAAQAAAAIBAwADAAAAegAAAAMBAwABAAAAAQAAAAYBAwABAAAAAgAAABEBBAABAAAAgAAAABUBAwABAAAAAwAAABYBBAABAAAAAQAAABcBBAABAAAAAwAAAAAAAAAIAAgACAAQIDA=")},
+		{name: "PNG", mediaType: "image/png", wantMediaType: "image/png", data: encodeRasterFixture(t, "png")},
+		{name: "JPEG", mediaType: "image/jpeg", wantMediaType: "image/jpeg", data: encodeRasterFixture(t, "jpeg")},
+		{name: "GIF", mediaType: "image/gif", wantMediaType: "image/gif", data: encodeRasterFixture(t, "gif")},
+		{name: "WebP", mediaType: "image/webp", wantMediaType: "image/webp", data: decodeRasterFixture(t, "UklGRjAAAABXRUJQVlA4ICQAAABwAQCdASoBAAEAAgA0JYwCdAGIQAD++ZNsGW2xURhNJHYAAAA=")},
+		{name: "BMP", mediaType: "image/bmp", wantMediaType: "image/bmp", data: decodeRasterFixture(t, "Qk06AAAAAAAAADYAAAAoAAAAAQAAAAEAAAABABgAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAMCAQAA==")},
+		{name: "TIFF", mediaType: "image/tiff", wantMediaType: "image/tiff", data: decodeRasterFixture(t, "SUkqAAgAAAAJAAABAwABAAAAAQAAAAEBAwABAAAAAQAAAAIBAwADAAAAegAAAAMBAwABAAAAAQAAAAYBAwABAAAAAgAAABEBBAABAAAAgAAAABUBAwABAAAAAwAAABYBBAABAAAAAQAAABcBBAABAAAAAwAAAAAAAAAIAAgACAAQIDA=")},
+		{name: "MislabeledPNG", mediaType: "text/plain", wantMediaType: "image/png", data: encodeRasterFixture(t, "png")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -36,7 +38,7 @@ func TestDispatchedResultAcceptsReadableRasterFormats(t *testing.T) {
 			if result.IsError {
 				t.Fatalf("valid raster was rejected: %s", result.FullOutput)
 			}
-			if !bytes.Equal(result.ImageData, test.data) || result.ImageMediaType != test.mediaType {
+			if !bytes.Equal(result.ImageData, test.data) || result.ImageMediaType != test.wantMediaType {
 				t.Fatalf("image result = data %d bytes, media type %q", len(result.ImageData), result.ImageMediaType)
 			}
 		})

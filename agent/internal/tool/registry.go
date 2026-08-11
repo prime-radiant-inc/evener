@@ -315,7 +315,7 @@ func ParseImageResult(path, readFileOutput string) *ImageResult {
 // ParseDocumentResult checks if ReadFile output is a document response (the [document: ...]
 // format produced by execenv.LocalExecutionEnvironment for PDFs). Returns an ImageResult so the
 // same vision side-channel pipeline handles both images and documents.
-func ParseDocumentResult(path, readFileOutput string) *ImageResult {
+func ParseDocumentResult(_ string, readFileOutput string) *ImageResult {
 	if !strings.HasPrefix(readFileOutput, "[document:") {
 		return nil
 	}
@@ -328,14 +328,10 @@ func ParseDocumentResult(path, readFileOutput string) *ImageResult {
 	if err != nil {
 		return nil
 	}
-	mt := llm.InferMimeTypeFromPath(path)
-	if mt == "" {
-		mt = "application/pdf"
-	}
 	return &ImageResult{
 		Text:      text,
 		Data:      data,
-		MediaType: mt,
+		MediaType: "application/pdf",
 	}
 }
 
@@ -726,10 +722,12 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 	// ImageResult carries both text and raw image bytes.
 	if img, ok := v.(ImageResult); ok {
 		mediaType := strings.ToLower(strings.TrimSpace(img.MediaType))
-		if mediaType == "" || strings.HasPrefix(mediaType, "image/") {
-			if err := llm.ValidateRasterImage(img.Data); err != nil {
+		if mediaType != "application/pdf" {
+			decodedMediaType, err := llm.RasterMediaType(img.Data)
+			if err != nil {
 				return truncateResult(name, callID, fmt.Sprintf("invalid image data: %v", err), true, lim)
 			}
+			img.MediaType = decodedMediaType
 		}
 		res := truncateResult(name, callID, img.Text, false, lim)
 		res.ImageData = img.Data

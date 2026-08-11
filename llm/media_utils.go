@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"image"
 	"image/gif"
+
+	// Registered for image.Decode side effects so raster validation accepts JPEG.
 	_ "image/jpeg"
 	"mime"
 	"os"
 	"path/filepath"
 	"strings"
 
+	// Registered for image.Decode side effects so raster validation accepts
+	// these common non-standard-library formats.
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
@@ -67,19 +71,27 @@ func IsImageFile(path string) bool {
 	return false
 }
 
-// ValidateRasterImage fully decodes supported raster bytes. Header-only or
-// otherwise malformed images are rejected before they can enter model history.
-func ValidateRasterImage(data []byte) error {
+// RasterMediaType fully decodes supported raster bytes and returns the media
+// type established by those bytes. Header-only or otherwise malformed images
+// are rejected before they can enter model history.
+func RasterMediaType(data []byte) (string, error) {
 	_, format, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
-		return err
+		return "", err
 	}
 	if format == "gif" {
 		if _, err := gif.DecodeAll(bytes.NewReader(data)); err != nil {
-			return err
+			return "", err
 		}
 	}
-	return nil
+	switch format {
+	case "png", "gif", "webp", "bmp", "tiff":
+		return "image/" + format, nil
+	case "jpeg":
+		return "image/jpeg", nil
+	default:
+		return "", fmt.Errorf("unsupported raster format %q", format)
+	}
 }
 
 // DataURI encodes data as a base64 data URI with the given MIME type. If
