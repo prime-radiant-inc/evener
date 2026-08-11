@@ -2237,12 +2237,107 @@ func TestStream_EmptyResponsesStream_TwiceFallsBackToChatCompletions(t *testing.
 	}
 	defer stream.Close()
 
-	text, streamErr := collectStreamEvents(t, stream)
+	var eventTypes []string
+	var text strings.Builder
+	var streamErr error
+	for ev := range stream.Events() {
+		eventTypes = append(eventTypes, string(ev.Type))
+		switch ev.Type {
+		case llm.StreamEventTextDelta:
+			text.WriteString(ev.Delta)
+		case llm.StreamEventError:
+			streamErr = ev.Err
+		}
+	}
 	if streamErr != nil {
 		t.Fatalf("stream error: %v", streamErr)
 	}
-	if text != "chat fallback" {
-		t.Fatalf("text = %q, want chat fallback", text)
+	if got := text.String(); got != "chat fallback" {
+		t.Fatalf("text = %q, want chat fallback", got)
+	}
+	if got, want := strings.Join(eventTypes, ","), "STREAM_START,TEXT_START,TEXT_DELTA,TEXT_END,FINISH"; got != want {
+		t.Fatalf("event sequence = %s, want %s", got, want)
+	}
+	if got := responsesHits.Load(); got != 2 {
+		t.Fatalf("Responses hits = %d, want 2", got)
+	}
+	if got := chatHits.Load(); got != 1 {
+		t.Fatalf("Chat Completions hits = %d, want 1", got)
+	}
+}
+
+type closeCountingStream struct {
+	events chan llm.StreamEvent
+	closes atomic.Int32
+}
+
+func (s *closeCountingStream) Events() <-chan llm.StreamEvent { return s.events }
+func (s *closeCountingStream) Close() error {
+	s.closes.Add(1)
+	return nil
+}
+
+func TestDecodeStream_SuccessfulAttemptClosesOnce(t *testing.T) {
+	responsesStream := &closeCountingStream{events: make(chan llm.StreamEvent, 2)}
+	responsesStream.events <- llm.StreamEvent{Type: llm.StreamEventStreamStart}
+	responsesStream.events <- llm.StreamEvent{Type: llm.StreamEventFinish}
+	close(responsesStream.events)
+	proxy := llm.NewChanStream(nil)
+
+	(&Adapter{}).decodeStream(context.Background(), proxy, responsesStream, llm.Request{Model: "gpt-test"})
+
+	var eventTypes []string
+	for ev := range proxy.Events() {
+		eventTypes = append(eventTypes, string(ev.Type))
+	}
+	if got, want := strings.Join(eventTypes, ","), "STREAM_START,FINISH"; got != want {
+		t.Fatalf("event sequence = %s, want %s", got, want)
+	}
+	if got := responsesStream.closes.Load(); got != 1 {
+		t.Fatalf("Responses stream Close calls = %d, want 1", got)
+	}
+}
+
+func TestStream_EmptyResponsesStream_RetryErrorPreservedWhenChatFallbackFails(t *testing.T) {
+	var responsesHits atomic.Int32
+	var chatHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			if responsesHits.Add(1) == 1 {
+				w.Header().Set("Content-Type", "text/event-stream")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"retry endpoint unsupported","code":"model_not_found","type":"invalid_request_error"}}`))
+		case "/v1/chat/completions":
+			chatHits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"chat endpoint failed","code":"server_error","type":"server_error"}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{Model: "gpt-test", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	_, streamErr := collectStreamEvents(t, stream)
+	if streamErr == nil {
+		t.Fatal("stream error = nil, want both endpoint failures")
+	}
+	if !strings.Contains(streamErr.Error(), "retry endpoint unsupported") {
+		t.Fatalf("stream error did not preserve retry failure: %v", streamErr)
+	}
+	if !strings.Contains(streamErr.Error(), "chat endpoint failed") {
+		t.Fatalf("stream error did not preserve Chat failure: %v", streamErr)
 	}
 	if got := responsesHits.Load(); got != 2 {
 		t.Fatalf("Responses hits = %d, want 2", got)

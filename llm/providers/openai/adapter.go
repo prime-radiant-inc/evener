@@ -782,57 +782,62 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 func (a *Adapter) decodeStream(out context.Context, proxy *llm.ChanStream, responsesStream llm.Stream, req llm.Request) {
 	defer proxy.CloseSend()
 
-attemptLoop:
-	for attempt := 0; attempt < 2; attempt++ {
+	sentStreamStart := false
+	forwardResponses := func(stream llm.Stream) (error, bool) {
+		defer func() { _ = stream.Close() }()
 		sentContent := false
-		for ev := range responsesStream.Events() {
+		for ev := range stream.Events() {
+			if ev.Type == llm.StreamEventStreamStart {
+				if sentStreamStart {
+					continue
+				}
+				sentStreamStart = true
+			}
 			if isContentEvent(ev.Type) {
 				sentContent = true
 			}
 			if ev.Type == llm.StreamEventError && errors.Is(ev.Err, errEmptyResponsesStream) && !sentContent {
-				responsesStream.Close() //nolint:errcheck
-				if attempt == 0 {
-					retryStream, retryErr := a.streamResponses(out, req)
-					if retryErr == nil {
-						responsesStream = retryStream
-						continue attemptLoop
-					}
-					ev.Err = retryErr
-				}
-				if !a.shouldFallbackToChatCompletions(req, ev.Err) {
-					proxy.Send(ev)
-					return
-				}
-				if requestHasToolResultImages(req) {
-					proxy.Send(ev)
-					return
-				}
-				// Both Responses attempts gave us nothing. Fall back to Chat Completions.
-				fallbackReq := chatFallbackRequest(req)
-				ccStream, ccErr := a.streamViaChatCompletions(out, fallbackReq)
-				if ccErr != nil {
-					combinedMsg := fmt.Sprintf(
-						"openai: model %q failed on both endpoints — "+
-							"/v1/responses: empty stream (model not supported); "+
-							"/v1/chat/completions: %v",
-						req.Model, ccErr,
-					)
-					proxy.Send(llm.StreamEvent{
-						Type: llm.StreamEventError,
-						Err:  llm.NewStreamError("openai", combinedMsg, ccErr),
-					})
-					return
-				}
-				// Forward all events from the Chat Completions stream.
-				for ccEv := range ccStream.Events() {
-					proxy.Send(ccEv)
-				}
-				ccStream.Close() //nolint:errcheck
-				return
+				return ev.Err, true
 			}
 			proxy.Send(ev)
 		}
-		responsesStream.Close() //nolint:errcheck
+		return nil, false
+	}
+
+	responsesErr, retry := forwardResponses(responsesStream)
+	if !retry {
+		return
+	}
+
+	retryStream, retryErr := a.streamResponses(out, req)
+	if retryErr != nil {
+		responsesErr = retryErr
+	} else {
+		responsesErr, retry = forwardResponses(retryStream)
+		if !retry {
+			return
+		}
+	}
+
+	if !a.shouldFallbackToChatCompletions(req, responsesErr) || requestHasToolResultImages(req) {
+		proxy.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: responsesErr})
+		return
+	}
+
+	ccStream, fallbackErr := a.fallbackToChatCompletions(out, req, responsesErr)
+	if fallbackErr != nil {
+		proxy.Send(llm.StreamEvent{
+			Type: llm.StreamEventError,
+			Err:  llm.NewStreamError("openai", fallbackErr.Error(), fallbackErr),
+		})
+		return
+	}
+	defer func() { _ = ccStream.Close() }()
+	for ccEv := range ccStream.Events() {
+		if ccEv.Type == llm.StreamEventStreamStart && sentStreamStart {
+			continue
+		}
+		proxy.Send(ccEv)
 	}
 }
 
