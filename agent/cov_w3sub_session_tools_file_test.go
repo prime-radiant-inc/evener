@@ -61,7 +61,7 @@ func w3sub_readFileResult(t *testing.T, env execenv.ExecutionEnvironment, path s
 // read_file routes an [image: ...] ReadFile payload through the vision
 // side-channel (session_tools_file.go image arm).
 func TestW3Sub_RegisterFileTools_ImageResult(t *testing.T) {
-	payload := "[image: pic.png]\n" + base64.StdEncoding.EncodeToString([]byte("fakepngbytes"))
+	payload := "[image: pic.png]\n" + base64.StdEncoding.EncodeToString(validPNGFixture(t))
 	res := w3sub_readFileResult(t, &w3sub_readFileEnv{output: payload}, "pic.png")
 	if res.IsError {
 		t.Fatalf("unexpected error: %q", res.Output)

@@ -105,9 +105,9 @@ func toolCallEndData(t *testing.T, collected []events.SessionEvent, callID strin
 // the session stream has no way to know the image exists until the session is
 // read back off disk (kata 2fxm).
 func TestToolCallEndCarriesTheToolResultImage(t *testing.T) {
-	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 's', 'h', 'o', 't'}
+	webp := validWebPFixture(t)
 	sess, stop := imageToolSession(t, "screenshot", func() (any, error) {
-		return tool.ImageResult{Text: "captured", Data: png, MediaType: "image/webp"}, nil
+		return tool.ImageResult{Text: "captured", Data: webp, MediaType: "image/webp"}, nil
 	})
 
 	sess.execTool(context.Background(), llm.ToolCallData{
@@ -118,12 +118,12 @@ func TestToolCallEndCarriesTheToolResultImage(t *testing.T) {
 	if len(data.OutputImages) != 1 {
 		t.Fatalf("OutputImages=%+v, want one descriptor for the returned bytes", data.OutputImages)
 	}
-	sum := sha256.Sum256(png)
+	sum := sha256.Sum256(webp)
 	want := events.OutputImage{
 		Source:    "tool-result",
 		Name:      "screenshot",
 		MediaType: "image/webp",
-		Size:      int64(len(png)),
+		Size:      int64(len(webp)),
 		SHA:       hex.EncodeToString(sum[:]),
 	}
 	if data.OutputImages[0] != want {
@@ -152,7 +152,7 @@ func TestToolCallEndCarriesNoImageForAByteLessResult(t *testing.T) {
 // from the transcript it wrote. A reader watching the session and a reader
 // opening it later must be told the same thing about the same bytes.
 func TestLiveToolResultImageMatchesItsReloadedProjection(t *testing.T) {
-	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 'l', 'i', 'v', 'e'}
+	png := validPNGFixture(t)
 	sess, stop := imageToolSessionWithState(t, "screenshot", func() (any, error) {
 		return tool.ImageResult{Text: "captured", Data: png, MediaType: "image/png"}, nil
 	})

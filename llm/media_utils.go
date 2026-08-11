@@ -1,12 +1,20 @@
 package llm
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
+	"image"
+	"image/gif"
+	_ "image/jpeg"
 	"mime"
 	"os"
 	"path/filepath"
 	"strings"
+
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/tiff"
+	_ "golang.org/x/image/webp"
 )
 
 // IsLocalPath reports whether s, after trimming surrounding whitespace, looks
@@ -57,6 +65,21 @@ func IsImageFile(path string) bool {
 		return true
 	}
 	return false
+}
+
+// ValidateRasterImage fully decodes supported raster bytes. Header-only or
+// otherwise malformed images are rejected before they can enter model history.
+func ValidateRasterImage(data []byte) error {
+	_, format, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	if format == "gif" {
+		if _, err := gif.DecodeAll(bytes.NewReader(data)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DataURI encodes data as a base64 data URI with the given MIME type. If

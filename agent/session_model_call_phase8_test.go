@@ -248,7 +248,7 @@ func TestSession_PersistsImageToolResultFromExecResult(t *testing.T) {
 	}()
 
 	const toolName = "image_fixture"
-	imageBytes := []byte("fake-png-bytes")
+	imageBytes := validPNGFixture(t)
 	if err := sess.reg.Register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name:        toolName,

@@ -1154,7 +1154,7 @@ func TestRegister_ReusesCompiledSchemaOnReregistration(t *testing.T) {
 
 func TestExecuteCall_ImageResult_PopulatesImageFields(t *testing.T) {
 	reg := NewRegistry()
-	imgData := []byte{0x89, 0x50, 0x4E, 0x47} // PNG magic bytes
+	imgData := encodeRasterFixture(t, "png")
 	if err := reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name:       "read_file",

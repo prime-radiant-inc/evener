@@ -88,7 +88,7 @@ func FuzzToolRegistryProgram(f *testing.F) {
 					t.Fatalf("text result = %+v", result)
 				}
 			case 3:
-				if result.IsError || string(result.ImageData) != payload || result.ImageMediaType != "image/png" {
+				if result.IsError || len(result.ImageData) == 0 || result.ImageMediaType != "image/png" || !strings.Contains(result.FullOutput, payload) {
 					t.Fatalf("image result = %+v", result)
 				}
 			case 4:
@@ -151,7 +151,7 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 			case 2:
 				return TextResult{Output: "text:" + value, FullOutput: "full:" + value}, nil
 			case 3:
-				return ImageResult{Text: "image:" + value, Data: []byte(value), MediaType: "image/png", Purpose: "program"}, nil
+				return ImageResult{Text: "image:" + value, Data: encodeRasterFixture(t, "png"), MediaType: "image/png", Purpose: "program"}, nil
 			case 4:
 				return "partial:" + value, errors.New("program executor error")
 			case 5:

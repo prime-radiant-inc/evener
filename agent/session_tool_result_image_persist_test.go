@@ -114,7 +114,7 @@ func transcriptImageSHAs(t *testing.T, sess *Session) []string {
 // announcement to both halves of the claim: it comes after every call in the
 // round has ended, and the bytes it names really are in the transcript by then.
 func TestToolResultImagesAreAnnouncedWhenTheRoundIsWritten(t *testing.T) {
-	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 'r', 'o', 'u', 'n', 'd'}
+	png := validPNGFixture(t)
 	sess, stop := imageToolSessionWithState(t, "screenshot", func() (any, error) {
 		return tool.ImageResult{Text: "captured", Data: png, MediaType: "image/png"}, nil
 	})
@@ -160,7 +160,7 @@ func TestToolResultImagesAreAnnouncedWhenTheRoundIsWritten(t *testing.T) {
 // and there is nothing to announce. The descriptor still rides TOOL_CALL_END —
 // that a tool returned an image is true either way.
 func TestNoToolResultImageAnnouncementWithoutATranscript(t *testing.T) {
-	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 'n', 'o', 'w', 'h', 'e', 'r', 'e'}
+	png := validPNGFixture(t)
 	sess, stop := imageToolSession(t, "screenshot", func() (any, error) {
 		return tool.ImageResult{Text: "captured", Data: png, MediaType: "image/png"}, nil
 	})

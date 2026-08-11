@@ -725,6 +725,12 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 
 	// ImageResult carries both text and raw image bytes.
 	if img, ok := v.(ImageResult); ok {
+		mediaType := strings.ToLower(strings.TrimSpace(img.MediaType))
+		if mediaType == "" || strings.HasPrefix(mediaType, "image/") {
+			if err := llm.ValidateRasterImage(img.Data); err != nil {
+				return truncateResult(name, callID, fmt.Sprintf("invalid image data: %v", err), true, lim)
+			}
+		}
 		res := truncateResult(name, callID, img.Text, false, lim)
 		res.ImageData = img.Data
 		res.ImageMediaType = img.MediaType
