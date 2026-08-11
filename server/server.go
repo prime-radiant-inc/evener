@@ -640,13 +640,21 @@ func (s *Server) SetProcessingTurn(turnID string) {
 
 func (s *Server) setProcessingLocked(processing bool) {
 	s.processing = processing
-	if processing {
-		if strings.TrimSpace(s.appActiveTurnID) == "" {
-			s.ensureAppProjectorLocked("")
-			s.appActiveTurnID = s.appProjector.ReserveTurnID()
+	if !processing {
+		if s.appProjector != nil && s.appReservedTurnID == "" {
+			reservedTurnID := s.appProjector.ReservedTurnID()
+			if reservedTurnID != "" && s.appActiveTurnID == reservedTurnID {
+				s.appProjector.ReleaseReservedTurnID(reservedTurnID)
+				s.appActiveTurnID = ""
+			}
 		}
-		s.appReservedTurnID = ""
+		return
 	}
+	if strings.TrimSpace(s.appActiveTurnID) == "" {
+		s.ensureAppProjectorLocked("")
+		s.appActiveTurnID = s.appProjector.ReserveTurnID()
+	}
+	s.appReservedTurnID = ""
 }
 
 // InputCh returns the channel that receives user input messages.

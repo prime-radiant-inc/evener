@@ -315,6 +315,15 @@ func readSessionControlThread(t *testing.T, lifecycle *sessionControlLifecycle, 
 func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) {
 	t.Run("steer and incorporate", func(t *testing.T) {
 		lifecycle := startSessionControlLifecycle(t)
+		lifecycle.server.RecordAppEvent(events.SessionEvent{
+			Kind:      events.EventUserInput,
+			SessionID: strings.TrimPrefix(lifecycle.ref, "local:"),
+			Data:      events.UserInputData{Text: "stale projected turn"},
+		})
+		staleProjectedTurnID := readSessionControlThread(t, lifecycle, false).Serf.ActiveTurnID
+		if staleProjectedTurnID == "" {
+			t.Fatal("failed to prime a stale projected active turn")
+		}
 		start := startHeldClientMutationTurn(t, lifecycle, "stable-start", "pending user input")
 		thread := readSessionControlThread(t, lifecycle, false)
 		activeTurnID := thread.Serf.ActiveTurnID
@@ -387,6 +396,9 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.processingFinished, "processing finish")
 		if status := readSessionControlThread(t, lifecycle, false).Status.Type; status != appwire.ThreadStatusIdle {
 			t.Fatalf("thread status after Stop = %q, want idle", status)
+		}
+		if activeTurnID := readSessionControlThread(t, lifecycle, false).Serf.ActiveTurnID; activeTurnID != "" {
+			t.Fatalf("active turn after Stop = %q, want empty", activeTurnID)
 		}
 	})
 }

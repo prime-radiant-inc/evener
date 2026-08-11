@@ -1604,7 +1604,15 @@ func (p *AppEventProjector) ReserveTurnID() string {
 // consumed by the next real turn projection.
 func (p *AppEventProjector) ReserveStableTurnID(turnID string) {
 	invariant.Hold(strings.TrimSpace(turnID) != "", "appprojector: stable turn id is empty")
+	// Durable mutation state is authoritative over a stale live projection.
+	// Keeping the old active ID would make an intervening event publish it
+	// again before this reservation is consumed by EventUserInput.
+	p.activeTurnID = ""
 	p.reservedTurnID = turnID
+}
+
+func (p *AppEventProjector) ReservedTurnID() string {
+	return p.reservedTurnID
 }
 
 func (p *AppEventProjector) ReleaseReservedTurnID(turnID string) {
