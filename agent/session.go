@@ -675,6 +675,22 @@ func (s *Session) enqueueJobNotificationAndNotify(n jobNotification) {
 	}
 }
 
+func (s *Session) consumeJobNotification(jobID string) {
+	if jobID == "" {
+		return
+	}
+	s.pendingJobNotifsMu.Lock()
+	kept := s.pendingJobNotifs[:0]
+	for _, notification := range s.pendingJobNotifs {
+		if notification.JobID == jobID && notification.WatchSend == nil && notification.Status != jobNotificationEventWatch {
+			continue
+		}
+		kept = append(kept, notification)
+	}
+	s.pendingJobNotifs = kept
+	s.pendingJobNotifsMu.Unlock()
+}
+
 // holdJobNotificationWake defers the notification wake until the returned
 // release runs, which then wakes ONCE if anything was queued meanwhile.
 // Notices produced by a single event belong in a single notification turn: an

@@ -405,7 +405,6 @@ func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	if live, liveErr := findJobRecord(jm, jobID); liveErr == nil {
 		rec = live
 	}
-	consumeTerminalJobNotification(s, jm, rec)
 	out := projectJobStatus(jm.now(), rec)
 	rendered, err := marshalBoundedJSON(out, maxChars)
 	if err != nil {
@@ -414,10 +413,10 @@ func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	return tool.StateResult{Output: rendered, State: out}, nil
 }
 
-// consumeTerminalJobNotification settles the terminal notification of a job
-// whose caller just read its terminal status: the caller has learned the job
-// ended, so waking it later to say the same thing is an interruption that
-// carries no news.
+// consumeTerminalJobNotification settles the terminal notification after its
+// job_status result is durable in the session transcript. At that point the
+// caller has learned the job ended, so waking it later to say the same thing is
+// an interruption that carries no news.
 //
 // It is recorded durably as its own state (consumed, not delivered) so the
 // told-the-caller invariant stays true without claiming a notification turn
@@ -447,6 +446,9 @@ func consumeTerminalJobNotification(s *Session, jm *jobManager, rec *jobstore.Jo
 		return
 	}
 	rec.NotifyState = jobstore.NotifyConsumed
+	if jm.consume != nil {
+		jm.consume(rec.JobID)
+	}
 	// Settle the parent's forwarded COPY too, for the same reason a delivery
 	// does: the copy is only a drive signal, and a signal nobody clears
 	// re-drives forever.

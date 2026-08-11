@@ -123,6 +123,9 @@ type jobManager struct {
 	forward     func(jobstore.Event) error
 	parentJobID string
 	enqueue     func(jobNotification)
+	// consume removes the owner's in-memory wake after the corresponding
+	// terminal status result is durable in the session transcript.
+	consume func(jobID string)
 	// holdWake defers the owner's notification wake until the returned release
 	// runs, so a group of notices produced by ONE event reaches the model in one
 	// notification turn instead of interrupting it once per notice. Only a real

@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
@@ -256,6 +257,7 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 	if abortErr := s.appendToolResults(ctx, calls, results, parts); abortErr != nil {
 		return abortErr
 	}
+	s.consumePersistedTerminalJobStatusNotifications(calls, results)
 
 	for i, r := range results {
 		if len(r.ImageData) > 0 {
@@ -284,6 +286,23 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 		}
 	}
 	return nil
+}
+
+func (s *Session) consumePersistedTerminalJobStatusNotifications(calls []llm.ToolCallData, results []tool.ExecResult) {
+	for i, call := range calls {
+		if call.Name != "job_status" || i >= len(results) || results[i].IsError {
+			continue
+		}
+		var status jobStatusResult
+		if err := json.Unmarshal(results[i].ToolState, &status); err != nil || !jobstore.Status(status.Status).IsTerminal() {
+			continue
+		}
+		jm, rec, err := s.nestedOrLocalJobManager(status.JobID)
+		if err != nil {
+			continue
+		}
+		consumeTerminalJobNotification(s, jm, rec)
+	}
 }
 
 // notifyStrategyAfterAction tells the context strategy that a tool round completed
