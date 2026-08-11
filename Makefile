@@ -33,7 +33,7 @@ build-runtime: build-web
 # cache to ensure embedded files (templates, sections, agent .md) are fresh.
 build-linux:
 	go clean -cache -x ./agent/ 2>/dev/null; \
-	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o serf-linux-amd64 ./cmd/serf/
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o serf-linux-amd64 ./cmd/serf/
 
 build-hub: build-runtime
 
