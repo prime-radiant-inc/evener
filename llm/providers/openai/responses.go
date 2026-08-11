@@ -1226,7 +1226,8 @@ func toResponsesInput(msgs []llm.Message, model string) (instructions string, it
 					"output":  outStr,
 				}
 
-				if len(p.ToolResult.ImageData) > 0 {
+				mediaType := strings.ToLower(strings.TrimSpace(p.ToolResult.ImageMediaType))
+				if len(p.ToolResult.ImageData) > 0 && (mediaType == "" || strings.HasPrefix(mediaType, "image/")) {
 					data, mt, err := normalizeImageInput(p.ToolResult.ImageData, p.ToolResult.ImageMediaType)
 					if err != nil {
 						return "", nil, &llm.ConfigurationError{Message: err.Error()}
