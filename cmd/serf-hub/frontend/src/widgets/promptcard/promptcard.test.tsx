@@ -129,7 +129,7 @@ test("hidden takes the card out of the interaction tree, not just out of sight",
 // the field would show nothing at all. jsdom applies no stylesheet, so the rule
 // is checked against the stylesheet text and the state against the DOM.
 test("the card owns the focus ring for the seamless field inside it", () => {
-  expect(moduleCss()).toMatch(/\.card:focus-within\s*\{[^}]*outline: 2px solid var\(--accent\)/);
+  expect(moduleCss()).toMatch(/\.card:focus-within\s*\{[^}]*outline: var\(--focus-ring\)/);
 });
 
 // Queried only after focusing: jsdom's selector engine caches a :focus-within

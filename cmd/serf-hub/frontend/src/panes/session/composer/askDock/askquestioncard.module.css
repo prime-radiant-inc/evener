@@ -89,7 +89,7 @@
  * selection ("--accent ... carries selection" - design-system.md §4), not a
  * needs-you signal, so it never touches the token-contract allowlist. */
 .option input:checked + .optionChip {
-  outline: 2px solid var(--accent);
+  outline: var(--focus-ring);
   outline-offset: 1px;
   border-radius: var(--radius-control);
 }

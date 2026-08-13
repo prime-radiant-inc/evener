@@ -32,7 +32,7 @@
   position: absolute;
   top: var(--space-1);
   right: var(--space-1);
-  z-index: 1;
+  z-index: var(--z-raised);
   display: flex;
   align-items: center;
   gap: var(--space-2);

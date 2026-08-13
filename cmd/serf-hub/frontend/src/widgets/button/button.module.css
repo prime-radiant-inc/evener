@@ -16,7 +16,7 @@
 }
 
 .button:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -98,7 +98,7 @@
 }
 
 .dangerQuiet:focus-visible {
-  outline: 2px solid var(--danger);
+  outline: var(--focus-ring-danger);
 }
 
 /* Phone tap floor (2026-07-30-mobile-session-layout-design.md, decision 4):

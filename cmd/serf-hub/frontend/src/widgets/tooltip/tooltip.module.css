@@ -15,7 +15,7 @@
  * own doc comment carries the numbers. */
 .bubble {
   position: fixed;
-  z-index: 1030;
+  z-index: var(--z-tooltip);
   padding: var(--space-1) var(--space-2);
   /* An out-of-flow box with `width: auto` shrink-to-fits into whatever space
    * its own offsets leave in its containing block, which is a moving target
@@ -29,6 +29,7 @@
   background: var(--surface-2);
   border: 1px solid var(--edge);
   border-radius: var(--radius-control);
+  box-shadow: var(--shadow-overlay);
   color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);

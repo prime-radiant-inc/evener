@@ -26,8 +26,8 @@
 }
 
 .chipButton:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 2px var(--accent);
+  outline: var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .chipButton > span {
@@ -48,7 +48,7 @@
   position: absolute;
   bottom: calc(100% + var(--space-1));
   left: 0;
-  z-index: 1020;
+  z-index: var(--z-menu);
   min-width: 200px;
   display: flex;
   flex-direction: column;
@@ -58,6 +58,7 @@
   background: var(--surface-2);
   border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
+  box-shadow: var(--shadow-overlay);
   animation: goalPopoverFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
 }
 

@@ -6,7 +6,7 @@
   align-items: center;
   justify-content: center;
   padding: var(--space-4);
-  z-index: 1000;
+  z-index: var(--z-dialog);
 }
 
 /* Shared panel chassis - Dialog and Sheet (via OverlayPanel) both start
@@ -17,6 +17,7 @@
   flex-direction: column;
   background: var(--surface-2);
   border: 1px solid var(--edge);
+  box-shadow: var(--shadow-modal);
   overflow: auto;
 }
 
@@ -78,7 +79,7 @@
 }
 
 .closeButton:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: var(--focus-ring);
   outline-offset: 2px;
 }
 

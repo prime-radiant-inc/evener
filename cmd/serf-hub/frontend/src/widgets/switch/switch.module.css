@@ -11,7 +11,7 @@
   height: 18px;
   padding: 2px;
   border: none;
-  border-radius: 9px;
+  border-radius: var(--radius-pill);
   background: var(--surface-2);
   cursor: pointer;
 }
@@ -26,7 +26,7 @@
 }
 
 .track:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: var(--focus-ring);
   outline-offset: 2px;
 }
 

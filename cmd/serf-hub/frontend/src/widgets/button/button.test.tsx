@@ -62,7 +62,7 @@ test("dangerQuiet colors the label rather than filling a background", () => {
   expect(rule).toContain("color: var(--danger)");
   expect(rule).toContain("background: transparent");
   expect(css).toMatch(/\.dangerQuiet:hover:not\(:disabled\)\s*\{[^}]*background: var\(--danger-bg\)/);
-  expect(css).toMatch(/\.dangerQuiet:focus-visible\s*\{[^}]*outline: 2px solid var\(--danger\)/);
+  expect(css).toMatch(/\.dangerQuiet:focus-visible\s*\{[^}]*outline: var\(--focus-ring-danger\)/);
 });
 
 test("each size renders a distinct class", () => {

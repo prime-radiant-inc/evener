@@ -68,8 +68,8 @@
   background: var(--surface-2);
 }
 .denseRow:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
+  outline: var(--focus-ring);
+  outline-offset: -2px;
 }
 .denseName {
   flex: 1;
@@ -130,8 +130,8 @@
   background: var(--surface-2);
 }
 .foldRow:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
+  outline: var(--focus-ring);
+  outline-offset: -2px;
 }
 .detailStrip {
   margin: 2px var(--space-3) 6px calc(var(--space-3) + 20px);

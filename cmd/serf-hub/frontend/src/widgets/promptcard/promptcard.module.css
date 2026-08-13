@@ -15,7 +15,7 @@
  * affordance for the seamless textarea inside it (which draws no ring of its
  * own) - the same 2px accent outline every interactive control here uses. */
 .card:focus-within {
-  outline: 2px solid var(--accent);
+  outline: var(--focus-ring);
   outline-offset: 2px;
 }
 

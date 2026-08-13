@@ -51,7 +51,7 @@
   height: 100%;
   cursor: col-resize;
   touch-action: none;
-  z-index: 1;
+  z-index: var(--z-raised);
 }
 
 .resizeHandle::after {
@@ -72,7 +72,7 @@
 }
 
 .resizeHandle:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: var(--focus-ring);
   outline-offset: 1px;
 }
 
@@ -213,7 +213,7 @@
 }
 
 .sectionDisclosure:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: var(--focus-ring);
   outline-offset: -2px;
 }
 
@@ -246,7 +246,7 @@
 }
 
 .chip:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -294,7 +294,7 @@
 }
 
 .pickerItem:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: var(--focus-ring);
   outline-offset: 1px;
 }
 

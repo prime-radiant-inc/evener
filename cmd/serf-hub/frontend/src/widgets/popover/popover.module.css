@@ -13,10 +13,11 @@
  * content and no clipping ancestor can cut it off. */
 .panel {
   position: fixed;
-  z-index: 1020;
+  z-index: var(--z-menu);
   background: var(--surface-1);
   border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
+  box-shadow: var(--shadow-overlay);
   animation: popoverFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
 }
 

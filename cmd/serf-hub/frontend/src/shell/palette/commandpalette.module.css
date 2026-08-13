@@ -175,7 +175,7 @@
 .mark {
   background: var(--accent-bg);
   color: var(--ink-hi);
-  border-radius: 2px;
+  border-radius: var(--radius-control);
 }
 
 .helpRow {

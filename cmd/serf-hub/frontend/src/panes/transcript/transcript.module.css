@@ -26,7 +26,7 @@
   min-height: 0;
   overflow: auto;
   margin: 0;
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
   white-space: pre-wrap;
@@ -34,7 +34,7 @@
 }
 
 .joblogNote {
-  padding: 4px 12px;
+  padding: var(--space-1) var(--space-3);
   color: var(--ink-low);
   font-size: var(--font-size-caption);
 }
