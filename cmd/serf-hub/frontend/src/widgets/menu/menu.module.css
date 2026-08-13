@@ -18,6 +18,7 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .trigger:hover {
@@ -99,16 +100,17 @@
   color: var(--ink-hi);
   cursor: pointer;
   white-space: nowrap;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .item:hover {
-  background: var(--surface-1);
+  background: var(--hover-1);
 }
 
 .item:focus-visible {
   outline: var(--focus-ring);
   outline-offset: -2px;
-  background: var(--surface-1);
+  background: var(--hover-1);
 }
 
 .itemDisabled {

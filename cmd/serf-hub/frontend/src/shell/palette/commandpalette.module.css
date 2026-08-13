@@ -49,10 +49,17 @@
   padding: var(--space-3);
   border: 1px solid var(--edge);
   border-radius: var(--radius-control);
-  background: var(--surface-0);
+  background: var(--field);
+  box-shadow: var(--shadow-inset-field);
   color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-body);
+  transition: border-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.input:hover,
+.input:focus-within {
+  border-color: var(--edge-strong);
 }
 
 .input:focus {
@@ -104,10 +111,15 @@
   border: none;
   cursor: pointer;
   min-width: 0;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.row:hover {
+  background: var(--hover-1);
 }
 
 .row[aria-selected="true"] {
-  background: var(--surface-2);
+  background: var(--hover-2);
 }
 
 /* A command the hub says it will not carry out right now. It recedes to the

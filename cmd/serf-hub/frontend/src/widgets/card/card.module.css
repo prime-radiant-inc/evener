@@ -1,8 +1,9 @@
 .card {
   padding: var(--space-4);
   background: var(--surface-1);
-  border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
+  /* --shadow-card embeds its own 1px ring, replacing the border. */
+  box-shadow: var(--shadow-card);
 }
 
 /* squircle-proto: continuous (Apple-style) corner curvature where the engine

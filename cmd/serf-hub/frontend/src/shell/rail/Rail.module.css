@@ -30,7 +30,7 @@
   height: 100%;
   /* Anchors the absolutely-positioned resize handle to the right edge. */
   position: relative;
-  background: var(--surface-1);
+  background: var(--surface-canvas);
   border-right: 1px solid var(--edge);
 }
 
@@ -210,6 +210,11 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
   cursor: default;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.sectionDisclosure:hover {
+  background: var(--hover-1);
 }
 
 .sectionDisclosure:focus-visible {
@@ -239,10 +244,11 @@
   background: var(--surface-1);
   color: var(--ink-mid);
   cursor: default;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .chip:hover {
-  background: var(--surface-2);
+  background: var(--hover-1);
 }
 
 .chip:focus-visible {
@@ -287,10 +293,11 @@
   color: var(--ink-hi);
   font: inherit;
   text-align: left;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .pickerItem:not(:disabled):hover {
-  background: var(--surface-2);
+  background: var(--hover-1);
 }
 
 .pickerItem:focus-visible {
@@ -334,6 +341,11 @@
    * positioned ancestor instead (the scrolling rail body, or the viewport)
    * and detaches from its own row entirely. */
   position: relative;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.railRow:hover {
+  background: var(--hover-1);
 }
 
 /* Nested-level guide rail (§2.3): widgets/tree exposes no depth class of
@@ -372,17 +384,18 @@
  * claiming a slot beside it (which made every actionable row narrower for
  * its title than its neighbours). `.railRow` above is the containing block.
  *
- * The masking background is what makes overlapping legible: `--surface-1`
- * is the rail's own background (`.rail`), and a row paints no surface of
- * its own (widgets/tree/tree.module.css sets none), so this is exactly the
- * color already behind the timestamp - the overlay reads as the row's own
- * right edge rather than a floating island, and the covered text can't
- * bleed through the "⋯" glyph. It's a left-to-right gradient rather than a
- * flat fill because a hard opaque edge slices whatever it covers mid-glyph
- * (a half-rendered letter reads as a rendering bug); the ramp reaches full
- * opacity before `padding-left` ends, so the buttons themselves always sit
- * on fully-masked ground. The opacity lives on the container, not the
- * buttons, so the mask fades in and out with what it's masking. */
+ * The masking background is what makes overlapping legible: it always
+ * matches whatever `.railRow` itself is painting underneath at that moment
+ * - `--surface-canvas` (the rail's own background, `.rail`) at rest, or
+ * `--hover-1` once `.railRow:hover` paints its own wash - so the overlay
+ * reads as the row's own right edge rather than a floating island, and the
+ * covered text can't bleed through the "⋯" glyph. It's a left-to-right
+ * gradient rather than a flat fill because a hard opaque edge slices
+ * whatever it covers mid-glyph (a half-rendered letter reads as a rendering
+ * bug); the ramp reaches full opacity before `padding-left` ends, so the
+ * buttons themselves always sit on fully-masked ground. The opacity lives
+ * on the container, not the buttons, so the mask fades in and out with what
+ * it's masking. */
 .actions {
   position: absolute;
   right: 0;
@@ -393,15 +406,23 @@
   flex: none;
   gap: var(--space-1);
   padding-left: var(--space-5);
-  background: linear-gradient(to right, transparent, var(--surface-1) var(--space-5));
+  background: linear-gradient(to right, transparent, var(--surface-canvas) var(--space-5));
   opacity: 0;
   transition: opacity 120ms var(--motion-easing-standard);
 }
 
-.railRow:hover .actions,
 [role="treeitem"]:focus .actions,
 .actions:has(button[aria-expanded="true"]) {
   opacity: 1;
+}
+
+/* The real-mouse-hover case gets its own rule, not folded into the one
+ * above: `.railRow:hover` paints `--hover-1` under the row (see that rule),
+ * so the mask's own background has to swap to match, on top of the same
+ * opacity flip the focus/open-menu case does. */
+.railRow:hover .actions {
+  opacity: 1;
+  background: linear-gradient(to right, transparent, var(--hover-1) var(--space-5));
 }
 
 /* Touch has no hover to reveal these with - stay visible below the mobile

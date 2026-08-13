@@ -241,3 +241,24 @@ test("mobile: the body can never scroll sideways - wide content is contained, no
   const bodyRule = css.match(/\.body \{([^}]*)\}/);
   expect(bodyRule![1]).toContain("overflow-x: clip");
 });
+
+// Micro-label pattern (design doc §2/§6): the pane title is chrome, not a
+// heading-sized title - small uppercase caption on the inset header band.
+test("the header sits on the inset surface", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
+  const rule = css.match(/\.header \{([^}]*)\}/)?.[1] ?? "";
+  expect(rule).toContain("background: var(--surface-inset)");
+  expect(rule).toContain("border-bottom: 1px solid var(--edge)");
+});
+
+test("the title renders as an uppercase micro-label, not a pane-title-sized heading", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
+  const rule = css.match(/\.title \{([^}]*)\}/)?.[1] ?? "";
+  expect(rule).toContain("font-size: var(--font-size-caption)");
+  expect(rule).toContain("font-weight: var(--font-weight-medium)");
+  expect(rule).toContain("text-transform: uppercase");
+  expect(rule).toContain("letter-spacing: var(--tracking-micro)");
+  expect(rule).toContain("color: var(--ink-mid)");
+});

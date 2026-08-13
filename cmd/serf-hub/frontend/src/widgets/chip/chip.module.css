@@ -4,7 +4,7 @@
   gap: var(--space-1);
   height: 24px;
   padding: 0 var(--space-2);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-chip);
   border: 1px solid transparent;
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
@@ -22,10 +22,11 @@
   background: transparent;
   color: inherit;
   cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .remove:hover {
-  background: color-mix(in oklab, currentColor 20%, transparent);
+  background: var(--hover-1);
 }
 
 .remove:focus-visible {
@@ -46,17 +47,17 @@
 .attention {
   background: var(--attention-bg);
   border-color: var(--attention-edge);
-  color: var(--attention);
+  color: var(--attention-ink);
 }
 
 .alive {
   background: var(--alive-bg);
   border-color: var(--alive-edge);
-  color: var(--alive);
+  color: var(--alive-ink);
 }
 
 .danger {
   background: var(--danger-bg);
   border-color: var(--danger-edge);
-  color: var(--danger);
+  color: var(--danger-ink);
 }

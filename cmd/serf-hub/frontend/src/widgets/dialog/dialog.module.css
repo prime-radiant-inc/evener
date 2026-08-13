@@ -23,6 +23,7 @@
 
 .header {
   padding: var(--space-4) var(--space-7) var(--space-3) var(--space-4);
+  background: var(--surface-inset);
   border-bottom: 1px solid var(--edge);
 }
 
@@ -46,6 +47,7 @@
 
 .footer {
   padding: var(--space-3) var(--space-4);
+  background: var(--surface-inset);
   border-top: 1px solid var(--edge);
   display: flex;
   justify-content: flex-end;

@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -461,4 +464,22 @@ test("a scroll does not dismiss the open picker", async () => {
 
   expect(screen.getByRole("combobox", { name: "Model" })).toBeTruthy();
   expect(screen.getAllByRole("option")).toHaveLength(3);
+});
+
+// --- Beautiful UI chrome pass (design doc §6): hover-1 resting, hover-2 active ---
+
+test("a row hovers with the resting wash and transitions on background-color", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "modelCatalog.module.css"), "utf8");
+  const rowRule = /\.row\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rowRule).toContain("transition: background-color var(--motion-duration-hover) var(--motion-easing-standard)");
+  const hoverRule = /\.row:hover\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(hoverRule).toContain("background: var(--hover-1)");
+});
+
+test("the active (virtual-focus) row carries the selected wash", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "modelCatalog.module.css"), "utf8");
+  const rule = /\.rowActive\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("background: var(--hover-2)");
 });

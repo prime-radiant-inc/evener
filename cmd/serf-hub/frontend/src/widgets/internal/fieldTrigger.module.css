@@ -19,15 +19,21 @@
   padding: 0 var(--space-3);
   border: 1px solid var(--edge);
   border-radius: var(--radius-control);
-  background: var(--surface-1);
+  background: var(--field);
+  box-shadow: var(--shadow-inset-field);
   color: var(--ink-hi);
   font-size: var(--font-size-ui);
   text-align: left;
   cursor: pointer;
+  transition:
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--motion-duration-hover) var(--motion-easing-standard),
+    box-shadow var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
-.trigger:hover {
-  background: var(--surface-2);
+.trigger:hover:not(:disabled),
+.trigger:focus-within {
+  border-color: var(--edge-strong);
 }
 
 .trigger:focus-visible {

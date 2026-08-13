@@ -53,10 +53,20 @@
   padding: 0 var(--space-3);
   border: 1px solid var(--edge);
   border-radius: var(--radius-control);
-  background: var(--surface-1);
+  background: var(--field);
+  box-shadow: var(--shadow-inset-field);
   color: var(--ink-hi);
   font-family: var(--font-mono);
   font-size: var(--font-size-ui);
+  transition:
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--motion-duration-hover) var(--motion-easing-standard),
+    box-shadow var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.input:hover:not(:disabled),
+.input:focus-within {
+  border-color: var(--edge-strong);
 }
 
 .input:focus-visible {

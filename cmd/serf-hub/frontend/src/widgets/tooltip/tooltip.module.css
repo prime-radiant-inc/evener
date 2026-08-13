@@ -26,10 +26,10 @@
    * the bubble is positioned from can be relied on to be. */
   width: max-content;
   max-width: 240px;
-  background: var(--surface-2);
-  border: 1px solid var(--edge);
+  background: var(--tooltip-bg);
+  border: 1px solid var(--tooltip-border);
   border-radius: var(--radius-control);
-  color: var(--ink-hi);
+  color: var(--tooltip-fg);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   line-height: var(--line-height-body);

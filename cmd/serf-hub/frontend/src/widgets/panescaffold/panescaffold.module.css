@@ -15,9 +15,13 @@
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
+  background: var(--surface-inset);
   border-bottom: 1px solid var(--edge);
 }
 
+/* Micro-label pattern (Beautiful UI chrome pass, §2): a pane title is chrome,
+ * not prose, so it reads as a small uppercase label on the header band
+ * rather than a heading-sized title. */
 .title {
   flex: 1 1 auto;
   /* min-width: 0 is required for ellipsis truncation inside a flex row -
@@ -27,12 +31,13 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  color: var(--ink-hi);
+  color: var(--ink-mid);
   font-family: var(--font-sans);
-  font-size: var(--font-size-pane-title);
-  font-weight: var(--font-weight-semibold);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-micro);
   line-height: var(--line-height-title);
-  letter-spacing: var(--tracking-display);
 }
 
 .desktopTitle {

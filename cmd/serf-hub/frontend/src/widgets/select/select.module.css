@@ -9,10 +9,20 @@
   padding: 0 var(--space-3);
   border-radius: var(--radius-control);
   border: 1px solid var(--edge);
-  background: var(--surface-1);
+  background: var(--field);
+  box-shadow: var(--shadow-inset-field);
   color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
+  transition:
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--motion-duration-hover) var(--motion-easing-standard),
+    box-shadow var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.select:hover:not(:disabled),
+.select:focus-within {
+  border-color: var(--edge-strong);
 }
 
 .select:disabled {

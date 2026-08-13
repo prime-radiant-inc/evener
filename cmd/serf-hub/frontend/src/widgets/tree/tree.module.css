@@ -10,6 +10,11 @@
   padding: 0 var(--space-2);
   border-radius: var(--radius-control);
   cursor: default;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.row:hover {
+  background: var(--hover-1);
 }
 
 .row:focus-visible {

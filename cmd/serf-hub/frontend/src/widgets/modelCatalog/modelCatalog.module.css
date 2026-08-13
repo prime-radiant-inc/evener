@@ -107,17 +107,18 @@
   color: var(--ink-hi);
   font-size: var(--font-size-ui);
   cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .row:hover {
-  background: var(--surface-2);
+  background: var(--hover-1);
 }
 
 /* The active option is a virtual (aria-activedescendant), not real DOM focus -
  * real focus stays on the input the whole time - so this is a plain
  * background wash, not a :focus-visible rule. */
 .rowActive {
-  background: var(--accent-bg);
+  background: var(--hover-2);
 }
 
 /* The model name is what the user is actually reading and choosing by, so it

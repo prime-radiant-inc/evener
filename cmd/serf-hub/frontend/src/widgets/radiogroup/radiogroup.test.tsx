@@ -171,3 +171,12 @@ test("declares a :focus-visible rule in its CSS module, using only tokens", () =
   const css = readFileSync(join(here, "radiogroup.module.css"), "utf8");
   expect(css).toContain(":focus-visible");
 });
+
+// Beautiful UI treatment (docs/superpowers/specs/2026-08-13-webui-
+// beautiful-ui-retheme-design.md §6): an option is a non-text control, so
+// it gets the --hover-1 wash rather than the sunken-field recipe.
+test("an option hovers with the --hover-1 wash", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "radiogroup.module.css"), "utf8");
+  expect(css).toMatch(/\.option:hover:not\(:disabled\)\s*\{[^}]*background: var\(--hover-1\)/);
+});

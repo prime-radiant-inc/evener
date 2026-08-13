@@ -33,6 +33,18 @@ test("the shared recipe declares the control-shaped box", () => {
   expect(trigger).toContain("border-radius: var(--radius-control)");
 });
 
+// Beautiful UI "sunken field" treatment - see widgets/input's matching
+// assertion and docs/superpowers/specs/2026-08-13-webui-beautiful-ui-
+// retheme-design.md §6.
+test("the shared recipe declares the sunken-field background/shadow and an edge-strong hover/focus-within border", () => {
+  const trigger = SHARED.match(/\.trigger\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(trigger).toContain("background: var(--field)");
+  expect(trigger).toContain("box-shadow: var(--shadow-inset-field)");
+  expect(SHARED).toMatch(
+    /\.trigger:hover:not\(:disabled\),\s*\n\.trigger:focus-within\s*\{[^}]*border-color: var\(--edge-strong\)/,
+  );
+});
+
 // A button does NOT inherit the body font, so the face is the one thing each
 // composing widget must still state for itself: mono for a path read
 // character by character, sans for a model id read as prose. The shared

@@ -11,9 +11,9 @@
   min-width: 1.4em;
   height: 18px;
   padding: 0 var(--space-1);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  background: var(--surface-2);
+  border: 1px solid var(--edge-strong);
+  border-radius: var(--radius-chip);
+  background: var(--field);
   color: var(--ink-mid);
   /* A kbd glyph is a verbatim rendering of a literal keystroke, not a
    * designer-authored chrome label - the same category Direction reserves

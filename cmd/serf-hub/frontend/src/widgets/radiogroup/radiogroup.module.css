@@ -21,12 +21,18 @@
   align-items: center;
   gap: var(--space-2);
   border: none;
+  border-radius: var(--radius-control);
   background: transparent;
-  padding: var(--space-1) 0;
+  padding: var(--space-1) var(--space-2);
   color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.option:hover:not(:disabled) {
+  background: var(--hover-1);
 }
 
 .option:disabled {

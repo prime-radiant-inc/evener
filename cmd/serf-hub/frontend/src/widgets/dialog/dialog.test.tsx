@@ -270,3 +270,22 @@ test("the large size variant also honors prefers-reduced-motion", () => {
   expect(reducedMotionBlock).toBeTruthy();
   expect(reducedMotionBlock![1]).toContain("dialogVariantLarge");
 });
+
+// Beautiful UI chrome bands (design doc §6): the header and footer sit on an
+// inset surface, set off from the body by the hairline they already drew.
+// Sheet reuses these same classes (see OverlayPanel), so this covers both.
+test("the header is a chrome band on the inset surface", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "dialog.module.css"), "utf8");
+  const rule = /\.header\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("background: var(--surface-inset)");
+  expect(rule).toContain("border-bottom: 1px solid var(--edge)");
+});
+
+test("the footer is a chrome band on the inset surface", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "dialog.module.css"), "utf8");
+  const rule = /\.footer\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("background: var(--surface-inset)");
+  expect(rule).toContain("border-top: 1px solid var(--edge)");
+});

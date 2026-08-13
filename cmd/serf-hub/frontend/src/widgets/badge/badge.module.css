@@ -5,7 +5,7 @@
   min-width: var(--space-5);
   height: var(--space-5);
   padding: 0 var(--space-2);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-chip);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
@@ -23,15 +23,15 @@
 
 .attention {
   background: var(--attention-bg);
-  color: var(--attention);
+  color: var(--attention-ink);
 }
 
 .alive {
   background: var(--alive-bg);
-  color: var(--alive);
+  color: var(--alive-ink);
 }
 
 .danger {
   background: var(--danger-bg);
-  color: var(--danger);
+  color: var(--danger-ink);
 }

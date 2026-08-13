@@ -6,13 +6,29 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  border-radius: var(--radius-control);
   cursor: pointer;
   list-style: none;
   color: var(--ink-mid);
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .summary::-webkit-details-marker {
   display: none;
+}
+
+.summary:hover {
+  background: var(--hover-1);
+}
+
+/* The open disclosure's own persistent affordance - the same "which one is
+ * currently active" wash Menu's quiet trigger keeps while its popup is open
+ * (menu.module.css's .triggerQuiet[aria-expanded="true"]), so a reader
+ * scanning a list of disclosures can tell which are expanded without reading
+ * every chevron. Declared after :hover so the persistent state wins over the
+ * lighter hover wash while a row is both open and under the pointer. */
+.details[open] > .summary {
+  background: var(--hover-2);
 }
 
 /* Turns the shared widgets/chevron icon rather than a text triangle. The

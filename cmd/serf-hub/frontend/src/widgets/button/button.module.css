@@ -8,6 +8,11 @@
   font-family: var(--font-sans);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
+  transition:
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--motion-duration-hover) var(--motion-easing-standard),
+    box-shadow var(--motion-duration-hover) var(--motion-easing-standard),
+    color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .button:disabled {
@@ -62,7 +67,7 @@
 }
 
 .primary:hover:not(:disabled) {
-  background: var(--accent-edge);
+  background: color-mix(in oklab, var(--accent) 85%, var(--surface-0));
 }
 
 .quiet {
@@ -71,7 +76,11 @@
 }
 
 .quiet:hover:not(:disabled) {
-  background: var(--surface-2);
+  background: var(--hover-1);
+}
+
+.quiet:active:not(:disabled) {
+  background: var(--hover-2);
 }
 
 .danger {
@@ -80,7 +89,7 @@
 }
 
 .danger:hover:not(:disabled) {
-  background: var(--danger-edge);
+  background: color-mix(in oklab, var(--danger) 85%, var(--surface-0));
 }
 
 /* A destructive action that is NOT the primary one on its row (the composer's

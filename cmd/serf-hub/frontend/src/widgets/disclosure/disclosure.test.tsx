@@ -72,15 +72,21 @@ test("every motion declaration uses an existing motion token - no invented durat
   expect(css).toContain("var(--motion-easing-standard)");
 });
 
-test("all motion sits inside a prefers-reduced-motion: no-preference gate", () => {
+test("the open/close motion (chevron rotation, body fade) sits inside a prefers-reduced-motion: no-preference gate", () => {
   const css = motionCss();
-  // Every transition/animation declaration must live in the gated block, so a
-  // reader who asked for less motion gets an instant open.
+  // The chevron/body open motion must live in the gated block, so a reader
+  // who asked for less motion gets an instant open. The summary's hover
+  // background-color transition is deliberately NOT gated here: it's
+  // interactive-response feedback (the app-wide --motion-duration-hover
+  // budget every widget chrome pass applies), not the idle-adjacent
+  // spatial motion prefers-reduced-motion targets.
   const gated = /@media\s*\(prefers-reduced-motion:\s*no-preference\)\s*\{([\s\S]*?)\n\}/.exec(css);
   expect(gated).not.toBeNull();
+  expect(gated![1]).toMatch(/\.chevron\s*\{[^}]*transition:\s*transform/);
+  expect(gated![1]).toMatch(/\.body\s*\{[^}]*animation:\s*disclosure-body-in/);
   const outsideGate = css.replace(gated![0], "");
-  expect(outsideGate).not.toMatch(/\btransition:/);
-  expect(outsideGate).not.toMatch(/\banimation:/);
+  expect(outsideGate).not.toMatch(/\.chevron\s*\{[^}]*transition:\s*transform/);
+  expect(outsideGate).not.toMatch(/\banimation:\s*disclosure-body-in/);
 });
 
 test("the motion is a fade, not a slide or a bounce", () => {

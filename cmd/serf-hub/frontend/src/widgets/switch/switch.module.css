@@ -12,7 +12,7 @@
   padding: 2px;
   border: none;
   border-radius: var(--radius-pill);
-  background: var(--surface-2);
+  background: var(--field);
   cursor: pointer;
 }
 
@@ -46,6 +46,10 @@
 @media (prefers-reduced-motion: no-preference) {
   .thumb {
     transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
+  }
+
+  .track {
+    transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
   }
 }
 

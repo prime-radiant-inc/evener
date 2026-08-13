@@ -11,7 +11,7 @@
 
 .toast {
   padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-pane);
   border: 1px solid var(--edge);
   background: var(--surface-2);
   box-shadow: var(--shadow-overlay);
@@ -37,9 +37,17 @@
   background: var(--alive-bg);
 }
 
+.success .text {
+  color: var(--alive-ink);
+}
+
 .error {
   border-color: var(--danger-edge);
   background: var(--danger-bg);
+}
+
+.error .text {
+  color: var(--danger-ink);
 }
 
 .warning {
@@ -47,7 +55,15 @@
   background: var(--attention-bg);
 }
 
+.warning .text {
+  color: var(--attention-ink);
+}
+
 .info {
   border-color: var(--accent-edge);
   background: var(--accent-bg);
+}
+
+.info .text {
+  color: var(--accent-ink);
 }

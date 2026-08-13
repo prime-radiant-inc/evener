@@ -103,3 +103,18 @@ test("declares a :focus-visible rule in its CSS module, using only tokens", () =
   const css = readFileSync(join(here, "input.module.css"), "utf8");
   expect(css).toContain(":focus-visible");
 });
+
+// Beautiful UI "sunken field" treatment: the field sinks into --field via
+// --shadow-inset-field, and its resting hairline (--edge) strengthens on
+// hover/focus-within - see docs/superpowers/specs/2026-08-13-webui-
+// beautiful-ui-retheme-design.md §6.
+test("declares the sunken-field background/shadow and an edge-strong hover/focus-within border", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "input.module.css"), "utf8");
+  const rule = /\.input\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("background: var(--field)");
+  expect(rule).toContain("box-shadow: var(--shadow-inset-field)");
+  expect(css).toMatch(
+    /\.input:hover:not\(:disabled\),\s*\n\.input:focus-within\s*\{[^}]*border-color: var\(--edge-strong\)/,
+  );
+});

@@ -22,14 +22,13 @@
  * live content. There is no custom property for that; it needs a real
  * selector.
  *
- * Mirrors PaneScaffold's own header/body precedent (panescaffold.module.css:
- * both surface-1, divided by an --edge border, not a background-color
- * change) rather than inventing a different visual language for dockview's
- * external tab-strip/content split: the tab strip and the pane content
- * below it sit on the SAME surface, and the currently-active tab is the
- * one that "lifts" via surface-2 - the same raised/hover token every other
- * widget in this app already uses (see button.module.css's
- * .quiet:hover { background: var(--surface-2) }).
+ * Surface ramp (design doc §1/§6): the tab strip sits on --surface-canvas,
+ * the same well the rail uses, and the currently-focused group's active tab
+ * "lifts" off it onto --surface-1 - the pane surface it's actually the tab
+ * FOR, so the lift reads as "this is the content below" rather than a bare
+ * hover step. An inactive group's active tab (still real, shown content,
+ * just not the globally-focused one) stays on the strip's own canvas
+ * instead, so only the one truly-focused tab lifts at a time.
  */
 
 .dockview-theme-serf {
@@ -39,28 +38,28 @@
    * through on resize/mount. */
   --dv-group-view-background-color: var(--surface-1);
 
-  /* Tab strip: same surface as the content it sits above - the divider
-   * below does the separating, not a background step. */
-  --dv-tabs-and-actions-container-background-color: var(--surface-1);
+  /* Tab strip: the canvas well, same step the rail sits on - the divider
+   * below does the separating, plus now the active tab's own lift. */
+  --dv-tabs-and-actions-container-background-color: var(--surface-canvas);
 
-  /* The active tab in the globally-focused group "lifts" via surface-2,
-   * the same raised/hover token every other widget uses. */
-  --dv-activegroup-visiblepanel-tab-background-color: var(--surface-2);
+  /* The active tab in the globally-focused group lifts onto --surface-1,
+   * the pane surface it's actually the tab for. */
+  --dv-activegroup-visiblepanel-tab-background-color: var(--surface-1);
   --dv-activegroup-visiblepanel-tab-color: var(--ink-hi);
 
   /* The active tab of a group that ISN'T the globally-focused one (visible
    * once a second group exists, e.g. via dockview's own drag-to-split) -
    * still real, shown content, so it keeps ink-hi text, but blends into the
    * strip rather than lifting like the truly-focused tab does. */
-  --dv-inactivegroup-visiblepanel-tab-background-color: var(--surface-1);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--surface-canvas);
   --dv-inactivegroup-visiblepanel-tab-color: var(--ink-hi);
 
   /* Overflow-hidden tabs (too many to fit the strip, listed in dockview's
    * own overflow dropdown instead) - a rarely-seen state, kept legible but
    * quieter than any visible tab. */
-  --dv-activegroup-hiddenpanel-tab-background-color: var(--surface-1);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--surface-canvas);
   --dv-activegroup-hiddenpanel-tab-color: var(--ink-mid);
-  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--surface-1);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--surface-canvas);
   --dv-inactivegroup-hiddenpanel-tab-color: var(--ink-low);
 
   /* Hairlines: between adjacent tabs, between the strip and the content
@@ -71,10 +70,9 @@
   --dv-separator-border: var(--edge);
   --dv-paneview-header-border-color: var(--edge);
 
-  /* Close-button hover wash - same token button.module.css's own
-   * .quiet:hover uses for an identical "quiet control, subtle hover"
-   * affordance. */
-  --dv-icon-hover-background-color: var(--surface-2);
+  /* Close-button hover wash - the same resting hover token every other
+   * quiet control in the app uses now (design doc §1/§6). */
+  --dv-icon-hover-background-color: var(--hover-1);
 
   /* dockview's custom scrollbar overlay (the tab strip, once there are too
    * many tabs to fit) and native-scrollbar fallback thumb color - both

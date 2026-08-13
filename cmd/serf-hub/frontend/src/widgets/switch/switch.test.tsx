@@ -126,3 +126,15 @@ test("declares a :focus-visible rule in its CSS module, using only tokens", () =
   const css = readFileSync(join(here, "switch.module.css"), "utf8");
   expect(css).toContain(":focus-visible");
 });
+
+// Beautiful UI treatment (docs/superpowers/specs/2026-08-13-webui-
+// beautiful-ui-retheme-design.md §6): the unchecked track sinks into
+// --field instead of the generic --surface-2 raised-layer fill; the
+// checked fill stays --accent (unchanged, so only the unchecked side is
+// asserted here).
+test("the unchecked track background is --field", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "switch.module.css"), "utf8");
+  const rule = /\.track\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("background: var(--field)");
+});

@@ -303,3 +303,13 @@ test("Copy preserves the original ANSI-bearing text exactly", async () => {
   await user.click(screen.getByRole("button", { name: "Copy" }));
   expect(writeText).toHaveBeenCalledExactlyOnceWith(source);
 });
+
+// Beautiful UI chrome pass (design doc §6): the language/copy corner control
+// sits on the inset surface, like the header bands elsewhere in the app.
+test("the language/copy header sits on the inset surface", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = stripCssComments(readFileSync(join(here, "codeblock.module.css"), "utf8"));
+  const rule = /\.header\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("background: var(--surface-inset)");
+  expect(rule).toContain("border-bottom: 1px solid var(--edge)");
+});

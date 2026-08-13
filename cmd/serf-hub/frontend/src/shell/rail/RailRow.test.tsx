@@ -1436,30 +1436,40 @@ describe("row actions overlay (Rail.module.css)", () => {
     // container's own masking background painted at rest, permanently
     // covering the timestamp it sits on top of.
     expect(ruleFor(".actions")).toMatch(/opacity:\s*0/);
-    const reveal = /([^{}]*)\{\s*opacity:\s*1;?\s*\}/g;
-    const revealRules = [...CSS.matchAll(reveal)].map((m) => m[1]!.trim());
-    const rule = revealRules.find((s) => s.includes(".railRow:hover"));
-    expect(rule, "row hover must reveal the actions").toBeTruthy();
-    // Split on commas and require each of the three reveal paths to TARGET
-    // `.actions` itself. A trailing descendant (`.railRow:hover .actions button`)
-    // fails these: the container - and so its mask - would stay at opacity 0.
-    const targets = rule!.split(",").map((s) => s.trim());
+    // Rules that reveal `.actions` (opacity: 1 somewhere in their body -
+    // not necessarily the only declaration, since the real-hover path also
+    // swaps the mask's background to match `.railRow:hover`'s own wash).
+    const rules = [...CSS.matchAll(/([^{}]*)\{([^}]*)\}/g)]
+      .map((m) => ({ selector: m[1]!.trim(), body: m[2]! }))
+      .filter((r) => /opacity:\s*1\b/.test(r.body));
+
+    const hoverRule = rules.find((r) => r.selector === ".railRow:hover .actions");
+    expect(hoverRule, "row hover must reveal the actions").toBeTruthy();
+
+    // The focus/open-menu path targets `.actions` itself via a comma list -
+    // a trailing descendant (`.actions button`) would fail this, since the
+    // container - and so its mask - would stay at opacity 0.
+    const focusMenuRule = rules.find((r) => r.selector.includes('[role="treeitem"]:focus'));
+    expect(focusMenuRule, "treeitem focus / open menu must reveal the actions").toBeTruthy();
+    const targets = focusMenuRule!.selector.split(",").map((s) => s.trim());
     expect(targets).toEqual(
-      expect.arrayContaining([
-        ".railRow:hover .actions",
-        '[role="treeitem"]:focus .actions',
-        '.actions:has(button[aria-expanded="true"])',
-      ]),
+      expect.arrayContaining(['[role="treeitem"]:focus .actions', '.actions:has(button[aria-expanded="true"])']),
     );
   });
 
-  test("the overlay masks what it covers with the rail's own surface token", () => {
-    const actionsRule = ruleFor(".actions");
-    // Same token .rail declares as its background - a row has no hover
-    // surface of its own (widgets/tree/tree.module.css paints none), so
-    // this is literally what shows through behind a row.
-    expect(ruleFor(".rail")).toMatch(/background:\s*var\(--surface-1\)/);
-    expect(actionsRule).toMatch(/background:[^;]*var\(--surface-1\)/);
+  test("the overlay masks what it covers with the row's own current background", () => {
+    // At rest a row shows the rail's own canvas background through it (a
+    // row paints no background of its own - widgets/tree/tree.module.css
+    // sets none), so the resting mask matches that token.
+    expect(ruleFor(".rail")).toMatch(/background:\s*var\(--surface-canvas\)/);
+    expect(ruleFor(".actions")).toMatch(/background:[^;]*var\(--surface-canvas\)/);
+
+    // Once `.railRow:hover` paints its own `--hover-1` wash (see that rule),
+    // the mask has to swap to match it too, or the overlay reads as a
+    // visibly different patch pasted over the row instead of its own right
+    // edge.
+    expect(ruleFor(".railRow:hover")).toMatch(/background:\s*var\(--hover-1\)/);
+    expect(ruleFor(".railRow:hover .actions")).toMatch(/background:[^;]*var\(--hover-1\)/);
   });
 
   test("the mask's leading edge fades in, so it never slices covered text mid-glyph", () => {

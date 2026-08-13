@@ -10,7 +10,8 @@
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-control);
   border: 1px solid var(--edge);
-  background: var(--surface-1);
+  background: var(--field);
+  box-shadow: var(--shadow-inset-field);
   color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
@@ -19,10 +20,19 @@
    * carry this variant's own vertical padding on top of the text lines. */
   min-height: calc(var(--textarea-min-lines) * var(--line-height-body) * 1em + 2 * var(--space-2));
   resize: vertical;
+  transition:
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--motion-duration-hover) var(--motion-easing-standard),
+    box-shadow var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .textarea::placeholder {
   color: var(--ink-low);
+}
+
+.textarea:hover:not(:disabled),
+.textarea:focus-within {
+  border-color: var(--edge-strong);
 }
 
 .textarea:disabled {
@@ -48,6 +58,10 @@
   border: none;
   border-radius: 0;
   background: transparent;
+  /* The base variant's sunken-field shadow reads as a box; a seamless field
+   * has none of its own, so this drops it along with the border/background
+   * above. */
+  box-shadow: none;
   /* The native resize grabber draws itself against the field's own corner; on
    * a field with no corner it floats loose inside the host card. A seamless
    * field is sized by its host (autoGrow, or the card's own height), so the

@@ -149,10 +149,26 @@ test("the seamless modifier removes the field's own box and its focus ring", () 
   expect(rule).toContain("background: transparent");
   expect(rule).toContain("border-radius: 0");
   expect(rule).toContain("padding: 0");
+  // The base variant's sunken-field shadow reads as a box too.
+  expect(rule).toContain("box-shadow: none");
   // The native resize grabber has no corner to sit in on a seamless field.
   expect(rule).toContain("resize: none");
   // The enclosing card owns the focus affordance instead (:focus-within).
   expect(css).toMatch(/\.seamless:focus-visible\s*\{\s*outline: none;\s*\}/);
+});
+
+// Beautiful UI "sunken field" treatment - see input.test.tsx's matching
+// assertion and docs/superpowers/specs/2026-08-13-webui-beautiful-ui-
+// retheme-design.md §6. Base variant only; seamless deliberately opts out
+// (see above).
+test("the base variant declares the sunken-field background/shadow and an edge-strong hover/focus-within border", () => {
+  const css = moduleCss();
+  const rule = /\.textarea\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("background: var(--field)");
+  expect(rule).toContain("box-shadow: var(--shadow-inset-field)");
+  expect(css).toMatch(
+    /\.textarea:hover:not\(:disabled\),\s*\n\.textarea:focus-within\s*\{[^}]*border-color: var\(--edge-strong\)/,
+  );
 });
 
 // --- autoGrow: scrollHeight-based, not newline-counting -------------------

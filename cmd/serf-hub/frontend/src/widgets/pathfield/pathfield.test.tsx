@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -809,4 +812,18 @@ test("Escape keeps whatever browsing left in the field - there is no Cancel", as
   await waitFor(() => expect(panelInput()).toBeNull());
   expect(onChange).toHaveBeenLastCalledWith("/home/jesse/src");
   expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+});
+
+// Beautiful UI "sunken field" treatment - see input.test.tsx's matching
+// assertion and docs/superpowers/specs/2026-08-13-webui-beautiful-ui-
+// retheme-design.md §6. The browse panel's own text input matches Input's
+// field recipe, so it gets the same treatment.
+test("the panel input declares the sunken-field background/shadow and an edge-strong hover/focus-within border", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "pathfield.module.css"), "utf8");
+  const rule = /\.input\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("background: var(--field)");
+  expect(rule).toContain("box-shadow: var(--shadow-inset-field)");
+  expect(css).toMatch(
+    /\.input:hover:not\(:disabled\),\s*\n\.input:focus-within\s*\{[^}]*border-color: var\(--edge-strong\)/,
+  );
 });
