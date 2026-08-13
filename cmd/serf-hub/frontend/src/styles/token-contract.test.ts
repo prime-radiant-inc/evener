@@ -668,7 +668,44 @@ test("tokens.css dark and light blocks declare the same color token names", () =
 test("the canonical dark token block directly scopes nested dark wrappers", () => {
   const darkBlock = extractBlock(TOKENS_CSS, /(?:^|\n):root\s*,\s*\[data-theme="dark"\]\s*\{/);
   expect(darkBlock).toContain("color-scheme: dark;");
-  expect(darkBlock).toContain("--surface-1: #171E28;");
+  expect(darkBlock).toContain("--surface-1: #232427;");
+});
+
+// --- (f) the -ink text companions clear AA in both themes ---------------
+//
+// The bare attention-family hues are glyph/border/wash colors; any use as
+// TEXT goes through the -ink companion, which exists precisely because the
+// light theme's bare hues measure 2.8–3.9:1. Same computation as the
+// DiffBlock contrast test above. Dark -ink is checked against the raised
+// surface and the hover wash (the lightest grounds dark text sits on);
+// light -ink against the page and the white card surface.
+test("the four -ink companions clear 4.5:1 on their theme's lightest text grounds", () => {
+  const themes = [
+    {
+      name: "dark",
+      block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/),
+      grounds: ["--surface-2", "--hover-1"],
+    },
+    {
+      name: "light",
+      block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/),
+      grounds: ["--surface-0", "--surface-1"],
+    },
+  ];
+  for (const theme of themes) {
+    for (const hue of ["--attention-ink", "--alive-ink", "--danger-ink", "--accent-ink"]) {
+      const ink = declaredToken(theme.block, hue);
+      expect(ink, `${theme.name} declares ${hue}`).toBeDefined();
+      if (!ink) continue;
+      for (const groundName of theme.grounds) {
+        const ground = declaredToken(theme.block, groundName);
+        expect(ground, `${theme.name} declares ${groundName}`).toBeDefined();
+        if (!ground) continue;
+        const ratio = contrastRatio(parseHexColor(ink), parseHexColor(ground));
+        expect(ratio, `${theme.name} ${hue} on ${groundName}`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  }
 });
 
 // --- (d) z-index values must use the token ladder ----------------------

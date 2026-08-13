@@ -8,27 +8,40 @@
  * palette. Every consumer just writes var(--name) and never branches on
  * theme.
  *
- * Source: docs/superpowers/plans/2026-07-20-webui-rewrite-wave2-design-system.md
- * specified the original palette (search that file for "Direction"). The
- * 2026-07-31 re-theme replaced it: the dark theme is now "Fjord" (cool
- * blue-grey, frost-blue accent) and the light theme is "Ledger" (warm
- * paper, deep indigo accent), chosen from five candidates evaluated with
- * real widgets — see docs/web-ui/decisions.md. Type scale, space grid,
- * and motion budget are unchanged from the wave-2 plan.
+ * Visual language: adapted from Beautiful UI (https://www.beautifului.dev),
+ * MIT License, Copyright (c) 2026 Shane Levine — see LICENSES/beautiful-ui.txt.
+ * Adopted in full per docs/superpowers/specs/2026-08-13-webui-beautiful-ui-
+ * retheme-design.md, superseding the 2026-07-31 "Fjord"/"Ledger" palettes
+ * (docs/web-ui/decisions.md). Values that deviate from Beautiful UI's are
+ * commented at the declaration; each deviation exists to satisfy a contract
+ * guarantee (AA text contrast, diff-marker contrast) their showcase does
+ * not enforce. Type scale, space grid, and the attention-semantics thesis
+ * are unchanged from the wave-2 plan.
  */
 
 :root,
 [data-theme="dark"] {
   color-scheme: dark;
 
-  /* --- surfaces + ink (dark, default) ---------------------------------- */
-  --surface-0: #10151C; /* app background — deep cool ink */
-  --surface-1: #171E28; /* panes, rail */
-  --surface-2: #1F2833; /* raised: menus, dialogs, hover */
-  --edge: #2A3542; /* hairline borders — replaces shadows */
-  --ink-hi: #E5ECF4; /* primary text */
-  --ink-mid: #93A3B5; /* secondary text */
-  --ink-low: #5E6E80; /* placeholders, disabled, timestamps */
+  /* --- surfaces + ink (dark, default) ----------------------------------
+   * Six-step neutral ramp replacing the old three: page, pane wells, cards,
+   * inset bands (card headers, code gutters), and the two interaction
+   * washes. Raised layers (menus, dialogs) share --surface-1's value and
+   * carry their depth via --shadow-overlay instead of a lighter fill.
+   */
+  --surface-0: #17181A; /* app background — page */
+  --surface-canvas: #1C1D1F; /* pane wells, rail */
+  --surface-1: #232427; /* panes, cards */
+  --surface-2: #232427; /* raised: menus, dialogs — depth comes from shadow */
+  --surface-inset: #1F2022; /* card header bands, gutters */
+  --hover-1: #2A2B2E; /* resting hover wash */
+  --hover-2: #313236; /* pressed / selected */
+  --field: #2B2C2F; /* form-control background (sunken fields) */
+  --edge: #2E3033; /* hairline borders */
+  --edge-strong: #3A3C40; /* control borders, overlay rings */
+  --ink-hi: #F2F3F4; /* primary text */
+  --ink-mid: #A5A8AD; /* secondary text */
+  --ink-low: #6C6F75; /* placeholders, disabled, timestamps */
 
   /* --- the four attention-family hues (dark) --------------------------
    * Exactly one meaning per hue, everywhere in the app. Reaching for one
@@ -36,10 +49,10 @@
    * bug, not a style choice — see that test for the allowlist and how a
    * widget earns an entry.
    */
-  --attention: #E8B04B; /* a human is needed — THE amber. Nothing else may be amber. */
-  --alive: #4FBF9A; /* agent working/streaming. Teal-leaning green, never acid. */
-  --danger: #E06C75; /* failure/destructive */
-  --accent: #81B4E8; /* focus ring, selection, links — frost-blue */
+  --attention: #F68F3C; /* a human is needed — THE orange. Nothing else may be orange. */
+  --alive: #3DBB72; /* agent working/streaming */
+  --danger: #EE5C61; /* failure/destructive */
+  --accent: #3D9AFF; /* focus ring, selection, links */
 
   /* -bg (15% into the pane surface) and -edge (40% into the hairline
    * border) companions for each hue above, so a "danger chip" or
@@ -54,16 +67,39 @@
   --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
   --accent-edge: color-mix(in oklab, var(--accent) 40%, var(--edge));
 
+  /* -ink companions: the hue as TEXT. The bare hues clear AA on dark
+   * surfaces already (danger is the one that needed brightening), but the
+   * light theme's do not — see the light block. Call sites that set a
+   * hue as color: use -ink; glyphs, borders, and washes use the bare hue.
+   * Contract-tested to >=4.5:1 against --surface-2 and --hover-1.
+   */
+  --attention-ink: #F68F3C;
+  --alive-ink: #3DBB72;
+  --danger-ink: #EF656A;
+  --accent-ink: #3D9AFF;
+
+  /* --- tooltip (inverted mini-palette, both themes near-black) --------- */
+  --tooltip-bg: #111214;
+  --tooltip-fg: #F2F3F4;
+  --tooltip-muted: #A5A8AD;
+  --tooltip-border: #2E3033;
+
   /* --- diff notation (dark) -------------------------------------------
    * Structural add/remove washes are deliberately separate from the
    * attention-family hues. Additions are slightly lighter than deletions in
    * grayscale as well as green/rose shifted, so the distinction does not
-   * depend on saturation or perfect color vision.
+   * depend on saturation or perfect color vision. Re-derived against the
+   * neutral surfaces (quiet 1.05–1.2x vs --surface-0, AA for content,
+   * >=3:1 for the --ink-low marker — the contract computes all of it).
    */
-  --diff-add-bg: #121D1B;
-  --diff-del-bg: #221721;
+  --diff-add-bg: #19251A;
+  --diff-del-bg: #170B17;
 
-  /* --- terminal notation (dark) -------------------------------------- */
+  /* --- terminal notation (dark) ---------------------------------------
+   * Carried over from the Fjord tuning; still legible on the neutral
+   * surfaces. Re-tune during the gallery review if the blue-leaning
+   * entries read off-palette.
+   */
   --ansi-black: #5E6E80;
   --ansi-red: #E06C75;
   --ansi-green: #4FBF9A;
@@ -82,16 +118,18 @@
   --ansi-bright-white: #FFFFFF;
 
   /* --- type -------------------------------------------------------------
-   * IBM Plex Sans for UI + prose, IBM Plex Mono for code/tool output/paths/
-   * timings (never for chrome labels). Font files: src/styles/global.css.
+   * Inter for UI + prose, JetBrains Mono for code/tool output/paths/
+   * timings (never for chrome labels). Both variable fonts, self-hosted
+   * from @fontsource-variable packages — see src/styles/global.css.
    */
-  --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-sans: "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 
   --font-weight-regular: 400;
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
-  --tracking-display: -0.01em; /* -1% tracking, display weight (600) only */
+  --tracking-display: -0.02em; /* display weight (600) titles only */
+  --tracking-micro: 0.08em; /* uppercase micro-labels (card/pane section headers) */
 
   /* The type ramp itself is declared on <body> (see the font-size preference
    * gate below), not here, so the Settings → Theme font-size choice can scale
@@ -111,8 +149,9 @@
   --space-8: 48px;
   --space-9: 64px;
 
-  --radius-control: 4px; /* buttons, inputs, chips */
-  --radius-pane: 8px; /* panes, dialogs */
+  --radius-chip: 6px; /* chips, badges, small tags */
+  --radius-control: 8px; /* buttons, inputs */
+  --radius-pane: 10px; /* panes, cards, dialogs */
   --radius-pill: 999px; /* pill geometry: switch track */
 
   /* --- focus ring ------------------------------------------------------
@@ -144,35 +183,43 @@
   --z-toast: 1040; /* toasts top the app's own ladder */
 
   /* --- elevation -------------------------------------------------------
-   * Depth is still --edge borders + surface steps; shadows exist ONLY on
-   * floating layers (design-system.md "shadows only on floating layers").
-   * Two levels: overlay (menu/popover/toast) and modal (dialog/sheet; the
-   * edge-anchored sheet variants redirect the same geometry toward their
-   * visible edge). The tooltip is deliberately shadowless — at ~21px tall
-   * its border on --surface-2 already carries the depth. The color carries
-   * the theme; the geometry is shared.
+   * Every shadow embeds its own 1px ring, so a shadowed element never also
+   * declares a border for the same edge. Five levels: hairline (ring only),
+   * btn (controls at rest), card (panes/cards), raised (hover lift, mid
+   * floats), overlay (menus/popovers/toasts/dialogs/sheets). inset-field
+   * sinks form controls into --field. The soft-layer alphas are per-theme
+   * (declared in each block); --shadow-color feeds the sheet's
+   * edge-directed variants, which keep their own geometry.
    */
-  --shadow-overlay: 0 4px 16px var(--shadow-color);
-  --shadow-modal: 0 16px 40px var(--shadow-color);
-  --shadow-color: color-mix(in srgb, #000000 50%, transparent);
+  --shadow-hairline: 0 0 0 1px var(--edge);
+  --shadow-btn: 0 0 0 1px var(--edge-strong), 0 1px 2px #0000004D;
+  --shadow-card: 0 0 0 1px var(--edge), 0 1px 2px #00000033, 0 2px 6px #00000033;
+  --shadow-raised: 0 0 0 1px var(--edge), 0 2px 10px #00000038;
+  --shadow-overlay: 0 0 0 1px var(--edge-strong), 0 8px 28px #00000057;
+  --shadow-inset-field: inset 0 1px 2px #00000066;
+  --shadow-color: #00000057;
 
   /* --- motion ---------------------------------------------------------
-   * Default is none. These are the only three motions this app plays:
-   * attention onset (a state crossing into needs-you), and the 120ms
-   * fade-scale overlays (menu/dialog) use. No idle pulses, no shimmer.
+   * The law is "no idle motion": nothing animates unless the user acted or
+   * the agent's state genuinely changed. Three budgets: attention onset (a
+   * state crossing into needs-you), the 120ms fade-scale overlays
+   * (menu/dialog), and 150ms hover/focus/press responses on interactive
+   * chrome (color/background/border/shadow only — transitions name their
+   * properties, never `all`). No idle pulses, no shimmer.
    */
   --motion-duration-attention: 200ms;
   --motion-duration-overlay: 120ms;
+  --motion-duration-hover: 150ms;
   --motion-easing-standard: ease-out;
 }
 
-/* Light theme ("Ledger"): same token names, values flipped around warm
- * #F4F1EC/#FBFAF7 paper surfaces with warm near-black ink. The four
- * attention-family hues each clear WCAG AA (>=4.5:1) for text usage against
- * both light surfaces — ratios computed during the 2026-07-31 re-theme
- * selection (Fjord dark + Ledger light, chosen from five candidates).
- * Non-color tokens (type/space/radius/motion) are theme-invariant and stay
- * in the block above; nothing here overrides them.
+/* Light theme: same token names, values flipped around neutral near-white
+ * surfaces. Cards (--surface-1 white) sit LIGHTER than the page — the
+ * inversion of the old Ledger ordering is deliberate, it is how cards pop
+ * without heavier borders. The four attention-family -ink companions each
+ * clear WCAG AA (>=4.5:1) against --surface-0 and --surface-1; the BARE
+ * hues here do NOT (2.8–3.9:1 — fine for glyphs/borders/washes, never for
+ * text), which is exactly why -ink exists.
  *
  * Both selector forms are declared so the flip works whether data-theme
  * lands on <html> (real app) or on a nested wrapper div (gallery
@@ -182,18 +229,27 @@
 [data-theme="light"] {
   color-scheme: light;
 
-  --surface-0: #F4F1EC;
-  --surface-1: #FBFAF7;
+  --surface-0: #FAFAFB;
+  --surface-canvas: #F1F2F3;
+  --surface-1: #FFFFFF;
   --surface-2: #FFFFFF;
-  --edge: #E0DACF;
-  --ink-hi: #1F1B16;
-  --ink-mid: #5C554A;
-  --ink-low: #8A8172;
+  --surface-inset: #F7F8F9;
+  --hover-1: #F4F5F6;
+  --hover-2: #E7E9EB;
+  --field: #F2F2F3;
+  --edge: #ECEDEF;
+  --edge-strong: #E0E2E5;
+  --ink-hi: #1F2124;
+  --ink-mid: #62656B;
+  /* Beautiful UI's #9A9DA3 is too light to serve as the diff marker ink
+   * (the contract needs >=3:1 on the diff washes); darkened to the nearest
+   * neutral that clears it. */
+  --ink-low: #86898F;
 
-  --attention: #8A5A0B;
-  --alive: #2E6E4E;
-  --danger: #B3382C;
-  --accent: #2450B8;
+  --attention: #EF720C;
+  --alive: #189A4D;
+  --danger: #E3474C;
+  --accent: #0285FF;
 
   --attention-bg: color-mix(in oklab, var(--attention) 15%, var(--surface-1));
   --attention-edge: color-mix(in oklab, var(--attention) 40%, var(--edge));
@@ -204,31 +260,50 @@
   --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
   --accent-edge: color-mix(in oklab, var(--accent) 40%, var(--edge));
 
+  /* AA-darkened text forms of the four hues (accent-ink is Beautiful UI's
+   * own; the other three are derived the same way). */
+  --attention-ink: #B75709;
+  --alive-ink: #158442;
+  --danger-ink: #DE282E;
+  --accent-ink: #0071DB;
+
+  /* Tooltip stays inverted (near-black) in the light theme too. */
+  --tooltip-bg: #25272B;
+  --tooltip-fg: #F6F7F8;
+  --tooltip-muted: #A5A8AD;
+  --tooltip-border: #3A3C40;
+
   /* Diff notation remains domain-specific rather than a status signal. */
-  --diff-add-bg: #E3EDDD;
-  --diff-del-bg: #F2E4DC;
+  --diff-add-bg: #EBF7F6;
+  --diff-del-bg: #FAEEFA;
 
-  /* Shadow ink on paper: derived from --ink-hi so a re-tuned ink re-tunes
-   * the shadows with it, at far lower alpha than dark theme — light
-   * surfaces need only a whisper of depth. */
-  --shadow-color: color-mix(in srgb, var(--ink-hi) 16%, transparent);
-
-  --ansi-black: #1F1B16;
+  /* Grayscale entries follow the new neutral inks; chromatic entries carry
+   * over from the Ledger tuning (all AA-checked against warm paper, which
+   * was darker than these surfaces — margins only improved). Re-tune during
+   * the gallery review if any read off-palette. */
+  --ansi-black: #1F2124;
   --ansi-red: #A33226;
   --ansi-green: #2E6E4E;
   --ansi-yellow: #7A5208;
   --ansi-blue: #2450B8;
   --ansi-magenta: #7A3E9D;
   --ansi-cyan: #0E6B6E;
-  --ansi-white: #5C554A;
-  --ansi-bright-black: #5C554A;
+  --ansi-white: #62656B;
+  --ansi-bright-black: #62656B;
   --ansi-bright-red: #B3382C;
   --ansi-bright-green: #35835F;
   --ansi-bright-yellow: #8A5A0B;
   --ansi-bright-blue: #2E5FD0;
   --ansi-bright-magenta: #8E4EC6;
   --ansi-bright-cyan: #0E7490;
-  --ansi-bright-white: #1F1B16;
+  --ansi-bright-white: #17181A;
+
+  --shadow-btn: 0 0 0 1px var(--edge-strong), 0 1px 2px #1018280D;
+  --shadow-card: 0 0 0 1px var(--edge), 0 1px 2px #1018280A, 0 2px 6px #10182808;
+  --shadow-raised: 0 0 0 1px var(--edge), 0 2px 10px #0000000B;
+  --shadow-overlay: 0 0 0 1px var(--edge-strong), 0 8px 28px #00000011;
+  --shadow-inset-field: inset 0 1px 2px #0000001F;
+  --shadow-color: #00000011;
 }
 
 /* --- font-size + phone-density preference application ------------------
