@@ -534,4 +534,54 @@ crisp, product-blue). Type scale, space grid, radius, and motion are
 unchanged — the re-theme touched color tokens only, which is exactly the
 seam the token contract was built to provide.
 
+## 2026-08-13 re-theme: full adoption of Beautiful UI
+
+Superseded the 2026-07-31 Fjord/Ledger decision above, five weeks after it
+shipped. Jesse's call: "move toward their aesthetic" — full adoption
+(palette, fonts, motion, chrome) of [Beautiful UI](https://www.beautifului.dev)'s
+design language, rather than another from-scratch candidate palette. Spec:
+`docs/superpowers/specs/2026-08-13-webui-beautiful-ui-retheme-design.md`.
+Shipped in two phases on this branch: tokens+fonts (`672cfffcd`) and widget
+chrome (`3da2dcf8e`).
+
+Unlike the 07-31 re-theme, this one is not color-tokens-only — it touches
+palette, type, shape, elevation, and motion together, because that is what
+"adopt a design language" means as opposed to "pick a new palette." What was
+kept, deliberately: the token-contract enforcement machinery (§4 of
+`design-system.md` — no literals outside `tokens.css`, the attention-family
+allowlist, the z-ladder, focus-ring rules, dark/light parity); the
+attention-semantics thesis (one meaning per hue, Beautiful UI's own
+orange/green/red/blue map 1:1 onto `--attention`/`--alive`/`--danger`/
+`--accent`); the 4px spacing grid and the type ramp's size steps; Cadence's
+honest liveness (no idle motion, ever — unchanged); the widget inventory,
+APIs, and one-dir-per-widget convention; and the AA guarantee that any hue
+used as text clears 4.5:1 on the surfaces it sits on, in both themes — now
+carried by the new `-ink` companions (`--accent-ink`, `--alive-ink`,
+`--attention-ink`, `--danger-ink`), because Beautiful UI's own bare light
+hues measure only 2.8–3.9:1 on white.
+
+Two changes are worth flagging as real departures rather than re-tuning:
+
+- **The motion law widened** from "default none" to "no idle motion."
+  Idle animation is still banned outright, but a new 150ms
+  `--motion-duration-hover` budget now covers color/background/border/shadow
+  transitions on hover/focus/press for interactive chrome — Beautiful UI's
+  chrome leans on hover response in a way the old two-state (rest/active)
+  system didn't need. Transitions still name their properties; `transition:
+  all` is not used anywhere.
+- **Light theme inverts its surface order**: `--surface-1` (card/pane
+  background, white) now sits *lighter* than `--surface-0` (page
+  background), the reverse of Ledger's ordering where panes were darker
+  paper than the page. This is how Beautiful UI's cards "pop" instead of
+  blending, and it was flagged as the re-theme's main readability risk in
+  the spec (any pane assuming the old darker-than-page ordering needed a
+  second look during the phase-1/phase-2 gallery review).
+
+Rejected implicitly by not being on the table: another from-scratch
+candidate-palette bake-off in the 07-31 style. The decision was to stop
+generating original palettes and adopt an external, complete design
+language wholesale — attributed per its MIT license
+(`cmd/serf-hub/frontend/LICENSES/beautiful-ui.txt`, Copyright (c) 2026 Shane
+Levine) rather than reinterpreted as an in-house original.
+
 <!-- decision-tables:end -->

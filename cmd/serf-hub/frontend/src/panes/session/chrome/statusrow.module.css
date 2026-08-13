@@ -115,10 +115,11 @@
   gap: var(--space-1);
   padding: var(--space-1);
   border-radius: var(--radius-control);
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .effortTrigger:hover {
-  background: var(--surface-2);
+  background: var(--hover-1);
 }
 
 /* The focus ring belongs to the trigger's visible face even though focus lands

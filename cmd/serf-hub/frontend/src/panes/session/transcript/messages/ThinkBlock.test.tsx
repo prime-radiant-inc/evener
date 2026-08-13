@@ -745,6 +745,86 @@ test("both live and settled render inside the same stable wrapper testid", () =>
   expect(container.querySelector('[data-testid="think-block"]')).toBeTruthy();
 });
 
+// --- expanded trace: Beautiful UI's Thinking step anatomy -------------------
+// Steps only appear when segmentReasoningTrace actually finds more than one
+// section (headings, or - absent any heading - multiple summaryIndex
+// paragraphs); a thought with no such structure keeps rendering as one
+// undivided Markdown document, covered by the settled-markdown tests above.
+
+test("a headed thought expands into a step trace: one row per heading section, ordinal markers, no leftover single-document render", () => {
+  render(
+    <ThinkBlock
+      item={item({ reasoningSummaries: [["## Survey\n\nlook around\n\n## Decide\n\nship it"]] })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  const trace = screen.getByTestId("think-block-trace");
+  const steps = trace.querySelectorAll("li");
+  expect(steps).toHaveLength(2);
+  expect(steps[0]?.textContent).toContain("01");
+  expect(steps[0]?.textContent).toContain("Survey");
+  expect(steps[0]?.textContent).toContain("look around");
+  expect(steps[1]?.textContent).toContain("02");
+  expect(steps[1]?.textContent).toContain("Decide");
+  expect(steps[1]?.textContent).toContain("ship it");
+  // Each heading still renders as a real heading element inside its step.
+  expect(screen.getByRole("heading", { level: 2, name: "Survey" })).toBeTruthy();
+  expect(screen.getByRole("heading", { level: 2, name: "Decide" })).toBeTruthy();
+});
+
+test("multiple summaryIndex paragraphs with no heading anywhere still segment into steps - the paragraph break is the structure", () => {
+  render(
+    <ThinkBlock
+      item={item({ reasoningSummaries: [["first thought"], ["second thought"], ["third thought"]] })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  const trace = screen.getByTestId("think-block-trace");
+  const steps = Array.from(trace.querySelectorAll("li"));
+  expect(steps.map((step) => step.textContent?.trim())).toEqual([
+    "01first thought",
+    "02second thought",
+    "03third thought",
+  ]);
+});
+
+test("a single undivided paragraph renders no trace list at all - the plain Markdown fallback stays the default", () => {
+  render(<ThinkBlock item={item({ reasoningSummaries: [["just one plain thought"]] })} turn={turn} live={false} />);
+  expect(screen.queryByTestId("think-block-trace")).toBeNull();
+});
+
+test("the trace panel sits on --surface-inset with --radius-control, stripped of default list styling (declaration-level)", () => {
+  const rule = /\.trace\s*\{([^}]*)\}/.exec(thinkCss());
+  expect(rule).not.toBeNull();
+  expect(rule![1]).toContain("background: var(--surface-inset)");
+  expect(rule![1]).toContain("border-radius: var(--radius-control)");
+  expect(rule![1]).toContain("list-style: none");
+});
+
+test("steps are separated by a hairline --edge divider, not a border on every row (no double-up at the shared edge)", () => {
+  const css = thinkCss();
+  expect(/\.step\s*\{([^}]*)\}/.exec(css)?.[1]).not.toContain("border");
+  const dividerRule = /\.step\s*\+\s*\.step\s*\{([^}]*)\}/.exec(css);
+  expect(dividerRule).not.toBeNull();
+  expect(dividerRule![1]).toContain("border-top: 1px solid var(--edge)");
+});
+
+test("the step marker is mono caption ink-low - chrome marking position, not content (declaration-level)", () => {
+  const rule = /\.stepMarker\s*\{([^}]*)\}/.exec(thinkCss());
+  expect(rule).not.toBeNull();
+  expect(rule![1]).toContain("font-family: var(--font-mono)");
+  expect(rule![1]).toContain("font-size: var(--font-size-caption)");
+  expect(rule![1]).toContain("color: var(--ink-low)");
+});
+
+test("the step marker is decorative - the ordinal is visual chrome, not read out as separate content", () => {
+  render(<ThinkBlock item={item({ reasoningSummaries: [["## One\n\na\n\n## Two\n\nb"]] })} turn={turn} live={false} />);
+  const marker = screen.getByTestId("think-block-trace").querySelector("li span");
+  expect(marker?.getAttribute("aria-hidden")).toBe("true");
+});
+
 // A closed <details> hides its non-summary children through the UA's own
 // skipped-contents mechanism, which any `display` set on the <details> element
 // A `display` value set on a <details> element REPLACES the UA's skipped-

@@ -25,6 +25,7 @@ import {
   resetPendingTurnsStoreForTests,
   settlePendingTurnsProjectionForTests,
 } from "./queue/pendingTurnsStore";
+import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global.
@@ -351,6 +352,7 @@ beforeEach(() => {
   // for "ref_a" in one test would still be sitting there for the next
   // test's own "ref_a" mount.
   resetAskDockStoreForTests();
+  resetQuoteInsertStoreForTests();
   // The toast store is module state that outlives RTL's own cleanup, so a
   // toast pushed by one test would otherwise still be in the next test's
   // tree and make a getByText for the same message ambiguous.
@@ -419,6 +421,51 @@ test("typing persists the draft under this ref's storage key", async () => {
   await mountComposer("ref_a");
   await user.type(textarea(), "hi");
   expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("hi");
+});
+
+// --- quote-insert (SelectionQuote's "Quote in reply" seam) -----------------
+//
+// SelectionQuote.tsx is a sibling component under Session.tsx, never a
+// child of Composer - it hands quoted markdown to this ref's Composer via
+// quoteInsert.ts's requestQuoteInsert/useQuoteInsertRequest pub/sub (that
+// file's own header comment), not a prop. These tests exercise that seam
+// from the Composer side only: they never render SelectionQuote, just call
+// requestQuoteInsert directly, the same way the real bar would.
+
+test("a quote-insert request writes the quoted markdown into an empty composer and focuses it", async () => {
+  await mountComposer("ref_a");
+  act(() => {
+    requestQuoteInsert("ref_a", "> quoted line\n\n");
+  });
+  await waitFor(() => expect(textarea().value).toBe("> quoted line\n\n"));
+  expect(document.activeElement).toBe(textarea());
+});
+
+test("a quote-insert request appends after a blank line, keeping whatever the user already typed", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a");
+  await user.type(textarea(), "my own note");
+  act(() => {
+    requestQuoteInsert("ref_a", "> quoted line\n\n");
+  });
+  await waitFor(() => expect(textarea().value).toBe("my own note\n\n> quoted line\n\n"));
+});
+
+test("a quote-insert request for a DIFFERENT ref never reaches this composer", async () => {
+  await mountComposer("ref_a");
+  act(() => {
+    requestQuoteInsert("ref_other", "> quoted line\n\n");
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(textarea().value).toBe("");
+});
+
+test("the composer persists the quote-inserted text as this ref's draft", async () => {
+  await mountComposer("ref_a");
+  act(() => {
+    requestQuoteInsert("ref_a", "> quoted line\n\n");
+  });
+  await waitFor(() => expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("> quoted line\n\n"));
 });
 
 // The card is widgets/promptcard now, so the focus-ring RULE is that widget's

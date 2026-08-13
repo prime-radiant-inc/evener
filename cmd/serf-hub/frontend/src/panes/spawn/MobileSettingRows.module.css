@@ -83,11 +83,15 @@
   font-size: var(--font-size-body);
   text-align: left;
   cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
-.option:hover,
+.option:hover {
+  background: var(--hover-1);
+}
+
 .optionSelected {
-  background: var(--surface-2);
+  background: var(--hover-2);
 }
 
 .option:focus-visible {

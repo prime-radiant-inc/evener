@@ -63,9 +63,10 @@
   font-size: var(--font-size-ui);
   color: var(--ink-hi);
   cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 .denseRow:hover {
-  background: var(--surface-2);
+  background: var(--hover-1);
 }
 /* -1px, not the usual -2px: these rows keep the redesign's 2px vertical
  * padding, so a deeper inset would draw the ring across the text line box. */
@@ -127,9 +128,10 @@
   font-size: var(--font-size-ui);
   color: var(--ink-mid);
   cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 .foldRow:hover {
-  background: var(--surface-2);
+  background: var(--hover-1);
 }
 /* Same tight-row -1px as .denseRow above. */
 .foldRow:focus-visible {

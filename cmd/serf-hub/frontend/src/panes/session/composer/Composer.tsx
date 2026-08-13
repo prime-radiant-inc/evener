@@ -53,6 +53,7 @@ import {
   updateRecoveryPendingTurn,
   useRecoveryEntries,
 } from "./queue/pendingTurnsStore";
+import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
 
@@ -66,6 +67,21 @@ const CLASS = {
   leading: requireClass(styles.leading, "composer.module.css", "leading"),
   visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
 };
+
+// Shared by restoreTextToComposer (QueueStrip's "edit a queued entry" path)
+// and the quote-insert effect below (SelectionQuote's "Quote in reply"
+// path): existing text is right-trimmed then kept, the incoming text is
+// appended after a blank line - "put text into the composer without
+// clobbering what's already typed there", byte-ported from renderer.js's
+// own restoreTextToComposer (see restoreTextToComposer's own doc comment
+// for the fuller history). A module-level function, not a closure, so it
+// can be called from the quote-insert effect below, which (like every hook
+// in this component) must run unconditionally ahead of the `if (!model)
+// return null` narrowing - restoreTextToComposer itself is declared after
+// that point and closes over already-narrowed locals it doesn't need here.
+function mergeDraftText(existing: string, addition: string): string {
+  return existing.trim() === "" ? addition : `${existing.replace(/\s+$/, "")}\n\n${addition}`;
+}
 
 function settledInputAttachments(items: PendingAttachment[]): InputAttachment[] {
   return items.flatMap((item) =>
@@ -356,6 +372,30 @@ export function Composer({ ref }: ComposerProps) {
     }
   }, [text]);
 
+  // SelectionQuote's "Quote in reply" seam (quoteInsert.ts): a sibling
+  // component under the transcript mounts and writes here via
+  // requestQuoteInsert; this effect is the ONLY reader for this ref, and
+  // consumeQuoteInsert() below is what makes the request one-shot - without
+  // it, a later re-render (or this component remounting under the SAME
+  // still-pending request, e.g. a fast tab switch) would replay it. Keyed on
+  // the request's own monotonic id, not its text, so quoting the identical
+  // line twice in a row is still two separate insertions rather than a
+  // no-op the second time (quoteInsert.ts's own QuoteInsertRequest doc
+  // comment). mergeDraftText is the SAME merge restoreTextToComposer uses
+  // for QueueStrip's "edit a queued entry" path - existing text kept,
+  // incoming text appended after a blank line - so a quote never clobbers
+  // whatever the user already typed.
+  const quoteInsertRequest = useQuoteInsertRequest(ref);
+  const consumedQuoteInsertIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!quoteInsertRequest || quoteInsertRequest.id === consumedQuoteInsertIdRef.current) return;
+    consumedQuoteInsertIdRef.current = quoteInsertRequest.id;
+    const merged = mergeDraftText(textRef.current, quoteInsertRequest.text);
+    textEditor.write(merged, merged.length);
+    textareaRef.current?.focus();
+    consumeQuoteInsert(ref);
+  }, [quoteInsertRequest, ref, textEditor.write]);
+
   if (!model) return null; // Session.tsx only mounts this once its own model is hydrated; defensive only.
 
   // Captured as plain consts (not read as `model.xyz` again below): a
@@ -482,8 +522,7 @@ export function Composer({ ref }: ComposerProps) {
   // caller passes is simply extra to a JS/TS call and never reaches this
   // function's body.
   function restoreTextToComposer(restoredText: string): void {
-    const existing = textRef.current;
-    const merged = existing.trim() === "" ? restoredText : `${existing.replace(/\s+$/, "")}\n\n${restoredText}`;
+    const merged = mergeDraftText(textRef.current, restoredText);
     textEditor.write(merged, merged.length);
     textareaRef.current?.focus();
   }

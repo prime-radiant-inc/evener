@@ -180,6 +180,55 @@
   --markdown-ink: var(--ink-mid);
 }
 
+/* Beautiful UI's Thinking anatomy, ported for a settled trace that actually
+ * has steps to show (segmentReasoningTrace found more than one section - see
+ * ThinkBlock.tsx). The panel it rides in is its own quiet surface, one step
+ * below the transcript's own background, with the app's one control radius -
+ * so a segmented trace reads as a distinct object in the disclosure, not
+ * more undifferentiated body text. Not sized or positioned as a list; the
+ * default UA list styling is stripped since .stepMarker already carries the
+ * ordinal. */
+.trace {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  list-style: none;
+  background: var(--surface-inset);
+  border-radius: var(--radius-control);
+}
+
+/* Each step is a two-column row: a slim marker rail, then the step's own
+ * Markdown beside it. A hairline --edge divider separates steps (not a
+ * border on every .step, which would double up at the shared edge) - the
+ * same trailing-rule idiom as most divided lists in this app. */
+.step {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+
+.step + .step {
+  border-top: 1px solid var(--edge);
+}
+
+/* Mono caption, ink-low: the ordinal is chrome marking the step's position,
+ * not content - the same demotion the kind icon and duration label already
+ * use elsewhere in this file. Fixed width so every marker in the trace lines
+ * up regardless of digit count. */
+.stepMarker {
+  flex: none;
+  width: 2ch;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
+.stepBody {
+  min-width: 0;
+}
+
 /* The one inversion of the always-italic body (Jesse, 2026-08-03): spans the
  * agent marked up as italic render roman, so emphasis still reads AS
  * emphasis against the italic field. Bare-tag descendant selectors are

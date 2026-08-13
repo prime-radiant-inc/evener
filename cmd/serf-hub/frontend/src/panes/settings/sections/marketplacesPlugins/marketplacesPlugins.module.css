@@ -156,10 +156,11 @@
   font-size: var(--font-size-ui);
   text-align: left;
   cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .treeToggle:hover {
-  background: var(--surface-2);
+  background: var(--hover-1);
 }
 
 .treeToggle:focus-visible {

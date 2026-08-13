@@ -39,10 +39,11 @@
   font-size: var(--font-size-ui);
   text-align: left;
   cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .link:hover {
-  background: var(--surface-2);
+  background: var(--hover-1);
 }
 
 .link:focus-visible {
@@ -75,10 +76,11 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .back:hover {
-  background: var(--surface-2);
+  background: var(--hover-1);
 }
 
 .back:focus-visible {

@@ -28,6 +28,7 @@ import { Cadence, EmptyState, PaneScaffold, RadioGroup, VirtualList, type Virtua
 import { modelLabel } from "./chrome/statusFormat";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { Composer } from "./composer/Composer";
+import { requestQuoteInsert } from "./composer/quoteInsert";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "./liveness";
 import { PendingChips } from "./pending/PendingChips";
 import { exchangeOpenersFor } from "./transcript/exchangeOpeners";
@@ -48,6 +49,8 @@ import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
 import { NewContentPill } from "./transcript/flow/NewContentPill";
 import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
+import { SelectionQuote } from "./transcript/SelectionQuote";
+import { formatQuoteBlock } from "./transcript/selectionQuoteLogic";
 import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
 import { type FocusedEntry, focusedEntries, SESSION_VIEW_MODES, type SessionViewMode } from "./viewModes";
 
@@ -242,6 +245,15 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // here, even though the ref only ever populates once turns.length > 0
   // (see useTranscriptScroll's own "hasContent" handling for that).
   const virtualListRef = useRef<VirtualListHandle>(null);
+  // SelectionQuote's own positioning/containment context (its header
+  // comment): the non-scrolling `.transcript` wrapper below, not
+  // VirtualList's internal scroll node - a selection's own
+  // getBoundingClientRect() is already viewport-relative regardless of
+  // scroll position, so this ref only needs to bound "is this selection
+  // inside the transcript pane at all" and clamp the floating bar to that
+  // same visible area (position: fixed, so it never scrolls away
+  // mid-selection).
+  const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const flow = useTranscriptScroll({
     ref,
     model,
@@ -285,7 +297,19 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   };
 
   const transcript = (
-    <div className={styles.transcript}>
+    <div className={styles.transcript} ref={transcriptContainerRef}>
+      <SelectionQuote
+        containerRef={transcriptContainerRef}
+        actions={[
+          {
+            label: "Quote in reply",
+            onInvoke: (selectedText) => {
+              const quoted = formatQuoteBlock(selectedText);
+              if (quoted !== "") requestQuoteInsert(ref, quoted);
+            },
+          },
+        ]}
+      />
       <FlowOverlay
         top={
           model.olderCursor && (

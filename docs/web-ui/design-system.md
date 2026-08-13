@@ -16,36 +16,34 @@ Source of design law: `docs/superpowers/plans/2026-07-20-webui-rewrite-wave2-des
 §Direction. §1 below reproduces it verbatim; everything after is derived from it or documents
 what the implementation actually shipped.
 
+**Visual language provenance.** As of the 2026-08-13 re-theme, the palette, type, shape,
+elevation, and motion described below (§2 onward) are adapted from
+[Beautiful UI](https://www.beautifului.dev), MIT License, Copyright (c) 2026 Shane Levine — full
+license text at `cmd/serf-hub/frontend/LICENSES/beautiful-ui.txt`. Beautiful UI ships as React +
+Tailwind components; nothing is copy-pasted from it — every value and structure is translated
+into serf's own CSS-module + token system, which is why the token-contract machinery in §4
+continues to hold unchanged. See
+`docs/superpowers/specs/2026-08-13-webui-beautiful-ui-retheme-design.md` and this document's
+sibling `decisions.md` (2026-08-13 entry) for what was kept, what changed, and why.
+
 ---
 
 ## 1. Direction (the design law)
 
-> Reproduced verbatim from the wave-2 plan — **except the palette**, which the
-> 2026-07-31 re-theme replaced (see `decisions.md`, "2026-07-31 re-theme: Fjord +
-> Ledger"). For everything else, if this section and the plan ever disagree, the
-> plan is source of truth and this section is stale — file it as a doc bug.
+> Reproduced verbatim from the wave-2 plan — largely superseded by now. The palette
+> was first replaced by the 2026-07-31 Fjord/Ledger re-theme, then palette, type,
+> shape, elevation, and motion were all replaced by the 2026-08-13 full adoption of
+> the Beautiful UI design language (see `decisions.md`'s entries for both dates). §2
+> below documents shipped reality; this section is kept as the original historical
+> record of the plan as written. For anything not covered by those two re-themes, if
+> this section and the plan ever disagree, the plan is source of truth and this
+> section is stale — file it as a doc bug.
 
-**Palette (dark, default — "Fjord"):**
-
-```css
---surface-0: #10151C;  /* app background — deep cool ink             */
---surface-1: #171E28;  /* panes, rail                              */
---surface-2: #1F2833;  /* raised: menus, dialogs, hover            */
---edge:      #2A3542;  /* hairline borders — replaces shadows      */
---ink-hi:    #E5ECF4;  /* primary text                             */
---ink-mid:   #93A3B5;  /* secondary text                           */
---ink-low:   #5E6E80;  /* placeholders, disabled, timestamps       */
---attention: #E8B04B;  /* a human is needed — THE amber. Nothing else may be amber. */
---alive:     #4FBF9A;  /* agent working/streaming. Teal-leaning green, never acid.  */
---danger:    #E06C75;  /* failure/destructive                       */
---accent:    #81B4E8;  /* focus ring, selection, links — frost-blue */
-```
-
-Each semantic family gets `-bg` and `-edge` companions mixed in `tokens.css` via
-`color-mix(in oklab, var(--attention) 15%, var(--surface-1))` — no new hex literals.
-Light theme ("Ledger"): same names, values flipped around warm `#F4F1EC`/`#FBFAF7`
-paper surfaces with the same four semantic hues re-voiced for light (brass
-attention, deep indigo accent), each validated ≥ 4.5:1 for text, 3:1 for UI.
+**Palette:** superseded twice since this plan was written — first by the 2026-07-31
+Fjord/Ledger re-theme, then in full by the 2026-08-13 adoption of the Beautiful UI
+design language. The wave-2 hex table originally reproduced here is dropped rather
+than perpetuated as a third stale table; see §2 below for the palette as shipped,
+and `decisions.md` for both re-themes' provenance and rationale.
 
 **Type:** IBM Plex Sans (UI + prose; display = weight 600, tracking −1%) and IBM Plex Mono
 (code, tool output, paths, timings). Scale (px): 12 caption / 13 ui / 14 body / 16 pane-title /
@@ -82,28 +80,58 @@ theme; the light-theme block (`[data-theme="light"]`) redeclares every color tok
 same name, and `token-contract.test.ts` (§4) fails CI if a token exists in one theme's block
 but not the other's.
 
-**Color** — surfaces/ink (`--surface-0/1/2`, `--edge`, `--ink-hi/mid/low`) plus the four
-semantic families (`--attention`, `--alive`, `--danger`, `--accent`), each with `-bg` (15% mix
-into the surface) and `-edge` (40% mix into the hairline border) companions. The two dedicated
-diff-notation backgrounds (`--diff-add-bg`/`--diff-del-bg`) are separate from that semantic
-family — 21 color tokens total, all declared identically-named in both theme blocks.
-Light-theme ("Ledger") semantic hues are
-WCAG-computed (not eyeballed): `--attention: #8A5A0B`, `--alive: #2E6E4E`, `--danger: #B3382C`,
-`--accent: #2450B8`, each clearing ≥4.5:1 against both `#F4F1EC` and `#FBFAF7`.
+**Color** — a six-step neutral surface ramp replaces the old three-step one: `--surface-0`
+(app background — page), `--surface-canvas` (pane wells, rail), `--surface-1` (panes/cards),
+`--surface-inset` (card header bands, code gutters), and the two interaction washes `--hover-1`
+(resting hover) / `--hover-2` (pressed/selected). `--field` is the sunken form-control
+background. `--surface-2` (raised: menus, dialogs) keeps its name and dark value, but now
+carries its depth via `--shadow-overlay` (see Elevation below) rather than a lighter fill —
+during the re-theme, call sites that used `--surface-2` purely as a hover wash migrated to
+`--hover-1`, so `--surface-2` now only appears on genuinely raised layers. Two border weights
+replace the old single `--edge`: `--edge` (hairline) and `--edge-strong` (control borders,
+overlay rings). `--ink-hi/mid/low` are unchanged in role. The four semantic families
+(`--attention`, `--alive`, `--danger`, `--accent`) keep their `-bg` (15% mix into the surface)
+and `-edge` (40% mix into the hairline border) companions, and each now also gets a `-ink`
+companion (`--attention-ink`, `--alive-ink`, `--danger-ink`, `--accent-ink`) for text usage.
+Reason: Beautiful UI's bare light-theme hues measure 2.8–3.9:1 against white — fine for glyphs,
+borders, and washes, but failing the 4.5:1 AA floor for text. `-ink` values are darkened (light
+theme) or brightened (dark theme) to clear ≥4.5:1 against both light surfaces, contract-tested
+the same way as the diff-contrast pair (§4, item 3 below). The rule: a call site that sets a hue
+as `color` uses `-ink`; glyphs, borders, and washes keep the bare hue. The tooltip carries its
+own inverted mini-palette instead of sitting on `--surface-2` — `--tooltip-bg/-fg/-muted/-border`,
+near-black in both themes. Light theme deliberately inverts the old surface order: `--surface-1`
+(white) sits *lighter* than `--surface-0` (page), so cards pop instead of blending — see
+`decisions.md`'s 2026-08-13 entry. The two dedicated diff-notation backgrounds
+(`--diff-add-bg`/`--diff-del-bg`) are re-derived against the new surfaces each re-theme (quiet
+1.05–1.2× vs `--surface-0`, AA for content); the sixteen ANSI colors are re-tuned to the new
+neutral palette each time too. All color tokens are declared identically-named in both theme
+blocks (§4, item 4).
 
-**Type** — `--font-sans` / `--font-mono` (IBM Plex, self-hosted from the `@ibm/plex-sans` /
-`@ibm/plex-mono` npm packages, latin1 subset, imported by relative `url()` straight from
-`node_modules` — no binaries committed); `--font-weight-regular/medium/semibold` (400/500/600);
-`--tracking-display` (−0.01em, display weight only); `--font-size-caption/ui/body/pane-title/
-page-title` (12/13/14/16/20px); `--line-height-body/title` (1.5/1.3).
+**Type** — `--font-sans` / `--font-mono` (Inter Variable + JetBrains Mono Variable, self-hosted
+from the `@fontsource-variable/inter` / `@fontsource-variable/jetbrains-mono` npm packages,
+latin subset, `@font-face`-wired in `global.css` — no binaries committed);
+`--font-weight-regular/medium/semibold` (400/500/600); `--tracking-display` (−0.02em, display
+weight only — widened from −0.01em under IBM Plex); `--font-size-caption/ui/body/pane-title/
+page-title` (12/13/14/16/20px); `--line-height-body/title` (1.5/1.3). NEW: `--tracking-micro`
+(0.08em) backs the **micro-label pattern** — card/pane section headers set at 11.5–12px
+uppercase, `--font-weight-medium`, `--tracking-micro`, `--ink-low`/`--ink-mid`, usually on a
+`--surface-inset` band. It's applied through widget chrome (PaneScaffold titles now use it,
+alongside Card and Dialog headers), never per-page. This is a distinct pattern from the
+caption-size "section eyebrow" documented in §6 (0.04em tracking, for group labels like the
+rail's "Projects") — eyebrows label a *group*, micro-labels title a *container*.
 
 **Space & shape** — `--space-1` through `--space-9` (4/8/12/16/24/32/40/48/64px — IBM Carbon
 Design System's own spacing progression, adopted because it's the only well-known scale that
 exactly fits the plan's stated endpoints (4, 64) and step count (9) while staying on the 4px
-grid); `--radius-control` (4px), `--radius-pane` (8px), `--radius-pill` (999px).
+grid; unchanged by the re-theme). Radii softened: `--radius-chip` (6px, NEW — chips, badges,
+small tags), `--radius-control` (4px → 8px — buttons, inputs), `--radius-pane` (8px → 10px —
+panes, cards, dialogs), `--radius-pill` (999px, unchanged — switch track). Everything already on
+the two pre-existing tokens inherited the softer values for free.
 
 **Motion** — `--motion-duration-attention` (200ms), `--motion-duration-overlay` (120ms),
-`--motion-easing-standard` (`ease-out`). See §5 for the budget these back.
+`--motion-duration-hover` (150ms, NEW — color/background/border/shadow transitions on
+hover/focus/press for interactive chrome; transitions name their properties explicitly, never
+`transition: all`), `--motion-easing-standard` (`ease-out`). See §5 for the budget these back.
 
 **Focus rings** — `--focus-ring` (2px solid accent) and `--focus-ring-danger` (2px solid danger).
 Every interactive widget gets `outline: var(--focus-ring)` on `:focus-visible`; `--focus-ring-danger`
@@ -125,12 +153,17 @@ dockview's stylesheet sits outside the ladder: its drag overlay is 999 (`--z-dia
 clears it deliberately) and its drop-target container is 9999, which sits above everything for
 the duration of a dock drag.
 
-**Elevation** — Floating widgets (menu, popover, toast) carry `--shadow-overlay` (0 4px 16px);
-dialogs and sheets carry `--shadow-modal` (0 16px 40px; the edge-anchored sheet variants redirect
-the same geometry toward their visible edge). The tooltip is deliberately shadowless — its border
-on `--surface-2` already carries the depth at that size. Both shadows are composed from
-`--shadow-color` (theme-dependent) — dark 50% black, light 16% `--ink-hi` via `color-mix`.
-Depth within a pane (no floating layers) remains `--edge` borders and `--surface` steps.
+**Elevation** — Beautiful UI's five-shadow system replaces the old two-shadow one. Every shadow
+embeds its own 1px ring, so a shadowed element never also declares a separate border for the
+same edge: `--shadow-hairline` (ring only — the tooltip), `--shadow-btn` (controls at rest),
+`--shadow-card` (panes/cards — Card uses this instead of a border now), `--shadow-raised` (hover
+lift, mid floats), `--shadow-overlay` (menus/popovers/toasts/dialogs/sheets), and
+`--shadow-inset-field` (sinks form controls into `--field`). The soft-layer alphas are per-theme
+(dark heavier, light whisper-light), declared as literal color values in `tokens.css` per the
+token contract — `--shadow-color` still feeds the sheet's edge-directed variants, which keep
+their own directional geometry rather than the omnidirectional card/overlay shape. The tooltip
+is deliberately shadowless beyond its hairline ring — its inverted mini-palette already carries
+the depth at that size. `--shadow-modal` retired with the old system.
 
 ---
 
@@ -248,18 +281,23 @@ widget stay aligned.
 
 ## 5. Motion budget
 
-Default is none. The only motion this app plays, all on `--motion-easing-standard`
-(`ease-out`):
+The law widened 2026-08-13 from "default none" to **"no idle motion"**: idle animation stays
+banned exactly as before, but input-response transitions on interactive chrome are now
+budgeted. Three budgets, all on `--motion-easing-standard` (`ease-out`):
 
 - **Attention onset** (`--motion-duration-attention`, 200ms) — a state crossing into
   needs-you. Cadence's dot, StatusDot, and Switch all use it for their own state-driven color
   transitions.
 - **Overlay fade-scale** (`--motion-duration-overlay`, 120ms) — Dialog, Sheet, and Menu's
   open/close.
+- **Hover/focus/press response** (`--motion-duration-hover`, 150ms, NEW) — color, background,
+  border, and shadow transitions on interactive chrome (buttons, inputs, rows, chips, ...)
+  triggered by hover, focus, or press. Transitions name their properties explicitly; a blanket
+  `transition: all` is never used.
 
-Forbidden: idle pulses, shimmer loops on live data, anything that animates during silence (the
-honest-liveness rule — a "working" indicator that looks identical whether the agent is
-streaming or hung is worse than no indicator). Every widget with motion of its own respects
+Forbidden, unchanged: idle pulses, shimmer loops on live data, anything that animates during
+silence (the honest-liveness rule — a "working" indicator that looks identical whether the agent
+is streaming or hung is worse than no indicator). Every widget with motion of its own respects
 `prefers-reduced-motion: reduce` (currently: Cadence, Dialog, Menu, Sheet, StatusDot, Switch) —
 collapses to instant, no exceptions.
 

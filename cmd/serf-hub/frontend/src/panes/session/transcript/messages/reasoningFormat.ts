@@ -142,6 +142,56 @@ function plainThoughtLine(line: string): string {
   return markdownLexer.lexer(line).map(plainTextFromToken).join(" ").replace(/\s+/g, " ").trim();
 }
 
+// segmentReasoningTrace breaks joinedReasoningParagraphs' output into the
+// expanded trace's step sections, using structure ALREADY present in the
+// text rather than inventing any (Beautiful UI's Thinking anatomy adapted
+// honestly - see ThinkBlock.tsx's top comment). Two sources of structure,
+// tried in order:
+//
+//   1. Markdown headings. Each heading starts a new section that runs up to
+//      (but not including) the next heading; any content before the first
+//      heading is its own leading section. Sections are reconstructed from
+//      the lexer's own `raw` spans (join-then-trim), so nothing about the
+//      source text is rewritten - a re-lex of a section's output reproduces
+//      the same tokens the whole-document lex would have produced for that
+//      span.
+//   2. No heading exists anywhere: each summaryIndex paragraph (already one
+//      blank-line-joined block per joinedReasoningParagraphs) becomes its
+//      own section - the paragraph break IS the only structure on offer.
+//
+// A single paragraph with no heading has no internal boundary to segment
+// on, so it stays the one section it always was - the caller renders that
+// case exactly as before (no step list, no left rail).
+export function segmentReasoningTrace(paragraphs: string[]): string[] {
+  const source = paragraphs.join("\n\n");
+  if (source.trim() === "") return [];
+
+  const tokens = markdownLexer.lexer(source);
+  const headingIndices: number[] = [];
+  tokens.forEach((token, index) => {
+    if (token.type === "heading") headingIndices.push(index);
+  });
+
+  if (headingIndices.length === 0) return paragraphs;
+
+  const sections: string[] = [];
+  const firstHeading = headingIndices[0];
+  if (firstHeading === undefined) return paragraphs; // unreachable: length checked above
+  if (firstHeading > 0) sections.push(joinTokenRaw(tokens.slice(0, firstHeading)));
+  headingIndices.forEach((start, position) => {
+    const end = headingIndices[position + 1] ?? tokens.length;
+    sections.push(joinTokenRaw(tokens.slice(start, end)));
+  });
+  return sections;
+}
+
+function joinTokenRaw(tokens: Token[]): string {
+  return tokens
+    .map((token) => token.raw)
+    .join("")
+    .trim();
+}
+
 export function lastMeaningfulThoughtLine(paragraphs: string[], maxLength: number): string {
   for (let paragraphIndex = paragraphs.length - 1; paragraphIndex >= 0; paragraphIndex--) {
     const lines = paragraphs[paragraphIndex]?.split(/\r?\n/) ?? [];

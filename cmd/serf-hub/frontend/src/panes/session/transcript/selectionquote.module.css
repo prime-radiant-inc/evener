@@ -1,0 +1,37 @@
+/* Floating layer (VISUAL LANGUAGE spec): surface-2 + shadow-overlay give it
+ * the same raised-menu depth as every other anchored float in this app -
+ * see tokens.css's own --shadow-overlay comment ("raised layers... share
+ * --surface-1's value and carry their depth via --shadow-overlay instead of
+ * a lighter fill"). position: fixed, not absolute - SelectionQuote.tsx
+ * computes viewport coordinates directly off range.getBoundingClientRect()
+ * and the pane container's own getBoundingClientRect(), so no ancestor
+ * needs a position:relative wrapper of its own. */
+.bar {
+  position: fixed;
+  z-index: var(--z-menu);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  background: var(--surface-2);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-overlay);
+  animation: selectionQuoteEnter var(--motion-duration-overlay) var(--motion-easing-standard);
+}
+
+@keyframes selectionQuoteEnter {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar {
+    animation: none;
+  }
+}

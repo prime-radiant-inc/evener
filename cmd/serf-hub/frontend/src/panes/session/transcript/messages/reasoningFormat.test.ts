@@ -4,6 +4,7 @@ import {
   formatThoughtDuration,
   joinedReasoningParagraphs,
   lastMeaningfulThoughtLine,
+  segmentReasoningTrace,
   thoughtDurationMs,
 } from "./reasoningFormat";
 
@@ -145,4 +146,63 @@ test("lastMeaningfulThoughtLine flattens Markdown inside image alt text", () => 
 test("formatThoughtDuration chooses the seconds tier before rounding", () => {
   expect(formatThoughtDuration(9_999)).toBe("10.0s");
   expect(formatThoughtDuration(10_000)).toBe("10s");
+});
+
+// --- segmentReasoningTrace ---------------------------------------------------
+// The expanded trace's step sections, built ONLY from structure the text
+// already carries - markdown headings, or (absent any heading) the paragraph
+// breaks joinedReasoningParagraphs already produced. No structure at all
+// stays one section, same as today's undivided render.
+
+test("no paragraphs yields no sections", () => {
+  expect(segmentReasoningTrace([])).toEqual([]);
+});
+
+test("a single paragraph with no heading has no internal boundary - stays one section", () => {
+  expect(segmentReasoningTrace(["just one plain thought, no structure"])).toEqual([
+    "just one plain thought, no structure",
+  ]);
+});
+
+test("multiple paragraphs with no heading anywhere: each paragraph break IS the structure", () => {
+  expect(segmentReasoningTrace(["first thought", "second thought", "third thought"])).toEqual([
+    "first thought",
+    "second thought",
+    "third thought",
+  ]);
+});
+
+test("a heading starting the very first paragraph: everything up to the next heading is one section, no empty preamble", () => {
+  expect(segmentReasoningTrace(["## Plan\n\nfigure it out"])).toEqual(["## Plan\n\nfigure it out"]);
+});
+
+test("text before the first heading becomes its own leading section", () => {
+  expect(segmentReasoningTrace(["intro text", "## Plan\n\nfigure it out"])).toEqual([
+    "intro text",
+    "## Plan\n\nfigure it out",
+  ]);
+});
+
+test("multiple headings each start a new section, running up to the next heading", () => {
+  expect(
+    segmentReasoningTrace(["## Survey\n\n- check a\n- check b", "## Decide\n\nship it", "## Verify\n\nrun the tests"]),
+  ).toEqual(["## Survey\n\n- check a\n- check b", "## Decide\n\nship it", "## Verify\n\nrun the tests"]);
+});
+
+test("heading structure wins over paragraph structure when both are present", () => {
+  // Two summaryIndex paragraphs, but only ONE heading inside the second: the
+  // heading boundary governs, not the paragraph break, so the first
+  // paragraph merges into the leading (headingless) section.
+  expect(segmentReasoningTrace(["intro", "middle", "## Plan\n\nfinish it"])).toEqual([
+    "intro\n\nmiddle",
+    "## Plan\n\nfinish it",
+  ]);
+});
+
+test("a section reconstructed from heading structure reproduces the exact source markdown, not a rewritten form", () => {
+  const paragraphs = ["setup notes", "## Steps\n\n1. one\n2. two\n\nsome **bold** trailing prose"];
+  expect(segmentReasoningTrace(paragraphs)).toEqual([
+    "setup notes",
+    "## Steps\n\n1. one\n2. two\n\nsome **bold** trailing prose",
+  ]);
 });

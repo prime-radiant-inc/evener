@@ -42,6 +42,8 @@
 // re-parse - correct by construction (see ThinkBlock.test.tsx's own
 // interleaving test).
 
+// Expanded-trace anatomy adapted from Beautiful UI's Thinking component (beautifului.dev, MIT © 2026 Shane Levine) — see LICENSES/beautiful-ui.txt.
+
 import { memo } from "react";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { Chevron, Markdown, ToolIcon } from "../../../../widgets";
@@ -53,6 +55,7 @@ import {
   formatThoughtDuration,
   joinedReasoningParagraphs,
   lastMeaningfulThoughtLine,
+  segmentReasoningTrace,
   thoughtDurationMs,
 } from "./reasoningFormat";
 import styles from "./thinkblock.module.css";
@@ -68,6 +71,10 @@ const CLASS = {
   summaryText: requireClass(styles.summaryText, "thinkblock.module.css", "summaryText"),
   chevron: requireClass(styles.chevron, "thinkblock.module.css", "chevron"),
   body: requireClass(styles.body, "thinkblock.module.css", "body"),
+  trace: requireClass(styles.trace, "thinkblock.module.css", "trace"),
+  step: requireClass(styles.step, "thinkblock.module.css", "step"),
+  stepMarker: requireClass(styles.stepMarker, "thinkblock.module.css", "stepMarker"),
+  stepBody: requireClass(styles.stepBody, "thinkblock.module.css", "stepBody"),
 };
 
 // The thought row leads with the same leading-icon grammar the tool rows use
@@ -175,6 +182,7 @@ export const ThinkBlock = memo(function ThinkBlock({ item, turn, live, sessionRe
   const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
   if (paragraphs.length === 0) return null; // empty thoughts removed
 
+  const sections = segmentReasoningTrace(paragraphs);
   const durationMs = thoughtDurationMs(
     item.startedAt,
     item.completedAt,
@@ -221,15 +229,39 @@ export const ThinkBlock = memo(function ThinkBlock({ item, turn, live, sessionRe
           </span>
         </summary>
         <div className={CLASS.body}>
-          {/* One document, not one per summaryIndex: a markdown parser needs
-              the whole text to resolve block structure. Blank-line joined so
-              each index still starts its own block-level token rather than
-              being folded into the previous index's paragraph. The live and
-              settled branches use this same complete document; only the
-              live branch opts into streaming preview behavior. Markdown owns
-              its own paragraph/heading/list layout, so nothing re-wraps it in
-              .paragraph. */}
-          <Markdown source={paragraphs.join("\n\n")} />
+          {/* Beautiful UI's Thinking anatomy, ported honestly: a step only
+              exists where the text itself already breaks into one (a
+              markdown heading, or - absent any heading - a paragraph break
+              between summaryIndex chunks; see segmentReasoningTrace). A
+              thought with none of that structure (the common case, one
+              undifferentiated paragraph) renders exactly as it always has -
+              no rail, no divider, no panel - so the one-document render
+              below stays the fallback, not a special case. */}
+          {sections.length > 1 ? (
+            <ol className={CLASS.trace} data-testid="think-block-trace">
+              {sections.map((section, index) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: sections are a static re-derivation of this settled item's fixed text, not a reorderable or independently-mutating list.
+                <li key={index} className={CLASS.step}>
+                  <span className={CLASS.stepMarker} aria-hidden="true">
+                    {String(index + 1).padStart(2, "0")}
+                  </span>
+                  <div className={CLASS.stepBody}>
+                    <Markdown source={section} />
+                  </div>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            // One document, not one per summaryIndex: a markdown parser needs
+            // the whole text to resolve block structure. Blank-line joined so
+            // each index still starts its own block-level token rather than
+            // being folded into the previous index's paragraph. The live and
+            // settled branches use this same complete document; only the
+            // live branch opts into streaming preview behavior. Markdown owns
+            // its own paragraph/heading/list layout, so nothing re-wraps it in
+            // .paragraph.
+            <Markdown source={paragraphs.join("\n\n")} />
+          )}
         </div>
       </details>
     </div>
