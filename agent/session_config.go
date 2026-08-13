@@ -118,6 +118,11 @@ type SessionConfig struct {
 	// autonomously. Appends guidance to the system prompt adapting skill behavior.
 	NonInteractive bool `json:"non_interactive,omitempty"`
 
+	// ExperimentalFinalRequirementsAudit inserts one final verification task in
+	// fresh non-interactive root sessions. It is intentionally not persisted
+	// because this switch exists only for controlled experiment runs.
+	ExperimentalFinalRequirementsAudit bool `json:"-"`
+
 	// ContextStrategy selects the context management strategy: compact|session-log|ooda.
 	// The value "recall" is accepted as a compatibility alias for compact.
 	ContextStrategy string `json:"context_strategy,omitempty"`

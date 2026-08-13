@@ -83,6 +83,10 @@ type toolDeps struct {
 	// the handler.
 	setCommunicateResult func(message, reply, output string)
 
+	// startFinalRequirementsAudit defers an eligible terminal result and starts
+	// the experiment's ordinary final verification task.
+	startFinalRequirementsAudit func() (bool, error)
+
 	// setCommunicateStructured records the raw output object the model emitted,
 	// before communicate canonicalization, for delegate structured_result capture.
 	setCommunicateStructured func(raw any)
@@ -230,9 +234,10 @@ func newToolDeps(s *Session) *toolDeps {
 			fetch:  s.webFetch,
 			search: s.webSearch,
 		},
-		setPinnedNote:       s.setPinnedNote,
-		requestForceCompact: s.requestForceCompact,
-		pressure:            s.ContextPressure,
+		setPinnedNote:               s.setPinnedNote,
+		requestForceCompact:         s.requestForceCompact,
+		pressure:                    s.ContextPressure,
+		startFinalRequirementsAudit: s.maybeStartFinalRequirementsAudit,
 		setCommunicateResult: func(message, reply, output string) {
 			s.mu.Lock()
 			if s.comm.called {

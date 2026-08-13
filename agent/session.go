@@ -238,7 +238,8 @@ type Session struct {
 	//   flag and kickFunc callback, the naming name-state, envTracker,
 	//   envContextState, currentRoundRecorder, salvagedTurnRound, and the worktree
 	//   occupancy fields (worktreeRestoreEnv, worktreeCurrentPath,
-	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub). It
+	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub), plus
+	//   originalTaskText and finalRequirementsAuditInjected. It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
 	mu sync.Mutex
 
@@ -580,6 +581,9 @@ type Session struct {
 	// be loaded. It is published by taskStoreOnce before any snapshot reads use
 	// it, so aggregate producers can distinguish unavailable data from zero tasks.
 	taskStoreLoadErr error
+	// final-requirements audit experiment state (guarded by mu).
+	originalTaskText               string
+	finalRequirementsAuditInjected bool
 
 	// goal store (lazy-init)
 	goalStore     *goal.Store

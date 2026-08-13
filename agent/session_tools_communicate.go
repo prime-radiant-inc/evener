@@ -64,6 +64,15 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			if err := deps.abort(ctx); err != nil {
 				return nil, err
 			}
+			if endTurn && deps.startFinalRequirementsAudit != nil {
+				started, err := deps.startFinalRequirementsAudit()
+				if err != nil {
+					return nil, err
+				}
+				if started {
+					return `{"accepted":false,"end_turn":false,"reason":"final requirements audit started"}`, nil
+				}
+			}
 
 			deps.emit(events.EventCommunicate, events.CommunicateData{
 				EndTurn: endTurn,

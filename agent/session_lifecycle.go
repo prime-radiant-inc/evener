@@ -1297,6 +1297,9 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 
 	s.mu.Lock()
 	s.turns++
+	if s.finalRequirementsAuditEligibleSession() && s.originalTaskText == "" {
+		s.originalTaskText = input
+	}
 	s.mu.Unlock()
 
 	if drainResumeSessionStart {
