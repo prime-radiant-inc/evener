@@ -1,4 +1,7 @@
-import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
@@ -382,4 +385,125 @@ test("SandboxEscalationRail renders one card per pending escalation, keyed by es
     });
   });
   expect(screen.getAllByText(/sandbox approval/i)).toHaveLength(2);
+});
+
+// --- reviewed UX fixes: amber envelope, sticky pin, autofocus, Mod+Enter --
+
+function sandboxEscalationCss(): string {
+  const path = join(dirname(fileURLToPath(import.meta.url)), "sandboxescalation.module.css");
+  return readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+test("the card's container carries the amber attention envelope, not a neutral surface (declaration-level)", () => {
+  const rule = /\.card\s*\{([^}]*)\}/.exec(sandboxEscalationCss());
+  expect(rule).not.toBeNull();
+  expect(rule![1]).toContain("border: 1px solid var(--attention-edge)");
+  expect(rule![1]).toContain("background: var(--attention-bg)");
+});
+
+test("the rail is pinned to the top of the scroll body while the transcript scrolls (declaration-level)", () => {
+  const rule = /\.rail\s*\{([^}]*)\}/.exec(sandboxEscalationCss());
+  expect(rule).not.toBeNull();
+  expect(rule![1]).toContain("position: sticky");
+  expect(rule![1]).toContain("z-index: var(--z-sticky-bar)");
+});
+
+test("nothing pending renders no sticky rail wrapper at all", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+
+  const { container } = render(<SandboxEscalationRail sessionRef="ref_a" />);
+  expect(container.firstChild).toBeNull();
+});
+
+test("an escalation arriving focuses the Allow button", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+
+  render(<SandboxEscalationRail sessionRef="ref_a" />);
+  act(() => {
+    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() });
+  });
+
+  const allow = await screen.findByRole("button", { name: /allow/i });
+  expect(document.activeElement).toBe(allow);
+});
+
+// Edge-triggered, mirroring AskDock.tsx's own dock-activation effect: a
+// LATER escalation that only grows an already-open rail must never steal
+// focus from something the reader is already interacting with (e.g. a
+// second card's Deny button already focused).
+test("a later escalation that only grows an already-open rail does not steal focus", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  const user = userEvent.setup();
+  await threadsStore.getState().ensureThread("ref_a");
+
+  render(<SandboxEscalationRail sessionRef="ref_a" />);
+  act(() => {
+    fake.emitNotification({
+      method: "serf/sandbox/escalation/requested",
+      params: requested({ escalationId: "esc_1" }),
+    });
+  });
+
+  const firstDeny = await screen.findByRole("button", { name: /deny/i });
+  await user.click(firstDeny); // moves focus onto the first card's Deny button
+  firstDeny.focus();
+  expect(document.activeElement).toBe(firstDeny);
+
+  act(() => {
+    fake.emitNotification({
+      method: "serf/sandbox/escalation/requested",
+      params: requested({ escalationId: "esc_2", deniedPath: "/etc/shadow" }),
+    });
+  });
+
+  expect(document.activeElement).toBe(firstDeny);
+});
+
+test("Mod+Enter approves the card it's fired from", async () => {
+  const onApprove = vi.fn();
+  const onDeny = vi.fn();
+  render(<SandboxEscalationCard escalation={requested()} onApprove={onApprove} onDeny={onDeny} resolved={false} />);
+
+  fireEvent.keyDown(screen.getByRole("button", { name: /allow/i }), { key: "Enter", metaKey: true });
+  expect(onApprove).toHaveBeenCalledTimes(1);
+  expect(onDeny).not.toHaveBeenCalled();
+});
+
+test("Ctrl+Enter also approves (the non-Mac modifier)", async () => {
+  const onApprove = vi.fn();
+  render(<SandboxEscalationCard escalation={requested()} onApprove={onApprove} onDeny={() => {}} resolved={false} />);
+
+  fireEvent.keyDown(screen.getByRole("button", { name: /allow/i }), { key: "Enter", ctrlKey: true });
+  expect(onApprove).toHaveBeenCalledTimes(1);
+});
+
+test("a plain Enter (no modifier) does not approve - only Mod+Enter does", async () => {
+  const onApprove = vi.fn();
+  render(<SandboxEscalationCard escalation={requested()} onApprove={onApprove} onDeny={() => {}} resolved={false} />);
+
+  fireEvent.keyDown(screen.getByRole("button", { name: /allow/i }), { key: "Enter" });
+  expect(onApprove).not.toHaveBeenCalled();
+});
+
+// Denial must never be one accidental keypress away: Escape is deliberately
+// NOT wired to Deny - it stays mouse/tab-reachable only.
+test("Escape does not deny - denial is never a single accidental keypress", async () => {
+  const onDeny = vi.fn();
+  render(<SandboxEscalationCard escalation={requested()} onApprove={() => {}} onDeny={onDeny} resolved={false} />);
+
+  fireEvent.keyDown(screen.getByRole("button", { name: /allow/i }), { key: "Escape" });
+  expect(onDeny).not.toHaveBeenCalled();
+});
+
+test("Mod+Enter does nothing once the card is resolved", async () => {
+  const onApprove = vi.fn();
+  render(<SandboxEscalationCard escalation={requested()} onApprove={onApprove} onDeny={() => {}} resolved={true} />);
+
+  fireEvent.keyDown(screen.getByRole("button", { name: /allow/i }), { key: "Enter", metaKey: true });
+  expect(onApprove).not.toHaveBeenCalled();
 });

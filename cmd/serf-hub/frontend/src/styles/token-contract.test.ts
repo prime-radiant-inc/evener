@@ -467,6 +467,16 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // specs/2026-08-09-task-list-ui-design.md): position already marks the
 // latest note, the hue is a glyph-level accent, and all panel text stays
 // on the ink scale.
+//
+// reviewed-ux-fixes fix 1: panes/session/transcript/tools/sandboxescalation.
+// module.css earns the same exception for the same structural reason - it
+// lives under panes/session/transcript/tools/, not widgets/<name>/, so it
+// can never match WIDGET_STYLESHEET_RE either. A sandbox escalation card is
+// a BLOCKING approval (the tool-exec goroutine is parked waiting on
+// serf/sandbox/escalation/resolve) - the app's SECOND "a human is needed
+// right now" moment after askDock's ask batch (kata crcf, above), same
+// structural reason, so it earns the same --attention-bg/--attention-edge
+// container tint askDock's .batch uses instead of a neutral Card.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "shell/rail/Rail.module.css",
   "panes/session/transcript/tools/subagentmodule.module.css",
@@ -474,6 +484,7 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "panes/session/transcript/tools/taskcheck.module.css",
   "panes/session/chrome/activitypanel.module.css",
   "panes/session/chrome/taskspanel.module.css",
+  "panes/session/transcript/tools/sandboxescalation.module.css",
 ]);
 
 for (const [path, text] of OTHER_STYLESHEETS) {
@@ -505,6 +516,14 @@ test("the askdock.module.css semantic-var exception is scoped to its exact path,
 test("the taskspanel.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
   expect(SEMANTIC_PATH_EXCEPTIONS.has("panes/session/chrome/taskspanel.module.css")).toBe(true);
   expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/taskspanel.module.css")).toBe(false);
+});
+
+test("the sandboxescalation.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("panes/session/transcript/tools/sandboxescalation.module.css")).toBe(true);
+  // A same-named decoy anywhere else must still go through the normal
+  // widget-allowlist check, exactly like the dockview-theme.css precedent.
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/sandboxescalation.module.css")).toBe(false);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("sandboxescalation.module.css")).toBe(false);
 });
 
 // --- (c) dark and light blocks declare the same color tokens -----------

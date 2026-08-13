@@ -20,6 +20,7 @@ import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css"
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer } from "./Composer";
+import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
 import {
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
@@ -353,6 +354,7 @@ beforeEach(() => {
   // test's own "ref_a" mount.
   resetAskDockStoreForTests();
   resetQuoteInsertStoreForTests();
+  resetComposerFocusStoreForTests();
   // The toast store is module state that outlives RTL's own cleanup, so a
   // toast pushed by one test would otherwise still be in the next test's
   // tree and make a getByText for the same message ambiguous.
@@ -466,6 +468,31 @@ test("the composer persists the quote-inserted text as this ref's draft", async 
     requestQuoteInsert("ref_a", "> quoted line\n\n");
   });
   await waitFor(() => expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("> quoted line\n\n"));
+});
+
+// --- composer-focus seam (composerFocus.ts) ---------------------------------
+//
+// A global Mod+I chord (owned elsewhere - see composerFocus.ts's own header
+// comment) will call requestComposerFocus(ref) to move keyboard focus into
+// this ref's Composer. These tests exercise that seam from the Composer
+// side only, the same way the quote-insert tests above call
+// requestQuoteInsert directly rather than rendering the chord's own owner.
+
+test("a composer-focus request focuses this ref's textarea", async () => {
+  await mountComposer("ref_a");
+  act(() => {
+    requestComposerFocus("ref_a");
+  });
+  await waitFor(() => expect(document.activeElement).toBe(textarea()));
+});
+
+test("a composer-focus request for a DIFFERENT ref never focuses this composer", async () => {
+  await mountComposer("ref_a");
+  act(() => {
+    requestComposerFocus("ref_other");
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(document.activeElement).not.toBe(textarea());
 });
 
 // The card is widgets/promptcard now, so the focus-ring RULE is that widget's
@@ -887,6 +914,21 @@ test("bare Enter does not submit when enterToSend is off (default)", async () =>
   await user.type(textarea(), "line one{Enter}");
   expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
   expect(textarea().value).toBe("line one\n");
+});
+
+// IME guard: while an IME composition is in progress (e.g. finishing a
+// Japanese/Chinese candidate with Enter), that Enter keydown must never be
+// read as "submit" - it is the IME's own confirm keystroke, not the user
+// asking to send.
+test("Enter is ignored while an IME composition is in progress, even with enterToSend on", async () => {
+  prefsStore.getState().setEnterToSend(true);
+  await mountComposer("ref_a");
+  const requestSubmitSpy = vi.spyOn(HTMLFormElement.prototype, "requestSubmit").mockImplementation(() => {});
+
+  fireEvent.change(textarea(), { target: { value: "composing" } });
+  fireEvent.keyDown(textarea(), { key: "Enter", isComposing: true });
+
+  expect(requestSubmitSpy).not.toHaveBeenCalled();
 });
 
 test("bare Enter submits when enterToSend is on", async () => {

@@ -11,9 +11,12 @@ import { DockviewReact, type DockviewReadyEvent, type IDockviewPanelProps } from
 import { Suspense, useEffect, useRef, useState } from "react";
 import "dockview-react/dist/styles/dockview.css";
 import "./dockview-theme.css";
+import type { ThreadModel } from "../protocol/model";
 import { threadsStore, useThreadsStore } from "../stores/threads";
+import { findSessionNode, type TreeResponse, treeStore, useTreeStore } from "../stores/tree";
 import { EmptyState } from "../widgets/emptystate";
 import styles from "./DockHost.module.css";
+import { PaneTab } from "./PaneTab";
 import { PopoutHeaderAction } from "./PopoutHeaderAction";
 import { type PaneTitleCtx, paneFor } from "./paneRegistry";
 import {
@@ -106,6 +109,28 @@ const PANE_COMPONENT_KEY = "pane";
 // params object shaped exactly like PanePanelParams, so the cast reflects a
 // real, enforced invariant rather than papering over a type mismatch.
 const COMPONENTS = { [PANE_COMPONENT_KEY]: PaneHost as React.FunctionComponent<IDockviewPanelProps> };
+
+// Resolves a pane title's threadName lookup (PaneTitleCtx) against BOTH
+// data sources a session pane's tab can draw a friendly title from: the
+// live ThreadModel (threads, keyed by ref) first, since it is the thread's
+// own current name and wins the moment it's hydrated - falling back to the
+// rail's already-loaded tree/session-index snapshot (findSessionNode) when
+// the thread hasn't hydrated a name yet, or isn't tracked at all. A pane
+// opened before its transcript hydrates (or with the WS down) would
+// otherwise show paneFor("session").title's own last-resort fallback, the
+// raw ref, even though the tree the rail already fetched knows the real
+// title - see this file's own doc comment on paneFor("session")'s title()
+// in panes/session/index.tsx, whose "fall back to the raw ref" branch this
+// keeps honest by only ever reaching it when NEITHER source has a title.
+function resolveThreadName(
+  threads: Map<string, ThreadModel>,
+  tree: TreeResponse | null,
+  ref: string,
+): string | undefined {
+  const live = threads.get(ref)?.name;
+  if (live !== undefined) return live;
+  return tree ? findSessionNode(tree, ref)?.title : undefined;
+}
 
 function readStoredLayout(): unknown {
   try {
@@ -220,6 +245,7 @@ export function DockHost() {
   const panes = useWorkspaceStore((s) => s.panes);
   const focusedPaneId = useWorkspaceStore((s) => s.focusedPaneId);
   const threads = useThreadsStore((s) => s.threads);
+  const tree = useTreeStore((s) => s.tree);
   // Tracks, per paneId, the last params reference actually pushed into
   // dockview (via addPanel at creation or updateParameters on a change) -
   // params identity only changes in workspace.ts when the value actually
@@ -305,7 +331,9 @@ export function DockHost() {
   useEffect(() => {
     if (!api) return;
     const currentIds = new Set(api.panels.map((p) => p.id));
-    const bootTitleCtx: PaneTitleCtx = { threadName: (ref) => threadsStore.getState().threads.get(ref)?.name };
+    const bootTitleCtx: PaneTitleCtx = {
+      threadName: (ref) => resolveThreadName(threadsStore.getState().threads, treeStore.getState().tree, ref),
+    };
 
     for (const pane of panes) {
       const panelParams: PanePanelParams = { paneType: pane.type, paneParams: pane.params };
@@ -367,14 +395,14 @@ export function DockHost() {
   // tracks a rename without needing a page reload.
   useEffect(() => {
     if (!api) return;
-    const ctx: PaneTitleCtx = { threadName: (ref) => threads.get(ref)?.name };
+    const ctx: PaneTitleCtx = { threadName: (ref) => resolveThreadName(threads, tree, ref) };
     for (const pane of panes) {
       const panel = api.getPanel(pane.id);
       if (!panel) continue; // not created yet on this pass - the structural effect (same commit) already gave it the right initial title
       const title = paneFor(pane.type).title(pane.params, ctx);
       if (panel.title !== title) panel.setTitle(title);
     }
-  }, [api, panes, threads]);
+  }, [api, panes, threads, tree]);
 
   // Registers the api and runs the restore-or-fallback boot sequence
   // BEFORE exposing `api` to this component's own state (setApi, last) -
@@ -479,6 +507,7 @@ export function DockHost() {
     <div className={styles.host}>
       <DockviewReact
         components={COMPONENTS}
+        defaultTabComponent={PaneTab}
         onReady={handleReady}
         className="dockview-theme-serf"
         rightHeaderActionsComponent={PopoutHeaderAction}

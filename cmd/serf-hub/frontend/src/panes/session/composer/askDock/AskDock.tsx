@@ -146,6 +146,28 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
     onSend(batch.id);
   }
 
+  // Keyboard submit (UX fix): Mod+Enter anywhere in the batch invokes the
+  // SAME primary action the footer button does (send, or advance while
+  // another question is still open - handlePrimaryAction's own doc comment
+  // above), so a keyboard-only reader never has to reach for the mouse. A
+  // bare Enter does the same, but ONLY from the question's own free-text
+  // answer input (data-ask-free-input, AskQuestionCard.tsx's own doc
+  // comment on that attribute) - it is a plain <input>, not a <textarea>, so
+  // there is no newline for a bare Enter to otherwise insert, unlike the
+  // main composer's own Shift+Enter-newlines contract. Guarded on
+  // isComposing both ways: an IME composition's own confirm keystroke also
+  // fires as "Enter", and must never be read as a submit (same guard
+  // Composer.tsx's own handleKeyDown applies to its Enter-to-send path).
+  function handleBatchKeyDown(event: React.KeyboardEvent) {
+    if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+    const isPrimaryChord = event.metaKey || event.ctrlKey;
+    const isFreeTextInputEnter =
+      !isPrimaryChord && !event.shiftKey && (event.target as HTMLElement).dataset.askFreeInput === "true";
+    if (!isPrimaryChord && !isFreeTextInputEnter) return;
+    event.preventDefault();
+    handlePrimaryAction();
+  }
+
   // ARIA tabs with automatic activation (arrow keys both move and select -
   // the panel is right there on the same surface, so there is no expensive
   // switch to defer behind a second Enter press). Home/End jump the ends.
@@ -177,7 +199,8 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
   }
 
   return (
-    <div className={CLASS.batch}>
+    // biome-ignore lint/a11y/noStaticElementInteractions: catches Mod+Enter/Enter bubbling up from the batch's own controls (radios, the free-text input) - the div is a layout container, not itself interactive, same precedent as Settings.tsx's own Escape-catching wrapper
+    <div className={CLASS.batch} onKeyDown={handleBatchKeyDown}>
       {total > 1 && (
         // key="tabs"/key="panel" on both siblings: when a late ask_user call
         // grows a single-question batch past one question, the tab strip

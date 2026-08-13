@@ -191,6 +191,14 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
             aria-labelledby={`${freeLabelId} ${headerId} ${textId}`}
             value={resolution?.kind === "free" ? resolution.text : ""}
             onChange={(e) => onResolutionChange({ kind: "free", text: e.target.value })}
+            // Marks this as THE question's own free-text answer input (not
+            // the "let serf decide" leaning input or the per-question note,
+            // both also plain single-line <input type="text"> elements
+            // sitting in the same batch) - AskDock's own batch-level keydown
+            // handler reads this to decide whether a bare Enter here should
+            // invoke the primary action (askdock's own keyboard-submit UX
+            // fix), since only this field is the question's actual answer.
+            data-ask-free-input="true"
           />
         )}
       </div>

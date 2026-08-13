@@ -44,6 +44,7 @@ import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type PendingAttachment, type TextEditor, useAttachments } from "./attachments/useAttachments";
 import styles from "./composer.module.css";
+import { consumeComposerFocus, useComposerFocusRequest } from "./composerFocus";
 import { clearDraft, readDraft, writeDraft } from "./draft";
 import { QueueStrip, submitWithPendingTracking } from "./queue";
 import {
@@ -396,6 +397,21 @@ export function Composer({ ref }: ComposerProps) {
     consumeQuoteInsert(ref);
   }, [quoteInsertRequest, ref, textEditor.write]);
 
+  // composerFocus.ts's own seam: a global chord (owned elsewhere) asks this
+  // ref's Composer to move keyboard focus into its textarea. Exactly the
+  // same shape as the quote-insert effect above - keyed on the request's own
+  // monotonic id so consuming a request from a previous mount under the SAME
+  // still-pending request never replays it, and consumeComposerFocus() below
+  // makes it one-shot.
+  const composerFocusRequest = useComposerFocusRequest(ref);
+  const consumedComposerFocusIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!composerFocusRequest || composerFocusRequest.id === consumedComposerFocusIdRef.current) return;
+    consumedComposerFocusIdRef.current = composerFocusRequest.id;
+    textareaRef.current?.focus();
+    consumeComposerFocus(ref);
+  }, [composerFocusRequest, ref]);
+
   if (!model) return null; // Session.tsx only mounts this once its own model is hydrated; defensive only.
 
   // Captured as plain consts (not read as `model.xyz` again below): a
@@ -723,6 +739,11 @@ export function Composer({ ref }: ComposerProps) {
       return;
     }
     if (event.key !== "Enter") return;
+    // An IME composition's own confirm keystroke also fires as a plain
+    // "Enter" keydown (e.g. finishing a Japanese/Chinese candidate) - that
+    // is the IME committing text, not the user asking to submit, so it must
+    // never be read as one.
+    if (event.nativeEvent.isComposing) return;
     if (event.metaKey || event.ctrlKey) {
       event.preventDefault();
       formRef.current?.requestSubmit();

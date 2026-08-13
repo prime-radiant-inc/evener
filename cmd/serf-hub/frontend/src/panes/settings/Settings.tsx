@@ -1,10 +1,12 @@
-import type { ComponentType } from "react";
+import type { ComponentType, KeyboardEvent } from "react";
 import { useState } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useIsMobile } from "../../shell/useIsMobile";
+import { workspaceStore } from "../../shell/workspace";
 import { useSettingsOverviewStore } from "../../stores/settingsOverview";
-import { PaneScaffold } from "../../widgets";
+import { IconButton, PaneScaffold } from "../../widgets";
+import { CloseIcon } from "../../widgets/dialog/CloseIcon";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { SettingsNav } from "./SettingsNav";
 import { DEFAULT_SECTION_ID, settingsSectionLabel } from "./sections";
@@ -102,7 +104,7 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
  * Desktop never unmounts it at all (both views always render), so filter
  * persistence there is automatic without any extra state here.
  */
-export default function Settings({ params }: PaneProps<SettingsPaneParams>) {
+export default function Settings({ params, paneId }: PaneProps<SettingsPaneParams>) {
   const activeId = params.section ?? DEFAULT_SECTION_ID;
   const isMobile = useIsMobile();
   const [mobileShowingNav, setMobileShowingNav] = useState(false);
@@ -114,12 +116,42 @@ export default function Settings({ params }: PaneProps<SettingsPaneParams>) {
     if (url !== null) navigate(url);
   }
 
+  // Settings has no other way out: opened via the rail gear, it took over
+  // the main slot (workspace.ts's own "primary" rule) whose tab bar/close
+  // affordance DockHost deliberately suppresses (DockHost.test.tsx: "the
+  // main pane offers no way to close it - it is replaceable, not
+  // closeable"). closePane on a main pane is exactly that replace - the
+  // main slot is never left empty, so DockHost relaunches welcome there -
+  // which makes it the correct exit here too, just reached from inside the
+  // pane instead of a tab (x) that main panes intentionally don't have.
+  function handleClose() {
+    workspaceStore.getState().closePane(paneId);
+  }
+
+  // Escape closes the pane, but only when nothing inside settings already
+  // claimed the key - a Dialog/Menu open in a section (e.g. credentials'
+  // instance dialogs) handles its own Escape first as the keydown bubbles
+  // up through this div, and this checks defaultPrevented rather than
+  // stopping propagation itself so it stays a HANDLER, not a global
+  // listener: it only ever sees keydowns that started inside this pane.
+  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Escape") return;
+    if (event.defaultPrevented) return;
+    handleClose();
+  }
+
   const showNav = !isMobile || mobileShowingNav;
   const showContent = !isMobile || !mobileShowingNav;
 
   return (
-    <PaneScaffold title={settingsSectionLabel(activeId)}>
-      <div className={CLASS.shell}>
+    <PaneScaffold
+      title={settingsSectionLabel(activeId)}
+      actions={
+        <IconButton label="Close settings" icon={<CloseIcon />} variant="quiet" size="sm" onClick={handleClose} />
+      }
+    >
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: keydown only closes the pane on Escape; the div is a layout container, not itself interactive - see OverlayPanel's identical precedent */}
+      <div className={CLASS.shell} onKeyDown={handleKeyDown}>
         {showNav && <SettingsNav activeId={activeId} onNavigate={handleNavigate} />}
         {showContent && (
           <div className={CLASS.content}>

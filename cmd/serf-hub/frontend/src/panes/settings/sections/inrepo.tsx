@@ -14,7 +14,7 @@ import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { errorText } from "../../../protocol/errors";
 import type { LaunchConfigResolved, RepoLaunchConfigStatus } from "../../../protocol/types.gen";
 import { launchConfigStore } from "../../../stores/launchConfig";
-import { Button, FormRow, Input } from "../../../widgets";
+import { Button, FormRow, Input, Loader } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./inrepo.module.css";
 import { useConnectedEffect } from "./useConnectedEffect";
@@ -132,7 +132,7 @@ export function InRepoSection(_props: InRepoSectionProps) {
       </div>
       <div className={CLASS.status} aria-live="polite">
         {status.phase === "empty" && <p className={CLASS.note}>Enter a working directory.</p>}
-        {status.phase === "loading" && <p className={CLASS.note}>Loading…</p>}
+        {status.phase === "loading" && <Loader label="Loading" />}
         {status.phase === "error" && <p className={CLASS.error}>Failed to load: {status.message}</p>}
         {status.phase === "resolved" && (
           <ResolvedStatus cwd={cwd.trim()} repo={status.repo} trusting={trusting} onTrust={handleTrust} />

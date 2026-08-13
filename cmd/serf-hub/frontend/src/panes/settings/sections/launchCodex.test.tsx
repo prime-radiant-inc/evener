@@ -26,6 +26,14 @@ describe("CodexLaunchSection", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
+  // FIX 2b: the loading state gets the Loader widget instead of a static
+  // "Loading…" string.
+  test("loading state shows a Loader", () => {
+    render(<CodexLaunchSection sectionId="launch-codex" useOverview={fixture({ loading: true })} />);
+    expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+    expect(screen.queryByText("Loading…")).toBeNull();
+  });
+
   test("empty state shows the worked [[codex_launches]] example and a restart hint", () => {
     const data: SettingsOverviewResponse = { codexLaunches: [] };
     render(<CodexLaunchSection sectionId="launch-codex" useOverview={fixture({ data })} />);

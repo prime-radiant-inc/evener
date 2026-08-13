@@ -31,7 +31,7 @@
 // honest unknown and renders no row at all.
 import { forwardRef, useImperativeHandle, useState } from "react";
 import type { ThreadModel } from "../../../protocol/model";
-import { Button, Meter, Sheet } from "../../../widgets";
+import { Button, InspectorCard, Meter, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatTokenCount } from "../transcript/messages/format";
 import { formatTimestamp, sessionTokens } from "./detailsAccounting";
@@ -136,17 +136,25 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
 
   return (
     <>
-      <Section title="Session">
-        <DetailRow label="model" testId="session-details-model">
-          {modelLabel(model.modelProvider, model.model)}
-        </DetailRow>
-        <DetailRow label="state" testId="session-details-status">
-          {model.status.type}
-        </DetailRow>
-        <DetailRow label="session id" testId="session-details-session-id">
-          {model.threadId}
-        </DetailRow>
-      </Section>
+      {/* Session is three flat, always-present, single-line strings - the
+          exact shape InspectorCard already provides, so this composes the
+          widget instead of duplicating it via Section/DetailRow. Usage and
+          Location stay on Section/DetailRow: Usage's rows are a Meter and a
+          two-value ↑/↓ readout, not single string values, and Location's
+          cwd/project are absolute paths that need their own wrapping line
+          (.path below) that InspectorCard's row has no room for. The
+          wrapping div keeps InspectorCard on the same .section divider
+          rhythm as its neighbors. */}
+      <div className={CLASS.section}>
+        <InspectorCard
+          title="Session"
+          properties={[
+            { key: "model", label: "model", value: modelLabel(model.modelProvider, model.model) },
+            { key: "state", label: "state", value: model.status.type },
+            { key: "session-id", label: "session id", value: model.threadId },
+          ]}
+        />
+      </div>
       <Section title="Usage">
         {showContext && (
           <DetailRow label="context" testId="session-details-context">

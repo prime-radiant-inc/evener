@@ -66,6 +66,18 @@
   border: 0;
 }
 
+/* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
+ * 4): the trigger is the only way to open the model picker, so a coarse
+ * pointer needs the platform's 44px tap floor - min-height, not height, so
+ * the row's own sizing above stays untouched and this only ever grows it.
+ * (pointer: coarse), not a width breakpoint like button.module.css's own
+ * phone block: this trigger isn't a widgets/button consumer. */
+@media (pointer: coarse) {
+  .trigger {
+    min-height: var(--tap-min);
+  }
+}
+
 /* The floating panel's own content padding/sizing - widgets/popover supplies
  * position/surface/border/radius/animation. Wider than the spawn form's copy
  * because this picker's rows carry qualified provider/model ids, and capped

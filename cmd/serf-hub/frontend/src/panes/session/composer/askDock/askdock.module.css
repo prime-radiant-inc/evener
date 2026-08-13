@@ -35,9 +35,22 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3);
-  border: 1px solid var(--attention-edge);
+  /* Stronger than the token default (--attention-bg/-edge, tokens.css's own
+   * 15%/40% mixes): those read fine against light's near-white surfaces, but
+   * dark's --surface-1 is a very dark, low-chroma neutral, so the same 15%
+   * mix barely tints it, leaving this batch's "a human is needed" envelope
+   * nearly invisible in dark. Mixed locally, past the shared token, rather
+   * than raising tokens.css's own 15%/40% - every OTHER --attention consumer
+   * (toasts, chips) already reads fine at the token default, and this file
+   * already carries its own semantic-hue exception (token-contract.test.ts's
+   * SEMANTIC_PATH_EXCEPTIONS) to do so. 24%/55% checked against both themes
+   * in the /dev/surfaces gallery: dark gains a clearly legible amber
+   * wash/edge, light stays close to its existing (already-legible) reading
+   * rather than shouting.
+   */
+  border: 1px solid color-mix(in oklab, var(--attention) 55%, var(--edge));
   border-radius: var(--radius-pane);
-  background: var(--attention-bg);
+  background: color-mix(in oklab, var(--attention) 24%, var(--surface-1));
 }
 
 /* Question tab strip (kata 99yf): one question on screen at a time; the
@@ -93,4 +106,18 @@
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
+}
+
+/* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
+ * 4): the tab strip is dense (kata 99yf's question-switcher, several tabs
+ * side by side), so a coarse pointer needs the platform's 44px tap floor -
+ * min-height, not height, so the desktop sizing above stays the desktop
+ * rule and this only ever grows it. (pointer: coarse), not a width
+ * breakpoint like button.module.css's own phone block: this strip isn't a
+ * widgets/button consumer, so it follows the pointer type directly rather
+ * than reaching for --tap-min's own ≤900px gate a second way. */
+@media (pointer: coarse) {
+  .tab {
+    min-height: var(--tap-min);
+  }
 }

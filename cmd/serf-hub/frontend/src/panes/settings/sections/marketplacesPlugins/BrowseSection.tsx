@@ -7,7 +7,7 @@ import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { errorText } from "../../../../protocol/errors";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../../../protocol/types.gen";
 import { extensionsStore, type MarketplaceCatalogEntry, useExtensionsStore } from "../../../../stores/extensions";
-import { Button, Chevron, ConfirmDialog, Input, useToasts } from "../../../../widgets";
+import { Button, Chevron, ConfirmDialog, Input, Loader, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./marketplacesPlugins.module.css";
 import { sourceLabel } from "./sourceLabel";
@@ -243,7 +243,9 @@ function MarketplaceNode({
       {expanded && (
         <ul aria-label={`${marketplace.name} plugins`} className={CLASS.treeChildren}>
           {!cache || cache.status === "loading" ? (
-            <li className={CLASS.empty}>Loading…</li>
+            <li className={CLASS.empty}>
+              <Loader label="Loading" />
+            </li>
           ) : cache.status === "error" ? (
             <li className={CLASS.empty}>{`Failed to browse: ${cache.error}`}</li>
           ) : rows.length === 0 ? (

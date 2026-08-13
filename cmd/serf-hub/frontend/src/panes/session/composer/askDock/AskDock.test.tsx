@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, onTestFinished, test } from "vitest";
@@ -155,6 +155,35 @@ test("renders nothing when there is no pending ask for this ref", async () => {
 
   const { container } = render(<AskDock ref="ref_a" />);
   expect(container.firstChild).toBeNull();
+});
+
+// Dark-theme legibility (UX fix): the amber envelope's default --attention-bg/
+// -edge (15%/40% mixes, tokens.css) barely reads as amber against dark
+// surfaces. This file is already on the semantic-hue exception list
+// (token-contract.test.ts's SEMANTIC_PATH_EXCEPTIONS), so it strengthens the
+// mix locally rather than changing the global token (which every OTHER
+// --attention consumer also reads).
+test("the batch envelope strengthens the amber mix locally, past the token default, for dark-theme legibility", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askdock.module.css"), "utf8");
+  const batchRule = css.match(/\.batch\s*\{([^}]*)\}/);
+  expect(batchRule, "askdock.module.css must declare a .batch rule").not.toBeNull();
+  const body = batchRule![1]!;
+  expect(body).toMatch(/background:\s*color-mix\(in oklab,\s*var\(--attention\)\s*24%,\s*var\(--surface-1\)\)/);
+  expect(body).toMatch(/border:\s*1px solid color-mix\(in oklab,\s*var\(--attention\)\s*55%,\s*var\(--edge\)\)/);
+});
+
+// Touch target (UX fix): the tab strip's own buttons are dense (kata 99yf's
+// question-switcher), so a coarse pointer (phone/tablet touch) needs the
+// platform's 44px tap floor - the same --tap-min button.module.css's own
+// phone block already applies to Button, mirrored here via the (pointer:
+// coarse) media feature since this is a plain <button>, not that widget.
+test("the tab strip buttons reach the tap floor on a coarse pointer", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askdock.module.css"), "utf8");
+  const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
+  expect(coarse, "askdock.module.css must have a (pointer: coarse) media block").not.toBeNull();
+  const rule = coarse![1]!.match(/\.tab\s*\{([^}]*)\}/);
+  expect(rule, "the coarse-pointer block must override .tab").not.toBeNull();
+  expect(rule![1]).toContain("min-height: var(--tap-min)");
 });
 
 test("sizes the dock from its pane allocation and scrolls a tall batch internally", () => {
@@ -515,4 +544,94 @@ test("the primary button sends once the last unanswered question is answered - t
 
   const [record] = (await readMutationPersistence("ref_a")).outbox;
   expect(record?.payload).toMatchObject({ ref: "ref_a" });
+});
+
+// --- keyboard submit (UX fix): Mod+Enter on the batch, plain Enter in the
+// single-line free-text answer input, both invoking the same primary action
+// a click on the footer button already does.
+
+test("Mod+Enter on the batch invokes the primary action (send) for a single-question batch", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  const persisted = nextMutationPersistence("ref_a");
+  fireEvent.keyDown(screen.getByRole("radio", { name: "Yes" }), { key: "Enter", metaKey: true });
+  await persisted;
+
+  const [record] = (await readMutationPersistence("ref_a")).outbox;
+  expect(record?.payload).toMatchObject({ ref: "ref_a" });
+});
+
+test("Mod+Enter with ctrlKey also invokes the primary action", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  const persisted = nextMutationPersistence("ref_a");
+  fireEvent.keyDown(screen.getByRole("radio", { name: "Yes" }), { key: "Enter", ctrlKey: true });
+  await persisted;
+
+  const [record] = (await readMutationPersistence("ref_a")).outbox;
+  expect(record?.payload).toMatchObject({ ref: "ref_a" });
+});
+
+test("Mod+Enter advances rather than sends when another question is still unanswered", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  await user.click(screen.getByRole("radio", { name: /something else/i }));
+  await user.type(screen.getByPlaceholderText(/type your answer/i), "custom answer");
+  fireEvent.keyDown(screen.getByPlaceholderText(/type your answer/i), { key: "Enter", metaKey: true });
+
+  expect(screen.getByText("q2")).toBeTruthy();
+  expect(screen.queryByText("q1")).toBeNull();
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
+});
+
+test("plain Enter in the free-text answer input invokes the primary action", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  await user.click(screen.getByRole("radio", { name: /something else/i }));
+  await user.type(screen.getByPlaceholderText(/type your answer/i), "custom answer");
+
+  const persisted = nextMutationPersistence("ref_a");
+  fireEvent.keyDown(screen.getByPlaceholderText(/type your answer/i), { key: "Enter" });
+  await persisted;
+
+  const [record] = (await readMutationPersistence("ref_a")).outbox;
+  expect(record?.payload).toMatchObject({ ref: "ref_a" });
+});
+
+test("plain Enter elsewhere in the batch (not the free-text input) does not invoke the primary action", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  fireEvent.keyDown(screen.getByRole("radio", { name: "Yes" }), { key: "Enter" });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
+});
+
+test("Mod+Enter is ignored while an IME composition is in progress", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  fireEvent.keyDown(screen.getByRole("radio", { name: "Yes" }), { key: "Enter", metaKey: true, isComposing: true });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
 });

@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -11,6 +14,20 @@ import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { ModelSwitch } from "./ModelSwitch";
 import rawStyles from "./modelswitch.module.css";
+
+// Touch target (UX fix): the trigger is the only way to open the model
+// picker, so a coarse pointer (phone/tablet touch) needs the platform's
+// 44px tap floor - the same treatment askdock.module.css's own .tab rule
+// gets, via (pointer: coarse) rather than a width breakpoint since this
+// isn't a widgets/button consumer.
+test("the trigger reaches the tap floor on a coarse pointer", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "modelswitch.module.css"), "utf8");
+  const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
+  expect(coarse, "modelswitch.module.css must have a (pointer: coarse) media block").not.toBeNull();
+  const rule = coarse![1]!.match(/\.trigger\s*\{([^}]*)\}/);
+  expect(rule, "the coarse-pointer block must override .trigger").not.toBeNull();
+  expect(rule![1]).toContain("min-height: var(--tap-min)");
+});
 
 test("the trigger exposes the full model label when its visible value truncates", () => {
   render(<ModelSwitch sessionRef="ref_a" model={testModel({ modelProvider: "anthropic", model: "claude-opus-5" })} />);

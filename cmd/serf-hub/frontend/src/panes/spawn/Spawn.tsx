@@ -28,6 +28,7 @@ import {
   Dropzone,
   FormRow,
   IconButton,
+  Loader,
   PaneScaffold,
   PathField,
   PromptCard,
@@ -117,6 +118,13 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const [staleNotice, setStaleNotice] = useState<string | null>(null);
   const [createDialogPath, setCreateDialogPath] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Loader's elapsed readout is pure-render (widgets/loader's own doc
+  // comment - no internal timer, so it can't drift or fake liveness): the
+  // caller owns the clock. busyStartedAt is stamped once, at the submit that
+  // flips busy true; the 1s ticker effect below feeds it a fresh `now` for
+  // as long as busy stays true, and stops the instant it doesn't.
+  const [busyStartedAt, setBusyStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   // kata xgk8: true only once serf/launch/resolve has CONFIRMED the hub has
   // no default model for this cwd (Effective.Model resolves empty with no
   // overrides) - never set on a rejection or before cwd is chosen, so an
@@ -298,6 +306,15 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
+  // Feeds the busy Loader's elapsed readout a fresh `now` once a second -
+  // only while busy, so the wait for a resolved cwd/model spawn never runs a
+  // timer with nothing on screen reading it.
+  useEffect(() => {
+    if (!busy) return undefined;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [busy]);
+
   // Branch HEAD resolution (floor §1.7): the readout is read-only, so HEAD is
   // its ONLY source - re-resolved on every working-dir change with no
   // user-edited escape hatch to respect. `active` still guards a late response
@@ -418,6 +435,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // forever on a pane that can outlive the navigation below.
     busyRef.current = false;
     setBusy(false);
+    setBusyStartedAt(null);
     const url = paneToURL("session", { ref });
     if (url) navigate(url);
   }
@@ -441,18 +459,21 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // simply waits for its first prompt in the session composer.
     busyRef.current = true;
     setBusy(true);
+    setBusyStartedAt(Date.now());
     try {
       const outcome = await preflightDir(client, cwd);
       if (outcome.kind === "abort") {
         toasts.push("error", outcome.message);
         busyRef.current = false;
         setBusy(false);
+        setBusyStartedAt(null);
         return;
       }
       if (outcome.kind === "offer-create") {
         setCreateDialogPath(outcome.path);
         busyRef.current = false;
         setBusy(false);
+        setBusyStartedAt(null);
         return;
       }
       await doSpawn();
@@ -460,6 +481,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       toasts.push("error", `Spawn failed: ${errorText(err)}`);
       busyRef.current = false;
       setBusy(false);
+      setBusyStartedAt(null);
     }
   }
 
@@ -469,6 +491,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     if (path === null) return;
     busyRef.current = true;
     setBusy(true);
+    setBusyStartedAt(Date.now());
     try {
       await createDir(path);
       await doSpawn();
@@ -476,6 +499,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       toasts.push("error", `Spawn failed: ${errorText(err)}`);
       busyRef.current = false;
       setBusy(false);
+      setBusyStartedAt(null);
     } finally {
       setCreateDialogPath(null);
     }
@@ -559,7 +583,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                   onClick={() => void handleSpawn()}
                   disabled={busy || modelRequired}
                 >
-                  {busy ? "Spawning…" : "Spawn"}
+                  {busy ? <Loader label="Spawning" startedAt={busyStartedAt ?? now} now={now} /> : "Spawn"}
                 </Button>
               </Tooltip>
             }

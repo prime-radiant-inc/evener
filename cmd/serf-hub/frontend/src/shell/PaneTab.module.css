@@ -1,0 +1,30 @@
+/*
+ * Layout only - no color of any kind. dockview's own default tab
+ * (DockviewDefaultTab, wrapped unchanged by PaneTab.tsx) carries every
+ * color this tab needs via dockview-theme.css's surface/edge/ink vars, and
+ * the status dot's own hue comes entirely from widgets/statusdot (that
+ * widget is on the token-contract's --attention/--alive/--danger allowlist;
+ * this file, under shell/, is deliberately not, and has no need to be).
+ */
+
+.tab {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  min-width: 0;
+}
+
+/* DockviewDefaultTab fills its own natural width (title + close button);
+ * this makes it the flexible half of the row so the dot always has room
+ * without pushing the tab strip wider than dockview already sized it. */
+.tab > :global(.dv-default-tab) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dot {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: 4px;
+}

@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -6,6 +6,7 @@ import type { ThreadModel } from "../protocol/model";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { ThreadCapabilities } from "../protocol/types.gen";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
+import { resetTreeStoreForTests, type TreeNode, type TreeResponse, treeStore } from "../stores/tree";
 import { PaneScaffold } from "../widgets/panescaffold";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
@@ -158,12 +159,14 @@ async function warmPane(open: () => void, findLandmark: () => Promise<unknown>):
   cleanup();
   resetWorkspaceStoreForTests();
   resetThreadsStoreForTests();
+  resetTreeStoreForTests();
   localStorage.clear();
 }
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetThreadsStoreForTests();
+  resetTreeStoreForTests();
   localStorage.clear();
 });
 
@@ -780,6 +783,58 @@ test("a session pane's tab falls back to the raw ref when no thread name is know
   expect(document.querySelector(".dv-tab")?.textContent).toBe("ref_untracked");
 });
 
+// Minimal, well-formed TreeNode - only the fields findSessionNode/title
+// resolution actually touch, matching fixtureThread's own "just enough"
+// shape above.
+function fixtureTreeNode(ref: string, title: string): TreeNode {
+  return {
+    row_id: `row_${ref}`,
+    ref,
+    host_id: "local",
+    session_id: ref,
+    title,
+    project: "test-project",
+    state: "idle",
+    kind: "session",
+    live: true,
+    children: [],
+  };
+}
+
+function fixtureTree(nodes: TreeNode[]): TreeResponse {
+  return {
+    generated_at: "2026-01-01T00:00:00Z",
+    sources: [],
+    live: nodes,
+    needs_you: [],
+    pin_sections: [],
+    projects: [],
+    archived_projects: [],
+    test_runs: [],
+    attentionSummary: { needsYou: 0, error: 0, working: 0 },
+  };
+}
+
+// Fix 2: a session pane opened before its transcript hydrates (threadsStore
+// has no ThreadModel for the ref yet) used to show the raw ref as its tab
+// title even when the rail's already-loaded tree data has the friendly
+// title. The tree/session-index store (stores/tree.ts) is exactly that data
+// - already loaded well before a freshly-opened session pane's own
+// hydration completes - so it is the seed source, and the raw ref stays the
+// last resort only.
+test("a session pane's tab title falls back to the tree store's title when no thread name is known yet", async () => {
+  treeStore.setState({ tree: fixtureTree([fixtureTreeNode("ref_tree", "Fix the flaky CI job")]) });
+  workspaceStore.getState().openPane("session", { ref: "ref_tree" });
+  render(
+    <ClientProvider client={new FakeClient("ready")}>
+      <DockHost />
+    </ClientProvider>,
+  );
+
+  await screen.findByTestId("empty-state");
+  expect(document.querySelector(".dv-tab")?.textContent).toBe("Fix the flaky CI job");
+});
+
 test("a session pane's tab title live-updates when the thread is renamed, with no remount", async () => {
   threadsStore.setState({ threads: new Map([["ref_x", fixtureThread("ref_x", { name: "Original name" })]]) });
   workspaceStore.getState().openPane("session", { ref: "ref_x" });
@@ -806,6 +861,58 @@ test("a session pane's tab title live-updates when the thread is renamed, with n
   // (which doesn't read the thread name at all, only its turns) is
   // untouched throughout the rename.
   expect(screen.getByTestId("empty-state")).toBeTruthy();
+});
+
+// Fix 1: proof PaneTab is actually wired into the live dockview host (not
+// just exercised in isolation - see PaneTab.test.tsx for the dot's own
+// state-mapping coverage), the same "wires the affordance into the live
+// host" shape PopoutHeaderAction's own DockHost test already establishes.
+// The session pane opens into the SECONDARY slot deliberately, not the main
+// one: the main group's header is hidden by design (syncGroupHeaders,
+// DockHost.tsx), which hides its whole tab subtree - including this dot -
+// from the accessibility tree, so role-based queries would find nothing
+// whatever the dot's actual state. The secondary group's header is always
+// visible (same reasoning PopoutHeaderAction's own DockHost test uses).
+test("a session pane's tab shows a live status dot wired to the real dockview host, absent for a quiet thread", async () => {
+  threadsStore.setState({ threads: new Map([["ref_x", fixtureThread("ref_x", { name: "Session X" })]]) });
+  workspaceStore.getState().openPane("doc", { ref: "ref_main" }); // occupies the main slot
+  workspaceStore.getState().openPane("session", { ref: "ref_x" }, { slot: "secondary" });
+  render(
+    <ClientProvider client={new FakeClient("ready")}>
+      <DockHost />
+    </ClientProvider>,
+  );
+  await screen.findByTestId("empty-state");
+
+  // Scoped to the session tab's own .dv-tab element: the pane's OWN header
+  // carries its own Cadence dot (also role="img") - this test is about the
+  // TAB's dot, not a duplicate assertion on chrome PaneTab.test.tsx already
+  // owns and Session.test.tsx already pins.
+  function sessionTab(): HTMLElement {
+    const tab = Array.from(document.querySelectorAll<HTMLElement>(".dv-tab")).find((t) =>
+      t.textContent?.includes("Session X"),
+    );
+    if (!tab) throw new Error("expected the session pane's own tab");
+    return tab;
+  }
+
+  // Idle (this fixture's default status): no dot at all.
+  expect(within(sessionTab()).queryByRole("img")).toBeNull();
+
+  threadsStore.setState((s) => {
+    const next = new Map(s.threads);
+    next.set("ref_x", { ...next.get("ref_x")!, status: { type: "awaiting" } });
+    return { threads: next };
+  });
+  expect(await within(sessionTab()).findByRole("img", { name: "Needs you" })).toBeTruthy();
+
+  // The main slot's own "doc" tab never carries a dot, whatever
+  // threadsStore says - it isn't a session pane at all.
+  const docTab = Array.from(document.querySelectorAll<HTMLElement>(".dv-tab")).find(
+    (t) => t.textContent === "Doc ref_main",
+  );
+  if (!docTab) throw new Error("expected the doc pane's own tab");
+  expect(within(docTab).queryByRole("img", { hidden: true })).toBeNull();
 });
 
 // --- layout persistence -----------------------------------------------

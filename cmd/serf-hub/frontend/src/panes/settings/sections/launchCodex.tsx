@@ -6,6 +6,7 @@
 // `useOverview` is injected rather than importing stores/settingsOverview.ts
 // directly.
 import type { SettingsCodexLaunchEntry } from "../../../protocol/types.gen";
+import { Loader } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./launchCodex.module.css";
 import { useSettingsOverview } from "./overviewSeam";
@@ -100,7 +101,7 @@ export function CodexLaunchSection({ useOverview = useSettingsOverview }: CodexL
         Codex launch entries are defined in <code>hub.toml</code> under <code>[[codex_launches]]</code>. This page shows
         the current configuration (read-only).
       </p>
-      {loading && <p className={CLASS.help}>Loading…</p>}
+      {loading && <Loader label="Loading" />}
       {error && <p className={CLASS.help}>Failed to load: {error}</p>}
       {!loading && !error && entries.length === 0 && (
         <div>

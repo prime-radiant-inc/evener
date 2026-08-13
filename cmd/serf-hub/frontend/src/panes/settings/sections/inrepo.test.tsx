@@ -73,6 +73,27 @@ describe("initial load", () => {
     await screen.findByText(findsNoFileMessage("/repo"));
   });
 
+  // FIX 2b: the loading phase gets the Loader widget instead of a static
+  // "Loading…" string.
+  test("shows a Loader while the resolve is in flight", async () => {
+    localStorage.setItem("lastCwd", "/repo");
+    const fake = connectFakeClient();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fake.on("serf/launch/resolve", async () => {
+      await gate;
+      return resolvedWithRepo({ path: ".serf/launch.toml", trust: "absent" });
+    });
+    render(<InRepoSection sectionId="inrepo" />);
+    expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+    expect(screen.queryByText("Loading…")).toBeNull();
+
+    release();
+    await screen.findByText(findsNoFileMessage("/repo"));
+  });
+
   test("no lastCwd in storage and an empty field: shows 'Enter a working directory.' with no RPC call", () => {
     const fake = connectFakeClient();
     let called = false;

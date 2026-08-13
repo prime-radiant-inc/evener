@@ -1,3 +1,33 @@
+/* Amber envelope (topic 16 / kata crcf's own pattern, see token-contract.
+ * test.ts's SEMANTIC_PATH_EXCEPTIONS): a blocking sandbox approval is the
+ * app's SECOND "a human is needed right now" moment, alongside askDock's
+ * batch envelope - the tool-exec goroutine is parked waiting on this exact
+ * card, so it needs the same container tint askDock's .batch uses, not the
+ * neutral surface a passive Card gives everything else. */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--attention-edge);
+  border-radius: var(--radius-pane);
+  background: var(--attention-bg);
+}
+
+/* Pins the rail (one wrapper around every pending card) to the top of the
+ * transcript's scroll body while the reader scrolls past it - a blocking
+ * approval must stay reachable, not scroll out of view while the tool-exec
+ * goroutine sits parked waiting on it. --z-sticky-bar is the same "pane-
+ * level pinned bar" layer PaneScaffold's other sticky chrome uses. */
+.rail {
+  position: sticky;
+  top: var(--space-2);
+  z-index: var(--z-sticky-bar);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
 .label {
   font-weight: var(--font-weight-semibold);
   color: var(--ink-hi);

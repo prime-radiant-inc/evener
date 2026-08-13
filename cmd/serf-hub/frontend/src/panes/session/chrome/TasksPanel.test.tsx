@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -373,6 +376,20 @@ test("notes render as a timeline with the latest note marked", async () => {
   expect(items[0]?.getAttribute("data-latest")).toBeNull();
   expect(items[1]?.getAttribute("data-latest")).toBe("true");
   expect(notes.textContent).toContain("Updates · 2");
+});
+
+// Touch target (UX fix): the prompt disclosure's own <summary> is a small
+// clickable row (chevron + one-line preview), so a coarse pointer needs the
+// platform's 44px tap floor - same treatment askdock/modelswitch/
+// newcontentpill get, via (pointer: coarse) since this isn't a
+// widgets/button consumer.
+test("the prompt disclosure summary reaches the tap floor on a coarse pointer", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "taskspanel.module.css"), "utf8");
+  const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
+  expect(coarse, "taskspanel.module.css must have a (pointer: coarse) media block").not.toBeNull();
+  const rule = coarse![1]!.match(/\.promptSummary\s*\{([^}]*)\}/);
+  expect(rule, "the coarse-pointer block must override .promptSummary").not.toBeNull();
+  expect(rule![1]).toContain("min-height: var(--tap-min)");
 });
 
 test("the prompt disclosure shows a one-line markdown preview collapsed and the full markdown body open", async () => {

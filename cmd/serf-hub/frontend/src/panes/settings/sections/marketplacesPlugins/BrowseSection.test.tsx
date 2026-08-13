@@ -89,6 +89,30 @@ test("expanding a node lazily fetches its catalog once; re-expanding does not re
   expect(browseSpy).toHaveBeenCalledTimes(1);
 });
 
+// FIX 2c: the loading state gets the Loader widget instead of a static
+// "Loading…" string.
+test("shows a Loader while a marketplace's catalog is loading", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("serf/marketplace/browse", async () => {
+    await gate;
+    return { name: "acme-plugins", plugins: [] };
+  });
+  render(<Harness />);
+  await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
+
+  expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+  expect(screen.queryByText("Loading…")).toBeNull();
+
+  release();
+  await screen.findByText("This marketplace has no plugins.");
+});
+
 test("shows loading, then error, for a failed browse", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();

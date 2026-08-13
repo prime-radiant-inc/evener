@@ -308,3 +308,16 @@
 .note[data-latest="true"]::before {
   border-color: var(--alive);
 }
+
+/* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
+ * 4): the prompt disclosure's own <summary> row is a small clickable target
+ * (chevron + one-line preview), so a coarse pointer needs the platform's
+ * 44px tap floor - min-height, not height, so the resting sizing above
+ * stays untouched and this only ever grows it. (pointer: coarse), not a
+ * width breakpoint like button.module.css's own phone block: this summary
+ * isn't a widgets/button consumer. */
+@media (pointer: coarse) {
+  .promptSummary {
+    min-height: var(--tap-min);
+  }
+}

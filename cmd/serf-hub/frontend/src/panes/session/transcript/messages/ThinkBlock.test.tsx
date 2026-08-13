@@ -812,12 +812,13 @@ test("steps are separated by a hairline --edge divider, not a border on every ro
   expect(dividerRule![1]).toContain("border-top: 1px solid var(--edge)");
 });
 
-test("the step marker is mono caption ink-low - chrome marking position, not content (declaration-level)", () => {
+test("the step marker is mono caption, medium-weight ink-mid - strong enough to carry the sequence framing (declaration-level)", () => {
   const rule = /\.stepMarker\s*\{([^}]*)\}/.exec(thinkCss());
   expect(rule).not.toBeNull();
   expect(rule![1]).toContain("font-family: var(--font-mono)");
   expect(rule![1]).toContain("font-size: var(--font-size-caption)");
-  expect(rule![1]).toContain("color: var(--ink-low)");
+  expect(rule![1]).toContain("color: var(--ink-mid)");
+  expect(rule![1]).toContain("font-weight: var(--font-weight-medium)");
 });
 
 test("the step marker is decorative - the ordinal is visual chrome, not read out as separate content", () => {

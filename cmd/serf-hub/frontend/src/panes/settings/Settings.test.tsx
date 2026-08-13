@@ -1,6 +1,7 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import Settings from "./Settings";
 
 // jsdom does not implement window.matchMedia at all - useIsMobile.test.ts's
@@ -22,12 +23,74 @@ afterEach(() => {
   window.history.pushState({}, "", "/");
   // @ts-expect-error restores jsdom's own honest default between tests.
   delete window.matchMedia;
+  resetWorkspaceStoreForTests();
+});
+
+// FIX 1: settings has no way out other than clicking a session in the rail
+// (Escape does nothing, no close affordance) - the main slot's tab bar is
+// deliberately close-less (DockHost.test.tsx), so the exit lives in the
+// pane's own header + Escape instead.
+function seedOpenSettingsPane() {
+  workspaceStore.setState({
+    panes: [{ id: "settings-1", type: "settings", params: {}, slot: "main" }],
+    focusedPaneId: "settings-1",
+  });
+}
+
+test("a close button in the header closes this pane", async () => {
+  stubMatchMedia(false);
+  seedOpenSettingsPane();
+  const user = userEvent.setup();
+  render(<Settings params={{}} paneId="settings-1" focused={true} />);
+
+  await user.click(screen.getByRole("button", { name: "Close settings" }));
+
+  expect(workspaceStore.getState().panes.map((p) => p.id)).not.toContain("settings-1");
+});
+
+test("Escape closes this pane", () => {
+  stubMatchMedia(false);
+  seedOpenSettingsPane();
+  render(<Settings params={{}} paneId="settings-1" focused={true} />);
+
+  fireEvent.keyDown(screen.getByRole("button", { name: "General" }), { key: "Escape" });
+
+  expect(workspaceStore.getState().panes.map((p) => p.id)).not.toContain("settings-1");
+});
+
+test("Escape is ignored when something inside settings already handled it", () => {
+  stubMatchMedia(false);
+  seedOpenSettingsPane();
+  render(<Settings params={{}} paneId="settings-1" focused={true} />);
+
+  // Simulates a Dialog/Menu open inside a section calling preventDefault on
+  // its own Escape handling (menu/index.tsx's handleMenuKeyDown does
+  // exactly this) before the keydown bubbles up to this pane's own handler.
+  const preventIt = (event: globalThis.KeyboardEvent) => event.preventDefault();
+  document.addEventListener("keydown", preventIt, true);
+  try {
+    fireEvent.keyDown(screen.getByRole("button", { name: "General" }), { key: "Escape" });
+  } finally {
+    document.removeEventListener("keydown", preventIt, true);
+  }
+
+  expect(workspaceStore.getState().panes.map((p) => p.id)).toContain("settings-1");
+});
+
+test("a non-Escape key does not close this pane", () => {
+  stubMatchMedia(false);
+  seedOpenSettingsPane();
+  render(<Settings params={{}} paneId="settings-1" focused={true} />);
+
+  fireEvent.keyDown(screen.getByRole("button", { name: "General" }), { key: "a" });
+
+  expect(workspaceStore.getState().panes.map((p) => p.id)).toContain("settings-1");
 });
 
 test("bare params show the default (General) section", () => {
   stubMatchMedia(false);
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
-  expect(screen.getByRole("heading", { name: "General" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "General" })).toBeTruthy();
   // General's own nav link is the active one.
   expect(screen.getByRole("button", { name: "General" }).getAttribute("aria-current")).toBe("page");
 });
@@ -42,7 +105,7 @@ test("desktop: nav and content render simultaneously, with no back button", () =
   stubMatchMedia(false);
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
   expect(screen.getByRole("navigation", { name: "Settings sections" })).toBeTruthy();
-  expect(screen.getByRole("heading", { name: "General" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "General" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Back to settings" })).toBeNull();
 });
 

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
@@ -1192,4 +1192,33 @@ test("kata 61v2 corollary: a successful spawn releases the guard for the next on
   await user.click(screen.getByTestId("spawn-submit"));
 
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(2));
+});
+
+// FIX 2a: the busy "Spawning…" state gets the Loader widget (widgets/loader)
+// instead of static text - a genuinely indeterminate, user-initiated wait is
+// exactly what Loader exists for.
+test("shows a Loader, not static text, while the spawn request is in flight", async () => {
+  const user = userEvent.setup();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fake = readyClient((f) => {
+    f.on("thread/start", async () => {
+      await gate;
+      return startResponse("local:abc123");
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  const button = await screen.findByTestId("spawn-submit");
+  expect(within(button).getByRole("status", { name: "Spawning" })).toBeTruthy();
+  expect(within(button).queryByText("Spawning…")).toBeNull();
+
+  release();
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
 });

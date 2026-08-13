@@ -213,16 +213,18 @@
   border-top: 1px solid var(--edge);
 }
 
-/* Mono caption, ink-low: the ordinal is chrome marking the step's position,
- * not content - the same demotion the kind icon and duration label already
- * use elsewhere in this file. Fixed width so every marker in the trace lines
- * up regardless of digit count. */
+/* Mono caption, ink-mid + medium weight: the ordinal is chrome marking the
+ * step's position, not content, but it's also the one visual cue that a
+ * trace is a SEQUENCE - ink-low read too faint to carry that framing.
+ * Fixed width so every marker in the trace lines up regardless of digit
+ * count. */
 .stepMarker {
   flex: none;
   width: 2ch;
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
-  color: var(--ink-low);
+  color: var(--ink-mid);
+  font-weight: var(--font-weight-medium);
 }
 
 .stepBody {

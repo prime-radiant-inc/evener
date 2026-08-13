@@ -34,15 +34,17 @@
 // own successful resolve() removes its local copy - see stores/threads.ts's
 // resolveEscalation), but no worse than before, and the common cold-open
 // case now works without any resolve happening at all.
-import { useCallback, useState } from "react";
+import { type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import { sessionActionError } from "../../../../protocol/errors";
 import type { SandboxEscalationRequested } from "../../../../protocol/types.gen";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
-import { Button, Card, Chip } from "../../../../widgets";
+import { Button, Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./sandboxescalation.module.css";
 
 const CLASS = {
+  card: requireClass(styles.card, "sandboxescalation.module.css", "card"),
+  rail: requireClass(styles.rail, "sandboxescalation.module.css", "rail"),
   label: requireClass(styles.label, "sandboxescalation.module.css", "label"),
   body: requireClass(styles.body, "sandboxescalation.module.css", "body"),
   error: requireClass(styles.error, "sandboxescalation.module.css", "error"),
@@ -62,9 +64,31 @@ export interface SandboxEscalationCardProps {
 // intent (renderer.js's appendSandboxEscalation comment): the model can
 // neither emit nor influence this card, so a human reading it should
 // never mistake it for something the agent said.
+//
+// Amber envelope, not a neutral Card (reviewed UX fix): this is a BLOCKING
+// approval - the tool-exec goroutine is parked waiting on it - the app's
+// SECOND "a human is needed right now" moment after askDock's ask batch, so
+// it gets the same container treatment (sandboxescalation.module.css's
+// .card, allowlisted in token-contract.test.ts's SEMANTIC_PATH_EXCEPTIONS
+// for the same structural reason askdock.module.css is).
+//
+// Mod+Enter approves (handleKeyDown below); Escape deliberately does NOT
+// deny - denial must never be one accidental keypress away, so Deny stays
+// mouse/tab-reachable only.
 export function SandboxEscalationCard({ escalation, onApprove, onDeny, resolved, error }: SandboxEscalationCardProps) {
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
+    event.preventDefault();
+    if (!resolved) onApprove();
+  }
+
   return (
-    <Card>
+    // role="group" + Mod+Enter's onKeyDown makes this an interactive
+    // grouping, not a hand-rolled generic <div> - the WAI-ARIA "group"
+    // role is the right one for a set of controls with a shared
+    // keybinding, and there is no native element for it.
+    // biome-ignore lint/a11y/useSemanticElements: role="group" is deliberate, see above
+    <div className={CLASS.card} role="group" aria-label="Sandbox approval" onKeyDown={handleKeyDown}>
       <div className={CLASS.label}>Sandbox approval — requested by serf, not the agent</div>
       <div className={CLASS.body}>
         The sandbox blocked {escalation.tool} from accessing {escalation.deniedPath} [--sandbox {escalation.mode}].
@@ -79,14 +103,14 @@ export function SandboxEscalationCard({ escalation, onApprove, onDeny, resolved,
         </div>
       )}
       <div className={CLASS.actions}>
-        <Button variant="primary" size="sm" onClick={onApprove} disabled={resolved}>
+        <Button variant="primary" size="sm" onClick={onApprove} disabled={resolved} data-sandbox-escalation-allow>
           Allow
         </Button>
         <Button variant="danger" size="sm" onClick={onDeny} disabled={resolved}>
           Deny
         </Button>
       </div>
-    </Card>
+    </div>
   );
 }
 
@@ -137,6 +161,23 @@ export function SandboxEscalationRail({ sessionRef }: { sessionRef: string }) {
   // drops the escalation from `pending`, which unmounts the card.
   const [errors, setErrors] = useState<Map<string, string>>(new Map());
 
+  // Autofocuses the Allow button the moment an escalation arrives (empty ->
+  // non-empty), edge-triggered on pending.length exactly like AskDock.tsx's
+  // own dock-activation effect - so a LATER escalation that only grows an
+  // already-open rail never steals focus from a card already on screen. A
+  // plain [data-sandbox-escalation-allow] query on the rail's own root finds
+  // the first pending card's Allow button without threading a ref down into
+  // SandboxEscalationCard for a one-time, edge-triggered action.
+  const railRef = useRef<HTMLDivElement>(null);
+  const wasEmptyRef = useRef(true);
+  useEffect(() => {
+    const isEmpty = pending.length === 0;
+    const wasEmpty = wasEmptyRef.current;
+    wasEmptyRef.current = isEmpty;
+    if (!wasEmpty || isEmpty) return;
+    railRef.current?.querySelector<HTMLElement>("[data-sandbox-escalation-allow]")?.focus();
+  }, [pending.length]);
+
   async function handleResolve(escalationId: string, approve: boolean) {
     setResolving((prev) => new Set(prev).add(escalationId));
     setErrors((prev) => {
@@ -158,8 +199,13 @@ export function SandboxEscalationRail({ sessionRef }: { sessionRef: string }) {
     }
   }
 
+  // Nothing pending renders nothing at all - not even the sticky rail
+  // wrapper, which would otherwise sit in the scroll body as an empty,
+  // zero-height sticky element.
+  if (pending.length === 0) return null;
+
   return (
-    <>
+    <div className={CLASS.rail} ref={railRef}>
       {pending.map((escalation) => (
         <SandboxEscalationCard
           key={escalation.escalationId}
@@ -170,6 +216,6 @@ export function SandboxEscalationRail({ sessionRef }: { sessionRef: string }) {
           error={errors.get(escalation.escalationId)}
         />
       ))}
-    </>
+    </div>
   );
 }

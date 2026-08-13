@@ -1,9 +1,26 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { NewContentPill } from "./NewContentPill";
 
 afterEach(() => {
   cleanup();
+});
+
+// Touch target (UX fix): the pill is a small floating jump-to-latest
+// control (see chevron tests below), so a coarse pointer (phone/tablet
+// touch) needs the platform's 44px tap floor - the same treatment
+// askdock.module.css's own .tab rule and modelswitch's own .trigger get,
+// via (pointer: coarse) since this isn't a widgets/button consumer.
+test("the pill reaches the tap floor on a coarse pointer", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "newcontentpill.module.css"), "utf8");
+  const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
+  expect(coarse, "newcontentpill.module.css must have a (pointer: coarse) media block").not.toBeNull();
+  const rule = coarse![1]!.match(/\.pill\s*\{([^}]*)\}/);
+  expect(rule, "the coarse-pointer block must override .pill").not.toBeNull();
+  expect(rule![1]).toContain("min-height: var(--tap-min)");
 });
 
 test("renders nothing when count is 0 and not needsYou", () => {

@@ -10,11 +10,17 @@ interface ModelRow {
   status: "active" | "retired";
 }
 
+// Mixed providers among the ACTIVE rows on purpose: the default filter is
+// "Active" (see LiveModelsTable below), so a fixture where every active row
+// shared one provider made sorting the Provider column a no-op until you
+// also flipped to "All" - nothing to see, nothing proving the sort worked.
 const ROWS: ModelRow[] = [
   { id: "1", name: "claude-opus-4.6", provider: "Anthropic", tags: ["reasoning", "long-context"], status: "active" },
   { id: "2", name: "claude-sonnet-4.6", provider: "Anthropic", tags: ["balanced"], status: "active" },
   { id: "3", name: "claude-haiku-3.5", provider: "Anthropic", tags: ["fast", "cheap"], status: "active" },
-  { id: "4", name: "gpt-4-legacy", provider: "OpenAI", tags: ["deprecated"], status: "retired" },
+  { id: "4", name: "gpt-5", provider: "OpenAI", tags: ["reasoning"], status: "active" },
+  { id: "5", name: "gemini-2.5-pro", provider: "Google", tags: ["long-context"], status: "active" },
+  { id: "6", name: "gpt-4-legacy", provider: "OpenAI", tags: ["deprecated"], status: "retired" },
 ];
 
 const COLUMNS: TableColumn<ModelRow>[] = [

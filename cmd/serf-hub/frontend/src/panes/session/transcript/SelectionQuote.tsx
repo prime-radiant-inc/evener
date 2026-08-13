@@ -71,6 +71,14 @@ export function SelectionQuote({ containerRef, actions }: SelectionQuoteProps) {
   const [selection, setSelection] = useState<CapturedSelection | null>(null);
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
+  // Read by the Mod+' handler inside the effect below without making
+  // `actions` an effect dependency - every caller (Session.tsx included)
+  // passes a fresh array literal each render, and re-subscribing the whole
+  // listener set on every render for that reason alone would be wasteful
+  // (same idiom as Composer.tsx's own textRef, kept live without being a
+  // dependency).
+  const actionsRef = useRef(actions);
+  actionsRef.current = actions;
 
   const evaluate = useCallback(() => {
     const container = containerRef.current;
@@ -106,7 +114,21 @@ export function SelectionQuote({ containerRef, actions }: SelectionQuoteProps) {
       debounceTimer = setTimeout(evaluate, SELECTIONCHANGE_DEBOUNCE_MS);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setSelection(null);
+      if (event.key === "Escape") {
+        setSelection(null);
+        return;
+      }
+      // Mod+' invokes the bar's first (and today, only) action directly
+      // against the currently captured selection - the same code path a
+      // click on the bar's own button takes (actions[0].onInvoke below),
+      // just reachable without a pointer. A no-op with nothing captured.
+      if (event.key === "'" && (event.metaKey || event.ctrlKey)) {
+        setSelection((current) => {
+          if (!current) return current;
+          actionsRef.current[0]?.onInvoke(current.text);
+          return null;
+        });
+      }
     };
     const handleScroll = () => setSelection(null);
 

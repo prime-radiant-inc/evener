@@ -24,3 +24,15 @@
 .arrow {
   line-height: 1;
 }
+
+/* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
+ * 4): the pill is a small floating jump-to-latest control, so a coarse
+ * pointer needs the platform's 44px tap floor - min-height, not height, so
+ * the resting sizing above stays untouched and this only ever grows it.
+ * (pointer: coarse), not a width breakpoint like button.module.css's own
+ * phone block: this pill isn't a widgets/button consumer. */
+@media (pointer: coarse) {
+  .pill {
+    min-height: var(--tap-min);
+  }
+}

@@ -71,6 +71,17 @@ function panelText(): string {
   return screen.getByRole("dialog", { name: "Session details" }).textContent ?? "";
 }
 
+// The Session section now composes InspectorCard (DetailsPanel.tsx), whose
+// rows carry a shared data-testid ("inspector-row") rather than this
+// panel's own per-field testids - so a Session-section value is found by
+// its label text instead, mirroring how inspectorcard.test.tsx itself reads
+// its own rows.
+function sessionRowValue(label: string): string {
+  const row = screen.getByText(label).closest('[data-testid="inspector-row"]');
+  if (!row) throw new Error(`no inspector row for label "${label}"`);
+  return row.textContent ?? "";
+}
+
 function PaneFixture() {
   return <div>pane</div>;
 }
@@ -259,19 +270,19 @@ test("a derived token total never invents a cost the server did not send", async
 
 test("the model row shows the provider/model label the status row's switch shows", async () => {
   await openPanel(testModel({ modelProvider: "openai", model: "gpt-5.6-luna" }));
-  expect(screen.getByTestId("session-details-model").textContent).toContain("openai/gpt-5.6-luna");
+  expect(sessionRowValue("model")).toContain("openai/gpt-5.6-luna");
 });
 
 test("the status row names the session's current state", async () => {
   await openPanel(testModel({ status: { type: "active" } }));
-  expect(screen.getByTestId("session-details-status").textContent).toContain("active");
+  expect(sessionRowValue("state")).toContain("active");
 });
 
 test("session id, cwd, and branch each render when the wire carried them", async () => {
   await openPanel(
     testModel({ threadId: "033uaztQj6XPP6eF7pS0OW", cwd: "/Users/jesse/serf", gitBranch: "details-empty" }),
   );
-  expect(screen.getByTestId("session-details-session-id").textContent).toContain("033uaztQj6XPP6eF7pS0OW");
+  expect(sessionRowValue("session id")).toContain("033uaztQj6XPP6eF7pS0OW");
   expect(screen.getByTestId("session-details-cwd").textContent).toContain("/Users/jesse/serf");
   expect(screen.getByTestId("session-details-branch").textContent).toContain("details-empty");
 });
@@ -309,10 +320,14 @@ test("no created/updated rows when the source did not know the instants", async 
 // --- grouping ---------------------------------------------------------------
 
 // The legacy panel grouped its rows under titled sections (Session / Usage /
-// Runtime), which is what keeps a dozen rows scannable.
+// Runtime), which is what keeps a dozen rows scannable. Session is titled by
+// InspectorCard's own header band (a styled div, not an h3 - see
+// DetailsPanel.tsx's comment on why it composes the widget), so it's found
+// by text rather than heading role; Usage and Location stay on
+// Section/DetailRow's own <h3>.
 test("rows are grouped under titled sections", async () => {
   await openPanel(testModel());
-  expect(screen.getByRole("heading", { name: "Session" })).toBeTruthy();
+  expect(screen.getByText("Session")).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Usage" })).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Location" })).toBeTruthy();
 });
@@ -351,7 +366,7 @@ test("a session with no accounting data at all keeps its identity rows and drops
       updatedAt: undefined,
     }),
   );
-  expect(screen.getByTestId("session-details-model")).toBeTruthy();
+  expect(sessionRowValue("model")).toBeTruthy();
   expect(screen.queryByRole("heading", { name: "Usage" })).toBeNull();
 });
 

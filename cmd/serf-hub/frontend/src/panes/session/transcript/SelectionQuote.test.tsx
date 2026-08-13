@@ -152,6 +152,58 @@ test("scrolling dismisses a visible bar - it is position:fixed and does not trac
   expect(screen.queryByRole("toolbar", { name: "Selection actions" })).toBeNull();
 });
 
+test("Mod+' invokes the first action directly with the captured selection, then clears the bar", () => {
+  const onInvoke = vi.fn();
+  const { messageNode, containerRef } = renderHarness(onInvoke);
+  installFakeSelection({ text: "quoted prose", anchorNode: messageNode });
+  act(() => {
+    containerRef.current?.dispatchEvent(new Event("pointerup", { bubbles: true }));
+  });
+  expect(screen.getByRole("toolbar", { name: "Selection actions" })).toBeTruthy();
+
+  fireEvent.keyDown(document, { key: "'", metaKey: true });
+
+  expect(onInvoke).toHaveBeenCalledExactlyOnceWith("quoted prose");
+  expect(screen.queryByRole("toolbar", { name: "Selection actions" })).toBeNull();
+});
+
+test("Mod+' with ctrlKey also invokes the first action", () => {
+  const onInvoke = vi.fn();
+  const { messageNode, containerRef } = renderHarness(onInvoke);
+  installFakeSelection({ text: "quoted prose", anchorNode: messageNode });
+  act(() => {
+    containerRef.current?.dispatchEvent(new Event("pointerup", { bubbles: true }));
+  });
+
+  fireEvent.keyDown(document, { key: "'", ctrlKey: true });
+
+  expect(onInvoke).toHaveBeenCalledExactlyOnceWith("quoted prose");
+});
+
+test("Mod+' does nothing when there is no captured selection", () => {
+  const onInvoke = vi.fn();
+  renderHarness(onInvoke);
+  installFakeSelection(null);
+
+  fireEvent.keyDown(document, { key: "'", metaKey: true });
+
+  expect(onInvoke).not.toHaveBeenCalled();
+});
+
+test('plain "\'" with no modifier is not treated as the quote chord', () => {
+  const onInvoke = vi.fn();
+  const { messageNode, containerRef } = renderHarness(onInvoke);
+  installFakeSelection({ text: "quoted prose", anchorNode: messageNode });
+  act(() => {
+    containerRef.current?.dispatchEvent(new Event("pointerup", { bubbles: true }));
+  });
+
+  fireEvent.keyDown(document, { key: "'" });
+
+  expect(onInvoke).not.toHaveBeenCalled();
+  expect(screen.getByRole("toolbar", { name: "Selection actions" })).toBeTruthy();
+});
+
 test("mousedown on the bar is prevented, so clicking its action never collapses the live text selection first", () => {
   const { messageNode, containerRef } = renderHarness(() => {});
   installFakeSelection({ text: "quoted prose", anchorNode: messageNode });

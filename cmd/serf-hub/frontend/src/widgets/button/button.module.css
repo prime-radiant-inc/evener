@@ -67,7 +67,7 @@
 }
 
 .primary:hover:not(:disabled) {
-  background: color-mix(in oklab, var(--accent) 85%, var(--ink-hi));
+  background: color-mix(in oklab, var(--accent) 78%, var(--ink-hi));
 }
 
 .quiet {
@@ -89,7 +89,7 @@
 }
 
 .danger:hover:not(:disabled) {
-  background: color-mix(in oklab, var(--danger) 85%, var(--ink-hi));
+  background: color-mix(in oklab, var(--danger) 78%, var(--ink-hi));
 }
 
 /* A destructive action that is NOT the primary one on its row (the composer's
