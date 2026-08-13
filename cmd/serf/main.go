@@ -45,6 +45,7 @@ type runCLIFlags struct {
 	outputSchema                *string
 	verbose                     *bool
 	noProjectPrompts            *bool
+	finalRequirementsAudit      *bool
 	agentName                   *string
 	skillsDirs                  stringSliceFlag
 	mcpServers                  stringSliceFlag
@@ -195,6 +196,7 @@ func mainWithDeps(deps mainDeps) {
 		outputSchema:                *flags.outputSchema,
 		verbose:                     *flags.verbose,
 		noProjectPrompts:            *flags.noProjectPrompts,
+		finalRequirementsAudit:      *flags.finalRequirementsAudit,
 		agentName:                   *flags.agentName,
 		skillsDirs:                  []string(flags.skillsDirs),
 		mcpServers:                  []string(flags.mcpServers),
@@ -247,6 +249,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.outputSchema = fs.String("output-schema", "", "inline JSON Schema `document` applied to the communicate tool's output field (replaces the default schema)")
 	flags.verbose = fs.Bool("verbose", false, "emit NDJSON events to stderr")
 	flags.noProjectPrompts = fs.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading (match container behavior)")
+	flags.finalRequirementsAudit = fs.Bool("experimental-final-requirements-audit", false, "run one final original-requirements audit task before completing")
 	flags.agentName = fs.String("agent", "", "agent persona `name`: default (default), explorer, or another available agent name")
 	fs.Var(&flags.skillsDirs, "skills-dir", "extra skill `directory` (repeatable)")
 	fs.Var(&flags.mcpServers, "mcp", "MCP server `spec` (repeatable, format: name:command args...)")

@@ -52,6 +52,7 @@ type runConfig struct {
 	outputSchema              string   // --output-schema: raw JSON schema applied to communicate.output
 	verbose                   bool
 	noProjectPrompts          bool
+	finalRequirementsAudit    bool
 	agentName                 string // --agent persona name (default: default)
 	stdout                    io.Writer
 	stderr                    io.Writer
@@ -242,6 +243,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		OpenAIResponsesContinuation: openAIResponsesContinuation,
 		ResolveProfile:              cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
 	}
+	baseSessionCfg.ExperimentalFinalRequirementsAudit = cfg.finalRequirementsAudit
 	if cfg.maxSubagentDepth >= 0 {
 		baseSessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth
 	}

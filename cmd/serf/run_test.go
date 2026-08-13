@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,45 @@ func TestRunWithArgs(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToUpper(stdout.String()), "PONG") {
 		t.Fatalf("expected stdout to contain PONG, got: %q", stdout.String())
+	}
+}
+
+func TestRun_ExperimentalFinalRequirementsAuditReachesFreshSession(t *testing.T) {
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+
+	oldEnsure, oldAttach, oldNew, oldProvision := runEnsureUserConfigDirs, runAttachAPILogger, runNewSession, runProvisionSandbox
+	t.Cleanup(func() {
+		runEnsureUserConfigDirs, runAttachAPILogger, runNewSession, runProvisionSandbox = oldEnsure, oldAttach, oldNew, oldProvision
+	})
+	runEnsureUserConfigDirs = func() error { return nil }
+	runAttachAPILogger = func(*llm.Client, string, io.Writer) (func(string) error, func() error, error) {
+		return func(string) error { return nil }, func() error { return nil }, nil
+	}
+	runProvisionSandbox = func(*execenv.LocalExecutionEnvironment, *agent.SessionConfig, string) error { return nil }
+
+	wantErr := errors.New("capture fresh session config")
+	var captured agent.SessionConfig
+	runNewSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		captured = cfg
+		return nil, wantErr
+	}
+
+	dir := t.TempDir()
+	err := run(context.Background(), runConfig{
+		prompt:                 "do the task",
+		model:                  "openai/gpt-test",
+		workDir:                dir,
+		stateDir:               t.TempDir(),
+		noDefaultMarketplaces:  true,
+		finalRequirementsAudit: true,
+		stdout:                 io.Discard,
+		stderr:                 io.Discard,
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("run error = %v, want wrapped capture error", err)
+	}
+	if !captured.ExperimentalFinalRequirementsAudit {
+		t.Fatal("run dropped the experiment switch before fresh session construction")
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,46 @@ import (
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/openai"
 )
+
+func deterministicMainDepsForTest(t *testing.T) mainDeps {
+	t.Helper()
+	return mainDeps{
+		stdin:  strings.NewReader(""),
+		stdout: io.Discard,
+		stderr: io.Discard,
+		stdinMode: func() (os.FileMode, error) {
+			return os.ModeCharDevice, nil
+		},
+		exit: func(code int) {
+			t.Fatalf("unexpected exit %d", code)
+		},
+		dispatch: func([]string, io.Reader, io.Writer, io.Writer) (bool, string, error) {
+			return false, "", nil
+		},
+		startCPU:   func(string) (func(), error) { return func() {}, nil },
+		startTrace: func(string) (func(), error) { return func() {}, nil },
+		notify: func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+			return context.WithCancel(ctx)
+		},
+		run: func(context.Context, runConfig) error { return nil },
+	}
+}
+
+func TestMain_ExperimentalFinalRequirementsAuditFlagReachesRunConfig(t *testing.T) {
+	var captured runConfig
+	deps := deterministicMainDepsForTest(t)
+	deps.args = []string{"--experimental-final-requirements-audit", "do the task"}
+	deps.run = func(_ context.Context, cfg runConfig) error {
+		captured = cfg
+		return nil
+	}
+
+	mainWithDeps(deps)
+
+	if !captured.finalRequirementsAudit {
+		t.Fatal("experiment flag was dropped before run")
+	}
+}
 
 // TestNewSessionFromEnv verifies that we can create a working session
 // from environment variables. This is the core wiring test.
