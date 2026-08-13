@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -42,17 +41,22 @@ type delegateTreeController struct {
 	durable delegatestore.State
 	live    map[string]*delegateLiveState
 
-	rootSessionID string
-	stateDir      string
-	worktreeRoot  string
-	now           func() time.Time
-	turnLimit     int
-	driveLimit    int
-	turnsInUse    int
-	drivesInUse   int
-	nextToken     uint64
-	reservations  map[uint64]*delegateStartRecord
-	deliveries    map[uint64]*delegateDeliveryAdmission
+	rootSessionID   string
+	stateDir        string
+	worktreeRoot    string
+	now             func() time.Time
+	turnLimit       int
+	driveLimit      int
+	turnsInUse      int
+	drivesInUse     int
+	nextToken       uint64
+	reservations    map[uint64]*delegateStartRecord
+	work            map[uint64]*delegateShellWork
+	deliveries      map[uint64]*delegateDeliveryAdmission
+	stop            *delegateStopState
+	evidenceVersion uint64
+	closing         bool
+	reconcileOrder  []delegateLease
 }
 
 type delegateActor struct {
@@ -100,8 +104,10 @@ type delegateUpdatePlan struct {
 }
 
 type delegateMutationPlans struct {
-	updates    []delegateUpdatePlan
-	deliveries []delegateDeliveryPlan
+	updates      []delegateUpdatePlan
+	deliveries   []delegateDeliveryPlan
+	attention    []delegateAttentionCleanupPlan
+	shellRepairs []delegateShellRepairPlan
 }
 
 func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTreeController, error) {
@@ -129,22 +135,21 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		return nil, err
 	}
 	c := &delegateTreeController{
-		store:         cfg.store,
-		durable:       durable,
-		live:          make(map[string]*delegateLiveState),
-		rootSessionID: cfg.rootSessionID,
-		stateDir:      cfg.stateDir,
-		worktreeRoot:  cfg.worktreeRoot,
-		now:           cfg.now,
-		turnLimit:     cfg.turnLimit,
-		driveLimit:    cfg.driveLimit,
-		reservations:  make(map[uint64]*delegateStartRecord),
-		deliveries:    make(map[uint64]*delegateDeliveryAdmission),
+		store:          cfg.store,
+		durable:        durable,
+		live:           make(map[string]*delegateLiveState),
+		rootSessionID:  cfg.rootSessionID,
+		stateDir:       cfg.stateDir,
+		worktreeRoot:   cfg.worktreeRoot,
+		now:            cfg.now,
+		turnLimit:      cfg.turnLimit,
+		driveLimit:     cfg.driveLimit,
+		reservations:   make(map[uint64]*delegateStartRecord),
+		work:           make(map[uint64]*delegateShellWork),
+		deliveries:     make(map[uint64]*delegateDeliveryAdmission),
+		reconcileOrder: delegateOpenRunOrder(events, durable),
 	}
-	c.mu.Lock()
-	err = c.reconcileRuntimeLostLocked()
-	c.mu.Unlock()
-	if err != nil {
+	if err := c.restorePendingStop(events); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -205,6 +210,9 @@ func (c *delegateTreeController) exactLeaseLocked(lease delegateLease) (*delegat
 }
 
 func (c *delegateTreeController) admitLeaseLocked(lease delegateLease, phases ...delegatestore.Phase) (*delegatestore.Aggregate, *delegateLiveState, error) {
+	if c.closing {
+		return nil, nil, errDelegateTargetBusy
+	}
 	aggregate, live, err := c.exactLeaseLocked(lease)
 	if err != nil {
 		return nil, nil, err
@@ -225,63 +233,6 @@ func (c *delegateTreeController) admitLeaseLocked(lease delegateLease, phases ..
 		}
 	}
 	return nil, nil, errDelegateTargetBusy
-}
-
-func (c *delegateTreeController) reconcileRuntimeLostLocked() error {
-	ids := make([]string, 0, len(c.durable))
-	for id, aggregate := range c.durable {
-		if aggregate != nil && aggregate.CurrentRunOpen {
-			ids = append(ids, id)
-		}
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		aggregate := c.durable[id]
-		lease := delegateLease{delegateID: id, generation: aggregate.Generation}
-		endedAt := c.now()
-		packet := delegatestore.TerminalPacket{
-			Kind:    delegatestore.PacketTerminalError,
-			Message: json.RawMessage(`"delegate runtime was lost before the generation settled"`),
-		}
-		var events []delegatestore.Event
-		switch aggregate.Phase {
-		case delegatestore.PhaseRunning:
-			terminal, finish := terminalFinishBatch(lease, delegatestore.OutcomeFailed, "runtime_lost", endedAt, packet)
-			events = []delegatestore.Event{terminal, finish}
-		case delegatestore.PhaseSettling:
-			if aggregate.PreparedTerminal == nil {
-				return fmt.Errorf("reconcile delegate %s: settling without prepared terminal", id)
-			}
-			outcome, disposition, reason := delegatePreparedFinish(*aggregate.PreparedTerminal)
-			events = []delegatestore.Event{delegateRunFinishedEvent(
-				lease,
-				outcome,
-				disposition,
-				reason,
-				endedAt,
-				delegateDeliveryID(id, aggregate.Generation),
-				nil,
-			)}
-		case delegatestore.PhaseStopping:
-			stoppedPacket := delegateStoppedTerminalPacket()
-			events = []delegatestore.Event{delegateRunFinishedEvent(
-				lease,
-				delegatestore.OutcomeStopped,
-				delegatestore.DispositionTerminalError,
-				"stopped_by_parent",
-				endedAt,
-				delegateDeliveryID(id, aggregate.Generation),
-				&stoppedPacket,
-			)}
-		default:
-			return fmt.Errorf("reconcile delegate %s: open run has phase %s", id, aggregate.Phase)
-		}
-		_, err := c.appendLocked(events...)
-		if err != nil {
-			return fmt.Errorf("reconcile delegate %s runtime loss: %w", id, err)
-		}
-	}
-	return nil
 }
 
 func (c *delegateTreeController) Snapshot() delegateUpdatePlan {

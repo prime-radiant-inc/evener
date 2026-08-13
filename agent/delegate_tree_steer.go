@@ -50,6 +50,7 @@ func (c *delegateTreeController) Steer(ctx context.Context, actor delegateActor,
 	if entry.timestamp.After(live.activityAt) {
 		live.activityAt = entry.timestamp
 	}
+	c.evidenceVersion++
 	return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(delegateID)}}, nil
 }
 
@@ -72,6 +73,7 @@ func (c *delegateTreeController) BeginModelRequest(lease delegateLease) ([]llm.M
 		}
 	}
 	live.pendingSteers = kept
+	c.evidenceVersion++
 	return expandHistory(history, replayScope{}), nil
 }
 

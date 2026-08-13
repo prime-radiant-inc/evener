@@ -184,6 +184,9 @@ func TestDelegateControllerCrashAfterCreateCommitReconcilesOwnedPartialArtifacts
 	if err != nil {
 		t.Fatalf("restart controller: %v", err)
 	}
+	if _, err := restarted.Reconcile(emptyDelegateReconcileEvidence(restarted)); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
 	aggregate := restarted.durable[started.lease.delegateID]
 	if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || aggregate.CurrentRunOpen {
 		t.Fatalf("reconciled aggregate = %#v, want idle closed run", aggregate)

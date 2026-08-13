@@ -61,6 +61,9 @@ type delegateDeliveryReceiver interface {
 func (c *delegateTreeController) RegisterInlineWaiter(reservation *delegateStartReservation) (*delegateInlineWaiter, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closing {
+		return nil, errDelegateTargetBusy
+	}
 	record, err := c.reservationRecordLocked(reservation)
 	if err != nil || record.waiter != nil {
 		return nil, errDelegateTargetBusy
@@ -72,6 +75,7 @@ func (c *delegateTreeController) RegisterInlineWaiter(reservation *delegateStart
 		resolution: make(chan delegateInlineResolution, 1),
 	}
 	record.waiter = waiter
+	c.evidenceVersion++
 	return waiter, nil
 }
 
@@ -92,6 +96,7 @@ func (c *delegateTreeController) waitForDelegateInline(ctx context.Context, wait
 			continue
 		}
 		delete(live.waiters, waiter.generation)
+		c.evidenceVersion++
 		withdrawn = true
 		break
 	}
@@ -105,6 +110,9 @@ func (c *delegateTreeController) waitForDelegateInline(ctx context.Context, wait
 func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (delegateDeliveryToken, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closing {
+		return delegateDeliveryToken{}, false, nil
+	}
 	if plan.controller != c || plan.deliveryID == "" {
 		return delegateDeliveryToken{}, false, errDelegateStaleLease
 	}
@@ -125,6 +133,13 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (deleg
 			return delegateDeliveryToken{}, false, nil
 		}
 	}
+	if c.stop != nil {
+		_, senderCovered := c.stop.members[plan.delegateID]
+		_, ownerCovered := c.stop.members[plan.ownerDelegateID]
+		if senderCovered || ownerCovered {
+			return delegateDeliveryToken{}, false, nil
+		}
+	}
 	for _, receipt := range c.deliveries {
 		if receipt.token.deliveryID == plan.deliveryID {
 			return receipt.token, true, nil
@@ -137,6 +152,7 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (deleg
 		delegateID: plan.delegateID,
 		ownerID:    plan.ownerDelegateID,
 	}
+	c.evidenceVersion++
 	return token, true, nil
 }
 
@@ -149,11 +165,19 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 	}
 	if !committed {
 		delete(c.deliveries, token.processID)
+		if c.stop != nil {
+			delete(c.stop.deliveries, token)
+		}
+		c.evidenceVersion++
 		return delegateMutationPlans{}, nil
 	}
 	aggregate := c.durable[receipt.delegateID]
 	if aggregate == nil || len(aggregate.PendingDeliveries) == 0 || aggregate.PendingDeliveries[0].DeliveryID != token.deliveryID {
 		delete(c.deliveries, token.processID)
+		if c.stop != nil {
+			delete(c.stop.deliveries, token)
+		}
+		c.evidenceVersion++
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
 	if _, err := c.appendLocked(delegatestore.Event{
@@ -164,9 +188,17 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 		},
 	}); err != nil {
 		delete(c.deliveries, token.processID)
+		if c.stop != nil {
+			delete(c.stop.deliveries, token)
+		}
+		c.evidenceVersion++
 		return delegateMutationPlans{}, err
 	}
 	delete(c.deliveries, token.processID)
+	if c.stop != nil {
+		delete(c.stop.deliveries, token)
+	}
+	c.evidenceVersion++
 	plan := c.capturedPlanLocked(receipt.delegateID)
 	plans := delegateMutationPlans{updates: []delegateUpdatePlan{plan}}
 	aggregate = c.durable[receipt.delegateID]
@@ -258,6 +290,19 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 	if head.DeliveryID != deliveryID {
 		return nil
 	}
+	if head.OwnerDelegateID != "" {
+		owner := c.durable[head.OwnerDelegateID]
+		if owner == nil || owner.PendingStopSeq != 0 {
+			return nil
+		}
+	}
+	if c.stop != nil {
+		_, senderCovered := c.stop.members[delegateID]
+		_, ownerCovered := c.stop.members[head.OwnerDelegateID]
+		if senderCovered || ownerCovered {
+			return nil
+		}
+	}
 	return &delegateDeliveryPlan{
 		controller:      c,
 		delegateID:      delegateID,
@@ -276,6 +321,7 @@ func (c *delegateTreeController) claimDelegateWaiterLocked(delegateID string, ge
 	waiter := live.waiters[generation]
 	if waiter != nil {
 		delete(live.waiters, generation)
+		c.evidenceVersion++
 	}
 	return waiter
 }

@@ -87,6 +87,9 @@ func TestDelegateControllerCrashAfterNormalSettlementFinishesPreparedOnce(t *tes
 	if err != nil {
 		t.Fatalf("openDelegateTreeController: %v", err)
 	}
+	if _, err := restarted.Reconcile(emptyDelegateReconcileEvidence(restarted)); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
 	aggregate := restarted.durable["dlg_target"]
 	if aggregate.Phase != delegatestore.PhaseIdle || aggregate.CurrentRunOpen || aggregate.PreparedTerminal != nil || len(aggregate.PendingDeliveries) != 1 {
 		t.Fatalf("reconciled aggregate = %#v", aggregate)
@@ -116,6 +119,9 @@ func TestDelegateControllerCrashAfterReportedSettlementPreservesPacket(t *testin
 	restarted, err := openDelegateTreeController(delegateTreeControllerConfig{store: reopened, rootSessionID: "root-session", now: c.now})
 	if err != nil {
 		t.Fatalf("openDelegateTreeController: %v", err)
+	}
+	if _, err := restarted.Reconcile(emptyDelegateReconcileEvidence(restarted)); err != nil {
+		t.Fatalf("Reconcile: %v", err)
 	}
 	aggregate := restarted.durable["dlg_target"]
 	if len(aggregate.PendingDeliveries) != 1 || !reflect.DeepEqual(aggregate.PendingDeliveries[0].Packet, want) {
@@ -242,6 +248,9 @@ func TestDelegateControllerRestartFinishesEachPreparedPacketShape(t *testing.T) 
 			restarted, err := openDelegateTreeController(delegateTreeControllerConfig{store: reopened, rootSessionID: "root-session", now: c.now})
 			if err != nil {
 				t.Fatalf("openDelegateTreeController: %v", err)
+			}
+			if _, err := restarted.Reconcile(emptyDelegateReconcileEvidence(restarted)); err != nil {
+				t.Fatalf("Reconcile: %v", err)
 			}
 			aggregate := restarted.durable["dlg_target"]
 			if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != test.wantOutcome || aggregate.LatestOutcome.Reason != test.wantReason {
@@ -377,6 +386,11 @@ func TestDelegateControllerRestartStoppingFinishUsesCanonicalPacket(t *testing.T
 	restarted, err := openDelegateTreeController(delegateTreeControllerConfig{store: reopened, rootSessionID: "root-session", now: restarting.now})
 	if err != nil {
 		t.Fatalf("openDelegateTreeController: %v", err)
+	}
+	evidence := emptyDelegateReconcileEvidence(restarted)
+	evidence.attention["dlg_restart"] = []string{"hold-stop-open"}
+	if _, err := restarted.Reconcile(evidence); err != nil {
+		t.Fatalf("Reconcile: %v", err)
 	}
 	restartedAggregate := restarted.durable["dlg_restart"]
 	if len(restartedAggregate.PendingDeliveries) != 1 {

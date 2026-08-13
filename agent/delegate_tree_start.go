@@ -66,6 +66,9 @@ type delegateFinish struct {
 func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor delegatestore.Descriptor) (*delegateStartReservation, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closing {
+		return nil, errDelegateTargetBusy
+	}
 	parentID := ""
 	if actor.lease == nil {
 		if actor.rootSessionID != c.rootSessionID {
@@ -122,6 +125,7 @@ func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor d
 		worktreePath:   worktreePath,
 	}
 	c.reservations[record.token] = record
+	c.evidenceVersion++
 	return reservation, nil
 }
 
@@ -131,6 +135,9 @@ func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor d
 func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID string) (*delegateStartReservation, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closing {
+		return nil, errDelegateTargetBusy
+	}
 	if runtime == nil {
 		return nil, errDelegateStaleLease
 	}
@@ -171,12 +178,16 @@ func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID 
 		attentionID:  attentionID,
 	}
 	c.reservations[record.token] = record
+	c.evidenceVersion++
 	return reservation, nil
 }
 
 func (c *delegateTreeController) AttachRuntime(lease delegateLease, runtime *Session) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closing {
+		return errDelegateTargetBusy
+	}
 	aggregate, live, err := c.exactLeaseLocked(lease)
 	if err != nil {
 		return err
@@ -193,6 +204,7 @@ func (c *delegateTreeController) AttachRuntime(lease delegateLease, runtime *Ses
 	}
 	live.runtime = runtime
 	live.binding.runtime = runtime
+	c.evidenceVersion++
 	return nil
 }
 
@@ -217,7 +229,13 @@ func (c *delegateTreeController) runtimeOwnerLocked(runtime *Session) (string, *
 // into the controller while c.mu is held.
 func (c *delegateTreeController) AdmitStartInput(lease delegateLease, admitInput func() error) (delegateMutationPlans, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	var cancel context.CancelFunc
+	defer func() {
+		c.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	}()
 	aggregate, live, err := c.exactLeaseLocked(lease)
 	if err != nil {
 		return delegateMutationPlans{}, err
@@ -231,16 +249,22 @@ func (c *delegateTreeController) AdmitStartInput(lease delegateLease, admitInput
 			live.recoveryRequired = true
 			return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, errors.Join(err, finishErr)
 		}
-		return c.generationFinishedPlansLocked(lease, finish.RunFinished.DeliveryID), err
+		plans, generationCancel := c.generationFinishedPlansLocked(lease, finish.RunFinished.DeliveryID)
+		cancel = generationCancel
+		return plans, err
 	}
 	live.binding.ready = true
 	live.activityAt = c.now()
+	c.evidenceVersion++
 	return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, nil
 }
 
 func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID string) (*delegateStartReservation, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closing {
+		return nil, errDelegateTargetBusy
+	}
 	if err := c.authorizeMutationLocked(actor, delegateID); err != nil {
 		return nil, err
 	}
@@ -289,17 +313,20 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 		worktreePath:   worktreePath,
 	}
 	c.reservations[record.token] = record
+	c.evidenceVersion++
 	return reservation, nil
 }
 
 func (c *delegateTreeController) AbortStart(reservation *delegateStartReservation) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	record, err := c.reservationRecordLocked(reservation)
 	if err != nil {
+		c.mu.Unlock()
 		return err
 	}
-	c.releaseReservationLocked(record)
+	cancel := c.releaseReservationLocked(record)
+	c.mu.Unlock()
+	cancel()
 	return nil
 }
 
@@ -315,32 +342,46 @@ func (c *delegateTreeController) reservationRecordLocked(reservation *delegateSt
 	return nil, errDelegateTargetBusy
 }
 
-func (c *delegateTreeController) releaseReservationLocked(record *delegateStartRecord) {
+func (c *delegateTreeController) releaseReservationLocked(record *delegateStartRecord) context.CancelFunc {
 	delete(c.reservations, record.token)
-	record.cancel()
+	if c.stop != nil {
+		delete(c.stop.starts, record.token)
+	}
 	c.releaseCapacityLocked(record.capacityKind)
+	c.evidenceVersion++
+	return record.cancel
 }
 
 func (c *delegateTreeController) CommitStart(reservation *delegateStartReservation) (delegateStartCommit, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	var cancel context.CancelFunc
+	defer func() {
+		c.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	}()
 	record, err := c.reservationRecordLocked(reservation)
-	if err != nil || record.ctx.Err() != nil {
+	if err != nil {
+		return delegateStartCommit{}, errDelegateTargetBusy
+	}
+	if record.ctx.Err() != nil || c.closing || c.stopCoversLocked(record.delegateID) {
+		cancel = c.releaseReservationLocked(record)
 		return delegateStartCommit{}, errDelegateTargetBusy
 	}
 	aggregate := c.durable[record.delegateID]
 	if record.create {
 		if aggregate != nil || record.generation != 1 {
-			c.releaseReservationLocked(record)
+			cancel = c.releaseReservationLocked(record)
 			return delegateStartCommit{}, errDelegateTargetBusy
 		}
 	} else if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || aggregate.Generation+1 != record.generation {
-		c.releaseReservationLocked(record)
+		cancel = c.releaseReservationLocked(record)
 		return delegateStartCommit{}, errDelegateTargetBusy
 	}
 	if record.waiter != nil {
 		if live := c.live[record.delegateID]; live != nil && live.waiters != nil && live.waiters[record.generation] != nil {
-			c.releaseReservationLocked(record)
+			cancel = c.releaseReservationLocked(record)
 			return delegateStartCommit{}, errDelegateTargetBusy
 		}
 	}
@@ -360,10 +401,13 @@ func (c *delegateTreeController) CommitStart(reservation *delegateStartReservati
 	}
 	_, err = c.appendLocked(events...)
 	if err != nil {
-		c.releaseReservationLocked(record)
+		cancel = c.releaseReservationLocked(record)
 		return delegateStartCommit{}, err
 	}
 	delete(c.reservations, record.token)
+	if c.stop != nil {
+		delete(c.stop.starts, record.token)
+	}
 	live := c.live[record.delegateID]
 	if live == nil {
 		live = &delegateLiveState{}
@@ -389,6 +433,7 @@ func (c *delegateTreeController) CommitStart(reservation *delegateStartReservati
 		live.waiters[record.generation] = record.waiter
 	}
 	live.activityAt = startedAt
+	c.evidenceVersion++
 	return delegateStartCommit{
 		lease:          lease,
 		plan:           c.capturedPlanLocked(record.delegateID),
@@ -399,12 +444,12 @@ func (c *delegateTreeController) CommitStart(reservation *delegateStartReservati
 	}, nil
 }
 
-func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) {
+func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) context.CancelFunc {
 	live := c.live[lease.delegateID]
 	if live == nil || live.binding == nil || live.binding.lease != lease {
-		return
+		return nil
 	}
-	live.binding.cancel()
+	cancel := live.binding.cancel
 	if live.binding.runtime != nil {
 		live.runtime = live.binding.runtime
 	}
@@ -417,6 +462,7 @@ func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) {
 	} else {
 		c.releaseCapacityLocked(delegateTurnCapacity)
 	}
+	return cancel
 }
 
 func (c *delegateTreeController) beginRuntimeBoundary(lease delegateLease) error {

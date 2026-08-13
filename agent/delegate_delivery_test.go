@@ -551,3 +551,45 @@ func (r *fakeDelegateDeliveryReceiver) appendDelegateNotificationDurably(attenti
 	r.writes++
 	return false, nil
 }
+
+func TestDelegateControllerDeliveryReceiptBeforeStopDrainsAndCleans(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	seedDelegateControllerDelivery(t, c, "dlg_target")
+	plan := c.ReplayDeliveries()[0]
+	token, admitted, err := c.BeginDelivery(plan)
+	if err != nil || !admitted {
+		t.Fatalf("BeginDelivery = admitted:%t err:%v", admitted, err)
+	}
+	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("Reconcile with receipt: %v", err)
+	}
+	select {
+	case <-result.done:
+		t.Fatal("stop completed with pre-stop delivery receipt")
+	default:
+	}
+	if _, err := c.CompleteDelivery(token, false); err != nil {
+		t.Fatalf("CompleteDelivery: %v", err)
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("Reconcile after receipt: %v", err)
+	}
+}
+
+func TestDelegateControllerStopBeforeDeliveryReceiptDefersAdmission(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	seedDelegateControllerDelivery(t, c, "dlg_target")
+	plan := c.ReplayDeliveries()[0]
+	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	if token, admitted, err := c.BeginDelivery(plan); err != nil || admitted || token != (delegateDeliveryToken{}) {
+		t.Fatalf("BeginDelivery during stop = token:%#v admitted:%t err:%v", token, admitted, err)
+	}
+}

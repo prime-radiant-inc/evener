@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,13 +37,20 @@ func (c *delegateTreeController) BeginSettlement(lease delegateLease, supplied *
 	}); err != nil {
 		return false, delegateMutationPlans{}, err
 	}
+	c.evidenceVersion++
 	plan := c.capturedPlanLocked(lease.delegateID)
 	return false, delegateMutationPlans{updates: []delegateUpdatePlan{plan}}, nil
 }
 
 func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish delegateFinish) (delegateMutationPlans, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	var cancel context.CancelFunc
+	defer func() {
+		c.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	}()
 	aggregate, _, err := c.exactLeaseLocked(lease)
 	if err != nil {
 		if errors.Is(err, errDelegateStaleLease) {
@@ -121,17 +129,23 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 	if _, err := c.appendLocked(events...); err != nil {
 		return delegateMutationPlans{}, err
 	}
-	return c.generationFinishedPlansLocked(lease, deliveryID), nil
+	plans, generationCancel := c.generationFinishedPlansLocked(lease, deliveryID)
+	cancel = generationCancel
+	return plans, nil
 }
 
-func (c *delegateTreeController) generationFinishedPlansLocked(lease delegateLease, deliveryID string) delegateMutationPlans {
-	c.releaseGenerationLocked(lease)
+func (c *delegateTreeController) generationFinishedPlansLocked(lease delegateLease, deliveryID string) (delegateMutationPlans, context.CancelFunc) {
+	if c.stop != nil {
+		delete(c.stop.active, lease)
+	}
+	cancel := c.releaseGenerationLocked(lease)
+	c.evidenceVersion++
 	plan := c.capturedPlanLocked(lease.delegateID)
 	plans := delegateMutationPlans{updates: []delegateUpdatePlan{plan}}
 	if delivery := c.newHeadDeliveryPlanLocked(lease.delegateID, deliveryID); delivery != nil {
 		plans.deliveries = append(plans.deliveries, *delivery)
 	}
-	return plans
+	return plans, cancel
 }
 
 func delegateRunFinishedEvent(lease delegateLease, outcome delegatestore.OutcomeStatus, disposition delegatestore.RunDisposition, reason string, endedAt time.Time, deliveryID string, packet *delegatestore.TerminalPacket) delegatestore.Event {
