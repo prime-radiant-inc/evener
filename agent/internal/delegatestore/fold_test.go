@@ -6,7 +6,143 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/serf/agent/provenance"
 )
+
+func TestApplyAndFoldCloneCreatedDescriptor(t *testing.T) {
+	mutations := []struct {
+		name   string
+		mutate func(*Descriptor)
+	}{
+		{name: "frozen tool names", mutate: func(descriptor *Descriptor) { descriptor.FrozenToolNames[0] = "mutated" }},
+		{name: "frozen skill names", mutate: func(descriptor *Descriptor) { descriptor.FrozenSkillNames[0] = "mutated" }},
+		{name: "frozen skill bodies", mutate: func(descriptor *Descriptor) { descriptor.FrozenSkillBodies[0] = "mutated" }},
+		{name: "result schema", mutate: func(descriptor *Descriptor) { descriptor.ResultSchema[9] = 'b' }},
+		{name: "explicit tool grants", mutate: func(descriptor *Descriptor) { descriptor.ExplicitToolGrants[0] = "mutated" }},
+		{name: "sandbox", mutate: func(descriptor *Descriptor) { descriptor.Sandbox.Mode = "mutated" }},
+		{name: "sandbox network", mutate: func(descriptor *Descriptor) { *descriptor.Sandbox.Network = false }},
+		{name: "sandbox denylist additions", mutate: func(descriptor *Descriptor) { descriptor.Sandbox.DenylistAdd[0] = "mutated" }},
+		{name: "sandbox denylist removals", mutate: func(descriptor *Descriptor) { descriptor.Sandbox.DenylistRemove[0] = "mutated" }},
+		{name: "sandbox writable roots", mutate: func(descriptor *Descriptor) { descriptor.Sandbox.ExtraWritableRoots[0] = "mutated" }},
+		{name: "sandbox read roots", mutate: func(descriptor *Descriptor) { descriptor.Sandbox.ExtraReadRoots[0] = "mutated" }},
+		{name: "provenance watch keys", mutate: func(descriptor *Descriptor) { descriptor.Provenance.WatchKeys[0].WatchID = "mutated" }},
+		{name: "provenance chain", mutate: func(descriptor *Descriptor) { descriptor.Provenance.Chain[0].DeliveryID = "mutated" }},
+	}
+	paths := []struct {
+		name  string
+		apply func(Event) (State, error)
+	}{
+		{
+			name: "Apply",
+			apply: func(event Event) (State, error) {
+				state := make(State)
+				return state, Apply(state, event)
+			},
+		},
+		{
+			name: "Fold",
+			apply: func(event Event) (State, error) {
+				return Fold([]Event{event})
+			},
+		},
+	}
+
+	for _, path := range paths {
+		for _, mutation := range mutations {
+			t.Run(path.name+"/"+mutation.name, func(t *testing.T) {
+				event := createdEventWithReferenceDescriptor("dlg_alpha")
+				state, err := path.apply(event)
+				if err != nil {
+					t.Fatalf("accept created event: %v", err)
+				}
+				before := stateJSON(t, state)
+				beforeRevision := state["dlg_alpha"].ProjectionRevision
+
+				mutation.mutate(&event.Created.Descriptor)
+
+				if got := stateJSON(t, state); got != before {
+					t.Fatalf("accepted state changed after caller mutated %s:\n got %s\nwant %s", mutation.name, got, before)
+				}
+				if got := state["dlg_alpha"].ProjectionRevision; got != beforeRevision {
+					t.Fatalf("projection revision = %d, want unchanged %d", got, beforeRevision)
+				}
+			})
+		}
+	}
+}
+
+func TestApplyStoppedExternalDeliveryRequiresID(t *testing.T) {
+	state := applyEvents(t,
+		createdEvent("dlg_alpha", ""),
+		startedEvent("dlg_alpha", 1, TriggerOwnerInput),
+		stopRequestedEvent("dlg_alpha"),
+	)
+	want := stateJSON(t, state)
+
+	err := Apply(state, finishedEvent("dlg_alpha", 1, OutcomeStopped, DispositionTerminalError, "", stoppedPacket()))
+	if err == nil || !strings.Contains(err.Error(), "delivery id") {
+		t.Fatalf("Apply stopped finish error = %v, want missing delivery id rejection", err)
+	}
+	if got := stateJSON(t, state); got != want {
+		t.Fatalf("state mutated after missing delivery id:\n got %s\nwant %s", got, want)
+	}
+}
+
+func TestApplyStoppedExternalDeliveryRejectsInvalidTerminalPacketJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr string
+		mutate  func(*TerminalPacket)
+	}{
+		{name: "message", wantErr: "message", mutate: func(packet *TerminalPacket) { packet.Message = json.RawMessage(`not-json`) }},
+		{name: "structured result", wantErr: "structured result", mutate: func(packet *TerminalPacket) { packet.StructuredResult = json.RawMessage(`{`) }},
+		{name: "metadata", wantErr: "metadata", mutate: func(packet *TerminalPacket) { packet.Metadata = json.RawMessage(`{`) }},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := applyEvents(t,
+				createdEvent("dlg_alpha", ""),
+				startedEvent("dlg_alpha", 1, TriggerOwnerInput),
+				stopRequestedEvent("dlg_alpha"),
+			)
+			want := stateJSON(t, state)
+			packet := stoppedPacket()
+			test.mutate(packet)
+
+			err := Apply(state, finishedEvent("dlg_alpha", 1, OutcomeStopped, DispositionTerminalError, "dlg_alpha/delivery/1", packet))
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Apply stopped finish error = %v, want invalid %s rejection", err, test.wantErr)
+			}
+			if got := stateJSON(t, state); got != want {
+				t.Fatalf("state mutated after invalid %s:\n got %s\nwant %s", test.name, got, want)
+			}
+		})
+	}
+}
+
+func TestApplyStoppedDeliverySuppressesCoveredOwnerWithoutDelivery(t *testing.T) {
+	state := applyEvents(t,
+		createdEvent("dlg_parent", ""),
+		createdEvent("dlg_child", "dlg_parent"),
+		startedEvent("dlg_child", 1, TriggerOwnerInput),
+		stopRequestedEvent("dlg_parent"),
+	)
+	packet := stoppedPacket()
+	packet.Message = json.RawMessage(`not-json`)
+
+	if err := Apply(state, finishedEvent("dlg_child", 1, OutcomeStopped, DispositionTerminalError, "", packet)); err != nil {
+		t.Fatalf("Apply covered stopped finish: %v", err)
+	}
+	child := state["dlg_child"]
+	if child.CurrentRunOpen || child.LatestOutcome == nil || child.LatestOutcome.Status != OutcomeStopped {
+		t.Fatalf("covered child = %#v, want closed stopped run", child)
+	}
+	if len(child.PendingDeliveries) != 0 {
+		t.Fatalf("covered child deliveries = %#v, want suppressed", child.PendingDeliveries)
+	}
+}
 
 func TestFoldUsesOneAggregatePerStableDelegate(t *testing.T) {
 	events := sequence(
@@ -305,6 +441,34 @@ func createdEvent(id, parentID string) Event {
 		Kind:       EventDelegateCreated,
 		DelegateID: id,
 		Created:    &DelegateCreated{Descriptor: testDescriptor(id, parentID)},
+	}
+}
+
+func createdEventWithReferenceDescriptor(id string) Event {
+	network := true
+	descriptor := testDescriptor(id, "")
+	descriptor.FrozenToolNames = []string{"shell"}
+	descriptor.FrozenSkillNames = []string{"review"}
+	descriptor.FrozenSkillBodies = []string{"review instructions"}
+	descriptor.ResultSchema = json.RawMessage(`{"type":"alpha"}`)
+	descriptor.ExplicitToolGrants = []string{"shell"}
+	descriptor.Sandbox = &SandboxSnapshot{
+		Mode:               "workspace-write",
+		Network:            &network,
+		DenylistAdd:        []string{"secret"},
+		DenylistRemove:     []string{"public"},
+		ExtraWritableRoots: []string{"/write"},
+		ExtraReadRoots:     []string{"/read"},
+	}
+	descriptor.Provenance = &provenance.Causal{
+		WatchKeys: []provenance.WatchKey{{WatchID: "watch", WatchGeneration: "generation"}},
+		Chain:     []provenance.Entry{{Kind: "watch", DeliveryID: "delivery"}},
+	}
+	return Event{
+		Kind:       EventDelegateCreated,
+		Seq:        1,
+		DelegateID: id,
+		Created:    &DelegateCreated{Descriptor: descriptor},
 	}
 }
 

@@ -91,7 +91,7 @@ func applyCreated(state State, event Event) error {
 	if state[event.DelegateID] != nil {
 		return fmt.Errorf("delegate %q already exists", event.DelegateID)
 	}
-	descriptor := event.Created.Descriptor
+	descriptor := cloneDescriptor(event.Created.Descriptor)
 	if err := validateDescriptor(descriptor); err != nil {
 		return fmt.Errorf("delegate_created: %w", err)
 	}
@@ -188,15 +188,18 @@ func applyRunFinished(state State, event Event) error {
 		outcome := payload.Outcome
 		outcome.Status = OutcomeStopped
 		outcome.Reason = "stopped_by_parent"
-		aggregate.LatestOutcome = &outcome
-		if payload.DeliveryID != "" && !ownerCoveredByStop(state, aggregate) {
+		if !ownerCoveredByStop(state, aggregate) {
 			if payload.Packet == nil || payload.Packet.Kind != PacketTerminalError {
 				packet = &TerminalPacket{Kind: PacketTerminalError, Message: json.RawMessage(`"stopped by parent"`)}
+			}
+			if err := validateTerminalPacket(*packet); err != nil {
+				return fmt.Errorf("delegate %q stopped finish packet: %w", event.DelegateID, err)
 			}
 			if err := appendDelivery(aggregate, payload.DeliveryID, payload.Generation, packet); err != nil {
 				return err
 			}
 		}
+		aggregate.LatestOutcome = &outcome
 	} else {
 		if err := validateFinishPacket(aggregate, payload, packet); err != nil {
 			return err
