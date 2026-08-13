@@ -30,6 +30,13 @@ var ErrInvalidLimit = errors.New("jobstore: invalid limit")
 // the lifetime end of the output stream.
 var ErrInvalidOffset = errors.New("jobstore: invalid offset")
 
+// errOutputTruncatedMidPrune reports the one state the prune protocol passes
+// through that the retained file cannot corroborate: pending metadata is
+// published but the output holds fewer bytes than its retained tail, so the
+// writer was caught — or crashed — between truncating the file and rewriting
+// it. Snapshot readers translate it to a concurrent change and retry.
+var errOutputTruncatedMidPrune = errors.New("jobstore: output truncated mid-prune rewrite")
+
 // SearchOptions bounds a retained-output line search. All offsets are lifetime
 // byte offsets, even when the retained file begins after offset zero.
 type SearchOptions struct {
@@ -881,8 +888,8 @@ func readValidPendingOutputMeta(fs afero.Fs, path string, finalMetaPath string, 
 		meta.RetainedSHA256 = hash
 		return meta, true, nil
 	}
-	if metaRetained != retained {
-		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
+	if metaRetained > retained {
+		return outputMeta{}, false, errOutputTruncatedMidPrune
 	}
 	hash, err := outputFileSHA256(fs, outputPath)
 	if err != nil {

@@ -454,6 +454,42 @@ func TestReadOutputWindowSnapshotConcurrentAppendAndPrune(t *testing.T) {
 	}
 }
 
+// TestReadOutputSnapshotMidPruneTruncationIsConcurrentChange freezes the one
+// transient the prune protocol passes through that the retained file cannot
+// corroborate: pending metadata published, the output truncated, the tail not
+// yet rewritten. A snapshot reader landing entirely inside that window must
+// report a concurrent change, never metadata corruption.
+func TestReadOutputSnapshotMidPruneTruncationIsConcurrentChange(t *testing.T) {
+	for name, retained := range map[string][]byte{
+		"empty-file":   nil,
+		"partial-tail": []byte("fg"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			fs := afero.NewMemMapFs()
+			const path = "/job.log"
+			if err := afero.WriteFile(fs, path, retained, 0o644); err != nil {
+				t.Fatalf("write truncated output: %v", err)
+			}
+			metaPath := outputMetaPath(path)
+			// The final metadata is the previous cycle's; the pending metadata
+			// claims a 5-byte retained tail the file no longer holds.
+			if err := writeSnapshotMetadataFile(fs, metaPath, []byte("abcde"), 10, 5); err != nil {
+				t.Fatalf("write final metadata: %v", err)
+			}
+			if err := writeSnapshotMetadataFile(fs, outputPendingMetaPath(metaPath), []byte("fghij"), 15, 10); err != nil {
+				t.Fatalf("write pending metadata: %v", err)
+			}
+
+			if _, err := readOutputWindowSnapshotFs(fs, path, 10, 5); !errors.Is(err, ErrOutputChangedDuringRead) {
+				t.Fatalf("window snapshot err = %v, want ErrOutputChangedDuringRead", err)
+			}
+			if _, err := readOutputSnapshotFs(fs, path, 5, false); !errors.Is(err, ErrOutputChangedDuringRead) {
+				t.Fatalf("tail snapshot err = %v, want ErrOutputChangedDuringRead", err)
+			}
+		})
+	}
+}
+
 func mustWriteSnapshotFixture(t *testing.T, fs afero.Fs, path string, content []byte, total, retainedStart int64) {
 	t.Helper()
 	if err := writeSnapshotFixture(fs, path, content, total, retainedStart); err != nil {

@@ -280,10 +280,31 @@ func rewriteLog(t *testing.T, path string, events []Event) {
 		b.Write(line)
 		b.WriteByte('\n')
 	}
-	// A distinct mtime is what tells the store the bytes are not its own; the
-	// filesystem supplies it on write, this only makes the write happen.
+	// A distinct mtime is what tells the store the bytes are not its own. The
+	// write usually supplies it, but filesystem timestamps are coarser than this
+	// test is fast: a rewrite landing in the same clock tick as the store's last
+	// append is the documented same-size-same-mtime boundary
+	// (TestStoreCursorSameSizeSameMTimeRewriteIsTheDocumentedBoundary), not the
+	// out-of-band write these tests mean to stage. Bump the mtime until it
+	// resolves.
+	before, statErr := os.Stat(path)
 	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
 		t.Fatalf("rewrite log: %v", err)
+	}
+	if statErr != nil {
+		return
+	}
+	for delta := time.Millisecond; ; delta *= 2 {
+		after, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat rewritten log: %v", err)
+		}
+		if !after.ModTime().Equal(before.ModTime()) {
+			return
+		}
+		if err := os.Chtimes(path, time.Time{}, before.ModTime().Add(delta)); err != nil {
+			t.Fatalf("bump rewritten log mtime: %v", err)
+		}
 	}
 }
 
