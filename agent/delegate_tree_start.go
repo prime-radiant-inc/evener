@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/identifier"
 )
 
@@ -22,6 +23,14 @@ const (
 )
 
 type delegateStartReservation struct {
+	delegateID     string
+	descriptor     delegatestore.Descriptor
+	transcriptPath string
+	worktreePath   string
+}
+
+type delegateStartRecord struct {
+	receipt        *delegateStartReservation
 	token          uint64
 	delegateID     string
 	generation     uint64
@@ -38,8 +47,12 @@ type delegateStartReservation struct {
 }
 
 type delegateStartCommit struct {
-	lease delegateLease
-	plan  delegateUpdatePlan
+	lease          delegateLease
+	plan           delegateUpdatePlan
+	ctx            context.Context
+	descriptor     delegatestore.Descriptor
+	transcriptPath string
+	worktreePath   string
 }
 
 type delegateGenerationFinish struct {
@@ -83,7 +96,16 @@ func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor d
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.nextToken++
+	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, childSessionID+".transcript.jsonl")
+	storedDescriptor := cloneDelegateStartDescriptor(descriptor)
 	reservation := &delegateStartReservation{
+		delegateID:     delegateID,
+		descriptor:     cloneDelegateStartDescriptor(storedDescriptor),
+		transcriptPath: transcriptPath,
+		worktreePath:   worktreePath,
+	}
+	record := &delegateStartRecord{
+		receipt:        reservation,
 		token:          c.nextToken,
 		delegateID:     delegateID,
 		generation:     1,
@@ -92,11 +114,11 @@ func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor d
 		ctx:            ctx,
 		cancel:         cancel,
 		create:         true,
-		descriptor:     descriptor,
-		transcriptPath: filepath.Join(c.stateDir, sessionsSubdir, childSessionID+".transcript.jsonl"),
+		descriptor:     storedDescriptor,
+		transcriptPath: transcriptPath,
 		worktreePath:   worktreePath,
 	}
-	c.reservations[reservation.token] = reservation
+	c.reservations[record.token] = record
 	return reservation, nil
 }
 
@@ -109,14 +131,9 @@ func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID 
 	if runtime == nil {
 		return nil, errDelegateStaleLease
 	}
-	var delegateID string
-	var live *delegateLiveState
-	for id, candidate := range c.live {
-		if candidate != nil && candidate.runtime == runtime {
-			delegateID = id
-			live = candidate
-			break
-		}
+	delegateID, live, err := c.runtimeOwnerLocked(runtime)
+	if err != nil {
+		return nil, err
 	}
 	if live == nil {
 		return nil, errDelegateStaleLease
@@ -136,6 +153,10 @@ func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID 
 	ctx, cancel := context.WithCancel(context.Background())
 	c.nextToken++
 	reservation := &delegateStartReservation{
+		delegateID: delegateID,
+	}
+	record := &delegateStartRecord{
+		receipt:      reservation,
 		token:        c.nextToken,
 		delegateID:   delegateID,
 		generation:   aggregate.Generation + 1,
@@ -146,7 +167,7 @@ func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID 
 		runtime:      runtime,
 		attentionID:  attentionID,
 	}
-	c.reservations[reservation.token] = reservation
+	c.reservations[record.token] = record
 	return reservation, nil
 }
 
@@ -160,12 +181,32 @@ func (c *delegateTreeController) AttachRuntime(lease delegateLease, runtime *Ses
 	if runtime == nil || aggregate.Phase != delegatestore.PhaseRunning || aggregate.PendingStopSeq != 0 || live.recoveryRequired || live.binding.ready {
 		return errDelegateTargetBusy
 	}
-	if live.binding.runtime != nil && live.binding.runtime != runtime {
+	if live.runtime != nil && live.runtime != runtime || live.binding.runtime != nil && live.binding.runtime != runtime {
+		return errDelegateTargetBusy
+	}
+	ownerID, _, err := c.runtimeOwnerLocked(runtime)
+	if err != nil || ownerID != "" && ownerID != lease.delegateID {
 		return errDelegateTargetBusy
 	}
 	live.runtime = runtime
 	live.binding.runtime = runtime
 	return nil
+}
+
+func (c *delegateTreeController) runtimeOwnerLocked(runtime *Session) (string, *delegateLiveState, error) {
+	var ownerID string
+	var owner *delegateLiveState
+	for id, candidate := range c.live {
+		if candidate == nil || candidate.runtime != runtime && (candidate.binding == nil || candidate.binding.runtime != runtime) {
+			continue
+		}
+		if owner != nil && ownerID != id {
+			return "", nil, errDelegateTargetBusy
+		}
+		ownerID = id
+		owner = candidate
+	}
+	return ownerID, owner, nil
 }
 
 // AdmitStartInput is the one narrow controller-to-transcript lock boundary.
@@ -228,88 +269,128 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.nextToken++
-	reservation := &delegateStartReservation{
-		token:        c.nextToken,
-		delegateID:   delegateID,
-		generation:   aggregate.Generation + 1,
-		trigger:      delegatestore.TriggerOwnerInput,
-		capacityKind: delegateTurnCapacity,
-		ctx:          ctx,
-		cancel:       cancel,
+	descriptor := cloneDelegateStartDescriptor(aggregate.Descriptor)
+	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, descriptor.ChildSessionID+".transcript.jsonl")
+	worktreePath := ""
+	if descriptor.Isolation == "worktree" {
+		worktreePath = descriptor.WorkingDir
 	}
-	c.reservations[reservation.token] = reservation
+	reservation := &delegateStartReservation{
+		delegateID:     delegateID,
+		descriptor:     cloneDelegateStartDescriptor(descriptor),
+		transcriptPath: transcriptPath,
+		worktreePath:   worktreePath,
+	}
+	record := &delegateStartRecord{
+		receipt:        reservation,
+		token:          c.nextToken,
+		delegateID:     delegateID,
+		generation:     aggregate.Generation + 1,
+		trigger:        delegatestore.TriggerOwnerInput,
+		capacityKind:   delegateTurnCapacity,
+		ctx:            ctx,
+		cancel:         cancel,
+		descriptor:     descriptor,
+		transcriptPath: transcriptPath,
+		worktreePath:   worktreePath,
+	}
+	c.reservations[record.token] = record
 	return reservation, nil
 }
 
 func (c *delegateTreeController) AbortStart(reservation *delegateStartReservation) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.abortReservationLocked(reservation)
+	record, err := c.reservationRecordLocked(reservation)
+	if err != nil {
+		return err
+	}
+	c.releaseReservationLocked(record)
+	return nil
 }
 
-func (c *delegateTreeController) abortReservationLocked(reservation *delegateStartReservation) error {
-	if reservation == nil || c.reservations[reservation.token] != reservation {
-		return errDelegateTargetBusy
+func (c *delegateTreeController) reservationRecordLocked(reservation *delegateStartReservation) (*delegateStartRecord, error) {
+	if reservation == nil {
+		return nil, errDelegateTargetBusy
 	}
-	delete(c.reservations, reservation.token)
-	reservation.cancel()
-	c.releaseCapacityLocked(reservation.capacityKind)
-	return nil
+	for _, record := range c.reservations {
+		if record.receipt == reservation {
+			return record, nil
+		}
+	}
+	return nil, errDelegateTargetBusy
+}
+
+func (c *delegateTreeController) releaseReservationLocked(record *delegateStartRecord) {
+	delete(c.reservations, record.token)
+	record.cancel()
+	c.releaseCapacityLocked(record.capacityKind)
 }
 
 func (c *delegateTreeController) CommitStart(reservation *delegateStartReservation) (delegateStartCommit, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if reservation == nil || c.reservations[reservation.token] != reservation || reservation.ctx.Err() != nil {
+	record, err := c.reservationRecordLocked(reservation)
+	if err != nil || record.ctx.Err() != nil {
 		return delegateStartCommit{}, errDelegateTargetBusy
 	}
-	aggregate := c.durable[reservation.delegateID]
-	if reservation.create {
-		if aggregate != nil || reservation.generation != 1 {
-			_ = c.abortReservationLocked(reservation)
+	aggregate := c.durable[record.delegateID]
+	if record.create {
+		if aggregate != nil || record.generation != 1 {
+			c.releaseReservationLocked(record)
 			return delegateStartCommit{}, errDelegateTargetBusy
 		}
-	} else if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || aggregate.Generation+1 != reservation.generation {
-		_ = c.abortReservationLocked(reservation)
+	} else if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || aggregate.Generation+1 != record.generation {
+		c.releaseReservationLocked(record)
 		return delegateStartCommit{}, errDelegateTargetBusy
 	}
 	startedAt := c.now()
 	events := []delegatestore.Event{delegateControllerRunStartedEvent(
-		reservation.delegateID,
-		reservation.generation,
-		reservation.trigger,
+		record.delegateID,
+		record.generation,
+		record.trigger,
 		startedAt,
 	)}
-	if reservation.create {
+	if record.create {
 		events = append([]delegatestore.Event{{
 			Kind:       delegatestore.EventDelegateCreated,
-			DelegateID: reservation.delegateID,
-			Created:    &delegatestore.DelegateCreated{Descriptor: reservation.descriptor},
+			DelegateID: record.delegateID,
+			Created:    &delegatestore.DelegateCreated{Descriptor: record.descriptor},
 		}}, events...)
 	}
-	_, err := c.appendLocked(events...)
+	_, err = c.appendLocked(events...)
 	if err != nil {
-		_ = c.abortReservationLocked(reservation)
+		c.releaseReservationLocked(record)
 		return delegateStartCommit{}, err
 	}
-	delete(c.reservations, reservation.token)
-	live := c.live[reservation.delegateID]
+	delete(c.reservations, record.token)
+	live := c.live[record.delegateID]
 	if live == nil {
 		live = &delegateLiveState{}
-		c.live[reservation.delegateID] = live
+		c.live[record.delegateID] = live
 	}
-	lease := delegateLease{delegateID: reservation.delegateID, generation: reservation.generation}
+	lease := delegateLease{delegateID: record.delegateID, generation: record.generation}
 	live.binding = &delegateRuntimeBinding{
 		lease:   lease,
-		runtime: reservation.runtime,
-		cancel:  reservation.cancel,
-		ready:   reservation.trigger == delegatestore.TriggerAttention,
+		runtime: record.runtime,
+		cancel:  record.cancel,
+		ready:   record.trigger == delegatestore.TriggerAttention,
 	}
-	if reservation.runtime != nil {
-		live.runtime = reservation.runtime
+	if record.trigger == delegatestore.TriggerAttention {
+		live.pendingTranscriptEntryIDs = []string{record.attentionID}
+	}
+	if record.runtime != nil {
+		live.runtime = record.runtime
 	}
 	live.activityAt = startedAt
-	return delegateStartCommit{lease: lease, plan: c.capturedPlanLocked(reservation.delegateID)}, nil
+	return delegateStartCommit{
+		lease:          lease,
+		plan:           c.capturedPlanLocked(record.delegateID),
+		ctx:            record.ctx,
+		descriptor:     cloneDelegateStartDescriptor(record.descriptor),
+		transcriptPath: record.transcriptPath,
+		worktreePath:   record.worktreePath,
+	}, nil
 }
 
 func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish delegateGenerationFinish) (delegateUpdatePlan, error) {
@@ -419,6 +500,29 @@ func (c *delegateTreeController) releaseCapacityLocked(kind delegateCapacityKind
 	if c.turnsInUse > 0 {
 		c.turnsInUse--
 	}
+}
+
+func cloneDelegateStartDescriptor(descriptor delegatestore.Descriptor) delegatestore.Descriptor {
+	clone := descriptor
+	clone.FrozenToolNames = append([]string(nil), descriptor.FrozenToolNames...)
+	clone.FrozenSkillNames = append([]string(nil), descriptor.FrozenSkillNames...)
+	clone.FrozenSkillBodies = append([]string(nil), descriptor.FrozenSkillBodies...)
+	clone.ResultSchema = append(json.RawMessage(nil), descriptor.ResultSchema...)
+	clone.ExplicitToolGrants = append([]string(nil), descriptor.ExplicitToolGrants...)
+	clone.Provenance = provenance.Clone(descriptor.Provenance)
+	if descriptor.Sandbox != nil {
+		sandbox := *descriptor.Sandbox
+		if descriptor.Sandbox.Network != nil {
+			network := *descriptor.Sandbox.Network
+			sandbox.Network = &network
+		}
+		sandbox.DenylistAdd = append([]string(nil), descriptor.Sandbox.DenylistAdd...)
+		sandbox.DenylistRemove = append([]string(nil), descriptor.Sandbox.DenylistRemove...)
+		sandbox.ExtraWritableRoots = append([]string(nil), descriptor.Sandbox.ExtraWritableRoots...)
+		sandbox.ExtraReadRoots = append([]string(nil), descriptor.Sandbox.ExtraReadRoots...)
+		clone.Sandbox = &sandbox
+	}
+	return clone
 }
 
 func delegateControllerRunStartedEvent(id string, generation uint64, trigger delegatestore.RunTrigger, startedAt time.Time) delegatestore.Event {

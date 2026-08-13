@@ -92,7 +92,7 @@ func firstDelegateControllerReservation(c *delegateTreeController) *delegateStar
 	if len(tokens) == 0 {
 		return nil
 	}
-	return c.reservations[tokens[0]]
+	return c.reservations[tokens[0]].receipt
 }
 
 func firstDelegateControllerBinding(c *delegateTreeController, requireReady bool) (delegateLease, bool) {

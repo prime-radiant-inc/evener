@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -444,6 +445,91 @@ func TestDelegateControllerAdmitStartInputSuccessMarksReady(t *testing.T) {
 	}
 }
 
+func TestDelegateControllerRuntimeAttachmentIsOneToOne(t *testing.T) {
+	t.Run("retained runtime is not replaced", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		seedDelegateControllerIdle(t, c, "dlg_target", "")
+		first, retained := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+		if _, err := c.AdmitStartInput(first.lease, func() error { return nil }); err != nil {
+			t.Fatalf("AdmitStartInput: %v", err)
+		}
+		if _, err := c.FinishGeneration(first.lease, delegateGenerationFinish{status: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
+			t.Fatalf("FinishGeneration: %v", err)
+		}
+
+		reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
+		if err != nil {
+			t.Fatalf("ReserveStart: %v", err)
+		}
+		second, err := c.CommitStart(reservation)
+		if err != nil {
+			t.Fatalf("CommitStart: %v", err)
+		}
+		if err := c.AttachRuntime(second.lease, &Session{}); !errors.Is(err, errDelegateTargetBusy) {
+			t.Fatalf("AttachRuntime replacement error = %v, want busy", err)
+		}
+		live := c.live["dlg_target"]
+		if live.runtime != retained || live.binding == nil || live.binding.runtime != nil {
+			t.Fatalf("live state after rejected replacement = %#v, want retained runtime and unattached binding", live)
+		}
+		if err := c.AttachRuntime(second.lease, retained); err != nil {
+			t.Fatalf("AttachRuntime exact retained runtime: %v", err)
+		}
+	})
+
+	t.Run("one runtime cannot attach to two delegates", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 2, 1)
+		seedDelegateControllerIdle(t, c, "dlg_first", "")
+		seedDelegateControllerIdle(t, c, "dlg_second", "")
+		firstReservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_first")
+		if err != nil {
+			t.Fatalf("ReserveStart first: %v", err)
+		}
+		first, err := c.CommitStart(firstReservation)
+		if err != nil {
+			t.Fatalf("CommitStart first: %v", err)
+		}
+		secondReservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_second")
+		if err != nil {
+			t.Fatalf("ReserveStart second: %v", err)
+		}
+		second, err := c.CommitStart(secondReservation)
+		if err != nil {
+			t.Fatalf("CommitStart second: %v", err)
+		}
+
+		runtime := &Session{}
+		if err := c.AttachRuntime(first.lease, runtime); err != nil {
+			t.Fatalf("AttachRuntime first: %v", err)
+		}
+		if err := c.AttachRuntime(second.lease, runtime); !errors.Is(err, errDelegateTargetBusy) {
+			t.Fatalf("AttachRuntime second owner error = %v, want busy", err)
+		}
+		if live := c.live["dlg_second"]; live.runtime != nil || live.binding == nil || live.binding.runtime != nil {
+			t.Fatalf("second live state after rejected attachment = %#v", live)
+		}
+	})
+
+	t.Run("ambiguous resident ownership is rejected", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 2, 1)
+		seedDelegateControllerIdle(t, c, "dlg_first", "")
+		seedDelegateControllerIdle(t, c, "dlg_second", "")
+		runtime := &Session{}
+		c.mu.Lock()
+		c.live["dlg_first"] = &delegateLiveState{runtime: runtime}
+		c.live["dlg_second"] = &delegateLiveState{runtime: runtime}
+		c.mu.Unlock()
+
+		reservation, err := c.ReserveAttention(runtime, "attention-exact")
+		if reservation != nil {
+			_ = c.AbortStart(reservation)
+		}
+		if !errors.Is(err, errDelegateTargetBusy) {
+			t.Fatalf("ReserveAttention ambiguous owner error = %v, want busy", err)
+		}
+	})
+}
+
 func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
@@ -481,6 +567,91 @@ func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t
 	}
 	if err := c.BeginModelRequest(attention.lease); err != nil {
 		t.Fatalf("BeginModelRequest attention: %v", err)
+	}
+}
+
+func TestDelegateControllerAttentionCommitBindsSelectedPendingTranscriptEntry(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	started, runtime := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {
+		t.Fatalf("AdmitStartInput: %v", err)
+	}
+	if _, err := c.FinishGeneration(started.lease, delegateGenerationFinish{status: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+
+	reservation, err := c.ReserveAttention(runtime, "attention-exact")
+	if err != nil {
+		t.Fatalf("ReserveAttention: %v", err)
+	}
+	if _, err := c.CommitStart(reservation); err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+
+	live := c.live["dlg_target"]
+	if live == nil || !reflect.DeepEqual(live.pendingTranscriptEntryIDs, []string{"attention-exact"}) {
+		t.Fatalf("bound pending transcript entries = %#v, want exact selected attention ID", live)
+	}
+}
+
+func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	descriptor := delegateControllerCreateDescriptor()
+	descriptor.FrozenToolNames = []string{"communicate"}
+	descriptor.ResultSchema = json.RawMessage(`{"type":"object"}`)
+	reservation, err := c.ReserveCreate(rootDelegateActor("root-session"), descriptor)
+	if err != nil {
+		t.Fatalf("ReserveCreate: %v", err)
+	}
+	wantID := reservation.delegateID
+	wantTranscriptRef := reservation.descriptor.TranscriptRef
+	wantWorkingDir := reservation.descriptor.WorkingDir
+	wantTask := reservation.descriptor.Task
+	wantSchema := append(json.RawMessage(nil), reservation.descriptor.ResultSchema...)
+	wantTranscriptPath := reservation.transcriptPath
+	wantWorktreePath := reservation.worktreePath
+
+	forged := *reservation
+	if err := c.AbortStart(&forged); !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("AbortStart copied receipt error = %v, want busy", err)
+	}
+	if turns, drives := c.capacityInUse(); turns != 1 || drives != 0 {
+		t.Fatalf("capacity after forged abort = (%d,%d), want (1,0)", turns, drives)
+	}
+
+	descriptor.FrozenToolNames[0] = "caller-mutated"
+	reservation.delegateID = "dlg_redirected"
+	reservation.descriptor.Task = "redirected task"
+	reservation.descriptor.FrozenToolNames[0] = "receipt-mutated"
+	reservation.descriptor.TranscriptRef = "local:redirected"
+	reservation.descriptor.WorkingDir = filepath.Join(t.TempDir(), "redirected")
+	reservation.descriptor.ResultSchema = json.RawMessage(`{"type":"number"}`)
+	reservation.transcriptPath = filepath.Join(t.TempDir(), "redirected.transcript.jsonl")
+	reservation.worktreePath = filepath.Join(t.TempDir(), "redirected-worktree")
+
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	if started.lease.delegateID != wantID {
+		t.Fatalf("committed delegate ID = %q, want reserved %q", started.lease.delegateID, wantID)
+	}
+	if started.ctx == nil || started.ctx.Err() != nil || started.transcriptPath != wantTranscriptPath || started.worktreePath != wantWorktreePath || started.descriptor.Task != wantTask || started.descriptor.TranscriptRef != wantTranscriptRef || started.descriptor.WorkingDir != wantWorkingDir || !bytes.Equal(started.descriptor.ResultSchema, wantSchema) {
+		t.Fatalf("committed construction outputs = %#v, want authoritative reserved descriptor and paths", started)
+	}
+	if c.durable["dlg_redirected"] != nil || c.live["dlg_redirected"] != nil {
+		t.Fatalf("caller-mutated target became authoritative: durable=%#v live=%#v", c.durable["dlg_redirected"], c.live["dlg_redirected"])
+	}
+	aggregate := c.durable[wantID]
+	if aggregate == nil {
+		t.Fatalf("reserved delegate %q was not committed", wantID)
+	}
+	if got := aggregate.Descriptor; got.Task != wantTask || got.TranscriptRef != wantTranscriptRef || got.WorkingDir != wantWorkingDir || !reflect.DeepEqual(got.FrozenToolNames, []string{"communicate"}) || !bytes.Equal(got.ResultSchema, wantSchema) {
+		t.Fatalf("committed descriptor trusted caller mutation:\n got %#v\nwant task=%q transcript=%q working_dir=%q tools=[communicate] schema=%s", got, wantTask, wantTranscriptRef, wantWorkingDir, wantSchema)
+	}
+	if turns, drives := c.capacityInUse(); turns != 1 || drives != 0 {
+		t.Fatalf("capacity after authoritative commit = (%d,%d), want (1,0)", turns, drives)
 	}
 }
 

@@ -252,19 +252,6 @@ func TestDelegateControllerRemainsDormant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadDir agent: %v", err)
 	}
-	controllerCalls := map[string]bool{
-		"ReserveCreate":      true,
-		"ReserveStart":       true,
-		"ReserveAttention":   true,
-		"AbortStart":         true,
-		"CommitStart":        true,
-		"AttachRuntime":      true,
-		"AdmitStartInput":    true,
-		"BeginModelRequest":  true,
-		"BeginToolExecution": true,
-		"FinishGeneration":   true,
-		"AuthorizeMutation":  true,
-	}
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || filepath.Ext(name) != ".go" || strings.HasSuffix(name, "_test.go") || name == "delegate_tree_controller.go" || name == "delegate_tree_start.go" {
@@ -275,23 +262,99 @@ func TestDelegateControllerRemainsDormant(t *testing.T) {
 		if parseErr != nil {
 			t.Fatalf("parse %s: %v", name, parseErr)
 		}
-		ast.Inspect(file, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
-				return true
+		for _, violation := range delegateControllerDormancyViolations(files, file) {
+			t.Errorf("active production caller references dormant delegate controller %s %s at %s", violation.kind, violation.symbol, violation.position)
+		}
+	}
+}
+
+func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		symbol string
+	}{
+		{name: "constructor call", source: `package agent; func probe() { _, _ = openDelegateTreeController(delegateTreeControllerConfig{}) }`, symbol: "openDelegateTreeController"},
+		{name: "constructor alias", source: `package agent; func probe() { constructor := openDelegateTreeController; _ = constructor }`, symbol: "openDelegateTreeController"},
+		{name: "controller composite", source: `package agent; func probe() { _ = delegateTreeController{} }`, symbol: "delegateTreeController"},
+		{name: "controller pointer composite", source: `package agent; func probe() { _ = &delegateTreeController{} }`, symbol: "delegateTreeController"},
+		{name: "controller new", source: `package agent; func probe() { _ = new(delegateTreeController) }`, symbol: "delegateTreeController"},
+		{name: "lifecycle call", source: `package agent; func probe(controller *delegateTreeController, reservation *delegateStartReservation) { _, _ = controller.CommitStart(reservation) }`, symbol: "CommitStart"},
+		{name: "bound lifecycle alias", source: `package agent; func probe(controller *delegateTreeController) { commit := controller.CommitStart; _ = commit }`, symbol: "CommitStart"},
+		{name: "lifecycle method expression", source: `package agent; func probe() { commit := (*delegateTreeController).CommitStart; _ = commit }`, symbol: "CommitStart"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			files := token.NewFileSet()
+			file, err := parser.ParseFile(files, test.name+".go", test.source, 0)
+			if err != nil {
+				t.Fatalf("parse source: %v", err)
 			}
-			switch fun := call.Fun.(type) {
-			case *ast.Ident:
-				if fun.Name == "openDelegateTreeController" {
-					t.Errorf("active production caller constructs dormant delegate controller at %s", files.Position(call.Pos()))
-				}
-			case *ast.SelectorExpr:
-				if controllerCalls[fun.Sel.Name] {
-					t.Errorf("active production caller invokes dormant delegate controller method %s at %s", fun.Sel.Name, files.Position(call.Pos()))
-				}
+			violations := delegateControllerDormancyViolations(files, file)
+			if len(violations) != 1 || violations[0].symbol != test.symbol {
+				t.Fatalf("violations = %#v, want one semantic reference to %s", violations, test.symbol)
 			}
-			return true
 		})
+	}
+}
+
+var delegateControllerLifecycleMethods = map[string]bool{
+	"ReserveCreate":      true,
+	"ReserveStart":       true,
+	"ReserveAttention":   true,
+	"AbortStart":         true,
+	"CommitStart":        true,
+	"AttachRuntime":      true,
+	"AdmitStartInput":    true,
+	"BeginModelRequest":  true,
+	"BeginToolExecution": true,
+	"FinishGeneration":   true,
+	"AuthorizeMutation":  true,
+}
+
+type delegateControllerDormancyViolation struct {
+	kind     string
+	symbol   string
+	position token.Position
+}
+
+func delegateControllerDormancyViolations(files *token.FileSet, file *ast.File) []delegateControllerDormancyViolation {
+	var violations []delegateControllerDormancyViolation
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch typed := node.(type) {
+		case *ast.Ident:
+			if typed.Name == "openDelegateTreeController" {
+				violations = append(violations, delegateControllerDormancyViolation{kind: "constructor", symbol: typed.Name, position: files.Position(typed.Pos())})
+			}
+		case *ast.SelectorExpr:
+			if delegateControllerLifecycleMethods[typed.Sel.Name] {
+				violations = append(violations, delegateControllerDormancyViolation{kind: "lifecycle method", symbol: typed.Sel.Name, position: files.Position(typed.Pos())})
+			}
+		case *ast.CompositeLit:
+			if isDelegateControllerType(typed.Type) {
+				violations = append(violations, delegateControllerDormancyViolation{kind: "composite literal", symbol: "delegateTreeController", position: files.Position(typed.Pos())})
+			}
+		case *ast.CallExpr:
+			constructor, ok := typed.Fun.(*ast.Ident)
+			if ok && constructor.Name == "new" && len(typed.Args) == 1 && isDelegateControllerType(typed.Args[0]) {
+				violations = append(violations, delegateControllerDormancyViolation{kind: "new expression", symbol: "delegateTreeController", position: files.Position(typed.Pos())})
+			}
+		}
+		return true
+	})
+	return violations
+}
+
+func isDelegateControllerType(expression ast.Expr) bool {
+	switch typed := expression.(type) {
+	case *ast.Ident:
+		return typed.Name == "delegateTreeController"
+	case *ast.ParenExpr:
+		return isDelegateControllerType(typed.X)
+	case *ast.StarExpr:
+		return isDelegateControllerType(typed.X)
+	default:
+		return false
 	}
 }
 

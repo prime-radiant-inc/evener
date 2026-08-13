@@ -51,7 +51,7 @@ type delegateTreeController struct {
 	turnsInUse    int
 	drivesInUse   int
 	nextToken     uint64
-	reservations  map[uint64]*delegateStartReservation
+	reservations  map[uint64]*delegateStartRecord
 }
 
 type delegateActor struct {
@@ -131,7 +131,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		now:           cfg.now,
 		turnLimit:     cfg.turnLimit,
 		driveLimit:    cfg.driveLimit,
-		reservations:  make(map[uint64]*delegateStartReservation),
+		reservations:  make(map[uint64]*delegateStartRecord),
 	}
 	c.mu.Lock()
 	err = c.reconcileRuntimeLostLocked()
