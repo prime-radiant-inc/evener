@@ -21,9 +21,15 @@ export interface SlashToken {
 }
 
 // Beautiful UI's own trailing-token regex, slash-only: a "/" preceded by
-// start-of-string or whitespace, followed by zero or more word/hyphen
-// characters, anchored at the END of whatever string it's run against.
-const TRAILING_SLASH_TOKEN_RE = /(^|\s)(\/)([\w-]*)$/;
+// start-of-string or whitespace, followed by zero or more word/hyphen/colon
+// characters, anchored at the END of whatever string it's run against. The
+// colon is this fork's own addition (Beautiful UI has no qualified-command
+// concept): a typed "/plugin:rev" must keep matching as ONE token through
+// the colon, or the menu closes the instant the user types past "/plugin"
+// into the qualifier - see filterSlashCommands' own note on matching
+// against `name` only, and Composer.tsx's commitSlashCompletion for the
+// qualified invocation this makes it possible to type manually.
+const TRAILING_SLASH_TOKEN_RE = /(^|\s)(\/)([\w:-]*)$/;
 
 // parseSlashToken looks for a slash token the caret trails, by running the
 // trailing-token regex against the text BEFORE the caret only - text after
@@ -58,14 +64,16 @@ export interface SlashSpliceResult {
   caret: number;
 }
 
-// spliceSlashCommand replaces the token (start..end) with "/<name> ",
-// keeping whatever text came before the token and whatever came after the
-// caret (relevant when the caret was mid-draft, not at the very end of the
-// text) untouched. The caret lands right after the inserted trailing
-// space, ahead of any surviving trailing text.
-export function spliceSlashCommand(text: string, token: SlashToken, name: string): SlashSpliceResult {
+// spliceSlashCommand replaces the token (start..end) with "<invocation> "
+// (the caller supplies the full "/name" or "/plugin:name" form - see
+// shell/palette/commands.ts's slashCommandInvocation, Composer.tsx's own
+// caller of this function), keeping whatever text came before the token and
+// whatever came after the caret (relevant when the caret was mid-draft, not
+// at the very end of the text) untouched. The caret lands right after the
+// inserted trailing space, ahead of any surviving trailing text.
+export function spliceSlashCommand(text: string, token: SlashToken, invocation: string): SlashSpliceResult {
   const before = text.slice(0, token.start);
   const after = text.slice(token.end);
-  const inserted = `/${name} `;
+  const inserted = `${invocation} `;
   return { text: before + inserted + after, caret: before.length + inserted.length };
 }

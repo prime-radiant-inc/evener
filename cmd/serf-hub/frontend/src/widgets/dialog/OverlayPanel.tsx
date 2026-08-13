@@ -74,7 +74,16 @@ export function OverlayPanel({ open, onClose, title, children, footer, panelClas
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") onClose();
+    // preventDefault (not stopPropagation - see Menu's handleMenuKeyDown for
+    // that stronger precedent, which this deliberately doesn't copy: an
+    // ancestor like Settings still needs to SEE this Escape bubble past it,
+    // just knowing not to act on it too - it checks event.defaultPrevented
+    // rather than never receiving the event at all) marks this Escape as
+    // already handled, so an ancestor overlay/pane doesn't also close.
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+    }
   }
 
   return (

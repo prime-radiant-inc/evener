@@ -14,9 +14,10 @@ import type { CommandDescriptor } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { threadsStore } from "../../stores/threads";
 import { type TreeNode as ApiTreeNode, useTreeStore } from "../../stores/tree";
-import { type CadenceState, Chip, Dialog, KeyHint, StatusDot, useToasts } from "../../widgets";
+import { Chip, Dialog, KeyHint, StatusDot, useToasts } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { openNeedsYouSession } from "../rail/needsYouCycle";
+import { cadenceStateFor } from "../rail/RailRow";
 import { navigate } from "../routing";
 import { isBlocked } from "./blocked";
 import styles from "./commandpalette.module.css";
@@ -98,14 +99,14 @@ interface HelpRow {
 // dependent, not a duplicate, so both rows stay with their own desc.
 const HELP_ROWS: HelpRow[] = [
   { keys: ["Mod", "K"], desc: "open the command palette" },
-  { keys: ["/"], desc: "at the start of an empty composer — opens command mode" },
+  { keys: ["/"], desc: "at the start of an empty composer — opens the inline slash-command menu" },
   { keys: ["↑"], desc: "move up the results list" },
   { keys: ["↓"], desc: "move down the results list" },
   { keys: ["Enter"], desc: "run the highlighted command (or open a search result)" },
   { keys: ["Mod", "Enter"], desc: "open a search result in a new tab" },
   { keys: ["Shift", "Enter"], desc: "jump to a turn in the current session" },
   { keys: ["Esc"], desc: "close the palette (or back out of args mode)" },
-  { keys: ["Mod", "B"], desc: "toggle the sidebar" },
+  { keys: ["Mod", "B"], desc: "toggle the sidebar — inert while typing in an editable field" },
   { keys: ["Mod", "I"], desc: "focus the composer" },
   { keys: ["Mod", "J"], desc: "go to the next session needing you" },
   { keys: ["Mod", "'"], desc: "quote the selection into the composer" },
@@ -123,25 +124,12 @@ const HELP_ROWS: HelpRow[] = [
 ];
 
 // Live-row status dot: the search API's normalized state (hubcore.
-// NormalizeState) mapped onto the StatusDot widget's CadenceState. Pulsing
-// alive/attention/danger dots read as "live" for active/awaiting/errored, the
-// exact set the legacy pulsed (search.js:1007-1009); past rows are always
-// "ended" (neutral).
-function toCadenceState(state: string): CadenceState {
-  switch (state) {
-    case "active":
-      return "working";
-    case "awaiting":
-    case "warning":
-      return "needs-you";
-    case "errored":
-      return "failed";
-    case "ended":
-      return "ended";
-    default:
-      return "idle";
-  }
-}
+// NormalizeState) mapped onto the StatusDot widget's CadenceState via the
+// canonical mapping (shell/rail/RailRow.tsx's own cadenceStateFor - this
+// used to be a second, hand-duplicated copy of the exact same switch).
+// Pulsing alive/attention/danger dots read as "live" for
+// active/awaiting/errored, the exact set the legacy pulsed
+// (search.js:1007-1009); past rows are always "ended" (neutral).
 
 // A single navigable row in the results list.
 type PaletteItem =
@@ -420,7 +408,12 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       // can add arguments (or reconsider) before sending it themselves.
       const args = query.replace(/^\//, "").trim().slice(command.id.length).trim();
       const text = args ? `${command.slashCommandInvocation} ${args} ` : `${command.slashCommandInvocation} `;
-      requestQuoteInsert(ctx.sessionRef, text);
+      // "prefix" (SHOULD-FIX): a slash command only parses at the very start
+      // of the draft, so requestQuoteInsert's default "append" placement -
+      // right, for SelectionQuote's "Quote in reply" - would strand this
+      // mid-message, after whatever the user already typed, where it can
+      // never be recognized as a command.
+      requestQuoteInsert(ctx.sessionRef, text, "prefix");
       requestComposerFocus(ctx.sessionRef);
       closePalette();
       return;
@@ -850,7 +843,7 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
   if (item.kind === "needsYou") {
     return (
       <>
-        <StatusDot state={toCadenceState(item.node.state)} />
+        <StatusDot state={cadenceStateFor(item.node.state)} />
         <span className={CLASS.title}>{item.node.title}</span>
         <span className={CLASS.hint}>needs you</span>
       </>
@@ -873,7 +866,7 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
   // (§2.3, search.js:994-1013).
   return (
     <>
-      <StatusDot state={toCadenceState(item.result.state)} />
+      <StatusDot state={cadenceStateFor(item.result.state)} />
       <span className={CLASS.title}>
         <Highlighted parts={highlightParts(item.result.title, query)} />
       </span>

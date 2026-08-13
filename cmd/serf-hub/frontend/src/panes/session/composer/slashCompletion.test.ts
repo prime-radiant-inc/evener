@@ -5,11 +5,12 @@ import { filterSlashCommands, parseSlashToken, spliceSlashCommand } from "./slas
 // --- parseSlashToken ---------------------------------------------------
 //
 // Ported from Beautiful UI's prompt-bar trailing-token regex
-// (/(^|\s)(\/)([\w-]*)$/, slash only - see slashCompletion.ts's own header
-// comment) run against the draft's text UP TO the caret, never the whole
-// draft: that's what makes "caret mid-draft" behave like the caret was the
-// end of the string for matching purposes, while text after the caret is
-// simply invisible to the match.
+// (/(^|\s)(\/)([\w:-]*)$/, slash only, colon added for qualified
+// "/plugin:name" commands - see slashCompletion.ts's own header comment) run
+// against the draft's text UP TO the caret, never the whole draft: that's
+// what makes "caret mid-draft" behave like the caret was the end of the
+// string for matching purposes, while text after the caret is simply
+// invisible to the match.
 
 test("an empty draft has no slash token", () => {
   expect(parseSlashToken("", 0)).toBeNull();
@@ -92,22 +93,32 @@ test("matching is case-insensitive", () => {
   expect(filterSlashCommands(CATALOG, "RE").map((c) => c.name)).toEqual(["review", "release"]);
 });
 
+test("a colon is a valid token character (a typed qualified prefix keeps the menu alive)", () => {
+  expect(parseSlashToken("/plugin:re", 10)).toEqual({ start: 0, end: 10, query: "plugin:re" });
+});
+
 // --- spliceSlashCommand ---------------------------------------------------
 
 test("splices the chosen command in at the token start, with a trailing space, caret after the space", () => {
   const token = { start: 0, end: 2, query: "x" };
-  const result = spliceSlashCommand("/x", token, "review");
+  const result = spliceSlashCommand("/x", token, "/review");
   expect(result).toEqual({ text: "/review ", caret: "/review ".length });
+});
+
+test("splices a qualified plugin invocation in whole, not just the bare name", () => {
+  const token = { start: 0, end: 2, query: "x" };
+  const result = spliceSlashCommand("/x", token, "/p:review");
+  expect(result).toEqual({ text: "/p:review ", caret: "/p:review ".length });
 });
 
 test("preserves text before the token", () => {
   const token = { start: 6, end: 8, query: "x" };
-  const result = spliceSlashCommand("hello /x", token, "review");
+  const result = spliceSlashCommand("hello /x", token, "/review");
   expect(result).toEqual({ text: "hello /review ", caret: "hello /review ".length });
 });
 
 test("preserves text after the token (caret was mid-draft)", () => {
   const token = { start: 0, end: 4, query: "rev" };
-  const result = spliceSlashCommand("/rev and more", token, "review");
+  const result = spliceSlashCommand("/rev and more", token, "/review");
   expect(result).toEqual({ text: "/review  and more", caret: "/review ".length });
 });

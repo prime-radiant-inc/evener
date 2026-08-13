@@ -121,6 +121,17 @@ export interface UseSandboxEscalationsResult {
 
 const NO_PENDING_ESCALATIONS: SandboxEscalationRequested[] = [];
 
+// True when `element` is a text-entry surface a reader could be mid-keystroke
+// in - a plain <input>/<textarea> or anything marked contenteditable (the
+// composer's own editable surface). Used by the autofocus effect below to
+// never yank focus off whatever the reader is actively typing into.
+function isEditableElement(element: Element | null): boolean {
+  if (element === null) return false;
+  const tag = element.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA") return true;
+  return (element as HTMLElement).isContentEditable === true;
+}
+
 // useSandboxEscalations reads `ref`'s tracked ThreadModel.pendingEscalations
 // (snapshot-seeded at hydrate, live-updated by serf/sandbox/escalation/
 // requested - both protocol/reducer.ts's job) and delegates resolve() to
@@ -168,6 +179,12 @@ export function SandboxEscalationRail({ sessionRef }: { sessionRef: string }) {
   // plain [data-sandbox-escalation-allow] query on the rail's own root finds
   // the first pending card's Allow button without threading a ref down into
   // SandboxEscalationCard for a one-time, edge-triggered action.
+  //
+  // Skipped entirely while the reader is mid-keystroke in an editable surface
+  // (the composer's textarea, most likely): this same edge fires on mount as
+  // well as empty->non-empty, so a cold-open escalation arriving while
+  // someone is typing must not steal focus onto Allow - the very next
+  // Enter/Space they type would approve an escalation they haven't read yet.
   const railRef = useRef<HTMLDivElement>(null);
   const wasEmptyRef = useRef(true);
   useEffect(() => {
@@ -175,6 +192,7 @@ export function SandboxEscalationRail({ sessionRef }: { sessionRef: string }) {
     const wasEmpty = wasEmptyRef.current;
     wasEmptyRef.current = isEmpty;
     if (!wasEmpty || isEmpty) return;
+    if (isEditableElement(document.activeElement)) return;
     railRef.current?.querySelector<HTMLElement>("[data-sandbox-escalation-allow]")?.focus();
   }, [pending.length]);
 

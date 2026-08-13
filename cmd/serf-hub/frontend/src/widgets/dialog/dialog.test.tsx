@@ -59,6 +59,25 @@ test("Escape calls onClose", async () => {
   expect(onClose).toHaveBeenCalledOnce();
 });
 
+test("Escape marks the keydown as handled, so an ancestor sees defaultPrevented true", async () => {
+  const user = userEvent.setup();
+  const onClose = vi.fn();
+  const ancestorKeyDown = vi.fn();
+  render(
+    // biome-ignore lint/a11y/noStaticElementInteractions: test-only ancestor listener standing in for a real ancestor (e.g. Settings) that must see this Escape but not act on it.
+    <div onKeyDown={ancestorKeyDown}>
+      <Dialog open onClose={onClose} title="t">
+        Body
+      </Dialog>
+    </div>,
+  );
+  await user.keyboard("{Escape}");
+  expect(onClose).toHaveBeenCalledOnce();
+  expect(ancestorKeyDown).toHaveBeenCalledOnce();
+  const event = ancestorKeyDown.mock.calls[0]?.[0];
+  expect(event?.defaultPrevented).toBe(true);
+});
+
 test("clicking the scrim (outside the panel) calls onClose", async () => {
   const user = userEvent.setup();
   const onClose = vi.fn();

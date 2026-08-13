@@ -1,7 +1,10 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
+import { FakeClient } from "../../protocol/testing/fakeClient";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
+import { connectionStore } from "../../stores/connection";
+import { resetCredentialsStoreForTests } from "../../stores/credentials";
 import Settings from "./Settings";
 
 // jsdom does not implement window.matchMedia at all - useIsMobile.test.ts's
@@ -24,6 +27,8 @@ afterEach(() => {
   // @ts-expect-error restores jsdom's own honest default between tests.
   delete window.matchMedia;
   resetWorkspaceStoreForTests();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetCredentialsStoreForTests();
 });
 
 // FIX 1: settings has no way out other than clicking a session in the rail
@@ -58,23 +63,48 @@ test("Escape closes this pane", () => {
   expect(workspaceStore.getState().panes.map((p) => p.id)).not.toContain("settings-1");
 });
 
-test("Escape is ignored when something inside settings already handled it", () => {
+// FIX 2: this used to simulate "something inside settings already handled
+// Escape" with a hand-installed document-level preventDefault listener - a
+// stand-in for the real thing, not the real thing. That stand-in couldn't
+// have caught OverlayPanel forgetting to call preventDefault on its own
+// Escape handling (see OverlayPanel.tsx's handleKeyDown), because it never
+// exercised OverlayPanel at all. These render a REAL Dialog (credentials'
+// AddInstanceDialog, reached exactly as a user would - the "+ Add provider
+// instance" button) inside Settings' actual section content, so the keydown
+// that bubbles up to Settings' own handleKeyDown is the genuine one
+// OverlayPanel produces.
+function connectFakeClientWithNoInstances(): void {
+  const fake = new FakeClient("ready");
+  fake.on("serf/instance/list", () => ({ instances: [], availableTypes: ["anthropic"] }));
+  connectionStore.getState().connect(fake);
+}
+
+test("Escape closes a real Dialog open inside a settings section, not the settings pane", async () => {
   stubMatchMedia(false);
   seedOpenSettingsPane();
-  render(<Settings params={{}} paneId="settings-1" focused={true} />);
+  connectFakeClientWithNoInstances();
+  const user = userEvent.setup();
+  render(<Settings params={{ section: "credentials" }} paneId="settings-1" focused={true} />);
+  await user.click(await screen.findByRole("button", { name: "+ Add provider instance" }));
+  expect(screen.getByRole("dialog")).toBeTruthy();
 
-  // Simulates a Dialog/Menu open inside a section calling preventDefault on
-  // its own Escape handling (menu/index.tsx's handleMenuKeyDown does
-  // exactly this) before the keydown bubbles up to this pane's own handler.
-  const preventIt = (event: globalThis.KeyboardEvent) => event.preventDefault();
-  document.addEventListener("keydown", preventIt, true);
-  try {
-    fireEvent.keyDown(screen.getByRole("button", { name: "General" }), { key: "Escape" });
-  } finally {
-    document.removeEventListener("keydown", preventIt, true);
-  }
+  await user.keyboard("{Escape}");
 
+  expect(screen.queryByRole("dialog")).toBeNull();
   expect(workspaceStore.getState().panes.map((p) => p.id)).toContain("settings-1");
+});
+
+test("Escape closes the settings pane when no dialog is open inside it", async () => {
+  stubMatchMedia(false);
+  seedOpenSettingsPane();
+  connectFakeClientWithNoInstances();
+  render(<Settings params={{ section: "credentials" }} paneId="settings-1" focused={true} />);
+  const addButton = await screen.findByRole("button", { name: "+ Add provider instance" });
+  expect(screen.queryByRole("dialog")).toBeNull();
+
+  fireEvent.keyDown(addButton, { key: "Escape" });
+
+  expect(workspaceStore.getState().panes.map((p) => p.id)).not.toContain("settings-1");
 });
 
 test("a non-Escape key does not close this pane", () => {

@@ -79,6 +79,11 @@ export function SelectionQuote({ containerRef, actions }: SelectionQuoteProps) {
   // dependency).
   const actionsRef = useRef(actions);
   actionsRef.current = actions;
+  // Mirrors `selection` state, read (never written) by the Mod+' handler -
+  // see that handler's own comment for why it reads this ref instead of
+  // the setSelection updater's own current-value argument.
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
 
   const evaluate = useCallback(() => {
     const container = containerRef.current;
@@ -122,12 +127,30 @@ export function SelectionQuote({ containerRef, actions }: SelectionQuoteProps) {
       // against the currently captured selection - the same code path a
       // click on the bar's own button takes (actions[0].onInvoke below),
       // just reachable without a pointer. A no-op with nothing captured.
-      if (event.key === "'" && (event.metaKey || event.ctrlKey)) {
-        setSelection((current) => {
-          if (!current) return current;
+      //
+      // !event.altKey: AltGr (used to type "'" directly on some non-US
+      // keyboard layouts) is reported as ctrlKey+altKey by browsers - see
+      // MDN's own note on AltGr - so without this guard, typing a literal
+      // "'" via AltGr on those layouts would misfire this chord.
+      // !event.defaultPrevented: some other handler (e.g. an ancestor
+      // overlay) already claimed this keydown - see OverlayPanel.tsx's own
+      // Escape precedent for the same idea.
+      //
+      // BLOCKER fix: onInvoke used to run INSIDE the setSelection updater
+      // function. A setState updater must be a pure function - React calls
+      // it twice under StrictMode (see shell/rail/Rail.tsx:323-325's own
+      // comment on this exact rule) - so a real double-invoke there ran
+      // onInvoke (and so requestQuoteInsert) twice per keypress, silently
+      // double-inserting the quote. Reading the current selection from
+      // selectionRef (written every render, never inside a state updater)
+      // and invoking OUTSIDE setSelection fixes that: the updater itself is
+      // now the pure `() => null` it always should have been.
+      if (event.key === "'" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.defaultPrevented) {
+        const current = selectionRef.current;
+        if (current) {
           actionsRef.current[0]?.onInvoke(current.text);
-          return null;
-        });
+          setSelection(null);
+        }
       }
     };
     const handleScroll = () => setSelection(null);

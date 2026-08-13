@@ -321,13 +321,11 @@ test("no created/updated rows when the source did not know the instants", async 
 
 // The legacy panel grouped its rows under titled sections (Session / Usage /
 // Runtime), which is what keeps a dozen rows scannable. Session is titled by
-// InspectorCard's own header band (a styled div, not an h3 - see
-// DetailsPanel.tsx's comment on why it composes the widget), so it's found
-// by text rather than heading role; Usage and Location stay on
-// Section/DetailRow's own <h3>.
+// InspectorCard's own header band, now a real <h3> (see inspectorcard's
+// index.tsx), same as Usage and Location's Section/DetailRow's own <h3>.
 test("rows are grouped under titled sections", async () => {
   await openPanel(testModel());
-  expect(screen.getByText("Session")).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Session" })).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Usage" })).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Location" })).toBeTruthy();
 });

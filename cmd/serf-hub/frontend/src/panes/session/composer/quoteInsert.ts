@@ -14,6 +14,14 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 
+// "append" (the default) is SelectionQuote's own "Quote in reply" shape -
+// after whatever the user already typed, matching mergeDraftText's
+// pre-existing behavior byte-for-byte. "prefix" is the palette's own
+// slash-command insert (CommandPalette.tsx's activateCommand): a command
+// typed mid-draft doesn't parse, so it has to land BEFORE existing text, not
+// after it - see Composer.tsx's merge effect for how each is applied.
+export type QuoteInsertPlacement = "append" | "prefix";
+
 export interface QuoteInsertRequest {
   // Monotonic, not derived from `text`: two requests for the same ref can
   // carry identical text (quoting the same line twice in a row), and a
@@ -21,11 +29,12 @@ export interface QuoteInsertRequest {
   // already handled.
   id: number;
   text: string;
+  placement: QuoteInsertPlacement;
 }
 
 interface QuoteInsertState {
   requests: Map<string, QuoteInsertRequest>;
-  requestQuoteInsert(ref: string, text: string): void;
+  requestQuoteInsert(ref: string, text: string, placement: QuoteInsertPlacement): void;
   consumeQuoteInsert(ref: string): void;
 }
 
@@ -33,10 +42,10 @@ let nextId = 1;
 
 const store = createStore<QuoteInsertState>((set) => ({
   requests: new Map(),
-  requestQuoteInsert: (ref, text) =>
+  requestQuoteInsert: (ref, text, placement) =>
     set((state) => {
       const requests = new Map(state.requests);
-      requests.set(ref, { id: nextId++, text });
+      requests.set(ref, { id: nextId++, text, placement });
       return { requests };
     }),
   consumeQuoteInsert: (ref) =>
@@ -49,8 +58,8 @@ const store = createStore<QuoteInsertState>((set) => ({
 }));
 
 /** SelectionQuote's write side: records a quote block waiting for `ref`'s Composer. */
-export function requestQuoteInsert(ref: string, text: string): void {
-  store.getState().requestQuoteInsert(ref, text);
+export function requestQuoteInsert(ref: string, text: string, placement: QuoteInsertPlacement = "append"): void {
+  store.getState().requestQuoteInsert(ref, text, placement);
 }
 
 /** Composer's write side: clears a request once it has been merged into the draft. */

@@ -27,6 +27,19 @@ test("consumeQuoteInsert: clears the pending request for that ref", () => {
   expect(result.current).toBeUndefined();
 });
 
+test("requestQuoteInsert: placement defaults to append when omitted", () => {
+  const { result } = renderHook(() => useQuoteInsertRequest("ref-placement-default"));
+  act(() => requestQuoteInsert("ref-placement-default", "> quoted\n\n"));
+  expect(result.current?.placement).toBe("append");
+});
+
+test("requestQuoteInsert: an explicit placement is recorded on the request", () => {
+  const { result } = renderHook(() => useQuoteInsertRequest("ref-placement-prefix"));
+  act(() => requestQuoteInsert("ref-placement-prefix", "/plugin:review ", "prefix"));
+  expect(result.current?.placement).toBe("prefix");
+  expect(result.current?.text).toBe("/plugin:review ");
+});
+
 test("two requests for the same ref carry distinct ids, so a subscriber can tell them apart even if the text repeats", () => {
   const { result } = renderHook(() => useQuoteInsertRequest("ref-d"));
   act(() => requestQuoteInsert("ref-d", "> same\n\n"));

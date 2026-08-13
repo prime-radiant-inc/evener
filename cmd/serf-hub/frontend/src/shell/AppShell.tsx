@@ -17,7 +17,7 @@ import { DockRegion } from "./DockRegion";
 import { StackHost } from "./mobile/StackHost";
 import { NotFound } from "./NotFound";
 import { CommandPalette } from "./palette/CommandPalette";
-import { openPalette } from "./palette/paletteController";
+import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "./rail/needsYouCycle";
 import { topLevelAncestorRef } from "./rail/railNodes";
@@ -292,7 +292,26 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   // everywhere - including while typing in an input/textarea - matching how
   // ⌘K already behaves; only event.defaultPrevented (another handler already
   // claimed this keystroke) suppresses them.
+  //
+  // BLOCKER fix: I/J used to fire straight through an open modal (the
+  // command palette itself, or a Dialog/Sheet like Settings' credential
+  // editors) - ⌘I stealing focus into a session composer, or ⌘J navigating
+  // the tree, out from under a modal the user is still looking at. Guarded
+  // two ways: paletteStore's own `open` flag (the palette isn't a
+  // [role=dialog] - it's CommandPalette's own overlay, so the DOM check
+  // below wouldn't catch it) and event.target sitting inside any
+  // [aria-modal="true"] element (every OverlayPanel-based Dialog/Sheet sets
+  // this - see widgets/dialog/OverlayPanel.tsx - and it needs no per-modal
+  // wiring here to keep catching new ones). ⌘K is deliberately exempt:
+  // opening the palette while it's already open is a harmless no-op reset,
+  // not a focus hijack, and ⌘K from inside a Dialog is the same "open the
+  // palette" intent as anywhere else.
   useEffect(() => {
+    function blockedByOpenModal(event: KeyboardEvent): boolean {
+      if (paletteStore.getState().open) return true;
+      const target = event.target;
+      return target instanceof Element && target.closest('[aria-modal="true"]') !== null;
+    }
     function onKeyDown(event: KeyboardEvent): void {
       if (event.defaultPrevented) return;
       if (!(event.metaKey || event.ctrlKey)) return;
@@ -303,12 +322,14 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
         return;
       }
       if (key === "i") {
+        if (blockedByOpenModal(event)) return;
         event.preventDefault();
         const ref = focusedSessionRef();
         if (ref !== null) requestComposerFocus(ref);
         return;
       }
       if (key === "j") {
+        if (blockedByOpenModal(event)) return;
         event.preventDefault();
         const next = nextNeedsYouRef(needsYouRefs(treeStore.getState().tree), focusedSessionRef());
         if (next !== null) openNeedsYouSession(next);

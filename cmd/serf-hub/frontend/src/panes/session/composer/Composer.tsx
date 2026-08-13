@@ -32,7 +32,7 @@ import {
 import { sessionActionError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
 import type { CommandDescriptor } from "../../../protocol/types.gen";
-import { openPalette } from "../../../shell/palette/paletteController";
+import { slashCommandInvocation } from "../../../shell/palette/commands";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
@@ -56,7 +56,7 @@ import {
   updateRecoveryPendingTurn,
   useRecoveryEntries,
 } from "./queue/pendingTurnsStore";
-import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
+import { consumeQuoteInsert, type QuoteInsertPlacement, useQuoteInsertRequest } from "./quoteInsert";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
 import { filterSlashCommands, parseSlashToken, type SlashToken, spliceSlashCommand } from "./slashCompletion";
@@ -75,17 +75,27 @@ const CLASS = {
 };
 
 // Shared by restoreTextToComposer (QueueStrip's "edit a queued entry" path)
-// and the quote-insert effect below (SelectionQuote's "Quote in reply"
-// path): existing text is right-trimmed then kept, the incoming text is
-// appended after a blank line - "put text into the composer without
-// clobbering what's already typed there", byte-ported from renderer.js's
-// own restoreTextToComposer (see restoreTextToComposer's own doc comment
-// for the fuller history). A module-level function, not a closure, so it
-// can be called from the quote-insert effect below, which (like every hook
-// in this component) must run unconditionally ahead of the `if (!model)
-// return null` narrowing - restoreTextToComposer itself is declared after
-// that point and closes over already-narrowed locals it doesn't need here.
-function mergeDraftText(existing: string, addition: string): string {
+// and the quote-insert effect below (SelectionQuote's "Quote in reply" path,
+// and the command palette's slash-command insert, via requestQuoteInsert's
+// own placement param - quoteInsert.ts's own header comment). placement
+// "append" (the default, and every existing caller's behavior, byte-
+// identical to before this param existed): existing text is right-trimmed
+// then kept, the incoming text is appended after a blank line - "put text
+// into the composer without clobbering what's already typed there", byte-
+// ported from renderer.js's own restoreTextToComposer (see
+// restoreTextToComposer's own doc comment for the fuller history).
+// placement "prefix" (the palette's own slash-command insert): the addition
+// goes FIRST, with no separator inserted - a slash command only parses at
+// the very start of the draft, and the addition already carries its own
+// trailing space (CommandPalette.tsx's activateCommand), so simple
+// concatenation is exactly right. A module-level function, not a closure,
+// so it can be called from the quote-insert effect below, which (like every
+// hook in this component) must run unconditionally ahead of the `if
+// (!model) return null` narrowing - restoreTextToComposer itself is
+// declared after that point and closes over already-narrowed locals it
+// doesn't need here.
+function mergeDraftText(existing: string, addition: string, placement: QuoteInsertPlacement = "append"): string {
+  if (placement === "prefix") return `${addition}${existing}`;
   return existing.trim() === "" ? addition : `${existing.replace(/\s+$/, "")}\n\n${addition}`;
 }
 
@@ -159,19 +169,16 @@ export function Composer({ ref }: ComposerProps) {
   // comment - ported from Beautiful UI's prompt-bar). slashToken is the
   // trailing-token match recomputed on every keystroke (handleTextChange
   // below); null means no menu, regardless of what the draft's text
-  // actually contains. slashDismissedRef is Escape's own one-shot latch -
-  // "dismisses the menu WITHOUT clearing the draft and typing reopens it"
-  // means the SAME still-matching token must not immediately reopen the
-  // menu Escape just closed, but the very next keystroke (handleTextChange
-  // always clears this ref first) does. slashHighlighted is the
-  // ArrowUp/Down cursor over whatever the CURRENT filtered list is; reset
-  // to 0 whenever the token itself changes (new match, or the query
-  // narrowed/widened) rather than persisted across it - an index into a
-  // list that just changed shape is not a meaningful position to keep.
+  // actually contains - Escape closes the menu by setting this to null
+  // directly, and typing further reopens it because the very next keystroke
+  // recomputes the match fresh. slashHighlighted is the ArrowUp/Down cursor
+  // over whatever the CURRENT filtered list is; reset to 0 whenever the
+  // token itself changes (new match, or the query narrowed/widened) rather
+  // than persisted across it - an index into a list that just changed shape
+  // is not a meaningful position to keep.
   const slashCatalog = useCommandCatalog((s) => s.commands);
   const [slashToken, setSlashToken] = useState<SlashToken | null>(null);
   const [slashHighlighted, setSlashHighlighted] = useState(0);
-  const slashDismissedRef = useRef(false);
   // The menu is only ever open when a token matched AND the catalog has at
   // least one startsWith hit for it - a matched-but-empty token (e.g. "/zzz"
   // against a real catalog) shows no menu at all, same as no token matching.
@@ -442,16 +449,23 @@ export function Composer({ ref }: ComposerProps) {
   // line twice in a row is still two separate insertions rather than a
   // no-op the second time (quoteInsert.ts's own QuoteInsertRequest doc
   // comment). mergeDraftText is the SAME merge restoreTextToComposer uses
-  // for QueueStrip's "edit a queued entry" path - existing text kept,
-  // incoming text appended after a blank line - so a quote never clobbers
-  // whatever the user already typed.
+  // for QueueStrip's "edit a queued entry" path, now parameterized on the
+  // request's own placement (mergeDraftText's own doc comment) - a quote
+  // never clobbers whatever the user already typed, and a palette-inserted
+  // slash command lands where it can actually parse (the draft's start)
+  // instead of stranded after it. The cursor lands at the end of the merged
+  // text for an append (unchanged), but right after the inserted text alone
+  // for a prefix - the user's own existing draft sits AFTER the cursor in
+  // that case, so jumping to the very end would land past it instead of
+  // where they'd actually want to keep typing (e.g. a command's arguments).
   const quoteInsertRequest = useQuoteInsertRequest(ref);
   const consumedQuoteInsertIdRef = useRef<number | null>(null);
   useEffect(() => {
     if (!quoteInsertRequest || quoteInsertRequest.id === consumedQuoteInsertIdRef.current) return;
     consumedQuoteInsertIdRef.current = quoteInsertRequest.id;
-    const merged = mergeDraftText(textRef.current, quoteInsertRequest.text);
-    textEditor.write(merged, merged.length);
+    const merged = mergeDraftText(textRef.current, quoteInsertRequest.text, quoteInsertRequest.placement);
+    const cursor = quoteInsertRequest.placement === "prefix" ? quoteInsertRequest.text.length : merged.length;
+    textEditor.write(merged, cursor);
     textareaRef.current?.focus();
     consumeQuoteInsert(ref);
   }, [quoteInsertRequest, ref, textEditor.write]);
@@ -534,19 +548,20 @@ export function Composer({ ref }: ComposerProps) {
   function handleTextChange(event: { target: { value: string; selectionStart?: number | null } }): void {
     updateText(event.target.value);
     if (activeRecoveryIdRef.current === null) writeDraft(ref, event.target.value);
-    // Every keystroke re-evaluates the trailing-token match fresh AND clears
-    // Escape's own dismissal latch - "typing reopens it" (see slashToken's
-    // own doc comment above): a token Escape just closed stays closed only
-    // until the NEXT text change, not indefinitely.
-    slashDismissedRef.current = false;
+    // Every keystroke re-evaluates the trailing-token match fresh - a token
+    // Escape just closed (slashToken's own doc comment above) reopens on the
+    // very next text change rather than staying closed indefinitely.
     const caret = event.target.selectionStart ?? event.target.value.length;
     setSlashToken(parseSlashToken(event.target.value, caret));
   }
 
   // commitSlashCompletion is Tab/Enter's (handleKeyDown below) and a mouse
   // click's (SlashCompletionMenu's own onSelect) shared "the user chose
-  // this command" path: splices "/<name> " in at the token's own start
-  // (never the caret, when the caret was left mid-token by an earlier
+  // this command" path: splices the QUALIFIED invocation
+  // (shell/palette/commands.ts's slashCommandInvocation - "/plugin:name" for
+  // a plugin command, bare "/name" otherwise, matching exactly what the
+  // modal palette's own activateCommand inserts) in at the token's own
+  // start (never the caret, when the caret was left mid-token by an earlier
   // Escape-then-retype - spliceSlashCommand's own doc comment), through the
   // SAME textEditor.write() seam every other programmatic edit in this file
   // uses (draft persistence, cursor restore), then closes the menu and
@@ -554,9 +569,8 @@ export function Composer({ ref }: ComposerProps) {
   // "write, then focus" shape.
   function commitSlashCompletion(item: CommandDescriptor): void {
     if (!slashToken) return;
-    const spliced = spliceSlashCommand(textRef.current, slashToken, item.name);
+    const spliced = spliceSlashCommand(textRef.current, slashToken, slashCommandInvocation(item));
     textEditor.write(spliced.text, spliced.caret);
-    slashDismissedRef.current = true;
     setSlashToken(null);
     textareaRef.current?.focus();
   }
@@ -842,21 +856,19 @@ export function Composer({ ref }: ComposerProps) {
       }
       if (event.key === "Escape") {
         event.preventDefault();
-        slashDismissedRef.current = true;
         setSlashToken(null);
         return;
       }
     }
-    // "/" as the first character of an EMPTY composer opens the command
-    // palette (floor §2.1, legacy renderer.js:6914); any other "/" - mid-text
-    // or in a non-empty composer - is a literal slash. textRef.current is the
-    // synchronous live value, the same read every liveness-sensitive path in
-    // this file uses.
-    if (event.key === "/" && !event.metaKey && !event.ctrlKey && !event.altKey && textRef.current === "") {
-      event.preventDefault();
-      openPalette("/");
-      return;
-    }
+    // SHOULD-FIX (product decision): "/" as the first character of an EMPTY
+    // composer used to preventDefault and open the MODAL command palette
+    // instead of typing (floor §2.1, legacy renderer.js:6914) - which made
+    // the inline slash menu above unreachable in its single most common
+    // case, an empty composer. "/" is now always a literal keystroke here;
+    // typing it lets it land in the draft and reach handleTextChange below,
+    // which is what opens the inline menu (parseSlashToken/slashOpen) the
+    // same way it would for "/" typed anywhere else. The modal palette
+    // remains reachable via Mod+K (AppShell.tsx) regardless.
     if (event.key !== "Enter") return;
     // An IME composition's own confirm keystroke also fires as a plain
     // "Enter" keydown (e.g. finishing a Japanese/Chinese candidate) - that

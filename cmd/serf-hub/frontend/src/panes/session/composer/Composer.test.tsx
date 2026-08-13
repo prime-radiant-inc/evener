@@ -22,6 +22,7 @@ import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
+import { draftStorageKey } from "./draft";
 import {
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
@@ -474,6 +475,41 @@ test("the composer persists the quote-inserted text as this ref's draft", async 
     requestQuoteInsert("ref_a", "> quoted line\n\n");
   });
   await waitFor(() => expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("> quoted line\n\n"));
+});
+
+// SHOULD-FIX: requestQuoteInsert's own placement param (quoteInsert.ts) -
+// "append" (the default, exercised above) keeps a quote after whatever the
+// user already typed; "prefix" (the command palette's own slash-command
+// insert - CommandPalette.tsx's activateCommand) puts the addition FIRST
+// instead, with no separator, so a command lands where it can actually
+// parse even against a non-empty draft.
+
+test("placement 'append' on a seeded draft matches the unqualified default: appended after a blank line", async () => {
+  localStorage.setItem(draftStorageKey("ref_a"), "my own note");
+  await mountComposer("ref_a");
+  expect(textarea().value).toBe("my own note");
+
+  act(() => {
+    requestQuoteInsert("ref_a", "> quoted line\n\n", "append");
+  });
+
+  await waitFor(() => expect(textarea().value).toBe("my own note\n\n> quoted line\n\n"));
+  expect(textarea().selectionStart).toBe(textarea().value.length);
+});
+
+test("placement 'prefix' on a seeded draft inserts the addition BEFORE the existing text, with no separator", async () => {
+  localStorage.setItem(draftStorageKey("ref_a"), "my own note");
+  await mountComposer("ref_a");
+  expect(textarea().value).toBe("my own note");
+
+  act(() => {
+    requestQuoteInsert("ref_a", "/p:review ", "prefix");
+  });
+
+  await waitFor(() => expect(textarea().value).toBe("/p:review my own note"));
+  // The cursor lands right after the inserted invocation, not at the very
+  // end of the merged text - see Composer.tsx's own comment on the effect.
+  expect(textarea().selectionStart).toBe("/p:review ".length);
 });
 
 // --- composer-focus seam (composerFocus.ts) ---------------------------------
@@ -2132,16 +2168,26 @@ test("clicking the attach button triggers the hidden file input", async () => {
 // supersedes it - see that file's "the ask dock renders above the queue
 // strip when both are visible at once" test.
 
-// --- leading-"/" command-palette hook (wave 6) ------------------------
+// --- leading-"/" on an empty composer (product decision, SHOULD-FIX) -------
+//
+// "/" at the start of an empty composer used to preventDefault() and open
+// the MODAL command palette instead of typing (floor §2.1) - which made the
+// inline slash menu below unreachable in its single most common case. It is
+// now always a literal keystroke, same as any other character: it lands in
+// the draft and the inline menu opens off it, exactly like "/" typed
+// anywhere else in a non-empty composer. Mod+K (AppShell.tsx) is the one
+// remaining way to open the modal palette.
 
-test('"/" at the start of an empty composer opens the command palette (floor §2.1)', async () => {
+test('"/" at the start of an empty composer types a literal slash and opens the INLINE menu, not the modal palette', async () => {
+  useCommandCatalog.setState({ commands: [{ name: "review", description: "review the diff" }], loaded: true });
+  const user = userEvent.setup();
   await mountComposer("ref_slash");
 
-  const notPrevented = fireEvent.keyDown(textarea(), { key: "/" });
+  await user.type(textarea(), "/");
 
-  expect(paletteStore.getState().open).toBe(true);
-  expect(paletteStore.getState().query).toBe("/");
-  expect(notPrevented).toBe(false); // preventDefault()'d - the "/" never types
+  expect(textarea().value).toBe("/");
+  expect(paletteStore.getState().open).toBe(false);
+  expect(screen.getByTestId("composer-slash-menu")).toBeTruthy();
 });
 
 test('"/" in a NON-empty composer is a literal slash, not a palette trigger', async () => {
@@ -2156,12 +2202,12 @@ test('"/" in a NON-empty composer is a literal slash, not a palette trigger', as
 
 // --- inline slash-command completion (Beautiful UI prompt-bar port) --------
 //
-// The leading-"/" palette hook above only ever fires on an EMPTY composer's
-// very first keystroke (it preventDefault()s before the character lands),
-// so it never overlaps with this menu: every case below types the slash
-// after some other text, the same way the "literal slash" test just above
-// does, so the character actually lands in the draft and the trailing-token
-// parser (slashCompletion.ts) gets a chance to see it.
+// "/" is a literal keystroke everywhere in this composer (see the leading-
+// "/" tests just above), including on an otherwise-empty composer, so it
+// always reaches handleTextChange and the trailing-token parser
+// (slashCompletion.ts) the same way. Most cases below still type the slash
+// after some other text anyway, purely to also exercise the "mid-draft, not
+// just at the very start" shape of that parser.
 
 const REVIEW_RELEASE_CATALOG = [
   { name: "review", description: "review the diff" },
@@ -2247,6 +2293,26 @@ test("Tab commits the highlighted option: splices /name<space> at the token star
   expect(textarea().selectionStart).toBe("hi /release ".length);
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
   expect(document.activeElement).toBe(textarea());
+});
+
+test("committing a plugin-sourced catalog entry inserts the QUALIFIED /plugin:name invocation, not the bare name", async () => {
+  // The unqualified "/name" form only resolves to the FIRST plugin
+  // registering that name on the hub side (app_rpc.go's dispatch) - see
+  // shell/palette/commands.ts's slashCommandInvocation, the single source
+  // of truth this insert and the modal palette's own activateCommand both
+  // go through.
+  useCommandCatalog.setState({
+    commands: [{ name: "review", description: "review the diff", source: "plugin", pluginName: "p" }],
+    loaded: true,
+  });
+  const user = userEvent.setup();
+  await mountComposer("ref_slash_qualified");
+  await user.type(textarea(), "hi /re");
+
+  await user.keyboard("{Tab}");
+
+  expect(textarea().value).toBe("hi /p:review ");
+  expect(textarea().selectionStart).toBe("hi /p:review ".length);
 });
 
 test("Enter commits the highlighted option and does NOT fall through to the composer's send routing", async () => {

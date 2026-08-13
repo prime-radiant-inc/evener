@@ -59,7 +59,7 @@ function Row({ property }: { property: InspectorCardProperty }) {
 export function InspectorCard({ title, properties }: InspectorCardProps) {
   return (
     <div className={CLASS.card}>
-      <div className={CLASS.header}>{title}</div>
+      <h3 className={CLASS.header}>{title}</h3>
       <div className={CLASS.body}>
         {properties.map((property) => (
           <Row key={property.key} property={property} />

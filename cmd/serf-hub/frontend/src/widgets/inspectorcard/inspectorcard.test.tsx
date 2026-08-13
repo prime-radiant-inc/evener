@@ -17,6 +17,15 @@ test("renders the title in a header band", () => {
   expect(header?.textContent).toContain("Fine-tune");
 });
 
+// Reviewed fix: the title band is a real heading (h3), not a styled div - a
+// composed InspectorCard must not cost its host page the heading semantics a
+// reader relies on (see DetailsPanel.test.tsx, which pins this same
+// contract for the "Session" section it composes InspectorCard for).
+test("the title band carries heading semantics", () => {
+  render(<InspectorCard title="Fine-tune" properties={[]} />);
+  expect(screen.getByRole("heading", { name: "Fine-tune", level: 3 })).toBeTruthy();
+});
+
 test("renders a read-only property as a mono value", () => {
   render(<InspectorCard title="Fine-tune" properties={[{ key: "epochs", label: "Epochs", value: "3" }]} />);
   expect(screen.getByText("Epochs")).toBeTruthy();

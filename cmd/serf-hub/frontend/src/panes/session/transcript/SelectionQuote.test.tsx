@@ -190,6 +190,71 @@ test("Mod+' does nothing when there is no captured selection", () => {
   expect(onInvoke).not.toHaveBeenCalled();
 });
 
+test("Mod+' with altKey set is ignored (AltGr types a literal ' on some layouts)", () => {
+  const onInvoke = vi.fn();
+  const { messageNode, containerRef } = renderHarness(onInvoke);
+  installFakeSelection({ text: "quoted prose", anchorNode: messageNode });
+  act(() => {
+    containerRef.current?.dispatchEvent(new Event("pointerup", { bubbles: true }));
+  });
+
+  // AltGr is reported by browsers as ctrlKey+altKey both true.
+  fireEvent.keyDown(document, { key: "'", ctrlKey: true, altKey: true });
+
+  expect(onInvoke).not.toHaveBeenCalled();
+  expect(screen.getByRole("toolbar", { name: "Selection actions" })).toBeTruthy();
+});
+
+test("Mod+' is ignored once another handler has already called preventDefault on the keydown", () => {
+  const onInvoke = vi.fn();
+  const { messageNode, containerRef } = renderHarness(onInvoke);
+  installFakeSelection({ text: "quoted prose", anchorNode: messageNode });
+  act(() => {
+    containerRef.current?.dispatchEvent(new Event("pointerup", { bubbles: true }));
+  });
+  const preventIt = (event: globalThis.KeyboardEvent) => event.preventDefault();
+  document.addEventListener("keydown", preventIt, true);
+
+  try {
+    fireEvent.keyDown(document, { key: "'", metaKey: true });
+  } finally {
+    document.removeEventListener("keydown", preventIt, true);
+  }
+
+  expect(onInvoke).not.toHaveBeenCalled();
+});
+
+// BLOCKER fix: onInvoke used to run INSIDE the setSelection updater
+// function, which React calls twice under StrictMode - see SelectionQuote.
+// tsx's own comment on this fix. Rendering under React.StrictMode and
+// confirming exactly one invocation (not two) is the regression test for
+// that double-insert bug.
+test("Mod+' invokes the action exactly once under React.StrictMode (no impure double-invoke)", async () => {
+  const { StrictMode } = await import("react");
+  const onInvoke = vi.fn();
+  const containerRef = createRef<HTMLDivElement>();
+  render(
+    <StrictMode>
+      <div ref={containerRef} data-testid="transcript-container">
+        <div data-view-anchor-message="true" data-testid="message-node">
+          selectable message prose
+        </div>
+        <SelectionQuote containerRef={containerRef} actions={[{ label: "Quote in reply", onInvoke }]} />
+      </div>
+    </StrictMode>,
+  );
+  const messageNode = screen.getByTestId("message-node").firstChild as Text;
+  installFakeSelection({ text: "quoted prose", anchorNode: messageNode });
+  act(() => {
+    containerRef.current?.dispatchEvent(new Event("pointerup", { bubbles: true }));
+  });
+  expect(screen.getByRole("toolbar", { name: "Selection actions" })).toBeTruthy();
+
+  fireEvent.keyDown(document, { key: "'", metaKey: true });
+
+  expect(onInvoke).toHaveBeenCalledExactlyOnceWith("quoted prose");
+});
+
 test('plain "\'" with no modifier is not treated as the quote chord', () => {
   const onInvoke = vi.fn();
   const { messageNode, containerRef } = renderHarness(onInvoke);

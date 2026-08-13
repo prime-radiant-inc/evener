@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
@@ -483,6 +483,43 @@ test("Mod+I is a no-op when the focused pane isn't a session", async () => {
 
   expect(focusSpy).not.toHaveBeenCalled();
   focusSpy.mockRestore();
+});
+
+// SHOULD-FIX: Mod+I/Mod+J used to fire straight through an open modal - see
+// AppShell.tsx's own "BLOCKER fix" comment above onKeyDown.
+
+test("Mod+I is a no-op while the command palette is open", async () => {
+  const user = userEvent.setup();
+  const focusSpy = vi.spyOn(composerFocus, "requestComposerFocus");
+  window.history.pushState({}, "", "/s/local:ref_abc123");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  await user.keyboard("{Meta>}k{/Meta}");
+  await screen.findByRole("dialog", { name: "Command palette" });
+
+  await user.keyboard("{Meta>}i{/Meta}");
+
+  expect(focusSpy).not.toHaveBeenCalled();
+  focusSpy.mockRestore();
+});
+
+test("Mod+I is a no-op while a Dialog/Sheet ([aria-modal=true]) is open", async () => {
+  const focusSpy = vi.spyOn(composerFocus, "requestComposerFocus");
+  window.history.pushState({}, "", "/s/local:ref_abc123");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  const modal = document.createElement("div");
+  modal.setAttribute("aria-modal", "true");
+  const focusTarget = document.createElement("button");
+  modal.appendChild(focusTarget);
+  document.body.appendChild(modal);
+  focusTarget.focus();
+
+  fireEvent.keyDown(focusTarget, { key: "i", metaKey: true });
+
+  expect(focusSpy).not.toHaveBeenCalled();
+  focusSpy.mockRestore();
+  modal.remove();
 });
 
 // --- Mod+J cycles needs-you sessions (UX fix) -----------------------------

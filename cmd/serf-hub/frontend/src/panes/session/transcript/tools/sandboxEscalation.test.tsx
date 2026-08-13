@@ -401,11 +401,11 @@ test("the card's container carries the amber attention envelope, not a neutral s
   expect(rule![1]).toContain("background: var(--attention-bg)");
 });
 
-test("the rail is pinned to the top of the scroll body while the transcript scrolls (declaration-level)", () => {
+test("the rail caps its own height and scrolls internally, so several pending escalations can't squeeze the transcript out (declaration-level)", () => {
   const rule = /\.rail\s*\{([^}]*)\}/.exec(sandboxEscalationCss());
   expect(rule).not.toBeNull();
-  expect(rule![1]).toContain("position: sticky");
-  expect(rule![1]).toContain("z-index: var(--z-sticky-bar)");
+  expect(rule![1]).toContain("max-height: 40vh");
+  expect(rule![1]).toContain("overflow-y: auto");
 });
 
 test("nothing pending renders no sticky rail wrapper at all", async () => {
@@ -429,6 +429,30 @@ test("an escalation arriving focuses the Allow button", async () => {
 
   const allow = await screen.findByRole("button", { name: /allow/i });
   expect(document.activeElement).toBe(allow);
+});
+
+// Reviewed fix: the autofocus edge fires on mount too, not just on a later
+// arrival, so a cold-open escalation showing up while the reader is already
+// mid-keystroke in the composer must not steal focus onto Allow - the very
+// next Enter/Space they type would approve an escalation they haven't read.
+test("does not steal focus while a textarea is focused", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+
+  const textarea = document.createElement("textarea");
+  document.body.appendChild(textarea);
+  textarea.focus();
+  expect(document.activeElement).toBe(textarea);
+
+  render(<SandboxEscalationRail sessionRef="ref_a" />);
+  act(() => {
+    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() });
+  });
+
+  await screen.findByRole("button", { name: /allow/i });
+  expect(document.activeElement).toBe(textarea);
+  textarea.remove();
 });
 
 // Edge-triggered, mirroring AskDock.tsx's own dock-activation effect: a

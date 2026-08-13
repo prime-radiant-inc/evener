@@ -14,18 +14,18 @@
   background: var(--attention-bg);
 }
 
-/* Pins the rail (one wrapper around every pending card) to the top of the
- * transcript's scroll body while the reader scrolls past it - a blocking
- * approval must stay reachable, not scroll out of view while the tool-exec
- * goroutine sits parked waiting on it. --z-sticky-bar is the same "pane-
- * level pinned bar" layer PaneScaffold's other sticky chrome uses. */
+/* The rail is a sibling above VirtualList's own scroller (Session.tsx), not
+ * part of the transcript's scroll body - it is always on screen by ordinary
+ * document position, no position/sticky needed. The real risk is several
+ * pending escalations at once squeezing the transcript itself down to
+ * nothing, so this caps the rail's own height and scrolls internally past
+ * that point instead. */
 .rail {
-  position: sticky;
-  top: var(--space-2);
-  z-index: var(--z-sticky-bar);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  max-height: 40vh;
+  overflow-y: auto;
 }
 
 .label {

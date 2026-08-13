@@ -386,7 +386,9 @@ test("/help lists the UX-fix chords the old table never had", async () => {
   act(() => openPalette("/help"));
   await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
 
-  expect(within(helpRowFor("toggle the sidebar")).getByText("B")).toBeTruthy();
+  expect(
+    within(helpRowFor("toggle the sidebar — inert while typing in an editable field")).getByText("B"),
+  ).toBeTruthy();
   expect(within(helpRowFor("focus the composer")).getByText("I")).toBeTruthy();
   expect(within(helpRowFor("go to the next session needing you")).getByText("J")).toBeTruthy();
   expect(within(helpRowFor("quote the selection into the composer")).getByText("'")).toBeTruthy();
@@ -418,6 +420,19 @@ test("/help documents ask dock's Mod+Enter answer/approve chord (ask dock and sa
   await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
 
   expect(screen.getByText(/answer.*approve/i)).toBeTruthy();
+});
+
+// SHOULD-FIX (product decision): "/" on an empty composer used to open the
+// MODAL palette; it now types a literal slash that opens the composer's own
+// INLINE slash-command menu instead (Composer.tsx's own handleKeyDown).
+test("/help describes the leading-'/' row as opening the inline slash-command menu, not command mode", async () => {
+  const user = userEvent.setup();
+  render(<CommandPalette />);
+  act(() => openPalette("/help"));
+  await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
+
+  expect(screen.getByText(/opens the inline slash-command menu/i)).toBeTruthy();
+  expect(screen.queryByText(/opens command mode/i)).toBeNull();
 });
 
 test("HELP_ROWS drops the mono-typeface rule (design bar bans mono for chrome labels)", () => {
@@ -605,6 +620,10 @@ test("selecting a plugin catalog entry inserts its qualified form into the compo
   expect(send).not.toHaveBeenCalled();
   const { result: insert } = renderHook(() => useQuoteInsertRequest("ref_a"));
   expect(insert.current?.text).toBe("/p:review ");
+  // SHOULD-FIX: "prefix", not the default "append" - a slash command only
+  // parses at the draft's start, so it must land there even ahead of
+  // whatever the user already typed, not after it.
+  expect(insert.current?.placement).toBe("prefix");
   const { result: focus } = renderHook(() => useComposerFocusRequest("ref_a"));
   expect(focus.current).not.toBeUndefined();
   expect(screen.queryByRole("dialog")).toBeNull();
