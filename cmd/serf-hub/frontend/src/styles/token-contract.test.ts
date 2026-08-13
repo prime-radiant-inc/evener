@@ -722,37 +722,65 @@ test("does not flag z-index mentioned only in a comment", () => {
 //
 // THE focus treatment: every :focus-visible ring is `outline: var(--focus-ring)`
 // or `var(--focus-ring-danger)` for destructive controls. Hand-rolled rings
-// (solid px outlines) and the retired inset-ring hack (box-shadow with --accent
-// or --danger) are banned.
+// are banned in every form they've been written: outline shorthands carrying
+// their own length + line style, the outline longhands, and the retired
+// inset-ring box-shadow hack (an inset spread-only shadow in any color, or a
+// shadow colored with bare --accent/--danger).
 //
-// ONE exact-path exception: shell/palette/commandpalette.module.css keeps a
-// deliberate quiet 2px var(--accent-edge) ring on `.input:focus` — a full-strength
-// --focus-ring on a text input you are actively typing in is louder than the
-// palette wants, and --accent-edge (40% accent) is the sanctioned muted mix.
-// This exception is scoped to the exact path so a same-named stylesheet
-// elsewhere cannot ride along on it.
+// TWO exact-path exceptions, each scoped to its exact path so a same-named
+// stylesheet elsewhere cannot ride along on it:
+// - shell/palette/commandpalette.module.css keeps a deliberate quiet 2px
+//   var(--accent-edge) ring on `.input:focus` — a full-strength --focus-ring
+//   on a text input you are actively typing in is louder than the palette
+//   wants, and --accent-edge (40% accent) is the sanctioned muted mix.
+// - widgets/dropzone/dropzone.module.css draws a 2px DASHED var(--accent)
+//   outline as its drag-target affordance — that outline is drop-here
+//   signage, not a focus ring, and dashed is what distinguishes it from one.
+//   The checker can't tell signage from rings, so the deviation is recorded
+//   here where it's visible instead of loosened out of the regex.
 
-const FOCUS_RING_EXCEPTIONS = new Set(["shell/palette/commandpalette.module.css"]);
+const FOCUS_RING_EXCEPTIONS = new Set([
+  "shell/palette/commandpalette.module.css",
+  "widgets/dropzone/dropzone.module.css",
+]);
 
 function focusRingViolations(cssText: string): string[] {
   const violations: string[] = [];
   const withoutComments = cssText.replace(COMMENT_RE, " ");
 
-  // Check outline declarations for hand-rolled geometry (e.g., "2px solid var(--accent)")
+  // Hand-rolled ring geometry in an outline shorthand: any explicit length
+  // plus any line style, in either order ("2px solid", "solid 2px", "2px
+  // dashed", "0.125rem solid" — two independent tests so ordering and unit
+  // can't dodge the check). var(--focus-ring*) and none carry neither a
+  // length nor a style keyword, so they pass untouched.
   const outlineRe = /outline\s*:\s*([^;}]+)/gi;
+  const OUTLINE_LENGTH_RE = /\b[\d.]+(px|rem|em)\b/i;
+  const OUTLINE_STYLE_RE = /\b(solid|dashed|dotted|double)\b/i;
   for (const match of withoutComments.matchAll(outlineRe)) {
     const value = match[1]!.trim();
-    // Flag if it contains px + solid (ring geometry), but allow var(--focus-ring*) and none
-    if (/\b\d+px\s+solid\b/i.test(value)) {
+    if (OUTLINE_LENGTH_RE.test(value) && OUTLINE_STYLE_RE.test(value)) {
       violations.push(`outline: ${value}`);
     }
   }
 
-  // Check box-shadow for the retired inset-ring hack (var(--accent) or var(--danger))
+  // The outline longhands are how a hand-rolled ring evades the shorthand
+  // scan piecemeal; there is no sanctioned use of any of them.
+  const outlineLonghandRe = /outline-(width|style|color)\s*:\s*([^;}]+)/gi;
+  for (const match of withoutComments.matchAll(outlineLonghandRe)) {
+    violations.push(`outline-${match[1]}: ${match[2]!.trim()}`);
+  }
+
+  // The retired inset-ring hack, both ways it was ever written: an inset
+  // spread-only shadow (any color — `inset 0 0 0 2px <anything>` is a ring
+  // by construction), or a shadow colored with the bare interaction hues.
+  // The hue test requires the exact token — var(--accent-bg)/-edge mixes in
+  // a shadow are legitimate tinting, not a ring.
   const boxShadowRe = /box-shadow\s*:\s*([^;}]+)/gi;
+  const INSET_RING_RE = /\binset\s+0\s+0\s+0\s+[\d.]/i;
+  const BARE_HUE_RE = /var\(\s*--(accent|danger)\s*\)/i;
   for (const match of withoutComments.matchAll(boxShadowRe)) {
     const value = match[1]!.trim();
-    if (/var\(\s*--(accent|danger)\b/i.test(value)) {
+    if (INSET_RING_RE.test(value) || BARE_HUE_RE.test(value)) {
       violations.push(`box-shadow: ${value}`);
     }
   }
@@ -767,11 +795,14 @@ for (const [path, text] of OTHER_STYLESHEETS) {
   });
 }
 
-test("the commandpalette.module.css focus-ring exception is scoped to its exact path", () => {
+test("the focus-ring exceptions are scoped to their exact paths", () => {
   expect(FOCUS_RING_EXCEPTIONS.has("shell/palette/commandpalette.module.css")).toBe(true);
+  expect(FOCUS_RING_EXCEPTIONS.has("widgets/dropzone/dropzone.module.css")).toBe(true);
   // A same-named decoy elsewhere must still go through the normal check.
   expect(FOCUS_RING_EXCEPTIONS.has("widgets/commandpalette.module.css")).toBe(false);
   expect(FOCUS_RING_EXCEPTIONS.has("shell/commandpalette.module.css")).toBe(false);
+  expect(FOCUS_RING_EXCEPTIONS.has("panes/spawn/dropzone.module.css")).toBe(false);
+  expect(FOCUS_RING_EXCEPTIONS.has("dropzone.module.css")).toBe(false);
 });
 
 test("catches a hand-rolled outline ring with px + solid", () => {
@@ -790,6 +821,28 @@ test("allows var(--focus-ring) outline", () => {
 
 test("allows outline: none", () => {
   expect(focusRingViolations(".a { outline: none; }")).toEqual([]);
+});
+
+test("catches ring geometry regardless of value order, unit, or line style", () => {
+  expect(focusRingViolations(".a:focus-visible { outline: solid 2px var(--accent); }").length).toBe(1);
+  expect(focusRingViolations(".a:focus-visible { outline: 2px dashed var(--accent); }").length).toBe(1);
+  expect(focusRingViolations(".a:focus-visible { outline: 0.125rem solid var(--accent); }").length).toBe(1);
+});
+
+test("catches outline longhands outright", () => {
+  expect(focusRingViolations(".a { outline-width: 2px; }")).toEqual(["outline-width: 2px"]);
+  expect(focusRingViolations(".a { outline-style: solid; }")).toEqual(["outline-style: solid"]);
+  expect(focusRingViolations(".a { outline-color: var(--accent); }")).toEqual(["outline-color: var(--accent)"]);
+});
+
+test("catches an inset spread-only ring in any color", () => {
+  expect(focusRingViolations(".a { box-shadow: inset 0 0 0 2px var(--ink-hi); }").length).toBe(1);
+  expect(focusRingViolations(".a { box-shadow: inset 0 0 0 1px var(--edge); }").length).toBe(1);
+});
+
+test("allows -bg/-edge hue mixes in a box-shadow (tinting, not a ring)", () => {
+  expect(focusRingViolations(".a { box-shadow: 0 4px 16px var(--accent-bg); }")).toEqual([]);
+  expect(focusRingViolations(".a { box-shadow: 0 4px 16px var(--danger-edge); }")).toEqual([]);
 });
 
 test("catches box-shadow with var(--accent) or var(--danger)", () => {

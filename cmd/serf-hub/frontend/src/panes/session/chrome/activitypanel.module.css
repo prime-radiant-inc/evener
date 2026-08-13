@@ -67,9 +67,11 @@
 .denseRow:hover {
   background: var(--surface-2);
 }
+/* -1px, not the usual -2px: these rows keep the redesign's 2px vertical
+ * padding, so a deeper inset would draw the ring across the text line box. */
 .denseRow:focus-visible {
   outline: var(--focus-ring);
-  outline-offset: -2px;
+  outline-offset: -1px;
 }
 .denseName {
   flex: 1;
@@ -129,9 +131,10 @@
 .foldRow:hover {
   background: var(--surface-2);
 }
+/* Same tight-row -1px as .denseRow above. */
 .foldRow:focus-visible {
   outline: var(--focus-ring);
-  outline-offset: -2px;
+  outline-offset: -1px;
 }
 .detailStrip {
   margin: 2px var(--space-3) 6px calc(var(--space-3) + 20px);

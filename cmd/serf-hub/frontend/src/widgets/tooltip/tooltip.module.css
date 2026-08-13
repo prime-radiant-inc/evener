@@ -29,7 +29,6 @@
   background: var(--surface-2);
   border: 1px solid var(--edge);
   border-radius: var(--radius-control);
-  box-shadow: var(--shadow-overlay);
   color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);

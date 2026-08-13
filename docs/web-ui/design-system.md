@@ -52,8 +52,8 @@ attention, deep indigo accent), each validated ≥ 4.5:1 for text, 3:1 for UI.
 20 page-title, line-heights 1.5 body, 1.3 titles. Mono never used for chrome labels (retired
 pattern stays retired).
 
-**Space/shape:** 4px grid (`--space-1..9` = 4..64); radius 4 (controls) / 8 (panes, dialogs) / 999px pill (switches, capsules);
-depth = `--edge` borders + surface steps; shadows only on floating layers (menu, popover, tooltip, toast: `--shadow-overlay`; dialog/sheet: `--shadow-modal`).
+**Space/shape:** 4px grid (`--space-1..9` = 4..64); radius 4 (controls) / 8 (panes, dialogs) / 999px pill (switch track);
+depth = `--edge` borders + surface steps; shadows only on floating layers (menu, popover, toast: `--shadow-overlay`; dialog/sheet: `--shadow-modal`; the tooltip stays border-only — too small to shadow).
 
 **Motion:** default none. Allowed: attention onset (one 200ms ease-out color/edge transition),
 streaming caret blink, dialog/menu 120ms fade-scale. Forbidden: idle pulses, skeleton shimmer
@@ -112,18 +112,24 @@ varies per site (positive, outside roomy controls; negative, for rows flush insi
 container). One exception: `shell/palette/commandpalette.module.css` keeps a deliberate quiet
 `2px var(--accent-edge)` ring on `.input:focus` — a full-strength `--focus-ring` on an actively-
 typed text input is louder than the palette wants. Hand-rolled ring geometry (bare `px` + `solid`
-outlines or the retired inset-ring `box-shadow` hack with `var(--accent)`/`var(--danger)`) is
-contract-banned; see §4.
+outlines in any order/unit, the outline longhands, or the retired inset-ring `box-shadow` hack) is
+contract-banned; see §4. Dropzone's dashed drag-target outline is signage, not a focus ring, and
+holds the second (and last) contract exception.
 
-**Stacking order** — The app's z-index values are tokenized to keep stacking context predictable.
-The ladder: `--z-raised` (1, local sticky headers/overlays within a pane), `--z-sticky-bar` (20,
-pane-level pinned bars), `--z-dialog` (1000, modal dialogs + scrim), `--z-menu` (1020, menus,
-popovers, anchored floats), `--z-tooltip` (1030, tooltips beat menus), `--z-toast` (1040, toasts
-beat everything). Raw z-index integers are contract-banned; see §4.
+**Stacking order** — The app's own z-index values are tokenized to keep stacking context
+predictable. The ladder: `--z-raised` (1, local resize handles/overlay controls within a pane),
+`--z-sticky-bar` (20, pane-level pinned bars), `--z-dialog` (1000, modal dialogs + scrim),
+`--z-menu` (1020, menus, popovers, anchored floats), `--z-tooltip` (1030, tooltips beat menus),
+`--z-toast` (1040, tops the app's own ladder). Raw z-index integers are contract-banned; see §4.
+dockview's stylesheet sits outside the ladder: its drag overlay is 999 (`--z-dialog`'s 1000
+clears it deliberately) and its drop-target container is 9999, which sits above everything for
+the duration of a dock drag.
 
-**Elevation** — Floating widgets (menu, popover, tooltip, toast) carry `--shadow-overlay`
-(0 4px 16px); dialogs and sheets carry `--shadow-modal` (0 16px 40px). Both are composed from
-`--shadow-color` (theme-dependent) — dark 0.5 alpha black, light 0.16 alpha warm near-black.
+**Elevation** — Floating widgets (menu, popover, toast) carry `--shadow-overlay` (0 4px 16px);
+dialogs and sheets carry `--shadow-modal` (0 16px 40px; the edge-anchored sheet variants redirect
+the same geometry toward their visible edge). The tooltip is deliberately shadowless — its border
+on `--surface-2` already carries the depth at that size. Both shadows are composed from
+`--shadow-color` (theme-dependent) — dark 50% black, light 16% `--ink-hi` via `color-mix`.
 Depth within a pane (no floating layers) remains `--edge` borders and `--surface` steps.
 
 ---
@@ -216,11 +222,14 @@ six independent checks:
    ladder above), `0` (reset), or `auto` (default) — never raw integers. Keeps stacking context
    predictable across the app.
 6. **Focus rings use tokens, not hand-rolled geometry.** Every `:focus-visible` outline is
-   `var(--focus-ring)` or `var(--focus-ring-danger)`, never bare `px solid` geometry. The retired
-   inset-ring `box-shadow` hack (with `var(--accent)` or `var(--danger)`) is banned. One exception
-   (scoped to `shell/palette/commandpalette.module.css`): the command palette input keeps a
-   quiet `2px var(--accent-edge)` ring for active typing — softer than a full `--focus-ring` but
-   still present.
+   `var(--focus-ring)` or `var(--focus-ring-danger)`, never an outline shorthand carrying its own
+   length + line style (any order, any unit), never the outline longhands, and never the retired
+   inset-ring `box-shadow` hack (an inset spread-only shadow in any color, or a shadow colored
+   with bare `--accent`/`--danger`; `-bg`/`-edge` mixes in a shadow are tinting and stay legal).
+   Two exact-path exceptions: `shell/palette/commandpalette.module.css` keeps a quiet
+   `2px var(--accent-edge)` ring for active typing — softer than a full `--focus-ring` but still
+   present — and `widgets/dropzone/dropzone.module.css` keeps its dashed accent drag-target
+   outline, which is drop-here signage, not a focus ring.
 
 Every mechanism above is poison-tested against hand-written snippets proving both what it
 catches and what it must not flag (see the test file itself) — not just asserted to work.

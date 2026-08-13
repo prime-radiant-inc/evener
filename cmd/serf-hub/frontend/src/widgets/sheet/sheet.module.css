@@ -46,6 +46,10 @@
   border-top: none;
   border-right: none;
   border-bottom: none;
+  /* .panel's --shadow-modal falls downward, which suits only the centered
+   * dialog; each edge variant redirects the same geometry toward its one
+   * visible edge so the shadow actually reads. */
+  box-shadow: -16px 0 40px var(--shadow-color);
   animation: sheetInRight var(--motion-duration-overlay) var(--motion-easing-standard);
 }
 
@@ -59,6 +63,7 @@
   border-left: none;
   border-right: none;
   border-bottom: none;
+  box-shadow: 0 -16px 40px var(--shadow-color);
   animation: sheetInBottom var(--motion-duration-overlay) var(--motion-easing-standard);
 }
 
@@ -72,6 +77,7 @@
   border-top: none;
   border-left: none;
   border-bottom: none;
+  box-shadow: 16px 0 40px var(--shadow-color);
   animation: sheetInLeft var(--motion-duration-overlay) var(--motion-easing-standard);
 }
 

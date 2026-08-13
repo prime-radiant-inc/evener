@@ -113,7 +113,7 @@
 
   --radius-control: 4px; /* buttons, inputs, chips */
   --radius-pane: 8px; /* panes, dialogs */
-  --radius-pill: 999px; /* pill geometry: switch track, capsule chips */
+  --radius-pill: 999px; /* pill geometry: switch track */
 
   /* --- focus ring ------------------------------------------------------
    * THE focus treatment: every :focus-visible (or :focus-within proxy) ring
@@ -121,32 +121,40 @@
    * per site (positive outside a roomy control, negative for rows flush
    * inside a clipping container). The danger variant exists solely for
    * destructive controls whose resting chrome is already danger-colored.
+   * Sole deviation: the command palette input's quiet accent-edge typing
+   * ring (see token-contract's FOCUS_RING_EXCEPTIONS).
    */
   --focus-ring: 2px solid var(--accent);
   --focus-ring-danger: 2px solid var(--danger);
 
   /* --- stacking order --------------------------------------------------
-   * The only z-index values in the app (see token-contract). Local
-   * stacking inside a pane uses --z-raised; the app-modal layers sit in
-   * one fixed ladder so a pane can never accidentally overtop a menu, nor
-   * a menu a toast.
+   * The only z-index values in this app's own CSS (see token-contract).
+   * Local stacking inside a pane uses --z-raised; the app-modal layers sit
+   * in one fixed ladder so a pane can never accidentally overtop a menu,
+   * nor a menu a toast. dockview's own stylesheet sits outside the ladder:
+   * its drag overlay is 999 (--z-dialog's 1000 clears it deliberately) and
+   * its drop-target container is 9999, which tops everything here for the
+   * duration of a dock drag.
    */
-  --z-raised: 1; /* local: sticky headers, overlay glyphs within a pane */
+  --z-raised: 1; /* local: resize handles, overlay controls within a pane */
   --z-sticky-bar: 20; /* pane-level pinned bars (mobile action band) */
   --z-dialog: 1000; /* modal dialog + its scrim */
   --z-menu: 1020; /* menus, popovers, anchored floats */
   --z-tooltip: 1030; /* tooltips beat menus */
-  --z-toast: 1040; /* toasts beat everything */
+  --z-toast: 1040; /* toasts top the app's own ladder */
 
   /* --- elevation -------------------------------------------------------
    * Depth is still --edge borders + surface steps; shadows exist ONLY on
    * floating layers (design-system.md "shadows only on floating layers").
-   * Two levels: overlay (menu/popover/tooltip/toast) and modal
-   * (dialog/sheet). The color carries the theme; the geometry is shared.
+   * Two levels: overlay (menu/popover/toast) and modal (dialog/sheet; the
+   * edge-anchored sheet variants redirect the same geometry toward their
+   * visible edge). The tooltip is deliberately shadowless — at ~21px tall
+   * its border on --surface-2 already carries the depth. The color carries
+   * the theme; the geometry is shared.
    */
   --shadow-overlay: 0 4px 16px var(--shadow-color);
   --shadow-modal: 0 16px 40px var(--shadow-color);
-  --shadow-color: rgba(0, 0, 0, 0.5);
+  --shadow-color: color-mix(in srgb, #000000 50%, transparent);
 
   /* --- motion ---------------------------------------------------------
    * Default is none. These are the only three motions this app plays:
@@ -200,9 +208,10 @@
   --diff-add-bg: #E3EDDD;
   --diff-del-bg: #F2E4DC;
 
-  /* Shadow ink on paper: warm near-black (--ink-hi's hue), far lower alpha
-   * than dark theme — light surfaces need only a whisper of depth. */
-  --shadow-color: rgba(31, 27, 22, 0.16);
+  /* Shadow ink on paper: derived from --ink-hi so a re-tuned ink re-tunes
+   * the shadows with it, at far lower alpha than dark theme — light
+   * surfaces need only a whisper of depth. */
+  --shadow-color: color-mix(in srgb, var(--ink-hi) 16%, transparent);
 
   --ansi-black: #1F1B16;
   --ansi-red: #A33226;
