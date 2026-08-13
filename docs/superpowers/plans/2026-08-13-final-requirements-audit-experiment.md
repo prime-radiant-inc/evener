@@ -21,6 +21,32 @@
 - Use one attempt, zero Harbor retries, no upload, and no Terminal-Bench submission.
 - Preserve all treatment trajectories and track total reported provider cost against Jesse's $500 ceiling.
 
+## Experiment Outcome (2026-08-13)
+
+The treatment was a null result and this branch should remain unmerged.
+
+- `sqlite-with-gcov`: reward 0 without exception. The audit lifecycle worked,
+  but Luna checked coverage in the separate build tree, ignored that its own
+  gcov-symbol subcheck did not pass, and left `/app/sqlite` without runtime
+  coverage data.
+- `count-dataset-tokens`: reward 0 without exception. Before injection, Luna
+  computed the required `79586` candidate but wrote `63841`. The injected audit
+  performed no new inspection or computation, immediately asserted compliance,
+  and returned the unchanged artifact.
+
+Both trials completed all ordinary tasks, received exactly one audit containing
+the original assignment verbatim, and delivered only the post-audit terminal
+response. Neither audit changed the deliverable or reward. The exact prompt is
+therefore insufficient to induce evidence-based manual checking. Complete
+configs, trajectories, verifier evidence, hashes, and RCAs are recorded on the
+runner branch `wip/final-requirements-audit-experiment` through commit
+`fd5521a`.
+
+Harbor reported no dollar cost through the OAuth path (`cost_usd: null`). The
+two trials used 144,640 input, 1,259,904 cached, and 30,177 output tokens. The
+campaign stopped after the two preselected failures rather than spending the
+remaining authorized budget on unsupported repetitions.
+
 ---
 
 ### Task 1: Implement the opt-in session finalization guard
