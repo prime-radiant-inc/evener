@@ -13,6 +13,10 @@
   border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
   background: var(--surface-0);
+  /* Reset ink along with surface: currentColor consumers (ToolIcon, Chevron)
+   * must inherit THIS pane's theme, not the ambient page's — the same pairing
+   * global.css gives <body>. */
+  color: var(--ink-hi);
 }
 
 .label {

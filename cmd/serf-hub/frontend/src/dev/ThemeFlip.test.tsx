@@ -44,3 +44,20 @@ test("explicitly scopes both panes when the gallery is nested under a light root
   expect(screen.getByText("Dark").parentElement?.getAttribute("data-theme")).toBe("dark");
   expect(screen.getByText("Light").parentElement?.getAttribute("data-theme")).toBe("light");
 });
+
+// A themed wrapper must reset ink alongside surface: a pane that flips the
+// token scope but inherits `color` from the ambient theme hands every
+// currentColor consumer (ToolIcon, Chevron - stroke="currentColor" line art)
+// the WRONG theme's ink - near-black glyphs on the dark pane whenever the
+// ambient theme is light. Asserted against the stylesheet text (the same
+// off-disk technique token-contract.test.ts uses) because jsdom does not
+// resolve CSS Modules classes to computed styles.
+test("each pane resets color to the scoped theme's ink, not the ambient theme's", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { dirname, join } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "theme-flip.module.css"), "utf8");
+  const paneRule = /\.pane\s*\{[^}]*\}/.exec(css)?.[0];
+  expect(paneRule).toBeDefined();
+  expect(paneRule).toMatch(/color:\s*var\(--ink-hi\)/);
+});
