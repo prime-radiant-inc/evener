@@ -7,14 +7,15 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"golang.org/x/tools/go/packages"
 	"primeradiant.com/serf/agent/internal/delegatestore"
 )
 
@@ -248,21 +249,23 @@ func TestDelegateControllerCapturedSnapshotsCarryMonotonicRevision(t *testing.T)
 }
 
 func TestDelegateControllerRemainsDormant(t *testing.T) {
-	entries, err := os.ReadDir(".")
+	loaded, err := packages.Load(&packages.Config{Mode: packages.LoadSyntax, Dir: "."}, ".")
 	if err != nil {
-		t.Fatalf("ReadDir agent: %v", err)
+		t.Fatalf("load agent package: %v", err)
 	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || filepath.Ext(name) != ".go" || strings.HasSuffix(name, "_test.go") || name == "delegate_tree_controller.go" || name == "delegate_tree_start.go" {
+	if len(loaded) != 1 {
+		t.Fatalf("loaded agent packages = %d, want 1", len(loaded))
+	}
+	pkg := loaded[0]
+	if len(pkg.Errors) != 0 {
+		t.Fatalf("load agent package: %s", pkg.Errors[0])
+	}
+	for _, file := range pkg.Syntax {
+		name := filepath.Base(pkg.Fset.Position(file.Package).Filename)
+		if name == "delegate_tree_controller.go" || name == "delegate_tree_start.go" {
 			continue
 		}
-		files := token.NewFileSet()
-		file, parseErr := parser.ParseFile(files, name, nil, 0)
-		if parseErr != nil {
-			t.Fatalf("parse %s: %v", name, parseErr)
-		}
-		for _, violation := range delegateControllerDormancyViolations(files, file) {
+		for _, violation := range delegateControllerDormancyViolations(pkg.Fset, file, pkg.TypesInfo, pkg.Types) {
 			t.Errorf("active production caller references dormant delegate controller %s %s at %s", violation.kind, violation.symbol, violation.position)
 		}
 	}
@@ -279,18 +282,27 @@ func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing
 		{name: "controller composite", source: `package agent; func probe() { _ = delegateTreeController{} }`, symbol: "delegateTreeController"},
 		{name: "controller pointer composite", source: `package agent; func probe() { _ = &delegateTreeController{} }`, symbol: "delegateTreeController"},
 		{name: "controller new", source: `package agent; func probe() { _ = new(delegateTreeController) }`, symbol: "delegateTreeController"},
+		{name: "controller alias composite", source: `package agent; type active = delegateTreeController; func probe() { _ = active{} }`, symbol: "delegateTreeController"},
+		{name: "controller alias new", source: `package agent; type active = delegateTreeController; func probe() { _ = new(active) }`, symbol: "delegateTreeController"},
 		{name: "lifecycle call", source: `package agent; func probe(controller *delegateTreeController, reservation *delegateStartReservation) { _, _ = controller.CommitStart(reservation) }`, symbol: "CommitStart"},
 		{name: "bound lifecycle alias", source: `package agent; func probe(controller *delegateTreeController) { commit := controller.CommitStart; _ = commit }`, symbol: "CommitStart"},
 		{name: "lifecycle method expression", source: `package agent; func probe() { commit := (*delegateTreeController).CommitStart; _ = commit }`, symbol: "CommitStart"},
+		{name: "bound lifecycle reference through type alias", source: `package agent; type active = delegateTreeController; func probe(controller *active) { commit := controller.CommitStart; _ = commit }`, symbol: "CommitStart"},
+		{name: "lifecycle method expression through type alias", source: `package agent; type active = delegateTreeController; func probe() { commit := (*active).CommitStart; _ = commit }`, symbol: "CommitStart"},
+		{name: "unrelated lifecycle call", source: `package agent; type unrelated struct{}; func (*unrelated) CommitStart() {}; func probe(other *unrelated) { other.CommitStart() }`},
+		{name: "unrelated bound lifecycle reference", source: `package agent; type unrelated struct{}; func (*unrelated) CommitStart() {}; func probe(other *unrelated) { commit := other.CommitStart; _ = commit }`},
+		{name: "unrelated lifecycle method expression", source: `package agent; type unrelated struct{}; func (*unrelated) CommitStart() {}; func probe() { commit := (*unrelated).CommitStart; _ = commit }`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			files := token.NewFileSet()
-			file, err := parser.ParseFile(files, test.name+".go", test.source, 0)
-			if err != nil {
-				t.Fatalf("parse source: %v", err)
+			files, file, info, pkg := typeCheckDelegateControllerDormancyFixture(t, test.name+".go", test.source)
+			violations := delegateControllerDormancyViolations(files, file, info, pkg)
+			if test.symbol == "" {
+				if len(violations) != 0 {
+					t.Fatalf("violations = %#v, want unrelated lifecycle method ignored", violations)
+				}
+				return
 			}
-			violations := delegateControllerDormancyViolations(files, file)
 			if len(violations) != 1 || violations[0].symbol != test.symbol {
 				t.Fatalf("violations = %#v, want one semantic reference to %s", violations, test.symbol)
 			}
@@ -318,25 +330,29 @@ type delegateControllerDormancyViolation struct {
 	position token.Position
 }
 
-func delegateControllerDormancyViolations(files *token.FileSet, file *ast.File) []delegateControllerDormancyViolation {
+func delegateControllerDormancyViolations(files *token.FileSet, file *ast.File, info *types.Info, pkg *types.Package) []delegateControllerDormancyViolation {
+	controller := types.Unalias(pkg.Scope().Lookup("delegateTreeController").Type())
+	constructor := pkg.Scope().Lookup("openDelegateTreeController")
 	var violations []delegateControllerDormancyViolation
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch typed := node.(type) {
 		case *ast.Ident:
-			if typed.Name == "openDelegateTreeController" {
+			if info.Uses[typed] == constructor {
 				violations = append(violations, delegateControllerDormancyViolation{kind: "constructor", symbol: typed.Name, position: files.Position(typed.Pos())})
 			}
 		case *ast.SelectorExpr:
-			if delegateControllerLifecycleMethods[typed.Sel.Name] {
+			selection := info.Selections[typed]
+			if selection != nil && delegateControllerLifecycleMethods[typed.Sel.Name] && delegateControllerMethodHasReceiver(selection.Obj(), controller) {
 				violations = append(violations, delegateControllerDormancyViolation{kind: "lifecycle method", symbol: typed.Sel.Name, position: files.Position(typed.Pos())})
 			}
 		case *ast.CompositeLit:
-			if isDelegateControllerType(typed.Type) {
+			if isDelegateControllerType(info.TypeOf(typed), controller) {
 				violations = append(violations, delegateControllerDormancyViolation{kind: "composite literal", symbol: "delegateTreeController", position: files.Position(typed.Pos())})
 			}
 		case *ast.CallExpr:
-			constructor, ok := typed.Fun.(*ast.Ident)
-			if ok && constructor.Name == "new" && len(typed.Args) == 1 && isDelegateControllerType(typed.Args[0]) {
+			identifier, isIdentifier := typed.Fun.(*ast.Ident)
+			builtin, isBuiltin := info.Uses[identifier].(*types.Builtin)
+			if isIdentifier && isBuiltin && builtin.Name() == "new" && len(typed.Args) == 1 && isDelegateControllerType(info.TypeOf(typed.Args[0]), controller) {
 				violations = append(violations, delegateControllerDormancyViolation{kind: "new expression", symbol: "delegateTreeController", position: files.Position(typed.Pos())})
 			}
 		}
@@ -345,17 +361,55 @@ func delegateControllerDormancyViolations(files *token.FileSet, file *ast.File) 
 	return violations
 }
 
-func isDelegateControllerType(expression ast.Expr) bool {
-	switch typed := expression.(type) {
-	case *ast.Ident:
-		return typed.Name == "delegateTreeController"
-	case *ast.ParenExpr:
-		return isDelegateControllerType(typed.X)
-	case *ast.StarExpr:
-		return isDelegateControllerType(typed.X)
-	default:
+func delegateControllerMethodHasReceiver(object types.Object, controller types.Type) bool {
+	method, ok := object.(*types.Func)
+	if !ok {
 		return false
 	}
+	signature, ok := method.Type().(*types.Signature)
+	return ok && signature.Recv() != nil && isDelegateControllerType(signature.Recv().Type(), controller)
+}
+
+func isDelegateControllerType(candidate, controller types.Type) bool {
+	if candidate == nil || controller == nil {
+		return false
+	}
+	candidate = types.Unalias(candidate)
+	if pointer, ok := candidate.(*types.Pointer); ok {
+		candidate = types.Unalias(pointer.Elem())
+	}
+	return types.Identical(candidate, controller)
+}
+
+func typeCheckDelegateControllerDormancyFixture(t *testing.T, filename, source string) (*token.FileSet, *ast.File, *types.Info, *types.Package) {
+	t.Helper()
+	files := token.NewFileSet()
+	prelude, err := parser.ParseFile(files, "delegate_controller_prelude.go", `package agent
+type delegateTreeController struct{}
+type delegateTreeControllerConfig struct{}
+type delegateStartReservation struct{}
+type delegateStartCommit struct{}
+func openDelegateTreeController(delegateTreeControllerConfig) (*delegateTreeController, error) { return nil, nil }
+func (*delegateTreeController) CommitStart(*delegateStartReservation) (delegateStartCommit, error) { return delegateStartCommit{}, nil }
+`, 0)
+	if err != nil {
+		t.Fatalf("parse fixture prelude: %v", err)
+	}
+	file, err := parser.ParseFile(files, filename, source, 0)
+	if err != nil {
+		t.Fatalf("parse source: %v", err)
+	}
+	info := &types.Info{
+		Types:      make(map[ast.Expr]types.TypeAndValue),
+		Defs:       make(map[*ast.Ident]types.Object),
+		Uses:       make(map[*ast.Ident]types.Object),
+		Selections: make(map[*ast.SelectorExpr]*types.Selection),
+	}
+	pkg, err := (&types.Config{}).Check("primeradiant.com/serf/agent/dormancyfixture", files, []*ast.File{prelude, file}, info)
+	if err != nil {
+		t.Fatalf("type-check source: %v", err)
+	}
+	return files, file, info, pkg
 }
 
 func newDelegateControllerTestHarness(t *testing.T, turnLimit, driveLimit int) (*delegateTreeController, string) {
