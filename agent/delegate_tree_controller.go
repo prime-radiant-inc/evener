@@ -53,6 +53,7 @@ type delegateTreeController struct {
 	reservations    map[uint64]*delegateStartRecord
 	work            map[uint64]*delegateShellWork
 	deliveries      map[uint64]*delegateDeliveryAdmission
+	deliveryClaims  map[string]*delegateDeliveryClaim
 	stop            *delegateStopState
 	evidenceVersion uint64
 	closing         bool
@@ -147,6 +148,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		reservations:   make(map[uint64]*delegateStartRecord),
 		work:           make(map[uint64]*delegateShellWork),
 		deliveries:     make(map[uint64]*delegateDeliveryAdmission),
+		deliveryClaims: make(map[string]*delegateDeliveryClaim),
 		reconcileOrder: delegateOpenRunOrder(events, durable),
 	}
 	if err := c.restorePendingStop(events); err != nil {

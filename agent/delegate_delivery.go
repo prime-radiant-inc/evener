@@ -8,6 +8,7 @@ import (
 	"html"
 	"reflect"
 	"sort"
+	"sync"
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
 )
@@ -17,9 +18,10 @@ var errDelegateDeliveryReceiverUnavailable = errors.New("delegate delivery recei
 type delegateWaiterToken struct{ id uint64 }
 
 type delegateInlineWaiter struct {
-	token      delegateWaiterToken
-	generation uint64
-	resolution chan delegateInlineResolution
+	token       delegateWaiterToken
+	generation  uint64
+	resolution  chan delegateInlineResolution
+	resolveOnce sync.Once
 }
 
 type delegateInlineResolution struct {
@@ -45,6 +47,18 @@ type delegateDeliveryAdmission struct {
 	ownerID    string
 }
 
+type delegateDeliveryClaimToken struct {
+	processID  uint64
+	deliveryID string
+}
+
+type delegateDeliveryClaim struct {
+	token      delegateDeliveryClaimToken
+	delegateID string
+	ownerID    string
+	waiter     *delegateInlineWaiter
+}
+
 type delegateDeliveryPlan struct {
 	controller      *delegateTreeController
 	delegateID      string
@@ -52,6 +66,7 @@ type delegateDeliveryPlan struct {
 	ownerDelegateID string
 	waiter          *delegateInlineWaiter
 	packet          delegatestore.TerminalPacket
+	claim           delegateDeliveryClaimToken
 }
 
 type delegateDeliveryReceiver interface {
@@ -110,11 +125,12 @@ func (c *delegateTreeController) waitForDelegateInline(ctx context.Context, wait
 func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (delegateDeliveryToken, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closing {
-		return delegateDeliveryToken{}, false, nil
-	}
-	if plan.controller != c || plan.deliveryID == "" {
+	if plan.controller != c || plan.deliveryID == "" || plan.claim.deliveryID != plan.deliveryID {
 		return delegateDeliveryToken{}, false, errDelegateStaleLease
+	}
+	claim := c.deliveryClaims[plan.deliveryID]
+	if claim == nil || claim.token != plan.claim || claim.delegateID != plan.delegateID || claim.ownerID != plan.ownerDelegateID || claim.waiter != plan.waiter {
+		return delegateDeliveryToken{}, false, nil
 	}
 	aggregate := c.durable[plan.delegateID]
 	if aggregate == nil || len(aggregate.PendingDeliveries) == 0 {
@@ -124,12 +140,16 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (deleg
 	if head.DeliveryID != plan.deliveryID || head.OwnerDelegateID != plan.ownerDelegateID || !reflect.DeepEqual(head.Packet, plan.packet) {
 		return delegateDeliveryToken{}, false, nil
 	}
-	if aggregate.PendingStopSeq != 0 {
+	if c.closing || aggregate.PendingStopSeq != 0 {
+		delete(c.deliveryClaims, plan.deliveryID)
+		c.evidenceVersion++
 		return delegateDeliveryToken{}, false, nil
 	}
 	if plan.ownerDelegateID != "" {
 		owner := c.durable[plan.ownerDelegateID]
 		if owner == nil || owner.PendingStopSeq != 0 {
+			delete(c.deliveryClaims, plan.deliveryID)
+			c.evidenceVersion++
 			return delegateDeliveryToken{}, false, nil
 		}
 	}
@@ -137,14 +157,12 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (deleg
 		_, senderCovered := c.stop.members[plan.delegateID]
 		_, ownerCovered := c.stop.members[plan.ownerDelegateID]
 		if senderCovered || ownerCovered {
+			delete(c.deliveryClaims, plan.deliveryID)
+			c.evidenceVersion++
 			return delegateDeliveryToken{}, false, nil
 		}
 	}
-	for _, receipt := range c.deliveries {
-		if receipt.token.deliveryID == plan.deliveryID {
-			return receipt.token, true, nil
-		}
-	}
+	delete(c.deliveryClaims, plan.deliveryID)
 	c.nextToken++
 	token := delegateDeliveryToken{processID: c.nextToken, deliveryID: plan.deliveryID}
 	c.deliveries[token.processID] = &delegateDeliveryAdmission{
@@ -279,7 +297,7 @@ func (commit *delegateToolResultCommit) Complete(committed bool) (delegateMutati
 }
 
 func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryID string) *delegateDeliveryPlan {
-	if deliveryID == "" {
+	if c.closing || deliveryID == "" {
 		return nil
 	}
 	aggregate := c.durable[delegateID]
@@ -303,13 +321,27 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 			return nil
 		}
 	}
+	if _, claimed := c.deliveryClaims[deliveryID]; claimed {
+		return nil
+	}
+	c.nextToken++
+	claimToken := delegateDeliveryClaimToken{processID: c.nextToken, deliveryID: deliveryID}
+	waiter := c.claimDelegateWaiterLocked(delegateID, head.Generation)
+	c.deliveryClaims[deliveryID] = &delegateDeliveryClaim{
+		token:      claimToken,
+		delegateID: delegateID,
+		ownerID:    head.OwnerDelegateID,
+		waiter:     waiter,
+	}
+	c.evidenceVersion++
 	return &delegateDeliveryPlan{
 		controller:      c,
 		delegateID:      delegateID,
 		deliveryID:      head.DeliveryID,
 		ownerDelegateID: head.OwnerDelegateID,
-		waiter:          c.claimDelegateWaiterLocked(delegateID, head.Generation),
+		waiter:          waiter,
 		packet:          cloneDelegateTerminalPacket(head.Packet),
+		claim:           claimToken,
 	}
 }
 
@@ -330,7 +362,9 @@ func resolveDelegateInlineClaim(waiter *delegateInlineWaiter, resolution delegat
 	if waiter == nil {
 		return
 	}
-	waiter.resolution <- resolution
+	waiter.resolveOnce.Do(func() {
+		waiter.resolution <- resolution
+	})
 }
 
 func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {

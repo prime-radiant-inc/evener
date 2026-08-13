@@ -207,14 +207,72 @@ func TestDelegateControllerBeginDeliveryCreatesOneExactReceipt(t *testing.T) {
 		t.Fatalf("first BeginDelivery = %#v %t %v", first, admitted, err)
 	}
 	second, admitted, err := c.BeginDelivery(firstPlan)
-	if err != nil || !admitted || second != first {
-		t.Fatalf("second BeginDelivery = %#v %t %v", second, admitted, err)
+	if err != nil || admitted || second != (delegateDeliveryToken{}) {
+		t.Fatalf("duplicate BeginDelivery = %#v %t %v, want one executor", second, admitted, err)
 	}
 	c.mu.Lock()
 	receipts := len(c.deliveries)
 	c.mu.Unlock()
 	if receipts != 1 {
 		t.Fatalf("delivery receipts = %d, want 1", receipts)
+	}
+}
+
+func TestDelegateControllerStopReleasesClaimedInlineWaiterAcrossCompletionOrders(t *testing.T) {
+	for _, completeBeforeFallback := range []bool{false, true} {
+		name := "fallback-before-completion"
+		if completeBeforeFallback {
+			name = "completion-before-fallback"
+		}
+		t.Run(name, func(t *testing.T) {
+			c, _ := newDelegateControllerTestHarness(t, 1, 1)
+			seedDelegateControllerIdle(t, c, "dlg_target", "")
+			lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
+			original := finishDelegateDeliveryGeneration(t, c, lease, "terminal").deliveries[0]
+			_, cancelPlan, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+			if err != nil {
+				t.Fatalf("StopSubtree: %v", err)
+			}
+
+			var completion delegateMutationPlans
+			complete := func() {
+				completion, err = c.Reconcile(emptyDelegateReconcileEvidence(c))
+				if err != nil {
+					t.Fatalf("Reconcile: %v", err)
+				}
+			}
+			runFallback := make(chan struct{})
+			fallbackDone := make(chan delegateInlineResolution, 1)
+			go func() {
+				<-runFallback
+				executeDelegateCancelPlan(cancelPlan)
+				fallbackDone <- <-waiter.resolution
+			}()
+			fallback := func() {
+				close(runFallback)
+				resolution := <-fallbackDone
+				if !resolution.fallback || resolution.packet != nil || resolution.commit != nil {
+					t.Fatalf("released waiter resolution = %#v", resolution)
+				}
+			}
+			if completeBeforeFallback {
+				complete()
+				fallback()
+			} else {
+				fallback()
+				complete()
+			}
+
+			if len(completion.deliveries) != 1 || completion.deliveries[0].waiter != nil {
+				t.Fatalf("post-stop delivery plans = %#v, want one background retry", completion.deliveries)
+			}
+			if token, admitted, err := c.BeginDelivery(original); err != nil || admitted || token != (delegateDeliveryToken{}) {
+				t.Fatalf("stale original BeginDelivery = %#v %t %v", token, admitted, err)
+			}
+			if _, admitted, err := c.BeginDelivery(completion.deliveries[0]); err != nil || !admitted {
+				t.Fatalf("retry BeginDelivery = admitted:%t err:%v", admitted, err)
+			}
+		})
 	}
 }
 

@@ -17,6 +17,7 @@ type delegateStopState struct {
 	starts     map[uint64]struct{}
 	work       map[delegateWorkToken]string
 	deliveries map[delegateDeliveryToken]struct{}
+	waiters    []*delegateInlineWaiter
 	done       chan struct{}
 }
 
@@ -35,6 +36,7 @@ type delegateCancelPlan struct {
 	cancel     []context.CancelFunc
 	children   []*Session
 	shells     []delegateShellWork
+	waiters    []*delegateInlineWaiter
 }
 
 func (c *delegateTreeController) StopSubtree(actor delegateActor, targetID string) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {
@@ -126,6 +128,25 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 			stop.deliveries[receipt.token] = struct{}{}
 		}
 	}
+	claimIDs := make([]string, 0, len(c.deliveryClaims))
+	for deliveryID := range c.deliveryClaims {
+		claimIDs = append(claimIDs, deliveryID)
+	}
+	sort.Strings(claimIDs)
+	for _, deliveryID := range claimIDs {
+		claim := c.deliveryClaims[deliveryID]
+		if claim == nil {
+			continue
+		}
+		_, senderCovered := members[claim.delegateID]
+		_, ownerCovered := members[claim.ownerID]
+		if !senderCovered && !ownerCovered {
+			continue
+		}
+		delete(c.deliveryClaims, deliveryID)
+		stop.waiters = append(stop.waiters, claim.waiter)
+		plan.waiters = append(plan.waiters, claim.waiter)
+	}
 	c.stop = stop
 	c.evidenceVersion++
 	updates := delegateMutationPlans{}
@@ -142,6 +163,7 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 
 func (c *delegateTreeController) cancelPlanForStopLocked(stop *delegateStopState) delegateCancelPlan {
 	plan := delegateCancelPlan{requestSeq: stop.requestSeq, targetID: stop.targetID}
+	plan.waiters = append(plan.waiters, stop.waiters...)
 	for _, id := range c.memberIDsLeafFirstLocked(stop.members) {
 		if live := c.live[id]; live != nil && live.binding != nil {
 			if _, active := stop.active[live.binding.lease]; active && live.binding.cancel != nil {
@@ -438,6 +460,9 @@ func executeDelegateCancelPlan(plan delegateCancelPlan) {
 		if shell.cancel != nil {
 			shell.cancel()
 		}
+	}
+	for _, waiter := range plan.waiters {
+		resolveDelegateInlineClaim(waiter, delegateInlineResolution{fallback: true})
 	}
 }
 

@@ -359,6 +359,18 @@ func TestDelegateControllerRootCloseFencesAdmissionWhileReceiptDrains(t *testing
 	}
 }
 
+func TestDelegateControllerRootCloseDoesNotClaimRetainedDelivery(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	seedDelegateControllerDelivery(t, c, "dlg_target")
+	if err := c.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if len(c.deliveryClaims) != 0 || len(c.deliveries) != 0 {
+		t.Fatalf("close manufactured delivery work: claims=%#v receipts=%#v", c.deliveryClaims, c.deliveries)
+	}
+}
+
 func seedDelegateControllerDelivery(t *testing.T, c *delegateTreeController, delegateID string) {
 	t.Helper()
 	c.mu.Lock()

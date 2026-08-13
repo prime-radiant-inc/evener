@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -20,44 +21,107 @@ func FuzzDelegateRestartEquivalence(f *testing.F) {
 		restarting, path := newDelegateControllerTestHarness(t, 4, 2)
 		seedRestartFuzzHistory(t, uninterrupted, program)
 		seedRestartFuzzHistory(t, restarting, program)
+		seedDelegateShellStoreAt(t, filepath.Join(jobsDir(uninterrupted.stateDir, "child-dlg_child"), "jobs.jsonl"))
+		seedDelegateShellStoreAt(t, filepath.Join(jobsDir(restarting.stateDir, "child-dlg_child"), "jobs.jsonl"))
 
-		// Process-local delivery receipts do not survive a process boundary. The
-		// uninterrupted comparison drops the same receipts explicitly while the
-		// restarted controller proves they are absent after reopen.
+		// Process-local delivery claims and receipts do not survive a process
+		// boundary. The uninterrupted comparison drops the same evidence while
+		// the restarted controller proves it is absent after reopen.
 		uninterrupted.mu.Lock()
 		uninterrupted.deliveries = make(map[uint64]*delegateDeliveryAdmission)
+		uninterrupted.deliveryClaims = make(map[string]*delegateDeliveryClaim)
 		uninterrupted.evidenceVersion++
 		uninterrupted.mu.Unlock()
 		restarted := reopenDelegateController(t, restarting, path)
 
-		leftEvidence, err := collectDelegateReconcileEvidence(uninterrupted.stateDir, uninterrupted.ReconcileRequirements())
-		if err != nil {
-			t.Fatalf("collect uninterrupted evidence: %v", err)
-		}
-		rightEvidence, err := collectDelegateReconcileEvidence(restarted.stateDir, restarted.ReconcileRequirements())
-		if err != nil {
-			t.Fatalf("collect restarted evidence: %v", err)
-		}
-		if _, err := uninterrupted.Reconcile(leftEvidence); err != nil {
-			t.Fatalf("uninterrupted Reconcile: %v", err)
-		}
-		if _, err := restarted.Reconcile(rightEvidence); err != nil {
-			t.Fatalf("restarted Reconcile: %v", err)
-		}
+		reconcileRestartFuzzToQuiescence(t, uninterrupted)
+		reconcileRestartFuzzToQuiescence(t, restarted)
 		if !reflect.DeepEqual(uninterrupted.durable, restarted.durable) {
 			t.Fatalf("restart state differs:\nuninterrupted=%#v\nrestarted=%#v", uninterrupted.durable, restarted.durable)
 		}
 		if len(restarted.live) != 0 {
 			t.Fatalf("restart constructed runtime/provider state: %#v", restarted.live)
 		}
-		for ownerID, aggregate := range restarted.durable {
+		for name, controller := range map[string]*delegateTreeController{"uninterrupted": uninterrupted, "restarted": restarted} {
+			shell, err := collectShellRuntimeLossEvidence(filepath.Join(jobsDir(controller.stateDir, "child-dlg_child"), "jobs.jsonl"))
+			if err != nil {
+				t.Fatalf("%s collect repaired shell: %v", name, err)
+			}
+			if len(shell.runningJobIDs) != 0 || len(shell.pendingNotification) != 0 {
+				t.Fatalf("%s shell evidence survived quiescence: %#v", name, shell)
+			}
+		}
+		completedMembers := completedDelegateStopMembers(t, restarted)
+		for senderID, aggregate := range restarted.durable {
 			for _, delivery := range aggregate.PendingDeliveries {
-				if covered := restarted.durable[delivery.OwnerDelegateID]; covered != nil && covered.PendingStopSeq != 0 {
-					t.Fatalf("covered-owner delivery survived completion: sender=%s owner=%s", ownerID, delivery.OwnerDelegateID)
+				if _, covered := completedMembers[delivery.OwnerDelegateID]; covered {
+					t.Fatalf("covered-owner delivery survived completion: sender=%s owner=%s", senderID, delivery.OwnerDelegateID)
 				}
 			}
 		}
 	})
+}
+
+func reconcileRestartFuzzToQuiescence(t *testing.T, c *delegateTreeController) {
+	t.Helper()
+	for cycle := 0; cycle < 32; cycle++ {
+		evidence, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
+		if err != nil {
+			t.Fatalf("cycle %d collect evidence: %v", cycle, err)
+		}
+		plans, err := c.Reconcile(evidence)
+		if err != nil {
+			t.Fatalf("cycle %d Reconcile: %v", cycle, err)
+		}
+		for _, plan := range plans.shellRepairs {
+			if err := executeDelegateShellRepair(plan, c.now()); err != nil {
+				t.Fatalf("cycle %d shell repair: %v", cycle, err)
+			}
+		}
+		for _, plan := range plans.attention {
+			if err := c.executeDelegateAttentionCleanup(plan); err != nil {
+				t.Fatalf("cycle %d attention cleanup: %v", cycle, err)
+			}
+		}
+		if c.stop == nil && len(plans.shellRepairs) == 0 && len(plans.attention) == 0 {
+			return
+		}
+	}
+	t.Fatal("reconciliation did not reach quiescence in 32 monotonic cycles")
+}
+
+func completedDelegateStopMembers(t *testing.T, c *delegateTreeController) map[string]struct{} {
+	t.Helper()
+	events, err := c.store.Load()
+	if err != nil {
+		t.Fatalf("Load completed stop events: %v", err)
+	}
+	targetID := ""
+	for _, event := range events {
+		if event.Kind == delegatestore.EventDelegateSubtreeStopCompleted && event.SubtreeStopCompleted != nil {
+			targetID = event.DelegateID
+		}
+	}
+	if targetID == "" {
+		t.Fatal("restart fuzz did not complete its durable stop")
+	}
+	members := map[string]struct{}{targetID: {}}
+	for changed := true; changed; {
+		changed = false
+		for id, aggregate := range c.durable {
+			if aggregate == nil {
+				continue
+			}
+			if _, included := members[id]; included {
+				continue
+			}
+			if _, parentIncluded := members[aggregate.Descriptor.ParentDelegateID]; parentIncluded {
+				members[id] = struct{}{}
+				changed = true
+			}
+		}
+	}
+	return members
 }
 
 func seedRestartFuzzHistory(t *testing.T, c *delegateTreeController, program []byte) {
