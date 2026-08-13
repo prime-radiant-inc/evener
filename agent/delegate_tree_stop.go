@@ -316,7 +316,10 @@ func (c *delegateTreeController) Close(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	c.mu.Lock()
-	c.closing = true
+	if !c.closing {
+		c.closing = true
+		c.evidenceVersion++
+	}
 	pending := c.stop
 	pendingCancelPlan := delegateCancelPlan{}
 	joinedMembers := make(map[string]struct{})

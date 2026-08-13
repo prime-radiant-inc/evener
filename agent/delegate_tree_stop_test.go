@@ -371,6 +371,17 @@ func TestDelegateControllerRootCloseDoesNotClaimRetainedDelivery(t *testing.T) {
 	}
 }
 
+func TestDelegateControllerRootCloseInvalidatesCollectedEvidence(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	evidence := emptyDelegateReconcileEvidence(c)
+	if err := c.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := c.Reconcile(evidence); !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("pre-close evidence after close = %v, want busy", err)
+	}
+}
+
 func seedDelegateControllerDelivery(t *testing.T, c *delegateTreeController, delegateID string) {
 	t.Helper()
 	c.mu.Lock()
