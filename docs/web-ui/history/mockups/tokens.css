@@ -1,3 +1,9 @@
+/**
+ * OBSOLETE — archived token sheet from pre-wave-2 HTML mockups; different names,
+ * fonts, and palette from the live system. The live tokens are in
+ * cmd/serf-hub/frontend/src/styles/tokens.css. Do not copy values from this file.
+ */
+
 :root{
   /* ---- neutral ramp ---- */
   --bg:#0e0f13; --surface:#16181d; --surface-2:#1c1f26;

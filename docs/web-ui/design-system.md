@@ -52,8 +52,8 @@ attention, deep indigo accent), each validated ≥ 4.5:1 for text, 3:1 for UI.
 20 page-title, line-heights 1.5 body, 1.3 titles. Mono never used for chrome labels (retired
 pattern stays retired).
 
-**Space/shape:** 4px grid (`--space-1..9` = 4..64); radius 4 (controls) / 8 (panes, dialogs);
-depth = `--edge` borders + surface steps, shadows only on floating layers (menu, dialog, toast).
+**Space/shape:** 4px grid (`--space-1..9` = 4..64); radius 4 (controls) / 8 (panes, dialogs) / 999px pill (switches, capsules);
+depth = `--edge` borders + surface steps; shadows only on floating layers (menu, popover, tooltip, toast: `--shadow-overlay`; dialog/sheet: `--shadow-modal`).
 
 **Motion:** default none. Allowed: attention onset (one 200ms ease-out color/edge transition),
 streaming caret blink, dialog/menu 120ms fade-scale. Forbidden: idle pulses, skeleton shimmer
@@ -100,10 +100,31 @@ page-title` (12/13/14/16/20px); `--line-height-body/title` (1.5/1.3).
 **Space & shape** — `--space-1` through `--space-9` (4/8/12/16/24/32/40/48/64px — IBM Carbon
 Design System's own spacing progression, adopted because it's the only well-known scale that
 exactly fits the plan's stated endpoints (4, 64) and step count (9) while staying on the 4px
-grid); `--radius-control` (4px), `--radius-pane` (8px).
+grid); `--radius-control` (4px), `--radius-pane` (8px), `--radius-pill` (999px).
 
 **Motion** — `--motion-duration-attention` (200ms), `--motion-duration-overlay` (120ms),
 `--motion-easing-standard` (`ease-out`). See §5 for the budget these back.
+
+**Focus rings** — `--focus-ring` (2px solid accent) and `--focus-ring-danger` (2px solid danger).
+Every interactive widget gets `outline: var(--focus-ring)` on `:focus-visible`; `--focus-ring-danger`
+applies to destructive controls (a red cancel button's ring, for instance). The outline-offset
+varies per site (positive, outside roomy controls; negative, for rows flush inside a clipping
+container). One exception: `shell/palette/commandpalette.module.css` keeps a deliberate quiet
+`2px var(--accent-edge)` ring on `.input:focus` — a full-strength `--focus-ring` on an actively-
+typed text input is louder than the palette wants. Hand-rolled ring geometry (bare `px` + `solid`
+outlines or the retired inset-ring `box-shadow` hack with `var(--accent)`/`var(--danger)`) is
+contract-banned; see §4.
+
+**Stacking order** — The app's z-index values are tokenized to keep stacking context predictable.
+The ladder: `--z-raised` (1, local sticky headers/overlays within a pane), `--z-sticky-bar` (20,
+pane-level pinned bars), `--z-dialog` (1000, modal dialogs + scrim), `--z-menu` (1020, menus,
+popovers, anchored floats), `--z-tooltip` (1030, tooltips beat menus), `--z-toast` (1040, toasts
+beat everything). Raw z-index integers are contract-banned; see §4.
+
+**Elevation** — Floating widgets (menu, popover, tooltip, toast) carry `--shadow-overlay`
+(0 4px 16px); dialogs and sheets carry `--shadow-modal` (0 16px 40px). Both are composed from
+`--shadow-color` (theme-dependent) — dark 0.5 alpha black, light 0.16 alpha warm near-black.
+Depth within a pane (no floating layers) remains `--edge` borders and `--surface` steps.
 
 ---
 
@@ -163,7 +184,7 @@ a style choice. `--accent` is different in kind, not degree — see below.
 under `src/` directly off disk (`node:fs`, not Vite's `?raw` import — see the file's own header
 comment for why: under vitest's default config, a `.css?raw` import silently returns an empty
 string, a real upstream issue this project works around rather than papering over) and runs
-four independent checks:
+six independent checks:
 
 1. **File naming.** Every stylesheet besides `tokens.css` is named `global.css` or
    `<name>.module.css` — the convention the rest of the contract, and the whole widget
@@ -191,6 +212,15 @@ four independent checks:
    one theme's block silently breaks the other (falls back to the wrong hue, or resolves to
    nothing) — checked by extracting both blocks via brace-depth counting and diffing their
    declared names.
+5. **Z-index values are tokenized.** Every `z-index` declaration uses `var(--z-*)` (from the
+   ladder above), `0` (reset), or `auto` (default) — never raw integers. Keeps stacking context
+   predictable across the app.
+6. **Focus rings use tokens, not hand-rolled geometry.** Every `:focus-visible` outline is
+   `var(--focus-ring)` or `var(--focus-ring-danger)`, never bare `px solid` geometry. The retired
+   inset-ring `box-shadow` hack (with `var(--accent)` or `var(--danger)`) is banned. One exception
+   (scoped to `shell/palette/commandpalette.module.css`): the command palette input keeps a
+   quiet `2px var(--accent-edge)` ring for active typing — softer than a full `--focus-ring` but
+   still present.
 
 Every mechanism above is poison-tested against hand-written snippets proving both what it
 catches and what it must not flag (see the test file itself) — not just asserted to work.

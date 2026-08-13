@@ -670,3 +670,143 @@ test("the canonical dark token block directly scopes nested dark wrappers", () =
   expect(darkBlock).toContain("color-scheme: dark;");
   expect(darkBlock).toContain("--surface-1: #171E28;");
 });
+
+// --- (d) z-index values must use the token ladder ----------------------
+//
+// Every z-index in the app comes from the token ladder (--z-raised, --z-sticky-bar,
+// --z-dialog, --z-menu, --z-tooltip, --z-toast) to keep stacking context
+// predictable and conflict-free. Raw integers are banned except for 0 (reset)
+// and auto (default).
+
+const Z_INDEX_RE = /z-index\s*:\s*([^;}]+)/gi;
+const Z_INDEX_VALUE_RE = /^(var\(--z-[a-z0-9-]+\)|0|auto)$/;
+
+function zIndexViolations(cssText: string): string[] {
+  const violations: string[] = [];
+  const withoutComments = cssText.replace(COMMENT_RE, " ");
+  for (const match of withoutComments.matchAll(Z_INDEX_RE)) {
+    const value = match[1]!.trim();
+    if (!Z_INDEX_VALUE_RE.test(value)) {
+      violations.push(value);
+    }
+  }
+  return violations;
+}
+
+for (const [path, text] of OTHER_STYLESHEETS) {
+  test(`${path} uses only tokenized z-index values`, () => {
+    expect(zIndexViolations(text)).toEqual([]);
+  });
+}
+
+test("catches a bare z-index integer", () => {
+  expect(zIndexViolations(".a { z-index: 1020; }")).toEqual(["1020"]);
+  expect(zIndexViolations(".a { z-index: 999; }")).toEqual(["999"]);
+});
+
+test("allows var(--z-*) token references", () => {
+  expect(zIndexViolations(".a { z-index: var(--z-menu); }")).toEqual([]);
+  expect(zIndexViolations(".a { z-index: var(--z-tooltip); }")).toEqual([]);
+});
+
+test("allows 0 and auto for z-index", () => {
+  expect(zIndexViolations(".a { z-index: 0; }")).toEqual([]);
+  expect(zIndexViolations(".a { z-index: auto; }")).toEqual([]);
+});
+
+test("does not flag z-index mentioned only in a comment", () => {
+  expect(zIndexViolations("/* z-index: 999; */ .a { position: relative; }")).toEqual([]);
+});
+
+// --- (e) focus ring must use token, not hand-rolled geometry -----------
+//
+// THE focus treatment: every :focus-visible ring is `outline: var(--focus-ring)`
+// or `var(--focus-ring-danger)` for destructive controls. Hand-rolled rings
+// (solid px outlines) and the retired inset-ring hack (box-shadow with --accent
+// or --danger) are banned.
+//
+// ONE exact-path exception: shell/palette/commandpalette.module.css keeps a
+// deliberate quiet 2px var(--accent-edge) ring on `.input:focus` — a full-strength
+// --focus-ring on a text input you are actively typing in is louder than the
+// palette wants, and --accent-edge (40% accent) is the sanctioned muted mix.
+// This exception is scoped to the exact path so a same-named stylesheet
+// elsewhere cannot ride along on it.
+
+const FOCUS_RING_EXCEPTIONS = new Set(["shell/palette/commandpalette.module.css"]);
+
+function focusRingViolations(cssText: string): string[] {
+  const violations: string[] = [];
+  const withoutComments = cssText.replace(COMMENT_RE, " ");
+
+  // Check outline declarations for hand-rolled geometry (e.g., "2px solid var(--accent)")
+  const outlineRe = /outline\s*:\s*([^;}]+)/gi;
+  for (const match of withoutComments.matchAll(outlineRe)) {
+    const value = match[1]!.trim();
+    // Flag if it contains px + solid (ring geometry), but allow var(--focus-ring*) and none
+    if (/\b\d+px\s+solid\b/i.test(value)) {
+      violations.push(`outline: ${value}`);
+    }
+  }
+
+  // Check box-shadow for the retired inset-ring hack (var(--accent) or var(--danger))
+  const boxShadowRe = /box-shadow\s*:\s*([^;}]+)/gi;
+  for (const match of withoutComments.matchAll(boxShadowRe)) {
+    const value = match[1]!.trim();
+    if (/var\(\s*--(accent|danger)\b/i.test(value)) {
+      violations.push(`box-shadow: ${value}`);
+    }
+  }
+
+  return violations;
+}
+
+for (const [path, text] of OTHER_STYLESHEETS) {
+  test(`${path} uses token focus rings, not hand-rolled geometry`, () => {
+    if (FOCUS_RING_EXCEPTIONS.has(path)) return;
+    expect(focusRingViolations(text)).toEqual([]);
+  });
+}
+
+test("the commandpalette.module.css focus-ring exception is scoped to its exact path", () => {
+  expect(FOCUS_RING_EXCEPTIONS.has("shell/palette/commandpalette.module.css")).toBe(true);
+  // A same-named decoy elsewhere must still go through the normal check.
+  expect(FOCUS_RING_EXCEPTIONS.has("widgets/commandpalette.module.css")).toBe(false);
+  expect(FOCUS_RING_EXCEPTIONS.has("shell/commandpalette.module.css")).toBe(false);
+});
+
+test("catches a hand-rolled outline ring with px + solid", () => {
+  const violations1 = focusRingViolations(".a:focus-visible { outline: 2px solid var(--accent); }");
+  expect(violations1.length).toBeGreaterThan(0);
+  expect(violations1[0]).toMatch(/^outline:/);
+  const violations2 = focusRingViolations(".a:focus-visible { outline: 3px solid red; }");
+  expect(violations2.length).toBeGreaterThan(0);
+  expect(violations2[0]).toMatch(/^outline:/);
+});
+
+test("allows var(--focus-ring) outline", () => {
+  expect(focusRingViolations(".a:focus-visible { outline: var(--focus-ring); }")).toEqual([]);
+  expect(focusRingViolations(".a:focus-visible { outline: var(--focus-ring-danger); }")).toEqual([]);
+});
+
+test("allows outline: none", () => {
+  expect(focusRingViolations(".a { outline: none; }")).toEqual([]);
+});
+
+test("catches box-shadow with var(--accent) or var(--danger)", () => {
+  const violations1 = focusRingViolations(".a { box-shadow: inset 0 0 0 2px var(--accent); }");
+  expect(violations1.length).toBeGreaterThan(0);
+  expect(violations1[0]).toMatch(/^box-shadow:/);
+  const violations2 = focusRingViolations(".a { box-shadow: inset 0 0 0 2px var(--danger); }");
+  expect(violations2.length).toBeGreaterThan(0);
+  expect(violations2[0]).toMatch(/^box-shadow:/);
+});
+
+test("allows box-shadow with token shadow values", () => {
+  expect(focusRingViolations(".a { box-shadow: var(--shadow-overlay); }")).toEqual([]);
+  expect(focusRingViolations(".a { box-shadow: var(--shadow-modal); }")).toEqual([]);
+});
+
+test("does not flag outline or box-shadow mentioned only in comments", () => {
+  expect(focusRingViolations("/* outline: 2px solid red; */ .a { position: relative; }")).toEqual([]);
+  expect(focusRingViolations("/* box-shadow: inset 0 0 0 2px var(--accent); */ .a { color: red; }")).toEqual([]);
+});
