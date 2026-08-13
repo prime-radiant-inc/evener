@@ -28,3 +28,12 @@
   font-family: var(--font-sans); /* a chrome label, never mono - see Direction */
   font-size: var(--font-size-caption);
 }
+
+/* Fixture-data caption under a surface section's heading: reminds the
+ * reader the surface below renders canned data, not a live hub. */
+.note {
+  margin: 0;
+  color: var(--ink-low);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}

@@ -1,0 +1,53 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-1);
+  border-radius: var(--radius-pane);
+  /* --shadow-card embeds its own 1px ring, replacing a border. */
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+/* Micro-label pattern (Beautiful UI chrome pass, §2) - same header-band
+ * shape as PaneScaffold's own title. */
+.header {
+  padding: var(--space-2) var(--space-4);
+  background: var(--surface-inset);
+  border-bottom: 1px solid var(--edge);
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-micro);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--edge);
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.label {
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
+
+.value {
+  color: var(--ink-hi);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-ui);
+}

@@ -6,6 +6,11 @@ import { AppShell } from "./shell/AppShell";
 // entirely for a production build: `npm run build` emits no gallery/harness
 // chunk (see this task's report for the dist/ listing that confirms it).
 const WidgetGallery = import.meta.env.DEV ? lazy(() => import("./dev/WidgetGallery")) : null;
+// SurfaceGallery mirrors WidgetGallery exactly, one route over: /dev/surfaces
+// renders real pane-level surfaces (transcript, composer, chrome, rail, …)
+// with fixture/seeded-store data instead of live network data - see
+// dev/SurfaceGallery.tsx's own header.
+const SurfaceGallery = import.meta.env.DEV ? lazy(() => import("./dev/SurfaceGallery")) : null;
 // DevHarness is a named export (dev/DevHarness.tsx), not a default one -
 // React.lazy needs a Promise<{default}>, so this adapts the import rather
 // than changing DevHarness's own export shape (which dev/DevHarness.test.tsx
@@ -19,6 +24,13 @@ export function App() {
     return (
       <Suspense fallback={null}>
         <WidgetGallery />
+      </Suspense>
+    );
+  }
+  if (SurfaceGallery !== null && window.location.pathname === "/dev/surfaces") {
+    return (
+      <Suspense fallback={null}>
+        <SurfaceGallery />
       </Suspense>
     );
   }

@@ -40,7 +40,11 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     proxy: {
-      "/rpc": { target: hub, ws: true },
+      // changeOrigin + an explicit Origin header: the hub's same-origin
+      // guard (internal/httpguard) only admits its own host as Origin, so
+      // the browser's dev-server origin must be rewritten on the proxied
+      // WebSocket upgrade or /rpc never connects in dev.
+      "/rpc": { target: hub, ws: true, changeOrigin: true, headers: { Origin: hub } },
       "/api": hub,
       "/auth": hub,
       "/doc": hub,

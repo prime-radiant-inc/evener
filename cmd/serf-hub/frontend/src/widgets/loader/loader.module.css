@@ -1,0 +1,91 @@
+.loader {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 4px);
+  grid-template-rows: repeat(3, 4px);
+  gap: 1.5px;
+  flex: none;
+}
+
+.cell {
+  width: 4px;
+  height: 4px;
+  border-radius: 1px;
+  background: var(--ink-low);
+  opacity: 0.3;
+}
+
+/* The one deliberate exception to the app's ban on idle animation - see
+ * this widget's index.tsx doc comment for why Loader (not Cadence) is where
+ * it lives. Nine cells wave on a staggered diagonal at a slow ~1.4s period;
+ * under prefers-reduced-motion: no-preference only. With a reduced-motion
+ * preference set, every cell just stays at its static, dim resting opacity
+ * (0.3 above) - the elapsed readout keeps counting either way, since it's
+ * driven by the startedAt/now props, not by this animation.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .cell {
+    animation: loader-pulse 1.4s ease-in-out infinite;
+  }
+
+  /* Diagonal wavefront delays, by grid position (row-major, 3x3):
+   * 0 1 2        0    90   180
+   * 3 4 5   ->  90   180   270  ms
+   * 6 7 8      180   270   360
+   */
+  .cell:nth-child(1) {
+    animation-delay: 0ms;
+  }
+  .cell:nth-child(2) {
+    animation-delay: 90ms;
+  }
+  .cell:nth-child(3) {
+    animation-delay: 180ms;
+  }
+  .cell:nth-child(4) {
+    animation-delay: 90ms;
+  }
+  .cell:nth-child(5) {
+    animation-delay: 180ms;
+  }
+  .cell:nth-child(6) {
+    animation-delay: 270ms;
+  }
+  .cell:nth-child(7) {
+    animation-delay: 180ms;
+  }
+  .cell:nth-child(8) {
+    animation-delay: 270ms;
+  }
+  .cell:nth-child(9) {
+    animation-delay: 360ms;
+  }
+
+  @keyframes loader-pulse {
+    0%,
+    100% {
+      opacity: 0.3;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+}
+
+.label {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+}
+
+.elapsed {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  font-variant-numeric: tabular-nums;
+}

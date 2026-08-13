@@ -1,0 +1,76 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  background: var(--surface-1);
+  border-radius: var(--radius-pane);
+  /* --shadow-card embeds its own 1px ring, replacing a border. */
+  box-shadow: var(--shadow-card);
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--ink-low);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-micro);
+}
+
+.title {
+  margin: 0;
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-semibold);
+}
+
+.confidenceRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.confidenceLabel {
+  flex: none;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
+
+.meterTrack {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: var(--radius-chip);
+  background: var(--field);
+  overflow: hidden;
+}
+
+.meterFill {
+  height: 100%;
+  width: var(--fill);
+  border-radius: var(--radius-chip);
+  background: var(--accent);
+}
+
+.body {
+  margin: 0;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-body);
+}
+
+.alternatives {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.footer {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}

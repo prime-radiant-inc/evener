@@ -1,0 +1,66 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  background: var(--surface-inset);
+  border-radius: var(--radius-control);
+  text-decoration: none;
+  color: inherit;
+}
+
+a.card {
+  cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+a.card:hover {
+  background: var(--hover-1);
+}
+
+a.card:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.sourceRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.glyph {
+  flex: none;
+  display: inline-flex;
+  color: var(--ink-low);
+}
+
+.source {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-low);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
+
+.meta {
+  flex: none;
+  color: var(--ink-low);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
+
+.snippet {
+  margin: 0;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-body);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

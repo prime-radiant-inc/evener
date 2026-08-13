@@ -1,0 +1,85 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  max-width: 320px;
+  padding: var(--space-4);
+  background: var(--surface-1);
+  border-radius: var(--radius-pane);
+  box-shadow: var(--shadow-card);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.counter {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  font-variant-numeric: tabular-nums;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-weight: var(--font-weight-medium);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+}
+
+.body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  color: var(--ink-mid);
+}
+
+.chartWrap {
+  width: 100%;
+}
+
+.chart {
+  display: block;
+  width: 100%;
+  height: 48px;
+}
+
+.area {
+  fill: color-mix(in oklab, var(--accent) 15%, transparent);
+  stroke: none;
+}
+
+.line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Standard visually-hidden recipe (see src/widgets/keyhint/keyhint.module.css
+ * for the same pattern) - carries the chart's min/max as real text since the
+ * <svg> itself is aria-hidden. */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
