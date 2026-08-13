@@ -341,6 +341,60 @@ func TestDelegateControllerStoppedFinishRemainsStoppingWithDiagnostic(t *testing
 	}
 }
 
+func TestDelegateControllerRestartStoppingFinishUsesCanonicalPacket(t *testing.T) {
+	live, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, live, "dlg_live", "")
+	liveLease := delegateLease{delegateID: "dlg_live", generation: 1}
+	liveDiagnostic := delegateControllerReportedPacket("live diagnostic")
+	if _, _, err := live.BeginSettlement(liveLease, &liveDiagnostic); err != nil {
+		t.Fatalf("live BeginSettlement: %v", err)
+	}
+	appendDelegateControllerStopRequest(t, live, "dlg_live")
+	if _, err := live.FinishGeneration(liveLease, delegateFinish{outcome: delegatestore.OutcomeCompleted}); err != nil {
+		t.Fatalf("live FinishGeneration: %v", err)
+	}
+	liveAggregate := live.durable["dlg_live"]
+	if len(liveAggregate.PendingDeliveries) != 1 {
+		t.Fatalf("live pending deliveries = %#v, want one", liveAggregate.PendingDeliveries)
+	}
+
+	restarting, path := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, restarting, "dlg_restart", "")
+	restartLease := delegateLease{delegateID: "dlg_restart", generation: 1}
+	restartDiagnostic := delegateControllerReportedPacket("restart diagnostic")
+	if _, _, err := restarting.BeginSettlement(restartLease, &restartDiagnostic); err != nil {
+		t.Fatalf("restart BeginSettlement: %v", err)
+	}
+	appendDelegateControllerStopRequest(t, restarting, "dlg_restart")
+	if err := restarting.store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	reopened, err := delegatestore.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	restarted, err := openDelegateTreeController(delegateTreeControllerConfig{store: reopened, rootSessionID: "root-session", now: restarting.now})
+	if err != nil {
+		t.Fatalf("openDelegateTreeController: %v", err)
+	}
+	restartedAggregate := restarted.durable["dlg_restart"]
+	if len(restartedAggregate.PendingDeliveries) != 1 {
+		t.Fatalf("restart pending deliveries = %#v, want one", restartedAggregate.PendingDeliveries)
+	}
+	if got, want := restartedAggregate.PendingDeliveries[0].Packet, liveAggregate.PendingDeliveries[0].Packet; !reflect.DeepEqual(got, want) {
+		t.Fatalf("restart stopped packet = %#v, want live canonical packet %#v", got, want)
+	}
+	if !reflect.DeepEqual(liveAggregate.PreparedTerminal, &liveDiagnostic) || !reflect.DeepEqual(restartedAggregate.PreparedTerminal, &restartDiagnostic) {
+		t.Fatalf("prepared diagnostics changed: live=%#v restart=%#v", liveAggregate.PreparedTerminal, restartedAggregate.PreparedTerminal)
+	}
+	for name, aggregate := range map[string]*delegatestore.Aggregate{"live": liveAggregate, "restart": restartedAggregate} {
+		if aggregate.Phase != delegatestore.PhaseStopping || aggregate.CurrentRunOpen || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeStopped || aggregate.LatestOutcome.Reason != "stopped_by_parent" {
+			t.Fatalf("%s stopped aggregate = %#v", name, aggregate)
+		}
+	}
+}
+
 func TestDelegateControllerStopCompletedClearsPreparedDiagnostic(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")

@@ -71,7 +71,7 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 		events = []delegatestore.Event{delegateRunFinishedEvent(lease, outcome, disposition, reason, endedAt, deliveryID, nil)}
 
 	case delegatestore.PhaseStopping:
-		packet := delegateTerminalErrorPacket("stopped by parent")
+		packet := delegateStoppedTerminalPacket()
 		outcome = delegatestore.OutcomeStopped
 		disposition = delegatestore.DispositionTerminalError
 		reason = "stopped_by_parent"
@@ -158,6 +158,10 @@ func delegateDeliveryID(delegateID string, generation uint64) string {
 
 func delegateMissingTerminalPacket() delegatestore.TerminalPacket {
 	return delegateTerminalErrorPacket("delegate completed without an accepted communicate result")
+}
+
+func delegateStoppedTerminalPacket() delegatestore.TerminalPacket {
+	return delegateTerminalErrorPacket("stopped by parent")
 }
 
 func delegateIsMissingTerminalPacket(packet delegatestore.TerminalPacket) bool {

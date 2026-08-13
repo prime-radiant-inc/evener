@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -11,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -260,14 +263,24 @@ func TestDelegateControllerRemainsDormant(t *testing.T) {
 	if len(pkg.Errors) != 0 {
 		t.Fatalf("load agent package: %s", pkg.Errors[0])
 	}
+	production, err := delegateControllerProductionFiles(".")
+	if err != nil {
+		t.Fatalf("enumerate production files: %v", err)
+	}
+	loadedFiles := make([]string, 0, len(pkg.Syntax))
 	for _, file := range pkg.Syntax {
-		name := filepath.Base(pkg.Fset.Position(file.Package).Filename)
-		for _, violation := range delegateControllerDormancyViolations(pkg.Fset, file, pkg.TypesInfo, pkg.Types) {
-			if delegateControllerDormancyReferenceAllowed(name, violation) {
-				continue
-			}
-			t.Errorf("active production caller references dormant delegate controller %s %s at %s", violation.kind, violation.symbol, violation.position)
-		}
+		loadedFiles = append(loadedFiles, filepath.Base(pkg.Fset.Position(file.Package).Filename))
+	}
+	if omitted := delegateControllerOmittedProductionFiles(production, loadedFiles); len(omitted) != 0 {
+		t.Fatalf("packages.Load omitted top-level production files: %v", omitted)
+	}
+
+	var violations []delegateControllerDormancyViolation
+	for _, file := range pkg.Syntax {
+		violations = append(violations, delegateControllerDormancyViolations(pkg.Fset, file, pkg.TypesInfo, pkg.Types)...)
+	}
+	for _, inventoryError := range delegateControllerDormancyInventoryErrors(violations, delegateControllerDormancyExpectedInventory) {
+		t.Error(inventoryError)
 	}
 }
 
@@ -323,6 +336,29 @@ func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing
 	}
 }
 
+func TestDelegateControllerDormancyGuardRejectsOmittedProductionFile(t *testing.T) {
+	production := []string{"active.go", "inactive_windows.go"}
+	loaded := []string{"active.go"}
+	if got, want := delegateControllerOmittedProductionFiles(production, loaded), []string{"inactive_windows.go"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("omitted production files = %#v, want %#v", got, want)
+	}
+}
+
+func TestDelegateControllerDormancyGuardRejectsExtraSameFunctionReference(t *testing.T) {
+	files, file, info, pkg := typeCheckDelegateControllerDormancyFixture(t, "delegate_tree_steer.go", `package agent
+func probe(session *Session) {
+	session.appendDelegateSteeringDurably("first")
+	session.appendDelegateSteeringDurably("second")
+}`)
+	violations := delegateControllerDormancyViolations(files, file, info, pkg)
+	expected := map[delegateControllerDormancyInventoryKey]int{
+		{filename: "delegate_tree_steer.go", function: "probe", kind: "session steering method", symbol: "appendDelegateSteeringDurably"}: 1,
+	}
+	if errors := delegateControllerDormancyInventoryErrors(violations, expected); len(errors) == 0 {
+		t.Fatalf("extra same-function reference was accepted: violations=%#v", violations)
+	}
+}
+
 var delegateControllerLifecycleMethods = map[string]bool{
 	"ReserveCreate":         true,
 	"ReserveStart":          true,
@@ -345,29 +381,100 @@ var delegateControllerLifecycleMethods = map[string]bool{
 	"Snapshot":              true,
 }
 
-var delegateControllerImplementationFiles = map[string]bool{
-	"delegate_tree_controller.go": true,
-	"delegate_tree_start.go":      true,
-	"delegate_tree_steer.go":      true,
-	"delegate_tree_finish.go":     true,
-	"delegate_delivery.go":        true,
+var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancyInventoryKey]int{
+	{filename: "delegate_tree_controller.go", function: "openDelegateTreeController", kind: "composite literal", symbol: "delegateTreeController"}:              1,
+	{filename: "delegate_tree_steer.go", function: "(*delegateTreeController).Steer", kind: "session steering method", symbol: "appendDelegateSteeringDurably"}: 1,
+	{filename: "delegate_delivery.go", function: "deliverDelegatePacket", kind: "lifecycle method", symbol: "BeginDelivery"}:                                    1,
+	{filename: "delegate_delivery.go", function: "deliverDelegatePacket", kind: "lifecycle method", symbol: "CompleteDelivery"}:                                 4,
+	{filename: "delegate_delivery.go", function: "(*delegateToolResultCommit).Complete", kind: "lifecycle method", symbol: "CompleteDelivery"}:                  1,
 }
 
 type delegateControllerDormancyViolation struct {
+	function string
 	kind     string
 	symbol   string
 	position token.Position
 }
 
-func delegateControllerDormancyReferenceAllowed(filename string, violation delegateControllerDormancyViolation) bool {
-	switch violation.kind {
-	case "session steering method":
-		return filename == "delegate_tree_steer.go"
-	case "delivery commit method":
-		return filename == "delegate_delivery.go"
-	default:
-		return delegateControllerImplementationFiles[filename]
+type delegateControllerDormancyInventoryKey struct {
+	filename string
+	function string
+	kind     string
+	symbol   string
+}
+
+func delegateControllerOmittedProductionFiles(production, loaded []string) []string {
+	loadedSet := make(map[string]bool, len(loaded))
+	for _, filename := range loaded {
+		loadedSet[filename] = true
 	}
+	omitted := make([]string, 0)
+	for _, filename := range production {
+		if !loadedSet[filename] {
+			omitted = append(omitted, filename)
+		}
+	}
+	sort.Strings(omitted)
+	return omitted
+}
+
+func delegateControllerDormancyInventoryErrors(violations []delegateControllerDormancyViolation, expected map[delegateControllerDormancyInventoryKey]int) []string {
+	actual := make(map[delegateControllerDormancyInventoryKey]int)
+	positions := make(map[delegateControllerDormancyInventoryKey][]token.Position)
+	for _, violation := range violations {
+		key := delegateControllerDormancyInventoryKey{
+			filename: filepath.Base(violation.position.Filename),
+			function: violation.function,
+			kind:     violation.kind,
+			symbol:   violation.symbol,
+		}
+		actual[key]++
+		positions[key] = append(positions[key], violation.position)
+	}
+	keys := make(map[delegateControllerDormancyInventoryKey]bool, len(actual)+len(expected))
+	for key := range actual {
+		keys[key] = true
+	}
+	for key := range expected {
+		keys[key] = true
+	}
+	ordered := make([]delegateControllerDormancyInventoryKey, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		left, right := ordered[i], ordered[j]
+		return fmt.Sprintf("%s\x00%s\x00%s\x00%s", left.filename, left.function, left.kind, left.symbol) <
+			fmt.Sprintf("%s\x00%s\x00%s\x00%s", right.filename, right.function, right.kind, right.symbol)
+	})
+	var inventoryErrors []string
+	for _, key := range ordered {
+		if actual[key] == expected[key] {
+			continue
+		}
+		inventoryErrors = append(inventoryErrors, fmt.Sprintf(
+			"dormant delegate reference inventory %s %s %s %s count=%d want=%d positions=%v",
+			key.filename, key.function, key.kind, key.symbol, actual[key], expected[key], positions[key],
+		))
+	}
+	return inventoryErrors
+}
+
+func delegateControllerProductionFiles(directory string) ([]string, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil, err
+	}
+	production := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		production = append(production, name)
+	}
+	sort.Strings(production)
+	return production, nil
 }
 
 func delegateControllerDormancyViolations(files *token.FileSet, file *ast.File, info *types.Info, pkg *types.Package) []delegateControllerDormancyViolation {
@@ -377,36 +484,76 @@ func delegateControllerDormancyViolations(files *token.FileSet, file *ast.File, 
 	constructor := pkg.Scope().Lookup("openDelegateTreeController")
 	delivery := pkg.Scope().Lookup("deliverDelegatePacket")
 	var violations []delegateControllerDormancyViolation
+	appendViolation := func(position token.Pos, kind, symbol string) {
+		violations = append(violations, delegateControllerDormancyViolation{
+			function: delegateControllerEnclosingFunction(file, position, info),
+			kind:     kind,
+			symbol:   symbol,
+			position: files.Position(position),
+		})
+	}
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch typed := node.(type) {
 		case *ast.Ident:
 			if object := info.Uses[typed]; object == constructor || object == delivery {
-				violations = append(violations, delegateControllerDormancyViolation{kind: "dormant function", symbol: typed.Name, position: files.Position(typed.Pos())})
+				appendViolation(typed.Pos(), "dormant function", typed.Name)
 			}
 		case *ast.SelectorExpr:
 			selection := info.Selections[typed]
 			switch {
 			case selection != nil && delegateControllerLifecycleMethods[typed.Sel.Name] && delegateControllerMethodHasReceiver(selection.Obj(), controller):
-				violations = append(violations, delegateControllerDormancyViolation{kind: "lifecycle method", symbol: typed.Sel.Name, position: files.Position(typed.Pos())})
+				appendViolation(typed.Pos(), "lifecycle method", typed.Sel.Name)
 			case selection != nil && typed.Sel.Name == "appendDelegateSteeringDurably" && delegateControllerMethodHasReceiver(selection.Obj(), session):
-				violations = append(violations, delegateControllerDormancyViolation{kind: "session steering method", symbol: typed.Sel.Name, position: files.Position(typed.Pos())})
+				appendViolation(typed.Pos(), "session steering method", typed.Sel.Name)
 			case selection != nil && typed.Sel.Name == "Complete" && delegateControllerMethodHasReceiver(selection.Obj(), deliveryCommit):
-				violations = append(violations, delegateControllerDormancyViolation{kind: "delivery commit method", symbol: typed.Sel.Name, position: files.Position(typed.Pos())})
+				appendViolation(typed.Pos(), "delivery commit method", typed.Sel.Name)
 			}
 		case *ast.CompositeLit:
 			if isDelegateControllerType(info.TypeOf(typed), controller) {
-				violations = append(violations, delegateControllerDormancyViolation{kind: "composite literal", symbol: "delegateTreeController", position: files.Position(typed.Pos())})
+				appendViolation(typed.Pos(), "composite literal", "delegateTreeController")
 			}
 		case *ast.CallExpr:
 			identifier, isIdentifier := typed.Fun.(*ast.Ident)
 			builtin, isBuiltin := info.Uses[identifier].(*types.Builtin)
 			if isIdentifier && isBuiltin && builtin.Name() == "new" && len(typed.Args) == 1 && isDelegateControllerType(info.TypeOf(typed.Args[0]), controller) {
-				violations = append(violations, delegateControllerDormancyViolation{kind: "new expression", symbol: "delegateTreeController", position: files.Position(typed.Pos())})
+				appendViolation(typed.Pos(), "new expression", "delegateTreeController")
 			}
 		}
 		return true
 	})
 	return violations
+}
+
+func delegateControllerEnclosingFunction(file *ast.File, position token.Pos, info *types.Info) string {
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || position < function.Pos() || position > function.End() {
+			continue
+		}
+		object, ok := info.Defs[function.Name].(*types.Func)
+		if !ok {
+			return function.Name.Name
+		}
+		signature, ok := object.Type().(*types.Signature)
+		if !ok || signature.Recv() == nil {
+			return object.Name()
+		}
+		receiver := types.Unalias(signature.Recv().Type())
+		pointer := false
+		if typed, ok := receiver.(*types.Pointer); ok {
+			pointer = true
+			receiver = types.Unalias(typed.Elem())
+		}
+		named, ok := receiver.(*types.Named)
+		if !ok {
+			return object.FullName()
+		}
+		if pointer {
+			return "(*" + named.Obj().Name() + ")." + object.Name()
+		}
+		return "(" + named.Obj().Name() + ")." + object.Name()
+	}
+	return "<package>"
 }
 
 func delegateControllerMethodHasReceiver(object types.Object, controller types.Type) bool {

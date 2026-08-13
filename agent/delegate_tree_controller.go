@@ -263,6 +263,7 @@ func (c *delegateTreeController) reconcileRuntimeLostLocked() error {
 				nil,
 			)}
 		case delegatestore.PhaseStopping:
+			stoppedPacket := delegateStoppedTerminalPacket()
 			events = []delegatestore.Event{delegateRunFinishedEvent(
 				lease,
 				delegatestore.OutcomeStopped,
@@ -270,7 +271,7 @@ func (c *delegateTreeController) reconcileRuntimeLostLocked() error {
 				"stopped_by_parent",
 				endedAt,
 				delegateDeliveryID(id, aggregate.Generation),
-				&packet,
+				&stoppedPacket,
 			)}
 		default:
 			return fmt.Errorf("reconcile delegate %s: open run has phase %s", id, aggregate.Phase)
