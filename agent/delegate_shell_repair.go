@@ -104,12 +104,20 @@ func delegateTranscriptPathFromRef(stateDir, ref string) (string, string, error)
 }
 
 func readPendingDelegateAttention(path, expectedSessionID string) ([]string, error) {
+	fold, err := readDelegateAttentionFold(path, expectedSessionID)
+	if err != nil {
+		return nil, err
+	}
+	return fold.pendingIDs(), nil
+}
+
+func readDelegateAttentionFold(path, expectedSessionID string) (delegateAttentionFold, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return newDelegateAttentionFold(), nil
 		}
-		return nil, fmt.Errorf("open delegate attention transcript: %w", err)
+		return delegateAttentionFold{}, fmt.Errorf("open delegate attention transcript: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 	reader := bufio.NewReaderSize(f, 64*1024)
@@ -118,7 +126,7 @@ func readPendingDelegateAttention(path, expectedSessionID string) ([]string, err
 	for {
 		line, complete, _, readErr := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
 		if readErr != nil {
-			return nil, readErr
+			return delegateAttentionFold{}, readErr
 		}
 		if !complete {
 			break
@@ -130,28 +138,24 @@ func readPendingDelegateAttention(path, expectedSessionID string) ([]string, err
 		if !headerRead {
 			header, err := transcript.DecodeHeader(line)
 			if err != nil {
-				return nil, err
+				return delegateAttentionFold{}, err
 			}
 			if header.SessionID != expectedSessionID {
-				return nil, fmt.Errorf("delegate attention transcript session %q, want %q", header.SessionID, expectedSessionID)
+				return delegateAttentionFold{}, fmt.Errorf("delegate attention transcript session %q, want %q", header.SessionID, expectedSessionID)
 			}
 			headerRead = true
 			continue
 		}
 		entry, err := transcript.DecodeEntry(line)
 		if err != nil {
-			return nil, err
+			return delegateAttentionFold{}, err
 		}
 		entries = append(entries, entry)
 	}
 	if !headerRead {
-		return nil, errors.New("delegate attention transcript has no header")
+		return delegateAttentionFold{}, errors.New("delegate attention transcript has no header")
 	}
-	fold, err := foldDelegateAttention(entries)
-	if err != nil {
-		return nil, err
-	}
-	return fold.pendingIDs(), nil
+	return foldDelegateAttention(entries)
 }
 
 type delegateAttentionFold struct {
@@ -161,10 +165,7 @@ type delegateAttentionFold struct {
 }
 
 func foldDelegateAttention(entries []transcript.Entry) (delegateAttentionFold, error) {
-	fold := delegateAttentionFold{
-		content:     make(map[string]llm.Message),
-		resolutions: make(map[string]delegateAttentionResolution),
-	}
+	fold := newDelegateAttentionFold()
 	for _, entry := range entries {
 		turn := entry.Turn
 		if turn.AttentionID != "" {
@@ -205,6 +206,13 @@ func foldDelegateAttention(entries []transcript.Entry) (delegateAttentionFold, e
 	return fold, nil
 }
 
+func newDelegateAttentionFold() delegateAttentionFold {
+	return delegateAttentionFold{
+		content:     make(map[string]llm.Message),
+		resolutions: make(map[string]delegateAttentionResolution),
+	}
+}
+
 func (f delegateAttentionFold) pendingIDs() []string {
 	pending := make([]string, 0, len(f.order))
 	for _, attentionID := range f.order {
@@ -216,9 +224,6 @@ func (f delegateAttentionFold) pendingIDs() []string {
 }
 
 func appendColdAttentionResolution(path, expectedSessionID string, ids []string, disposition delegateAttentionResolution) (err error) {
-	if disposition != delegateAttentionConsumed && disposition != delegateAttentionDiscarded {
-		return fmt.Errorf("invalid attention resolution %q", disposition)
-	}
 	writer, entries, err := transcript.OpenWriterForSession(path, expectedSessionID)
 	if err != nil {
 		return err
@@ -228,30 +233,16 @@ func appendColdAttentionResolution(path, expectedSessionID string, ids []string,
 	if err != nil {
 		return err
 	}
-	for _, attentionID := range ids {
-		if attentionID == "" {
-			return errors.New("attention resolution ID is empty")
-		}
-		if previous, resolved := fold.resolutions[attentionID]; resolved {
-			if previous != disposition {
-				return fmt.Errorf("attention %q has conflicting resolution %q", attentionID, previous)
-			}
-			continue
-		}
-		if _, pending := fold.content[attentionID]; !pending {
-			return fmt.Errorf("attention %q is not pending", attentionID)
-		}
-		turn := schema.NewTurn(schema.TurnAttentionResolution, llm.System("Attention resolved."))
-		turn.AttentionResolution = &schema.AttentionResolutionInfo{
-			AttentionID: attentionID,
-			Disposition: string(disposition),
-		}
-		if err := writer.AppendDurable(turn); err != nil {
-			return err
-		}
-		fold.resolutions[attentionID] = disposition
+	return appendDelegateAttentionResolutions(writer, fold, ids, disposition)
+}
+
+func delegateAttentionResolutionTurn(attentionID string, disposition delegateAttentionResolution) schema.Turn {
+	turn := schema.NewTurn(schema.TurnAttentionResolution, llm.System("Attention resolved."))
+	turn.AttentionResolution = &schema.AttentionResolutionInfo{
+		AttentionID: attentionID,
+		Disposition: string(disposition),
 	}
-	return nil
+	return turn
 }
 
 func executeDelegateShellRepair(plan delegateShellRepairPlan, now time.Time) (err error) {

@@ -252,14 +252,20 @@ func (c *delegateTreeController) ReportAttentionResolved(requestSeq, evidenceVer
 }
 
 func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAttentionCleanupPlan) error {
-	path, expectedSessionID, err := delegateTranscriptPathFromRef(c.stateDir, plan.transcriptRef)
-	if err != nil {
-		return err
+	if plan.runtime != nil {
+		if err := plan.runtime.resolveAttentionDurably([]string{plan.attentionID}, plan.disposition); err != nil {
+			return err
+		}
+	} else {
+		path, expectedSessionID, err := delegateTranscriptPathFromRef(c.stateDir, plan.transcriptRef)
+		if err != nil {
+			return err
+		}
+		if err := appendColdAttentionResolution(path, expectedSessionID, []string{plan.attentionID}, plan.disposition); err != nil {
+			return err
+		}
 	}
-	if err := appendColdAttentionResolution(path, expectedSessionID, []string{plan.attentionID}, plan.disposition); err != nil {
-		return err
-	}
-	_, err = c.ReportAttentionResolved(plan.requestSeq, plan.evidenceVersion, plan.delegateID, plan.attentionID, plan.disposition, plan.runtime)
+	_, err := c.ReportAttentionResolved(plan.requestSeq, plan.evidenceVersion, plan.delegateID, plan.attentionID, plan.disposition, plan.runtime)
 	return err
 }
 

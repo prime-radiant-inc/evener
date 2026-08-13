@@ -307,6 +307,10 @@ func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing
 		{name: "bound session steering alias", source: `package agent; func probe(session *Session) { appendSteer := session.appendDelegateSteeringDurably; _ = appendSteer }`, symbol: "appendDelegateSteeringDurably"},
 		{name: "session steering method expression", source: `package agent; func probe() { appendSteer := (*Session).appendDelegateSteeringDurably; _ = appendSteer }`, symbol: "appendDelegateSteeringDurably"},
 		{name: "session steering method expression through type alias", source: `package agent; type child = Session; func probe() { appendSteer := (*child).appendDelegateSteeringDurably; _ = appendSteer }`, symbol: "appendDelegateSteeringDurably"},
+		{name: "session attention call", source: `package agent; func probe(session *Session) { session.resolveAttentionDurably(nil, "") }`, symbol: "resolveAttentionDurably"},
+		{name: "bound session attention alias", source: `package agent; func probe(session *Session) { resolve := session.resolveAttentionDurably; _ = resolve }`, symbol: "resolveAttentionDurably"},
+		{name: "session attention method expression", source: `package agent; func probe() { resolve := (*Session).resolveAttentionDurably; _ = resolve }`, symbol: "resolveAttentionDurably"},
+		{name: "session attention method expression through type alias", source: `package agent; type child = Session; func probe() { resolve := (*child).resolveAttentionDurably; _ = resolve }`, symbol: "resolveAttentionDurably"},
 		{name: "delivery commit call", source: `package agent; func probe(commit *delegateToolResultCommit) { commit.Complete(true) }`, symbol: "Complete"},
 		{name: "bound delivery commit alias", source: `package agent; func probe(commit *delegateToolResultCommit) { complete := commit.Complete; _ = complete }`, symbol: "Complete"},
 		{name: "delivery commit method expression", source: `package agent; func probe() { complete := (*delegateToolResultCommit).Complete; _ = complete }`, symbol: "Complete"},
@@ -392,14 +396,15 @@ var delegateControllerLifecycleMethods = map[string]bool{
 }
 
 var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancyInventoryKey]int{
-	{filename: "delegate_tree_controller.go", function: "openDelegateTreeController", kind: "composite literal", symbol: "delegateTreeController"}:                             1,
-	{filename: "delegate_tree_steer.go", function: "(*delegateTreeController).Steer", kind: "session steering method", symbol: "appendDelegateSteeringDurably"}:                1,
-	{filename: "delegate_delivery.go", function: "deliverDelegatePacket", kind: "lifecycle method", symbol: "BeginDelivery"}:                                                   1,
-	{filename: "delegate_delivery.go", function: "deliverDelegatePacket", kind: "lifecycle method", symbol: "CompleteDelivery"}:                                                4,
-	{filename: "delegate_delivery.go", function: "(*delegateToolResultCommit).Complete", kind: "lifecycle method", symbol: "CompleteDelivery"}:                                 1,
-	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).executeDelegateAttentionCleanup", kind: "lifecycle method", symbol: "ReportAttentionResolved"}: 1,
-	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopForClose", kind: "lifecycle method", symbol: "ReconcileRequirements"}:                    1,
-	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopForClose", kind: "lifecycle method", symbol: "Reconcile"}:                                1,
+	{filename: "delegate_tree_controller.go", function: "openDelegateTreeController", kind: "composite literal", symbol: "delegateTreeController"}:                                     1,
+	{filename: "delegate_tree_steer.go", function: "(*delegateTreeController).Steer", kind: "session steering method", symbol: "appendDelegateSteeringDurably"}:                        1,
+	{filename: "delegate_delivery.go", function: "deliverDelegatePacket", kind: "lifecycle method", symbol: "BeginDelivery"}:                                                           1,
+	{filename: "delegate_delivery.go", function: "deliverDelegatePacket", kind: "lifecycle method", symbol: "CompleteDelivery"}:                                                        4,
+	{filename: "delegate_delivery.go", function: "(*delegateToolResultCommit).Complete", kind: "lifecycle method", symbol: "CompleteDelivery"}:                                         1,
+	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).executeDelegateAttentionCleanup", kind: "lifecycle method", symbol: "ReportAttentionResolved"}:         1,
+	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).executeDelegateAttentionCleanup", kind: "session attention method", symbol: "resolveAttentionDurably"}: 1,
+	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopForClose", kind: "lifecycle method", symbol: "ReconcileRequirements"}:                            1,
+	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopForClose", kind: "lifecycle method", symbol: "Reconcile"}:                                        1,
 }
 
 type delegateControllerDormancyViolation struct {
@@ -518,6 +523,8 @@ func delegateControllerDormancyViolations(files *token.FileSet, file *ast.File, 
 				appendViolation(typed.Pos(), "lifecycle method", typed.Sel.Name)
 			case selection != nil && typed.Sel.Name == "appendDelegateSteeringDurably" && delegateControllerMethodHasReceiver(selection.Obj(), session):
 				appendViolation(typed.Pos(), "session steering method", typed.Sel.Name)
+			case selection != nil && typed.Sel.Name == "resolveAttentionDurably" && delegateControllerMethodHasReceiver(selection.Obj(), session):
+				appendViolation(typed.Pos(), "session attention method", typed.Sel.Name)
 			case selection != nil && typed.Sel.Name == "Complete" && delegateControllerMethodHasReceiver(selection.Obj(), deliveryCommit):
 				appendViolation(typed.Pos(), "delivery commit method", typed.Sel.Name)
 			}
@@ -603,6 +610,7 @@ func openDelegateTreeController(delegateTreeControllerConfig) (*delegateTreeCont
 func deliverDelegatePacket() {}
 func (*delegateTreeController) CommitStart(*delegateStartReservation) (delegateStartCommit, error) { return delegateStartCommit{}, nil }
 func (*Session) appendDelegateSteeringDurably(string) {}
+func (*Session) resolveAttentionDurably([]string, string) {}
 func (*delegateToolResultCommit) Complete(bool) {}
 `, 0)
 	if err != nil {
