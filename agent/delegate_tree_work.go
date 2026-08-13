@@ -40,9 +40,11 @@ func (c *delegateTreeController) CommitShellWork(token delegateWorkToken, shellJ
 		return false, errDelegateStaleLease
 	}
 	if c.closing || c.stopCoversLocked(work.owner.delegateID) {
-		delete(c.work, token.processID)
+		work.jobID = shellJobID
+		work.cancel = cancel
+		work.committed = true
 		if c.stop != nil {
-			delete(c.stop.work, token)
+			c.stop.work[token] = shellJobID
 		}
 		c.evidenceVersion++
 		return true, nil
@@ -50,7 +52,7 @@ func (c *delegateTreeController) CommitShellWork(token delegateWorkToken, shellJ
 	work.jobID = shellJobID
 	work.cancel = cancel
 	work.committed = true
-	if c.stop != nil {
+	if c.stopCoversLocked(work.owner.delegateID) {
 		c.stop.work[token] = shellJobID
 	}
 	c.evidenceVersion++

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 
@@ -405,7 +406,18 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 				return err
 			}
 		}
-		if len(plans.attention) != 0 || len(plans.shellRepairs) == 0 && !delegateStopDone(stop) {
+		for _, plan := range plans.attention {
+			if err := c.executeDelegateAttentionCleanup(plan); err != nil {
+				if errors.Is(err, errDelegateStaleLease) {
+					continue
+				}
+				return err
+			}
+		}
+		if len(plans.attention) != 0 || len(plans.shellRepairs) != 0 {
+			continue
+		}
+		if !delegateStopDone(stop) {
 			select {
 			case <-stop.done:
 				return nil

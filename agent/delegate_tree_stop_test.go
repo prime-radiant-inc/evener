@@ -172,7 +172,7 @@ func TestDelegateControllerStopRescansCancellationAttentionBeforeCompletion(t *t
 		t.Fatal("stop completed before attention resolution")
 	default:
 	}
-	if _, err := c.ReportAttentionResolved(result.requestSeq, "dlg_target", "attention-1", delegateAttentionDiscarded, nil); err != nil {
+	if _, err := c.ReportAttentionResolved(result.requestSeq, evidence.evidenceVersion, "dlg_target", "attention-1", delegateAttentionDiscarded, nil); err != nil {
 		t.Fatalf("ReportAttentionResolved: %v", err)
 	}
 	if _, err := c.Reconcile(evidence); !errors.Is(err, errDelegateTargetBusy) {

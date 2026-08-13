@@ -38,7 +38,8 @@ func TestDelegateControllerCommitShellWorkAfterStopCancelsImmediately(t *testing
 	if err != nil {
 		t.Fatalf("BeginShellWork: %v", err)
 	}
-	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
+	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+	if err != nil {
 		t.Fatalf("StopSubtree: %v", err)
 	}
 	cancelled := false
@@ -51,6 +52,31 @@ func TestDelegateControllerCommitShellWorkAfterStopCancelsImmediately(t *testing
 	}
 	if cancelled {
 		t.Fatal("CommitShellWork invoked process cancellation while holding controller ownership")
+	}
+	if _, err := c.FinishGeneration(delegateLease{delegateID: "dlg_target", generation: 1}, delegateFinish{}); err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	if _, err := c.ReportShellFinished(token, "job-other"); !errors.Is(err, errDelegateStaleLease) {
+		t.Fatalf("wrong shell finish error = %v, want stale lease", err)
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("Reconcile before exact shell finish: %v", err)
+	}
+	select {
+	case <-result.done:
+		t.Fatal("stop completed before exact shell finish")
+	default:
+	}
+	if _, err := c.ReportShellFinished(token, "job-shell"); err != nil {
+		t.Fatalf("ReportShellFinished exact: %v", err)
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("Reconcile after exact shell finish: %v", err)
+	}
+	select {
+	case <-result.done:
+	default:
+		t.Fatal("stop remained pending after exact shell finish")
 	}
 }
 
@@ -82,6 +108,31 @@ func TestDelegateControllerShellFinishRequiresTokenAndJobID(t *testing.T) {
 	}
 }
 
+func TestDelegateControllerUnrelatedShellCommitDoesNotJoinStop(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 2, 1)
+	seedDelegateControllerIdle(t, c, "dlg_stopping", "")
+	seedDelegateControllerRunning(t, c, "dlg_running", "")
+	token, err := c.BeginShellWork(delegateLease{delegateID: "dlg_running", generation: 1})
+	if err != nil {
+		t.Fatalf("BeginShellWork: %v", err)
+	}
+	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_stopping")
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	if cancelNow, err := c.CommitShellWork(token, "job-unrelated", func() {}); err != nil || cancelNow {
+		t.Fatalf("CommitShellWork outside stop = cancel:%t err:%v", cancelNow, err)
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	select {
+	case <-result.done:
+	default:
+		t.Fatal("unrelated shell work blocked stop completion")
+	}
+}
+
 func TestDelegateControllerAbortShellReceiptReleasesOnce(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
@@ -99,9 +150,16 @@ func TestDelegateControllerAbortShellReceiptReleasesOnce(t *testing.T) {
 
 func emptyDelegateReconcileEvidence(c *delegateTreeController) delegateReconcileEvidence {
 	requirements := c.ReconcileRequirements()
-	return delegateReconcileEvidence{
+	evidence := delegateReconcileEvidence{
 		evidenceVersion: requirements.evidenceVersion,
 		shells:          map[string]shellRuntimeLossEvidence{},
 		attention:       map[string][]string{},
 	}
+	for id := range requirements.shellStores {
+		evidence.shells[id] = shellRuntimeLossEvidence{}
+	}
+	for id := range requirements.attentionTranscripts {
+		evidence.attention[id] = nil
+	}
+	return evidence
 }

@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,7 +12,219 @@ import (
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/llm"
 )
+
+func TestDelegateAttentionSchemaStrictRoundTrip(t *testing.T) {
+	entries := [][]byte{
+		[]byte(`{"kind":"entry","seq":0,"turn":{"kind":"STEERING","message":{},"timestamp":"0001-01-01T00:00:00Z","usage":{},"attention_id":"shell:job-shell:terminal-1"}}`),
+		[]byte(`{"kind":"entry","seq":1,"turn":{"kind":"ATTENTION_RESOLUTION","message":{},"timestamp":"0001-01-01T00:00:00Z","usage":{},"attention_resolution":{"attention_id":"shell:job-shell:terminal-1","disposition":"discarded"}}}`),
+	}
+	for _, raw := range entries {
+		entry, err := transcript.DecodeEntry(raw)
+		if err != nil {
+			t.Fatalf("strict decode %s: %v", raw, err)
+		}
+		encoded, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("marshal decoded entry: %v", err)
+		}
+		if bytes.Contains(raw, []byte(`"attention_id"`)) && !bytes.Contains(encoded, []byte(`"attention_id"`)) {
+			t.Fatalf("private attention identity was dropped: %s", encoded)
+		}
+	}
+}
+
+func TestDelegateControllerCloseExecutesColdAttentionCleanup(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	path := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
+	writeDelegateAttentionTranscript(t, path, "child-dlg_target", "attention-close")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := c.Close(ctx); err != nil {
+		t.Fatalf("Close with synchronously repairable attention: %v", err)
+	}
+	pending, err := readPendingDelegateAttention(path, "child-dlg_target")
+	if err != nil {
+		t.Fatalf("read attention after close: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("attention after close = %#v, want durable resolution", pending)
+	}
+}
+
+func TestDelegateColdAttentionResolutionIsDurableAndIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "attention.transcript.jsonl")
+	writeDelegateAttentionTranscript(t, path, "child-attention", "attention-idempotent")
+	for i := 0; i < 2; i++ {
+		if err := appendColdAttentionResolution(path, "child-attention", []string{"attention-idempotent"}, delegateAttentionDiscarded); err != nil {
+			t.Fatalf("append resolution %d: %v", i, err)
+		}
+	}
+	writer, entries, err := transcript.OpenWriterForSession(path, "child-attention")
+	if err != nil {
+		t.Fatalf("OpenWriterForSession: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close writer: %v", err)
+	}
+	resolutions := 0
+	for _, entry := range entries {
+		if entry.Turn.AttentionResolution != nil {
+			resolutions++
+		}
+	}
+	if resolutions != 1 {
+		t.Fatalf("durable resolution count = %d, want 1", resolutions)
+	}
+}
+
+func TestDelegateAttentionAppendFailureLeavesStopPending(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	path := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
+	writeDelegateAttentionTranscript(t, path, "child-dlg_target", "attention-failure")
+	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	evidence, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
+	if err != nil {
+		t.Fatalf("collect evidence: %v", err)
+	}
+	plans, err := c.Reconcile(evidence)
+	if err != nil || len(plans.attention) != 1 {
+		t.Fatalf("Reconcile attention plans = %#v, err=%v", plans.attention, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove transcript fixture: %v", err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("replace transcript fixture: %v", err)
+	}
+	if err := c.executeDelegateAttentionCleanup(plans.attention[0]); err == nil {
+		t.Fatal("attention cleanup succeeded against a directory")
+	}
+	if c.stop == nil {
+		t.Fatal("attention append failure completed stop")
+	}
+}
+
+func TestDelegateAttentionCleanupRejectsReplacedRuntime(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	path := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
+	writeDelegateAttentionTranscript(t, path, "child-dlg_target", "attention-stale")
+	original := &Session{}
+	c.live["dlg_target"] = &delegateLiveState{runtime: original}
+	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	evidence, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
+	if err != nil {
+		t.Fatalf("collect evidence: %v", err)
+	}
+	plans, err := c.Reconcile(evidence)
+	if err != nil || len(plans.attention) != 1 || plans.attention[0].runtime != original {
+		t.Fatalf("Reconcile attention plans = %#v, err=%v", plans.attention, err)
+	}
+	c.mu.Lock()
+	c.live["dlg_target"].runtime = &Session{}
+	c.evidenceVersion++
+	c.mu.Unlock()
+	if err := c.executeDelegateAttentionCleanup(plans.attention[0]); !errors.Is(err, errDelegateStaleLease) {
+		t.Fatalf("cleanup after runtime replacement = %v, want stale lease", err)
+	}
+	if c.stop == nil {
+		t.Fatal("stale runtime report completed stop")
+	}
+}
+
+func TestDelegateAttentionCleanupRejectsNilRuntimeReplacementAndStaleEvidence(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*delegateTreeController)
+	}{
+		{
+			name: "nil runtime replaced",
+			mutate: func(c *delegateTreeController) {
+				c.live["dlg_target"] = &delegateLiveState{runtime: &Session{}}
+				c.evidenceVersion++
+			},
+		},
+		{
+			name: "evidence version changed",
+			mutate: func(c *delegateTreeController) {
+				c.evidenceVersion++
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c, _ := newDelegateControllerTestHarness(t, 1, 1)
+			seedDelegateControllerIdle(t, c, "dlg_target", "")
+			path := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
+			writeDelegateAttentionTranscript(t, path, "child-dlg_target", "attention-stale")
+			if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
+				t.Fatalf("StopSubtree: %v", err)
+			}
+			evidence, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
+			if err != nil {
+				t.Fatalf("collect evidence: %v", err)
+			}
+			plans, err := c.Reconcile(evidence)
+			if err != nil || len(plans.attention) != 1 || plans.attention[0].runtime != nil {
+				t.Fatalf("Reconcile attention plans = %#v, err=%v", plans.attention, err)
+			}
+			c.mu.Lock()
+			test.mutate(c)
+			c.mu.Unlock()
+			if err := c.executeDelegateAttentionCleanup(plans.attention[0]); !errors.Is(err, errDelegateStaleLease) {
+				t.Fatalf("stale cleanup error = %v, want stale lease", err)
+			}
+			pending, err := readPendingDelegateAttention(path, "child-dlg_target")
+			if err != nil {
+				t.Fatalf("read resolved attention: %v", err)
+			}
+			if len(pending) != 0 || c.stop == nil {
+				t.Fatalf("stale report state pending=%#v stop=%#v", pending, c.stop)
+			}
+		})
+	}
+}
+
+func TestDelegateControllerStopRescansAttentionCreatedByCancellation(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	path := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
+	writeDelegateAttentionTranscript(t, path, "child-dlg_target", "attention-before-cancel")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	c.live["dlg_target"].binding.cancel = func() {
+		appendDelegateAttentionTurn(t, path, "child-dlg_target", "attention-from-cancel")
+		if _, err := c.FinishGeneration(lease, delegateFinish{}); err != nil {
+			t.Fatalf("FinishGeneration from cancellation: %v", err)
+		}
+	}
+	result, cancelPlan, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	executeDelegateCancelPlan(cancelPlan)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := c.drainStopForClose(ctx, c.stopForResult(result)); err != nil {
+		t.Fatalf("drain cancellation attention: %v", err)
+	}
+	pending, err := readPendingDelegateAttention(path, "child-dlg_target")
+	if err != nil {
+		t.Fatalf("read final attention: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending attention after repeated fold = %#v", pending)
+	}
+}
 
 func TestDelegateControllerRestartThreeLevelTreeIsProviderFree(t *testing.T) {
 	c, path := newDelegateControllerTestHarness(t, 3, 1)
@@ -78,14 +292,60 @@ func TestDelegateControllerRestartCompletesStopBeforeAdmission(t *testing.T) {
 	if _, err := restarted.ReserveStart(rootDelegateActor("root-session"), "dlg_target"); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("ReserveStart before reconcile = %v, want busy", err)
 	}
+	preRepairEvidence := emptyDelegateReconcileEvidence(restarted)
+	if _, err := restarted.Reconcile(preRepairEvidence); err != nil {
+		t.Fatalf("runtime-loss Reconcile: %v", err)
+	}
+	if restarted.stop == nil || restarted.durable["dlg_target"].CurrentRunOpen {
+		t.Fatalf("runtime repair used pre-repair evidence to complete stop: stop=%#v aggregate=%#v", restarted.stop, restarted.durable["dlg_target"])
+	}
+	if _, err := restarted.Reconcile(preRepairEvidence); !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("pre-repair evidence reuse error = %v, want busy", err)
+	}
 	if _, err := restarted.Reconcile(emptyDelegateReconcileEvidence(restarted)); err != nil {
-		t.Fatalf("Reconcile: %v", err)
+		t.Fatalf("fresh Reconcile: %v", err)
 	}
 	if restarted.stop != nil || restarted.durable["dlg_target"].PendingStopSeq != 0 {
 		t.Fatalf("restart stop remained pending: stop=%#v aggregate=%#v", restarted.stop, restarted.durable["dlg_target"])
 	}
 	if _, err := restarted.ReserveStart(rootDelegateActor("root-session"), "dlg_target"); err != nil {
 		t.Fatalf("ReserveStart after completion: %v", err)
+	}
+}
+
+func TestDelegateControllerReconcileRequiresExactEvidenceSnapshot(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	complete := emptyDelegateReconcileEvidence(c)
+	tests := map[string]func(delegateReconcileEvidence) delegateReconcileEvidence{
+		"missing shell": func(e delegateReconcileEvidence) delegateReconcileEvidence {
+			delete(e.shells, "dlg_target")
+			return e
+		},
+		"missing attention": func(e delegateReconcileEvidence) delegateReconcileEvidence {
+			delete(e.attention, "dlg_target")
+			return e
+		},
+		"extra shell": func(e delegateReconcileEvidence) delegateReconcileEvidence {
+			e.shells["dlg_extra"] = shellRuntimeLossEvidence{}
+			return e
+		},
+		"extra attention": func(e delegateReconcileEvidence) delegateReconcileEvidence {
+			e.attention["dlg_extra"] = nil
+			return e
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			evidence := delegateReconcileEvidence{
+				evidenceVersion: complete.evidenceVersion,
+				shells:          map[string]shellRuntimeLossEvidence{"dlg_target": {}},
+				attention:       map[string][]string{"dlg_target": nil},
+			}
+			if _, err := c.Reconcile(mutate(evidence)); !errors.Is(err, errDelegateTargetBusy) {
+				t.Fatalf("Reconcile error = %v, want exact-snapshot rejection", err)
+			}
+		})
 	}
 }
 
@@ -113,7 +373,7 @@ func TestDelegateControllerRestartCleansAttentionWithoutRuntime(t *testing.T) {
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	requestSeq := appendDelegateControllerStopRequest(t, c, "dlg_target")
 	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
-	writeRawAttentionTranscript(t, transcriptPath, "child-dlg_target", "attention-1", false)
+	writeDelegateAttentionTranscriptState(t, transcriptPath, "child-dlg_target", "attention-1", false)
 	restarted := reopenDelegateController(t, c, path)
 	requirements := restarted.ReconcileRequirements()
 	evidence, err := collectDelegateReconcileEvidence(restarted.stateDir, requirements)
@@ -127,8 +387,8 @@ func TestDelegateControllerRestartCleansAttentionWithoutRuntime(t *testing.T) {
 	if err != nil || len(plans.attention) != 1 || plans.attention[0].runtime != nil {
 		t.Fatalf("cold attention plans = %#v err=%v", plans.attention, err)
 	}
-	writeRawAttentionTranscript(t, transcriptPath, "child-dlg_target", "attention-1", true)
-	if _, err := restarted.ReportAttentionResolved(requestSeq, "dlg_target", "attention-1", delegateAttentionDiscarded, nil); err != nil {
+	writeDelegateAttentionTranscriptState(t, transcriptPath, "child-dlg_target", "attention-1", true)
+	if _, err := restarted.ReportAttentionResolved(requestSeq, evidence.evidenceVersion, "dlg_target", "attention-1", delegateAttentionDiscarded, nil); err != nil {
 		t.Fatalf("ReportAttentionResolved: %v", err)
 	}
 	evidence, err = collectDelegateReconcileEvidence(restarted.stateDir, restarted.ReconcileRequirements())
@@ -312,18 +572,47 @@ func countDelegateRunFinished(t *testing.T, c *delegateTreeController, delegateI
 	return count
 }
 
-func writeRawAttentionTranscript(t *testing.T, path, sessionID, attentionID string, resolved bool) {
+func writeDelegateAttentionTranscriptState(t *testing.T, path, sessionID, attentionID string, resolved bool) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	resolution := ""
+	writeDelegateAttentionTranscript(t, path, sessionID, attentionID)
 	if resolved {
-		resolution = fmt.Sprintf("{\"kind\":\"entry\",\"seq\":1,\"turn\":{\"kind\":\"ATTENTION_RESOLUTION\",\"attention_resolution\":{\"attention_id\":%q,\"disposition\":\"discarded\"}}}\n", attentionID)
+		if err := appendColdAttentionResolution(path, sessionID, []string{attentionID}, delegateAttentionDiscarded); err != nil {
+			t.Fatalf("append cold attention resolution: %v", err)
+		}
 	}
-	body := fmt.Sprintf("{\"kind\":\"header\",\"format_version\":2,\"session_id\":%q}\n{\"kind\":\"entry\",\"seq\":0,\"turn\":{\"kind\":\"STEERING\",\"attention_id\":%q}}\n%s", sessionID, attentionID, resolution)
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+}
+
+func writeDelegateAttentionTranscript(t *testing.T, path, sessionID, attentionID string) {
+	t.Helper()
+	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	turn := schema.NewTurn(schema.TurnSteering, llm.User("attention"))
+	turn.AttentionID = attentionID
+	if err := writer.AppendDurable(turn); err != nil {
+		_ = writer.Close()
+		t.Fatalf("AppendDurable attention: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close attention writer: %v", err)
+	}
+}
+
+func appendDelegateAttentionTurn(t *testing.T, path, sessionID, attentionID string) {
+	t.Helper()
+	writer, _, err := transcript.OpenWriterForSession(path, sessionID)
+	if err != nil {
+		t.Fatalf("OpenWriterForSession: %v", err)
+	}
+	turn := schema.NewTurn(schema.TurnSteering, llm.User("attention"))
+	turn.AttentionID = attentionID
+	if err := writer.AppendDurable(turn); err != nil {
+		_ = writer.Close()
+		t.Fatalf("AppendDurable attention: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close attention writer: %v", err)
 	}
 }
 

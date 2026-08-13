@@ -3,17 +3,19 @@ package agent
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/llm"
 )
 
 func collectDelegateReconcileEvidence(stateDir string, requirements delegateReconcileRequirements) (delegateReconcileEvidence, error) {
@@ -112,9 +114,7 @@ func readPendingDelegateAttention(path, expectedSessionID string) ([]string, err
 	defer func() { _ = f.Close() }()
 	reader := bufio.NewReaderSize(f, 64*1024)
 	headerRead := false
-	pending := make(map[string]struct{})
-	resolved := make(map[string]struct{})
-	order := make([]string, 0)
+	entries := make([]transcript.Entry, 0)
 	for {
 		line, complete, _, readErr := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
 		if readErr != nil {
@@ -138,46 +138,120 @@ func readPendingDelegateAttention(path, expectedSessionID string) ([]string, err
 			headerRead = true
 			continue
 		}
-		var entry struct {
-			Kind string `json:"kind"`
-			Turn struct {
-				Kind                string `json:"kind"`
-				AttentionID         string `json:"attention_id"`
-				AttentionResolution *struct {
-					AttentionID string `json:"attention_id"`
-					Disposition string `json:"disposition"`
-				} `json:"attention_resolution"`
-			} `json:"turn"`
-		}
-		if err := json.Unmarshal(line, &entry); err != nil {
-			return nil, fmt.Errorf("decode delegate attention entry: %w", err)
-		}
-		if err := transcript.ValidateRecordKind(entry.Kind); err != nil {
+		entry, err := transcript.DecodeEntry(line)
+		if err != nil {
 			return nil, err
 		}
-		if entry.Turn.AttentionID != "" {
-			_, alreadyResolved := resolved[entry.Turn.AttentionID]
-			if _, exists := pending[entry.Turn.AttentionID]; !exists && !alreadyResolved {
-				pending[entry.Turn.AttentionID] = struct{}{}
-				order = append(order, entry.Turn.AttentionID)
-			}
-		}
-		if resolution := entry.Turn.AttentionResolution; resolution != nil &&
-			(resolution.Disposition == string(delegateAttentionConsumed) || resolution.Disposition == string(delegateAttentionDiscarded)) {
-			delete(pending, resolution.AttentionID)
-			resolved[resolution.AttentionID] = struct{}{}
-		}
+		entries = append(entries, entry)
 	}
 	if !headerRead {
 		return nil, errors.New("delegate attention transcript has no header")
 	}
-	result := make([]string, 0, len(pending))
-	for _, attentionID := range order {
-		if _, exists := pending[attentionID]; exists {
-			result = append(result, attentionID)
+	fold, err := foldDelegateAttention(entries)
+	if err != nil {
+		return nil, err
+	}
+	return fold.pendingIDs(), nil
+}
+
+type delegateAttentionFold struct {
+	order       []string
+	content     map[string]llm.Message
+	resolutions map[string]delegateAttentionResolution
+}
+
+func foldDelegateAttention(entries []transcript.Entry) (delegateAttentionFold, error) {
+	fold := delegateAttentionFold{
+		content:     make(map[string]llm.Message),
+		resolutions: make(map[string]delegateAttentionResolution),
+	}
+	for _, entry := range entries {
+		turn := entry.Turn
+		if turn.AttentionID != "" {
+			if turn.Kind != schema.TurnSteering || turn.AttentionResolution != nil {
+				return delegateAttentionFold{}, fmt.Errorf("attention %q is not a steering turn", turn.AttentionID)
+			}
+			if previous, exists := fold.content[turn.AttentionID]; exists {
+				if !reflect.DeepEqual(previous, turn.Message) {
+					return delegateAttentionFold{}, fmt.Errorf("attention %q has conflicting content", turn.AttentionID)
+				}
+			} else {
+				fold.content[turn.AttentionID] = turn.Message
+				fold.order = append(fold.order, turn.AttentionID)
+			}
+		}
+		resolution := turn.AttentionResolution
+		if resolution == nil {
+			if turn.Kind == schema.TurnAttentionResolution {
+				return delegateAttentionFold{}, errors.New("attention resolution turn has no resolution")
+			}
+			continue
+		}
+		if turn.Kind != schema.TurnAttentionResolution || turn.AttentionID != "" || resolution.AttentionID == "" {
+			return delegateAttentionFold{}, errors.New("invalid attention resolution turn")
+		}
+		disposition := delegateAttentionResolution(resolution.Disposition)
+		if disposition != delegateAttentionConsumed && disposition != delegateAttentionDiscarded {
+			return delegateAttentionFold{}, fmt.Errorf("attention %q has invalid resolution %q", resolution.AttentionID, resolution.Disposition)
+		}
+		if _, exists := fold.content[resolution.AttentionID]; !exists {
+			return delegateAttentionFold{}, fmt.Errorf("attention %q resolved before it was appended", resolution.AttentionID)
+		}
+		if previous, exists := fold.resolutions[resolution.AttentionID]; exists && previous != disposition {
+			return delegateAttentionFold{}, fmt.Errorf("attention %q has conflicting resolutions", resolution.AttentionID)
+		}
+		fold.resolutions[resolution.AttentionID] = disposition
+	}
+	return fold, nil
+}
+
+func (f delegateAttentionFold) pendingIDs() []string {
+	pending := make([]string, 0, len(f.order))
+	for _, attentionID := range f.order {
+		if _, resolved := f.resolutions[attentionID]; !resolved {
+			pending = append(pending, attentionID)
 		}
 	}
-	return result, nil
+	return pending
+}
+
+func appendColdAttentionResolution(path, expectedSessionID string, ids []string, disposition delegateAttentionResolution) (err error) {
+	if disposition != delegateAttentionConsumed && disposition != delegateAttentionDiscarded {
+		return fmt.Errorf("invalid attention resolution %q", disposition)
+	}
+	writer, entries, err := transcript.OpenWriterForSession(path, expectedSessionID)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, writer.Close()) }()
+	fold, err := foldDelegateAttention(entries)
+	if err != nil {
+		return err
+	}
+	for _, attentionID := range ids {
+		if attentionID == "" {
+			return errors.New("attention resolution ID is empty")
+		}
+		if previous, resolved := fold.resolutions[attentionID]; resolved {
+			if previous != disposition {
+				return fmt.Errorf("attention %q has conflicting resolution %q", attentionID, previous)
+			}
+			continue
+		}
+		if _, pending := fold.content[attentionID]; !pending {
+			return fmt.Errorf("attention %q is not pending", attentionID)
+		}
+		turn := schema.NewTurn(schema.TurnAttentionResolution, llm.System("Attention resolved."))
+		turn.AttentionResolution = &schema.AttentionResolutionInfo{
+			AttentionID: attentionID,
+			Disposition: string(disposition),
+		}
+		if err := writer.AppendDurable(turn); err != nil {
+			return err
+		}
+		fold.resolutions[attentionID] = disposition
+	}
+	return nil
 }
 
 func executeDelegateShellRepair(plan delegateShellRepairPlan, now time.Time) (err error) {

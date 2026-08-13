@@ -45,6 +45,31 @@ func TestDelegateShellRepairPreservesNotificationOutsideStop(t *testing.T) {
 	}
 }
 
+func TestDelegateControllerReconcileRepairsShellOutsideStop(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	path := filepath.Join(jobsDir(c.stateDir, "child-dlg_target"), "jobs.jsonl")
+	seedDelegateShellStoreAt(t, path)
+	evidence, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
+	if err != nil {
+		t.Fatalf("collectDelegateReconcileEvidence: %v", err)
+	}
+	plans, err := c.Reconcile(evidence)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(plans.shellRepairs) != 1 || plans.shellRepairs[0].suppressOwnerNotify {
+		t.Fatalf("outside-stop shell repair plans = %#v", plans.shellRepairs)
+	}
+	if err := executeDelegateShellRepair(plans.shellRepairs[0], time.Unix(20, 0).UTC()); err != nil {
+		t.Fatalf("executeDelegateShellRepair: %v", err)
+	}
+	records, _ := readDelegateShellStore(t, path)
+	if record := records["job-shell"]; record == nil || record.Status != jobstore.StatusStopped || record.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("outside-stop repaired shell = %#v", record)
+	}
+}
+
 func TestDelegateShellRepairAppendFailureKeepsStopPending(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")

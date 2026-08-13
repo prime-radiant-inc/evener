@@ -27,12 +27,13 @@ type shellRuntimeLossEvidence struct {
 }
 
 type delegateAttentionCleanupPlan struct {
-	requestSeq    uint64
-	delegateID    string
-	transcriptRef string
-	attentionID   string
-	disposition   delegateAttentionResolution
-	runtime       *Session
+	requestSeq      uint64
+	evidenceVersion uint64
+	delegateID      string
+	transcriptRef   string
+	attentionID     string
+	disposition     delegateAttentionResolution
+	runtime         *Session
 }
 
 type delegateShellRepairPlan struct {
@@ -79,9 +80,34 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 	if evidence.evidenceVersion != c.evidenceVersion {
 		return delegateMutationPlans{}, errDelegateTargetBusy
 	}
+	if !delegateReconcileEvidenceMatchesState(evidence, c.durable) {
+		return delegateMutationPlans{}, errDelegateTargetBusy
+	}
 	plans, err := c.reconcileRuntimeLostFromEvidenceLocked()
 	if err != nil {
 		return delegateMutationPlans{}, err
+	}
+	if evidence.evidenceVersion != c.evidenceVersion {
+		return plans, nil
+	}
+	allIDs := make([]string, 0, len(c.durable))
+	for id := range c.durable {
+		allIDs = append(allIDs, id)
+	}
+	sort.Strings(allIDs)
+	for _, id := range allIDs {
+		shell := evidence.shells[id]
+		covered := c.stopCoversLocked(id)
+		if len(shell.runningJobIDs) == 0 && (!covered || len(shell.pendingNotification) == 0) {
+			continue
+		}
+		plans.shellRepairs = append(plans.shellRepairs, delegateShellRepairPlan{
+			delegateID:          id,
+			storePath:           filepath.Join(jobsDir(c.stateDir, c.durable[id].Descriptor.ChildSessionID), "jobs.jsonl"),
+			runningJobIDs:       append([]string(nil), shell.runningJobIDs...),
+			pendingNotification: append([]shellNotificationIdentity(nil), shell.pendingNotification...),
+			suppressOwnerNotify: covered,
+		})
 	}
 	if c.stop == nil {
 		return plans, nil
@@ -96,16 +122,6 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		shell := evidence.shells[id]
-		if len(shell.runningJobIDs) != 0 || len(shell.pendingNotification) != 0 {
-			plans.shellRepairs = append(plans.shellRepairs, delegateShellRepairPlan{
-				delegateID:          id,
-				storePath:           filepath.Join(jobsDir(c.stateDir, c.durable[id].Descriptor.ChildSessionID), "jobs.jsonl"),
-				runningJobIDs:       append([]string(nil), shell.runningJobIDs...),
-				pendingNotification: append([]shellNotificationIdentity(nil), shell.pendingNotification...),
-				suppressOwnerNotify: true,
-			})
-		}
 		attention := append([]string(nil), evidence.attention[id]...)
 		sort.Strings(attention)
 		for _, attentionID := range attention {
@@ -117,13 +133,15 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 				runtime = live.runtime
 			}
 			plans.attention = append(plans.attention, delegateAttentionCleanupPlan{
-				requestSeq:    stop.requestSeq,
-				delegateID:    id,
-				transcriptRef: c.durable[id].Descriptor.TranscriptRef,
-				attentionID:   attentionID,
-				disposition:   delegateAttentionDiscarded,
-				runtime:       runtime,
+				requestSeq:      stop.requestSeq,
+				evidenceVersion: evidence.evidenceVersion,
+				delegateID:      id,
+				transcriptRef:   c.durable[id].Descriptor.TranscriptRef,
+				attentionID:     attentionID,
+				disposition:     delegateAttentionDiscarded,
+				runtime:         runtime,
 			})
+			return plans, nil
 		}
 	}
 	if len(plans.shellRepairs) != 0 || len(plans.attention) != 0 {
@@ -144,7 +162,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 	for _, id := range ids {
 		plans.updates = append(plans.updates, c.capturedPlanLocked(id))
 	}
-	allIDs := make([]string, 0, len(c.durable))
+	allIDs = make([]string, 0, len(c.durable))
 	for id := range c.durable {
 		allIDs = append(allIDs, id)
 	}
@@ -161,23 +179,54 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 	return plans, nil
 }
 
-func (c *delegateTreeController) ReportAttentionResolved(requestSeq uint64, delegateID, attentionID string, disposition delegateAttentionResolution, runtime *Session) (delegateMutationPlans, error) {
+func delegateReconcileEvidenceMatchesState(evidence delegateReconcileEvidence, state delegatestore.State) bool {
+	if len(evidence.shells) != len(state) || len(evidence.attention) != len(state) {
+		return false
+	}
+	for id, aggregate := range state {
+		if aggregate == nil {
+			return false
+		}
+		if _, exists := evidence.shells[id]; !exists {
+			return false
+		}
+		if _, exists := evidence.attention[id]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *delegateTreeController) ReportAttentionResolved(requestSeq, evidenceVersion uint64, delegateID, attentionID string, disposition delegateAttentionResolution, runtime *Session) (delegateMutationPlans, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.stop == nil || c.stop.requestSeq != requestSeq || attentionID == "" || disposition != delegateAttentionDiscarded {
+	if c.stop == nil || c.stop.requestSeq != requestSeq || c.evidenceVersion != evidenceVersion || attentionID == "" || disposition != delegateAttentionDiscarded {
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
 	if _, covered := c.stop.members[delegateID]; !covered {
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
-	if runtime != nil {
-		live := c.live[delegateID]
-		if live == nil || live.runtime != runtime {
-			return delegateMutationPlans{}, errDelegateStaleLease
-		}
+	var currentRuntime *Session
+	if live := c.live[delegateID]; live != nil {
+		currentRuntime = live.runtime
+	}
+	if currentRuntime != runtime {
+		return delegateMutationPlans{}, errDelegateStaleLease
 	}
 	c.evidenceVersion++
 	return delegateMutationPlans{}, nil
+}
+
+func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAttentionCleanupPlan) error {
+	path, expectedSessionID, err := delegateTranscriptPathFromRef(c.stateDir, plan.transcriptRef)
+	if err != nil {
+		return err
+	}
+	if err := appendColdAttentionResolution(path, expectedSessionID, []string{plan.attentionID}, plan.disposition); err != nil {
+		return err
+	}
+	_, err = c.ReportAttentionResolved(plan.requestSeq, plan.evidenceVersion, plan.delegateID, plan.attentionID, plan.disposition, plan.runtime)
+	return err
 }
 
 func (c *delegateTreeController) reconcileRuntimeLostFromEvidenceLocked() (delegateMutationPlans, error) {
@@ -233,6 +282,7 @@ func (c *delegateTreeController) reconcileRuntimeLostFromEvidenceLocked() (deleg
 		if _, err := c.appendLocked(events...); err != nil {
 			return delegateMutationPlans{}, fmt.Errorf("reconcile delegate %s runtime loss: %w", lease.delegateID, err)
 		}
+		c.evidenceVersion++
 		plans.updates = append(plans.updates, c.capturedPlanLocked(lease.delegateID))
 		if delivery := c.newHeadDeliveryPlanLocked(lease.delegateID, delegateDeliveryID(lease.delegateID, lease.generation)); delivery != nil {
 			plans.deliveries = append(plans.deliveries, *delivery)

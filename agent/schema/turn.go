@@ -56,7 +56,19 @@ const (
 	// because it is only ever appended (never edited) it preserves
 	// provider prompt caches. UIs render it as harness chrome, not user speech.
 	TurnEnvironment TurnKind = "ENVIRONMENT"
+	// TurnAttentionResolution records the terminal disposition of one durable
+	// attention item. Provider projection excludes it; generic presentation may
+	// retain the marker while hiding its private metadata.
+	TurnAttentionResolution TurnKind = "ATTENTION_RESOLUTION"
 )
+
+// AttentionResolutionInfo identifies one durable attention item and its
+// terminal disposition. The resolution is append-only so cold reconciliation
+// can repeat safely after a crash.
+type AttentionResolutionInfo struct {
+	AttentionID string `json:"attention_id"`
+	Disposition string `json:"disposition"`
+}
 
 // HookInfo is the persisted detail of one completed hook: the same fields the
 // live events.HookEndData carries, so a reloaded transcript describes the hook
@@ -143,6 +155,11 @@ type Turn struct {
 	// SteeringKind records what a TurnSteering entry was (events.SteeringKind*),
 	// so a reloaded transcript labels a steer the same way the live path did.
 	SteeringKind string `json:"steering_kind,omitempty"`
+	// AttentionID identifies steering that requires durable terminal cleanup.
+	// It is empty for ordinary steering and all non-steering turns.
+	AttentionID string `json:"attention_id,omitempty"`
+	// AttentionResolution is set only on TurnAttentionResolution turns.
+	AttentionResolution *AttentionResolutionInfo `json:"attention_resolution,omitempty"`
 	// ClientMutationID and StableTurnID identify retry-safe client-authored
 	// user and steering turns across live events, transcript recovery, and
 	// mutation replay.
