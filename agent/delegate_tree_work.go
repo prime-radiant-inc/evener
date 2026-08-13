@@ -43,7 +43,7 @@ func (c *delegateTreeController) CommitShellWork(token delegateWorkToken, shellJ
 		work.jobID = shellJobID
 		work.cancel = cancel
 		work.committed = true
-		if c.stop != nil {
+		if c.stopCoversLocked(work.owner.delegateID) {
 			c.stop.work[token] = shellJobID
 		}
 		c.evidenceVersion++

@@ -96,7 +96,10 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 	}
 	sort.Strings(allIDs)
 	for _, id := range allIDs {
-		shell := evidence.shells[id]
+		shell, known := c.repairableShellEvidenceLocked(id, evidence.shells[id])
+		if !known {
+			continue
+		}
 		covered := c.stopCoversLocked(id)
 		if len(shell.runningJobIDs) == 0 && (!covered || len(shell.pendingNotification) == 0) {
 			continue
@@ -177,6 +180,37 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		}
 	}
 	return plans, nil
+}
+
+// repairableShellEvidenceLocked removes process work that still has an exact
+// live receipt. An uncommitted receipt defers the delegate because the durable
+// job identity is not known yet and therefore cannot be excluded safely.
+func (c *delegateTreeController) repairableShellEvidenceLocked(delegateID string, evidence shellRuntimeLossEvidence) (shellRuntimeLossEvidence, bool) {
+	liveJobIDs := make(map[string]struct{})
+	for _, work := range c.work {
+		if work == nil || work.owner.delegateID != delegateID {
+			continue
+		}
+		if !work.committed {
+			return shellRuntimeLossEvidence{}, false
+		}
+		liveJobIDs[work.jobID] = struct{}{}
+	}
+	if len(liveJobIDs) == 0 {
+		return evidence, true
+	}
+	filtered := shellRuntimeLossEvidence{}
+	for _, jobID := range evidence.runningJobIDs {
+		if _, live := liveJobIDs[jobID]; !live {
+			filtered.runningJobIDs = append(filtered.runningJobIDs, jobID)
+		}
+	}
+	for _, notification := range evidence.pendingNotification {
+		if _, live := liveJobIDs[notification.jobID]; !live {
+			filtered.pendingNotification = append(filtered.pendingNotification, notification)
+		}
+	}
+	return filtered, true
 }
 
 func delegateReconcileEvidenceMatchesState(evidence delegateReconcileEvidence, state delegatestore.State) bool {

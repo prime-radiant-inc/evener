@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -67,6 +68,139 @@ func TestDelegateControllerReconcileRepairsShellOutsideStop(t *testing.T) {
 	records, _ := readDelegateShellStore(t, path)
 	if record := records["job-shell"]; record == nil || record.Status != jobstore.StatusStopped || record.NotifyState != jobstore.NotifyPending {
 		t.Fatalf("outside-stop repaired shell = %#v", record)
+	}
+}
+
+func TestDelegateControllerReconcileExcludesLiveShellEvidence(t *testing.T) {
+	now := time.Unix(10, 0).UTC()
+	ended := time.Unix(20, 0).UTC()
+	tests := []struct {
+		name                string
+		committedJobID      string
+		events              []jobstore.Event
+		wantRunning         []string
+		wantPending         []shellNotificationIdentity
+		wantRepairPlanCount int
+	}{
+		{
+			name:           "committed running job",
+			committedJobID: "job-live",
+			events: []jobstore.Event{
+				{Kind: jobstore.EventJobStarted, TS: now, JobID: "job-live", Type: jobstore.JobShell, OwnerSessionID: "child-dlg_target", StartedAt: &now},
+				{Kind: jobstore.EventJobStarted, TS: now, JobID: "job-lost", Type: jobstore.JobShell, OwnerSessionID: "child-dlg_target", StartedAt: &now},
+			},
+			wantRunning:         []string{"job-lost"},
+			wantRepairPlanCount: 1,
+		},
+		{
+			name:           "committed terminal notification",
+			committedJobID: "job-live",
+			events: []jobstore.Event{
+				{Kind: jobstore.EventJobStarted, TS: now, JobID: "job-live", Type: jobstore.JobShell, OwnerSessionID: "child-dlg_target", StartedAt: &now},
+				{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job-live", Status: jobstore.StatusCompleted, Reason: "exit_zero", EndedAt: &ended, TerminalGen: "terminal-live"},
+				{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "job-live", TerminalGen: "terminal-live"},
+				{Kind: jobstore.EventJobStarted, TS: now, JobID: "job-lost", Type: jobstore.JobShell, OwnerSessionID: "child-dlg_target", StartedAt: &now},
+			},
+			wantRunning:         []string{"job-lost"},
+			wantRepairPlanCount: 1,
+		},
+		{
+			name: "uncommitted receipt defers delegate",
+			events: []jobstore.Event{
+				{Kind: jobstore.EventJobStarted, TS: now, JobID: "job-lost", Type: jobstore.JobShell, OwnerSessionID: "child-dlg_target", StartedAt: &now},
+			},
+			wantRepairPlanCount: 0,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c, _ := newDelegateControllerTestHarness(t, 1, 1)
+			seedDelegateControllerRunning(t, c, "dlg_target", "")
+			lease := delegateLease{delegateID: "dlg_target", generation: 1}
+			token, err := c.BeginShellWork(lease)
+			if err != nil {
+				t.Fatalf("BeginShellWork: %v", err)
+			}
+			if test.committedJobID != "" {
+				if cancelNow, err := c.CommitShellWork(token, test.committedJobID, func() {}); err != nil || cancelNow {
+					t.Fatalf("CommitShellWork = cancel:%t err:%v", cancelNow, err)
+				}
+			}
+			path := filepath.Join(jobsDir(c.stateDir, "child-dlg_target"), "jobs.jsonl")
+			appendDelegateShellEventsAt(t, path, test.events...)
+			evidence, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
+			if err != nil {
+				t.Fatalf("collectDelegateReconcileEvidence: %v", err)
+			}
+			plans, err := c.Reconcile(evidence)
+			if err != nil {
+				t.Fatalf("Reconcile: %v", err)
+			}
+			if len(plans.shellRepairs) != test.wantRepairPlanCount {
+				t.Fatalf("shell repair plans = %#v, want count %d", plans.shellRepairs, test.wantRepairPlanCount)
+			}
+			if test.wantRepairPlanCount == 0 {
+				return
+			}
+			plan := plans.shellRepairs[0]
+			if !reflect.DeepEqual(plan.runningJobIDs, test.wantRunning) || !reflect.DeepEqual(plan.pendingNotification, test.wantPending) {
+				t.Fatalf("filtered shell plan = running:%#v pending:%#v, want running:%#v pending:%#v", plan.runningJobIDs, plan.pendingNotification, test.wantRunning, test.wantPending)
+			}
+		})
+	}
+}
+
+func TestDelegateControllerCloseDoesNotRepairLiveShellBeforeFinalizer(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	token, err := c.BeginShellWork(lease)
+	if err != nil {
+		t.Fatalf("BeginShellWork: %v", err)
+	}
+	if cancelNow, err := c.CommitShellWork(token, "job-live", func() {}); err != nil || cancelNow {
+		t.Fatalf("CommitShellWork = cancel:%t err:%v", cancelNow, err)
+	}
+	c.live["dlg_target"].binding.cancel = func() {}
+	path := filepath.Join(jobsDir(c.stateDir, "child-dlg_target"), "jobs.jsonl")
+	now := time.Unix(10, 0).UTC()
+	appendDelegateShellEventsAt(t, path, jobstore.Event{
+		Kind:           jobstore.EventJobStarted,
+		TS:             now,
+		JobID:          "job-live",
+		Type:           jobstore.JobShell,
+		OwnerSessionID: "child-dlg_target",
+		StartedAt:      &now,
+	})
+
+	ctx := newDelegateStopWaitBarrierContext()
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- c.Close(ctx) }()
+	<-ctx.entered
+	records, _ := readDelegateShellStore(t, path)
+	wasRunning := records["job-live"] != nil && records["job-live"].Status == jobstore.StatusRunning
+
+	ended := time.Unix(20, 0).UTC()
+	appendDelegateShellEventsAt(t, path,
+		jobstore.Event{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job-live", Status: jobstore.StatusCompleted, Reason: "exit_zero", EndedAt: &ended, TerminalGen: "terminal-live"},
+		jobstore.Event{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "job-live", TerminalGen: "terminal-live"},
+	)
+	if _, err := c.ReportShellFinished(token, "job-live"); err != nil {
+		t.Fatalf("ReportShellFinished: %v", err)
+	}
+	if _, err := c.FinishGeneration(lease, delegateFinish{}); err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	ctx.cancel()
+	if err := <-closeResult; err != nil {
+		t.Fatalf("Close after exact finalizer: %v", err)
+	}
+	if !wasRunning {
+		t.Fatal("close repaired the exact live shell as runtime_lost before its finalizer")
+	}
+	records, _ = readDelegateShellStore(t, path)
+	if record := records["job-live"]; record == nil || record.Status != jobstore.StatusCompleted || record.Reason != "exit_zero" || record.NotifyState != jobstore.NotifyConsumed {
+		t.Fatalf("shell after finalizer and covered cleanup = %#v", record)
 	}
 }
 
@@ -180,6 +314,26 @@ func seedDelegateShellStore(t *testing.T, running, terminalPending bool) string 
 		t.Fatalf("Close: %v", err)
 	}
 	return path
+}
+
+func appendDelegateShellEventsAt(t *testing.T, path string, events ...jobstore.Event) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll shell store: %v", err)
+	}
+	store, err := jobstore.OpenNoSync(path)
+	if err != nil {
+		t.Fatalf("OpenNoSync shell store: %v", err)
+	}
+	for _, event := range events {
+		if err := store.Append(event); err != nil {
+			_ = store.Close()
+			t.Fatalf("append shell event %s for %s: %v", event.Kind, event.JobID, err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close shell store: %v", err)
+	}
 }
 
 func readDelegateShellStore(t *testing.T, path string) (map[string]*jobstore.JobRecord, map[string]*jobstore.WatchRecord) {

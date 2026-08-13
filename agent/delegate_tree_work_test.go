@@ -133,6 +133,68 @@ func TestDelegateControllerUnrelatedShellCommitDoesNotJoinStop(t *testing.T) {
 	}
 }
 
+func TestDelegateControllerClosingShellOutsideCurrentStopJoinsLaterRoot(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 2, 1)
+	seedDelegateControllerIdle(t, c, "dlg_stopping", "")
+	seedDelegateControllerRunning(t, c, "dlg_running", "")
+	token, err := c.BeginShellWork(delegateLease{delegateID: "dlg_running", generation: 1})
+	if err != nil {
+		t.Fatalf("BeginShellWork: %v", err)
+	}
+	seedDelegateControllerDelivery(t, c, "dlg_stopping")
+	deliveryPlan := c.ReplayDeliveries()[0]
+	deliveryToken, admitted, err := c.BeginDelivery(deliveryPlan)
+	if err != nil || !admitted {
+		t.Fatalf("BeginDelivery = admitted:%t err:%v", admitted, err)
+	}
+	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_stopping"); err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+
+	cancelCount := 0
+	var cancellationErr error
+	lease := delegateLease{delegateID: "dlg_running", generation: 1}
+	shellCancel := func() {
+		cancelCount++
+		if cancelCount != 2 {
+			return
+		}
+		_, reportErr := c.ReportShellFinished(token, "job-later-root")
+		cancellationErr = errors.Join(cancellationErr, reportErr)
+	}
+	finishRan := false
+	c.live["dlg_running"].binding.cancel = func() {
+		if finishRan {
+			return
+		}
+		finishRan = true
+		_, finishErr := c.FinishGeneration(lease, delegateFinish{})
+		cancellationErr = errors.Join(cancellationErr, finishErr)
+	}
+	ctx := newDelegateStopWaitBarrierContext()
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- c.Close(ctx) }()
+	<-ctx.entered
+	cancelNow, err := c.CommitShellWork(token, "job-later-root", shellCancel)
+	if err != nil || !cancelNow {
+		t.Fatalf("CommitShellWork while closing = cancel:%t err:%v", cancelNow, err)
+	}
+	shellCancel()
+	if _, err := c.CompleteDelivery(deliveryToken, false); err != nil {
+		t.Fatalf("CompleteDelivery current stop: %v", err)
+	}
+	ctx.cancel()
+	if err := <-closeResult; err != nil {
+		t.Fatalf("Close before later root cancellation = %v", err)
+	}
+	if cancellationErr != nil {
+		t.Fatalf("later root cleanup: %v", cancellationErr)
+	}
+	if cancelCount != 2 || !finishRan || len(c.work) != 0 {
+		t.Fatalf("later root drain cancelCount=%d finish=%t work=%#v", cancelCount, finishRan, c.work)
+	}
+}
+
 func TestDelegateControllerAbortShellReceiptReleasesOnce(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
