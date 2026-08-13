@@ -11,7 +11,8 @@ import (
 )
 
 // The OutputStore prune/persist path is a chain of durable filesystem steps —
-// write the pending tail, truncate, rewrite, fsync, rename metadata — each
+// write the pending metadata, stage the retained tail in a sibling file, fsync,
+// rename it over the output, rename metadata — each
 // guarded by an `if err != nil` arm that a MemMapFs (which never fails) leaves at
 // 0% coverage. These tests inject a fault filesystem through the afero seam
 // added to OutputStore, failing exactly one operation at a time, to drive those
@@ -98,7 +99,7 @@ func TestOutputStoreAppendPathFaultArms(t *testing.T) {
 }
 
 // TestOutputStorePrunePathFaultArms opens an oversized file so pruneLocked must
-// reduce it to the retained tail, and proves the truncate/seek/rewrite arms of
+// reduce it to the retained tail, and proves the stage/sync/replace arms of
 // that path surface the injected fault.
 func TestOutputStorePrunePathFaultArms(t *testing.T) {
 	setup := func(base afero.Fs) {
@@ -114,11 +115,14 @@ func TestOutputStorePrunePathFaultArms(t *testing.T) {
 		return o.Close()
 	})
 
-	assertArmReached(t, errs, "jobstore: seek output prune tail") // Seek before reading tail
-	assertArmReached(t, errs, "jobstore: read output prune tail") // ReadFull of the tail
-	assertArmReached(t, errs, "jobstore: truncate output")        // truncate the file to empty
-	assertArmReached(t, errs, "jobstore: rewrite output tail")    // rewrite the retained tail
-	assertArmReached(t, errs, "jobstore: trim output tail")       // truncate down to the retained length
+	assertArmReached(t, errs, "jobstore: seek output prune tail")            // Seek before reading tail
+	assertArmReached(t, errs, "jobstore: read output prune tail")            // ReadFull of the tail
+	assertArmReached(t, errs, "jobstore: open output tail rewrite")          // open the staging file
+	assertArmReached(t, errs, "jobstore: rewrite output tail")               // write the retained tail into it
+	assertArmReached(t, errs, "jobstore: sync output tail rewrite")          // fsync the staged tail
+	assertArmReached(t, errs, "jobstore: replace output with retained tail") // rename over the output
+	// The close-replaced-output arm has no assertion: the fault seam does not
+	// intercept Close, so no injected fault can reach it.
 }
 
 // TestOutputStorePruneWritesPendingMetadata proves the pending-metadata write
@@ -139,6 +143,74 @@ func TestOutputStorePruneWritesPendingMetadataFault(t *testing.T) {
 	})
 
 	assertArmReached(t, errs, "jobstore: hash output metadata") // SHA256 over the file for metadata
+}
+
+// TestOutputStorePruneFaultNeverLosesRetainedTail pins the prune protocol's
+// durability contract: no single failed filesystem operation during an
+// appending prune may lose retained bytes the store already committed, and the
+// store must reopen afterwards. For every fault point the disk must hold one of
+// the two coherent histories — the pre-append commit or the post-append commit
+// — never a bricked or bald state.
+func TestOutputStorePruneFaultNeverLosesRetainedTail(t *testing.T) {
+	const capBytes = 10
+	committed := []byte("0123456789")
+	appended := []byte("ABCDE")
+	lifetime := append(append([]byte(nil), committed...), appended...)
+	for k := range 64 {
+		base := afero.NewMemMapFs()
+		seed, err := openOutputFsNoSync(base, outputFaultPath, capBytes)
+		if err != nil {
+			t.Fatalf("seed output: %v", err)
+		}
+		if _, err := seed.Append(committed); err != nil {
+			t.Fatalf("seed append: %v", err)
+		}
+		if err := seed.Close(); err != nil {
+			t.Fatalf("seed close: %v", err)
+		}
+
+		fs := fault.FS(base, fault.FromBytes(failAtPlan(k)))
+		appendErr := func() (err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("injected fault at op %d panicked: %v", k, r)
+				}
+			}()
+			o, err := openOutputFsNoSync(fs, outputFaultPath, capBytes)
+			if err != nil {
+				return err
+			}
+			defer o.Close() //nolint:errcheck
+			_, err = o.Append(appended)
+			return err
+		}()
+
+		// The faulted run is over; reopen on the clean base, as after a crash.
+		o, err := openOutputFsNoSync(base, outputFaultPath, capBytes)
+		if err != nil {
+			t.Fatalf("fault at op %d bricked reopen (append err %v): %v", k, appendErr, err)
+		}
+		tail, total, _, err := o.Tail(1024)
+		if err != nil {
+			t.Fatalf("fault at op %d: tail after reopen: %v", k, err)
+		}
+		if err := o.Close(); err != nil {
+			t.Fatalf("fault at op %d: close after reopen: %v", k, err)
+		}
+		wantTail := lifetime[max(0, total-capBytes):total:total]
+		if total != int64(len(committed)) && total != int64(len(lifetime)) {
+			t.Fatalf("fault at op %d (append err %v): reopened total = %d, want %d or %d",
+				k, appendErr, total, len(committed), len(lifetime))
+		}
+		if appendErr == nil && total != int64(len(lifetime)) {
+			t.Fatalf("fault at op %d: append reported success but reopened total = %d, want %d",
+				k, total, len(lifetime))
+		}
+		if !bytes.Equal(tail, wantTail) {
+			t.Fatalf("fault at op %d (append err %v): reopened tail = %q, want %q",
+				k, appendErr, tail, wantTail)
+		}
+	}
 }
 
 // TestOutputStoreFaultsNeverSwallowed sweeps both the append and prune paths and

@@ -454,12 +454,12 @@ func TestReadOutputWindowSnapshotConcurrentAppendAndPrune(t *testing.T) {
 	}
 }
 
-// TestReadOutputSnapshotMidPruneTruncationIsConcurrentChange freezes the one
-// transient the prune protocol passes through that the retained file cannot
-// corroborate: pending metadata published, the output truncated, the tail not
-// yet rewritten. A snapshot reader landing entirely inside that window must
-// report a concurrent change, never metadata corruption.
-func TestReadOutputSnapshotMidPruneTruncationIsConcurrentChange(t *testing.T) {
+// TestReadOutputSnapshotTruncatedBelowPendingTailIsCorruption pins the reason
+// the tail rewrite replaces the output atomically: an output file shorter than
+// the pending metadata's retained tail is a state the writer never produces —
+// live or crashed — so snapshot readers must report it as metadata corruption,
+// never dress it up as a retryable concurrent change.
+func TestReadOutputSnapshotTruncatedBelowPendingTailIsCorruption(t *testing.T) {
 	for name, retained := range map[string][]byte{
 		"empty-file":   nil,
 		"partial-tail": []byte("fg"),
@@ -480,11 +480,12 @@ func TestReadOutputSnapshotMidPruneTruncationIsConcurrentChange(t *testing.T) {
 				t.Fatalf("write pending metadata: %v", err)
 			}
 
-			if _, err := readOutputWindowSnapshotFs(fs, path, 10, 5); !errors.Is(err, ErrOutputChangedDuringRead) {
-				t.Fatalf("window snapshot err = %v, want ErrOutputChangedDuringRead", err)
+			wantErr := "jobstore: output metadata does not match retained output"
+			if _, err := readOutputWindowSnapshotFs(fs, path, 10, 5); err == nil || err.Error() != wantErr {
+				t.Fatalf("window snapshot err = %v, want %q", err, wantErr)
 			}
-			if _, err := readOutputSnapshotFs(fs, path, 5, false); !errors.Is(err, ErrOutputChangedDuringRead) {
-				t.Fatalf("tail snapshot err = %v, want ErrOutputChangedDuringRead", err)
+			if _, err := readOutputSnapshotFs(fs, path, 5, false); err == nil || err.Error() != wantErr {
+				t.Fatalf("tail snapshot err = %v, want %q", err, wantErr)
 			}
 		})
 	}

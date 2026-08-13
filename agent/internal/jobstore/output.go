@@ -30,13 +30,6 @@ var ErrInvalidLimit = errors.New("jobstore: invalid limit")
 // the lifetime end of the output stream.
 var ErrInvalidOffset = errors.New("jobstore: invalid offset")
 
-// errOutputTruncatedMidPrune reports the one state the prune protocol passes
-// through that the retained file cannot corroborate: pending metadata is
-// published but the output holds fewer bytes than its retained tail, so the
-// writer was caught — or crashed — between truncating the file and rewriting
-// it. Snapshot readers translate it to a concurrent change and retry.
-var errOutputTruncatedMidPrune = errors.New("jobstore: output truncated mid-prune rewrite")
-
 // SearchOptions bounds a retained-output line search. All offsets are lifetime
 // byte offsets, even when the retained file begins after offset zero.
 type SearchOptions struct {
@@ -190,6 +183,7 @@ func outputArtifactPaths(path string) []string {
 	metaPath := outputMetaPath(path)
 	return []string{
 		path,
+		path + ".tmp",
 		metaPath,
 		metaPath + ".tmp",
 		outputPendingMetaPath(metaPath),
@@ -651,25 +645,49 @@ func (o *OutputStore) pruneLocked() error {
 	}, !o.disableSync); err != nil {
 		return err
 	}
-	if err := o.f.Truncate(0); err != nil {
-		return fmt.Errorf("jobstore: truncate output: %w", err)
+	// The tail lands in a sibling file that atomically replaces the output, so
+	// no moment — mid-crash or mid-read — exists where the retained bytes live
+	// only in this process. The new handle is opened before the rename and kept
+	// as the store's own: a rename never detaches an open descriptor, and the
+	// unlinked old file stays reachable through the old handle until it closes.
+	tmpPath := o.path + ".tmp"
+	nf, err := o.fs.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("jobstore: open output tail rewrite: %w", err)
 	}
-	if _, err := o.f.Seek(0, 0); err != nil {
-		return fmt.Errorf("jobstore: seek output rewrite: %w", err)
+	abandonRewrite := func() {
+		_ = nf.Close()
+		_ = o.fs.Remove(tmpPath)
 	}
-	if n, err := o.f.Write(tail); err != nil {
+	if n, err := nf.Write(tail); err != nil {
+		abandonRewrite()
 		return fmt.Errorf("jobstore: rewrite output tail: %w", err)
 	} else if n != len(tail) {
+		abandonRewrite()
 		return fmt.Errorf("jobstore: rewrite output tail: %w", io.ErrShortWrite)
 	}
-	if err := o.f.Truncate(keep); err != nil {
-		return fmt.Errorf("jobstore: trim output tail: %w", err)
+	if !o.disableSync {
+		if err := nf.Sync(); err != nil {
+			abandonRewrite()
+			return fmt.Errorf("jobstore: sync output tail rewrite: %w", err)
+		}
 	}
-	if _, err := o.f.Seek(0, io.SeekEnd); err != nil {
-		return fmt.Errorf("jobstore: seek output eof: %w", err)
+	if err := o.fs.Rename(tmpPath, o.path); err != nil {
+		abandonRewrite()
+		return fmt.Errorf("jobstore: replace output with retained tail: %w", err)
 	}
+	oldFile := o.f
+	o.f = nf
 	o.retainedStart = retainedStart
 	o.retainedStartPartial = retainedStartPartial
+	if err := oldFile.Close(); err != nil {
+		return fmt.Errorf("jobstore: close replaced output: %w", err)
+	}
+	if !o.disableSync {
+		if err := syncParentDir(o.fs, o.path); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -888,8 +906,11 @@ func readValidPendingOutputMeta(fs afero.Fs, path string, finalMetaPath string, 
 		meta.RetainedSHA256 = hash
 		return meta, true, nil
 	}
+	// The tail rewrite replaces the output atomically, so the file is never
+	// shorter than the pending metadata's retained tail; a shortfall here is
+	// out-of-contract tampering, not a writer state.
 	if metaRetained > retained {
-		return outputMeta{}, false, errOutputTruncatedMidPrune
+		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
 	}
 	hash, err := outputFileSHA256(fs, outputPath)
 	if err != nil {
