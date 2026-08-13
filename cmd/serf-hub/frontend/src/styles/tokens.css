@@ -113,6 +113,40 @@
 
   --radius-control: 4px; /* buttons, inputs, chips */
   --radius-pane: 8px; /* panes, dialogs */
+  --radius-pill: 999px; /* pill geometry: switch track, capsule chips */
+
+  /* --- focus ring ------------------------------------------------------
+   * THE focus treatment: every :focus-visible (or :focus-within proxy) ring
+   * in the app is `outline: var(--focus-ring)` — only outline-offset varies
+   * per site (positive outside a roomy control, negative for rows flush
+   * inside a clipping container). The danger variant exists solely for
+   * destructive controls whose resting chrome is already danger-colored.
+   */
+  --focus-ring: 2px solid var(--accent);
+  --focus-ring-danger: 2px solid var(--danger);
+
+  /* --- stacking order --------------------------------------------------
+   * The only z-index values in the app (see token-contract). Local
+   * stacking inside a pane uses --z-raised; the app-modal layers sit in
+   * one fixed ladder so a pane can never accidentally overtop a menu, nor
+   * a menu a toast.
+   */
+  --z-raised: 1; /* local: sticky headers, overlay glyphs within a pane */
+  --z-sticky-bar: 20; /* pane-level pinned bars (mobile action band) */
+  --z-dialog: 1000; /* modal dialog + its scrim */
+  --z-menu: 1020; /* menus, popovers, anchored floats */
+  --z-tooltip: 1030; /* tooltips beat menus */
+  --z-toast: 1040; /* toasts beat everything */
+
+  /* --- elevation -------------------------------------------------------
+   * Depth is still --edge borders + surface steps; shadows exist ONLY on
+   * floating layers (design-system.md "shadows only on floating layers").
+   * Two levels: overlay (menu/popover/tooltip/toast) and modal
+   * (dialog/sheet). The color carries the theme; the geometry is shared.
+   */
+  --shadow-overlay: 0 4px 16px var(--shadow-color);
+  --shadow-modal: 0 16px 40px var(--shadow-color);
+  --shadow-color: rgba(0, 0, 0, 0.5);
 
   /* --- motion ---------------------------------------------------------
    * Default is none. These are the only three motions this app plays:
@@ -165,6 +199,10 @@
   /* Diff notation remains domain-specific rather than a status signal. */
   --diff-add-bg: #E3EDDD;
   --diff-del-bg: #F2E4DC;
+
+  /* Shadow ink on paper: warm near-black (--ink-hi's hue), far lower alpha
+   * than dark theme — light surfaces need only a whisper of depth. */
+  --shadow-color: rgba(31, 27, 22, 0.16);
 
   --ansi-black: #1F1B16;
   --ansi-red: #A33226;
