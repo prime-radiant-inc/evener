@@ -218,24 +218,24 @@ func TestDelegateControllerCommittedUnreadyStartAdmitsOnlyStopOrFinish(t *testin
 	if err != nil {
 		t.Fatalf("CommitStart: %v", err)
 	}
-	if err := c.BeginModelRequest(started.lease); !errors.Is(err, errDelegateTargetBusy) {
+	if _, err := c.BeginModelRequest(started.lease); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("BeginModelRequest unready error = %v, want busy", err)
 	}
-	if err := c.BeginToolExecution(started.lease); !errors.Is(err, errDelegateTargetBusy) {
-		t.Fatalf("BeginToolExecution unready error = %v, want busy", err)
+	if err := c.BeginTool(started.lease); !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("BeginTool unready error = %v, want busy", err)
 	}
 	runtime := &Session{}
 	if err := c.AttachRuntime(started.lease, runtime); err != nil {
 		t.Fatalf("AttachRuntime: %v", err)
 	}
-	if err := c.BeginModelRequest(started.lease); !errors.Is(err, errDelegateTargetBusy) {
+	if _, err := c.BeginModelRequest(started.lease); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("BeginModelRequest before input error = %v, want busy", err)
 	}
-	plan, err := c.FinishGeneration(started.lease, delegateGenerationFinish{status: delegatestore.OutcomeStopped, reason: "stopped_before_launch"})
+	plan, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeStopped, reason: "stopped_before_launch"})
 	if err != nil {
 		t.Fatalf("FinishGeneration exact unready lease: %v", err)
 	}
-	if row := plan.rows[0]; row.lifecycle != delegateLifecycleIdle || row.lastOutcome == nil || row.lastOutcome.Status != delegatestore.OutcomeStopped {
+	if row := plan.updates[0].rows[0]; row.lifecycle != delegateLifecycleIdle || row.lastOutcome == nil || row.lastOutcome.Status != delegatestore.OutcomeStopped {
 		t.Fatalf("finish plan = %#v, want idle stopped", row)
 	}
 }
@@ -263,14 +263,14 @@ func TestDelegateControllerExactFinishSettlesStoppingGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append stop request: %v", err)
 	}
-	if err := c.BeginModelRequest(started.lease); !errors.Is(err, errDelegateTargetBusy) {
+	if _, err := c.BeginModelRequest(started.lease); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("BeginModelRequest while stopping error = %v, want busy", err)
 	}
-	plan, err := c.FinishGeneration(started.lease, delegateGenerationFinish{status: delegatestore.OutcomeFailed, reason: "cancelled"})
+	plan, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeFailed, reason: "cancelled"})
 	if err != nil {
 		t.Fatalf("FinishGeneration stopping exact lease: %v", err)
 	}
-	row := plan.rows[0]
+	row := plan.updates[0].rows[0]
 	if row.phase != delegatestore.PhaseStopping || row.lastOutcome == nil || row.lastOutcome.Status != delegatestore.OutcomeStopped || row.lastOutcome.Reason != "stopped_by_parent" {
 		t.Fatalf("stopping finish plan = %#v", row)
 	}
@@ -308,7 +308,7 @@ func TestDelegateControllerInputAndCompensatingFinishFailureKeepsExactBinding(t 
 	if got := readDelegateControllerFile(t, path); !bytes.Equal(got, beforeBytes) {
 		t.Fatalf("double-failure bytes changed:\n got %q\nwant %q", got, beforeBytes)
 	}
-	if err := c.BeginModelRequest(started.lease); !errors.Is(err, errDelegateTargetBusy) {
+	if _, err := c.BeginModelRequest(started.lease); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("recovery-required model admission error = %v, want busy", err)
 	}
 }
@@ -333,11 +333,11 @@ func TestDelegateControllerStopCanSettleRecoveryRequiredStart(t *testing.T) {
 	c.store = reopened
 	c.mu.Unlock()
 
-	plan, err := c.FinishGeneration(started.lease, delegateGenerationFinish{status: delegatestore.OutcomeStopped, reason: "stopped_for_recovery"})
+	plan, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeStopped, reason: "stopped_for_recovery"})
 	if err != nil {
 		t.Fatalf("FinishGeneration recovery-required lease: %v", err)
 	}
-	if row := plan.rows[0]; row.lifecycle != delegateLifecycleIdle || row.lastOutcome == nil || row.lastOutcome.Status != delegatestore.OutcomeStopped {
+	if row := plan.updates[0].rows[0]; row.lifecycle != delegateLifecycleIdle || row.lastOutcome == nil || row.lastOutcome.Status != delegatestore.OutcomeStopped {
 		t.Fatalf("recovery stop plan = %#v, want idle stopped", row)
 	}
 	if live := c.live["dlg_target"]; live == nil || live.binding != nil || live.recoveryRequired {
@@ -348,7 +348,7 @@ func TestDelegateControllerStopCanSettleRecoveryRequiredStart(t *testing.T) {
 	}
 }
 
-func TestDelegateControllerAdmitStartInputFailureAppendsCanonicalAtomicTerminalBatch(t *testing.T) {
+func TestDelegateControllerInputPersistFailureUsesCanonicalAtomicFinish(t *testing.T) {
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")
@@ -388,7 +388,7 @@ func TestDelegateControllerFinishGenerationUsesCanonicalAtomicTerminalBatch(t *t
 	if err != nil {
 		t.Fatalf("CommitStart: %v", err)
 	}
-	if _, err := c.FinishGeneration(started.lease, delegateGenerationFinish{status: delegatestore.OutcomeFailed, reason: "construction_failed"}); err != nil {
+	if _, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeFailed, reason: "construction_failed"}); err != nil {
 		t.Fatalf("FinishGeneration: %v", err)
 	}
 	raw := readDelegateControllerFile(t, path)
@@ -410,11 +410,11 @@ func TestDelegateControllerFinishGenerationEscapesArbitraryReasonAsJSON(t *testi
 		t.Fatalf("CommitStart: %v", err)
 	}
 	reason := "construction failed: \x01"
-	plan, err := c.FinishGeneration(started.lease, delegateGenerationFinish{status: delegatestore.OutcomeFailed, reason: reason})
+	plan, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeFailed, reason: reason})
 	if err != nil {
 		t.Fatalf("FinishGeneration arbitrary reason: %v", err)
 	}
-	if got := plan.rows[0].lastOutcome; got == nil || got.Reason != reason {
+	if got := plan.updates[0].rows[0].lastOutcome; got == nil || got.Reason != reason {
 		t.Fatalf("last outcome = %#v, want exact reason %q", got, reason)
 	}
 }
@@ -437,11 +437,11 @@ func TestDelegateControllerAdmitStartInputSuccessMarksReady(t *testing.T) {
 	if row := plan.rows[0]; row.lifecycle != delegateLifecycleRunning {
 		t.Fatalf("successful input plan = %#v, want running", row)
 	}
-	if err := c.BeginModelRequest(started.lease); err != nil {
+	if _, err := c.BeginModelRequest(started.lease); err != nil {
 		t.Fatalf("BeginModelRequest ready start: %v", err)
 	}
-	if err := c.BeginToolExecution(started.lease); err != nil {
-		t.Fatalf("BeginToolExecution ready start: %v", err)
+	if err := c.BeginTool(started.lease); err != nil {
+		t.Fatalf("BeginTool ready start: %v", err)
 	}
 }
 
@@ -453,7 +453,7 @@ func TestDelegateControllerRuntimeAttachmentIsOneToOne(t *testing.T) {
 		if _, err := c.AdmitStartInput(first.lease, func() error { return nil }); err != nil {
 			t.Fatalf("AdmitStartInput: %v", err)
 		}
-		if _, err := c.FinishGeneration(first.lease, delegateGenerationFinish{status: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
+		if _, err := c.FinishGeneration(first.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
 			t.Fatalf("FinishGeneration: %v", err)
 		}
 
@@ -537,7 +537,7 @@ func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t
 	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {
 		t.Fatalf("AdmitStartInput: %v", err)
 	}
-	if _, err := c.FinishGeneration(started.lease, delegateGenerationFinish{status: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
+	if _, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
 		t.Fatalf("FinishGeneration: %v", err)
 	}
 
@@ -565,7 +565,7 @@ func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t
 	if live.binding == nil || live.binding.runtime != runtime || !live.binding.ready {
 		t.Fatalf("attention binding = %#v, want exact ready resident runtime", live.binding)
 	}
-	if err := c.BeginModelRequest(attention.lease); err != nil {
+	if _, err := c.BeginModelRequest(attention.lease); err != nil {
 		t.Fatalf("BeginModelRequest attention: %v", err)
 	}
 }
@@ -577,7 +577,7 @@ func TestDelegateControllerAttentionCommitBindsSelectedPendingTranscriptEntry(t 
 	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {
 		t.Fatalf("AdmitStartInput: %v", err)
 	}
-	if _, err := c.FinishGeneration(started.lease, delegateGenerationFinish{status: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
+	if _, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
 		t.Fatalf("FinishGeneration: %v", err)
 	}
 
@@ -590,7 +590,7 @@ func TestDelegateControllerAttentionCommitBindsSelectedPendingTranscriptEntry(t 
 	}
 
 	live := c.live["dlg_target"]
-	if live == nil || !reflect.DeepEqual(live.pendingTranscriptEntryIDs, []string{"attention-exact"}) {
+	if live == nil || !reflect.DeepEqual(live.attentionIDs, []string{"attention-exact"}) {
 		t.Fatalf("bound pending transcript entries = %#v, want exact selected attention ID", live)
 	}
 }

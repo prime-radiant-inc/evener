@@ -1,0 +1,318 @@
+package agent
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"reflect"
+	"testing"
+
+	"github.com/spf13/afero"
+
+	"primeradiant.com/serf/agent/internal/delegatestore"
+)
+
+func TestDelegateControllerNormalSettlementDefersEarlierSteer(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), "dlg_target", "earlier"); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+
+	continueRun, plans, err := c.BeginSettlement(lease, nil)
+	if err != nil {
+		t.Fatalf("BeginSettlement: %v", err)
+	}
+	if !continueRun || len(plans.updates) != 0 || c.durable["dlg_target"].Phase != delegatestore.PhaseRunning || c.durable["dlg_target"].PreparedTerminal != nil {
+		t.Fatalf("settlement with earlier steer = continue:%t plans:%#v aggregate:%#v", continueRun, plans, c.durable["dlg_target"])
+	}
+}
+
+func TestDelegateControllerCommunicateSettlementDefersEarlierSteer(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), "dlg_target", "earlier"); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+	packet := delegateControllerReportedPacket("must defer")
+
+	continueRun, plans, err := c.BeginSettlement(lease, &packet)
+	if err != nil {
+		t.Fatalf("BeginSettlement: %v", err)
+	}
+	if !continueRun || len(plans.updates) != 0 || c.durable["dlg_target"].PreparedTerminal != nil {
+		t.Fatalf("communicate settlement with earlier steer = continue:%t plans:%#v aggregate:%#v", continueRun, plans, c.durable["dlg_target"])
+	}
+}
+
+func TestDelegateControllerNormalSettlementPreparesMissingTerminal(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+
+	continueRun, plans, err := c.BeginSettlement(lease, nil)
+	if err != nil {
+		t.Fatalf("BeginSettlement: %v", err)
+	}
+	aggregate := c.durable["dlg_target"]
+	if continueRun || len(plans.updates) != 1 || aggregate.Phase != delegatestore.PhaseSettling || aggregate.PreparedTerminal == nil || aggregate.PreparedTerminal.Kind != delegatestore.PacketTerminalError {
+		t.Fatalf("missing-terminal settlement = continue:%t plans:%#v aggregate:%#v", continueRun, plans, aggregate)
+	}
+	if got := string(aggregate.PreparedTerminal.Message); got != `"delegate completed without an accepted communicate result"` {
+		t.Fatalf("missing-terminal message = %s", got)
+	}
+}
+
+func TestDelegateControllerCrashAfterNormalSettlementFinishesPreparedOnce(t *testing.T) {
+	c, path := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	if _, _, err := c.BeginSettlement(lease, nil); err != nil {
+		t.Fatalf("BeginSettlement: %v", err)
+	}
+	if err := c.store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	reopened, err := delegatestore.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	restarted, err := openDelegateTreeController(delegateTreeControllerConfig{store: reopened, rootSessionID: "root-session", now: c.now})
+	if err != nil {
+		t.Fatalf("openDelegateTreeController: %v", err)
+	}
+	aggregate := restarted.durable["dlg_target"]
+	if aggregate.Phase != delegatestore.PhaseIdle || aggregate.CurrentRunOpen || aggregate.PreparedTerminal != nil || len(aggregate.PendingDeliveries) != 1 {
+		t.Fatalf("reconciled aggregate = %#v", aggregate)
+	}
+	raw := readDelegateControllerFile(t, path)
+	if got := bytes.Count(raw, []byte(`"delegate_terminal_prepared"`)); got != 1 {
+		t.Fatalf("terminal-prepared event count = %d, want 1\n%s", got, raw)
+	}
+}
+
+func TestDelegateControllerCrashAfterReportedSettlementPreservesPacket(t *testing.T) {
+	c, path := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	want := delegateControllerReportedPacket("accepted")
+	if _, _, err := c.BeginSettlement(lease, &want); err != nil {
+		t.Fatalf("BeginSettlement: %v", err)
+	}
+	if err := c.store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	reopened, err := delegatestore.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	restarted, err := openDelegateTreeController(delegateTreeControllerConfig{store: reopened, rootSessionID: "root-session", now: c.now})
+	if err != nil {
+		t.Fatalf("openDelegateTreeController: %v", err)
+	}
+	aggregate := restarted.durable["dlg_target"]
+	if len(aggregate.PendingDeliveries) != 1 || !reflect.DeepEqual(aggregate.PendingDeliveries[0].Packet, want) {
+		t.Fatalf("reported crash delivery = %#v, want %#v", aggregate.PendingDeliveries, want)
+	}
+}
+
+func TestDelegateControllerFatalFinishPreparesAndFinishesAtomically(t *testing.T) {
+	c, path := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	before := bytes.Count(readDelegateControllerFile(t, path), []byte{'\n'})
+
+	plans, err := c.FinishGeneration(delegateLease{delegateID: "dlg_target", generation: 1}, delegateFinish{
+		outcome: delegatestore.OutcomeFailed,
+		reason:  "provider_failed",
+	})
+	if err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	raw := readDelegateControllerFile(t, path)
+	after := bytes.Count(raw, []byte{'\n'})
+	if after != before+1 || !bytes.Contains(raw, []byte(`"delegate_terminal_prepared"`)) || !bytes.Contains(raw, []byte(`"delegate_run_finished"`)) {
+		t.Fatalf("fatal finish was not one prepare+finish batch:\n%s", raw)
+	}
+	if len(plans.updates) != 1 || len(plans.deliveries) != 1 {
+		t.Fatalf("fatal finish plans = %#v", plans)
+	}
+}
+
+func TestDelegateControllerTerminalPreparedAppendFailureKeepsRunning(t *testing.T) {
+	c, path := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	before := readDelegateControllerFile(t, path)
+	if err := c.store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	continueRun, plans, err := c.BeginSettlement(delegateLease{delegateID: "dlg_target", generation: 1}, nil)
+	if err == nil {
+		t.Fatal("BeginSettlement succeeded after store close")
+	}
+	aggregate := c.durable["dlg_target"]
+	if continueRun || len(plans.updates) != 0 || aggregate.Phase != delegatestore.PhaseRunning || aggregate.PreparedTerminal != nil {
+		t.Fatalf("failed settlement mutated state = continue:%t plans:%#v aggregate:%#v", continueRun, plans, aggregate)
+	}
+	if got := readDelegateControllerFile(t, path); !bytes.Equal(got, before) {
+		t.Fatalf("failed settlement changed bytes:\n got %q\nwant %q", got, before)
+	}
+}
+
+func TestDelegateControllerStopOverridesPreparedNormalPacket(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	packet := delegateControllerReportedPacket("normal")
+	if _, _, err := c.BeginSettlement(lease, &packet); err != nil {
+		t.Fatalf("BeginSettlement: %v", err)
+	}
+	requestSeq := appendDelegateControllerStopRequest(t, c, "dlg_target")
+
+	plans, err := c.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, disposition: delegatestore.DispositionReported})
+	if err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	aggregate := c.durable["dlg_target"]
+	if aggregate.Phase != delegatestore.PhaseStopping || aggregate.PendingStopSeq != requestSeq || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeStopped || !reflect.DeepEqual(aggregate.PreparedTerminal, &packet) {
+		t.Fatalf("stop-selected finish aggregate = %#v", aggregate)
+	}
+	if len(plans.deliveries) != 0 || len(aggregate.PendingDeliveries) != 1 || aggregate.PendingDeliveries[0].Packet.Kind != delegatestore.PacketTerminalError {
+		t.Fatalf("stop-selected delivery state plans=%#v aggregate=%#v", plans, aggregate)
+	}
+}
+
+func TestDelegateControllerStoppedFinishRemainsStoppingWithDiagnostic(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	packet := delegateControllerReportedPacket("diagnostic")
+	if _, _, err := c.BeginSettlement(lease, &packet); err != nil {
+		t.Fatalf("BeginSettlement: %v", err)
+	}
+	appendDelegateControllerStopRequest(t, c, "dlg_target")
+	if _, err := c.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeCancelled, reason: "cancelled"}); err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	aggregate := c.durable["dlg_target"]
+	if aggregate.Phase != delegatestore.PhaseStopping || aggregate.CurrentRunOpen || !reflect.DeepEqual(aggregate.PreparedTerminal, &packet) {
+		t.Fatalf("stopped finish discarded diagnostic or left stopping: %#v", aggregate)
+	}
+}
+
+func TestDelegateControllerStopCompletedClearsPreparedDiagnostic(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	packet := delegateControllerReportedPacket("diagnostic")
+	if _, _, err := c.BeginSettlement(lease, &packet); err != nil {
+		t.Fatalf("BeginSettlement: %v", err)
+	}
+	requestSeq := appendDelegateControllerStopRequest(t, c, "dlg_target")
+	if _, err := c.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeCancelled, reason: "cancelled"}); err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	c.mu.Lock()
+	_, err := c.appendLocked(delegatestore.Event{
+		Kind:       delegatestore.EventDelegateSubtreeStopCompleted,
+		DelegateID: "dlg_target",
+		SubtreeStopCompleted: &delegatestore.SubtreeStopCompleted{
+			RequestSeq: requestSeq,
+		},
+	})
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("append stop completion: %v", err)
+	}
+	aggregate := c.durable["dlg_target"]
+	if aggregate.Phase != delegatestore.PhaseIdle || aggregate.PreparedTerminal != nil || aggregate.PendingStopSeq != 0 {
+		t.Fatalf("stop-completed aggregate = %#v", aggregate)
+	}
+}
+
+func TestDelegateControllerAttentionCompletedNoActionStaysPrivate(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	c.mu.Lock()
+	_, err := c.appendLocked(
+		delegateControllerCreatedEvent("dlg_target", ""),
+		delegateControllerRunStartedEvent("dlg_target", 1, delegatestore.TriggerAttention, c.now()),
+	)
+	if err == nil {
+		c.live["dlg_target"] = &delegateLiveState{binding: &delegateRuntimeBinding{
+			lease:  delegateLease{delegateID: "dlg_target", generation: 1},
+			cancel: func() {},
+			ready:  true,
+		}}
+		c.drivesInUse = 1
+	}
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("seed attention run: %v", err)
+	}
+
+	plans, err := c.FinishGeneration(delegateLease{delegateID: "dlg_target", generation: 1}, delegateFinish{
+		outcome:     delegatestore.OutcomeCompleted,
+		disposition: delegatestore.DispositionCompletedNoAction,
+		reason:      "attention_consumed_without_report",
+	})
+	if err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	aggregate := c.durable["dlg_target"]
+	if len(plans.deliveries) != 0 || len(aggregate.PendingDeliveries) != 0 || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeCompleted || string(aggregate.LatestOutcome.Status) == string(delegatestore.DispositionCompletedNoAction) {
+		t.Fatalf("completed-no-action leaked publicly: plans=%#v aggregate=%#v", plans, aggregate)
+	}
+}
+
+func TestDelegateControllerOwnerInputWithoutCommunicateFailsMissingTerminal(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	if _, _, err := c.BeginSettlement(lease, nil); err != nil {
+		t.Fatalf("BeginSettlement: %v", err)
+	}
+	plans, err := c.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeCompleted})
+	if err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	aggregate := c.durable["dlg_target"]
+	if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeFailed || aggregate.LatestOutcome.Reason != "missing_terminal" || len(aggregate.PendingDeliveries) != 1 || aggregate.PendingDeliveries[0].Packet.Kind != delegatestore.PacketTerminalError || len(plans.deliveries) != 1 {
+		t.Fatalf("missing-terminal finish = plans:%#v aggregate:%#v", plans, aggregate)
+	}
+}
+
+func appendDelegateControllerStopRequest(t *testing.T, c *delegateTreeController, delegateID string) uint64 {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	appended, err := c.appendLocked(delegatestore.Event{
+		Kind:       delegatestore.EventDelegateSubtreeStopRequested,
+		DelegateID: delegateID,
+		SubtreeStopRequested: &delegatestore.SubtreeStopRequested{
+			TargetDelegateID: delegateID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("append stop request: %v", err)
+	}
+	return appended[0].Seq
+}
+
+func delegateControllerReportedPacket(message string) delegatestore.TerminalPacket {
+	valid := false
+	return delegatestore.TerminalPacket{
+		Kind:                   delegatestore.PacketReported,
+		Message:                json.RawMessage(`"` + message + `"`),
+		StructuredResult:       json.RawMessage(`null`),
+		StructuredResultValid:  &valid,
+		StructuredResultReason: "schema mismatch",
+		Warnings:               []string{"warning"},
+		Metadata:               json.RawMessage(`{"source":"test"}`),
+	}
+}

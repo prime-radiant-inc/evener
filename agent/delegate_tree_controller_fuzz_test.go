@@ -49,7 +49,7 @@ func FuzzDelegateControllerTransitions(f *testing.F) {
 				}
 			case 5:
 				if lease, ok := firstDelegateControllerBinding(c, true); ok {
-					_, _ = c.FinishGeneration(lease, delegateGenerationFinish{status: delegatestore.OutcomeFailed, reason: "fuzz_finish"})
+					_, _ = c.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeFailed, reason: "fuzz_finish"})
 				}
 			case 6:
 				if id := firstDelegateControllerIdle(c, false); id != "" {

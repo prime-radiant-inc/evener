@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
@@ -44,6 +43,7 @@ type delegateStartRecord struct {
 	worktreePath   string
 	runtime        *Session
 	attentionID    string
+	waiter         *delegateInlineWaiter
 }
 
 type delegateStartCommit struct {
@@ -55,9 +55,12 @@ type delegateStartCommit struct {
 	worktreePath   string
 }
 
-type delegateGenerationFinish struct {
-	status delegatestore.OutcomeStatus
-	reason string
+type delegateFinish struct {
+	outcome     delegatestore.OutcomeStatus
+	disposition delegatestore.RunDisposition
+	reason      string
+	packet      *delegatestore.TerminalPacket
+	endedAt     time.Time
 }
 
 func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor delegatestore.Descriptor) (*delegateStartReservation, error) {
@@ -236,14 +239,6 @@ func (c *delegateTreeController) AdmitStartInput(lease delegateLease, admitInput
 	return c.capturedPlanLocked(lease.delegateID), nil
 }
 
-func (c *delegateTreeController) BeginModelRequest(lease delegateLease) error {
-	return c.beginRuntimeBoundary(lease)
-}
-
-func (c *delegateTreeController) BeginToolExecution(lease delegateLease) error {
-	return c.beginRuntimeBoundary(lease)
-}
-
 func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID string) (*delegateStartReservation, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -344,6 +339,12 @@ func (c *delegateTreeController) CommitStart(reservation *delegateStartReservati
 		c.releaseReservationLocked(record)
 		return delegateStartCommit{}, errDelegateTargetBusy
 	}
+	if record.waiter != nil {
+		if live := c.live[record.delegateID]; live != nil && live.waiters != nil && live.waiters[record.generation] != nil {
+			c.releaseReservationLocked(record)
+			return delegateStartCommit{}, errDelegateTargetBusy
+		}
+	}
 	startedAt := c.now()
 	events := []delegatestore.Event{delegateControllerRunStartedEvent(
 		record.delegateID,
@@ -377,10 +378,16 @@ func (c *delegateTreeController) CommitStart(reservation *delegateStartReservati
 		ready:   record.trigger == delegatestore.TriggerAttention,
 	}
 	if record.trigger == delegatestore.TriggerAttention {
-		live.pendingTranscriptEntryIDs = []string{record.attentionID}
+		live.attentionIDs = []string{record.attentionID}
 	}
 	if record.runtime != nil {
 		live.runtime = record.runtime
+	}
+	if record.waiter != nil {
+		if live.waiters == nil {
+			live.waiters = make(map[uint64]*delegateInlineWaiter)
+		}
+		live.waiters[record.generation] = record.waiter
 	}
 	live.activityAt = startedAt
 	return delegateStartCommit{
@@ -393,26 +400,6 @@ func (c *delegateTreeController) CommitStart(reservation *delegateStartReservati
 	}, nil
 }
 
-func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish delegateGenerationFinish) (delegateUpdatePlan, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	aggregate, _, err := c.exactLeaseLocked(lease)
-	if err != nil {
-		return delegateUpdatePlan{}, err
-	}
-	message, _ := json.Marshal(finish.reason)
-	packet := delegatestore.TerminalPacket{
-		Kind:    delegatestore.PacketTerminalError,
-		Message: message,
-	}
-	terminal, finished := terminalFinishBatch(lease, finish.status, finish.reason, c.now(), packet)
-	if err := c.appendTerminalFinishLocked(aggregate.Phase, terminal, finished); err != nil {
-		return delegateUpdatePlan{}, err
-	}
-	c.releaseGenerationLocked(lease)
-	return c.capturedPlanLocked(lease.delegateID), nil
-}
-
 func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) {
 	live := c.live[lease.delegateID]
 	if live == nil || live.binding == nil || live.binding.lease != lease {
@@ -423,6 +410,8 @@ func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) {
 		live.runtime = live.binding.runtime
 	}
 	live.binding = nil
+	live.pendingSteers = nil
+	live.attentionIDs = nil
 	live.recoveryRequired = false
 	if c.durable[lease.delegateID].Trigger == delegatestore.TriggerAttention {
 		c.releaseCapacityLocked(delegateDriveCapacity)
@@ -470,7 +459,7 @@ func terminalFinishBatch(lease delegateLease, status delegatestore.OutcomeStatus
 					EndedAt: endedAt,
 				},
 				Disposition: delegatestore.DispositionTerminalError,
-				DeliveryID:  fmt.Sprintf("%s/delivery/%d", lease.delegateID, lease.generation),
+				DeliveryID:  delegateDeliveryID(lease.delegateID, lease.generation),
 			},
 		}
 }

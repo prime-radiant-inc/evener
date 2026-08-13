@@ -52,6 +52,7 @@ type delegateTreeController struct {
 	drivesInUse   int
 	nextToken     uint64
 	reservations  map[uint64]*delegateStartRecord
+	deliveries    map[uint64]*delegateDeliveryAdmission
 }
 
 type delegateActor struct {
@@ -72,12 +73,13 @@ type delegateRuntimeBinding struct {
 }
 
 type delegateLiveState struct {
-	runtime                   *Session
-	binding                   *delegateRuntimeBinding
-	pendingTranscriptEntryIDs []string
-	waiters                   map[uint64]chan struct{}
-	recoveryRequired          bool
-	activityAt                time.Time
+	runtime          *Session
+	binding          *delegateRuntimeBinding
+	pendingSteers    []delegateSteeringAdmission
+	attentionIDs     []string
+	waiters          map[uint64]*delegateInlineWaiter
+	recoveryRequired bool
+	activityAt       time.Time
 }
 
 type delegateSnapshot struct {
@@ -95,6 +97,11 @@ type delegateSnapshot struct {
 
 type delegateUpdatePlan struct {
 	rows []delegateSnapshot
+}
+
+type delegateMutationPlans struct {
+	updates    []delegateUpdatePlan
+	deliveries []delegateDeliveryPlan
 }
 
 func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTreeController, error) {
@@ -132,6 +139,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		turnLimit:     cfg.turnLimit,
 		driveLimit:    cfg.driveLimit,
 		reservations:  make(map[uint64]*delegateStartRecord),
+		deliveries:    make(map[uint64]*delegateDeliveryAdmission),
 	}
 	c.mu.Lock()
 	err = c.reconcileRuntimeLostLocked()
@@ -229,33 +237,49 @@ func (c *delegateTreeController) reconcileRuntimeLostLocked() error {
 	sort.Strings(ids)
 	for _, id := range ids {
 		aggregate := c.durable[id]
+		lease := delegateLease{delegateID: id, generation: aggregate.Generation}
+		endedAt := c.now()
 		packet := delegatestore.TerminalPacket{
 			Kind:    delegatestore.PacketTerminalError,
 			Message: json.RawMessage(`"delegate runtime was lost before the generation settled"`),
 		}
-		terminal, finish := terminalFinishBatch(
-			delegateLease{delegateID: id, generation: aggregate.Generation},
-			delegatestore.OutcomeFailed,
-			"runtime_lost",
-			c.now(),
-			packet,
-		)
-		err := c.appendTerminalFinishLocked(aggregate.Phase, terminal, finish)
+		var events []delegatestore.Event
+		switch aggregate.Phase {
+		case delegatestore.PhaseRunning:
+			terminal, finish := terminalFinishBatch(lease, delegatestore.OutcomeFailed, "runtime_lost", endedAt, packet)
+			events = []delegatestore.Event{terminal, finish}
+		case delegatestore.PhaseSettling:
+			if aggregate.PreparedTerminal == nil {
+				return fmt.Errorf("reconcile delegate %s: settling without prepared terminal", id)
+			}
+			events = []delegatestore.Event{delegateRunFinishedEvent(
+				lease,
+				delegatestore.OutcomeFailed,
+				delegatePacketDisposition(*aggregate.PreparedTerminal),
+				"runtime_lost",
+				endedAt,
+				delegateDeliveryID(id, aggregate.Generation),
+				nil,
+			)}
+		case delegatestore.PhaseStopping:
+			events = []delegatestore.Event{delegateRunFinishedEvent(
+				lease,
+				delegatestore.OutcomeStopped,
+				delegatestore.DispositionTerminalError,
+				"runtime_lost",
+				endedAt,
+				delegateDeliveryID(id, aggregate.Generation),
+				&packet,
+			)}
+		default:
+			return fmt.Errorf("reconcile delegate %s: open run has phase %s", id, aggregate.Phase)
+		}
+		_, err := c.appendLocked(events...)
 		if err != nil {
 			return fmt.Errorf("reconcile delegate %s runtime loss: %w", id, err)
 		}
 	}
 	return nil
-}
-
-func (c *delegateTreeController) appendTerminalFinishLocked(phase delegatestore.Phase, terminal, finish delegatestore.Event) error {
-	var err error
-	if phase == delegatestore.PhaseRunning {
-		_, err = c.appendLocked(terminal, finish)
-	} else {
-		_, err = c.appendLocked(finish)
-	}
-	return err
 }
 
 func (c *delegateTreeController) Snapshot() delegateUpdatePlan {
@@ -268,13 +292,21 @@ func (c *delegateTreeController) Snapshot() delegateUpdatePlan {
 	sort.Strings(ids)
 	rows := make([]delegateSnapshot, 0, len(ids))
 	for _, id := range ids {
-		rows = append(rows, captureDelegateSnapshot(c.durable[id]))
+		rows = append(rows, c.captureDelegateSnapshotLocked(id))
 	}
 	return delegateUpdatePlan{rows: rows}
 }
 
 func (c *delegateTreeController) capturedPlanLocked(id string) delegateUpdatePlan {
-	return delegateUpdatePlan{rows: []delegateSnapshot{captureDelegateSnapshot(c.durable[id])}}
+	return delegateUpdatePlan{rows: []delegateSnapshot{c.captureDelegateSnapshotLocked(id)}}
+}
+
+func (c *delegateTreeController) captureDelegateSnapshotLocked(id string) delegateSnapshot {
+	snapshot := captureDelegateSnapshot(c.durable[id])
+	if live := c.live[id]; live != nil && live.activityAt.After(snapshot.latestActivityAt) {
+		snapshot.latestActivityAt = live.activityAt
+	}
+	return snapshot
 }
 
 func captureDelegateSnapshot(aggregate *delegatestore.Aggregate) delegateSnapshot {

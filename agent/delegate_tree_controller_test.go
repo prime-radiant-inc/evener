@@ -208,9 +208,9 @@ func TestDelegateControllerMutationReturnsCapturedSnapshot(t *testing.T) {
 		t.Fatalf("CommitStart: %v", err)
 	}
 	first := started.plan
-	if _, err := c.FinishGeneration(started.lease, delegateGenerationFinish{
-		status: delegatestore.OutcomeFailed,
-		reason: "test_finished",
+	if _, err := c.FinishGeneration(started.lease, delegateFinish{
+		outcome: delegatestore.OutcomeFailed,
+		reason:  "test_finished",
 	}); err != nil {
 		t.Fatalf("FinishGeneration: %v", err)
 	}
@@ -231,15 +231,15 @@ func TestDelegateControllerCapturedSnapshotsCarryMonotonicRevision(t *testing.T)
 	if err != nil {
 		t.Fatalf("CommitStart: %v", err)
 	}
-	finished, err := c.FinishGeneration(started.lease, delegateGenerationFinish{
-		status: delegatestore.OutcomeFailed,
-		reason: "test_finished",
+	finished, err := c.FinishGeneration(started.lease, delegateFinish{
+		outcome: delegatestore.OutcomeFailed,
+		reason:  "test_finished",
 	})
 	if err != nil {
 		t.Fatalf("FinishGeneration: %v", err)
 	}
 
-	first, second := started.plan.rows[0], finished.rows[0]
+	first, second := started.plan.rows[0], finished.updates[0].rows[0]
 	if first.revision >= second.revision {
 		t.Fatalf("captured revisions = %d then %d, want increasing", first.revision, second.revision)
 	}
@@ -262,7 +262,7 @@ func TestDelegateControllerRemainsDormant(t *testing.T) {
 	}
 	for _, file := range pkg.Syntax {
 		name := filepath.Base(pkg.Fset.Position(file.Package).Filename)
-		if name == "delegate_tree_controller.go" || name == "delegate_tree_start.go" {
+		if delegateControllerImplementationFiles[name] {
 			continue
 		}
 		for _, violation := range delegateControllerDormancyViolations(pkg.Fset, file, pkg.TypesInfo, pkg.Types) {
@@ -279,6 +279,7 @@ func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing
 	}{
 		{name: "constructor call", source: `package agent; func probe() { _, _ = openDelegateTreeController(delegateTreeControllerConfig{}) }`, symbol: "openDelegateTreeController"},
 		{name: "constructor alias", source: `package agent; func probe() { constructor := openDelegateTreeController; _ = constructor }`, symbol: "openDelegateTreeController"},
+		{name: "delivery call", source: `package agent; func probe() { deliverDelegatePacket() }`, symbol: "deliverDelegatePacket"},
 		{name: "controller composite", source: `package agent; func probe() { _ = delegateTreeController{} }`, symbol: "delegateTreeController"},
 		{name: "controller pointer composite", source: `package agent; func probe() { _ = &delegateTreeController{} }`, symbol: "delegateTreeController"},
 		{name: "controller new", source: `package agent; func probe() { _ = new(delegateTreeController) }`, symbol: "delegateTreeController"},
@@ -311,17 +312,33 @@ func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing
 }
 
 var delegateControllerLifecycleMethods = map[string]bool{
-	"ReserveCreate":      true,
-	"ReserveStart":       true,
-	"ReserveAttention":   true,
-	"AbortStart":         true,
-	"CommitStart":        true,
-	"AttachRuntime":      true,
-	"AdmitStartInput":    true,
-	"BeginModelRequest":  true,
-	"BeginToolExecution": true,
-	"FinishGeneration":   true,
-	"AuthorizeMutation":  true,
+	"ReserveCreate":         true,
+	"ReserveStart":          true,
+	"ReserveAttention":      true,
+	"RegisterInlineWaiter":  true,
+	"waitForDelegateInline": true,
+	"AbortStart":            true,
+	"CommitStart":           true,
+	"AttachRuntime":         true,
+	"AdmitStartInput":       true,
+	"Steer":                 true,
+	"BeginModelRequest":     true,
+	"BeginTool":             true,
+	"BeginSettlement":       true,
+	"FinishGeneration":      true,
+	"BeginDelivery":         true,
+	"CompleteDelivery":      true,
+	"ReplayDeliveries":      true,
+	"AuthorizeMutation":     true,
+	"Snapshot":              true,
+}
+
+var delegateControllerImplementationFiles = map[string]bool{
+	"delegate_tree_controller.go": true,
+	"delegate_tree_start.go":      true,
+	"delegate_tree_steer.go":      true,
+	"delegate_tree_finish.go":     true,
+	"delegate_delivery.go":        true,
 }
 
 type delegateControllerDormancyViolation struct {
@@ -333,12 +350,13 @@ type delegateControllerDormancyViolation struct {
 func delegateControllerDormancyViolations(files *token.FileSet, file *ast.File, info *types.Info, pkg *types.Package) []delegateControllerDormancyViolation {
 	controller := types.Unalias(pkg.Scope().Lookup("delegateTreeController").Type())
 	constructor := pkg.Scope().Lookup("openDelegateTreeController")
+	delivery := pkg.Scope().Lookup("deliverDelegatePacket")
 	var violations []delegateControllerDormancyViolation
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch typed := node.(type) {
 		case *ast.Ident:
-			if info.Uses[typed] == constructor {
-				violations = append(violations, delegateControllerDormancyViolation{kind: "constructor", symbol: typed.Name, position: files.Position(typed.Pos())})
+			if object := info.Uses[typed]; object == constructor || object == delivery {
+				violations = append(violations, delegateControllerDormancyViolation{kind: "dormant function", symbol: typed.Name, position: files.Position(typed.Pos())})
 			}
 		case *ast.SelectorExpr:
 			selection := info.Selections[typed]
@@ -390,6 +408,7 @@ type delegateTreeControllerConfig struct{}
 type delegateStartReservation struct{}
 type delegateStartCommit struct{}
 func openDelegateTreeController(delegateTreeControllerConfig) (*delegateTreeController, error) { return nil, nil }
+func deliverDelegatePacket() {}
 func (*delegateTreeController) CommitStart(*delegateStartReservation) (delegateStartCommit, error) { return delegateStartCommit{}, nil }
 `, 0)
 	if err != nil {
@@ -511,6 +530,14 @@ func cloneDelegateControllerLive(live map[string]*delegateLiveState) map[string]
 		if state.binding != nil {
 			binding := *state.binding
 			value.binding = &binding
+		}
+		value.pendingSteers = append([]delegateSteeringAdmission(nil), state.pendingSteers...)
+		value.attentionIDs = append([]string(nil), state.attentionIDs...)
+		if state.waiters != nil {
+			value.waiters = make(map[uint64]*delegateInlineWaiter, len(state.waiters))
+			for generation, waiter := range state.waiters {
+				value.waiters[generation] = waiter
+			}
 		}
 		clone[id] = &value
 	}
