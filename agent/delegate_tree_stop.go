@@ -19,6 +19,7 @@ type delegateStopState struct {
 	deliveries map[delegateDeliveryToken]struct{}
 	waiters    []*delegateInlineWaiter
 	done       chan struct{}
+	progress   chan struct{}
 }
 
 type delegateStopResult struct {
@@ -81,6 +82,7 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 		work:       make(map[delegateWorkToken]string),
 		deliveries: make(map[delegateDeliveryToken]struct{}),
 		done:       make(chan struct{}),
+		progress:   make(chan struct{}, 1),
 	}
 	plan := delegateCancelPlan{requestSeq: stop.requestSeq, targetID: targetID}
 	memberIDs := c.memberIDsLeafFirstLocked(members)
@@ -363,9 +365,9 @@ func (c *delegateTreeController) Close(ctx context.Context) error {
 		}
 		c.mu.Lock()
 		aggregate := c.durable[rootID]
-		alreadyStopped := aggregate == nil || aggregate.PendingStopSeq == 0 && aggregate.Phase == delegatestore.PhaseClosed
+		missing := aggregate == nil
 		c.mu.Unlock()
-		if alreadyStopped {
+		if missing {
 			continue
 		}
 		result, cancelPlan, _, err := c.stopSubtreeForClose(rootID)
@@ -424,6 +426,9 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 		}
 		plans, err := c.Reconcile(evidence)
 		if err != nil {
+			if errors.Is(err, errDelegateTargetBusy) {
+				continue
+			}
 			return err
 		}
 		for _, plan := range plans.shellRepairs {
@@ -443,12 +448,46 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 			continue
 		}
 		if !delegateStopDone(stop) {
-			select {
-			case <-stop.done:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
+			if err := waitForDelegateStopProgress(ctx, stop); err != nil {
+				return err
 			}
+		}
+	}
+}
+
+func (c *delegateTreeController) signalStopProgressLocked() {
+	if c.stop == nil {
+		return
+	}
+	select {
+	case c.stop.progress <- struct{}{}:
+	default:
+	}
+}
+
+func waitForDelegateStopProgress(ctx context.Context, stop *delegateStopState) error {
+	select {
+	case <-stop.done:
+		return nil
+	case <-stop.progress:
+		return nil
+	default:
+	}
+	select {
+	case <-stop.done:
+		return nil
+	case <-stop.progress:
+		return nil
+	case <-ctx.Done():
+		// Exact progress wins over cancellation when both become observable at
+		// the wait boundary, so close gets one final evidence recollection.
+		select {
+		case <-stop.done:
+			return nil
+		case <-stop.progress:
+			return nil
+		default:
+			return ctx.Err()
 		}
 	}
 }

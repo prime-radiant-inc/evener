@@ -346,6 +346,7 @@ func (c *delegateTreeController) restorePendingStop(events []delegatestore.Event
 		work:       make(map[delegateWorkToken]string),
 		deliveries: make(map[delegateDeliveryToken]struct{}),
 		done:       make(chan struct{}),
+		progress:   make(chan struct{}, 1),
 	}
 	return nil
 }

@@ -68,7 +68,10 @@ func (c *delegateTreeController) AbortShellWork(token delegateWorkToken) error {
 	}
 	delete(c.work, token.processID)
 	if c.stop != nil {
-		delete(c.stop.work, token)
+		if _, tracked := c.stop.work[token]; tracked {
+			delete(c.stop.work, token)
+			c.signalStopProgressLocked()
+		}
 	}
 	c.evidenceVersion++
 	return nil
@@ -83,7 +86,10 @@ func (c *delegateTreeController) ReportShellFinished(token delegateWorkToken, sh
 	}
 	delete(c.work, token.processID)
 	if c.stop != nil {
-		delete(c.stop.work, token)
+		if _, tracked := c.stop.work[token]; tracked {
+			delete(c.stop.work, token)
+			c.signalStopProgressLocked()
+		}
 	}
 	c.evidenceVersion++
 	return delegateMutationPlans{}, nil

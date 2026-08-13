@@ -136,7 +136,10 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 
 func (c *delegateTreeController) generationFinishedPlansLocked(lease delegateLease, deliveryID string) (delegateMutationPlans, context.CancelFunc) {
 	if c.stop != nil {
-		delete(c.stop.active, lease)
+		if _, tracked := c.stop.active[lease]; tracked {
+			delete(c.stop.active, lease)
+			c.signalStopProgressLocked()
+		}
 	}
 	cancel := c.releaseGenerationLocked(lease)
 	c.evidenceVersion++

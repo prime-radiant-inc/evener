@@ -345,7 +345,10 @@ func (c *delegateTreeController) reservationRecordLocked(reservation *delegateSt
 func (c *delegateTreeController) releaseReservationLocked(record *delegateStartRecord) context.CancelFunc {
 	delete(c.reservations, record.token)
 	if c.stop != nil {
-		delete(c.stop.starts, record.token)
+		if _, tracked := c.stop.starts[record.token]; tracked {
+			delete(c.stop.starts, record.token)
+			c.signalStopProgressLocked()
+		}
 	}
 	c.releaseCapacityLocked(record.capacityKind)
 	c.evidenceVersion++
@@ -406,7 +409,10 @@ func (c *delegateTreeController) CommitStart(reservation *delegateStartReservati
 	}
 	delete(c.reservations, record.token)
 	if c.stop != nil {
-		delete(c.stop.starts, record.token)
+		if _, tracked := c.stop.starts[record.token]; tracked {
+			delete(c.stop.starts, record.token)
+			c.signalStopProgressLocked()
+		}
 	}
 	live := c.live[record.delegateID]
 	if live == nil {

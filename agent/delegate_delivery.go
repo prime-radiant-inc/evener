@@ -184,7 +184,10 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 	if !committed {
 		delete(c.deliveries, token.processID)
 		if c.stop != nil {
-			delete(c.stop.deliveries, token)
+			if _, tracked := c.stop.deliveries[token]; tracked {
+				delete(c.stop.deliveries, token)
+				c.signalStopProgressLocked()
+			}
 		}
 		c.evidenceVersion++
 		return delegateMutationPlans{}, nil
@@ -193,7 +196,10 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 	if aggregate == nil || len(aggregate.PendingDeliveries) == 0 || aggregate.PendingDeliveries[0].DeliveryID != token.deliveryID {
 		delete(c.deliveries, token.processID)
 		if c.stop != nil {
-			delete(c.stop.deliveries, token)
+			if _, tracked := c.stop.deliveries[token]; tracked {
+				delete(c.stop.deliveries, token)
+				c.signalStopProgressLocked()
+			}
 		}
 		c.evidenceVersion++
 		return delegateMutationPlans{}, errDelegateStaleLease
@@ -207,14 +213,20 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 	}); err != nil {
 		delete(c.deliveries, token.processID)
 		if c.stop != nil {
-			delete(c.stop.deliveries, token)
+			if _, tracked := c.stop.deliveries[token]; tracked {
+				delete(c.stop.deliveries, token)
+				c.signalStopProgressLocked()
+			}
 		}
 		c.evidenceVersion++
 		return delegateMutationPlans{}, err
 	}
 	delete(c.deliveries, token.processID)
 	if c.stop != nil {
-		delete(c.stop.deliveries, token)
+		if _, tracked := c.stop.deliveries[token]; tracked {
+			delete(c.stop.deliveries, token)
+			c.signalStopProgressLocked()
+		}
 	}
 	c.evidenceVersion++
 	plan := c.capturedPlanLocked(receipt.delegateID)

@@ -4,12 +4,292 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
 )
+
+type delegateStopWaitBarrierContext struct {
+	entered  chan struct{}
+	canceled chan struct{}
+	once     sync.Once
+}
+
+func newDelegateStopWaitBarrierContext() *delegateStopWaitBarrierContext {
+	return &delegateStopWaitBarrierContext{
+		entered:  make(chan struct{}, 8),
+		canceled: make(chan struct{}),
+	}
+}
+
+func (c *delegateStopWaitBarrierContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *delegateStopWaitBarrierContext) Done() <-chan struct{} {
+	c.entered <- struct{}{}
+	return c.canceled
+}
+func (c *delegateStopWaitBarrierContext) Err() error {
+	select {
+	case <-c.canceled:
+		return context.Canceled
+	default:
+		return nil
+	}
+}
+func (c *delegateStopWaitBarrierContext) Value(any) any { return nil }
+func (c *delegateStopWaitBarrierContext) cancel() {
+	c.once.Do(func() { close(c.canceled) })
+}
+
+func TestDelegateControllerCloseDrainProgressCoversBothWaitOrders(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T) (*delegateTreeController, *delegateStopState, func(), func())
+	}{
+		{
+			name: "generation finish",
+			setup: func(t *testing.T) (*delegateTreeController, *delegateStopState, func(), func()) {
+				c, _ := newDelegateControllerTestHarness(t, 2, 1)
+				seedDelegateControllerIdle(t, c, "dlg_target", "")
+				seedDelegateControllerRunning(t, c, "dlg_first", "dlg_target")
+				seedDelegateControllerRunning(t, c, "dlg_second", "dlg_target")
+				result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+				if err != nil {
+					t.Fatalf("StopSubtree: %v", err)
+				}
+				finish := func(id string) func() {
+					return func() {
+						_, err := c.FinishGeneration(delegateLease{delegateID: id, generation: 1}, delegateFinish{
+							outcome:     delegatestore.OutcomeCompleted,
+							disposition: delegatestore.DispositionCompletedNoAction,
+						})
+						if err != nil {
+							t.Fatalf("FinishGeneration(%s): %v", id, err)
+						}
+					}
+				}
+				return c, c.stopForResult(result), finish("dlg_first"), finish("dlg_second")
+			},
+		},
+		{
+			name: "start release",
+			setup: func(t *testing.T) (*delegateTreeController, *delegateStopState, func(), func()) {
+				c, _ := newDelegateControllerTestHarness(t, 3, 1)
+				seedDelegateControllerRunning(t, c, "dlg_target", "")
+				seedDelegateControllerIdle(t, c, "dlg_first", "dlg_target")
+				seedDelegateControllerIdle(t, c, "dlg_second", "dlg_target")
+				lease := delegateLease{delegateID: "dlg_target", generation: 1}
+				actor := delegateActor{lease: &lease}
+				first, err := c.ReserveStart(actor, "dlg_first")
+				if err != nil {
+					t.Fatalf("ReserveStart(first): %v", err)
+				}
+				second, err := c.ReserveStart(actor, "dlg_second")
+				if err != nil {
+					t.Fatalf("ReserveStart(second): %v", err)
+				}
+				if _, err := c.FinishGeneration(lease, delegateFinish{
+					outcome: delegatestore.OutcomeFailed,
+					reason:  "test parent setup",
+				}); err != nil {
+					t.Fatalf("FinishGeneration(parent): %v", err)
+				}
+				result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+				if err != nil {
+					t.Fatalf("StopSubtree: %v", err)
+				}
+				abort := func(reservation *delegateStartReservation) func() {
+					return func() {
+						if err := c.AbortStart(reservation); err != nil {
+							t.Fatalf("AbortStart: %v", err)
+						}
+					}
+				}
+				return c, c.stopForResult(result), abort(first), abort(second)
+			},
+		},
+		{
+			name: "shell finish",
+			setup: func(t *testing.T) (*delegateTreeController, *delegateStopState, func(), func()) {
+				c, _ := newDelegateControllerTestHarness(t, 1, 1)
+				seedDelegateControllerRunning(t, c, "dlg_target", "")
+				lease := delegateLease{delegateID: "dlg_target", generation: 1}
+				first, err := c.BeginShellWork(lease)
+				if err != nil {
+					t.Fatalf("BeginShellWork(first): %v", err)
+				}
+				second, err := c.BeginShellWork(lease)
+				if err != nil {
+					t.Fatalf("BeginShellWork(second): %v", err)
+				}
+				if cancelNow, err := c.CommitShellWork(first, "job-first", func() {}); err != nil || cancelNow {
+					t.Fatalf("CommitShellWork(first) = cancel:%t err:%v", cancelNow, err)
+				}
+				if cancelNow, err := c.CommitShellWork(second, "job-second", func() {}); err != nil || cancelNow {
+					t.Fatalf("CommitShellWork(second) = cancel:%t err:%v", cancelNow, err)
+				}
+				if _, err := c.FinishGeneration(lease, delegateFinish{
+					outcome: delegatestore.OutcomeFailed,
+					reason:  "test parent setup",
+				}); err != nil {
+					t.Fatalf("FinishGeneration(parent): %v", err)
+				}
+				result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+				if err != nil {
+					t.Fatalf("StopSubtree: %v", err)
+				}
+				finish := func(token delegateWorkToken, jobID string) func() {
+					return func() {
+						if _, err := c.ReportShellFinished(token, jobID); err != nil {
+							t.Fatalf("ReportShellFinished(%s): %v", jobID, err)
+						}
+					}
+				}
+				return c, c.stopForResult(result), finish(first, "job-first"), finish(second, "job-second")
+			},
+		},
+		{
+			name: "delivery completion",
+			setup: func(t *testing.T) (*delegateTreeController, *delegateStopState, func(), func()) {
+				c, _ := newDelegateControllerTestHarness(t, 1, 1)
+				seedDelegateControllerIdle(t, c, "dlg_target", "")
+				seedDelegateControllerIdle(t, c, "dlg_first", "dlg_target")
+				seedDelegateControllerIdle(t, c, "dlg_second", "dlg_target")
+				seedDelegateControllerDelivery(t, c, "dlg_first")
+				seedDelegateControllerDelivery(t, c, "dlg_second")
+				plans := c.ReplayDeliveries()
+				if len(plans) != 2 {
+					t.Fatalf("ReplayDeliveries count = %d, want 2", len(plans))
+				}
+				first, admitted, err := c.BeginDelivery(plans[0])
+				if err != nil || !admitted {
+					t.Fatalf("BeginDelivery(first) = admitted:%t err:%v", admitted, err)
+				}
+				second, admitted, err := c.BeginDelivery(plans[1])
+				if err != nil || !admitted {
+					t.Fatalf("BeginDelivery(second) = admitted:%t err:%v", admitted, err)
+				}
+				result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+				if err != nil {
+					t.Fatalf("StopSubtree: %v", err)
+				}
+				complete := func(token delegateDeliveryToken) func() {
+					return func() {
+						if _, err := c.CompleteDelivery(token, false); err != nil {
+							t.Fatalf("CompleteDelivery: %v", err)
+						}
+					}
+				}
+				return c, c.stopForResult(result), complete(first), complete(second)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c, stop, mutateBeforeWait, mutateAfterWait := test.setup(t)
+			mutateBeforeWait()
+			ctx := newDelegateStopWaitBarrierContext()
+			result := make(chan error, 1)
+			go func() { result <- c.drainStopForClose(ctx, stop) }()
+			<-ctx.entered
+			mutateAfterWait()
+			ctx.cancel()
+			if err := <-result; err != nil {
+				t.Fatalf("drainStopForClose after exact progress = %v", err)
+			}
+			select {
+			case <-stop.done:
+			default:
+				t.Fatal("stop did not complete after both exact drain orders")
+			}
+		})
+	}
+}
+
+func TestDelegateControllerCloseDrainRetriesStaleEvidence(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 2, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	seedDelegateControllerRunning(t, c, "dlg_unrelated", "")
+	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	stop := c.stopForResult(result)
+	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcriptPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := syscall.Mkfifo(transcriptPath, 0o600); err != nil {
+		t.Fatalf("Mkfifo: %v", err)
+	}
+	nextTranscriptPath := transcriptPath + ".next"
+	if err := syscall.Mkfifo(nextTranscriptPath, 0o600); err != nil {
+		t.Fatalf("Mkfifo next pass: %v", err)
+	}
+	readerOpened := make(chan struct{}, 2)
+	releaseFirst := make(chan struct{})
+	writerDone := make(chan error, 1)
+	go func() {
+		for pass := 0; pass < 2; pass++ {
+			file, openErr := os.OpenFile(transcriptPath, os.O_WRONLY, 0)
+			if openErr != nil {
+				writerDone <- openErr
+				return
+			}
+			readerOpened <- struct{}{}
+			if pass == 0 {
+				<-releaseFirst
+				if renameErr := os.Rename(nextTranscriptPath, transcriptPath); renameErr != nil {
+					writerDone <- renameErr
+					return
+				}
+			}
+			_, writeErr := file.WriteString(`{"kind":"header","format_version":2,"session_id":"child-dlg_target","created_at":"0001-01-01T00:00:00Z","profile_id":"","model":""}` + "\n")
+			closeErr := file.Close()
+			if writeErr != nil || closeErr != nil {
+				writerDone <- errors.Join(writeErr, closeErr)
+				return
+			}
+		}
+		writerDone <- nil
+	}()
+
+	drainResult := make(chan error, 1)
+	go func() { drainResult <- c.drainStopForClose(context.Background(), stop) }()
+	<-readerOpened
+	if _, err := c.BeginShellWork(delegateLease{delegateID: "dlg_unrelated", generation: 1}); err != nil {
+		t.Fatalf("BeginShellWork unrelated evidence mutation: %v", err)
+	}
+	close(releaseFirst)
+	if err := <-drainResult; err != nil {
+		var writerErr error
+		select {
+		case writerErr = <-writerDone:
+		default:
+			// Release the second FIFO writer on the old early-return path.
+			reader, openErr := os.Open(transcriptPath)
+			if openErr == nil {
+				_ = reader.Close()
+			}
+			writerErr = <-writerDone
+		}
+		t.Fatalf("drainStopForClose after stale evidence = %v (writer: %v)", err, writerErr)
+	}
+	if err := <-writerDone; err != nil {
+		t.Fatalf("transcript FIFO writer: %v", err)
+	}
+	select {
+	case <-stop.done:
+	default:
+		t.Fatal("stop remained pending after stale evidence recollection")
+	}
+}
 
 func TestDelegateControllerStopPersistsBeforeCancellationPlan(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
@@ -379,6 +659,79 @@ func TestDelegateControllerRootCloseInvalidatesCollectedEvidence(t *testing.T) {
 	}
 	if _, err := c.Reconcile(evidence); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("pre-close evidence after close = %v, want busy", err)
+	}
+}
+
+func TestDelegateControllerRootCloseReconcilesClosedRootDescendantWork(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 3, 1)
+	seedDelegateControllerIdle(t, c, "dlg_root", "")
+	seedDelegateControllerRunning(t, c, "dlg_running", "dlg_root")
+	seedDelegateControllerIdle(t, c, "dlg_delivery", "dlg_root")
+	seedDelegateControllerIdle(t, c, "dlg_attention", "dlg_root")
+
+	lease := delegateLease{delegateID: "dlg_running", generation: 1}
+	workToken, err := c.BeginShellWork(lease)
+	if err != nil {
+		t.Fatalf("BeginShellWork: %v", err)
+	}
+	if cancelNow, err := c.CommitShellWork(workToken, "job-running", func() {}); err != nil || cancelNow {
+		t.Fatalf("CommitShellWork = cancel:%t err:%v", cancelNow, err)
+	}
+	seedDelegateControllerDelivery(t, c, "dlg_delivery")
+	deliveryPlans := c.ReplayDeliveries()
+	if len(deliveryPlans) != 1 {
+		t.Fatalf("ReplayDeliveries count = %d, want 1", len(deliveryPlans))
+	}
+	deliveryToken, admitted, err := c.BeginDelivery(deliveryPlans[0])
+	if err != nil || !admitted {
+		t.Fatalf("BeginDelivery = admitted:%t err:%v", admitted, err)
+	}
+	attentionPath := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_attention.transcript.jsonl")
+	writeDelegateAttentionTranscript(t, attentionPath, "child-dlg_attention", "attention-close-closed-root")
+	if _, err := c.CloseResumability(rootDelegateActor("root-session"), "dlg_root", "root retired"); err != nil {
+		t.Fatalf("CloseResumability: %v", err)
+	}
+	if phase := c.durable["dlg_root"].Phase; phase != delegatestore.PhaseClosed {
+		t.Fatalf("root phase before Close = %s, want closed", phase)
+	}
+
+	var cancellationErr error
+	cancellationRan := false
+	c.live["dlg_running"].binding.cancel = func() {
+		if cancellationRan {
+			return
+		}
+		cancellationRan = true
+		_, finishErr := c.FinishGeneration(lease, delegateFinish{
+			outcome:     delegatestore.OutcomeCompleted,
+			disposition: delegatestore.DispositionCompletedNoAction,
+		})
+		_, shellErr := c.ReportShellFinished(workToken, "job-running")
+		_, deliveryErr := c.CompleteDelivery(deliveryToken, false)
+		cancellationErr = errors.Join(finishErr, shellErr, deliveryErr)
+	}
+	if err := c.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if cancellationErr != nil {
+		t.Fatalf("descendant cancellation cleanup: %v", cancellationErr)
+	}
+	if aggregate := c.durable["dlg_running"]; aggregate.CurrentRunOpen || aggregate.PendingStopSeq != 0 {
+		t.Fatalf("running descendant after Close = %#v", aggregate)
+	}
+	if len(c.work) != 0 || len(c.deliveries) != 0 {
+		t.Fatalf("process receipts after Close: work=%#v deliveries=%#v", c.work, c.deliveries)
+	}
+	pending, err := readPendingDelegateAttention(attentionPath, "child-dlg_attention")
+	if err != nil {
+		t.Fatalf("read attention after Close: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending attention after Close = %#v", pending)
+	}
+	raw := readDelegateControllerFile(t, filepath.Join(c.stateDir, "delegate-events.jsonl"))
+	if got := bytes.Count(raw, []byte(`"delegate_subtree_stop_requested"`)); got != 1 {
+		t.Fatalf("root stop request count = %d, want 1\n%s", got, raw)
 	}
 }
 
