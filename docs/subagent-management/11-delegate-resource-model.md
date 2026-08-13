@@ -132,10 +132,13 @@ first implementation. This costs memory but removes unload, reconstruction,
 and routing races from the identity cutover. Automatic unload is a separate
 project after this controller has shipped and remained stable.
 
-Existing shell watches and self/parent session watches remain in scope.
-Creating a watch on a delegate target or sending a watch callback to a delegate
-returns a typed unsupported error until the separate delegate-watch design is
-implemented against aggregate events.
+Existing shell-watch infrastructure remains only when neither the watch source
+nor its callback receiver is a delegate conversation. `watch_parent` is removed
+from delegate creation, and Serf does not auto-install a parent-session watch
+whose callback enters the child delegate. Creating a watch on a delegate target
+or sending any watch callback to a delegate returns a typed unsupported error
+until the separate delegate-watch design is implemented against aggregate
+events.
 
 ## Vocabulary
 
@@ -151,6 +154,10 @@ implemented against aggregate events.
   child/shell start began while the subtree admitted new work.
 - **Terminal packet**: the bounded canonical result or error delivered to the
   delegate's owner for one generation.
+- **Attention entry**: one model-bound steering turn in the receiver's existing
+  append-only transcript, named by a private stable attention ID and resolved
+  by a later provider-excluded consumed/discarded marker in that same
+  transcript.
 - **Subtree stop**: one controller operation that fences a target delegate and
   every descendant before external cancellation begins.
 
@@ -215,7 +222,8 @@ pending. It never returns a job ID.
 delegate_send accepts to=dlg_..., message, and max_wait_ms:
 
 - If the delegate is running, the message is durably admitted to that
-  generation's child transcript and steering queue. The call returns
+  generation's child transcript and bound into the next legal model request.
+  The call returns
   action=steered after that admission succeeds. It does not start another
   generation and does not wait for a reply.
 - If the delegate is idle and resumable, the call restores or reuses the child
@@ -264,7 +272,9 @@ stable-resource subtree stop. include_children has no effect for a delegate:
 both values perform mandatory recursive stop.
 
 A delegate stop result contains stable id/type, previous and current lifecycle,
-and one outcome: cancelled_by_request, already_idle, or stop_requested. If
+and one outcome: cancelled_by_request, already_idle, or stop_requested.
+already_idle means the common durable stop request completed and found no live
+work; it is not a shortcut around fencing/reconciliation. If
 normal completion linearizes first, stop sees idle; if stop linearizes first,
 stop precedence applies. A bounded wait that expires reports stop_requested
 without claiming cancellation has settled.
@@ -311,7 +321,7 @@ type delegateTreeController struct {
     mu        sync.Mutex
     store     *delegateStore
     delegates map[string]*delegateState
-    stops     map[string]*delegateStop
+    stop      *delegateStop
     receipts  map[uint64]*workReceipt
 }
 
@@ -326,6 +336,7 @@ type delegateState struct {
     lastOutcome   *delegateOutcome
     live          *delegateRuntime
     pendingSteers []steeringAdmission
+    deliveries    []pendingDelivery
 }
 
 type delegateLease struct {
@@ -342,6 +353,13 @@ The controller map is the only live routing index from delegate ID to current
 runtime. The durable store is the only restart authority. Session fields may
 cache non-authoritative runtime details, but no caller may decide lifecycle by
 combining a Session snapshot with a job-store snapshot.
+
+Process-local start, shell-work, delivery-receipt, and waiter tokens may use
+one in-memory counter because they never survive restart. Durable correlation
+does not use that counter: an owner-delivery ID is deterministically scoped by
+delegate ID and generation, and a stop operation is identified by the sequence of its
+durable stop-request event. A restarted controller therefore cannot collide
+with an earlier delivery or stop.
 
 ### Lock and I/O rule
 
@@ -370,15 +388,31 @@ The controller mutex must not cover:
 - arbitrary callbacks.
 
 The live store is private to the controller. No other production component
-locks or appends it. Read-only doctor/cold-projection tooling uses the same pure
-fold over a closed or snapshot log and never writes. Append succeeds before
-the in-memory fold changes; append failure leaves the previous aggregate state
-intact.
+locks or appends it. Read-only doctor/cold-projection tooling uses a separate
+missing-file-tolerant `ReadEvents` path plus the same pure fold. That path never
+creates, truncates, repairs, locks for append, or writes the log. Before an
+append writes bytes, the store assigns the prospective sequence values and
+applies the whole batch through the same reducer to a transient deep clone of
+the caller's current fold. Rejection changes neither bytes, store sequence, nor
+live state. A valid append fsyncs before the controller swaps in that accepted
+clone; append failure leaves the previous aggregate state intact. The store
+retains no second fold.
 
 The controller is the outer lifecycle lock. Code must not acquire it while
 holding a child Session, subagent, transcript, or shell job-manager lock.
 Runtime and job callbacks snapshot what they need, release their local lock,
 then report through the controller. Lock-order tests must enforce this rule.
+
+The receiver transcript, not the process steering queue or its best-effort
+snapshot, is the durable attention journal. Attention append, consume, discard,
+and read-only fold happen outside the controller mutex. Source acknowledgement
+may occur only after the receiver append has fsynced. The controller may retain
+an in-memory index or wake hint for a resident runtime, but loss or disagreement
+of that cache cannot create, consume, discard, or otherwise settle attention.
+A receiver-local process mutex may serialize the fold-plus-append operation so
+concurrent retries of one ID write once, but it stores no pending state and is
+not a second journal or lifecycle authority. Cold operations are serialized by
+the exact delivery receipt or the root's single stop/reconciliation loop.
 
 ## Internal state machine
 
@@ -426,7 +460,7 @@ before the lock.
 | Race | Required result |
 |---|---|
 | idle send vs. idle send | One call reserves starting. A truly concurrent call receives target_busy; after the first reaches running, a later call steers. |
-| idle stop vs. send | If stop linearizes while idle, it returns already_idle and a later send may start. If send commits first, stop cancels that generation. |
+| idle stop vs. send | If stop linearizes while idle, its durable request fences admission, completes, and may report already_idle; only then may a later send start. If send commits first, stop cancels that generation. |
 | running steer vs. stop | If steer commits first, it is durably admitted and stop then cancels the run. If stop commits first, steer is rejected as stopping. |
 | finalize vs. stop | If normal finish commits first, stop observes idle. If stop commits first, the exact finish records the stop outcome and cannot publish normal completion over it. |
 | stale finish vs. successor | Generation mismatch is a no-op. |
@@ -435,59 +469,92 @@ before the lock.
 
 ### Create
 
-Creation performs only validation and runtime construction before the delegate
-becomes public:
+Creation makes durable delegate ownership precede every persistent child
+artifact:
 
 1. validate the request, agent policy, sandbox, worktree request, delegation
-   allowance, tree capacity, and result schema;
+   allowance, tree capacity, and result schema; derive the immutable descriptor
+   and deterministic transcript/worktree locations without creating them;
 2. under the controller mutex, mint the stable delegate ID and reserve an
    unexposed starting state beneath the owning parent, with a construction
    cancellation context;
-3. release the mutex and construct the child Session, transcript, environment,
-   and runtime without making a provider call;
-4. durably append the initial input to the new child transcript;
-5. reacquire the controller mutex, verify the unexposed starting reservation
-   is still admitted, append one batch containing delegate_created and
-   delegate_run_started(generation=1), install the runtime, and fold running;
+3. still under the mutex, verify the reservation, append one batch containing
+   delegate_created and delegate_run_started(generation=1), transfer the
+   construction cancellation into an exact non-launched live binding, and fold
+   running;
+4. release the mutex and construct the child Session, transcript, environment,
+   worktree, and runtime only in the deterministic locations now owned by that
+   durable delegate; make no provider call;
+5. under the controller mutex, attach that runtime to the exact generation and
+   durably admit the initial input through the narrow transcript-admission
+   boundary, then mark the process-local binding ready;
 6. release the mutex and launch the first model turn; and
 7. return the stable projection after input admission is durable.
 
-An ancestor stop or root close can see and cancel the unexposed starting state.
-No provider call occurs before step 5. If steps 1–4 fail, no public delegate
-exists. If stop invalidates the reservation or the controller append fails,
-the unexposed child runtime and newly created state are closed and removed. If
-launch fails after step 5, the exact generation settles through the ordinary
-failed terminal path.
+Before step 3 there are no child filesystem writes, so a crash loses only the
+process-local reservation. After step 3 the aggregate exists and owns every
+partially constructed transcript, environment, and worktree path. A crash or
+construction failure therefore reconciles the exact generation as
+failed/runtime_lost and never leaves unowned state. A stop before step 3
+invalidates the reservation; a stop afterward cancels and settles the durable
+generation. If construction or input admission fails after step 3, the tool
+returns a normal structured result containing the stable ID and failed outcome
+rather than a transport error that would drop the result; the durable resource
+is never hidden from its owner. Pre-commit validation or append failure may
+return a tool error because no delegate exists. If the compensating finish
+append also fails, the exact
+non-launched binding and capacity stay latched for explicit stop or restart
+repair. No provider call occurs through any failure path.
+
+From step 3 until ready is marked, the durable generation is active and may be
+stopped or exactly finished, but steer, model, tool, child, and shell admission
+return target_busy. Readiness is a process-local launch gate, not a second
+lifecycle phase; if it disappears on restart, the durable generation settles
+failed/runtime_lost.
 
 The creation batch contains descriptor and lineage fields needed for lazy
 restore. It does not contain a JobRecord or activation ID.
 
 ### Start an idle delegate
 
-An idle send uses an in-memory starting reservation so runtime construction
-cannot race a stop:
+An idle send uses an in-memory starting reservation and the same
+durable-before-side-effect protocol:
 
 1. under the controller mutex, validate direct ownership, resumability,
    ancestor state, capacity, and idle phase; reserve starting and a start
    cancellation context;
-2. release the mutex and reuse or restore the child runtime without calling the
+2. still under the mutex, verify the reservation, increment the generation,
+   append delegate_run_started, transfer its cancellation into an exact
+   non-launched live binding, and fold running;
+3. release the mutex and reuse or restore the child runtime without calling the
    provider;
-3. reacquire the mutex and verify the starting reservation still owns the
-   delegate;
-4. increment the generation, append delegate_run_started, install the exact
-   runtime/cancel binding, and durably admit the input to the child transcript;
-5. fold running, release the mutex, and launch the model turn; and
+4. under the controller mutex, attach that runtime to the exact generation and
+   durably admit the input to the child transcript, then mark the binding
+   ready;
+5. release the mutex and launch the model turn; and
 6. return action=started only after durable input admission.
 
-If stop wins while runtime construction is outside the lock, it changes
-starting to stopping and cancels construction. Step 3 then refuses the stale
-reservation. The constructed runtime is closed without a provider call.
+If stop wins before step 2, it invalidates the reservation. If stop wins while
+runtime construction is outside the lock, it cancels and settles the already
+durable exact generation. Runtime attachment or input admission then refuses
+the stopped lease, and the constructed runtime closes without a provider call.
 
 If the run-start append succeeds but child input persistence fails, the
-generation settles as failed with reason input_persist_failed and the send
-returns an error. A process crash after run-start but before input persistence
-reconciles as runtime_lost; Serf never claims the input was accepted to a
-caller whose tool result did not commit.
+generation settles as failed with reason input_persist_failed by atomically
+appending the canonical bounded terminal_error preparation and the one
+delegate_run_finished event. Owner delivery and restart therefore use the same
+shape as every other non-settling failed finish, and the send returns a
+structured stable-ID/failed-outcome result. A process crash after run-start but
+before input persistence reconciles as failed/runtime_lost; Serf never claims
+the input was accepted to a caller whose tool result did not commit.
+
+If both input persistence and that compensating atomic batch append fail, the
+exact non-launched runtime binding remains installed and capacity
+remains held. A process-local recovery-required latch rejects model, tool,
+steer, and successor admission without changing durable lifecycle authority.
+Explicit stop may settle that exact lease, and restart deterministically folds
+the durable running generation as failed/runtime_lost. The provider is never
+launched through this failure path.
 
 ### Steer a running delegate
 
@@ -502,8 +569,10 @@ Under the controller mutex, the command:
    controller-to-transcript lock order;
 4. records that transcript entry as pending steering for the current
    generation;
-5. updates latest activity; and
-6. returns success.
+5. updates latest activity from the durable transcript-entry timestamp;
+6. captures a public update with the unchanged lifecycle revision so clients
+   can max-merge that activity hint; and
+7. returns success.
 
 The append is the steering linearization point. The child loop must include
 that turn at the next legal model boundary exactly once. If a provider request
@@ -525,8 +594,10 @@ Normal settlement cannot strand an accepted steer. Before ordinary completion
 or communicate(end_turn=true) changes running to settling, BeginSettlement
 checks pending steering:
 
-- if no steer is pending, settlement wins and later delegate_send is rejected
-  as target_busy;
+- if no steer is pending, settlement constructs the accepted communicate
+  packet or a bounded missing-terminal terminal_error for ordinary completion,
+  appends delegate_terminal_prepared, folds settling, and later delegate_send
+  is rejected as target_busy;
 - if a steer is pending, normal settlement is deferred and the child must run
   another model boundary that consumes it; and
 - fatal provider failure, exhaustion, or explicit stop may still terminate
@@ -562,10 +633,12 @@ the running generation; abort releases it, and delegate_run_finished releases
 the running slot. Notification/attention drives are normal generations and use
 the existing separately bounded drive capacity.
 
-### Child and shell admission receipts
+### Delegate reservations and shell admission receipts
 
 Starting a descendant delegate or shell process has an external construction
-boundary. The controller uses one process-local receipt protocol:
+boundary. A descendant delegate uses its starting reservation as the receipt;
+do not layer another generic token around the same construction. A shell start
+uses this process-local receipt protocol:
 
 1. BeginWork validates the owning delegate and ancestors, records a receipt
    under the controller mutex, and returns a receipt token.
@@ -576,8 +649,9 @@ boundary. The controller uses one process-local receipt protocol:
    cancel_immediately without publishing new active work.
 4. AbortWork releases a failed receipt.
 
-A subtree stop rejects new receipts and waits for existing receipts in that
-subtree to commit or abort before the stop operation can complete. A receipt is
+A subtree stop cancels and waits for descendant starting reservations, rejects
+new shell receipts, and waits for existing shell receipts in that subtree to
+commit or abort before the stop operation can complete. A receipt is
 process-local and is not a second durable lifetime identity.
 
 For shell work, the shell manager's existing durable launch record remains
@@ -589,8 +663,10 @@ and shell runtime-loss reconciliation settles any durable shell launch that
 survived. The implementation must not assume an OS process vanished merely
 because its process-local controller receipt did.
 
-For delegate creation, the starting phase is the receipt. Do not layer a second
-generic receipt on the same delegate start.
+The committed shell work remains indexed by that exact receipt token together
+with its durable shell job ID until shell completion reports both identities.
+Stop never tries to join an unrelated token set to a separately gathered shell
+set.
 
 ## Stable-resource subtree stop
 
@@ -603,18 +679,27 @@ While holding the one controller mutex, StopSubtree:
 1. authorizes the caller against the target delegate;
 2. traverses the controller's durable parent graph to identify the target and
    all descendants;
-3. appends delegate_subtree_stop_requested with a private stop operation ID and
-   the stable target;
+3. appends delegate_subtree_stop_requested with the stable target and uses that
+   event's durable sequence as the private stop operation identity;
 4. folds every active member of that subtree to stopping;
 5. rejects new delegate, model, tool, and shell admissions under that subtree;
 6. cancels in-memory starting reservations;
 7. snapshots exact generation cancellation handles, live child Sessions, shell
-   jobs, and outstanding work receipts; and
+   jobs, outstanding work receipts, and pre-admitted delivery receipts; and
 8. returns an external cancellation plan.
 
 The reducer for delegate_subtree_stop_requested applies to the generations
 current at that event's sequence. It does not store or interpret a separate
 subtree epoch.
+
+The first implementation permits one pending subtree stop per root tree. An
+exact retry of the same stable target joins that operation. Any different
+target receives typed target_busy until the pending stop completes, regardless
+of whether its subtree would be disjoint, covering, or intersecting. This
+global serialization is deliberate: it avoids an overlap algebra that the
+first release does not need. Root Session close first closes admission for the
+whole controller, drains or joins the pending stop, and then performs the
+whole-tree teardown stop.
 
 ### External phase
 
@@ -638,24 +723,68 @@ cancelled/stopped_by_parent even if normal communicate completion raced after
 the stop request. Existing terminal content may be retained for diagnostics,
 but it does not replace the stop outcome.
 
-When every active generation, shell job, and outstanding receipt in the
-operation's subtree has settled, the controller appends
+When every active generation, shell job, and outstanding work/delivery receipt
+in the operation's subtree has settled, the controller appends
 delegate_subtree_stop_completed and changes stopped delegates to idle. New
 delegate_send calls may then start a later generation.
 
-Stop completion also waits until pending attention owned inside the stopped
-subtree is durably acknowledged or discarded without a model drive. The
-controller keeps new admissions closed while cancellation-generated
-notifications settle, then performs one final quiescent attention cleanup.
-This prevents a pre-stop shell/delegate notification from reopening the
-subtree immediately after stop. A terminal packet whose receiver is outside
-the stopped subtree retains ordinary owner delivery.
+Stop completion also waits until the read-only receiver-transcript fold finds
+no pending attention entry owned inside the stopped subtree. These entries are
+distinct from aggregate owner-delivery packets. While a sender remains in the
+pending stop, no new owner delivery is admitted. Stop completion discards
+packets whose receiver delegate is covered by that same stop, because
+re-notifying a stopped ancestor would reopen the subtree; packets owed to the
+root or an owner outside the subtree remain queued and become eligible only
+after completion. The controller keeps new admissions closed and captures
+exact transcript references plus evidence versions under its mutex. After
+unlock, cleanup appends and fsyncs an idempotent discarded resolution marker
+for each exact attention ID without constructing or consulting a runtime, then
+re-reads the transcript fold and reports the evidence. Cancellation can commit
+a new attention entry, so cleanup repeats until one final locked validation of
+an immediately preceding empty transcript fold observes no active work or
+receipts and can append stop completed in that same critical section.
+
+Delivery admission serializes with stop by creating one process-local receipt
+under the controller mutex after revalidating the exact head and receiver.
+Inline waiter resolution and background idempotent transcript insertion then
+happen after unlock. Stop waits for every receipt whose sender or receiver
+intersects the subtree before its final attention rescan. A delivery therefore
+either reserves before the stop request as pre-admitted work that must drain
+and be cleaned, or observes stopping and cannot enter the covered receiver. A
+post-unlock plan never appends attention to a receiver transcript without an
+accounted receipt.
+
+After restart there is no resident runtime or shell process to query. Root
+initialization snapshots covered transcript references, shell-store paths, and
+a process-only evidence version under the controller lock, then uses a
+missing-file-tolerant read-only transcript fold to collect exact pending
+attention IDs plus folded running-shell/pending-notification identities outside
+the lock. It reads each durable shell source before its receiver transcript:
+because source acknowledgement is receiver-fsync-first, that order cannot
+observe both sides absent during the handoff. Shell finalization reports its
+controller evidence-version change only after the terminal generation and
+pending source state are durable. Reconciliation returns exact
+transcript-discard and shell-store
+repair plans. After unlock, the caller revalidates the exact shell records,
+appends shell stopped/runtime_lost plus consumed source-notification state for
+the covered stop, clears shell-only terminal watches, and appends the attention
+resolution markers—all without constructing a child Session or provider.
+Runtime-loss repair outside a pending stop preserves the ordinary shell
+pending-notification contract. It then collects read-only evidence again and
+repeats until the controller accepts the unchanged evidence version and the
+final locked empty-evidence check can complete the stop. Shell-store or
+transcript-resolution append failure keeps the stop pending. Transcript reads,
+transcript appends, and shell-store writes never occur while the controller
+mutex is held.
 
 max_wait_ms=0 returns after the durable request and cancellation dispatch.
 Positive max_wait_ms waits only up to the existing bounded limit and reports
-stop_requested if completion is still pending. A subtree returns already_idle
-without a durable stop operation only when it has no starting/running work,
-shell work, receipts, or pending attention to fence.
+stop_requested if completion is still pending. Stable delegate stop has no
+already_idle bypass: even an apparently idle subtree appends the durable
+request, fences admission, reconciles shell/attention/delivery evidence, and
+appends completion. A completed no-work request may report that the previous
+lifecycle was idle, but it still uses the same operation. This removes a
+separate path that could miss queued delivery or notification work.
 
 If the stop-request append fails, no cancellation is dispatched and aggregate
 state is unchanged. Once the append succeeds, cancellation-plan failures leave
@@ -666,30 +795,50 @@ After restart, a requested but incomplete stop is reconstructed before any
 new admission. No old runtime exists, so running generations settle
 cancelled/stopped_by_parent, running shell jobs follow shell runtime-loss
 reconciliation, the stop completes, and only then may a new generation start.
+For a stopping member, the folded current_run_open bit is authoritative: true
+appends the one stopped run_finished; false never finishes, delivers, or
+releases capacity again and proceeds only with remaining stop cleanup.
 
 ## Terminal settlement and delivery
 
 ### One exact finalizer
 
 Every runtime completion calls FinishGeneration with its delegate lease. Under
-the controller mutex, normal completion first passes BeginSettlement. Fatal,
-exhausted, cancelled, and stop-forced completion may enter settling without a
-continuation. FinishGeneration then:
+the controller mutex, normal completion first passes BeginSettlement, which
+must durably prepare either the accepted communicate packet or the canonical
+missing-terminal packet before it folds settling. There is no durable settling
+state without a prepared packet. Fatal, exhausted, cancelled, and stop-forced
+completion does not expose such an intermediate state: if it needs a packet
+while still running, FinishGeneration appends terminal_prepared and
+run_finished in one crash-atomic store batch. Attention completed_no_action has
+no outward packet and appends only run_finished without entering settling.
+FinishGeneration then:
 
 1. rejects a stale generation as a no-op;
 2. resolves stop precedence from current controller state;
-3. uses a previously prepared communicate packet when present; records
-   completed_no_action with no outward packet for an attention generation that
-   legitimately had nothing to report; otherwise creates a bounded canonical
-   terminal_error packet;
-4. appends delegate_run_finished with outcome, reason, timing, a private
-   delivery ID when owner delivery is required, and the canonical packet only
-   when no prepared packet already exists;
-5. folds the delegate to idle, records last_outcome, releases tree capacity,
-   and marks delivery pending; and
-6. returns a delivery plan.
+3. uses the required prepared packet when settling; for a non-settling
+   terminal path, records the private disposition completed_no_action with
+   public outcome completed and no outward packet when an attention generation
+   legitimately had nothing to report, otherwise creates a bounded canonical
+   terminal_error packet for the atomic prepare+finish batch;
+4. appends delegate_run_finished with outcome, reason, timing, and a private
+   delivery ID when owner delivery is required; a non-settling terminal path
+   that needs a packet appends prepare+finish as one batch;
+5. for an ordinary finish folds the delegate to idle; for a generation covered
+   by a pending stop records the stopped outcome and releases tree capacity but
+   leaves lifecycle phase stopping until delegate_subtree_stop_completed;
+   creates no delivery when the owner delegate belongs to the same stop, and
+   queues without dispatching the stop-selected packet for a root or owner
+   outside the subtree; and
+6. returns an immutable post-mutation public snapshot and, only when this
+   packet is the ordered collection head, one delivery plan.
 
-Event emission and delivery happen after unlock.
+Event emission and initial delivery planning happen after unlock from the
+returned immutable plans. Actual delivery re-enters the controller to validate
+the exact head and receiver admission before resolving a waiter or inserting
+into a transcript. A caller never unlocks and re-reads mutable controller state
+to emit an earlier transition, because a later command could otherwise be
+mislabeled as the earlier event.
 
 There is no separate failure record. A failed generation has the same
 delegate_run_finished event as a completed, exhausted, cancelled, or stopped
@@ -697,9 +846,11 @@ generation. Its reason is part of the outcome, and its bounded terminal_error
 packet exists only because the owner must be told what happened and restart
 must not invent a different result.
 
-completed_no_action is a disposition on delegate_run_finished, not another
-record type. It is allowed only for an attention-triggered generation whose
-durable queue was successfully processed without communicate. A user-input
+completed_no_action is a private disposition on delegate_run_finished, not
+another record type and not a public outcome status. It is allowed only for an
+attention-triggered generation whose bound durable attention entries were
+successfully consumed without communicate. Its public latest outcome is
+completed. A user-input
 generation that ends without an accepted communicate result receives the
 ordinary missing-terminal terminal_error.
 
@@ -739,7 +890,10 @@ history-repair mechanism. It does not search by recency.
 delegate_terminal_prepared is an event inside the same delegate aggregate, not
 a second record or lifecycle authority. It contains the bounded packet itself,
 not a cross-store locator. It is valid only for the current generation and is
-consumed exactly once by delegate_run_finished.
+used exactly once to decide delegate_run_finished. An ordinary finish clears
+it. If stop changes settling to stopping, the same field remains bounded
+diagnostic evidence through stopped finish and is cleared by
+delegate_subtree_stop_completed; it is never delivered as the normal result.
 
 If stop wins after preparation, the prepared communicate packet remains
 diagnostic evidence, but the outward terminal packet and last_outcome describe
@@ -753,28 +907,86 @@ durable, later generic runtime errors cannot replace it.
 ### Owner delivery
 
 Each outward terminal packet has one private delivery ID scoped to delegate and
-generation. It is never a control handle.
+generation. The ID is deterministically derived from that pair, so restart
+cannot reuse it. It is never a control handle.
 
 - At most one creating/starting call may register an inline waiter for that
-  generation.
-- Waiter timeout withdraws the waiter under the controller mutex before the
-  tool returns a running result.
-- FinishGeneration chooses inline delivery when the waiter still owns the
-  generation; otherwise it chooses an owner notification. Timeout and finish
+  generation. The process-local waiter map is keyed by private generation (and
+  therefore by its deterministic delivery ID); it is not a single current-run
+  slot.
+- Waiter timeout withdraws only that exact generation's waiter under the
+  controller mutex before the tool returns a running result. Withdrawal wins
+  only if the pending waiter is still in the keyed map.
+- When a packet reaches the ordered collection head, dispatch chooses inline
+  delivery by atomically removing the exact waiter from the map under the
+  controller mutex and transferring sole ownership into the immutable delivery
+  plan. If timeout finds that the waiter is already absent because dispatch
+  claimed it, timeout loses and waits for that claim's buffered handoff instead
+  of returning a running result. The post-unlock claim must always hand off
+  either the packet plus one private process-only delivery completion token, or
+  an explicit fallback signal that makes the tool return running while the
+  durable head remains queued for notification. Timeout and head dispatch
   therefore cannot both claim the packet.
-- A background completion queues the packet as an owner notification.
-- The receiver transcript records the delivery ID when it commits the tool
-  result or notification.
-- Only after that receiver commit does the controller append
-  delegate_delivery_acknowledged.
-- Restart replays an unacknowledged packet.
+- A background completion queues the packet for later head dispatch.
+- Before either inline handoff or background transcript insertion, dispatch
+  re-enters the controller mutex, validates that the exact packet remains head
+  and neither its sender nor delegate receiver is fenced by a pending stop,
+  then creates one process-local delivery receipt. The actual waiter handoff or
+  idempotent transcript insertion occurs after unlock. Inline handoff is not
+  receiver commit: the caller's existing aggregated tool-result persistence
+  boundary carries the private completion token until that exact tool-result
+  turn has been appended and fsynced. Exact receipt completion either
+  acknowledges the durable head or leaves it queued; stop waits for
+  intersecting receipts, so stop and receiver admission still have one linear
+  order without transcript I/O under the lifecycle lock.
+- A stop-selected finish suppresses delivery to an owner delegate covered by
+  the same stop. Existing queued packets to covered owners are discarded by
+  stop completion. Packets for the root or an owner outside the stopped
+  subtree remain ordered but are not dispatched until stop completion.
+- The receiver transcript records the delivery ID as private idempotency
+  metadata on the same committed tool-result or attention turn. Provider
+  projection, public events, transcript rendering, TUI, and web exclude that
+  metadata.
+- Inline tool results force the durable transcript append even when no other
+  result in that parallel tool round requires it. Only after the append fsyncs
+  does the tool-result persistence boundary call
+  `CompleteDelivery(committed=true)`. Append or fsync failure calls
+  `CompleteDelivery(committed=false)`, propagates the persistence failure, and
+  leaves the same durable head queued for later notification/replay; it never
+  reports a committed inline result.
+- Exact receipt completion with `committed=false` removes only the process-local
+  admission and leaves the durable head queued. Only exact receipt completion
+  after receiver commit appends delegate_delivery_acknowledged and releases the
+  next head.
+- Only the head pending delivery may be dispatched. Acknowledging that exact
+  head removes it and returns the delivery plan for the next head, if any.
+- Restart begins with the oldest unacknowledged packet and advances through the
+  same acknowledge-then-release chain.
 - Receiver-side insertion is idempotent by delivery ID, so a crash between
-  receiver commit and acknowledgement does not create duplicate model input.
+  receiver commit and acknowledgement finds the private delivery metadata,
+  acknowledges the already-committed head, and does not create duplicate model
+  input.
 
 If selected inline delivery cannot commit because the owner Session closes or
 its tool result fails, delivery remains pending and later uses the ordinary
-notification/replay path. There is one delivery state in the aggregate, not
-separate inline and notification intents.
+notification/replay path. The aggregate keeps an ordered collection keyed by
+delivery ID, with at most one entry per generation. A later generation may
+finish while an earlier delivery remains unacknowledged; it appends a second
+entry rather than overwriting the first, but receives no independent delivery
+plan until every earlier entry is acknowledged. Waiter selection occurs when
+an entry becomes the head and looks up that entry's generation-keyed waiter,
+even if a successor generation is now current. A restart loses process-local
+waiters and therefore uses notification/replay for every remaining head. There
+is one durable collection of delivery state in the aggregate, not separate
+inline and notification intents.
+
+The same ownership transfer applies when acknowledgement of N releases N+1.
+The controller removes N+1's keyed waiter before returning its plan. N+1 is not
+dispatched merely because N's packet was handed to its caller: N's caller
+tool-result turn must fsync and N's acknowledgement must commit first. A racing
+N+1 timeout either withdraws first and forces notification, or observes the
+claim and waits for its handoff; no delayed plan can deliver inline after the
+tool has returned running.
 
 The first implementation has no delegate watch/callback delivery path. It has
 only inline owner delivery and ordinary owner notification.
@@ -788,10 +1000,13 @@ Sessions in that tree share the controller that owns it. The physical file may
 use the existing session-state directory, but it is not folded as jobs.jsonl
 and it is never opened independently by child job managers.
 
-The first record declares the delegate-store format version. All later records
-carry a monotonically assigned sequence. The store supports atomic append of a
-small event batch, fsyncs before returning success, and applies the in-memory
-fold only after the append succeeds.
+The first record declares the delegate-store format version. Each later JSONL
+record is one small append batch containing one or more events with
+monotonically assigned sequence values. Encoding a create/start pair in one
+record prevents crash recovery from accepting a valid prefix of that pair. The
+store fsyncs before returning success and applies the in-memory fold only after
+the append succeeds. Reopen may truncate only an unterminated trailing batch;
+a newline-terminated malformed batch fails closed.
 
 Required event kinds are:
 
@@ -819,12 +1034,20 @@ The durable fold retains:
 - model/profile/tool policy and result schema;
 - sandbox, worktree, isolation, and restore configuration;
 - delegation allowance and public visibility metadata;
+- per-delegate public projection revision, deterministically incremented by
+  every applied event that changes that delegate's public snapshot;
 - current private generation and durable running/settling/stopping phase;
-- a prepared terminal packet for the current settling generation, if any;
+- private current_run_open, set by delegate_run_started and cleared exactly
+  once by delegate_run_finished; while phase is stopping this distinguishes a
+  generation still requiring exact stopped finish from one already settled and
+  waiting only for subtree-stop cleanup/completion;
+- exactly one prepared terminal packet whenever phase is settling; phase
+  stopping may retain at most that same generation's already-prepared packet
+  as diagnostic evidence, while every other phase has none;
 - resumability and permanent close reason;
 - current run start/activity metadata;
 - latest outcome;
-- pending terminal delivery; and
+- ordered pending terminal deliveries keyed by deterministic delivery ID; and
 - pending subtree-stop membership.
 
 Older run events remain audit history in the append-only log, but the folded
@@ -837,21 +1060,24 @@ rail, cancellation route, or public projection. It is evidence used only to
 fold the owning delegate aggregate.
 
 pendingSteers is a process-local index of already-durable child-transcript
-entries for the current live generation. It is not a second message store.
-After process loss that generation reconciles as runtime_lost; the transcript
-entries remain part of the conversation seen by a later resumable generation.
+entries for the current live generation. Attention IDs bound to a drive are a
+process-local working set derived from the same transcript fold. Neither is a
+second message store. After process loss that generation reconciles as
+runtime_lost; unresolved attention and steering entries remain in the
+conversation seen by a later resumable generation.
 
-### State-version cutover
+### Flag-day state and schema cutover
 
-There is no migration and no mixed loader.
+This is a flag-day cutover. There is no migration, mixed loader, compatibility
+window, dual writer, fallback route, or feature flag.
 
-When opening a root that has no new delegate-tree store, Serf checks whether
-the existing root job history contains delegate JobRecords. If it does, startup
-or restore fails with legacy_delegate_state and directs the operator to use a
-fresh state root. It must not silently ignore, translate, or partially load
-those records.
+When opening a root, Serf always checks whether the existing root job history
+contains delegate JobRecords. If it does, startup or restore fails with
+legacy_delegate_state and directs the operator to use a fresh state root,
+whether or not a new delegate-tree store is also present. It must not silently
+ignore, translate, prefer, or partially load either side of mixed state.
 
-A root with shell-only job history may create the new delegate store because
+A root with shell-only job history may create or open the new delegate store because
 the shell job schema is unchanged. A present delegate-tree store with an
 unknown version fails closed.
 
@@ -866,19 +1092,28 @@ child model runtimes.
 
 Reconciliation applies in sequence order:
 
-1. A delegate_run_started generation left running without a process-local
-   runtime becomes stopped/runtime_lost through one delegate_run_finished
-   event. Process-local starting reservations disappear without creating a
+1. A current_run_open generation left running without a process-local runtime
+   becomes failed/runtime_lost through one delegate_run_finished event.
+   Process-local starting reservations disappear without creating a
    generation.
-2. A generation left settling completes from its
+2. A current_run_open generation left settling completes from its
    delegate_terminal_prepared packet, repairs the transcript if necessary, and
    preserves the accepted communicate result.
 3. A generation covered by an incomplete subtree stop settles
-   cancelled/stopped_by_parent and contributes to stop completion.
-4. Pending terminal deliveries remain pending and are offered idempotently to
-   the owner.
-5. Permanent resumability closures remain monotonic.
-6. No model client, provider request, hook, worktree mutation, or child Session
+   cancelled/stopped_by_parent only when current_run_open is true. A stopping
+   generation whose run_finished already cleared the bit is not finished,
+   delivered, or capacity-released again and contributes directly to remaining
+   stop cleanup/completion.
+4. A reconstructed stop reads shell evidence and folds each covered receiver
+   transcript outside the controller lock, performs provider-free exact
+   shell-store repair plus idempotent attention-discard marker appends after
+   unlock, and repeats until no covered running shell, pending shell source
+   notification, or unresolved attention ID remains and a final empty-evidence
+   pass completes the stop without constructing a child Session or provider.
+5. Pending terminal deliveries remain ordered; only the head is offered
+   idempotently to the owner, and each acknowledgement releases the next.
+6. Permanent resumability closures remain monotonic.
+7. No model client, provider request, hook, worktree mutation, or child Session
    is constructed during reconciliation.
 
 After reconciliation, every delegate is idle or permanently closed. A later
@@ -893,6 +1128,13 @@ stores. Existing shell runtime-loss reconciliation may open descendant
 shell-job stores without constructing child model runtimes, especially while
 completing an interrupted subtree stop.
 
+Any descendant shell evidence needed for reconciliation is collected through
+read-only shell-store APIs before the controller mutex is acquired. The locked
+reducer receives an immutable evidence value and performs only controller
+validation, controller-store append/fold, and plan capture. It never opens a
+shell store, calls a Session, or performs external repair while holding the
+controller mutex.
+
 ## Runtime ownership
 
 ### Resident child Sessions
@@ -906,7 +1148,7 @@ tree-controller pointer.
 The resident child Session owns conversation mechanics:
 
 - transcript and model history;
-- steering queue integration;
+- durable steering-turn admission and model-boundary projection;
 - provider/model loop;
 - tool execution;
 - hooks;
@@ -922,19 +1164,59 @@ An idle delegate may need a model turn because one of its own shell jobs
 finished or another existing owner-scoped notification arrived. Such a drive
 is a normal delegate generation:
 
-1. the drive requests StartAttention from the tree controller;
-2. the controller applies the same owner, ancestor, stop, and capacity checks
+1. the source derives one stable private attention ID from its own durable
+   identity: `delegate:<deliveryID>` for a delegate packet or
+   `shell:<jobID>:<terminalGeneration>` for a shell terminal;
+2. after controller/stop admission and outside the controller mutex, the
+   receiver idempotently appends and fsyncs one model-bound steering turn with
+   that private ID to its existing transcript;
+3. only after that fsync does the source acknowledge its delivery; a crash
+   before source acknowledgement replays by ID without appending a second
+   steering turn;
+4. the retained runtime requests StartAttention from the tree controller with
+   its exact runtime pointer and one still-pending transcript attention ID;
+5. the controller applies the same owner, ancestor, stop, and capacity checks
    as delegate_send;
-3. the controller starts a private generation with trigger=attention;
-4. the child Session processes its durable notification queue; and
-5. the generation settles through the ordinary finish path.
+6. the controller starts a private generation with trigger=attention and binds
+   the exact pending IDs selected for that drive;
+7. the child Session processes those model-bound transcript turns; and
+8. before that generation finishes, settlement appends and fsyncs one
+   provider-excluded consumed resolution marker per bound ID.
 
 There are no recordless model-bearing drive turns. A drive is not a JobRecord,
 but it is an exact delegate generation governed by the same lease.
 
-If the delegate or an ancestor is stopping, attention remains queued until the
-stop completes or normal queue cleanup proves it obsolete. It must not reopen a
-stopping subtree.
+Attention does not use a public delegate actor, because an idle resource has no
+active generation lease to authenticate. The controller instead verifies that
+the supplied runtime is the exact resident runtime currently bound to that
+stable delegate, and narrowly verifies the pending attention ID through that
+runtime's transcript fold. A missing-file-tolerant read-only fold reconstructs
+pending attention as model-bound turns minus later consumed/discarded markers;
+it never creates a transcript, Session, provider, or queue file. After restart,
+the root may inspect and select pending IDs while cold, but lazy restore first
+installs only the selected delegate's exact runtime; only then may that runtime
+request an attention generation after revalidating the ID. This is runtime
+identity, not a copied Session lifecycle token.
+
+Attention append, consume, and discard are idempotent by exact ID. A duplicate
+pending append with the same source identity is a no-op; exact duplicate
+consumed or discarded markers are no-ops and may be retried after crash.
+Conflicting content for one ID or conflicting consumed/discarded dispositions
+fail closed. The resolution marker is presentational and excluded from
+provider history. It is also transparent to conversation structure: compaction
+and repair treat a marker inside an assistant tool-call/result exchange as an
+interleaving, never as permission to cut the exchange. Removing the marker for
+provider projection or compaction must leave neither an orphan tool result nor
+a dangling tool call. Sequence invariants apply to the projected history as if
+the marker were absent. Its private attention ID is also excluded from public
+events and rendering. If consumed-marker fsync fails, the generation does not
+finish and the entry remains pending. Stop performs the same durable
+discarded-marker append after unlock and repeats the cold fold until none
+remain.
+
+If the delegate or an ancestor is stopping, unresolved attention remains in the
+receiver transcript until stop appends its discarded marker. It must not reopen
+a stopping subtree.
 
 ### Root and child close
 
@@ -990,6 +1272,13 @@ Existing nested-shell forwarding may remain where required for ancestor
 visibility, but a forwarded shell record never becomes delegate lifecycle
 authority. Public projection resolves its typed parent to the stable delegate.
 
+Terminal attention markup follows the same identity split. Shell completion
+retains `<job-notification job_id="job_..." job_type="shell">`. Delegate owner
+attention uses `<delegate-notification delegate_id="dlg_...">` and never emits
+`job_id` or `job_type="delegate"`. TUI and web parsers branch on the tag and
+bind delegate cards/headlines by stable delegate ID; delegate copy says
+"Delegate", while shell copy says "Job".
+
 The old JobDelegate enum and delegate branches in job start/finish/stop/list
 are not used for new state. They should be deleted once all call sites are
 cut over; they must not remain as a dormant alternate runtime path.
@@ -997,8 +1286,17 @@ cut over; they must not remain as a dormant alternate runtime path.
 ## Public events and client projections
 
 Public delegate events identify target=dlg_... and type=delegate. They may
-report lifecycle, phase, outcome, reason, timestamps, transcript_ref, and typed
-parent. They never include:
+report lifecycle, phase, outcome, reason, timestamps, transcript_ref, typed
+parent, and one per-delegate projection_revision. That revision is a durable
+fold counter incremented whenever an event changes that delegate's public
+projection. It is ordering metadata only—not an event-log sequence, generation,
+or control identity. `latest_activity_at` is the one field outside that
+revision gate: steering is already durable in the conversation transcript, not
+a ninth delegate lifecycle event. Live projection uses the admitted transcript
+entry timestamp; cold projection derives the same hint from transcript
+metadata. Clients merge it by max timestamp even when an incoming state
+revision is equal or stale, and never derive lifecycle/outcome from it. They
+never include:
 
 - private generation;
 - child Session ID as a control identity;
@@ -1012,9 +1310,31 @@ event must not masquerade as a shell job event. Client projectors must be able
 to distinguish delegate lifecycle from shell job lifecycle without consulting
 ID prefixes.
 
+Every durable controller mutation that changes the public projection first
+increments the aggregate's projection_revision in the pure fold, then captures
+an immutable post-mutation delegate snapshot while the controller mutex is
+held and returns it as an emission plan. The caller emits that captured value
+after unlock; it does not re-read the controller. Emission itself may be
+reordered after unlock, so every live/cold projector and TUI/web stable-row
+store keeps the greatest revision seen per delegate and ignores equal/older
+lifecycle/phase/outcome fields while still merging latest_activity_at by max.
+Restart reconstructs the same state revision by folding events and
+reconstructs the activity hint from the transcript, so a cold snapshot and
+later live event share explicit merge rules rather than letting transcript
+recency become lifecycle authority.
+
 Doctor output, AppWire, TUI, and web receive controller snapshots and project
-one row/card per stable delegate. A generation may contribute activity to that
-row or transcript, but it does not create a second task/job row.
+one row/card per stable delegate. The flag-day client cutover includes live
+notification ingress: the web protocol reducer invalidates the target thread's
+activity view on serf/delegate/updated, and the thread router applies that
+snapshot to the stable delegate module row. Shell job notifications do not
+update delegate rows. A generation may contribute activity to that row or
+transcript, but it does not create a second task/job row.
+
+The Hub daemon prober discovers live descendants only through
+`descendant_session_ids` and `descendant_states`. It does not infer delegate
+runtimes from `Detailed.Jobs`, transcript references, or `job_type=delegate`;
+those are removed in the same flag-day consumer cutover.
 
 The first implementation need not redesign all AppWire DTOs. It must, however,
 remove activation rows and source the existing stable delegate fields from the
@@ -1049,13 +1369,24 @@ Before merge, production must no longer depend on:
 - attachDelegateJob, attachDelegateJobWith..., or relinkDelegateChildToJob;
 - delegate branches in jobManager.running;
 - delegate stop by private job ID;
+- Hub prober discovery through Detailed.Jobs, delegate job type, or delegate
+  transcript references;
+- delegate terminal markup carried as `<job-notification>`, `job_id`, or
+  `job_type="delegate"`;
+- ReceiverDelegateID/receiverDelegateID watch routing,
+  applyReceiverWatchSend, installParentSourceWatchForChild,
+  clearParentSourceWatchForChild, attachDelegateJobFromWatch, FromWatch,
+  runFromWatch, deliverWatchCallback, staleDelegateWatchSend, or
+  delegateStoppedAfterWatchSendPending;
 - parent delegate lineage encoded as ParentJobID;
 - Session lifecycle-admission token copies;
 - job-manager lifecycle-token mirrors;
 - subtree epoch vectors or epoch event folds;
 - unload-request, unload-completion, or close-flight lifecycle state; or
 - caller-specific exceptions that treat a missing/zero generation as a
-  wildcard.
+  wildcard; or
+- process queue snapshots, raw notification strings, or in-memory inboxes used
+  as durable attention authority.
 
 Tests and documentation add lines, so raw repository line count is not the
 acceptance metric. The measurable complexity metric is one active lifecycle
@@ -1080,24 +1411,40 @@ Even then, re-derive the change against main and review it normally. Do not
 port lifecycle locks, epochs, unload state, activation JobRecords, admission
 tokens, or compatibility scaffolding.
 
-### One cutover, no dual runtime
+### One flag-day cutover, no dual runtime
 
-Implementation may use small reviewable commits, but the release is one
-cutover. There is no feature flag that lets one Session tree use delegate jobs
-while another uses the controller, and no adapter that writes both event
-models.
+Implementation may use small reviewable dormant-foundation commits, but the
+release is one flag-day cutover. There is no feature flag that lets one Session
+tree use delegate jobs while another uses the controller, and no adapter that
+writes both event models.
 
 A reasonable internal sequence is:
 
-1. add behavioral characterization tests and the private controller/store;
-2. route create, resume, steer, model admission, terminal settlement, and
-   attention drives through the controller;
-3. route nested delegate/shell admission and subtree stop through it;
-4. cut tools and client projections to stable identity;
-5. delete delegate JobRecord production paths and old fields; and
-6. update evergreen docs and run full verification before merge.
+1. characterize the desired public behavior on unchanged main, recording each
+   honest RED and removing intentional failing test files before ordinary
+   hooks run;
+2. add and test the dormant private store, fold, controller transitions,
+   exact finish/delivery, steering/admission, stop, receipts, and restart
+   reducer while the old production route remains the only active route;
+3. perform one vertical production cutover that changes root/child ownership,
+   create/resume/steer/model/tool/settlement/finish/attention/stop/reconcile,
+   registered tool schemas, and stable public projection together;
+4. update TUI, web, AppWire, doctor, and cold projections while the old
+   jobstore types remain available only to compile not-yet-migrated consumers;
+5. delete delegate JobRecord production paths, old fields, and the inactive
+   legacy implementation after every consumer has moved; and
+6. update the remaining evergreen docs and run full verification before merge.
 
-This is sequencing guidance, not permission to merge a half-cut-over state.
+Steps 3 and 4 are one uncommitted working-tree transition and one deployable
+commit: controller ownership, state format, registered schemas, projections,
+and clients switch together. Step 5 removes source that is already unreachable
+in that build; it is not a compatibility period or a second operational phase.
+
+Foundation code may be temporarily dormant and directly tested; it may not be
+selected by a feature flag or dual-written beside the old route. No commit may
+leave a registered delegate public path whose start, steering, exact finish,
+stop, restart, and projection authorities disagree. This is sequencing
+guidance, not permission to merge a half-cut-over state.
 
 ### No speculative framework
 
@@ -1152,19 +1499,53 @@ seams. Do not use sleeps to create races.
 
 Required interleavings include:
 
-- pause idle restore before CommitStart; stop; release restore;
+- pause idle restore after CommitStart has installed the exact non-launched
+  generation; stop; release restore;
+- crash a create before CommitStart and prove no child artifact exists; crash
+  after CommitStart during construction and prove the aggregate owns and
+  reconciles every partial deterministic path;
 - pause running steer immediately before transcript admission; stop in the
   opposite ordering in a second test;
 - pause normal and communicate settlement, admit steering first, and prove the
   child continues to a request containing it before terminal settlement;
+- crash after ordinary completion has prepared the missing-terminal packet but
+  before run_finished, and prove restart finishes that exact packet once;
 - pause finalization before FinishGeneration; stop; release finalization;
 - finish generation N; start N+1; release a delayed N finalizer;
 - hold a child-start receipt; stop its ancestor; try to commit the receipt;
 - hold a shell-start receipt; stop its ancestor; publish the process handle;
 - persist subtree_stop_requested; simulate restart before external
-  cancellation; reconcile;
-- commit receiver delivery; crash before acknowledgement; replay without
-  duplicate model input; and
+  cancellation with a descendant shell still durably running; reconcile the
+  shell store to stopped/runtime_lost, consume its covered notification, and
+  only then complete the stop;
+- commit stopped run_finished, crash before subtree_stop_completed, reopen,
+  and prove current_run_open=false prevents duplicate finish, delivery, or
+  capacity release;
+- hand inline packet N to its exact caller tool result, block that aggregated
+  tool-result append before fsync, finish N+1, and prove neither N
+  acknowledgement nor N+1 dispatch occurs; fail the append and prove
+  `committed=false` leaves N then N+1 durably queued; and
+- fsync caller tool-result N with its private delivery metadata, crash before
+  acknowledgement, and prove replay acknowledges N without a duplicate tool
+  result before releasing N+1; and
+- give N+1 a live inline waiter while N's receiver is blocked, then prove N's
+  post-fsync acknowledgement releases N+1 to that exact generation-keyed
+  waiter rather than losing or notifying it; and
+- append delegate and shell attention, crash after receiver transcript fsync
+  but before source acknowledgement, and prove exact-ID replay acknowledges the
+  source without a duplicate model-bound turn; fail consumed-marker fsync and
+  prove attention settlement cannot finish; and
+- let stop's first attention fold become empty, append a
+  cancellation-generated attention entry, and prove the repeated cold fold
+  durably discards it before stop completion; hold a descendant-to-covered-parent
+  delivery and prove completion suppresses it, while a delivery to the root or
+  an owner outside the subtree remains ordered and is released only after stop
+  completion, in both live and restart orders; and
+- capture public revision N, commit N+1, emit N+1 before delayed N, and prove
+  live AppWire, TUI, web module, and activity stores ignore the stale snapshot;
+  give delayed N a newer transcript activity timestamp and prove only ordering
+  time max-merges; close/reopen and prove cold fold plus transcript metadata
+  obey the same two-part merge; and
 - append failure at each lifecycle event boundary, proving no in-memory
   mutation or external launch escapes.
 
@@ -1204,14 +1585,19 @@ stop request before cancellation signals, then proves:
 ### Restart proof
 
 Construct a three-level delegate tree with durable descriptors, pending
-delivery, a running generation, and an incomplete subtree stop. Close all live
+delivery, a running generation, a descendant shell durably running, and an
+incomplete subtree stop. Close all live
 objects, reopen only the root state, and prove reconciliation:
 
 - constructs no child Session or provider;
 - makes no model request;
 - settles running/stopping generations once;
+- repairs the descendant shell store to stopped/runtime_lost and leaves no
+  covered pending shell notification;
 - completes the stop;
-- retains the pending terminal packet;
+- suppresses packets addressed to owners covered by the stop, retains a
+  pending packet owed outside the stopped subtree, and releases that external
+  packet only after stop completion;
 - restores stable lineage/status/list projections; and
 - lazily restores only the selected delegate on a later send.
 
@@ -1231,6 +1617,8 @@ the minimum final evidence includes:
 - AppWire/TUI/web/doctor projection tests;
 - the complete agent package;
 - all repository-required module, lint, fuzz, and generated-artifact gates;
+- the authoritative native fuzz registry check after every commit that adds or
+  removes a fuzz declaration;
 - git diff --check; and
 - clean tracked porcelain with only intentionally committed docs/code.
 
@@ -1258,20 +1646,34 @@ The project is complete only when all of the following are true:
     before external cancellation.
 13. No new model, tool, delegate, or shell admission can commit below a
     stopping ancestor.
-14. Pre-admitted external starts are accounted for through receipts and cannot
-    escape stop.
+14. Pre-admitted external starts and owner deliveries are accounted for
+    through receipts and cannot escape stop.
 15. Stop completion precedes any successor generation.
 16. Normal finalization cannot overwrite stop precedence.
 17. Restart reconciliation constructs no model runtime.
-18. Pending terminal delivery replays idempotently.
+18. Pending terminal delivery replays idempotently and dispatches head-only;
+    queued generations retain their own inline waiters, covered-owner packets
+    are suppressed, and external packets wait for stop completion. Inline
+    delivery is acknowledged only after the caller's tool-result turn fsyncs
+    with private delivery metadata; append failure leaves the head queued, and
+    crash after fsync replays without duplication.
 19. There is no standalone failure record; every outcome uses one
     delegate_run_finished shape.
 20. Public list/status/events show one delegate row and no private generation.
+    Reordered equal/older projection revisions cannot regress a client row.
+    Hub descendant probing uses only descendant session IDs/states, delegate
+    notifications use stable delegate markup/identity, and shell notifications
+    alone retain job markup/identity.
 21. Public lineage uses typed stable parents.
 22. Shell jobs remain independently controllable jobs.
 23. Nested delegation and mandatory delegate subtree stop work at depth three.
 24. Idle runtimes remain resident; no automatic unload code is introduced.
-25. Delegate-source/receiver watches fail explicitly as unsupported.
+25. Delegate-source/receiver watches fail explicitly as unsupported, no
+    parent watch is auto-installed, restored callback state cannot enter a
+    delegate, and the permanent source inventory contains no delegate callback
+    field/helper. Receiver transcripts are the only durable attention journal:
+    exact-ID append/source-ack, consume, discard, restart, and stop cleanup are
+    idempotent, while queue snapshots remain non-authoritative.
 26. Old delegate durable state fails closed; no migration or mixed load exists.
 27. Old public argument/result aliases are absent.
 28. The deletion inventory has no active production references.
@@ -1288,6 +1690,7 @@ to require any of the following:
 
 - retaining delegate JobRecords as lifecycle authority;
 - a second durable delegate projection;
+- a second durable attention queue/store beside the receiver transcript;
 - a Session or job-manager lifecycle mirror;
 - an ancestor epoch vector;
 - a wildcard or zero-generation match;
@@ -1315,9 +1718,9 @@ design requires separate approval and deterministic stop/resume/unload tests.
 ### Durable delegate watches
 
 Delegate watches may later subscribe to stable aggregate activity and deliver
-to a stable delegate inbox. They must not target private generations or
-recreate delegate JobRecords. Source cursor, receiver delivery, restart, and
-unload behavior require a separate design.
+through the stable delegate's receiver-transcript attention journal. They must
+not target private generations or recreate delegate JobRecords. Source cursor,
+receiver delivery, restart, and unload behavior require a separate design.
 
 ### AppWire evolution
 
