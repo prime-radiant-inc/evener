@@ -57,7 +57,6 @@
   gap: var(--space-2);
   padding: var(--space-3);
   background: var(--surface-2);
-  border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
   box-shadow: var(--shadow-overlay);
   animation: goalPopoverFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);

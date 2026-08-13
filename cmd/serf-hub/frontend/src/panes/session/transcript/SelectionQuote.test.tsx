@@ -137,6 +137,21 @@ test("pressing Escape dismisses the bar", () => {
   expect(screen.queryByRole("toolbar", { name: "Selection actions" })).toBeNull();
 });
 
+test("scrolling dismisses a visible bar - it is position:fixed and does not track the selection", () => {
+  const { messageNode, containerRef } = renderHarness(() => {});
+  installFakeSelection({ text: "quoted prose", anchorNode: messageNode });
+  act(() => {
+    containerRef.current?.dispatchEvent(new Event("pointerup", { bubbles: true }));
+  });
+  expect(screen.getByRole("toolbar", { name: "Selection actions" })).toBeTruthy();
+
+  act(() => {
+    document.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+
+  expect(screen.queryByRole("toolbar", { name: "Selection actions" })).toBeNull();
+});
+
 test("mousedown on the bar is prevented, so clicking its action never collapses the live text selection first", () => {
   const { messageNode, containerRef } = renderHarness(() => {});
   installFakeSelection({ text: "quoted prose", anchorNode: messageNode });

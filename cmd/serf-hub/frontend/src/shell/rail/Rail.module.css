@@ -341,9 +341,13 @@
    * positioned ancestor instead (the scrolling rail body, or the viewport)
    * and detaches from its own row entirely. */
   position: relative;
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
+/* No transition here: `.actions`'s reveal mask is a linear-gradient, which
+ * cannot interpolate, so it snaps between states instantly. If this wash
+ * faded in over --motion-duration-hover, the mask would snap into place
+ * mid-fade, visibly out of lockstep with the background it's meant to
+ * match - so the wash has to be instant too. */
 .railRow:hover {
   background: var(--hover-1);
 }

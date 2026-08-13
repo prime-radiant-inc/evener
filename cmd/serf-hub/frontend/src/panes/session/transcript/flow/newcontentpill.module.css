@@ -5,10 +5,15 @@
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--edge);
   border-radius: var(--radius-control);
-  background: var(--surface-2);
+  background: var(--surface-1);
   color: var(--ink-hi);
   font-size: var(--font-size-ui);
   cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.pill:hover {
+  background: var(--hover-1);
 }
 
 .pill:focus-visible {

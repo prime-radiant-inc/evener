@@ -7,8 +7,8 @@
  * Turns a raw text-selection string into a markdown blockquote: outer
  * whitespace-only lines are dropped, every remaining line gets its own
  * "> " prefix (an internal blank line becomes a bare "> "), and the block
- * ends with one blank line so it reads as its own paragraph once inserted
- * ahead of whatever the composer already holds. An empty/whitespace-only
+ * ends with one blank line so it reads as its own paragraph once appended
+ * after whatever the composer draft already holds. An empty/whitespace-only
  * selection formats to "" - callers never insert a lone blank block.
  */
 export function formatQuoteBlock(selectedText: string): string {

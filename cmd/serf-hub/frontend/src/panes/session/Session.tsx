@@ -251,8 +251,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // getBoundingClientRect() is already viewport-relative regardless of
   // scroll position, so this ref only needs to bound "is this selection
   // inside the transcript pane at all" and clamp the floating bar to that
-  // same visible area (position: fixed, so it never scrolls away
-  // mid-selection).
+  // same visible area. The bar is position: fixed and does not track
+  // scroll - any scroll dismisses it instead (SelectionQuote's own
+  // document-level capture listener).
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const flow = useTranscriptScroll({
     ref,

@@ -87,16 +87,19 @@ but not the other's.
 background. `--surface-2` (raised: menus, dialogs) keeps its name and dark value, but now
 carries its depth via `--shadow-overlay` (see Elevation below) rather than a lighter fill —
 during the re-theme, call sites that used `--surface-2` purely as a hover wash migrated to
-`--hover-1`, so `--surface-2` now only appears on genuinely raised layers. Two border weights
+`--hover-1`, so `--surface-2` now appears only on genuinely raised layers and as the neutral
+fill of small static elements (chip/badge neutral tone). Two border weights
 replace the old single `--edge`: `--edge` (hairline) and `--edge-strong` (control borders,
 overlay rings). `--ink-hi/mid/low` are unchanged in role. The four semantic families
 (`--attention`, `--alive`, `--danger`, `--accent`) keep their `-bg` (15% mix into the surface)
 and `-edge` (40% mix into the hairline border) companions, and each now also gets a `-ink`
 companion (`--attention-ink`, `--alive-ink`, `--danger-ink`, `--accent-ink`) for text usage.
 Reason: Beautiful UI's bare light-theme hues measure 2.8–3.9:1 against white — fine for glyphs,
-borders, and washes, but failing the 4.5:1 AA floor for text. `-ink` values are darkened (light
-theme) or brightened (dark theme) to clear ≥4.5:1 against both light surfaces, contract-tested
-the same way as the diff-contrast pair (§4, item 3 below). The rule: a call site that sets a hue
+borders, and washes, but failing the 4.5:1 AA floor for text. Light `-ink` values are darkened
+forms of all four hues; in dark only accent and danger needed brightening (attention/alive
+already clear). Each is contract-tested ≥4.5:1 against its theme's lightest text grounds AND
+the hue's own `-bg` tint — the fill chips/badges/toasts actually set `-ink` text on — the same
+way as the diff-contrast pair (§4, item 3 below). The rule: a call site that sets a hue
 as `color` uses `-ink`; glyphs, borders, and washes keep the bare hue. The tooltip carries its
 own inverted mini-palette instead of sitting on `--surface-2` — `--tooltip-bg/-fg/-muted/-border`,
 near-black in both themes. Light theme deliberately inverts the old surface order: `--surface-1`
@@ -115,8 +118,9 @@ weight only — widened from −0.01em under IBM Plex); `--font-size-caption/ui/
 page-title` (12/13/14/16/20px); `--line-height-body/title` (1.5/1.3). NEW: `--tracking-micro`
 (0.08em) backs the **micro-label pattern** — card/pane section headers set at 11.5–12px
 uppercase, `--font-weight-medium`, `--tracking-micro`, `--ink-low`/`--ink-mid`, usually on a
-`--surface-inset` band. It's applied through widget chrome (PaneScaffold titles now use it,
-alongside Card and Dialog headers), never per-page. This is a distinct pattern from the
+`--surface-inset` band. It's applied through widget chrome (PaneScaffold titles are its one
+adopter today; Dialog keeps its full-size title on an inset band, and Card has no header slot),
+never per-page. This is a distinct pattern from the
 caption-size "section eyebrow" documented in §6 (0.04em tracking, for group labels like the
 rail's "Projects") — eyebrows label a *group*, micro-labels title a *container*.
 
@@ -153,12 +157,13 @@ dockview's stylesheet sits outside the ladder: its drag overlay is 999 (`--z-dia
 clears it deliberately) and its drop-target container is 9999, which sits above everything for
 the duration of a dock drag.
 
-**Elevation** — Beautiful UI's five-shadow system replaces the old two-shadow one. Every shadow
-embeds its own 1px ring, so a shadowed element never also declares a separate border for the
-same edge: `--shadow-hairline` (ring only — the tooltip), `--shadow-btn` (controls at rest),
-`--shadow-card` (panes/cards — Card uses this instead of a border now), `--shadow-raised` (hover
-lift, mid floats), `--shadow-overlay` (menus/popovers/toasts/dialogs/sheets), and
-`--shadow-inset-field` (sinks form controls into `--field`). The soft-layer alphas are per-theme
+**Elevation** — Beautiful UI's ring-embedding shadows replace the old two-shadow system. Every
+shadow embeds its own 1px ring, so a shadowed element never also declares a separate border for
+the same edge: `--shadow-card` (panes/cards — Card uses this instead of a border now),
+`--shadow-overlay` (menus/popovers/toasts/dialogs/sheets), and `--shadow-inset-field` (sinks
+form controls into `--field`). Beautiful UI's btn/raised/hairline rungs were deliberately not
+adopted — serf's Button has no bordered-neutral variant and nothing needed a mid float, so those
+tokens would have shipped with zero consumers. The soft-layer alphas are per-theme
 (dark heavier, light whisper-light), declared as literal color values in `tokens.css` per the
 token contract — `--shadow-color` still feeds the sheet's edge-directed variants, which keep
 their own directional geometry rather than the omnidirectional card/overlay shape. The tooltip
@@ -190,7 +195,7 @@ during implementation (noted inline); this table is the one to trust.
 | **Meter** | `{label: string; value: number; max: number; tone?: "neutral"\|"attention"\|"alive"\|"danger"}` | `role="meter"`; `label` is required (not optional as an early sketch had it) since role=meter needs an accessible name and a Meter can't ship without one. Fill width via a `--fill` style custom property, not an inline style rule. |
 | **Skeleton** | `{lines?: number}` (default 3) | Static bars, no shimmer (honest-liveness rule) — announces "Loading" once for AT; bars themselves are decorative. |
 | **EmptyState** | `{title: string; hint?: string; action?: ReactNode}` | `action` is optional (an early plan sketch showed it required; a pane with nothing actionable — e.g. a read-only empty log — is an ordinary case, and every sibling slot-style prop this wave is optional, so this was kept optional as the more consistent, more correct shape). |
-| **Card** | `{children: ReactNode}` | Passive raised/bordered container. |
+| **Card** | `{children: ReactNode}` | Passive raised container; its ring is `--shadow-card`'s embedded 1px, not a border. |
 | **Input** | `{value: string; onChange; placeholder?; disabled?; type?: "text"\|"password"\|"email"\|"search"\|"number"\|"tel"\|"url"; id?; name?}` | Controlled only; labeling is the consumer's job via `<label htmlFor>`. |
 | **Textarea** | `{value: string; onChange; placeholder?; disabled?; autoGrow?: boolean; rows?; id?; name?}` | `autoGrow` counts literal `"\n"` occurrences, not wrapped lines. |
 | **Select** | `{value: string; onChange; options: {value; label}[]; disabled?; id?; name?}` | Native `<select>`, restyled — no custom listbox (Combobox covers richer cases). |
@@ -298,8 +303,8 @@ budgeted. Three budgets, all on `--motion-easing-standard` (`ease-out`):
 Forbidden, unchanged: idle pulses, shimmer loops on live data, anything that animates during
 silence (the honest-liveness rule — a "working" indicator that looks identical whether the agent
 is streaming or hung is worse than no indicator). Every widget with motion of its own respects
-`prefers-reduced-motion: reduce` (currently: Cadence, Dialog, Menu, Sheet, StatusDot, Switch) —
-collapses to instant, no exceptions.
+`prefers-reduced-motion: reduce` (currently: Cadence, Dialog, Disclosure, Menu, SelectionQuote,
+Sheet, StatusDot, Switch) — collapses to instant, no exceptions.
 
 ---
 

@@ -13,6 +13,12 @@ const styles = {
   card: requireClass(rawStyles.card, "card.module.css", "card"),
 };
 
+// A stylesheet-grep assertion must not be satisfiable by a comment - this repo
+// has a precedent of exactly that passing while asserting nothing.
+function stripCssComments(css: string): string {
+  return css.replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
 test("renders its children", () => {
   render(
     <Card>
@@ -37,7 +43,7 @@ test("wraps children in a single container carrying the card class", () => {
 // design.md §6.
 test("carries its ring via box-shadow rather than a border", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "card.module.css"), "utf8");
-  const rule = /\.card\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  const rule = /\.card\s*\{([^}]*)\}/.exec(stripCssComments(css))?.[1] ?? "";
   expect(rule).toContain("box-shadow: var(--shadow-card)");
   expect(rule).not.toContain("border:");
 });

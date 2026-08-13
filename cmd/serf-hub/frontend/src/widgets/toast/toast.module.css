@@ -12,7 +12,6 @@
 .toast {
   padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-pane);
-  border: 1px solid var(--edge);
   background: var(--surface-2);
   box-shadow: var(--shadow-overlay);
 }

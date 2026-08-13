@@ -25,7 +25,12 @@
 // range, which this same handler reads as "hide the bar" - no separate
 // outside-click listener is needed). `mousedown` on the bar itself is
 // preventDefault()'d so pressing its own button never collapses the
-// selection out from under the click that is about to read it.
+// selection out from under the click that is about to read it. The bar is
+// `position: fixed` and positioned once per selection (see the useLayoutEffect
+// below) - it does NOT track scroll, so a capture-phase `scroll` listener on
+// document dismisses it on any scroll (the transcript pane, a nested
+// scroller, anywhere) rather than leaving it floating over content it no
+// longer points at.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -103,15 +108,21 @@ export function SelectionQuote({ containerRef, actions }: SelectionQuoteProps) {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") setSelection(null);
     };
+    const handleScroll = () => setSelection(null);
 
     container.addEventListener("pointerup", evaluate);
     document.addEventListener("selectionchange", debouncedEvaluate);
     document.addEventListener("keydown", handleKeyDown);
+    // Capture phase: a scroll inside any nested scroller (not just document)
+    // still fires here on the way down, so the bar dismisses regardless of
+    // which element actually scrolled.
+    document.addEventListener("scroll", handleScroll, true);
     return () => {
       if (debounceTimer !== undefined) clearTimeout(debounceTimer);
       container.removeEventListener("pointerup", evaluate);
       document.removeEventListener("selectionchange", debouncedEvaluate);
       document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("scroll", handleScroll, true);
     };
   }, [containerRef, evaluate]);
 

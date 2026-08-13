@@ -67,16 +67,16 @@
   --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
   --accent-edge: color-mix(in oklab, var(--accent) 40%, var(--edge));
 
-  /* -ink companions: the hue as TEXT. The bare hues clear AA on dark
-   * surfaces already (danger is the one that needed brightening), but the
-   * light theme's do not — see the light block. Call sites that set a
-   * hue as color: use -ink; glyphs, borders, and washes use the bare hue.
-   * Contract-tested to >=4.5:1 against --surface-2 and --hover-1.
+  /* -ink companions: the hue as TEXT. Call sites that set a hue as color:
+   * use -ink; glyphs, borders, and washes use the bare hue. Contract-tested
+   * to >=4.5:1 against --surface-2, --hover-1, AND the hue's own -bg tint
+   * (chips/badges/toasts set -ink text on -bg fills) — accent and danger
+   * needed brightening past the bare hue to clear their own tints here.
    */
   --attention-ink: #F68F3C;
   --alive-ink: #3DBB72;
-  --danger-ink: #EF656A;
-  --accent-ink: #3D9AFF;
+  --danger-ink: #F17478;
+  --accent-ink: #459EFF;
 
   /* --- tooltip (inverted mini-palette, both themes near-black) --------- */
   --tooltip-bg: #111214;
@@ -184,17 +184,16 @@
 
   /* --- elevation -------------------------------------------------------
    * Every shadow embeds its own 1px ring, so a shadowed element never also
-   * declares a border for the same edge. Five levels: hairline (ring only),
-   * btn (controls at rest), card (panes/cards), raised (hover lift, mid
-   * floats), overlay (menus/popovers/toasts/dialogs/sheets). inset-field
-   * sinks form controls into --field. The soft-layer alphas are per-theme
-   * (declared in each block); --shadow-color feeds the sheet's
-   * edge-directed variants, which keep their own geometry.
+   * declares a border for the same edge. Two elevations shipped: card
+   * (panes/cards) and overlay (menus/popovers/toasts/dialogs/sheets);
+   * inset-field sinks form controls into --field. Beautiful UI's btn/
+   * raised/hairline rungs were not adopted — serf's Button has no
+   * bordered-neutral variant and nothing needed a mid float, so the
+   * tokens would be dead weight until a consumer exists. The soft-layer
+   * alphas are per-theme (declared in each block); --shadow-color feeds
+   * the sheet's edge-directed variants, which keep their own geometry.
    */
-  --shadow-hairline: 0 0 0 1px var(--edge);
-  --shadow-btn: 0 0 0 1px var(--edge-strong), 0 1px 2px #0000004D;
   --shadow-card: 0 0 0 1px var(--edge), 0 1px 2px #00000033, 0 2px 6px #00000033;
-  --shadow-raised: 0 0 0 1px var(--edge), 0 2px 10px #00000038;
   --shadow-overlay: 0 0 0 1px var(--edge-strong), 0 8px 28px #00000057;
   --shadow-inset-field: inset 0 1px 2px #00000066;
   --shadow-color: #00000057;
@@ -260,12 +259,13 @@
   --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
   --accent-edge: color-mix(in oklab, var(--accent) 40%, var(--edge));
 
-  /* AA-darkened text forms of the four hues (accent-ink is Beautiful UI's
-   * own; the other three are derived the same way). */
-  --attention-ink: #B75709;
-  --alive-ink: #158442;
-  --danger-ink: #DE282E;
-  --accent-ink: #0071DB;
+  /* AA-darkened text forms of the four hues, derived to clear 4.5:1 on
+   * both light surfaces and each hue's own near-white -bg tint (the
+   * strictest ground -ink text actually sits on). */
+  --attention-ink: #AD5209;
+  --alive-ink: #137A3D;
+  --danger-ink: #CE1F25;
+  --accent-ink: #0069CA;
 
   /* Tooltip stays inverted (near-black) in the light theme too. */
   --tooltip-bg: #25272B;
@@ -298,9 +298,7 @@
   --ansi-bright-cyan: #0E7490;
   --ansi-bright-white: #17181A;
 
-  --shadow-btn: 0 0 0 1px var(--edge-strong), 0 1px 2px #1018280D;
   --shadow-card: 0 0 0 1px var(--edge), 0 1px 2px #1018280A, 0 2px 6px #10182808;
-  --shadow-raised: 0 0 0 1px var(--edge), 0 2px 10px #0000000B;
   --shadow-overlay: 0 0 0 1px var(--edge-strong), 0 8px 28px #00000011;
   --shadow-inset-field: inset 0 1px 2px #0000001F;
   --shadow-color: #00000011;

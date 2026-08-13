@@ -230,13 +230,13 @@ export const ThinkBlock = memo(function ThinkBlock({ item, turn, live, sessionRe
         </summary>
         <div className={CLASS.body}>
           {/* Beautiful UI's Thinking anatomy, ported honestly: a step only
-              exists where the text itself already breaks into one (a
-              markdown heading, or - absent any heading - a paragraph break
-              between summaryIndex chunks; see segmentReasoningTrace). A
-              thought with none of that structure (the common case, one
-              undifferentiated paragraph) renders exactly as it always has -
-              no rail, no divider, no panel - so the one-document render
-              below stays the fallback, not a special case. */}
+              exists where the text itself already breaks into one via a
+              markdown heading (see segmentReasoningTrace - gated on heading
+              structure only, deliberately not paragraph breaks). A thought
+              with no heading (the common case, a multi-paragraph thought
+              with no structure of that kind) renders exactly as it always
+              has - no rail, no divider, no panel - so the one-document
+              render below stays the fallback, not a special case. */}
           {sections.length > 1 ? (
             <ol className={CLASS.trace} data-testid="think-block-trace">
               {sections.map((section, index) => (

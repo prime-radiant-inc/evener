@@ -37,9 +37,8 @@
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
-  background: var(--surface-inset);
+  background: var(--hover-1);
   border-radius: var(--radius-chip);
-  border-bottom: 1px solid var(--edge);
 }
 
 .language {

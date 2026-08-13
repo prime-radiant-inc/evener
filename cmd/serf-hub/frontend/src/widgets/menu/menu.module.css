@@ -22,7 +22,7 @@
 }
 
 .trigger:hover {
-  background: var(--surface-2);
+  background: var(--hover-1);
 }
 
 .trigger:focus-visible {
@@ -43,7 +43,7 @@
 }
 
 .triggerQuiet[aria-expanded="true"] {
-  background: var(--surface-2);
+  background: var(--hover-2);
 }
 
 /* position: fixed (not absolute): the popup portals to document.body (see
@@ -60,7 +60,6 @@
   padding: var(--space-1) 0;
   list-style: none;
   background: var(--surface-2);
-  border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
   box-shadow: var(--shadow-overlay);
   animation: menuFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);

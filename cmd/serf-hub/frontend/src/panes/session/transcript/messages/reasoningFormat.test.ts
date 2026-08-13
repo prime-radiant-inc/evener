@@ -164,11 +164,9 @@ test("a single paragraph with no heading has no internal boundary - stays one se
   ]);
 });
 
-test("multiple paragraphs with no heading anywhere: each paragraph break IS the structure", () => {
+test("multiple paragraphs with no heading anywhere: gated on heading structure only, so they stay one joined section (falls through to the single-document render)", () => {
   expect(segmentReasoningTrace(["first thought", "second thought", "third thought"])).toEqual([
-    "first thought",
-    "second thought",
-    "third thought",
+    "first thought\n\nsecond thought\n\nthird thought",
   ]);
 });
 
@@ -197,6 +195,11 @@ test("heading structure wins over paragraph structure when both are present", ()
     "intro\n\nmiddle",
     "## Plan\n\nfinish it",
   ]);
+});
+
+test("a section starting with an indented code block keeps its indentation (joinTokenRaw strips only leading newlines, never leading whitespace)", () => {
+  const paragraphs = ["    indented\n    code block", "## Heading\n\ntext"];
+  expect(segmentReasoningTrace(paragraphs)).toEqual(["    indented\n    code block", "## Heading\n\ntext"]);
 });
 
 test("a section reconstructed from heading structure reproduces the exact source markdown, not a rewritten form", () => {

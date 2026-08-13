@@ -747,9 +747,10 @@ test("both live and settled render inside the same stable wrapper testid", () =>
 
 // --- expanded trace: Beautiful UI's Thinking step anatomy -------------------
 // Steps only appear when segmentReasoningTrace actually finds more than one
-// section (headings, or - absent any heading - multiple summaryIndex
-// paragraphs); a thought with no such structure keeps rendering as one
-// undivided Markdown document, covered by the settled-markdown tests above.
+// section, which requires top-level markdown headings - a thought with no
+// heading (however many summaryIndex paragraphs it has) keeps rendering as
+// one undivided Markdown document, covered by the settled-markdown tests
+// above.
 
 test("a headed thought expands into a step trace: one row per heading section, ordinal markers, no leftover single-document render", () => {
   render(
@@ -773,7 +774,7 @@ test("a headed thought expands into a step trace: one row per heading section, o
   expect(screen.getByRole("heading", { level: 2, name: "Decide" })).toBeTruthy();
 });
 
-test("multiple summaryIndex paragraphs with no heading anywhere still segment into steps - the paragraph break is the structure", () => {
+test("multiple summaryIndex paragraphs with no heading anywhere fall through to the single-document render - no rail, no reflow risk", () => {
   render(
     <ThinkBlock
       item={item({ reasoningSummaries: [["first thought"], ["second thought"], ["third thought"]] })}
@@ -781,12 +782,12 @@ test("multiple summaryIndex paragraphs with no heading anywhere still segment in
       live={false}
     />,
   );
-  const trace = screen.getByTestId("think-block-trace");
-  const steps = Array.from(trace.querySelectorAll("li"));
-  expect(steps.map((step) => step.textContent?.trim())).toEqual([
-    "01first thought",
-    "02second thought",
-    "03third thought",
+  expect(screen.queryByTestId("think-block-trace")).toBeNull();
+  const paragraphs = document.querySelectorAll('[data-testid="think-block"] p');
+  expect(Array.from(paragraphs).map((p) => p.textContent)).toEqual([
+    "first thought",
+    "second thought",
+    "third thought",
   ]);
 });
 

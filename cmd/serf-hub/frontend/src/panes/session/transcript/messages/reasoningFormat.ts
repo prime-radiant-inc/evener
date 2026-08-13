@@ -145,23 +145,27 @@ function plainThoughtLine(line: string): string {
 // segmentReasoningTrace breaks joinedReasoningParagraphs' output into the
 // expanded trace's step sections, using structure ALREADY present in the
 // text rather than inventing any (Beautiful UI's Thinking anatomy adapted
-// honestly - see ThinkBlock.tsx's top comment). Two sources of structure,
-// tried in order:
+// honestly - see ThinkBlock.tsx's top comment). Gated on ONE source of
+// structure: top-level Markdown headings. Each heading starts a new section
+// that runs up to (but not including) the next heading; any content before
+// the first heading is its own leading section. Sections are reconstructed
+// from the lexer's own `raw` spans (join-then-trimEnd, leading newlines
+// stripped - see joinTokenRaw), so nothing about the source text is
+// rewritten - a re-lex of a section's output reproduces the same tokens the
+// whole-document lex would have produced for that span.
 //
-//   1. Markdown headings. Each heading starts a new section that runs up to
-//      (but not including) the next heading; any content before the first
-//      heading is its own leading section. Sections are reconstructed from
-//      the lexer's own `raw` spans (join-then-trim), so nothing about the
-//      source text is rewritten - a re-lex of a section's output reproduces
-//      the same tokens the whole-document lex would have produced for that
-//      span.
-//   2. No heading exists anywhere: each summaryIndex paragraph (already one
-//      blank-line-joined block per joinedReasoningParagraphs) becomes its
-//      own section - the paragraph break IS the only structure on offer.
-//
-// A single paragraph with no heading has no internal boundary to segment
-// on, so it stays the one section it always was - the caller renders that
-// case exactly as before (no step list, no left rail).
+// No heading anywhere - the common case, a plain multi-paragraph thought -
+// returns the single joined document as one section, same as a single
+// undivided paragraph. This is deliberate, not an oversight: splitting a
+// headingless thought into one section per summaryIndex paragraph (this
+// function's earlier behavior) breaks any markdown structure that spans a
+// paragraph break - list numbering, link reference definitions, a fence that
+// opens in one paragraph and closes in the next - because each section would
+// then render through its own separate <Markdown> call. It also contradicts
+// LiveThinkBlock's "settling never reflows" invariant, since almost every
+// live thought is exactly this multi-paragraph, no-heading shape. The
+// caller's `sections.length > 1` check naturally falls through to the
+// identical single-document render for this case.
 export function segmentReasoningTrace(paragraphs: string[]): string[] {
   const source = paragraphs.join("\n\n");
   if (source.trim() === "") return [];
@@ -172,11 +176,11 @@ export function segmentReasoningTrace(paragraphs: string[]): string[] {
     if (token.type === "heading") headingIndices.push(index);
   });
 
-  if (headingIndices.length === 0) return paragraphs;
+  if (headingIndices.length === 0) return [source];
 
   const sections: string[] = [];
   const firstHeading = headingIndices[0];
-  if (firstHeading === undefined) return paragraphs; // unreachable: length checked above
+  if (firstHeading === undefined) return [source]; // unreachable: length checked above
   if (firstHeading > 0) sections.push(joinTokenRaw(tokens.slice(0, firstHeading)));
   headingIndices.forEach((start, position) => {
     const end = headingIndices[position + 1] ?? tokens.length;
@@ -185,11 +189,16 @@ export function segmentReasoningTrace(paragraphs: string[]): string[] {
   return sections;
 }
 
+// Strips only leading newlines (never leading spaces/tabs - those are
+// significant indentation, e.g. a 4-space-indented code block, which a plain
+// .trim() would destroy and cause to re-lex as an ordinary paragraph) and
+// trailing whitespace of any kind.
 function joinTokenRaw(tokens: Token[]): string {
   return tokens
     .map((token) => token.raw)
     .join("")
-    .trim();
+    .replace(/^\n+/, "")
+    .trimEnd();
 }
 
 export function lastMeaningfulThoughtLine(paragraphs: string[], maxLength: number): string {

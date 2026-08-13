@@ -31,7 +31,7 @@
   transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
-.option:hover:not(:disabled) {
+.option:not([aria-checked="true"]):hover:not(:disabled) {
   background: var(--hover-1);
 }
 

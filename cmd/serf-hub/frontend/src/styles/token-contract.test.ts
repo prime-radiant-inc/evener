@@ -676,9 +676,61 @@ test("the canonical dark token block directly scopes nested dark wrappers", () =
 // The bare attention-family hues are glyph/border/wash colors; any use as
 // TEXT goes through the -ink companion, which exists precisely because the
 // light theme's bare hues measure 2.8–3.9:1. Same computation as the
-// DiffBlock contrast test above. Dark -ink is checked against the raised
-// surface and the hover wash (the lightest grounds dark text sits on);
-// light -ink against the page and the white card surface.
+// DiffBlock contrast test above, with one addition: chips, badges, and
+// toasts set -ink text on the hue's own -bg tint (`color-mix(in oklab,
+// hue 15%, --surface-1)`), so that tint is a real text ground and is
+// checked too — which requires reproducing the oklab mix here. The mix
+// implementation below follows the OKLab reference (Björn Ottosson's
+// published matrices), and is only ever asked to reproduce a 15% mix of
+// two in-gamut sRGB colors, so gamut clipping stays a plain clamp.
+
+type OklabTriple = [number, number, number];
+
+function srgbChannelToLinear(channel: number): number {
+  const c = channel / 255;
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+
+function linearChannelToSrgb(linear: number): number {
+  const c = linear <= 0.0031308 ? 12.92 * linear : 1.055 * linear ** (1 / 2.4) - 0.055;
+  return Math.max(0, Math.min(255, Math.round(c * 255)));
+}
+
+function rgbToOklab([red, green, blue]: RGB): OklabTriple {
+  const r = srgbChannelToLinear(red);
+  const g = srgbChannelToLinear(green);
+  const b = srgbChannelToLinear(blue);
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  return [
+    0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+  ];
+}
+
+function oklabToRgb([L, a, b]: OklabTriple): RGB {
+  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  return [
+    linearChannelToSrgb(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+    linearChannelToSrgb(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+    linearChannelToSrgb(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s),
+  ] as RGB;
+}
+
+function oklabMix(colorA: RGB, colorB: RGB, fractionOfA: number): RGB {
+  const a = rgbToOklab(colorA);
+  const b = rgbToOklab(colorB);
+  return oklabToRgb([
+    a[0] * fractionOfA + b[0] * (1 - fractionOfA),
+    a[1] * fractionOfA + b[1] * (1 - fractionOfA),
+    a[2] * fractionOfA + b[2] * (1 - fractionOfA),
+  ]);
+}
+
 test("the four -ink companions clear 4.5:1 on their theme's lightest text grounds", () => {
   const themes = [
     {
@@ -693,16 +745,25 @@ test("the four -ink companions clear 4.5:1 on their theme's lightest text ground
     },
   ];
   for (const theme of themes) {
-    for (const hue of ["--attention-ink", "--alive-ink", "--danger-ink", "--accent-ink"]) {
-      const ink = declaredToken(theme.block, hue);
-      expect(ink, `${theme.name} declares ${hue}`).toBeDefined();
-      if (!ink) continue;
-      for (const groundName of theme.grounds) {
+    const surface1 = declaredToken(theme.block, "--surface-1");
+    expect(surface1, `${theme.name} declares --surface-1`).toBeDefined();
+    for (const family of ["attention", "alive", "danger", "accent"]) {
+      const ink = declaredToken(theme.block, `--${family}-ink`);
+      expect(ink, `${theme.name} declares --${family}-ink`).toBeDefined();
+      const bareHue = declaredToken(theme.block, `--${family}`);
+      expect(bareHue, `${theme.name} declares --${family}`).toBeDefined();
+      if (!ink || !bareHue || !surface1) continue;
+      const grounds: [string, RGB][] = theme.grounds.map((groundName) => {
         const ground = declaredToken(theme.block, groundName);
         expect(ground, `${theme.name} declares ${groundName}`).toBeDefined();
-        if (!ground) continue;
-        const ratio = contrastRatio(parseHexColor(ink), parseHexColor(ground));
-        expect(ratio, `${theme.name} ${hue} on ${groundName}`).toBeGreaterThanOrEqual(4.5);
+        return [groundName, parseHexColor(ground!)];
+      });
+      // The hue's own -bg tint (15% oklab mix into --surface-1) is the
+      // ground -ink text most often sits on: chip/badge/toast fills.
+      grounds.push([`--${family}-bg`, oklabMix(parseHexColor(bareHue), parseHexColor(surface1), 0.15)]);
+      for (const [groundName, ground] of grounds) {
+        const ratio = contrastRatio(parseHexColor(ink), ground);
+        expect(ratio, `${theme.name} --${family}-ink on ${groundName}`).toBeGreaterThanOrEqual(4.5);
       }
     }
   }
