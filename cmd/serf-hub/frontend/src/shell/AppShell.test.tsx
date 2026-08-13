@@ -5,6 +5,7 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
+import * as composerFocus from "../panes/session/composer/composerFocus";
 import { AppwireClient } from "../protocol/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { InitializeResponse, ThreadStartResponse } from "../protocol/types.gen";
@@ -455,6 +456,83 @@ test("Ctrl+K opens the command palette", async () => {
   await user.keyboard("{Control>}k{/Control}");
 
   expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeTruthy();
+});
+
+// --- Mod+I focuses the focused session pane's composer (UX fix) ----------
+
+test("Mod+I focuses the focused session pane's composer", async () => {
+  const user = userEvent.setup();
+  const focusSpy = vi.spyOn(composerFocus, "requestComposerFocus");
+  window.history.pushState({}, "", "/s/local:ref_abc123");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+
+  await user.keyboard("{Meta>}i{/Meta}");
+
+  expect(focusSpy).toHaveBeenCalledWith("local:ref_abc123");
+  focusSpy.mockRestore();
+});
+
+test("Mod+I is a no-op when the focused pane isn't a session", async () => {
+  const user = userEvent.setup();
+  const focusSpy = vi.spyOn(composerFocus, "requestComposerFocus");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+
+  await user.keyboard("{Meta>}i{/Meta}");
+
+  expect(focusSpy).not.toHaveBeenCalled();
+  focusSpy.mockRestore();
+});
+
+// --- Mod+J cycles needs-you sessions (UX fix) -----------------------------
+
+const NEEDS_YOU_TREE = {
+  generated_at: "2026-01-01T00:00:00Z",
+  sources: [],
+  live: [],
+  needs_you: [
+    { ...TREE_SESSION, row_id: "needsyou:1", ref: "local:ny1", title: "Needs you one", state: "awaiting" },
+    { ...TREE_SESSION, row_id: "needsyou:2", ref: "local:ny2", title: "Needs you two", state: "awaiting" },
+  ],
+  pin_sections: [],
+  projects: [],
+  archived_projects: [],
+  test_runs: [],
+  attentionSummary: { needsYou: 2, error: 0, working: 0 },
+};
+
+test("Mod+J opens the first needs-you session when nothing is focused", async () => {
+  const user = userEvent.setup();
+  vi.stubGlobal("fetch", (url: string) => {
+    if (url === "/api/tree") return Promise.resolve(jsonResponse(NEEDS_YOU_TREE));
+    return Promise.resolve(jsonResponse({}));
+  });
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+  await waitFor(() => expect(treeStore.getState().tree).not.toBeNull());
+
+  await user.keyboard("{Meta>}j{/Meta}");
+
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:ny1" }));
+});
+
+test("Mod+J cycles from the focused needs-you session to the next one, wrapping", async () => {
+  const user = userEvent.setup();
+  vi.stubGlobal("fetch", (url: string) => {
+    if (url === "/api/tree") return Promise.resolve(jsonResponse(NEEDS_YOU_TREE));
+    return Promise.resolve(jsonResponse({}));
+  });
+  window.history.pushState({}, "", "/s/local:ny2");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(treeStore.getState().tree).not.toBeNull());
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:ny2" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
+
+  await user.keyboard("{Meta>}j{/Meta}");
+
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:ny1" }));
 });
 
 test("clicking any [data-search-trigger] element opens the command palette", async () => {

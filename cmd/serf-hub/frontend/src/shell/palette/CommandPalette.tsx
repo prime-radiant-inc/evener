@@ -7,12 +7,16 @@
 // panel - all ported from search.js, adapted to React state instead of
 // imperative innerHTML.
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { requestComposerFocus } from "../../panes/session/composer/composerFocus";
+import { requestQuoteInsert } from "../../panes/session/composer/quoteInsert";
 import { errorText, isHubLaunchError } from "../../protocol/errors";
 import type { CommandDescriptor } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { threadsStore } from "../../stores/threads";
-import { type CadenceState, Chip, Dialog, StatusDot, useToasts } from "../../widgets";
+import { type TreeNode as ApiTreeNode, useTreeStore } from "../../stores/tree";
+import { type CadenceState, Chip, Dialog, KeyHint, StatusDot, useToasts } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { openNeedsYouSession } from "../rail/needsYouCycle";
 import { navigate } from "../routing";
 import { isBlocked } from "./blocked";
 import styles from "./commandpalette.module.css";
@@ -70,15 +74,52 @@ const CLASS = {
 const SEARCH_PLACEHOLDER = "search live + past sessions";
 const SEARCH_DEBOUNCE_MS = 150;
 
-// The 7 fixed help rows (§2.8, search.js:697-705).
-const HELP_ROWS: Array<[string, string]> = [
-  ["⌘K / Ctrl-K", "open the palette from anywhere"],
-  ["/", "at the start of an empty message textarea — opens command mode"],
-  ["↑ ↓", "navigate the list"],
-  ["↵", "run the highlighted command (or open a search result)"],
-  ["⌘↵", "open a search result in a new tab"],
-  ["⇧↵", "jump to a turn in the current session"],
-  ["Esc", "close the palette (or back out of args mode)"],
+// A stable empty-array reference for the needsYouNodes selector below: `?? []`
+// would otherwise allocate a fresh array every render when tree is null (or
+// every time useTreeStore's own tree reference changes with no needs_you of
+// its own), and zustand's useStore re-renders on referential inequality - a
+// fresh empty array every render is an infinite render loop, not a no-op.
+const NO_NEEDS_YOU: readonly ApiTreeNode[] = [];
+
+interface HelpRow {
+  keys: string[];
+  desc: string;
+}
+
+// UX fix: rebuilt from a stale, hand-rolled §2.8 list (search.js:697-705,
+// palette-only, whose Enter/Shift+Enter/Mod+Enter row was never accurate for
+// THIS composer's real keydown routing) into an app-wide shortcut legend,
+// rendered through the shared KeyHint widget (Mod resolves to the reviewing
+// platform's own ⌘/Ctrl) instead of literal glyph strings.
+//
+// The palette's own rows (still accurate) come first; the composer/rail/ask-
+// dock rows this task adds follow. The same chord legitimately appears twice
+// (Mod+Enter: composer submit vs. ask dock/sandbox answer) - context-
+// dependent, not a duplicate, so both rows stay with their own desc.
+const HELP_ROWS: HelpRow[] = [
+  { keys: ["Mod", "K"], desc: "open the command palette" },
+  { keys: ["/"], desc: "at the start of an empty composer — opens command mode" },
+  { keys: ["↑"], desc: "move up the results list" },
+  { keys: ["↓"], desc: "move down the results list" },
+  { keys: ["Enter"], desc: "run the highlighted command (or open a search result)" },
+  { keys: ["Mod", "Enter"], desc: "open a search result in a new tab" },
+  { keys: ["Shift", "Enter"], desc: "jump to a turn in the current session" },
+  { keys: ["Esc"], desc: "close the palette (or back out of args mode)" },
+  { keys: ["Mod", "B"], desc: "toggle the sidebar" },
+  { keys: ["Mod", "I"], desc: "focus the composer" },
+  { keys: ["Mod", "J"], desc: "go to the next session needing you" },
+  { keys: ["Mod", "'"], desc: "quote the selection into the composer" },
+  // Composer.tsx's own handleKeyDown: a plain Enter (or Mod+Enter, always)
+  // submits - send now, or queue when the agent is mid-turn - and Shift+
+  // Enter only steers when Enter-to-send is OFF (with it on, Shift+Enter is
+  // a literal newline instead).
+  { keys: ["Enter"], desc: "send now (or queue, mid-turn) — when Enter-to-send is on" },
+  { keys: ["Shift", "Enter"], desc: "steer mid-turn — when Enter-to-send is off" },
+  { keys: ["Mod", "Enter"], desc: "send or queue now, regardless of the Enter-to-send setting" },
+  // AskDock.tsx's handleBatchKeyDown / sandboxEscalation.tsx's own Mod+Enter.
+  { keys: ["Mod", "Enter"], desc: "answer or approve (ask dock questions, sandbox approvals)" },
+  { keys: ["←"], desc: "previous ask-dock question" },
+  { keys: ["→"], desc: "next ask-dock question" },
 ];
 
 // Live-row status dot: the search API's normalized state (hubcore.
@@ -108,7 +149,10 @@ type PaletteItem =
   | { kind: "past"; result: SearchResult }
   | { kind: "insession"; match: InSessionMatch }
   | { kind: "command"; command: ScopedCommand }
-  | { kind: "arg"; item: CommandArgsEnumItem };
+  | { kind: "arg"; item: CommandArgsEnumItem }
+  // UX fix: the empty-query view's needs-you list (Mod+J's palette-visible
+  // counterpart) - one row per tree.needs_you entry.
+  | { kind: "needsYou"; node: ApiTreeNode };
 
 // One render entry: a section header or a navigable row carrying its flat
 // index (which matches its position in the parallel `items` list, so
@@ -170,6 +214,9 @@ export function CommandPalette() {
 function PaletteBody({ initialQuery }: { initialQuery: string }) {
   const toasts = useToasts();
   const catalogCommands = useCommandCatalog((state) => state.commands);
+  // UX fix: the empty-query view's needs-you list (Mod+J's palette-visible
+  // counterpart, needsYouCycle.ts's own tree-order source of truth).
+  const needsYouNodes = useTreeStore((s) => s.tree?.needs_you ?? NO_NEEDS_YOU);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [query, setQuery] = useState(initialQuery);
@@ -288,8 +335,19 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   // deps change - never on a bare activeIndex change, so arrow-key navigation
   // doesn't reset the selection (see the reset effect below).
   const view = useMemo<ResultsView>(
-    () => buildView({ mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, catalogCommands }),
-    [mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, catalogCommands],
+    () =>
+      buildView({
+        mode,
+        query,
+        ctx,
+        searchResp,
+        selectedCommand,
+        enumItems,
+        showingHelp,
+        catalogCommands,
+        needsYouNodes,
+      }),
+    [mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, catalogCommands, needsYouNodes],
   );
 
   // Reset the active row whenever the row list is rebuilt (§2.3/§2.4:
@@ -355,9 +413,15 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       return;
     }
     if (command.slashCommandInvocation && ctx.sessionRef) {
+      // UX fix: a picked plugin slash-command no longer sends immediately -
+      // it inserts the qualified invocation into the composer's draft
+      // (trailing space, cursor after) via the SAME per-ref insert/focus
+      // seams SelectionQuote's "Quote in reply" already uses, so the user
+      // can add arguments (or reconsider) before sending it themselves.
       const args = query.replace(/^\//, "").trim().slice(command.id.length).trim();
-      const text = args ? `${command.slashCommandInvocation} ${args}` : command.slashCommandInvocation;
-      void threadsStore.getState().send(ctx.sessionRef, text);
+      const text = args ? `${command.slashCommandInvocation} ${args} ` : `${command.slashCommandInvocation} `;
+      requestQuoteInsert(ctx.sessionRef, text);
+      requestComposerFocus(ctx.sessionRef);
       closePalette();
       return;
     }
@@ -392,6 +456,14 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   }
 
   function activateResult(item: PaletteItem, newTab: boolean) {
+    if (item.kind === "needsYou") {
+      // No new-tab semantics here (unlike live/past below) - this row isn't
+      // a plain URL open, it's the same top-level/nested-aware seam Mod+J
+      // uses, so a Mod+Enter on it just opens same-tab like a bare Enter.
+      closePalette();
+      openNeedsYouSession(item.node.ref);
+      return;
+    }
     if (item.kind === "insession") {
       // Best-effort: focus stays on the already-focused session pane; precise
       // scroll-to-hit in the virtualized transcript is beyond-parity (flagged
@@ -564,8 +636,10 @@ function buildView(args: {
   enumItems: CommandArgsEnumItem[];
   showingHelp: boolean;
   catalogCommands: CommandDescriptor[];
+  needsYouNodes: readonly ApiTreeNode[];
 }): ResultsView {
-  const { mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, catalogCommands } = args;
+  const { mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, catalogCommands, needsYouNodes } =
+    args;
   const entries: Entry[] = [];
   const items: PaletteItem[] = [];
   const push = (item: PaletteItem) => {
@@ -579,6 +653,16 @@ function buildView(args: {
   if (showingHelp) return { entries, items };
 
   if (mode === "search") {
+    // UX fix: the empty-query view used to render nothing at all (no live/
+    // past results to show without a search term). It now lists needs-you
+    // sessions instead, when there are any - Mod+J's own tree-order list,
+    // opened the same way (needsYouCycle.ts). A non-empty query keeps the
+    // existing live/past/in-session behavior untouched below.
+    if (!query.trim() && needsYouNodes.length > 0) {
+      entries.push({ type: "header", label: "Needs you" });
+      for (const node of needsYouNodes) push({ kind: "needsYou", node });
+      return { entries, items };
+    }
     const live = searchResp?.live ?? [];
     const past = searchResp?.past ?? [];
     const model = focusedModel(ctx.sessionRef);
@@ -637,10 +721,18 @@ function renderResults(args: {
     return (
       <>
         <div className={CLASS.sectionHeader}>Keyboard shortcuts</div>
-        {HELP_ROWS.map(([keys, desc]) => (
-          <div className={CLASS.helpRow} key={keys}>
-            <span className={CLASS.helpKeys}>{keys}</span>
-            <span className={CLASS.helpDesc}>{desc}</span>
+        {HELP_ROWS.map((row, i) => (
+          // HELP_ROWS is a fixed static list (order IS its meaning, like
+          // RowContent's own Highlighted parts above) and the same chord
+          // legitimately appears more than once (Mod+Enter: composer submit
+          // vs. ask dock answer) - desc alone isn't unique either, so the
+          // stable position is the only real identity here.
+          // biome-ignore lint/suspicious/noArrayIndexKey: fixed static list, position is identity - see above
+          <div className={CLASS.helpRow} key={i}>
+            <span className={CLASS.helpKeys}>
+              <KeyHint keys={row.keys} />
+            </span>
+            <span className={CLASS.helpDesc}>{row.desc}</span>
           </div>
         ))}
       </>
@@ -752,6 +844,15 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
       <>
         <span className={CLASS.title}>{item.item.label || item.item.id}</span>
         {item.item.hint && <span className={CLASS.hint}>{item.item.hint}</span>}
+      </>
+    );
+  }
+  if (item.kind === "needsYou") {
+    return (
+      <>
+        <StatusDot state={toCadenceState(item.node.state)} />
+        <span className={CLASS.title}>{item.node.title}</span>
+        <span className={CLASS.hint}>needs you</span>
       </>
     );
   }

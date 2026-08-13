@@ -201,7 +201,6 @@
   flex: none;
   min-width: 5rem;
   color: var(--ink-hi);
-  font-family: var(--font-mono);
   font-size: var(--font-size-caption);
 }
 

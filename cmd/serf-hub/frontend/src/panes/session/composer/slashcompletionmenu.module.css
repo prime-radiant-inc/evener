@@ -1,0 +1,66 @@
+/* Anchored-float popup for inline slash-command completion, adapted from
+ * Beautiful UI's prompt-bar menu (beautifului.dev, MIT © 2026 Shane Levine)
+ * - see LICENSES/beautiful-ui.txt. Same recipe as
+ * panes/session/chrome/goalcontrol.module.css's own .popover: opens
+ * UPWARD off the bottom edge of its positioned ancestor (Composer.tsx's
+ * .formAnchor), since the composer sits at the pane's own bottom edge and
+ * a downward popup would clip off the viewport. No border, unlike the
+ * goal popover - the shadow alone separates it from the card underneath. */
+.menu {
+  position: absolute;
+  bottom: calc(100% + var(--space-1));
+  left: 0;
+  right: 0;
+  z-index: var(--z-menu);
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-1);
+  background: var(--surface-2);
+  border-radius: var(--radius-pane);
+  box-shadow: var(--shadow-overlay);
+}
+
+.option {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-2);
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.option:hover {
+  background: var(--hover-1);
+}
+
+.optionActive {
+  background: var(--hover-2);
+}
+
+.name {
+  flex: none;
+  font-family: var(--font-mono);
+  color: var(--ink-hi);
+}
+
+.hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}

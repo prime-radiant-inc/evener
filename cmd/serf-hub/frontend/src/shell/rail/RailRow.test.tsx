@@ -751,6 +751,20 @@ describe("session row", () => {
     expect(screen.getByTestId("rail-row-activity").textContent).toBe("prime-radiant · working · fix/thing");
   });
 
+  // UX fix: an empty project name must not leave an orphaned leading " · "
+  // separator in front of the gloss - the separator only belongs between two
+  // real parts.
+  test("a top-level signal row with an empty project has no orphaned leading separator", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "active", project: "" }))}
+        info={info({ depth: 0 })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-activity").textContent).toBe("working");
+  });
+
   // Three facts of noise on every row: the model is a property of the session,
   // not a reason to look at it, and the session pane's own status strip reports
   // it the moment the row is opened.
@@ -1222,6 +1236,28 @@ describe("project row", () => {
     render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
     expect(screen.getByText("prime-radiant")).toBeTruthy();
     expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+  });
+
+  // UX fix: two projects with the same name are disambiguated upstream in
+  // railNodes.ts (projectDisplayLabels), which stamps the decorated label
+  // onto ProjectRailNode.displayName - the row just has to prefer it.
+  test("prefers node.displayName over the bare project name, when set", () => {
+    const project = apiProject({ name: "frontend" });
+    render(
+      <RailRow
+        node={{ ...projectRailNode(project), displayName: "frontend (repoA)" }}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByText("frontend (repoA)")).toBeTruthy();
+    expect(screen.queryByText("frontend", { selector: "span" })).toBeNull();
+  });
+
+  test("falls back to the bare project name when displayName is unset (the common, non-colliding case)", () => {
+    const project = apiProject({ name: "prime-radiant" });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    expect(screen.getByText("prime-radiant")).toBeTruthy();
   });
 
   test("shows an attention Badge when rollup_attn is nonzero, hides it when zero", () => {

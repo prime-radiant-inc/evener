@@ -352,6 +352,17 @@
   background: var(--hover-1);
 }
 
+/* Touch target (UX fix): a coarse pointer (phone/tablet touch) needs the
+ * platform's 44px tap floor, the same treatment modelswitch.module.css's own
+ * .trigger rule gets. min-height, not height - button.module.css's own
+ * mobile block follows the same rule - so this only ever GROWS the row,
+ * never overrides its desktop sizing. */
+@media (pointer: coarse) {
+  .railRow {
+    min-height: var(--tap-min);
+  }
+}
+
 /* Nested-level guide rail (§2.3): widgets/tree exposes no depth class of
  * its own on its nested-children container (only aria-level on each
  * treeitem), so this reaches into its role=group element by attribute,

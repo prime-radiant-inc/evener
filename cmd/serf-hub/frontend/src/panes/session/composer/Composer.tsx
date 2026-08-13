@@ -31,7 +31,9 @@ import {
 } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
+import type { CommandDescriptor } from "../../../protocol/types.gen";
 import { openPalette } from "../../../shell/palette/paletteController";
+import { useCommandCatalog } from "../../../stores/commandCatalog";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
@@ -56,6 +58,8 @@ import {
 } from "./queue/pendingTurnsStore";
 import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
+import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
+import { filterSlashCommands, parseSlashToken, type SlashToken, spliceSlashCommand } from "./slashCompletion";
 import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
 
 export interface ComposerProps {
@@ -67,6 +71,7 @@ const CLASS = {
   attachments: requireClass(styles.attachments, "composer.module.css", "attachments"),
   leading: requireClass(styles.leading, "composer.module.css", "leading"),
   visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
+  formAnchor: requireClass(styles.formAnchor, "composer.module.css", "formAnchor"),
 };
 
 // Shared by restoreTextToComposer (QueueStrip's "edit a queued entry" path)
@@ -149,6 +154,60 @@ export function Composer({ ref }: ComposerProps) {
   // which is what expands it from its one-line resting state. Only read on that
   // path (see the ended card's minLines below); harmless everywhere else.
   const [followUpFocused, setFollowUpFocused] = useState(false);
+
+  // Inline slash-command completion (slashCompletion.ts's own header
+  // comment - ported from Beautiful UI's prompt-bar). slashToken is the
+  // trailing-token match recomputed on every keystroke (handleTextChange
+  // below); null means no menu, regardless of what the draft's text
+  // actually contains. slashDismissedRef is Escape's own one-shot latch -
+  // "dismisses the menu WITHOUT clearing the draft and typing reopens it"
+  // means the SAME still-matching token must not immediately reopen the
+  // menu Escape just closed, but the very next keystroke (handleTextChange
+  // always clears this ref first) does. slashHighlighted is the
+  // ArrowUp/Down cursor over whatever the CURRENT filtered list is; reset
+  // to 0 whenever the token itself changes (new match, or the query
+  // narrowed/widened) rather than persisted across it - an index into a
+  // list that just changed shape is not a meaningful position to keep.
+  const slashCatalog = useCommandCatalog((s) => s.commands);
+  const [slashToken, setSlashToken] = useState<SlashToken | null>(null);
+  const [slashHighlighted, setSlashHighlighted] = useState(0);
+  const slashDismissedRef = useRef(false);
+  // The menu is only ever open when a token matched AND the catalog has at
+  // least one startsWith hit for it - a matched-but-empty token (e.g. "/zzz"
+  // against a real catalog) shows no menu at all, same as no token matching.
+  const slashItems = slashToken ? filterSlashCommands(slashCatalog, slashToken.query) : [];
+  const slashOpen = slashToken !== null && slashItems.length > 0;
+  // Scoped by `ref`: dockview can have several session panes - and so
+  // several mounted Composers - open at once, and a bare literal id would
+  // collide across them.
+  const slashListboxId = `composer-slash-listbox-${ref}`;
+  const slashActiveIndex = slashOpen ? Math.min(slashHighlighted, slashItems.length - 1) : -1;
+  const slashActiveId = slashActiveIndex >= 0 ? slashOptionId(slashListboxId, slashActiveIndex) : null;
+
+  // Textarea (widgets/textarea) takes no aria-activedescendant/aria-controls
+  // prop - it's a shared widget outside this stream's manifest - so this
+  // component sets both directly on the native node it already refs for
+  // cursor restoration below, the same imperative-DOM idiom the cursor-
+  // restore layout effect already uses on the identical ref.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    if (slashActiveId) {
+      el.setAttribute("aria-controls", slashListboxId);
+      el.setAttribute("aria-activedescendant", slashActiveId);
+    } else {
+      el.removeAttribute("aria-controls");
+      el.removeAttribute("aria-activedescendant");
+    }
+  }, [slashActiveId, slashListboxId]);
+
+  // A freshly (re)matched token always starts highlighted at its first
+  // option - an index carried over from the PREVIOUS token's list is not a
+  // meaningful position once the list itself has changed shape.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: slashToken's start/query are deliberate trigger-only deps - the effect body only calls setSlashHighlighted(0), but must still re-run whenever the token identity actually changes (a new match, or the same match with a different query), same idiom as the cursor-restore layout effect below
+  useEffect(() => {
+    setSlashHighlighted(0);
+  }, [slashToken?.start, slashToken?.query]);
 
   // textRef mirrors `text`, updated SYNCHRONOUSLY by updateText() below -
   // unlike `text` itself (a plain per-render const) or the textarea DOM
@@ -472,9 +531,34 @@ export function Composer({ ref }: ComposerProps) {
   // strand a typed message with no visible way to send it.
   const followUpEngaged = followUpFocused || hasContent;
 
-  function handleTextChange(event: { target: { value: string } }): void {
+  function handleTextChange(event: { target: { value: string; selectionStart?: number | null } }): void {
     updateText(event.target.value);
     if (activeRecoveryIdRef.current === null) writeDraft(ref, event.target.value);
+    // Every keystroke re-evaluates the trailing-token match fresh AND clears
+    // Escape's own dismissal latch - "typing reopens it" (see slashToken's
+    // own doc comment above): a token Escape just closed stays closed only
+    // until the NEXT text change, not indefinitely.
+    slashDismissedRef.current = false;
+    const caret = event.target.selectionStart ?? event.target.value.length;
+    setSlashToken(parseSlashToken(event.target.value, caret));
+  }
+
+  // commitSlashCompletion is Tab/Enter's (handleKeyDown below) and a mouse
+  // click's (SlashCompletionMenu's own onSelect) shared "the user chose
+  // this command" path: splices "/<name> " in at the token's own start
+  // (never the caret, when the caret was left mid-token by an earlier
+  // Escape-then-retype - spliceSlashCommand's own doc comment), through the
+  // SAME textEditor.write() seam every other programmatic edit in this file
+  // uses (draft persistence, cursor restore), then closes the menu and
+  // returns focus to the field - mirrors restoreTextToComposer's own
+  // "write, then focus" shape.
+  function commitSlashCompletion(item: CommandDescriptor): void {
+    if (!slashToken) return;
+    const spliced = spliceSlashCommand(textRef.current, slashToken, item.name);
+    textEditor.write(spliced.text, spliced.caret);
+    slashDismissedRef.current = true;
+    setSlashToken(null);
+    textareaRef.current?.focus();
   }
 
   // clearIfUnchanged mirrors clearComposerDraftIfUnchanged (parity-m5-
@@ -728,6 +812,41 @@ export function Composer({ ref }: ComposerProps) {
   // legacy gate defended against doesn't exist here, so there is no
   // isInPane()-equivalent check to port.
   function handleKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>): void {
+    // Inline slash-completion's own keyboard mechanics, ported from
+    // Beautiful UI's prompt-bar (slashCompletion.ts's own header comment):
+    // ArrowUp/Down move the highlighted option (wrapping at both ends) OVER
+    // the caret rather than moving the caret itself, Tab OR Enter commits
+    // the highlighted option, Escape dismisses without touching the draft.
+    // Every branch here returns before falling through to the rest of this
+    // function - in particular, the committing Enter never reaches the
+    // Enter-to-send routing below it, which is the whole point of checking
+    // this FIRST: with the menu open, this function's own routing must not
+    // fire at all for that keystroke.
+    if (slashOpen) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSlashHighlighted((i) => (i + 1) % slashItems.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSlashHighlighted((i) => (i - 1 + slashItems.length) % slashItems.length);
+        return;
+      }
+      if (event.key === "Tab" || (event.key === "Enter" && !event.nativeEvent.isComposing)) {
+        event.preventDefault();
+        event.stopPropagation();
+        const chosen = slashItems[slashActiveIndex] ?? slashItems[0];
+        if (chosen) commitSlashCompletion(chosen);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        slashDismissedRef.current = true;
+        setSlashToken(null);
+        return;
+      }
+    }
     // "/" as the first character of an EMPTY composer opens the command
     // palette (floor §2.1, legacy renderer.js:6914); any other "/" - mid-text
     // or in a non-empty composer - is a literal slash. textRef.current is the
@@ -778,6 +897,18 @@ export function Composer({ ref }: ComposerProps) {
     event.target.value = ""; // re-picking the identical file must re-fire change
   }
 
+  // Blur is the slash menu's own "clicked/tabbed away entirely" close, on
+  // top of whatever the ended-session follow-up card already does with a
+  // blur (collapsing back to one line). SlashCompletionMenu's own options
+  // preventDefault() on their mousedown specifically so a MOUSE click on an
+  // option never reaches this handler in the first place - see that
+  // component's own comment - so this only ever fires for a genuine
+  // "focus left the field" (Tab away, click elsewhere, blur()).
+  function handleTextareaBlur(): void {
+    if (ended) setFollowUpFocused(false);
+    setSlashToken(null);
+  }
+
   return (
     <div className={CLASS.composer}>
       {/* T4: ask dock - renders above the queue strip.
@@ -822,140 +953,155 @@ export function Composer({ ref }: ComposerProps) {
         </div>
       )}
       {(!ended || showFollowUpCard) && (
-        <form ref={formRef} onSubmit={handleFormSubmit}>
-          <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
-            <PromptCard
-              data-testid="composer-input-card"
-              hidden={askPending}
-              field={
-                <Textarea
-                  ref={textareaRef}
-                  value={text}
-                  onChange={handleTextChange}
-                  onKeyDown={handleKeyDown}
-                  onPaste={handlePaste}
-                  autoGrow
-                  // The PromptCard around it draws the one border this field
-                  // needs, and owns the focus ring via :focus-within.
-                  seamless
-                  // A finished session's card is one line of invitation at
-                  // rest, opening to a real writing surface once it has focus.
-                  // Driven from React state rather than a :focus-within CSS
-                  // rule because the floor has to reach the field's own `rows`
-                  // to take effect at all (see widgets/textarea's rows
-                  // comment), and only the prop can do that.
-                  minLines={ended ? (followUpEngaged ? 3 : 1) : undefined}
-                  onFocus={ended ? () => setFollowUpFocused(true) : undefined}
-                  onBlur={ended ? () => setFollowUpFocused(false) : undefined}
-                  placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
-                  aria-label="Message"
-                />
-              }
-              // An ended session's card is a bare invitation UNTIL it is
-              // engaged: at rest it is one line with no control row, because
-              // chrome around an empty invitation is noise. Once it has focus
-              // or content it grows a real control row, because a field you
-              // can type into and cannot visibly send is a dead end - the
-              // ⌘/Ctrl+Enter chord alone is not an affordance anyone can see.
-              leading={
-                ended && !followUpEngaged ? undefined : (
-                  /* data-testid on every control in this row: two different
+        <div className={CLASS.formAnchor}>
+          {/* Anchored above the control row inside the card below, opening
+              upward the same way GoalControl's own popover does - see
+              slashcompletionmenu.module.css's header comment. Mounted only
+              while a token has real catalog matches (slashOpen), never for
+              an empty/no-match filter. */}
+          {slashOpen && (
+            <SlashCompletionMenu
+              id={slashListboxId}
+              items={slashItems}
+              highlightedIndex={slashActiveIndex}
+              onSelect={commitSlashCompletion}
+            />
+          )}
+          <form ref={formRef} onSubmit={handleFormSubmit}>
+            <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
+              <PromptCard
+                data-testid="composer-input-card"
+                hidden={askPending}
+                field={
+                  <Textarea
+                    ref={textareaRef}
+                    value={text}
+                    onChange={handleTextChange}
+                    onKeyDown={handleKeyDown}
+                    onPaste={handlePaste}
+                    autoGrow
+                    // The PromptCard around it draws the one border this field
+                    // needs, and owns the focus ring via :focus-within.
+                    seamless
+                    // A finished session's card is one line of invitation at
+                    // rest, opening to a real writing surface once it has focus.
+                    // Driven from React state rather than a :focus-within CSS
+                    // rule because the floor has to reach the field's own `rows`
+                    // to take effect at all (see widgets/textarea's rows
+                    // comment), and only the prop can do that.
+                    minLines={ended ? (followUpEngaged ? 3 : 1) : undefined}
+                    onFocus={ended ? () => setFollowUpFocused(true) : undefined}
+                    onBlur={handleTextareaBlur}
+                    placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
+                    aria-label="Message"
+                  />
+                }
+                // An ended session's card is a bare invitation UNTIL it is
+                // engaged: at rest it is one line with no control row, because
+                // chrome around an empty invitation is noise. Once it has focus
+                // or content it grows a real control row, because a field you
+                // can type into and cannot visibly send is a dead end - the
+                // ⌘/Ctrl+Enter chord alone is not an affordance anyone can see.
+                leading={
+                  ended && !followUpEngaged ? undefined : (
+                    /* data-testid on every control in this row: two different
                      buttons here start with "Steer" (this one and
                      QueueStrip's "Steer queue now"), so tests address
                      controls by a stable hook instead of navigating by
                      accessible name - the naming style follows StatusRow's
                      own status-row-* testids. */
-                  <div className={CLASS.leading}>
-                    <Tooltip label="Attach an image">
-                      <IconButton
-                        label="Attach image"
-                        icon={<AttachIcon />}
-                        variant="quiet"
-                        size="xs"
-                        type="button"
-                        data-testid="composer-attach"
-                        onClick={() => fileInputRef.current?.click()}
-                      />
-                    </Tooltip>
-                    <SessionChrome ref={ref} placement="composer" />
-                  </div>
-                )
-              }
-              actions={
-                ended && !followUpEngaged ? undefined : (
-                  <>
-                    {/* Stop leads the cluster, always in the same place: it is
+                    <div className={CLASS.leading}>
+                      <Tooltip label="Attach an image">
+                        <IconButton
+                          label="Attach image"
+                          icon={<AttachIcon />}
+                          variant="quiet"
+                          size="xs"
+                          type="button"
+                          data-testid="composer-attach"
+                          onClick={() => fileInputRef.current?.click()}
+                        />
+                      </Tooltip>
+                      <SessionChrome ref={ref} placement="composer" />
+                    </div>
+                  )
+                }
+                actions={
+                  ended && !followUpEngaged ? undefined : (
+                    <>
+                      {/* Stop leads the cluster, always in the same place: it is
                         the one control here whose misfire cannot be undone, so
                         it must never trade positions with Send or Steer as
                         those come and go. The word, not a glyph - "Stop" is
                         chrome, and chrome speaks. */}
-                    {showStop && (
-                      <Tooltip label="Stop the current turn">
-                        <Button
-                          variant="dangerQuiet"
-                          size="xs"
-                          type="button"
-                          data-testid="composer-stop"
-                          onClick={() => void handleInterruptClick()}
-                          // busy + the interrupt capability are already what
-                          // makes this render at all, so only an in-flight
-                          // request of our own is left to gate on.
-                          disabled={busyAction !== null}
-                        >
-                          Stop
-                        </Button>
-                      </Tooltip>
-                    )}
-                    {/* Send is quiet while a turn runs and primary when
+                      {showStop && (
+                        <Tooltip label="Stop the current turn">
+                          <Button
+                            variant="dangerQuiet"
+                            size="xs"
+                            type="button"
+                            data-testid="composer-stop"
+                            onClick={() => void handleInterruptClick()}
+                            // busy + the interrupt capability are already what
+                            // makes this render at all, so only an in-flight
+                            // request of our own is left to gate on.
+                            disabled={busyAction !== null}
+                          >
+                            Stop
+                          </Button>
+                        </Tooltip>
+                      )}
+                      {/* Send is quiet while a turn runs and primary when
                         nothing does: with a turn in flight the immediate
                         action is Steer, and Send's job is the patient one. */}
-                    <Tooltip label={submitTooltip}>
-                      <Button
-                        type="submit"
-                        variant={showSteer ? "quiet" : "primary"}
-                        size="xs"
-                        data-testid="composer-submit"
-                        // canCompose comes from the availability table, which
-                        // reports both-false for ended/closed: it answers "can
-                        // this turn be sent to right now", and a follow-up to a
-                        // finished session resumes it first. The capability is
-                        // the authority there, the same way it is for whether
-                        // this card renders at all - otherwise a session the hub
-                        // will happily resume shows a permanently dead Send.
-                        disabled={busyAction !== null || !hasContent || !(ended ? canSendWhenEnded : canCompose)}
-                      >
-                        Send
-                      </Button>
-                    </Tooltip>
-                    {showSteer && (
-                      <Tooltip
-                        label={
-                          enterToSend
-                            ? "Interrupt and redirect now"
-                            : `Interrupt and redirect now · ${chordLabel(["Shift", "Enter"])}`
-                        }
-                      >
+                      <Tooltip label={submitTooltip}>
                         <Button
-                          variant="primary"
+                          type="submit"
+                          variant={showSteer ? "quiet" : "primary"}
                           size="xs"
-                          type="button"
-                          data-testid="composer-steer"
-                          onClick={handleSteerClick}
-                          // Same as Stop above: busy + the steer capability
-                          // already gate this control's existence.
-                          disabled={busyAction !== null}
+                          data-testid="composer-submit"
+                          // canCompose comes from the availability table, which
+                          // reports both-false for ended/closed: it answers "can
+                          // this turn be sent to right now", and a follow-up to a
+                          // finished session resumes it first. The capability is
+                          // the authority there, the same way it is for whether
+                          // this card renders at all - otherwise a session the hub
+                          // will happily resume shows a permanently dead Send.
+                          disabled={busyAction !== null || !hasContent || !(ended ? canSendWhenEnded : canCompose)}
                         >
-                          Steer
+                          Send
                         </Button>
                       </Tooltip>
-                    )}
-                  </>
-                )
-              }
-            />
-          </Dropzone>
-          <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePickerChange} />
-        </form>
+                      {showSteer && (
+                        <Tooltip
+                          label={
+                            enterToSend
+                              ? "Interrupt and redirect now"
+                              : `Interrupt and redirect now · ${chordLabel(["Shift", "Enter"])}`
+                          }
+                        >
+                          <Button
+                            variant="primary"
+                            size="xs"
+                            type="button"
+                            data-testid="composer-steer"
+                            onClick={handleSteerClick}
+                            // Same as Stop above: busy + the steer capability
+                            // already gate this control's existence.
+                            disabled={busyAction !== null}
+                          >
+                            Steer
+                          </Button>
+                        </Tooltip>
+                      )}
+                    </>
+                  )
+                }
+              />
+            </Dropzone>
+            <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePickerChange} />
+          </form>
+        </div>
       )}
     </div>
   );

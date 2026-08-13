@@ -257,7 +257,9 @@ export function activityGloss(session: ApiTreeNode): string {
 // activityGloss already leads with state before branch.
 function secondLine(session: ApiTreeNode, showsGloss: boolean, showsProject: boolean): string {
   const parts: string[] = [];
-  if (showsProject) parts.push(session.project);
+  // An empty project name has nothing to join, so it must not contribute a
+  // leading " · " separator with no text before it (UX fix).
+  if (showsProject && session.project !== "") parts.push(session.project);
   if (showsGloss) parts.push(activityGloss(session));
   return parts.join(" · ");
 }
@@ -600,11 +602,15 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
       <span className={CLASS.textCol}>
         <span className={CLASS.titleLine}>
           <Signal wireState={project.rollup_state ?? "idle"} />
-          {/* Same reasoning as SessionRow's own label above. */}
+          {/* Same reasoning as SessionRow's own label above. displayName is
+              the UX-fix decoration railNodes.ts's projectDisplayLabels
+              stamps on when this project's name collides with a sibling's
+              in the same list; falls back to the bare name otherwise (and
+              for a hand-built test double that omits it). */}
           {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
           <span className={CLASS.label} onClick={info.activate}>
-            {project.name}
+            {node.displayName ?? project.name}
           </span>
           <TrailingChevron info={info} />
         </span>

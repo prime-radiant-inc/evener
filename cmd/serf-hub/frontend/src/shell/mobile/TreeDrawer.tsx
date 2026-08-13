@@ -16,8 +16,10 @@
 // auto-close effect below already reacts to that, for free, with no
 // bespoke integration code required on the rail's side.
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { EmptyState, IconButton, Sheet } from "../../widgets";
+import { useTreeStore } from "../../stores/tree";
+import { Badge, EmptyState, IconButton, Sheet } from "../../widgets";
 import { useWorkspaceStore } from "../workspace";
+import styles from "./treedrawer.module.css";
 
 function SessionsIcon() {
   return (
@@ -35,6 +37,11 @@ export function TreeDrawer({ children }: TreeDrawerProps) {
   const [open, setOpen] = useState(false);
   const focusedPaneId = useWorkspaceStore((s) => s.focusedPaneId);
   const prevFocusedIdRef = useRef(focusedPaneId);
+  // UX fix: parity with RailHost's own hidden-rail ☰ chip, which already
+  // shows Badge(needsYou) beside its glyph - this trigger carries the same
+  // Badge, overlaid on its corner since an icon-only button has no room for
+  // an inline second element.
+  const needsYou = useTreeStore((s) => s.tree?.attentionSummary.needsYou ?? 0);
 
   // Auto-close on navigation: whatever eventually fills the slot above
   // only ever needs to call openPane() for this to work - see the module
@@ -49,7 +56,14 @@ export function TreeDrawer({ children }: TreeDrawerProps) {
 
   return (
     <>
-      <IconButton label="Sessions" icon={<SessionsIcon />} variant="quiet" onClick={() => setOpen(true)} />
+      <span className={styles.triggerWrap}>
+        <IconButton label="Sessions" icon={<SessionsIcon />} variant="quiet" onClick={() => setOpen(true)} />
+        {needsYou > 0 && (
+          <span className={styles.badgeOverlay}>
+            <Badge count={needsYou} tone="attention" />
+          </span>
+        )}
+      </span>
       {/* Bottom, not right: see this stream's own report for the
           thumb-reach justification (a bottom sheet's header/close button
           sits within one-handed reach; a full-height right-edge sheet's

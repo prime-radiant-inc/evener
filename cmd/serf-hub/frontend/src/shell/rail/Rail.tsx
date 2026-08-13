@@ -30,6 +30,7 @@ import {
   useTreeStore,
 } from "../../stores/tree";
 import {
+  Badge,
   Button,
   Chevron,
   Dialog,
@@ -243,6 +244,10 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   // handle). Falls back to the "serf" brand string before a handshake has
   // populated serverInfo.
   const serverInfo = useConnectionStore((s) => s.serverInfo);
+  // UX fix: the docked rail carries the same needs-you count RailHost's own
+  // hidden-rail ☰ chip already shows (its Badge(needsYou)), so the count is
+  // visible whether the rail is docked or hidden.
+  const needsYou = useTreeStore((s) => s.tree?.attentionSummary.needsYou ?? 0);
   const toasts = useToasts();
 
   // Seeded from localStorage on first render (railExpansion), so a rail you
@@ -757,6 +762,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       <div className={CLASS.header}>
         <div data-testid="rail-brand" className={CLASS.brand}>
           <span className={CLASS.brandName}>serf</span>
+          {needsYou > 0 && <Badge count={needsYou} tone="attention" />}
           {/* Search is a palette opener, never a text input, so it rides in
               the brand row as an icon button instead of claiming a row of the
               sidebar's vertical space for itself. data-search-trigger is what

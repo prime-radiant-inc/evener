@@ -4,11 +4,12 @@
 // place for a path urlToPane() can't resolve at all.
 import { useEffect, useRef, useState } from "react";
 import { initNotifications } from "../notifications";
+import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { AppwireClient } from "../protocol/client";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import { rpcURLFromLocation } from "../protocol/transport";
 import { connectionStore, useConnectionStore } from "../stores/connection";
-import { type TreeResponse, useTreeStore } from "../stores/tree";
+import { type TreeResponse, treeStore, useTreeStore } from "../stores/tree";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { ToastRegion } from "./chrome/ToastRegion";
 import { ClientProvider } from "./clientContext";
@@ -18,6 +19,7 @@ import { NotFound } from "./NotFound";
 import { CommandPalette } from "./palette/CommandPalette";
 import { openPalette } from "./palette/paletteController";
 import { RailHost } from "./rail";
+import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "./rail/needsYouCycle";
 import { topLevelAncestorRef } from "./rail/railNodes";
 import { urlToPane } from "./routing";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
@@ -112,6 +114,17 @@ function sessionRefFromRouteParams(params: unknown): string | null {
 
 function sameRouteParams(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+// The ref of the focused pane, but ONLY when that pane IS a session pane
+// (never a session panel, a doc, settings, ...) - Mod+I's own "no-op when
+// the focused pane isn't a session" contract, and Mod+J's own "cycle from
+// the currently-focused session" starting point.
+function focusedSessionRef(): string | null {
+  const state = workspaceStore.getState();
+  const pane = state.panes.find((p) => p.id === state.focusedPaneId);
+  if (pane?.type !== "session") return null;
+  return sessionRefFromRouteParams(pane.params);
 }
 
 function routePlacementIsApplied(pathname: string, tree: TreeResponse | null, allowFocusedPanel = false): boolean {
@@ -269,11 +282,36 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   // Both open the palette through the one openPalette() the whole app shares
   // (Composer's leading-"/"-on-empty hook is the third). ⌘B (sidebar cycle,
   // T5) is a separate, disjoint listener and is never added here (PIN-D).
+  //
+  // ⌘I / Ctrl-I (UX fix) focuses the focused session pane's composer
+  // (composerFocus.ts's per-ref seam) - a no-op when the focused pane isn't a
+  // session. ⌘J / Ctrl-J (UX fix) cycles the needs-you sessions (tree order,
+  // wrapping from whichever session is currently focused), opening a hit
+  // through the same top-level/nested seams the rail itself uses
+  // (needsYouCycle.ts). Both are Mod-chords, like ⌘K, so they fire
+  // everywhere - including while typing in an input/textarea - matching how
+  // ⌘K already behaves; only event.defaultPrevented (another handler already
+  // claimed this keystroke) suppresses them.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      if (event.defaultPrevented) return;
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === "k") {
         event.preventDefault();
         openPalette();
+        return;
+      }
+      if (key === "i") {
+        event.preventDefault();
+        const ref = focusedSessionRef();
+        if (ref !== null) requestComposerFocus(ref);
+        return;
+      }
+      if (key === "j") {
+        event.preventDefault();
+        const next = nextNeedsYouRef(needsYouRefs(treeStore.getState().tree), focusedSessionRef());
+        if (next !== null) openNeedsYouSession(next);
       }
     }
     function onClick(event: MouseEvent): void {

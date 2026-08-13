@@ -15,7 +15,11 @@ import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { prefsStore } from "../../stores/prefs";
 import { threadsStore } from "../../stores/threads";
+import { treeStore } from "../../stores/tree";
 import type { ToastKind } from "../../widgets";
+import { fetchModelCatalog } from "../../widgets/modelCatalog/catalogClient";
+import { mergeScopedCatalog } from "../../widgets/modelCatalog/scopedCatalog";
+import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "../rail/needsYouCycle";
 import { revealSessionInRail } from "../rail/railController";
 import { navigate } from "../routing";
 import { workspaceStore } from "../workspace";
@@ -175,8 +179,9 @@ function upgrade(ctx: PaletteRunContext): CommandResult {
 }
 
 // buildCommands rebuilds the registry fresh on every call (search.js:326:
-// "The command registry is rebuilt fresh on every call"). All 23 entries: 8
-// global, 11 session mutations, 4 read-only session commands. /fork is
+// "The command registry is rebuilt fresh on every call"). All 24 entries: 9
+// global (8 from search.js plus the UX-fix "Go to next session needing
+// you"), 11 session mutations, 4 read-only session commands. /fork is
 // intentionally OMITTED (floor §2.5, search.js:497-499) - it needs an edited
 // message the palette has no UI to collect; the transcript row's own edit
 // affordance is the entry point.
@@ -279,6 +284,21 @@ export function buildCommands(): Command[] {
       scope: "global",
       run: (ctx) => upgrade(ctx),
     },
+    // UX fix: cycles the needs-you sessions in tree order, wrapping from
+    // whichever session is currently focused (Mod+J's own palette-visible
+    // counterpart - see AppShell.tsx's chord and needsYouCycle.ts, which
+    // both this and it share).
+    {
+      id: "next-needs-you",
+      title: "Go to next session needing you",
+      hint: "cycle needs-you sessions",
+      keywords: ["needs you", "attention", "next"],
+      scope: "global",
+      run: (ctx) => {
+        const next = nextNeedsYouRef(needsYouRefs(treeStore.getState().tree), ctx.sessionRef);
+        if (next !== null) openNeedsYouSession(next);
+      },
+    },
 
     // --- session: mutations, each carrying the capability that authorizes it ---
     {
@@ -362,14 +382,25 @@ export function buildCommands(): Command[] {
       args: {
         kind: "enum",
         placeholder: "choose a model…",
-        // Interim source: appwire model/list (ModelDescriptor is {provider,
-        // model} only). The rich REST /api/models catalog - display names,
-        // capability badges, grouping, pricing - is Jesse-decided Wave 8, not
-        // W6. Lets the enum's rejection path surface a load failure rather
-        // than swallowing it to an empty list.
+        // The launchable SET still comes from model/list (session-scoped -
+        // what's actually valid to switch THIS session to), enriched with the
+        // unscoped rich /api/models catalog's display names via
+        // mergeScopedCatalog - the SAME merge ModelSwitch.tsx's own
+        // mid-session picker uses (chrome/ModelSwitch.tsx's openPicker). A
+        // failed enrichment fetch degrades to label-only entries
+        // (mergeScopedCatalog's own null-enrichment fallback), never a load
+        // failure - the scoped list alone is still a usable enum.
         source: async () => {
-          const resp = await threadsStore.getState().listModels();
-          return resp.data.map((m) => ({ id: `${m.provider}/${m.model}`, label: m.model, hint: m.provider }));
+          const [scoped, enrichment] = await Promise.all([
+            threadsStore.getState().listModels(),
+            fetchModelCatalog().catch(() => null),
+          ]);
+          const catalog = mergeScopedCatalog(scoped.data, enrichment);
+          return catalog.models.map((m) => ({
+            id: `${m.provider}/${m.model}`,
+            label: m.displayName || m.model,
+            hint: m.provider,
+          }));
         },
         // No client-side turn-in-flight guard: only the daemon knows, and it
         // answers. It resumes a cold session behind the call and retries

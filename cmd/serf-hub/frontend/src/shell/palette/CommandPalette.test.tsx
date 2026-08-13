@@ -1,7 +1,12 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { act, cleanup, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import "../../panes/sessionPanels";
+import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../../panes/session/composer/composerFocus";
+import { resetQuoteInsertStoreForTests, useQuoteInsertRequest } from "../../panes/session/composer/quoteInsert";
 import { WireError } from "../../protocol/errors";
 import "../../panes/sessionPanels";
 import type { ItemModel, ThreadModel, TurnModel } from "../../protocol/model";
@@ -10,6 +15,7 @@ import type { ThreadCapabilities } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { resetTreeStoreForTests, type TreeResponse, treeStore } from "../../stores/tree";
 import { Toast } from "../../widgets";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
@@ -105,6 +111,9 @@ beforeEach(() => {
   useCommandCatalog.setState({ commands: [], loaded: false });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
+  resetTreeStoreForTests();
+  resetQuoteInsertStoreForTests();
+  resetComposerFocusStoreForTests();
   localStorage.clear();
   window.history.pushState({}, "", "/");
   fetchMock = vi.fn();
@@ -139,6 +148,77 @@ test("Escape closes the overlay when no command is selected", async () => {
   await user.keyboard("{Escape}");
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(paletteStore.getState().open).toBe(false);
+});
+
+// --- empty-query view: needs-you sessions (UX fix) ------------------------
+
+function needsYouTree(): TreeResponse {
+  return {
+    generated_at: "2026-01-01T00:00:00Z",
+    sources: [],
+    live: [],
+    needs_you: [
+      {
+        row_id: "r1",
+        ref: "local:ny1",
+        host_id: "local",
+        session_id: "ny1",
+        title: "Session A",
+        project: "P",
+        state: "awaiting",
+        kind: "session",
+        live: true,
+        children: [],
+      },
+      {
+        row_id: "r2",
+        ref: "local:ny2",
+        host_id: "local",
+        session_id: "ny2",
+        title: "Session B",
+        project: "P",
+        state: "awaiting",
+        kind: "session",
+        live: true,
+        children: [],
+      },
+    ],
+    pin_sections: [],
+    projects: [],
+    archived_projects: [],
+    test_runs: [],
+    attentionSummary: { needsYou: 2, error: 0, working: 0 },
+  };
+}
+
+test("the empty-query view lists needs-you sessions (title + 'needs you' hint) when any exist", () => {
+  treeStore.setState({ tree: needsYouTree() });
+  render(<CommandPalette />);
+  act(() => openPalette());
+
+  const option = screen.getByRole("option", { name: /Session A/i });
+  expect(within(option).getByText(/needs you/i)).toBeTruthy();
+  expect(screen.getByRole("option", { name: /Session B/i })).toBeTruthy();
+});
+
+test("Enter on a needs-you row opens that session and closes the palette", async () => {
+  const user = userEvent.setup();
+  treeStore.setState({ tree: needsYouTree() });
+  render(<CommandPalette />);
+  act(() => openPalette());
+
+  await user.keyboard("{Enter}");
+
+  expect(window.location.pathname).toBe("/s/local%3Any1");
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("the empty-query view keeps its old (empty) behavior when there are no needs-you sessions", () => {
+  treeStore.setState({ tree: null });
+  render(<CommandPalette />);
+  act(() => openPalette());
+
+  expect(screen.queryByRole("option")).toBeNull();
 });
 
 // --- mode machine ---
@@ -271,23 +351,89 @@ test("a failed auto-resume is attributed to the session, not blamed on the comma
   );
 });
 
-test("/help renders the seven fixed keyboard-shortcut rows", async () => {
+// UX fix: HELP_ROWS was stale, hand-rolled, and mono-typeface (the design
+// bar bans mono for chrome labels). It's now {keys, desc}[] rendered through
+// the shared KeyHint widget (Mod resolves to the reviewing platform's own
+// symbol), covering every real chord across the app - not just the
+// palette's own - including ones the old table never had at all (Mod+I,
+// Mod+J, Mod+', ask dock's Mod+Enter and arrow-key navigation) and
+// correcting the composer's Enter/Shift+Enter/Mod+Enter semantics against
+// Composer.tsx's actual keydown routing (handleKeyDown) rather than the old
+// generic "run the highlighted command" wording.
+function helpRowFor(desc: string): HTMLElement {
+  const descEl = screen.getByText(desc);
+  return descEl.parentElement as HTMLElement;
+}
+
+test("/help renders through KeyHint, with the platform's own Mod glyph", async () => {
+  const user = userEvent.setup();
+  Object.defineProperty(window.navigator, "platform", { value: "Win32", configurable: true });
+  render(<CommandPalette />);
+  act(() => openPalette("/help"));
+  await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
+
+  expect(screen.getByText("Keyboard shortcuts")).toBeTruthy();
+  // KeyHint's own bordered form: one <kbd> per key, not a hand-rolled string.
+  expect(document.querySelectorAll("kbd").length).toBeGreaterThan(0);
+  const paletteRow = helpRowFor("open the command palette");
+  expect(within(paletteRow).getAllByText("Ctrl").length).toBeGreaterThan(0);
+  expect(within(paletteRow).getByText("K")).toBeTruthy();
+});
+
+test("/help lists the UX-fix chords the old table never had", async () => {
   const user = userEvent.setup();
   render(<CommandPalette />);
   act(() => openPalette("/help"));
   await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
-  expect(screen.getByText("Keyboard shortcuts")).toBeTruthy();
-  expect(screen.getByText("open the palette from anywhere")).toBeTruthy();
-  expect(screen.getByText("close the palette (or back out of args mode)")).toBeTruthy();
+
+  expect(within(helpRowFor("toggle the sidebar")).getByText("B")).toBeTruthy();
+  expect(within(helpRowFor("focus the composer")).getByText("I")).toBeTruthy();
+  expect(within(helpRowFor("go to the next session needing you")).getByText("J")).toBeTruthy();
+  expect(within(helpRowFor("quote the selection into the composer")).getByText("'")).toBeTruthy();
+  expect(within(helpRowFor("previous ask-dock question")).getByText("←")).toBeTruthy();
+  expect(within(helpRowFor("next ask-dock question")).getByText("→")).toBeTruthy();
+});
+
+// Composer.tsx's own handleKeyDown: plain Enter (or Mod+Enter, always)
+// submits (send, or queue when the agent is mid-turn); Shift+Enter only
+// steers when Enter-to-send is OFF (with it on, Shift+Enter is a literal
+// newline). The old table's "⇧↵ jump to a turn" and "⌘↵ open in a new tab"
+// described the PALETTE's search-result rows, not the composer at all - a
+// different (still-real) row covers those, kept separately below.
+test("/help describes the composer's real Enter/Shift+Enter/Mod+Enter semantics", async () => {
+  const user = userEvent.setup();
+  render(<CommandPalette />);
+  act(() => openPalette("/help"));
+  await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
+
+  expect(screen.getByText(/send now.*queue.*mid-turn/i)).toBeTruthy();
+  expect(screen.getByText(/steer mid-turn/i)).toBeTruthy();
+  expect(screen.getByText(/send or queue now, regardless/i)).toBeTruthy();
+});
+
+test("/help documents ask dock's Mod+Enter answer/approve chord (ask dock and sandbox approval)", async () => {
+  const user = userEvent.setup();
+  render(<CommandPalette />);
+  act(() => openPalette("/help"));
+  await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
+
+  expect(screen.getByText(/answer.*approve/i)).toBeTruthy();
+});
+
+test("HELP_ROWS drops the mono-typeface rule (design bar bans mono for chrome labels)", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "commandpalette.module.css"), "utf8");
+  const helpKeysRule = /\.helpKeys\s*\{[^}]*\}/.exec(css);
+  expect(helpKeysRule).not.toBeNull();
+  expect(helpKeysRule?.[0]).not.toMatch(/font-family:\s*var\(--font-mono\)/);
 });
 
 test("the help panel is inert: ArrowDown+Enter never fires a hidden registry command (§2.8)", async () => {
   const user = userEvent.setup();
   render(<CommandPalette />);
-  // No session focused -> command-filter with the empty "/" filter lists the 8
-  // global commands; the last is /upgrade (index 7). Showing help must not
-  // leave that list navigable underneath, or ArrowDown+Enter fires /upgrade
-  // invisibly (with no client it blocks, surfacing the error strip).
+  // No session focused -> command-filter with the empty "/" filter lists the
+  // global commands. Showing help must not leave that list navigable
+  // underneath, or ArrowDown+Enter fires a hidden one invisibly (with no
+  // client it blocks, surfacing the error strip).
   act(() => openPalette("/"));
   await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
   await user.keyboard("{ArrowDown}{Enter}");
@@ -436,9 +582,16 @@ test("Enter on an unknown slash command sends the raw query", async () => {
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-test("selecting a plugin catalog entry submits the qualified form", async () => {
+// UX fix: a picked plugin slash-command used to send() immediately (no
+// chance to add arguments). It now inserts the qualified invocation into
+// the composer's draft instead - the user finishes typing and sends it
+// themselves - via the SAME per-ref insert/focus seams SelectionQuote's
+// "Quote in reply" already uses (quoteInsert.ts/composerFocus.ts).
+
+test("selecting a plugin catalog entry inserts its qualified form into the composer instead of sending", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
+  send.mockClear(); // isolate:false: threadsStore.send may already be spied by an earlier test in this worker
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
     loaded: true,
@@ -449,13 +602,18 @@ test("selecting a plugin catalog entry submits the qualified form", async () => 
 
   await user.click(screen.getByRole("option", { name: /review \[plugin\]/ }));
 
-  expect(send).toHaveBeenCalledWith("ref_a", "/p:review");
+  expect(send).not.toHaveBeenCalled();
+  const { result: insert } = renderHook(() => useQuoteInsertRequest("ref_a"));
+  expect(insert.current?.text).toBe("/p:review ");
+  const { result: focus } = renderHook(() => useComposerFocusRequest("ref_a"));
+  expect(focus.current).not.toBeUndefined();
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-test("Enter on a plugin command with arguments preserves its qualified invocation", async () => {
+test("Enter on a plugin command with arguments preserves its qualified invocation in the inserted text", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
+  send.mockClear(); // isolate:false: threadsStore.send may already be spied by an earlier test in this worker
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
     loaded: true,
@@ -466,13 +624,16 @@ test("Enter on a plugin command with arguments preserves its qualified invocatio
 
   await user.keyboard("{Enter}");
 
-  expect(send).toHaveBeenCalledWith("ref_a", "/p:review main");
+  expect(send).not.toHaveBeenCalled();
+  const { result: insert } = renderHook(() => useQuoteInsertRequest("ref_a"));
+  expect(insert.current?.text).toBe("/p:review main ");
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
 test("Arrow-selected catalog entry activates instead of the first result", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
+  send.mockClear(); // isolate:false: threadsStore.send may already be spied by an earlier test in this worker
   useCommandCatalog.setState({
     commands: [
       { name: "review", pluginName: "p", source: "plugin" },
@@ -486,7 +647,9 @@ test("Arrow-selected catalog entry activates instead of the first result", async
 
   await user.keyboard("{ArrowDown}{Enter}");
 
-  expect(send).toHaveBeenCalledWith("ref_a", "/q:review");
+  expect(send).not.toHaveBeenCalled();
+  const { result: insert } = renderHook(() => useQuoteInsertRequest("ref_a"));
+  expect(insert.current?.text).toBe("/q:review ");
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 

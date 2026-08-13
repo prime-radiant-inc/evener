@@ -9,6 +9,7 @@ import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
 import { paletteStore } from "../../../shell/palette/paletteController";
+import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
@@ -355,6 +356,11 @@ beforeEach(() => {
   resetAskDockStoreForTests();
   resetQuoteInsertStoreForTests();
   resetComposerFocusStoreForTests();
+  // useCommandCatalog is module state the same way, and is entirely unused
+  // by every OTHER test in this file - only the slash-completion tests
+  // below ever populate it - so resetting it here is purely additive
+  // isolation, never a behavior change for the rest of the suite.
+  useCommandCatalog.setState({ commands: [], loaded: false });
   // The toast store is module state that outlives RTL's own cleanup, so a
   // toast pushed by one test would otherwise still be in the next test's
   // tree and make a getByText for the same message ambiguous.
@@ -2146,4 +2152,178 @@ test('"/" in a NON-empty composer is a literal slash, not a palette trigger', as
   fireEvent.keyDown(textarea(), { key: "/" });
 
   expect(paletteStore.getState().open).toBe(false);
+});
+
+// --- inline slash-command completion (Beautiful UI prompt-bar port) --------
+//
+// The leading-"/" palette hook above only ever fires on an EMPTY composer's
+// very first keystroke (it preventDefault()s before the character lands),
+// so it never overlaps with this menu: every case below types the slash
+// after some other text, the same way the "literal slash" test just above
+// does, so the character actually lands in the draft and the trailing-token
+// parser (slashCompletion.ts) gets a chance to see it.
+
+const REVIEW_RELEASE_CATALOG = [
+  { name: "review", description: "review the diff" },
+  { name: "release", description: "cut a release" },
+];
+
+function slashMenu() {
+  return screen.getByTestId("composer-slash-menu");
+}
+
+function slashOptions() {
+  return within(slashMenu()).getAllByRole("option");
+}
+
+test("a trailing slash token opens a completion menu filtered from the plugin command catalog", async () => {
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  const user = userEvent.setup();
+  await mountComposer("ref_slash3");
+
+  await user.type(textarea(), "hi /re");
+
+  expect(slashOptions().map((el) => el.textContent)).toEqual([
+    expect.stringContaining("/review"),
+    expect.stringContaining("/release"),
+  ]);
+});
+
+test("typing further narrows the menu live", async () => {
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  const user = userEvent.setup();
+  await mountComposer("ref_slash4");
+
+  await user.type(textarea(), "hi /rev");
+
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
+});
+
+test("a mid-word slash never opens the menu", async () => {
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  const user = userEvent.setup();
+  await mountComposer("ref_slash5");
+
+  await user.type(textarea(), "foo/bar");
+
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+});
+
+test("a token with no catalog match shows no menu", async () => {
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  const user = userEvent.setup();
+  await mountComposer("ref_slash6");
+
+  await user.type(textarea(), "hi /zzz");
+
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+});
+
+test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", async () => {
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  const user = userEvent.setup();
+  await mountComposer("ref_slash7");
+  await user.type(textarea(), "hi /re");
+
+  expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
+  await user.keyboard("{ArrowDown}");
+  expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
+  await user.keyboard("{ArrowDown}"); // wraps past the last option back to the first
+  expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
+  await user.keyboard("{ArrowUp}"); // wraps the other way, back to the last
+  expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
+});
+
+test("Tab commits the highlighted option: splices /name<space> at the token start, caret after the space", async () => {
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  const user = userEvent.setup();
+  await mountComposer("ref_slash8");
+  await user.type(textarea(), "hi /re");
+  await user.keyboard("{ArrowDown}"); // highlight "release"
+
+  await user.keyboard("{Tab}");
+
+  expect(textarea().value).toBe("hi /release ");
+  expect(textarea().selectionStart).toBe("hi /release ".length);
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  expect(document.activeElement).toBe(textarea());
+});
+
+test("Enter commits the highlighted option and does NOT fall through to the composer's send routing", async () => {
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_slash9", { status: { type: "idle" } });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  await user.type(textarea(), "hi /re");
+
+  await user.keyboard("{Enter}");
+
+  expect(textarea().value).toBe("hi /review ");
+  expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
+});
+
+test("Escape closes the menu without clearing the draft, and typing further reopens it", async () => {
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  const user = userEvent.setup();
+  await mountComposer("ref_slash10");
+  await user.type(textarea(), "hi /re");
+  expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
+
+  await user.keyboard("{Escape}");
+
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  expect(textarea().value).toBe("hi /re"); // draft untouched
+
+  await user.type(textarea(), "v");
+
+  expect(textarea().value).toBe("hi /rev");
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
+});
+
+test("blur closes the menu", async () => {
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  const user = userEvent.setup();
+  await mountComposer("ref_slash11");
+  await user.type(textarea(), "hi /re");
+  expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
+
+  fireEvent.blur(textarea());
+
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+});
+
+test("clicking an option commits it without ever blurring the textarea", async () => {
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  const user = userEvent.setup();
+  await mountComposer("ref_slash12");
+  await user.type(textarea(), "hi /re");
+
+  await user.click(slashOptions()[1]!); // "release"
+
+  expect(textarea().value).toBe("hi /release ");
+  expect(document.activeElement).toBe(textarea());
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+});
+
+test("the open menu wires listbox/option roles and aria-activedescendant on the textarea", async () => {
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  const user = userEvent.setup();
+  await mountComposer("ref_slash13");
+  await user.type(textarea(), "hi /re");
+
+  expect(slashMenu().getAttribute("role")).toBe("listbox");
+  const activeId = textarea().getAttribute("aria-activedescendant");
+  expect(activeId).toBeTruthy();
+  expect(document.getElementById(activeId ?? "")).toBe(slashOptions()[0]);
+
+  await user.keyboard("{Escape}");
+  expect(textarea().getAttribute("aria-activedescendant")).toBeNull();
 });

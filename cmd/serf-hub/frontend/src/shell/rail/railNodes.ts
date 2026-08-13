@@ -29,6 +29,12 @@ export interface SessionRailNode extends WidgetTreeNode {
 export interface ProjectRailNode extends WidgetTreeNode {
   kind: "project";
   project: ApiTreeProject;
+  // The label RailRow actually renders: project.name, decorated with a
+  // distinguishing path segment when it collides with a sibling's name in
+  // the same list (see projectDisplayLabels). Optional so a hand-built test
+  // double can omit it and still render the plain name via RailRow's own
+  // fallback.
+  displayName?: string;
   // Usually SessionRailNode[]; an archived project not yet hydrated (see
   // archivedProjectNodes) instead gets a single LoadingRailNode child so it
   // still renders a chevron before its real sessions have loaded.
@@ -254,6 +260,44 @@ function projectNodeId(key: string): string {
   return `projectnode:${key}`;
 }
 
+// The bit of a project's own working_dir that tells it apart from a
+// same-named sibling - the parent directory's basename (two checkouts named
+// "frontend" usually differ in which repo holds them, not in the leaf
+// directory name itself, which is the name colliding in the first place).
+// Falls back to the project's own key when there's no working_dir to read
+// (never absent for a real project, but this keeps a synthetic/test project
+// from decorating into "undefined").
+function distinguishingSegment(p: ApiTreeProject): string {
+  const dir = p.working_dir;
+  if (!dir) return p.key;
+  const segments = dir.split("/").filter((s) => s.length > 0);
+  if (segments.length === 0) return p.key;
+  return segments.length >= 2 ? (segments[segments.length - 2] as string) : (segments[segments.length - 1] as string);
+}
+
+/** The label each project in `projects` should actually render, keyed by
+ * project.key: the bare name, except within a same-named group (2+ projects
+ * sharing a name), where every member gets the name plus its own
+ * distinguishing path segment - otherwise two different projects render as
+ * identical rows. Computed over exactly the list a caller is about to
+ * render (a Projects section, an archived stub list, ...), never globally,
+ * so a collision in one section can't decorate an unrelated one. */
+export function projectDisplayLabels(projects: ApiTreeProject[]): Map<string, string> {
+  const byName = new Map<string, ApiTreeProject[]>();
+  for (const p of projects) {
+    const group = byName.get(p.name) ?? [];
+    group.push(p);
+    byName.set(p.name, group);
+  }
+  const labels = new Map<string, string>();
+  for (const group of byName.values()) {
+    for (const p of group) {
+      labels.set(p.key, group.length > 1 ? `${p.name} (${distinguishingSegment(p)})` : p.name);
+    }
+  }
+  return labels;
+}
+
 // True when `nodes` (a project's session list or a tier) contains a session
 // with `ref`, recursing into subagent-cluster children.
 function sessionListHasRef(nodes: ApiTreeNode[], ref: string): boolean {
@@ -306,12 +350,14 @@ export function projectNodeIdForSessionRef(projects: ApiTreeProject[], ref: stri
  * partition (Array.prototype.sort is stable in the target engines), so
  * sessions that don't need you keep their incoming relative order. */
 export function projectNodes(projects: ApiTreeProject[], isExpanded: IsExpanded): ProjectRailNode[] {
+  const labels = projectDisplayLabels(projects);
   return projects.map((p) => {
     const id = projectNodeId(p.key);
     return {
       id,
       kind: "project",
       project: p,
+      displayName: labels.get(p.key),
       expanded: isExpanded(id, p.default_expanded ?? false),
       children: [
         ...p.sessions
@@ -348,6 +394,7 @@ function archivedGroupId(key: string): string {
  * Carries the REAL project object, so the row's menu acts on the project
  * itself rather than on a synthetic stand-in. */
 export function archivedSessionGroups(projects: ApiTreeProject[], isExpanded: IsExpanded): ProjectRailNode[] {
+  const labels = projectDisplayLabels(projects);
   const groups: ProjectRailNode[] = [];
   for (const p of projects) {
     const archived = p.sessions.filter(isArchivedTier);
@@ -357,6 +404,7 @@ export function archivedSessionGroups(projects: ApiTreeProject[], isExpanded: Is
       id,
       kind: "project",
       project: p,
+      displayName: labels.get(p.key),
       expanded: isExpanded(id, false),
       children: [...archived.map((n) => toSessionNode(n, isExpanded)), ...projectOverflowNode(id, p, ["archived"])],
     });
@@ -395,6 +443,7 @@ export function archivedProjectNodes(
   projectDetails: ReadonlyMap<string, ApiTreeProject>,
   isExpanded: IsExpanded,
 ): ProjectRailNode[] {
+  const labels = projectDisplayLabels(projects);
   return projects.map((p) => {
     const id = projectNodeId(p.key);
     const detail = projectDetails.get(p.key);
@@ -411,6 +460,13 @@ export function archivedProjectNodes(
     } else {
       children = [];
     }
-    return { id, kind: "project", project: p, expanded: isExpanded(id, false), children };
+    return {
+      id,
+      kind: "project",
+      project: p,
+      displayName: labels.get(p.key),
+      expanded: isExpanded(id, false),
+      children,
+    };
   });
 }

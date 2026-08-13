@@ -9,6 +9,7 @@ import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
 import { registerPaneForTests } from "../paneRegistry";
 import * as railController from "../rail/railController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -200,6 +201,7 @@ beforeEach(() => {
   useCommandCatalog.setState({ commands: [], loaded: false });
   resetWorkspaceStoreForTests();
   resetPrefsStoreForTests();
+  resetTreeStoreForTests();
   localStorage.clear();
   window.history.pushState({}, "", "/");
   pushes.length = 0;
@@ -214,6 +216,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   // Direct assignments are not spies, so restoreAllMocks cannot remove the
   // mobile viewport fake from the final test in this shared worker.
   // @ts-expect-error jsdom baseline has no matchMedia.
@@ -230,17 +233,17 @@ afterEach(() => {
 
 // --- scope gating (search.js:581-588) ---
 
-test("with no focused session, only the 8 global commands are in scope", () => {
+test("with no focused session, only the 9 global commands are in scope", () => {
   const inScope = commandsInScope(buildPaletteContext());
   expect(inScope.every((c) => c.scope === "global")).toBe(true);
-  expect(inScope).toHaveLength(8);
+  expect(inScope).toHaveLength(9);
 });
 
-test("a live focused session exposes global + session (all 23 commands)", () => {
+test("a live focused session exposes global + session (all 24 commands)", () => {
   focusSession("ref_a");
   seedModel("ref_a", { status: { type: "active" }, activeTurnId: "t1" });
   const inScope = commandsInScope(buildPaletteContext());
-  expect(inScope).toHaveLength(23);
+  expect(inScope).toHaveLength(24);
   expect(inScope.some((c) => c.id === "steer")).toBe(true);
   expect(inScope.some((c) => c.id === "project")).toBe(true);
 });
@@ -257,7 +260,7 @@ test("an ended focused session still lists every command; only the wire's own fa
     capabilities: { ...CAPS, steer: false, interrupt: false, queue: false },
   });
   const inScope = commandsInScope(buildPaletteContext());
-  expect(inScope).toHaveLength(23);
+  expect(inScope).toHaveLength(24);
   const byId = new Map(inScope.map((c) => [c.id, c]));
   for (const id of ["model", "goal", "clear", "compact", "aside", "shutdown", "copy-id"]) {
     expect(byId.get(id)?.unavailableReason).toBeUndefined();
@@ -301,7 +304,7 @@ test("a session command with no wire capability is never capability-gated", () =
 test("a focused session whose model has not hydrated yet leaves every command enabled", () => {
   focusSession("ref_a");
   const inScope = commandsInScope(buildPaletteContext());
-  expect(inScope).toHaveLength(23);
+  expect(inScope).toHaveLength(24);
   expect(inScope.every((c) => c.unavailableReason === undefined)).toBe(true);
 });
 
@@ -479,6 +482,35 @@ test("/model source lists models and run sets the split provider/model with a su
   expect(pushes).toContainEqual({ kind: "success", text: "Model: openai/gpt-5.5" });
 });
 
+// UX fix: /model's enum source used to build its list from the bare
+// model/list result alone (id + provider hint, no display name). It now
+// merges in the same rich /api/models catalog ModelSwitch.tsx's own
+// mid-session picker already uses (mergeScopedCatalog), so a model with a
+// human display name shows it here too.
+test("/model source enriches the scoped list with the rich catalog's display names (mergeScopedCatalog)", async () => {
+  const fake = connectFake();
+  fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({
+        models: [{ provider: "openai", model: "gpt-5.5", display_name: "GPT-5.5" }],
+        recent: [],
+        diagnostics: [],
+      }),
+    })),
+  );
+  focusSession("ref_a");
+  seedModel("ref_a", { status: { type: "idle" } });
+  const c = cmd("model");
+  if (c.args?.kind !== "enum") throw new Error("expected enum args");
+
+  expect(await c.args.source(runContext())).toEqual([{ id: "openai/gpt-5.5", label: "GPT-5.5", hint: "openai" }]);
+});
+
 test("splitModelId splits on the first slash so a model id with slashes survives", () => {
   expect(splitModelId("openai/gpt-5.5")).toEqual({ provider: "openai", model: "gpt-5.5" });
   expect(splitModelId("anthropic/claude-sonnet-4-5")).toEqual({ provider: "anthropic", model: "claude-sonnet-4-5" });
@@ -575,6 +607,103 @@ test("/upgrade calls serf/upgrade and toasts success + restart message", async (
   expect(fake.calls.some((call) => call.method === "serf/upgrade")).toBe(true);
   expect(pushes).toContainEqual({ kind: "success", text: "Serf upgraded to stable" });
   expect(pushes).toContainEqual({ kind: "info", text: "restart your shell" });
+});
+
+// --- Go to next session needing you (UX fix) ------------------------------
+
+test("next-needs-you is a global command", () => {
+  expect(cmd("next-needs-you").scope).toBe("global");
+});
+
+test("next-needs-you opens the first needs-you session when nothing is focused", () => {
+  treeStore.setState({
+    tree: {
+      generated_at: "2026-01-01T00:00:00Z",
+      sources: [],
+      live: [],
+      needs_you: [
+        {
+          row_id: "r1",
+          ref: "local:ny1",
+          host_id: "local",
+          session_id: "ny1",
+          title: "A",
+          project: "P",
+          state: "awaiting",
+          kind: "session",
+          live: true,
+          children: [],
+        },
+        {
+          row_id: "r2",
+          ref: "local:ny2",
+          host_id: "local",
+          session_id: "ny2",
+          title: "B",
+          project: "P",
+          state: "awaiting",
+          kind: "session",
+          live: true,
+          children: [],
+        },
+      ],
+      pin_sections: [],
+      projects: [],
+      archived_projects: [],
+      test_runs: [],
+      attentionSummary: { needsYou: 2, error: 0, working: 0 },
+    },
+  });
+
+  cmd("next-needs-you").run?.(runContext());
+
+  expect(window.location.pathname).toBe("/s/local%3Any1");
+});
+
+test("next-needs-you cycles from the focused session to the next needs-you session, wrapping", () => {
+  treeStore.setState({
+    tree: {
+      generated_at: "2026-01-01T00:00:00Z",
+      sources: [],
+      live: [],
+      needs_you: [
+        {
+          row_id: "r1",
+          ref: "local:ny1",
+          host_id: "local",
+          session_id: "ny1",
+          title: "A",
+          project: "P",
+          state: "awaiting",
+          kind: "session",
+          live: true,
+          children: [],
+        },
+        {
+          row_id: "r2",
+          ref: "local:ny2",
+          host_id: "local",
+          session_id: "ny2",
+          title: "B",
+          project: "P",
+          state: "awaiting",
+          kind: "session",
+          live: true,
+          children: [],
+        },
+      ],
+      pin_sections: [],
+      projects: [],
+      archived_projects: [],
+      test_runs: [],
+      attentionSummary: { needsYou: 2, error: 0, working: 0 },
+    },
+  });
+  focusSession("local:ny2");
+
+  cmd("next-needs-you").run?.(runContext());
+
+  expect(window.location.pathname).toBe("/s/local%3Any1");
 });
 
 // --- /project, /copy-id, /tasks, /status ---

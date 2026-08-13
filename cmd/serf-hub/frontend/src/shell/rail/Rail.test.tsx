@@ -922,6 +922,23 @@ describe("in-sidebar chrome (c8gt)", () => {
     expect(screen.getByTestId("rail-settings")).toBeTruthy();
   });
 
+  // UX fix: the docked rail carries the same needs-you Badge RailHost's own
+  // hidden-rail ☰ chip already shows, so the count is never only visible when
+  // the rail happens to be hidden.
+  test("the brand row shows a needs-you attention Badge when the tree reports any, hides it when zero", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(SAMPLE_WIRE_TREE)); // attentionSummary.needsYou: 1
+    renderRail();
+    await screen.findByTestId("rail-brand");
+    expect(screen.getByText("1")).toBeTruthy();
+
+    cleanup();
+    resetTreeStoreForTests(); // otherwise the cached tree from the first render skips the second fetch
+    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY_WIRE_TREE)); // attentionSummary.needsYou: 0
+    renderRail();
+    await screen.findByText(/no sessions yet/i);
+    expect(screen.queryByText("0")).toBeNull();
+  });
+
   test("search rides in the brand row rather than claiming a header row of its own", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY_WIRE_TREE));
     renderRail();
@@ -1350,6 +1367,28 @@ describe("width stability across expand/collapse", () => {
     // unset overflow-x computes to `auto` (not `visible`) once the other axis
     // scrolls, so `overflow-y: auto` alone already scrolls both axes.
     expect(rule?.[0]).toMatch(/overflow(-x|-y)?:\s*(auto|scroll)/);
+  });
+});
+
+// UX fix: a coarse pointer (touch) needs the platform's 44px tap floor on
+// every rail row - the same (pointer: coarse) treatment modelswitch.module.css's
+// own .trigger rule already gets, following button.module.css's own
+// min-height (not height) consumption pattern so this only ever GROWS the
+// desktop row height, never overrides it. jsdom has no real layout: read the
+// CSS source, the same way the width-stability block above does.
+describe("touch target (pointer: coarse)", () => {
+  const railCSS = (): string => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    return readFileSync(join(here, "Rail.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  };
+
+  test(".railRow reaches the 44px tap floor on a coarse pointer", () => {
+    const css = railCSS();
+    const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
+    expect(coarse, "Rail.module.css must have a (pointer: coarse) media block").not.toBeNull();
+    const rule = coarse![1]!.match(/\.railRow\s*\{([^}]*)\}/);
+    expect(rule, "the coarse-pointer block must override .railRow").not.toBeNull();
+    expect(rule![1]).toContain("min-height: var(--tap-min)");
   });
 });
 

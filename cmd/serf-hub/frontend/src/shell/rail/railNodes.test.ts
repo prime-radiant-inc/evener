@@ -463,6 +463,36 @@ describe("projectNodes", () => {
     const rails = projectNodes([project({ key: "p1", default_expanded: true })], () => false);
     expect(rails[0]?.expanded).toBe(false);
   });
+
+  // UX fix: two projects with the same name render identically otherwise (two
+  // "frontend" checkouts of different repos) - decorate with the
+  // distinguishing path segment, but only when there's actually a collision.
+  test("a unique project name is left undecorated", () => {
+    const [rail] = projectNodes([project({ key: "p1", name: "prime-radiant" })], NEVER_EXPANDED);
+    expect(rail?.displayName).toBe("prime-radiant");
+  });
+
+  test("two same-named projects are each decorated with their own distinguishing working_dir segment", () => {
+    const rails = projectNodes(
+      [
+        project({ key: "p1", name: "frontend", working_dir: "/home/user/repoA/frontend" }),
+        project({ key: "p2", name: "frontend", working_dir: "/home/user/repoB/frontend" }),
+      ],
+      NEVER_EXPANDED,
+    );
+    expect(rails.map((r) => r.displayName)).toEqual(["frontend (repoA)", "frontend (repoB)"]);
+  });
+
+  test("a same-named project with no working_dir falls back to its key for the distinguishing segment", () => {
+    const rails = projectNodes(
+      [
+        project({ key: "p1", name: "frontend", working_dir: "/home/user/repoA/frontend" }),
+        project({ key: "p2", name: "frontend" }),
+      ],
+      NEVER_EXPANDED,
+    );
+    expect(rails.map((r) => r.displayName)).toEqual(["frontend (repoA)", "frontend (p2)"]);
+  });
 });
 
 describe("archivedProjectNodes", () => {

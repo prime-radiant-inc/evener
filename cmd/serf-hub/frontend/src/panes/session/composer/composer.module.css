@@ -10,6 +10,15 @@
   gap: var(--space-2);
 }
 
+/* Positions SlashCompletionMenu (an absolutely-positioned child) above the
+ * form it wraps, without affecting this element's own layout - see that
+ * component's own slashcompletionmenu.module.css header comment for the
+ * anchored-float recipe (matches panes/session/chrome/goalcontrol.module.css's
+ * own .anchor/.popover pair). */
+.formAnchor {
+  position: relative;
+}
+
 .leading {
   display: flex;
   align-items: center;

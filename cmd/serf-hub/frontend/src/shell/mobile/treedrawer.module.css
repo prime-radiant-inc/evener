@@ -1,0 +1,16 @@
+/* TreeDrawer's own trigger: a positioning wrapper for the needs-you Badge
+ * overlay (UX fix, parity with RailHost's own hidden-rail chip, which shows
+ * the same Badge inline beside its ☰ glyph). The wrapper is the containing
+ * block for the badge's absolute placement; the trigger IconButton itself is
+ * untouched. */
+.triggerWrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.badgeOverlay {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  pointer-events: none;
+}
