@@ -252,11 +252,12 @@ func (c *delegateTreeController) reconcileRuntimeLostLocked() error {
 			if aggregate.PreparedTerminal == nil {
 				return fmt.Errorf("reconcile delegate %s: settling without prepared terminal", id)
 			}
+			outcome, disposition, reason := delegatePreparedFinish(*aggregate.PreparedTerminal)
 			events = []delegatestore.Event{delegateRunFinishedEvent(
 				lease,
-				delegatestore.OutcomeFailed,
-				delegatePacketDisposition(*aggregate.PreparedTerminal),
-				"runtime_lost",
+				outcome,
+				disposition,
+				reason,
 				endedAt,
 				delegateDeliveryID(id, aggregate.Generation),
 				nil,
@@ -266,7 +267,7 @@ func (c *delegateTreeController) reconcileRuntimeLostLocked() error {
 				lease,
 				delegatestore.OutcomeStopped,
 				delegatestore.DispositionTerminalError,
-				"runtime_lost",
+				"stopped_by_parent",
 				endedAt,
 				delegateDeliveryID(id, aggregate.Generation),
 				&packet,

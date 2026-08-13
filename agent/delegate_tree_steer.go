@@ -64,20 +64,43 @@ func (c *delegateTreeController) BeginModelRequest(lease delegateLease) ([]llm.M
 		return nil, errDelegateTargetBusy
 	}
 	history := live.binding.runtime.delegateModelHistorySnapshot()
-	present := make(map[string]struct{}, len(history))
-	for _, turn := range history {
-		if turn.StableTurnID != "" {
-			present[turn.StableTurnID] = struct{}{}
-		}
-	}
+	history, bound := projectDelegatePendingSteers(history, live.pendingSteers)
 	kept := live.pendingSteers[:0]
 	for _, pending := range live.pendingSteers {
-		if _, ok := present[pending.entryID]; !ok {
+		if _, ok := bound[pending.entryID]; !ok {
 			kept = append(kept, pending)
 		}
 	}
 	live.pendingSteers = kept
 	return expandHistory(history, replayScope{}), nil
+}
+
+func projectDelegatePendingSteers(history []schema.Turn, pending []delegateSteeringAdmission) ([]schema.Turn, map[string]struct{}) {
+	order := make(map[string]int, len(pending))
+	for i, admission := range pending {
+		order[admission.entryID] = i
+	}
+	projected := make([]schema.Turn, 0, len(history))
+	steers := make([]schema.Turn, len(pending))
+	found := make([]bool, len(pending))
+	for _, turn := range history {
+		index, waiting := order[turn.StableTurnID]
+		if waiting && turn.Kind == schema.TurnSteering && !found[index] {
+			steers[index] = turn
+			found[index] = true
+			continue
+		}
+		projected = append(projected, turn)
+	}
+	bound := make(map[string]struct{}, len(pending))
+	for i, admission := range pending {
+		if !found[i] {
+			continue
+		}
+		projected = append(projected, steers[i])
+		bound[admission.entryID] = struct{}{}
+	}
+	return projected, bound
 }
 
 func (c *delegateTreeController) BeginTool(lease delegateLease) error {

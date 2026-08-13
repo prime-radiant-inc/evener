@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 
@@ -119,6 +120,140 @@ func TestDelegateControllerCrashAfterReportedSettlementPreservesPacket(t *testin
 	aggregate := restarted.durable["dlg_target"]
 	if len(aggregate.PendingDeliveries) != 1 || !reflect.DeepEqual(aggregate.PendingDeliveries[0].Packet, want) {
 		t.Fatalf("reported crash delivery = %#v, want %#v", aggregate.PendingDeliveries, want)
+	}
+}
+
+func TestDelegateControllerSettlingReportedPacketOverridesLaterRuntimeError(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	wantPacket := delegateControllerReportedPacket("accepted before runtime error")
+	if _, _, err := c.BeginSettlement(lease, &wantPacket); err != nil {
+		t.Fatalf("BeginSettlement: %v", err)
+	}
+	endedAt := time.Unix(250, 0).UTC()
+	misleadingPacket := delegateTerminalErrorPacket("late runtime error")
+	plans, err := c.FinishGeneration(lease, delegateFinish{
+		outcome:     delegatestore.OutcomeFailed,
+		disposition: delegatestore.DispositionTerminalError,
+		reason:      "late_runtime_error",
+		packet:      &misleadingPacket,
+		endedAt:     endedAt,
+	})
+	if err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	aggregate := c.durable["dlg_target"]
+	if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeCompleted || aggregate.LatestOutcome.Reason != "" || !aggregate.LatestOutcome.EndedAt.Equal(endedAt) {
+		t.Fatalf("reported prepared outcome = %#v, want completed at supplied end time", aggregate.LatestOutcome)
+	}
+	if len(plans.deliveries) != 1 || len(aggregate.PendingDeliveries) != 1 || !reflect.DeepEqual(aggregate.PendingDeliveries[0].Packet, wantPacket) {
+		t.Fatalf("reported prepared delivery plans=%#v pending=%#v", plans, aggregate.PendingDeliveries)
+	}
+	if finish := latestDelegateControllerRunFinished(t, c, "dlg_target"); finish.Disposition != delegatestore.DispositionReported {
+		t.Fatalf("reported prepared disposition = %q", finish.Disposition)
+	}
+}
+
+func TestDelegateControllerSettlingMissingPacketOverridesMisleadingFinish(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	if _, _, err := c.BeginSettlement(lease, nil); err != nil {
+		t.Fatalf("BeginSettlement: %v", err)
+	}
+	endedAt := time.Unix(251, 0).UTC()
+	plans, err := c.FinishGeneration(lease, delegateFinish{
+		outcome:     delegatestore.OutcomeCompleted,
+		disposition: delegatestore.DispositionReported,
+		reason:      "misleading_success",
+		packet:      &delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: json.RawMessage(`"ignore me"`)},
+		endedAt:     endedAt,
+	})
+	if err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	aggregate := c.durable["dlg_target"]
+	if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeFailed || aggregate.LatestOutcome.Reason != "missing_terminal" || !aggregate.LatestOutcome.EndedAt.Equal(endedAt) {
+		t.Fatalf("missing prepared outcome = %#v", aggregate.LatestOutcome)
+	}
+	if len(plans.deliveries) != 1 || len(aggregate.PendingDeliveries) != 1 || !delegateIsMissingTerminalPacket(aggregate.PendingDeliveries[0].Packet) {
+		t.Fatalf("missing prepared delivery plans=%#v pending=%#v", plans, aggregate.PendingDeliveries)
+	}
+	if finish := latestDelegateControllerRunFinished(t, c, "dlg_target"); finish.Disposition != delegatestore.DispositionTerminalError {
+		t.Fatalf("missing prepared disposition = %q", finish.Disposition)
+	}
+}
+
+func TestDelegateControllerRestartFinishesEachPreparedPacketShape(t *testing.T) {
+	tests := []struct {
+		name            string
+		packet          *delegatestore.TerminalPacket
+		wantPacket      delegatestore.TerminalPacket
+		wantOutcome     delegatestore.OutcomeStatus
+		wantReason      string
+		wantDisposition delegatestore.RunDisposition
+	}{
+		{
+			name: "reported",
+			packet: func() *delegatestore.TerminalPacket {
+				packet := delegateControllerReportedPacket("accepted")
+				return &packet
+			}(),
+			wantPacket:      delegateControllerReportedPacket("accepted"),
+			wantOutcome:     delegatestore.OutcomeCompleted,
+			wantDisposition: delegatestore.DispositionReported,
+		},
+		{
+			name:            "missing terminal",
+			wantPacket:      delegateMissingTerminalPacket(),
+			wantOutcome:     delegatestore.OutcomeFailed,
+			wantReason:      "missing_terminal",
+			wantDisposition: delegatestore.DispositionTerminalError,
+		},
+		{
+			name: "terminal error",
+			packet: func() *delegatestore.TerminalPacket {
+				packet := delegateTerminalErrorPacket("provider rejected request")
+				return &packet
+			}(),
+			wantPacket:      delegateTerminalErrorPacket("provider rejected request"),
+			wantOutcome:     delegatestore.OutcomeFailed,
+			wantReason:      "terminal_error",
+			wantDisposition: delegatestore.DispositionTerminalError,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c, path := newDelegateControllerTestHarness(t, 1, 1)
+			seedDelegateControllerRunning(t, c, "dlg_target", "")
+			lease := delegateLease{delegateID: "dlg_target", generation: 1}
+			if _, _, err := c.BeginSettlement(lease, test.packet); err != nil {
+				t.Fatalf("BeginSettlement: %v", err)
+			}
+			if err := c.store.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			reopened, err := delegatestore.Open(path)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			t.Cleanup(func() { _ = reopened.Close() })
+			restarted, err := openDelegateTreeController(delegateTreeControllerConfig{store: reopened, rootSessionID: "root-session", now: c.now})
+			if err != nil {
+				t.Fatalf("openDelegateTreeController: %v", err)
+			}
+			aggregate := restarted.durable["dlg_target"]
+			if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != test.wantOutcome || aggregate.LatestOutcome.Reason != test.wantReason {
+				t.Fatalf("restart outcome = %#v, want status=%q reason=%q", aggregate.LatestOutcome, test.wantOutcome, test.wantReason)
+			}
+			if len(aggregate.PendingDeliveries) != 1 || !reflect.DeepEqual(aggregate.PendingDeliveries[0].Packet, test.wantPacket) {
+				t.Fatalf("restart delivery = %#v, want packet %#v", aggregate.PendingDeliveries, test.wantPacket)
+			}
+			if finish := latestDelegateControllerRunFinished(t, restarted, "dlg_target"); finish.Disposition != test.wantDisposition {
+				t.Fatalf("restart disposition = %q, want %q", finish.Disposition, test.wantDisposition)
+			}
+		})
 	}
 }
 
@@ -315,4 +450,19 @@ func delegateControllerReportedPacket(message string) delegatestore.TerminalPack
 		Warnings:               []string{"warning"},
 		Metadata:               json.RawMessage(`{"source":"test"}`),
 	}
+}
+
+func latestDelegateControllerRunFinished(t *testing.T, c *delegateTreeController, delegateID string) delegatestore.RunFinished {
+	t.Helper()
+	events, err := c.store.Load()
+	if err != nil {
+		t.Fatalf("load delegate events: %v", err)
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].DelegateID == delegateID && events[i].RunFinished != nil {
+			return *events[i].RunFinished
+		}
+	}
+	t.Fatalf("no run-finished event for %s", delegateID)
+	return delegatestore.RunFinished{}
 }

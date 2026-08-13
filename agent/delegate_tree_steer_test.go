@@ -10,7 +10,9 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/llm"
 )
 
 func TestDelegateControllerSteerPersistsBeforeAcknowledgement(t *testing.T) {
@@ -135,6 +137,86 @@ func TestDelegateControllerBeginModelRequestBindsPendingEntriesOnce(t *testing.T
 	defer c.mu.Unlock()
 	if got := c.live["dlg_target"].pendingSteers; len(got) != 0 {
 		t.Fatalf("already-bound steers re-entered pending state: %#v", got)
+	}
+}
+
+func TestDelegateControllerBeginModelRequestProjectsInFlightSteersAfterResponseOnce(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	runtime := attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	initial := schema.NewTurn(schema.TurnUserInput, llm.User("initial"))
+	initial.StableTurnID = "turn_initial"
+	runtime.recordTurn(initial, initial)
+	if _, err := c.BeginModelRequest(lease); err != nil {
+		t.Fatalf("initial BeginModelRequest: %v", err)
+	}
+
+	requestInFlight := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	responseRecorded := make(chan struct{})
+	go func() {
+		close(requestInFlight)
+		<-releaseResponse
+		response := schema.NewTurn(schema.TurnAssistant, llm.Assistant("in-flight response"))
+		response.StableTurnID = "turn_response"
+		runtime.recordTurn(response, response)
+		close(responseRecorded)
+	}()
+	<-requestInFlight
+
+	for _, message := range []string{"first steer", "second steer"} {
+		if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), "dlg_target", message); err != nil {
+			t.Fatalf("Steer(%q): %v", message, err)
+		}
+	}
+	close(releaseResponse)
+	<-responseRecorded
+
+	raw := runtime.delegateModelHistorySnapshot()
+	if len(raw) != 4 {
+		t.Fatalf("durable chronological history length = %d, want 4: %#v", len(raw), raw)
+	}
+	if got := []schema.TurnKind{raw[0].Kind, raw[1].Kind, raw[2].Kind, raw[3].Kind}; !reflect.DeepEqual(got, []schema.TurnKind{
+		schema.TurnUserInput,
+		schema.TurnSteering,
+		schema.TurnSteering,
+		schema.TurnAssistant,
+	}) {
+		t.Fatalf("durable chronological history kinds = %#v", got)
+	}
+	steerIDs := []string{raw[1].StableTurnID, raw[2].StableTurnID}
+	if steerIDs[0] == "" || steerIDs[1] == "" || steerIDs[0] == steerIDs[1] {
+		t.Fatalf("durable steer IDs = %#v, want distinct stable IDs", steerIDs)
+	}
+
+	request, err := c.BeginModelRequest(lease)
+	if err != nil {
+		t.Fatalf("next BeginModelRequest: %v", err)
+	}
+	got := make([]string, len(request))
+	for i := range request {
+		got[i] = request[i].Text()
+	}
+	want := []string{"initial", "in-flight response", "first steer", "second steer"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("next request history = %#v, want %#v", got, want)
+	}
+	for _, steer := range want[2:] {
+		count := 0
+		for _, message := range got {
+			if message == steer {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("next request contains %q %d times, want exactly once", steer, count)
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if pending := c.live["dlg_target"].pendingSteers; len(pending) != 0 {
+		t.Fatalf("bound in-flight steers remain pending: %#v", pending)
 	}
 }
 

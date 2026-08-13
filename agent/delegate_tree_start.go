@@ -215,28 +215,27 @@ func (c *delegateTreeController) runtimeOwnerLocked(runtime *Session) (string, *
 // AdmitStartInput is the one narrow controller-to-transcript lock boundary.
 // admitInput must append only to the child transcript and must not call back
 // into the controller while c.mu is held.
-func (c *delegateTreeController) AdmitStartInput(lease delegateLease, admitInput func() error) (delegateUpdatePlan, error) {
+func (c *delegateTreeController) AdmitStartInput(lease delegateLease, admitInput func() error) (delegateMutationPlans, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	aggregate, live, err := c.exactLeaseLocked(lease)
 	if err != nil {
-		return delegateUpdatePlan{}, err
+		return delegateMutationPlans{}, err
 	}
 	if admitInput == nil || aggregate.Phase != delegatestore.PhaseRunning || aggregate.PendingStopSeq != 0 || live.recoveryRequired || live.binding.ready || live.binding.runtime == nil || aggregate.Trigger == delegatestore.TriggerAttention {
-		return delegateUpdatePlan{}, errDelegateTargetBusy
+		return delegateMutationPlans{}, errDelegateTargetBusy
 	}
 	if err := admitInput(); err != nil {
 		terminal, finish := c.inputPersistFailureBatch(lease, err)
 		if _, finishErr := c.appendLocked(terminal, finish); finishErr != nil {
 			live.recoveryRequired = true
-			return c.capturedPlanLocked(lease.delegateID), errors.Join(err, finishErr)
+			return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, errors.Join(err, finishErr)
 		}
-		c.releaseGenerationLocked(lease)
-		return c.capturedPlanLocked(lease.delegateID), err
+		return c.generationFinishedPlansLocked(lease, finish.RunFinished.DeliveryID), err
 	}
 	live.binding.ready = true
 	live.activityAt = c.now()
-	return c.capturedPlanLocked(lease.delegateID), nil
+	return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, nil
 }
 
 func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID string) (*delegateStartReservation, error) {

@@ -292,7 +292,7 @@ func TestDelegateControllerInputAndCompensatingFinishFailureKeepsExactBinding(t 
 	if !errors.Is(err, inputErr) || !strings.Contains(err.Error(), "store is closed") {
 		t.Fatalf("AdmitStartInput error = %v, want input and compensating append failures", err)
 	}
-	if row := plan.rows[0]; row.lifecycle != delegateLifecycleRunning || row.lastOutcome != nil {
+	if row := plan.updates[0].rows[0]; row.lifecycle != delegateLifecycleRunning || row.lastOutcome != nil {
 		t.Fatalf("double-failure plan = %#v, want captured running state", row)
 	}
 	live := c.live["dlg_target"]
@@ -357,7 +357,7 @@ func TestDelegateControllerInputPersistFailureUsesCanonicalAtomicFinish(t *testi
 	if !errors.Is(err, inputErr) {
 		t.Fatalf("AdmitStartInput error = %v, want input failure", err)
 	}
-	row := plan.rows[0]
+	row := plan.updates[0].rows[0]
 	if row.lifecycle != delegateLifecycleIdle || row.lastOutcome == nil || row.lastOutcome.Status != delegatestore.OutcomeFailed || row.lastOutcome.Reason != "input_persist_failed" {
 		t.Fatalf("input-failure plan = %#v", row)
 	}
@@ -374,6 +374,98 @@ func TestDelegateControllerInputPersistFailureUsesCanonicalAtomicFinish(t *testi
 	}
 	if !bytes.Contains(lines[3], []byte(`"delegate_terminal_prepared"`)) || !bytes.Contains(lines[3], []byte(`"delegate_run_finished"`)) {
 		t.Fatalf("input-failure batch is not canonical terminal+finish: %s", lines[3])
+	}
+}
+
+func TestDelegateControllerInputPersistFailureClaimsWaiterAndReturnsDelivery(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	waiter, err := c.RegisterInlineWaiter(reservation)
+	if err != nil {
+		t.Fatalf("RegisterInlineWaiter: %v", err)
+	}
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	if err := c.AttachRuntime(started.lease, &Session{}); err != nil {
+		t.Fatalf("AttachRuntime: %v", err)
+	}
+	inputErr := errors.New("injected input persistence failure")
+	plans, err := c.AdmitStartInput(started.lease, func() error { return inputErr })
+	if !errors.Is(err, inputErr) {
+		t.Fatalf("AdmitStartInput error = %v, want input failure", err)
+	}
+	if len(plans.updates) != 1 || len(plans.deliveries) != 1 || plans.deliveries[0].waiter != waiter {
+		t.Fatalf("input-failure plans = %#v, want exact claimed waiter", plans)
+	}
+	c.mu.Lock()
+	remaining := c.live["dlg_target"].waiters[started.lease.generation]
+	c.mu.Unlock()
+	if remaining != nil {
+		t.Fatalf("claimed waiter remains registered: %#v", remaining)
+	}
+	if _, err := deliverDelegatePacket(plans.deliveries[0], nil); err != nil {
+		t.Fatalf("deliverDelegatePacket: %v", err)
+	}
+	resolution := <-waiter.resolution
+	if resolution.fallback || resolution.packet == nil || resolution.packet.Kind != delegatestore.PacketTerminalError || !strings.Contains(string(resolution.packet.Message), "input persistence failed") || resolution.commit == nil {
+		t.Fatalf("input-failure waiter resolution = %#v", resolution)
+	}
+	if _, err := resolution.commit.Complete(false); err != nil {
+		t.Fatalf("Complete(false): %v", err)
+	}
+}
+
+func TestDelegateControllerInputPersistFinishAppendFailureDoesNotClaimWaiter(t *testing.T) {
+	c, path := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	waiter, err := c.RegisterInlineWaiter(reservation)
+	if err != nil {
+		t.Fatalf("RegisterInlineWaiter: %v", err)
+	}
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	if err := c.AttachRuntime(started.lease, &Session{}); err != nil {
+		t.Fatalf("AttachRuntime: %v", err)
+	}
+	before := readDelegateControllerFile(t, path)
+	if err := c.store.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+	inputErr := errors.New("injected input persistence failure")
+	plans, err := c.AdmitStartInput(started.lease, func() error { return inputErr })
+	if !errors.Is(err, inputErr) || !strings.Contains(err.Error(), "store is closed") {
+		t.Fatalf("AdmitStartInput error = %v, want input and append failures", err)
+	}
+	if len(plans.deliveries) != 0 {
+		t.Fatalf("failed append published delivery plans: %#v", plans.deliveries)
+	}
+	c.mu.Lock()
+	live := c.live["dlg_target"]
+	remaining := live.waiters[started.lease.generation]
+	recoveryRequired := live.recoveryRequired
+	c.mu.Unlock()
+	if remaining != waiter || !recoveryRequired {
+		t.Fatalf("failed append waiter=%#v recovery=%t, want original waiter and recovery latch", remaining, recoveryRequired)
+	}
+	select {
+	case resolution := <-waiter.resolution:
+		t.Fatalf("failed append resolved waiter: %#v", resolution)
+	default:
+	}
+	if got := readDelegateControllerFile(t, path); !bytes.Equal(got, before) {
+		t.Fatalf("failed append changed bytes:\n got %q\nwant %q", got, before)
 	}
 }
 
@@ -434,7 +526,7 @@ func TestDelegateControllerAdmitStartInputSuccessMarksReady(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("input admission calls = %d, want 1", calls)
 	}
-	if row := plan.rows[0]; row.lifecycle != delegateLifecycleRunning {
+	if row := plan.updates[0].rows[0]; row.lifecycle != delegateLifecycleRunning {
 		t.Fatalf("successful input plan = %#v, want running", row)
 	}
 	if _, err := c.BeginModelRequest(started.lease); err != nil {

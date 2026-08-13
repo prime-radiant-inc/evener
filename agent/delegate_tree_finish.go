@@ -66,25 +66,15 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 		if aggregate.PreparedTerminal == nil {
 			return delegateMutationPlans{}, fmt.Errorf("delegate %q settling without prepared terminal", lease.delegateID)
 		}
-		if disposition == "" && delegateIsMissingTerminalPacket(*aggregate.PreparedTerminal) {
-			outcome = delegatestore.OutcomeFailed
-			reason = "missing_terminal"
-		}
-		if disposition == "" {
-			disposition = delegatePacketDisposition(*aggregate.PreparedTerminal)
-		}
-		if outcome == "" {
-			outcome = delegatestore.OutcomeCompleted
-		}
+		outcome, disposition, reason = delegatePreparedFinish(*aggregate.PreparedTerminal)
 		deliveryID = delegateDeliveryID(lease.delegateID, lease.generation)
 		events = []delegatestore.Event{delegateRunFinishedEvent(lease, outcome, disposition, reason, endedAt, deliveryID, nil)}
 
 	case delegatestore.PhaseStopping:
 		packet := delegateTerminalErrorPacket("stopped by parent")
-		if outcome == "" {
-			outcome = delegatestore.OutcomeStopped
-		}
+		outcome = delegatestore.OutcomeStopped
 		disposition = delegatestore.DispositionTerminalError
+		reason = "stopped_by_parent"
 		deliveryID = delegateDeliveryID(lease.delegateID, lease.generation)
 		events = []delegatestore.Event{delegateRunFinishedEvent(lease, outcome, disposition, reason, endedAt, deliveryID, &packet)}
 
@@ -131,13 +121,17 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 	if _, err := c.appendLocked(events...); err != nil {
 		return delegateMutationPlans{}, err
 	}
+	return c.generationFinishedPlansLocked(lease, deliveryID), nil
+}
+
+func (c *delegateTreeController) generationFinishedPlansLocked(lease delegateLease, deliveryID string) delegateMutationPlans {
 	c.releaseGenerationLocked(lease)
 	plan := c.capturedPlanLocked(lease.delegateID)
 	plans := delegateMutationPlans{updates: []delegateUpdatePlan{plan}}
 	if delivery := c.newHeadDeliveryPlanLocked(lease.delegateID, deliveryID); delivery != nil {
 		plans.deliveries = append(plans.deliveries, *delivery)
 	}
-	return plans, nil
+	return plans
 }
 
 func delegateRunFinishedEvent(lease delegateLease, outcome delegatestore.OutcomeStatus, disposition delegatestore.RunDisposition, reason string, endedAt time.Time, deliveryID string, packet *delegatestore.TerminalPacket) delegatestore.Event {
@@ -194,6 +188,16 @@ func delegatePacketDisposition(packet delegatestore.TerminalPacket) delegatestor
 		return delegatestore.DispositionReported
 	}
 	return delegatestore.DispositionTerminalError
+}
+
+func delegatePreparedFinish(packet delegatestore.TerminalPacket) (delegatestore.OutcomeStatus, delegatestore.RunDisposition, string) {
+	if packet.Kind == delegatestore.PacketReported {
+		return delegatestore.OutcomeCompleted, delegatestore.DispositionReported, ""
+	}
+	if delegateIsMissingTerminalPacket(packet) {
+		return delegatestore.OutcomeFailed, delegatestore.DispositionTerminalError, "missing_terminal"
+	}
+	return delegatestore.OutcomeFailed, delegatestore.DispositionTerminalError, "terminal_error"
 }
 
 func cloneDelegateTerminalPacket(packet delegatestore.TerminalPacket) delegatestore.TerminalPacket {

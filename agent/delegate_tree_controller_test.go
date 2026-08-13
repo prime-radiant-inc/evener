@@ -262,10 +262,10 @@ func TestDelegateControllerRemainsDormant(t *testing.T) {
 	}
 	for _, file := range pkg.Syntax {
 		name := filepath.Base(pkg.Fset.Position(file.Package).Filename)
-		if delegateControllerImplementationFiles[name] {
-			continue
-		}
 		for _, violation := range delegateControllerDormancyViolations(pkg.Fset, file, pkg.TypesInfo, pkg.Types) {
+			if delegateControllerDormancyReferenceAllowed(name, violation) {
+				continue
+			}
 			t.Errorf("active production caller references dormant delegate controller %s %s at %s", violation.kind, violation.symbol, violation.position)
 		}
 	}
@@ -290,9 +290,21 @@ func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing
 		{name: "lifecycle method expression", source: `package agent; func probe() { commit := (*delegateTreeController).CommitStart; _ = commit }`, symbol: "CommitStart"},
 		{name: "bound lifecycle reference through type alias", source: `package agent; type active = delegateTreeController; func probe(controller *active) { commit := controller.CommitStart; _ = commit }`, symbol: "CommitStart"},
 		{name: "lifecycle method expression through type alias", source: `package agent; type active = delegateTreeController; func probe() { commit := (*active).CommitStart; _ = commit }`, symbol: "CommitStart"},
+		{name: "session steering call", source: `package agent; func probe(session *Session) { session.appendDelegateSteeringDurably("steer") }`, symbol: "appendDelegateSteeringDurably"},
+		{name: "bound session steering alias", source: `package agent; func probe(session *Session) { appendSteer := session.appendDelegateSteeringDurably; _ = appendSteer }`, symbol: "appendDelegateSteeringDurably"},
+		{name: "session steering method expression", source: `package agent; func probe() { appendSteer := (*Session).appendDelegateSteeringDurably; _ = appendSteer }`, symbol: "appendDelegateSteeringDurably"},
+		{name: "session steering method expression through type alias", source: `package agent; type child = Session; func probe() { appendSteer := (*child).appendDelegateSteeringDurably; _ = appendSteer }`, symbol: "appendDelegateSteeringDurably"},
+		{name: "delivery commit call", source: `package agent; func probe(commit *delegateToolResultCommit) { commit.Complete(true) }`, symbol: "Complete"},
+		{name: "bound delivery commit alias", source: `package agent; func probe(commit *delegateToolResultCommit) { complete := commit.Complete; _ = complete }`, symbol: "Complete"},
+		{name: "delivery commit method expression", source: `package agent; func probe() { complete := (*delegateToolResultCommit).Complete; _ = complete }`, symbol: "Complete"},
+		{name: "delivery commit method expression through type alias", source: `package agent; type deliveryCommit = delegateToolResultCommit; func probe() { complete := (*deliveryCommit).Complete; _ = complete }`, symbol: "Complete"},
 		{name: "unrelated lifecycle call", source: `package agent; type unrelated struct{}; func (*unrelated) CommitStart() {}; func probe(other *unrelated) { other.CommitStart() }`},
 		{name: "unrelated bound lifecycle reference", source: `package agent; type unrelated struct{}; func (*unrelated) CommitStart() {}; func probe(other *unrelated) { commit := other.CommitStart; _ = commit }`},
 		{name: "unrelated lifecycle method expression", source: `package agent; type unrelated struct{}; func (*unrelated) CommitStart() {}; func probe() { commit := (*unrelated).CommitStart; _ = commit }`},
+		{name: "unrelated session steering call", source: `package agent; type unrelated struct{}; func (*unrelated) appendDelegateSteeringDurably(string) {}; func probe(other *unrelated) { other.appendDelegateSteeringDurably("steer") }`},
+		{name: "unrelated session steering method expression", source: `package agent; type unrelated struct{}; func (*unrelated) appendDelegateSteeringDurably(string) {}; func probe() { appendSteer := (*unrelated).appendDelegateSteeringDurably; _ = appendSteer }`},
+		{name: "unrelated delivery commit call", source: `package agent; type unrelated struct{}; func (*unrelated) Complete(bool) {}; func probe(other *unrelated) { other.Complete(true) }`},
+		{name: "unrelated delivery commit method expression", source: `package agent; type unrelated struct{}; func (*unrelated) Complete(bool) {}; func probe() { complete := (*unrelated).Complete; _ = complete }`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -347,8 +359,21 @@ type delegateControllerDormancyViolation struct {
 	position token.Position
 }
 
+func delegateControllerDormancyReferenceAllowed(filename string, violation delegateControllerDormancyViolation) bool {
+	switch violation.kind {
+	case "session steering method":
+		return filename == "delegate_tree_steer.go"
+	case "delivery commit method":
+		return filename == "delegate_delivery.go"
+	default:
+		return delegateControllerImplementationFiles[filename]
+	}
+}
+
 func delegateControllerDormancyViolations(files *token.FileSet, file *ast.File, info *types.Info, pkg *types.Package) []delegateControllerDormancyViolation {
 	controller := types.Unalias(pkg.Scope().Lookup("delegateTreeController").Type())
+	session := types.Unalias(pkg.Scope().Lookup("Session").Type())
+	deliveryCommit := types.Unalias(pkg.Scope().Lookup("delegateToolResultCommit").Type())
 	constructor := pkg.Scope().Lookup("openDelegateTreeController")
 	delivery := pkg.Scope().Lookup("deliverDelegatePacket")
 	var violations []delegateControllerDormancyViolation
@@ -360,8 +385,13 @@ func delegateControllerDormancyViolations(files *token.FileSet, file *ast.File, 
 			}
 		case *ast.SelectorExpr:
 			selection := info.Selections[typed]
-			if selection != nil && delegateControllerLifecycleMethods[typed.Sel.Name] && delegateControllerMethodHasReceiver(selection.Obj(), controller) {
+			switch {
+			case selection != nil && delegateControllerLifecycleMethods[typed.Sel.Name] && delegateControllerMethodHasReceiver(selection.Obj(), controller):
 				violations = append(violations, delegateControllerDormancyViolation{kind: "lifecycle method", symbol: typed.Sel.Name, position: files.Position(typed.Pos())})
+			case selection != nil && typed.Sel.Name == "appendDelegateSteeringDurably" && delegateControllerMethodHasReceiver(selection.Obj(), session):
+				violations = append(violations, delegateControllerDormancyViolation{kind: "session steering method", symbol: typed.Sel.Name, position: files.Position(typed.Pos())})
+			case selection != nil && typed.Sel.Name == "Complete" && delegateControllerMethodHasReceiver(selection.Obj(), deliveryCommit):
+				violations = append(violations, delegateControllerDormancyViolation{kind: "delivery commit method", symbol: typed.Sel.Name, position: files.Position(typed.Pos())})
 			}
 		case *ast.CompositeLit:
 			if isDelegateControllerType(info.TypeOf(typed), controller) {
@@ -407,9 +437,13 @@ type delegateTreeController struct{}
 type delegateTreeControllerConfig struct{}
 type delegateStartReservation struct{}
 type delegateStartCommit struct{}
+type Session struct{}
+type delegateToolResultCommit struct{}
 func openDelegateTreeController(delegateTreeControllerConfig) (*delegateTreeController, error) { return nil, nil }
 func deliverDelegatePacket() {}
 func (*delegateTreeController) CommitStart(*delegateStartReservation) (delegateStartCommit, error) { return delegateStartCommit{}, nil }
+func (*Session) appendDelegateSteeringDurably(string) {}
+func (*delegateToolResultCommit) Complete(bool) {}
 `, 0)
 	if err != nil {
 		t.Fatalf("parse fixture prelude: %v", err)
