@@ -149,6 +149,15 @@
   --space-8: 48px;
   --space-9: 64px;
 
+  /* Transcript speaker geometry, declared once for every surface that
+   * renders speaker rows (session pane's turn blocks AND focused view, the
+   * read-only transcript pane, the surfaces gallery — sibling render trees
+   * with no shared CSS ancestor, which is why this lives here and not on a
+   * component class). Gutter = avatar + gap; keep the arithmetic honest. */
+  --speaker-avatar-size: 24px;
+  --speaker-gap: 10px; /* deliberately off the 4px grid: measured rhythm */
+  --speaker-gutter: 34px;
+
   --radius-chip: 6px; /* chips, badges, small tags */
   --radius-control: 8px; /* buttons, inputs */
   --radius-pane: 10px; /* panes, cards, dialogs */

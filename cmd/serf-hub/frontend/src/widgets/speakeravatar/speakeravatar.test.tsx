@@ -22,17 +22,18 @@ function tileCss(): string {
   return readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
-// Same declaration-level read for the transcript's geometry: the gutter
-// custom properties live on .turn in turnblock.module.css, one directory
-// over. Comments stripped first, same as tileCss().
+// Same declaration-level read for the transcript's geometry: the speaker
+// custom properties live in tokens.css (single-sourced there because the
+// transcript surfaces are sibling render trees). Comments stripped first,
+// same as tileCss().
 function turnCss(): string {
-  const path = join(dirname(fileURLToPath(import.meta.url)), "../../panes/session/transcript/turnblock.module.css");
+  const path = join(dirname(fileURLToPath(import.meta.url)), "../../styles/tokens.css");
   return readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
 function geometryVar(css: string, name: string): number {
   const match = new RegExp(`${name}:\\s*(\\d+)px`).exec(css);
-  if (!match) throw new Error(`turnblock.module.css declares no ${name}`);
+  if (!match) throw new Error(`tokens.css declares no ${name}`);
   return Number(match[1]!);
 }
 
@@ -112,7 +113,7 @@ test("the tile uses the edge/surface/ink/radius tokens, not literals", () => {
 });
 
 // The drift pin. The transcript's gutter geometry is single-sourced on .turn
-// in turnblock.module.css: --speaker-avatar-size (the tile edge) +
+// in tokens.css: --speaker-avatar-size (the tile edge) +
 // --speaker-gap (the header row's gap) = --speaker-gutter (the content
 // column indent). This widget's DEFAULT_SIZE is the avatar half of that
 // arithmetic, so it is pinned equal to --speaker-avatar-size here: if anyone

@@ -991,7 +991,7 @@ test("a spawn that fails because no agent daemon could be reached shows actionab
   await user.click(screen.getByTestId("spawn-submit"));
 
   await screen.findByText(
-    "Spawn failed: No agent daemon responded for this project. Start one by running `serf` in the repo, then retry.",
+    "Spawn failed: No agent daemon responded for this project. Start one by running serf in the repo, then retry.",
   );
   expect(screen.queryByText(/launch-check timed out/i)).toBeNull();
 });

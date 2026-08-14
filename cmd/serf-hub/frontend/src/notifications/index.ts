@@ -4,11 +4,11 @@
 // workspaceStore + connectionStore. AppShell calls initNotifications() once
 // at module evaluation, beside initPrefs().
 //
-// Every opt-in is read EXCLUSIVELY from the shipped prefs store (all-OFF by
-// default, prefs.ts:197-204/300) — this engine introduces NO default layer
-// of its own. The legacy runtime engine defaulted title/favicon TRUE
-// (notifications.js:31); that default is deliberately NOT ported (the top
-// cross-wave trap). See title.ts / favicon.ts / channels.ts for each
+// Every channel is read EXCLUSIVELY from the shipped prefs store (title ON,
+// favicon/os/sound OFF by default — stores/prefs.ts's loadNotifications and
+// docs/web-ui/decisions.md's 2026-08-14 entry) — this engine introduces NO
+// default layer of its own. The legacy runtime's favicon-TRUE default stays
+// deliberately unported. See title.ts / favicon.ts / channels.ts for each
 // channel; attention.ts for the pure transition detection; leader.ts for the
 // Web-Locks-only election.
 

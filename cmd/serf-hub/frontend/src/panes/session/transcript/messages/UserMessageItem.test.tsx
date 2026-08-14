@@ -155,7 +155,7 @@ test("the slack-lean layout is token-backed and has no prose card treatment", ()
   // ancestor to inherit the custom property from there (kata T9,
   // Session.test.tsx's own "declared exactly once" test covers the source
   // side of this contract).
-  expect(css).toMatch(/\.message\s*\{[\s\S]*display:\s*flex;[\s\S]*gap:\s*var\(--speaker-gap,\s*10px\);/);
+  expect(css).toMatch(/\.message\s*\{[\s\S]*display:\s*flex;[\s\S]*gap:\s*var\(--speaker-gap\);/);
   expect(css).toMatch(/\.avatar\s*\{[\s\S]*flex:\s*none;/);
   // The content column must SPAN the row (flex: 1 1 auto), matching the agent
   // side's .column: left shrink-to-fit, the bubble's max-width: 92% becomes a

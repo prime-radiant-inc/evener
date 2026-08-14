@@ -60,7 +60,7 @@
 .opener {
   display: flex;
   align-items: flex-start;
-  gap: var(--speaker-gap, 10px);
+  gap: var(--speaker-gap);
 }
 
 .column {

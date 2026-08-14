@@ -620,3 +620,26 @@ ink-low/mid, placed below the example-prompt buttons so it reads as an
 aside rather than another call to action.
 
 <!-- decision-tables:end -->
+
+## 2026-08-14 launch-error presentation: pass-through by default
+
+`friendlyLaunchErrorMessage` initially mapped the whole hubLaunch family to
+"no daemon — run serf" guidance. A live repro (credentialed daemon,
+uncredentialed default provider) showed that masks the family's config half
+with actively wrong advice, and review showed it also destroyed the daemon's
+own propagated stderr — a diagnosis the hub has a dedicated Go test to
+preserve. The rule is now inverted: hubLaunch messages pass through with
+their own instructions; only the no-diagnosis subset (launch-check
+canceled/timed out, fork/exec — the daemon never produced output) gets the
+guidance copy. A new hub message therefore defaults to being shown, never
+swallowed.
+
+## 2026-08-14 GoalControl rides the inline status row
+
+Production only ever mounts SessionChrome's composer placement, and the goal
+chip only rendered in the footer placement — unreachable dead code, caught by
+the live E2E pass (the long-standing "popover clipping" suspicion was this,
+misdiagnosed). The chip now renders in the inline status row, compressing
+away below 560px of container width per the pre-existing status-row rule.
+Known limitation: phones therefore have no goal affordance; a compact
+trigger or SessionMenu entry is the follow-up if goals matter on phones.

@@ -46,7 +46,7 @@ start one with `serf` in the repo, or pick a live project." Done when:
 spawn failure with a live hub and no daemon shows actionable copy (unit +
 live check in T2).
 
-## T4 — blocking escalations count as needs-you (Go)
+## T4 — blocking escalations count as needs-you (Go) — DONE AS FOUND
 
 `hubcore.DeriveAttention`/tree state derivation doesn't treat a pending
 sandbox escalation as "a human is needed", so escalations are invisible to
@@ -73,7 +73,7 @@ shortcut hint row (KeyHint): Mod+K palette, Mod+I composer, Mod+J
 needs-you, and "? in the palette shows all shortcuts". Done when: rendered
 on welcome, gallery/tests updated.
 
-## T7 — phone transcript legibility (frontend)
+## T7 — phone transcript legibility (frontend) — NO-OP, premise stale
 
 Measured 13px message body at 390px. At ≤900px, transcript message BODY
 text moves to var(--font-size-body) (14px); chrome/captions stay as they
@@ -87,7 +87,7 @@ fix by portaling like widgets/popover (or anchoring within the unclipped
 region); if not reproducible, delete the stale memory note. Done when:
 verified either way, fix landed if needed.
 
-## T9 — cleanup: shared --speaker-gap (frontend)
+## T9 — cleanup: shared --speaker-gap (frontend) — hoisted to tokens.css
 
 The off-grid `--speaker-gap: 10px` is declared independently in
 session.module.css and turnblock.module.css. Hoist to one declaration on a
@@ -104,3 +104,25 @@ remediated areas; opus review over the batch; push; report.
 T1 → {T2, T8} live-dependent; {T3, T5, T6, T7, T9} parallel frontend
 workers (disjoint files); T4 solo Go worker with investigate-first
 mandate; T10 last.
+
+## Outcomes (2026-08-14)
+
+- T4: no code — the escalation→needs_you plumbing already exists end to end
+  (hubcore promotedAttentionLevel, fuzz-tested; commits 9f9593042/74053aa35/
+  fb171f89c). The audit finding was stale.
+- T7: no code — message prose already resolves --font-size-body (14px) at
+  every width; the persona's 13px reading was tool-row meta, which the
+  tiered-density spec deliberately keeps at ui size.
+- T9: the plan's "shared ancestor" doesn't exist (focused view, turn blocks,
+  and standalone transcript surfaces are sibling render trees), so the
+  speaker geometry trio moved to tokens.css — one declaration, every
+  consumer bare var(), pinned from both sides by Session.test.
+- T2 live pass: 7/8 cards passed; caught GoalControl unreachable in
+  production (fixed — chip now rides the inline status row) and the
+  launch-error masking bug (fixed — pass-through by default, guidance only
+  for the no-diagnosis subset). Known limitation: the goal chip compresses
+  away below 560px container width, so phones have no goal affordance —
+  candidates: glyph-only trigger or a SessionMenu entry.
+- Default-model spawn failures were config, not code: the launch.toml
+  default (openai/gpt-5.5) has no credentials on this machine; the
+  now-passed-through server message says exactly that.

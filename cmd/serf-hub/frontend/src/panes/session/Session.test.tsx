@@ -1738,33 +1738,27 @@ test("the transcript flex chain carries min-width: 0", () => {
   }
 });
 
-// --- --speaker-gap has exactly one declaration site (kata T9) --------------
+// --- speaker geometry has exactly one declaration site: tokens.css --------
 //
 // .focusedTranscript (this file) and .turn (transcript/turnblock.module.css)
-// are SIBLING branches of the same VirtualList row - the "Intent" focused
-// view renders userMessage/agentMessage items directly under
-// .focusedTranscript (Session.tsx's focusedEntries branch), while every
-// other view renders them under TurnBlock's .turn. Neither is an ancestor of
-// the other, and TurnBlock is also reused standalone (the /dev/surfaces
-// gallery, panes/transcript's read-only pane) with no .focusedTranscript
-// ancestor at all - so .turn must keep its own --speaker-gap declaration.
-// The single source of truth is THAT declaration; .focusedTranscript no
-// longer declares its own copy, and the two item renderers reachable from
-// both branches (AgentMessageItem's .opener, UserMessageItem's .message)
-// carry a documented var(--speaker-gap, 10px) fallback for when .turn isn't
-// an ancestor. This test pins the "exactly one declaration" half of that
-// contract; the isolation half is TurnBlock.test.tsx's own "declared once on
-// .turn" test, which keeps passing unchanged.
-test("--speaker-gap is declared exactly once, on .turn - not duplicated onto .focusedTranscript", () => {
+// are SIBLING branches of the same VirtualList row, and TurnBlock is also
+// reused standalone (the /dev/surfaces gallery, panes/transcript's read-only
+// pane) - no component class is an ancestor of every consumer, so the
+// speaker geometry (--speaker-avatar-size/-gap/-gutter) lives in tokens.css
+// and NEITHER stylesheet may redeclare any of it. This pins that contract
+// from both sides.
+test("speaker geometry is declared only in tokens.css, not in session or turnblock css", () => {
   const here = dirname(fileURLToPath(import.meta.url));
-  const sessionCss = readFileSync(join(here, "session.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  const turnblockCss = readFileSync(join(here, "transcript", "turnblock.module.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    "",
-  );
-  expect(sessionCss).not.toContain("--speaker-gap");
-  const declarations = (turnblockCss.match(/--speaker-gap:\s*10px;/g) ?? []).length;
-  expect(declarations).toBe(1);
+  const stripped = (path: string) => readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const sessionCss = stripped(join(here, "session.module.css"));
+  const turnblockCss = stripped(join(here, "transcript", "turnblock.module.css"));
+  for (const name of ["--speaker-avatar-size:", "--speaker-gap:", "--speaker-gutter:"]) {
+    expect(sessionCss).not.toContain(name);
+    expect(turnblockCss).not.toContain(name);
+  }
+  const tokensCss = stripped(join(here, "..", "..", "styles", "tokens.css"));
+  expect(tokensCss.match(/--speaker-gap:\s*10px;/g) ?? []).toHaveLength(1);
+  expect(tokensCss.match(/--speaker-gutter:\s*34px;/g) ?? []).toHaveLength(1);
 });
 
 // --- session-open lands at the transcript end (kata cmjb) ------------------

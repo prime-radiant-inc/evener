@@ -148,7 +148,7 @@ export function friendlyErrorMessage(error: unknown): string {
 // which is the CLIENT's own connection being down: this is the hub saying
 // "I'm here, the daemon isn't", so the fix is different - start one.
 const DAEMON_MISSING_MESSAGE =
-  "No agent daemon responded for this project. Start one by running `serf` in the repo, then retry.";
+  "No agent daemon responded for this project. Start one by running serf in the repo, then retry.";
 
 // errorKind classifies a rejection into the families a caller with launch
 // context (spawn, a model picker) needs to tell apart. Driven by real
@@ -176,29 +176,32 @@ export function errorKind(error: unknown): ErrorKind {
   return "unknown";
 }
 
-// The hubLaunch family splits in two (appwire.HubLaunchError call sites in
-// cmd/serf-hub): CONFIG failures ("provider credentials missing for ...",
-// "model is not configured ...", "... not reported by the launch harness")
-// carry their own actionable instructions and must pass through — masking
-// them with daemon guidance sends the user to fix the wrong thing (live
-// repro: credentialed daemon, uncredentialed default provider). Everything
-// else in the family is daemon reachability (launch-check failed/timed
-// out/canceled, fork/exec, spawn/resume failures) — raw text a person
-// can't act on, which is what the guidance copy is for.
-const LAUNCH_CONFIG_MESSAGE_PATTERN =
-  /^provider credentials missing for |model is not configured for Serf launch|not reported by the Serf launch harness/;
+// Within the hubLaunch family (appwire.HubLaunchError, stamped from
+// cmd/serf-hub/spawn.go, app_threadlifecycle.go, app_models.go, AND
+// internal/codexlaunch), almost every message carries its own diagnosis —
+// config failures ("provider credentials missing for ..."), resume advice
+// (resumeFailureError's kill-the-old-daemon instructions), and crucially
+// the daemon's own redacted stderr ("serf launch-check failed: <stderr>",
+// which cmd/serf-hub/app_rpc_test.go's stderr-propagation test exists to
+// keep intact end to end). Masking those with generic guidance sends the
+// user to fix the wrong thing, so the DEFAULT is pass-through, and only
+// the messages that genuinely contain no diagnosis — the daemon never got
+// far enough to produce one — take the guidance copy: launch-check
+// canceled/timed out (no output existed) and fork/exec (the serf binary
+// itself is absent). A new Go message therefore defaults to being shown,
+// not swallowed.
+const LAUNCH_NO_DIAGNOSIS_PATTERN = /^serf launch-check (?:canceled|timed out)$|^fork\/exec /;
 
-// friendlyLaunchErrorMessage is friendlyErrorMessage for the two surfaces
-// that can hit the daemon-missing family against a cold project (spawn, a
-// model picker): identical to friendlyErrorMessage except the
-// daemon-reachability half of the hubLaunch family gets
-// DAEMON_MISSING_MESSAGE's actionable copy instead of raw launch-check
-// text, while the config half keeps its own (already actionable) message.
+// friendlyLaunchErrorMessage is friendlyErrorMessage for the surfaces that
+// can hit the hubLaunch family against a cold project (spawn, a model
+// picker): identical to friendlyErrorMessage except the no-diagnosis
+// subset above gets DAEMON_MISSING_MESSAGE's actionable copy; every other
+// hubLaunch message passes through with its own instructions.
 export function friendlyLaunchErrorMessage(error: unknown): string {
   if (errorKind(error) !== "daemon-missing") return friendlyErrorMessage(error);
   const message = error instanceof WireError ? error.message.trim() : "";
-  if (LAUNCH_CONFIG_MESSAGE_PATTERN.test(message)) return message;
-  return DAEMON_MISSING_MESSAGE;
+  if (message === "" || LAUNCH_NO_DIAGNOSIS_PATTERN.test(message)) return DAEMON_MISSING_MESSAGE;
+  return message;
 }
 
 export type MutationOutcome = "notAccepted" | "unknown" | "targetDeleted";

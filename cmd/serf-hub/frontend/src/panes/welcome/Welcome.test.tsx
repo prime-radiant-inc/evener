@@ -150,8 +150,14 @@ describe("chord hints", () => {
 
   test("renders each chord through KeyHint's own <kbd> elements, not hand-rolled text", () => {
     render(<Welcome params={{}} paneId="welcome" focused={true} />);
-    // 3 chords x 2 keys (Mod+K, Mod+I, Mod+J) + the bare "?" hint = 7 <kbd>s.
-    expect(document.querySelectorAll("kbd").length).toBe(7);
+    // 3 chords x 2 keys (Mod+K, Mod+I, Mod+J) + the bare "?" hint = 7 <kbd>s,
+    // and the modifier glyph is KeyHint's platform-split rendering (⌘ or
+    // Ctrl), which hand-rolled text wouldn't produce.
+    const kbds = [...document.querySelectorAll("kbd")];
+    expect(kbds.length).toBe(7);
+    const modifierKbds = kbds.filter((kbd) => kbd.textContent === "⌘" || kbd.textContent === "Ctrl");
+    expect(modifierKbds.length).toBe(3);
+    expect(kbds.map((kbd) => kbd.textContent)).toContain("?");
   });
 
   test('mentions that "?" inside the command palette shows all shortcuts', () => {

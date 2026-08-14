@@ -11,15 +11,9 @@
    * wrap - a single ancestor declaration wouldn't reach it there.
    */
   --session-measure: 76rem;
-  /* Speaker geometry, declared ONCE on .turn: the gutter is 34px = 24px
-   * speaker-avatar tile + 10px gap. Custom properties (not a literal in the
-   * indent rule) so every consumer - the .runContent indent here,
-   * usermessageitem.module.css, agentmessageitem.module.css - inherits one
-   * definition: changing the gutter later is one number in one file.
-   */
-  --speaker-avatar-size: 24px;
-  --speaker-gap: 10px;
-  --speaker-gutter: 34px;
+  /* Speaker geometry (--speaker-avatar-size/-gap/-gutter) comes from
+   * tokens.css: .turn and the focused view are sibling render trees, so no
+   * component class could be the single source for both. */
   display: flex;
   flex-direction: column;
   width: 100%;

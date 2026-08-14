@@ -169,7 +169,7 @@ test("errorKind classifies anything else as unknown", () => {
 test("friendlyLaunchErrorMessage gives the daemon-missing family actionable copy instead of the launch-check's raw text", () => {
   expect(
     friendlyLaunchErrorMessage(new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" })),
-  ).toBe("No agent daemon responded for this project. Start one by running `serf` in the repo, then retry.");
+  ).toBe("No agent daemon responded for this project. Start one by running serf in the repo, then retry.");
 });
 
 test("friendlyLaunchErrorMessage passes a hubLaunch config/credentials message through untouched", () => {
@@ -199,12 +199,33 @@ test("friendlyLaunchErrorMessage passes a hubLaunch config/credentials message t
   ).toBe("model provider is not reported by the Serf launch harness: openai");
 });
 
-test("friendlyLaunchErrorMessage still gives daemon-reachability launch failures the guidance copy", () => {
-  for (const raw of ["serf launch-check failed: boom", "fork/exec serf: no such file or directory"]) {
+test("friendlyLaunchErrorMessage masks only the no-diagnosis subset with the guidance copy", () => {
+  for (const raw of ["serf launch-check timed out", "serf launch-check canceled", "fork/exec serf: no such file or directory"]) {
     expect(friendlyLaunchErrorMessage(new WireError(raw, -32014, { serfErrorInfo: "hubLaunch" }))).toBe(
-      "No agent daemon responded for this project. Start one by running `serf` in the repo, then retry.",
+      "No agent daemon responded for this project. Start one by running serf in the repo, then retry.",
     );
   }
+});
+
+test("friendlyLaunchErrorMessage preserves the daemon's own stderr (the hub propagates it on purpose)", () => {
+  // Mirrors cmd/serf-hub/app_rpc_test.go's stderr-propagation fixture: a
+  // daemon that SPAWNED and crashed carries its diagnosis in the message,
+  // and 'run serf in the repo' would reproduce the same crash silently.
+  const stderr =
+    'daemon spawn failed: process exited before rendezvous: exit status 1: serf serve: session creation: plugin initialization: resolving plugin dir "/Users/jesse/x": lstat /Users: no such file or directory';
+  expect(friendlyLaunchErrorMessage(new WireError(stderr, -32014, { serfErrorInfo: "hubLaunch" }))).toBe(stderr);
+  expect(
+    friendlyLaunchErrorMessage(new WireError("serf launch-check failed: boom", -32014, { serfErrorInfo: "hubLaunch" })),
+  ).toBe("serf launch-check failed: boom");
+});
+
+test("friendlyLaunchErrorMessage passes wrapped and resume-advice messages through", () => {
+  const wrapped =
+    "session s1 is still held by live daemon pid 42. Stop it and resume again. Replacement spawn failed: provider credentials missing for openai: set via serf/auth/apiKey/set or set the matching env var";
+  expect(friendlyLaunchErrorMessage(new WireError(wrapped, -32014, { serfErrorInfo: "hubLaunch" }))).toBe(wrapped);
+  expect(
+    friendlyLaunchErrorMessage(new WireError("codex launch not configured: src1", -32014, { serfErrorInfo: "hubLaunch" })),
+  ).toBe("codex launch not configured: src1");
 });
 
 test("friendlyLaunchErrorMessage keeps the hub-unreachable message for a closed connection", () => {

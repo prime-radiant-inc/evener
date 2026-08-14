@@ -539,7 +539,8 @@ test("the speaker geometry is declared once on .turn: 34px gutter = 24px avatar 
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "turnblock.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   expect(css).toMatch(
-    /\.turn\s*\{[\s\S]*--speaker-avatar-size:\s*24px;[\s\S]*--speaker-gap:\s*10px;[\s\S]*--speaker-gutter:\s*34px;/,
+    // Speaker geometry hoisted to tokens.css - .turn must NOT redeclare it.
+    /\.turn\s*\{(?![\s\S]*--speaker-gap:)/,
   );
 });
 

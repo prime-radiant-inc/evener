@@ -205,7 +205,7 @@ describe("open state", () => {
 
     expect(
       await screen.findByText(
-        "Couldn't load models: No agent daemon responded for this project. Start one by running `serf` in the repo, then retry.",
+        "Couldn't load models: No agent daemon responded for this project. Start one by running serf in the repo, then retry.",
       ),
     ).toBeTruthy();
     expect(screen.queryByText(/launch-check timed out/i)).toBeNull();

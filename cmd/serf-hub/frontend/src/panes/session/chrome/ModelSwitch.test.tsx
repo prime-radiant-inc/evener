@@ -407,7 +407,7 @@ test("a daemon-missing catalog fetch shows actionable copy under the session-sta
 
   const alert = await screen.findByRole("alert");
   expect(alert.textContent).toBe(
-    "Couldn't start this session: No agent daemon responded for this project. Start one by running `serf` in the repo, then retry.",
+    "Couldn't start this session: No agent daemon responded for this project. Start one by running serf in the repo, then retry.",
   );
   expect(alert.textContent).not.toMatch(/launch-check timed out/i);
 });

@@ -67,17 +67,8 @@
 }
 
 .focusedTranscript {
-  --speaker-avatar-size: 24px;
-  /* --speaker-gap is NOT declared here (kata T9): it used to be, duplicating
-   * turnblock.module.css's .turn declaration - the same 10px, two places
-   * that could silently drift. .turn is the single source now; the two item
-   * renderers this branch can reach (AgentMessageItem's .opener,
-   * UserMessageItem's .message - the only kinds focusedEntries() ever
-   * emits, viewModes.ts) carry a documented var(--speaker-gap, 10px)
-   * fallback for when .turn isn't an ancestor, which it never is here: this
-   * branch and TurnBlock's .turn are SIBLING renders of the same VirtualList
-   * row (Session.tsx), never nested. */
-  --speaker-gutter: 34px;
+  /* Speaker geometry comes from tokens.css — one declaration for this
+   * branch, .turn, and every standalone transcript surface. */
   display: flex;
   flex-direction: column;
   width: 100%;

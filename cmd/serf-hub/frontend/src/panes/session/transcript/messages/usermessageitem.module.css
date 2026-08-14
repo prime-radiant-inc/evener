@@ -35,7 +35,7 @@
    * under .turn - the two are sibling branches of the same VirtualList row
    * (Session.tsx), so there is no ancestor there to inherit the custom
    * property from (kata T9). */
-  gap: var(--speaker-gap, 10px);
+  gap: var(--speaker-gap);
   /* --space-1, not --space-2: with the body now a bubble (see .body), the
    * message is a chat row, and chat rows sit tight - the bubble's own fill
    * carries the separation the old document rhythm bought with air. */
