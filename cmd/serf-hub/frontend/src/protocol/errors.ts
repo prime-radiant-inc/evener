@@ -176,15 +176,29 @@ export function errorKind(error: unknown): ErrorKind {
   return "unknown";
 }
 
+// The hubLaunch family splits in two (appwire.HubLaunchError call sites in
+// cmd/serf-hub): CONFIG failures ("provider credentials missing for ...",
+// "model is not configured ...", "... not reported by the launch harness")
+// carry their own actionable instructions and must pass through — masking
+// them with daemon guidance sends the user to fix the wrong thing (live
+// repro: credentialed daemon, uncredentialed default provider). Everything
+// else in the family is daemon reachability (launch-check failed/timed
+// out/canceled, fork/exec, spawn/resume failures) — raw text a person
+// can't act on, which is what the guidance copy is for.
+const LAUNCH_CONFIG_MESSAGE_PATTERN =
+  /^provider credentials missing for |model is not configured for Serf launch|not reported by the Serf launch harness/;
+
 // friendlyLaunchErrorMessage is friendlyErrorMessage for the two surfaces
 // that can hit the daemon-missing family against a cold project (spawn, a
 // model picker): identical to friendlyErrorMessage except the
-// daemon-missing family gets DAEMON_MISSING_MESSAGE's actionable copy
-// instead of the launch-check's own raw text ("serf launch-check timed
-// out", "fork/exec serf: no such file", ...) - accurate, but not something a
-// person can act on.
+// daemon-reachability half of the hubLaunch family gets
+// DAEMON_MISSING_MESSAGE's actionable copy instead of raw launch-check
+// text, while the config half keeps its own (already actionable) message.
 export function friendlyLaunchErrorMessage(error: unknown): string {
-  return errorKind(error) === "daemon-missing" ? DAEMON_MISSING_MESSAGE : friendlyErrorMessage(error);
+  if (errorKind(error) !== "daemon-missing") return friendlyErrorMessage(error);
+  const message = error instanceof WireError ? error.message.trim() : "";
+  if (LAUNCH_CONFIG_MESSAGE_PATTERN.test(message)) return message;
+  return DAEMON_MISSING_MESSAGE;
 }
 
 export type MutationOutcome = "notAccepted" | "unknown" | "targetDeleted";

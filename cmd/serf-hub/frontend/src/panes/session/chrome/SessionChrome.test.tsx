@@ -227,7 +227,10 @@ test("composer placement renders one ordered inline status and actions cluster w
   expect(screen.getAllByRole("button", { name: "Session actions" })).toHaveLength(1);
   expect(screen.queryByTestId("session-chrome")).toBeNull();
   expect(within(cluster).queryByTestId("session-chrome-cadence")).toBeNull();
-  expect(within(cluster).queryByRole("button", { name: /goal: active/i })).toBeNull();
+  // GoalControl rides the inline status too: production only ever mounts
+  // placement="composer" (Composer.tsx), so leaving it footer-only made it
+  // unreachable in the real app — the live E2E pass caught the regression.
+  expect(within(statusContainer).getByRole("button", { name: /goal/i })).toBeTruthy();
 });
 
 test("default placement preserves the standalone session chrome presentation", async () => {

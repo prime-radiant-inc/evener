@@ -172,6 +172,41 @@ test("friendlyLaunchErrorMessage gives the daemon-missing family actionable copy
   ).toBe("No agent daemon responded for this project. Start one by running `serf` in the repo, then retry.");
 });
 
+test("friendlyLaunchErrorMessage passes a hubLaunch config/credentials message through untouched", () => {
+  // These launch failures carry their own actionable instructions - masking
+  // them with the daemon guidance sends the user to fix the WRONG thing
+  // (live repro: a credentialed daemon, an uncredentialed default provider).
+  expect(
+    friendlyLaunchErrorMessage(
+      new WireError(
+        "provider credentials missing for openai: set via serf/auth/apiKey/set or set the matching env var",
+        -32014,
+        { serfErrorInfo: "hubLaunch" },
+      ),
+    ),
+  ).toBe("provider credentials missing for openai: set via serf/auth/apiKey/set or set the matching env var");
+  expect(
+    friendlyLaunchErrorMessage(
+      new WireError("model is not configured for Serf launch: openai/gpt-5.5", -32014, { serfErrorInfo: "hubLaunch" }),
+    ),
+  ).toBe("model is not configured for Serf launch: openai/gpt-5.5");
+  expect(
+    friendlyLaunchErrorMessage(
+      new WireError("model provider is not reported by the Serf launch harness: openai", -32014, {
+        serfErrorInfo: "hubLaunch",
+      }),
+    ),
+  ).toBe("model provider is not reported by the Serf launch harness: openai");
+});
+
+test("friendlyLaunchErrorMessage still gives daemon-reachability launch failures the guidance copy", () => {
+  for (const raw of ["serf launch-check failed: boom", "fork/exec serf: no such file or directory"]) {
+    expect(friendlyLaunchErrorMessage(new WireError(raw, -32014, { serfErrorInfo: "hubLaunch" }))).toBe(
+      "No agent daemon responded for this project. Start one by running `serf` in the repo, then retry.",
+    );
+  }
+});
+
 test("friendlyLaunchErrorMessage keeps the hub-unreachable message for a closed connection", () => {
   expect(friendlyLaunchErrorMessage(new ConnectionClosedError("AppwireClient: closed"))).toBe(
     "Can't reach the hub right now.",

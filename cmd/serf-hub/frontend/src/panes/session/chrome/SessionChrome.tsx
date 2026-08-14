@@ -114,6 +114,10 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
       {placement === "composer" ? (
         <div className={CLASS.body} data-testid="session-chrome-inline-status">
           <StatusRow sessionRef={sessionRef} model={model} now={now} />
+          {/* Production mounts ONLY this placement (Composer.tsx), so the
+              goal chip must ride here too — footer-only left it unreachable
+              in the real app. */}
+          <GoalControl sessionRef={sessionRef} model={model} />
         </div>
       ) : (
         /* .body owns compression (sessionchrome.module.css says why): its
