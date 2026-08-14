@@ -267,6 +267,9 @@ type testConfig struct {
 	subagentReserveTreeSlot func(*Session) (*treeReservation, bool)
 	// subagentStopGated overrides child stop-gating when handled is true.
 	subagentStopGated func(*Session, string) (stopped, handled bool)
+	// subagentRunIteration observes each production subagent input iteration.
+	// Tests use it only as a deterministic barrier around continuation decisions.
+	subagentRunIteration func(*subagent, int)
 	// subagentAfterFinalStatePublish observes the interval after a retained child
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)

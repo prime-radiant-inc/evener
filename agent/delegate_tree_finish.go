@@ -22,9 +22,16 @@ const (
 	delegateSupervisionSuppress
 )
 
+type delegateSettlementMode uint8
+
+const (
+	delegateSettlementOrdinary delegateSettlementMode = iota
+	delegateSettlementTerminal
+)
+
 // SupervisionBoundary linearizes pending-steer and stop precedence before
 // ordinary nudge and hook work begins outside the controller mutex.
-func (c *delegateTreeController) SupervisionBoundary(lease delegateLease) (delegateSupervisionBoundary, error) {
+func (c *delegateTreeController) SupervisionBoundary(lease delegateLease, mode delegateSettlementMode) (delegateSupervisionBoundary, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	aggregate, live, err := c.exactLeaseLocked(lease)
@@ -37,20 +44,20 @@ func (c *delegateTreeController) SupervisionBoundary(lease delegateLease) (deleg
 	if aggregate.Phase != delegatestore.PhaseRunning || !aggregate.Resumable || live.binding == nil || !live.binding.ready {
 		return delegateSupervisionSuppress, errDelegateTargetBusy
 	}
-	if len(live.pendingSteers) != 0 {
+	if len(live.pendingSteers) != 0 && mode == delegateSettlementOrdinary {
 		return delegateSupervisionContinue, nil
 	}
 	return delegateSupervisionProceed, nil
 }
 
-func (c *delegateTreeController) BeginSettlement(lease delegateLease, supplied *delegatestore.TerminalPacket) (bool, delegateMutationPlans, error) {
+func (c *delegateTreeController) BeginSettlement(lease delegateLease, supplied *delegatestore.TerminalPacket, mode delegateSettlementMode) (bool, delegateMutationPlans, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
 	if err != nil {
 		return false, delegateMutationPlans{}, err
 	}
-	if len(live.pendingSteers) != 0 {
+	if len(live.pendingSteers) != 0 && mode == delegateSettlementOrdinary {
 		return true, delegateMutationPlans{}, nil
 	}
 	packet := delegateMissingTerminalPacket()

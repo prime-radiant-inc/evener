@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -119,6 +120,144 @@ func TestDelegateResourceSupervision_AutoNudgeSuppressedBySteerCancellationAndEx
 	})
 }
 
+func TestDelegateResourceSupervision_FatalFailureBeatsPendingSteer(t *testing.T) {
+	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal turn", nil, nil)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	adapter := &fakeErrAdapter{
+		name: "openai",
+		steps: []func(llm.Request) (llm.Response, error){
+			func(llm.Request) (llm.Response, error) {
+				close(entered)
+				<-release
+				return llm.Response{}, fatalErr
+			},
+			func(llm.Request) (llm.Response, error) {
+				return finalResponse("unexpected continuation after fatal failure"), nil
+			},
+		},
+	}
+	fixture := newColdStableDelegateFixture(t, "")
+	client := llm.NewClient()
+	client.Register(adapter)
+	fixture.client = client
+	root := restoreSupervisionRoot(t, fixture, nil)
+	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
+	if started.result.Err != nil {
+		t.Fatalf("start stable delegate: %v", started.result.Err)
+	}
+	<-entered
+	steered := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "accepted before fatal failure", 0)
+	if steered.result.Err != nil || steered.result.Action != "steered" {
+		t.Fatalf("steer stable delegate = %#v", steered.result)
+	}
+	close(release)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	if got := len(adapter.Requests()); got != 1 {
+		t.Fatalf("provider requests after fatal failure = %d, want no steering continuation", got)
+	}
+	assertStableSupervisionOutcome(t, root, fixture.delegateID, delegatestore.OutcomeFailed)
+}
+
+func TestDelegateResourceSupervision_ExhaustionBeatsPendingSteer(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.Config.MaxToolRoundsPerInput = 1
+	})
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			close(entered)
+			<-release
+			return communicateResponse(false, "exhaust this activation")
+		},
+		func(llm.Request) llm.Response {
+			return finalResponse("unexpected continuation after exhaustion")
+		},
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
+	if started.result.Err != nil {
+		t.Fatalf("start stable delegate: %v", started.result.Err)
+	}
+	<-entered
+	steered := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "accepted before exhaustion", 0)
+	if steered.result.Err != nil || steered.result.Action != "steered" {
+		t.Fatalf("steer stable delegate = %#v", steered.result)
+	}
+	close(release)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	if got := supervisionRequestCount(fixture.adapter); got != 1 {
+		t.Fatalf("provider requests after exhaustion = %d, want no steering continuation", got)
+	}
+	assertStableSupervisionOutcome(t, root, fixture.delegateID, delegatestore.OutcomeExhausted)
+}
+
+func TestDelegateResourceSupervision_CancellationBeatsPendingSteer(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	continued := make(chan struct{})
+	var continuedOnce sync.Once
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+		close(entered)
+		<-release
+		return finalResponse("cancelled result")
+	}}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	root.cfg.testOnly.subagentRunIteration = func(_ *subagent, iteration int) {
+		if iteration > 1 {
+			continuedOnce.Do(func() { close(continued) })
+		}
+	}
+	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
+	if started.result.Err != nil {
+		t.Fatalf("start stable delegate: %v", started.result.Err)
+	}
+	<-entered
+	steered := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "accepted before cancellation", 0)
+	if steered.result.Err != nil || steered.result.Action != "steered" {
+		t.Fatalf("steer stable delegate = %#v", steered.result)
+	}
+	sub := root.subagents.get(fixture.childID)
+	if sub == nil {
+		t.Fatal("stable child was not tracked")
+	}
+	sub.mu.Lock()
+	sub.cancelRequested = true
+	cancel := sub.cancel
+	done := sub.done
+	sub.mu.Unlock()
+	if cancel == nil || done == nil {
+		t.Fatal("stable child has no cancellable generation")
+	}
+	cancel()
+	close(release)
+	select {
+	case <-done:
+	case <-continued:
+		root.delegateController.mu.Lock()
+		root.delegateController.live[fixture.delegateID].pendingSteers = nil
+		root.delegateController.mu.Unlock()
+		<-done
+		t.Fatal("cancelled generation entered a steering continuation")
+	}
+	if got := supervisionRequestCount(fixture.adapter); got != 1 {
+		t.Fatalf("provider requests after cancellation = %d, want no steering continuation", got)
+	}
+	assertStableSupervisionOutcome(t, root, fixture.delegateID, delegatestore.OutcomeCancelled)
+}
+
+func assertStableSupervisionOutcome(t *testing.T, root *Session, delegateID string, want delegatestore.OutcomeStatus) {
+	t.Helper()
+	root.delegateController.mu.Lock()
+	aggregate := root.delegateController.durable[delegateID]
+	root.delegateController.mu.Unlock()
+	if aggregate == nil || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != want {
+		t.Fatalf("stable delegate outcome = %#v, want %s", aggregate, want)
+	}
+}
+
 func TestDelegateResourceSupervision_PendingSteerPrecedesAutoNudge(t *testing.T) {
 	enteredFinalEmpty := make(chan struct{})
 	releaseFinalEmpty := make(chan struct{})
@@ -159,6 +298,13 @@ func TestDelegateResourceSupervision_PendingSteerPrecedesAutoNudge(t *testing.T)
 }
 
 func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) {
+	worktreeClient := llm.NewClient()
+	worktreeClient.Register(&fakeAdapter{name: "openai"})
+	worktreeRepo := newWtDlgRepo(t, worktreeClient)
+	lane, _, _, _, _, err := worktreeRepo.s.createDelegateWorktree(context.Background(), "dlg_01TASK7FATALPACKET000001")
+	if err != nil {
+		t.Fatalf("create fatal-evidence worktree: %v", err)
+	}
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal nudge turn", nil, nil)
 	enteredFatalNudge := make(chan struct{})
 	releaseFatalNudge := make(chan struct{})
@@ -184,7 +330,10 @@ func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) 
 			},
 		},
 	}
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.Isolation = "worktree"
+		descriptor.WorkingDir = lane
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	fixture.client = client
@@ -214,6 +363,13 @@ func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) 
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("stable child %q was not tracked", fixture.childID)
 	}
+	root.delegateController.mu.Lock()
+	descriptor := cloneDelegateStartDescriptor(root.delegateController.durable[fixture.delegateID].Descriptor)
+	root.delegateController.mu.Unlock()
+	if report := root.stableDelegateWorktreeReport(descriptor); report == nil || report.Dirty {
+		t.Fatalf("initial fatal-evidence worktree report = %#v, want clean", report)
+	}
+	cleanupMarker := filepath.Join(lane, "fatal-shell-cleanup.txt")
 	signaled := make(chan struct{}, 1)
 	ownedShell := &runningJob{
 		rec: &jobstore.JobRecord{
@@ -222,7 +378,12 @@ func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) 
 			Status:         jobstore.StatusRunning,
 			OwnerSessionID: sub.sess.ID(),
 		},
-		signal:         func() { signaled <- struct{}{} },
+		signal: func() {
+			if err := os.WriteFile(cleanupMarker, []byte("cleaned\n"), 0o644); err != nil {
+				panic(err)
+			}
+			signaled <- struct{}{}
+		},
 		done:           make(chan struct{}),
 		durableStarted: true,
 	}
@@ -241,6 +402,30 @@ func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) 
 	case <-signaled:
 	default:
 		t.Fatal("fatal stable nudge run published final state before stopping its owned shell")
+	}
+	if report := root.stableDelegateWorktreeReport(descriptor); report == nil || !report.Dirty {
+		t.Fatalf("post-cleanup worktree report = %#v, want dirty", report)
+	}
+	events, err := root.delegateController.store.Load()
+	if err != nil {
+		t.Fatalf("load fatal terminal packet: %v", err)
+	}
+	var packet *delegatestore.TerminalPacket
+	for i := range events {
+		if events[i].DelegateID == fixture.delegateID && events[i].TerminalPrepared != nil {
+			value := events[i].TerminalPrepared.Packet
+			packet = &value
+		}
+	}
+	if packet == nil {
+		t.Fatal("fatal stable generation has no terminal packet")
+	}
+	var metadata delegateTerminalPacketMetadata
+	if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
+		t.Fatalf("decode fatal terminal metadata: %v", err)
+	}
+	if metadata.Worktree == nil || !metadata.Worktree.Dirty {
+		t.Fatalf("fatal packet sampled worktree before shell cleanup: %#v", metadata.Worktree)
 	}
 }
 

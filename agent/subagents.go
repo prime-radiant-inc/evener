@@ -1465,14 +1465,20 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	var err error
 	var restoreParentDriveNotify func()
 	var finish delegateFinish
+	iteration := 0
 	for {
+		iteration++
+		if observer := a.sess.cfg.testOnly.subagentRunIteration; observer != nil {
+			observer(a, iteration)
+		}
 		res, err = a.sess.processInputKindWithProvenance(ctx, input, nil, kind, inputProvenance)
 		_, budgetExhausted := budgetExhaustionFromError(err)
 		a.mu.Lock()
 		cancelRequested := a.cancelRequested
 		a.mu.Unlock()
+		settlementMode := delegateSettlementModeForRun(err, cancelRequested)
 		if stableRun && a.sess.delegateController != nil {
-			boundary, boundaryErr := a.sess.delegateController.SupervisionBoundary(lease)
+			boundary, boundaryErr := a.sess.delegateController.SupervisionBoundary(lease, settlementMode)
 			if boundaryErr != nil && !errors.Is(boundaryErr, errDelegateTargetBusy) {
 				err = errors.Join(err, boundaryErr)
 			}
@@ -1517,11 +1523,18 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				res = drained
 			}
 		}
+		a.mu.Lock()
+		cancelRequested = a.cancelRequested
+		a.mu.Unlock()
+		settlementMode = delegateSettlementModeForRun(err, cancelRequested)
+		if err != nil && (!stableRun || stableDelegateFatalRun(err)) {
+			a.gateFatalRun(err)
+		}
 		finish = a.stableDelegateFinish(res, err)
 		if !stableRun || a.sess.delegateController == nil {
 			break
 		}
-		continueRun, plans, settleErr := a.sess.delegateController.BeginSettlement(lease, finish.packet)
+		continueRun, plans, settleErr := a.sess.delegateController.BeginSettlement(lease, finish.packet, settlementMode)
 		if executeErr := a.sess.executeDelegateMutationPlans(plans); settleErr == nil {
 			settleErr = executeErr
 		}
@@ -1544,9 +1557,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		input = "Continue with the newly received steering before settling."
 		kind = EntryContinuation
 		runStartedFromWatch = false
-	}
-	if err != nil && (!stableRun || finish.outcome == delegatestore.OutcomeFailed) {
-		a.gateFatalRun(err)
 	}
 	exhaustion, budgetExhausted := budgetExhaustionFromError(err)
 
@@ -1610,6 +1620,27 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	if done != nil {
 		close(done)
 	}
+}
+
+func delegateSettlementModeForRun(err error, cancelRequested bool) delegateSettlementMode {
+	if cancelRequested {
+		return delegateSettlementTerminal
+	}
+	if _, exhausted := budgetExhaustionFromError(err); exhausted {
+		return delegateSettlementTerminal
+	}
+	if err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted) {
+		return delegateSettlementOrdinary
+	}
+	return delegateSettlementTerminal
+}
+
+func stableDelegateFatalRun(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	_, exhausted := budgetExhaustionFromError(err)
+	return !exhausted
 }
 
 func stableDelegateFinish(sess *Session, result string, runErr error) delegateFinish {
