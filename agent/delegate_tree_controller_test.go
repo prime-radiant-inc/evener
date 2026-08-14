@@ -372,7 +372,9 @@ var delegateControllerLifecycleMethods = map[string]bool{
 	"AbortStart":              true,
 	"CommitStart":             true,
 	"AttachRuntime":           true,
-	"AdmitStartInput":         true,
+	"BeginStartInput":         true,
+	"CompleteStartInput":      true,
+	"FailCommittedStart":      true,
 	"Steer":                   true,
 	"BeginModelRequest":       true,
 	"BeginTool":               true,
@@ -396,6 +398,14 @@ var delegateControllerLifecycleMethods = map[string]bool{
 }
 
 var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancyInventoryKey]int{
+	{filename: "delegate_runtime.go", function: "(delegateRuntime).create", kind: "lifecycle method", symbol: "ReserveCreate"}:                                                         1,
+	{filename: "delegate_runtime.go", function: "(delegateRuntime).create", kind: "lifecycle method", symbol: "AbortStart"}:                                                            2,
+	{filename: "delegate_runtime.go", function: "(delegateRuntime).create", kind: "lifecycle method", symbol: "CommitStart"}:                                                           1,
+	{filename: "delegate_runtime.go", function: "(delegateRuntime).create", kind: "lifecycle method", symbol: "AttachRuntime"}:                                                         1,
+	{filename: "delegate_runtime.go", function: "(delegateRuntime).create", kind: "lifecycle method", symbol: "BeginStartInput"}:                                                       1,
+	{filename: "delegate_runtime.go", function: "(delegateRuntime).create", kind: "lifecycle method", symbol: "CompleteStartInput"}:                                                    2,
+	{filename: "delegate_runtime.go", function: "(delegateRuntime).failCommittedStart", kind: "lifecycle method", symbol: "FailCommittedStart"}:                                        1,
+	{filename: "delegate_runtime.go", function: "(delegateRuntime).failAdoptedStart", kind: "lifecycle method", symbol: "FailCommittedStart"}:                                          1,
 	{filename: "delegate_runtime.go", function: "(*Session).bootstrapDelegateResources", kind: "dormant function", symbol: "openDelegateTreeController"}:                               1,
 	{filename: "delegate_runtime.go", function: "(*Session).bootstrapDelegateResources", kind: "lifecycle method", symbol: "ReconcileRequirements"}:                                    1,
 	{filename: "delegate_runtime.go", function: "(*Session).bootstrapDelegateResources", kind: "lifecycle method", symbol: "Reconcile"}:                                                1,

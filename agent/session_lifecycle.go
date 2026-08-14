@@ -1313,17 +1313,25 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 		s.drainPendingSessionStartHooksForUserTurn(ctx)
 	}
 
-	s.maybeAppendEnvironmentContext()
+	preseededInput := delegateInputWasPreseeded(ctx, s.id, input) && len(images) == 0 && queuedIdentity.ClientMutationID == ""
+	if !preseededInput {
+		s.maybeAppendEnvironmentContext()
+	}
 
 	// userInputTurn is computed AFTER any SessionStart-hook and environment-context
 	// turns above so it reports the USER_INPUT turn's actual history position,
 	// not a position stale by however many turns those inserted ahead of it.
 	s.mu.Lock()
 	userInputTurn := len(s.history) + 1
+	if preseededInput {
+		userInputTurn = len(s.history)
+	}
 	s.mu.Unlock()
 
 	if queuedIdentity.ClientMutationID == "" {
-		s.appendTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
+		if !preseededInput {
+			s.appendTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
+		}
 	} else {
 		turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
 		turn.ClientMutationID = queuedIdentity.ClientMutationID

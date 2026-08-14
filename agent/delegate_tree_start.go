@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/identifier"
 )
@@ -63,6 +62,11 @@ type delegateFinish struct {
 	endedAt     time.Time
 }
 
+type delegateInputClaim struct {
+	lease delegateLease
+	token uint64
+}
+
 func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor delegatestore.Descriptor) (*delegateStartReservation, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -89,7 +93,7 @@ func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor d
 	if !c.reserveCapacityLocked(delegateTurnCapacity) {
 		return nil, errTreeAtCapacity
 	}
-	delegateID := jobstore.NewDelegateID()
+	delegateID := c.newDelegateID()
 	childSessionID := identifier.MustNewSessionID()
 	descriptor.ParentDelegateID = parentID
 	descriptor.OwnerSessionID = c.rootSessionID
@@ -97,7 +101,11 @@ func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor d
 	descriptor.TranscriptRef = encodeRef("", childSessionID)
 	worktreePath := ""
 	if descriptor.Isolation == "worktree" {
-		worktreePath = filepath.Join(c.worktreeRoot, delegateID)
+		worktreeRoot := strings.TrimSpace(descriptor.WorkingDir)
+		if worktreeRoot == "" {
+			worktreeRoot = c.worktreeRoot
+		}
+		worktreePath = filepath.Join(worktreeRoot, delegateID)
 		descriptor.WorkingDir = worktreePath
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -224,10 +232,71 @@ func (c *delegateTreeController) runtimeOwnerLocked(runtime *Session) (string, *
 	return ownerID, owner, nil
 }
 
-// AdmitStartInput is the one narrow controller-to-transcript lock boundary.
-// admitInput must append only to the child transcript and must not call back
-// into the controller while c.mu is held.
-func (c *delegateTreeController) AdmitStartInput(lease delegateLease, admitInput func() error) (delegateMutationPlans, error) {
+func (c *delegateTreeController) BeginStartInput(lease delegateLease) (delegateInputClaim, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate, live, err := c.exactLeaseLocked(lease)
+	if err != nil {
+		return delegateInputClaim{}, err
+	}
+	if aggregate.Phase != delegatestore.PhaseRunning || aggregate.PendingStopSeq != 0 || live.recoveryRequired || live.binding.ready || live.binding.runtime == nil || live.binding.inputClaim != 0 || aggregate.Trigger == delegatestore.TriggerAttention {
+		return delegateInputClaim{}, errDelegateTargetBusy
+	}
+	c.nextToken++
+	claim := delegateInputClaim{lease: lease, token: c.nextToken}
+	c.inputClaims[claim.token] = lease
+	live.binding.inputClaim = claim.token
+	c.evidenceVersion++
+	return claim, nil
+}
+
+func (c *delegateTreeController) CompleteStartInput(claim delegateInputClaim, committed bool, failure delegateFinish) (delegateMutationPlans, error) {
+	c.mu.Lock()
+	var cancel context.CancelFunc
+	defer func() {
+		c.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	}()
+	lease, exists := c.inputClaims[claim.token]
+	if claim.token == 0 || !exists || lease != claim.lease {
+		return delegateMutationPlans{}, errDelegateStaleLease
+	}
+	aggregate, live, err := c.exactLeaseLocked(lease)
+	if err != nil {
+		return delegateMutationPlans{}, err
+	}
+	if live.binding.inputClaim != claim.token {
+		return delegateMutationPlans{}, errDelegateStaleLease
+	}
+	delete(c.inputClaims, claim.token)
+	live.binding.inputClaim = 0
+	if aggregate.Phase == delegatestore.PhaseStopping {
+		plans, generationCancel, finishErr := c.finishStoppedStartLocked(lease, live)
+		cancel = generationCancel
+		return plans, finishErr
+	}
+	if aggregate.Phase != delegatestore.PhaseRunning || live.recoveryRequired || live.binding.ready || live.binding.runtime == nil || aggregate.Trigger == delegatestore.TriggerAttention {
+		return delegateMutationPlans{}, errDelegateTargetBusy
+	}
+	if !committed {
+		terminal, finish := c.startInputFailureBatch(lease, failure)
+		if _, finishErr := c.appendLocked(terminal, finish); finishErr != nil {
+			live.recoveryRequired = true
+			return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, finishErr
+		}
+		plans, generationCancel := c.generationFinishedPlansLocked(lease, finish.RunFinished.DeliveryID)
+		cancel = generationCancel
+		return plans, nil
+	}
+	live.binding.ready = true
+	live.activityAt = c.now()
+	c.evidenceVersion++
+	return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, nil
+}
+
+func (c *delegateTreeController) FailCommittedStart(lease delegateLease, failure delegateFinish, closeReason string) (delegateMutationPlans, error) {
 	c.mu.Lock()
 	var cancel context.CancelFunc
 	defer func() {
@@ -240,23 +309,49 @@ func (c *delegateTreeController) AdmitStartInput(lease delegateLease, admitInput
 	if err != nil {
 		return delegateMutationPlans{}, err
 	}
-	if admitInput == nil || aggregate.Phase != delegatestore.PhaseRunning || aggregate.PendingStopSeq != 0 || live.recoveryRequired || live.binding.ready || live.binding.runtime == nil || aggregate.Trigger == delegatestore.TriggerAttention {
+	if aggregate.Phase == delegatestore.PhaseStopping {
+		plans, generationCancel, finishErr := c.finishStoppedStartLocked(lease, live)
+		cancel = generationCancel
+		return plans, finishErr
+	}
+	closeReason = strings.TrimSpace(closeReason)
+	if closeReason == "" || aggregate.Phase != delegatestore.PhaseRunning || live.recoveryRequired || live.binding.ready {
 		return delegateMutationPlans{}, errDelegateTargetBusy
 	}
-	if err := admitInput(); err != nil {
-		terminal, finish := c.inputPersistFailureBatch(lease, err)
-		if _, finishErr := c.appendLocked(terminal, finish); finishErr != nil {
-			live.recoveryRequired = true
-			return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, errors.Join(err, finishErr)
-		}
-		plans, generationCancel := c.generationFinishedPlansLocked(lease, finish.RunFinished.DeliveryID)
-		cancel = generationCancel
-		return plans, err
+	terminal, finish := c.committedStartFailureBatch(lease, failure)
+	closure := delegatestore.Event{
+		Kind:               delegatestore.EventDelegateResumabilityClosed,
+		DelegateID:         lease.delegateID,
+		ResumabilityClosed: &delegatestore.ResumabilityClosed{Reason: closeReason},
 	}
-	live.binding.ready = true
-	live.activityAt = c.now()
-	c.evidenceVersion++
-	return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, nil
+	if _, appendErr := c.appendLocked(terminal, finish, closure); appendErr != nil {
+		live.recoveryRequired = true
+		return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, appendErr
+	}
+	plans, generationCancel := c.generationFinishedPlansLocked(lease, finish.RunFinished.DeliveryID)
+	cancel = generationCancel
+	return plans, nil
+}
+
+func (c *delegateTreeController) finishStoppedStartLocked(lease delegateLease, live *delegateLiveState) (delegateMutationPlans, context.CancelFunc, error) {
+	packet := delegateStoppedTerminalPacket()
+	deliveryID := delegateDeliveryID(lease.delegateID, lease.generation)
+	finish := delegateRunFinishedEvent(
+		lease,
+		delegatestore.OutcomeStopped,
+		delegatestore.DispositionTerminalError,
+		"stopped_by_parent",
+		c.now(),
+		deliveryID,
+		&packet,
+	)
+	if _, finishErr := c.appendLocked(finish); finishErr != nil {
+		live.recoveryRequired = true
+		plans := delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}
+		return plans, nil, errors.Join(errDelegateTargetBusy, finishErr)
+	}
+	plans, cancel := c.generationFinishedPlansLocked(lease, deliveryID)
+	return plans, cancel, errDelegateTargetBusy
 }
 
 func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID string) (*delegateStartReservation, error) {
@@ -456,6 +551,9 @@ func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) co
 		return nil
 	}
 	cancel := live.binding.cancel
+	if live.binding.inputClaim != 0 {
+		delete(c.inputClaims, live.binding.inputClaim)
+	}
 	if live.binding.runtime != nil {
 		live.runtime = live.binding.runtime
 	}
@@ -489,6 +587,33 @@ func (c *delegateTreeController) inputPersistFailureBatch(lease delegateLease, i
 	raw, _ := json.Marshal(message)
 	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: raw}
 	return terminalFinishBatch(lease, delegatestore.OutcomeFailed, "input_persist_failed", c.now(), packet)
+}
+
+func (c *delegateTreeController) startInputFailureBatch(lease delegateLease, failure delegateFinish) (delegatestore.Event, delegatestore.Event) {
+	failure = normalizeDelegateStartFailure(failure, "input_persist_failed", "input persistence failed", c.now())
+	return terminalFinishBatch(lease, failure.outcome, failure.reason, failure.endedAt, *failure.packet)
+}
+
+func (c *delegateTreeController) committedStartFailureBatch(lease delegateLease, failure delegateFinish) (delegatestore.Event, delegatestore.Event) {
+	failure = normalizeDelegateStartFailure(failure, "construction_failed", "delegate construction failed", c.now())
+	return terminalFinishBatch(lease, failure.outcome, failure.reason, failure.endedAt, *failure.packet)
+}
+
+func normalizeDelegateStartFailure(failure delegateFinish, fallbackReason, fallbackMessage string, now time.Time) delegateFinish {
+	if failure.outcome == "" {
+		failure.outcome = delegatestore.OutcomeFailed
+	}
+	if strings.TrimSpace(failure.reason) == "" {
+		failure.reason = fallbackReason
+	}
+	if failure.endedAt.IsZero() {
+		failure.endedAt = now
+	}
+	if failure.packet == nil {
+		message, _ := json.Marshal(fallbackMessage)
+		failure.packet = &delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: message}
+	}
+	return failure
 }
 
 func terminalFinishBatch(lease delegateLease, status delegatestore.OutcomeStatus, reason string, endedAt time.Time, packet delegatestore.TerminalPacket) (delegatestore.Event, delegatestore.Event) {

@@ -10,6 +10,67 @@ import (
 	"primeradiant.com/serf/agent/sandbox"
 )
 
+type delegatePreparedEnvironment struct {
+	env              execenv.ExecutionEnvironment
+	ownsFresh        bool
+	stableController bool
+}
+
+type delegatePreparedEnvironmentContextKey struct{}
+
+func (s *Session) prepareSubagentEnvironment(workingDir string, requested *sandbox.SandboxPolicy) (execenv.ExecutionEnvironment, bool, error) {
+	subEnv := s.currentEnv()
+	workingDir = strings.TrimSpace(workingDir)
+	if workingDir != "" {
+		local, ok := subEnv.(*execenv.LocalExecutionEnvironment)
+		if s.subagentPrepareFault("working_dir_env") != nil || !ok {
+			return nil, false, errors.New("execution environment does not support working_dir override")
+		}
+		rerooted := local.WithWorkingDirectory(workingDir)
+		rerootErr := rerooted.SandboxReRootError()
+		if fault := s.subagentPrepareFault("sandbox_reroot"); fault != nil {
+			rerootErr = fault
+		}
+		if rerootErr != nil {
+			return nil, false, fmt.Errorf("sandbox cannot confine the subagent to %s: %w", workingDir, rerootErr)
+		}
+		subEnv = rerooted
+	}
+	if requested != nil {
+		local, ok := subEnv.(*execenv.LocalExecutionEnvironment)
+		if s.subagentPrepareFault("sandbox_env") != nil || !ok {
+			return nil, false, errors.New("execution environment does not support a per-delegate sandbox")
+		}
+		if workingDir == "" {
+			local = local.WithWorkingDirectory(local.WorkingDirectory())
+		}
+		var resolved sandbox.ResolvedPolicy
+		var err error
+		if fault := s.subagentPrepareFault("sandbox_resolve"); fault != nil {
+			err = fault
+		} else {
+			policy := *requested
+			policy.InfraReadRoots = SessionInfraRoots(s.cfg, local)
+			resolved, err = sandbox.Resolve(policy, s.sandboxHostFacts(), local.WorkingDirectory())
+		}
+		if err != nil {
+			local.DisposeSandboxScratch()
+			return nil, false, fmt.Errorf("per-delegate sandbox: %w", err)
+		}
+		if fault := s.subagentPrepareFault("sandbox_enable"); fault != nil {
+			err = fault
+		} else {
+			err = local.EnableSandbox(&resolved)
+		}
+		if err != nil {
+			local.DisposeSandboxScratch()
+			return nil, false, fmt.Errorf("per-delegate sandbox: %w", err)
+		}
+		subEnv = local
+	}
+	return subEnv, workingDir != "" || requested != nil, nil
+}
+
 // parentSandboxModeNet reports the session's effective sandbox (mode, network) —
 // the parent side of the per-delegate no-escalation floor. An unsandboxed session
 // (nil/non-enforced policy, or a non-local env) is off with unrestricted network,

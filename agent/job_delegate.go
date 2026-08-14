@@ -207,6 +207,7 @@ func delegateModelReportForDescriptor(desc *jobstore.DelegateRestoreDescriptor) 
 
 type delegateResult struct {
 	DelegateID               string
+	ChildSessionID           string
 	StartedJobID             string
 	JobID                    string
 	LatestJobID              string
@@ -277,7 +278,7 @@ type sendMessageResult struct {
 	Err                       error
 }
 
-func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegateResult {
+func (s *Session) createLegacyDelegate(ctx context.Context, args delegateArgs) delegateResult {
 	task := strings.TrimSpace(args.Task)
 	if task == "" {
 		return delegateStartFailed(errors.New("invalid_request: task is required"))

@@ -427,6 +427,10 @@ type testConfig struct {
 // would gain a non-zero depth and break ATIF root-export gating and the
 // subagent-management-is-top-level guards.
 type spawnConfig struct {
+	// sessionID is the controller-reserved child session identity. Empty makes a
+	// non-delegate session mint its own identity.
+	sessionID string
+
 	// delegateController is the single root-owned authority inherited by every
 	// child session in the live tree.
 	delegateController *delegateTreeController
@@ -438,6 +442,10 @@ type spawnConfig struct {
 	// owningDelegateID is the immutable stable delegate identity that owns this
 	// child session. It is empty on the root session.
 	owningDelegateID string
+
+	// subscriberCount preserves the root daemon's live observer probe for child
+	// escalation decisions.
+	subscriberCount func() int
 
 	// parentSessionID links sub-agent sessions to their parent (set by spawnAgent).
 	parentSessionID string

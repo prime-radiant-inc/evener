@@ -460,16 +460,19 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 
 	s.mu.Lock()
 	subCfg := s.cfg
+	subscriberCount := s.subscriberCountFn
 	s.mu.Unlock()
 	subCfg.artifactStore = s.artifactStore
 	subCfg.MCPConfigFiles = nil
 	subCfg.MCPInline = nil
+	subCfg.spawn.sessionID = ""
 	subCfg.spawn.parentJobID = ""
 	subCfg.spawn.parentJobActivity = nil
 	subCfg.spawn.parentDelegateID = ""
 	subCfg.spawn.delegateController = s.delegateController
 	subCfg.spawn.delegateRootSessionID = s.delegateRootSessionID
 	subCfg.spawn.owningDelegateID = ""
+	subCfg.spawn.subscriberCount = subscriberCount
 	subCfg.spawn.forwardJobEvent = nil
 	subCfg.spawn.parentWatchGranted = false
 	subCfg.spawn.parentInstallWatch = nil
@@ -504,6 +507,9 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	if delegateID, ok := ctx.Value(ctxParentDelegateID).(string); ok {
 		subCfg.spawn.parentDelegateID = delegateID
 		subCfg.spawn.owningDelegateID = delegateID
+	}
+	if childSessionID, ok := ctx.Value(delegateChildSessionIDContextKey{}).(string); ok {
+		subCfg.spawn.sessionID = childSessionID
 	}
 	if isolation, ok := ctx.Value(ctxIsolation).(string); ok {
 		subCfg.spawn.isolation = isolation
@@ -619,70 +625,20 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 		subCfg.spawn.deniedToolNames = append([]string(nil), deniedTools...)
 	}
 
-	subEnv := s.currentEnv()
 	var reqSandbox *sandbox.SandboxPolicy
 	if v, ok := ctx.Value(ctxDelegateSandboxPolicy).(*sandbox.SandboxPolicy); ok {
 		reqSandbox = v
 	}
-	if workingDir = strings.TrimSpace(workingDir); workingDir != "" {
-		le, ok := subEnv.(*execenv.LocalExecutionEnvironment)
-		if s.subagentPrepareFault("working_dir_env") != nil || !ok {
-			return nil, errors.New("execution environment does not support working_dir override")
-		}
-		rerooted := le.WithWorkingDirectory(workingDir)
-		// Fail closed: if the sandbox policy cannot be re-anchored to the child's
-		// worktree lane, refuse the spawn rather than launch a child that would run
-		// with the parent's roots or none (a containment hole).
-		rerootErr := rerooted.SandboxReRootError()
-		if fault := s.subagentPrepareFault("sandbox_reroot"); fault != nil {
-			rerootErr = fault
-		}
-		if err := rerootErr; err != nil {
-			return nil, fmt.Errorf("sandbox cannot confine the subagent to %s: %w", workingDir, err)
-		}
-		subEnv = rerooted
-	}
-	// An explicit per-delegate sandbox (already floor-checked in createDelegate)
-	// OVERRIDES whatever box the working-dir re-root inherited from the parent:
-	// re-resolve the requested policy against the child's own working dir + the
-	// session's memoized host facts, then EnableSandbox so the child's box is a pure
-	// function of ITS OWN policy. The session's hook/MCP infrastructure roots are
-	// folded in because a delegate loads the SAME plugin dirs and MCP config as its
-	// parent — its infrastructure grant is identical, never wider, so the
-	// no-escalation floor is untouched. The env is mutated in place, so clone the shared
-	// parent env first when there was no working-dir re-root to clone it for us.
-	if reqSandbox != nil {
-		le, ok := subEnv.(*execenv.LocalExecutionEnvironment)
-		if s.subagentPrepareFault("sandbox_env") != nil || !ok {
-			return nil, errors.New("execution environment does not support a per-delegate sandbox")
-		}
-		if workingDir == "" {
-			le = le.WithWorkingDirectory(le.WorkingDirectory())
-		}
-		var rp sandbox.ResolvedPolicy
+	preparedEnv, hasPreparedEnv := ctx.Value(delegatePreparedEnvironmentContextKey{}).(delegatePreparedEnvironment)
+	subEnv := preparedEnv.env
+	ownsFreshEnv := preparedEnv.ownsFresh
+	if !hasPreparedEnv {
 		var err error
-		if fault := s.subagentPrepareFault("sandbox_resolve"); fault != nil {
-			err = fault
-		} else {
-			pol := *reqSandbox
-			pol.InfraReadRoots = SessionInfraRoots(s.cfg, le)
-			rp, err = sandbox.Resolve(pol, s.sandboxHostFacts(), le.WorkingDirectory())
-		}
+		subEnv, ownsFreshEnv, err = s.prepareSubagentEnvironment(workingDir, reqSandbox)
 		if err != nil {
-			return nil, fmt.Errorf("per-delegate sandbox: %w", err)
+			return nil, err
 		}
-		var enableErr error
-		if fault := s.subagentPrepareFault("sandbox_enable"); fault != nil {
-			enableErr = fault
-		} else {
-			enableErr = le.EnableSandbox(&rp)
-		}
-		if err := enableErr; err != nil {
-			return nil, fmt.Errorf("per-delegate sandbox: %w", err)
-		}
-		subEnv = le
 	}
-	ownsFreshEnv := workingDir != "" || reqSandbox != nil
 
 	if schema := subCfg.spawn.communicateOutputSchema; len(schema) > 0 {
 		subProfile = provider.WithCommunicateOutputSchema(subProfile, schema)
@@ -706,7 +662,7 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 		// A fresh environment that failed before session adoption never reaches the
 		// session cleanup path, so dispose any scratch it provisioned. A worktree-only
 		// re-root has no owned scratch, making this safe when reqSandbox is nil.
-		if ownsFreshEnv {
+		if ownsFreshEnv && !hasPreparedEnv {
 			if le, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok {
 				le.DisposeSandboxScratch()
 			}
@@ -751,18 +707,20 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	// the child is fully built, but a failure must not leak it: dispose the created
 	// session and any unadopted fresh environment before returning.
 	// On success, GC-evicted records are closed here, OUTSIDE the manager mutex.
-	var evicted []*subagent
-	if reserve := s.cfg.testOnly.subagentReserveSlot; reserve != nil {
-		evicted, err = reserve(s)
-	} else {
-		evicted, err = s.subagents.reserveSlot()
-	}
-	if err != nil {
-		disposeUnadopted()
-		return nil, err
-	}
-	for _, ev := range evicted {
-		ev.sess.Close()
+	if !preparedEnv.stableController {
+		var evicted []*subagent
+		if reserve := s.cfg.testOnly.subagentReserveSlot; reserve != nil {
+			evicted, err = reserve(s)
+		} else {
+			evicted, err = s.subagents.reserveSlot()
+		}
+		if err != nil {
+			disposeUnadopted()
+			return nil, err
+		}
+		for _, ev := range evicted {
+			ev.sess.Close()
+		}
 	}
 
 	// Reserve a tree-counter slot for this spawn's running delegate turn (spec §4).
@@ -773,14 +731,16 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	// releases it (releasePreparedTreeSlot).
 	var treeSlot *treeReservation
 	var ok bool
-	if reserve := s.cfg.testOnly.subagentReserveTreeSlot; reserve != nil {
-		treeSlot, ok = reserve(s)
-	} else {
-		treeSlot, ok = s.reserveTreeSlot(slotKindJob)
-	}
-	if !ok {
-		disposeUnadopted()
-		return nil, s.treeCapacityErrorFor()
+	if !preparedEnv.stableController {
+		if reserve := s.cfg.testOnly.subagentReserveTreeSlot; reserve != nil {
+			treeSlot, ok = reserve(s)
+		} else {
+			treeSlot, ok = s.reserveTreeSlot(slotKindJob)
+		}
+		if !ok {
+			disposeUnadopted()
+			return nil, s.treeCapacityErrorFor()
+		}
 	}
 
 	now := s.sclock().Now()
@@ -797,7 +757,7 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 		startedAt:    now,
 		// The child owns a fresh env iff we re-rooted to a lane and/or enforced a
 		// per-delegate sandbox; otherwise subEnv is the shared parent env.
-		ownsEnv: workingDir != "" || reqSandbox != nil,
+		ownsEnv: ownsFreshEnv,
 	}
 
 	// Drive-down wake (spec §3): a child's notify must reach its parent, which

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/serf/identifier"
 )
 
 var (
@@ -32,6 +33,7 @@ type delegateTreeControllerConfig struct {
 	turnLimit     int
 	driveLimit    int
 	now           func() time.Time
+	newDelegateID func() string
 }
 
 type delegateTreeController struct {
@@ -45,12 +47,14 @@ type delegateTreeController struct {
 	stateDir        string
 	worktreeRoot    string
 	now             func() time.Time
+	newDelegateID   func() string
 	turnLimit       int
 	driveLimit      int
 	turnsInUse      int
 	drivesInUse     int
 	nextToken       uint64
 	reservations    map[uint64]*delegateStartRecord
+	inputClaims     map[uint64]delegateLease
 	work            map[uint64]*delegateShellWork
 	deliveries      map[uint64]*delegateDeliveryAdmission
 	deliveryClaims  map[string]*delegateDeliveryClaim
@@ -71,10 +75,11 @@ type delegateLease struct {
 }
 
 type delegateRuntimeBinding struct {
-	lease   delegateLease
-	runtime *Session
-	cancel  context.CancelFunc
-	ready   bool
+	lease      delegateLease
+	runtime    *Session
+	cancel     context.CancelFunc
+	ready      bool
+	inputClaim uint64
 }
 
 type delegateLiveState struct {
@@ -127,6 +132,9 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 	if cfg.driveLimit <= 0 {
 		cfg.driveLimit = defaultMaxConcurrentDriveTurns
 	}
+	if cfg.newDelegateID == nil {
+		cfg.newDelegateID = identifier.MustNewDelegateID
+	}
 	events, err := cfg.store.Load()
 	if err != nil {
 		return nil, err
@@ -145,7 +153,9 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		now:            cfg.now,
 		turnLimit:      cfg.turnLimit,
 		driveLimit:     cfg.driveLimit,
+		newDelegateID:  cfg.newDelegateID,
 		reservations:   make(map[uint64]*delegateStartRecord),
+		inputClaims:    make(map[uint64]delegateLease),
 		work:           make(map[uint64]*delegateShellWork),
 		deliveries:     make(map[uint64]*delegateDeliveryAdmission),
 		deliveryClaims: make(map[string]*delegateDeliveryClaim),

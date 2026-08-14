@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
@@ -198,12 +199,14 @@ func TestDelegateResourceBootstrap_RestartIsProviderFreeAndLazy(t *testing.T) {
 			TS:         now,
 			DelegateID: delegateID,
 			Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
-				ChildSessionID: childID,
-				TranscriptRef:  encodeRef("", childID),
-				OwnerSessionID: meta.ID,
-				Task:           "resume lazily",
-				AgentType:      "default",
-				Resumable:      true,
+				ChildSessionID:    childID,
+				TranscriptRef:     encodeRef("", childID),
+				OwnerSessionID:    meta.ID,
+				Task:              "resume lazily",
+				AgentType:         "default",
+				ResolvedProfileID: "openai",
+				ResolvedModel:     "gpt-5.2",
+				Resumable:         true,
 			}},
 		},
 		{
@@ -222,6 +225,29 @@ func TestDelegateResourceBootstrap_RestartIsProviderFreeAndLazy(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	childMeta := meta
+	childMeta.ID = childID
+	childMeta.ParentSessionID = meta.ID
+	childMeta.IsSubagent = true
+	if err := schema.SaveSessionMeta(stateDir, childMeta); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := transcript.NewWriter(filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl"), transcript.Header{
+		SessionID:       childID,
+		ParentSessionID: meta.ID,
+		Task:            "resume lazily",
+		CreatedAt:       now,
+		ProfileID:       "openai",
+		Model:           "gpt-5.2",
+		WorkingDir:      workspace,
+		Depth:           1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
 

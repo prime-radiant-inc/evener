@@ -13,6 +13,29 @@ import (
 	"primeradiant.com/serf/agent/internal/delegatestore"
 )
 
+// AdmitStartInput is the test-only callback adapter used by controller fuzz
+// programs that exercise transcript success and failure as one operation. It
+// runs the callback only after BeginStartInput releases the controller mutex.
+func (c *delegateTreeController) AdmitStartInput(lease delegateLease, admitInput func() error) (delegateMutationPlans, error) {
+	claim, err := c.BeginStartInput(lease)
+	if err != nil {
+		return delegateMutationPlans{}, err
+	}
+	inputErr := admitInput()
+	if inputErr == nil {
+		return c.CompleteStartInput(claim, true, delegateFinish{})
+	}
+	terminal, finish := c.inputPersistFailureBatch(lease, inputErr)
+	plans, finishErr := c.CompleteStartInput(claim, false, delegateFinish{
+		outcome:     finish.RunFinished.Outcome.Status,
+		disposition: finish.RunFinished.Disposition,
+		reason:      finish.RunFinished.Outcome.Reason,
+		packet:      &terminal.TerminalPrepared.Packet,
+		endedAt:     finish.RunFinished.Outcome.EndedAt,
+	})
+	return plans, errors.Join(inputErr, finishErr)
+}
+
 func TestDelegateControllerCreatedAppendFailurePublishesNothing(t *testing.T) {
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	reservation, err := c.ReserveCreate(rootDelegateActor("root-session"), delegateControllerCreateDescriptor())
@@ -537,6 +560,68 @@ func TestDelegateControllerAdmitStartInputSuccessMarksReady(t *testing.T) {
 	}
 	if err := c.BeginTool(started.lease); err != nil {
 		t.Fatalf("BeginTool ready start: %v", err)
+	}
+}
+
+func TestDelegateControllerStartInputClaimStopWinsBeforeCompletion(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+	claim, err := c.BeginStartInput(started.lease)
+	if err != nil {
+		t.Fatalf("BeginStartInput: %v", err)
+	}
+	_, cancelPlan, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	executeDelegateCancelPlan(cancelPlan)
+
+	plans, err := c.CompleteStartInput(claim, true, delegateFinish{})
+	if !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("CompleteStartInput after stop error = %v, want target busy", err)
+	}
+	if len(plans.updates) != 1 {
+		t.Fatalf("CompleteStartInput after stop plans = %#v, want stopped update", plans)
+	}
+	aggregate := c.durable["dlg_target"]
+	if aggregate == nil || aggregate.CurrentRunOpen || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeStopped {
+		t.Fatalf("input-claim stop aggregate = %#v, want durably stopped generation", aggregate)
+	}
+	if live := c.live["dlg_target"]; live == nil || live.binding != nil {
+		t.Fatalf("input-claim stop live state = %#v, want released binding", live)
+	}
+	if turns, _ := c.capacityInUse(); turns != 0 {
+		t.Fatalf("input-claim stop retained capacity = %d, want zero", turns)
+	}
+}
+
+func TestDelegateControllerCommittedStartFailureStopWins(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+	_, cancelPlan, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	executeDelegateCancelPlan(cancelPlan)
+
+	plans, err := c.FailCommittedStart(started.lease, delegatePermanentStartFailure(errors.New("construction failed"), "construction_failed"), "construction_failed")
+	if !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("FailCommittedStart after stop error = %v, want target busy", err)
+	}
+	if len(plans.updates) != 1 {
+		t.Fatalf("FailCommittedStart after stop plans = %#v, want stopped update", plans)
+	}
+	aggregate := c.durable["dlg_target"]
+	if aggregate == nil || aggregate.CurrentRunOpen || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeStopped || !aggregate.Resumable {
+		t.Fatalf("committed-failure stop aggregate = %#v, want stopped and resumable", aggregate)
+	}
+	if live := c.live["dlg_target"]; live == nil || live.binding != nil {
+		t.Fatalf("committed-failure stop live state = %#v, want released binding", live)
+	}
+	if turns, _ := c.capacityInUse(); turns != 0 {
+		t.Fatalf("committed-failure stop retained capacity = %d, want zero", turns)
 	}
 }
 

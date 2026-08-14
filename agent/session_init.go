@@ -216,9 +216,14 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// down the tree.
 	cfg.spawn.treeCounter = tc
 	cfg.spawn.driveCounter = dc
-	sessionID, err := identifier.NewSessionID()
-	if err != nil {
-		return nil, fmt.Errorf("generate session ID: %w", err)
+	sessionID := strings.TrimSpace(cfg.spawn.sessionID)
+	if sessionID == "" {
+		sessionID, err = identifier.NewSessionID()
+		if err != nil {
+			return nil, fmt.Errorf("generate session ID: %w", err)
+		}
+	} else if err := identifier.ValidateSessionID(sessionID); err != nil {
+		return nil, fmt.Errorf("reserved child session ID: %w", err)
 	}
 	jobClock := resolveJobTreeClock(tc)
 	if cfg.spawn.parentSessionID == "" && jobClock == nil {
@@ -261,6 +266,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		clientMutations:               clientMutations,
 		artifactStore:                 store,
 		ownsArtifactStore:             ownsArtifactStore,
+		subscriberCountFn:             cfg.spawn.subscriberCount,
 	}
 	s.createdAt = s.sclock().Now().UTC()
 	s.initEnvContext(nil)
@@ -710,6 +716,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		restoredClientMutationItems: restoredClientMutationItems,
 		artifactStore:               store,
 		ownsArtifactStore:           ownsArtifactStore,
+		subscriberCountFn:           cfg.spawn.subscriberCount,
 	}
 	s.initEnvContext(meta.EnvContext)
 	if err := s.bootstrapDelegateResources(); err != nil {

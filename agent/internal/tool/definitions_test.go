@@ -196,8 +196,8 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 		if !strings.Contains(text, "delegate_id") {
 			t.Fatalf("delegate schema text must mention delegate_id: %q", text)
 		}
-		if !strings.Contains(text, "job_id") {
-			t.Fatalf("delegate schema text must still mention concrete job_id: %q", text)
+		if strings.Contains(text, "job_id") || strings.Contains(text, "started job") {
+			t.Fatalf("delegate schema text must not expose an activation job identity: %q", text)
 		}
 	}
 	if !strings.Contains(def.Description, "delegate_send(to=<delegate_id>)") {

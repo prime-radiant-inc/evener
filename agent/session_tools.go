@@ -85,6 +85,57 @@ var delegationPromptToolNames = []string{
 	"shell",
 }
 
+type stableDelegateCreateResult struct {
+	DelegateID     string                     `json:"delegate_id"`
+	ChildSessionID string                     `json:"child_session_id"`
+	Type           string                     `json:"type"`
+	Status         string                     `json:"status"`
+	Reason         string                     `json:"reason,omitempty"`
+	Resumable      *bool                      `json:"resumable,omitempty"`
+	TranscriptRef  string                     `json:"transcript_ref"`
+	Model          string                     `json:"model,omitempty"`
+	Sandbox        *delegateSandboxToolResult `json:"sandbox,omitempty"`
+	StartError     string                     `json:"error,omitempty"`
+}
+
+func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
+	reg.Remove("delegate")
+	return reg.Register(tool.RegisteredTool{
+		Tool:  llm.Tool{Definition: tool.DefDelegate(s.delegateAgentTypeNames())},
+		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = env
+			return stableDelegateCreateTool(ctx, s, args, jobToolResultMaxChars(reg, "delegate"))
+		},
+	})
+}
+
+func stableDelegateCreateTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
+	decoded, err := decodeDelegateArgs(args)
+	if err != nil {
+		return "", err
+	}
+	result := s.createDelegate(ctx, decoded)
+	if result.Err != nil && result.DelegateID == "" {
+		return "", result.Err
+	}
+	out := stableDelegateCreateResult{
+		DelegateID:     result.DelegateID,
+		ChildSessionID: result.ChildSessionID,
+		Type:           result.Type,
+		Status:         string(result.Status),
+		Reason:         result.Reason,
+		Resumable:      result.Resumable,
+		TranscriptRef:  result.TranscriptRef,
+		Model:          result.Model,
+		Sandbox:        delegateSandboxToolResultFrom(result.Sandbox),
+	}
+	if result.Err != nil {
+		out.StartError = result.Err.Error()
+	}
+	return marshalBoundedJSON(out, maxChars)
+}
+
 // resultToolName returns the effective name for the communicate tool.
 func (s *Session) resultToolName() string {
 	if s.cfg.ResultToolName != "" {

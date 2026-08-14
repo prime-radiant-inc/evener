@@ -352,6 +352,9 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	if err := registerJobTools(reg, s, deps); err != nil {
 		return err
 	}
+	if err := registerStableDelegateTool(reg, s); err != nil {
+		return err
+	}
 	registerTaskTools(reg, deps)
 	registerGoalTools(reg, deps)
 	registerWorktreeTool(reg, deps)

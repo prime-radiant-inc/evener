@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
 )
@@ -178,6 +179,34 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		if plan := c.newHeadDeliveryPlanLocked(id, aggregate.PendingDeliveries[0].DeliveryID); plan != nil {
 			plans.deliveries = append(plans.deliveries, *plan)
 		}
+	}
+	return plans, nil
+}
+
+func (c *delegateTreeController) closeMissingRestoreInputs(reasons map[string]string) (delegateMutationPlans, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ids := make([]string, 0, len(reasons))
+	for id := range reasons {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	plans := delegateMutationPlans{}
+	for _, id := range ids {
+		reason := reasons[id]
+		aggregate := c.durable[id]
+		if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || strings.TrimSpace(reason) == "" {
+			continue
+		}
+		if _, err := c.appendLocked(delegatestore.Event{
+			Kind:               delegatestore.EventDelegateResumabilityClosed,
+			DelegateID:         id,
+			ResumabilityClosed: &delegatestore.ResumabilityClosed{Reason: reason},
+		}); err != nil {
+			return delegateMutationPlans{}, err
+		}
+		c.evidenceVersion++
+		plans.updates = append(plans.updates, c.capturedPlanLocked(id))
 	}
 	return plans, nil
 }
