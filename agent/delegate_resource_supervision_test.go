@@ -724,6 +724,180 @@ func TestDelegateResourceSupervision_FatalCleanupFailureIsObservable(t *testing.
 	}
 }
 
+func TestDelegateResourceSupervision_RootCloseAbandonmentIsCleanupFailure(t *testing.T) {
+	clock := agenttest.NewFakeClock()
+	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal close-abandon turn", nil, nil)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	adapter := &fakeErrAdapter{
+		name: "openai",
+		steps: []func(llm.Request) (llm.Response, error){func(llm.Request) (llm.Response, error) {
+			close(entered)
+			<-release
+			return llm.Response{}, fatalErr
+		}},
+	}
+	fixture := newColdStableDelegateFixture(t, "")
+	client := llm.NewClient()
+	client.Register(adapter)
+	fixture.client = client
+	finalStatePublished := make(chan struct{})
+	root := restoreSupervisionRoot(t, fixture, clock)
+	root.cfg.testOnly.subagentAfterFinalStatePublish = func(*subagent) {
+		close(finalStatePublished)
+	}
+	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start close-abandon run", 0)
+	if started.result.Err != nil {
+		t.Fatalf("start close-abandon delegate: %v", started.result.Err)
+	}
+	<-entered
+	sub := root.subagents.get(fixture.childID)
+	if sub == nil || sub.sess == nil || sub.sess.jobManager == nil {
+		t.Fatalf("stable child %q has no managed-work runtime", fixture.childID)
+	}
+	cleanupMarker := filepath.Join(fixture.workspace, "close-abandon-cleanup.txt")
+	executor := newAsynchronousCleanupStreamingExecutor(cleanupMarker)
+	t.Cleanup(executor.release)
+	ownedShell := runShell(context.Background(), sub.sess.jobManager, executor, shellArgs{
+		Command:    "asynchronous close-abandon cleanup",
+		Background: true,
+		WorkingDir: fixture.workspace,
+	})
+	if ownedShell.JobID == "" || !ownedShell.RunningInBackground {
+		t.Fatalf("start close-abandon owned shell = %#v", ownedShell)
+	}
+	joinStarted := make(chan struct{})
+	var joinOnce sync.Once
+	jm := sub.sess.jobManager
+	jm.closeGrace = time.Second
+	jm.stopReceiptBeforeWait = func(jobID string) {
+		if jobID == ownedShell.JobID {
+			joinOnce.Do(func() { close(joinStarted) })
+		}
+	}
+	close(release)
+	<-joinStarted
+	blockedBeforeClose := clock.BlockedCount()
+	closeResult := make(chan error, 1)
+	go func() {
+		closeResult <- jm.closeRuntimeState()
+	}()
+	clock.BlockUntil(blockedBeforeClose + 1)
+	clock.Advance(time.Second)
+	if err := <-closeResult; err == nil || !strings.Contains(err.Error(), "timed out waiting for running jobs") {
+		t.Fatalf("close runtime result = %v, want bounded running-job timeout", err)
+	}
+	<-finalStatePublished
+	select {
+	case <-executor.waitReturned:
+		t.Fatal("blocked executor Wait returned before the test released it")
+	default:
+	}
+	sub.mu.Lock()
+	runErr := sub.err
+	sub.mu.Unlock()
+	if runErr == nil || !strings.Contains(runErr.Error(), ownedShell.JobID) || !strings.Contains(runErr.Error(), "durable completion") {
+		t.Fatalf("retained close-abandon error = %v, want exact job and durable-completion failure", runErr)
+	}
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	events, err := root.delegateController.store.Load()
+	if err != nil {
+		t.Fatalf("load close-abandon terminal packet: %v", err)
+	}
+	var packet *delegatestore.TerminalPacket
+	for i := range events {
+		if events[i].DelegateID == fixture.delegateID && events[i].TerminalPrepared != nil {
+			value := events[i].TerminalPrepared.Packet
+			packet = &value
+		}
+	}
+	if packet == nil || !strings.Contains(string(packet.Message), ownedShell.JobID) || !strings.Contains(string(packet.Message), "durable completion") {
+		t.Fatalf("close-abandon terminal packet = %#v, want exact cleanup failure", packet)
+	}
+	executor.release()
+	<-executor.waitReturned
+}
+
+func TestDelegateResourceSupervision_OrdinaryCleanupFailureIsObservable(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	bare := func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("partial ordinary result")}
+	}
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			close(entered)
+			<-release
+			return bare(llm.Request{})
+		},
+		bare,
+		bare,
+		bare,
+		bare,
+		bare,
+		bare,
+		bare,
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start ordinary cleanup-failure run", 0)
+	if started.result.Err != nil {
+		t.Fatalf("start ordinary cleanup-failure delegate: %v", started.result.Err)
+	}
+	<-entered
+	sub := root.subagents.get(fixture.childID)
+	if sub == nil || sub.sess == nil || sub.sess.jobManager == nil {
+		t.Fatalf("stable child %q has no managed-work runtime", fixture.childID)
+	}
+	cleanupErr := errors.New("persist ordinary owned cleanup stop gate")
+	ownedDelegate := &runningJob{
+		rec: &jobstore.JobRecord{
+			JobID:          "job_ordinary_cleanup_failure",
+			Type:           jobstore.JobDelegate,
+			Status:         jobstore.StatusRunning,
+			DelegateID:     "dlg_01TASK7ORDCLEANFAILURE01",
+			OwnerSessionID: sub.sess.ID(),
+		},
+		signal:         func() {},
+		done:           make(chan struct{}),
+		durableStarted: true,
+	}
+	jm := sub.sess.jobManager
+	originalAppend := jm.appendEvent
+	jm.appendEvent = func(event jobstore.Event) error {
+		if event.Kind == jobstore.EventDelegateStopGateClosed && event.DelegateID == ownedDelegate.rec.DelegateID {
+			return cleanupErr
+		}
+		return originalAppend(event)
+	}
+	jm.mu.Lock()
+	jm.running[ownedDelegate.rec.JobID] = ownedDelegate
+	jm.mu.Unlock()
+	t.Cleanup(func() {
+		jm.appendEvent = originalAppend
+		jm.mu.Lock()
+		delete(jm.running, ownedDelegate.rec.JobID)
+		jm.mu.Unlock()
+		ownedDelegate.closeDone()
+	})
+	close(release)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	events, err := root.delegateController.store.Load()
+	if err != nil {
+		t.Fatalf("load ordinary cleanup-failure packet: %v", err)
+	}
+	var packet *delegatestore.TerminalPacket
+	for i := range events {
+		if events[i].DelegateID == fixture.delegateID && events[i].TerminalPrepared != nil {
+			value := events[i].TerminalPrepared.Packet
+			packet = &value
+		}
+	}
+	if packet == nil || !strings.Contains(string(packet.Message), cleanupErr.Error()) {
+		t.Fatalf("ordinary cleanup-failure packet = %#v, want observable cleanup failure", packet)
+	}
+}
+
 func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacketEvidence(t *testing.T) {
 	worktreeClient := llm.NewClient()
 	worktreeClient.Register(&fakeAdapter{name: "openai"})

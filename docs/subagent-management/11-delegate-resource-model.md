@@ -1582,7 +1582,10 @@ entire live subtree before waiting, holds no job-manager or Session lock while
 joining, and samples terminal worktree evidence only after every accepted stop
 has reached its exact durable terminal boundary. This join belongs only to
 delegate finalization; ordinary job_stop keeps its established nonblocking
-request semantics.
+request semantics. Closing a process receipt during root-close abandonment is
+not durable terminal completion: the join returns an exact cleanup failure for
+that job rather than treating teardown release as proof that process Wait and
+terminal persistence finished.
 
 Terminal attention markup follows the same identity split. Shell completion
 retains `<job-notification job_id="job_..." job_type="shell">`. Delegate owner

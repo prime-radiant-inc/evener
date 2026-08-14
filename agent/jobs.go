@@ -273,6 +273,10 @@ type runningJob struct {
 	watchdogStop    chan struct{}
 	watchdogStopped sync.Once
 	quietNotified   bool
+	// completion distinguishes a durable terminal close of done from teardown
+	// abandonment. Stop receipts must not treat both channel closes as the same
+	// lifecycle proof.
+	completion atomic.Uint32
 	// treeSlot holds the tree-counter reservation for a running delegate turn
 	// (spec §4). Set when the spawn/resume path reserves a slot for this run;
 	// released exactly once when the run leaves jm.running (terminal finalize or
@@ -304,11 +308,32 @@ type finalizeAttempt struct {
 	err  error
 }
 
+type runningJobCompletion uint32
+
+const (
+	runningJobCompletionUnknown runningJobCompletion = iota
+	runningJobCompletionDurable
+	runningJobCompletionAbandoned
+)
+
 func (run *runningJob) closeDone() {
+	run.closeDoneWith(runningJobCompletionUnknown)
+}
+
+func (run *runningJob) closeDoneDurable() {
+	run.closeDoneWith(runningJobCompletionDurable)
+}
+
+func (run *runningJob) closeDoneAbandoned() {
+	run.closeDoneWith(runningJobCompletionAbandoned)
+}
+
+func (run *runningJob) closeDoneWith(completion runningJobCompletion) {
 	if run == nil {
 		return
 	}
 	run.doneOnce.Do(func() {
+		run.completion.Store(uint32(completion))
 		close(run.done)
 	})
 }
@@ -745,7 +770,7 @@ func (jm *jobManager) abandonRunningJobs() {
 		running = append(running, jobRuntimeHandle{
 			jobID:     run.rec.JobID,
 			done:      run.done,
-			closeDone: run.closeDone,
+			closeDone: run.closeDoneAbandoned,
 			output:    run.output,
 		})
 		delete(jm.running, run.rec.JobID)
@@ -804,7 +829,7 @@ func (jm *jobManager) abandonRunningJob(jobID string) {
 	if run.output != nil {
 		_ = run.output.Close()
 	}
-	run.closeDone()
+	run.closeDoneAbandoned()
 }
 
 func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, error) {
@@ -1457,16 +1482,21 @@ func (jm *jobManager) runningJobIDs() []string {
 type jobStopReceipt struct {
 	manager *jobManager
 	jobID   string
-	done    <-chan struct{}
+	run     *runningJob
 }
 
-func (r jobStopReceipt) wait() {
+func (r jobStopReceipt) wait() error {
 	if r.manager != nil && r.manager.stopReceiptBeforeWait != nil {
 		r.manager.stopReceiptBeforeWait(r.jobID)
 	}
-	if r.done != nil {
-		<-r.done
+	if r.run == nil || r.run.done == nil {
+		return fmt.Errorf("owned job %s has no completion receipt", r.jobID)
 	}
+	<-r.run.done
+	if runningJobCompletion(r.run.completion.Load()) != runningJobCompletionDurable {
+		return fmt.Errorf("owned job %s ended without durable completion", r.jobID)
+	}
+	return nil
 }
 
 func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
@@ -1483,7 +1513,7 @@ func (jm *jobManager) stopWithReceipt(jobID string) (*jobstore.JobRecord, *jobSt
 	run := jm.running[jobID]
 	if run != nil {
 		rec := cloneJobRecord(run.rec)
-		receipt := &jobStopReceipt{manager: jm, jobID: jobID, done: run.done}
+		receipt := &jobStopReceipt{manager: jm, jobID: jobID, run: run}
 		if run.finalize != nil || run.terminal != nil || run.rec.Status.IsTerminal() {
 			jm.mu.Unlock()
 			return rec, receipt, nil
@@ -1583,7 +1613,7 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 	jm.mu.Unlock()
 	run.stopWatchdog()
 	_ = run.output.Close()
-	run.closeDone()
+	run.closeDoneDurable()
 	return nil
 }
 
@@ -2007,7 +2037,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		})
 	}
 	flushNotices()
-	run.closeDone()
+	run.closeDoneDurable()
 	return nil
 }
 

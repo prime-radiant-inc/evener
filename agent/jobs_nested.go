@@ -502,7 +502,7 @@ func (s *Session) stopDelegateSubtree(childSession *Session) ([]*jobstore.JobRec
 func (s *Session) stopDelegateSubtreeAndWait(childSession *Session) ([]*jobstore.JobRecord, error) {
 	stopped, receipts, stopErr := s.stopDelegateSubtreeWithReceipts(childSession)
 	for _, receipt := range receipts {
-		receipt.wait()
+		stopErr = errors.Join(stopErr, receipt.wait())
 	}
 	return stopped, stopErr
 }
