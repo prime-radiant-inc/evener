@@ -153,7 +153,11 @@ type jobManager struct {
 	// receive and its timeout-flag check.
 	shellBeforeWaitTimeoutDecision  func(*atomic.Bool)
 	shellBeforeBlockTimeoutDecision func(*atomic.Bool)
-	clock                           clock.Clock
+	// stopReceiptBeforeWait observes the fatal-finalization-only join boundary.
+	// It is nil in production and exists so concurrency tests can release an
+	// asynchronously terminating shell only after the exact receipt is awaited.
+	stopReceiptBeforeWait func(string)
+	clock                 clock.Clock
 	// closeGrace bounds how long closeRuntimeState waits for each still-running
 	// job to finalize before abandoning it. Seeded from defaultCloseGrace at
 	// construction so tests can shrink the graceful-shutdown window.
@@ -1447,18 +1451,46 @@ func (jm *jobManager) runningJobIDs() []string {
 	return ids
 }
 
+// jobStopReceipt is the exact process-local completion boundary for the run
+// observed by stopWithReceipt. It is captured while jm.mu still protects that
+// run, before its signal callback can begin asynchronous termination.
+type jobStopReceipt struct {
+	manager *jobManager
+	jobID   string
+	done    <-chan struct{}
+}
+
+func (r jobStopReceipt) wait() {
+	if r.manager != nil && r.manager.stopReceiptBeforeWait != nil {
+		r.manager.stopReceiptBeforeWait(r.jobID)
+	}
+	if r.done != nil {
+		<-r.done
+	}
+}
+
 func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
+	rec, _, err := jm.stopWithReceipt(jobID)
+	return rec, err
+}
+
+// stopWithReceipt preserves stop's nonblocking contract while giving the
+// delegate fatal-finalization path an exact run receipt to join. Callers must
+// wait only after all subtree jobs have been signalled and no manager or
+// session lock is held.
+func (jm *jobManager) stopWithReceipt(jobID string) (*jobstore.JobRecord, *jobStopReceipt, error) {
 	jm.mu.Lock()
 	run := jm.running[jobID]
 	if run != nil {
 		rec := cloneJobRecord(run.rec)
+		receipt := &jobStopReceipt{manager: jm, jobID: jobID, done: run.done}
 		if run.finalize != nil || run.terminal != nil || run.rec.Status.IsTerminal() {
 			jm.mu.Unlock()
-			return rec, nil
+			return rec, receipt, nil
 		}
 		if err := jm.appendDelegateStopGateForRecord(rec); err != nil {
 			jm.mu.Unlock()
-			return nil, err
+			return nil, nil, err
 		}
 		run.stopStatus = jobstore.StatusCancelled
 		run.stopReason = "stopped_by_parent"
@@ -1469,19 +1501,19 @@ func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 		if signal != nil {
 			signal()
 		}
-		return rec, nil
+		return rec, receipt, nil
 	}
 	jm.mu.Unlock()
 
 	recs, err := jm.store.Load()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	rec := recs[jobID]
 	if rec == nil {
-		return nil, errJobNotFound(jobID)
+		return nil, nil, errJobNotFound(jobID)
 	}
-	return cloneJobRecord(rec), nil
+	return cloneJobRecord(rec), nil, nil
 }
 
 func (jm *jobManager) appendDelegateStopGateForRecord(rec *jobstore.JobRecord) error {

@@ -1033,6 +1033,12 @@ activity, AppWire, TUI, web, Hub cold reads, and doctor must carry those fields
 losslessly or explicitly omit fields the contract marks absent; none may
 reconstruct them from transient Session communicate state.
 
+Terminal worktree evidence is sampled only after failed-generation cleanup has
+joined the exact completion receipt of every owned shell or descendant job it
+successfully stopped. A shell signal that merely begins asynchronous process
+termination is not completion. Stop-admission or persistence failures remain
+part of the failed generation's terminal diagnostic instead of being discarded.
+
 ### communicate
 
 The dedicated communicate(end_turn=true) path:
@@ -1570,6 +1576,14 @@ owner-wins dedupe. A deeper shell remains directly controllable only through
 the caller's direct stable delegate handle under the existing authorization
 rule; stable lineage does not synthesize a delegate parent JobRecord.
 
+Failed delegate finalization captures each owned job's private completion
+receipt under that job manager's lock before signalling it. It signals the
+entire live subtree before waiting, holds no job-manager or Session lock while
+joining, and samples terminal worktree evidence only after every accepted stop
+has reached its exact durable terminal boundary. This join belongs only to
+delegate finalization; ordinary job_stop keeps its established nonblocking
+request semantics.
+
 Terminal attention markup follows the same identity split. Shell completion
 retains `<job-notification job_id="job_..." job_type="shell">`. Delegate owner
 attention uses `<delegate-notification delegate_id="dlg_...">` and never emits
@@ -1821,8 +1835,9 @@ At minimum, characterize:
 12. descendant event callbacks survive stable runtime construction;
 13. watch_parent, stable delegate sources/receivers, observer callback
     de-duplication, coalescing, stop fencing, and restart repair survive;
-14. delegate-owned shell completion reaches its direct owner and retains
-    ancestor visibility;
+14. delegate-owned shell completion reaches its direct owner, retains ancestor
+    visibility, and is joined before failed-generation terminal worktree
+    evidence is sampled;
 15. quiet supervision, communicate auto-nudge, SubagentStop continuation,
     final-round salvage, and unreachable attention preserve their exact trigger
     and suppression rules;

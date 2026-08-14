@@ -491,24 +491,43 @@ func (s *Session) delegateChildSessionToCascade(jobID string) *Session {
 // recursion. A no-longer-live (closed) child contributes nothing — its runtime is
 // already gone.
 func (s *Session) stopDelegateSubtree(childSession *Session) ([]*jobstore.JobRecord, error) {
+	stopped, _, stopErr := s.stopDelegateSubtreeWithReceipts(childSession)
+	return stopped, stopErr
+}
+
+// stopDelegateSubtreeAndWait is reserved for delegate finalization after a
+// failed run. It signals the entire live subtree first, then joins the exact
+// running jobs observed by each stop without holding a manager or session lock.
+// Generic job_stop continues to use stopDelegateSubtree and remains nonblocking.
+func (s *Session) stopDelegateSubtreeAndWait(childSession *Session) ([]*jobstore.JobRecord, error) {
+	stopped, receipts, stopErr := s.stopDelegateSubtreeWithReceipts(childSession)
+	for _, receipt := range receipts {
+		receipt.wait()
+	}
+	return stopped, stopErr
+}
+
+func (s *Session) stopDelegateSubtreeWithReceipts(childSession *Session) ([]*jobstore.JobRecord, []jobStopReceipt, error) {
 	if childSession == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var stopped []*jobstore.JobRecord
+	var receipts []jobStopReceipt
 	var stopErr error
 	// Recurse into the live subtree first so a worker delegate's own children are
 	// stopped before the worker delegate's runtime is signalled.
 	for _, grandchild := range childSession.liveSubagentSessions() {
-		recs, err := s.stopDelegateSubtree(grandchild)
+		recs, childReceipts, err := s.stopDelegateSubtreeWithReceipts(grandchild)
 		stopped = append(stopped, recs...)
+		receipts = append(receipts, childReceipts...)
 		stopErr = errors.Join(stopErr, err)
 	}
 	jm := childSession.jobManager
 	if jm == nil || jm.store == nil {
-		return stopped, stopErr
+		return stopped, receipts, stopErr
 	}
 	for _, jobID := range jm.runningJobIDs() {
-		rec, err := jm.stop(jobID)
+		rec, receipt, err := jm.stopWithReceipt(jobID)
 		if err != nil {
 			stopErr = errors.Join(stopErr, err)
 			continue
@@ -516,8 +535,11 @@ func (s *Session) stopDelegateSubtree(childSession *Session) ([]*jobstore.JobRec
 		if rec != nil {
 			stopped = append(stopped, rec)
 		}
+		if receipt != nil {
+			receipts = append(receipts, *receipt)
+		}
 	}
-	return stopped, stopErr
+	return stopped, receipts, stopErr
 }
 
 // directChildOwningDescendant returns the caller's direct-child session whose

@@ -1291,7 +1291,9 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		defer treeSlot.release()
 		_, err := childSess.ProcessInputKind(driveCtx, "", nil, EntryNotification)
 		if err != nil {
-			sub.gateFatalRun(err)
+			if cleanupErr := sub.gateFatalRun(err); cleanupErr != nil {
+				childSess.emit(events.EventWarning, warningDataFromError("delegate owned-work cleanup incomplete", cleanupErr))
+			}
 		}
 	}()
 	return true
@@ -1336,9 +1338,9 @@ func (s *Session) redriveChildIfAttentionRemains(driveCtx context.Context, sub *
 	}
 }
 
-func (a *subagent) gateFatalRun(err error) {
+func (a *subagent) gateFatalRun(err error) error {
 	if a == nil || err == nil {
-		return
+		return nil
 	}
 	a.mu.Lock()
 	a.fatalRunGated = true
@@ -1346,8 +1348,17 @@ func (a *subagent) gateFatalRun(err error) {
 	// A failed child turn must not leave owned managed work alive. Preserve the
 	// retained run's error/state even if stopping races with a job-manager error.
 	if a.sess != nil {
-		_, _ = a.sess.stopDelegateSubtree(a.sess)
+		_, cleanupErr := a.sess.stopDelegateSubtreeAndWait(a.sess)
+		return cleanupErr
 	}
+	return nil
+}
+
+func (a *subagent) gateFatalRunError(err error) error {
+	if cleanupErr := a.gateFatalRun(err); cleanupErr != nil {
+		return errors.Join(err, fmt.Errorf("stop delegate-owned work: %w", cleanupErr))
+	}
+	return err
 }
 
 func (s *Session) subagentPrepareFault(point string) error {
@@ -1543,6 +1554,9 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		}
 		settlementMode = delegateSettlementModeForRun(err, cancelRequested)
 		if !stableRun || a.sess.delegateController == nil {
+			if err != nil {
+				err = a.gateFatalRunError(err)
+			}
 			finish = a.stableDelegateFinish(res, err)
 			break
 		}
@@ -1553,10 +1567,10 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			}
 			if settlementMode == delegateSettlementTerminal {
 				if stableDelegateFatalRun(err) {
-					a.gateFatalRun(err)
+					err = a.gateFatalRunError(err)
 				}
 			} else if err != nil {
-				a.gateFatalRun(err)
+				err = a.gateFatalRunError(err)
 			}
 			finish = a.stableDelegateFinish(res, err)
 			break
@@ -1577,13 +1591,13 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		<-settlementClaim.ready
 		if settlementClaim.mode == delegateSettlementTerminal {
 			if stableDelegateFatalRun(err) {
-				a.gateFatalRun(err)
+				err = a.gateFatalRunError(err)
 			}
 			finish = a.stableDelegateFinish(res, err)
 			break
 		}
 		if err != nil {
-			a.gateFatalRun(err)
+			err = a.gateFatalRunError(err)
 		}
 		finish = a.stableDelegateFinish(res, err)
 		plans, settleErr := a.sess.delegateController.CompleteSettlement(settlementClaim, finish.packet)
@@ -1595,14 +1609,11 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				err = errors.Join(err, settleErr)
 			}
 			if err != nil {
-				a.gateFatalRun(err)
+				err = a.gateFatalRunError(err)
 			}
 			finish = a.stableDelegateFinish(res, err)
 		}
 		break
-	}
-	if !stableRun && err != nil {
-		a.gateFatalRun(err)
 	}
 	exhaustion, budgetExhausted := budgetExhaustionFromError(err)
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -479,6 +480,42 @@ func TestDelegateResourceSupervision_LateCancellationBeatsSettlementSteer(t *tes
 	assertStableSupervisionOutcome(t, root, fixture.delegateID, delegatestore.OutcomeCancelled)
 }
 
+type asynchronousCleanupStreamingExecutor struct {
+	marker         string
+	signalReturned chan struct{}
+	releaseWait    chan struct{}
+	waitReturned   chan struct{}
+	signalOnce     sync.Once
+	releaseOnce    sync.Once
+}
+
+func newAsynchronousCleanupStreamingExecutor(marker string) *asynchronousCleanupStreamingExecutor {
+	return &asynchronousCleanupStreamingExecutor{
+		marker:         marker,
+		signalReturned: make(chan struct{}),
+		releaseWait:    make(chan struct{}),
+		waitReturned:   make(chan struct{}),
+	}
+}
+
+func (e *asynchronousCleanupStreamingExecutor) StreamCommand(_ context.Context, _ string, _ string, _ map[string]string, _ io.Writer) (*execenv.StreamHandle, error) {
+	return &execenv.StreamHandle{
+		Signal: func() {
+			e.signalOnce.Do(func() { close(e.signalReturned) })
+		},
+		Wait: func() (int, error) {
+			<-e.releaseWait
+			err := os.WriteFile(e.marker, []byte("cleaned\n"), 0o644)
+			close(e.waitReturned)
+			return 143, err
+		},
+	}, nil
+}
+
+func (e *asynchronousCleanupStreamingExecutor) release() {
+	e.releaseOnce.Do(func() { close(e.releaseWait) })
+}
+
 func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) {
 	worktreeClient := llm.NewClient()
 	worktreeClient.Register(&fakeAdapter{name: "openai"})
@@ -552,39 +589,34 @@ func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) 
 		t.Fatalf("initial fatal-evidence worktree report = %#v, want clean", report)
 	}
 	cleanupMarker := filepath.Join(lane, "fatal-shell-cleanup.txt")
-	signaled := make(chan struct{}, 1)
-	ownedShell := &runningJob{
-		rec: &jobstore.JobRecord{
-			JobID:          "job_fatal_nudge_owned_shell",
-			Type:           jobstore.JobShell,
-			Status:         jobstore.StatusRunning,
-			OwnerSessionID: sub.sess.ID(),
-		},
-		signal: func() {
-			if err := os.WriteFile(cleanupMarker, []byte("cleaned\n"), 0o644); err != nil {
-				panic(err)
-			}
-			signaled <- struct{}{}
-		},
-		done:           make(chan struct{}),
-		durableStarted: true,
-	}
-	sub.sess.jobManager.mu.Lock()
-	sub.sess.jobManager.running[ownedShell.rec.JobID] = ownedShell
-	sub.sess.jobManager.mu.Unlock()
-	t.Cleanup(func() {
-		sub.sess.jobManager.mu.Lock()
-		delete(sub.sess.jobManager.running, ownedShell.rec.JobID)
-		sub.sess.jobManager.mu.Unlock()
-		ownedShell.closeDone()
+	executor := newAsynchronousCleanupStreamingExecutor(cleanupMarker)
+	t.Cleanup(executor.release)
+	ownedShell := runShell(context.Background(), sub.sess.jobManager, executor, shellArgs{
+		Command:    "asynchronous fatal cleanup",
+		Background: true,
+		WorkingDir: lane,
 	})
-	close(releaseFatalNudge)
-	<-finalStatePublished
-	select {
-	case <-signaled:
-	default:
-		t.Fatal("fatal stable nudge run published final state before stopping its owned shell")
+	if ownedShell.JobID == "" || !ownedShell.RunningInBackground {
+		t.Fatalf("start fatal owned shell = %#v", ownedShell)
 	}
+	joinStarted := make(chan struct{})
+	var joinOnce sync.Once
+	sub.sess.jobManager.stopReceiptBeforeWait = func(jobID string) {
+		if jobID == ownedShell.JobID {
+			joinOnce.Do(func() { close(joinStarted) })
+		}
+	}
+	close(releaseFatalNudge)
+	select {
+	case <-joinStarted:
+		executor.release()
+	case <-finalStatePublished:
+		executor.release()
+		<-executor.waitReturned
+		t.Fatal("fatal stable nudge run sampled terminal evidence before joining its owned shell")
+	}
+	<-finalStatePublished
+	<-executor.waitReturned
 	if report := root.stableDelegateWorktreeReport(descriptor); report == nil || !report.Dirty {
 		t.Fatalf("post-cleanup worktree report = %#v, want dirty", report)
 	}
@@ -608,6 +640,87 @@ func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) 
 	}
 	if metadata.Worktree == nil || !metadata.Worktree.Dirty {
 		t.Fatalf("fatal packet sampled worktree before shell cleanup: %#v", metadata.Worktree)
+	}
+}
+
+func TestDelegateResourceSupervision_FatalCleanupFailureIsObservable(t *testing.T) {
+	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal cleanup failure turn", nil, nil)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	adapter := &fakeErrAdapter{
+		name: "openai",
+		steps: []func(llm.Request) (llm.Response, error){func(llm.Request) (llm.Response, error) {
+			close(entered)
+			<-release
+			return llm.Response{}, fatalErr
+		}},
+	}
+	fixture := newColdStableDelegateFixture(t, "")
+	client := llm.NewClient()
+	client.Register(adapter)
+	fixture.client = client
+	root := restoreSupervisionRoot(t, fixture, nil)
+	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start cleanup-failure run", 0)
+	if started.result.Err != nil {
+		t.Fatalf("start cleanup-failure delegate: %v", started.result.Err)
+	}
+	<-entered
+	sub := root.subagents.get(fixture.childID)
+	if sub == nil || sub.sess == nil || sub.sess.jobManager == nil {
+		t.Fatalf("stable child %q has no managed-work runtime", fixture.childID)
+	}
+	cleanupErr := errors.New("persist owned cleanup stop gate")
+	ownedDelegate := &runningJob{
+		rec: &jobstore.JobRecord{
+			JobID:          "job_owned_cleanup_failure",
+			Type:           jobstore.JobDelegate,
+			Status:         jobstore.StatusRunning,
+			DelegateID:     "dlg_01TASK7CLEANUPFAILURE01",
+			OwnerSessionID: sub.sess.ID(),
+		},
+		signal:         func() {},
+		done:           make(chan struct{}),
+		durableStarted: true,
+	}
+	jm := sub.sess.jobManager
+	originalAppend := jm.appendEvent
+	jm.appendEvent = func(event jobstore.Event) error {
+		if event.Kind == jobstore.EventDelegateStopGateClosed && event.DelegateID == ownedDelegate.rec.DelegateID {
+			return cleanupErr
+		}
+		return originalAppend(event)
+	}
+	jm.mu.Lock()
+	jm.running[ownedDelegate.rec.JobID] = ownedDelegate
+	jm.mu.Unlock()
+	t.Cleanup(func() {
+		jm.appendEvent = originalAppend
+		jm.mu.Lock()
+		delete(jm.running, ownedDelegate.rec.JobID)
+		jm.mu.Unlock()
+		ownedDelegate.closeDone()
+	})
+	close(release)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	sub.mu.Lock()
+	runErr := sub.err
+	sub.mu.Unlock()
+	if !errors.Is(runErr, cleanupErr) {
+		t.Fatalf("retained fatal error = %v, want owned cleanup failure", runErr)
+	}
+	events, err := root.delegateController.store.Load()
+	if err != nil {
+		t.Fatalf("load cleanup-failure terminal packet: %v", err)
+	}
+	var packet *delegatestore.TerminalPacket
+	for i := range events {
+		if events[i].DelegateID == fixture.delegateID && events[i].TerminalPrepared != nil {
+			value := events[i].TerminalPrepared.Packet
+			packet = &value
+		}
+	}
+	if packet == nil || !strings.Contains(string(packet.Message), cleanupErr.Error()) {
+		t.Fatalf("cleanup-failure terminal packet = %#v, want observable cleanup error", packet)
 	}
 }
 
@@ -675,55 +788,40 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 		t.Fatalf("initial ordinary-evidence worktree report = %#v, want clean", report)
 	}
 	cleanupMarker := filepath.Join(lane, "ordinary-shell-cleanup.txt")
-	cleanupStarted := make(chan struct{})
-	releaseCleanup := make(chan struct{})
-	var releaseCleanupOnce sync.Once
-	releaseCleanupBarrier := func() {
-		releaseCleanupOnce.Do(func() { close(releaseCleanup) })
-	}
-	t.Cleanup(releaseCleanupBarrier)
-	signaled := make(chan struct{}, 1)
-	ownedShell := &runningJob{
-		rec: &jobstore.JobRecord{
-			JobID:          "job_ordinary_owned_shell",
-			Type:           jobstore.JobShell,
-			Status:         jobstore.StatusRunning,
-			OwnerSessionID: sub.sess.ID(),
-		},
-		signal: func() {
-			close(cleanupStarted)
-			<-releaseCleanup
-			if err := os.WriteFile(cleanupMarker, []byte("cleaned\n"), 0o644); err != nil {
-				panic(err)
-			}
-			signaled <- struct{}{}
-		},
-		done:           make(chan struct{}),
-		durableStarted: true,
-	}
-	sub.sess.jobManager.mu.Lock()
-	sub.sess.jobManager.running[ownedShell.rec.JobID] = ownedShell
-	sub.sess.jobManager.mu.Unlock()
-	t.Cleanup(func() {
-		sub.sess.jobManager.mu.Lock()
-		delete(sub.sess.jobManager.running, ownedShell.rec.JobID)
-		sub.sess.jobManager.mu.Unlock()
-		ownedShell.closeDone()
+	executor := newAsynchronousCleanupStreamingExecutor(cleanupMarker)
+	t.Cleanup(executor.release)
+	ownedShell := runShell(context.Background(), sub.sess.jobManager, executor, shellArgs{
+		Command:    "asynchronous ordinary cleanup",
+		Background: true,
+		WorkingDir: lane,
 	})
+	if ownedShell.JobID == "" || !ownedShell.RunningInBackground {
+		t.Fatalf("start ordinary owned shell = %#v", ownedShell)
+	}
+	joinStarted := make(chan struct{})
+	var joinOnce sync.Once
+	sub.sess.jobManager.stopReceiptBeforeWait = func(jobID string) {
+		if jobID == ownedShell.JobID {
+			joinOnce.Do(func() { close(joinStarted) })
+		}
+	}
 	close(releaseInitialRequest)
-	<-cleanupStarted
+	<-executor.signalReturned
 	lateSteer := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "steer after ordinary settlement claim", 0)
 	if !errors.Is(lateSteer.result.Err, errDelegateTargetBusy) {
-		releaseCleanupBarrier()
+		executor.release()
 		t.Fatalf("steer after ordinary settlement claim error = %v, want target busy", lateSteer.result.Err)
 	}
-	releaseCleanupBarrier()
-	<-finalStatePublished
 	select {
-	case <-signaled:
-	default:
-		t.Fatal("ordinary missing-terminal run published final state before stopping its owned shell")
+	case <-joinStarted:
+		executor.release()
+	case <-finalStatePublished:
+		executor.release()
+		<-executor.waitReturned
+		t.Fatal("ordinary missing-terminal run sampled terminal evidence before joining its owned shell")
 	}
+	<-finalStatePublished
+	<-executor.waitReturned
 	if report := root.stableDelegateWorktreeReport(descriptor); report == nil || !report.Dirty {
 		t.Fatalf("post-cleanup ordinary worktree report = %#v, want dirty", report)
 	}
