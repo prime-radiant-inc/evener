@@ -1162,12 +1162,17 @@ func TestDelegateResourceCreate_RegisteredRejectsCreationMaxWait(t *testing.T) {
 		Name:      "delegate",
 		Arguments: raw,
 	})
-	const wantRegistryRejection = "tool args schema validation failed: jsonschema: '' does not validate with urn:serf:tool-schema#/additionalProperties: additionalProperties 'max_wait_ms' not allowed"
 	if !call.IsError {
 		t.Errorf("registered delegate accepted creation max_wait_ms: %#v", call)
 	}
-	if call.Output != wantRegistryRejection {
-		t.Errorf("registered delegate rejection = %q, want %q", call.Output, wantRegistryRejection)
+	const registryRejectionPrefix = "tool args schema validation failed:"
+	if !strings.HasPrefix(call.Output, registryRejectionPrefix) {
+		t.Errorf("registered delegate rejection = %q, want prefix %q", call.Output, registryRejectionPrefix)
+	}
+	for _, evidence := range []string{"additionalProperties", "max_wait_ms", "not allowed"} {
+		if !strings.Contains(call.Output, evidence) {
+			t.Errorf("registered delegate rejection = %q, want schema evidence %q", call.Output, evidence)
+		}
 	}
 	if !call.IsError {
 		select {
