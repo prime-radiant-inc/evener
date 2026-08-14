@@ -39,3 +39,29 @@ type ConfigSnapshot struct {
 	Sandbox                     string                     `json:"sandbox,omitempty"`                       // sandbox mode name (off|read-only|workspace-write|restricted); empty = off
 	SandboxNet                  *bool                      `json:"sandbox_net,omitempty"`                   // sandbox network decision; nil = default (on when sandboxed)
 }
+
+// Clone returns an independently mutable copy of the persisted configuration.
+func (s ConfigSnapshot) Clone() ConfigSnapshot {
+	clone := s
+	if s.ToolOutputLimits != nil {
+		clone.ToolOutputLimits = make(map[string]ToolOutputLimit, len(s.ToolOutputLimits))
+		for name, limit := range s.ToolOutputLimits {
+			clone.ToolOutputLimits[name] = limit
+		}
+	}
+	clone.SkillsDirs = append([]string(nil), s.SkillsDirs...)
+	clone.MCPConfigFiles = append([]string(nil), s.MCPConfigFiles...)
+	clone.MCPInline = append([]string(nil), s.MCPInline...)
+	clone.PluginDirs = append([]string(nil), s.PluginDirs...)
+	clone.SystemPromptAppend = append([]string(nil), s.SystemPromptAppend...)
+	if s.EnableLoopDetection != nil {
+		enabled := *s.EnableLoopDetection
+		clone.EnableLoopDetection = &enabled
+	}
+	clone.ModelFallbacks = append([]string(nil), s.ModelFallbacks...)
+	if s.SandboxNet != nil {
+		network := *s.SandboxNet
+		clone.SandboxNet = &network
+	}
+	return clone
+}
