@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadStartResponse } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
@@ -969,6 +970,50 @@ test("a failed spawn leaves the prompt and attachment staged (failure paths keep
   // class of bug, verified already-fixed here - the button must stay usable
   // so the user can retry without reloading).
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+});
+
+// T3: the first-run worst moment - the hub is fine but no agent daemon could
+// be reached for cwd (thread/start rejects with the hubLaunch WireError
+// family, appwire.HubLaunchError's own discriminator). The raw launch-check
+// text is replaced with copy a person can act on, distinct from a genuinely
+// unreachable hub.
+test("a spawn that fails because no agent daemon could be reached shows actionable copy, not the raw launch-check text", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("thread/start", () => {
+      throw new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" });
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await screen.findByText(
+    "Spawn failed: No agent daemon responded for this project. Start one by running `serf` in the repo, then retry.",
+  );
+  expect(screen.queryByText(/launch-check timed out/i)).toBeNull();
+});
+
+// The other failure family (T3): the hub connection itself is down. This
+// must keep the existing hub-unreachable sentence, not the daemon-missing
+// copy above - the two are not interchangeable advice.
+test("a spawn that fails because the hub connection is down keeps the hub-unreachable message", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("thread/start", () => {
+      throw new Error('AppwireClient: cannot call "thread/start" while state is "closed"');
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await screen.findByText("Spawn failed: Can't reach the hub right now.");
+  expect(screen.queryByText(/AppwireClient/i)).toBeNull();
 });
 
 test("re-enables the Spawn button after a successful start (post-success state hygiene, same class as §1.14)", async () => {

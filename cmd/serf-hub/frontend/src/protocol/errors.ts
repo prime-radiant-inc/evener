@@ -140,6 +140,53 @@ export function friendlyErrorMessage(error: unknown): string {
   return GENERIC_ERROR_MESSAGE;
 }
 
+// DAEMON_MISSING_MESSAGE is what friendlyLaunchErrorMessage shows for the
+// daemon-missing family (errorKind's "daemon-missing"): the hub answered,
+// but no agent daemon could be reached to serve the request - the first-run
+// worst moment (no daemon has ever been started for this project, or the
+// one the hub knew about is gone). Distinct from HUB_UNREACHABLE_MESSAGE,
+// which is the CLIENT's own connection being down: this is the hub saying
+// "I'm here, the daemon isn't", so the fix is different - start one.
+const DAEMON_MISSING_MESSAGE =
+  "No agent daemon responded for this project. Start one by running `serf` in the repo, then retry.";
+
+// errorKind classifies a rejection into the families a caller with launch
+// context (spawn, a model picker) needs to tell apart. Driven by real
+// wire/client shapes, not guesses:
+//  - "hub-unreachable": the request never reached the hub at all - the
+//    CLIENT_UNREACHABLE_PATTERN family friendlyErrorMessage already
+//    recognizes (a closed, or not-yet-open, socket).
+//  - "daemon-missing": the hub answered, but the AGENT DAEMON for the
+//    target project is what failed - isHubLaunchError's own discriminator
+//    (data.serfErrorInfo === "hubLaunch", stamped by every launch-check,
+//    credential, and daemon-spawn/resume failure - appwire.HubLaunchError,
+//    called from cmd/serf-hub/spawn.go, app_threadlifecycle.go, and
+//    app_models.go). A WireError only ever exists once the hub is there to
+//    write one, so this needs no separate connection-state check: the two
+//    families are already mutually exclusive by construction.
+//  - "server": any other hub-composed WireError (validation, conflict,
+//    etc.) - the hub's own message already says what happened.
+//  - "unknown": anything else (a plain JS exception, a timeout, ...).
+export type ErrorKind = "hub-unreachable" | "daemon-missing" | "server" | "unknown";
+
+export function errorKind(error: unknown): ErrorKind {
+  if (isClientUnreachableError(error)) return "hub-unreachable";
+  if (isHubLaunchError(error)) return "daemon-missing";
+  if (error instanceof WireError) return "server";
+  return "unknown";
+}
+
+// friendlyLaunchErrorMessage is friendlyErrorMessage for the two surfaces
+// that can hit the daemon-missing family against a cold project (spawn, a
+// model picker): identical to friendlyErrorMessage except the
+// daemon-missing family gets DAEMON_MISSING_MESSAGE's actionable copy
+// instead of the launch-check's own raw text ("serf launch-check timed
+// out", "fork/exec serf: no such file", ...) - accurate, but not something a
+// person can act on.
+export function friendlyLaunchErrorMessage(error: unknown): string {
+  return errorKind(error) === "daemon-missing" ? DAEMON_MISSING_MESSAGE : friendlyErrorMessage(error);
+}
+
 export type MutationOutcome = "notAccepted" | "unknown" | "targetDeleted";
 export type MutationRetryDisposition = "automatic" | "blocked" | "none";
 

@@ -95,13 +95,13 @@ describe("defaults (empty localStorage)", () => {
   test("showCost defaults to false", () => {
     expect(prefsStore.getState().showCost).toBe(false);
   });
-  // Pre-adjudicated (wave-7 plan): the floor doc flags a copy/code
-  // discrepancy for notifications ("title/favicon default on" per copy, but
-  // both the static markup and the JS default land all four at OFF) - the
-  // CODE's behavior wins, replicated here as all-false.
-  test("every notification toggle defaults to false (code-wins discrepancy resolution, not the copy's stated default)", () => {
+  // 2026-08-14 reversal (docs/web-ui/decisions.md): title-count is now the
+  // one channel that defaults ON - the attention system was otherwise
+  // invisible to anyone who never opened Settings. favicon/os/sound stay at
+  // the wave-7 code-wins floor (all OFF).
+  test("title defaults to true; favicon/os/sound default to false", () => {
     expect(prefsStore.getState().notifications).toEqual({
-      title: false,
+      title: true,
       favicon: false,
       os: false,
       sound: false,
@@ -180,6 +180,19 @@ describe("hydration from existing localStorage", () => {
     resetPrefsStoreForTests();
     expect(prefsStore.getState().notifications.os).toBe(true);
     expect(prefsStore.getState().notificationsLoudScope).toBe("all");
+  });
+
+  // The migration case the 2026-08-14 default flip must not break: a browser
+  // that explicitly turned title OFF before the flip stored a real "0" - that
+  // stored value has to keep winning over the new ON default, exactly like
+  // the pinned-key-contract's "stored value wins in both directions" case
+  // below. Only the ABSENT-key default changed; an existing opt-out is not a
+  // hypothetical migration risk here, it round-trips through the same
+  // readBool() every other pref uses.
+  test("a stored title of '0' beats the new on-by-default (existing opt-out survives the default flip)", () => {
+    localStorage.setItem(KEY("notificationsTitle"), "0");
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().notifications.title).toBe(false);
   });
 });
 
@@ -478,7 +491,8 @@ describe("setNotification", () => {
     prefsStore.getState().setNotification("favicon", true);
     expect(localStorage.getItem(KEY("notificationsFavicon"))).toBe("1");
     expect(prefsStore.getState().notifications).toEqual({
-      title: false,
+      // Untouched by this call, so it stays at its shipped default (on).
+      title: true,
       favicon: true,
       os: false,
       sound: false,

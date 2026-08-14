@@ -19,14 +19,19 @@ const LOUD_SCOPE_OPTIONS: RadioGroupOption[] = [
  * Settings -> Notifications (parity-m7-settings.md §6): 4 toggles + a
  * "Loud for" radio, localStorage-only, plus the one browser-API-touching
  * flow in this section: OS notification's Notification.requestPermission()
- * gate. All 4 toggles default OFF - the pre-adjudicated code-wins
- * resolution of the floor doc's own copy/code discrepancy (legacy copy
- * claimed title/favicon default on; both the static markup and the JS
+ * gate. Originally all 4 toggles defaulted OFF - the pre-adjudicated
+ * code-wins resolution of the floor doc's own copy/code discrepancy (legacy
+ * copy claimed title/favicon default on; both the static markup and the JS
  * default landed all four at OFF, per assets/settings-notifications.js's
- * own `!!prefs[key]` against an empty object). This section's intro
- * paragraph is corrected to match that same resolution rather than copied
- * verbatim - shipping copy that contradicts the toggles rendered directly
- * below it would be worse than either "faithful" option alone.
+ * own `!!prefs[key]` against an empty object).
+ *
+ * 2026-08-14 (docs/web-ui/decisions.md): title bar count now defaults ON -
+ * see stores/prefs.ts's loadNotifications for the reasoning. Favicon, OS
+ * notification, and sound are still OFF by default. This section's intro
+ * paragraph is worded to match that split rather than either the legacy
+ * copy or the old all-OFF resolution verbatim - shipping copy that
+ * contradicts the toggles rendered directly below it would be worse than
+ * either "faithful" option alone.
  *
  * OS notification's permission gate has no timer/polling to clean up
  * (unlike T2's OAuth device-code flow) - one `requestPermission()` promise
@@ -77,7 +82,9 @@ export function NotificationsSection() {
 
   return (
     <div className={CLASS.root}>
-      <p className={CLASS.intro}>Title, favicon, OS notification, and sound are all opt-in. Saved per-browser.</p>
+      <p className={CLASS.intro}>
+        Title bar count is on by default; favicon, OS notification, and sound are opt-in. Saved per-browser.
+      </p>
 
       <div className={CLASS.row}>
         <Switch

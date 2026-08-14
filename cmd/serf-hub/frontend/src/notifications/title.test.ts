@@ -5,8 +5,8 @@ import type { ThreadModel } from "../protocol/model";
 import { type PaneProps, registerPaneForTests } from "../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
-import { resetTreeStoreForTests, treeStore } from "../stores/tree";
 import type { AttentionSummary } from "../stores/tree";
+import { resetTreeStoreForTests, treeStore } from "../stores/tree";
 import { applyTitle, baseTitle, formatTitle } from "./title";
 
 function summary(needsYou: number, error: number): AttentionSummary {

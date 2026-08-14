@@ -22,7 +22,7 @@
 // the existing ReasoningEffortControl picks up the new model's profile
 // for free.
 import { useRef, useState } from "react";
-import { friendlyErrorMessage, sessionActionError, sessionActionHeadline } from "../../../protocol/errors";
+import { friendlyLaunchErrorMessage, sessionActionError, sessionActionHeadline } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
 import {
@@ -90,9 +90,11 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
       // wrote it for a person) but not for AppwireClient's own internal
       // "cannot call ... while state is closed" rejections, which is
       // exactly what a mid-teardown model/list lands here. Same headline
-      // rule (sessionActionHeadline), friendlyErrorMessage detail instead.
+      // rule (sessionActionHeadline), friendlyLaunchErrorMessage detail
+      // instead - it also replaces the daemon-missing family's raw
+      // launch-check text with actionable copy (T3).
       const headline = sessionActionHeadline("Couldn't load models", err);
-      setError(`${headline}: ${friendlyErrorMessage(err)}`);
+      setError(`${headline}: ${friendlyLaunchErrorMessage(err)}`);
     } finally {
       setLoading(false);
     }

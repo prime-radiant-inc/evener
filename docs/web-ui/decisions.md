@@ -584,4 +584,39 @@ language wholesale — attributed per its MIT license
 (`cmd/serf-hub/frontend/LICENSES/beautiful-ui.txt`, Copyright (c) 2026 Shane
 Levine) rather than reinterpreted as an in-house original.
 
+## 2026-08-14 title-count notification default flips to ON
+
+Reverses one channel of the wave-7 "all-OFF" floor (`stores/prefs.ts`'s
+`loadNotifications`, pre-adjudicated code-wins resolution of a legacy
+copy/code discrepancy — see that function's own comment history). All four
+notification toggles (title, favicon, OS notification, sound) shipped OFF by
+default; the attention system built on top of them was consequently
+invisible to anyone who never opened Settings and turned it on by hand.
+
+Title bar count is the one channel that flips to ON. It's the quietest,
+most reversible of the four: no OS permission prompt (unlike OS
+notification), no audio (unlike sound), no favicon repaint to notice or
+distrust — just a `(N)` prefix on the tab title, gone the instant the count
+drops to zero. Favicon dot, OS notification, and sound stay OFF; this is a
+one-channel exception to the floor, not a re-litigation of it.
+
+Only the default for an *absent* key changed. A browser that already stored
+an explicit title=off keeps reading false — `readBool`'s stored-value-wins
+contract (`prefs.test.ts`'s pinned-key-contract block) already guaranteed
+this for every other pref here; the migration test in `prefs.test.ts`
+("a stored title of '0' beats the new on-by-default") pins it for title
+specifically.
+
+## 2026-08-14 welcome pane teaches the chords
+
+The welcome/empty state (`panes/welcome/Welcome.tsx`) gained a quiet hint
+row below the existing task suggestions, listing the three chords a new
+person has no other way to discover from this cold pane: Mod+K (command
+palette), Mod+I (focus composer), Mod+J (next session needing you) — the
+same three from `CommandPalette.tsx`'s own `HELP_ROWS`, rendered through the
+shared `KeyHint` widget rather than hand-rolled text — plus a line noting
+that `?` inside the palette shows the full shortcut legend. Caption-size,
+ink-low/mid, placed below the example-prompt buttons so it reads as an
+aside rather than another call to action.
+
 <!-- decision-tables:end -->

@@ -67,28 +67,31 @@ function renderWithToasts() {
   );
 }
 
-test("all 4 toggles default unchecked and Loud for defaults to Questions & errors (code-wins discrepancy resolution)", () => {
+test("title bar count defaults checked; favicon/OS/sound default unchecked; Loud for defaults to Questions & errors", () => {
   renderWithToasts();
-  expect(screen.getByRole("switch", { name: "Title bar count" }).getAttribute("aria-checked")).toBe("false");
+  expect(screen.getByRole("switch", { name: "Title bar count" }).getAttribute("aria-checked")).toBe("true");
   expect(screen.getByRole("switch", { name: "Favicon dot" }).getAttribute("aria-checked")).toBe("false");
   expect(screen.getByRole("switch", { name: "OS notification" }).getAttribute("aria-checked")).toBe("false");
   expect(screen.getByRole("switch", { name: "Sound" }).getAttribute("aria-checked")).toBe("false");
   expect(screen.getByRole("radio", { name: "Questions & errors" }).getAttribute("aria-checked")).toBe("true");
 });
 
-test("intro copy matches the code-wins defaults (does not claim title/favicon are on by default)", () => {
+test("intro copy matches the current defaults (title on, the rest opt-in)", () => {
   renderWithToasts();
-  expect(screen.queryByText(/Title and favicon default on/)).toBeNull();
+  expect(screen.getByText(/Title bar count is on by default/)).toBeTruthy();
 });
 
 describe("Title bar count / Favicon dot / Sound - plain toggles, no permission gate", () => {
+  // Title bar count now defaults ON, so the first click turns it OFF - the
+  // opposite direction of every other toggle in this file, but the same
+  // persist-and-toast behavior.
   test("Title bar count persists independently and toasts Settings saved", async () => {
     const user = userEvent.setup();
     renderWithToasts();
 
     await user.click(screen.getByRole("switch", { name: "Title bar count" }));
 
-    expect(prefsStore.getState().notifications).toEqual({ title: true, favicon: false, os: false, sound: false });
+    expect(prefsStore.getState().notifications).toEqual({ title: false, favicon: false, os: false, sound: false });
     expect(await screen.findByText("Settings saved")).toBeTruthy();
   });
 
@@ -99,7 +102,8 @@ describe("Title bar count / Favicon dot / Sound - plain toggles, no permission g
     await user.click(screen.getByRole("switch", { name: "Sound" }));
 
     expect(prefsStore.getState().notifications.sound).toBe(true);
-    expect(prefsStore.getState().notifications.title).toBe(false);
+    // title stays at its shipped default (on) - untouched by this toggle.
+    expect(prefsStore.getState().notifications.title).toBe(true);
   });
 });
 

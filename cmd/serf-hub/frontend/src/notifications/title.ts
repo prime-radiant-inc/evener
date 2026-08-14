@@ -26,8 +26,7 @@ export function baseTitle(): string {
     // (threadTitle.ts): live thread name, else the rail's tree title —
     // three surfaces, one resolver, no disagreements.
     const ctx = {
-      threadName: (ref: string) =>
-        resolveThreadName(threadsStore.getState().threads, treeStore.getState().tree, ref),
+      threadName: (ref: string) => resolveThreadName(threadsStore.getState().threads, treeStore.getState().tree, ref),
     };
     const paneTitle = paneFor(pane.type).title(pane.params, ctx);
     return paneTitle ? `${paneTitle} · serf hub` : "serf hub";

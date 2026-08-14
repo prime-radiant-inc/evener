@@ -188,6 +188,28 @@ describe("open state", () => {
 
     expect(await screen.findByText("Couldn't load models: no providers configured")).toBeTruthy();
   });
+
+  // T3: the first-run worst moment - the hub answered, but no agent daemon
+  // could be reached for the scoped harness/cwd (loadCatalog rejects with
+  // the hubLaunch WireError family). The raw launch-check text is replaced
+  // with copy a person can act on.
+  test("replaces a daemon-missing rejection's raw launch-check text with actionable copy", async () => {
+    const user = userEvent.setup();
+    renderPicker({
+      loadCatalog: vi
+        .fn()
+        .mockRejectedValue(new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" })),
+    });
+
+    await user.click(openTrigger());
+
+    expect(
+      await screen.findByText(
+        "Couldn't load models: No agent daemon responded for this project. Start one by running `serf` in the repo, then retry.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/launch-check timed out/i)).toBeNull();
+  });
 });
 
 // --- the input replaces the previously-selected value ---------------------

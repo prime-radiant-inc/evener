@@ -1,13 +1,25 @@
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { type TreeNode, useTreeStore } from "../../stores/tree";
-import { Button, EmptyState, PaneScaffold } from "../../widgets";
+import { Button, EmptyState, KeyHint, PaneScaffold } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./welcome.module.css";
 
 const CLASS = {
   actions: requireClass(styles.actions, "welcome.module.css", "actions"),
+  hints: requireClass(styles.hints, "welcome.module.css", "hints"),
+  hintRow: requireClass(styles.hintRow, "welcome.module.css", "hintRow"),
+  hintFooter: requireClass(styles.hintFooter, "welcome.module.css", "hintFooter"),
 };
+
+// T6: the chords a new person has no other way to discover from this cold
+// pane - CommandPalette.tsx's own HELP_ROWS is the source of truth for all
+// three (Mod+K/Mod+I/Mod+J); order matches HELP_ROWS' own listing.
+const CHORD_HINTS: { keys: string[]; desc: string }[] = [
+  { keys: ["Mod", "K"], desc: "command palette" },
+  { keys: ["Mod", "I"], desc: "focus the composer" },
+  { keys: ["Mod", "J"], desc: "next session needing you" },
+];
 
 const EXAMPLE_PROMPTS = [
   "Find and fix the root cause of a flaky test",
@@ -82,6 +94,17 @@ export default function Welcome({ params }: PaneProps<WelcomePaneParams>) {
                   {prompt}
                 </Button>
               ))}
+            </div>
+            <div className={CLASS.hints}>
+              {CHORD_HINTS.map((hint) => (
+                <div className={CLASS.hintRow} key={hint.desc}>
+                  <KeyHint keys={hint.keys} />
+                  <span>{hint.desc}</span>
+                </div>
+              ))}
+              <p className={CLASS.hintFooter}>
+                <KeyHint keys={["?"]} /> inside the command palette shows all shortcuts.
+              </p>
             </div>
           </div>
         }

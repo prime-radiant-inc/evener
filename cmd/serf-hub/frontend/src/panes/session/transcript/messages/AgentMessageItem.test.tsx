@@ -291,6 +291,19 @@ test("the speaker avatar starts at the top of the agent message row", () => {
   expect(css).toMatch(/\.opener\s*\{[\s\S]*align-items:\s*flex-start;/);
 });
 
+// The opener row's gap carries the same single-sourced --speaker-gap
+// UserMessageItem.test.tsx documents (10px, declared once on .turn in
+// turnblock.module.css). The (, 10px) fallback covers the "Intent" focused
+// view (Session.tsx's focusedTranscript branch), which renders this item
+// directly - never under .turn - so there is no ancestor to inherit the
+// custom property from there (kata T9; Session.test.tsx's own "declared
+// exactly once" test covers the source side of this contract).
+test("the opener's gap resolves --speaker-gap with a documented 10px fallback for the focused view", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toMatch(/\.opener\s*\{[\s\S]*gap:\s*var\(--speaker-gap,\s*10px\);/);
+});
+
 // --- the chat bubble (2026-07-30-transcript-chat-bubbles-design.md) --------
 // Every fragment bubbles: opener tailed toward the avatar, continuations
 // fully rounded, the SAME wrapper live and settled.

@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { resetTreeStoreForTests, type TreeNode, type TreeResponse, treeStore } from "../../stores/tree";
 import Welcome from "./Welcome";
 
@@ -134,4 +134,28 @@ test('clicking "Jump back in" opens that session\'s pane', async () => {
   render(<Welcome params={{}} paneId="welcome" focused={true} />);
   await user.click(screen.getByRole("button", { name: /Jump back in/ }));
   expect(window.location.pathname).toBe(`/s/${encodeURIComponent("local:live1")}`);
+});
+
+// T6: a quiet hint row teaching the three chords a new person has no other
+// way to discover from this cold pane - KeyHint renders each chord's keys as
+// real <kbd> elements (platform-split "Mod"), so these assertions target the
+// description text next to each chord rather than the glyph itself.
+describe("chord hints", () => {
+  test("shows the command palette, focus composer, and next-needs-you chords", () => {
+    render(<Welcome params={{}} paneId="welcome" focused={true} />);
+    expect(screen.getByText(/^command palette$/i)).toBeTruthy();
+    expect(screen.getByText(/focus (the )?composer/i)).toBeTruthy();
+    expect(screen.getByText(/next session needing you/i)).toBeTruthy();
+  });
+
+  test("renders each chord through KeyHint's own <kbd> elements, not hand-rolled text", () => {
+    render(<Welcome params={{}} paneId="welcome" focused={true} />);
+    // 3 chords x 2 keys (Mod+K, Mod+I, Mod+J) + the bare "?" hint = 7 <kbd>s.
+    expect(document.querySelectorAll("kbd").length).toBe(7);
+  });
+
+  test('mentions that "?" inside the command palette shows all shortcuts', () => {
+    render(<Welcome params={{}} paneId="welcome" focused={true} />);
+    expect(screen.getByText(/shows all shortcuts/i)).toBeTruthy();
+  });
 });

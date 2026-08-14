@@ -264,13 +264,18 @@ describe("loudScope", () => {
   });
 });
 
-describe("all-OFF defaults (the top cross-wave trap)", () => {
-  test("with the shipped defaults, nothing counts, tints, or fires", async () => {
-    // leader + unfocused (defaults) — ONLY the OFF prefs hold anything back.
+// 2026-08-14: title flipped to ON by default (docs/web-ui/decisions.md);
+// favicon/os/sound stay at the wave-7 all-OFF floor. This block now proves
+// BOTH halves of that split default, not just the OFF one - a regression
+// either direction (title reverting to OFF, or a favicon/os/sound default
+// creeping to ON) should fail here.
+describe("shipped defaults (title ON, favicon/os/sound OFF)", () => {
+  test("title counts unconditionally by default; favicon/os/sound stay off", async () => {
+    // leader + unfocused (defaults) — ONLY the favicon/os/sound OFF prefs hold anything back.
     await boot(treeOf([node("local:a", "awaiting", true), node("local:e", "errored")]));
-    expect(document.title).toBe("serf hub"); // no "(2)" prefix
-    expect(faviconHref()).not.toContain("%23f7768e"); // no error dot
-    // a fresh transition still fires nothing while every channel pref is OFF
+    expect(document.title).toBe("(2) serf hub"); // title default ON: count prefix present
+    expect(faviconHref()).not.toContain("%23f7768e"); // favicon still OFF by default: no error dot
+    // a fresh transition still fires nothing while os/sound stay OFF
     treeStore.setState({
       tree: treeOf([node("local:a", "awaiting", true), node("local:e", "errored"), node("local:f", "errored")]),
     });

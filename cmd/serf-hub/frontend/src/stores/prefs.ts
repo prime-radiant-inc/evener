@@ -261,13 +261,23 @@ function loadTranscript(): Record<TranscriptStatusKey, boolean> {
   };
 }
 
-// code-wins: the floor doc's own §6 flags a copy/code discrepancy (page
-// copy claims title/favicon default on; both the static markup and the
-// legacy JS default land all four at OFF) - replicating the CODE's
-// behavior per this wave's pre-adjudication, all four false.
+// code-wins (wave-7 pre-adjudication): the floor doc's own §6 flags a
+// copy/code discrepancy (page copy claimed title/favicon default on; both
+// the static markup and the legacy JS default landed all four at OFF) - all
+// four shipped false, replicating the CODE's behavior.
+//
+// 2026-08-14 reversal (docs/web-ui/decisions.md): title flips back to ON by
+// default. The all-OFF floor made the attention system invisible to anyone
+// who never opened Settings - the count badge/title-bar prefix is the
+// quietest, most reversible of the four channels (no OS permission prompt,
+// no sound), so it's the one that ships on. favicon/os/sound stay OFF; this
+// is a one-channel exception to the floor, not a re-litigation of it. As
+// with every other pref here, this only changes the ABSENT-key default - a
+// browser that already stored an explicit "0" for title keeps reading false
+// (see prefs.test.ts's "existing opt-out survives the default flip").
 function loadNotifications(): Record<NotificationKey, boolean> {
   return {
-    title: readBool(NOTIFICATION_KEY_NAMES.title, false),
+    title: readBool(NOTIFICATION_KEY_NAMES.title, true),
     favicon: readBool(NOTIFICATION_KEY_NAMES.favicon, false),
     os: readBool(NOTIFICATION_KEY_NAMES.os, false),
     sound: readBool(NOTIFICATION_KEY_NAMES.sound, false),

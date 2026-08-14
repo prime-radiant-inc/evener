@@ -39,3 +39,33 @@
   white-space: normal;
   text-align: left;
 }
+
+/* T6: a quiet hint row teaching the chords, below the task suggestions -
+ * caption-size and ink-low/mid so it reads as an aside, not another action. */
+.hints {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(100%, 36rem);
+  gap: var(--space-1);
+  margin-top: var(--space-4);
+}
+
+.hintRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
+
+.hintFooter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: var(--space-1) 0 0;
+  color: var(--ink-low);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}

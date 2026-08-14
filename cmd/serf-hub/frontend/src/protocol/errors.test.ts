@@ -3,8 +3,10 @@
 import { expect, test } from "vitest";
 import {
   ConnectionClosedError,
+  errorKind,
   errorText,
   friendlyErrorMessage,
+  friendlyLaunchErrorMessage,
   isHubLaunchError,
   sessionActionError,
   sessionActionHeadline,
@@ -130,4 +132,58 @@ test("friendlyErrorMessage gives every other unknown rejection the same generic 
   expect(friendlyErrorMessage("plain string failure")).toBe("Something went wrong.");
   expect(friendlyErrorMessage(404)).toBe("Something went wrong.");
   expect(friendlyErrorMessage(undefined)).toBe("Something went wrong.");
+});
+
+// errorKind is the classification spawn/model-picker call sites use to tell
+// a dead hub connection apart from a hub that answered but couldn't reach
+// the target project's agent daemon (T3: the first-run worst moment).
+test("errorKind classifies a closed/not-yet-open socket as hub-unreachable", () => {
+  expect(errorKind(new ConnectionClosedError("AppwireClient: closed"))).toBe("hub-unreachable");
+  expect(errorKind(new Error('AppwireClient: cannot call "model/list" while state is "closed"'))).toBe(
+    "hub-unreachable",
+  );
+});
+
+test("errorKind classifies the hubLaunch WireError family as daemon-missing", () => {
+  expect(errorKind(new WireError("fork/exec serf: no such file", -32014, { serfErrorInfo: "hubLaunch" }))).toBe(
+    "daemon-missing",
+  );
+  expect(errorKind(new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" }))).toBe(
+    "daemon-missing",
+  );
+});
+
+test("errorKind classifies every other WireError as server", () => {
+  expect(errorKind(new WireError("turn t1 is active", -32013, { serfErrorInfo: "conflict" }))).toBe("server");
+  expect(errorKind(new WireError("no data at all", -32014))).toBe("server");
+});
+
+test("errorKind classifies anything else as unknown", () => {
+  expect(errorKind(new Error("switch boom"))).toBe("unknown");
+  expect(errorKind("plain string failure")).toBe("unknown");
+  expect(errorKind(undefined)).toBe("unknown");
+});
+
+// friendlyLaunchErrorMessage is friendlyErrorMessage plus actionable copy for
+// the daemon-missing family - everything else passes through unchanged.
+test("friendlyLaunchErrorMessage gives the daemon-missing family actionable copy instead of the launch-check's raw text", () => {
+  expect(
+    friendlyLaunchErrorMessage(new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" })),
+  ).toBe("No agent daemon responded for this project. Start one by running `serf` in the repo, then retry.");
+});
+
+test("friendlyLaunchErrorMessage keeps the hub-unreachable message for a closed connection", () => {
+  expect(friendlyLaunchErrorMessage(new ConnectionClosedError("AppwireClient: closed"))).toBe(
+    "Can't reach the hub right now.",
+  );
+});
+
+test("friendlyLaunchErrorMessage keeps every other WireError's own message untouched", () => {
+  expect(friendlyLaunchErrorMessage(new WireError("turn t1 is active", -32013, { serfErrorInfo: "conflict" }))).toBe(
+    "turn t1 is active",
+  );
+});
+
+test("friendlyLaunchErrorMessage gives an unknown rejection the same generic sentence friendlyErrorMessage would", () => {
+  expect(friendlyLaunchErrorMessage(new Error("switch boom"))).toBe("Something went wrong.");
 });

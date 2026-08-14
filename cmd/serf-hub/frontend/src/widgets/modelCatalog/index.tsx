@@ -11,7 +11,7 @@
 // options-list: it needs provider group heads, non-interactive diagnostic
 // lines, and a list expanded the moment it opens.
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
-import { friendlyErrorMessage } from "../../protocol/errors";
+import { friendlyLaunchErrorMessage } from "../../protocol/errors";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
@@ -340,12 +340,15 @@ export function ModelCatalog({
     try {
       setCatalog(await loadCatalog());
     } catch (err) {
-      // friendlyErrorMessage, not errorText: loadCatalog is wired to a real
-      // RPC at both call sites (spawn's harness-scoped fetch, settings'
+      // friendlyLaunchErrorMessage, not errorText: loadCatalog is wired to a
+      // real RPC at both call sites (spawn's harness-scoped fetch, settings'
       // unscoped one) and a mid-teardown call can reject with
       // AppwireClient's own "cannot call ... while state is closed" text -
-      // internal wiring detail that must never reach this panel.
-      setError(`Couldn't load models: ${friendlyErrorMessage(err)}`);
+      // internal wiring detail that must never reach this panel. It also
+      // replaces the daemon-missing family's raw launch-check text with
+      // actionable copy when the hub is up but no agent daemon could be
+      // reached for the scoped harness/cwd (T3).
+      setError(`Couldn't load models: ${friendlyLaunchErrorMessage(err)}`);
     } finally {
       setLoading(false);
     }

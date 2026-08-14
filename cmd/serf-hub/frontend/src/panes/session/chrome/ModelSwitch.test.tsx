@@ -385,6 +385,33 @@ test("a client-unreachable rejection (the reported bug) shows the friendly hub-u
   expect(alert.textContent).not.toMatch(/AppwireClient/i);
 });
 
+// T3: the first-run worst moment - the hub answered, but no agent daemon
+// could be reached for this session (model/list rejects with the hubLaunch
+// WireError family). sessionActionHeadline already renames the headline to
+// "Couldn't start this session" for this family; the detail now gets
+// actionable copy instead of the launch-check's own raw text.
+test("a daemon-missing catalog fetch shows actionable copy under the session-start headline", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("model/list", () => {
+    throw new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" });
+  });
+
+  render(
+    <>
+      <ModelSwitch sessionRef="ref_a" model={testModel()} />
+      <Toast />
+    </>,
+  );
+  await user.click(trigger());
+
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toBe(
+    "Couldn't start this session: No agent daemon responded for this project. Start one by running `serf` in the repo, then retry.",
+  );
+  expect(alert.textContent).not.toMatch(/launch-check timed out/i);
+});
+
 // The picker is dismissable by Escape and by an outside click, not only by
 // its Cancel button (parity with the legacy live picker's dismiss affordances).
 test("pressing Escape closes an open picker", async () => {

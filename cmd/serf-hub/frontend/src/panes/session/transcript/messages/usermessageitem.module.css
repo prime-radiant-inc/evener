@@ -29,8 +29,13 @@
    * transcript's one geometry definition, --speaker-gap, declared on .turn in
    * turnblock.module.css - not a local literal that happens to match a
    * constant elsewhere - so the 24+10=34 arithmetic can never silently drift
-   * between this avatar row and the gutter's indent rule. */
-  gap: var(--speaker-gap);
+   * between this avatar row and the gutter's indent rule. The (, 10px)
+   * fallback is for the "Intent" focused view (session.module.css's
+   * .focusedTranscript branch), which renders this item directly, never
+   * under .turn - the two are sibling branches of the same VirtualList row
+   * (Session.tsx), so there is no ancestor there to inherit the custom
+   * property from (kata T9). */
+  gap: var(--speaker-gap, 10px);
   /* --space-1, not --space-2: with the body now a bubble (see .body), the
    * message is a chat row, and chat rows sit tight - the bubble's own fill
    * carries the separation the old document rhythm bought with air. */

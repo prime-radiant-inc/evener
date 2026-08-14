@@ -1738,6 +1738,35 @@ test("the transcript flex chain carries min-width: 0", () => {
   }
 });
 
+// --- --speaker-gap has exactly one declaration site (kata T9) --------------
+//
+// .focusedTranscript (this file) and .turn (transcript/turnblock.module.css)
+// are SIBLING branches of the same VirtualList row - the "Intent" focused
+// view renders userMessage/agentMessage items directly under
+// .focusedTranscript (Session.tsx's focusedEntries branch), while every
+// other view renders them under TurnBlock's .turn. Neither is an ancestor of
+// the other, and TurnBlock is also reused standalone (the /dev/surfaces
+// gallery, panes/transcript's read-only pane) with no .focusedTranscript
+// ancestor at all - so .turn must keep its own --speaker-gap declaration.
+// The single source of truth is THAT declaration; .focusedTranscript no
+// longer declares its own copy, and the two item renderers reachable from
+// both branches (AgentMessageItem's .opener, UserMessageItem's .message)
+// carry a documented var(--speaker-gap, 10px) fallback for when .turn isn't
+// an ancestor. This test pins the "exactly one declaration" half of that
+// contract; the isolation half is TurnBlock.test.tsx's own "declared once on
+// .turn" test, which keeps passing unchanged.
+test("--speaker-gap is declared exactly once, on .turn - not duplicated onto .focusedTranscript", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const sessionCss = readFileSync(join(here, "session.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const turnblockCss = readFileSync(join(here, "transcript", "turnblock.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  expect(sessionCss).not.toContain("--speaker-gap");
+  const declarations = (turnblockCss.match(/--speaker-gap:\s*10px;/g) ?? []).length;
+  expect(declarations).toBe(1);
+});
+
 // --- session-open lands at the transcript end (kata cmjb) ------------------
 //
 // A real serf session's transcript is never literally turns.length === 0 -

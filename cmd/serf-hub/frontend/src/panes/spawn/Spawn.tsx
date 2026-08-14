@@ -16,7 +16,7 @@
 // parity-m6-surfaces.md). The recent-prompts row is a decided parity drop
 // (Jesse 2026-07-22).
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { friendlyErrorMessage } from "../../protocol/errors";
+import { friendlyLaunchErrorMessage } from "../../protocol/errors";
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption } from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
 import type { PaneProps } from "../../shell/paneRegistry";
@@ -478,11 +478,14 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       }
       await doSpawn();
     } catch (err) {
-      // friendlyErrorMessage, not errorText: doSpawn's thread/start call can
-      // reject with AppwireClient's own "cannot call ... while state is
+      // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
+      // can reject with AppwireClient's own "cannot call ... while state is
       // closed" text if the client tears down mid-submit, which is internal
-      // wiring detail, never something to toast at a person.
-      toasts.push("error", `Spawn failed: ${friendlyErrorMessage(err)}`);
+      // wiring detail, never something to toast at a person - and when the
+      // hub answered but no agent daemon could be reached for cwd (the
+      // first-run worst moment, T3), the launch-check's own raw text is
+      // replaced with actionable copy instead.
+      toasts.push("error", `Spawn failed: ${friendlyLaunchErrorMessage(err)}`);
       busyRef.current = false;
       setBusy(false);
       setBusyStartedAt(null);
@@ -500,11 +503,14 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       await createDir(path);
       await doSpawn();
     } catch (err) {
-      // friendlyErrorMessage, not errorText: doSpawn's thread/start call can
-      // reject with AppwireClient's own "cannot call ... while state is
+      // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
+      // can reject with AppwireClient's own "cannot call ... while state is
       // closed" text if the client tears down mid-submit, which is internal
-      // wiring detail, never something to toast at a person.
-      toasts.push("error", `Spawn failed: ${friendlyErrorMessage(err)}`);
+      // wiring detail, never something to toast at a person - and when the
+      // hub answered but no agent daemon could be reached for cwd (the
+      // first-run worst moment, T3), the launch-check's own raw text is
+      // replaced with actionable copy instead.
+      toasts.push("error", `Spawn failed: ${friendlyLaunchErrorMessage(err)}`);
       busyRef.current = false;
       setBusy(false);
       setBusyStartedAt(null);
