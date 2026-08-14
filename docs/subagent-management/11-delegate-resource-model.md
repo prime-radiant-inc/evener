@@ -267,7 +267,9 @@ delegate_send never accepts a job_... target and never returns a job ID.
 A positive max_wait_ms applies only when that call starts an idle delegate. A
 live steer returns on durable admission and reports that waiting was not
 applicable in the public wait_ignored_reason field. That field is specific to
-the call and is not folded into warnings.
+the call, remains only on the delegate_send result and the transcript/UI
+transport of that result, and is not folded into warnings, the delegate
+aggregate, stable events/status, or client snapshots.
 
 to=caller remains the explicit route from a delegate to its controlling
 caller. If the caller is another delegate, the route uses that stable parent's
@@ -569,11 +571,13 @@ error because no delegate exists. If the compensating batch also fails, the exac
 non-launched binding and capacity stay latched for explicit stop or restart
 repair. No provider call occurs through any failure path.
 
-From step 3 until ready is marked, the durable generation is active and may be
+From step 4 until ready is marked, the durable generation is active and may be
 stopped or exactly finished, but steer, model, tool, child, and shell admission
-return target_busy. Readiness is a process-local launch gate, not a second
-lifecycle phase; if it disappears on restart, the durable generation settles
-failed/runtime_lost.
+return target_busy. Before step 4, the window contains only a cancellable
+process reservation and cleanup responsibility for its exact uncommitted
+artifacts; there is no durable generation or public delegate. Readiness is a
+process-local launch gate, not a second lifecycle phase; if it disappears on
+restart, the durable generation settles failed/runtime_lost.
 
 The creation batch contains descriptor and lineage fields needed for lazy
 restore. It does not contain a JobRecord or activation ID.
@@ -1560,9 +1564,12 @@ Every DTO bridge is lossless for the stable projection. In particular it must
 not drop explicit JSON null, validation flags/reasons, exhaustion type/budget/
 limit, task/description/agent type/model/effort, timing, cumulative self-only
 usage, quiet state, turn slots/delegation allowance, watch diagnostics,
-wait_ignored_reason, warnings, or worktree/disposal evidence. Cold and live
-paths use the same folded types; historical thread and doctor reads use
-ReadEvents plus pure folds and never an append-capable Open.
+warnings, or worktree/disposal evidence. Stable snapshot, lifecycle-event,
+status, and cold-projection DTOs omit the call-scoped wait_ignored_reason;
+delegate_send result bridges and transcript/UI renderers preserve it
+separately. Cold and live paths use the same folded types; historical thread
+and doctor reads use ReadEvents plus pure folds and never an append-capable
+Open.
 
 The Hub daemon prober discovers live descendants only through
 `descendant_session_ids` and `descendant_states`. It does not infer delegate
@@ -1746,9 +1753,10 @@ At minimum, characterize:
 17. positive stop wait cannot suspend or cancel the sole reconciliation driver;
 18. a foreground shell timeout releases its exact controller receipt;
 19. to=caller never writes directly into an unfinished root tool round;
-20. explicit JSON null, validation, exhaustion, worktree evidence,
-    wait_ignored_reason, turn slots, timing, usage, and diagnostics survive
-    live/cold/client bridges; and
+20. explicit JSON null, validation, exhaustion, worktree evidence, turn slots,
+    timing, usage, and diagnostics survive live/cold/client bridges, while
+    wait_ignored_reason survives only the delegate_send result and its
+    transcript/UI transport; and
 21. cold activity, Hub thread reads, and doctor do not mutate any historical
     log or construct a Session/provider.
 

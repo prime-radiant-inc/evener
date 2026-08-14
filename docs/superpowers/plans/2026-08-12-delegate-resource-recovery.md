@@ -825,7 +825,8 @@ Each row is a required behavioral RED before its owner slice and a count-20 norm
 | Positive stop wait cancelled the sole reconciliation driver | Task 7 | TestDelegateResourceRuntime_PositiveStopWaitKeepsReconciliationDriverAlive |
 | Foreground shell timeout leaked its controller receipt | Task 9 | TestDelegateResourceStop_ForegroundShellTimeoutAbortsUncommittedReceipt |
 | to=caller appended into an unfinished root tool round | Task 7 | TestDelegateResourceRuntime_CallerCannotWriteIntoUnfinishedRootToolRound |
-| Explicit null, validation, exhaustion, worktree, wait reason, slots, timing, usage, or diagnostics were dropped | Tasks 7, 10, 11 | TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsageAndWorktree, TestStableDelegateTools_ListPreservesTurnSlotsAllowanceAndWatchDiagnostics, and TestDelegateProjection_PreservesNullValidationExhaustionWaitReasonAndTurnSlots |
+| Explicit null, validation, exhaustion, worktree, slots, timing, usage, or stable diagnostics were dropped | Tasks 7, 10, 11 | TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsageAndWorktree, TestStableDelegateTools_ListPreservesTurnSlotsAllowanceAndWatchDiagnostics, and TestDelegateProjection_PreservesNullValidationExhaustionAndTurnSlots |
+| Call-scoped wait_ignored_reason was dropped from delegate_send or copied into stable delegate state | Tasks 10, 11 | TestStableDelegateTools_WaitIgnoredReasonIsOwnField and the Task 11 jobTools/subagent-module Vitest cases |
 | Historical reads mutated logs | Task 10 | TestStableDelegateReadOnly_FileBytesAndMetadataRemainUnchanged |
 | Backend cutover outpaced Hub/TUI/web/doctor/prompt consumers | Tasks 10, 11, 13 | TestDoctorStableDelegatePreservesShellAndWatchDiagnostics, TestDelegateProjection_DescendantOrdinaryEventsReachRootTransport, TestTUIStableDelegateWatchAndObserverNoticesRemainVisible, the exact Task 11 Vitest cases, and TestBundledDelegatePromptPreservesWatchSupervisionAndShellGuidance |
 | Stable watches/observer sidecars were mistaken for deletion targets | Task 8 | TestStableDelegateWatch_PreservesFiltersEveryCoalescingAndBudget and TestStableDelegateObserver_EmitsExactlyOneControllerTerminalPacket |
@@ -847,7 +848,7 @@ Each row is a required behavioral RED before its owner slice and a count-20 norm
 **Interfaces:**
 
 - Consume the exact Task 1–5 controller and store interfaces listed above.
-- Produce one root-owned controller/store bootstrap, inherited child controller plus owning lease, a provider-free cold restore coordinator, legacy_delegate_state and legacy_delegate_watch_state guards, and the registered create path returning one stable dlg_ identity.
+- Produce one root-owned controller/store bootstrap, inherited child controller plus immutable stable owning delegate ID, generation-scoped run leases, a provider-free cold restore coordinator, legacy_delegate_state and legacy_delegate_watch_state guards, and the registered create path returning one stable dlg_ identity.
 - delegateRuntime constructs, attaches, starts, and closes a child Session after controller unlock. It owns no lifecycle state.
 - delegate_legacy_state.go scans existing lifecycle and watch envelopes read-only before either writable store is opened. It recognizes only the two forbidden legacy classes and does not translate them.
 - ReserveCreate mints the stable public identity from identifier.MustNewDelegateID (through a deterministic test seam where needed), not jobstore.NewDelegateID. No stable delegate identity helper remains owned by jobstore after Task 12.
@@ -860,7 +861,7 @@ Add these behavioral tests:
 
 ~~~go
 func TestDelegateResourceBootstrap_RootOwnsOneController(t *testing.T)
-func TestDelegateResourceBootstrap_ChildInheritsControllerAndLease(t *testing.T)
+func TestDelegateResourceBootstrap_ChildInheritsControllerAndStableOwnerID(t *testing.T)
 func TestDelegateResourceBootstrap_LegacyDelegateStateFailsClosed(t *testing.T)
 func TestDelegateResourceBootstrap_LegacyDelegateWatchStateFailsClosed(t *testing.T)
 func TestDelegateResourceBootstrap_ShellOnlyAndStableWatchStateOpen(t *testing.T)
@@ -876,7 +877,7 @@ go test ./agent -run '^TestDelegateResourceBootstrap_' -count=1
 
 Expected RED: the real Session open path either has no root controller, accepts a forbidden legacy fixture, or constructs a child/provider during restart. A compile error, missing selector, or fixture-only parser assertion is invalid.
 
-Implement root bootstrap in session_init.go/session_lifecycle.go and the narrow read-only guards in delegate_legacy_state.go. Open exactly one delegatestore Store, pass it to openDelegateTreeController, and install the pointer on the root before registered tools become available. A child receives that pointer and its immutable owning lease through construction config. Restart performs ReadEvents/fold/reconcile evidence collection only; it starts no provider, timer, hook, nudge, salvage, worktree operation, or child Session. Ensure writable Open is not called until both legacy scans succeed.
+Implement root bootstrap in session_init.go/session_lifecycle.go and the narrow read-only guards in delegate_legacy_state.go. Open exactly one delegatestore Store, pass it to openDelegateTreeController, and install the pointer on the root before registered tools become available. A child receives that pointer and its immutable stable owning delegate ID through retained construction config. Each generation receives the fresh immutable lease returned by CommitStart only through its run context and generation-scoped closures. Restart performs ReadEvents/fold/reconcile evidence collection only; it starts no provider, timer, hook, nudge, salvage, worktree operation, or child Session. Ensure writable Open is not called until both legacy scans succeed.
 
 Run GREEN:
 
@@ -920,7 +921,7 @@ Implement the order:
 7. call BeginStartInput, release the controller, durably preseed its transcript, and call CompleteStartInput on the exact claim;
 8. start provider execution.
 
-Before step 4 failure publishes no ID and writes no delegate aggregate. After step 4 a permanently unrestorable failure calls FailCommittedStart so the failed canonical packet and resumability closure commit atomically; it never reports a resumable but unrestorable idle delegate. A transient failure may remain resumable only when the durable descriptor is sufficient for later restore. If the atomic append fails, keep the generation fenced for reconcile, retain its artifacts, and return the stable ID plus durable error; destroy nothing. Copy the root-installed ordinary event callback, transcript subscription, owner root ID, and private lease into child config without copying any legacy JobRecord handle.
+Before step 4 failure publishes no ID and writes no delegate aggregate. After step 4 a permanently unrestorable failure calls FailCommittedStart so the failed canonical packet and resumability closure commit atomically; it never reports a resumable but unrestorable idle delegate. A transient failure may remain resumable only when the durable descriptor is sufficient for later restore. If the atomic append fails, keep the generation fenced for reconcile, retain its artifacts, and return the stable ID plus durable error; destroy nothing. Copy the root-installed ordinary event callback, transcript subscription, owner root ID, controller pointer, and stable owning delegate ID into child config without copying any legacy JobRecord handle or generation lease. Carry the fresh lease only in the active generation's run context and closures.
 
 Run GREEN:
 
@@ -1567,7 +1568,7 @@ git commit -m "feat: project stable delegates without mutation" -m "Cut stable t
 **Interfaces:**
 
 - Consume lossless stable snapshots, canonical packets, descendant event callbacks, ParentDelegateID shells, typed watches, and per-delegate monotonic projection revision.
-- Produce DELEGATE_UPDATED internally and serf/delegate/updated on AppWire, carrying one immutable stable snapshot. SerfDelegateInfo and SerfDiagnostics.Delegates carry the same fields through live, reconnect, and cold thread-read. Projection revision fences rendering only; it is not a control identity.
+- Produce DELEGATE_UPDATED internally and serf/delegate/updated on AppWire, carrying one immutable stable snapshot. SerfDelegateInfo and SerfDiagnostics.Delegates carry the same stable fields through live, reconnect, and cold thread-read. Neither stable type carries call-scoped wait_ignored_reason; delegate_send results and their transcript/UI transport carry it separately. Projection revision fences rendering only; it is not a control identity.
 - Replace address-derived tree-clock sharing with one explicitly inherited *jobActivityClock for projection ordering only. It carries no lifecycle, generation, capacity, authorization, phase, or stop state.
 - Remove activation cards and legacy Detailed.Jobs discovery without removing send/stop/status/watch/observer/navigation capability.
 
@@ -1580,7 +1581,7 @@ func TestDelegateProjection_DescendantOrdinaryEventsReachRootTransport(t *testin
 func TestDelegateProjection_LateRootReceivesStableDelegateSnapshot(t *testing.T)
 func TestDelegateProjection_OwnerRootFencesForeignUpdates(t *testing.T)
 func TestDelegateProjection_RevisionRejectsStaleStateButMergesLatestActivityByMax(t *testing.T)
-func TestDelegateProjection_PreservesNullValidationExhaustionWaitReasonAndTurnSlots(t *testing.T)
+func TestDelegateProjection_PreservesNullValidationExhaustionAndTurnSlots(t *testing.T)
 func TestDelegateProjection_PreservesTimingUsageQuietWorktreeWarningsAndDiagnostics(t *testing.T)
 func TestDelegateProjection_ShellUsesParentDelegateID(t *testing.T)
 func TestDelegateProjection_TranscriptPreseedSubscriptionAndThreadReadRemainAvailable(t *testing.T)
@@ -1601,7 +1602,7 @@ go test ./server -run '^(TestStatusEndpoint_DetailedStatusIncludesStableDelegate
 go test ./cmd/serf-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=1
 ~~~
 
-Keep the root-installed descendant callback installed on child spawn. DELEGATE_UPDATED carries projection_revision and refreshes facetDiagnostics in the thread freshness table. JOB_STARTED/JOB_FINISHED are shell-only. Carry all fidelity fields explicitly through agent events, status, app projector, AppWire, server, Hub, and TUI types. Latest activity is max-merged independently of revision. Do not reconstruct packets or infer structured-result presence from decoded value. Run GREEN count 20/race.
+Keep the root-installed descendant callback installed on child spawn. DELEGATE_UPDATED carries projection_revision and refreshes facetDiagnostics in the thread freshness table. JOB_STARTED/JOB_FINISHED are shell-only. Carry all stable fidelity fields explicitly through agent events, status, app projector, AppWire, server, Hub, and TUI types, while omitting call-scoped wait_ignored_reason from those snapshots. Carry that field only on delegate_send result DTOs and their transcript/UI rendering. Latest activity is max-merged independently of revision. Do not reconstruct packets or infer structured-result presence from decoded value. Run GREEN count 20/race.
 
 - [ ] **Step 2: Prove TUI stable behavior**
 
@@ -1634,10 +1635,10 @@ Add exact Vitest cases in the named test files:
 
 - threads.test.ts: ignores stale delegate revision, preserves descendant ordinary events, and restores a late stable snapshot.
 - activityPanel.test.ts: stable delegate selection survives reconnect and opens its child session.
-- reducer.test.ts: carries explicit null, validation, exhaustion, wait reason, timing, usage, worktree, warnings, turn slots, and diagnostics.
+- reducer.test.ts: carries explicit null, validation, exhaustion, timing, usage, worktree, warnings, turn slots, and stable diagnostics while omitting call-scoped wait reason from stable state.
 - activityData.test.ts and activityRows.test.ts: render stable delegate lineage and ParentDelegateID shell ancestry.
 - ActivityTree.test.tsx: stable delegate rows retain navigation, send, stop, status, watch, and observer affordances without activation cards.
-- jobTools.test.tsx, subagentModule.test.tsx, and subagentModuleStore.test.ts: use delegate_id and never synthesize a delegate job.
+- jobTools.test.tsx, subagentModule.test.tsx, and subagentModuleStore.test.ts: use delegate_id, never synthesize a delegate job, preserve wait_ignored_reason on the delegate_send result and its transcript rendering, and never copy it into the stable module snapshot.
 - steeringClassify.test.ts, NotificationCard.test.tsx, and SteeringItem.test.tsx: distinguish delegate notification markup from shell job notification markup.
 
 Immediately before web implementation, run:
@@ -1951,7 +1952,7 @@ Save the clean pre-mutation `git diff`. Apply one temporary mutation at a time w
 7. Append to=caller directly into the root's unfinished tool round; run `go test ./agent -run '^TestDelegateResourceRuntime_CallerCannotWriteIntoUnfinishedRootToolRound$' -count=1`.
 8. Treat raw JSON null as absent; run `go test ./agent -run '^TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent$' -count=1`.
 9. Replace ReadEvents with writable Open in historical activity; run `go test ./agent -run '^TestStableDelegateReadOnly_FileBytesAndMetadataRemainUnchanged$' -count=1`.
-10. Drop wait_ignored_reason and turn-slot diagnostics from the stable tool projection; run `go test ./agent -run '^(TestStableDelegateTools_WaitIgnoredReasonIsOwnField|TestStableDelegateTools_ListPreservesTurnSlotsAllowanceAndWatchDiagnostics)$' -count=1`.
+10. Drop wait_ignored_reason from the delegate_send result or turn-slot diagnostics from the stable list projection; run `go test ./agent -run '^(TestStableDelegateTools_WaitIgnoredReasonIsOwnField|TestStableDelegateTools_ListPreservesTurnSlotsAllowanceAndWatchDiagnostics)$' -count=1`.
 
 A selector that passes under its matching mutation is inadequate: restore first, strengthen only its owner task's behavioral assertion, record a new RED, and repeat the task gates before continuing.
 
