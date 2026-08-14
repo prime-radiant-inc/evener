@@ -198,7 +198,12 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// One context spans the whole flow: dial, two full turns, and every
+	// milestone wait. Each wait is event-driven, so the budget only has to be
+	// impossible for a healthy run to exhaust; 150s matches what
+	// serve_goal_test.go gives a comparable full-daemon multi-turn flow, and a
+	// loaded 2-core CI runner under -race has blown through 30s here.
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
 	if err != nil {
@@ -325,7 +330,10 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 		if err != nil {
 			t.Fatalf("runServe: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	// Comfortably past serve's own 30s shutdown drain budget, so this only
+	// fires on a daemon that is genuinely stuck, never on a starved runner
+	// still inside its teardown contract.
+	case <-time.After(60 * time.Second):
 		t.Fatal("runServe did not exit after /shutdown")
 	}
 }

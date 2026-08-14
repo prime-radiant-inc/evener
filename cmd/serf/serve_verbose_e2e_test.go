@@ -47,7 +47,8 @@ const verboseE2EChildEnv = "SERF_TEST_VERBOSE_E2E_CHILD"
 // Two failures, one child:
 //
 //   - A SYNCHRONOUS observer stalls once the unread stderr pipe fills, so the
-//     child never reports progress on stdout. Caught by the first budget.
+//     child's emit counter stops climbing, its stall detector gives up, and it
+//     exits without ever reporting progress on stdout.
 //   - A teardown that does not wait for the drain panics with "send on closed
 //     channel". Caught by the exit status and the captured output.
 func TestServeVerboseSurvivesAnUnreadStderr(t *testing.T) {
@@ -91,10 +92,22 @@ func TestServeVerboseSurvivesAnUnreadStderr(t *testing.T) {
 		scanErr <- scanner.Err()
 	}()
 
+	// The child reports its own verdict: the progress line on success, or a
+	// clean exit WITHOUT that line when its stall detector concluded the
+	// consumer wedged. So the parent waits on the child, never on a tight
+	// wall-clock budget of its own -- a starved CI runner can take minutes to
+	// finish a healthy run, and only the child can tell slow from stuck. The
+	// backstop covers a child wedged outside its own detector's reach.
 	stalled := false
+	scanDone := false
+	var scanFailed error
 	select {
 	case <-progress:
-	case <-time.After(30 * time.Second):
+	case err := <-scanErr:
+		scanFailed = err
+		scanDone = true
+		stalled = true
+	case <-time.After(verboseE2EParentBackstop):
 		stalled = true
 	}
 
@@ -111,13 +124,14 @@ func TestServeVerboseSurvivesAnUnreadStderr(t *testing.T) {
 	// goroutine's own Read produces "file already closed" instead of a clean
 	// EOF. os/exec requires all reads from a StdoutPipe to finish before Wait
 	// is called.
-	var scanFailed error
-	select {
-	case scanFailed = <-scanErr:
-	case <-time.After(60 * time.Second):
-		_ = cmd.Process.Kill()
-		<-scanErr
-		scanFailed = errors.New("child never exited")
+	if !scanDone {
+		select {
+		case scanFailed = <-scanErr:
+		case <-time.After(verboseE2EParentBackstop):
+			_ = cmd.Process.Kill()
+			<-scanErr
+			scanFailed = errors.New("child never exited")
+		}
 	}
 
 	exitErr := cmd.Wait()
@@ -146,6 +160,19 @@ const verboseE2EProgress = "VERBOSE-E2E-EVENTS-EMITTED"
 // verboseE2EEmitTarget is well past the session's 256-deep buffer and the tee's
 // 1024, so reaching it means the daemon kept consuming with its stderr unread.
 const verboseE2EEmitTarget = 4000
+
+// verboseE2EStallWindow is how long the child tolerates ZERO movement on the
+// emit counter before concluding the consumer wedged. A wedged consumer fills
+// the lossless channel and blocks the emitter permanently, so any window works
+// for detection; this one is generous because a starved CI runner can leave the
+// emitter unscheduled for whole seconds without anything being wrong.
+const verboseE2EStallWindow = 30 * time.Second
+
+// verboseE2EParentBackstop bounds each parent-side wait on a child that has
+// stopped answering entirely: hung before serveHTTP, or hung in teardown (whose
+// own drain budget is 30s). It is deliberately far past anything CPU starvation
+// produces, because the child self-reports both success and stall.
+const verboseE2EParentBackstop = 2 * time.Minute
 
 // runVerboseE2EChild is the daemon half. It keeps defaultServeDeps' real bridge
 // and real server -- overriding either is what let the earlier tests miss this.
@@ -186,9 +213,15 @@ func runVerboseE2EChild(t *testing.T) {
 	teardownObserverParked := make(chan struct{})
 	releaseTeardownObserver := make(chan struct{})
 	teardownObserverDelivered := make(chan struct{})
+	// Every REASONING_EFFORT_CHANGED delivery the bridge makes, so the gate
+	// below can be armed only once the bridge has caught up with the producer.
+	var effortDelivered atomic.Int64
 	realBridge := defaultServeDeps().bridge
 	deps.bridge = func(s serveServer, sess *agent.Session, observer func(events.SessionEvent), onDrained func()) {
 		realBridge(s, sess, func(ev events.SessionEvent) {
+			if ev.Kind == events.EventReasoningEffortChanged {
+				effortDelivered.Add(1)
+			}
 			select {
 			case <-gateNextObserver:
 				close(teardownObserverParked)
@@ -242,10 +275,26 @@ func runVerboseE2EChild(t *testing.T) {
 		//
 		// This is the real liveness check: delivery is lossless, so a stalled
 		// consumer fills the 256-deep buffer and then BLOCKS the emitter. The
-		// counter stops climbing and the parent's budget expires. With the tee
-		// in place the consumer never stalls, because it drops instead.
-		deadline := time.Now().Add(20 * time.Second)
-		for emitted.Load() < verboseE2EEmitTarget && time.Now().Before(deadline) {
+		// counter stops climbing FOREVER, the stall window expires, and the
+		// child exits without reporting progress. With the tee in place the
+		// consumer never stalls, because it drops instead.
+		//
+		// The give-up condition is a counter that stopped moving, never total
+		// elapsed time: a starved CI runner climbs slowly but keeps climbing,
+		// and a total-time deadline here failed healthy runs under load.
+		lastSeen := int64(-1)
+		lastClimb := time.Now()
+		for {
+			n := emitted.Load()
+			if n >= verboseE2EEmitTarget {
+				break
+			}
+			if n != lastSeen {
+				lastSeen = n
+				lastClimb = time.Now()
+			} else if time.Since(lastClimb) >= verboseE2EStallWindow {
+				break
+			}
 			time.Sleep(5 * time.Millisecond)
 		}
 		reachedTarget := emitted.Load() >= verboseE2EEmitTarget
@@ -256,6 +305,21 @@ func runVerboseE2EChild(t *testing.T) {
 			// still unimpeded here, the producer always joins.
 			close(stop)
 			<-emitting
+
+			// Let the bridge finish the producer's backlog before arming the
+			// gate. The gate parks the bridge on its NEXT delivery, and a park
+			// with the 256-deep event channel still full wedges the daemon for
+			// good: shutdown's Session.Close emits SessionEnd BEFORE the
+			// teardown defer whose drainWaitExpiry releases the gate, and that
+			// emit blocks forever on a full channel whose only consumer is
+			// parked. Nothing in production parks the bridge -- the wedge is
+			// this harness's own -- so the gate must only ever close over an
+			// empty buffer. The wait is an exact delivery count, not a
+			// deadline: the bridge is still unimpeded here, so it always
+			// catches up, however starved the machine.
+			for effortDelivered.Load() < emitted.Load() {
+				time.Sleep(time.Millisecond)
+			}
 
 			gateNextObserver <- struct{}{}
 			teardownObserverArmed = true
