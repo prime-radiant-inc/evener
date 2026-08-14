@@ -284,6 +284,84 @@ func TestDelegateResourceRuntime_InputCompensationFailureLatchesBeforeRunReset(t
 	c.mu.Unlock()
 }
 
+func TestDelegateResourceRuntime_StopOwnsColdRestoreBeforeSideEffects(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	restoreReady := make(chan struct{})
+	releaseRestore := make(chan struct{})
+	root.delegateRestoreBeforeSideEffects = func(*Session) {
+		close(restoreReady)
+		<-releaseRestore
+	}
+
+	sendDone := make(chan stableDelegateSendOutcome, 1)
+	go func() {
+		sendDone <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "race stop with cold restore", 0)
+	}()
+	<-restoreReady
+	_, cancelPlan, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		close(releaseRestore)
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	if len(cancelPlan.children) != 1 || cancelPlan.children[0].id != fixture.childID {
+		close(releaseRestore)
+		t.Fatalf("stop-owned restored runtimes = %#v, want exact child %q", cancelPlan.children, fixture.childID)
+	}
+	executeDelegateCancelPlan(cancelPlan)
+	close(releaseRestore)
+	outcome := <-sendDone
+	if outcome.result.DelegateID != fixture.delegateID {
+		t.Fatalf("stopped cold restore outcome = %#v, want stable delegate identity", outcome.result)
+	}
+}
+
+func TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	restoreReady := make(chan struct{})
+	releaseRestore := make(chan struct{})
+	root.cfg.testOnly.sessionInitFault = func(point string) error {
+		if point == "reconcile_lost_jobs" {
+			close(restoreReady)
+			<-releaseRestore
+		}
+		return nil
+	}
+
+	sendDone := make(chan stableDelegateSendOutcome, 1)
+	go func() {
+		sendDone <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "race close with cold restore", 0)
+	}()
+	<-restoreReady
+	closeDone := make(chan struct{})
+	go func() {
+		root.Close()
+		close(closeDone)
+	}()
+	select {
+	case <-closeDone:
+		close(releaseRestore)
+		<-sendDone
+		t.Fatal("parent Close returned before cold-restore side effects drained")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(releaseRestore)
+	select {
+	case <-closeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("parent Close did not return after cold-restore side effects drained")
+	}
+	<-sendDone
+}
+
 func TestDelegateResourceRuntime_ConcurrentIdleSendsStartOneGeneration(t *testing.T) {
 	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
 	start := make(chan struct{})

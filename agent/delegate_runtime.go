@@ -320,26 +320,44 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if err != nil {
 		return failed(err)
 	}
-	sub, restored, err := runtime.restoreIdle(started)
+	sub, restored, finishRestore, err := runtime.restoreIdleForSend(started)
 	if err != nil {
-		return runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, err)
+		outcome := runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, err)
+		finishRestore(nil, err)
+		return outcome
 	}
 	if restored {
-		tracked, inserted, trackErr := s.subagents.trackIfAbsent(sub)
+		candidate := sub
+		tracked, inserted, trackErr := s.subagents.admitReconstructed(candidate, func(selected *subagent) error {
+			return s.delegateController.AttachRuntime(started.lease, selected.sess)
+		})
 		if trackErr != nil {
-			sub.sess.discardRestoredCandidate()
-			return runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, trackErr)
+			candidate.sess.discardRestoredCandidate()
+			outcome := runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, trackErr)
+			finishRestore(nil, trackErr)
+			return outcome
 		}
 		if !inserted {
-			sub.sess.discardRestoredCandidate()
+			candidate.sess.discardRestoredCandidate()
 			sub = tracked
+			restored = false
+		}
+		if s.delegateRestoreBeforeSideEffects != nil {
+			s.delegateRestoreBeforeSideEffects(sub.sess)
 		}
 	}
 	if sub == nil || sub.sess == nil {
-		return runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, errors.New("delegate runtime is unavailable"))
+		cause := errors.New("delegate runtime is unavailable")
+		outcome := runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, cause)
+		finishRestore(nil, cause)
+		return outcome
 	}
-	if err := s.delegateController.AttachRuntime(started.lease, sub.sess); err != nil {
-		return runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, err)
+	if !restored {
+		if err := s.delegateController.AttachRuntime(started.lease, sub.sess); err != nil {
+			outcome := runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, err)
+			finishRestore(nil, err)
+			return outcome
+		}
 	}
 	if restored {
 		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
@@ -349,10 +367,14 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, errors.New("session is closed"))
+		cause := errors.New("session is closed")
+		outcome := runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, cause)
+		finishRestore(sub, nil)
+		return outcome
 	}
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
+	finishRestore(sub, nil)
 	claim, err := s.delegateController.BeginStartInput(started.lease)
 	if err != nil {
 		s.sendersWG.Done()
@@ -1023,6 +1045,34 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	child.SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })
 	return sub, true, nil
+}
+
+func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (*subagent, bool, func(*subagent, error), error) {
+	s := runtime.owner
+	finish := func(*subagent, error) {}
+	if s == nil {
+		return nil, false, finish, errors.New("delegate restore reservation is unavailable")
+	}
+	childID := strings.TrimSpace(started.descriptor.ChildSessionID)
+	if childID == "" {
+		return nil, false, finish, errors.New("delegate restore child identity is unavailable")
+	}
+	existing, pending, leader, err := s.subagents.beginReconstruction(childID)
+	if err != nil {
+		return nil, false, finish, err
+	}
+	if !leader {
+		if existing != nil {
+			return existing, false, finish, nil
+		}
+		reconstructed, waitErr := pending.wait()
+		return reconstructed, false, finish, waitErr
+	}
+	finish = func(sub *subagent, restoreErr error) {
+		s.subagents.finishReconstruction(childID, pending, sub, restoreErr)
+	}
+	sub, restored, restoreErr := runtime.restoreIdle(started)
+	return sub, restored, finish, restoreErr
 }
 
 func sandboxPolicyFromStableSnapshot(snapshot *delegatestore.SandboxSnapshot) *sandbox.SandboxPolicy {

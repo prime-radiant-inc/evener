@@ -121,6 +121,36 @@ func (m *subagentManager) trackIfAbsent(sub *subagent) (*subagent, bool, error) 
 	return sub, true, nil
 }
 
+// admitReconstructed makes a restored runtime visible only after bind accepts
+// that exact runtime. Holding the manager lock across both steps makes parent
+// close observe either the fully bound child or no child at all.
+func (m *subagentManager) admitReconstructed(sub *subagent, bind func(*subagent) error) (*subagent, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closing {
+		return nil, false, errSubagentManagerClosing
+	}
+	if sub == nil || sub.sess == nil {
+		return nil, false, errors.New("restored delegate runtime is unavailable")
+	}
+	tracked := sub
+	inserted := true
+	if existing := m.subs[sub.id]; existing != nil {
+		tracked = existing
+		inserted = false
+	}
+	if tracked == nil || tracked.sess == nil {
+		return nil, false, errors.New("delegate session collision with unavailable retained runtime")
+	}
+	if err := bind(tracked); err != nil {
+		return nil, false, err
+	}
+	if inserted {
+		m.subs[sub.id] = sub
+	}
+	return tracked, inserted, nil
+}
+
 func (m *subagentManager) beginReconstructionSideEffects(childID string, sub *subagent) (func(), error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
