@@ -4,20 +4,20 @@
 
 **Goal:** Replace delegate activation jobs with one root-owned stable delegate controller and one durable delegate aggregate, making `dlg_...` the only delegate control identity while deleting more lifecycle machinery than the replacement adds.
 
-**Architecture:** Build and prove a dormant `delegatestore` plus synchronous one-mutex `delegateTreeController` while current `main` remains the only active production route. Then perform one flag-day vertical cutover that switches state format, Session ownership, runtime start/steer/settle/finish/stop/restart, registered tools, events, AppWire, TUI, web, doctor, and cold projection together. That first deployable build accepts only the new delegate store and stable contracts; it rejects legacy delegate-job state. Only after every consumer has moved do we delete already-unreachable delegate JobRecords and old lifecycle authorities; that deletion is not a second operational phase.
+**Architecture:** Tasks 1–5 built and proved a dormant `delegatestore` plus a synchronous one-mutex `delegateTreeController` while the legacy route remained active. Tasks 6–14 complete one flag-day vertical branch: bootstrap and runtime first, preserved delivery/supervision/retention behavior next, every tool and client consumer after that, and legacy-authority deletion only after those replacements are live. Intermediate commits are review checkpoints, not deployable compatibility phases. The first deployable branch accepts the stable store and stable watch journal, rejects legacy delegate JobRecord and delegate-job-addressed watch state, and contains no dual writer or fallback route.
 
 **Tech Stack:** Go, append-only JSONL with fsync, Serf Session/transcript/provider seams, deterministic channel barriers, Rapid/native fuzz replay, AppWire Go/TypeScript generation, React/Vitest/Biome, Kata, and repository Make gates.
 
 ## Global Constraints
 
 - Jesse is the human partner. The authoritative target is `docs/subagent-management/11-delegate-resource-model.md`; this dated file is an execution plan, not a second product specification.
-- Work only in `/Users/jesse/prime-radiant/toil-suite/serf/.worktrees/delegate-resource-recovery-design` on `wip/delegate-resource-recovery-design`, whose implementation ancestry is clean `main`. Never merge, rebase, cherry-pick, reset, clean, stash, switch branches, or push.
+- Execute Tasks 6–14 only in `/Users/jesse/prime-radiant/toil-suite/serf/.worktrees/delegate-resource-task6-clean` on `wip/delegate-resource-task6-clean`, starting from completed Task 5 commit `2da9863390e3e064fc015afe79a54fe8a8ce1d8f`. Before each task, verify the branch, expected prior task commit, and clean tracked porcelain. Never merge, rebase, cherry-pick, reset, clean, stash, switch branches, or push while executing this plan.
 - Do not copy lifecycle code from `delegate-identity-integration`. Pure DTO/rendering ideas and still-valid behavioral tests must be re-derived against `main`.
 - There is one stable public delegate identity (`dlg_...`), one root-owned controller, one durable delegate fold, one current private `uint64` generation per delegate, and one lifecycle mutex per root tree.
 - A delegate generation is never a JobRecord, job ID, output file, independent reducer, query target, notification rail, or public row.
 - Child Sessions inherit only the controller pointer and immutable owning delegate ID. Exact generation leases travel in the active run context, never in a mutable Session token, subagent manager, or job-manager mirror.
 - Shell jobs remain durable `job_...` resources with output, watch, status, and stop. A shell launched by a delegate records `ParentDelegateID`; delegate lineage never uses `ParentJobID`.
-- The controller mutex may cover validation, its own store append/fsync, and narrow controller-to-transcript admission. It may not cover provider calls, process start/cancel, hooks, notifications, event delivery, filesystem lane mutation, shell-store reads, or completion waits.
+- The controller mutex may cover validation, its own store append/fsync, and process-only claim/receipt admission. It may not cover transcript/history operations, provider calls, timers, process start/cancel, hooks, notifications, event delivery, runtime close/restore, filesystem lane mutation, worktree operations, shell-store reads, or completion waits.
 - No Session, subagent, transcript, or shell job-manager lock may enter the controller. Callbacks snapshot exact identity, release local locks, and then report.
 - Starting reservations are process-local and hold capacity. A delegate start uses that reservation as its construction receipt; do not add a second generic delegate receipt. Shell external starts use exact work tokens.
 - Running steering is durably appended before acknowledgement and is bound exactly once at the next legal model boundary. Normal/communicate settlement cannot strand an earlier accepted steer.
@@ -29,9 +29,9 @@
 - Shell terminal markup remains `<job-notification job_id="job_..." job_type="shell">`. Delegate attention/result markup is `<delegate-notification delegate_id="dlg_...">` and contains no `job_id` or `job_type="delegate"`. Hub probing uses only `descendant_session_ids`/`descendant_states`, and delegate clients label the resource "Delegate", not "Job".
 - There is at most one pending subtree stop per root tree. Same-target retry joins it; any different target returns typed busy until completion. No delegate reopens while a stop is pending.
 - Root close first closes controller-wide admission, joins/drains a pending stop, performs whole-tree stop and postorder teardown, then closes the store.
-- Idle runtimes remain resident. Do not add automatic unload, close flights, epochs, wildcard generations, detached supervisors, lock sharding, or lifecycle mirrors.
-- Delegate watch sources/receivers and `watch_parent` are removed; `dlg_...` watch use returns `unsupported_delegate_watch`. Do not add an activation fallback.
-- This is a flag-day cutover. There is no migration, mixed loader, compatibility alias/window, dual write, fallback route, or feature flag. Any old delegate job bytes fail `legacy_delegate_state` even if a new store is also present; shell-only history is permitted; unknown delegate-store versions fail closed.
+- Idle terminal child runtimes normally remain resident. Preserve `max_retained_terminal` as demand-triggered reclamation during create or cold restore: claim exact quiescent runtime subtrees under the controller, close them postorder after unlock, and clear only their exact resident pointers. Do not add automatic/time-based unload, durable unload events, close flights, epochs, wildcard generations, detached supervisors, lock sharding, or lifecycle mirrors.
+- Preserve the existing watch journal and all shipped `watch_parent`, observer, filter, coalescing, budget, inspection, terminal-ordering, restart, and `SessionMeta.ObservedBy` behavior. Replace delegate-job indirection with typed `session`, `shell`, and stable `delegate` endpoints. Do not add a second watch journal, loose receiver field, or activation fallback.
+- This is a flag-day cutover. There is no migration or alias for legacy delegate JobRecords and no mixed lifecycle loader, compatibility window, dual write, fallback route, or feature flag. Any old delegate job bytes fail `legacy_delegate_state` even if a new store is also present; old delegate-job-addressed watch rows fail `legacy_delegate_watch_state`; shell-only history and the existing stable watch journal are permitted; unknown delegate-store versions fail closed.
 - Foundation commits may contain dormant directly tested code, but the old production route remains the only active route until the one vertical cutover. No commit may expose a half-switched public delegate path.
 - Before any production change, capture desired public behavior on unchanged `main` using temporary compile-valid tests and existing seams. Record honest RED/GREEN evidence in Kata `my73`, then remove intentional failures before ordinary hooks run.
 - Every final regression test exercises registered tools or real Session/provider/executor behavior. Compile errors, missing selectors, timeouts, queue-only inspection, and internal symbol assertions are not behavioral RED evidence.
@@ -39,7 +39,7 @@
 - Fault-inject each lifecycle event boundary: created, run-started, terminal-prepared, run-finished, resumability-closed, stop-requested, stop-completed, and delivery-acknowledged. Append failure cannot leak in-memory mutation or external launch.
 - Use `apply_patch` for edits, `gofmt` for Go, `npx biome check --write` on touched frontend `src/` files, and `make generate` for AppWire outputs. Never hand-edit generated TypeScript or protocol Markdown.
 - Run `git status --short` before explicit staging; never use `git add -A`, wildcard staging, or bypass a hook. Commit each dormant foundation task and each later coherent cut with a detailed intent/evidence body.
-- Stop for architectural review if correctness appears to require delegate JobRecords, a second fold, a Session/job-manager lifecycle mirror, an ancestor epoch vector, wildcard/zero-generation matching, reopen during stop, controller lock across external work, auto-unload, delegate watches, compatibility, supervisor goroutine, or caller-specific recovery exceptions.
+- Stop for architectural review if correctness appears to require delegate JobRecords, a second lifecycle or watch fold, a Session/job-manager lifecycle mirror, an ancestor epoch vector, wildcard/zero-generation matching, reopen during stop, controller lock across timers/hooks/provider/transcript/runtime/worktree/notification work, automatic unload, migration aliases, a detached supervisor goroutine, or caller-specific recovery exceptions.
 
 ---
 
@@ -75,385 +75,112 @@
 - Tools: `agent/internal/tool/definitions.go`, `session_tools_jobs.go`, `session_outline.go`, `job_transcript_read.go`, `session_tools_transcript.go`.
 - Persistence deletion: `agent/internal/jobstore/{event,record,fold,store}.go` becomes shell/watch-only after consumers move.
 - Projection: `agent/events/{events,payloads}.go`, `jobs_activity.go`, `jobs_activity_past.go`, `historical_jobs.go`, `internal/appprojector/appwire_projection.go`, `appwire/types.go`, `appwire/protocol.go`, `server/appwire_runtime.go`, `cmd/serf-hub/app_jobs.go`; plus the stable live/reconnect status bridge `agent/{status.go,status_test.go,status_support_program_fuzz_test.go}`, `cmd/serf/{serve.go,serve_test.go,serve_coverage_fuzz_test.go}`, and `server/{server.go,server_test.go,server_surface_fuzz_test.go}`.
-- Clients: `cmd/serf-hub/internal/hubcore/{prober.go,prober_test.go,prober_wire_test.go,scenarios_fuzz_test.go}`; `cmd/serf-tui/internal/transcript/{job_notification.go,reducer.go,types.go}` plus their exact tests/fuzz files, `cmd/serf-tui/hub_notifications.go`, and `cmd/serf-tui/model_misc_serffuzz_test.go`; `cmd/serf/{run_drain_test.go,run_drain_nested_test.go}`; and the Hub frontend activity/transcript/store modules, notification parser/card tests, protocol fixture, and overflow harness named in Task 6.
+- Clients: `cmd/serf-hub/internal/hubcore/{prober.go,prober_test.go,prober_wire_test.go,scenarios_fuzz_test.go}`; `cmd/serf-tui/internal/transcript/{job_notification.go,reducer.go,types.go,reducer_test.go,cov_rtui_transcript_test.go,reducer_fuzz_test.go,fuzz_coverage_union_test.go}`; `cmd/serf-tui/{hub_notifications.go,hub_notifications_test.go,hub_notifications_fuzz_test.go,model_misc_serffuzz_test.go}`; `cmd/serf/{run_drain_test.go,run_drain_nested_test.go}`; and the exact Hub frontend activity/transcript/store, notification, fixture, and overflow-harness files named in Task 11.
 - Operations: `agent/doctor`, `cmd/serf-doctor`, worktree/disposal helpers, bundled doctor references, prompts, and evergreen docs.
 
-## Fixed internal shapes
+## Established foundation interfaces
 
-Later tasks use these names. A task may add non-authoritative operational fields, but it may not add another lifecycle API.
+Tasks 1–5 are complete at commit 2da9863390e3e064fc015afe79a54fe8a8ce1d8f. Tasks 6–14 consume the concrete interfaces below. If a task needs another process-only receipt or claim, it must add it in that task with a causal concurrency test; it may not rename or duplicate an existing lifecycle operation.
 
-```go
-type delegateActor struct {
-	rootSessionID string
-	delegateID    string
-	lease         delegateLease // required when delegateID is non-empty
+The controller is configured and owned once by the root Session:
+
+~~~go
+type delegateTreeControllerConfig struct {
+    store         *delegatestore.Store
+    rootSessionID string
+    stateDir      string
+    worktreeRoot  string
+    turnLimit     int
+    driveLimit    int
+    now           func() time.Time
 }
 
-type delegateLease struct {
-	delegateID string
-	generation uint64
-}
+func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTreeController, error)
+~~~
 
-type delegateStartToken struct{ id uint64 }
-type delegateWorkToken struct{ id uint64 }
-type delegateWaiterToken struct{ id uint64 }
+The completed start, runtime, settlement, shell, stop, delivery, and recovery surfaces are:
 
-type delegateTreeLimits struct {
-	maxTurns int
-	maxDrives int
-}
+~~~go
+func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor delegatestore.Descriptor) (*delegateStartReservation, error)
+func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID string) (*delegateStartReservation, error)
+func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID string) (*delegateStartReservation, error)
+func (c *delegateTreeController) CommitStart(reservation *delegateStartReservation) (delegateStartCommit, error)
+func (c *delegateTreeController) AttachRuntime(lease delegateLease, runtime *Session) error
+func (c *delegateTreeController) AdmitStartInput(lease delegateLease, admitInput func() error) (delegateMutationPlans, error)
+func (c *delegateTreeController) AbortStart(reservation *delegateStartReservation) error
 
-type delegateVisibility uint8
+func (c *delegateTreeController) Steer(ctx context.Context, actor delegateActor, delegateID, message string) (delegateMutationPlans, error)
+func (c *delegateTreeController) BeginModelRequest(lease delegateLease) ([]llm.Message, error)
+func (c *delegateTreeController) BeginTool(lease delegateLease) error
+func (c *delegateTreeController) BeginSettlement(lease delegateLease, packet *delegatestore.TerminalPacket) (bool, delegateMutationPlans, error)
+func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish delegateFinish) (delegateMutationPlans, error)
 
-const (
-	delegateDirect delegateVisibility = iota + 1
-	delegateDescendants
-)
+func (c *delegateTreeController) BeginShellWork(owner delegateLease) (delegateWorkToken, error)
+func (c *delegateTreeController) CommitShellWork(token delegateWorkToken, shellJobID string, cancel context.CancelFunc) (bool, error)
+func (c *delegateTreeController) AbortShellWork(token delegateWorkToken) error
+func (c *delegateTreeController) ReportShellFinished(token delegateWorkToken, shellJobID string) (delegateMutationPlans, error)
 
-type delegateStartReservation struct {
-	token      delegateStartToken
-	delegateID string
-	create     bool
-	trigger    delegatestore.RunTrigger
-	cancel     context.CancelCauseFunc
-	drive      bool
-	waiter     *delegateInlineWaiter
-}
+func (c *delegateTreeController) StopSubtree(actor delegateActor, targetID string) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error)
+func (c *delegateTreeController) CloseResumability(actor delegateActor, delegateID, reason string) (delegateMutationPlans, error)
+func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (delegateDeliveryToken, bool, error)
+func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, committed bool) (delegateMutationPlans, error)
+func (c *delegateTreeController) ReportAttentionResolved(requestSeq, evidenceVersion uint64, delegateID, attentionID string, disposition delegateAttentionResolution, runtime *Session) (delegateMutationPlans, error)
 
-type delegateRuntime struct {
-	delegateID string
-	session    *Session
-	owner      *Session
-	done       <-chan struct{}
-}
+func (c *delegateTreeController) Snapshot() delegateUpdatePlan
+func (c *delegateTreeController) ReconcileRequirements() delegateReconcileRequirements
+func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (delegateMutationPlans, error)
+func (c *delegateTreeController) Close(ctx context.Context) error
+~~~
 
-type delegateShellWork struct {
-	token      delegateWorkToken
-	owner      delegateLease
-	jobID      string
-	cancel     context.CancelCauseFunc
-	committed  bool
-}
+ReserveCreate and ReserveStart return the exact construction reservation. CommitStart accepts that same pointer and returns a delegateStartCommit containing the private lease, immutable descriptor paths, cancellation context, and captured update. BeginModelRequest already snapshots the bound Session history itself; callers do not pass a snapshot callback. Runtime bindings use *Session directly. CommitShellWork uses context.CancelFunc. ReportAttentionResolved requires both the durable stop request sequence and the process-only evidence version. Later tasks must use these signatures rather than restating obsolete token/value forms.
 
-type delegateSteeringAdmission struct {
-	entryID string
-}
+The dormant foundation still has callback-based transcript work in AdmitStartInput, Steer, and BeginModelRequest. Task 6 replaces AdmitStartInput with an input claim before registering production create/restore. Task 7 replaces steering append and model-history snapshot with claims before registering send/model execution. In the final route every transcript/history operation, attention, watch, timer, hook, provider, runtime, worktree, shell-manager, event, and notification action is claimed under the mutex and executed after unlock.
 
-type delegateInlineWaiter struct {
-	token      delegateWaiterToken
-	generation uint64
-	resolution chan delegateInlineResolution // buffered one; claim always resolves
-}
+The durable store API is fixed:
 
-type delegateInlineResolution struct {
-    packet    *delegatestore.TerminalPacket
-    commit    *delegateToolResultCommit // process-only handoff to caller tool-result persistence
-    fallback  bool
-}
+~~~go
+const CurrentVersion = 1
 
-type delegateToolResultCommit struct {
-    controller *delegateTreeController
-    token      delegateDeliveryToken
-    deliveryID string
-}
+func delegatestore.Open(path string) (*delegatestore.Store, error)
+func delegatestore.ReadEvents(path string) ([]delegatestore.Event, error)
+func (s *delegatestore.Store) Load() ([]delegatestore.Event, error)
+func (s *delegatestore.Store) Append(state delegatestore.State, event delegatestore.Event) (delegatestore.Event, delegatestore.State, error)
+func (s *delegatestore.Store) AppendBatch(state delegatestore.State, events []delegatestore.Event) ([]delegatestore.Event, delegatestore.State, error)
+func (s *delegatestore.Store) Close() error
+func delegatestore.Fold(events []delegatestore.Event) (delegatestore.State, error)
+func delegatestore.Apply(state delegatestore.State, event delegatestore.Event) error
+~~~
 
-type delegateAttentionResolution string
+The first JSONL line is the version header. The eight lifecycle events remain exactly delegate_created, delegate_run_started, delegate_terminal_prepared, delegate_run_finished, delegate_resumability_closed, delegate_subtree_stop_requested, delegate_subtree_stop_completed, and delegate_delivery_acknowledged. Watch state remains in the existing watch journal and is never copied into this fold.
 
-const (
-    delegateAttentionConsumed  delegateAttentionResolution = "consumed"
-    delegateAttentionDiscarded delegateAttentionResolution = "discarded"
-)
+The existing attention-resolution foundation and the delivery metadata completed during Tasks 7–8 are private correlation fields, not lifecycle identities:
 
-type delegateAttentionEntry struct {
-    attentionID string
-    turn        schema.Turn // model-bound steering turn carrying the private ID
-}
-
-type shellNotificationIdentity struct {
-	jobID             string
-	terminalGeneration string
-}
-
-type shellRuntimeLossEvidence struct {
-	runningJobIDs       []string
-	pendingNotification []shellNotificationIdentity
-}
-
-type delegateLiveState struct {
-	runtime          *delegateRuntime
-	lease            delegateLease
-	cancel           context.CancelCauseFunc
-	ready            bool
-	pendingSteers    []delegateSteeringAdmission
-	attentionIDs     []string // exact IDs bound to the current attention drive; transcript remains authority
-	waiters           map[uint64]*delegateInlineWaiter
-	recoveryRequired bool
-	latestAt         time.Time // transcript-derived monotonic hint, outside the state revision gate
-}
-
-type delegateTreeController struct {
-	mu          sync.Mutex
-	rootID      string
-	store       *delegatestore.Store
-	durable     delegatestore.State
-	live        map[string]*delegateLiveState
-	starts      map[uint64]*delegateStartReservation
-	work        map[uint64]*delegateShellWork
-	deliveries  map[uint64]*delegateDeliveryAdmission
-	stop        *delegateStopState
-	nextProcess uint64 // reservations, receipts, waiters only; never persisted
-	turnsInUse  int
-	drivesInUse int
-	evidenceVersion uint64 // process-only optimistic validation for external evidence
-	closing     bool
-}
-
-type delegateUpdatePlan struct {
-	snapshot delegateSnapshot // captured under controller lock
-}
-
-type delegateMutationPlans struct {
-	updates      []delegateUpdatePlan
-	deliveries   []delegateDeliveryPlan
-	attention    []delegateAttentionCleanupPlan
-	shellRepairs []delegateShellRepairPlan
-}
-
-type delegateSnapshot struct {
-	id            string
-	revision      uint64 // per-delegate durable projection revision, never a control ID
-	parentID      string
-	lifecycle     string
-	phase         string
-	resumable     bool
-	closedReason  string
-	transcriptRef string
-	lastOutcome   *delegatestore.Outcome
-	latestAt      time.Time // merge by max independently of revision
-}
-
-type delegateFinish struct {
-	outcome     delegatestore.OutcomeStatus
-	disposition delegatestore.RunDisposition
-	reason      string
-	packet      *delegatestore.TerminalPacket
-	endedAt     time.Time
-}
-
-type delegateDeliveryPlan struct {
-	delegateID      string
-	deliveryID      string
-	ownerDelegateID string
-	waiter          *delegateInlineWaiter // ownership already removed from live.waiters under c.mu
-	packet          delegatestore.TerminalPacket
-}
-
-type delegateDeliveryToken struct {
-	processID  uint64
-	deliveryID string
-}
-
-type delegateDeliveryAdmission struct {
-	token      delegateDeliveryToken
-	delegateID string
-	ownerID    string
-}
-
-type delegateAttentionCleanupPlan struct {
-    requestSeq   uint64
-    delegateID   string
-    transcriptRef string
-    attentionID  string
-    disposition  delegateAttentionResolution
-    runtime      *delegateRuntime // exact live identity; nil only during cold reconcile
-}
-
-type delegateShellRepairPlan struct {
-	delegateID          string
-	storePath           string
-	runningJobIDs       []string
-	pendingNotification []shellNotificationIdentity
-	suppressOwnerNotify bool
-}
-
-type delegateStopState struct {
-	requestSeq uint64
-	targetID   string
-	members    map[string]struct{}
-	active     map[delegateLease]struct{}
-	starts     map[delegateStartToken]struct{}
-	work       map[delegateWorkToken]string
-	deliveries map[delegateDeliveryToken]struct{}
-	done       chan struct{}
-}
-
-type delegateStopResult struct {
-	id                string
-	previousLifecycle string
-	lifecycle         string
-	outcome           string
-	requestSeq        uint64
-	done              <-chan struct{}
-}
-
-type delegateCancelPlan struct {
-	requestSeq uint64
-	targetID   string
-	cancel     []context.CancelCauseFunc
-	children   []*delegateRuntime
-	shells     []delegateShellWork
-}
-
-type delegateReconcileRequirements struct {
-	evidenceVersion       uint64
-	shellStores          map[string]string // delegate ID to shell-store path
-	attentionTranscripts map[string]string // delegate ID to durable transcript reference
-}
-
-type delegateReconcileEvidence struct {
-	evidenceVersion uint64
-	shells         map[string]shellRuntimeLossEvidence
-	attention      map[string][]string // exact pending IDs from read-only receiver-transcript folds
-}
-```
-
-Durable identity is restart-safe:
-
-```go
-func delegateDeliveryID(delegateID string, generation uint64) string {
-	return delegateID + "/delivery/" + strconv.FormatUint(generation, 10)
-}
-
-// A pending stop is identified by its delegate_subtree_stop_requested event
-// sequence. Completion carries RequestSeq; no process counter is persisted.
-```
-
-Exact leases live in the active run context:
-
-```go
-func withDelegateLease(ctx context.Context, lease delegateLease) context.Context
-func delegateLeaseFromContext(ctx context.Context) (delegateLease, bool)
-```
-
-The existing transcript turn owns the two private durable correlation shapes;
-neither is projected into provider messages, public events, Markdown, AppWire,
-TUI, or web:
-
-```go
+~~~go
 type DelegateDeliveryCommit struct {
-    ToolCallID string `json:"tool_call_id"`
-    DeliveryID string `json:"delivery_id"`
+    ToolCallID string
+    DeliveryID string
 }
 
 type AttentionResolutionInfo struct {
-    AttentionID string `json:"attention_id"`
-    Disposition string `json:"disposition"` // consumed | discarded
+    AttentionID string
+    Disposition string
 }
+~~~
 
-// On schema.Turn:
-AttentionID            string                    `json:"attention_id,omitempty"`
-DelegateDeliveryCommits []DelegateDeliveryCommit `json:"delegate_delivery_commits,omitempty"`
-AttentionResolution    *AttentionResolutionInfo  `json:"attention_resolution,omitempty"`
-```
+AttentionID is valid only on a model-bound steering turn. AttentionResolution is valid only on a provider-excluded presentational resolution turn. The first pending entry for an ID is authoritative; an exact duplicate is idempotent; reuse with different content or disposition is corruption. No private delivery, update-sequence, generation, claim, receipt, watch cursor, or attention ID appears in provider messages or public control identity.
 
-`AttentionID` is valid only on a model-bound `TurnSteering` entry.
-`AttentionResolution` is valid only on the new presentational,
-provider-excluded `TurnAttentionResolution` kind. A pure fold treats the first
-pending turn for an ID as authoritative and a later consumed/discarded marker
-as monotonic resolution. An exact duplicate append/resolution is a no-op; an ID
-reused with different content or disposition is corruption.
+The only permitted new operational surfaces are assigned to explicit tasks:
 
-The concrete transcript helpers are:
-
-```go
-func delegateAttentionID(deliveryID string) string
-func shellAttentionID(jobID, terminalGeneration string) string
-func readPendingAttention(path string) ([]delegateAttentionEntry, error) // missing file => nil; read-only
-func (s *Session) appendAttentionDurably(entry delegateAttentionEntry) (alreadyPresent bool, error)
-func (s *Session) resolveAttentionDurably(ids []string, disposition delegateAttentionResolution) error
-func appendColdAttentionResolution(path, expectedSessionID string, ids []string, disposition delegateAttentionResolution) error
-```
-
-The live helpers use the already-open Session transcript writer; the cold stop
-helper opens the exact existing transcript for append only after read-only
-fold/identity validation and never constructs a Session/provider. None touches
-`queues/*.json` or creates a second journal.
-
-Controller operations return immutable post-mutation plans where public state changes:
-
-```go
-func openDelegateTreeController(rootID, stateDir string, limits delegateTreeLimits) (*delegateTreeController, error)
-func (c *delegateTreeController) ReserveCreate(actor delegateActor) (string, delegateStartToken, error)
-func (c *delegateTreeController) ReserveStart(actor delegateActor, id string, trigger delegatestore.RunTrigger) (delegateStartToken, error)
-func (c *delegateTreeController) ReserveAttention(runtime *delegateRuntime, attentionID string) (delegateStartToken, error)
-func (c *delegateTreeController) CommitStart(token delegateStartToken, descriptor *delegatestore.Descriptor) (delegateLease, delegateMutationPlans, error)
-func (c *delegateTreeController) AttachRuntime(lease delegateLease, runtime *delegateRuntime) error
-func (c *delegateTreeController) AdmitStartInput(lease delegateLease, admitInput func() error) (delegateMutationPlans, error)
-func (c *delegateTreeController) AbortStart(token delegateStartToken)
-func (c *delegateTreeController) Steer(ctx context.Context, actor delegateActor, id, message string) (delegateMutationPlans, error)
-func (c *delegateTreeController) SteerCaller(ctx context.Context, actor delegateActor, message string) (delegateMutationPlans, error)
-func (c *delegateTreeController) BeginModelRequest(lease delegateLease, snapshot func() []llm.Message) ([]llm.Message, error)
-func (c *delegateTreeController) BeginTool(lease delegateLease) error
-func (c *delegateTreeController) BeginSettlement(lease delegateLease, packet *delegatestore.TerminalPacket) (continueRun bool, plans delegateMutationPlans, err error)
-func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish delegateFinish) (delegateMutationPlans, error)
-func (c *delegateTreeController) BeginShellWork(owner delegateLease) (delegateWorkToken, error)
-func (c *delegateTreeController) CommitShellWork(token delegateWorkToken, shellJobID string, cancel context.CancelCauseFunc) (cancelImmediately bool, error)
-func (c *delegateTreeController) AbortShellWork(token delegateWorkToken)
-func (c *delegateTreeController) ReportShellFinished(token delegateWorkToken, shellJobID string) (delegateMutationPlans, error)
-func (c *delegateTreeController) StopSubtree(actor delegateActor, targetID string) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error)
-func (c *delegateTreeController) ReportAttentionResolved(requestSeq uint64, delegateID, attentionID string, disposition delegateAttentionResolution, runtime *delegateRuntime) (delegateMutationPlans, error)
-func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (delegateDeliveryToken, bool, error)
-func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, committed bool) (delegateMutationPlans, error)
-func (c *delegateTreeController) CloseResumability(actor delegateActor, delegateID, reason string) (delegateMutationPlans, error)
-func (c *delegateTreeController) Snapshot(actor delegateActor, visibility delegateVisibility) []delegateSnapshot
-func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (delegateMutationPlans, error)
-func (c *delegateTreeController) Close(ctx context.Context) error
-```
-
-Only `admitInput`, model-history `snapshot`, and concrete runtime steering admission may acquire transcript/history locks under `c.mu`. They must not call the controller. Owner-delivery insertion, attention append/fold/consume/discard, and caller tool-result persistence use process-local receipts/handoffs and happen after unlock. `ReserveAttention` receives an exact runtime plus a read-only pending-ID proof captured from that runtime immediately before the call; it does no transcript I/O while locked. Every other external action consumes returned plans after unlock.
-
-The durable store API is concrete:
-
-```go
-const CurrentVersion = 1
-
-type State map[string]*Aggregate
-
-func Open(path string) (*Store, error)
-func ReadEvents(path string) ([]Event, error)
-func (s *Store) Load() ([]Event, error)
-func (s *Store) Append(state State, event Event) (Event, State, error)
-func (s *Store) AppendBatch(state State, events []Event) ([]Event, State, error)
-func (s *Store) Close() error
-func Fold(events []Event) (State, error)
-func Apply(state State, event Event) error
-```
-
-The first JSONL line is a version header. Each later line is one `batchRecord{Events []Event}`; events have contiguous sequence values. Required event kinds are exactly `delegate_created`, `delegate_run_started`, `delegate_terminal_prepared`, `delegate_run_finished`, `delegate_resumability_closed`, `delegate_subtree_stop_requested`, `delegate_subtree_stop_completed`, and `delegate_delivery_acknowledged`.
-
-`Aggregate.PendingDeliveries` is an ordered slice keyed uniquely by deterministic delivery ID. `Aggregate.PendingStopSeq` is the one request sequence covering that member. `RunFinished.Disposition` may be `completed_no_action`, but `Outcome.Status` is only `completed|failed|exhausted|cancelled|stopped`.
-
-```go
-type RunDisposition string
-
-const (
-	DispositionReported          RunDisposition = "reported"
-	DispositionTerminalError     RunDisposition = "terminal_error"
-	DispositionCompletedNoAction RunDisposition = "completed_no_action"
-)
-
-type OutcomeStatus string
-
-const (
-	OutcomeCompleted OutcomeStatus = "completed"
-	OutcomeFailed    OutcomeStatus = "failed"
-	OutcomeExhausted OutcomeStatus = "exhausted"
-	OutcomeCancelled OutcomeStatus = "cancelled"
-	OutcomeStopped   OutcomeStatus = "stopped"
-)
-```
+- Task 6: BeginStartInput and CompleteStartInput replace callback-based AdmitStartInput with one stop-fenced process claim; FailCommittedStart batches permanent post-commit construction/admission failure from existing terminal-prepared, run-finished, and resumability-closed events.
+- Task 7: BeginSteerPersistence, CompleteSteerPersistence, and AbortSteerPersistence replace the locked steering append; BeginModelRequest, CompleteModelRequest, and AbortModelRequest claim/snapshot/revalidate a model boundary without taking a transcript/history lock under the controller; fake-clock watchdog bindings ask the controller to admit ordinary attention; and one root-owned reconcile driver keeps positive stop waits self-driving after the requesting context ends.
+- Task 8: enqueue and delivery receipts for the existing watch journal, plus receiver-transcript attention helpers keyed by delivery ID and update sequence.
+- Task 9: a process-only reclamation claim over exact quiescent resident runtime subtrees, plus recursive stop/root-close drain through the Task 7 reconcile driver; it adds no second driver.
+- Task 10: read-only stable snapshots and pure cold readers; no lifecycle mutation or delivery acknowledgement.
+- Task 11: monotonic projection revisions and lossless DTOs; revisions fence rendering only and are never control identities.
 
 ---
+
+Tasks 1–5 below are retained as the completed foundation record and must not be rerun or rewritten. Their dormant implementations still contain the callback-based AdmitStartInput, locked steering append, and locked model-history snapshot described by their historical steps. Those are not approved production exceptions: Tasks 6 and 7 replace them with post-unlock claims before the registered flag-day route is complete.
 
 ### Task 1: Characterize desired public behavior on unchanged `main`
 
@@ -1083,615 +810,1188 @@ Expected: focused normal/race/fuzz tests and hooks pass. The old production rout
 
 ---
 
-### Task 6: Perform the one vertical production cutover
-
-**Files — root/runtime/tool path:**
-- Create: `agent/delegate_runtime.go`
-- Create: `agent/delegate_legacy_state.go`
-- Create: `agent/session_attention.go`, `session_attention_test.go`, `session_attention_fuzz_test.go`
-- Create: `agent/delegate_resource_contract_test.go`
-- Create: `agent/delegate_resource_race_test.go`
-- Create: `agent/delegate_legacy_state_test.go`
-- Modify: `agent/schema/turn.go`, `agent/session.go`, `session_config.go`, `session_init.go`, `session_lifecycle.go`, `session_lifecycle_test.go`, `session_model_call.go`, `session_model_call_phase8_test.go`, `session_queue.go`, `session_queue_persist.go`, `session_queue_persist_test.go`, `session_tools.go`, `session_tool_registry.go`, `session_tool_round.go`, `session_tool_round_test.go`, `session_assistant_persistence_test.go`, `session_tools_communicate.go`, `transcript_read.go`, `history_repair.go`, `session_orphaned_tool_repair_test.go`, `tree_counter.go`
-- Modify: `agent/internal/contextmgr/context_manager.go`, `context_manager_test.go`, `compaction_seqfuzz_test.go`, `maybecompact_fc1_seqfuzz_test.go`
-- Modify: `agent/delegate_delivery.go`, `delegate_delivery_test.go`, `agent/job_delegate.go`, `subagents.go`, `job_shell.go`, `jobs.go`, `jobs_nested.go`, `job_notify.go`, `shell_notify_digest_program_fuzz_test.go`, `job_watch.go`, `session_jobtree_drain.go`; `cmd/serf/run_drain_test.go`, `run_drain_nested_test.go`
-- Modify: `agent/session_tools_worktree_dispose.go`, `session_tools_worktree.go`, `session_worktree_close.go`, `session_worktree_relock.go`, `session_worktree_resume.go`, `session_worktree_sweep.go`
-- Modify: `agent/sandbox_delegate.go`, `sandbox_delegate_test.go`, `sandbox_delegate_program_fuzz_test.go` to use the descriptor sandbox type in `delegatestore`, before Task 7 removes the jobstore duplicate
-- Modify: `agent/internal/jobstore/event.go`, `record.go`, `fold.go` only to add shell `ParentDelegateID`; old delegate types remain until Task 7
-- Modify: `agent/internal/tool/definitions.go`, `definitions_test.go`, `definitions_program_fuzz_test.go`
-- Modify: `agent/session_tools_jobs.go`, `session_tools_jobs_test.go`, `session_tools_jobs_list_test.go`, `session_tools_jobs_stop_delegate_test.go`, `session_tools_jobs_watch_test.go`, `delegate_schema_test.go`, `registry_schemafuzz_test.go`, `session_outline.go`, `job_transcript_read.go`, `session_tools_transcript.go`
-- Modify: `agent/transcript_render.go`, `transcript_render_test.go`, `transcript_render_job_test.go`, `transcript_render_fuzz_test.go`, `transcript_render_lookup_exact_fuzz_test.go`
-- Modify: `agent/internal/atif/atif.go`, `atif_test.go` so trajectory export preserves the presentational marker without either private correlation field
-- Rewrite active-route expectations in: `agent/job_delegate_create_test.go`, `job_delegate_send_test.go`, `job_delegate_send_fifo_test.go`, `job_delegate_finalize_test.go`, `job_delegate_drivedown_test.go`, `job_delegate_budget_test.go`, `job_nested_test.go`, `subagents_test.go`, `session_tools_jobs_lifecycle_fuzz_test.go`, `nested_subagent_lifecycle_program_fuzz_test.go`
-
-**Files — events/projection/AppWire/clients/doctor:**
-- Modify: `agent/events/events.go`, `agent/events/payloads.go`, `agent/events/eventdata.go`, their exhaustive event tests/fuzz programs, `agent/jobs_activity.go`, `agent/jobs_activity_past.go`, `agent/historical_jobs.go`
-- Modify: `agent/status.go`, `status_test.go`, `status_support_program_fuzz_test.go`; `cmd/serf/serve.go`, `serve_test.go`, `serve_coverage_fuzz_test.go`; `server/server.go`, `server_test.go`, `server/server_surface_fuzz_test.go`
-- Modify: `internal/appprojector/appwire_projection.go`, `appwire/types.go`, `appwire/protocol.go`, `server/appwire_runtime.go`, `cmd/serf-hub/app_jobs.go`
-- Modify: `server/thread_envelope.go`, `thread_envelope_test.go` so the new delegate update refreshes its affected diagnostics facet
-- Generate: `cmd/serf-hub/frontend/src/protocol/types.gen.ts`, `docs/appwire-protocol.md`
-- Modify: `cmd/serf-hub/internal/hubcore/prober.go`, `prober_test.go`, `prober_wire_test.go`, `scenarios_fuzz_test.go`
-- Modify: `cmd/serf-tui/hub_notifications.go`, `hub_notifications_test.go`, `hub_notifications_fuzz_test.go`, `model_misc_serffuzz_test.go`, `cmd/serf-tui/internal/transcript/job_notification.go`, `reducer.go`, `types.go`, `reducer_test.go`, `cov_rtui_transcript_test.go`, `reducer_fuzz_test.go`, `fuzz_coverage_union_test.go`, `cmd/serf-tui/internal/msgrender/tool_bodies.go`, `tool_renderers.go`, `cmd/serf-tui/internal/toolsummary/tool_summary.go`, plus adjacent render/summary tests including `fuzz_coverage_union_test.go`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/activityData.ts`, `activityRows.ts`, `ActivityTree.tsx`, `ActivityRowDetail.tsx`
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.ts`, `threads.test.ts`, `protocol/model.ts`, `reducer.ts`, `reducer.test.ts`
-- Modify: `cmd/serf-hub/app_threadread.go`, `app_threadread_test.go` to remove activation-ID extraction from cold transcripts
-- Modify: `cmd/serf-hub/frontend/src/stores/activityPanel.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx`, `subagentModule.tsx`, `subagentModuleStore.ts`, `cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx`, plus their existing adjacent tests
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts`, `steeringClassify.test.ts`, `NotificationCard.tsx`, `NotificationCard.test.tsx`, `SteeringItem.tsx`, `SteeringItem.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/protocol/fixtures/tool-and-jobs.jsonl`, `cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx`
-- Modify: `agent/doctor/doctor.go`, `jobs.go`, `tree.go`, `sessions.go`, `watches.go`, their existing tests/fuzz fixtures including `sessions_test.go` and `watches_receiver_test.go`, `cmd/serf-doctor/main.go`, `main_test.go`, `README.md`
-
-**Interfaces:**
-- Consumes: every dormant Task 2–5 interface.
-- Produces: the only active delegate route, stable registered schemas, one stable public projection, provider-free startup, resident idle runtimes, shell-only job ownership, and default-on causal regression tests. The old lifecycle code may still compile but is unreachable and receives no writes; Task 7 deletes it.
-
-This task is intentionally one commit. Its substeps may leave the working tree red while wiring, but no intermediate commit, feature flag, dual write, or half-switched registered route is allowed.
-
-- [ ] **Step 1: Recreate final default-on causal tests and capture the old-route RED**
-
-Implement the Task 1 product tests as final tests without the `PhaseZero` suffix, plus the missing durability/restart cases:
-
-```go
-func TestDelegateResource_CreateReturnsOnlyStableIdentity(t *testing.T)
-func TestDelegateResource_RunningSendReachesNextProviderRequestExactlyOnce(t *testing.T)
-func TestDelegateResource_RunningSendDoesNotStartSuccessor(t *testing.T)
-func TestDelegateResource_IdleSendStartsOneSuccessor(t *testing.T)
-func TestDelegateResource_ConcurrentIdleSendsNeverStartTwoRuns(t *testing.T)
-func TestDelegateResource_SteerBeforeNormalSettlementContinues(t *testing.T)
-func TestDelegateResource_SteerBeforeCommunicateSettlementContinues(t *testing.T)
-func TestDelegateResource_StaleFinalizerCannotAffectSuccessor(t *testing.T)
-func TestDelegateResource_RegisteredStopCancelsWholeSubtree(t *testing.T)
-func TestDelegateResource_StopRacingIdleStartHasOneOrder(t *testing.T)
-func TestDelegateResource_StopRacingSteerNeverLosesAcceptedMessage(t *testing.T)
-func TestDelegateResource_ChildReservationCannotEscapeAncestorStop(t *testing.T)
-func TestDelegateResource_ShellReceiptCannotEscapeAncestorStop(t *testing.T)
-func TestDelegateResource_StopSuppressesCoveredOwnerDelivery(t *testing.T)
-func TestDelegateResource_StopDefersExternalOwnerDeliveryUntilCompletion(t *testing.T)
-func TestDelegateResource_IdleStopFencesQueuedCoveredDelivery(t *testing.T)
-func TestDelegateResource_DeliveryReceiptRacingStopHasOneOrder(t *testing.T)
-func TestDelegateResource_RestartThreeLevelTreeIsProviderFreeAndLazy(t *testing.T)
-func TestDelegateResource_RestartRepairsDescendantShellBeforeStopCompletion(t *testing.T)
-func TestDelegateResource_RestartAfterStoppedFinishDoesNotFinishTwice(t *testing.T)
-func TestDelegateResource_RestartReplaysTwoDeliveriesExactlyOnce(t *testing.T)
-func TestDelegateResource_LiveDeliveryNPlusOneWaitsForNAcknowledgement(t *testing.T)
-func TestDelegateResource_BlockedFirstDeliveryPreservesSecondInlineWaiter(t *testing.T)
-func TestDelegateResource_InlineToolResultAppendFailureLeavesNThenNPlusOneQueued(t *testing.T)
-func TestDelegateResource_InlineToolResultFSyncBeforeAckReplaysWithoutDuplicate(t *testing.T)
-func TestDelegateResource_CrashAfterNormalSettlementFinishesPreparedOnce(t *testing.T)
-func TestDelegateResource_CrashAfterCreateCommitLeavesNoUnownedState(t *testing.T)
-func TestDelegateResource_PostCommitCreateFailureReturnsStableResult(t *testing.T)
-func TestDelegateResource_NewStorePlusLegacyJobBytesFailsClosed(t *testing.T)
-func TestDelegateResource_CreateInstallsNoParentWatch(t *testing.T)
-func TestDelegateResource_WatchCallbackCannotEnterDelegate(t *testing.T)
-func TestDelegateResource_RestoredWatchCallbackCannotEnterDelegate(t *testing.T)
-func TestDelegateResource_ReversedUpdateEmissionCannotRegressClients(t *testing.T)
-func TestDelegateResource_NewerActivityAtMergesAcrossEqualOrStaleStateRevision(t *testing.T)
-func TestDelegateResource_CompletedNoActionIsPublicCompleted(t *testing.T)
-func TestDelegateResource_TranscriptRendererKeepsDelegateAndShellIdentitySeparate(t *testing.T)
-func TestDelegateResource_DelegateAndShellNotificationsUseDistinctMarkup(t *testing.T)
-```
-
-Before switching production behavior, run the selectors against the still-active old route and record assertion REDs in Kata `my73`. Test-only barriers may be added to `sessionConfig.testOnly` first, but must not alter non-test behavior. Every concurrency test enters through registered tools and asserts provider/process/transcript/public results.
-
-- [ ] **Step 2: Open one controller at the root before side effects**
-
-Add `Session.delegateController *delegateTreeController` and `Session.owningDelegateID string`; no lease field. A root always checks legacy bytes before accepting the new store, opens/folds the one store, snapshots reconciliation requirements, collects shell and attention evidence outside the controller lock, reconciles, and only then registers tools/emits startup. A child inherits the pointer/owning ID and never opens a delegate store.
-
-`delegate_legacy_state.go` reads only `{kind,type}` from root `jobs.jsonl` and rejects old delegate start/create/stop-gate/disposed bytes. It cannot fold, translate, or project them. Shell-only history opens normally; unknown delegate version fails closed.
-
-- [ ] **Step 3: Make exact leases run-context values**
-
-`delegateRuntime.launch(lease,input)` derives `withDelegateLease(ctx,lease)` for the entire provider/tool/finalizer goroutine. `Session.delegateActor(ctx)` requires the exact context lease for a delegate-originated command. Root commands use a root actor. A retained idle Session stores no current generation.
-
-- [ ] **Step 4: Cut creation and idle/attention start to controller reservations**
-
-Refactor current child policy/profile/sandbox/worktree/transcript construction into:
-
-```go
-func (s *Session) constructDelegateRuntime(ctx context.Context, id string, descriptor *delegatestore.Descriptor) (*delegateRuntime, delegatestore.Descriptor, error)
-func (s *Session) admitDelegateInputDurably(ctx context.Context, text string, p *provenance.Causal) (durableDelegateInput, error)
-func (s *Session) processAdmittedDelegateInput(ctx context.Context, input durableDelegateInput) (string, bool, error)
-```
-
-Construction performs no provider call and publishes to no subagent/job manager. Before any child filesystem write, create derives deterministic locations and commits the atomic create/start batch plus exact non-launched cancellation binding; only then does it construct artifacts owned by that aggregate, attach the runtime, and durably admit input. Idle send likewise commits run-start before restore/reuse. A post-commit failure is a structured stable-ID/failed-outcome tool result, never a transport error that drops the ID; a pre-commit crash leaves no child artifact, and a post-commit crash reconciles the owned partial state as failed/runtime_lost. Attention uses exact resident runtime+durable entry identity. Normal finish retains idle runtime and worktree occupancy.
-
-- [ ] **Step 5: Cut running steering and caller routing**
-
-Resolve `dlg_...` directly in controller state. Append the steering transcript entry under controller-to-transcript order, return `action=steered` immediately, ignore waiting for running steer, and bind it exactly once before the next provider request. `to=caller` calls `SteerCaller`: stable parent runtime when nested, root durable steering admission when parent is root. Never look up an activation JobRecord.
-
-- [ ] **Step 6: Cut model, tool, communicate, and finish boundaries**
-
-Before request construction, derive context lease and call `BeginModelRequest`; refactor `prepareModelRequestFromHistory` to consume the captured history. At the start of each `execTool`, before pre-tool hooks, call `BeginTool`. In `session_tool_registry.go`, replace the Session-owned communicate terminal setters/watch callback with one dependency that invokes controller `BeginSettlement` and returns its continue/settle decision to the handler. Communicate validates/bounds the packet, continues if steer won, and prepares no terminal in that case. Ordinary completion with no communicate passes nil so `BeginSettlement` prepares the bounded missing-terminal packet before folding settling. Fatal/exhausted/cancelled paths use atomic prepare+finish. After tool-result persistence, exact finish records one outcome, returns immutable update/head-delivery plans, and never calls Session.Close.
-
-The delegate handler uses existing `ctxToolCallID` to bind an inline packet's process-only `delegateToolResultCommit` to that exact caller tool call in a Session-owned pending map; do not add a field to generic `tool.ExecResult` or a cross-tool receipt framework. `persistToolResults` drains only commits for the round's call IDs and passes them to `appendToolResults`. When the set is non-empty, `appendToolResults` constructs one `TurnToolResults` whose persisted copy carries `DelegateDeliveryCommits`, forces the existing `appendTurnWithDurableTranscriptMessage`/`writeTranscriptDurable` path even if no shell-terminal result otherwise requires it, and does not expose the metadata in the live `llm.Message`. A commit-bearing tool-result turn requires the attached transcript writer; the pre-attachment held-turn path is not a durable success for this case. Only after that append returns from `transcript.Writer.AppendDurable` does it call each exact `CompleteDelivery(true)`. Append or fsync failure calls each `CompleteDelivery(false)`, returns the persistence error, and leaves the corresponding heads ordered and pending; cancellation before persistence takes the same false-completion path. If the receiver append committed but delivery-ack append fails or the process crashes, transcript replay finds the exact `ToolCallID+DeliveryID`, does not append a second tool-result turn, and retries only the acknowledgement.
-
-Add deterministic barriers in `session_tool_round_test.go` and `session_assistant_persistence_test.go` around the existing writer seam. `TestSessionDelegateInlineToolResultDoesNotAckBeforeDurableAppend` blocks before fsync and proves N remains head; `TestSessionDelegateInlineToolResultAppendFailureLeavesNAndNPlusOneQueued` fails append and proves false completion plus honest persistence failure; `TestSessionDelegateInlineToolResultAckReleasesNPlusOneOnlyAfterNFSync` finishes N+1 while N is blocked and proves ordering; and `TestSessionDelegateInlineToolResultReplayAfterFsyncBeforeAckIsIdempotent` reopens the transcript and proves no duplicate tool result before N acknowledgement releases N+1. These are behavioral Session/controller tests, not rendered-JSON string matches.
-
-- [ ] **Step 7: Cut inline/background owner delivery and repair**
-
-Creating/idle-start calls may register one waiter keyed by the committed private generation. Timeout withdraws only that keyed waiter. Finish appends by deterministic delivery ID but dispatches only the ordered head; inline dispatch hands the caller Session a packet plus the exact process-only completion object and does not acknowledge at waiter resolution. The caller's aggregated tool-result boundary performs receiver commit as specified in Step 6; background dispatch performs the same ordering with a receiver-transcript attention append. Either receiver commit acknowledges that head and releases the next plan using the next entry's generation-keyed waiter even if a successor is current. Nested replay without a resident parent opens the exact transcript reference for durable idempotent append and uses existing orphaned-tool repair without provider construction. Remove delegate terminal JobRecord notification consumption from the active route.
-
-- [ ] **Step 8: Cut descendant and shell admission plus stable stop**
-
-Delegate construction uses its start reservation. In `runShell`, `BeginShellWork` precedes external start; after existing durable shell launch commit, `CommitShellWork(token,jobID,cancel)` decides publish versus immediate cancel. Stamp `ParentDelegateID` on shell record/event/fold. Registered `job_stop(target=dlg_)` calls controller stop, persists before cancellation, uses exact plan, waits only on the returned done channel, and never re-resolves a later generation.
-
-- [ ] **Step 9: Cut root close, attention, restart, and disposal**
-
-Root close sets controller closing, joins pending stop, whole-tree stops/drains, closes children postorder, then store. Refactor `jobManager.reconcileLostJobs` to share the same shell-only repair primitive with ordinary notification policy; pending delegate stop selects the suppression policy, so there is one jobstore terminal-repair implementation. Explicit isolation disposal first appends resumability closure; only then, after unlock, tears down runtime/worktree. Append failure destroys nothing.
-
-`agent/session_attention.go` is the sole owner of durable attention operations against the existing receiver transcript. Delegate delivery derives `delegate:<deliveryID>`; shell terminal notification derives `shell:<jobID>:<terminalGeneration>`. Live check+append/resolve operations serialize on one narrow process-only `Session.attentionMu` that stores no entries; cold operations are already serialized by the exact delivery receipt or the root's single stop/reconcile loop. The transcript fold remains the only truth. `appendAttentionDurably` performs a missing-file-tolerant read-only fold inside that exclusion, no-ops if the same ID is already pending or resolved, otherwise appends and fsyncs one model-bound `TurnSteering` carrying private `AttentionID`. Only after that fsync may delegate delivery call `CompleteDelivery(true)` or shell notification mark its exact terminal generation delivered. Append failure leaves the delegate delivery or shell notification pending. A crash after receiver fsync but before source acknowledgement replays the source, observes the same pending ID, and acknowledges without a second model-bound turn.
-
-The daemon steering queue and `<stateDir>/queues/*.json` snapshot remain best-effort transport/cache only for non-attention steering; `saveQueues`, `loadQueues`, and daemon-queue drain neither create nor resolve an `AttentionID`. `readPendingAttention` folds transcript turns only, treats a missing file as empty without creating it, and constructs no Session, provider, or queue store. The first pending turn for an ID wins; exact duplicate pending and resolution appends are no-ops; conflicting content or disposition fails closed. `resolveAttentionDurably` appends and fsyncs presentational `TurnAttentionResolution` with private ID and consumed/discarded disposition. `session_model_call.go` excludes that marker and all private attention/delivery metadata from provider history; `history_repair.go` treats it as a presentational interleaving that cannot interrupt a pending tool round; `transcript_render.go`, `internal/appprojector/appwire_projection.go`, and `internal/atif/atif.go` may preserve generic presentational content but never project `AttentionID` or `DelegateDeliveryCommits`.
-
-Cut `agent/internal/contextmgr/context_manager.go` in the same atomic commit. Its cutoff scan treats `TurnAttentionResolution` inside a tool round like the existing structural interleavings: it walks through the marker to the assistant tool call instead of preserving a result-side suffix, and provider/presentation filtering of the marker cannot strand either half of the call/results pair. Update `context_manager_test.go` with `TestAttentionResolutionMarkerInsideToolRoundCompactionPreservesCallAndResults`, covering cutoffs on the marker and the following `TurnToolResults`, marker removal, checkpoint, and summarization fallback. Update both `compaction_seqfuzz_test.go` and `maybecompact_fc1_seqfuzz_test.go` so their generated legal histories include resolution markers between assistant tool calls and results and their no-orphan/no-dangling invariants evaluate the marker-transparent projected sequence.
-
-An attention drive first read-folds the exact receiver transcript, restores or selects the exact resident runtime, then calls `ReserveAttention(runtime, attentionID)`; cold discovery alone never starts a model. The drive binds the exact IDs it owns to its run. Normal and communicate settlement must fsync consumed markers for every bound ID before `FinishGeneration`; a marker append/fsync failure leaves the run open and the attention pending. Stop snapshots only transcript references under lock, then after unlock repeatedly cold-folds and fsyncs discarded markers until no covered ID remains; it must repeat after an apparently empty fold because cancellation may append another entry. Startup follows the same read-only fold and cleanup path without constructing Session/provider, and may drive an ID only after exact runtime restore/selection.
-
-Add deterministic tests in `session_attention_test.go`, `session_queue_persist_test.go`, `session_tool_round_test.go`, `session_lifecycle_test.go`, `session_model_call_phase8_test.go`, `session_orphaned_tool_repair_test.go`, `transcript_render_test.go`, `agent/internal/atif/atif_test.go`, and `internal/appprojector/appwire_projection_test.go`:
-
-```go
-func TestDelegateAttentionAppendFSyncsBeforeSourceAck(t *testing.T)
-func TestShellAttentionAppendFSyncsBeforeSourceAck(t *testing.T)
-func TestAttentionConcurrentDuplicateAppendWritesOnce(t *testing.T)
-func TestAttentionCrashAfterReceiverCommitBeforeSourceAckIsIdempotent(t *testing.T)
-func TestAttentionConsumedMarkerPersistsBeforeGenerationFinish(t *testing.T)
-func TestAttentionConsumedMarkerFailureKeepsGenerationOpen(t *testing.T)
-func TestAttentionStopDiscardsAfterUnlockAndRefoldsUntilEmpty(t *testing.T)
-func TestAttentionEvidenceSourceBeforeReceiverCannotMissHandoff(t *testing.T)
-func TestAttentionMissingTranscriptReadDoesNotCreateFile(t *testing.T)
-func TestAttentionColdRestartDoesNotConstructSessionOrProvider(t *testing.T)
-func TestAttentionColdRestartDrivesOnlyAfterExactRuntimeRestore(t *testing.T)
-func TestQueueSnapshotIsNotAttentionAuthority(t *testing.T)
-func TestAttentionPrivateMetadataExcludedFromProviderRenderAndProjection(t *testing.T)
-func TestAttentionResolutionMarkerDoesNotInterruptToolRoundRepair(t *testing.T)
-func TestAttentionResolutionMarkerInsideToolRoundCompactionPreservesCallAndResults(t *testing.T)
-```
-
-Use writer barriers/faults, exact source acknowledgements, provider-constructor counters, and a cancellation-generated second attention append; do not inspect only an in-memory queue. `FuzzDelegateAttentionJournal` in `session_attention_fuzz_test.go` generates duplicate append/consume/discard/crash-reopen sequences and asserts one pending model-bound turn per stable ID, monotonic resolution, provider exclusion, and missing-file read-only behavior. Register `native:agent:.:FuzzDelegateAttentionJournal::session_attention.go;schema/turn.go;transcript_read.go` in `scripts/run-fuzz.sh` and run it with `-tags serffuzz`.
-
-- [ ] **Step 10: Atomically cut registered tool contracts**
-
-Change definitions and handlers together:
-
-```json
-{"job_status":{"required":["target"]}}
-{"job_stop":{"required":["target"],"optional":["include_children","max_wait_ms"]}}
-{"job_list":{"result":{"items":"array"}}}
-{"delegate_send":{"to":"dlg_... or caller"}}
-```
-
-Delegate results contain stable ID/type/lifecycle/phase/resumability/transcript/typed parent/last outcome and optional inline terminal packet; no activation/current/latest/resumed job fields. `job_status(dlg_)` is metadata-only and does not expose/ack delivery. Each delegate appears once in list. Delegate stop is always recursive regardless of `include_children`. `job:` transcript references are shell-only. `dlg_...` source/receiver watch returns `unsupported_delegate_watch`; remove `watch_parent` and `job_send_message` fallback from the active registry.
-
-Cut `transcript_render.go` in the same commit: render stable delegate results through a delegate-specific shape with `delegate_id` and no activation aliases; retain `job_id` only for shell-job output/status; remove `job_send_message` from tool rendering and lookup classification. Extend normal and fuzz tests to prove a delegate tool call cannot render or accept `job_id`, `started_job_id`, `current_job_id`, `latest_job_id`, or `resumed_from_job_id`, while a shell job still renders its `job_id` exactly.
-
-- [ ] **Step 11: Cut public events and live/cold activity to stable snapshots**
-
-Add `DELEGATE_UPDATED` carrying the immutable `delegateUpdatePlan` snapshot, including per-delegate `projection_revision`, and project it to distinct `serf/delegate/updated`. Register its sealed payload marker and exhaustive event/fuzz cases in `agent/events/eventdata.go` and adjacent tests. Add it to `server/thread_envelope.go`'s freshness table as `facetDiagnostics`, with a producer test proving `DetailedStatus` resamples instead of retaining plausible stale delegate activity. `JOB_STARTED`/`JOB_FINISHED` become shell-only in active emission. Replace address-based `jobTreeClockByTreeCounter` sharing with an explicit inherited `*jobActivityClock`; that clock orders UI snapshots only and carries no generation, capacity, authorization, phase, or stop state. Replace delegate activation grouping/turn arrays with one `JobActivityDelegate` per stable ID, sourced live from controller snapshots and cold from `delegatestore.ReadEvents+Fold`. Live/cold projection carries the same folded state revision. `LatestAt` is explicitly outside that revision gate: live steering uses its durable transcript-entry timestamp, cold/refetch uses transcript metadata, and every merge takes max even for an equal/older state revision. Lifecycle/outcome never comes from transcript recency.
-
-- [ ] **Step 12: Cut AppWire, TUI, and web in the same working tree**
-
-Add `SerfDelegateInfo` with `projection_revision`, typed parent, stable outcome, and turn-free activity delegate. Keep `SerfJobInfo` shell-only. TUI gets `ApplySerfDelegate` keyed only by stable ID: equal/older revisions cannot change state fields but can increase `latest_activity_at`. Web activity uses the same two-part merge, modules key only by delegate ID, and tool renderers parse no activation job fields. Add reversed-emission tests in TUI reducer, web thread store, protocol reducer, and activity store: apply running revision N+1 before delayed idle N and prove every surface remains running; then give delayed N a newer activity timestamp and prove only ordering time advances.
-
-Delete the fallback in `cmd/serf-hub/internal/hubcore/prober.go` that walks `Detailed.Jobs` and infers delegates from `job_type=delegate` or transcript refs. Prober discovery must use only `DescendantSessionIDs` and `DescendantStates`; malformed, empty, or shell-only `Detailed.Jobs` cannot add a running delegate. Pin this in `prober_test.go`, `prober_wire_test.go`, and `scenarios_fuzz_test.go`, including a descendant present only in the stable fields and a delegate-shaped legacy job present only in `Detailed.Jobs`.
-
-Split terminal markup at both producer and client parser. `agent/job_notify.go` formats only shell `<job-notification job_id="job_..." job_type="shell">`; `agent/delegate_delivery.go` formats delegate `<delegate-notification delegate_id="dlg_...">` and never emits `job_id` or `job_type="delegate"`. Update `agent/shell_notify_digest_program_fuzz_test.go` so shell markup remains exact and add delegate format coverage in `delegate_delivery_test.go`.
-
-In TUI, update `internal/transcript/job_notification.go` to parse the two tags into disjoint typed identities, `types.go` to carry `DelegateID` without a job alias, and `reducer.go` to apply delegate headlines/cards only by stable delegate ID. Rewrite `reducer_test.go`, `cov_rtui_transcript_test.go`, `reducer_fuzz_test.go`, and `fuzz_coverage_union_test.go`; update `hub_notifications.go`, `hub_notifications_test.go`, and `hub_notifications_fuzz_test.go` so the delegate notification method and payload never flow through `SerfJobInfo` or job-ID matching. Also rewrite `cmd/serf-tui/model_misc_serffuzz_test.go`: its `SubagentRunInfo` seed uses stable `DelegateID`, its notification seed uses `<delegate-notification delegate_id="dlg_...">`, and it asserts no delegate seed constructs `JobID` or `job_type="delegate"`. Keep `FuzzRootTUIModelMisc` registered in `scripts/run-fuzz.sh`. Fuzz invariants reject a delegate tag with job attributes and reject delegate semantics in a job tag, while accepting the shell tag unchanged.
-
-Update `cmd/serf/run_drain_test.go` and `cmd/serf/run_drain_nested_test.go` with the producer cut. Their scripted provider branches recognize `<delegate-notification delegate_id="dlg_...">` for delegate completion at both root and nested levels, reject delegate completion carried by `<job-notification>`, and retain the existing exact `<job-notification job_id="job_..." job_type="shell">` assertions for shell drain. This proves one-shot drain still re-drives the complete delegate subtree after the identity/markup cutover instead of silently accepting the old test fixture.
-
-In web, extend `messages/steeringClassify.ts` with a disjoint delegate notification variant keyed by `delegateId`; `NotificationCard.tsx` must title and label it `Delegate`, never `Job`, while shell cards remain jobs. Update `steeringClassify.test.ts`, `NotificationCard.test.tsx`, `SteeringItem.tsx`, and `SteeringItem.test.tsx` for single/multiple/malformed tags and raw-text fallback. Replace legacy delegate-job examples in `protocol/fixtures/tool-and-jobs.jsonl` and `dev/overflowharness-entry.tsx` with stable delegate markup so fixtures and the overflow harness exercise the new parser rather than preserving the removed contract.
-
-Update these exact frontend activity/tool tests:
-
-```text
-src/panes/session/chrome/activityData.test.ts
-src/panes/session/chrome/activityRows.test.ts
-src/panes/session/chrome/ActivityTree.test.tsx
-src/panes/session/chrome/ActivityRowDetail.test.tsx
-src/stores/activityPanel.test.ts
-src/stores/threads.test.ts
-src/protocol/reducer.test.ts
-src/panes/session/transcript/tools/jobTools.test.tsx
-src/panes/session/transcript/tools/subagentModule.test.tsx
-src/panes/session/transcript/tools/subagentModuleStore.test.ts
-src/panes/session/transcript/ToolCallItem.test.tsx
-src/panes/session/transcript/messages/steeringClassify.test.ts
-src/panes/session/transcript/messages/NotificationCard.test.tsx
-src/panes/session/transcript/messages/SteeringItem.test.tsx
-```
-
-Update TUI `tool_renderers.go` and `toolsummary/tool_summary.go` so `job_status` and `job_stop` display `target`, while shell output still displays `job_id`; remove `job_send_message`. Extend their unit and fuzz tests with both `dlg_...` and `job_...` targets. Add the delegate notification to `hub_notifications_fuzz_test.go`'s authoritative `notifyMethods` inventory and seed its stable payload shape.
-
-Route `serf/delegate/updated` through both live ingress layers: `protocol/model.ts` keeps private per-delegate greatest state revision plus greatest activity timestamp, `protocol/reducer.ts` bumps refetch when either component advances, and `stores/threads.ts` applies lifecycle fields only for a newer revision while always max-merging activity time. Add causal tests that one newer notification changes the stable row and invalidates/refetches activity, an equal/older state snapshot cannot regress it, an equal/older snapshot with newer activity time advances only ordering/refetch, and a notification for another thread changes neither. `serf/job/started|finished` remains shell-only and must not update delegate rows.
-
-Carry the same stable rows through the reconnect/refetch bridge. Add `Delegates` to `agent.DetailedStatus`, `server.DetailedStatus`, and `appwire.SerfDiagnostics`, with values shaped as `SerfDelegateInfo`; `agent/status.go` sources them from the controller snapshot, `cmd/serf/serve.go` maps every field without deriving from `Jobs`, and `server/server.go` serializes the stable slice. `server/appwire_runtime.go` maps that slice into diagnostics. Cold `cmd/serf-hub/app_threadread.go` projection and a reconnected daemon's DetailedStatus must therefore produce the same stable IDs, typed parents, lifecycle/outcome, projection revision, and independently max-merged activity timestamp. Add `TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen` in `agent/status_test.go`, `TestAgentToServerDetailedStatus_DelegatesLossless` in `cmd/serf/serve_test.go`, `TestStatusEndpoint_DetailedStatusIncludesStableDelegates` in `server/server_test.go`, `TestAppDiagnosticsFromDetailedStatus_DelegatesLossless` in `server/appwire_runtime_test.go`, and `TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus` in `cmd/serf-hub/app_threadread_test.go`. Register the new status cases in `FuzzStatusSupportProgram`, `FuzzServeSeedCoverage`, and the server surface fuzz table so tagged replay exercises the bridge rather than retaining delegate JobInfo fixtures.
-
-- [ ] **Step 13: Cut doctor and cold Hub inspection to the read-only delegate fold**
-
-Doctor locates root `delegates.jsonl`, reports shell jobs separately, and builds stable delegate parent graph from `ReadEvents+Fold`. `sessions.go` obtains delegate counts from that read-only fold rather than `jobstore.FoldDelegates`. Remove delegate receiver fields from watch reports. Cold Hub uses the same reader, removes `delegateJobIDFromRaw`/activation extraction in `app_threadread.go`, and constructs no Session. Add fixtures for depth-three tree, delegate-owned shell, pending stop, two pending deliveries, unknown version, legacy state, shell-only watches, and stable session delegate counts. Human/JSON output contains no private generation, activation job ID, or delegate watch receiver.
-
-- [ ] **Step 14: Remove active old-route calls without deleting definitions yet**
-
-Ensure registered create/send/finish/stop/list/status/events/restart/disposal paths call only the controller. Old `attachDelegateJob*`, current/latest lookup, subagent-manager lifecycle, delegate job finalizer, delegate job notification/watch code may remain as unreachable definitions solely so not-yet-ported legacy tests compile; no active caller or event write reaches them. Add a temporary source/call-graph assertion that every registered handler resolves to the new path and no active or restore route reaches `ReceiverDelegateID`, `receiverDelegateID`, `applyReceiverWatchSend`, `installParentSourceWatchForChild`, `clearParentSourceWatchForChild`, `attachDelegateJobFromWatch`, `FromWatch`, `runFromWatch`, `deliverWatchCallback`, `staleDelegateWatchSend`, or `delegateStoppedAfterWatchSendPending`. The three registered/restored callback tests above prove no callback input reaches a delegate transcript or provider.
-
-The same cutover assertion scans the active Hub/TUI/web source and fixtures. It fails if hubcore prober reads `Detailed.Jobs` for delegate discovery; if any delegate notification contains `<job-notification`, `job_id`, or `job_type="delegate"`; if any TUI/web notification parser classifies a delegate by job type; or if a delegate card says `Job`. It also scans `cmd/serf/run_drain_test.go`, `cmd/serf/run_drain_nested_test.go`, and `cmd/serf-tui/model_misc_serffuzz_test.go` and rejects delegate JobID construction or delegate completion parsed from job markup. Shell markup is allowed only with `job_type="shell"`, and delegate markup must contain one `delegate_id="dlg_..."`.
-
-Rewrite every existing integration/fuzz test that exercises an active registered delegate route to assert stable/controller behavior in this task. Tests that directly unit-test now-unreachable old helpers may remain until Task 7, but no ordinary package test may expect the registered route to create a delegate JobRecord or return activation IDs.
-
-- [ ] **Step 15: Run formatting and generate AppWire outputs idempotently**
-
-Run `gofmt` on every touched Go file. Run:
-
-```bash
-make generate
-git status --short
-```
-
-Review generated changes, then explicitly stage `appwire/types.go`, `appwire/protocol.go`, `docs/appwire-protocol.md`, and `cmd/serf-hub/frontend/src/protocol/types.gen.ts` together with their projector source. Run `make generate` a second time, then:
-
-```bash
-git diff --exit-code -- docs/appwire-protocol.md cmd/serf-hub/frontend/src/protocol/types.gen.ts
-```
-
-Expected: zero working-tree diff against the staged generated files; intentional staged diff versus HEAD remains.
-
-- [ ] **Step 16: Format exact touched frontend files before gates**
-
-From `cmd/serf-hub/frontend`, run:
-
-```bash
-npx biome check --write src/panes/session/chrome/activityData.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.tsx src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/chrome/ActivityRowDetail.tsx src/panes/session/chrome/ActivityRowDetail.test.tsx src/stores/activityPanel.ts src/stores/activityPanel.test.ts src/stores/threads.ts src/stores/threads.test.ts src/protocol/model.ts src/protocol/reducer.ts src/protocol/reducer.test.ts src/panes/session/transcript/tools/jobTools.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.ts src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/ToolCallItem.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/messages/steeringClassify.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.tsx src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx src/dev/overflowharness-entry.tsx
-```
-
-Review any write and include it in the exact staging list.
-
-- [ ] **Step 17: Make all causal public tests GREEN repeatedly**
-
-Run:
-
-```bash
-go test ./agent -run '^TestDelegateResource_' -count=20 -timeout=20m
-go test -race ./agent -run '^TestDelegateResource_' -count=20 -timeout=30m
-go test ./agent/internal/contextmgr -run '^TestAttentionResolutionMarkerInsideToolRoundCompactionPreservesCallAndResults$' -count=20
-go test -race ./agent/internal/contextmgr -run '^TestAttentionResolutionMarkerInsideToolRoundCompactionPreservesCallAndResults$' -count=20
-go test ./agent -run '^Test(Session.*LegacyDelegate|JobTools|DelegateSchema|JobStop.*Delegate|JobWatch.*Delegate|ReadTranscript)' -count=20
-go test ./agent -run '^Test(JobShell|NestedShell|SessionCommunicate|SessionClose|WorktreeDispose|RuntimeLost)' -count=1 -timeout=20m
-go test ./agent -run '^TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen$' -count=20
-go test ./cmd/serf -run '^(TestAgentToServerDetailedStatus_DelegatesLossless|TestRunDrainsDelegatedJobTreeBeforeExit|TestRunDrainsNestedDelegateSubtree)$' -count=20
-go test ./server -run '^(TestStatusEndpoint_DetailedStatusIncludesStableDelegates|TestAppDiagnosticsFromDetailedStatus_DelegatesLossless)$' -count=20
-go test ./cmd/serf-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=20
-go test ./agent -count=1 -timeout=30m
-```
-
-Expected: real steering appears exactly once in the next provider request, stop cancels depth-three delegate+shell+held start, restart invokes no provider, two deliveries replay once, compaction preserves a marker-interleaved tool round, live/reopened DetailedStatus projects the same stable delegates, both one-shot drain levels consume only stable delegate markup, and stable schemas contain no job identity.
-
-- [ ] **Step 18: Run projection, doctor, TUI, and frontend gates**
-
-Run:
-
-```bash
-go test ./agent/events ./agent/doctor ./agent/internal/atif ./cmd/serf-doctor ./internal/appprojector ./appwire ./server ./cmd/serf-hub ./cmd/serf-hub/internal/hubcore ./cmd/serf-tui/... -count=1
-SERF_FUZZ_TESTS=1 go test ./agent/internal/contextmgr -run '^(TestCompactionSeqFuzz|TestFc1MaybeCompactSeqFuzz)$' -count=1
-SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^FuzzDelegateAttentionJournal$' -count=1
-SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^FuzzStatusSupportProgram$' -count=1
-SERF_FUZZ_TESTS=1 go test -tags serffuzz ./cmd/serf -run '^FuzzServeSeedCoverage$' -count=1
-SERF_FUZZ_TESTS=1 go test -tags serffuzz ./server -run '^FuzzAppTurnsFromNotifications$' -count=1
-SERF_FUZZ_TESTS=1 go test -tags serffuzz ./cmd/serf-tui -run '^FuzzRootTUIModelMisc$' -count=1
-SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent/events ./agent/doctor ./internal/appprojector ./appwire ./cmd/serf-hub/internal/hubcore ./cmd/serf-tui ./cmd/serf-tui/internal/transcript -run '^(Test|Fuzz)' -count=1
-make test-web
-git diff --check
-```
-
-Expected: full-default-depth Rapid compaction sequences, tagged status/TUI replay, live/cold/doctor parity, transcript-backed attention replay, one stable client row, shell/delegate notification separation, generated drift check, Vitest/typecheck/Biome, and diff check pass. The Rapid command is the focused Task 6 equivalent of `make test-fuzz`; the native tagged commands are deterministic `make fuzz` replay surfaces, not substitutes for it.
-
-- [ ] **Step 19: Stage the vertical cutover with exact paths and commit once**
-
-Run `git status --short`, then these exact staging commands (omit an unchanged listed file; if implementation needs a file not listed here, add that exact path to this plan before staging):
-
-```bash
-git add -- agent/delegate_runtime.go agent/delegate_legacy_state.go agent/session_attention.go agent/session_attention_test.go agent/session_attention_fuzz_test.go agent/delegate_resource_contract_test.go agent/delegate_resource_race_test.go agent/delegate_legacy_state_test.go agent/schema/turn.go agent/session.go agent/session_config.go agent/session_init.go agent/session_lifecycle.go agent/session_lifecycle_test.go agent/session_model_call.go agent/session_model_call_phase8_test.go agent/session_queue.go agent/session_queue_persist.go agent/session_queue_persist_test.go agent/session_tools.go agent/session_tool_registry.go agent/session_tool_round.go agent/session_tool_round_test.go agent/session_assistant_persistence_test.go agent/session_tools_communicate.go agent/transcript_read.go agent/history_repair.go agent/session_orphaned_tool_repair_test.go agent/tree_counter.go
-git add -- agent/internal/contextmgr/context_manager.go agent/internal/contextmgr/context_manager_test.go agent/internal/contextmgr/compaction_seqfuzz_test.go agent/internal/contextmgr/maybecompact_fc1_seqfuzz_test.go
-git add -- agent/sandbox_delegate.go agent/sandbox_delegate_test.go agent/sandbox_delegate_program_fuzz_test.go agent/sandbox_delegate_floor_test.go agent/sandbox_delegate_create_test.go
-git add -- agent/delegate_delivery.go agent/delegate_delivery_test.go agent/job_delegate.go agent/subagents.go agent/job_shell.go agent/jobs.go agent/jobs_nested.go agent/job_notify.go agent/shell_notify_digest_program_fuzz_test.go agent/job_watch.go agent/session_jobtree_drain.go cmd/serf/run_drain_test.go cmd/serf/run_drain_nested_test.go agent/session_tools_worktree_dispose.go agent/session_tools_worktree.go agent/session_worktree_close.go agent/session_worktree_relock.go agent/session_worktree_resume.go agent/session_worktree_sweep.go agent/internal/jobstore/event.go agent/internal/jobstore/record.go agent/internal/jobstore/fold.go scripts/run-fuzz.sh
-git add -- agent/internal/tool/definitions.go agent/internal/tool/definitions_test.go agent/internal/tool/definitions_program_fuzz_test.go agent/session_tools_jobs.go agent/session_tools_jobs_test.go agent/session_tools_jobs_list_test.go agent/session_tools_jobs_stop_delegate_test.go agent/session_tools_jobs_watch_test.go agent/delegate_schema_test.go agent/registry_schemafuzz_test.go agent/session_outline.go agent/job_transcript_read.go agent/session_tools_transcript.go agent/transcript_render.go agent/transcript_render_test.go agent/transcript_render_job_test.go agent/transcript_render_fuzz_test.go agent/transcript_render_lookup_exact_fuzz_test.go
-git add -- agent/internal/atif/atif.go agent/internal/atif/atif_test.go
-git add -- agent/job_delegate_create_test.go agent/job_delegate_send_test.go agent/job_delegate_send_fifo_test.go agent/job_delegate_finalize_test.go agent/job_delegate_drivedown_test.go agent/job_delegate_budget_test.go agent/job_nested_test.go agent/subagents_test.go agent/session_tools_jobs_lifecycle_fuzz_test.go agent/nested_subagent_lifecycle_program_fuzz_test.go
-git add -- agent/events/events.go agent/events/payloads.go agent/events/eventdata.go agent/events/events_test.go agent/events/events_fuzz_test.go agent/events/eventdata_program_fuzz_test.go agent/events/payloads_test.go agent/jobs_activity.go agent/jobs_activity_past.go agent/historical_jobs.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go internal/appprojector/project_fuzz_test.go appwire/types.go appwire/protocol.go appwire/types_test.go appwire/protocol_test.go appwire/wiretypes_fuzz_test.go server/appwire_runtime.go server/appwire_runtime_test.go server/thread_envelope.go server/thread_envelope_test.go server/thread_envelope_test_helpers_test.go cmd/serf-hub/app_jobs.go cmd/serf-hub/app_jobs_test.go cmd/serf-hub/app_threadread.go cmd/serf-hub/app_threadread_test.go docs/appwire-protocol.md cmd/serf-hub/frontend/src/protocol/types.gen.ts
-git add -- agent/status.go agent/status_test.go agent/status_support_program_fuzz_test.go cmd/serf/serve.go cmd/serf/serve_test.go cmd/serf/serve_coverage_fuzz_test.go server/server.go server/server_test.go server/server_surface_fuzz_test.go
-git add -- cmd/serf-hub/internal/hubcore/prober.go cmd/serf-hub/internal/hubcore/prober_test.go cmd/serf-hub/internal/hubcore/prober_wire_test.go cmd/serf-hub/internal/hubcore/scenarios_fuzz_test.go
-git add -- cmd/serf-tui/hub_notifications.go cmd/serf-tui/hub_notifications_test.go cmd/serf-tui/hub_notifications_fuzz_test.go cmd/serf-tui/model_misc_serffuzz_test.go cmd/serf-tui/hub_appwire_test.go cmd/serf-tui/hub_notifications_catalog_types_test.go cmd/serf-tui/hub_partial_repaint_nxq6_test.go cmd/serf-tui/internal/transcript/job_notification.go cmd/serf-tui/internal/transcript/reducer.go cmd/serf-tui/internal/transcript/types.go cmd/serf-tui/internal/transcript/reducer_test.go cmd/serf-tui/internal/transcript/cov_rtui_transcript_test.go cmd/serf-tui/internal/transcript/reducer_fuzz_test.go cmd/serf-tui/internal/transcript/fuzz_coverage_union_test.go
-git add -- cmd/serf-tui/internal/msgrender/tool_bodies.go cmd/serf-tui/internal/msgrender/tool_bodies_test.go cmd/serf-tui/internal/msgrender/tool_renderers.go cmd/serf-tui/internal/msgrender/tool_renderers_test.go cmd/serf-tui/internal/msgrender/tool_renderers_fuzz_test.go cmd/serf-tui/internal/toolsummary/tool_summary.go cmd/serf-tui/internal/toolsummary/tool_summary_test.go cmd/serf-tui/internal/toolsummary/tool_summary_fuzz_test.go cmd/serf-tui/internal/toolsummary/fuzz_coverage_test.go
-git add -- cmd/serf-hub/frontend/src/panes/session/chrome/activityData.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityData.test.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.test.ts cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.tsx cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx cmd/serf-hub/frontend/src/panes/session/chrome/ActivityRowDetail.tsx cmd/serf-hub/frontend/src/panes/session/chrome/ActivityRowDetail.test.tsx cmd/serf-hub/frontend/src/stores/activityPanel.ts cmd/serf-hub/frontend/src/stores/activityPanel.test.ts cmd/serf-hub/frontend/src/stores/threads.ts cmd/serf-hub/frontend/src/stores/threads.test.ts cmd/serf-hub/frontend/src/protocol/model.ts cmd/serf-hub/frontend/src/protocol/reducer.ts cmd/serf-hub/frontend/src/protocol/reducer.test.ts
-git add -- cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.ts cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.test.ts cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.test.tsx
-git add -- cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.test.tsx cmd/serf-hub/frontend/src/protocol/fixtures/tool-and-jobs.jsonl cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx
-git add -- agent/doctor/doctor.go agent/doctor/jobs.go agent/doctor/tree.go agent/doctor/sessions.go agent/doctor/watches.go agent/doctor/jobs_test.go agent/doctor/tree_test.go agent/doctor/sessions_test.go agent/doctor/watches_test.go agent/doctor/watches_receiver_test.go agent/doctor/filesystem_program_fuzz_test.go cmd/serf-doctor/main.go cmd/serf-doctor/main_test.go cmd/serf-doctor/README.md
-```
-
-Do not use `*`, directory-wide adds, `git add -u`, or `git add -A`. Re-run `git status --short` and inspect `git diff --cached --stat` plus representative diffs for controller wiring, schemas, generated files, and clients. Then commit:
-
-```bash
-git commit -m "refactor: make delegates stable resources" -m "Perform the single production cutover from delegate activation jobs to the root-owned controller. Creation, idle start, durable steering, model/tool admission, settlement, exact finish, ordered delivery, shell receipts, subtree stop, restart, disposal, registered tools, events, AppWire, TUI, web, doctor, and cold projection now use one stable dlg identity and one aggregate. The former implementation remains unreachable only until the next deletion commit; no dual write or compatibility route exists."
-```
-
-Expected: hooks pass. If a hook exposes an old-route dependency, fix the dependency and rerun; never disable the hook or commit a half-cut state.
+## Task 6–14 integration-defect ownership
+
+Each row is a required behavioral RED before its owner slice and a count-20 normal/race proof in that task and Task 14. The named test is the causal owner; broader gates do not substitute for it.
+
+| Abandoned-cutover defect or preservation risk | Owner | Causal test |
+|---|---|---|
+| Descendant ordinary events disappeared when spawn config was replaced | Task 6 | TestDelegateResourceCreate_DescendantEventCallbackSurvivesSpawnConfig |
+| Worktree/sandbox lifecycle still depended on delegate JobRecords | Task 9 | TestStableDelegateWorktree_SandboxRestoreUsesDescriptorNotLegacyJob |
+| Delegate-owned shell completion attention and ancestor visibility disappeared | Task 8 | TestStableDelegateShell_CompletionAttentionReachesDirectOwner and TestStableDelegateShell_AncestorCanSeeDescendantShell |
+| Post-commit construction failure published false resumability | Task 6 | TestDelegateResourceCreate_PostCommitConstructionFailureClosesResumability |
+| Auto-nudge, SubagentStop, quiet supervision, and final-round salvage disappeared | Task 7 | TestDelegateResourceSupervision_AutoNudgeOccursOnceForEligibleBuiltin, TestDelegateResourceSupervision_SubagentStopBlockingStartsOneContinuation, TestDelegateResourceSupervision_QuietWatchdogUsesTenMinuteThresholdAndThirtySecondChecks, and TestDelegateResourceSupervision_FinalRoundFailedSalvageAddsResumeHint |
+| max_retained_terminal reclamation disappeared | Task 9 | TestDelegateRuntimeReclaim_UsesPublicMaxRetainedTerminalDefault2048 |
+| Positive stop wait cancelled the sole reconciliation driver | Task 7 | TestDelegateResourceRuntime_PositiveStopWaitKeepsReconciliationDriverAlive |
+| Foreground shell timeout leaked its controller receipt | Task 9 | TestDelegateResourceStop_ForegroundShellTimeoutAbortsUncommittedReceipt |
+| to=caller appended into an unfinished root tool round | Task 7 | TestDelegateResourceRuntime_CallerCannotWriteIntoUnfinishedRootToolRound |
+| Explicit null, validation, exhaustion, worktree, wait reason, slots, timing, usage, or diagnostics were dropped | Tasks 7, 10, 11 | TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsageAndWorktree, TestStableDelegateTools_ListPreservesTurnSlotsAllowanceAndWatchDiagnostics, and TestDelegateProjection_PreservesNullValidationExhaustionWaitReasonAndTurnSlots |
+| Historical reads mutated logs | Task 10 | TestStableDelegateReadOnly_FileBytesAndMetadataRemainUnchanged |
+| Backend cutover outpaced Hub/TUI/web/doctor/prompt consumers | Tasks 10, 11, 13 | TestDoctorStableDelegatePreservesShellAndWatchDiagnostics, TestDelegateProjection_DescendantOrdinaryEventsReachRootTransport, TestTUIStableDelegateWatchAndObserverNoticesRemainVisible, the exact Task 11 Vitest cases, and TestBundledDelegatePromptPreservesWatchSupervisionAndShellGuidance |
+| Stable watches/observer sidecars were mistaken for deletion targets | Task 8 | TestStableDelegateWatch_PreservesFiltersEveryCoalescingAndBudget and TestStableDelegateObserver_EmitsExactlyOneControllerTerminalPacket |
 
 ---
 
-### Task 7: Delete delegate jobs and every former lifecycle authority
+### Task 6: Flag-day authority/bootstrap and stable create/restore
 
 **Files:**
-- Modify: `agent/internal/jobstore/event.go`, `record.go`, `fold.go`, `store.go`
-- Delete/rewrite: delegate-only tests under `agent/internal/jobstore`
-- Modify: `agent/jobs.go`, `jobs_nested.go`, `job_notify.go`, `job_watch.go`, `job_delegate.go`, `subagents.go`
-- Delete: `agent/subagent_manager.go` if no construction-only code remains; otherwise move the minimal construction helper into `agent/delegate_runtime.go` and delete the manager type
-- Modify: `agent/session.go`, `session_config.go`, `session_init.go`, `session_lifecycle.go` to remove obsolete fields/callbacks/counters
-- Modify: `identifier/domains.go`, `identifier/domains_test.go` to remove the delegate-generation generator/parser
-- Delete/rewrite: old shape tests in `agent/job_delegate_create_test.go`, `job_delegate_send_test.go`, `job_delegate_send_fifo_test.go`, `job_delegate_finalize_test.go`, `job_delegate_drivedown_test.go`, `job_nested_test.go`, `subagents_test.go`
-- Create: `agent/delegate_legacy_path_test.go`
-- Modify: `scripts/run-fuzz.sh` to remove only manifest rows whose old delegate/watch target declarations are deleted
+
+- Create: agent/delegate_runtime.go, agent/delegate_legacy_state.go, agent/delegate_resource_bootstrap_test.go, agent/delegate_resource_create_test.go.
+- Modify: agent/session.go, agent/session_config.go, agent/session_init.go, agent/session_lifecycle.go, agent/session_lifecycle_test.go.
+- Modify: agent/delegate_tree_controller.go, agent/delegate_tree_controller_test.go, agent/delegate_tree_start.go, agent/delegate_tree_start_test.go, agent/delegate_tree_restore.go, agent/delegate_tree_restore_test.go.
+- Modify: agent/job_delegate.go, agent/subagents.go, agent/subagent_manager.go, agent/sandbox_delegate.go.
+- Modify: agent/session_tools.go, agent/session_tool_registry.go, agent/internal/tool/definitions.go, agent/internal/tool/definitions_test.go.
+- Modify: agent/session_tools_worktree.go, agent/session_worktree_relock.go, agent/session_worktree_resume.go, agent/session_worktree_sweep.go.
+- Modify: agent/events/events.go, agent/events/payloads.go, agent/events/eventdata.go.
 
 **Interfaces:**
-- Consumes: the complete active vertical route from Task 6.
-- Produces: shell/watch-only jobstore and job manager, no inactive alternate production path, no delegate generation strings, and measurable authority reduction.
 
-- [ ] **Step 1: Establish the active route is green before deletion**
+- Consume the exact Task 1–5 controller and store interfaces listed above.
+- Produce one root-owned controller/store bootstrap, inherited child controller plus owning lease, a provider-free cold restore coordinator, legacy_delegate_state and legacy_delegate_watch_state guards, and the registered create path returning one stable dlg_ identity.
+- delegateRuntime constructs, attaches, starts, and closes a child Session after controller unlock. It owns no lifecycle state.
+- delegate_legacy_state.go scans existing lifecycle and watch envelopes read-only before either writable store is opened. It recognizes only the two forbidden legacy classes and does not translate them.
+- ReserveCreate mints the stable public identity from identifier.MustNewDelegateID (through a deterministic test seam where needed), not jobstore.NewDelegateID. No stable delegate identity helper remains owned by jobstore after Task 12.
+- Replace AdmitStartInput with BeginStartInput(lease delegateLease) (delegateInputClaim, error) and CompleteStartInput(claim delegateInputClaim, committed bool, failure delegateFinish) (delegateMutationPlans, error). The first method claims the exact non-launched binding; the transcript append/fsync occurs after unlock; the second revalidates the claim and either marks ready or atomically settles input_persist_failed. No transcript callback runs under the controller.
+- Add FailCommittedStart(lease delegateLease, finish delegateFinish, closeReason string) (delegateMutationPlans, error) on the controller. For a permanently unrestorable post-commit construction/admission failure it appends terminal preparation, run finish, and resumability closure in one existing-event batch; it adds no event kind or failure record.
 
-Run:
+- [ ] **Step 1: Prove fail-closed bootstrap and single authority**
 
-```bash
-go test ./agent -run '^TestDelegateResource_' -count=20 -timeout=20m
-go test ./agent -run '^Test(JobShell|JobTools|JobActivity|HistoricalJobs)' -count=1
-git status --short
-```
+Add these behavioral tests:
 
-Expected: stable route passes and the tree is clean.
+~~~go
+func TestDelegateResourceBootstrap_RootOwnsOneController(t *testing.T)
+func TestDelegateResourceBootstrap_ChildInheritsControllerAndLease(t *testing.T)
+func TestDelegateResourceBootstrap_LegacyDelegateStateFailsClosed(t *testing.T)
+func TestDelegateResourceBootstrap_LegacyDelegateWatchStateFailsClosed(t *testing.T)
+func TestDelegateResourceBootstrap_ShellOnlyAndStableWatchStateOpen(t *testing.T)
+func TestDelegateResourceBootstrap_UnknownStoreVersionFailsClosed(t *testing.T)
+func TestDelegateResourceBootstrap_RestartIsProviderFreeAndLazy(t *testing.T)
+~~~
 
-- [ ] **Step 2: Remove delegate durable schema from jobstore**
+Immediately before bootstrap implementation, run and retain the behavioral RED:
 
-Delete `JobDelegate`, `DelegateStatus`, `DelegateRecord`, `DelegateRestoreDescriptor`, `SandboxSnapshot` duplicate, delegate event payload/kinds, `FoldDelegates`, `LoadDelegates`, current/latest IDs, string delegate generations, stop gates, delegate restore fields, delegate terminal structured-result fields, and delegate receiver/generation watch state. Keep shell/watch schemas and `ParentDelegateID` on shell job start/record.
+~~~bash
+go test ./agent -run '^TestDelegateResourceBootstrap_' -count=1
+~~~
 
-Retain only `delegate_legacy_state.go`'s narrow raw-envelope scanner. It recognizes old bytes to fail closed but cannot load/fold/migrate/route/project them.
+Expected RED: the real Session open path either has no root controller, accepts a forbidden legacy fixture, or constructs a child/provider during restart. A compile error, missing selector, or fixture-only parser assertion is invalid.
 
-- [ ] **Step 3: Make `jobManager` and nested forwarding shell-only**
+Implement root bootstrap in session_init.go/session_lifecycle.go and the narrow read-only guards in delegate_legacy_state.go. Open exactly one delegatestore Store, pass it to openDelegateTreeController, and install the pointer on the root before registered tools become available. A child receives that pointer and its immutable owning lease through construction config. Restart performs ReadEvents/fold/reconcile evidence collection only; it starts no provider, timer, hook, nudge, salvage, worktree operation, or child Session. Ensure writable Open is not called until both legacy scans succeed.
 
-Remove delegate runtime pointers, tree slots, quiet watchdog state, delegate output/notification/forwarding, delegate job finalization, current/latest lookup, stop gates, delegate recursive stop, and delegate branches in `running`. Preserve shell process/output/stop/finalization/watch and any shell-only ancestor visibility; forwarded shell records use typed stable parent, never a delegate activation job.
+Run GREEN:
 
-- [ ] **Step 4: Remove subagent lifecycle and routing mirrors**
+~~~bash
+go test ./agent -run '^TestDelegateResourceBootstrap_' -count=20
+go test -race ./agent -run '^TestDelegateResourceBootstrap_' -count=20
+~~~
 
-Delete `running`, `driving`, `finalizing`, `fatalRunGated`, `cancelRequested`, `disposeGated`, retained-terminal eviction, reconstruction coordination, manager routing map, result/status authority, and copied lifecycle callbacks. Child policy/profile/sandbox/worktree construction remains only in `delegate_runtime.go`; all runtime reachability is `controller.live[id]`.
+- [ ] **Step 2: Prove isolation-before-durable-publication and recoverable post-commit failure**
 
-- [ ] **Step 5: Delete activation attach/relink/finalize/control helpers**
+Add:
 
-Delete `findRunningDelegateByTranscriptRef`, `resumeOrFindRunningDelegate`, `relinkDelegateChildToJob`, every `attachDelegateJob*`, `finalizeDelegateOnce`, delegate output readers, delegate JobRecord notification methods, delegate job-ID stop/send paths, lifecycle token copies/mirrors, epoch/unload/close-flight names, and `dg_...` generation identifiers.
+~~~go
+func TestDelegateResourceCreate_IsolationFailurePublishesNothing(t *testing.T)
+func TestDelegateResourceCreate_StableIdentityCommitsBeforeRuntimeLaunch(t *testing.T)
+func TestDelegateResourceCreate_PostCommitConstructionFailureClosesResumability(t *testing.T)
+func TestDelegateResourceCreate_PostCommitFailureRemainsInspectableAfterRestart(t *testing.T)
+func TestDelegateResourceCreate_MissingRestoreInputsCloseResumabilityBeforeCleanup(t *testing.T)
+func TestDelegateResourceCreate_ResumabilityAppendFailureDestroysNothing(t *testing.T)
+func TestDelegateResourceCreate_DescendantEventCallbackSurvivesSpawnConfig(t *testing.T)
+func TestDelegateResourceCreate_ChildTranscriptIsPreseededBeforeRun(t *testing.T)
+func TestDelegateResourceCreate_InputTranscriptAppendRunsAfterControllerUnlock(t *testing.T)
+~~~
 
-- [ ] **Step 6: Port behavior tests and delete implementation-shape tests**
+Use fake worktree/sandbox constructors, a scripted child Session constructor, a provider panic sentinel, an append fault seam, and a captured root event callback. Immediately before changing create/restore, run:
 
-Keep sandbox/model/worktree/budget/result/nested behavior assertions by routing them through registered stable tools and controller/store outcomes. Delete tests whose sole contract is delegate JobRecord bytes, output path, current/latest mapping, generation string, stop gate, subagent-manager retention, or old lock shape. Do not weaken Task 6 causal tests.
+~~~bash
+go test ./agent -run '^TestDelegateResourceCreate_' -count=1
+~~~
 
-- [ ] **Step 7: Add an AST/source deletion inventory gate**
+Expected RED: at least the stable registered create route, post-commit recovery, and descendant callback cases fail against the current route.
 
-`delegate_legacy_path_test.go` scans non-test production Go files under `agent`, `internal`, `cmd`, `server`, and `appwire`, excluding only `delegate_legacy_state.go`'s raw string constants. It fails on these symbols/patterns:
+Implement the order:
 
-```text
-JobDelegate
-DelegateRecord
-CurrentJobID
-LatestJobID
-DelegateGeneration
-StopGateClosed
-findRunningDelegateByTranscriptRef
-resumeOrFindRunningDelegate
-relinkDelegateChildToJob
-attachDelegateJob
-finalizeDelegateOnce
-delegateRuntimeUnload
-closeDelegateLifetime
-subtreeEpoch
-ReceiverDelegateID
-receiverDelegateID
-applyReceiverWatchSend
-installParentSourceWatchForChild
-clearParentSourceWatchForChild
-attachDelegateJobFromWatch
-FromWatch
-runFromWatch
-deliverWatchCallback
-staleDelegateWatchSend
-delegateStoppedAfterWatchSendPending
-```
+1. validate descriptor and resolve model/reasoning/sandbox inputs;
+2. call ReserveCreate to hold capacity and obtain one process-only reservation containing the uncommitted stable ID and exact isolation paths;
+3. complete deterministic worktree/sandbox isolation outside the controller lock, calling AbortStart and cleaning only the reservation's artifacts on failure;
+4. call CommitStart on that exact reservation;
+5. publish the stable update;
+6. construct and attach the child outside the lock;
+7. call BeginStartInput, release the controller, durably preseed its transcript, and call CompleteStartInput on the exact claim;
+8. start provider execution.
 
-Also assert registered delegate result/schema and delegate branches in `transcript_render.go` contain none of `job_id`, `started_job_id`, `current_job_id`, `latest_job_id`, `resumed_from_job_id`, `watch_parent`, or `job_send_message`; shell-only renderer branches may retain `job_id`.
+Before step 4 failure publishes no ID and writes no delegate aggregate. After step 4 a permanently unrestorable failure calls FailCommittedStart so the failed canonical packet and resumability closure commit atomically; it never reports a resumable but unrestorable idle delegate. A transient failure may remain resumable only when the durable descriptor is sufficient for later restore. If the atomic append fails, keep the generation fenced for reconcile, retain its artifacts, and return the stable ID plus durable error; destroy nothing. Copy the root-installed ordinary event callback, transcript subscription, owner root ID, and private lease into child config without copying any legacy JobRecord handle.
 
-Add scoped consumer assertions too: `cmd/serf-hub/internal/hubcore/prober.go` must not reference `Detailed.Jobs` or `job_type`; `agent/session_queue.go` and `session_queue_persist.go` must not reference `AttentionID`, delivery attention IDs, or resolution markers; delegate producer/parser/card sources must not combine `delegate-notification` with `job_id`/`job_type`, nor infer delegate semantics from `job-notification`; and the web delegate card branch must contain the `Delegate` label. The assertion also owns `cmd/serf/run_drain_test.go`, `cmd/serf/run_drain_nested_test.go`, and `cmd/serf-tui/model_misc_serffuzz_test.go`: delegate paths must use stable delegate markup/identity, while shell-only cases may retain shell job markup. Tests and fuzz seeds may carry forbidden legacy strings only as explicit rejection inputs.
+Run GREEN:
 
-- [ ] **Step 8: Run structural and behavioral gates**
+~~~bash
+go test ./agent -run '^TestDelegateResourceCreate_' -count=20
+go test -race ./agent -run '^TestDelegateResourceCreate_' -count=20
+~~~
 
-Run:
+- [ ] **Step 3: Register stable creation without activation aliases**
 
-```bash
-gofmt -w agent/internal/jobstore/event.go agent/internal/jobstore/record.go agent/internal/jobstore/fold.go agent/internal/jobstore/store.go agent/jobs.go agent/jobs_nested.go agent/job_notify.go agent/job_watch.go agent/job_delegate.go agent/subagents.go agent/session.go agent/session_config.go agent/session_init.go agent/session_lifecycle.go agent/delegate_runtime.go agent/delegate_legacy_path_test.go
-go test ./agent/internal/jobstore -count=20
-go test ./agent -run '^TestDelegate(Resource|LegacyPath)|^Test(JobShell|JobManager|JobStore|JobWatch|Nested)' -count=20 -timeout=20m
-go test -race ./agent -run '^TestDelegateResource_' -count=20 -timeout=30m
+Update the registered delegate tool schema and implementation so creation returns delegate_id, child_session_id, transcript_ref, and durable metadata from the stable descriptor. Do not return an activation job ID. Keep shell job registration unchanged. Add:
+
+~~~go
+func TestDelegateResourceCreate_RegisteredToolReturnsOnlyStableDelegateIdentity(t *testing.T)
+func TestDelegateResourceCreate_RegisteredToolUsesRootController(t *testing.T)
+func TestDelegateResourceCreate_RegisteredNestedCreateUsesCurrentLease(t *testing.T)
+~~~
+
+Immediately before registration, run:
+
+~~~bash
+go test ./agent -run '^TestDelegateResourceCreate_Registered' -count=1
+~~~
+
+Expected RED: the registered tool still constructs or returns a delegate JobRecord.
+
+Run the task GREEN and broader gates:
+
+~~~bash
+gofmt -w agent/delegate_runtime.go agent/delegate_legacy_state.go agent/delegate_resource_bootstrap_test.go agent/delegate_resource_create_test.go agent/session.go agent/session_config.go agent/session_init.go agent/session_lifecycle.go agent/session_lifecycle_test.go agent/delegate_tree_controller.go agent/delegate_tree_controller_test.go agent/delegate_tree_start.go agent/delegate_tree_start_test.go agent/delegate_tree_restore.go agent/delegate_tree_restore_test.go agent/job_delegate.go agent/subagents.go agent/subagent_manager.go agent/sandbox_delegate.go agent/session_tools.go agent/session_tool_registry.go agent/internal/tool/definitions.go agent/internal/tool/definitions_test.go agent/session_tools_worktree.go agent/session_worktree_relock.go agent/session_worktree_resume.go agent/session_worktree_sweep.go agent/events/events.go agent/events/payloads.go agent/events/eventdata.go
+go test ./agent -run '^(TestDelegateResourceBootstrap_|TestDelegateResourceCreate_)' -count=20
+go test -race ./agent -run '^(TestDelegateResourceBootstrap_|TestDelegateResourceCreate_)' -count=20
+go test ./agent/internal/delegatestore -count=1
+go test ./agent/internal/tool -count=1
 make fuzz-registry-check
 git diff --check
 git status --short
-```
+~~~
 
-Run the manual inventory too:
+Review the diff before staging. Stage only:
 
-```bash
-rg -n 'JobDelegate|DelegateRecord|CurrentJobID|LatestJobID|DelegateGeneration|StopGateClosed|findRunningDelegateByTranscriptRef|resumeOrFindRunningDelegate|relinkDelegateChildToJob|attachDelegateJob|finalizeDelegateOnce|delegateRuntimeUnload|closeDelegateLifetime|subtreeEpoch|ReceiverDelegateID|receiverDelegateID|applyReceiverWatchSend|installParentSourceWatchForChild|clearParentSourceWatchForChild|attachDelegateJobFromWatch|FromWatch|runFromWatch|deliverWatchCallback|staleDelegateWatchSend|delegateStoppedAfterWatchSendPending' agent internal cmd server appwire
-rg -n 'Detailed\.Jobs|job_type' cmd/serf-hub/internal/hubcore/prober.go
-rg -n 'AttentionID|delegate:|shell:|AttentionResolution' agent/session_queue.go agent/session_queue_persist.go
-rg -n -g '!**/*_test.go' -g '!**/*fuzz*.go' -g '!**/*.test.ts' -g '!**/*.test.tsx' 'job_type.*delegate|job-notification.*delegate|delegate-notification.*job_(id|type)' agent cmd/serf-tui cmd/serf-hub/frontend/src
-rg -n 'job_type="delegate"|<job-notification[^>]*(delegate|dlg_)|SubagentRunInfo.*JobID' cmd/serf/run_drain_test.go cmd/serf/run_drain_nested_test.go cmd/serf-tui/model_misc_serffuzz_test.go
-rg -n 'delegate-notification|delegate_id' cmd/serf/run_drain_test.go cmd/serf/run_drain_nested_test.go cmd/serf-tui/model_misc_serffuzz_test.go
-```
+~~~bash
+git add -- agent/delegate_runtime.go agent/delegate_legacy_state.go agent/delegate_resource_bootstrap_test.go agent/delegate_resource_create_test.go
+git add -- agent/session.go agent/session_config.go agent/session_init.go agent/session_lifecycle.go agent/session_lifecycle_test.go
+git add -- agent/delegate_tree_controller.go agent/delegate_tree_controller_test.go agent/delegate_tree_start.go agent/delegate_tree_start_test.go agent/delegate_tree_restore.go agent/delegate_tree_restore_test.go agent/job_delegate.go agent/subagents.go agent/subagent_manager.go agent/sandbox_delegate.go
+git add -- agent/session_tools.go agent/session_tool_registry.go agent/internal/tool/definitions.go agent/internal/tool/definitions_test.go
+git add -- agent/session_tools_worktree.go agent/session_worktree_relock.go agent/session_worktree_resume.go agent/session_worktree_sweep.go
+git add -- agent/events/events.go agent/events/payloads.go agent/events/eventdata.go
+git commit -m "feat: bootstrap stable delegate authority" -m "Install one root-owned delegate controller, reject legacy delegate and delegate-job watch state before writable open, preserve descendant event wiring, and route registered creation through deterministic isolation and a durable stable identity. Post-commit construction failures now close resumability instead of publishing an unrestorable delegate."
+~~~
 
-Expected: the first search has only explicit legacy rejection/test literals or evergreen historical explanation; the first four scoped forbidden searches are empty; the final positive search shows stable delegate markup/identity in both drain paths and the tagged TUI fuzz. Every alternate authority and old consumer contract is gone.
-
-- [ ] **Step 9: Stage exact deletion paths and commit**
-
-Run `git status --short`. For each modified/deleted file shown, issue `git add -- <exact-path>` separately; do not use a glob, directory add, `-u`, or `-A`. Inspect `git diff --cached --stat` and the deletion inventory test, then commit:
-
-```bash
-git add -- agent/internal/jobstore/event.go agent/internal/jobstore/event_clone.go agent/internal/jobstore/fold.go agent/internal/jobstore/record.go agent/internal/jobstore/store.go
-git add -- agent/internal/jobstore/cov_s4_jobstore_test.go agent/internal/jobstore/event_test.go agent/internal/jobstore/fold_fuzz_test.go agent/internal/jobstore/fold_test.go agent/internal/jobstore/jobstore_program_fuzz_test.go agent/internal/jobstore/record_test.go agent/internal/jobstore/seqfuzz_test.go agent/internal/jobstore/store_incremental_test.go agent/internal/jobstore/store_persistence_fuzz_test.go agent/internal/jobstore/store_test.go
-git add -- agent/jobs.go agent/jobs_nested.go agent/job_notify.go agent/job_watch.go agent/job_delegate.go agent/subagents.go agent/subagent_manager.go agent/session.go agent/session_config.go agent/session_init.go agent/session_lifecycle.go identifier/domains.go identifier/domains_test.go agent/delegate_runtime.go agent/delegate_legacy_path_test.go
-git add -- agent/job_delegate_create_test.go agent/job_delegate_send_test.go agent/job_delegate_send_fifo_test.go agent/job_delegate_finalize_test.go agent/job_delegate_drivedown_test.go agent/job_nested_test.go agent/subagents_test.go
-git add -- scripts/run-fuzz.sh
-git commit -m "refactor: remove delegate activation jobs" -m "Delete the delegate JobRecord schema, current/latest mappings, generation strings, stop gates, output/notification rails, manager runtime branches, attach/relink/finalize helpers, lifecycle mirrors, and inactive alternate route. Jobstore and jobManager are shell-only; the stable controller and aggregate are now the sole delegate authorities."
-```
-
-If `git status --short` shows an additional old shape/fuzz test that had to be rewritten or deleted to preserve a real behavior contract, add that exact path to this Task 7 list before staging it. Never substitute a directory or wildcard add.
-
-Expected: hooks pass. Record production additions/deletions separately from tests/docs in Kata `my73`; authority count, not raw total line count, is the acceptance metric.
+Do not deploy this intermediate commit; the branch is atomic only after Task 14.
 
 ---
 
-### Task 8: Update all evergreen shipped documentation and prompts
+### Task 7: Registered runtime lifecycle
 
 **Files:**
-- Modify: `docs/subagent-management/11-delegate-resource-model.md` status/current-state preface only after verification of shipped behavior
-- Modify: `docs/architecture.md`, `docs/job-control.md`, `docs/subagent-runtime-contracts.md`, `docs/tools/transcripts.md`, `docs/hooks.md`
-- Modify: `cmd/serf-doctor/README.md`
-- Modify: `internal/bundled/skills/doctoring-serf/references/data-model.md`, `failure-modes.md`, `finding-contract.md`, `repair-guardrails.md`, `writing-runbooks.md`
-- Modify: `agent/prompts/sections/delegation.md`, `agent/prompts/sections/background-jobs.md`
-- Modify: `internal/bundled/agents/subagent.md`
-- Modify: `internal/bundled/plugins/coordinator-workflow/agents/coordinator.md`
+
+- Create: agent/delegate_resource_runtime_test.go, agent/delegate_resource_supervision_test.go.
+- Modify: agent/delegate_runtime.go, agent/delegate_delivery.go.
+- Modify: agent/delegate_tree_controller.go, agent/delegate_tree_controller_test.go, agent/delegate_tree_start.go, agent/delegate_tree_start_test.go, agent/delegate_tree_steer.go, agent/delegate_tree_steer_test.go, agent/delegate_tree_finish.go, agent/delegate_tree_finish_test.go, agent/delegate_tree_stop.go, agent/delegate_tree_stop_test.go, agent/delegate_tree_restore.go, agent/delegate_tree_restore_test.go.
+- Modify: agent/session.go, agent/session_config.go, agent/session_model_call.go, agent/session_tool_round.go, agent/session_tools_communicate.go, agent/session_queue.go, agent/session_queue_persist.go, agent/session_lifecycle.go.
+- Modify: agent/job_delegate.go, agent/subagents.go, agent/job_notify.go, agent/job_watch.go.
+- Modify: agent/salvage.go, agent/salvage_test.go, agent/settlement_salvage_test.go, agent/job_supervision_test.go.
+- Modify: agent/subagents_test.go, agent/cov_w3init_subagents_test.go, agent/internal/hooks/hooks.go, agent/internal/hooks/hooks_test.go.
+- Modify: agent/internal/delegatestore/record.go and agent/internal/delegatestore/fold.go for canonical packet/exhaustion/usage/worktree fidelity; modify agent/internal/delegatestore/fold_test.go, agent/internal/delegatestore/store_test.go, and agent/internal/delegatestore/fuzz_test.go to prove validation, clone, append/reopen, and replay. Add no event kind or second record.
 
 **Interfaces:**
-- Consumes: verified Task 6 behavior and Task 7 deletion inventory.
-- Produces: evergreen current-reality documentation only; no new dated spec or compatibility promise.
 
-- [ ] **Step 1: Document controller ownership and lock order**
+- Consume committed starts, exact leases, BeginModelRequest, BeginTool, BeginSettlement, FinishGeneration, StopSubtree, immutable post-unlock plans, and receiver delivery receipts.
+- Produce registered running/idle send, safe to=caller persistence, canonical packet construction, typed exhaustion, generic Stop/SubagentStop integration, one auto-nudge, quiet-watchdog attention admission, final-round salvage guidance, and a self-driving positive-stop reconcile loop.
+- Add one process-only delegateSteeringClaim with BeginSteerPersistence, CompleteSteerPersistence, and AbortSteerPersistence operations. The claim orders the exact accepted send while the transcript append runs after unlock; it is neither persisted nor publicly addressable.
+- Change BeginModelRequest to return a delegateModelRequestClaim containing the exact lease/runtime and claimed pending-steer entry IDs. Snapshot child history after unlock. CompleteModelRequest(claim, history) revalidates the claim and returns expanded immutable provider history while consuming only claimed IDs found in that snapshot. AbortModelRequest releases a failed snapshot claim. Stop drains these claims; no provider starts before completion.
 
-In `docs/architecture.md`, state one root controller/fold/lock, exact context leases, process-only tokens, restart-safe durable IDs, permitted controller-store/transcript I/O, external shell evidence before lock, immutable update plans, and prohibition on provider/process/hook/delivery/wait under lock.
+- [ ] **Step 1: Prove running, idle, caller, and settlement behavior**
 
-- [ ] **Step 2: Document stable tool and stop contracts**
+Add:
 
-In `docs/job-control.md`, describe stable-only delegate identity, `target`, one `items` list, metadata-only status, running steer versus idle start, contextual caller, mandatory recursive stop, one pending stop per tree, shell-only jobs/output/watch, and explicit unsupported delegate watches. Remove current/latest activation guidance.
+~~~go
+func TestDelegateResourceRuntime_RunningSendPersistsBeforeAck(t *testing.T)
+func TestDelegateResourceRuntime_RunningSendDoesNotStartSuccessor(t *testing.T)
+func TestDelegateResourceRuntime_IdleSendReservesOneSuccessor(t *testing.T)
+func TestDelegateResourceRuntime_ConcurrentIdleSendsStartOneGeneration(t *testing.T)
+func TestDelegateResourceRuntime_CallerNestedPersistsAtNextModelBoundary(t *testing.T)
+func TestDelegateResourceRuntime_CallerRootWaitsForToolRoundPersistence(t *testing.T)
+func TestDelegateResourceRuntime_CallerCannotWriteIntoUnfinishedRootToolRound(t *testing.T)
+func TestDelegateResourceRuntime_ModelHistorySnapshotRunsAfterControllerUnlock(t *testing.T)
+func TestDelegateResourceRuntime_PendingSteerWinsAtTerminalBoundary(t *testing.T)
+func TestDelegateResourceRuntime_CommunicateSettlesExactlyOnce(t *testing.T)
+~~~
 
-- [ ] **Step 3: Document runtime, settlement, delivery, restart, and disposal**
+Use scripted providers, durable transcript readback, and channel barriers around the caller's aggregated tool-result fsync. Immediately before the send/caller implementation slice, run:
 
-In `docs/subagent-runtime-contracts.md`, describe durable steering/request binding, per-tool admission, settlement precedence, private `completed_no_action`, ordered delivery collection, deterministic IDs, start double-failure recovery latch, exact shell receipts, provider-free reconciliation evidence, resident idle runtimes, attention runtime identity, and monotonic resumability closure.
+~~~bash
+go test ./agent -run '^TestDelegateResourceRuntime_(Running|Idle|Concurrent|Caller|ModelHistory|PendingSteer|Communicate)' -count=1
+~~~
 
-- [ ] **Step 4: Update transcript, hook, doctor, and bundled guidance**
+Expected RED: the legacy activation route or direct to=caller insertion violates at least one contract.
 
-State that delegate conversation is read through `transcript_ref`, `job:job_...` is shell output, delegate lifecycle events are distinct, doctor reads one root delegate store non-mutatingly, and no activation job can be polled/stopped/watched. Remove observer-sidecar/`watch_parent`, `job_send_message`, and activation-job orchestration instructions from prompts and bundled agents.
+Move running steering transcript I/O after controller unlock behind the exact claim. Split model-boundary validation, history snapshot, and claim completion so no child history lock is acquired under the controller; bind accepted steering once at CompleteModelRequest. For to=caller, hand the payload to the caller Session's existing durable turn boundary; never append into an unfinished root tool round. Idle send uses ReserveStart/CommitStart and the runtime adapter. Run the selector GREEN count 20 and race before continuing.
 
-- [ ] **Step 5: Mark the evergreen decision as shipped without rewriting rationale**
+- [ ] **Step 2: Prove one canonical packet and lossless exhaustion**
 
-Change only the opening status/current-state paragraphs of `docs/subagent-management/11-delegate-resource-model.md` to reflect verified implementation. Preserve decision history, scope cuts, stop conditions, and follow-on projects.
+Add:
 
-- [ ] **Step 6: Run documentation and bundled-content gates**
+~~~go
+func TestDelegateResourceRuntime_CanonicalPacketReusedAcrossFinishReplayAndDelivery(t *testing.T)
+func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testing.T)
+func TestDelegateResourceRuntime_InvalidStructuredResultIsBoundedAndExplained(t *testing.T)
+func TestDelegateResourceRuntime_ToolRoundExhaustionIsTypedAndResumable(t *testing.T)
+func TestDelegateResourceRuntime_TurnExhaustionClosesResumabilityAtomically(t *testing.T)
+func TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsageAndWorktree(t *testing.T)
+func TestDelegateResourceRuntime_StaleGenerationCannotPublishPacket(t *testing.T)
+~~~
 
-Run:
+Immediately before packet/exhaustion implementation, run:
 
-```bash
-go run ./cmd/serf-docscheck
-go test ./internal/bundled/... -count=1
-go test ./agent/doctor ./cmd/serf-doctor -count=20
+~~~bash
+go test ./agent -run '^TestDelegateResourceRuntime_(Canonical|Structured|Invalid|ToolRound|TurnExhaustion|TerminalPacket|Stale)' -count=1
+~~~
+
+Build the canonical TerminalPacket once from durable run inputs. Track structured-result presence separately from decoding so raw JSON null is present. Bound invalid bytes and carry structured_result_valid plus structured_result_reason. Extend the existing Outcome in record.go/fold.go with typed exhaustion budget, limit, and explicit resumability so metadata-only status never reads packet contents. Encode tool_round_budget_exhausted in both packet metadata and latest outcome with budget/limit and resumable=true. Encode turn_budget_exhausted the same way with resumable=false, and append finish plus resumability closure in one batch. Preserve descriptor, resolved model, effort, start/end/activity timestamps, cumulative self-only usage, worktree evidence, validation, and warnings. Run the selector GREEN count 20 and race.
+
+- [ ] **Step 3: Prove hooks, nudge, salvage, and quiet supervision**
+
+Add:
+
+~~~go
+func TestDelegateResourceSupervision_AutoNudgeOccursOnceForEligibleBuiltin(t *testing.T)
+func TestDelegateResourceSupervision_AutoNudgeSuppressedBySteerCancellationAndExhaustion(t *testing.T)
+func TestDelegateResourceSupervision_SubagentStopRunsAfterFinishAndBeforeContinuation(t *testing.T)
+func TestDelegateResourceSupervision_SubagentStopBlockingStartsOneContinuation(t *testing.T)
+func TestDelegateResourceSupervision_SubagentStopNonblockingStartsNoContinuation(t *testing.T)
+func TestDelegateResourceSupervision_FinalRoundFailedSalvageAddsResumeHint(t *testing.T)
+func TestDelegateResourceSupervision_SuccessExhaustionCancellationStopAndStaleSalvageAddNoHint(t *testing.T)
+func TestDelegateResourceSupervision_QuietWatchdogUsesTenMinuteThresholdAndThirtySecondChecks(t *testing.T)
+func TestDelegateResourceSupervision_QuietWatchdogFiresOncePerQuietStretch(t *testing.T)
+func TestDelegateResourceSupervision_QuietAttentionAppendFailureRetriesSameIdentity(t *testing.T)
+func TestDelegateResourceSupervision_RestartStartsNoWatchdogOrProvider(t *testing.T)
+~~~
+
+Use a fake clock and explicit timer channel, not sleeps. Immediately before implementation, run:
+
+~~~bash
+go test ./agent -run '^TestDelegateResourceSupervision_' -count=1
+~~~
+
+Route activity through the exact lease at retry, awaiting-model, streaming, and tool-running boundaries. The binding timer only requests controller admission of ordinary owner attention after unlock. Set the quiet latch only after receiver transcript fsync. Preserve exact hook ordering, one eligible auto-nudge, one blocking-hook continuation, pending-steer precedence, suppression rules, and final-round-only salvage wording. Restart replays none of them. Run GREEN count 20 and race.
+
+- [ ] **Step 4: Prove generic Stop and positive wait keep reconciliation alive**
+
+Add:
+
+~~~go
+func TestDelegateResourceRuntime_GenericStopUsesCanonicalFinish(t *testing.T)
+func TestDelegateResourceRuntime_PositiveStopWaitKeepsReconciliationDriverAlive(t *testing.T)
+func TestDelegateResourceRuntime_PositiveStopWaitReturnsAfterDurableCompletion(t *testing.T)
+func TestDelegateResourceRuntime_StopWaitTimeoutLeavesReconciliationRunning(t *testing.T)
+func TestDelegateResourceRuntime_ZeroWaitReturnsAfterRequestFsync(t *testing.T)
+~~~
+
+Place barriers around cancellation, attention repair, and stop_completed append. Immediately before changing stop waiting, run:
+
+~~~bash
+go test ./agent -run '^TestDelegateResourceRuntime_(GenericStop|PositiveStop|StopWait|ZeroWait)' -count=1
+~~~
+
+The reconcile driver is controller/root owned and lives independently of the requesting tool context. max_wait_ms only bounds that caller's wait on StopSubtree.done. Timeout cannot cancel the driver or its claims. Generic Session Stop uses the same canonical finish and stop algebra as explicit job_stop.
+
+Run task GREEN and broader gates:
+
+~~~bash
+gofmt -w agent/delegate_resource_runtime_test.go agent/delegate_resource_supervision_test.go agent/delegate_runtime.go agent/delegate_delivery.go agent/delegate_tree_controller.go agent/delegate_tree_controller_test.go agent/delegate_tree_start.go agent/delegate_tree_start_test.go agent/delegate_tree_steer.go agent/delegate_tree_steer_test.go agent/delegate_tree_finish.go agent/delegate_tree_finish_test.go agent/delegate_tree_stop.go agent/delegate_tree_stop_test.go agent/delegate_tree_restore.go agent/delegate_tree_restore_test.go agent/session.go agent/session_config.go agent/session_model_call.go agent/session_tool_round.go agent/session_tools_communicate.go agent/session_queue.go agent/session_queue_persist.go agent/session_lifecycle.go agent/job_delegate.go agent/subagents.go agent/subagents_test.go agent/cov_w3init_subagents_test.go agent/job_notify.go agent/job_watch.go agent/salvage.go agent/salvage_test.go agent/settlement_salvage_test.go agent/job_supervision_test.go agent/internal/hooks/hooks.go agent/internal/hooks/hooks_test.go agent/internal/delegatestore/record.go agent/internal/delegatestore/fold.go agent/internal/delegatestore/fold_test.go agent/internal/delegatestore/store_test.go agent/internal/delegatestore/fuzz_test.go
+go test ./agent -run '^(TestDelegateResourceRuntime_|TestDelegateResourceSupervision_)' -count=20
+go test -race ./agent -run '^(TestDelegateResourceRuntime_|TestDelegateResourceSupervision_)' -count=20
+go test ./agent/internal/delegatestore -count=1
+go test ./agent -run '^(TestJobDelegate|TestSubagent|TestSessionToolRound)' -count=1
 git diff --check
 git status --short
-```
+~~~
 
-Expected: docscheck, bundled prompt/reference tests, doctor tests, and diff check pass.
+Stage only:
 
-- [ ] **Step 7: Stage exact evergreen files and commit**
-
-Run `git status --short`, then issue one explicit `git add -- <exact-path>` for each listed modified doc/prompt/reference. Commit:
-
-```bash
-git add -- docs/subagent-management/11-delegate-resource-model.md docs/architecture.md docs/job-control.md docs/subagent-runtime-contracts.md docs/tools/transcripts.md docs/hooks.md cmd/serf-doctor/README.md
-git add -- internal/bundled/skills/doctoring-serf/references/data-model.md internal/bundled/skills/doctoring-serf/references/failure-modes.md internal/bundled/skills/doctoring-serf/references/finding-contract.md internal/bundled/skills/doctoring-serf/references/repair-guardrails.md internal/bundled/skills/doctoring-serf/references/writing-runbooks.md
-git add -- agent/prompts/sections/delegation.md agent/prompts/sections/background-jobs.md internal/bundled/agents/subagent.md internal/bundled/plugins/coordinator-workflow/agents/coordinator.md
-git commit -m "docs: describe the shipped delegate resource model" -m "Make evergreen architecture, job control, runtime, transcript, hook, doctor, and bundled guidance match the stable delegate controller: one identity, one aggregate, exact leases, durable steering, ordered delivery, globally serialized stop, provider-free restart, shell-only jobs, and deliberate watch/unload cuts."
-```
-
-Expected: hooks pass.
+~~~bash
+git add -- agent/delegate_resource_runtime_test.go agent/delegate_resource_supervision_test.go agent/delegate_runtime.go agent/delegate_delivery.go
+git add -- agent/delegate_tree_controller.go agent/delegate_tree_controller_test.go agent/delegate_tree_start.go agent/delegate_tree_start_test.go agent/delegate_tree_steer.go agent/delegate_tree_steer_test.go agent/delegate_tree_finish.go agent/delegate_tree_finish_test.go agent/delegate_tree_stop.go agent/delegate_tree_stop_test.go agent/delegate_tree_restore.go agent/delegate_tree_restore_test.go
+git add -- agent/session.go agent/session_config.go agent/session_model_call.go agent/session_tool_round.go agent/session_tools_communicate.go agent/session_queue.go agent/session_queue_persist.go agent/session_lifecycle.go
+git add -- agent/job_delegate.go agent/subagents.go agent/subagents_test.go agent/cov_w3init_subagents_test.go agent/job_notify.go agent/job_watch.go
+git add -- agent/salvage.go agent/salvage_test.go agent/settlement_salvage_test.go agent/job_supervision_test.go agent/internal/hooks/hooks.go agent/internal/hooks/hooks_test.go
+git add -- agent/internal/delegatestore/record.go agent/internal/delegatestore/fold.go agent/internal/delegatestore/fold_test.go agent/internal/delegatestore/store_test.go agent/internal/delegatestore/fuzz_test.go
+git commit -m "feat: run delegates through stable lifecycle" -m "Route registered send, caller steering, settlement, exhaustion, hooks, nudge, salvage, quiet supervision, generic stop, and positive stop waits through exact stable leases and canonical packets. External transcript, timer, hook, and provider work is claimed under the controller and performed after unlock."
+~~~
 
 ---
 
-### Task 9: Prove mutation sensitivity, full repository readiness, and independent review
+### Task 8: Attention, watch, observer, and shell delivery
 
 **Files:**
-- Modify causal tests only if a verified coverage gap requires an additional assertion; never weaken existing tests
-- Modify production/docs only in response to a reproduced Critical/Important finding
-- Update Kata `my73` with exact evidence
+
+- Modify: agent/session_attention.go. Create: agent/session_attention_test.go, agent/session_attention_fuzz_test.go.
+- Create: agent/delegate_resource_watch_test.go, agent/delegate_resource_shell_test.go.
+- Modify: agent/schema/turn.go, agent/transcript_read.go, agent/history_repair.go, agent/internal/contextmgr/context_manager.go, agent/internal/contextmgr/context_manager_test.go.
+- Modify: agent/delegate_shell_repair.go, agent/delegate_shell_repair_test.go.
+- Modify: agent/delegate_delivery.go, agent/delegate_tree_controller.go, agent/delegate_tree_finish.go, agent/delegate_tree_restore.go, agent/delegate_tree_stop.go, agent/delegate_tree_work.go.
+- Modify: agent/internal/delegatestore/record.go, agent/internal/delegatestore/fold_test.go, agent/internal/delegatestore/store_test.go, agent/internal/delegatestore/fuzz_test.go to persist and round-trip ParentWatchGranted in the stable descriptor without adding an event kind.
+- Modify: agent/job_watch.go, agent/job_notify.go, agent/job_shell.go, agent/jobs.go, agent/jobs_nested.go, agent/session_jobtree_drain.go.
+- Modify: agent/internal/jobstore/watch.go, agent/internal/jobstore/event.go, agent/internal/jobstore/record.go, agent/internal/jobstore/fold.go.
+- Modify: agent/session_tools_jobs.go, agent/session_tools_jobs_watch_test.go, agent/job_watch_parent_test.go, agent/job_watch_observer_test.go, agent/job_watch_restore_end_notice_test.go, agent/job_watch_restore_lost_notice_test.go, agent/job_watch_end_notice_test.go.
+- Modify: agent/root_watch_tree_program_fuzz_test.go, agent/job_watch_delegate_fuzz_test.go, agent/watch_seqfuzz_test.go, agent/watch_observer_fuzz_test.go, agent/watch_pending_frame_program_fuzz_test.go, agent/watch_restore_clear_history_program_fuzz_test.go, agent/watch_attach_terminal_program_fuzz_test.go, agent/watch_config_validation_program_fuzz_test.go.
+- Modify: scripts/run-fuzz.sh for FuzzDelegateAttentionFold and FuzzStableDelegateWatchDelivery.
 
 **Interfaces:**
-- Consumes: all prior task outputs.
-- Produces: causal mutation evidence, complete gates from bare exits, clean ancestry/porcelain/generated state, sequential independent approvals, and a no-push handoff.
 
-- [ ] **Step 1: Run the final authority/deletion inventory**
+- Consume controller terminal packets, stop membership, shell work receipts, existing jobstore watch journal, and receiver Session transcripts.
+- Produce idempotent attention append/resolve helpers; typed session/shell/delegate watch endpoints; enqueue/delivery receipts; stable parent grants; exact observer folding; unreachable-owner escalation; and shell completion routing through ParentDelegateID.
+- The watch journal remains authoritative. No watch state enters delegatestore and no arbitrary receiver field is added.
 
-Run both Task 7 searches plus:
+- [ ] **Step 1: Prove receiver attention durability and tool-round transparency**
 
-```bash
-rg -n 'job_id|started_job_id|current_job_id|latest_job_id|resumed_from_job_id|watch_parent|job_send_message' agent/internal/tool agent/session_tools_jobs.go agent/transcript_render.go agent/prompts internal/bundled cmd/serf-tui cmd/serf-hub/frontend/src
-rg -n 'Detailed\.Jobs|job_type' cmd/serf-hub/internal/hubcore/prober.go
-rg -n 'AttentionID|delegate:|shell:|AttentionResolution' agent/session_queue.go agent/session_queue_persist.go
-rg -n -g '!**/*_test.go' -g '!**/*fuzz*.go' -g '!**/*.test.ts' -g '!**/*.test.tsx' 'job_type.*delegate|job-notification.*delegate|delegate-notification.*job_(id|type)' agent cmd/serf-tui cmd/serf-hub/frontend/src
-rg -n 'delegate-notification|Delegate' agent/delegate_delivery.go cmd/serf-tui/internal/transcript/job_notification.go cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx cmd/serf-hub/frontend/src/protocol/fixtures/tool-and-jobs.jsonl cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx
-rg -n 'job_type="delegate"|<job-notification[^>]*(delegate|dlg_)|SubagentRunInfo.*JobID' cmd/serf/run_drain_test.go cmd/serf/run_drain_nested_test.go cmd/serf-tui/model_misc_serffuzz_test.go
-rg -n 'delegate-notification|delegate_id' cmd/serf/run_drain_test.go cmd/serf/run_drain_nested_test.go cmd/serf-tui/model_misc_serffuzz_test.go
-```
+Add:
 
-Review every remaining match. Expected: shell job fields, explicit legacy rejection/test literals, or historical explanation only in the broad search; all four forbidden scoped searches are empty; the positive searches show the stable tag/ID parser and `Delegate` card label in production, both fixture paths, both drain paths, and the tagged TUI fuzz. No delegate production dependency, queue authority, prober fallback, tagged replay fixture, drain fixture, or public job alias remains.
+~~~go
+func TestDelegateAttention_AppendIsIdempotentByIdentityAndContent(t *testing.T)
+func TestDelegateAttention_ConflictingIdentityIsCorruption(t *testing.T)
+func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T)
+func TestDelegateAttention_DeliveryCommitUsesCallerToolResultFsync(t *testing.T)
+func TestDelegateAttention_ResolutionMarkerDoesNotSplitToolCallAndResult(t *testing.T)
+func TestDelegateAttention_HistoryRepairCannotCreateOrphanedToolResult(t *testing.T)
+func TestDelegateAttention_RestartFoldIsProviderFreeAndReadOnly(t *testing.T)
+func FuzzDelegateAttentionFold(f *testing.F)
+~~~
 
-- [ ] **Step 2: Prove six causal mutations**
+Put this target and the Step 2 watch-delivery target in session_attention_fuzz_test.go under the serffuzz build tag. Register `native:agent:.:FuzzDelegateAttentionFold::session_attention.go` in scripts/run-fuzz.sh in this task.
 
-Apply one temporary mutation at a time with `apply_patch`, run the named selector, capture its failing assertion, then reverse exactly that patch with `apply_patch` and rerun GREEN:
+Immediately before adding the turn/helper implementation, run:
 
-1. remove finish generation equality → stale-finalizer test fails;
-2. acknowledge steer before transcript append → real-provider steering test fails;
-3. allow settlement with pending steer → normal and communicate continuation tests fail;
-4. clear stop before start/shell work drains → reservation/receipt tests fail;
-5. permit start while stopping → stop-restart successor test fails;
-6. skip direct-owner/stale-actor check → authorization tests fail.
+~~~bash
+go test ./agent -run '^TestDelegateAttention_' -count=1
+~~~
 
-After every restoration run `git diff --check` and compare `git diff` to the pre-mutation saved inspection; do not reset or checkout files.
+Extend the existing AttentionID, provider-excluded AttentionResolution, live resolution, and cold-fold foundation with DelegateDeliveryCommits, missing-file-tolerant readPendingAttention, idempotent live append, and cold append-after-identity-validation helpers. Move the generic attention fold/cold helpers from delegate_shell_repair.go into session_attention.go so shell repair keeps only shell-specific orchestration and the registered fuzz surface names its real owner. Ensure context compaction and history repair treat the marker as transparent. Run GREEN count 20/race plus the registered deterministic fuzz replay.
 
-- [ ] **Step 3: Run causal normal/race/fuzz gates**
+- [ ] **Step 2: Prove typed watches and crash-safe delivery**
 
-Run:
+Add:
 
-```bash
-go test ./agent -run '^TestDelegateResource_' -count=20 -timeout=20m
-go test -race ./agent -run '^TestDelegateResource_' -count=20 -timeout=30m
-go test ./agent/internal/delegatestore -count=20
-go test ./agent/internal/contextmgr -run '^TestAttentionResolutionMarkerInsideToolRoundCompactionPreservesCallAndResults$' -count=20
-go test -race ./agent/internal/contextmgr -run '^TestAttentionResolutionMarkerInsideToolRoundCompactionPreservesCallAndResults$' -count=20
-SERF_FUZZ_TESTS=1 go test ./agent/internal/contextmgr -run '^(TestCompactionSeqFuzz|TestFc1MaybeCompactSeqFuzz)$' -count=1
-SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent/internal/delegatestore ./agent -run '^(Test|Fuzz)(Delegate|RegistrySchema)' -count=1
-```
+~~~go
+func TestStableDelegateWatch_TypedSessionShellAndDelegateSources(t *testing.T)
+func TestStableDelegateWatch_DelegateReceiverIsImplicit(t *testing.T)
+func TestStableDelegateWatch_ParentRequiresLeaseEdgeAndPersistedGrant(t *testing.T)
+func TestStableDelegateWatch_ParentGrantIsNonTransitive(t *testing.T)
+func TestStableDelegateWatch_PreservesFiltersEveryCoalescingAndBudget(t *testing.T)
+func TestStableDelegateWatch_PreservesListInspectClearAndObservedBy(t *testing.T)
+func TestStableDelegateWatch_EnqueueFsyncPrecedesCursorAdvance(t *testing.T)
+func TestStableDelegateWatch_ReceiverFsyncPrecedesDeliveredAck(t *testing.T)
+func TestStableDelegateWatch_LaterCoalescedUpdateSurvivesEarlierAck(t *testing.T)
+func TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked(t *testing.T)
+func TestStableDelegateWatch_StopFencesAndDrainsBothReceiptClasses(t *testing.T)
+func TestStableDelegateWatch_TerminalFramePrecedesEndNotice(t *testing.T)
+func TestStableDelegateWatch_RestartCancellationEmitsEndNotice(t *testing.T)
+func TestStableDelegateWatch_LegacyDelegateJobRowFailsClosed(t *testing.T)
+func FuzzStableDelegateWatchDelivery(f *testing.F)
+~~~
 
-Expected: all pass, including fault injection for all eight event boundaries, crash-safe create publication, crash-durable normal settlement, generation-keyed inline waiters behind blocked delivery heads, head-only live and restart delivery ordering, durable idle stop fencing, provider-free descendant-shell repair before stop completion, stop retry/serialization, repeating attention cleanup, attention runtime identity, marker-transparent compaction at deterministic and full Rapid depth, and input-compensation double failure.
+Register `native:agent:.:FuzzStableDelegateWatchDelivery::session_attention.go;delegate_delivery.go;job_watch.go` in scripts/run-fuzz.sh. Port FuzzRootWatchTreeProgram and the watch configuration/pending/observer programs to typed stable endpoints; remove only the obsolete WatchdelDelegateResume subtarget, not WatchdelWatchOps or the existing watch-journal fuzz surfaces.
 
-- [ ] **Step 4: Run focused cross-surface regression gates**
+Use append-fault seams and channel barriers at each fsync/receipt boundary. Immediately before typed endpoint and receipt implementation, run:
 
-Run:
+~~~bash
+go test ./agent -run '^TestStableDelegateWatch_' -count=1
+~~~
 
-```bash
-go test ./agent -run '^Test(JobShell|JobManager|JobStore|JobWatch|ReadTranscript|SessionCommunicate|SessionClose|Worktree|Sandbox|Nested)' -count=1 -timeout=20m
-go test ./cmd/serf -run '^(TestAgentToServerDetailedStatus_DelegatesLossless|TestRunDrainsDelegatedJobTreeBeforeExit|TestRunDrainsNestedDelegateSubtree)$' -count=20
+Bind a stable delegate source to stable ID plus current private generation. Keep the receiver implicit from the watcher Session. Acquire enqueue receipt, fsync frame/cursor, acquire delivery receipt and refold, fsync receiver attention keyed by delivery ID plus update sequence, fsync source acknowledgement, then release before provider work. Stop blocks new receipts, drains both sets, resolves source cursors, discards matching receiver attention, and repeats until the evidence version is stable. Run GREEN count 20/race and fuzz.
+
+- [ ] **Step 3: Prove observer and unreachable-attention behavior**
+
+Add:
+
+~~~go
+func TestStableDelegateObserver_EmitsExactlyOneControllerTerminalPacket(t *testing.T)
+func TestStableDelegateObserver_NoOrdinaryDuplicateAfterCallback(t *testing.T)
+func TestStableDelegateAttention_ReachableColdOwnerRetainsAttentionAfterRestoreFailure(t *testing.T)
+func TestStableDelegateAttention_UnreachableOwnerTransfersToNearestReachableAncestor(t *testing.T)
+func TestStableDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T)
+func TestStableDelegateAttention_ConsumedEntryIsNeverEscalated(t *testing.T)
+func TestStableDelegateAttention_StartupRepairUsesNoProvider(t *testing.T)
+~~~
+
+Immediately before observer/escalation implementation, run:
+
+~~~bash
+go test ./agent -run '^TestStableDelegate(Observer|Attention)_' -count=1
+~~~
+
+Fold a parent observer callback into exactly one canonical controller terminal packet. For permanent owner loss, deterministically fsync ancestor attention before child discard. Do not transfer attention merely because a reachable cold delegate has a transient restore failure. Run GREEN count 20/race.
+
+- [ ] **Step 4: Prove delegate-owned shell delivery and ancestor visibility**
+
+Add:
+
+~~~go
+func TestStableDelegateShell_ParentDelegateIDReplacesSyntheticParentJob(t *testing.T)
+func TestStableDelegateShell_CompletionAttentionReachesDirectOwner(t *testing.T)
+func TestStableDelegateShell_AncestorCanSeeDescendantShell(t *testing.T)
+func TestStableDelegateShell_AncestorCannotControlWithoutDirectDelegateHandle(t *testing.T)
+func TestStableDelegateShell_OutputStatusWatchAndStopRemainJobAddressed(t *testing.T)
+func TestStableDelegateShell_RestartRepairsCompletionAttentionOnce(t *testing.T)
+~~~
+
+Immediately before shell routing implementation, run:
+
+~~~bash
+go test ./agent -run '^TestStableDelegateShell_' -count=1
+~~~
+
+Keep shell jobs as job_ resources. Persist ParentDelegateID, preserve shell terminal generation and direct-owner attention, and compute ancestor visibility from stable delegate edges. Remove only the synthetic delegate ParentJobID dependency.
+
+Run task GREEN and broader gates:
+
+~~~bash
+gofmt -w agent/session_attention.go agent/session_attention_test.go agent/session_attention_fuzz_test.go agent/delegate_resource_watch_test.go agent/delegate_resource_shell_test.go agent/schema/turn.go agent/transcript_read.go agent/history_repair.go agent/internal/contextmgr/context_manager.go agent/internal/contextmgr/context_manager_test.go agent/delegate_shell_repair.go agent/delegate_shell_repair_test.go agent/delegate_delivery.go agent/delegate_tree_controller.go agent/delegate_tree_finish.go agent/delegate_tree_restore.go agent/delegate_tree_stop.go agent/delegate_tree_work.go agent/internal/delegatestore/record.go agent/internal/delegatestore/fold_test.go agent/internal/delegatestore/store_test.go agent/internal/delegatestore/fuzz_test.go agent/job_watch.go agent/job_notify.go agent/job_shell.go agent/jobs.go agent/jobs_nested.go agent/session_jobtree_drain.go agent/internal/jobstore/watch.go agent/internal/jobstore/event.go agent/internal/jobstore/record.go agent/internal/jobstore/fold.go agent/session_tools_jobs.go agent/session_tools_jobs_watch_test.go agent/job_watch_parent_test.go agent/job_watch_observer_test.go agent/job_watch_restore_end_notice_test.go agent/job_watch_restore_lost_notice_test.go agent/job_watch_end_notice_test.go agent/root_watch_tree_program_fuzz_test.go agent/job_watch_delegate_fuzz_test.go agent/watch_seqfuzz_test.go agent/watch_observer_fuzz_test.go agent/watch_pending_frame_program_fuzz_test.go agent/watch_restore_clear_history_program_fuzz_test.go agent/watch_attach_terminal_program_fuzz_test.go agent/watch_config_validation_program_fuzz_test.go
+go test ./agent -run '^(TestDelegateAttention_|TestStableDelegateWatch_|TestStableDelegateObserver_|TestStableDelegateAttention_|TestStableDelegateShell_)' -count=20
+go test -race ./agent -run '^(TestDelegateAttention_|TestStableDelegateWatch_|TestStableDelegateObserver_|TestStableDelegateAttention_|TestStableDelegateShell_)' -count=20
+SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^(FuzzDelegateAttentionFold|FuzzStableDelegateWatchDelivery)$' -count=1
+go test ./agent/internal/jobstore -run 'Watch' -count=1
+make fuzz-registry-check
+git diff --check
+git status --short
+~~~
+
+Stage only the named files:
+
+~~~bash
+git add -- agent/session_attention.go agent/session_attention_test.go agent/session_attention_fuzz_test.go agent/delegate_resource_watch_test.go agent/delegate_resource_shell_test.go
+git add -- agent/schema/turn.go agent/transcript_read.go agent/history_repair.go agent/internal/contextmgr/context_manager.go agent/internal/contextmgr/context_manager_test.go
+git add -- agent/delegate_shell_repair.go agent/delegate_shell_repair_test.go
+git add -- agent/delegate_delivery.go agent/delegate_tree_controller.go agent/delegate_tree_finish.go agent/delegate_tree_restore.go agent/delegate_tree_stop.go agent/delegate_tree_work.go
+git add -- agent/internal/delegatestore/record.go agent/internal/delegatestore/fold_test.go agent/internal/delegatestore/store_test.go agent/internal/delegatestore/fuzz_test.go
+git add -- agent/job_watch.go agent/job_notify.go agent/job_shell.go agent/jobs.go agent/jobs_nested.go agent/session_jobtree_drain.go
+git add -- agent/internal/jobstore/watch.go agent/internal/jobstore/event.go agent/internal/jobstore/record.go agent/internal/jobstore/fold.go
+git add -- agent/session_tools_jobs.go agent/session_tools_jobs_watch_test.go agent/job_watch_parent_test.go agent/job_watch_observer_test.go agent/job_watch_restore_end_notice_test.go agent/job_watch_restore_lost_notice_test.go agent/job_watch_end_notice_test.go scripts/run-fuzz.sh
+git add -- agent/root_watch_tree_program_fuzz_test.go agent/job_watch_delegate_fuzz_test.go agent/watch_seqfuzz_test.go agent/watch_observer_fuzz_test.go agent/watch_pending_frame_program_fuzz_test.go agent/watch_restore_clear_history_program_fuzz_test.go agent/watch_attach_terminal_program_fuzz_test.go agent/watch_config_validation_program_fuzz_test.go
+git commit -m "feat: preserve stable delegate delivery" -m "Keep the existing watch journal and shipped observer behavior while replacing delegate-job indirection with typed stable endpoints. Add crash-safe receiver attention, stop-fenced watch receipts, unreachable-owner escalation, and ParentDelegateID shell routing without a second lifecycle or watch authority."
+~~~
+
+---
+
+### Task 9: Retention, stop, worktree, and close
+
+**Files:**
+
+- Create: agent/delegate_tree_reclaim.go, agent/delegate_tree_reclaim_test.go, agent/delegate_tree_reclaim_fuzz_test.go, agent/delegate_resource_retention_stop_test.go, agent/delegate_resource_worktree_test.go.
+- Modify: agent/delegate_tree_controller.go, agent/delegate_tree_start.go, agent/delegate_tree_stop.go, agent/delegate_tree_restore.go, agent/delegate_tree_work.go.
+- Modify: agent/delegate_runtime.go, agent/session.go, agent/session_config.go, agent/session_lifecycle.go, agent/tree_counter.go.
+- Modify: agent/job_shell.go, agent/jobs.go, agent/session_jobtree_drain.go.
+- Modify: agent/sandbox_delegate.go, agent/session_tools_worktree.go, agent/session_tools_worktree_dispose.go, agent/session_worktree_close.go, agent/session_worktree_relock.go, agent/session_worktree_resume.go, agent/session_worktree_sweep.go.
+- Modify: agent/delegate_disposal_hint_test.go, agent/session_tools_worktree_livework_test.go, agent/session_tools_worktree_dispose_test.go, agent/session_worktree_close_test.go.
+- Modify: scripts/run-fuzz.sh for FuzzDelegateReclaimStopRestart.
+
+**Interfaces:**
+
+- Consume exact controller runtime bindings, stable descriptors, stop request sequence, work and delivery receipts, immutable repair plans, and durable resumability closure.
+- Produce max_retained_terminal admission reclamation, recursive stable stop, root close, foreground-shell receipt cleanup, stable worktree live/disposal guards, and restart equivalence.
+- Add ClaimRuntimeReclamation(required int), CompleteRuntimeReclamation(claim, closed), and AbortRuntimeReclamation(claim) as process-only claim operations. The claim contains exact Session pointers and stable IDs; it has no durable event or public identity.
+
+- [ ] **Step 1: Prove bounded admission-time reclamation**
+
+Add:
+
+~~~go
+func TestDelegateRuntimeReclaim_UsesPublicMaxRetainedTerminalDefault2048(t *testing.T)
+func TestDelegateRuntimeReclaim_ClaimsOnlyQuiescentTerminalSubtrees(t *testing.T)
+func TestDelegateRuntimeReclaim_ClosesPostorderAfterUnlock(t *testing.T)
+func TestDelegateRuntimeReclaim_ClearsOnlyExactResidentPointers(t *testing.T)
+func TestDelegateRuntimeReclaim_PrefersClosedThenAcknowledgedThenOldestThenID(t *testing.T)
+func TestDelegateRuntimeReclaim_InsufficientCapacityFailsBeforeIDMintOrConstruction(t *testing.T)
+func TestDelegateRuntimeReclaim_CreateAndColdRestoreTriggerReclamation(t *testing.T)
+func TestDelegateRuntimeReclaim_NoTimerUnloadEventOrStableDataDeletion(t *testing.T)
+func FuzzDelegateReclaimStopRestart(f *testing.F)
+~~~
+
+Put the target in agent/delegate_tree_reclaim_fuzz_test.go under the serffuzz build tag. Register `native:agent:.:FuzzDelegateReclaimStopRestart::delegate_tree_reclaim.go;delegate_tree_stop.go;delegate_tree_restore.go` in scripts/run-fuzz.sh in this task.
+
+Immediately before reclamation implementation, run:
+
+~~~bash
+go test ./agent -run '^TestDelegateRuntimeReclaim_' -count=1
+~~~
+
+At create entry, satisfy the resident bound through the reclamation claim before ReserveCreate can mint its process-only ID. At cold-restore entry, do the same before runtime construction. Claim exact quiescent runtime subtrees under the mutex, close postorder after unlock, then clear only exact pointers still matching the claim. Never delete aggregate, descriptor, transcript, outcome, lineage, delivery, or resumability. No background timer invokes reclamation. Run GREEN count 20/race.
+
+- [ ] **Step 2: Prove recursive stop and self-driving drain**
+
+Add:
+
+~~~go
+func TestDelegateResourceStop_StableStopIsAlwaysRecursive(t *testing.T)
+func TestDelegateResourceStop_IncludeChildrenFalseIsIgnoredForDelegate(t *testing.T)
+func TestDelegateResourceStop_RequestFsyncPrecedesExternalCancellation(t *testing.T)
+func TestDelegateResourceStop_DrainsRuntimeShellWatchAttentionAndDeliveryReceipts(t *testing.T)
+func TestDelegateResourceStop_SameTargetRetryJoinsDifferentTargetIsBusy(t *testing.T)
+func TestDelegateResourceStop_PositiveWaitCannotOwnOrCancelDriver(t *testing.T)
+func TestDelegateResourceStop_RestartCompletesPendingStopProviderFree(t *testing.T)
+func TestDelegateResourceStop_CompletionAppendFailureKeepsAdmissionClosed(t *testing.T)
+func TestDelegateResourceStop_RootCloseJoinsStopAndTeardownPostorder(t *testing.T)
+~~~
+
+Immediately before registered stop/root-close implementation, run:
+
+~~~bash
+go test ./agent -run '^TestDelegateResourceStop_' -count=1
+~~~
+
+Stable job_stop(dlg_...) always uses StopSubtree recursively and ignores include_children. The controller/root-owned reconcile driver repeatedly collects read-only external evidence, executes exact repairs after unlock, and attempts stop completion. Root close closes admission, joins any pending stop, performs whole-tree stop and postorder child teardown, then closes stores. Run GREEN count 20/race.
+
+- [ ] **Step 3: Prove shell timeout receipt correctness**
+
+Add:
+
+~~~go
+func TestDelegateResourceStop_ForegroundShellTimeoutAbortsUncommittedReceipt(t *testing.T)
+func TestDelegateResourceStop_ForegroundShellTimeoutReportsCommittedShellOnce(t *testing.T)
+func TestDelegateResourceStop_TimeoutRaceCannotLeakStopMembership(t *testing.T)
+~~~
+
+Use executor and timeout channels, not time.Sleep. Immediately before touching the timeout branch, run:
+
+~~~bash
+go test ./agent -run '^TestDelegateResourceStop_ForegroundShellTimeout' -count=1
+go test ./agent -run '^TestDelegateResourceStop_TimeoutRace' -count=1
+~~~
+
+Every BeginShellWork has exactly one CommitShellWork or AbortShellWork outcome, including the foreground timeout path. A committed shell reports finish by exact token and job ID. Run GREEN count 20/race.
+
+- [ ] **Step 4: Prove stable worktree and sandbox lifecycle**
+
+Add:
+
+~~~go
+func TestStableDelegateWorktree_LiveGuardUsesStableDelegateState(t *testing.T)
+func TestStableDelegateWorktree_RootCloseCleansEligibleScratch(t *testing.T)
+func TestStableDelegateWorktree_ExplicitDisposalPreservesDirtyAndD0Checks(t *testing.T)
+func TestStableDelegateWorktree_ForcePreservesLockProvenanceAndEvidence(t *testing.T)
+func TestStableDelegateWorktree_ResumabilityClosureFsyncPrecedesDestruction(t *testing.T)
+func TestStableDelegateWorktree_ClosureAppendFailureDestroysNothing(t *testing.T)
+func TestStableDelegateWorktree_CleanupFailureReportsRetainedResidueWithoutReopen(t *testing.T)
+func TestStableDelegateWorktree_DisposalAndRestartAreIdempotent(t *testing.T)
+func TestStableDelegateWorktree_SandboxRestoreUsesDescriptorNotLegacyJob(t *testing.T)
+~~~
+
+Immediately before worktree/sandbox rewiring, run:
+
+~~~bash
+go test ./agent -run '^TestStableDelegateWorktree_' -count=1
+~~~
+
+Replace all live-work, owner, isolation, and cleanup lookups that still depend on a delegate JobRecord with stable descriptor/snapshot lookups. Keep scratch retention, lock provenance, dirty/D0 checks, force semantics, and cleanup evidence. Append resumability closure before destructive teardown; later physical failure records residue and cannot reopen.
+
+Run task GREEN and broader gates:
+
+~~~bash
+gofmt -w agent/delegate_tree_reclaim.go agent/delegate_tree_reclaim_test.go agent/delegate_tree_reclaim_fuzz_test.go agent/delegate_resource_retention_stop_test.go agent/delegate_resource_worktree_test.go agent/delegate_tree_controller.go agent/delegate_tree_start.go agent/delegate_tree_stop.go agent/delegate_tree_restore.go agent/delegate_tree_work.go agent/delegate_runtime.go agent/session.go agent/session_config.go agent/session_lifecycle.go agent/tree_counter.go agent/job_shell.go agent/jobs.go agent/session_jobtree_drain.go agent/sandbox_delegate.go agent/session_tools_worktree.go agent/session_tools_worktree_dispose.go agent/session_worktree_close.go agent/session_worktree_relock.go agent/session_worktree_resume.go agent/session_worktree_sweep.go agent/delegate_disposal_hint_test.go agent/session_tools_worktree_livework_test.go agent/session_tools_worktree_dispose_test.go agent/session_worktree_close_test.go
+go test ./agent -run '^(TestDelegateRuntimeReclaim_|TestDelegateResourceStop_|TestStableDelegateWorktree_)' -count=20
+go test -race ./agent -run '^(TestDelegateRuntimeReclaim_|TestDelegateResourceStop_|TestStableDelegateWorktree_)' -count=20
+SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^FuzzDelegateReclaimStopRestart$' -count=1
+go test ./agent/internal/worktree -count=1
+make fuzz-registry-check
+git diff --check
+git status --short
+~~~
+
+Stage only:
+
+~~~bash
+git add -- agent/delegate_tree_reclaim.go agent/delegate_tree_reclaim_test.go agent/delegate_tree_reclaim_fuzz_test.go agent/delegate_resource_retention_stop_test.go agent/delegate_resource_worktree_test.go
+git add -- agent/delegate_tree_controller.go agent/delegate_tree_start.go agent/delegate_tree_stop.go agent/delegate_tree_restore.go agent/delegate_tree_work.go agent/delegate_runtime.go
+git add -- agent/session.go agent/session_config.go agent/session_lifecycle.go agent/tree_counter.go agent/job_shell.go agent/jobs.go agent/session_jobtree_drain.go
+git add -- agent/sandbox_delegate.go agent/session_tools_worktree.go agent/session_tools_worktree_dispose.go agent/session_worktree_close.go agent/session_worktree_relock.go agent/session_worktree_resume.go agent/session_worktree_sweep.go
+git add -- agent/delegate_disposal_hint_test.go agent/session_tools_worktree_livework_test.go agent/session_tools_worktree_dispose_test.go agent/session_worktree_close_test.go scripts/run-fuzz.sh
+git commit -m "feat: preserve delegate retention and cleanup" -m "Rehome max_retained_terminal as admission-triggered runtime reclamation, make stable stop recursively self-driving, close exact shell receipts on timeout, and bind worktree/sandbox guards and disposal to stable delegate descriptors without adding unload lifecycle state."
+~~~
+
+---
+
+### Task 10: Stable tools and read-only projections
+
+**Files:**
+
+- Create: agent/delegate_resource_tools_test.go, agent/delegate_resource_readonly_test.go.
+- Modify: agent/internal/tool/definitions.go, agent/internal/tool/definitions_test.go, agent/internal/tool/definitions_program_fuzz_test.go.
+- Modify: agent/session_tools_jobs.go, agent/session_tools_jobs_test.go, agent/session_tools_jobs_list_test.go, agent/session_tools_jobs_stop_delegate_test.go, agent/session_tools_jobs_watch_test.go, agent/delegate_schema_test.go.
+- Modify: agent/fuzz_ar_delegate_test.go, agent/registry_schemafuzz_test.go, agent/session_tools_jobs_contract_program_fuzz_test.go, agent/session_tools_jobs_lifecycle_fuzz_test.go.
+- Modify: agent/session_outline.go, agent/job_transcript_read.go, agent/session_tools_transcript.go, agent/transcript_render.go, agent/transcript_render_test.go, agent/transcript_render_job_test.go.
+- Modify: agent/jobs_activity.go, agent/jobs_activity_past.go, agent/historical_jobs.go, agent/status.go.
+- Modify: agent/events/events.go, agent/events/payloads.go, agent/events/eventdata.go.
+- Modify: agent/internal/delegatestore/read_events.go, agent/internal/delegatestore/read_events_test.go.
+- Modify: agent/doctor/doctor.go, agent/doctor/audit.go, agent/doctor/jobs.go, agent/doctor/tree.go, agent/doctor/sessions.go, agent/doctor/watches.go, agent/doctor/audit_test.go, agent/doctor/jobs_test.go, agent/doctor/tree_test.go, agent/doctor/sessions_test.go, agent/doctor/watches_test.go.
+- Modify: cmd/serf-doctor/main.go, cmd/serf-doctor/main_test.go, cmd/serf-doctor/README.md.
+- Modify: cmd/serf-hub/internal/hubcore/prober.go, cmd/serf-hub/internal/hubcore/prober_test.go, cmd/serf-hub/internal/hubcore/prober_wire_test.go, cmd/serf-hub/internal/hubcore/scenarios_fuzz_test.go.
+- Modify: cmd/serf-hub/app_threadread.go, cmd/serf-hub/app_threadread_test.go.
+
+**Interfaces:**
+
+- Consume stable controller snapshots, delegatestore.ReadEvents/Fold, existing jobstore.ReadEvents/Fold, typed watch diagnostics, canonical packets, descriptors, shell ParentDelegateID, and one sampled clock.
+- Produce stable registered tool schemas/results; unified job_list; metadata-only non-acknowledging delegate status; historical rendering; live/cold activity; doctor/prober/thread-read pure projections.
+- Read paths may reject legacy aliases but never call append-capable Open, repair a tail, create a file, construct a Session/provider, acknowledge delivery, or mutate metadata.
+
+- [ ] **Step 1: Prove stable tool schemas and exact list/status semantics**
+
+Add:
+
+~~~go
+func TestStableDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T)
+func TestStableDelegateTools_StatusReadsMetadataWithoutPacketOrAck(t *testing.T)
+func TestStableDelegateTools_StatusRejectsActivationAlias(t *testing.T)
+func TestStableDelegateTools_StopIgnoresIncludeChildrenAndRemainsRecursive(t *testing.T)
+func TestStableDelegateTools_WaitIgnoredReasonIsOwnField(t *testing.T)
+func TestStableDelegateTools_ListUnifiesShellAndDelegateCandidates(t *testing.T)
+func TestStableDelegateTools_ListPreservesTypeStatusAndVisibilityFilters(t *testing.T)
+func TestStableDelegateTools_ListOwnerWinsDedupeAndSortsBeforePaging(t *testing.T)
+func TestStableDelegateTools_ListPreservesOffsetLimitCountTotal(t *testing.T)
+func TestStableDelegateTools_ListPreservesTurnSlotsAllowanceAndWatchDiagnostics(t *testing.T)
+~~~
+
+Immediately before schema/tool implementation, run:
+
+~~~bash
+go test ./agent -run '^TestStableDelegateTools_' -count=1
+~~~
+
+Keep established numeric limits and error codes. job_status(dlg_...) reads aggregate metadata only and does not read terminal packet contents or acknowledge delivery. Positive live steering may return wait_ignored_reason; it is not a warning. Build one candidate set, dedupe owner-first, globally sort, then page. Run GREEN count 20/race.
+
+- [ ] **Step 2: Prove historical fidelity and nonmutation**
+
+Add:
+
+~~~go
+func TestStableDelegateReadOnly_HistoricalSendRendersWithoutLiveAlias(t *testing.T)
+func TestStableDelegateReadOnly_ActivityPreservesTimingUsageQuietWorktreeAndDiagnostics(t *testing.T)
+func TestStableDelegateReadOnly_OneSampledClockDrivesQuietRunningAndDuration(t *testing.T)
+func TestStableDelegateReadOnly_ColdAndLiveProjectionMatch(t *testing.T)
+func TestStableDelegateReadOnly_MissingFilesRemainMissing(t *testing.T)
+func TestStableDelegateReadOnly_TornTailIsReportedButNotRepaired(t *testing.T)
+func TestStableDelegateReadOnly_FileBytesAndMetadataRemainUnchanged(t *testing.T)
+func TestStableDelegateReadOnly_NoSessionProviderOrWritableOpen(t *testing.T)
+~~~
+
+Record inode/size/mtime/hash before and after reads and install constructor/open panic sentinels. Immediately before cold/history implementation, run:
+
+~~~bash
+go test ./agent -run '^TestStableDelegateReadOnly_' -count=1
+~~~
+
+Historical job_send_message rendering is presentational only and cannot resolve a live activation alias. Use ReadEvents plus Fold for cold activity and history. Sample time once per projection. Preserve explicit null/validation/exhaustion, task/description/type/model/effort, timing, cumulative self usage, worktree evidence, warnings, turn slots, allowance, and active/recent watch diagnostics. Run GREEN count 20/race.
+
+- [ ] **Step 3: Prove doctor, prober, and Hub cold reads use pure APIs**
+
+Add or update:
+
+~~~go
+func TestDoctorStableDelegateReadOnlyDoesNotMutateState(t *testing.T)
+func TestDoctorStableDelegateReportsLegacyStateAndWatchFailures(t *testing.T)
+func TestDoctorStableDelegatePreservesShellAndWatchDiagnostics(t *testing.T)
+func TestHubProberStableDelegateUsesDescendantSessionsNotDetailedJobs(t *testing.T)
+func TestHubThreadReadStableDelegateDoesNotExtractActivationID(t *testing.T)
+func TestHubThreadReadStableDelegateIsReadOnly(t *testing.T)
+~~~
+
+Immediately before operational reader changes, run:
+
+~~~bash
+go test ./agent/doctor -run '^TestDoctorStableDelegate' -count=1
+go test ./cmd/serf-hub -run '^TestHubThreadReadStableDelegate' -count=1
+go test ./cmd/serf-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=1
+~~~
+
+Doctor reports both fail-closed legacy classes without attempting migration. Hub probing uses descendant_session_ids/descendant_states only. Thread read and prober never call writable Open.
+
+Run task GREEN and broader gates:
+
+~~~bash
+gofmt -w agent/delegate_resource_tools_test.go agent/delegate_resource_readonly_test.go agent/internal/tool/definitions.go agent/internal/tool/definitions_test.go agent/internal/tool/definitions_program_fuzz_test.go agent/session_tools_jobs.go agent/session_tools_jobs_test.go agent/session_tools_jobs_list_test.go agent/session_tools_jobs_stop_delegate_test.go agent/session_tools_jobs_watch_test.go agent/delegate_schema_test.go agent/fuzz_ar_delegate_test.go agent/registry_schemafuzz_test.go agent/session_tools_jobs_contract_program_fuzz_test.go agent/session_tools_jobs_lifecycle_fuzz_test.go agent/session_outline.go agent/job_transcript_read.go agent/session_tools_transcript.go agent/transcript_render.go agent/transcript_render_test.go agent/transcript_render_job_test.go agent/jobs_activity.go agent/jobs_activity_past.go agent/historical_jobs.go agent/status.go agent/events/events.go agent/events/payloads.go agent/events/eventdata.go agent/internal/delegatestore/read_events.go agent/internal/delegatestore/read_events_test.go agent/doctor/doctor.go agent/doctor/audit.go agent/doctor/jobs.go agent/doctor/tree.go agent/doctor/sessions.go agent/doctor/watches.go agent/doctor/audit_test.go agent/doctor/jobs_test.go agent/doctor/tree_test.go agent/doctor/sessions_test.go agent/doctor/watches_test.go cmd/serf-doctor/main.go cmd/serf-doctor/main_test.go cmd/serf-hub/internal/hubcore/prober.go cmd/serf-hub/internal/hubcore/prober_test.go cmd/serf-hub/internal/hubcore/prober_wire_test.go cmd/serf-hub/internal/hubcore/scenarios_fuzz_test.go cmd/serf-hub/app_threadread.go cmd/serf-hub/app_threadread_test.go
+go test ./agent -run '^(TestStableDelegateTools_|TestStableDelegateReadOnly_)' -count=20
+go test -race ./agent -run '^(TestStableDelegateTools_|TestStableDelegateReadOnly_)' -count=20
+go test ./agent/doctor -run '^TestDoctorStableDelegate' -count=20
+go test -race ./agent/doctor -run '^TestDoctorStableDelegate' -count=20
+go test ./cmd/serf-hub -run '^TestHubThreadReadStableDelegate' -count=20
+go test -race ./cmd/serf-hub -run '^TestHubThreadReadStableDelegate' -count=20
+go test ./cmd/serf-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=20
+go test -race ./cmd/serf-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=20
+go test ./cmd/serf-doctor -count=1
+make fuzz
+make fuzz-registry-check
+git diff --check
+git status --short
+~~~
+
+Stage only:
+
+~~~bash
+git add -- agent/delegate_resource_tools_test.go agent/delegate_resource_readonly_test.go
+git add -- agent/internal/tool/definitions.go agent/internal/tool/definitions_test.go agent/internal/tool/definitions_program_fuzz_test.go
+git add -- agent/session_tools_jobs.go agent/session_tools_jobs_test.go agent/session_tools_jobs_list_test.go agent/session_tools_jobs_stop_delegate_test.go agent/session_tools_jobs_watch_test.go agent/delegate_schema_test.go
+git add -- agent/fuzz_ar_delegate_test.go agent/registry_schemafuzz_test.go agent/session_tools_jobs_contract_program_fuzz_test.go agent/session_tools_jobs_lifecycle_fuzz_test.go
+git add -- agent/session_outline.go agent/job_transcript_read.go agent/session_tools_transcript.go agent/transcript_render.go agent/transcript_render_test.go agent/transcript_render_job_test.go
+git add -- agent/jobs_activity.go agent/jobs_activity_past.go agent/historical_jobs.go agent/status.go agent/events/events.go agent/events/payloads.go agent/events/eventdata.go
+git add -- agent/internal/delegatestore/read_events.go agent/internal/delegatestore/read_events_test.go
+git add -- agent/doctor/doctor.go agent/doctor/audit.go agent/doctor/jobs.go agent/doctor/tree.go agent/doctor/sessions.go agent/doctor/watches.go agent/doctor/audit_test.go agent/doctor/jobs_test.go agent/doctor/tree_test.go agent/doctor/sessions_test.go agent/doctor/watches_test.go
+git add -- cmd/serf-doctor/main.go cmd/serf-doctor/main_test.go cmd/serf-doctor/README.md cmd/serf-hub/internal/hubcore/prober.go cmd/serf-hub/internal/hubcore/prober_test.go cmd/serf-hub/internal/hubcore/prober_wire_test.go cmd/serf-hub/internal/hubcore/scenarios_fuzz_test.go cmd/serf-hub/app_threadread.go cmd/serf-hub/app_threadread_test.go
+git commit -m "feat: project stable delegates without mutation" -m "Cut stable tool, list, status, activity, history, doctor, prober, and Hub thread-read surfaces to the delegate aggregate while preserving paging and fidelity. Cold readers now use pure ReadEvents/Fold paths and status remains metadata-only and non-acknowledging."
+~~~
+
+---
+
+### Task 11: AppWire, Hub, TUI, and web cutover
+
+**Files — Go projection and transport:**
+
+- Create: internal/appprojector/delegate_projection_test.go.
+- Modify: agent/events/events.go, agent/events/payloads.go, agent/events/eventdata.go, agent/events/events_test.go, agent/events/events_fuzz_test.go, agent/events/payloads_test.go, agent/events/eventdata_program_fuzz_test.go.
+- Modify: agent/status.go, agent/status_test.go, agent/status_support_program_fuzz_test.go.
+- Modify: agent/jobs_activity.go, agent/jobs_activity_past.go, agent/tree_counter.go.
+- Modify: internal/appprojector/appwire_projection.go, internal/appprojector/appwire_projection_test.go.
+- Modify: appwire/types.go, appwire/protocol.go, appwire/types_test.go, appwire/protocol_test.go.
+- Modify: server/server.go, server/server_test.go, server/server_surface_fuzz_test.go, server/appwire_runtime.go, server/appwire_runtime_test.go, server/thread_envelope.go, server/thread_envelope_test.go.
+- Modify: cmd/serf/serve.go, cmd/serf/serve_test.go, cmd/serf/serve_coverage_fuzz_test.go, cmd/serf/run_drain_test.go, cmd/serf/run_drain_nested_test.go.
+- Modify: cmd/serf-hub/app_jobs.go, cmd/serf-hub/app_jobs_test.go, cmd/serf-hub/app_threadread.go, cmd/serf-hub/app_threadread_test.go.
+- Modify: cmd/serf-tui/hub_notifications.go, cmd/serf-tui/hub_notifications_test.go, cmd/serf-tui/hub_notifications_fuzz_test.go, cmd/serf-tui/model_misc_serffuzz_test.go.
+- Modify: cmd/serf-tui/internal/transcript/job_notification.go, cmd/serf-tui/internal/transcript/reducer.go, cmd/serf-tui/internal/transcript/types.go, cmd/serf-tui/internal/transcript/reducer_test.go, cmd/serf-tui/internal/transcript/cov_rtui_transcript_test.go, cmd/serf-tui/internal/transcript/reducer_fuzz_test.go, cmd/serf-tui/internal/transcript/fuzz_coverage_union_test.go.
+- Modify: cmd/serf-tui/internal/msgrender/tool_bodies.go, cmd/serf-tui/internal/msgrender/tool_bodies_test.go, cmd/serf-tui/internal/msgrender/tool_renderers.go, cmd/serf-tui/internal/msgrender/tool_renderers_test.go, cmd/serf-tui/internal/msgrender/tool_renderers_fuzz_test.go, cmd/serf-tui/internal/msgrender/cov_rtui_msgrender_test.go.
+- Modify: cmd/serf-tui/internal/toolsummary/tool_summary.go, cmd/serf-tui/internal/toolsummary/tool_summary_test.go, cmd/serf-tui/internal/toolsummary/tool_summary_fuzz_test.go, cmd/serf-tui/internal/toolsummary/fuzz_coverage_union_test.go.
+
+**Files — generated and web:**
+
+- Generate through make generate: cmd/serf-hub/frontend/src/protocol/types.gen.ts and docs/appwire-protocol.md.
+- Modify: cmd/serf-hub/frontend/src/stores/threads.ts, cmd/serf-hub/frontend/src/stores/threads.test.ts, cmd/serf-hub/frontend/src/stores/activityPanel.ts, cmd/serf-hub/frontend/src/stores/activityPanel.test.ts.
+- Modify: cmd/serf-hub/frontend/src/protocol/model.ts, cmd/serf-hub/frontend/src/protocol/reducer.ts, cmd/serf-hub/frontend/src/protocol/reducer.test.ts.
+- Modify: cmd/serf-hub/frontend/src/panes/session/chrome/activityData.ts, cmd/serf-hub/frontend/src/panes/session/chrome/activityData.test.ts, cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.ts, cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.test.ts, cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.tsx, cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx.
+- Modify: cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.ts, cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.test.ts.
+- Modify: cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts, cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts, cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.test.tsx.
+- Modify: cmd/serf-hub/frontend/src/protocol/fixtures/tool-and-jobs.jsonl, cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx.
+
+**Interfaces:**
+
+- Consume lossless stable snapshots, canonical packets, descendant event callbacks, ParentDelegateID shells, typed watches, and per-delegate monotonic projection revision.
+- Produce DELEGATE_UPDATED internally and serf/delegate/updated on AppWire, carrying one immutable stable snapshot. SerfDelegateInfo and SerfDiagnostics.Delegates carry the same fields through live, reconnect, and cold thread-read. Projection revision fences rendering only; it is not a control identity.
+- Replace address-derived tree-clock sharing with one explicitly inherited *jobActivityClock for projection ordering only. It carries no lifecycle, generation, capacity, authorization, phase, or stop state.
+- Remove activation cards and legacy Detailed.Jobs discovery without removing send/stop/status/watch/observer/navigation capability.
+
+- [ ] **Step 1: Prove event inheritance and lossless Go DTOs**
+
+Add:
+
+~~~go
+func TestDelegateProjection_DescendantOrdinaryEventsReachRootTransport(t *testing.T)
+func TestDelegateProjection_LateRootReceivesStableDelegateSnapshot(t *testing.T)
+func TestDelegateProjection_OwnerRootFencesForeignUpdates(t *testing.T)
+func TestDelegateProjection_RevisionRejectsStaleStateButMergesLatestActivityByMax(t *testing.T)
+func TestDelegateProjection_PreservesNullValidationExhaustionWaitReasonAndTurnSlots(t *testing.T)
+func TestDelegateProjection_PreservesTimingUsageQuietWorktreeWarningsAndDiagnostics(t *testing.T)
+func TestDelegateProjection_ShellUsesParentDelegateID(t *testing.T)
+func TestDelegateProjection_TranscriptPreseedSubscriptionAndThreadReadRemainAvailable(t *testing.T)
+func TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen(t *testing.T)
+func TestAgentToServerDetailedStatus_DelegatesLossless(t *testing.T)
+func TestStatusEndpoint_DetailedStatusIncludesStableDelegates(t *testing.T)
+func TestAppDiagnosticsFromDetailedStatus_DelegatesLossless(t *testing.T)
+func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T)
+~~~
+
+Immediately before event/DTO implementation, run:
+
+~~~bash
+go test ./internal/appprojector -run '^TestDelegateProjection_' -count=1
+go test ./agent -run '^TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen$' -count=1
+go test ./cmd/serf -run '^TestAgentToServerDetailedStatus_DelegatesLossless$' -count=1
+go test ./server -run '^(TestStatusEndpoint_DetailedStatusIncludesStableDelegates|TestAppDiagnosticsFromDetailedStatus_DelegatesLossless)$' -count=1
+go test ./cmd/serf-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=1
+~~~
+
+Keep the root-installed descendant callback installed on child spawn. DELEGATE_UPDATED carries projection_revision and refreshes facetDiagnostics in the thread freshness table. JOB_STARTED/JOB_FINISHED are shell-only. Carry all fidelity fields explicitly through agent events, status, app projector, AppWire, server, Hub, and TUI types. Latest activity is max-merged independently of revision. Do not reconstruct packets or infer structured-result presence from decoded value. Run GREEN count 20/race.
+
+- [ ] **Step 2: Prove TUI stable behavior**
+
+Add or update:
+
+~~~go
+func TestTUIStableDelegateNotificationHasNoDelegateJobIdentity(t *testing.T)
+func TestTUIStableDelegateReducerRejectsStaleRevision(t *testing.T)
+func TestTUIStableDelegateRendersTimingUsageQuietWorktreeAndWarnings(t *testing.T)
+func TestTUIStableDelegateShellRemainsJobAddressed(t *testing.T)
+func TestTUIStableDelegateWatchAndObserverNoticesRemainVisible(t *testing.T)
+~~~
+
+Immediately before TUI changes, run:
+
+~~~bash
+go test ./cmd/serf-tui/... -run '^TestTUIStableDelegate' -count=1
+~~~
+
+Render the resource label as Delegate and control it by dlg_. Retain shell job markup and stable watch/observer notices. Run GREEN and race before continuing:
+
+~~~bash
+go test ./cmd/serf-tui/... -run '^TestTUIStableDelegate' -count=20
+go test -race ./cmd/serf-tui/... -run '^TestTUIStableDelegate' -count=20
+~~~
+
+- [ ] **Step 3: Prove web stores, activity tree, and transcript controls**
+
+Add exact Vitest cases in the named test files:
+
+- threads.test.ts: ignores stale delegate revision, preserves descendant ordinary events, and restores a late stable snapshot.
+- activityPanel.test.ts: stable delegate selection survives reconnect and opens its child session.
+- reducer.test.ts: carries explicit null, validation, exhaustion, wait reason, timing, usage, worktree, warnings, turn slots, and diagnostics.
+- activityData.test.ts and activityRows.test.ts: render stable delegate lineage and ParentDelegateID shell ancestry.
+- ActivityTree.test.tsx: stable delegate rows retain navigation, send, stop, status, watch, and observer affordances without activation cards.
+- jobTools.test.tsx, subagentModule.test.tsx, and subagentModuleStore.test.ts: use delegate_id and never synthesize a delegate job.
+- steeringClassify.test.ts, NotificationCard.test.tsx, and SteeringItem.test.tsx: distinguish delegate notification markup from shell job notification markup.
+
+Immediately before web implementation, run:
+
+~~~bash
+scripts/web-preflight.sh
+cd cmd/serf-hub/frontend
+npx vitest run --maxWorkers=4 src/stores/threads.test.ts src/stores/activityPanel.test.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx
+cd ../../..
+~~~
+
+Expected RED: the current generated type or at least one store/component still requires activation job data.
+
+From the repository root, run make generate. Then implement the stores and components against generated stable DTOs. Run Biome only on the touched source files.
+
+- [ ] **Step 4: Run cutover gates and commit**
+
+~~~bash
+gofmt -w internal/appprojector/delegate_projection_test.go agent/events/events.go agent/events/payloads.go agent/events/eventdata.go agent/events/events_test.go agent/events/events_fuzz_test.go agent/events/payloads_test.go agent/events/eventdata_program_fuzz_test.go agent/status.go agent/status_test.go agent/status_support_program_fuzz_test.go agent/jobs_activity.go agent/jobs_activity_past.go agent/tree_counter.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go appwire/types.go appwire/protocol.go appwire/types_test.go appwire/protocol_test.go server/server.go server/server_test.go server/server_surface_fuzz_test.go server/appwire_runtime.go server/appwire_runtime_test.go server/thread_envelope.go server/thread_envelope_test.go cmd/serf/serve.go cmd/serf/serve_test.go cmd/serf/serve_coverage_fuzz_test.go cmd/serf/run_drain_test.go cmd/serf/run_drain_nested_test.go cmd/serf-hub/app_jobs.go cmd/serf-hub/app_jobs_test.go cmd/serf-hub/app_threadread.go cmd/serf-hub/app_threadread_test.go cmd/serf-tui/hub_notifications.go cmd/serf-tui/hub_notifications_test.go cmd/serf-tui/hub_notifications_fuzz_test.go cmd/serf-tui/model_misc_serffuzz_test.go cmd/serf-tui/internal/transcript/job_notification.go cmd/serf-tui/internal/transcript/reducer.go cmd/serf-tui/internal/transcript/types.go cmd/serf-tui/internal/transcript/reducer_test.go cmd/serf-tui/internal/transcript/cov_rtui_transcript_test.go cmd/serf-tui/internal/transcript/reducer_fuzz_test.go cmd/serf-tui/internal/transcript/fuzz_coverage_union_test.go cmd/serf-tui/internal/msgrender/tool_bodies.go cmd/serf-tui/internal/msgrender/tool_bodies_test.go cmd/serf-tui/internal/msgrender/tool_renderers.go cmd/serf-tui/internal/msgrender/tool_renderers_test.go cmd/serf-tui/internal/msgrender/tool_renderers_fuzz_test.go cmd/serf-tui/internal/msgrender/cov_rtui_msgrender_test.go cmd/serf-tui/internal/toolsummary/tool_summary.go cmd/serf-tui/internal/toolsummary/tool_summary_test.go cmd/serf-tui/internal/toolsummary/tool_summary_fuzz_test.go cmd/serf-tui/internal/toolsummary/fuzz_coverage_union_test.go
+make generate
+cd cmd/serf-hub/frontend
+npx biome check --write src/stores/threads.ts src/stores/threads.test.ts src/stores/activityPanel.ts src/stores/activityPanel.test.ts src/protocol/model.ts src/protocol/reducer.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.tsx src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/ToolCallItem.tsx src/panes/session/transcript/tools/jobTools.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.ts src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.tsx src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx src/dev/overflowharness-entry.tsx
+npx vitest run --maxWorkers=4 src/stores/threads.test.ts src/stores/activityPanel.test.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx
+cd ../../..
+go test ./internal/appprojector ./appwire ./server ./cmd/serf ./cmd/serf-hub ./cmd/serf-tui/... -count=1
+go test ./agent -run '^TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen$' -count=20
+go test -race ./agent -run '^TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen$' -count=20
+go test ./cmd/serf -run '^TestAgentToServerDetailedStatus_DelegatesLossless$' -count=20
+go test -race ./cmd/serf -run '^TestAgentToServerDetailedStatus_DelegatesLossless$' -count=20
 go test ./server -run '^(TestStatusEndpoint_DetailedStatusIncludesStableDelegates|TestAppDiagnosticsFromDetailedStatus_DelegatesLossless)$' -count=20
+go test -race ./server -run '^(TestStatusEndpoint_DetailedStatusIncludesStableDelegates|TestAppDiagnosticsFromDetailedStatus_DelegatesLossless)$' -count=20
 go test ./cmd/serf-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=20
-go test ./agent/internal/jobstore ./agent/doctor ./agent/internal/atif ./cmd/serf-doctor ./internal/appprojector ./appwire ./server ./cmd/serf-hub ./cmd/serf-hub/internal/hubcore ./cmd/serf-tui/... -count=1
-make test-web
-make test-web-browser
-```
+go test -race ./cmd/serf-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=20
+go test ./internal/appprojector -run '^TestDelegateProjection_' -count=20
+go test -race ./internal/appprojector -run '^TestDelegateProjection_' -count=20
+make lint-generated
+make fuzz
+make fuzz-registry-check
+git diff --check
+git status --short
+~~~
 
-Expected: shell lifecycle, history, nested delegation, disposal, projections, doctor, TUI, frontend, and browser guards pass. Missing Chrome is a reported failure/limitation, never a pass.
+Stage only:
 
-- [ ] **Step 5: Run the canonical repository gates serially and record bare exits**
+~~~bash
+git add -- internal/appprojector/delegate_projection_test.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go
+git add -- agent/events/events.go agent/events/payloads.go agent/events/eventdata.go agent/events/events_test.go agent/events/events_fuzz_test.go agent/events/payloads_test.go agent/events/eventdata_program_fuzz_test.go agent/status.go agent/status_test.go agent/status_support_program_fuzz_test.go agent/jobs_activity.go agent/jobs_activity_past.go agent/tree_counter.go
+git add -- appwire/types.go appwire/protocol.go appwire/types_test.go appwire/protocol_test.go server/server.go server/server_test.go server/server_surface_fuzz_test.go server/appwire_runtime.go server/appwire_runtime_test.go server/thread_envelope.go server/thread_envelope_test.go
+git add -- cmd/serf/serve.go cmd/serf/serve_test.go cmd/serf/serve_coverage_fuzz_test.go cmd/serf/run_drain_test.go cmd/serf/run_drain_nested_test.go cmd/serf-hub/app_jobs.go cmd/serf-hub/app_jobs_test.go cmd/serf-hub/app_threadread.go cmd/serf-hub/app_threadread_test.go
+git add -- cmd/serf-tui/hub_notifications.go cmd/serf-tui/hub_notifications_test.go cmd/serf-tui/hub_notifications_fuzz_test.go cmd/serf-tui/model_misc_serffuzz_test.go
+git add -- cmd/serf-tui/internal/transcript/job_notification.go cmd/serf-tui/internal/transcript/reducer.go cmd/serf-tui/internal/transcript/types.go cmd/serf-tui/internal/transcript/reducer_test.go cmd/serf-tui/internal/transcript/cov_rtui_transcript_test.go cmd/serf-tui/internal/transcript/reducer_fuzz_test.go cmd/serf-tui/internal/transcript/fuzz_coverage_union_test.go
+git add -- cmd/serf-tui/internal/msgrender/tool_bodies.go cmd/serf-tui/internal/msgrender/tool_bodies_test.go cmd/serf-tui/internal/msgrender/tool_renderers.go cmd/serf-tui/internal/msgrender/tool_renderers_test.go cmd/serf-tui/internal/msgrender/tool_renderers_fuzz_test.go cmd/serf-tui/internal/msgrender/cov_rtui_msgrender_test.go
+git add -- cmd/serf-tui/internal/toolsummary/tool_summary.go cmd/serf-tui/internal/toolsummary/tool_summary_test.go cmd/serf-tui/internal/toolsummary/tool_summary_fuzz_test.go cmd/serf-tui/internal/toolsummary/fuzz_coverage_union_test.go
+git add -- cmd/serf-hub/frontend/src/protocol/types.gen.ts docs/appwire-protocol.md
+git add -- cmd/serf-hub/frontend/src/stores/threads.ts cmd/serf-hub/frontend/src/stores/threads.test.ts cmd/serf-hub/frontend/src/stores/activityPanel.ts cmd/serf-hub/frontend/src/stores/activityPanel.test.ts cmd/serf-hub/frontend/src/protocol/model.ts cmd/serf-hub/frontend/src/protocol/reducer.ts cmd/serf-hub/frontend/src/protocol/reducer.test.ts
+git add -- cmd/serf-hub/frontend/src/panes/session/chrome/activityData.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityData.test.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.test.ts cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.tsx cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx
+git add -- cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.ts cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.test.ts
+git add -- cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.test.tsx cmd/serf-hub/frontend/src/protocol/fixtures/tool-and-jobs.jsonl cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx
+git commit -m "feat: cut clients to stable delegates" -m "Carry stable delegate events and lossless lifecycle metadata through AppWire, Hub, TUI, and web while preserving descendant events, navigation, watches, observers, shells, timing, usage, quiet, and worktree evidence. Remove activation cards and Detailed.Jobs discovery without removing stable control capability."
+~~~
 
-Run each as its own command and record its exit code, duration, and evidence root on failure:
+---
 
-```bash
+### Task 12: Legacy retirement and semantic dormancy
+
+**Files:**
+
+- Create: agent/delegate_legacy_dormancy_test.go.
+- Modify or delete only delegate lifecycle branches in: agent/internal/jobstore/event.go, agent/internal/jobstore/event_clone.go, agent/internal/jobstore/record.go, agent/internal/jobstore/fold.go, agent/internal/jobstore/store.go.
+- Modify or rewrite: agent/internal/jobstore/cov_s4_jobstore_test.go, agent/internal/jobstore/event_test.go, agent/internal/jobstore/fold_fuzz_test.go, agent/internal/jobstore/fold_test.go, agent/internal/jobstore/jobstore_program_fuzz_test.go, agent/internal/jobstore/record_test.go, agent/internal/jobstore/seqfuzz_test.go, agent/internal/jobstore/store_incremental_test.go, agent/internal/jobstore/store_persistence_fuzz_test.go, agent/internal/jobstore/store_test.go.
+- Modify: agent/job_delegate.go, agent/subagents.go, agent/subagent_manager.go, agent/jobs.go, agent/jobs_nested.go, agent/job_notify.go, agent/session_tools_jobs.go, agent/session_outline.go, agent/historical_jobs.go.
+- Modify: agent/session.go, agent/session_config.go, agent/session_init.go, agent/session_lifecycle.go, agent/delegate_runtime.go, identifier/domains.go, identifier/domains_test.go.
+- Rewrite against registered stable behavior or remove implementation-shape cases in: agent/job_delegate_test.go, agent/job_delegate_create_test.go, agent/job_delegate_decode_test.go, agent/job_delegate_send_test.go, agent/job_delegate_send_fifo_test.go, agent/job_delegate_finalize_test.go, agent/job_delegate_finalize_retry_structured_test.go, agent/job_delegate_drivedown_test.go, agent/job_delegate_budget_test.go, agent/job_delegate_isolation_test.go, agent/job_delegate_model_echo_test.go, agent/job_delegate_model_selection_test.go, agent/job_nested_test.go, agent/subagent_manager_test.go, agent/subagents_test.go.
+- Rewrite or retire the exact legacy fuzz owners in: agent/delegate_seqfuzz_test.go, agent/fuzz_lx_delegate_test.go, agent/fuzz_delegate_creation_restore_config_test.go, agent/fuzz_delegate_finalize_report_test.go, agent/fuzz_jd_classify_delegate_send_target_test.go, agent/fuzz_jd_resolve_delegate_terminal_status_test.go, agent/fuzz_jd_validate_delegate_grant_test.go, agent/fuzz_jdr_restore_lifecycle_test.go, agent/job_delegate_attach_finalize_seed100_fuzz_test.go, agent/job_delegate_exact_create_send_fuzz_test.go, agent/job_delegate_exact_finalize_report_fuzz_test.go, agent/job_delegate_exact_restore_fuzz_test.go, agent/job_delegate_exact_running_attach_fuzz_test.go, agent/job_delegate_exact_tail_create_restore_fuzz_test.go, agent/job_delegate_exact_tail_finalize_fuzz_test.go, agent/job_delegate_exact_tail_running_fuzz_test.go, agent/job_delegate_git_report_seed100_fuzz_test.go, agent/job_delegate_sandbox_schema_seed100_fuzz_test.go, agent/job_delegate_seed100_fuzz_test.go, agent/job_delegate_send_fuzz_test.go, agent/job_delegate_send_seed100_fuzz_test.go, agent/subagents_fuzz_test.go, agent/subagents_seed100_exact_fuzz_test.go, agent/nested_subagent_lifecycle_program_fuzz_test.go.
+- Modify only the retired delegate subtargets in these mixed fuzz owners: agent/root_watch_tree_program_fuzz_test.go, agent/job_watch_delegate_fuzz_test.go, agent/session_tools_jobs_contract_program_fuzz_test.go. Preserve their stable watch and stable tool coverage.
+- Modify: audit and rewrite or retire only non-allowlisted legacy references in these exact coverage owners: agent/agent_misc_program_fuzz_test.go, agent/cov_s1_classify_test.go, agent/cov_s1_job_log_helpers_test.go, agent/cov_s1_watch_targets_test.go, agent/cov_s1_watchlist_receiver_test.go, agent/cov_w2dlg_helpers_test.go, agent/cov_w2dlg_newjm_test.go, agent/cov_w2dlg_restore_helpers_test.go, agent/cov_w2dlg_resume_finalize_test.go, agent/cov_w2tail_jobs_helpers_test.go, agent/cov_w2watch_list_test.go, agent/cov_w3dlg_attach_test.go, agent/cov_w3dlg_finalize_test.go, agent/cov_w3dlg_resume_test.go, agent/cov_w3dlg_send_test.go, agent/cov_w3dlg_sendrunning_test.go.
+- Modify: audit and rewrite or retire only non-allowlisted legacy references in these exact watch/notification owners: agent/doctor/watches_receiver_test.go, agent/fuzz_jd_keep_listed_job_row_test.go, agent/fuzz_lx_notify_test.go, agent/fuzz_wv_validate_send_target_test.go, agent/fuzz_wx_watch_test.go, agent/job_notify_consume_test.go, agent/job_notify_test.go, agent/job_watch_config_test.go, agent/job_watch_drain_render_fuzz_test.go, agent/job_watch_loopguard_test.go, agent/job_watch_pending_state_fuzz_test.go, agent/job_watch_registry_receiver_test.go, agent/job_watch_seams_fuzz_test.go, agent/job_watch_send_test.go, agent/job_watch_test.go, agent/job_watch_timers_observe_fuzz_test.go, agent/notification_test.go, agent/shell_notify_digest_program_fuzz_test.go.
+- Modify: audit and rewrite or retire only non-allowlisted legacy references in these exact job/session owners: agent/job_manager_error_recovery_fuzz_test.go, agent/job_reconcile_test.go, agent/job_shell_seed100_fuzz_test.go, agent/job_transcript_read_test.go, agent/jobs_activity_past_test.go, agent/jobs_activity_test.go, agent/jobs_nested_seed100_more_test.go, agent/jobs_seed100_fuzz_test.go, agent/jobs_seed100_more_test.go, agent/jobs_seed100_range_a_test.go, agent/jobs_test.go, agent/lifecycle_ops_test.go, agent/nested_drain_branches_fuzz_test.go, agent/session_jobtree_drain_seed100_more_test.go, agent/session_jobtree_drain_stall_test.go, agent/session_jobtree_drain_test.go, agent/session_misc_fuzz_test.go, agent/session_provenance_test.go, agent/session_restore_close_status_program_fuzz_test.go, agent/session_subagent_livetree_test.go, agent/session_tools_jobs_fuzz_test.go, agent/session_tools_jobs_seed100_final_test.go, agent/session_tools_jobs_seed100_more_test.go, agent/session_tools_jobs_seed100_range_b_test.go, agent/session_tools_jobs_seed100_range_c_test.go, agent/session_tools_jobs_seed100_range_d_test.go, agent/session_tools_transcript_job_read_test.go.
+- Modify: audit and rewrite or retire only non-allowlisted legacy references in these exact isolation/lifecycle owners: agent/sandbox_delegate_create_test.go, agent/session_init_worktree_seed100_fuzz_test.go, agent/session_lifecycle_tail_coverage_fuzz_test.go, agent/session_tools_worktree_dispose_execute_test.go, agent/session_tools_worktree_dispose_resume_test.go, agent/session_tools_worktree_remove_force_dispose_test.go. ParentJobID remains valid only in shell-to-shell fixtures; historical rendering and explicit legacy-rejection fixtures remain read-only allowlists.
+- Modify: scripts/run-fuzz.sh with the exact manifest disposition below.
+- Do not delete or weaken: agent/job_watch.go, agent/internal/jobstore/watch.go, agent/job_shell.go, agent/salvage.go, the nudge/stop-hook implementation in agent/subagents.go, agent/delegate_tree_reclaim.go, agent/delegate_resource_supervision_test.go, agent/delegate_resource_watch_test.go, agent/delegate_resource_shell_test.go, or historical rendering in agent/transcript_render.go.
+
+**Interfaces:**
+
+- Consume the fully registered stable path from Tasks 6–11.
+- Produce a shell/watch-only JobRecord reducer, no delegate activation aliases, no current/latest job mirror, no standalone failure record, and no loose watch receiver.
+- Preserve the existing watch journal, quiet supervision, hooks/nudge/salvage, admission reclamation, stable shell routing, old transcript rendering, and all client behavior.
+
+- [ ] **Step 1: Prove semantic dormancy before deleting authority**
+
+Add:
+
+~~~go
+func TestDelegateLegacyDormancy_NoDelegateJobRecordCanBeCreated(t *testing.T)
+func TestDelegateLegacyDormancy_NoActivationAliasResolvesForLiveControl(t *testing.T)
+func TestDelegateLegacyDormancy_StableWatchJournalStillDelivers(t *testing.T)
+func TestDelegateLegacyDormancy_QuietSupervisionStillDelivers(t *testing.T)
+func TestDelegateLegacyDormancy_RetentionStillReclaimsOnAdmission(t *testing.T)
+func TestDelegateLegacyDormancy_ShellParentDelegateIDStillRoutes(t *testing.T)
+func TestDelegateLegacyDormancy_HistoricalSendStillRendersReadOnly(t *testing.T)
+func TestDelegateLegacyDormancy_LegacyLifecycleAndWatchRowsFailClosed(t *testing.T)
+~~~
+
+Immediately before removal, run:
+
+~~~bash
+go test ./agent -run '^TestDelegateLegacyDormancy_' -count=1
+~~~
+
+Expected RED: at least the JobRecord creation or activation alias case reaches legacy code. Tests must execute registered tools and durable folds; an identifier-name-only assertion is insufficient.
+
+First cut every registered production call site that can create, resume, alias, notify, query, or control a delegate JobRecord. Leave the now-unreachable legacy reducer types and helpers intact until Step 2 so this commit changes routing without mixing in structural deletion. Retain shell/watch JobRecord behavior, the watch journal, and read-only historical rendering without registering old IDs.
+
+Run the dormancy selector GREEN and the preserved stable surfaces, then stage only this routing slice:
+
+~~~bash
+gofmt -w agent/delegate_legacy_dormancy_test.go agent/job_delegate.go agent/subagents.go agent/subagent_manager.go agent/jobs.go agent/jobs_nested.go agent/job_notify.go agent/session_tools_jobs.go agent/session_outline.go agent/historical_jobs.go agent/session.go agent/session_config.go agent/session_init.go agent/session_lifecycle.go agent/delegate_runtime.go
+go test ./agent -run '^TestDelegateLegacyDormancy_' -count=20
+go test -race ./agent -run '^TestDelegateLegacyDormancy_' -count=20
+go test ./agent -run '^(TestStableDelegateWatch_|TestDelegateResourceSupervision_|TestDelegateRuntimeReclaim_|TestStableDelegateShell_|TestStableDelegateReadOnly_)' -count=20
+go test -race ./agent -run '^(TestStableDelegateWatch_|TestDelegateResourceSupervision_|TestDelegateRuntimeReclaim_|TestStableDelegateShell_|TestStableDelegateReadOnly_)' -count=20
+git diff --check
+git status --short
+git add -- agent/delegate_legacy_dormancy_test.go agent/job_delegate.go agent/subagents.go agent/subagent_manager.go agent/jobs.go agent/jobs_nested.go agent/job_notify.go agent/session_tools_jobs.go agent/session_outline.go agent/historical_jobs.go
+git add -- agent/session.go agent/session_config.go agent/session_init.go agent/session_lifecycle.go agent/delegate_runtime.go
+git commit -m "refactor: make delegate job authority unreachable" -m "Cut every registered creation, resume, alias, notification, query, and control route to the stable delegate controller while retaining inert legacy reducer code for a separate source-deletion review. Preserve shell jobs, the watch journal, supervision, reclamation, and historical rendering."
+~~~
+
+Do not deploy this intermediate commit; the branch remains atomic through Task 14.
+
+- [ ] **Step 2: Prove source and schema dormancy**
+
+Now delete only the unreachable branches and types that create, fold, mirror, or identify delegate JobRecords, plus their implementation-shape tests and fuzz targets. Retain shell/watch JobRecord types and every allowlisted stable or historical surface. The first commit proves public dormancy; this step proves the old authority is physically absent without changing the stable contract.
+
+In scripts/run-fuzz.sh remove the rows for FuzzLxValidateDelegateRestoreState, FuzzDelegateCreationRestoreConfigProgram, FuzzRootDelegateResumeLifecycleProgram, FuzzDelegateFinalizeReportProgram, FuzzDgfzSendDelegateMessage, FuzzWatchdelDelegateResume, FuzzJdValidateDelegateGrant, FuzzJdResolveDelegateTerminalStatus, FuzzJdClassifyDelegateSendTarget, FuzzJdrDelegateRestoreLifecycle, and every FuzzJobDelegate-prefixed target after their old functions are removed. Rewrite FuzzJobtoolsContractProgram to point only at stable tool functions. Retain FuzzWatchdelWatchOps, FuzzRootWatchTreeProgram, every generic watch-journal target, FuzzWvQuietWatchdogTick, the three Task 1–5 delegate-store/controller/restart fuzz targets, and the Task 8–9 attention/watch/reclamation targets.
+
+Run these inventories before and after deletion. Before deletion, at least one command must identify the legacy authority; after deletion, every command must be empty or contain only an explicit historical-fixture/legacy-rejection allowlist documented in delegate_legacy_dormancy_test.go:
+
+~~~bash
+rg -n 'JobTypeDelegate|JobDelegate|job_type.*delegate|DelegateJobID|CurrentJobID|LatestJobID|DelegateGeneration|StopGateClosed|findRunningDelegateByTranscriptRef|resumeOrFindRunningDelegate|relinkDelegateChildToJob|attachDelegateJob|finalizeDelegateOnce|ReceiverDelegateID|receiverDelegateID|applyReceiverWatchSend|installParentSourceWatchForChild|clearParentSourceWatchForChild|attachDelegateJobFromWatch|runFromWatch|staleDelegateWatchSend|delegateStoppedAfterWatchSendPending|delegate failure record' agent identifier --glob '*.go'
+rg -n 'ParentJobID' agent --glob '*.go'
+rg -n 'activation.*(status|output|history|watch|stop)|unsupported_delegate_watch' agent cmd internal appwire --glob '*.{go,ts,tsx,md}'
+rg -n 'Detailed\.Jobs' cmd/serf-hub internal appwire --glob '*.{go,ts,tsx}'
+~~~
+
+ParentJobID remains legal only for shell-to-shell ancestry; it must not encode delegate lineage. Detailed.Jobs remains legal only for real jobs, never delegate discovery.
+
+Run Task 12 GREEN and broader gates:
+
+~~~bash
+task12_go_files=$(git diff --name-only --diff-filter=ACM HEAD -- '*.go')
+test -z "$task12_go_files" || gofmt -w $task12_go_files
+go test ./agent -run '^TestDelegateLegacyDormancy_' -count=20
+go test -race ./agent -run '^TestDelegateLegacyDormancy_' -count=20
+go test ./agent/internal/jobstore -count=1
+go test ./agent -run '^(TestStableDelegateWatch_|TestDelegateResourceSupervision_|TestDelegateRuntimeReclaim_|TestStableDelegateShell_|TestStableDelegateReadOnly_)' -count=20
+go test -race ./agent -run '^(TestStableDelegateWatch_|TestDelegateResourceSupervision_|TestDelegateRuntimeReclaim_|TestStableDelegateShell_|TestStableDelegateReadOnly_)' -count=20
+SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^(FuzzDelegateAttentionFold|FuzzStableDelegateWatchDelivery|FuzzDelegateReclaimStopRestart)$' -count=1
+make fuzz
+make fuzz-registry-check
+git diff --check
+git status --short
+~~~
+
+Stage only:
+
+~~~bash
+git add -- agent/delegate_legacy_dormancy_test.go agent/internal/jobstore/event.go agent/internal/jobstore/event_clone.go agent/internal/jobstore/record.go agent/internal/jobstore/fold.go agent/internal/jobstore/store.go
+git add -- agent/internal/jobstore/cov_s4_jobstore_test.go agent/internal/jobstore/event_test.go agent/internal/jobstore/fold_fuzz_test.go agent/internal/jobstore/fold_test.go agent/internal/jobstore/jobstore_program_fuzz_test.go agent/internal/jobstore/record_test.go agent/internal/jobstore/seqfuzz_test.go agent/internal/jobstore/store_incremental_test.go agent/internal/jobstore/store_persistence_fuzz_test.go agent/internal/jobstore/store_test.go
+git add -- agent/job_delegate.go agent/subagents.go agent/subagent_manager.go agent/jobs.go agent/jobs_nested.go agent/job_notify.go agent/session_tools_jobs.go agent/session_outline.go agent/historical_jobs.go
+git add -- agent/session.go agent/session_config.go agent/session_init.go agent/session_lifecycle.go agent/delegate_runtime.go identifier/domains.go identifier/domains_test.go
+git add -- agent/job_delegate_test.go agent/job_delegate_create_test.go agent/job_delegate_decode_test.go agent/job_delegate_send_test.go agent/job_delegate_send_fifo_test.go agent/job_delegate_finalize_test.go agent/job_delegate_finalize_retry_structured_test.go agent/job_delegate_drivedown_test.go agent/job_delegate_budget_test.go agent/job_delegate_isolation_test.go agent/job_delegate_model_echo_test.go agent/job_delegate_model_selection_test.go agent/job_nested_test.go agent/subagent_manager_test.go agent/subagents_test.go
+git add -- agent/delegate_seqfuzz_test.go agent/fuzz_lx_delegate_test.go agent/fuzz_delegate_creation_restore_config_test.go agent/fuzz_delegate_finalize_report_test.go agent/fuzz_jd_classify_delegate_send_target_test.go agent/fuzz_jd_resolve_delegate_terminal_status_test.go agent/fuzz_jd_validate_delegate_grant_test.go agent/fuzz_jdr_restore_lifecycle_test.go
+git add -- agent/root_watch_tree_program_fuzz_test.go agent/job_watch_delegate_fuzz_test.go agent/session_tools_jobs_contract_program_fuzz_test.go
+git add -- agent/agent_misc_program_fuzz_test.go agent/cov_s1_classify_test.go agent/cov_s1_job_log_helpers_test.go agent/cov_s1_watch_targets_test.go agent/cov_s1_watchlist_receiver_test.go agent/cov_w2dlg_helpers_test.go agent/cov_w2dlg_newjm_test.go agent/cov_w2dlg_restore_helpers_test.go agent/cov_w2dlg_resume_finalize_test.go agent/cov_w2tail_jobs_helpers_test.go agent/cov_w2watch_list_test.go agent/cov_w3dlg_attach_test.go agent/cov_w3dlg_finalize_test.go agent/cov_w3dlg_resume_test.go agent/cov_w3dlg_send_test.go agent/cov_w3dlg_sendrunning_test.go
+git add -- agent/doctor/watches_receiver_test.go agent/fuzz_jd_keep_listed_job_row_test.go agent/fuzz_lx_notify_test.go agent/fuzz_wv_validate_send_target_test.go agent/fuzz_wx_watch_test.go agent/job_notify_consume_test.go agent/job_notify_test.go agent/job_watch_config_test.go agent/job_watch_drain_render_fuzz_test.go agent/job_watch_loopguard_test.go agent/job_watch_pending_state_fuzz_test.go agent/job_watch_registry_receiver_test.go agent/job_watch_seams_fuzz_test.go agent/job_watch_send_test.go agent/job_watch_test.go agent/job_watch_timers_observe_fuzz_test.go agent/notification_test.go agent/shell_notify_digest_program_fuzz_test.go
+git add -- agent/job_manager_error_recovery_fuzz_test.go agent/job_reconcile_test.go agent/job_shell_seed100_fuzz_test.go agent/job_transcript_read_test.go agent/jobs_activity_past_test.go agent/jobs_activity_test.go agent/jobs_nested_seed100_more_test.go agent/jobs_seed100_fuzz_test.go agent/jobs_seed100_more_test.go agent/jobs_seed100_range_a_test.go agent/jobs_test.go agent/lifecycle_ops_test.go agent/nested_drain_branches_fuzz_test.go agent/session_jobtree_drain_seed100_more_test.go agent/session_jobtree_drain_stall_test.go agent/session_jobtree_drain_test.go agent/session_misc_fuzz_test.go agent/session_provenance_test.go agent/session_restore_close_status_program_fuzz_test.go agent/session_subagent_livetree_test.go agent/session_tools_jobs_fuzz_test.go agent/session_tools_jobs_seed100_final_test.go agent/session_tools_jobs_seed100_more_test.go agent/session_tools_jobs_seed100_range_b_test.go agent/session_tools_jobs_seed100_range_c_test.go agent/session_tools_jobs_seed100_range_d_test.go agent/session_tools_transcript_job_read_test.go
+git add -- agent/sandbox_delegate_create_test.go agent/session_init_worktree_seed100_fuzz_test.go agent/session_lifecycle_tail_coverage_fuzz_test.go agent/session_tools_worktree_dispose_execute_test.go agent/session_tools_worktree_dispose_resume_test.go agent/session_tools_worktree_remove_force_dispose_test.go
+git add -- agent/job_delegate_attach_finalize_seed100_fuzz_test.go agent/job_delegate_exact_create_send_fuzz_test.go agent/job_delegate_exact_finalize_report_fuzz_test.go agent/job_delegate_exact_restore_fuzz_test.go agent/job_delegate_exact_running_attach_fuzz_test.go agent/job_delegate_exact_tail_create_restore_fuzz_test.go agent/job_delegate_exact_tail_finalize_fuzz_test.go agent/job_delegate_exact_tail_running_fuzz_test.go
+git add -- agent/job_delegate_git_report_seed100_fuzz_test.go agent/job_delegate_sandbox_schema_seed100_fuzz_test.go agent/job_delegate_seed100_fuzz_test.go agent/job_delegate_send_fuzz_test.go agent/job_delegate_send_seed100_fuzz_test.go agent/subagents_fuzz_test.go agent/subagents_seed100_exact_fuzz_test.go agent/nested_subagent_lifecycle_program_fuzz_test.go scripts/run-fuzz.sh
+git commit -m "refactor: delete dormant delegate job schema" -m "Delete the now-unreachable delegate JobRecord reducer branches, activation fields, helpers, identifiers, tests, and fuzz registrations after the registered route is already stable-only. Preserve the existing watch journal, shell jobs, supervision, reclamation, historical rendering, and explicit fail-closed legacy detection."
+~~~
+
+---
+
+### Task 13: Shipped documentation and prompts
+
+**Files:**
+
+- Modify: docs/subagent-management/11-delegate-resource-model.md status only after implementation matches it.
+- Modify: docs/architecture.md, docs/job-control.md, docs/subagent-runtime-contracts.md, docs/tools/transcripts.md, docs/hooks.md.
+- Modify: agent/prompts/sections/delegation.md, agent/prompts/sections/background-jobs.md, agent/prompts/templates/subagent.md.tmpl.
+- Modify: internal/bundled/agents/subagent.md, internal/bundled/plugins/coordinator-workflow/agents/coordinator.md.
+- Modify: internal/bundled/skills/doctoring-serf/references/data-model.md, internal/bundled/skills/doctoring-serf/references/failure-modes.md, internal/bundled/skills/doctoring-serf/references/finding-contract.md, internal/bundled/skills/doctoring-serf/references/repair-guardrails.md, internal/bundled/skills/doctoring-serf/references/writing-runbooks.md.
+- Modify: agent/bundled_prompt_tool_mentions_test.go, internal/bundled/bundled_test.go.
+
+**Interfaces:**
+
+- Consume the shipped tool schemas, stable behavior, legacy failure codes, and operational evidence contracts from Tasks 6–12.
+- Produce one consistent public vocabulary: delegate/dlg_ for delegate control, job/job_ for shell work, typed stable watches, recursive stable stop, metadata-only status, and pure cold diagnosis.
+- Preserve watch_parent, observers, quiet supervision, max_retained_terminal reclamation, hooks/nudge/salvage, shell routing, worktree/disposal, restart recovery, and historical rendering guidance.
+
+- [ ] **Step 1: Add minimal prompt-surface contract tests and record RED**
+
+Add:
+
+~~~go
+func TestBundledDelegatePromptUsesStableControlIdentity(t *testing.T)
+func TestBundledDelegatePromptPreservesWatchSupervisionAndShellGuidance(t *testing.T)
+func TestBundledCoordinatorUsesStableDelegateAndShellIdentities(t *testing.T)
+~~~
+
+These tests load the actual assembled/bundled prompt and assert only the public identity/tool-capability contract; they do not regex-match a generated script or large rendered document.
+
+Immediately before prompt edits, run:
+
+~~~bash
+go test ./agent -run '^TestBundledDelegatePrompt' -count=1
+go test ./internal/bundled -run '^TestBundledCoordinatorUsesStable' -count=1
+~~~
+
+Expected RED: shipped guidance still teaches an activation job or omits a preserved stable capability.
+
+- [ ] **Step 2: Translate shipped docs and prompts without changing architecture**
+
+Update each named file from its existing purpose. Remove instructions to control a delegate through an activation job. Keep shell jobs public and job-addressed. Describe typed stable watches, exact watch-parent authorization, quiet watchdog, admission reclamation, hook/nudge/salvage, canonical exhaustion and warnings, worktree disposal, provider-free restart, pure doctor reads, and the two fail-closed legacy codes where operationally relevant. Do not introduce new lifecycle shapes or copy the dated plan into evergreen docs.
+
+Set the evergreen status to shipped only after the implementation and tests are green.
+
+Run GREEN and documentation checks:
+
+~~~bash
+gofmt -w agent/bundled_prompt_tool_mentions_test.go internal/bundled/bundled_test.go
+go test ./agent -run '^TestBundledDelegatePrompt' -count=20
+go test -race ./agent -run '^TestBundledDelegatePrompt' -count=20
+go test ./internal/bundled -run '^TestBundledCoordinatorUsesStable' -count=20
+go test -race ./internal/bundled -run '^TestBundledCoordinatorUsesStable' -count=20
+go test ./agent -run '^(TestBundledAgent|TestBundledPrompt|TestBuiltinAgent)' -count=1
+go test ./internal/bundled -count=1
+make lint-docs
+make lint-generated
+git diff --check
+git status --short
+~~~
+
+Review every documentation diff for retained behavior. Stage only:
+
+~~~bash
+git add -- docs/subagent-management/11-delegate-resource-model.md docs/architecture.md docs/job-control.md docs/subagent-runtime-contracts.md docs/tools/transcripts.md docs/hooks.md
+git add -- agent/prompts/sections/delegation.md agent/prompts/sections/background-jobs.md agent/prompts/templates/subagent.md.tmpl
+git add -- internal/bundled/agents/subagent.md internal/bundled/plugins/coordinator-workflow/agents/coordinator.md
+git add -- internal/bundled/skills/doctoring-serf/references/data-model.md internal/bundled/skills/doctoring-serf/references/failure-modes.md internal/bundled/skills/doctoring-serf/references/finding-contract.md internal/bundled/skills/doctoring-serf/references/repair-guardrails.md internal/bundled/skills/doctoring-serf/references/writing-runbooks.md
+git add -- agent/bundled_prompt_tool_mentions_test.go internal/bundled/bundled_test.go
+git commit -m "docs: teach stable delegate resources" -m "Update shipped architecture, job-control, transcript, hook, doctor, subagent, and coordinator guidance to use dlg_ control identities while preserving watches, observers, supervision, reclamation, shells, worktrees, recovery, and historical read behavior."
+~~~
+
+---
+
+### Task 14: Final verification and recovery proof
+
+**Files:**
+
+- No planned production, test, generated, or documentation edits.
+- If a check exposes a defect, return to the owning Task 6–13 test and implementation files, record a behavioral RED there, make the smallest fix, rerun that task's full gates, amend only that task's explicit staging list with the exact additional file, and add a new corrective commit. Do not hide fixes in this verification task.
+
+**Interfaces:**
+
+- Consume the complete flag-day branch.
+- Produce evidence that every causal defect is fixed, preserved behavior remains live, legacy state fails closed, restart is provider-free, tests are mutation-sensitive, the branch is reviewable, and no push occurred.
+
+- [ ] **Step 1: Rerun every integration-defect selector normal and race count 20**
+
+~~~bash
+agent_selector='^(TestDelegateResourceBootstrap_|TestDelegateResourceCreate_|TestDelegateResourceRuntime_|TestDelegateResourceSupervision_|TestDelegateAttention_|TestStableDelegateWatch_|TestStableDelegateObserver_|TestStableDelegateAttention_|TestStableDelegateShell_|TestDelegateRuntimeReclaim_|TestDelegateResourceStop_|TestStableDelegateWorktree_|TestStableDelegateTools_|TestStableDelegateReadOnly_|TestDelegateLegacyDormancy_|TestBundledDelegatePrompt)'
+go test ./agent -run "$agent_selector" -count=20 -timeout=90m
+go test -race ./agent -run "$agent_selector" -count=20 -timeout=120m
+go test ./agent/doctor -run '^TestDoctorStableDelegate' -count=20
+go test -race ./agent/doctor -run '^TestDoctorStableDelegate' -count=20
+go test ./internal/appprojector -run '^TestDelegateProjection_' -count=20
+go test -race ./internal/appprojector -run '^TestDelegateProjection_' -count=20
+go test ./internal/bundled -run '^TestBundledCoordinatorUsesStable' -count=20
+go test -race ./internal/bundled -run '^TestBundledCoordinatorUsesStable' -count=20
+go test ./cmd/serf-tui/... -run '^TestTUIStableDelegate' -count=20
+go test -race ./cmd/serf-tui/... -run '^TestTUIStableDelegate' -count=20
+go test ./cmd/serf -run '^TestAgentToServerDetailedStatus_DelegatesLossless$' -count=20
+go test -race ./cmd/serf -run '^TestAgentToServerDetailedStatus_DelegatesLossless$' -count=20
+go test ./server -run '^(TestStatusEndpoint_DetailedStatusIncludesStableDelegates|TestAppDiagnosticsFromDetailedStatus_DelegatesLossless)$' -count=20
+go test -race ./server -run '^(TestStatusEndpoint_DetailedStatusIncludesStableDelegates|TestAppDiagnosticsFromDetailedStatus_DelegatesLossless)$' -count=20
+go test ./cmd/serf-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=20
+go test -race ./cmd/serf-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=20
+go test ./cmd/serf-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=20
+go test -race ./cmd/serf-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=20
+scripts/web-preflight.sh
+cd cmd/serf-hub/frontend
+npx vitest run --maxWorkers=4 src/stores/threads.test.ts src/stores/activityPanel.test.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx
+cd ../../..
+~~~
+
+Every selector must enumerate at least one test; inspect the package output for accidental [no tests to run]. Save exit codes, not partial logs. There is no new RED in Task 14 because it has no implementation slice; its mutation evidence comes from the recorded pre-implementation RED for each named test. Vitest has no Go race mode, so its deterministic reducer/store/component suite runs once here after its Task 11 RED and repeated focused GREEN.
+
+- [ ] **Step 2: Prove mutation sensitivity through temporary exact patches**
+
+Save the clean pre-mutation `git diff`. Apply one temporary mutation at a time with apply_patch, run its exact command, capture the expected failing assertion in Kata my73, reverse that exact patch with apply_patch, rerun the same command GREEN, then verify `git diff --check` and byte-for-byte equality with the saved pre-mutation diff. Never reset, checkout, stash, or combine mutations.
+
+1. Skip descendant callback inheritance; run `go test ./agent -run '^TestDelegateResourceCreate_DescendantEventCallbackSurvivesSpawnConfig$' -count=1`.
+2. Commit/publicize create before deterministic isolation; run `go test ./agent -run '^TestDelegateResourceCreate_IsolationFailurePublishesNothing$' -count=1`.
+3. Omit the post-commit resumability-closure event; run `go test ./agent -run '^TestDelegateResourceCreate_PostCommitConstructionFailureClosesResumability$' -count=1`.
+4. Acknowledge a stable watch source before receiver transcript fsync; run `go test ./agent -run '^TestStableDelegateWatch_ReceiverFsyncPrecedesDeliveredAck$' -count=1`.
+5. Bind the stop reconcile driver to the requesting tool context; run `go test ./agent -run '^TestDelegateResourceRuntime_PositiveStopWaitKeepsReconciliationDriverAlive$' -count=1`.
+6. Omit AbortShellWork on the foreground-timeout branch; run `go test ./agent -run '^TestDelegateResourceStop_ForegroundShellTimeoutAbortsUncommittedReceipt$' -count=1`.
+7. Append to=caller directly into the root's unfinished tool round; run `go test ./agent -run '^TestDelegateResourceRuntime_CallerCannotWriteIntoUnfinishedRootToolRound$' -count=1`.
+8. Treat raw JSON null as absent; run `go test ./agent -run '^TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent$' -count=1`.
+9. Replace ReadEvents with writable Open in historical activity; run `go test ./agent -run '^TestStableDelegateReadOnly_FileBytesAndMetadataRemainUnchanged$' -count=1`.
+10. Drop wait_ignored_reason and turn-slot diagnostics from the stable tool projection; run `go test ./agent -run '^(TestStableDelegateTools_WaitIgnoredReasonIsOwnField|TestStableDelegateTools_ListPreservesTurnSlotsAllowanceAndWatchDiagnostics)$' -count=1`.
+
+A selector that passes under its matching mutation is inadequate: restore first, strengthen only its owner task's behavioral assertion, record a new RED, and repeat the task gates before continuing.
+
+- [ ] **Step 3: Run fuzz registry and replay**
+
+~~~bash
+make fuzz-registry-check
+make fuzz
+SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^(FuzzDelegateControllerTransitions|FuzzDelegateConversationTransitions|FuzzDelegateRestartEquivalence|FuzzDelegateAttentionFold|FuzzStableDelegateWatchDelivery|FuzzDelegateReclaimStopRestart)$' -count=1
+go test ./agent/internal/delegatestore -run '^Fuzz' -count=1
+go test ./agent/internal/jobstore -run '^Fuzz.*Watch' -count=1
+~~~
+
+- [ ] **Step 4: Prove clean flag-day restart and fail-closed legacy input**
+
+Run these exact tests from their Task 6/8/12 files:
+
+~~~bash
+go test ./agent -run '^(TestDelegateResourceBootstrap_RestartIsProviderFreeAndLazy|TestDelegateResourceBootstrap_LegacyDelegateStateFailsClosed|TestDelegateResourceBootstrap_LegacyDelegateWatchStateFailsClosed|TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked|TestDelegateResourceStop_RestartCompletesPendingStopProviderFree|TestDelegateLegacyDormancy_LegacyLifecycleAndWatchRowsFailClosed)$' -count=20
+go test -race ./agent -run '^(TestDelegateResourceBootstrap_RestartIsProviderFreeAndLazy|TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked|TestDelegateResourceStop_RestartCompletesPendingStopProviderFree)$' -count=20
+~~~
+
+Use fresh temporary state directories. Assert no provider, Session, timer, hook, nudge, salvage, worktree, notification, or metadata mutation occurs during bootstrap/reconcile.
+
+- [ ] **Step 5: Run source/AST inventories**
+
+~~~bash
+rg -n 'JobTypeDelegate|JobDelegate|DelegateJobID|CurrentJobID|LatestJobID|delegate failure record' agent --glob '*.go'
+rg -n 'unsupported_delegate_watch|activation.*(status|output|history|watch|stop)' agent cmd internal appwire --glob '*.{go,ts,tsx,md}'
+rg -n 'Detailed\.Jobs' cmd/serf-hub internal appwire --glob '*.{go,ts,tsx}'
+rg -n 'time\.(NewTicker|AfterFunc)|go func' agent/delegate_*.go agent/session_attention.go
+rg -n 'delegatestore\.Open|jobstore\.Open' agent/historical_jobs.go agent/jobs_activity_past.go agent/doctor cmd/serf-hub/app_threadread.go cmd/serf-hub/internal/hubcore/prober.go
+rg -n 'queues/|queue.*attention|attention.*queue' agent/delegate_*.go agent/session_attention.go
+~~~
+
+Review every nonempty result against the explicit allowlists: legacy rejection fixtures, shell-only JobRecord behavior, existing watch journal, historical rendering, and root-owned reconcile driver. There must be no second lifecycle/watch log, automatic unload timer, activation fallback, mutable identity mirror, or append-capable cold read.
+
+- [ ] **Step 6: Run full repository gates individually**
+
+~~~bash
 make lint
 make build
 make build-go
@@ -1706,49 +2006,35 @@ make fuzz-gap-check
 make fuzz-corpus-scan
 make test-web
 make test-web-browser
-```
-
-Do not infer a verdict from partial logs. `make lint`, `make build`, `ROOT_FULL=1 make test`, and `make test-dev-tooling` are the canonical merge-approval composition. `make test-fuzz` is additionally mandatory before merge at full default Rapid depth; it is distinct from `make fuzz`, whose native/committed-corpus replay does not replace the full Rapid search. The explicit all-module build/vet, race, deterministic fuzz replay/coverage/corpus, and browser gates have separate required ownership for this change.
-
-After an eventual Jesse-authorized merge, the integrator repeats the post-merge sequence from the repository root and records each bare exit independently:
-
-```bash
-make merge-approval-gate
-make test-fuzz
-make fuzz
-```
-
-`make merge-approval-gate` retains its documented four-command composition; the two fuzz-family gates remain separate required post-merge commands. This plan does not authorize the merge or these post-merge mutations itself.
-
-- [ ] **Step 6: Verify generated state, ancestry, diff, and cleanliness**
-
-Run:
-
-```bash
-make generate
-git diff --exit-code -- docs/appwire-protocol.md cmd/serf-hub/frontend/src/protocol/types.gen.ts
-git diff --check main...HEAD
-git diff --stat main...HEAD
+git diff --check
 git status --short
-git rev-parse HEAD
-```
+~~~
 
-Then run `git merge-base --is-ancestor delegate-identity-integration HEAD` as a separate command and record its bare exit code. Expected: exit 1 (the abandoned branch is not an ancestor), empty porcelain, current generated outputs, clean diff, and a production deletion inventory showing one authority/fold/lock and zero alternate paths.
+Capture each bare exit code, duration, and failure evidence root. Do not infer success from a partial transcript and do not combine gates through a pipeline. Missing browser prerequisites are reported as a limitation/failure, never a pass. The canonical merge-approval composition is make lint, make build, ROOT_FULL=1 make test, and make test-dev-tooling; test-fuzz and deterministic make fuzz remain separate mandatory evidence.
 
-- [ ] **Step 7: Run three independent reviews sequentially**
+- [ ] **Step 7: Review the entire branch and recovery evidence**
 
-Dispatch only one reviewer at a time, forbid recursive delegation, and wait with `timeout_ms: 1800000`:
+Determine the exact range:
 
-1. architecture/complexity — sole authority/fold/lock, scope cuts, stop/delivery/attention/restart design, deletion inventory, no compatibility/framework;
-2. concurrency/restart — lock order, exact leases, start double failure, steer/settle/finish, shell receipts, one stop, ordered delivery, immutable evidence/update plans;
-3. tests/public surface — RED provenance, mutation sensitivity, schemas/events/AppWire/TUI/web/doctor/docs, generated outputs.
+~~~bash
+git merge-base main HEAD
+git log --oneline --decorate main..HEAD
+git diff --stat main...HEAD
+git diff --check main...HEAD
+~~~
 
-Each receives `AGENTS.md`, `docs/testing.md`, evergreen design, this plan, exact branch/HEAD, and `main...HEAD`; each is read-only. If a Critical/Important finding reproduces, add a causal RED, fix root cause, rerun affected/full gates, and restart all three reviews sequentially on the new HEAD.
+Request sequential whole-range reviews for lifecycle/locking, watches/recovery, worktree/sandbox, tools/projection, clients, and documentation. Resolve every finding through its owning task and rerun the relevant causal selector plus full gates. Then obtain one final fresh whole-range review.
 
-- [ ] **Step 8: Commit only an intentional reviewed correction**
+Final acceptance requires:
 
-If review/verification changed files, run `git status --short`, stage each exact path separately, rerun the applicable full gates, and commit with a detailed finding/RED/fix/evidence body. If nothing changed, create no empty verification commit.
+- exactly one root controller/mutex/delegatestore lifecycle authority and one public dlg_ identity;
+- shell-only public jobs and typed stable watch endpoints backed by the existing watch journal;
+- all external I/O after controller unlock with exact process-only claims;
+- preserved watches, observers, quiet supervision, hooks/nudge/salvage, reclamation, shells, worktrees, events, historical reads, and fidelity;
+- only the approved activation/API/migration cuts;
+- provider-free restart and fail-closed legacy state;
+- no delegate JobRecord, lifecycle mirror, second queue/log, dual writer, close flight, stop epoch, or automatic unload;
+- all gates and fresh reviews clean;
+- no push.
 
-- [ ] **Step 9: Hand off without merge or push**
-
-Report branch, HEAD, commits, empty porcelain, main ancestry, abandoned-branch non-ancestry, phase-zero REDs, final GREEN/mutation evidence, every gate exit/duration, three review verdicts, production additions/deletions, and any environmental limitation. Do not merge or push unless Jesse explicitly asks.
+Do not create an empty verification commit. Leave the branch clean and report the exact commit range, gate exit codes, fuzz replay results, review dispositions, and any intentionally retained allowlisted source matches.
