@@ -67,7 +67,7 @@ TARGETS=(
 	"native:agent:.:FuzzSessionLoopRecoveryProgram::session_loopdetect.go"
 	"native:agent:.:FuzzLxClassifyDurableNotifications::session_lifecycle.go#classifyDurableNotifications"
 	"native:agent:.:FuzzLxValidateDelegateRestoreState::job_delegate.go#validateDelegateRestoreState"
-	"native:agent:.:FuzzDelegateCreationRestoreConfigProgram::job_delegate.go#createDelegate;job_delegate.go#validateDelegateRestoreState;job_delegate.go#assessDelegateResumability;job_delegate.go#resolveDelegateRestoreProfile;job_delegate.go#restoreTerminalDelegateChild;job_delegate.go#restoreTerminalDelegateChildClaimed;job_delegate.go#restoreDelegateChildEnvironment;job_delegate.go#resolveRestoredDelegateSandbox;job_delegate.go#delegateRestoreDescriptor;job_delegate.go#resumedDelegateRestoreDescriptor"
+	"native:agent:.:FuzzDelegateCreationRestoreConfigProgram::delegate_runtime.go#createDelegate;job_delegate.go#validateDelegateRestoreState;job_delegate.go#assessDelegateResumability;job_delegate.go#resolveDelegateRestoreProfile;job_delegate.go#restoreTerminalDelegateChild;job_delegate.go#restoreTerminalDelegateChildClaimed;job_delegate.go#restoreDelegateChildEnvironment;job_delegate.go#resolveRestoredDelegateSandbox;job_delegate.go#delegateRestoreDescriptor;job_delegate.go#resumedDelegateRestoreDescriptor"
 	"native:agent:.:FuzzWxEvaluateWatchEvent::job_watch.go#evaluateWatchEvent"
 	"native:agent:.:FuzzWxClassifyWatchSendTarget::job_watch.go#classifyWatchSendDeliveryTarget"
 	"native:agent:.:FuzzRootWatchTreeProgram::"
