@@ -1735,9 +1735,12 @@ func TestHubRPCSubscribedAtomicFailuresDoNotFallBackToPastAndCanRetry(t *testing
 	if response.Thread.ID != sessionID {
 		t.Fatalf("retry thread ID = %q, want %q", response.Thread.ID, sessionID)
 	}
+	// The hub commits the handoff after the response enters the connection's
+	// send queue, so the client can observe the response before Commit runs.
+	// Wait for the commit signal instead of assuming that ordering.
 	select {
 	case <-handoff.committed:
-	default:
+	case <-time.After(time.Second):
 		t.Fatal("successful retry did not commit its live handoff")
 	}
 	if got := lease.readCallCount(); got != 3 {

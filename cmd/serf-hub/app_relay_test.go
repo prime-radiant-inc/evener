@@ -71,9 +71,12 @@ func TestHubAtomicRejoinUsesRelaySessionRead(t *testing.T) {
 	if got := lease.listenCallCount(); got != 1 {
 		t.Fatalf("RelaySession Listen calls = %d, want 1 Hub downstream owner", got)
 	}
+	// The hub commits the handoff after the response enters the connection's
+	// send queue, so this goroutine can get here before Commit runs (the same
+	// scheduling race app_rpc_test.go's retry test hit on a starved runner).
 	select {
 	case <-handoff.committed:
-	default:
+	case <-time.After(time.Second):
 		t.Fatal("relay handoff was not committed after the thread/read response entered the downstream queue")
 	}
 	select {
@@ -731,9 +734,11 @@ func TestHubAtomicRelayReadLetsDeletionWinAndAbortsHandoff(t *testing.T) {
 	}); !isTargetDeletedError(err) {
 		t.Fatalf("atomic read error = %T %v, want targetDeleted", err, err)
 	}
+	// Abort also fires after the error response is enqueued - same bounded
+	// wait as the commit checks, for the same scheduling-race reason.
 	select {
 	case <-handoff.aborted:
-	default:
+	case <-time.After(time.Second):
 		t.Fatal("deletion-winning atomic read did not abort its live handoff")
 	}
 	select {
