@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/delegatestore"
@@ -16,6 +17,7 @@ import (
 	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
@@ -572,7 +574,12 @@ func (s *Session) bootstrapDelegateResources() error {
 		_ = store.Close()
 		return fmt.Errorf("reconcile delegate resources: %w", err)
 	}
-	if _, err := controller.closeMissingRestoreInputs(missingDelegateRestoreInputs(s.stateDir, controller)); err != nil {
+	missingInputs, err := missingDelegateRestoreInputs(s.stateDir, controller)
+	if err != nil {
+		_ = store.Close()
+		return fmt.Errorf("inspect delegate restore inputs: %w", err)
+	}
+	if _, err := controller.closeMissingRestoreInputs(missingInputs); err != nil {
 		_ = store.Close()
 		return fmt.Errorf("close delegates with missing restore inputs: %w", err)
 	}
@@ -582,7 +589,7 @@ func (s *Session) bootstrapDelegateResources() error {
 	return nil
 }
 
-func missingDelegateRestoreInputs(stateDir string, controller *delegateTreeController) map[string]string {
+func missingDelegateRestoreInputs(stateDir string, controller *delegateTreeController) (map[string]string, error) {
 	controller.mu.Lock()
 	ids := make([]string, 0, len(controller.durable))
 	descriptors := make(map[string]delegatestore.Descriptor, len(controller.durable))
@@ -597,54 +604,88 @@ func missingDelegateRestoreInputs(stateDir string, controller *delegateTreeContr
 	sort.Strings(ids)
 	reasons := make(map[string]string)
 	for _, id := range ids {
-		if reason := missingDelegateRestoreInputReason(stateDir, descriptors[id]); reason != "" {
+		reason, err := missingDelegateRestoreInputReason(stateDir, descriptors[id])
+		if err != nil {
+			return nil, fmt.Errorf("delegate %s: %w", id, err)
+		}
+		if reason != "" {
 			reasons[id] = reason
 		}
 	}
-	return reasons
+	return reasons, nil
 }
 
-func missingDelegateRestoreInputReason(stateDir string, descriptor delegatestore.Descriptor) string {
+func missingDelegateRestoreInputReason(stateDir string, descriptor delegatestore.Descriptor) (string, error) {
 	childID := strings.TrimSpace(descriptor.ChildSessionID)
 	if childID == "" || strings.TrimSpace(descriptor.Task) == "" || strings.TrimSpace(descriptor.AgentType) == "" || strings.TrimSpace(descriptor.ResolvedProfileID) == "" || strings.TrimSpace(descriptor.ResolvedModel) == "" {
-		return notResumableMissingDelegateResumeMetadata
+		return notResumableMissingDelegateResumeMetadata, nil
 	}
 	_, transcriptChildID, err := decodeRef(descriptor.TranscriptRef)
 	if err != nil || transcriptChildID != childID {
-		return notResumableParentLinkageUnavailable
+		return notResumableParentLinkageUnavailable, nil
 	}
 	if strings.TrimSpace(stateDir) == "" {
-		return notResumableMissingChildSessionMeta
+		return notResumableMissingChildSessionMeta, nil
 	}
 	if workingDir := strings.TrimSpace(descriptor.WorkingDir); workingDir != "" {
 		if _, err := os.Stat(workingDir); err != nil {
-			return notResumableWorkingDirMissing
+			if errors.Is(err, os.ErrNotExist) {
+				return notResumableWorkingDirMissing, nil
+			}
+			return "", fmt.Errorf("stat working directory %s: %w", workingDir, err)
 		}
 	}
-	meta, err := schema.LoadSessionMeta(stateDir, childID)
+	metaPath := filepath.Join(stateDir, sessionsSubdir, childID+".meta.json")
+	metaBytes, err := os.ReadFile(metaPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return notResumableMissingChildSessionMeta
+			return notResumableMissingChildSessionMeta, nil
 		}
-		return notResumableCorruptChildSessionMeta
+		return "", fmt.Errorf("read child session metadata %s: %w", childID, err)
+	}
+	var meta schema.SessionMeta
+	if err := json.Unmarshal(metaBytes, &meta); err != nil {
+		return notResumableCorruptChildSessionMeta, nil
 	}
 	if strings.TrimSpace(meta.ID) != childID {
-		return notResumableCorruptChildSessionMeta
+		return notResumableCorruptChildSessionMeta, nil
 	}
 	path := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return notResumableMissingChildTranscript
+			return notResumableMissingChildTranscript, nil
 		}
-		return notResumableCorruptChildTranscript
+		return "", fmt.Errorf("stat child transcript %s: %w", childID, err)
 	}
 	if _, err := validateStrictChildTranscript(path, childID, 0); err != nil {
-		if errors.Is(err, errStrictChildTranscriptSessionMismatch) {
-			return notResumableTranscriptSessionMismatch
+		if delegateRestoreOperationalIOError(err) {
+			return "", fmt.Errorf("validate child transcript %s: %w", childID, err)
 		}
-		return notResumableCorruptChildTranscript
+		if errors.Is(err, errStrictChildTranscriptSessionMismatch) {
+			return notResumableTranscriptSessionMismatch, nil
+		}
+		if errors.Is(err, errStrictChildTranscriptCorrupt) || errors.Is(err, transcript.ErrUnsupportedFormat) {
+			return notResumableCorruptChildTranscript, nil
+		}
+		return "", fmt.Errorf("validate child transcript %s: %w", childID, err)
 	}
-	return ""
+	return "", nil
+}
+
+func delegateRestoreOperationalIOError(err error) bool {
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return true
+	}
+	var syscallErr *os.SyscallError
+	if errors.As(err, &syscallErr) {
+		return true
+	}
+	var errno syscall.Errno
+	return errors.As(err, &errno)
 }
 
 func (s *Session) closeOwnedDelegateStore() error {

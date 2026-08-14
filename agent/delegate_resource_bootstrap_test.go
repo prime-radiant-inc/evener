@@ -3,10 +3,13 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -277,6 +280,184 @@ func TestDelegateResourceBootstrap_RestartIsProviderFreeAndLazy(t *testing.T) {
 	}
 	if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeFailed || aggregate.LatestOutcome.Reason != "runtime_lost" {
 		t.Fatalf("reconciled outcome = %+v, want failed/runtime_lost", aggregate.LatestOutcome)
+	}
+}
+
+func TestDelegateResourceBootstrap_WorkingDirEACCESPreservesResumability(t *testing.T) {
+	fixture := newIdleDelegateRestoreInputFixture(t)
+	restrictedParent := filepath.Dir(fixture.workingDir)
+	if err := os.Chmod(restrictedParent, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(restrictedParent, 0o700) })
+
+	assertOperationalRestoreInputErrorPreservesDelegate(t, fixture, syscall.EACCES)
+}
+
+func TestDelegateResourceBootstrap_MetadataEACCESPreservesResumability(t *testing.T) {
+	fixture := newIdleDelegateRestoreInputFixture(t)
+	if err := os.Chmod(fixture.metaPath, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(fixture.metaPath, 0o600) })
+
+	assertOperationalRestoreInputErrorPreservesDelegate(t, fixture, syscall.EACCES)
+}
+
+func TestDelegateResourceBootstrap_TranscriptEIOPreservesResumability(t *testing.T) {
+	fixture := newIdleDelegateRestoreInputFixture(t)
+	previousOpen := openTranscriptFile
+	openTranscriptFile = func(path string) (io.ReadCloser, error) {
+		if filepath.Clean(path) == filepath.Clean(fixture.transcriptPath) {
+			return nil, &os.PathError{Op: "open", Path: path, Err: syscall.EIO}
+		}
+		return previousOpen(path)
+	}
+	t.Cleanup(func() { openTranscriptFile = previousOpen })
+
+	assertOperationalRestoreInputErrorPreservesDelegate(t, fixture, syscall.EIO)
+}
+
+type idleDelegateRestoreInputFixture struct {
+	meta           schema.SessionMeta
+	client         *llm.Client
+	profile        *provider.Profile
+	stateDir       string
+	rootWorkingDir string
+	delegateID     string
+	storePath      string
+	storeBytes     []byte
+	workingDir     string
+	metaPath       string
+	transcriptPath string
+}
+
+func newIdleDelegateRestoreInputFixture(t *testing.T) idleDelegateRestoreInputFixture {
+	t.Helper()
+	meta, client, profile, stateDir, rootWorkingDir, _ := closedDelegateResourceBootstrapFixture(t)
+	delegateID := identifier.MustNewDelegateID()
+	childID := identifier.MustNewSessionID()
+	restrictedParent := t.TempDir()
+	workingDir := filepath.Join(restrictedParent, "lane")
+	if err := os.MkdirAll(workingDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	storePath := delegateResourceStorePath(stateDir, meta.ID)
+	store, err := delegatestore.Open(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.Load()
+	if err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	state, err := delegatestore.Fold(events)
+	if err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_100, 0).UTC()
+	_, _, err = store.AppendBatch(state, []delegatestore.Event{{
+		Kind:       delegatestore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: delegateID,
+		Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
+			ChildSessionID:    childID,
+			TranscriptRef:     encodeRef("", childID),
+			OwnerSessionID:    meta.ID,
+			VisibleSessionID:  meta.ID,
+			Task:              "remain resumable across operational I/O failure",
+			AgentType:         "default",
+			ResolvedProfileID: "openai",
+			ResolvedModel:     "gpt-5.2",
+			WorkingDir:        workingDir,
+			Resumable:         true,
+		}},
+	}})
+	if err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	childMeta := meta
+	childMeta.ID = childID
+	childMeta.ParentSessionID = meta.ID
+	childMeta.IsSubagent = true
+	if err := schema.SaveSessionMeta(stateDir, childMeta); err != nil {
+		t.Fatal(err)
+	}
+	transcriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
+	writer, err := transcript.NewWriter(transcriptPath, transcript.Header{
+		SessionID:       childID,
+		ParentSessionID: meta.ID,
+		Task:            "remain resumable across operational I/O failure",
+		CreatedAt:       now,
+		ProfileID:       "openai",
+		Model:           "gpt-5.2",
+		WorkingDir:      workingDir,
+		Depth:           1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	storeBytes, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return idleDelegateRestoreInputFixture{
+		meta:           meta,
+		client:         client,
+		profile:        profile,
+		stateDir:       stateDir,
+		rootWorkingDir: rootWorkingDir,
+		delegateID:     delegateID,
+		storePath:      storePath,
+		storeBytes:     storeBytes,
+		workingDir:     workingDir,
+		metaPath:       filepath.Join(stateDir, sessionsSubdir, childID+".meta.json"),
+		transcriptPath: transcriptPath,
+	}
+}
+
+func assertOperationalRestoreInputErrorPreservesDelegate(t *testing.T, fixture idleDelegateRestoreInputFixture, wantErr error) {
+	t.Helper()
+	restored, restoreErr := restoreDelegateResourceBootstrapSession(
+		fixture.client,
+		fixture.profile,
+		fixture.rootWorkingDir,
+		fixture.meta,
+		fixture.stateDir,
+	)
+	if restored != nil {
+		restored.Close()
+	}
+	if !errors.Is(restoreErr, wantErr) {
+		t.Errorf("restore error = %v, want operational I/O error %v", restoreErr, wantErr)
+	}
+	gotBytes, err := os.ReadFile(fixture.storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotBytes, fixture.storeBytes) {
+		t.Error("delegate store bytes changed after operational restore-input failure")
+	}
+	events, err := delegatestore.ReadEvents(fixture.storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := delegatestore.Fold(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aggregate := state[fixture.delegateID]
+	if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.NotResumableReason != "" {
+		t.Errorf("delegate after operational restore-input failure = %#v, want unchanged idle resumability", aggregate)
 	}
 }
 
