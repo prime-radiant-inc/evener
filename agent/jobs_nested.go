@@ -485,11 +485,11 @@ func (s *Session) delegateChildSessionToCascade(jobID string) *Session {
 // childSession is the delegate job's child session (resolved from the delegate
 // record's transcript_ref); stopping the delegate job itself is the caller's job
 // (stopNestedOrLocal). The traversal reuses the live-walk leaf-lock discipline:
-// each store's running jobs are snapshotted under that store's own lock
-// (runningJobIDs) and stopped one at a time; live direct children are enumerated
-// through liveSubagentSessions; NO job-manager or session lock is held across the
-// recursion. A no-longer-live (closed) child contributes nothing — its runtime is
-// already gone.
+// each store enumerates its running jobs, captures exact receipts, and accepts
+// their stops under that store's own lock, then signals after unlock. Live direct
+// children are enumerated through liveSubagentSessions; NO job-manager or session
+// lock is held across recursion or receipt waits. A no-longer-live (closed) child
+// contributes nothing — its runtime is already gone.
 func (s *Session) stopDelegateSubtree(childSession *Session) ([]*jobstore.JobRecord, error) {
 	stopped, _, stopErr := s.stopDelegateSubtreeWithReceipts(childSession)
 	return stopped, stopErr
