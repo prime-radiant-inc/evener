@@ -889,10 +889,13 @@ func TestJobToolsDefinitions(t *testing.T) {
 		t.Fatalf("job_stop exposes unsupported signal parameter")
 	}
 	delegateProps := tooldefs.DefDelegate([]string{"reviewer"}).Parameters["properties"].(map[string]any)
-	for _, param := range []string{"task", "agent_type", "model", "reasoning_effort", "max_wait_ms", "result_schema"} {
+	for _, param := range []string{"task", "agent_type", "model", "reasoning_effort", "result_schema"} {
 		if _, ok := delegateProps[param]; !ok {
 			t.Fatalf("delegate missing param %q", param)
 		}
+	}
+	if _, ok := delegateProps["max_wait_ms"]; ok {
+		t.Fatal("delegate exposes unsupported creation max_wait_ms")
 	}
 	sendProps := tooldefs.DefDelegateSend().Parameters["properties"].(map[string]any)
 	for _, param := range []string{"to", "message", "max_wait_ms"} {
@@ -1011,25 +1014,30 @@ func TestJobStopAcceptsIncludeChildrenThroughRegistry(t *testing.T) {
 	}
 }
 
-// TestDelegateMaxWaitMSDecodeTable pins spec §2 delegate decode: negative
-// max_wait_ms is rejected; the old background+block_timeout_ms combo rejection
-// is gone (spec §3 — combo is inexpressible).
+func assertRegisteredDelegateCreationMaxWaitRejected(t *testing.T, result tooldefs.ExecResult) {
+	t.Helper()
+	if !result.IsError {
+		t.Fatalf("registered delegate accepted creation max_wait_ms: %s", result.Output)
+	}
+	for _, want := range []string{"additionalProperties", "max_wait_ms", "not allowed"} {
+		if !strings.Contains(result.Output, want) {
+			t.Fatalf("registered delegate error = %q, want schema rejection containing %q", result.Output, want)
+		}
+	}
+}
+
+// TestDelegateMaxWaitMSDecodeTable pins the registered creation boundary:
+// max_wait_ms is not part of the schema, regardless of its value.
 func TestDelegateMaxWaitMSDecodeTable(t *testing.T) {
 	t.Parallel()
 	s := newDelegateTestSession(t, llm.NewClient())
 
-	// Negative max_wait_ms → invalid_request.
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "delegate",
 		Name:      "delegate",
 		Arguments: json.RawMessage(`{"task":"x","max_wait_ms":-5}`),
 	})
-	if !res.IsError {
-		t.Fatalf("delegate with max_wait_ms=-5 should return error, got success: %s", res.Output)
-	}
-	if !strings.Contains(res.Output, "max_wait_ms must be non-negative") {
-		t.Fatalf("delegate error = %q, want max_wait_ms must be non-negative", res.Output)
-	}
+	assertRegisteredDelegateCreationMaxWaitRejected(t, res)
 }
 
 // TestDelegateSendMaxWaitMSDecodeTable pins spec §2 delegate_send decode:
@@ -1074,21 +1082,11 @@ func TestDelegateSendMaxWaitMSDecodeTable(t *testing.T) {
 	}
 }
 
-// TestDelegateAndDelegateSendAcceptZeroMaxWaitMS pins spec §2: max_wait_ms=0 is
-// accepted (strict-provider safe — zero reads as unset on all five tools).
-
-// TestDelegateAndDelegateSendAcceptZeroMaxWaitMS pins spec §2: max_wait_ms=0 is
-// accepted (strict-provider safe — zero reads as unset on all five tools).
-func TestDelegateAndDelegateSendAcceptZeroMaxWaitMS(t *testing.T) {
+// TestDelegateRejectsAndDelegateSendAcceptsZeroMaxWaitMS keeps creation's
+// no-wait schema separate from delegate_send's zero-as-unset contract.
+func TestDelegateRejectsAndDelegateSendAcceptsZeroMaxWaitMS(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return communicateWithDefaultOutput("done")
-			},
-		},
-	}
+	adapter := &blockingAdapter{name: "openai", blocked: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
 	s := newDelegateTestSession(t, c)
@@ -1098,26 +1096,17 @@ func TestDelegateAndDelegateSendAcceptZeroMaxWaitMS(t *testing.T) {
 		Name:      "delegate",
 		Arguments: json.RawMessage(`{"task":"zero is unset","max_wait_ms":0}`),
 	})
-	if res.IsError {
-		t.Fatalf("delegate with max_wait_ms=0 (unset) failed unexpectedly: %s", res.Output)
+	assertRegisteredDelegateCreationMaxWaitRejected(t, res)
+
+	spawned := s.createLegacyDelegate(context.Background(), delegateArgs{Task: "seed delegate_send target", Background: true})
+	if spawned.Err != nil || spawned.DelegateID == "" {
+		t.Fatalf("seed legacy delegate target = %#v, want delegate identity", spawned)
 	}
-	var spawned struct {
-		DelegateID          string `json:"delegate_id"`
-		JobID               string `json:"job_id"`
-		RunningInBackground bool   `json:"running_in_background"`
+	select {
+	case <-adapter.blocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("delegate provider did not start")
 	}
-	if err := json.Unmarshal(toolResultJSON(res), &spawned); err != nil || spawned.JobID == "" || spawned.DelegateID == "" {
-		t.Fatalf("delegate result missing job_id: %s", res.Output)
-	}
-	if !spawned.RunningInBackground {
-		t.Fatalf("delegate with max_wait_ms=0 should be running_in_background, got: %s", res.Output)
-	}
-	waitForShellDone(t, s.jobManager, spawned.JobID)
-	adapter.mu.Lock()
-	adapter.steps = append(adapter.steps, func(req llm.Request) llm.Response {
-		return communicateWithDefaultOutput("done again")
-	})
-	adapter.mu.Unlock()
 
 	res2 := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send0",
@@ -1129,9 +1118,8 @@ func TestDelegateAndDelegateSendAcceptZeroMaxWaitMS(t *testing.T) {
 	}
 }
 
-// TestMaxWaitMSDecoders covers spec §2's decode table for delegate,
-// delegate_send, and job_stop: negative max_wait_ms must
-// return invalid_request; 0/absent must succeed with unset behavior.
+// TestMaxWaitMSDecoders separates creation's absent wait option from the
+// delegate_send and job_stop value semantics retained by their decoders.
 func TestMaxWaitMSDecoders(t *testing.T) {
 	t.Parallel()
 	const wantNegErr = "invalid_request: max_wait_ms must be non-negative"
@@ -1144,47 +1132,18 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 			Name:      "delegate",
 			Arguments: json.RawMessage(`{"task":"x","max_wait_ms":-1}`),
 		})
-		if !res.IsError {
-			t.Fatalf("delegate with max_wait_ms=-1: want error, got success: %s", res.Output)
-		}
-		if !strings.Contains(res.Output, wantNegErr) {
-			t.Fatalf("delegate error = %q, want %q", res.Output, wantNegErr)
-		}
+		assertRegisteredDelegateCreationMaxWaitRejected(t, res)
 	})
 
-	t.Run("delegate_zero_is_unset", func(t *testing.T) {
+	t.Run("delegate_zero_rejected", func(t *testing.T) {
 		t.Parallel()
-		adapter := &fakeAdapter{
-			name: "openai",
-			steps: []func(req llm.Request) llm.Response{
-				func(req llm.Request) llm.Response {
-					return communicateWithDefaultOutput("done")
-				},
-			},
-		}
-		c := llm.NewClient()
-		c.Register(adapter)
-		s := newDelegateTestSession(t, c)
+		s := newDelegateTestSession(t, llm.NewClient())
 		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 			ID:        "d",
 			Name:      "delegate",
 			Arguments: json.RawMessage(`{"task":"x","max_wait_ms":0}`),
 		})
-		if res.IsError {
-			t.Fatalf("delegate with max_wait_ms=0: want no-wait success, got error: %s", res.Output)
-		}
-		// With unset (0), should return immediately with running_in_background:true.
-		var out struct {
-			RunningInBackground bool   `json:"running_in_background"`
-			JobID               string `json:"job_id"`
-		}
-		if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if !out.RunningInBackground || out.JobID == "" {
-			t.Fatalf("delegate with max_wait_ms=0 = %+v, want running_in_background with job_id", out)
-		}
-		waitForShellDone(t, s.jobManager, out.JobID)
+		assertRegisteredDelegateCreationMaxWaitRejected(t, res)
 	})
 
 	t.Run("delegate_send_negative", func(t *testing.T) {
