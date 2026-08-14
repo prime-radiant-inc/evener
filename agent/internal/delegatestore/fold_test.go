@@ -39,7 +39,7 @@ func TestApplyAndFoldCloneCreatedDescriptor(t *testing.T) {
 		{name: "config skills dirs", mutate: func(descriptor *Descriptor) { descriptor.Config.SkillsDirs[0] = "mutated" }},
 		{name: "config loop detection", mutate: func(descriptor *Descriptor) { *descriptor.Config.EnableLoopDetection = true }},
 		{name: "config model fallbacks", mutate: func(descriptor *Descriptor) { descriptor.Config.ModelFallbacks[0] = "mutated" }},
-		{name: "config sandbox network", mutate: func(descriptor *Descriptor) { *descriptor.Config.SandboxNet = true }},
+		{name: "config sandbox network", mutate: func(descriptor *Descriptor) { *descriptor.Config.SandboxNet = false }},
 	}
 	paths := []struct {
 		name  string
@@ -108,6 +108,49 @@ func TestApplyRejectsInvalidToolNameCeiling(t *testing.T) {
 			err := Apply(make(State), event)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Apply error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyValidatesSandboxConfigProjection(t *testing.T) {
+	trueValue := true
+	alsoTrueValue := true
+	falseValue := false
+	tests := []struct {
+		name    string
+		sandbox *SandboxSnapshot
+		mode    string
+		network *bool
+		wantErr string
+	}{
+		{name: "no sandbox has empty config projection"},
+		{name: "matching mode", sandbox: &SandboxSnapshot{Mode: "read-only"}, mode: "read-only"},
+		{name: "matching mode and network", sandbox: &SandboxSnapshot{Mode: "workspace-write", Network: &trueValue}, mode: "workspace-write", network: &alsoTrueValue},
+		{name: "nil snapshot with mode", mode: "read-only", wantErr: "sandbox snapshot is nil"},
+		{name: "nil snapshot with network", network: &falseValue, wantErr: "sandbox snapshot is nil"},
+		{name: "snapshot with empty projection", sandbox: &SandboxSnapshot{}, wantErr: "sandbox snapshot requires a config projection"},
+		{name: "mode mismatch", sandbox: &SandboxSnapshot{Mode: "workspace-write"}, mode: "read-only", wantErr: "sandbox mode"},
+		{name: "snapshot network missing", sandbox: &SandboxSnapshot{Mode: "read-only"}, mode: "read-only", network: &trueValue, wantErr: "sandbox network"},
+		{name: "config network missing", sandbox: &SandboxSnapshot{Mode: "read-only", Network: &trueValue}, mode: "read-only", wantErr: "sandbox network"},
+		{name: "network value mismatch", sandbox: &SandboxSnapshot{Mode: "read-only", Network: &trueValue}, mode: "read-only", network: &falseValue, wantErr: "sandbox network"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			event := createdEvent("dlg_alpha", "")
+			event.Seq = 1
+			event.Created.Descriptor.Sandbox = tc.sandbox
+			event.Created.Descriptor.Config.Sandbox = tc.mode
+			event.Created.Descriptor.Config.SandboxNet = tc.network
+			err := Apply(make(State), event)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Apply matching sandbox projection: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Apply error = %v, want %q", err, tc.wantErr)
 			}
 		})
 	}
@@ -488,7 +531,7 @@ func createdEvent(id, parentID string) Event {
 func createdEventWithReferenceDescriptor(id string) Event {
 	network := true
 	loopDetection := false
-	configNetwork := false
+	configNetwork := true
 	descriptor := testDescriptor(id, "")
 	descriptor.TaskTemplates = []task.TaskTemplate{
 		{Title: "research", Prompt: "investigate", ReasoningEffort: "high", Type: "research"},
@@ -516,6 +559,8 @@ func createdEventWithReferenceDescriptor(id string) Event {
 		ToolOutputLimits: map[string]schema.ToolOutputLimit{
 			"read_file": {MaxChars: 100, MaxLines: 10, Strategy: schema.TruncHeadTail},
 		},
+		AgentName:              "reviewer",
+		ReasoningEffort:        "high",
 		SkillsDirs:             []string{"skills"},
 		MCPConfigFiles:         []string{"mcp.json"},
 		MCPInline:              []string{"inline"},

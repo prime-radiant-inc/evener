@@ -423,17 +423,17 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 	}
 	child := childRecord.sess
 
-	if descriptor.AgentType != agentType || descriptor.AgentName != "frozen-reviewer" || descriptor.RequestedModel != "gpt-5.2" || descriptor.ResolvedProfileID != profile.ID() || descriptor.ResolvedModel != profile.Model() {
+	if descriptor.AgentType != agentType || descriptor.Config.AgentName != "frozen-reviewer" || descriptor.RequestedModel != "gpt-5.2" || descriptor.ResolvedProfileID != profile.ID() || descriptor.ResolvedModel != profile.Model() {
 		t.Fatalf("committed identity/model descriptor = %#v", descriptor)
 	}
 	if request.SessionID != descriptor.ChildSessionID || request.Model != descriptor.ResolvedModel || child.currentProfile().ID() != descriptor.ResolvedProfileID || child.currentProfile().Model() != descriptor.ResolvedModel {
 		t.Fatalf("provider/child identity = session %q model %q profile %s/%s, want descriptor %#v", request.SessionID, request.Model, child.currentProfile().ID(), child.currentProfile().Model(), descriptor)
 	}
-	if request.ReasoningEffort == nil || *request.ReasoningEffort != "low" || child.cfg.ReasoningEffort != descriptor.ReasoningEffort {
-		t.Fatalf("provider/child reasoning = %#v/%q, want frozen %q", request.ReasoningEffort, child.cfg.ReasoningEffort, descriptor.ReasoningEffort)
+	if request.ReasoningEffort == nil || *request.ReasoningEffort != "low" || child.cfg.ReasoningEffort != descriptor.Config.ReasoningEffort {
+		t.Fatalf("provider/child reasoning = %#v/%q, want frozen %q", request.ReasoningEffort, child.cfg.ReasoningEffort, descriptor.Config.ReasoningEffort)
 	}
-	if child.cfg.AgentName != descriptor.AgentName || childRecord.agentType != descriptor.AgentType {
-		t.Fatalf("child agent identity = %q/%q, want %q/%q", child.cfg.AgentName, childRecord.agentType, descriptor.AgentName, descriptor.AgentType)
+	if child.cfg.AgentName != descriptor.Config.AgentName || childRecord.agentType != descriptor.AgentType {
+		t.Fatalf("child agent identity = %q/%q, want %q/%q", child.cfg.AgentName, childRecord.agentType, descriptor.Config.AgentName, descriptor.AgentType)
 	}
 
 	requestText := task6RequestText(request)

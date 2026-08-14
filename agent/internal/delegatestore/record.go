@@ -69,8 +69,6 @@ type Descriptor struct {
 	RequestedModel                string                `json:"requested_model,omitempty"`
 	ResolvedProfileID             string                `json:"resolved_profile_id,omitempty"`
 	ResolvedModel                 string                `json:"resolved_model,omitempty"`
-	ReasoningEffort               string                `json:"reasoning_effort,omitempty"`
-	AgentName                     string                `json:"agent_name,omitempty"`
 	FrozenRolePrompt              string                `json:"frozen_role_prompt,omitempty"`
 	TaskTemplates                 []task.TaskTemplate   `json:"task_templates,omitempty"`
 	ToolNameCeiling               []string              `json:"tool_name_ceiling,omitempty"`

@@ -544,7 +544,7 @@ func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor deleg
 	}
 	selection.agent = nil
 	return s.prepareSubagentRunFromSelection(
-		ctx, descriptor.Task, descriptor.WorkingDir, 0, descriptor.AgentType, descriptor.ReasoningEffort,
+		ctx, descriptor.Task, descriptor.WorkingDir, 0, descriptor.AgentType, descriptor.Config.ReasoningEffort,
 		nil, nil, selection, &descriptor,
 	)
 }
@@ -690,7 +690,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	var agentName string
 	var rolePrompt string
 	if frozen != nil {
-		agentName = frozen.AgentName
+		agentName = frozen.Config.AgentName
 		rolePrompt = frozen.FrozenRolePrompt
 	} else if agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" {
 		agentName = agent.Name
@@ -930,7 +930,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	now := s.sclock().Now()
 	nudgeEnabled := subagentNeedsCommunicateNudge(agent)
 	if frozen != nil {
-		nudgeEnabled = frozen.AgentName == "subagent"
+		nudgeEnabled = frozen.Config.AgentName == "subagent"
 	}
 	sub := &subagent{
 		id:           subSess.id,
@@ -999,8 +999,8 @@ func (s *Session) prepareSubagentRunFromSelection(
 		prepared.task = frozen.Task
 		prepared.agentType = frozen.AgentType
 		prepared.requestedModel = frozen.RequestedModel
-		prepared.resolvedAgentName = frozen.AgentName
-		prepared.reasoningEffort = frozen.ReasoningEffort
+		prepared.resolvedAgentName = frozen.Config.AgentName
+		prepared.reasoningEffort = frozen.Config.ReasoningEffort
 		prepared.frozenRolePrompt = frozen.FrozenRolePrompt
 		prepared.frozenToolNames = append([]string(nil), frozen.ToolNameCeiling...)
 		prepared.frozenSkillNames = append([]string(nil), frozen.FrozenSkillNames...)

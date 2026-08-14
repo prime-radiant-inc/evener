@@ -789,6 +789,8 @@ func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) 
 	descriptor.ResultSchema = json.RawMessage(`{"type":"object"}`)
 	descriptor.Config = schema.ConfigSnapshot{
 		ToolOutputLimits:       map[string]schema.ToolOutputLimit{"read_file": {MaxChars: 111}},
+		AgentName:              "controller-agent",
+		ReasoningEffort:        "high",
 		ModelFallbacks:         []string{"openai/frozen"},
 		ShareTasksWithChildren: true,
 		EnableLoopDetection:    &loopDetection,

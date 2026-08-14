@@ -402,7 +402,32 @@ func validateDescriptor(descriptor Descriptor) error {
 	case !descriptor.Config.ShareTasksWithChildren && descriptor.SharedTaskStoreOwnerSessionID != "":
 		return fmt.Errorf("shared task store owner requires task sharing")
 	}
+	if err := validateSandboxConfigProjection(descriptor); err != nil {
+		return err
+	}
 	return validateToolNameCeiling(descriptor)
+}
+
+func validateSandboxConfigProjection(descriptor Descriptor) error {
+	snapshot := descriptor.Sandbox
+	mode := descriptor.Config.Sandbox
+	network := descriptor.Config.SandboxNet
+	if snapshot == nil {
+		if mode != "" || network != nil {
+			return fmt.Errorf("sandbox snapshot is nil but config projection is nonempty")
+		}
+		return nil
+	}
+	if mode == "" && network == nil {
+		return fmt.Errorf("sandbox snapshot requires a config projection")
+	}
+	if snapshot.Mode != mode {
+		return fmt.Errorf("sandbox mode %q does not match config mode %q", snapshot.Mode, mode)
+	}
+	if (snapshot.Network == nil) != (network == nil) || snapshot.Network != nil && *snapshot.Network != *network {
+		return fmt.Errorf("sandbox network does not match config network")
+	}
+	return nil
 }
 
 func validateToolNameCeiling(descriptor Descriptor) error {
