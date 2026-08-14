@@ -1408,6 +1408,17 @@ after the receiver transcript append fsyncs, so append failure retries the same
 private attention identity. Fresh activity re-arms the stretch. Restart starts
 no timer and performs no provider call.
 
+Generation finalization is one process-only fence for ordinary, terminal, and
+stop outcomes. It rejects later quiet attention and drains any exact quiet
+append admitted before the fence; the runtime waits for that drain outside the
+controller lock. If a durable stop covers the exact active generation before
+ordinary finalization acquires the fence, that finalization becomes the stop's
+terminal owner, skips steer continuation and ordinary settlement, and records
+the canonical stopped finish after the quiet append completes or aborts. If
+ordinary finalization acquires the fence first, it remains ordinary when stop
+arrives. Neither ordering may release the generation while a quiet append is
+still in flight.
+
 The communicate auto-nudge remains exactly once for eligible builtin delegates.
 SubagentStop runs in its established order before final settlement; if it
 blocks, the same generation receives exactly one continuation. A pending owner
@@ -1849,6 +1860,9 @@ Required interleavings include:
 - crash after ordinary completion has prepared the missing-terminal packet but
   before run_finished, and prove restart finishes that exact packet once;
 - pause finalization before FinishGeneration; stop; release finalization;
+- admit quiet attention, persist stop before ordinary finalization, then prove
+  the finalizer drains that attention and records stopped before releasing the
+  exact generation;
 - finish generation N; start N+1; release a delayed N finalizer;
 - hold a child-start receipt; stop its ancestor; try to commit the receipt;
 - hold a shell-start receipt; stop its ancestor; publish the process handle;
@@ -1997,7 +2011,9 @@ The project is complete only when all of the following are true:
 14. Pre-admitted external starts and owner deliveries are accounted for
     through receipts and cannot escape stop.
 15. Stop completion precedes any successor generation.
-16. Normal finalization cannot overwrite stop precedence.
+16. Normal finalization cannot overwrite stop precedence; a stop that wins
+    before the fence adopts the exact active finalizer and drains its admitted
+    quiet append before recording the stopped outcome.
 17. Restart reconciliation constructs no model runtime.
 18. Pending terminal delivery replays idempotently and dispatches head-only;
     queued generations retain their own inline waiters, covered-owner packets

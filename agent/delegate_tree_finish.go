@@ -74,10 +74,24 @@ func (c *delegateTreeController) BeginFinalization(lease delegateLease, mode del
 	case delegateSettlementOrdinary:
 		_, admitted, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
 		if err != nil {
-			return nil, false, err
+			exactAggregate, exact, exactErr := c.exactLeaseLocked(lease)
+			if exactErr != nil {
+				return nil, false, exactErr
+			}
+			if c.stop == nil {
+				return nil, false, err
+			}
+			_, active := c.stop.active[lease]
+			_, covered := c.stop.members[lease.delegateID]
+			if exactAggregate.Phase != delegatestore.PhaseStopping || exactAggregate.PendingStopSeq != c.stop.requestSeq ||
+				!active || !covered || exact.recoveryRequired || exact.binding == nil || !exact.binding.ready {
+				return nil, false, err
+			}
+			admitted = exact
+			mode = delegateSettlementTerminal
 		}
 		live = admitted
-		if len(live.pendingSteers) != 0 || c.hasSteeringClaimLocked(lease) {
+		if mode == delegateSettlementOrdinary && (len(live.pendingSteers) != 0 || c.hasSteeringClaimLocked(lease)) {
 			return nil, true, nil
 		}
 	case delegateSettlementTerminal:
@@ -113,6 +127,7 @@ func (c *delegateTreeController) BeginFinalization(lease delegateLease, mode del
 		if _, active := c.stop.active[lease]; active {
 			if _, covered := c.stop.members[lease.delegateID]; covered {
 				c.stop.settlementClaims[claim.token] = struct{}{}
+				c.signalStopProgressLocked()
 			}
 		}
 	}

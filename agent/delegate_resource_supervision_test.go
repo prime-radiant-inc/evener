@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1181,6 +1182,195 @@ func TestDelegateResourceSupervision_QuietAttentionClaimDrainsBeforeStopCompleti
 	if got := pendingQuietAttention(t, root); len(got) != 1 || got[0] != quiet.attentionID {
 		t.Fatalf("durable quiet attention after stop = %#v, want %q", got, quiet.attentionID)
 	}
+}
+
+func TestDelegateControllerOrdinaryFinalizationAdoptsExactCoveringStop(t *testing.T) {
+	root, controller, lease, clock := newStableQuietSupervisionHarness(t)
+	clock.Advance(delegateQuietWindow)
+	quiet, err := controller.BeginQuietAttention(root, lease, clock.Now())
+	if err != nil || quiet == nil {
+		t.Fatalf("BeginQuietAttention = %#v, %v", quiet, err)
+	}
+	result, _, _, err := controller.StopSubtree(rootDelegateActor("root-session"), lease.delegateID)
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+
+	finalization, continueRun, err := controller.BeginFinalization(lease, delegateSettlementOrdinary)
+	if err != nil || continueRun || finalization == nil {
+		t.Fatalf("BeginFinalization after covered stop = claim:%#v continue:%t err:%v", finalization, continueRun, err)
+	}
+	if finalization.mode != delegateSettlementTerminal {
+		t.Fatalf("effective finalization mode = %d, want terminal stop", finalization.mode)
+	}
+	select {
+	case <-finalization.ready:
+		t.Fatal("stopped finalization became ready before admitted quiet attention completed")
+	default:
+	}
+	if err := controller.CompleteQuietAttention(quiet, false); err != nil {
+		t.Fatalf("CompleteQuietAttention: %v", err)
+	}
+	select {
+	case <-finalization.ready:
+	default:
+		t.Fatal("stopped finalization remained blocked after quiet attention aborted")
+	}
+	if _, err := controller.FinishGeneration(lease, delegateFinish{}); err != nil {
+		t.Fatalf("FinishGeneration after quiet drain: %v", err)
+	}
+	if _, err := controller.Reconcile(emptyDelegateReconcileEvidence(controller)); err != nil {
+		t.Fatalf("Reconcile after stopped finalization: %v", err)
+	}
+	select {
+	case <-result.done:
+	default:
+		t.Fatal("stop remained pending after its exact generation finalized")
+	}
+	controller.mu.Lock()
+	aggregate := controller.durable[lease.delegateID]
+	live := controller.live[lease.delegateID]
+	stop := controller.stop
+	controller.mu.Unlock()
+	if aggregate == nil || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeStopped {
+		t.Fatalf("durable outcome = %#v, want stopped", aggregate)
+	}
+	if live == nil || live.binding != nil || stop != nil {
+		t.Fatalf("released state = live:%#v stop:%#v, want no binding or active stop", live, stop)
+	}
+}
+
+func TestDelegateControllerOrdinaryFinalizationRetainsModeWhenItPrecedesStop(t *testing.T) {
+	root, controller, lease, clock := newStableQuietSupervisionHarness(t)
+	clock.Advance(delegateQuietWindow)
+	quiet, err := controller.BeginQuietAttention(root, lease, clock.Now())
+	if err != nil || quiet == nil {
+		t.Fatalf("BeginQuietAttention = %#v, %v", quiet, err)
+	}
+	finalization, continueRun, err := controller.BeginFinalization(lease, delegateSettlementOrdinary)
+	if err != nil || continueRun || finalization == nil {
+		t.Fatalf("BeginFinalization before stop = claim:%#v continue:%t err:%v", finalization, continueRun, err)
+	}
+	result, _, _, err := controller.StopSubtree(rootDelegateActor("root-session"), lease.delegateID)
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	if finalization.mode != delegateSettlementOrdinary {
+		t.Fatalf("effective finalization mode = %d, want ordinary winner", finalization.mode)
+	}
+	if err := controller.CompleteQuietAttention(quiet, false); err != nil {
+		t.Fatalf("CompleteQuietAttention: %v", err)
+	}
+	if _, err := controller.CompleteSettlement(finalization, nil); !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("CompleteSettlement after stop = %v, want target busy", err)
+	}
+	if _, err := controller.FinishGeneration(lease, delegateFinish{}); err != nil {
+		t.Fatalf("FinishGeneration after quiet drain: %v", err)
+	}
+	if _, err := controller.Reconcile(emptyDelegateReconcileEvidence(controller)); err != nil {
+		t.Fatalf("Reconcile after stopped finalization: %v", err)
+	}
+	select {
+	case <-result.done:
+	default:
+		t.Fatal("stop remained pending after ordinary finalization winner drained")
+	}
+}
+
+func TestDelegateResourceSupervision_StopBeforeOrdinaryFinalizationDrainsQuietAttention(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+		close(entered)
+		<-release
+		return finalResponse("ordinary result before covered stop")
+	}}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
+	if started.result.Err != nil {
+		t.Fatalf("start stable delegate: %v", started.result.Err)
+	}
+	<-entered
+	child := root.subagents.get(fixture.childID)
+	if child == nil || child.sess == nil {
+		t.Fatalf("stable child %q was not tracked", fixture.childID)
+	}
+	lease := delegateLease{delegateID: fixture.delegateID, generation: 1}
+	type boundaryResult struct {
+		quiet *delegateQuietAttentionClaim
+		stop  delegateStopResult
+		err   error
+	}
+	boundary := make(chan boundaryResult, 1)
+	var boundaryOnce sync.Once
+	child.sess.cfg.testOnly.subagentBeforeSettlement = func(*subagent) {
+		boundaryOnce.Do(func() {
+			root.delegateController.mu.Lock()
+			live := root.delegateController.live[lease.delegateID]
+			activityAt := live.activityAt
+			root.delegateController.mu.Unlock()
+			quiet, err := root.delegateController.BeginQuietAttention(root, lease, activityAt.Add(delegateQuietWindow))
+			if err != nil || quiet == nil {
+				boundary <- boundaryResult{err: fmt.Errorf("BeginQuietAttention = %#v, %w", quiet, err)}
+				return
+			}
+			stop, _, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.delegateRootSessionID), lease.delegateID)
+			boundary <- boundaryResult{quiet: quiet, stop: stop, err: err}
+		})
+	}
+	close(release)
+	observed := <-boundary
+	if observed.err != nil {
+		t.Fatalf("stop-before-finalization boundary: %v", observed.err)
+	}
+	child.mu.Lock()
+	done := child.done
+	child.mu.Unlock()
+	root.delegateController.mu.Lock()
+	stop := root.delegateController.stop
+	root.delegateController.mu.Unlock()
+	if stop == nil || stop.requestSeq != observed.stop.requestSeq {
+		t.Fatalf("active stop = %#v, want request %d", stop, observed.stop.requestSeq)
+	}
+
+	select {
+	case <-done:
+		root.delegateController.mu.Lock()
+		_, active := stop.active[lease]
+		live := root.delegateController.live[lease.delegateID]
+		bindingRetained := live != nil && live.binding != nil && live.binding.lease == lease
+		root.delegateController.mu.Unlock()
+		if err := root.delegateController.CompleteQuietAttention(observed.quiet, false); err != nil {
+			t.Fatalf("cleanup CompleteQuietAttention: %v", err)
+		}
+		if _, err := root.delegateController.FinishGeneration(lease, delegateFinish{}); err != nil {
+			t.Fatalf("cleanup FinishGeneration: %v", err)
+		}
+		if _, err := root.delegateController.Reconcile(emptyDelegateReconcileEvidence(root.delegateController)); err != nil {
+			t.Fatalf("cleanup Reconcile: %v", err)
+		}
+		t.Fatalf("ordinary runner exited before quiet completion; stop active = %t, binding retained = %t", active, bindingRetained)
+	case <-stop.progress:
+	}
+	select {
+	case <-done:
+		t.Fatal("ordinary runner exited after claiming the stop but before quiet completion")
+	default:
+	}
+	if err := root.delegateController.CompleteQuietAttention(observed.quiet, false); err != nil {
+		t.Fatalf("CompleteQuietAttention: %v", err)
+	}
+	<-done
+	if _, err := root.delegateController.Reconcile(emptyDelegateReconcileEvidence(root.delegateController)); err != nil {
+		t.Fatalf("Reconcile after stopped finalization: %v", err)
+	}
+	select {
+	case <-observed.stop.done:
+	default:
+		t.Fatal("stop remained pending after runner drained quiet attention")
+	}
+	assertStableSupervisionOutcome(t, root, fixture.delegateID, delegatestore.OutcomeStopped)
 }
 
 func TestDelegateResourceSupervision_RestartStartsNoWatchdogOrProvider(t *testing.T) {

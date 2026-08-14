@@ -1575,7 +1575,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			continue
 		}
 		<-settlementClaim.ready
-		if settlementMode == delegateSettlementTerminal {
+		if settlementClaim.mode == delegateSettlementTerminal {
 			if stableDelegateFatalRun(err) {
 				a.gateFatalRun(err)
 			}
