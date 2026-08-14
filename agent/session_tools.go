@@ -136,6 +136,24 @@ func stableDelegateCreateTool(ctx context.Context, s *Session, args map[string]a
 	if result.Err != nil {
 		out.StartError = result.Err.Error()
 	}
+	return marshalStableDelegateCreateResult(out, maxChars)
+}
+
+func marshalStableDelegateCreateResult(out stableDelegateCreateResult, maxChars int) (string, error) {
+	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
+		return fit, err
+	}
+	// Preserve the durable identity and outcome by dropping optional diagnostics
+	// from least to most useful before falling back to the bounded core.
+	out.StartError = ""
+	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
+		return fit, err
+	}
+	out.Model = ""
+	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
+		return fit, err
+	}
+	out.Sandbox = nil
 	return marshalBoundedJSON(out, maxChars)
 }
 

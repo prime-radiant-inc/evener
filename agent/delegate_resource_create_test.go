@@ -199,6 +199,80 @@ func TestDelegateResourceCreate_PostCommitConstructionFailureClosesResumability(
 	}
 }
 
+func TestDelegateResourceCreate_RegisteredPostCommitFailureRetainsStableIdentityWithinMinimumLimit(t *testing.T) {
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	root.reg.OverrideLimits(map[string]schema.ToolOutputLimit{
+		"delegate": {MaxChars: 1, Strategy: schema.TruncTail},
+	})
+	enforceJobToolJSONLimits(root.reg)
+	registered := root.reg.Get("delegate")
+	if registered == nil || registered.Limit.MaxChars != jobToolResultMinJSONChars {
+		t.Fatalf("registered delegate output limit = %#v, want enforced minimum %d", registered, jobToolResultMinJSONChars)
+	}
+
+	wantErr := errors.New(strings.Repeat("oversized post-commit construction diagnostic ", 200))
+	root.cfg.testOnly.subagentPrepareFault = func(point string) error {
+		if point == "new_session" {
+			return wantErr
+		}
+		return nil
+	}
+	raw, err := json.Marshal(map[string]any{"task": "retain stable identity after oversized construction failure"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := root.reg.ExecuteCall(context.Background(), root.currentEnv(), llm.ToolCallData{
+		ID:        "task6-bounded-postcommit-failure",
+		Name:      "delegate",
+		Arguments: raw,
+	})
+	if call.IsError {
+		t.Fatalf("registered post-commit failure returned transport error: %s", call.Output)
+	}
+	resultJSON := toolResultJSON(call)
+	if got := jsonCharLen(resultJSON); got > jobToolResultMinJSONChars {
+		t.Fatalf("registered post-commit result length = %d, want <= %d", got, jobToolResultMinJSONChars)
+	}
+	var result stableDelegateCreateResult
+	if err := json.Unmarshal(resultJSON, &result); err != nil {
+		t.Fatalf("decode registered post-commit result %q: %v", resultJSON, err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(resultJSON, &fields); err != nil {
+		t.Fatalf("decode registered post-commit result fields: %v", err)
+	}
+	if _, exists := fields["error"]; exists {
+		t.Fatalf("bounded post-commit result retained oversized error diagnostic: %#v", fields)
+	}
+
+	aggregate := delegateAggregateSnapshot(t, root.delegateController, result.DelegateID)
+	if aggregate.Phase != delegatestore.PhaseClosed || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeFailed || aggregate.LatestOutcome.Reason != "construction_failed" || aggregate.Resumable {
+		t.Fatalf("durable post-commit failure = %#v, want closed failed/construction_failed/not resumable", aggregate)
+	}
+	if result.DelegateID == "" || result.DelegateID != aggregate.DelegateID {
+		t.Fatalf("registered delegate_id = %q, durable aggregate = %q", result.DelegateID, aggregate.DelegateID)
+	}
+	if result.ChildSessionID != aggregate.Descriptor.ChildSessionID {
+		t.Fatalf("registered child_session_id = %q, durable descriptor = %q", result.ChildSessionID, aggregate.Descriptor.ChildSessionID)
+	}
+	if result.Type != string(jobstore.JobDelegate) {
+		t.Fatalf("registered type = %q, want delegate", result.Type)
+	}
+	if result.Status != string(aggregate.LatestOutcome.Status) || result.Reason != aggregate.LatestOutcome.Reason {
+		t.Fatalf("registered outcome = %q/%q, durable outcome = %#v", result.Status, result.Reason, aggregate.LatestOutcome)
+	}
+	if result.Resumable == nil || *result.Resumable != aggregate.Resumable {
+		t.Fatalf("registered resumability = %#v, durable resumability = %t", result.Resumable, aggregate.Resumable)
+	}
+	if result.TranscriptRef == "" || result.TranscriptRef != aggregate.Descriptor.TranscriptRef {
+		t.Fatalf("registered transcript_ref = %q, durable descriptor = %q", result.TranscriptRef, aggregate.Descriptor.TranscriptRef)
+	}
+	wantModel := aggregate.Descriptor.ResolvedProfileID + "/" + aggregate.Descriptor.ResolvedModel
+	if result.Model != wantModel {
+		t.Fatalf("registered bounded model = %q, want retained diagnostic %q", result.Model, wantModel)
+	}
+}
+
 func TestDelegateResourceCreate_ResultMatchesCommittedSnapshot(t *testing.T) {
 	t.Run("stop wins before attach", func(t *testing.T) {
 		root, _, _ := newDelegateResourceBootstrapSession(t)

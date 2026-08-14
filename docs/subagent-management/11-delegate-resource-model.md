@@ -564,12 +564,16 @@ settles the durable generation. If construction or input admission fails after
 step 4, the tool
 returns a normal structured result containing the stable ID and failed outcome
 rather than a transport error that would drop the result; the durable resource
-is never hidden from its owner. A permanently unrestorable failure atomically
-appends terminal preparation, run finish, and resumability closure using the
-existing event kinds. Pre-commit validation or append failure may return a tool
-error because no delegate exists. If the compensating batch also fails, the exact
-non-launched binding and capacity stay latched for explicit stop or restart
-repair. No provider call occurs through any failure path.
+is never hidden from its owner. If the configured output bound cannot hold the
+full post-commit result, create omits optional diagnostics in error, model, then
+sandbox order; the bounded core always retains the stable ID, child identity,
+type, status, reason, resumability, and transcript reference. A permanently
+unrestorable failure atomically appends terminal preparation, run finish, and
+resumability closure using the existing event kinds. Pre-commit validation or
+append failure may return a tool error because no delegate exists. If the
+compensating batch also fails, the exact non-launched binding and capacity stay
+latched for explicit stop or restart repair. No provider call occurs through any
+failure path.
 
 From step 4 until ready is marked, the durable generation is active and may be
 stopped or exactly finished, but steer, model, tool, child, and shell admission
