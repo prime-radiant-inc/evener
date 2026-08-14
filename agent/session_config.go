@@ -257,6 +257,9 @@ type testConfig struct {
 	// delegateInitialInputAppend observes the real stable-create boundary
 	// immediately before the child transcript receives its initial user input.
 	delegateInitialInputAppend func(*Session)
+	// delegateAttentionReadFold replaces only resident attention verification
+	// reads. Nil preserves the production transcript fold.
+	delegateAttentionReadFold func(string, string) (delegateAttentionFold, error)
 	// delegateRestoreStat and delegateRestoreReadFile replace only restore-input
 	// filesystem reads for this session. Nil preserves the production paths.
 	delegateRestoreStat     func(string) (os.FileInfo, error)

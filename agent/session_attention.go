@@ -33,7 +33,7 @@ func (s *Session) appendDelegateNotificationDurably(attentionID, content string)
 		return false, errors.New("delegate attention requires an attached transcript writer")
 	}
 	path := transcriptPath(stateDir, sessionID)
-	fold, err := readDelegateAttentionFold(path, sessionID)
+	fold, err := s.readDelegateAttentionFold(path, sessionID)
 	if err != nil {
 		return false, err
 	}
@@ -41,6 +41,9 @@ func (s *Session) appendDelegateNotificationDurably(attentionID, content string)
 	if previous, exists := fold.content[attentionID]; exists {
 		if !reflect.DeepEqual(previous, message) {
 			return false, fmt.Errorf("attention %q has conflicting content", attentionID)
+		}
+		if err := s.retainDelegateAttentionTurn(fold.turns[attentionID]); err != nil {
+			return false, err
 		}
 		return false, nil
 	}
@@ -51,17 +54,48 @@ func (s *Session) appendDelegateNotificationDurably(attentionID, content string)
 	if err := writer.AppendDurable(turn); err != nil {
 		return false, err
 	}
-	verified, err := readDelegateAttentionFold(path, sessionID)
+	if err := s.retainDelegateAttentionTurn(turn); err != nil {
+		return false, err
+	}
+	verified, err := s.readDelegateAttentionFold(path, sessionID)
 	if err != nil {
 		return false, err
 	}
 	if persisted, exists := verified.content[attentionID]; !exists || !reflect.DeepEqual(persisted, message) {
 		return false, fmt.Errorf("attention %q was not durably appended", attentionID)
 	}
-	s.mu.Lock()
-	s.history = append(s.history, turn)
-	s.mu.Unlock()
+	if err := s.retainDelegateAttentionTurn(verified.turns[attentionID]); err != nil {
+		return false, err
+	}
 	return true, nil
+}
+
+func (s *Session) retainDelegateAttentionTurn(turn schema.Turn) error {
+	if turn.Kind != schema.TurnSteering || turn.AttentionID == "" {
+		return errors.New("durable delegate attention turn is invalid")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := range s.history {
+		resident := s.history[index]
+		if resident.AttentionID != turn.AttentionID {
+			continue
+		}
+		if resident.Kind != schema.TurnSteering || !reflect.DeepEqual(resident.Message, turn.Message) {
+			return fmt.Errorf("resident attention %q conflicts with durable content", turn.AttentionID)
+		}
+		s.history[index] = turn
+		return nil
+	}
+	s.history = append(s.history, turn)
+	return nil
+}
+
+func (s *Session) readDelegateAttentionFold(path, sessionID string) (delegateAttentionFold, error) {
+	if readFold := s.cfg.testOnly.delegateAttentionReadFold; readFold != nil {
+		return readFold(path, sessionID)
+	}
+	return readDelegateAttentionFold(path, sessionID)
 }
 
 // resolveAttentionDurably appends attention markers through the one writer

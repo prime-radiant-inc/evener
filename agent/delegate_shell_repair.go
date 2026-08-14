@@ -161,6 +161,7 @@ func readDelegateAttentionFold(path, expectedSessionID string) (delegateAttentio
 type delegateAttentionFold struct {
 	order       []string
 	content     map[string]llm.Message
+	turns       map[string]schema.Turn
 	resolutions map[string]delegateAttentionResolution
 }
 
@@ -178,6 +179,7 @@ func foldDelegateAttention(entries []transcript.Entry) (delegateAttentionFold, e
 				}
 			} else {
 				fold.content[turn.AttentionID] = turn.Message
+				fold.turns[turn.AttentionID] = turn
 				fold.order = append(fold.order, turn.AttentionID)
 			}
 		}
@@ -209,6 +211,7 @@ func foldDelegateAttention(entries []transcript.Entry) (delegateAttentionFold, e
 func newDelegateAttentionFold() delegateAttentionFold {
 	return delegateAttentionFold{
 		content:     make(map[string]llm.Message),
+		turns:       make(map[string]schema.Turn),
 		resolutions: make(map[string]delegateAttentionResolution),
 	}
 }

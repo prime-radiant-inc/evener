@@ -70,9 +70,11 @@ type AttentionResolutionInfo struct {
 	Disposition string `json:"disposition"`
 }
 
-// DelegateDeliveryCommit records that this exact tool-result turn durably
-// received a delegate delivery. It is persistence metadata, not model content.
+// DelegateDeliveryCommit records which exact tool call durably received one
+// delegate delivery on this tool-result turn. It is private persistence
+// metadata, not model content.
 type DelegateDeliveryCommit struct {
+	ToolCallID string `json:"tool_call_id"`
 	DeliveryID string `json:"delivery_id"`
 }
 

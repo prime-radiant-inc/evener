@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -109,7 +110,7 @@ func TestDelegateAttention_DeliveryCommitUsesCallerToolResultFsync(t *testing.T)
 	}
 	entries := decodeTranscriptEntries(t, fs.Fs, "/caller.jsonl")
 	last := entries[len(entries)-1].Turn
-	if len(last.DelegateDeliveryCommits) != 1 || last.DelegateDeliveryCommits[0].DeliveryID != firstPlan.deliveryID {
+	if len(last.DelegateDeliveryCommits) != 1 || last.DelegateDeliveryCommits[0].ToolCallID != "delegate-send" || last.DelegateDeliveryCommits[0].DeliveryID != firstPlan.deliveryID {
 		t.Fatalf("persisted delivery commits = %#v", last.DelegateDeliveryCommits)
 	}
 }
@@ -173,6 +174,76 @@ func TestDelegateAttention_DeliveryCommitReleasesNPlusOneOnlyAfterNFsync(t *test
 		}
 	default:
 		t.Fatal("N+1 was not released after N caller fsync")
+	}
+}
+
+func TestDelegateAttention_DeliveryCommitsPreserveExactToolCallPairsAndStayProviderPrivate(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 2, 2)
+	seedDelegateControllerIdle(t, c, "dlg_first", "")
+	seedDelegateControllerIdle(t, c, "dlg_second", "")
+	firstLease, firstWaiter := startDelegateDeliveryGeneration(t, c, "dlg_first", true)
+	firstPlan := finishDelegateDeliveryGeneration(t, c, firstLease, "first result").deliveries[0]
+	secondLease, secondWaiter := startDelegateDeliveryGeneration(t, c, "dlg_second", true)
+	secondPlan := finishDelegateDeliveryGeneration(t, c, secondLease, "second result").deliveries[0]
+	if _, err := deliverDelegatePacket(firstPlan, nil); err != nil {
+		t.Fatalf("deliver first packet: %v", err)
+	}
+	if _, err := deliverDelegatePacket(secondPlan, nil); err != nil {
+		t.Fatalf("deliver second packet: %v", err)
+	}
+	firstResolution := <-firstWaiter.resolution
+	secondResolution := <-secondWaiter.resolution
+
+	fs := afero.NewMemMapFs()
+	sess := newDelegateToolResultPersistenceSession(t, c, fs)
+	sess.queueDelegateDeliveryCommit("call-first", firstResolution.commit)
+	sess.queueDelegateDeliveryCommit("call-second", secondResolution.commit)
+	calls := []llm.ToolCallData{
+		{ID: "call-second", Name: "delegate_send"},
+		{ID: "call-first", Name: "delegate_send"},
+	}
+	results := []tool.ExecResult{
+		{CallID: "call-second", ToolName: "delegate_send", Output: `{"status":"completed"}`},
+		{CallID: "call-first", ToolName: "delegate_send", Output: `{"status":"completed"}`},
+	}
+	parts := []llm.ContentPart{
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call-second", Name: "delegate_send", Content: results[0].Output}},
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call-first", Name: "delegate_send", Content: results[1].Output}},
+	}
+	if err := sess.appendToolResults(context.Background(), calls, results, parts); err != nil {
+		t.Fatalf("append paired delegate results: %v", err)
+	}
+
+	entries := decodeTranscriptEntries(t, fs, "/caller.jsonl")
+	persisted := entries[len(entries)-1].Turn
+	want := map[string]string{
+		"call-first":  firstPlan.deliveryID,
+		"call-second": secondPlan.deliveryID,
+	}
+	if len(persisted.DelegateDeliveryCommits) != len(want) {
+		t.Fatalf("persisted delivery pairs = %#v", persisted.DelegateDeliveryCommits)
+	}
+	for _, commit := range persisted.DelegateDeliveryCommits {
+		if want[commit.ToolCallID] != commit.DeliveryID {
+			t.Fatalf("persisted delivery pair = %#v, want %q", commit, want[commit.ToolCallID])
+		}
+		delete(want, commit.ToolCallID)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing persisted delivery pairs = %#v", want)
+	}
+	sess.mu.Lock()
+	live := sess.history[len(sess.history)-1]
+	sess.mu.Unlock()
+	if len(live.DelegateDeliveryCommits) != 0 {
+		t.Fatalf("live provider turn exposed delivery commits = %#v", live.DelegateDeliveryCommits)
+	}
+	providerJSON, err := json.Marshal(expandHistory([]schema.Turn{live}, replayScope{}))
+	if err != nil {
+		t.Fatalf("marshal provider history: %v", err)
+	}
+	if bytes.Contains(providerJSON, []byte(firstPlan.deliveryID)) || bytes.Contains(providerJSON, []byte(secondPlan.deliveryID)) {
+		t.Fatalf("provider history exposed private delivery IDs: %s", providerJSON)
 	}
 }
 

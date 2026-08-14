@@ -811,30 +811,40 @@ func (s *Session) queueDelegateDeliveryCommit(callID string, commit *delegateToo
 	s.delegateDeliveryMu.Unlock()
 }
 
-func (s *Session) takeDelegateDeliveryCommits(calls []llm.ToolCallData) []*delegateToolResultCommit {
+type delegateToolCallDeliveryCommit struct {
+	toolCallID string
+	commit     *delegateToolResultCommit
+}
+
+func (s *Session) takeDelegateDeliveryCommits(calls []llm.ToolCallData) []delegateToolCallDeliveryCommit {
 	s.delegateDeliveryMu.Lock()
 	defer s.delegateDeliveryMu.Unlock()
-	var commits []*delegateToolResultCommit
+	var commits []delegateToolCallDeliveryCommit
 	for _, call := range calls {
-		commits = append(commits, s.delegateDeliveryCommits[call.ID]...)
+		for _, commit := range s.delegateDeliveryCommits[call.ID] {
+			commits = append(commits, delegateToolCallDeliveryCommit{toolCallID: call.ID, commit: commit})
+		}
 		delete(s.delegateDeliveryCommits, call.ID)
 	}
 	return commits
 }
 
-func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted llm.Message, commits []*delegateToolResultCommit) error {
+func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted llm.Message, commits []delegateToolCallDeliveryCommit) error {
 	liveTurn := schema.NewTurn(schema.TurnToolResults, live)
 	persistedTurn := liveTurn
 	persistedTurn.Message = persisted
-	for _, commit := range commits {
-		if commit != nil {
-			persistedTurn.DelegateDeliveryCommits = append(persistedTurn.DelegateDeliveryCommits, schema.DelegateDeliveryCommit{DeliveryID: commit.deliveryID})
+	for _, binding := range commits {
+		if binding.commit != nil {
+			persistedTurn.DelegateDeliveryCommits = append(persistedTurn.DelegateDeliveryCommits, schema.DelegateDeliveryCommit{
+				ToolCallID: binding.toolCallID,
+				DeliveryID: binding.commit.deliveryID,
+			})
 		}
 	}
 	if err := s.writeTranscriptDurable(persistedTurn); err != nil {
-		for _, commit := range commits {
-			if commit != nil {
-				_, _ = commit.Complete(false)
+		for _, binding := range commits {
+			if binding.commit != nil {
+				_, _ = binding.commit.Complete(false)
 			}
 		}
 		return err
@@ -842,11 +852,11 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 	s.mu.Lock()
 	s.history = append(s.history, liveTurn)
 	s.mu.Unlock()
-	for _, commit := range commits {
-		if commit == nil {
+	for _, binding := range commits {
+		if binding.commit == nil {
 			continue
 		}
-		plans, err := commit.Complete(true)
+		plans, err := binding.commit.Complete(true)
 		if err != nil {
 			return err
 		}

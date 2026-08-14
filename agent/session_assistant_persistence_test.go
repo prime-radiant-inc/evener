@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -19,6 +20,7 @@ import (
 )
 
 var errInjectedTranscriptWrite = errors.New("injected transcript write failure")
+var errInjectedAttentionReadback = errors.New("injected attention readback failure")
 
 func TestDelegateAttention_AppendIsIdempotentByIdentityAndContent(t *testing.T) {
 	sess := newDelegateAttentionTestSession(t)
@@ -44,6 +46,49 @@ func TestDelegateAttention_ConflictingIdentityIsCorruption(t *testing.T) {
 	}
 	if _, err := sess.appendDelegateNotificationDurably("attention-1", "different"); err == nil {
 		t.Fatal("conflicting attention content was accepted")
+	}
+}
+
+func TestDelegateAttention_FsyncReadbackAmbiguityRetainsAndRepairsExactResidentTurn(t *testing.T) {
+	sess := newDelegateAttentionTestSession(t)
+	reads := 0
+	sess.cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+		reads++
+		if reads == 2 {
+			return delegateAttentionFold{}, errInjectedAttentionReadback
+		}
+		return readDelegateAttentionFold(path, sessionID)
+	}
+	if appended, err := sess.appendDelegateNotificationDurably("attention-ambiguous", "durable attention"); appended || !errors.Is(err, errInjectedAttentionReadback) {
+		t.Fatalf("ambiguous attention append = appended:%t err:%v", appended, err)
+	}
+	durable, err := readDelegateAttentionFold(transcriptPath(sess.stateDir, sess.id), sess.id)
+	if err != nil {
+		t.Fatalf("read durable attention: %v", err)
+	}
+	want := durable.turns["attention-ambiguous"]
+	if want.AttentionID == "" {
+		t.Fatal("fsynced attention turn is absent from durable fold")
+	}
+	sess.mu.Lock()
+	resident := append([]schema.Turn(nil), sess.history...)
+	sess.mu.Unlock()
+	if len(resident) != 1 || !reflect.DeepEqual(resident[0], want) {
+		t.Fatalf("resident attention after ambiguous readback = %#v, want exact durable turn %#v", resident, want)
+	}
+
+	sess.mu.Lock()
+	sess.history = nil
+	sess.mu.Unlock()
+	sess.cfg.testOnly.delegateAttentionReadFold = nil
+	if appended, err := sess.appendDelegateNotificationDurably("attention-ambiguous", "durable attention"); err != nil || appended {
+		t.Fatalf("retry existing attention = appended:%t err:%v", appended, err)
+	}
+	sess.mu.Lock()
+	resident = append([]schema.Turn(nil), sess.history...)
+	sess.mu.Unlock()
+	if len(resident) != 1 || !reflect.DeepEqual(resident[0], want) {
+		t.Fatalf("repaired resident attention = %#v, want exact durable turn %#v", resident, want)
 	}
 }
 
