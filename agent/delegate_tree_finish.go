@@ -32,6 +32,8 @@ const (
 type delegateSettlementClaim struct {
 	token uint64
 	lease delegateLease
+	mode  delegateSettlementMode
+	ready <-chan struct{}
 }
 
 // SupervisionBoundary linearizes pending-steer and stop precedence before
@@ -58,21 +60,62 @@ func (c *delegateTreeController) SupervisionBoundary(lease delegateLease, mode d
 // BeginSettlement makes the final pending-steer decision and fences new work
 // while the runtime performs its last cleanup and samples terminal evidence.
 func (c *delegateTreeController) BeginSettlement(lease delegateLease) (*delegateSettlementClaim, bool, error) {
+	return c.BeginFinalization(lease, delegateSettlementOrdinary)
+}
+
+// BeginFinalization fences new runtime work and joins any quiet-attention write
+// that was already admitted for the exact generation. Only ordinary
+// finalization arbitrates pending steering.
+func (c *delegateTreeController) BeginFinalization(lease delegateLease, mode delegateSettlementMode) (*delegateSettlementClaim, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
-	if err != nil {
-		return nil, false, err
-	}
-	if len(live.pendingSteers) != 0 || c.hasSteeringClaimLocked(lease) {
-		return nil, true, nil
+	var live *delegateLiveState
+	switch mode {
+	case delegateSettlementOrdinary:
+		_, admitted, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
+		if err != nil {
+			return nil, false, err
+		}
+		live = admitted
+		if len(live.pendingSteers) != 0 || c.hasSteeringClaimLocked(lease) {
+			return nil, true, nil
+		}
+	case delegateSettlementTerminal:
+		aggregate, exact, err := c.exactLeaseLocked(lease)
+		if err != nil {
+			return nil, false, err
+		}
+		if aggregate.Phase != delegatestore.PhaseRunning && aggregate.Phase != delegatestore.PhaseStopping {
+			return nil, false, errDelegateTargetBusy
+		}
+		if exact.recoveryRequired || exact.binding == nil || !exact.binding.ready {
+			return nil, false, errDelegateTargetBusy
+		}
+		live = exact
+	default:
+		return nil, false, errDelegateTargetBusy
 	}
 	if c.hasSettlementClaimLocked(lease) {
 		return nil, false, errDelegateTargetBusy
 	}
 	c.nextToken++
-	claim := &delegateSettlementClaim{token: c.nextToken, lease: lease}
+	var ready <-chan struct{}
+	if live.quietClaim != nil {
+		ready = live.quietClaim.done
+	} else {
+		closed := make(chan struct{})
+		close(closed)
+		ready = closed
+	}
+	claim := &delegateSettlementClaim{token: c.nextToken, lease: lease, mode: mode, ready: ready}
 	c.settlementClaims[claim.token] = claim
+	if c.stop != nil {
+		if _, active := c.stop.active[lease]; active {
+			if _, covered := c.stop.members[lease.delegateID]; covered {
+				c.stop.settlementClaims[claim.token] = struct{}{}
+			}
+		}
+	}
 	c.evidenceVersion++
 	return claim, false, nil
 }
@@ -80,8 +123,11 @@ func (c *delegateTreeController) BeginSettlement(lease delegateLease) (*delegate
 func (c *delegateTreeController) CompleteSettlement(claim *delegateSettlementClaim, supplied *delegatestore.TerminalPacket) (delegateMutationPlans, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if claim == nil || c.settlementClaims[claim.token] != claim {
+	if claim == nil || claim.mode != delegateSettlementOrdinary || c.settlementClaims[claim.token] != claim {
 		return delegateMutationPlans{}, errDelegateStaleLease
+	}
+	if err := c.finalizationReadyLocked(claim); err != nil {
+		return delegateMutationPlans{}, err
 	}
 	if _, _, err := c.admitLeaseLocked(claim.lease, delegatestore.PhaseRunning); err != nil {
 		return delegateMutationPlans{}, err
@@ -103,10 +149,59 @@ func (c *delegateTreeController) CompleteSettlement(claim *delegateSettlementCla
 		}
 		return delegateMutationPlans{}, err
 	}
-	delete(c.settlementClaims, claim.token)
+	c.releaseSettlementClaimLocked(claim.token)
 	c.evidenceVersion++
 	plan := c.capturedPlanLocked(claim.lease.delegateID)
 	return delegateMutationPlans{updates: []delegateUpdatePlan{plan}}, nil
+}
+
+func (c *delegateTreeController) finalizationReadyLocked(claim *delegateSettlementClaim) error {
+	if claim == nil || c.settlementClaims[claim.token] != claim {
+		return errDelegateStaleLease
+	}
+	select {
+	case <-claim.ready:
+	default:
+		return errDelegateTargetBusy
+	}
+	live := c.live[claim.lease.delegateID]
+	if live == nil || live.binding == nil || live.binding.lease != claim.lease {
+		return errDelegateStaleLease
+	}
+	if live.quietClaim != nil {
+		return errDelegateTargetBusy
+	}
+	return nil
+}
+
+func (c *delegateTreeController) finalizationReadyForLeaseLocked(lease delegateLease, live *delegateLiveState) error {
+	if live != nil && live.quietClaim != nil {
+		return errDelegateTargetBusy
+	}
+	for _, claim := range c.settlementClaims {
+		if claim != nil && claim.lease == lease {
+			return c.finalizationReadyLocked(claim)
+		}
+	}
+	return nil
+}
+
+func (c *delegateTreeController) releaseSettlementClaimLocked(token uint64) {
+	delete(c.settlementClaims, token)
+	if c.stop != nil {
+		if _, tracked := c.stop.settlementClaims[token]; tracked {
+			delete(c.stop.settlementClaims, token)
+			c.signalStopProgressLocked()
+		}
+	}
+}
+
+func (c *delegateTreeController) releaseSettlementClaimsForLeaseLocked(lease delegateLease) {
+	for token, claim := range c.settlementClaims {
+		if claim != nil && claim.lease == lease {
+			c.releaseSettlementClaimLocked(token)
+		}
+	}
 }
 
 func (c *delegateTreeController) hasSettlementClaimLocked(lease delegateLease) bool {
@@ -142,6 +237,11 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 			return delegateMutationPlans{}, nil
 		}
 		return delegateMutationPlans{}, err
+	}
+	if aggregate.Phase == delegatestore.PhaseRunning || aggregate.Phase == delegatestore.PhaseStopping {
+		if err := c.finalizationReadyForLeaseLocked(lease, live); err != nil {
+			return delegateMutationPlans{}, err
+		}
 	}
 
 	endedAt := finish.endedAt
@@ -258,6 +358,7 @@ func delegateFinishMetadataEvents(events []delegatestore.Event, lease delegateLe
 }
 
 func (c *delegateTreeController) generationFinishedPlansLocked(lease delegateLease, deliveryID string) (delegateMutationPlans, context.CancelFunc) {
+	c.releaseSettlementClaimsForLeaseLocked(lease)
 	if c.stop != nil {
 		if _, tracked := c.stop.active[lease]; tracked {
 			delete(c.stop.active, lease)

@@ -63,6 +63,7 @@ type delegateQuietAttentionClaim struct {
 	attentionID string
 	content     string
 	receiver    *Session
+	done        chan struct{}
 }
 
 func (c *delegateTreeController) ReportActivity(lease delegateLease, at time.Time) error {
@@ -164,6 +165,9 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 	if err != nil {
 		return nil, err
 	}
+	if c.hasSettlementClaimLocked(lease) {
+		return nil, errDelegateTargetBusy
+	}
 	expectedReceiver := c.rootRuntime
 	if aggregate.Descriptor.ParentDelegateID != "" {
 		parent := c.live[aggregate.Descriptor.ParentDelegateID]
@@ -197,6 +201,7 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 		attentionID: delegateQuietAttentionIDForStretch(lease, live.quietSequence),
 		content:     delegateQuietAttentionContent(lease, activityAt),
 		receiver:    receiver,
+		done:        make(chan struct{}),
 	}
 	live.quietClaim = claim
 	c.quietClaims[claim.token] = claim
@@ -224,18 +229,18 @@ func (c *delegateTreeController) CompleteQuietAttention(claim *delegateQuietAtte
 			c.signalStopProgressLocked()
 		}
 	}
-	if !committed {
-		c.evidenceVersion++
-		return nil
+	var result error
+	if committed {
+		aggregate := c.durable[claim.lease.delegateID]
+		if aggregate == nil || aggregate.Generation != claim.lease.generation || !aggregate.CurrentRunOpen || aggregate.Phase != delegatestore.PhaseRunning || live == nil || live.binding == nil || live.binding.lease != claim.lease || live.quietSequence != claim.sequence || !live.activityAt.Equal(claim.activityAt) {
+			result = errDelegateStaleLease
+		} else {
+			live.quietNotified = true
+		}
 	}
-	aggregate := c.durable[claim.lease.delegateID]
-	if aggregate == nil || aggregate.Generation != claim.lease.generation || !aggregate.CurrentRunOpen || aggregate.Phase != delegatestore.PhaseRunning || live == nil || live.binding == nil || live.binding.lease != claim.lease || live.quietSequence != claim.sequence || !live.activityAt.Equal(claim.activityAt) {
-		c.evidenceVersion++
-		return errDelegateStaleLease
-	}
-	live.quietNotified = true
 	c.evidenceVersion++
-	return nil
+	close(claim.done)
+	return result
 }
 
 func (s *Session) appendQuietAttentionAtTurnBoundary(attentionID, content string) (bool, error) {

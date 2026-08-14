@@ -1000,19 +1000,144 @@ func TestDelegateResourceSupervision_QuietAttentionWaitsForOwnerTurnBoundary(t *
 	}
 }
 
+func TestDelegateControllerFinalizationDrainsAdmittedQuietAttention(t *testing.T) {
+	tests := []struct {
+		name string
+		mode delegateSettlementMode
+	}{
+		{name: "ordinary", mode: delegateSettlementOrdinary},
+		{name: "terminal", mode: delegateSettlementTerminal},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root, controller, lease, clock := newStableQuietSupervisionHarness(t)
+			clock.Advance(delegateQuietWindow)
+			quiet, err := controller.BeginQuietAttention(root, lease, clock.Now())
+			if err != nil || quiet == nil {
+				t.Fatalf("BeginQuietAttention = %#v, %v", quiet, err)
+			}
+			finalization, continueRun, err := controller.BeginFinalization(lease, test.mode)
+			if err != nil || continueRun || finalization == nil {
+				t.Fatalf("BeginFinalization = claim:%#v continue:%t err:%v", finalization, continueRun, err)
+			}
+			select {
+			case <-finalization.ready:
+				t.Fatal("finalization became ready before admitted quiet attention completed")
+			default:
+			}
+			if err := controller.CompleteQuietAttention(quiet, false); err != nil {
+				t.Fatalf("CompleteQuietAttention: %v", err)
+			}
+			select {
+			case <-finalization.ready:
+			default:
+				t.Fatal("finalization remained blocked after quiet attention aborted")
+			}
+		})
+	}
+}
+
+func TestDelegateResourceSupervision_QuietAttentionFsyncPrecedesFinalization(t *testing.T) {
+	tests := []struct {
+		name string
+		mode delegateSettlementMode
+	}{
+		{name: "ordinary", mode: delegateSettlementOrdinary},
+		{name: "terminal", mode: delegateSettlementTerminal},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root, controller, lease, clock := newStableQuietSupervisionHarness(t)
+			clock.Advance(delegateQuietWindow)
+			quiet, err := controller.BeginQuietAttention(root, lease, clock.Now())
+			if err != nil || quiet == nil {
+				t.Fatalf("BeginQuietAttention = %#v, %v", quiet, err)
+			}
+			finalization, continueRun, err := controller.BeginFinalization(lease, test.mode)
+			if err != nil || continueRun || finalization == nil {
+				t.Fatalf("BeginFinalization = claim:%#v continue:%t err:%v", finalization, continueRun, err)
+			}
+
+			var prematureErr error
+			if test.mode == delegateSettlementOrdinary {
+				_, prematureErr = controller.CompleteSettlement(finalization, nil)
+			} else {
+				_, prematureErr = controller.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeFailed, reason: "provider_failed"})
+			}
+			if !errors.Is(prematureErr, errDelegateTargetBusy) {
+				t.Fatalf("finalization before quiet fsync error = %v, want target busy", prematureErr)
+			}
+
+			deferred, err := root.appendQuietAttentionAtTurnBoundary(quiet.attentionID, quiet.content)
+			if err != nil || deferred {
+				t.Fatalf("appendQuietAttentionAtTurnBoundary = deferred:%t err:%v", deferred, err)
+			}
+			if err := controller.CompleteQuietAttention(quiet, true); err != nil {
+				t.Fatalf("CompleteQuietAttention after fsync: %v", err)
+			}
+			select {
+			case <-finalization.ready:
+			default:
+				t.Fatal("finalization remained blocked after quiet attention fsync")
+			}
+			if test.mode == delegateSettlementOrdinary {
+				if _, err := controller.CompleteSettlement(finalization, nil); err != nil {
+					t.Fatalf("CompleteSettlement after quiet fsync: %v", err)
+				}
+			}
+			if _, err := controller.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeFailed, reason: "provider_failed"}); err != nil {
+				t.Fatalf("FinishGeneration after quiet fsync: %v", err)
+			}
+			if got := pendingQuietAttention(t, root); len(got) != 1 || got[0] != quiet.attentionID {
+				t.Fatalf("durable quiet attention after finalization = %#v, want %q", got, quiet.attentionID)
+			}
+		})
+	}
+}
+
+func TestDelegateResourceSupervision_FinalizationRejectsLaterQuietAttention(t *testing.T) {
+	tests := []struct {
+		name string
+		mode delegateSettlementMode
+	}{
+		{name: "ordinary", mode: delegateSettlementOrdinary},
+		{name: "terminal", mode: delegateSettlementTerminal},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root, controller, lease, clock := newStableQuietSupervisionHarness(t)
+			clock.Advance(delegateQuietWindow)
+			finalization, continueRun, err := controller.BeginFinalization(lease, test.mode)
+			if err != nil || continueRun || finalization == nil {
+				t.Fatalf("BeginFinalization = claim:%#v continue:%t err:%v", finalization, continueRun, err)
+			}
+			quiet, err := controller.BeginQuietAttention(root, lease, clock.Now())
+			if quiet != nil || !errors.Is(err, errDelegateTargetBusy) {
+				t.Fatalf("BeginQuietAttention after finalization = claim:%#v err:%v, want target busy", quiet, err)
+			}
+		})
+	}
+}
+
 func TestDelegateResourceSupervision_QuietAttentionClaimDrainsBeforeStopCompletion(t *testing.T) {
 	root, controller, lease, clock := newStableQuietSupervisionHarness(t)
-	clock.Advance(10 * time.Minute)
-	claim, err := controller.BeginQuietAttention(root, lease, clock.Now())
-	if err != nil || claim == nil {
-		t.Fatalf("BeginQuietAttention = %#v, %v", claim, err)
+	clock.Advance(delegateQuietWindow)
+	quiet, err := controller.BeginQuietAttention(root, lease, clock.Now())
+	if err != nil || quiet == nil {
+		t.Fatalf("BeginQuietAttention = %#v, %v", quiet, err)
+	}
+	finalization, continueRun, err := controller.BeginFinalization(lease, delegateSettlementTerminal)
+	if err != nil || continueRun || finalization == nil {
+		t.Fatalf("BeginFinalization = claim:%#v continue:%t err:%v", finalization, continueRun, err)
+	}
+	select {
+	case <-finalization.ready:
+		t.Fatal("finalization became ready before admitted quiet attention completed")
+	default:
 	}
 	result, _, _, err := controller.StopSubtree(rootDelegateActor("root-session"), lease.delegateID)
 	if err != nil {
 		t.Fatalf("StopSubtree: %v", err)
-	}
-	if _, err := controller.FinishGeneration(lease, delegateFinish{}); err != nil {
-		t.Fatalf("FinishGeneration: %v", err)
 	}
 	if _, err := controller.Reconcile(emptyDelegateReconcileEvidence(controller)); err != nil {
 		t.Fatalf("Reconcile with quiet claim: %v", err)
@@ -1022,16 +1147,39 @@ func TestDelegateResourceSupervision_QuietAttentionClaimDrainsBeforeStopCompleti
 		t.Fatal("stop completed before its pre-admitted quiet claim drained")
 	default:
 	}
-	if err := controller.CompleteQuietAttention(claim, false); err != nil {
-		t.Fatalf("CompleteQuietAttention after generation finish: %v", err)
+	deferred, err := root.appendQuietAttentionAtTurnBoundary(quiet.attentionID, quiet.content)
+	if err != nil || deferred {
+		t.Fatalf("appendQuietAttentionAtTurnBoundary = deferred:%t err:%v", deferred, err)
+	}
+	if err := controller.CompleteQuietAttention(quiet, true); !errors.Is(err, errDelegateStaleLease) {
+		t.Fatalf("CompleteQuietAttention after stop = %v, want stale lease after durable drain", err)
+	}
+	select {
+	case <-finalization.ready:
+	default:
+		t.Fatal("finalization remained blocked after stopped quiet attention drained")
 	}
 	if _, err := controller.Reconcile(emptyDelegateReconcileEvidence(controller)); err != nil {
-		t.Fatalf("Reconcile after quiet claim: %v", err)
+		t.Fatalf("Reconcile while finalization owns generation: %v", err)
+	}
+	select {
+	case <-result.done:
+		t.Fatal("stop completed before finalization recorded stopped outcome")
+	default:
+	}
+	if _, err := controller.FinishGeneration(lease, delegateFinish{}); err != nil {
+		t.Fatalf("FinishGeneration after quiet drain: %v", err)
+	}
+	if _, err := controller.Reconcile(emptyDelegateReconcileEvidence(controller)); err != nil {
+		t.Fatalf("Reconcile after finalization: %v", err)
 	}
 	select {
 	case <-result.done:
 	default:
-		t.Fatal("stop remained pending after its quiet claim drained")
+		t.Fatal("stop remained pending after quiet drain and stopped finalization")
+	}
+	if got := pendingQuietAttention(t, root); len(got) != 1 || got[0] != quiet.attentionID {
+		t.Fatalf("durable quiet attention after stop = %#v, want %q", got, quiet.attentionID)
 	}
 }
 

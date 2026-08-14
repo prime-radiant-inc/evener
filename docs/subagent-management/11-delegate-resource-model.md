@@ -730,6 +730,15 @@ tells the child that new owner input arrived and the activation must continue;
 it does not prepare or publish a terminal packet. This gives steer and terminal
 acceptance one honest controller order.
 
+Ordinary and terminal completion then share one process-only finalization
+claim. The claim fences later quiet-attention admission and captures the
+completion channel of any quiet append already admitted for the exact
+generation. The runtime waits on that channel outside the controller mutex.
+Only after the quiet append commits or aborts may the controller revalidate the
+claim and perform durable terminal preparation or finish. Stop retains both
+claims and drains the quiet append before the same finalizer records the stopped
+outcome; it does not delete either process claim to manufacture progress.
+
 ### Model and tool admission
 
 Before each provider call and before each new tool execution, the child Session
@@ -931,7 +940,10 @@ releases capacity again and proceeds only with remaining stop cleanup.
 ### One exact finalizer
 
 Every runtime completion calls FinishGeneration with its delegate lease. Under
-the controller mutex, normal completion first passes BeginSettlement, which
+the controller mutex, runtime completion first passes BeginFinalization. That
+one process claim orders both ordinary and terminal completion against quiet
+attention; only the ordinary mode also arbitrates pending steering. Normal
+completion then passes CompleteSettlement, which
 must durably prepare either the accepted communicate packet or the canonical
 missing-terminal packet before it folds settling. There is no durable settling
 state without a prepared packet. Fatal, exhausted, cancelled, and stop-forced

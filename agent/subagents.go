@@ -1542,23 +1542,20 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			err = context.Canceled
 		}
 		settlementMode = delegateSettlementModeForRun(err, cancelRequested)
-		if stableRun && settlementMode == delegateSettlementTerminal && stableDelegateFatalRun(err) {
-			a.gateFatalRun(err)
-		}
 		if !stableRun || a.sess.delegateController == nil {
 			finish = a.stableDelegateFinish(res, err)
 			break
 		}
-		if settlementMode == delegateSettlementTerminal {
-			finish = a.stableDelegateFinish(res, err)
-			break
-		}
-		settlementClaim, continueRun, settleErr := a.sess.delegateController.BeginSettlement(lease)
+		settlementClaim, continueRun, settleErr := a.sess.delegateController.BeginFinalization(lease, settlementMode)
 		if settleErr != nil {
 			if !errors.Is(settleErr, errDelegateTargetBusy) {
 				err = errors.Join(err, settleErr)
 			}
-			if err != nil {
+			if settlementMode == delegateSettlementTerminal {
+				if stableDelegateFatalRun(err) {
+					a.gateFatalRun(err)
+				}
+			} else if err != nil {
 				a.gateFatalRun(err)
 			}
 			finish = a.stableDelegateFinish(res, err)
@@ -1576,6 +1573,14 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			kind = EntryContinuation
 			runStartedFromWatch = false
 			continue
+		}
+		<-settlementClaim.ready
+		if settlementMode == delegateSettlementTerminal {
+			if stableDelegateFatalRun(err) {
+				a.gateFatalRun(err)
+			}
+			finish = a.stableDelegateFinish(res, err)
+			break
 		}
 		if err != nil {
 			a.gateFatalRun(err)
