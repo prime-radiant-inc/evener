@@ -19,12 +19,12 @@ import { Badge } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useIsMobile } from "../useIsMobile";
 import { Rail } from "./Rail";
-import styles from "./Rail.module.css";
+import styles from "./RailHost.module.css";
 import { setRailRevealHandler } from "./railController";
 
 const CLASS = {
-  chipBar: requireClass(styles.chipBar, "Rail.module.css", "chipBar"),
-  chip: requireClass(styles.chip, "Rail.module.css", "chip"),
+  chipBar: requireClass(styles.chipBar, "RailHost.module.css", "chipBar"),
+  chip: requireClass(styles.chip, "RailHost.module.css", "chip"),
 };
 
 // Ctrl+B is the macOS emacs-style "move cursor back one character" binding

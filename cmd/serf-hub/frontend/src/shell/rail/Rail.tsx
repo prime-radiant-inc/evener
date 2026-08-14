@@ -63,6 +63,7 @@ import {
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
+import dialogStyles from "./railDialog.module.css";
 import { loadExpansion, saveExpansion } from "./railExpansion";
 import {
   archivedCount,
@@ -92,9 +93,9 @@ const CLASS = {
   sectionDisclosure: requireClass(styles.sectionDisclosure, "Rail.module.css", "sectionDisclosure"),
   sectionHeadingRow: requireClass(styles.sectionHeadingRow, "Rail.module.css", "sectionHeadingRow"),
   sectionHeadingAction: requireClass(styles.sectionHeadingAction, "Rail.module.css", "sectionHeadingAction"),
-  dialogField: requireClass(styles.dialogField, "Rail.module.css", "dialogField"),
-  dialogActions: requireClass(styles.dialogActions, "Rail.module.css", "dialogActions"),
-  pickerError: requireClass(styles.pickerError, "Rail.module.css", "pickerError"),
+  dialogField: requireClass(dialogStyles.dialogField, "railDialog.module.css", "dialogField"),
+  dialogActions: requireClass(dialogStyles.dialogActions, "railDialog.module.css", "dialogActions"),
+  pickerError: requireClass(dialogStyles.pickerError, "railDialog.module.css", "pickerError"),
   srOnly: requireClass(styles.srOnly, "Rail.module.css", "srOnly"),
 };
 

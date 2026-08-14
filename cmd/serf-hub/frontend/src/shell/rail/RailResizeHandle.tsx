@@ -18,10 +18,10 @@
 import { type KeyboardEvent, type PointerEvent, type RefObject, useState } from "react";
 import { clampSidebarWidth, SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN } from "../../stores/prefs";
 import { requireClass } from "../../widgets/internal/requireClass";
-import styles from "./Rail.module.css";
+import styles from "./RailResizeHandle.module.css";
 
 const CLASS = {
-  resizeHandle: requireClass(styles.resizeHandle, "Rail.module.css", "resizeHandle"),
+  resizeHandle: requireClass(styles.resizeHandle, "RailResizeHandle.module.css", "resizeHandle"),
 };
 
 // The custom property Rail.module.css's own `.rail` width reads. Set inline by

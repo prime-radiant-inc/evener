@@ -1,0 +1,325 @@
+/* Row content (RailRow.tsx).
+ * The outer role=treeitem div itself, incl. its own :focus-visible ring, is
+ * owned by widgets/tree/tree.module.css; these classes only style what
+ * renderRow puts inside it. The nested-level guide rail (.section
+ * [role="group"]) lives in Rail.module.css: it selects through Rail.tsx's
+ * own .section, and a CSS Modules class only resolves to the same scoped
+ * name inside the stylesheet that declares it.
+ *
+ * The content wrapper is `.railRow`, NOT `.row`: tree.module.css already
+ * owns a bare `.row` (the treeitem), and CSS Modules only keeps the two
+ * apart in the scoped production build - a consumer loading both
+ * stylesheets unscoped (the layoutguard harnesses, which concatenate real
+ * .module.css files verbatim) would see each module's `.row` rule land on
+ * the other's element. Distinct names make the unscoped load behave like
+ * the scoped one, so a harness reproducing this DOM needs no corrective
+ * CSS of its own. */
+
+.railRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  /* The leading padding is the signal dot's home: .signal outdents into it
+   * (negative margin, below), so the dot hangs LEFT of the text and every
+   * row's text starts at this one x - dotted or not. 14px = 4px edge
+   * breathing + 6px dot + 4px gap to the text. */
+  padding-left: 14px;
+  /* Containing block for the absolutely-positioned `.actions` overlay
+   * below - without it that overlay resolves against the nearest
+   * positioned ancestor instead (the scrolling rail body, or the viewport)
+   * and detaches from its own row entirely. */
+  position: relative;
+}
+
+/* No transition here: `.actions`'s reveal mask is a linear-gradient, which
+ * cannot interpolate, so it snaps between states instantly. If this wash
+ * faded in over --motion-duration-hover, the mask would snap into place
+ * mid-fade, visibly out of lockstep with the background it's meant to
+ * match - so the wash has to be instant too. */
+.railRow:hover {
+  background: var(--hover-1);
+}
+
+/* Touch target (UX fix): a coarse pointer (phone/tablet touch) needs the
+ * platform's 44px tap floor, the same treatment modelswitch.module.css's own
+ * .trigger rule gets. min-height, not height - button.module.css's own
+ * mobile block follows the same rule - so this only ever GROWS the row,
+ * never overrides its desktop sizing. */
+@media (pointer: coarse) {
+  .railRow {
+    min-height: var(--tap-min);
+  }
+
+  /* UX fix, real-phone measurement: the row's "..."/"+" actions buttons
+   * (ActionsMenu's trigger, ProjectRow's IconButton - both plain <button>
+   * descendants of `.actions`) measured ~47x32, under the tap floor even
+   * though `.railRow` itself already reaches it. min-height, not height, so
+   * each button's own desktop sizing (owned by widgets/menu /
+   * widgets/iconbutton, not this file) stays untouched everywhere else. */
+  .actions button {
+    min-height: var(--tap-min);
+  }
+}
+
+/* Row actions (RailRow's "+"/"..." trigger buttons; both a session row's
+ * single "..." and a project row's "+" pair): quiet by default -
+ * transparent, borderless, invisible - revealed on row hover/focus so the
+ * rail reads as dense and quiet (design bar: Linear/VS Code-quality sidebar)
+ * instead of every row showing a permanently-loud bordered button. `.railRow` is
+ * a child of the Tree widget's own role=treeitem element (tree.module.css),
+ * which is what actually receives roving-tabindex focus - hence the
+ * [role="treeitem"]:focus selector below, rather than :focus-within on
+ * `.railRow` itself (a descendant-focus check would never match the ANCESTOR
+ * treeitem being focused). `:has(button[aria-expanded="true"])` keeps a row
+ * revealed while ITS OWN menu is open (closing on blur/Escape already
+ * reverts it via Menu's own isOpen state); an ancestor selector is scoped
+ * to `.actions` so an open menu on one row never reveals another's.
+ *
+ * Out of flow and pinned to the row's right edge, so a hidden->revealed
+ * transition costs the row's own content exactly zero width: the title
+ * column and the timestamp/Badge lay out as if these buttons weren't
+ * there, and the revealed buttons paint ON TOP of the timestamp instead of
+ * claiming a slot beside it (which made every actionable row narrower for
+ * its title than its neighbours). `.railRow` above is the containing block.
+ *
+ * The masking background is what makes overlapping legible: it always
+ * matches whatever `.railRow` itself is painting underneath at that moment
+ * - `--surface-canvas` (the rail's own background, `.rail`) at rest, or
+ * `--hover-1` once `.railRow:hover` paints its own wash - so the overlay
+ * reads as the row's own right edge rather than a floating island, and the
+ * covered text can't bleed through the "⋯" glyph. It's a left-to-right
+ * gradient rather than a flat fill because a hard opaque edge slices
+ * whatever it covers mid-glyph (a half-rendered letter reads as a rendering
+ * bug); the ramp reaches full opacity before `padding-left` ends, so the
+ * buttons themselves always sit on fully-masked ground. The opacity lives
+ * on the container, not the buttons, so the mask fades in and out with what
+ * it's masking. */
+.actions {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: var(--space-1);
+  padding-left: var(--space-5);
+  background: linear-gradient(to right, transparent, var(--surface-canvas) var(--space-5));
+  opacity: 0;
+  transition: opacity 120ms var(--motion-easing-standard);
+}
+
+[role="treeitem"]:focus .actions,
+.actions:has(button[aria-expanded="true"]) {
+  opacity: 1;
+}
+
+/* The real-mouse-hover case gets its own rule, not folded into the one
+ * above: `.railRow:hover` paints `--hover-1` under the row (see that rule),
+ * so the mask's own background has to swap to match, on top of the same
+ * opacity flip the focus/open-menu case does. */
+.railRow:hover .actions {
+  opacity: 1;
+  background: linear-gradient(to right, transparent, var(--hover-1) var(--space-5));
+}
+
+/* Touch has no hover to reveal these with - stay visible below the mobile
+ * breakpoint (useIsMobile.ts's own 899px threshold), matching TreeDrawer's
+ * touch-first rail presentation. Permanently visible means permanently
+ * masking, so touch drops the overlay entirely and goes back to a real
+ * flex slot beside the timestamp: the age stays readable, and there is no
+ * hover state left for an overlay to buy zero-shift for anyway. */
+@media (max-width: 899px) {
+  .actions {
+    position: static;
+    padding-left: 0;
+    background: none;
+    opacity: 1;
+  }
+}
+
+/* The signal dot renders only when the row has a dot to show - working /
+ * waiting on you / failed - and hangs OUTDENTED, left of the title line's
+ * text, so state never moves the text's x: the negative margin-left exactly
+ * cancels the dot's own width (6px, matching cadence.module.css's .dot) plus
+ * the .titleLine gap after it (var(--space-1)), so the title starts at the
+ * same position whether or not a dot precedes it. The dot itself lands
+ * inside .railRow's 14px leading padding (its left edge sits 4px in from the
+ * row's box edge), never clipping at any nesting depth.
+ *
+ *   advance = margin-left (-10px) + width (6px) + .titleLine gap (4px) = 0
+ */
+.signal {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  width: 6px;
+  margin-left: -10px;
+}
+
+/* The title line: signal dot (outdented, when present), the label, and the
+ * trailing expand/collapse chevron on branch rows - the same inline,
+ * after-the-text chevron position the transcript's disclosure rows use.
+ * A leaf row renders no chevron, and because the chevron trails the text
+ * there is no hole to reserve: one title x-position holds across the whole
+ * list with nothing reserved for it. */
+.titleLine {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* The trailing chevron button: a quiet inline glyph hugging the title text,
+ * smaller than the app's default 14px icon box so it reads as part of the
+ * line rather than as a separate control. */
+.chevronButton {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink-low);
+  cursor: default;
+}
+
+/* The row's text column: the title line, and on a signal row a gloss line
+ * under it. A column rather than two siblings directly in `.railRow` so the
+ * row's own `align-items: center` centers whatever it holds vertically
+ * instead of stretching each line to the row's full height - which is what
+ * keeps a one-line quiet row and a two-line signal row both vertically
+ * centered. */
+.textCol {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  /* min-width: 0 is required for ellipsis truncation inside a flex row -
+   * without it a flex item won't shrink below its content's natural width. */
+  min-width: 0;
+}
+
+.label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  /* Same flex-shrink enabler as .textCol: the label sits inside .titleLine
+   * beside the trailing chevron, and must give up its own overflow (not the
+   * chevron's slot) when the row runs narrow. */
+  min-width: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+}
+
+/* Second line, rendered only on a SIGNAL row (RailRow.tsx's SessionRow): a
+ * short, honest gloss of why that row wants attention - the state worded for a
+ * person, plus its branch. Never a faked liveness cue. A quiet row has no
+ * second line at all, so this is also what makes signal rows taller than quiet
+ * ones - deliberately, so the rows worth finding are physically bigger.
+ * It ellipsizes inside the same min-width:0 column as the title, so a long
+ * branch name costs the branch its tail rather than costing the title, the one
+ * thing that identifies the row. */
+.activity {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
+
+/* kata zq7g: a signal row's gloss text is tinted to match its own Cadence
+ * dot family (RailRow's local STATE_FAMILY, mirroring cadence/index.tsx's
+ * private mapping - see that widget's own doc comment on why the mapping is
+ * duplicated per surface rather than shared). Before this, EVERY signal
+ * state (working/needs-you/failed) shared the same --ink-low grey text, so
+ * the 6px dot was the only place the state's urgency actually showed - a
+ * person had to already know to look there. Text carries the color instead
+ * of adding new chrome (a banner, a pill) - "the design system has a
+ * deliberate four-colour budget; prefer text" - so budget is never spent
+ * twice for the same fact.
+ *
+ * RailRow.module.css is not a `widgets/<name>/<name>.module.css` path, so
+ * this needs its own exact-path entry on token-contract.test.ts's
+ * semantic-var allowlist (mirroring the dockview-theme.css naming exception) rather than
+ * qualifying automatically under WIDGET_STYLESHEET_RE.
+ */
+.activityAlive {
+  color: var(--alive);
+}
+
+.activityAttention {
+  color: var(--attention);
+}
+
+.activityDanger {
+  color: var(--danger);
+}
+
+/* Right-aligned relative timestamp - the row's OTHER right-slot occupant
+ * (the Task-7 needs-you Badge) renders in this same position; RailRow.tsx
+ * shows at most one of the two, never both. */
+.time {
+  flex: none;
+  margin-left: auto;
+  color: var(--ink-low);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+}
+
+/* Third occupant of the same right slot as .time and the Badge (RailRow.tsx
+ * shows exactly one of the three): the words a session that has never run
+ * shows INSTEAD of an age. Set in the UI sans face rather than .time's mono,
+ * because this is a sentence, not a measurement - and in --ink-mid rather than
+ * .time's --ink-low, because a glanceable age can sit below the AA text floor
+ * and a phrase the reader has to actually read cannot. Deliberately NOT a
+ * semantic hue: a session nobody has started yet is not an error and not an
+ * appeal for attention. */
+.notStarted {
+  flex: none;
+  margin-left: auto;
+  white-space: nowrap;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.star {
+  flex: none;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.loadingRow {
+  display: block;
+  width: 100%;
+  color: var(--ink-low);
+  font-size: var(--font-size-ui);
+}
+
+/* The "+N older" note for rows the server capped away. Quiet on purpose: it
+ * is a footnote about the list, not an entry in it, so it takes the caption
+ * size and the lowest ink rather than sitting at row weight and competing
+ * with the sessions above it. */
+.overflow {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
+
+/* Visually hidden but still reachable by assistive tech - gives the
+ * actions Menu's trigger (an icon-only "⋯") a real accessible name without
+ * widening the row for visible text (see RailRow.tsx's ActionsMenu). */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

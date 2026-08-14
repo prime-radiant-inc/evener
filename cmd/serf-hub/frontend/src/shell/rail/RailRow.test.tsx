@@ -11,8 +11,8 @@ import { Tree, type TreeRowInfo } from "../../widgets";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import * as railActions from "./actions";
-import railStyles from "./Rail.module.css";
 import { activityGloss, cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
+import railStyles from "./RailRow.module.css";
 import type {
   InactiveFoldRailNode,
   LoadingRailNode,
@@ -361,7 +361,7 @@ describe("inactive-subagent fold row", () => {
 
   test("the stylesheet carries no inactiveFold override at all", () => {
     const here = dirname(fileURLToPath(import.meta.url));
-    const css = readFileSync(join(here, "Rail.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
     expect(css).not.toMatch(/\.inactiveFold/);
   });
 
@@ -372,13 +372,13 @@ describe("inactive-subagent fold row", () => {
   // at the same x.
   test("the row reserves the dot's outdent padding", () => {
     const here = dirname(fileURLToPath(import.meta.url));
-    const css = readFileSync(join(here, "Rail.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
     expect(css).toMatch(/\.railRow\s*\{[^}]*padding-left:\s*14px;/);
   });
 
   test("the signal dot outdents by exactly its own advance", () => {
     const here = dirname(fileURLToPath(import.meta.url));
-    const css = readFileSync(join(here, "Rail.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
     expect(css).toMatch(/\.signal\s*\{[^}]*width:\s*6px;[^}]*margin-left:\s*-10px;/);
   });
 });
@@ -430,7 +430,7 @@ describe("session row", () => {
   // trailing chevron, in that order, whether or not the row has children -
   // the chevron is simply absent on a leaf. This is what keeps one title
   // x-position across a mixed tree: the dot hangs in the row's leading
-  // padding (see .signal in Rail.module.css), so it participates in the DOM
+  // padding (see .signal in RailRow.module.css), so it participates in the DOM
   // order without shifting the label.
   test.each([true, false])(
     "the title line is signal-dot, label, then trailing chevron (hasChildren %s)",
@@ -596,7 +596,7 @@ describe("session row", () => {
     ["warning", railStyles.activityAttention, "activityAttention"],
     ["errored", railStyles.activityDanger, "activityDanger"],
   ] as const)("a signal row (%s) tints its gloss text with the matching family color", (state, familyClass, name) => {
-    if (familyClass === undefined) throw new Error(`Rail.module.css is missing the "${name}" class`);
+    if (familyClass === undefined) throw new Error(`RailRow.module.css is missing the "${name}" class`);
     render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info({ depth: 1 })} actions={actions()} />);
     const activity = screen.getByTestId("rail-row-activity");
     expect(activity.className.split(" ")).toContain(familyClass);
@@ -1177,7 +1177,7 @@ describe("session row", () => {
   // StackHost.test.tsx / radiogroup.test.tsx pin their own layout-critical
   // declarations.
   test("the activity line's stylesheet rule ellipsizes rather than wraps, so metadata never grows the row", () => {
-    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Rail.module.css"), "utf8");
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "RailRow.module.css"), "utf8");
     const activityRule = /\.activity\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
     expect(activityRule).toMatch(/white-space:\s*nowrap/);
     expect(activityRule).toMatch(/text-overflow:\s*ellipsis/);
@@ -1441,19 +1441,30 @@ describe("roving-tabindex integration (Tree + RailRow)", () => {
 //
 // jsdom applies no stylesheet at all (vite.config.ts's test block enables
 // no `css` processing), so "hovering a row costs zero layout width" is not
-// assertable against a rendered tree here. These read Rail.module.css off
+// assertable against a rendered tree here. These read RailRow.module.css off
 // disk and pin the structure that makes it true - same mechanism as
 // styles/display-gates.test.ts and widgets/tooltip's own touch gate.
-describe("row actions overlay (Rail.module.css)", () => {
-  const RAIL_CSS = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Rail.module.css"), "utf8");
+describe("row actions overlay (RailRow.module.css)", () => {
+  const RAIL_CSS = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "RailRow.module.css"), "utf8");
   // Block comments stripped so a class or token named only in prose can
   // never satisfy an assertion (same discipline as token-contract.test.ts).
   const CSS = RAIL_CSS.replace(/\/\*[\s\S]*?\*\//g, " ");
+  // The mask-matches-its-ground contract below spans two stylesheets: the
+  // ground (.rail's canvas background) is Rail.module.css's, while the mask
+  // (.actions) is this file's.
+  const RAIL_CHROME_CSS = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "Rail.module.css"),
+    "utf8",
+  ).replace(/\/\*[\s\S]*?\*\//g, " ");
+
+  function ruleIn(css: string, selector: string): string | null {
+    const escaped = selector.replace(/[.[\]"^$*+?()|{}\\]/g, "\\$&");
+    const match = new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(css);
+    return match ? match[1]! : null;
+  }
 
   function ruleFor(selector: string): string | null {
-    const escaped = selector.replace(/[.[\]"^$*+?()|{}\\]/g, "\\$&");
-    const match = new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(CSS);
-    return match ? match[1]! : null;
+    return ruleIn(CSS, selector);
   }
 
   test("actions are taken out of flow and pinned to the row's right edge, so revealing them shifts nothing", () => {
@@ -1497,7 +1508,7 @@ describe("row actions overlay (Rail.module.css)", () => {
     // At rest a row shows the rail's own canvas background through it (a
     // row paints no background of its own - widgets/tree/tree.module.css
     // sets none), so the resting mask matches that token.
-    expect(ruleFor(".rail")).toMatch(/background:\s*var\(--surface-canvas\)/);
+    expect(ruleIn(RAIL_CHROME_CSS, ".rail")).toMatch(/background:\s*var\(--surface-canvas\)/);
     expect(ruleFor(".actions")).toMatch(/background:[^;]*var\(--surface-canvas\)/);
 
     // Once `.railRow:hover` paints its own `--hover-1` wash (see that rule),

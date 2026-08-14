@@ -1,0 +1,33 @@
+/* Hidden-sidebar chip (RailHost): when the persisted sidebarHidden boolean is
+ * true, the docked rail is replaced by this one top-left ☰ button that docks
+ * it back. Carries the needs-you Badge so attention stays visible while the
+ * tree is hidden. */
+.chipBar {
+  flex: none;
+  align-self: flex-start;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  min-width: var(--space-7);
+  height: var(--space-7);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-1);
+  color: var(--ink-mid);
+  cursor: default;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.chip:hover {
+  background: var(--hover-1);
+}
+
+.chip:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}

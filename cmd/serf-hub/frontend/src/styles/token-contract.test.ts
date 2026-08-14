@@ -410,15 +410,17 @@ const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger)\b/;
 // be called button.module.css) can't ride along on a real widget's entry.
 const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 
-// kata zq7g: shell/rail/Rail.module.css tints a signal row's gloss text with
-// its own state family (working/needs-you/failed - see RailRow.tsx's
+// kata zq7g: shell/rail/RailRow.module.css tints a signal row's gloss text
+// with its own state family (working/needs-you/failed - see RailRow.tsx's
 // ACTIVITY_FAMILY_CLASS) so the rail's "waiting on you" signal is no longer
-// carried by a 6px dot alone. Rail.module.css is a shell stylesheet, not a
+// carried by a 6px dot alone. RailRow.module.css is a shell stylesheet, not a
 // widget (it lives under shell/rail/, not widgets/<name>/), so it can never
 // match WIDGET_STYLESHEET_RE no matter how SEMANTIC_USE_ALLOWLIST is
 // extended - this is a deliberate, exact-path exception, the same shape as
 // the dockview-theme.css naming exception above, scoped to this one file so
-// a same-named stylesheet elsewhere can't ride along on it.
+// a same-named stylesheet elsewhere can't ride along on it. (The rail's
+// signal hues live with the row content in RailRow.module.css; Rail.module.
+// css itself carries none.)
 //
 // kata 3h80: panes/session/transcript/tools/subagentmodule.module.css earns
 // the same exception for the same structural reason - it lives under
@@ -427,7 +429,7 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // contains. Its own failure edge (`.module[data-has-failure="true"]`) is the
 // module-level "a child failed" signal parity §12 calls for - the failure
 // colour has to come from somewhere, and this is the same deliberate,
-// exact-path route Rail.module.css already established, not a new one.
+// exact-path route RailRow.module.css already established, not a new one.
 //
 // kata crcf: panes/session/composer/askDock/askdock.module.css earns the
 // same exception for the same structural reason - it lives under
@@ -457,7 +459,7 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // dense tree's failure text (.denseFailed: the terminal-row "failed" meta
 // suffix and the fold row's "· M failed" count), which the 2026-08-05
 // activity-view redesign spec assigns to the danger hue exactly the way
-// Rail.module.css's failure signals already established.
+// RailRow.module.css's failure signals already established.
 //
 // task-list-ui task 8: panes/session/chrome/taskspanel.module.css earns the
 // same exception for the same structural reason - it lives under
@@ -477,8 +479,14 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // right now" moment after askDock's ask batch (kata crcf, above), same
 // structural reason, so it earns the same --attention-bg/--attention-edge
 // container tint askDock's .batch uses instead of a neutral Card.
+// shell/rail/railDialog.module.css earns the same exception for the same
+// structural reason - it lives under shell/rail/, not widgets/<name>/, so it
+// can never match WIDGET_STYLESHEET_RE. Its one semantic reach is --danger
+// on .pickerError, the rail dialogs' inline failure text - error text is the
+// danger hue's canonical, ungateable job.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
-  "shell/rail/Rail.module.css",
+  "shell/rail/RailRow.module.css",
+  "shell/rail/railDialog.module.css",
   "panes/session/transcript/tools/subagentmodule.module.css",
   "panes/session/composer/askDock/askdock.module.css",
   "panes/session/transcript/tools/taskcheck.module.css",
@@ -497,12 +505,12 @@ for (const [path, text] of OTHER_STYLESHEETS) {
   });
 }
 
-test("the Rail.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("shell/rail/Rail.module.css")).toBe(true);
+test("the RailRow.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("shell/rail/RailRow.module.css")).toBe(true);
   // A same-named decoy anywhere else must still go through the normal
   // widget-allowlist check, exactly like the dockview-theme.css precedent.
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/Rail.module.css")).toBe(false);
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/Rail.module.css")).toBe(false);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/RailRow.module.css")).toBe(false);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/RailRow.module.css")).toBe(false);
 });
 
 test("the askdock.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {

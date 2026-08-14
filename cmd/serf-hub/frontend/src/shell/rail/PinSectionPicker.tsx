@@ -5,7 +5,7 @@ import { Button, Dialog, Input, Sheet } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useIsMobile } from "../useIsMobile";
 import { isRailRequestStatus, listPinSections } from "./actions";
-import styles from "./Rail.module.css";
+import styles from "./railDialog.module.css";
 
 export interface PinSectionPickerProps {
   session: TreeNode;
@@ -14,11 +14,11 @@ export interface PinSectionPickerProps {
 }
 
 const CLASS = {
-  pickerList: requireClass(styles.pickerList, "Rail.module.css", "pickerList"),
-  pickerItem: requireClass(styles.pickerItem, "Rail.module.css", "pickerItem"),
-  pickerError: requireClass(styles.pickerError, "Rail.module.css", "pickerError"),
-  dialogField: requireClass(styles.dialogField, "Rail.module.css", "dialogField"),
-  dialogActions: requireClass(styles.dialogActions, "Rail.module.css", "dialogActions"),
+  pickerList: requireClass(styles.pickerList, "railDialog.module.css", "pickerList"),
+  pickerItem: requireClass(styles.pickerItem, "railDialog.module.css", "pickerItem"),
+  pickerError: requireClass(styles.pickerError, "railDialog.module.css", "pickerError"),
+  dialogField: requireClass(styles.dialogField, "railDialog.module.css", "dialogField"),
+  dialogActions: requireClass(styles.dialogActions, "railDialog.module.css", "dialogActions"),
 };
 
 function compareSections(a: PinSectionSummary, b: PinSectionSummary): number {

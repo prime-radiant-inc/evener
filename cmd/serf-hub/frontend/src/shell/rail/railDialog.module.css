@@ -1,0 +1,57 @@
+/* The rail's dialog + picker form styles - the one stylesheet two rail
+ * components genuinely share: Rail.tsx (the delete-project dialog) and
+ * PinSectionPicker.tsx. */
+
+.dialogField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}
+
+.dialogActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.pickerList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pickerItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--ink-hi);
+  font: inherit;
+  text-align: left;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.pickerItem:not(:disabled):hover {
+  background: var(--hover-1);
+}
+
+.pickerItem:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.pickerError {
+  margin: var(--space-2) 0 0;
+  color: var(--danger);
+  font-size: var(--font-size-caption);
+}

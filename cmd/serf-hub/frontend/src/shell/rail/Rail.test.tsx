@@ -1370,44 +1370,6 @@ describe("width stability across expand/collapse", () => {
   });
 });
 
-// UX fix: a coarse pointer (touch) needs the platform's 44px tap floor on
-// every rail row - the same (pointer: coarse) treatment modelswitch.module.css's
-// own .trigger rule already gets, following button.module.css's own
-// min-height (not height) consumption pattern so this only ever GROWS the
-// desktop row height, never overrides it. jsdom has no real layout: read the
-// CSS source, the same way the width-stability block above does.
-describe("touch target (pointer: coarse)", () => {
-  const railCSS = (): string => {
-    const here = dirname(fileURLToPath(import.meta.url));
-    return readFileSync(join(here, "Rail.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  };
-
-  test(".railRow reaches the 44px tap floor on a coarse pointer", () => {
-    const css = railCSS();
-    const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
-    expect(coarse, "Rail.module.css must have a (pointer: coarse) media block").not.toBeNull();
-    const rule = coarse![1]!.match(/\.railRow\s*\{([^}]*)\}/);
-    expect(rule, "the coarse-pointer block must override .railRow").not.toBeNull();
-    expect(rule![1]).toContain("min-height: var(--tap-min)");
-  });
-
-  // UX fix, real-phone measurement: the row's "..."/"+" actions buttons
-  // (RailRow.tsx's ActionsMenu trigger and ProjectRow's IconButton, both
-  // plain <button> descendants of `.actions`) measured ~47x32 - under the
-  // 44px tap floor even though `.railRow` itself already reaches it. A
-  // plain `.actions button` descendant selector reaches both without this
-  // file touching widgets/menu or widgets/iconbutton, whose desktop sizing
-  // every OTHER consumer still relies on.
-  test(".actions buttons reach the 44px tap floor on a coarse pointer", () => {
-    const css = railCSS();
-    const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
-    expect(coarse, "Rail.module.css must have a (pointer: coarse) media block").not.toBeNull();
-    const rule = coarse![1]!.match(/\.actions button\s*\{([^}]*)\}/);
-    expect(rule, "the coarse-pointer block must override .actions button").not.toBeNull();
-    expect(rule![1]).toContain("min-height: var(--tap-min)");
-  });
-});
-
 describe("hide affordance (onHide)", () => {
   // The « button renders only when RailHost passes onHide (desktop); the
   // mobile drawer instance passes none - the drawer is its own show/hide.

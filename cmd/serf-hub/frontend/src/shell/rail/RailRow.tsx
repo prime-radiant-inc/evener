@@ -47,7 +47,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { isPaneOpen, useWorkspaceStore } from "../workspace";
-import styles from "./Rail.module.css";
+import styles from "./RailRow.module.css";
 import {
   displayState,
   type InactiveFoldRailNode,
@@ -63,23 +63,23 @@ import { isTopLevelSession } from "./sessionKind";
 export { isTopLevelSession } from "./sessionKind";
 
 const CLASS = {
-  railRow: requireClass(styles.railRow, "Rail.module.css", "railRow"),
-  actions: requireClass(styles.actions, "Rail.module.css", "actions"),
-  chevronButton: requireClass(styles.chevronButton, "Rail.module.css", "chevronButton"),
-  signal: requireClass(styles.signal, "Rail.module.css", "signal"),
-  textCol: requireClass(styles.textCol, "Rail.module.css", "textCol"),
-  titleLine: requireClass(styles.titleLine, "Rail.module.css", "titleLine"),
-  label: requireClass(styles.label, "Rail.module.css", "label"),
-  activity: requireClass(styles.activity, "Rail.module.css", "activity"),
-  activityAlive: requireClass(styles.activityAlive, "Rail.module.css", "activityAlive"),
-  activityAttention: requireClass(styles.activityAttention, "Rail.module.css", "activityAttention"),
-  activityDanger: requireClass(styles.activityDanger, "Rail.module.css", "activityDanger"),
-  time: requireClass(styles.time, "Rail.module.css", "time"),
-  notStarted: requireClass(styles.notStarted, "Rail.module.css", "notStarted"),
-  star: requireClass(styles.star, "Rail.module.css", "star"),
-  loadingRow: requireClass(styles.loadingRow, "Rail.module.css", "loadingRow"),
-  overflow: requireClass(styles.overflow, "Rail.module.css", "overflow"),
-  srOnly: requireClass(styles.srOnly, "Rail.module.css", "srOnly"),
+  railRow: requireClass(styles.railRow, "RailRow.module.css", "railRow"),
+  actions: requireClass(styles.actions, "RailRow.module.css", "actions"),
+  chevronButton: requireClass(styles.chevronButton, "RailRow.module.css", "chevronButton"),
+  signal: requireClass(styles.signal, "RailRow.module.css", "signal"),
+  textCol: requireClass(styles.textCol, "RailRow.module.css", "textCol"),
+  titleLine: requireClass(styles.titleLine, "RailRow.module.css", "titleLine"),
+  label: requireClass(styles.label, "RailRow.module.css", "label"),
+  activity: requireClass(styles.activity, "RailRow.module.css", "activity"),
+  activityAlive: requireClass(styles.activityAlive, "RailRow.module.css", "activityAlive"),
+  activityAttention: requireClass(styles.activityAttention, "RailRow.module.css", "activityAttention"),
+  activityDanger: requireClass(styles.activityDanger, "RailRow.module.css", "activityDanger"),
+  time: requireClass(styles.time, "RailRow.module.css", "time"),
+  notStarted: requireClass(styles.notStarted, "RailRow.module.css", "notStarted"),
+  star: requireClass(styles.star, "RailRow.module.css", "star"),
+  loadingRow: requireClass(styles.loadingRow, "RailRow.module.css", "loadingRow"),
+  overflow: requireClass(styles.overflow, "RailRow.module.css", "overflow"),
+  srOnly: requireClass(styles.srOnly, "RailRow.module.css", "srOnly"),
 };
 
 // frameTimes is always [] here: the REST /api/tree snapshot carries no
