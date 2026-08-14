@@ -247,7 +247,18 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 				case appwire.TurnStatusFailed:
 					record("failed turn")
 				case appwire.TurnStatusCompleted:
-					completedTurns <- params.Turn.ID
+					// Boot announcements ("Loaded prompt ...") each re-emit the
+					// whole system prelude turn as turn/completed with status
+					// "completed". On a starved runner the subscribe cut lands
+					// while the daemon's bridge is still draining those boot
+					// events, so 20+ turn_system completions arrive live; pushing
+					// them here filled this 8-slot channel (which nothing drains
+					// until the recovery phase) and permanently wedged this
+					// goroutine before the "failed turn" milestone was ever read.
+					// Only real turns belong on completedTurns.
+					if params.Turn.ID != appwire.SystemPreludeTurnID {
+						completedTurns <- params.Turn.ID
+					}
 				}
 			case appwire.NotifyThreadStatusChanged:
 				var params appwire.ThreadStatusChangedParams
