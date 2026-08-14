@@ -1,15 +1,7 @@
 # Delegate Resource Model
 
 Status: Approved evergreen product authority for the stable-delegate flag-day
-recovery. Tasks 6 and 7 are implemented on
-`wip/delegate-resource-task6-clean` through immutable commit
-`521a4892d977927154f34636343d84e8dda15508`; Tasks 8–14, final integration
-verification, and deployment remain incomplete. That recovery checkpoint is
-intentionally nondeployable. Shipped current behavior still models one delegate
-conversation as both a DelegateRecord and a succession of delegate JobRecords,
-while the abandoned delegate-identity integration branch added more coordination
-around that split. The implementation starts from clean main and replaces that
-lifecycle model. The abandoned branch is evidence, not an implementation base.
+recovery.
 
 ## Decision
 

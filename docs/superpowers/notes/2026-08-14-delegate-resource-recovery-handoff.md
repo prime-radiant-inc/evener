@@ -6,10 +6,18 @@ Date: 2026-08-14
 
 - Worktree: `/Users/jesse/prime-radiant/toil-suite/serf/.worktrees/delegate-resource-task6-clean`
 - Branch: `wip/delegate-resource-task6-clean`
-- Completed Task 7 code checkpoint: `521a4892d977927154f34636343d84e8dda15508`
+- Task 7 code closure: `521a4892d977927154f34636343d84e8dda15508`
+- Documentation/handoff baseline: `d6db1ad730e793f36d4594000df5ba5e8ef97e27`
 - Task 5 foundation / required merge base: `2da9863390e3e064fc015afe79a54fe8a8ce1d8f`
 - State at this checkpoint: tracked worktree and index clean.
 - Rebase, merge, and push: none performed. This branch is not landed.
+
+Derive the actual resume HEAD instead of copying a stale hash: set
+`resume_head=$(git rev-parse HEAD)`, verify the expected branch, then require
+both `git merge-base --is-ancestor 521a4892d977927154f34636343d84e8dda15508 "$resume_head"`
+and `git merge-base --is-ancestor d6db1ad730e793f36d4594000df5ba5e8ef97e27 "$resume_head"`.
+This proves the exact checkout being resumed contains both the completed Task 7
+code closure and the original tracked handoff before any Task 8 work begins.
 
 This is an intentionally nondeployable flag-day implementation checkpoint. Do
 not merge, release, or run it against durable user state until Tasks 8–14 and
@@ -73,9 +81,11 @@ authority and typed endpoint contracts cross those tasks. Independent read-only
 review, test-design, or consumer inventory work may run in parallel when it
 does not edit shared files or preempt the owning task. Task 13 waits for the
 implemented user-facing contract, and Task 14 waits for every prior task. Do
-not start Task 8 by copying or inspecting the abandoned
-`delegate-identity-integration` worktree; it is evidence only, never an
-implementation base.
+not inspect, copy, clean, reset, or repurpose the abandoned
+`/Users/jesse/prime-radiant/toil-suite/serf/.worktrees/delegate-resource-recovery-design`
+worktree. Do not start Task 8 by copying or inspecting the separate abandoned
+`delegate-identity-integration` worktree either; both are evidence only, never
+implementation bases.
 
 ## Safe resume
 
