@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/agent/schema"
 )
 
 func TestApplyAndFoldCloneCreatedDescriptor(t *testing.T) {
@@ -28,6 +29,13 @@ func TestApplyAndFoldCloneCreatedDescriptor(t *testing.T) {
 		{name: "sandbox read roots", mutate: func(descriptor *Descriptor) { descriptor.Sandbox.ExtraReadRoots[0] = "mutated" }},
 		{name: "provenance watch keys", mutate: func(descriptor *Descriptor) { descriptor.Provenance.WatchKeys[0].WatchID = "mutated" }},
 		{name: "provenance chain", mutate: func(descriptor *Descriptor) { descriptor.Provenance.Chain[0].DeliveryID = "mutated" }},
+		{name: "config tool output limits", mutate: func(descriptor *Descriptor) {
+			descriptor.Config.ToolOutputLimits["read_file"] = schema.ToolOutputLimit{MaxChars: 999}
+		}},
+		{name: "config skills dirs", mutate: func(descriptor *Descriptor) { descriptor.Config.SkillsDirs[0] = "mutated" }},
+		{name: "config loop detection", mutate: func(descriptor *Descriptor) { *descriptor.Config.EnableLoopDetection = true }},
+		{name: "config model fallbacks", mutate: func(descriptor *Descriptor) { descriptor.Config.ModelFallbacks[0] = "mutated" }},
+		{name: "config sandbox network", mutate: func(descriptor *Descriptor) { *descriptor.Config.SandboxNet = true }},
 	}
 	paths := []struct {
 		name  string
@@ -446,6 +454,8 @@ func createdEvent(id, parentID string) Event {
 
 func createdEventWithReferenceDescriptor(id string) Event {
 	network := true
+	loopDetection := false
+	configNetwork := false
 	descriptor := testDescriptor(id, "")
 	descriptor.FrozenToolNames = []string{"shell"}
 	descriptor.FrozenSkillNames = []string{"review"}
@@ -464,6 +474,22 @@ func createdEventWithReferenceDescriptor(id string) Event {
 		WatchKeys: []provenance.WatchKey{{WatchID: "watch", WatchGeneration: "generation"}},
 		Chain:     []provenance.Entry{{Kind: "watch", DeliveryID: "delivery"}},
 	}
+	descriptor.Config = schema.ConfigSnapshot{
+		ToolOutputLimits: map[string]schema.ToolOutputLimit{
+			"read_file": {MaxChars: 100, MaxLines: 10, Strategy: schema.TruncHeadTail},
+		},
+		SkillsDirs:             []string{"skills"},
+		MCPConfigFiles:         []string{"mcp.json"},
+		MCPInline:              []string{"inline"},
+		PluginDirs:             []string{"plugins"},
+		SystemPromptAppend:     []string{"append.md"},
+		ShareTasksWithChildren: true,
+		EnableLoopDetection:    &loopDetection,
+		ModelFallbacks:         []string{"openai/fallback"},
+		Sandbox:                "workspace-write",
+		SandboxNet:             &configNetwork,
+	}
+	descriptor.SharedTaskStoreOwnerSessionID = "root_session"
 	return Event{
 		Kind:       EventDelegateCreated,
 		Seq:        1,

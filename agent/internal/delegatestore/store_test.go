@@ -20,8 +20,9 @@ func TestStoreAppendBatchIsOneCrashAtomicLine(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	callerState := make(State)
+	created := createdEventWithReferenceDescriptor("dlg_alpha")
 	assigned, accepted, err := store.AppendBatch(callerState, []Event{
-		createdEvent("dlg_alpha", ""),
+		created,
 		startedEvent("dlg_alpha", 1, TriggerInitial),
 	})
 	if err != nil {
@@ -71,6 +72,13 @@ func TestStoreAppendBatchIsOneCrashAtomicLine(t *testing.T) {
 	}
 	if !reflect.DeepEqual(replayed, accepted) {
 		t.Fatalf("reopened state differs:\n got %#v\nwant %#v", replayed, accepted)
+	}
+	aggregate := replayed["dlg_alpha"]
+	if aggregate == nil || aggregate.Descriptor.SharedTaskStoreOwnerSessionID != "root_session" {
+		t.Fatalf("reopened shared task store owner = %#v, want root_session", aggregate)
+	}
+	if !reflect.DeepEqual(aggregate.Descriptor.Config, created.Created.Descriptor.Config) {
+		t.Fatalf("reopened descriptor config = %#v, want %#v", aggregate.Descriptor.Config, created.Created.Descriptor.Config)
 	}
 }
 

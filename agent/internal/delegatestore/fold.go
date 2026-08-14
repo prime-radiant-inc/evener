@@ -396,6 +396,10 @@ func validateDescriptor(descriptor Descriptor) error {
 		return fmt.Errorf("agent type is empty")
 	case len(descriptor.ResultSchema) > 0 && !json.Valid(descriptor.ResultSchema):
 		return fmt.Errorf("result schema is not valid JSON")
+	case descriptor.Config.ShareTasksWithChildren && descriptor.SharedTaskStoreOwnerSessionID == "":
+		return fmt.Errorf("shared task store owner session id is empty")
+	case !descriptor.Config.ShareTasksWithChildren && descriptor.SharedTaskStoreOwnerSessionID != "":
+		return fmt.Errorf("shared task store owner requires task sharing")
 	default:
 		return nil
 	}
@@ -579,6 +583,7 @@ func cloneDescriptor(descriptor Descriptor) Descriptor {
 	clone.FrozenSkillBodies = append([]string(nil), descriptor.FrozenSkillBodies...)
 	clone.ResultSchema = append(json.RawMessage(nil), descriptor.ResultSchema...)
 	clone.ExplicitToolGrants = append([]string(nil), descriptor.ExplicitToolGrants...)
+	clone.Config = descriptor.Config.Clone()
 	clone.Provenance = provenance.Clone(descriptor.Provenance)
 	if descriptor.Sandbox != nil {
 		sandbox := *descriptor.Sandbox

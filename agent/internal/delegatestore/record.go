@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/agent/schema"
 )
 
 type State map[string]*Aggregate
@@ -53,36 +54,38 @@ const (
 )
 
 type Descriptor struct {
-	ChildSessionID      string             `json:"child_session_id"`
-	TranscriptRef       string             `json:"transcript_ref"`
-	ParentDelegateID    string             `json:"parent_delegate_id,omitempty"`
-	OwnerSessionID      string             `json:"owner_session_id"`
-	VisibleSessionID    string             `json:"visible_session_id,omitempty"`
-	OriginTurnID        string             `json:"origin_turn_id,omitempty"`
-	OriginToolCallID    string             `json:"origin_tool_call_id,omitempty"`
-	OriginItemID        string             `json:"origin_item_id,omitempty"`
-	Task                string             `json:"task"`
-	Description         string             `json:"description,omitempty"`
-	AgentType           string             `json:"agent_type"`
-	RequestedModel      string             `json:"requested_model,omitempty"`
-	ResolvedProfileID   string             `json:"resolved_profile_id,omitempty"`
-	ResolvedModel       string             `json:"resolved_model,omitempty"`
-	ReasoningEffort     string             `json:"reasoning_effort,omitempty"`
-	AgentName           string             `json:"agent_name,omitempty"`
-	FrozenRolePrompt    string             `json:"frozen_role_prompt,omitempty"`
-	FrozenTaskPrompt    string             `json:"frozen_task_prompt,omitempty"`
-	FrozenToolNames     []string           `json:"frozen_tool_names,omitempty"`
-	FrozenSkillNames    []string           `json:"frozen_skill_names,omitempty"`
-	FrozenSkillBodies   []string           `json:"frozen_skill_bodies,omitempty"`
-	WorkingDir          string             `json:"working_dir,omitempty"`
-	LocalEnvPolicy      string             `json:"local_env_policy,omitempty"`
-	ResultSchema        json.RawMessage    `json:"result_schema,omitempty"`
-	ExplicitToolGrants  []string           `json:"explicit_tool_grants,omitempty"`
-	DelegationAllowance int                `json:"delegation_allowance,omitempty"`
-	Isolation           string             `json:"isolation,omitempty"`
-	Sandbox             *SandboxSnapshot   `json:"sandbox,omitempty"`
-	Provenance          *provenance.Causal `json:"provenance,omitempty"`
-	Resumable           bool               `json:"resumable"`
+	ChildSessionID                string                `json:"child_session_id"`
+	TranscriptRef                 string                `json:"transcript_ref"`
+	ParentDelegateID              string                `json:"parent_delegate_id,omitempty"`
+	OwnerSessionID                string                `json:"owner_session_id"`
+	VisibleSessionID              string                `json:"visible_session_id,omitempty"`
+	OriginTurnID                  string                `json:"origin_turn_id,omitempty"`
+	OriginToolCallID              string                `json:"origin_tool_call_id,omitempty"`
+	OriginItemID                  string                `json:"origin_item_id,omitempty"`
+	Task                          string                `json:"task"`
+	Description                   string                `json:"description,omitempty"`
+	AgentType                     string                `json:"agent_type"`
+	RequestedModel                string                `json:"requested_model,omitempty"`
+	ResolvedProfileID             string                `json:"resolved_profile_id,omitempty"`
+	ResolvedModel                 string                `json:"resolved_model,omitempty"`
+	ReasoningEffort               string                `json:"reasoning_effort,omitempty"`
+	AgentName                     string                `json:"agent_name,omitempty"`
+	FrozenRolePrompt              string                `json:"frozen_role_prompt,omitempty"`
+	FrozenTaskPrompt              string                `json:"frozen_task_prompt,omitempty"`
+	FrozenToolNames               []string              `json:"frozen_tool_names,omitempty"`
+	FrozenSkillNames              []string              `json:"frozen_skill_names,omitempty"`
+	FrozenSkillBodies             []string              `json:"frozen_skill_bodies,omitempty"`
+	WorkingDir                    string                `json:"working_dir,omitempty"`
+	LocalEnvPolicy                string                `json:"local_env_policy,omitempty"`
+	ResultSchema                  json.RawMessage       `json:"result_schema,omitempty"`
+	ExplicitToolGrants            []string              `json:"explicit_tool_grants,omitempty"`
+	DelegationAllowance           int                   `json:"delegation_allowance,omitempty"`
+	Isolation                     string                `json:"isolation,omitempty"`
+	Sandbox                       *SandboxSnapshot      `json:"sandbox,omitempty"`
+	Config                        schema.ConfigSnapshot `json:"config"`
+	SharedTaskStoreOwnerSessionID string                `json:"shared_task_store_owner_session_id,omitempty"`
+	Provenance                    *provenance.Causal    `json:"provenance,omitempty"`
+	Resumable                     bool                  `json:"resumable"`
 }
 
 type SandboxSnapshot struct {

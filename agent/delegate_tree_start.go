@@ -723,6 +723,7 @@ func cloneDelegateStartDescriptor(descriptor delegatestore.Descriptor) delegates
 	clone.FrozenSkillBodies = append([]string(nil), descriptor.FrozenSkillBodies...)
 	clone.ResultSchema = append(json.RawMessage(nil), descriptor.ResultSchema...)
 	clone.ExplicitToolGrants = append([]string(nil), descriptor.ExplicitToolGrants...)
+	clone.Config = descriptor.Config.Clone()
 	clone.Provenance = provenance.Clone(descriptor.Provenance)
 	if descriptor.Sandbox != nil {
 		sandbox := *descriptor.Sandbox

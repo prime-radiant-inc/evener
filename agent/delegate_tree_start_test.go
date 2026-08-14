@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/serf/agent/schema"
 )
 
 // AdmitStartInput is the test-only callback adapter used by controller fuzz
@@ -781,8 +782,16 @@ func TestDelegateControllerAttentionCommitBindsSelectedPendingTranscriptEntry(t 
 func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	descriptor := delegateControllerCreateDescriptor()
+	loopDetection := false
 	descriptor.FrozenToolNames = []string{"communicate"}
 	descriptor.ResultSchema = json.RawMessage(`{"type":"object"}`)
+	descriptor.Config = schema.ConfigSnapshot{
+		ToolOutputLimits:       map[string]schema.ToolOutputLimit{"read_file": {MaxChars: 111}},
+		ModelFallbacks:         []string{"openai/frozen"},
+		ShareTasksWithChildren: true,
+		EnableLoopDetection:    &loopDetection,
+	}
+	descriptor.SharedTaskStoreOwnerSessionID = "root-session"
 	reservation, err := c.ReserveCreate(rootDelegateActor("root-session"), descriptor)
 	if err != nil {
 		t.Fatalf("ReserveCreate: %v", err)
@@ -792,6 +801,8 @@ func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) 
 	wantWorkingDir := reservation.descriptor.WorkingDir
 	wantTask := reservation.descriptor.Task
 	wantSchema := append(json.RawMessage(nil), reservation.descriptor.ResultSchema...)
+	wantConfig := reservation.descriptor.Config.Clone()
+	wantSharedTaskStoreOwner := reservation.descriptor.SharedTaskStoreOwnerSessionID
 	wantTranscriptPath := reservation.transcriptPath
 	wantWorktreePath := reservation.worktreePath
 
@@ -804,12 +815,19 @@ func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) 
 	}
 
 	descriptor.FrozenToolNames[0] = "caller-mutated"
+	descriptor.Config.ToolOutputLimits["read_file"] = schema.ToolOutputLimit{MaxChars: 999}
+	descriptor.Config.ModelFallbacks[0] = "openai/caller-mutated"
+	*descriptor.Config.EnableLoopDetection = true
 	reservation.delegateID = "dlg_redirected"
 	reservation.descriptor.Task = "redirected task"
 	reservation.descriptor.FrozenToolNames[0] = "receipt-mutated"
 	reservation.descriptor.TranscriptRef = "local:redirected"
 	reservation.descriptor.WorkingDir = filepath.Join(t.TempDir(), "redirected")
 	reservation.descriptor.ResultSchema = json.RawMessage(`{"type":"number"}`)
+	reservation.descriptor.Config.ToolOutputLimits["read_file"] = schema.ToolOutputLimit{MaxChars: 777}
+	reservation.descriptor.Config.ModelFallbacks[0] = "openai/receipt-mutated"
+	*reservation.descriptor.Config.EnableLoopDetection = true
+	reservation.descriptor.SharedTaskStoreOwnerSessionID = "redirected-owner"
 	reservation.transcriptPath = filepath.Join(t.TempDir(), "redirected.transcript.jsonl")
 	reservation.worktreePath = filepath.Join(t.TempDir(), "redirected-worktree")
 
@@ -820,7 +838,7 @@ func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) 
 	if started.lease.delegateID != wantID {
 		t.Fatalf("committed delegate ID = %q, want reserved %q", started.lease.delegateID, wantID)
 	}
-	if started.ctx == nil || started.ctx.Err() != nil || started.transcriptPath != wantTranscriptPath || started.worktreePath != wantWorktreePath || started.descriptor.Task != wantTask || started.descriptor.TranscriptRef != wantTranscriptRef || started.descriptor.WorkingDir != wantWorkingDir || !bytes.Equal(started.descriptor.ResultSchema, wantSchema) {
+	if started.ctx == nil || started.ctx.Err() != nil || started.transcriptPath != wantTranscriptPath || started.worktreePath != wantWorktreePath || started.descriptor.Task != wantTask || started.descriptor.TranscriptRef != wantTranscriptRef || started.descriptor.WorkingDir != wantWorkingDir || !bytes.Equal(started.descriptor.ResultSchema, wantSchema) || !reflect.DeepEqual(started.descriptor.Config, wantConfig) || started.descriptor.SharedTaskStoreOwnerSessionID != wantSharedTaskStoreOwner {
 		t.Fatalf("committed construction outputs = %#v, want authoritative reserved descriptor and paths", started)
 	}
 	if c.durable["dlg_redirected"] != nil || c.live["dlg_redirected"] != nil {
@@ -830,7 +848,7 @@ func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) 
 	if aggregate == nil {
 		t.Fatalf("reserved delegate %q was not committed", wantID)
 	}
-	if got := aggregate.Descriptor; got.Task != wantTask || got.TranscriptRef != wantTranscriptRef || got.WorkingDir != wantWorkingDir || !reflect.DeepEqual(got.FrozenToolNames, []string{"communicate"}) || !bytes.Equal(got.ResultSchema, wantSchema) {
+	if got := aggregate.Descriptor; got.Task != wantTask || got.TranscriptRef != wantTranscriptRef || got.WorkingDir != wantWorkingDir || !reflect.DeepEqual(got.FrozenToolNames, []string{"communicate"}) || !bytes.Equal(got.ResultSchema, wantSchema) || !reflect.DeepEqual(got.Config, wantConfig) || got.SharedTaskStoreOwnerSessionID != wantSharedTaskStoreOwner {
 		t.Fatalf("committed descriptor trusted caller mutation:\n got %#v\nwant task=%q transcript=%q working_dir=%q tools=[communicate] schema=%s", got, wantTask, wantTranscriptRef, wantWorkingDir, wantSchema)
 	}
 	if turns, drives := c.capacityInUse(); turns != 1 || drives != 0 {
