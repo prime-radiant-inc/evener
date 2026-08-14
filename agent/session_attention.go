@@ -61,7 +61,9 @@ func (s *Session) appendDelegateNotificationDurably(attentionID, content string)
 	if err != nil {
 		return false, err
 	}
-	if persisted, exists := verified.content[attentionID]; !exists || !reflect.DeepEqual(persisted, message) {
+	persisted, exists := verified.content[attentionID]
+	if !exists || !reflect.DeepEqual(persisted, message) {
+		s.removeUnverifiedDelegateAttentionTurn(turn)
 		return false, fmt.Errorf("attention %q was not durably appended", attentionID)
 	}
 	if err := s.retainDelegateAttentionTurn(verified.turns[attentionID]); err != nil {
@@ -89,6 +91,17 @@ func (s *Session) retainDelegateAttentionTurn(turn schema.Turn) error {
 	}
 	s.history = append(s.history, turn)
 	return nil
+}
+
+func (s *Session) removeUnverifiedDelegateAttentionTurn(turn schema.Turn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := range s.history {
+		if reflect.DeepEqual(s.history[index], turn) {
+			s.history = append(s.history[:index], s.history[index+1:]...)
+			return
+		}
+	}
 }
 
 func (s *Session) readDelegateAttentionFold(path, sessionID string) (delegateAttentionFold, error) {

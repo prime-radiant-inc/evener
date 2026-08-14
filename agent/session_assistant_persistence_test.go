@@ -92,6 +92,34 @@ func TestDelegateAttention_FsyncReadbackAmbiguityRetainsAndRepairsExactResidentT
 	}
 }
 
+func TestDelegateAttention_ClosedWriterNoOpDoesNotPublishResidentTurn(t *testing.T) {
+	sess := newDelegateAttentionTestSession(t)
+	sess.mu.Lock()
+	writer := sess.transcript
+	sess.mu.Unlock()
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close transcript writer: %v", err)
+	}
+	if appended, err := sess.appendDelegateNotificationDurably("attention-not-written", "must stay invisible"); appended || err == nil {
+		t.Fatalf("closed-writer attention append = appended:%t err:%v", appended, err)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(sess.stateDir, sess.id), sess.id)
+	if err != nil {
+		t.Fatalf("read closed-writer attention fold: %v", err)
+	}
+	if _, exists := fold.content["attention-not-written"]; exists {
+		t.Fatal("closed writer durably appended attention")
+	}
+	sess.mu.Lock()
+	resident := append([]schema.Turn(nil), sess.history...)
+	sess.mu.Unlock()
+	for _, turn := range resident {
+		if turn.AttentionID == "attention-not-written" {
+			t.Fatalf("closed-writer attention became model-visible: %#v", turn)
+		}
+	}
+}
+
 func newDelegateAttentionTestSession(t *testing.T) *Session {
 	t.Helper()
 	stateDir := t.TempDir()
