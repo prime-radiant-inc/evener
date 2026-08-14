@@ -91,22 +91,33 @@ func (e *shellExecutorEnvironment) StreamCommand(ctx context.Context, command, w
 	return e.executor.StreamCommand(ctx, command, workingDir, envVars, out)
 }
 
-func installHeldRunShell(t *testing.T, executor *heldShellExecutor) {
+// releaseOnDrainStart holds a background shell's completion until the one-shot
+// drain begins: a managed job that finishes while its own tool batch is still
+// running makes the session yield so the completion is delivered as a
+// notification turn (session_lifecycle.go post-tool seam), which would fold the
+// notification into the tool-result request and race these scripted steps
+// against a fast local process.
+func releaseOnDrainStart(t *testing.T, release func()) {
 	t.Helper()
-	oldNewSession := runNewSession
 	oldDrainJobTree := runDrainJobTree
-	runNewSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
-		return oldNewSession(client, profile, &shellExecutorEnvironment{ExecutionEnvironment: env, executor: executor}, cfg)
-	}
 	runDrainJobTree = func(sess *agent.Session, ctx context.Context) (string, error) {
-		executor.releaseShell()
+		release()
 		return oldDrainJobTree(sess, ctx)
 	}
 	t.Cleanup(func() {
-		executor.releaseShell()
-		runNewSession = oldNewSession
+		release()
 		runDrainJobTree = oldDrainJobTree
 	})
+}
+
+func installHeldRunShell(t *testing.T, executor *heldShellExecutor) {
+	t.Helper()
+	oldNewSession := runNewSession
+	runNewSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		return oldNewSession(client, profile, &shellExecutorEnvironment{ExecutionEnvironment: env, executor: executor}, cfg)
+	}
+	t.Cleanup(func() { runNewSession = oldNewSession })
+	releaseOnDrainStart(t, executor.releaseShell)
 }
 
 // TestRunDrainsDelegatedJobTreeBeforeExit is the PRI-2441 B1 regression: a
@@ -245,13 +256,26 @@ func TestRunDrainsManagedShellBeforeExit(t *testing.T) {
 }
 
 func TestRunDrainContinuesWhenNotificationTurnStartsAnotherShell(t *testing.T) {
+	// Shell A is gated so it cannot reach terminal completion until the drain
+	// starts; otherwise its notification can beat the tool-result model round
+	// and be folded into that request. Shell B needs no gate: it is launched
+	// from A's notification turn, and a notification turn owns its current
+	// batch (no post-tool yield), so B's completion always waits for the next
+	// drain wake.
+	gate := filepath.Join(t.TempDir(), "release-shell-a")
+	shellACommand := "while [ ! -f " + gate + " ]; do sleep 0.02; done; printf shell-a"
+	releaseOnDrainStart(t, func() {
+		if err := os.WriteFile(gate, []byte("go\n"), 0o600); err != nil {
+			t.Errorf("release shell A: %v", err)
+		}
+	})
 	jobIDPattern := regexp.MustCompile(`job_id="([^"]+)"`)
 	adapter := &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
 			if got := strings.Count(requestFullText(req), "<job-notification"); got != 0 {
 				t.Fatalf("initial request notification count = %d, want 0", got)
 			}
-			return scriptedToolCalls(scriptedShellCall("shell_a", "printf shell-a", "background"))
+			return scriptedToolCalls(scriptedShellCall("shell_a", shellACommand, "background"))
 		},
 		func(req llm.Request) llm.Response {
 			if got := strings.Count(requestFullText(req), "<job-notification"); got != 0 {
