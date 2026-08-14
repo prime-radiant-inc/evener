@@ -115,6 +115,16 @@ function setGoalOverride(ref: string, baseline: GoalState | null, override: Goal
   notifyGoalOverrideListeners();
 }
 
+// applyGoalSetOptimistically is the same optimistic bridge for the OTHER
+// goal writer: the /goal built-in (shell/palette/commands.ts, run from the
+// composer's command line). goal/set has no live push, so without this the
+// chip would not appear until some unrelated rehydrate delivered fresh
+// server truth - live-verified: the transcript showed the goal running
+// while the status row still showed nothing.
+export function applyGoalSetOptimistically(ref: string, baseline: GoalState | null, objective: string): void {
+  setGoalOverride(ref, baseline, objective === "" ? null : { status: "active", iterations: 0 });
+}
+
 // resolveDisplayedGoal returns the override for `ref` only while it's still
 // valid (the store's own model.goal hasn't moved since it was set); a
 // stale entry is dropped as a side effect so the next call sees the fresh

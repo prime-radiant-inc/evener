@@ -9,6 +9,7 @@
 // open) for an idle-guarded action or a Conflict, or as a useToasts() toast
 // for a fire-and-report action - never a silent swallow.
 
+import { applyGoalSetOptimistically } from "../../panes/session/chrome/GoalControl";
 import type { ThreadModel } from "../../protocol/model";
 import type { CommandDescriptor, ThreadCapabilities } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
@@ -537,8 +538,19 @@ export function buildCommands(): Command[] {
       args: {
         kind: "free",
         placeholder: "objective… (empty to clear)",
-        run: (ctx, text) =>
-          ctx.sessionRef ? threadsStore.getState().setGoal(ctx.sessionRef, (text || "").trim()) : undefined,
+        run: async (ctx, text) => {
+          if (!ctx.sessionRef) return undefined;
+          const ref = ctx.sessionRef;
+          const objective = (text || "").trim();
+          // Baseline read BEFORE the await: the override must be pinned
+          // against the goal the user saw when they ran the command, so a
+          // hydrate landing mid-flight invalidates it (GoalControl's own
+          // resolveDisplayedGoal contract).
+          const baseline = focusedModel(ref)?.goal ?? null;
+          const result = await threadsStore.getState().setGoal(ref, objective);
+          applyGoalSetOptimistically(ref, baseline, objective);
+          return result;
+        },
       },
     },
     {

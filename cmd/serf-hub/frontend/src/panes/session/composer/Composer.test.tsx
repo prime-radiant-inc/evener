@@ -2430,6 +2430,21 @@ test("a built-in invocation (/goal) runs the RPC instead of sending, and clears 
   expect(localStorage.getItem("serf.composer.draft.v1.ref_builtin_goal")).toBeNull();
 });
 
+test("a successful /goal shows the goal chip immediately - no rehydrate needed (goal/set has no live push)", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_builtin_goal_chip");
+  fake.on("goal/set", () => ({ started: true }));
+
+  await user.type(textarea(), "/goal ship the demo");
+  await user.click(submitButton());
+
+  // The wire carries no goal-changed notification and the fake never
+  // rehydrates the thread, so the chip can only come from the optimistic
+  // override the command applies (GoalControl's own module cache).
+  await waitFor(() => expect(screen.getByTestId("goal-chip-trigger")).toBeTruthy());
+  expect(screen.getByTestId("goal-chip-trigger").textContent).toContain("Goal: active");
+});
+
 test("a failed built-in invocation preserves the draft and toasts a friendly message", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_builtin_fail");
