@@ -33,6 +33,14 @@ type Client struct {
 	pendingCoord  PendingCoordinator
 	featuresMu    sync.RWMutex
 	features      FeatureSet
+	// closed latches the read loop's exit. failPending only fails the entries
+	// registered at that instant; a request that registers afterwards would
+	// otherwise wait forever for a response no goroutine can deliver (a first
+	// Send after a TCP half-close succeeds, so the send path does not save it).
+	// request selects on this alongside its reply channel.
+	closedMu sync.Mutex
+	closeErr error
+	closed   chan struct{}
 }
 
 type pendingRequest struct {
@@ -45,6 +53,7 @@ func NewClient(transport Transport) *Client {
 		transport:     transport,
 		pending:       map[string]pendingRequest{},
 		notifications: make(chan Notification, NotificationBufferCap),
+		closed:        make(chan struct{}),
 	}
 	c.nextID.Store(1)
 	return c
@@ -82,6 +91,11 @@ func (c *Client) startWithKeepalive(ctx context.Context, pingInterval, pongTimeo
 				if c.orderedFrames != nil {
 					c.orderedFrames(msg, err)
 				}
+				// Latch before failPending: an entry registered after the latch
+				// is caught by request's own select even when it misses the
+				// drain below; the reverse order would leave a window where it
+				// misses both.
+				c.markClosed(err)
 				c.failPending(err)
 				close(c.notifications)
 				return
@@ -92,6 +106,7 @@ func (c *Client) startWithKeepalive(ctx context.Context, pingInterval, pongTimeo
 					continue
 				}
 				if !c.enqueueNotification(*msg.Notification) {
+					c.markClosed(ErrNotificationOverflow)
 					c.failPending(ErrNotificationOverflow)
 					_ = c.transport.Close()
 					close(c.notifications)
@@ -213,6 +228,16 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 	case <-ctx.Done():
 		c.removePending(id)
 		return ctx.Err()
+	case <-c.closed:
+		// The read loop is gone. A response or failPending error that raced in
+		// before the exit still wins; otherwise synthesize the same error frame
+		// failPending would have delivered, so callers see one failure shape.
+		select {
+		case msg = <-ch:
+		default:
+			c.removePending(id)
+			msg = ErrorMessage(id, InternalError(c.closedError().Error()))
+		}
 	}
 
 	if msg.Error != nil {
@@ -241,6 +266,27 @@ func (c *Client) Notify(ctx context.Context, method string, params any) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 	return c.transport.Send(ctx, NotificationMessage(method, params))
+}
+
+func (c *Client) markClosed(err error) {
+	c.closedMu.Lock()
+	defer c.closedMu.Unlock()
+	select {
+	case <-c.closed:
+		return
+	default:
+	}
+	c.closeErr = err
+	close(c.closed)
+}
+
+func (c *Client) closedError() error {
+	c.closedMu.Lock()
+	defer c.closedMu.Unlock()
+	if c.closeErr != nil {
+		return c.closeErr
+	}
+	return errors.New("appwire client closed")
 }
 
 func (c *Client) removePending(id ID) {

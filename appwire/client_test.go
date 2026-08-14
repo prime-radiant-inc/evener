@@ -475,3 +475,55 @@ func TestClientRequestIDObserverNamesTheCallersResponseFrame(t *testing.T) {
 		}
 	}
 }
+
+// deadPeerTransport models the terminal state of a daemon that dropped the
+// connection: Recv fails immediately (the read loop exits), while Send still
+// succeeds — a first write after a TCP half-close lands in the kernel buffer
+// and reports no error. This is exactly the state a CI timeout dump caught
+// LocalDaemonSource.StartTurn in (appsource_program_fuzz_test.go's
+// dropped-transport scenario): request parked forever on a Background context
+// with no read loop left to fail its pending entry.
+type deadPeerTransport struct {
+	recvErr error
+}
+
+func (d *deadPeerTransport) Send(context.Context, Message) error { return nil }
+
+func (d *deadPeerTransport) Recv(context.Context) (Message, error) {
+	return Message{}, d.recvErr
+}
+
+func (d *deadPeerTransport) Close() error { return nil }
+
+// TestClientRequestFailsAfterReadLoopExit pins the missed-failure race: a
+// request registered AFTER the read loop has already failed all pending
+// entries and exited must still fail promptly, not wait forever for a response
+// no goroutine can deliver. The request deliberately carries a context with no
+// deadline, because that is how hub call sites drive it.
+func TestClientRequestFailsAfterReadLoopExit(t *testing.T) {
+	transport := &deadPeerTransport{recvErr: errors.New("websocket: close 1006 (abnormal closure): dropped")}
+	client := NewClient(transport)
+	client.Start(t.Context())
+
+	// The notifications channel closes when the read loop exits; draining it is
+	// the deterministic "read loop is dead" barrier, so the request below is
+	// guaranteed to register its pending entry after failPending already ran.
+	for range client.Notifications() {
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Request(context.Background(), "turn/start", EmptyParams{}, nil)
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("request returned nil error on a dead connection")
+		}
+		if !strings.Contains(err.Error(), "abnormal closure") {
+			t.Fatalf("request error = %v, want the transport failure preserved", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("request hung after the read loop exited (missed-failure race)")
+	}
+}
