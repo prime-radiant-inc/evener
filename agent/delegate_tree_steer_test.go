@@ -350,6 +350,68 @@ func TestDelegateControllerModelRequestUsesOutgoingReplayScope(t *testing.T) {
 	}
 }
 
+type delegateBlockingContextStrategy struct {
+	spyStrategy
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *delegateBlockingContextStrategy) ManageContext(ctx context.Context, _ *[]schema.Turn, _ int, _ func(events.EventKind, events.EventData)) error {
+	close(s.entered)
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestDelegateControllerSteerDuringContextManagementEntersNextRequestOnce(t *testing.T) {
+	strategy := &delegateBlockingContextStrategy{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	cfg := SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}
+	cfg.testOnly.contextStrategyOverride = strategy
+	runtime := newSession(t, withConfig(cfg), withoutGitSnapshot())
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	runtime.delegateController = c
+	c.mu.Lock()
+	c.live[lease.delegateID].runtime = runtime
+	c.live[lease.delegateID].binding.runtime = runtime
+	c.mu.Unlock()
+
+	type prepareResult struct {
+		history []llm.Message
+		err     error
+	}
+	result := make(chan prepareResult, 1)
+	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
+	go func() {
+		var timings events.RoundTimings
+		_, _, history, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings)
+		result <- prepareResult{history: history, err: err}
+	}()
+
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(strategy.release) }) }
+	defer release()
+	waitForTestSignal(t, strategy.entered, "delegate context management")
+	if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), lease.delegateID, "accepted during context management"); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+	release()
+	prepared := <-result
+	if prepared.err != nil {
+		t.Fatalf("prepare model request: %v", prepared.err)
+	}
+	if got := countMessageText(prepared.history, "accepted during context management"); got != 1 {
+		t.Fatalf("next request contains context-management steer %d times, want once: %#v", got, prepared.history)
+	}
+}
+
 func countMessageText(messages []llm.Message, want string) int {
 	count := 0
 	for _, message := range messages {

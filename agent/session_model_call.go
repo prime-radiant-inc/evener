@@ -174,6 +174,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	}
 
 	preManageLen := len(historyTurns)
+	managedLen := preManageLen
 
 	// Apply context management before each LLM request.
 	if s.strategy != nil {
@@ -190,8 +191,15 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			s.emit(events.EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
 		}
 		flushCompactionHooks()
+		managedLen = len(historyTurns)
 
 		s.mu.Lock()
+		// Context management works on a snapshot without holding s.mu. Preserve
+		// turns accepted while it ran so publishing the managed prefix cannot
+		// erase durable steering from the next model request.
+		if len(s.history) > preManageLen {
+			historyTurns = append(historyTurns, s.history[preManageLen:]...)
+		}
 		s.history = historyTurns
 		s.mu.Unlock()
 	}
@@ -207,7 +215,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.mu.Lock()
 	if round == 0 {
 		s.turnHistoryBaseline = len(historyTurns)
-	} else if shrink := preManageLen - len(historyTurns); shrink > 0 {
+	} else if shrink := preManageLen - managedLen; shrink > 0 {
 		s.turnHistoryBaseline -= shrink
 		if s.turnHistoryBaseline < 0 {
 			s.turnHistoryBaseline = 0
