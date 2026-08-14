@@ -153,7 +153,7 @@ func delegatestore.Apply(state delegatestore.State, event delegatestore.Event) e
 
 The first JSONL line is the version header. The eight lifecycle events remain exactly delegate_created, delegate_run_started, delegate_terminal_prepared, delegate_run_finished, delegate_resumability_closed, delegate_subtree_stop_requested, delegate_subtree_stop_completed, and delegate_delivery_acknowledged. Watch state remains in the existing watch journal and is never copied into this fold.
 
-The existing attention-resolution foundation and the delivery metadata completed during Tasks 7–8 are private correlation fields, not lifecycle identities:
+The existing attention-resolution foundation and the delivery metadata completed in Task 7, then consumed and extended for watch recovery in Task 8, are private correlation fields, not lifecycle identities:
 
 ~~~go
 type DelegateDeliveryCommit struct {
@@ -172,8 +172,8 @@ AttentionID is valid only on a model-bound steering turn. AttentionResolution is
 The only permitted new operational surfaces are assigned to explicit tasks:
 
 - Task 6: BeginStartInput and CompleteStartInput replace callback-based AdmitStartInput with one stop-fenced process claim; FailCommittedStart batches permanent post-commit construction/admission failure from existing terminal-prepared, run-finished, and resumability-closed events.
-- Task 7: BeginSteerPersistence, CompleteSteerPersistence, and AbortSteerPersistence replace the locked steering append; BeginModelRequest, CompleteModelRequest, and AbortModelRequest claim/snapshot/revalidate a model boundary without taking a transcript/history lock under the controller; fake-clock watchdog bindings ask the controller to admit ordinary attention; and one root-owned reconcile driver keeps positive stop waits self-driving after the requesting context ends.
-- Task 8: enqueue and delivery receipts for the existing watch journal, plus receiver-transcript attention helpers keyed by delivery ID and update sequence.
+- Task 7: BeginSteerPersistence, CompleteSteerPersistence, and AbortSteerPersistence replace the locked steering append; BeginModelRequest, CompleteModelRequest, and AbortModelRequest claim/snapshot/revalidate a model boundary without taking a transcript/history lock under the controller; the minimal idempotent receiver-attention append and inline caller delivery-commit bridge share the caller tool-result fsync boundary; fake-clock watchdog bindings ask the controller to admit ordinary attention; and one root-owned reconcile driver keeps positive stop waits self-driving after the requesting context ends.
+- Task 8: consume the Task 7 attention append and inline commit bridge, then add cold attention folding/resolution plus enqueue and delivery receipts for the existing watch journal keyed by delivery ID and update sequence.
 - Task 9: a process-only reclamation claim over exact quiescent resident runtime subtrees, plus recursive stop/root-close drain through the Task 7 reconcile driver; it adds no second driver.
 - Task 10: read-only stable snapshots and pure cold readers; no lifecycle mutation or delivery acknowledgement.
 - Task 11: monotonic projection revisions and lossless DTOs; revisions fence rendering only and are never control identities.
@@ -984,7 +984,8 @@ Do not deploy this intermediate commit; the branch is atomic only after Task 14.
 - Create: agent/delegate_resource_runtime_test.go, agent/delegate_resource_supervision_test.go.
 - Modify: agent/delegate_runtime.go, agent/delegate_delivery.go.
 - Modify: agent/delegate_tree_controller.go, agent/delegate_tree_controller_test.go, agent/delegate_tree_start.go, agent/delegate_tree_start_test.go, agent/delegate_tree_steer.go, agent/delegate_tree_steer_test.go, agent/delegate_tree_finish.go, agent/delegate_tree_finish_test.go, agent/delegate_tree_stop.go, agent/delegate_tree_stop_test.go, agent/delegate_tree_restore.go, agent/delegate_tree_restore_test.go.
-- Modify: agent/session.go, agent/session_config.go, agent/session_model_call.go, agent/session_tool_round.go, agent/session_tools_communicate.go, agent/session_queue.go, agent/session_queue_persist.go, agent/session_lifecycle.go.
+- Modify: agent/session_attention.go and agent/schema/turn.go for private attention content and delivery-commit persistence.
+- Modify: agent/session.go, agent/session_config.go, agent/session_model_call.go, agent/session_tools.go, agent/session_tool_round.go, agent/session_tool_round_test.go, agent/session_assistant_persistence_test.go, agent/session_tools_communicate.go, agent/session_queue.go, agent/session_queue_persist.go, agent/session_lifecycle.go.
 - Modify: agent/job_delegate.go, agent/subagents.go, agent/job_notify.go, agent/job_watch.go.
 - Modify: agent/salvage.go, agent/salvage_test.go, agent/settlement_salvage_test.go, agent/job_supervision_test.go.
 - Modify: agent/subagents_test.go, agent/cov_w3init_subagents_test.go, agent/internal/hooks/hooks.go, agent/internal/hooks/hooks_test.go.
@@ -993,9 +994,10 @@ Do not deploy this intermediate commit; the branch is atomic only after Task 14.
 **Interfaces:**
 
 - Consume committed starts, exact leases, BeginModelRequest, BeginTool, BeginSettlement, FinishGeneration, StopSubtree, immutable post-unlock plans, and receiver delivery receipts.
-- Produce registered running/idle send, safe to=caller persistence, canonical packet construction, typed exhaustion, generic Stop/SubagentStop integration, one auto-nudge, quiet-watchdog attention admission, final-round salvage guidance, and a self-driving positive-stop reconcile loop.
+- Produce registered running/idle send, safe to=caller persistence, the minimal idempotent receiver-attention append and inline delivery-commit bridge, canonical packet construction, typed exhaustion, generic Stop/SubagentStop integration, one auto-nudge, quiet-watchdog attention admission, final-round salvage guidance, and a self-driving positive-stop reconcile loop.
 - Add one process-only delegateSteeringClaim with BeginSteerPersistence, CompleteSteerPersistence, and AbortSteerPersistence operations. The claim orders the exact accepted send while the transcript append runs after unlock; it is neither persisted nor publicly addressable.
 - Change BeginModelRequest to return a delegateModelRequestClaim containing the exact lease/runtime and claimed pending-steer entry IDs. Snapshot child history after unlock. CompleteModelRequest(claim, history) revalidates the claim and returns expanded immutable provider history while consuming only claimed IDs found in that snapshot. AbortModelRequest releases a failed snapshot claim. Stop drains these claims; no provider starts before completion.
+- Complete the live receiver persistence foundation in this task. `DelegateDeliveryCommit` is private metadata on the same `TurnToolResults` turn as the caller's aggregated tool results and is excluded from provider/public projections. The Session append helper is idempotent by attention identity plus content. A round carrying a delivery commit must use the durable append path even when it has no terminal shell result; call `CompleteDelivery(true)` only after that fsync succeeds, and call `CompleteDelivery(false)` on append/fsync failure. The same helper serves quiet-watchdog attention. The controller continues to fence delivery N+1 until N's durable completion.
 
 - [ ] **Step 1: Prove running, idle, caller, and settlement behavior**
 
@@ -1012,17 +1014,28 @@ func TestDelegateResourceRuntime_CallerCannotWriteIntoUnfinishedRootToolRound(t 
 func TestDelegateResourceRuntime_ModelHistorySnapshotRunsAfterControllerUnlock(t *testing.T)
 func TestDelegateResourceRuntime_PendingSteerWinsAtTerminalBoundary(t *testing.T)
 func TestDelegateResourceRuntime_CommunicateSettlesExactlyOnce(t *testing.T)
+func TestDelegateAttention_AppendIsIdempotentByIdentityAndContent(t *testing.T)
+func TestDelegateAttention_ConflictingIdentityIsCorruption(t *testing.T)
+func TestDelegateAttention_DeliveryCommitUsesCallerToolResultFsync(t *testing.T)
+func TestDelegateAttention_DeliveryCommitAppendFailureLeavesNAndNPlusOnePending(t *testing.T)
+func TestDelegateAttention_DeliveryCommitReleasesNPlusOneOnlyAfterNFsync(t *testing.T)
 ~~~
 
-Use scripted providers, durable transcript readback, and channel barriers around the caller's aggregated tool-result fsync. Immediately before the send/caller implementation slice, run:
+Put the attention append cases in `agent/session_assistant_persistence_test.go` and the caller-round delivery-commit cases in `agent/session_tool_round_test.go`. Use scripted providers, durable transcript readback, append-fault seams, and channel barriers that hold the caller's aggregated tool-result fsync. Prove the blocked fsync cannot acknowledge N, append failure leaves both N and N+1 pending, and only N's successful fsync/ack releases N+1 in order. Immediately before the send/caller implementation slice, run:
 
 ~~~bash
 go test ./agent -run '^TestDelegateResourceRuntime_(Running|Idle|Concurrent|Caller|ModelHistory|PendingSteer|Communicate)' -count=1
+go test ./agent -run '^TestDelegateAttention_(Append|Conflicting|DeliveryCommit)' -count=1
 ~~~
 
-Expected RED: the legacy activation route or direct to=caller insertion violates at least one contract.
+Expected RED: the legacy activation route or direct to=caller insertion violates at least one runtime contract, and the caller round has no durable attention/delivery-commit bridge.
 
-Move running steering transcript I/O after controller unlock behind the exact claim. Split model-boundary validation, history snapshot, and claim completion so no child history lock is acquired under the controller; bind accepted steering once at CompleteModelRequest. For to=caller, hand the payload to the caller Session's existing durable turn boundary; never append into an unfinished root tool round. Idle send uses ReserveStart/CommitStart and the runtime adapter. Run the selector GREEN count 20 and race before continuing.
+Move running steering transcript I/O after controller unlock behind the exact claim. Split model-boundary validation, history snapshot, and claim completion so no child history lock is acquired under the controller; bind accepted steering once at CompleteModelRequest. For to=caller, hand the payload and private delivery commit to the caller Session's existing durable tool-result boundary; never append into an unfinished root tool round. Add the idempotent durable attention helper and make the inline bridge complete delivery only after that boundary returns from fsync. Idle send uses ReserveStart/CommitStart and the runtime adapter. Run both selectors GREEN before continuing:
+
+~~~bash
+go test ./agent -run '^(TestDelegateResourceRuntime_(Running|Idle|Concurrent|Caller|ModelHistory|PendingSteer|Communicate)|TestDelegateAttention_(Append|Conflicting|DeliveryCommit))' -count=20
+go test -race ./agent -run '^(TestDelegateResourceRuntime_(Running|Idle|Concurrent|Caller|ModelHistory|PendingSteer|Communicate)|TestDelegateAttention_(Append|Conflicting|DeliveryCommit))' -count=20
+~~~
 
 - [ ] **Step 2: Prove one canonical packet and lossless exhaustion**
 
@@ -1095,9 +1108,9 @@ The reconcile driver is controller/root owned and lives independently of the req
 Run task GREEN and broader gates:
 
 ~~~bash
-gofmt -w agent/delegate_resource_runtime_test.go agent/delegate_resource_supervision_test.go agent/delegate_runtime.go agent/delegate_delivery.go agent/delegate_tree_controller.go agent/delegate_tree_controller_test.go agent/delegate_tree_start.go agent/delegate_tree_start_test.go agent/delegate_tree_steer.go agent/delegate_tree_steer_test.go agent/delegate_tree_finish.go agent/delegate_tree_finish_test.go agent/delegate_tree_stop.go agent/delegate_tree_stop_test.go agent/delegate_tree_restore.go agent/delegate_tree_restore_test.go agent/session.go agent/session_config.go agent/session_model_call.go agent/session_tool_round.go agent/session_tools_communicate.go agent/session_queue.go agent/session_queue_persist.go agent/session_lifecycle.go agent/job_delegate.go agent/subagents.go agent/subagents_test.go agent/cov_w3init_subagents_test.go agent/job_notify.go agent/job_watch.go agent/salvage.go agent/salvage_test.go agent/settlement_salvage_test.go agent/job_supervision_test.go agent/internal/hooks/hooks.go agent/internal/hooks/hooks_test.go agent/internal/delegatestore/record.go agent/internal/delegatestore/fold.go agent/internal/delegatestore/fold_test.go agent/internal/delegatestore/store_test.go agent/internal/delegatestore/fuzz_test.go
-go test ./agent -run '^(TestDelegateResourceRuntime_|TestDelegateResourceSupervision_)' -count=20
-go test -race ./agent -run '^(TestDelegateResourceRuntime_|TestDelegateResourceSupervision_)' -count=20
+gofmt -w agent/delegate_resource_runtime_test.go agent/delegate_resource_supervision_test.go agent/delegate_runtime.go agent/delegate_delivery.go agent/delegate_tree_controller.go agent/delegate_tree_controller_test.go agent/delegate_tree_start.go agent/delegate_tree_start_test.go agent/delegate_tree_steer.go agent/delegate_tree_steer_test.go agent/delegate_tree_finish.go agent/delegate_tree_finish_test.go agent/delegate_tree_stop.go agent/delegate_tree_stop_test.go agent/delegate_tree_restore.go agent/delegate_tree_restore_test.go agent/session_attention.go agent/schema/turn.go agent/session.go agent/session_config.go agent/session_model_call.go agent/session_tools.go agent/session_tool_round.go agent/session_tool_round_test.go agent/session_assistant_persistence_test.go agent/session_tools_communicate.go agent/session_queue.go agent/session_queue_persist.go agent/session_lifecycle.go agent/job_delegate.go agent/subagents.go agent/subagents_test.go agent/cov_w3init_subagents_test.go agent/job_notify.go agent/job_watch.go agent/salvage.go agent/salvage_test.go agent/settlement_salvage_test.go agent/job_supervision_test.go agent/internal/hooks/hooks.go agent/internal/hooks/hooks_test.go agent/internal/delegatestore/record.go agent/internal/delegatestore/fold.go agent/internal/delegatestore/fold_test.go agent/internal/delegatestore/store_test.go agent/internal/delegatestore/fuzz_test.go
+go test ./agent -run '^(TestDelegateResourceRuntime_|TestDelegateResourceSupervision_|TestDelegateAttention_)' -count=20
+go test -race ./agent -run '^(TestDelegateResourceRuntime_|TestDelegateResourceSupervision_|TestDelegateAttention_)' -count=20
 go test ./agent/internal/delegatestore -count=1
 go test ./agent -run '^(TestJobDelegate|TestSubagent|TestSessionToolRound)' -count=1
 git diff --check
@@ -1109,11 +1122,11 @@ Stage only:
 ~~~bash
 git add -- agent/delegate_resource_runtime_test.go agent/delegate_resource_supervision_test.go agent/delegate_runtime.go agent/delegate_delivery.go
 git add -- agent/delegate_tree_controller.go agent/delegate_tree_controller_test.go agent/delegate_tree_start.go agent/delegate_tree_start_test.go agent/delegate_tree_steer.go agent/delegate_tree_steer_test.go agent/delegate_tree_finish.go agent/delegate_tree_finish_test.go agent/delegate_tree_stop.go agent/delegate_tree_stop_test.go agent/delegate_tree_restore.go agent/delegate_tree_restore_test.go
-git add -- agent/session.go agent/session_config.go agent/session_model_call.go agent/session_tool_round.go agent/session_tools_communicate.go agent/session_queue.go agent/session_queue_persist.go agent/session_lifecycle.go
+git add -- agent/session_attention.go agent/schema/turn.go agent/session.go agent/session_config.go agent/session_model_call.go agent/session_tools.go agent/session_tool_round.go agent/session_tool_round_test.go agent/session_assistant_persistence_test.go agent/session_tools_communicate.go agent/session_queue.go agent/session_queue_persist.go agent/session_lifecycle.go
 git add -- agent/job_delegate.go agent/subagents.go agent/subagents_test.go agent/cov_w3init_subagents_test.go agent/job_notify.go agent/job_watch.go
 git add -- agent/salvage.go agent/salvage_test.go agent/settlement_salvage_test.go agent/job_supervision_test.go agent/internal/hooks/hooks.go agent/internal/hooks/hooks_test.go
 git add -- agent/internal/delegatestore/record.go agent/internal/delegatestore/fold.go agent/internal/delegatestore/fold_test.go agent/internal/delegatestore/store_test.go agent/internal/delegatestore/fuzz_test.go
-git commit -m "feat: run delegates through stable lifecycle" -m "Route registered send, caller steering, settlement, exhaustion, hooks, nudge, salvage, quiet supervision, generic stop, and positive stop waits through exact stable leases and canonical packets. External transcript, timer, hook, and provider work is claimed under the controller and performed after unlock."
+git commit -m "feat: run delegates through stable lifecycle" -m "Route registered send, caller steering, caller delivery commits, settlement, exhaustion, hooks, nudge, salvage, quiet supervision, generic stop, and positive stop waits through exact stable leases and canonical packets. Inline acknowledgement now follows the caller tool-result fsync through one idempotent attention append; external transcript, timer, hook, and provider work remains claimed under the controller and performed after unlock."
 ~~~
 
 ---
@@ -1122,7 +1135,7 @@ git commit -m "feat: run delegates through stable lifecycle" -m "Route registere
 
 **Files:**
 
-- Modify: agent/session_attention.go. Create: agent/session_attention_test.go, agent/session_attention_fuzz_test.go.
+- Modify: agent/session_attention.go. Create: agent/session_attention_test.go, agent/session_attention_fuzz_test.go for cold fold, resolution, compaction, and watch-delivery coverage; the Task 7 inline delivery-commit tests remain in their caller-persistence owners.
 - Create: agent/delegate_resource_watch_test.go, agent/delegate_resource_shell_test.go.
 - Modify: agent/schema/turn.go, agent/transcript_read.go, agent/history_repair.go, agent/internal/contextmgr/context_manager.go, agent/internal/contextmgr/context_manager_test.go.
 - Modify: agent/delegate_shell_repair.go, agent/delegate_shell_repair_test.go.
@@ -1136,19 +1149,16 @@ git commit -m "feat: run delegates through stable lifecycle" -m "Route registere
 
 **Interfaces:**
 
-- Consume controller terminal packets, stop membership, shell work receipts, existing jobstore watch journal, and receiver Session transcripts.
-- Produce idempotent attention append/resolve helpers; typed session/shell/delegate watch endpoints; enqueue/delivery receipts; stable parent grants; exact observer folding; unreachable-owner escalation; and shell completion routing through ParentDelegateID.
+- Consume the Task 7 idempotent live attention append and inline caller delivery-commit bridge, controller terminal packets, stop membership, shell work receipts, the existing jobstore watch journal, and receiver Session transcripts.
+- Produce cold attention fold and durable resolution helpers; typed session/shell/delegate watch endpoints; enqueue/delivery receipts; stable parent grants; exact observer folding; unreachable-owner escalation; and shell completion routing through ParentDelegateID.
 - The watch journal remains authoritative. No watch state enters delegatestore and no arbitrary receiver field is added.
 
-- [ ] **Step 1: Prove receiver attention durability and tool-round transparency**
+- [ ] **Step 1: Prove attention resolution durability and tool-round transparency**
 
 Add:
 
 ~~~go
-func TestDelegateAttention_AppendIsIdempotentByIdentityAndContent(t *testing.T)
-func TestDelegateAttention_ConflictingIdentityIsCorruption(t *testing.T)
 func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T)
-func TestDelegateAttention_DeliveryCommitUsesCallerToolResultFsync(t *testing.T)
 func TestDelegateAttention_ResolutionMarkerDoesNotSplitToolCallAndResult(t *testing.T)
 func TestDelegateAttention_HistoryRepairCannotCreateOrphanedToolResult(t *testing.T)
 func TestDelegateAttention_RestartFoldIsProviderFreeAndReadOnly(t *testing.T)
@@ -1160,10 +1170,10 @@ Put this target and the Step 2 watch-delivery target in session_attention_fuzz_t
 Immediately before adding the turn/helper implementation, run:
 
 ~~~bash
-go test ./agent -run '^TestDelegateAttention_' -count=1
+go test ./agent -run '^TestDelegateAttention_(ResolutionFsyncPrecedesSourceAck|ResolutionMarkerDoesNotSplitToolCallAndResult|HistoryRepairCannotCreateOrphanedToolResult|RestartFoldIsProviderFreeAndReadOnly)$' -count=1
 ~~~
 
-Extend the existing AttentionID, provider-excluded AttentionResolution, live resolution, and cold-fold foundation with DelegateDeliveryCommits, missing-file-tolerant readPendingAttention, idempotent live append, and cold append-after-identity-validation helpers. Move the generic attention fold/cold helpers from delegate_shell_repair.go into session_attention.go so shell repair keeps only shell-specific orchestration and the registered fuzz surface names its real owner. Ensure context compaction and history repair treat the marker as transparent. Run GREEN count 20/race plus the registered deterministic fuzz replay.
+Consume Task 7's `DelegateDeliveryCommit` and idempotent live append without redefining their caller-fsync boundary. Extend the existing AttentionID, provider-excluded AttentionResolution, and live append foundation with missing-file-tolerant readPendingAttention, durable resolution, and cold append-after-identity-validation helpers. Move the generic attention fold/cold helpers from delegate_shell_repair.go into session_attention.go so shell repair keeps only shell-specific orchestration and the registered fuzz surface names its real owner. Ensure context compaction and history repair treat the marker as transparent. Run the focused selector GREEN count 20/race plus the registered deterministic fuzz replay.
 
 - [ ] **Step 2: Prove typed watches and crash-safe delivery**
 
@@ -1265,7 +1275,7 @@ git add -- agent/job_watch.go agent/job_notify.go agent/job_shell.go agent/jobs.
 git add -- agent/internal/jobstore/watch.go agent/internal/jobstore/event.go agent/internal/jobstore/record.go agent/internal/jobstore/fold.go
 git add -- agent/session_tools_jobs.go agent/session_tools_jobs_watch_test.go agent/job_watch_parent_test.go agent/job_watch_observer_test.go agent/job_watch_restore_end_notice_test.go agent/job_watch_restore_lost_notice_test.go agent/job_watch_end_notice_test.go scripts/run-fuzz.sh
 git add -- agent/root_watch_tree_program_fuzz_test.go agent/job_watch_delegate_fuzz_test.go agent/watch_seqfuzz_test.go agent/watch_observer_fuzz_test.go agent/watch_pending_frame_program_fuzz_test.go agent/watch_restore_clear_history_program_fuzz_test.go agent/watch_attach_terminal_program_fuzz_test.go agent/watch_config_validation_program_fuzz_test.go
-git commit -m "feat: preserve stable delegate delivery" -m "Keep the existing watch journal and shipped observer behavior while replacing delegate-job indirection with typed stable endpoints. Add crash-safe receiver attention, stop-fenced watch receipts, unreachable-owner escalation, and ParentDelegateID shell routing without a second lifecycle or watch authority."
+git commit -m "feat: preserve stable delegate delivery" -m "Keep the existing watch journal and shipped observer behavior while replacing delegate-job indirection with typed stable endpoints. Extend the Task 7 attention foundation with cold fold and durable resolution, then add stop-fenced watch receipts, unreachable-owner escalation, and ParentDelegateID shell routing without a second lifecycle or watch authority."
 ~~~
 
 ---
@@ -1561,7 +1571,7 @@ git commit -m "feat: project stable delegates without mutation" -m "Cut stable t
 - Modify: cmd/serf-hub/frontend/src/stores/threads.ts, cmd/serf-hub/frontend/src/stores/threads.test.ts, cmd/serf-hub/frontend/src/stores/activityPanel.ts, cmd/serf-hub/frontend/src/stores/activityPanel.test.ts.
 - Modify: cmd/serf-hub/frontend/src/protocol/model.ts, cmd/serf-hub/frontend/src/protocol/reducer.ts, cmd/serf-hub/frontend/src/protocol/reducer.test.ts.
 - Modify: cmd/serf-hub/frontend/src/panes/session/chrome/activityData.ts, cmd/serf-hub/frontend/src/panes/session/chrome/activityData.test.ts, cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.ts, cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.test.ts, cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.tsx, cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx.
-- Modify: cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.ts, cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.test.ts.
+- Modify: cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.test.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.ts, cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.test.ts.
 - Modify: cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts, cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts, cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.test.tsx.
 - Modify: cmd/serf-hub/frontend/src/protocol/fixtures/tool-and-jobs.jsonl, cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx.
 
@@ -1638,6 +1648,7 @@ Add exact Vitest cases in the named test files:
 - reducer.test.ts: carries explicit null, validation, exhaustion, timing, usage, worktree, warnings, turn slots, and stable diagnostics while omitting call-scoped wait reason from stable state.
 - activityData.test.ts and activityRows.test.ts: render stable delegate lineage and ParentDelegateID shell ancestry.
 - ActivityTree.test.tsx: stable delegate rows retain navigation, send, stop, status, watch, and observer affordances without activation cards.
+- ToolCallItem.test.tsx: update active delegate fixtures from activation `job_id` to stable `delegate_id`, reject activation-only delegate controls, and retain `job_id` only for real shell-job fixtures.
 - jobTools.test.tsx, subagentModule.test.tsx, and subagentModuleStore.test.ts: use delegate_id, never synthesize a delegate job, preserve wait_ignored_reason on the delegate_send result and its transcript rendering, and never copy it into the stable module snapshot.
 - steeringClassify.test.ts, NotificationCard.test.tsx, and SteeringItem.test.tsx: distinguish delegate notification markup from shell job notification markup.
 
@@ -1646,7 +1657,7 @@ Immediately before web implementation, run:
 ~~~bash
 scripts/web-preflight.sh
 cd cmd/serf-hub/frontend
-npx vitest run --maxWorkers=4 src/stores/threads.test.ts src/stores/activityPanel.test.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx
+npx vitest run --maxWorkers=4 src/stores/threads.test.ts src/stores/activityPanel.test.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx
 cd ../../..
 ~~~
 
@@ -1660,9 +1671,10 @@ From the repository root, run make generate. Then implement the stores and compo
 gofmt -w internal/appprojector/delegate_projection_test.go agent/events/events.go agent/events/payloads.go agent/events/eventdata.go agent/events/events_test.go agent/events/events_fuzz_test.go agent/events/payloads_test.go agent/events/eventdata_program_fuzz_test.go agent/status.go agent/status_test.go agent/status_support_program_fuzz_test.go agent/jobs_activity.go agent/jobs_activity_past.go agent/tree_counter.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go appwire/types.go appwire/protocol.go appwire/types_test.go appwire/protocol_test.go server/server.go server/server_test.go server/server_surface_fuzz_test.go server/appwire_runtime.go server/appwire_runtime_test.go server/thread_envelope.go server/thread_envelope_test.go cmd/serf/serve.go cmd/serf/serve_test.go cmd/serf/serve_coverage_fuzz_test.go cmd/serf/run_drain_test.go cmd/serf/run_drain_nested_test.go cmd/serf-hub/app_jobs.go cmd/serf-hub/app_jobs_test.go cmd/serf-hub/app_threadread.go cmd/serf-hub/app_threadread_test.go cmd/serf-tui/hub_notifications.go cmd/serf-tui/hub_notifications_test.go cmd/serf-tui/hub_notifications_fuzz_test.go cmd/serf-tui/model_misc_serffuzz_test.go cmd/serf-tui/internal/transcript/job_notification.go cmd/serf-tui/internal/transcript/reducer.go cmd/serf-tui/internal/transcript/types.go cmd/serf-tui/internal/transcript/reducer_test.go cmd/serf-tui/internal/transcript/cov_rtui_transcript_test.go cmd/serf-tui/internal/transcript/reducer_fuzz_test.go cmd/serf-tui/internal/transcript/fuzz_coverage_union_test.go cmd/serf-tui/internal/msgrender/tool_bodies.go cmd/serf-tui/internal/msgrender/tool_bodies_test.go cmd/serf-tui/internal/msgrender/tool_renderers.go cmd/serf-tui/internal/msgrender/tool_renderers_test.go cmd/serf-tui/internal/msgrender/tool_renderers_fuzz_test.go cmd/serf-tui/internal/msgrender/cov_rtui_msgrender_test.go cmd/serf-tui/internal/toolsummary/tool_summary.go cmd/serf-tui/internal/toolsummary/tool_summary_test.go cmd/serf-tui/internal/toolsummary/tool_summary_fuzz_test.go cmd/serf-tui/internal/toolsummary/fuzz_coverage_union_test.go
 make generate
 cd cmd/serf-hub/frontend
-npx biome check --write src/stores/threads.ts src/stores/threads.test.ts src/stores/activityPanel.ts src/stores/activityPanel.test.ts src/protocol/model.ts src/protocol/reducer.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.tsx src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/ToolCallItem.tsx src/panes/session/transcript/tools/jobTools.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.ts src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.tsx src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx src/dev/overflowharness-entry.tsx
-npx vitest run --maxWorkers=4 src/stores/threads.test.ts src/stores/activityPanel.test.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx
+npx biome check --write src/stores/threads.ts src/stores/threads.test.ts src/stores/activityPanel.ts src/stores/activityPanel.test.ts src/protocol/model.ts src/protocol/reducer.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.tsx src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/ToolCallItem.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/tools/jobTools.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.ts src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.tsx src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx src/dev/overflowharness-entry.tsx
+npx vitest run --maxWorkers=4 src/stores/threads.test.ts src/stores/activityPanel.test.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx
 cd ../../..
+make test-web
 go test ./internal/appprojector ./appwire ./server ./cmd/serf ./cmd/serf-hub ./cmd/serf-tui/... -count=1
 go test ./agent -run '^TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen$' -count=20
 go test -race ./agent -run '^TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen$' -count=20
@@ -1695,7 +1707,7 @@ git add -- cmd/serf-tui/internal/toolsummary/tool_summary.go cmd/serf-tui/intern
 git add -- cmd/serf-hub/frontend/src/protocol/types.gen.ts docs/appwire-protocol.md
 git add -- cmd/serf-hub/frontend/src/stores/threads.ts cmd/serf-hub/frontend/src/stores/threads.test.ts cmd/serf-hub/frontend/src/stores/activityPanel.ts cmd/serf-hub/frontend/src/stores/activityPanel.test.ts cmd/serf-hub/frontend/src/protocol/model.ts cmd/serf-hub/frontend/src/protocol/reducer.ts cmd/serf-hub/frontend/src/protocol/reducer.test.ts
 git add -- cmd/serf-hub/frontend/src/panes/session/chrome/activityData.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityData.test.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.test.ts cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.tsx cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx
-git add -- cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.ts cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.test.ts
+git add -- cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.ts cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.test.ts
 git add -- cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.test.tsx cmd/serf-hub/frontend/src/protocol/fixtures/tool-and-jobs.jsonl cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx
 git commit -m "feat: cut clients to stable delegates" -m "Carry stable delegate events and lossless lifecycle metadata through AppWire, Hub, TUI, and web while preserving descendant events, navigation, watches, observers, shells, timing, usage, quiet, and worktree evidence. Remove activation cards and Detailed.Jobs discovery without removing stable control capability."
 ~~~
@@ -1709,8 +1721,8 @@ git commit -m "feat: cut clients to stable delegates" -m "Carry stable delegate 
 - Create: agent/delegate_legacy_dormancy_test.go.
 - Modify or delete only delegate lifecycle branches in: agent/internal/jobstore/event.go, agent/internal/jobstore/event_clone.go, agent/internal/jobstore/record.go, agent/internal/jobstore/fold.go, agent/internal/jobstore/store.go.
 - Modify or rewrite: agent/internal/jobstore/cov_s4_jobstore_test.go, agent/internal/jobstore/event_test.go, agent/internal/jobstore/fold_fuzz_test.go, agent/internal/jobstore/fold_test.go, agent/internal/jobstore/jobstore_program_fuzz_test.go, agent/internal/jobstore/record_test.go, agent/internal/jobstore/seqfuzz_test.go, agent/internal/jobstore/store_incremental_test.go, agent/internal/jobstore/store_persistence_fuzz_test.go, agent/internal/jobstore/store_test.go.
-- Modify: agent/job_delegate.go, agent/subagents.go, agent/subagent_manager.go, agent/jobs.go, agent/jobs_nested.go, agent/job_notify.go, agent/session_tools_jobs.go, agent/session_outline.go, agent/historical_jobs.go.
-- Modify: agent/session.go, agent/session_config.go, agent/session_init.go, agent/session_lifecycle.go, agent/delegate_runtime.go, identifier/domains.go, identifier/domains_test.go.
+- Modify or delete only unreachable legacy delegate definitions in: agent/job_delegate.go, agent/subagents.go, agent/subagent_manager.go, agent/jobs.go, agent/jobs_nested.go, agent/job_notify.go, agent/session_tools_jobs.go, agent/session_outline.go, agent/historical_jobs.go. Do not change a registered route proven GREEN in Step 1.
+- Modify or delete only unreachable legacy delegate definitions in: agent/session.go, agent/session_config.go, agent/session_init.go, agent/session_lifecycle.go, agent/delegate_runtime.go, identifier/domains.go, identifier/domains_test.go. Do not change a registered route proven GREEN in Step 1.
 - Rewrite against registered stable behavior or remove implementation-shape cases in: agent/job_delegate_test.go, agent/job_delegate_create_test.go, agent/job_delegate_decode_test.go, agent/job_delegate_send_test.go, agent/job_delegate_send_fifo_test.go, agent/job_delegate_finalize_test.go, agent/job_delegate_finalize_retry_structured_test.go, agent/job_delegate_drivedown_test.go, agent/job_delegate_budget_test.go, agent/job_delegate_isolation_test.go, agent/job_delegate_model_echo_test.go, agent/job_delegate_model_selection_test.go, agent/job_nested_test.go, agent/subagent_manager_test.go, agent/subagents_test.go.
 - Rewrite or retire the exact legacy fuzz owners in: agent/delegate_seqfuzz_test.go, agent/fuzz_lx_delegate_test.go, agent/fuzz_delegate_creation_restore_config_test.go, agent/fuzz_delegate_finalize_report_test.go, agent/fuzz_jd_classify_delegate_send_target_test.go, agent/fuzz_jd_resolve_delegate_terminal_status_test.go, agent/fuzz_jd_validate_delegate_grant_test.go, agent/fuzz_jdr_restore_lifecycle_test.go, agent/job_delegate_attach_finalize_seed100_fuzz_test.go, agent/job_delegate_exact_create_send_fuzz_test.go, agent/job_delegate_exact_finalize_report_fuzz_test.go, agent/job_delegate_exact_restore_fuzz_test.go, agent/job_delegate_exact_running_attach_fuzz_test.go, agent/job_delegate_exact_tail_create_restore_fuzz_test.go, agent/job_delegate_exact_tail_finalize_fuzz_test.go, agent/job_delegate_exact_tail_running_fuzz_test.go, agent/job_delegate_git_report_seed100_fuzz_test.go, agent/job_delegate_sandbox_schema_seed100_fuzz_test.go, agent/job_delegate_seed100_fuzz_test.go, agent/job_delegate_send_fuzz_test.go, agent/job_delegate_send_seed100_fuzz_test.go, agent/subagents_fuzz_test.go, agent/subagents_seed100_exact_fuzz_test.go, agent/nested_subagent_lifecycle_program_fuzz_test.go.
 - Modify only the retired delegate subtargets in these mixed fuzz owners: agent/root_watch_tree_program_fuzz_test.go, agent/job_watch_delegate_fuzz_test.go, agent/session_tools_jobs_contract_program_fuzz_test.go. Preserve their stable watch and stable tool coverage.
@@ -1727,7 +1739,7 @@ git commit -m "feat: cut clients to stable delegates" -m "Carry stable delegate 
 - Produce a shell/watch-only JobRecord reducer, no delegate activation aliases, no current/latest job mirror, no standalone failure record, and no loose watch receiver.
 - Preserve the existing watch journal, quiet supervision, hooks/nudge/salvage, admission reclamation, stable shell routing, old transcript rendering, and all client behavior.
 
-- [ ] **Step 1: Prove semantic dormancy before deleting authority**
+- [ ] **Step 1: Require semantic dormancy to be GREEN before deleting authority**
 
 Add:
 
@@ -1742,40 +1754,27 @@ func TestDelegateLegacyDormancy_HistoricalSendStillRendersReadOnly(t *testing.T)
 func TestDelegateLegacyDormancy_LegacyLifecycleAndWatchRowsFailClosed(t *testing.T)
 ~~~
 
-Immediately before removal, run:
+These cases exercise the registered tools, durable folds, and preserved behavior; they are not identifier-name-only assertions. Immediately before any production removal, format the new test and run the semantic-dormancy gate as required GREEN evidence:
 
 ~~~bash
-go test ./agent -run '^TestDelegateLegacyDormancy_' -count=1
-~~~
-
-Expected RED: at least the JobRecord creation or activation alias case reaches legacy code. Tests must execute registered tools and durable folds; an identifier-name-only assertion is insufficient.
-
-First cut every registered production call site that can create, resume, alias, notify, query, or control a delegate JobRecord. Leave the now-unreachable legacy reducer types and helpers intact until Step 2 so this commit changes routing without mixing in structural deletion. Retain shell/watch JobRecord behavior, the watch journal, and read-only historical rendering without registering old IDs.
-
-Run the dormancy selector GREEN and the preserved stable surfaces, then stage only this routing slice:
-
-~~~bash
-gofmt -w agent/delegate_legacy_dormancy_test.go agent/job_delegate.go agent/subagents.go agent/subagent_manager.go agent/jobs.go agent/jobs_nested.go agent/job_notify.go agent/session_tools_jobs.go agent/session_outline.go agent/historical_jobs.go agent/session.go agent/session_config.go agent/session_init.go agent/session_lifecycle.go agent/delegate_runtime.go
+gofmt -w agent/delegate_legacy_dormancy_test.go
 go test ./agent -run '^TestDelegateLegacyDormancy_' -count=20
 go test -race ./agent -run '^TestDelegateLegacyDormancy_' -count=20
 go test ./agent -run '^(TestStableDelegateWatch_|TestDelegateResourceSupervision_|TestDelegateRuntimeReclaim_|TestStableDelegateShell_|TestStableDelegateReadOnly_)' -count=20
 go test -race ./agent -run '^(TestStableDelegateWatch_|TestDelegateResourceSupervision_|TestDelegateRuntimeReclaim_|TestStableDelegateShell_|TestStableDelegateReadOnly_)' -count=20
-git diff --check
-git status --short
-git add -- agent/delegate_legacy_dormancy_test.go agent/job_delegate.go agent/subagents.go agent/subagent_manager.go agent/jobs.go agent/jobs_nested.go agent/job_notify.go agent/session_tools_jobs.go agent/session_outline.go agent/historical_jobs.go
-git add -- agent/session.go agent/session_config.go agent/session_init.go agent/session_lifecycle.go agent/delegate_runtime.go
-git commit -m "refactor: make delegate job authority unreachable" -m "Cut every registered creation, resume, alias, notification, query, and control route to the stable delegate controller while retaining inert legacy reducer code for a separate source-deletion review. Preserve shell jobs, the watch journal, supervision, reclamation, and historical rendering."
 ~~~
 
-Do not deploy this intermediate commit; the branch remains atomic through Task 14.
+Expected GREEN: Tasks 6–11 have already cut every registered delegate route to the stable controller while preserving the named surfaces. If any case is RED, stop Task 12 and return the defect to its exact Task 6–11 owner. Add the causal behavioral RED there, make the smallest owner-task fix, rerun that task's gates, and create a corrective owner-task commit before restarting this GREEN gate. Task 12 must not repair a live route or claim that earlier-task failure as its own RED.
 
-- [ ] **Step 2: Prove source and schema dormancy**
+Do not create a separate routing commit in this task. With the gate GREEN, any remaining delegate JobRecord definitions are unreachable structure rather than registered behavior.
 
-Now delete only the unreachable branches and types that create, fold, mirror, or identify delegate JobRecords, plus their implementation-shape tests and fuzz targets. Retain shell/watch JobRecord types and every allowlisted stable or historical surface. The first commit proves public dormancy; this step proves the old authority is physically absent without changing the stable contract.
+- [ ] **Step 2: Use source/schema inventory as structural RED, then delete dormant authority**
+
+Before changing production, inventory the unreachable definitions below. Their non-allowlisted matches are the structural RED for this deletion-only task. Then delete only the branches and types that create, fold, mirror, or identify delegate JobRecords, plus their implementation-shape tests and fuzz targets. Retain shell/watch JobRecord types and every allowlisted stable or historical surface. The Step 1 GREEN gate proves public dormancy; this step proves the old authority is physically absent without changing the stable contract.
 
 In scripts/run-fuzz.sh remove the rows for FuzzLxValidateDelegateRestoreState, FuzzDelegateCreationRestoreConfigProgram, FuzzRootDelegateResumeLifecycleProgram, FuzzDelegateFinalizeReportProgram, FuzzDgfzSendDelegateMessage, FuzzWatchdelDelegateResume, FuzzJdValidateDelegateGrant, FuzzJdResolveDelegateTerminalStatus, FuzzJdClassifyDelegateSendTarget, FuzzJdrDelegateRestoreLifecycle, and every FuzzJobDelegate-prefixed target after their old functions are removed. Rewrite FuzzJobtoolsContractProgram to point only at stable tool functions. Retain FuzzWatchdelWatchOps, FuzzRootWatchTreeProgram, every generic watch-journal target, FuzzWvQuietWatchdogTick, the three Task 1–5 delegate-store/controller/restart fuzz targets, and the Task 8–9 attention/watch/reclamation targets.
 
-Run these inventories before and after deletion. Before deletion, at least one command must identify the legacy authority; after deletion, every command must be empty or contain only an explicit historical-fixture/legacy-rejection allowlist documented in delegate_legacy_dormancy_test.go:
+Run these inventories before and after deletion. Before deletion, at least one command must identify the unreachable legacy authority as the required structural RED; after deletion, every command must be empty or contain only an explicit historical-fixture/legacy-rejection allowlist documented in delegate_legacy_dormancy_test.go:
 
 ~~~bash
 rg -n 'JobTypeDelegate|JobDelegate|job_type.*delegate|DelegateJobID|CurrentJobID|LatestJobID|DelegateGeneration|StopGateClosed|findRunningDelegateByTranscriptRef|resumeOrFindRunningDelegate|relinkDelegateChildToJob|attachDelegateJob|finalizeDelegateOnce|ReceiverDelegateID|receiverDelegateID|applyReceiverWatchSend|installParentSourceWatchForChild|clearParentSourceWatchForChild|attachDelegateJobFromWatch|runFromWatch|staleDelegateWatchSend|delegateStoppedAfterWatchSendPending|delegate failure record' agent identifier --glob '*.go'
@@ -1933,7 +1932,7 @@ go test ./cmd/serf-hub/internal/hubcore -run '^TestHubProberStableDelegate' -cou
 go test -race ./cmd/serf-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=20
 scripts/web-preflight.sh
 cd cmd/serf-hub/frontend
-npx vitest run --maxWorkers=4 src/stores/threads.test.ts src/stores/activityPanel.test.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx
+npx vitest run --maxWorkers=4 src/stores/threads.test.ts src/stores/activityPanel.test.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx
 cd ../../..
 ~~~
 
@@ -1962,8 +1961,8 @@ A selector that passes under its matching mutation is inadequate: restore first,
 make fuzz-registry-check
 make fuzz
 SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^(FuzzDelegateControllerTransitions|FuzzDelegateConversationTransitions|FuzzDelegateRestartEquivalence|FuzzDelegateAttentionFold|FuzzStableDelegateWatchDelivery|FuzzDelegateReclaimStopRestart)$' -count=1
-go test ./agent/internal/delegatestore -run '^Fuzz' -count=1
-go test ./agent/internal/jobstore -run '^Fuzz.*Watch' -count=1
+SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent/internal/delegatestore -run '^Fuzz(Fold|StoreReplay|ReadEvents)$' -count=1
+go test ./agent/internal/jobstore -run '^FuzzOutputMatcher$' -count=1
 ~~~
 
 - [ ] **Step 4: Prove clean flag-day restart and fail-closed legacy input**
@@ -2018,13 +2017,15 @@ Capture each bare exit code, duration, and failure evidence root. Do not infer s
 Determine the exact range:
 
 ~~~bash
-git merge-base main HEAD
-git log --oneline --decorate main..HEAD
-git diff --stat main...HEAD
-git diff --check main...HEAD
+task5_base=2da9863390e3e064fc015afe79a54fe8a8ce1d8f
+actual_merge_base=$(git merge-base "$task5_base" HEAD)
+test "$actual_merge_base" = "$task5_base"
+git log --oneline --decorate "$task5_base"..HEAD
+git diff --stat "$task5_base"..HEAD
+git diff --check "$task5_base"..HEAD
 ~~~
 
-Request sequential whole-range reviews for lifecycle/locking, watches/recovery, worktree/sandbox, tools/projection, clients, and documentation. Resolve every finding through its owning task and rerun the relevant causal selector plus full gates. Then obtain one final fresh whole-range review.
+Use the asserted fixed Task 5 foundation through HEAD for every requested review; do not derive the implementation range from current `main`. Request sequential whole-range reviews for lifecycle/locking, watches/recovery, worktree/sandbox, tools/projection, clients, and documentation. Resolve every finding through its owning task and rerun the relevant causal selector plus full gates. Then obtain one final fresh review of the same fixed range. A separate comparison to current `main` may be recorded only as integration evidence and does not define or replace the review range.
 
 Final acceptance requires:
 
