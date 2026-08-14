@@ -1364,8 +1364,12 @@ func delegateRestoreOperationalIOError(err error) bool {
 }
 
 func (s *Session) closeOwnedDelegateStore() error {
+	return s.closeOwnedDelegateStoreWithContext(context.Background())
+}
+
+func (s *Session) closeOwnedDelegateStoreWithContext(ctx context.Context) error {
 	if s == nil || !s.ownsDelegateController || s.delegateController == nil || s.delegateController.store == nil {
 		return nil
 	}
-	return s.delegateController.store.Close()
+	return s.delegateController.closeStoreAfterStopReconcileDriver(ctx)
 }

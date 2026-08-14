@@ -36,7 +36,6 @@ func TestJobToolsRejectDelegateIDWithActionableGuidance(t *testing.T) {
 		want string
 	}{
 		{"status", "job_status", fmt.Sprintf(`{"job_id":%q}`, res.DelegateID), "delegate_id is a conversation handle; inspect a concrete job_id"},
-		{"stop", "job_stop", fmt.Sprintf(`{"job_id":%q}`, res.DelegateID), "delegate_id is a conversation handle; stop a concrete job_id"},
 		{"watch", "job_watch", fmt.Sprintf(`{"operation":"create","source":%q,"events":["communicate"]}`, res.DelegateID), "delegate_id is a conversation handle; watch source self, parent, or a concrete job_id"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

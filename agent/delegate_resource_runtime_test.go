@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -468,6 +469,407 @@ func TestDelegateResourceRuntime_CanonicalInlineDeliveryPreservesPacketSemantics
 			t.Fatalf("inline invalid structured result = %#v", result)
 		}
 	})
+}
+
+func TestDelegateResourceRuntime_GenericStopUsesCanonicalFinish(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "stop-hook-ran")
+	pluginDir := writeStableOnceBlockingStopPlugin(t, marker)
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.Config.PluginDirs = []string{pluginDir}
+	})
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("before generic Stop continuation") },
+		func(llm.Request) llm.Response { return finalResponse("after generic Stop continuation") },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "run Stop hook", 60_000)
+	if outcome.result.Err != nil || outcome.result.Status != jobstore.StatusCompleted || !strings.Contains(outcome.result.Output, "before generic Stop continuation") {
+		t.Fatalf("stable generic Stop outcome = %#v", outcome.result)
+	}
+	if got := supervisionRequestCount(fixture.adapter); got != 2 {
+		t.Fatalf("generic Stop provider requests = %d, want one blocked continuation", got)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("Stop hook marker: %v", err)
+	}
+	events, err := root.delegateController.store.Load()
+	if err != nil {
+		t.Fatalf("load canonical finish: %v", err)
+	}
+	var packet *delegatestore.TerminalPacket
+	for i := range events {
+		if events[i].DelegateID == fixture.delegateID && events[i].TerminalPrepared != nil {
+			value := events[i].TerminalPrepared.Packet
+			packet = &value
+		}
+	}
+	if packet == nil || !strings.Contains(string(packet.Message), "before generic Stop continuation") {
+		t.Fatalf("generic Stop canonical packet = %#v", packet)
+	}
+}
+
+func TestDelegateResourceRuntime_PositiveStopWaitKeepsReconciliationDriverAlive(t *testing.T) {
+	harness := newStableStopRuntimeHarness(t)
+	waitCtx := newDelegateStopWaitBarrierContext()
+	result := make(chan stableJobStopInvocation, 1)
+	go func() {
+		value, err := jobStopTool(waitCtx, harness.root, map[string]any{
+			"job_id":      harness.fixture.delegateID,
+			"max_wait_ms": 60_000,
+		}, jobToolResultDefaultMaxChar)
+		result <- stableJobStopInvocation{value: value, err: err}
+	}()
+	select {
+	case invocation := <-result:
+		harness.release()
+		waitForStableSupervisionRun(t, harness.root, harness.fixture.childID)
+		t.Fatalf("positive stable stop returned before entering its wait: %#v, %v", invocation.value, invocation.err)
+	case <-waitCtx.entered:
+	}
+	stop := currentDelegateStop(t, harness.root.delegateController)
+	waitCtx.cancel()
+	invocation := <-result
+	assertStableStopPending(t, invocation, harness.fixture.delegateID)
+	harness.release()
+	waitForStableSupervisionRun(t, harness.root, harness.fixture.childID)
+	<-stop.done
+	assertStableStopDurableCompletion(t, harness.root.delegateController, harness.fixture.delegateID)
+}
+
+func TestDelegateResourceRuntime_PositiveStopWaitReturnsAfterDurableCompletion(t *testing.T) {
+	harness := newStableStopRuntimeHarness(t)
+	finalStatePublished := make(chan struct{})
+	releaseFinalization := make(chan struct{})
+	sub := harness.root.subagents.get(harness.fixture.childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatal("stable stop harness has no child Session")
+	}
+	if appended, err := sub.sess.appendDelegateNotificationDurably("attention-before-stop", "stop must discard this pending attention"); err != nil || !appended {
+		t.Fatalf("append pending stop attention: appended=%t err=%v", appended, err)
+	}
+	sub.sess.cfg.testOnly.subagentAfterFinalStatePublish = func(*subagent) {
+		close(finalStatePublished)
+		<-releaseFinalization
+	}
+	waitCtx := newDelegateStopWaitBarrierContext()
+	result := make(chan stableJobStopInvocation, 1)
+	go func() {
+		value, err := jobStopTool(waitCtx, harness.root, map[string]any{
+			"job_id":      harness.fixture.delegateID,
+			"max_wait_ms": 60_000,
+		}, jobToolResultDefaultMaxChar)
+		result <- stableJobStopInvocation{value: value, err: err}
+	}()
+	select {
+	case invocation := <-result:
+		harness.release()
+		waitForStableSupervisionRun(t, harness.root, harness.fixture.childID)
+		t.Fatalf("positive stable stop returned before entering its wait: %#v, %v", invocation.value, invocation.err)
+	case <-waitCtx.entered:
+	}
+	harness.release()
+	<-finalStatePublished
+	select {
+	case invocation := <-result:
+		t.Fatalf("positive stable stop returned before canonical finish fsync: %#v, %v", invocation.value, invocation.err)
+	default:
+	}
+	close(releaseFinalization)
+	invocation := <-result
+	assertStableStopCompleted(t, invocation, harness.fixture.delegateID)
+	assertStableStopDurableCompletion(t, harness.root.delegateController, harness.fixture.delegateID)
+	pending, err := readPendingDelegateAttention(transcriptPath(harness.fixture.stateDir, harness.fixture.childID), harness.fixture.childID)
+	if err != nil {
+		t.Fatalf("read attention after stable stop: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending attention after stable stop = %#v", pending)
+	}
+}
+
+func TestDelegateResourceRuntime_StopWaitTimeoutLeavesReconciliationRunning(t *testing.T) {
+	clock := agenttest.NewFakeClock()
+	harness := newStableStopRuntimeHarnessWithClock(t, clock)
+	waitCtx := newDelegateStopWaitBarrierContext()
+	result := make(chan stableJobStopInvocation, 1)
+	go func() {
+		value, err := jobStopTool(waitCtx, harness.root, map[string]any{
+			"job_id":      harness.fixture.delegateID,
+			"max_wait_ms": minJobBlockTimeoutMS,
+		}, jobToolResultDefaultMaxChar)
+		result <- stableJobStopInvocation{value: value, err: err}
+	}()
+	select {
+	case invocation := <-result:
+		harness.release()
+		waitForStableSupervisionRun(t, harness.root, harness.fixture.childID)
+		t.Fatalf("positive stable stop returned before entering its wait: %#v, %v", invocation.value, invocation.err)
+	case <-waitCtx.entered:
+	}
+	stop := currentDelegateStop(t, harness.root.delegateController)
+	clock.Advance(time.Duration(minJobBlockTimeoutMS) * time.Millisecond)
+	assertStableStopPending(t, <-result, harness.fixture.delegateID)
+	harness.release()
+	waitForStableSupervisionRun(t, harness.root, harness.fixture.childID)
+	<-stop.done
+	assertStableStopDurableCompletion(t, harness.root.delegateController, harness.fixture.delegateID)
+}
+
+func TestDelegateResourceRuntime_TransientDriverFailureCanBeRetried(t *testing.T) {
+	harness := newStableStopRuntimeHarness(t)
+	transcriptPath := transcriptPath(harness.fixture.stateDir, harness.fixture.childID)
+	backupPath := transcriptPath + ".driver-retry"
+	if err := os.Rename(transcriptPath, backupPath); err != nil {
+		t.Fatalf("hide transcript from first driver: %v", err)
+	}
+	if err := os.Mkdir(transcriptPath, 0o700); err != nil {
+		t.Fatalf("replace transcript with directory: %v", err)
+	}
+	var restoreOnce sync.Once
+	restoreTranscript := func() {
+		restoreOnce.Do(func() {
+			_ = os.Remove(transcriptPath)
+			_ = os.Rename(backupPath, transcriptPath)
+		})
+	}
+	t.Cleanup(restoreTranscript)
+
+	first, err := jobStopTool(context.Background(), harness.root, map[string]any{
+		"job_id": harness.fixture.delegateID,
+	}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		restoreTranscript()
+		harness.release()
+		waitForStableSupervisionRun(t, harness.root, harness.fixture.childID)
+		t.Fatalf("first stable stop request: %v", err)
+	}
+	assertStableStopPending(t, stableJobStopInvocation{value: first}, harness.fixture.delegateID)
+	stop := currentDelegateStop(t, harness.root.delegateController)
+	<-stop.driver.done
+	harness.root.delegateController.mu.Lock()
+	firstDriver := stop.driver
+	firstErr := firstDriver.err
+	harness.root.delegateController.mu.Unlock()
+	if firstErr == nil {
+		restoreTranscript()
+		harness.release()
+		waitForStableSupervisionRun(t, harness.root, harness.fixture.childID)
+		t.Fatal("first reconciliation driver did not report the transcript evidence failure")
+	}
+	restoreTranscript()
+
+	second, err := jobStopTool(context.Background(), harness.root, map[string]any{
+		"job_id": harness.fixture.delegateID,
+	}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		harness.release()
+		waitForStableSupervisionRun(t, harness.root, harness.fixture.childID)
+		t.Fatalf("retry stable stop request: %v", err)
+	}
+	assertStableStopPending(t, stableJobStopInvocation{value: second}, harness.fixture.delegateID)
+	harness.root.delegateController.mu.Lock()
+	retriedDriver := stop.driver
+	harness.root.delegateController.mu.Unlock()
+	if retriedDriver == firstDriver {
+		harness.release()
+		waitForStableSupervisionRun(t, harness.root, harness.fixture.childID)
+		t.Fatal("retry kept the completed failed driver instead of starting one new exact driver")
+	}
+	harness.release()
+	waitForStableSupervisionRun(t, harness.root, harness.fixture.childID)
+	<-stop.done
+	assertStableStopDurableCompletion(t, harness.root.delegateController, harness.fixture.delegateID)
+}
+
+func TestDelegateResourceRuntime_RootStoreCloseJoinsReconciliationDriver(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	root := restoreSupervisionRoot(t, fixture, nil)
+	result, _, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.delegateRootSessionID), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("seed stable stop: %v", err)
+	}
+	stop := root.delegateController.stopForResult(result)
+	driverErr := errors.New("driver did not finish cleanly")
+	root.delegateController.mu.Lock()
+	stop.driver = &delegateStopDriver{done: make(chan struct{}), err: driverErr}
+	root.delegateController.stopDriver = stop.driver
+	close(stop.driver.done)
+	root.delegateController.mu.Unlock()
+	if err := root.closeOwnedDelegateStore(); !errors.Is(err, driverErr) {
+		t.Fatalf("root store close ignored its reconciliation driver result: %v", err)
+	}
+	if _, _, _, err := root.delegateController.StopSubtreeAndDrive(rootDelegateActor(root.delegateRootSessionID), fixture.delegateID); !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("stable stop retry crossed the root store-close fence: %v", err)
+	}
+	root.delegateController.mu.Lock()
+	stop.driver.err = nil
+	root.delegateController.mu.Unlock()
+	if err := root.closeOwnedDelegateStore(); err != nil {
+		t.Fatalf("close root delegate store after stop: %v", err)
+	}
+}
+
+func TestDelegateResourceRuntime_ZeroWaitReturnsAfterRequestFsync(t *testing.T) {
+	harness := newStableStopRuntimeHarness(t)
+	value, err := jobStopTool(context.Background(), harness.root, map[string]any{
+		"job_id":      harness.fixture.delegateID,
+		"max_wait_ms": 0,
+	}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		harness.release()
+		waitForStableSupervisionRun(t, harness.root, harness.fixture.childID)
+		t.Fatalf("zero-wait stable job_stop: %v", err)
+	}
+	invocation := stableJobStopInvocation{value: value, err: err}
+	assertStableStopPending(t, invocation, harness.fixture.delegateID)
+	controller := harness.root.delegateController
+	controller.mu.Lock()
+	aggregate := controller.durable[harness.fixture.delegateID]
+	requestSeq := aggregate.PendingStopSeq
+	open := aggregate.CurrentRunOpen
+	stop := controller.stop
+	controller.mu.Unlock()
+	if requestSeq == 0 || !open || stop == nil || stop.requestSeq != requestSeq {
+		t.Fatalf("zero-wait stop returned without durable request: seq=%d open=%t stop=%#v", requestSeq, open, stop)
+	}
+	events, err := controller.store.Load()
+	if err != nil {
+		t.Fatalf("load stop request: %v", err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Seq == requestSeq && event.SubtreeStopRequested != nil {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("zero-wait stop request %d was not fsynced", requestSeq)
+	}
+	harness.release()
+	waitForStableSupervisionRun(t, harness.root, harness.fixture.childID)
+	<-stop.done
+}
+
+type stableJobStopInvocation struct {
+	value any
+	err   error
+}
+
+type stableStopRuntimeHarness struct {
+	root    *Session
+	fixture coldStableDelegateFixture
+	release func()
+}
+
+func newStableStopRuntimeHarness(t *testing.T) stableStopRuntimeHarness {
+	return newStableStopRuntimeHarnessWithClock(t, nil)
+}
+
+func newStableStopRuntimeHarnessWithClock(t *testing.T, clock *agenttest.FakeClock) stableStopRuntimeHarness {
+	t.Helper()
+	fixture := newColdStableDelegateFixture(t, "")
+	entered := make(chan struct{})
+	releaseProvider := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseProvider) }) }
+	t.Cleanup(release)
+	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+		close(entered)
+		<-releaseProvider
+		return finalResponse("provider released after stop")
+	}}
+	root := restoreSupervisionRoot(t, fixture, clock)
+	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "block for stop", 0)
+	if started.result.Err != nil {
+		t.Fatalf("start stable delegate: %v", started.result.Err)
+	}
+	<-entered
+	return stableStopRuntimeHarness{root: root, fixture: fixture, release: release}
+}
+
+func currentDelegateStop(t *testing.T, controller *delegateTreeController) *delegateStopState {
+	t.Helper()
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	if controller.stop == nil {
+		t.Fatal("stable stop was not durably admitted")
+	}
+	return controller.stop
+}
+
+func stableJobStopState(t *testing.T, invocation stableJobStopInvocation) jobStopResult {
+	t.Helper()
+	if invocation.err != nil {
+		t.Fatalf("stable job_stop: %v", invocation.err)
+	}
+	result, ok := invocation.value.(toolpkg.StateResult)
+	if !ok {
+		t.Fatalf("stable job_stop value = %T, want tool.StateResult", invocation.value)
+	}
+	state, ok := result.State.(jobStopResult)
+	if !ok {
+		t.Fatalf("stable job_stop state = %T, want jobStopResult", result.State)
+	}
+	return state
+}
+
+func assertStableStopPending(t *testing.T, invocation stableJobStopInvocation, delegateID string) {
+	t.Helper()
+	state := stableJobStopState(t, invocation)
+	if state.JobID != delegateID || state.Outcome != "stop_requested" || state.Status != string(jobstore.StatusRunning) {
+		t.Fatalf("pending stable stop = %#v", state)
+	}
+}
+
+func assertStableStopCompleted(t *testing.T, invocation stableJobStopInvocation, delegateID string) {
+	t.Helper()
+	state := stableJobStopState(t, invocation)
+	if state.JobID != delegateID || state.Outcome != "stopped" || state.Status != string(jobstore.StatusStopped) {
+		t.Fatalf("completed stable stop = %#v", state)
+	}
+}
+
+func assertStableStopDurableCompletion(t *testing.T, controller *delegateTreeController, delegateID string) {
+	t.Helper()
+	controller.mu.Lock()
+	aggregate := controller.durable[delegateID]
+	stop := controller.stop
+	controller.mu.Unlock()
+	if stop != nil || aggregate == nil || aggregate.PendingStopSeq != 0 || aggregate.CurrentRunOpen || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeStopped {
+		t.Fatalf("durable stable stop completion = stop:%#v aggregate:%#v", stop, aggregate)
+	}
+	events, err := controller.store.Load()
+	if err != nil {
+		t.Fatalf("load durable stable stop completion: %v", err)
+	}
+	for _, event := range events {
+		if event.DelegateID == delegateID && event.SubtreeStopCompleted != nil {
+			return
+		}
+	}
+	t.Fatal("stable stop returned completed without a durable stop_completed event")
+}
+
+func writeStableOnceBlockingStopPlugin(t *testing.T, marker string) string {
+	t.Helper()
+	pluginDir := makePluginDir(t, "task7-generic-stop")
+	hooksDir := filepath.Join(pluginDir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	command := "if [ -f " + shellQuote(marker) + " ]; then printf '{}'; else : > " + shellQuote(marker) + "; printf '%s' '{\"decision\":\"block\",\"reason\":\"continue after generic Stop\"}'; fi"
+	payload := map[string]any{"hooks": map[string]any{"Stop": []any{map[string]any{
+		"matcher": "*",
+		"hooks":   []any{map[string]any{"type": "command", "command": command}},
+	}}}}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooksDir, "hooks.json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return pluginDir
 }
 
 func runStableDelegateInlinePacket(t *testing.T, finish delegateFinish) sendMessageResult {

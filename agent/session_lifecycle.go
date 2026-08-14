@@ -252,7 +252,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		if jobManagerCloseErr != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("job manager close incomplete: %v", jobManagerCloseErr)})
 		}
-		if err := s.closeOwnedDelegateStore(); err != nil {
+		if err := s.closeOwnedDelegateStoreWithContext(budgetCtx); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate store close incomplete: %v", err)})
 		}
 

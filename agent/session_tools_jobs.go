@@ -693,16 +693,9 @@ func shortTimestamp(ts string) string {
 }
 
 func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
-	jm, err := sessionJobManager(s)
-	if err != nil {
-		return "", err
-	}
 	jobID := strings.TrimSpace(stringArg(args, "job_id"))
 	if jobID == "" {
 		return "", errors.New("invalid_request: job_id is required")
-	}
-	if strings.HasPrefix(jobID, "dlg_") {
-		return "", errors.New("invalid_request: delegate_id is a conversation handle; stop a concrete job_id")
 	}
 	// max_wait_ms: 0/absent = request stop and return; positive = wait up to N;
 	// negative = invalid_request. Zero reads as unset (strict-provider safe).
@@ -712,6 +705,13 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 			return "", errors.New("invalid_request: max_wait_ms must be non-negative")
 		}
 		maxWaitMS = n
+	}
+	if strings.HasPrefix(jobID, "dlg_") {
+		return stopStableDelegate(ctx, s, jobID, maxWaitMS)
+	}
+	jm, err := sessionJobManager(s)
+	if err != nil {
+		return "", err
 	}
 
 	targetJM := jm
@@ -764,6 +764,66 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 		Outcome:        classifyStopOutcome(previousStatus, rec),
 	}
 	return tool.StateResult{Output: formatJobStop(stop), State: stop}, nil
+}
+
+func stopStableDelegate(ctx context.Context, s *Session, delegateID string, maxWaitMS int) (any, error) {
+	if s == nil || s.delegateController == nil {
+		return "", errors.New("delegate controller is unavailable")
+	}
+	actor, err := s.delegateActor(ctx)
+	if err != nil {
+		return "", err
+	}
+	result, cancelPlan, plans, err := s.delegateController.StopSubtreeAndDrive(actor, delegateID)
+	if err != nil {
+		return "", err
+	}
+	executeDelegateCancelPlan(cancelPlan)
+	if err := s.executeDelegateMutationPlans(plans); err != nil {
+		return "", err
+	}
+	completed := false
+	if maxWaitMS > 0 {
+		completed = waitForDelegateStopDone(ctx, s, result.done, clampJobBlockTimeout(maxWaitMS))
+	}
+	stop := stableDelegateStopResult(result, completed)
+	return tool.StateResult{Output: formatJobStop(stop), State: stop}, nil
+}
+
+func waitForDelegateStopDone(ctx context.Context, s *Session, done <-chan struct{}, timeout time.Duration) bool {
+	select {
+	case <-done:
+		return true
+	default:
+	}
+	timer := s.sclock().NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C():
+		return false
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func stableDelegateStopResult(result delegateStopResult, completed bool) jobStopResult {
+	reason := "stop_pending"
+	status := jobstore.StatusRunning
+	outcome := "stop_requested"
+	if completed {
+		reason = "stopped_by_parent"
+		status = jobstore.StatusStopped
+		outcome = "stopped"
+	}
+	return jobStopResult{
+		JobID:          result.id,
+		Status:         string(status),
+		Reason:         &reason,
+		PreviousStatus: string(result.previousLifecycle),
+		Outcome:        outcome,
+	}
 }
 
 var stopNestedOrLocalForJobStop = func(s *Session, jobID string) (*jobstore.JobRecord, error) {

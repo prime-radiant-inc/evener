@@ -64,6 +64,7 @@ type delegateTreeController struct {
 	deliveryClaims  map[string]*delegateDeliveryClaim
 	quietClaims     map[uint64]*delegateQuietAttentionClaim
 	stop            *delegateStopState
+	stopDriver      *delegateStopDriver
 	evidenceVersion uint64
 	closing         bool
 	reconcileOrder  []delegateLease

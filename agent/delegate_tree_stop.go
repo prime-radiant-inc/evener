@@ -21,6 +21,12 @@ type delegateStopState struct {
 	waiters     []*delegateInlineWaiter
 	done        chan struct{}
 	progress    chan struct{}
+	driver      *delegateStopDriver
+}
+
+type delegateStopDriver struct {
+	done chan struct{}
+	err  error
 }
 
 type delegateStopResult struct {
@@ -45,6 +51,56 @@ func (c *delegateTreeController) StopSubtree(actor delegateActor, targetID strin
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.stopSubtreeLocked(actor, targetID, false)
+}
+
+// StopSubtreeAndDrive admits the durable stop and gives its reconciliation to
+// the root runtime. The driver is process-only and unique for the exact stop;
+// callers may stop waiting without stopping reconciliation.
+func (c *delegateTreeController) StopSubtreeAndDrive(actor delegateActor, targetID string) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {
+	c.mu.Lock()
+	if c.closing {
+		c.mu.Unlock()
+		return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, errDelegateTargetBusy
+	}
+	if c.rootRuntime == nil {
+		c.mu.Unlock()
+		return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, errors.New("delegate root runtime is unavailable")
+	}
+	if c.stop == nil && c.stopDriver != nil {
+		select {
+		case <-c.stopDriver.done:
+		default:
+			c.mu.Unlock()
+			return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, errDelegateTargetBusy
+		}
+	}
+	result, cancelPlan, plans, err := c.stopSubtreeLocked(actor, targetID, false)
+	if err != nil {
+		c.mu.Unlock()
+		return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, err
+	}
+	stop := c.stop
+	root := c.rootRuntime
+	startDriver := false
+	if stop != nil && stop.driver == nil {
+		stop.driver = &delegateStopDriver{done: make(chan struct{})}
+		c.stopDriver = stop.driver
+		startDriver = true
+	} else if stop != nil && stop.driver.err != nil {
+		select {
+		case <-stop.driver.done:
+			stop.driver = &delegateStopDriver{done: make(chan struct{})}
+			c.stopDriver = stop.driver
+			startDriver = true
+		default:
+		}
+	}
+	driver := stop.driver
+	c.mu.Unlock()
+	if startDriver {
+		go c.runStopReconcileDriver(stop, driver, root)
+	}
+	return result, cancelPlan, plans, nil
 }
 
 func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID string, allowClosing bool) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {
@@ -356,7 +412,7 @@ func (c *delegateTreeController) Close(ctx context.Context) error {
 	children = append(children, pendingCancelPlan.children...)
 	if pending != nil {
 		executeDelegateCancelPlan(pendingCancelPlan)
-		if err := c.drainStopForClose(ctx, pending); err != nil {
+		if err := c.joinOrDrainStopForClose(ctx, pending); err != nil {
 			return err
 		}
 	}
@@ -402,6 +458,9 @@ func (c *delegateTreeController) Close(ctx context.Context) error {
 		closed[child] = struct{}{}
 		child.Close()
 	}
+	if _, err := c.joinStopReconcileDriver(ctx); err != nil {
+		return err
+	}
 	return c.store.Close()
 }
 
@@ -421,6 +480,10 @@ func (c *delegateTreeController) stopForResult(result delegateStopResult) *deleg
 }
 
 func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *delegateStopState) error {
+	return c.drainStop(ctx, stop, nil)
+}
+
+func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateStopState, root *Session) error {
 	if stop == nil {
 		return nil
 	}
@@ -455,6 +518,11 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 				return err
 			}
 		}
+		if root != nil {
+			if err := root.executeDelegateMutationPlans(plans); err != nil {
+				return err
+			}
+		}
 		if len(plans.attention) != 0 || len(plans.shellRepairs) != 0 {
 			continue
 		}
@@ -462,6 +530,70 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 			if err := waitForDelegateStopProgress(ctx, stop); err != nil {
 				return err
 			}
+		}
+	}
+}
+
+func (c *delegateTreeController) runStopReconcileDriver(stop *delegateStopState, driver *delegateStopDriver, root *Session) {
+	err := c.drainStop(context.Background(), stop, root)
+	c.mu.Lock()
+	driver.err = err
+	close(driver.done)
+	c.mu.Unlock()
+}
+
+func (c *delegateTreeController) joinOrDrainStopForClose(ctx context.Context, stop *delegateStopState) error {
+	c.mu.Lock()
+	driver := stop.driver
+	c.mu.Unlock()
+	if driver == nil {
+		return c.drainStopForClose(ctx, stop)
+	}
+	_, err := c.joinStopReconcileDriver(ctx)
+	return err
+}
+
+func (c *delegateTreeController) joinStopReconcileDriver(ctx context.Context) (bool, error) {
+	c.mu.Lock()
+	driver := c.stopDriver
+	c.mu.Unlock()
+	return c.joinExactStopReconcileDriver(ctx, driver)
+}
+
+func (c *delegateTreeController) closeStoreAfterStopReconcileDriver(ctx context.Context) error {
+	c.mu.Lock()
+	if !c.closing {
+		c.closing = true
+		c.evidenceVersion++
+	}
+	driver := c.stopDriver
+	c.mu.Unlock()
+	joined, driverErr := c.joinExactStopReconcileDriver(ctx, driver)
+	if !joined {
+		return driverErr
+	}
+	return errors.Join(driverErr, c.store.Close())
+}
+
+func (c *delegateTreeController) joinExactStopReconcileDriver(ctx context.Context, driver *delegateStopDriver) (bool, error) {
+	if driver == nil {
+		return true, nil
+	}
+	select {
+	case <-driver.done:
+		c.mu.Lock()
+		err := driver.err
+		c.mu.Unlock()
+		return true, err
+	case <-ctx.Done():
+		select {
+		case <-driver.done:
+			c.mu.Lock()
+			err := driver.err
+			c.mu.Unlock()
+			return true, err
+		default:
+			return false, ctx.Err()
 		}
 	}
 }
