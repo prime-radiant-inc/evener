@@ -405,6 +405,19 @@ func (s *WebServer) cleanupProjectDeletion(
 		}
 	}
 	if len(result.Deleted) > 0 {
+		// Refresh the roster before the bump and broadcast below, so the
+		// UI's immediate follow-up GET /api/tree is built from a roster that
+		// already dropped the deleted sessions (their rendezvous files were
+		// just unlinked) instead of showing ghost rows until the 5s tick.
+		if s.cfg.Roster != nil {
+			hubRosterRefresh(s.cfg.Roster)
+		}
+		// Bust the tree memo unconditionally: a no-delta past rebuild plus a
+		// nil PokeAttention would otherwise leave InputsVersion unmoved and
+		// /api/tree serving the memoized pre-delete tree for its bucket.
+		if s.cfg.Inputs != nil {
+			s.cfg.Inputs.Bump()
+		}
 		if s.cfg.PokeAttention != nil {
 			s.cfg.PokeAttention()
 		}

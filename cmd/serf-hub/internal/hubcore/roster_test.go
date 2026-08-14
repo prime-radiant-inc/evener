@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -157,6 +158,7 @@ func fuzzScenarioRoster_SurfacesCrashedProcessAsErrored(t *testing.T) {
 		PID:       1001,
 		Address:   "127.0.0.1:50001",
 		SessionID: "01CRASHED",
+		StartedAt: time.Now().UTC(), // fresh: within the crash-retention window
 	})
 
 	prober := &flakyProber{sessionID: "01CRASHED"}
@@ -206,6 +208,7 @@ func fuzzScenarioRoster_SurfacesStaleCrashOnFreshRoster(t *testing.T) {
 		PID:       1002,
 		Address:   "127.0.0.1:50002",
 		SessionID: "01ALREADYDEAD",
+		StartedAt: time.Now().UTC(), // fresh: within the crash-retention window
 	})
 
 	r := NewRoster(dir, fakeProber{shouldFail: true})
@@ -252,6 +255,7 @@ func fuzzScenarioRoster_KeepsAliveDaemonThroughProbeFailures(t *testing.T) {
 		PID:       1001,
 		Address:   "127.0.0.1:50001",
 		SessionID: "01ALIVE",
+		StartedAt: time.Now().UTC(), // fresh: within the crash-retention window
 	})
 
 	// First, a successful probe seeds the entry.
@@ -285,6 +289,61 @@ func fuzzScenarioRoster_KeepsAliveDaemonThroughProbeFailures(t *testing.T) {
 	if got[0].Status != "errored" {
 		t.Fatalf("crashed daemon status = %q, want %q", got[0].Status, "errored")
 	}
+}
+
+// fuzzScenarioRoster_GarbageCollectsStaleDeadRendezvousFiles pins the
+// reclamation half of the crash-marker contract: a dead PID's rendezvous file
+// is retained (as an "errored" entry, kata zm6s) only while its crash is
+// fresh enough to matter. Once StartedAt is more than 24h in the past, or the
+// file never resolved a session id at all (nothing to attribute a crash to),
+// Refresh unlinks the file so dead-pid files stop accumulating forever. A
+// live PID's file is never touched.
+func fuzzScenarioRoster_GarbageCollectsStaleDeadRendezvousFiles(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID: 1001, Address: "127.0.0.1:50001", SessionID: "01OLDCRASH", StartedAt: now.Add(-25 * time.Hour),
+	})
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID: 1002, Address: "127.0.0.1:50002", SessionID: "01FRESHCRASH", StartedAt: now.Add(-time.Hour),
+	})
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID: 1003, Address: "127.0.0.1:50003", StartedAt: now.Add(-time.Minute), // no session id ever resolved
+	})
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID: 1004, Address: "127.0.0.1:50004", SessionID: "01LIVE", StartedAt: now.Add(-48 * time.Hour),
+	})
+
+	r := NewRoster(dir, fakeProber{shouldFail: true})
+	r.procAlive = func(pid int) bool { return pid == 1004 }
+	r.Refresh()
+
+	fileExists := func(pid int) bool {
+		_, err := os.Stat(filepath.Join(dir, strconv.Itoa(pid)+".json"))
+		return err == nil
+	}
+	if fileExists(1001) {
+		t.Fatal("dead pid with a >24h-old StartedAt: rendezvous file must be garbage-collected")
+	}
+	if _, ok := r.Find("01OLDCRASH"); ok {
+		t.Fatal("dead pid with a >24h-old StartedAt: entry must be gone from the roster")
+	}
+	if !fileExists(1002) {
+		t.Fatal("fresh crash: rendezvous file must be kept so the crash row survives a hub restart")
+	}
+	if got, ok := r.Find("01FRESHCRASH"); !ok || !got.Crashed || got.Status != "errored" {
+		t.Fatalf("fresh crash must stay retained as errored: ok=%v entry=%+v", ok, got)
+	}
+	if fileExists(1003) {
+		t.Fatal("dead pid with no session id: the file is pure garbage and must be removed regardless of age")
+	}
+	if !fileExists(1004) {
+		t.Fatal("a live pid's rendezvous file must never be garbage-collected")
+	}
+}
+
+func TestRosterGarbageCollectsStaleDeadRendezvousFiles(t *testing.T) {
+	fuzzScenarioRoster_GarbageCollectsStaleDeadRendezvousFiles(t)
 }
 
 func fuzzScenarioRoster_FindMissing(t *testing.T) {

@@ -92,6 +92,16 @@ func (s *WebServer) handleAPISessionDelete(w http.ResponseWriter, r *http.Reques
 			decisionErrors = append(decisionErrors, "past index rebuild error: "+err.Error())
 		}
 	}
+	// Same post-delete freshness contract as cleanupProjectDeletion: refresh
+	// the roster before the bump and broadcast so the UI's immediate
+	// follow-up GET /api/tree carries no ghost row, and bust the tree memo
+	// even when the past rebuild reported no delta.
+	if s.cfg.Roster != nil {
+		hubRosterRefresh(s.cfg.Roster)
+	}
+	if s.cfg.Inputs != nil {
+		s.cfg.Inputs.Bump()
+	}
 	if s.cfg.PokeAttention != nil {
 		s.cfg.PokeAttention()
 	}

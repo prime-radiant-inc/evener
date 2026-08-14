@@ -146,6 +146,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioRoster_DefaultRunDir,
 		fuzzScenarioRoster_FindBySessionID,
 		fuzzScenarioRoster_FindMissing,
+		fuzzScenarioRoster_GarbageCollectsStaleDeadRendezvousFiles,
 		fuzzScenarioRoster_KeepsAliveDaemonThroughProbeFailures,
 		fuzzScenarioRoster_ListStaysResponsiveDuringSlowProbe,
 		fuzzScenarioRoster_LoadFromDir,

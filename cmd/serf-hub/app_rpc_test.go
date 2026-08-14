@@ -8479,6 +8479,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 		SourceID:  "local",
 		ThreadID:  sessionID,
 		SessionID: sessionID,
+		StartedAt: time.Now().UTC(), // fresh crash: within the roster's crash-retention window
 	})
 	prober := perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{}}
 	roster := hubcore.NewRoster(runDir, prober)
@@ -8502,6 +8503,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 				ThreadID:   sessionID,
 				SessionID:  sessionID,
 				WorkingDir: workingDir,
+				StartedAt:  time.Now().UTC(), // a real spawn stamps StartedAt; it must outrank the stale crashed entry
 			}
 			prober.byAddr[entry.Address] = struct{ SessionID, Status string }{SessionID: sessionID, Status: "idle"}
 			writeRendezvous(t, runDir, entry)

@@ -69,6 +69,12 @@ func cloneSubagentStates(in map[string]string) map[string]string {
 	return out
 }
 
+// crashedFileRetention is how long Refresh keeps a dead PID's rendezvous file
+// on disk (and its "errored" entry in the roster, kata zm6s) after the
+// daemon's StartedAt. Past that, the crash is old news and the file is
+// garbage-collected so dead-pid files don't accumulate forever.
+const crashedFileRetention = 24 * time.Hour
+
 type rosterWatcher interface {
 	Add(string) error
 	Close() error
@@ -307,7 +313,21 @@ func (r *Roster) Refresh() {
 			// already-stale file just as well as watching the crash live.
 			sessionID := strutil.FirstNonEmpty(e.SessionID, e.ThreadID)
 			if sessionID == "" {
-				continue // never resolved an id; nothing to attribute the crash to
+				// Never resolved an id; nothing to attribute the crash to. The
+				// file on disk is pure garbage, so reclaim it instead of
+				// rescanning it on every refresh forever. Removal failure is
+				// non-fatal (same stance as the List error above): the file
+				// just survives until a later refresh.
+				_ = rendezvous.Remove(r.runDir, e.PID)
+				continue
+			}
+			if time.Since(e.StartedAt) > crashedFileRetention {
+				// Old enough that crash reporting no longer matters: drop the
+				// entry and unlink the file so dead-pid rendezvous files stop
+				// accumulating forever. Fresh crashes keep the retained
+				// "errored" contract below untouched.
+				_ = rendezvous.Remove(r.runDir, e.PID)
+				continue
 			}
 			crashed := LiveEntry{Entry: e, SessionID: sessionID}
 			if prev, had := prevByPID[e.PID]; had {

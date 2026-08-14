@@ -696,6 +696,74 @@ func TestProjectDeleteRefusesLiveSessionWhoseProbeTransientlyFails(t *testing.T)
 	}
 }
 
+// TestProjectDeleteRefreshesRosterAndBustsTreeMemo pins the post-delete
+// freshness contract: a successful project delete must (1) refresh the
+// in-memory roster BEFORE poking the attention watcher, so the immediate
+// follow-up GET /api/tree the frontend issues is served from a roster that
+// already dropped the deleted sessions instead of ghost rows until the next
+// 5s tick, and (2) bump the shared InputsVersion so the tree memo is busted
+// even when the past-index rebuild reports no delta.
+func TestProjectDeleteRefreshesRosterAndBustsTreeMemo(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A retained crash marker unblocks deletion (kata 8at6) while still being
+	// listed by the roster snapshot the tree is built from.
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{PID: 4242, ThreadID: webTestSessionID, SessionID: webTestSessionID},
+		SessionID: webTestSessionID,
+		Status:    "errored",
+		Crashed:   true,
+	})
+
+	var events []string
+	prevRefresh := hubRosterRefresh
+	hubRosterRefresh = func(r *hubcore.Roster) {
+		events = append(events, "roster-refresh")
+		prevRefresh(r)
+	}
+	t.Cleanup(func() { hubRosterRefresh = prevRefresh })
+
+	inputs := &hubcore.InputsVersion{}
+	web := NewWebServer(hubcore.WebConfig{
+		Past: past, Roster: roster, Inputs: inputs,
+		PokeAttention: func() { events = append(events, "poke") },
+	})
+	before := inputs.Load()
+
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if _, ok := roster.Find(webTestSessionID); ok {
+		t.Fatal("deleted session must be gone from the roster snapshot right after the delete response")
+	}
+	if got := inputs.Load(); got <= before {
+		t.Fatalf("InputsVersion=%d, want a bump past %d so the tree memo is busted", got, before)
+	}
+	if len(events) < 2 || events[0] != "roster-refresh" || events[1] != "poke" {
+		t.Fatalf("events=%v, want the roster refreshed before PokeAttention", events)
+	}
+}
+
 func TestProjectDeleteSkipsSessionThatBecomesLive(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")

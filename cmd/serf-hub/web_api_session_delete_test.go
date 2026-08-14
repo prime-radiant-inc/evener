@@ -507,3 +507,68 @@ func TestAPISessionDeleteRetryScrubsPinAfterArtifactsAreAlreadyGone(t *testing.T
 		t.Fatalf("retry left the durable pin behind: %+v", pins)
 	}
 }
+
+// TestSessionDeleteRefreshesRosterAndBustsTreeMemo mirrors
+// TestProjectDeleteRefreshesRosterAndBustsTreeMemo for the single-session
+// handler: a successful delete must refresh the roster before PokeAttention
+// (no ghost rows in the immediate follow-up /api/tree) and bump the shared
+// InputsVersion so the tree memo is busted even without a past-index delta.
+func TestSessionDeleteRefreshesRosterAndBustsTreeMemo(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "session-delete-0123456789")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A retained crash marker unblocks deletion (kata 8at6) while still being
+	// listed by the roster snapshot the tree is built from.
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{PID: 4242, ThreadID: webTestSessionID, SessionID: webTestSessionID},
+		SessionID: webTestSessionID,
+		Status:    "errored",
+		Crashed:   true,
+	})
+
+	var events []string
+	prevRefresh := hubRosterRefresh
+	hubRosterRefresh = func(r *hubcore.Roster) {
+		events = append(events, "roster-refresh")
+		prevRefresh(r)
+	}
+	t.Cleanup(func() { hubRosterRefresh = prevRefresh })
+
+	inputs := &hubcore.InputsVersion{}
+	web := NewWebServer(hubcore.WebConfig{
+		StateDir: root, Past: past, Roster: roster, Inputs: inputs,
+		PokeAttention: func() { events = append(events, "poke") },
+	})
+	before := inputs.Load()
+
+	rec, resp := postSessionDelete(t, web, webTestSessionID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(resp.Deleted) != 1 || resp.Deleted[0] != webTestSessionID {
+		t.Fatalf("session should have been deleted: %+v", resp)
+	}
+
+	if _, ok := roster.Find(webTestSessionID); ok {
+		t.Fatal("deleted session must be gone from the roster snapshot right after the delete response")
+	}
+	if got := inputs.Load(); got <= before {
+		t.Fatalf("InputsVersion=%d, want a bump past %d so the tree memo is busted", got, before)
+	}
+	if len(events) < 2 || events[0] != "roster-refresh" || events[1] != "poke" {
+		t.Fatalf("events=%v, want the roster refreshed before PokeAttention", events)
+	}
+}
