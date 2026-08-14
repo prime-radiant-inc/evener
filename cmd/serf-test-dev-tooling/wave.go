@@ -212,9 +212,13 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 	// Leak check is post-reap bookkeeping that could block on a wedged
 	// filesystem. Run it with a timeout so it doesn't block the wave's
 	// ability to report this suite's result.
+	// Capture the function value here rather than inside the goroutine: the
+	// goroutine can outlive the wave when the check blocks past the timeout,
+	// and a late read of the package var would race with a test restoring it.
+	check := checkLeaksFn
 	leakCheckDone := make(chan []string, 1)
 	go func() {
-		leakCheckDone <- checkLeaksFn(tmp)
+		leakCheckDone <- check(tmp)
 	}()
 	select {
 	case leftovers := <-leakCheckDone:
