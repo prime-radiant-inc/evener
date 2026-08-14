@@ -591,7 +591,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 	if frozen != nil {
 		subCfg = configFromSnapshot(frozen.Config.Clone())
 		subCfg.Project = parentCfg.Project
-		subCfg.SessionStartKind = parentCfg.SessionStartKind
 		subCfg.LLMRetryPolicy = parentCfg.LLMRetryPolicy
 		subCfg.LLMSleep = parentCfg.LLMSleep
 		subCfg.clock = parentCfg.clock

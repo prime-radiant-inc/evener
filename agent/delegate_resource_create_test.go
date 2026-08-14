@@ -498,6 +498,98 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 	}
 }
 
+func TestDelegateResourceCreate_RestoredRootStartsNewChildWithStartupHooks(t *testing.T) {
+	const (
+		startupMarker = "TASK6 STARTUP CHILD HOOK"
+		resumeMarker  = "TASK6 RESUME CHILD HOOK"
+	)
+	pluginDir := makePluginDir(t, "task6-child-start-kind")
+	hooksDir := filepath.Join(pluginDir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hooksJSON := `{
+		"hooks": {
+			"SessionStart": [
+				{"matcher": "startup", "hooks": [{"type": "command", "command": "echo TASK6 STARTUP CHILD HOOK"}]},
+				{"matcher": "resume", "hooks": [{"type": "command", "command": "echo TASK6 RESUME CHILD HOOK"}]}
+			]
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(hooksDir, "hooks.json"), []byte(hooksJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := t.TempDir()
+	workspace := t.TempDir()
+	client := llm.NewClient()
+	adapter := newTask6FrozenDescriptorAdapter()
+	client.Register(adapter)
+	t.Cleanup(adapter.releaseRun)
+	profile := NewOpenAIProfile("gpt-5.2")
+	seed, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
+		StateDir:         stateDir,
+		MaxSubagentDepth: 2,
+		PluginDirs:       []string{pluginDir},
+		NoProjectPrompts: true,
+		ForceRealIO:      true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	meta := seed.Meta()
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		seed.Close()
+		t.Fatal(err)
+	}
+	seed.Close()
+
+	root, err := RestoreSessionFromMetaWithConfig(client, profile, execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{
+		StateDir:    stateDir,
+		ForceRealIO: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	t.Cleanup(root.Close)
+	if got := root.cfg.SessionStartKind; got != plugin.SessionStartKindResume {
+		t.Fatalf("restored root SessionStartKind = %q, want resume", got)
+	}
+
+	result := root.createDelegate(context.Background(), delegateArgs{
+		Task:                "start a new child from the restored root",
+		Background:          true,
+		DelegationAllowance: 0,
+	})
+	if result.Err != nil {
+		t.Fatalf("createDelegate: %v", result.Err)
+	}
+
+	var request llm.Request
+	select {
+	case request = <-adapter.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider did not receive the new child's request")
+	}
+	adapter.releaseRun()
+
+	requestText := task6RequestText(request)
+	if !strings.Contains(requestText, startupMarker) {
+		t.Fatalf("new child provider request omitted startup hook marker: %s", requestText)
+	}
+	if strings.Contains(requestText, resumeMarker) {
+		t.Fatalf("new child provider request included restored-root resume hook marker: %s", requestText)
+	}
+}
+
 func TestDelegateResourceCreate_PostCommitFailureRemainsInspectableAfterRestart(t *testing.T) {
 	root, client, profile := newDelegateResourceBootstrapSession(t)
 	wantErr := errors.New("injected permanent child construction failure")
