@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"os"
 	"time"
 
 	"github.com/spf13/afero"
@@ -256,6 +257,10 @@ type testConfig struct {
 	// delegateInitialInputAppend observes the real stable-create boundary
 	// immediately before the child transcript receives its initial user input.
 	delegateInitialInputAppend func(*Session)
+	// delegateRestoreStat and delegateRestoreReadFile replace only restore-input
+	// filesystem reads for this session. Nil preserves the production paths.
+	delegateRestoreStat     func(string) (os.FileInfo, error)
+	delegateRestoreReadFile func(string) ([]byte, error)
 	// subagentReserveSlot replaces only the retained-terminal reservation boundary.
 	subagentReserveSlot func(*Session) ([]*subagent, error)
 	// subagentReserveTreeSlot replaces only the tree-capacity reservation boundary.

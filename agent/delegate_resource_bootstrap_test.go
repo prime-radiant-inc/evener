@@ -285,23 +285,30 @@ func TestDelegateResourceBootstrap_RestartIsProviderFreeAndLazy(t *testing.T) {
 
 func TestDelegateResourceBootstrap_WorkingDirEACCESPreservesResumability(t *testing.T) {
 	fixture := newIdleDelegateRestoreInputFixture(t)
-	restrictedParent := filepath.Dir(fixture.workingDir)
-	if err := os.Chmod(restrictedParent, 0); err != nil {
-		t.Fatal(err)
+	testOnly := testConfig{
+		delegateRestoreStat: func(path string) (os.FileInfo, error) {
+			if filepath.Clean(path) == filepath.Clean(fixture.workingDir) {
+				return nil, &os.PathError{Op: "stat", Path: path, Err: syscall.EACCES}
+			}
+			return os.Stat(path)
+		},
 	}
-	t.Cleanup(func() { _ = os.Chmod(restrictedParent, 0o700) })
 
-	assertOperationalRestoreInputErrorPreservesDelegate(t, fixture, syscall.EACCES)
+	assertOperationalRestoreInputErrorPreservesDelegate(t, fixture, testOnly, syscall.EACCES)
 }
 
 func TestDelegateResourceBootstrap_MetadataEACCESPreservesResumability(t *testing.T) {
 	fixture := newIdleDelegateRestoreInputFixture(t)
-	if err := os.Chmod(fixture.metaPath, 0); err != nil {
-		t.Fatal(err)
+	testOnly := testConfig{
+		delegateRestoreReadFile: func(path string) ([]byte, error) {
+			if filepath.Clean(path) == filepath.Clean(fixture.metaPath) {
+				return nil, &os.PathError{Op: "read", Path: path, Err: syscall.EACCES}
+			}
+			return os.ReadFile(path)
+		},
 	}
-	t.Cleanup(func() { _ = os.Chmod(fixture.metaPath, 0o600) })
 
-	assertOperationalRestoreInputErrorPreservesDelegate(t, fixture, syscall.EACCES)
+	assertOperationalRestoreInputErrorPreservesDelegate(t, fixture, testOnly, syscall.EACCES)
 }
 
 func TestDelegateResourceBootstrap_TranscriptEIOPreservesResumability(t *testing.T) {
@@ -315,7 +322,7 @@ func TestDelegateResourceBootstrap_TranscriptEIOPreservesResumability(t *testing
 	}
 	t.Cleanup(func() { openTranscriptFile = previousOpen })
 
-	assertOperationalRestoreInputErrorPreservesDelegate(t, fixture, syscall.EIO)
+	assertOperationalRestoreInputErrorPreservesDelegate(t, fixture, testConfig{}, syscall.EIO)
 }
 
 type idleDelegateRestoreInputFixture struct {
@@ -425,14 +432,15 @@ func newIdleDelegateRestoreInputFixture(t *testing.T) idleDelegateRestoreInputFi
 	}
 }
 
-func assertOperationalRestoreInputErrorPreservesDelegate(t *testing.T, fixture idleDelegateRestoreInputFixture, wantErr error) {
+func assertOperationalRestoreInputErrorPreservesDelegate(t *testing.T, fixture idleDelegateRestoreInputFixture, testOnly testConfig, wantErr error) {
 	t.Helper()
-	restored, restoreErr := restoreDelegateResourceBootstrapSession(
+	restored, restoreErr := restoreDelegateResourceBootstrapSessionWithTestConfig(
 		fixture.client,
 		fixture.profile,
 		fixture.rootWorkingDir,
 		fixture.meta,
 		fixture.stateDir,
+		testOnly,
 	)
 	if restored != nil {
 		restored.Close()
@@ -517,13 +525,16 @@ func closedDelegateResourceBootstrapFixture(t *testing.T) (schema.SessionMeta, *
 }
 
 func restoreDelegateResourceBootstrapSession(client *llm.Client, profile *provider.Profile, workspace string, meta schema.SessionMeta, stateDir string) (*Session, error) {
+	return restoreDelegateResourceBootstrapSessionWithTestConfig(client, profile, workspace, meta, stateDir, testConfig{})
+}
+
+func restoreDelegateResourceBootstrapSessionWithTestConfig(client *llm.Client, profile *provider.Profile, workspace string, meta schema.SessionMeta, stateDir string, testOnly testConfig) (*Session, error) {
+	testOnly.skipGitSnapshot = true
+	testOnly.minimalSystemPrompt = true
 	return RestoreSessionFromMetaWithConfig(client, profile, execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{
 		StateDir:    stateDir,
 		ForceRealIO: true,
-		testOnly: testConfig{
-			skipGitSnapshot:     true,
-			minimalSystemPrompt: true,
-		},
+		testOnly:    testOnly,
 	})
 }
 

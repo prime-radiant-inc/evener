@@ -614,7 +614,7 @@ func (s *Session) bootstrapDelegateResources() error {
 		_ = store.Close()
 		return fmt.Errorf("reconcile delegate resources: %w", err)
 	}
-	missingInputs, err := missingDelegateRestoreInputs(s.stateDir, controller)
+	missingInputs, err := missingDelegateRestoreInputs(s.stateDir, controller, s.delegateRestoreStat, s.delegateRestoreReadFile)
 	if err != nil {
 		_ = store.Close()
 		return fmt.Errorf("inspect delegate restore inputs: %w", err)
@@ -629,7 +629,12 @@ func (s *Session) bootstrapDelegateResources() error {
 	return nil
 }
 
-func missingDelegateRestoreInputs(stateDir string, controller *delegateTreeController) (map[string]string, error) {
+func missingDelegateRestoreInputs(
+	stateDir string,
+	controller *delegateTreeController,
+	stat func(string) (os.FileInfo, error),
+	readFile func(string) ([]byte, error),
+) (map[string]string, error) {
 	controller.mu.Lock()
 	ids := make([]string, 0, len(controller.durable))
 	descriptors := make(map[string]delegatestore.Descriptor, len(controller.durable))
@@ -644,7 +649,7 @@ func missingDelegateRestoreInputs(stateDir string, controller *delegateTreeContr
 	sort.Strings(ids)
 	reasons := make(map[string]string)
 	for _, id := range ids {
-		reason, err := missingDelegateRestoreInputReason(stateDir, descriptors[id])
+		reason, err := missingDelegateRestoreInputReason(stateDir, descriptors[id], stat, readFile)
 		if err != nil {
 			return nil, fmt.Errorf("delegate %s: %w", id, err)
 		}
@@ -655,7 +660,12 @@ func missingDelegateRestoreInputs(stateDir string, controller *delegateTreeContr
 	return reasons, nil
 }
 
-func missingDelegateRestoreInputReason(stateDir string, descriptor delegatestore.Descriptor) (string, error) {
+func missingDelegateRestoreInputReason(
+	stateDir string,
+	descriptor delegatestore.Descriptor,
+	stat func(string) (os.FileInfo, error),
+	readFile func(string) ([]byte, error),
+) (string, error) {
 	childID := strings.TrimSpace(descriptor.ChildSessionID)
 	if childID == "" || strings.TrimSpace(descriptor.Task) == "" || strings.TrimSpace(descriptor.AgentType) == "" || strings.TrimSpace(descriptor.ResolvedProfileID) == "" || strings.TrimSpace(descriptor.ResolvedModel) == "" {
 		return notResumableMissingDelegateResumeMetadata, nil
@@ -668,7 +678,7 @@ func missingDelegateRestoreInputReason(stateDir string, descriptor delegatestore
 		return notResumableMissingChildSessionMeta, nil
 	}
 	if workingDir := strings.TrimSpace(descriptor.WorkingDir); workingDir != "" {
-		if _, err := os.Stat(workingDir); err != nil {
+		if _, err := stat(workingDir); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				return notResumableWorkingDirMissing, nil
 			}
@@ -676,7 +686,7 @@ func missingDelegateRestoreInputReason(stateDir string, descriptor delegatestore
 		}
 	}
 	metaPath := filepath.Join(stateDir, sessionsSubdir, childID+".meta.json")
-	metaBytes, err := os.ReadFile(metaPath)
+	metaBytes, err := readFile(metaPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return notResumableMissingChildSessionMeta, nil
@@ -691,7 +701,7 @@ func missingDelegateRestoreInputReason(stateDir string, descriptor delegatestore
 		return notResumableCorruptChildSessionMeta, nil
 	}
 	path := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
-	if _, err := os.Stat(path); err != nil {
+	if _, err := stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return notResumableMissingChildTranscript, nil
 		}
@@ -710,6 +720,20 @@ func missingDelegateRestoreInputReason(stateDir string, descriptor delegatestore
 		return "", fmt.Errorf("validate child transcript %s: %w", childID, err)
 	}
 	return "", nil
+}
+
+func (s *Session) delegateRestoreStat(path string) (os.FileInfo, error) {
+	if stat := s.cfg.testOnly.delegateRestoreStat; stat != nil {
+		return stat(path)
+	}
+	return os.Stat(path)
+}
+
+func (s *Session) delegateRestoreReadFile(path string) ([]byte, error) {
+	if readFile := s.cfg.testOnly.delegateRestoreReadFile; readFile != nil {
+		return readFile(path)
+	}
+	return os.ReadFile(path)
 }
 
 func delegateRestoreOperationalIOError(err error) bool {
