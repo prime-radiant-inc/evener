@@ -6,6 +6,16 @@
   max-width: 240px;
 }
 
+/* Popover's trigger wrapper (an inline-flex span, widgets/popover) hugs its
+ * content by design; here it must also SHRINK, or a long goal label pushes
+ * the whole chip past .anchor's 240px cap instead of ellipsizing inside it.
+ * The wrapper is always this anchor's one direct child, so the element
+ * selector is safe even though the class lives in another module. */
+.anchor > span {
+  min-width: 0;
+  max-width: 100%;
+}
+
 /* Quiet trigger, same recipe as ModelSwitch's own .trigger - the chip reads
  * as the interactive element, no separate button beside it. */
 .chipButton {

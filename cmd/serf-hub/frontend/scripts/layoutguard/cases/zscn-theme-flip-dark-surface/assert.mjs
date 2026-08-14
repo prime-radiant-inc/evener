@@ -2,16 +2,16 @@
 // at the custom-property boundary, not merely carry a data-theme marker.
 export default function assert(measurement) {
   const failures = [];
-  if (measurement.darkSurface1 !== "#171E28") {
-    failures.push(`dark pane --surface-1 resolved to ${measurement.darkSurface1}, want #171E28`);
+  if (measurement.darkSurface1 !== "#232427") {
+    failures.push(`dark pane --surface-1 resolved to ${measurement.darkSurface1}, want #232427`);
   }
-  if (measurement.darkPaneSurface0 !== "rgb(16, 21, 28)") {
+  if (measurement.darkPaneSurface0 !== "rgb(23, 24, 26)") {
     failures.push(`dark pane background resolved to ${measurement.darkPaneSurface0}, want dark --surface-0`);
   }
-  if (measurement.darkProbeSurface1 !== "rgb(23, 30, 40)") {
+  if (measurement.darkProbeSurface1 !== "rgb(35, 36, 39)") {
     failures.push(`dark surface probe resolved to ${measurement.darkProbeSurface1}, want dark --surface-1`);
   }
-  if (measurement.lightSurface1 !== "#FBFAF7" || measurement.lightProbeSurface1 !== "rgb(251, 250, 247)") {
+  if (measurement.lightSurface1 !== "#FFFFFF" || measurement.lightProbeSurface1 !== "rgb(255, 255, 255)") {
     failures.push("light pane no longer resolves its own light --surface-1");
   }
   return failures.length === 0

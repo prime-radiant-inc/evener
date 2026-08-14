@@ -89,23 +89,24 @@ export default function assert(measurements) {
     if (m.model.clientWidth <= 0) fail("model visible value has zero width");
 
     expectTwoPixelOutline(m.focus.attachOutlineStyle, m.focus.attachOutlineWidth, "attachment control");
-    if (
-      m.focus.modelBoxShadow === "none" ||
-      !m.focus.modelBoxShadow.includes("inset") ||
-      m.focus.modelOutlineStyle !== "none"
-    ) {
-      fail("focused model ring is not containment-safe");
-    }
-    if (m.focus.effortBoxShadow === "none" || !m.focus.effortBoxShadow.includes("inset")) {
-      fail("focused effort ring is not containment-safe");
-    }
-    if (
-      m.focus.actionsBoxShadow === "none" ||
-      !m.focus.actionsBoxShadow.includes("inset") ||
-      m.focus.actionsOutlineStyle !== "none"
-    ) {
-      fail("focused session-actions ring is not containment-safe");
-    }
+    // Containment-safe ring recipe (design-system focus-ring contract): the
+    // ring is the shared `outline: var(--focus-ring)` pulled fully inside the
+    // border box with a negative outline-offset, so an overflow boundary flush
+    // against the control cannot clip it.
+    const expectInsetOutline = (style, width, offset, label) => {
+      const widthPx = Number.parseFloat(width);
+      if (style === "none" || widthPx < 2 || Number.parseFloat(offset) > -widthPx) {
+        fail(`focused ${label} ring is not containment-safe`);
+      }
+    };
+    expectInsetOutline(m.focus.modelOutlineStyle, m.focus.modelOutlineWidth, m.focus.modelOutlineOffset, "model");
+    expectInsetOutline(m.focus.effortOutlineStyle, m.focus.effortOutlineWidth, m.focus.effortOutlineOffset, "effort");
+    expectInsetOutline(
+      m.focus.actionsOutlineStyle,
+      m.focus.actionsOutlineWidth,
+      m.focus.actionsOutlineOffset,
+      "session-actions",
+    );
     expectTwoPixelOutline(m.focus.sendOutlineStyle, m.focus.sendOutlineWidth, "Send control");
 
     // Boundary fixtures declare the exact StatusRow query-container width they

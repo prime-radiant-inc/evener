@@ -61,16 +61,16 @@
 <script>
 const fixtures = [
   { width: 320 },
-  // The composer's fixed controls consume 139.625px in this rendered
+  // The composer's fixed controls consume 138.375px in this rendered
   // hierarchy. Fractional outer widths are deliberate: they make StatusRow's
   // actual query-container rect exactly 399/400, 479/480, and 559/560px rather
   // than relying on integer clientWidth rounding around a fractional box.
-  { width: 538.625, expectedStatusWidth: 399 },
-  { width: 539.625, expectedStatusWidth: 400 },
-  { width: 618.625, expectedStatusWidth: 479 },
-  { width: 619.625, expectedStatusWidth: 480 },
-  { width: 698.625, expectedStatusWidth: 559 },
-  { width: 699.625, expectedStatusWidth: 560 },
+  { width: 537.375, expectedStatusWidth: 399 },
+  { width: 538.375, expectedStatusWidth: 400 },
+  { width: 617.375, expectedStatusWidth: 479 },
+  { width: 618.375, expectedStatusWidth: 480 },
+  { width: 697.375, expectedStatusWidth: 559 },
+  { width: 698.375, expectedStatusWidth: 560 },
   { width: 900 },
   { width: 900, shortModel: true },
 ];
@@ -185,11 +185,15 @@ window.measure = function () {
       focus: {
         attachOutlineStyle: focusedAttachStyle.outlineStyle,
         attachOutlineWidth: focusedAttachStyle.outlineWidth,
-        modelBoxShadow: focusedModelStyle.boxShadow,
         modelOutlineStyle: focusedModelStyle.outlineStyle,
-        effortBoxShadow: focusedEffortStyle.boxShadow,
-        actionsBoxShadow: focusedActionsStyle.boxShadow,
+        modelOutlineWidth: focusedModelStyle.outlineWidth,
+        modelOutlineOffset: focusedModelStyle.outlineOffset,
+        effortOutlineStyle: focusedEffortStyle.outlineStyle,
+        effortOutlineWidth: focusedEffortStyle.outlineWidth,
+        effortOutlineOffset: focusedEffortStyle.outlineOffset,
         actionsOutlineStyle: focusedActionsStyle.outlineStyle,
+        actionsOutlineWidth: focusedActionsStyle.outlineWidth,
+        actionsOutlineOffset: focusedActionsStyle.outlineOffset,
         sendOutlineStyle: focusedSendStyle.outlineStyle,
         sendOutlineWidth: focusedSendStyle.outlineWidth,
       },
