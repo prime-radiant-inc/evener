@@ -193,6 +193,83 @@ func TestDelegateResourceCreate_PostCommitConstructionFailureClosesResumability(
 	}
 }
 
+func TestDelegateResourceCreate_ResultMatchesCommittedSnapshot(t *testing.T) {
+	t.Run("stop wins before attach", func(t *testing.T) {
+		root, _, _ := newDelegateResourceBootstrapSession(t)
+		constructionErr := errors.New("construction cancelled after committed stop")
+		root.cfg.testOnly.subagentPrepareFault = func(point string) error {
+			if point != "new_session" {
+				return nil
+			}
+			plan := root.delegateController.Snapshot()
+			if len(plan.rows) != 1 {
+				t.Fatalf("committed snapshot rows = %#v, want one delegate", plan.rows)
+			}
+			_, cancelPlan, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.ID()), plan.rows[0].id)
+			if err != nil {
+				t.Fatalf("StopSubtree: %v", err)
+			}
+			executeDelegateCancelPlan(cancelPlan)
+			return constructionErr
+		}
+
+		result := root.createDelegate(context.Background(), delegateArgs{Task: "stop before attach", Background: true})
+		if !errors.Is(result.Err, constructionErr) {
+			t.Fatalf("create error = %v, want construction diagnostic", result.Err)
+		}
+		if result.Status != jobstore.StatusStopped || result.Reason != "stopped_by_parent" || result.Resumable == nil || !*result.Resumable {
+			t.Fatalf("create result = %#v, want stopped/stopped_by_parent/resumable", result)
+		}
+	})
+
+	t.Run("permanent postcommit closure", func(t *testing.T) {
+		root, _, _ := newDelegateResourceBootstrapSession(t)
+		constructionErr := errors.New("permanent committed construction failure")
+		root.cfg.testOnly.subagentPrepareFault = func(point string) error {
+			if point == "new_session" {
+				return constructionErr
+			}
+			return nil
+		}
+
+		result := root.createDelegate(context.Background(), delegateArgs{Task: "close failed start", Background: true})
+		if !errors.Is(result.Err, constructionErr) {
+			t.Fatalf("create error = %v, want construction diagnostic", result.Err)
+		}
+		if result.Status != jobstore.StatusFailed || result.Reason != "construction_failed" || result.Resumable == nil || *result.Resumable {
+			t.Fatalf("create result = %#v, want failed/construction_failed/not resumable", result)
+		}
+	})
+
+	t.Run("compensating append failure", func(t *testing.T) {
+		root, _, _ := newDelegateResourceBootstrapSession(t)
+		constructionErr := errors.New("construction failure before failed compensation")
+		root.cfg.testOnly.subagentPrepareFault = func(point string) error {
+			if point != "new_session" {
+				return nil
+			}
+			if err := root.delegateController.store.Close(); err != nil {
+				t.Fatalf("close delegate store: %v", err)
+			}
+			return constructionErr
+		}
+
+		result := root.createDelegate(context.Background(), delegateArgs{Task: "retain fenced start", Background: true})
+		if !errors.Is(result.Err, constructionErr) || !strings.Contains(result.Err.Error(), "store is closed") {
+			t.Fatalf("create error = %v, want construction and compensating append diagnostics", result.Err)
+		}
+		if result.Status != jobstore.StatusRunning || result.Reason != "" || result.Resumable == nil || !*result.Resumable {
+			t.Fatalf("create result = %#v, want exact running/resumable committed snapshot", result)
+		}
+		root.delegateController.mu.Lock()
+		live := root.delegateController.live[result.DelegateID]
+		root.delegateController.mu.Unlock()
+		if live == nil || !live.recoveryRequired {
+			t.Fatalf("append-failed delegate live state = %#v, want recovery fence", live)
+		}
+	})
+}
+
 func TestDelegateResourceCreate_PostCommitFailureRemainsInspectableAfterRestart(t *testing.T) {
 	root, client, profile := newDelegateResourceBootstrapSession(t)
 	wantErr := errors.New("injected permanent child construction failure")

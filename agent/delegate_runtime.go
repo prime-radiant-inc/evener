@@ -138,19 +138,19 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		s.delegateController.emitDelegateUpdates(plans)
 		if completeErr != nil {
 			runtime.retainAdoptedWithoutLaunch(prepared)
-			return stableDelegateResult(started.descriptor, started.lease.delegateID, errors.Join(preseedErr, completeErr))
+			return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, errors.Join(preseedErr, completeErr))
 		}
 		runtime.retainAdoptedWithoutLaunch(prepared)
-		return stableDelegateResult(started.descriptor, started.lease.delegateID, preseedErr)
+		return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, preseedErr)
 	}
 	plans, err := s.delegateController.CompleteStartInput(claim, true, delegateFinish{})
 	s.delegateController.emitDelegateUpdates(plans)
 	if err != nil {
 		runtime.retainAdoptedWithoutLaunch(prepared)
-		return stableDelegateResult(started.descriptor, started.lease.delegateID, err)
+		return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, err)
 	}
 	s.launchSubagentRun(prepared.runCtx, prepared.sub, prepared.runCancel, prepared.input, s.activeCausalProvenance())
-	return stableDelegateResult(started.descriptor, started.lease.delegateID, nil)
+	return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, nil)
 }
 
 func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
@@ -455,18 +455,18 @@ func (runtime delegateRuntime) failCommittedStart(started delegateStartCommit, i
 			prepared.runCancel()
 			prepared.disposeUnadopted()
 		}
-		return stableDelegateResult(started.descriptor, started.lease.delegateID, constructionErr)
+		return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, constructionErr)
 	}
 	if finishErr != nil {
 		retainErr := runtime.retainFailedStartCandidate(prepared)
-		return stableDelegateResult(started.descriptor, started.lease.delegateID, errors.Join(constructionErr, finishErr, retainErr))
+		return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, errors.Join(constructionErr, finishErr, retainErr))
 	}
 	if prepared != nil {
 		prepared.runCancel()
 		prepared.disposeUnadopted()
 	}
 	isolation.cleanup(runtime.owner, started.lease.delegateID)
-	return closedStableDelegateResult(started.descriptor, started.lease.delegateID, constructionErr)
+	return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, constructionErr)
 }
 
 func (runtime delegateRuntime) retainFailedStartCandidate(prepared *preparedSubagentRun) error {
@@ -492,11 +492,11 @@ func (runtime delegateRuntime) failAdoptedStart(started delegateStartCommit, iso
 	runtime.owner.delegateController.emitDelegateUpdates(plans)
 	if finishErr != nil {
 		runtime.retainAdoptedWithoutLaunch(prepared)
-		return stableDelegateResult(started.descriptor, started.lease.delegateID, errors.Join(startErr, finishErr))
+		return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, errors.Join(startErr, finishErr))
 	}
 	runtime.discardAdopted(prepared)
 	isolation.cleanup(runtime.owner, started.lease.delegateID)
-	return closedStableDelegateResult(started.descriptor, started.lease.delegateID, startErr)
+	return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, startErr)
 }
 
 func (runtime delegateRuntime) retainAdoptedWithoutLaunch(prepared *preparedSubagentRun) {
@@ -529,8 +529,9 @@ func delegatePermanentStartFailure(err error, reason string) delegateFinish {
 	}
 }
 
-func stableDelegateResult(descriptor delegatestore.Descriptor, delegateID string, err error) delegateResult {
-	resumable := descriptor.Resumable
+func stableDelegateResult(descriptor delegatestore.Descriptor, delegateID string, committed delegateUpdatePlan, plans delegateMutationPlans, err error) delegateResult {
+	snapshot := latestDelegateMutationSnapshot(delegateID, committed, plans)
+	resumable := snapshot.resumable
 	result := delegateResult{
 		DelegateID:          delegateID,
 		ChildSessionID:      descriptor.ChildSessionID,
@@ -542,9 +543,9 @@ func stableDelegateResult(descriptor delegatestore.Descriptor, delegateID string
 		Model:               descriptor.ResolvedProfileID + "/" + descriptor.ResolvedModel,
 		Err:                 err,
 	}
-	if err != nil {
-		result.Status = jobstore.StatusFailed
-		result.Reason = "start_failed"
+	if snapshot.lastOutcome != nil {
+		result.Status = jobstore.Status(snapshot.lastOutcome.Status)
+		result.Reason = snapshot.lastOutcome.Reason
 	}
 	if descriptor.Sandbox != nil {
 		network := true
@@ -556,11 +557,24 @@ func stableDelegateResult(descriptor delegatestore.Descriptor, delegateID string
 	return result
 }
 
-func closedStableDelegateResult(descriptor delegatestore.Descriptor, delegateID string, err error) delegateResult {
-	result := stableDelegateResult(descriptor, delegateID, err)
-	resumable := false
-	result.Resumable = &resumable
-	return result
+func latestDelegateMutationSnapshot(delegateID string, committed delegateUpdatePlan, plans delegateMutationPlans) delegateSnapshot {
+	var latest delegateSnapshot
+	for _, row := range committed.rows {
+		if row.id == delegateID {
+			latest = row
+		}
+	}
+	if latest.id == "" && len(committed.rows) > 0 {
+		latest = committed.rows[len(committed.rows)-1]
+	}
+	for _, update := range plans.updates {
+		for _, row := range update.rows {
+			if row.id == delegateID {
+				latest = row
+			}
+		}
+	}
+	return latest
 }
 
 func (s *Session) bootstrapDelegateResources() error {
