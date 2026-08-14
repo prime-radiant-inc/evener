@@ -582,6 +582,19 @@ restart, the durable generation settles failed/runtime_lost.
 The creation batch contains descriptor and lineage fields needed for lazy
 restore. It does not contain a JobRecord or activation ID.
 
+The descriptor's Config is the effective child configuration captured before
+step 4, after applying child-specific turn, agent, effort, MCP, and sandbox
+decisions. Stable child construction starts from that snapshot and overlays
+only process-local engine dependencies, callbacks, and tree linkage. The live
+parent configuration is not a post-commit source for model-visible child
+semantics.
+
+When Config.ShareTasksWithChildren is enabled, the descriptor also records
+SharedTaskStoreOwnerSessionID. Live construction may attach the current shared
+TaskStore pointer only when that owner identity matches. Cold restoration must
+resolve this owner key to the existing shared store before constructing the
+child; creating a separate child store would fork the committed task history.
+
 ### Start an idle delegate
 
 An idle send uses an in-memory starting reservation and the same
