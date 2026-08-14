@@ -721,7 +721,7 @@ chmod +x "$bin/go" "$bin/git" "$bin/gofmt" "$bin/golangci-lint" "$repo/scripts/g
 out="$case_dir/make-lint.out"
 if (
 	cd "$repo" || exit 1
-	TMPDIR="$tmp" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" make lint
+	TMPDIR="$tmp" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" make --no-print-directory lint
 ) >"$out" 2>&1; then rc=0; else rc=$?; fi
 assert_eq "$rc" "0" "real make lint wiring exits zero with healthy fakes"
 assert_eq "$(wc -l <"$out" | tr -d ' ')" "2" "real make lint keeps the two-line success contract"
@@ -832,7 +832,7 @@ chmod +x "$generated_bin/go"
 out="$case_dir/generated-drift.out"
 if (
 	cd "$generated_repo" || exit 1
-	PATH="$generated_bin:/usr/bin:/bin" TMPDIR="$tmp" make lint-generated
+	PATH="$generated_bin:/usr/bin:/bin" TMPDIR="$tmp" make --no-print-directory lint-generated
 ) >"$out" 2>&1; then rc=0; else rc=$?; fi
 if [ "$rc" -ne 0 ]; then
 	ok "stale TypeScript output fails lint-generated"
@@ -846,7 +846,7 @@ assert_has "$out" "types.gen.ts" "generated drift identifies the TypeScript outp
 out="$case_dir/make-secret-degraded.out"
 if (
 	cd "$repo" || exit 1
-	TMPDIR="$tmp" PATH="$bin:/usr/bin:/bin" FAKE_STATE="$state" FAKE_GITLEAKS_MISSING=1 make secret-scan
+	TMPDIR="$tmp" PATH="$bin:/usr/bin:/bin" FAKE_STATE="$state" FAKE_GITLEAKS_MISSING=1 make --no-print-directory secret-scan
 ) >"$out" 2>&1; then rc=0; else rc=$?; fi
 assert_eq "$rc" "0" "missing-gitleaks secret scan remains successful"
 assert_eq "$(cat "$out")" "warning: gitleaks not installed; skipping repo secret scan (install: https://github.com/gitleaks/gitleaks)" "missing-gitleaks warning remains exact and visible"
