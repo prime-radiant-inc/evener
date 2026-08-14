@@ -180,8 +180,11 @@ test("composes the status row, the session menu, and the goal control once the r
   expect(screen.getByText("anthropic/claude-sonnet-4-5")).toBeTruthy();
   // Session menu trigger.
   expect(screen.getByRole("button", { name: /session actions/i })).toBeTruthy();
-  // Goal control: the goal chip, once a goal is set.
-  expect(screen.getByRole("button", { name: /goal: active/i })).toBeTruthy();
+  // Goal control: the goal chip, once a goal is set. Two triggers share this
+  // accessible name now (the full chip and the compact glyph trigger that
+  // takes over below 560px - GoalControl.tsx), so a role/name query alone is
+  // ambiguous; the testid picks the chip specifically.
+  expect(screen.getByTestId("goal-chip-trigger")).toBeTruthy();
 });
 
 test("composer placement renders one ordered inline status and actions cluster without footer-only controls", async () => {
@@ -230,7 +233,9 @@ test("composer placement renders one ordered inline status and actions cluster w
   // GoalControl rides the inline status too: production only ever mounts
   // placement="composer" (Composer.tsx), so leaving it footer-only made it
   // unreachable in the real app — the live E2E pass caught the regression.
-  expect(within(statusContainer).getByRole("button", { name: /goal/i })).toBeTruthy();
+  // The testid picks the full chip specifically - a role/name query is
+  // ambiguous now that the compact glyph trigger shares its accessible name.
+  expect(within(statusContainer).getByTestId("goal-chip-trigger")).toBeTruthy();
 });
 
 test("default placement preserves the standalone session chrome presentation", async () => {

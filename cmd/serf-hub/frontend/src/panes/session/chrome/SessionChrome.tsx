@@ -17,7 +17,9 @@
 // mobile Sheets; ActivityPanel's refreshWhenHidden is unconditional because
 // the menu's "Activity · N" label reads the summary that refresh maintains.
 // Slash-command actions (goal/aside/compact/clear) are deliberately NOT in
-// the menu - the command palette owns those - so GoalControl below is the
+// the menu - the session's own composer owns those now (2026-08-14, "the
+// composer is where you act on this session"; the command palette only
+// hands off to it - design-system.md §9) - so GoalControl below is the
 // goal chip + clear popover only.
 import { useRef } from "react";
 import { sessionActionError } from "../../../protocol/errors";

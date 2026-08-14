@@ -440,6 +440,39 @@ current gap:
 
 ---
 
+## 9. Command surfaces: palette vs. composer
+
+**The principle (2026-08-14): the palette is where you go; the composer is where you act on this
+session.** Every command in the registry (`shell/palette/commands.ts`) is tagged with a surface —
+`commandSurface()`, derived from the same `scope` field that already decided whether a session
+needs to be focused. An **app-global** command (new session, spawn, theme, dashboard, search,
+help, upgrade, next-needs-you, open settings) needs no session and stays palette-native: it is
+listed, filtered, and run entirely inside the command palette (`Mod+K`), exactly as before. A
+**session** command — every mutation or read that acts on the focused session, built-in (goal,
+model, reasoning effort, status, compact, clear, steer, queue, interrupt, shutdown, aside,
+drain-as-steer, copy-id, tasks, project) or a plugin's own slash command — runs ONLY from that
+session's composer, never the palette.
+
+**The composer is the session's own command line, Slack-model.** Its inline `/` menu
+(`slashCompletion.ts`'s `mergeSlashCommands`) lists the session-scoped built-ins merged with the
+plugin catalog — one list, each row stating what it does or, for a plugin command with no
+description, naming its plugin provenance. Submitting a message that PARSES as a known built-in
+invocation (a leading `/name` with optional args) runs that command's RPC instead of sending the
+text — a literal message that happens to start with a recognized `/command` executes rather than
+sends, matching the muscle memory Slack and Discord users already have. Feedback is a toast plus
+whatever live chrome the mutation already drives (the goal chip, the status row); the draft clears
+on success and is preserved verbatim on failure, so a rejected command never costs the user their
+typed text. Anything that does NOT parse as a known built-in — an unrecognized `/foo`, or a
+plugin's own slash command — sends as an ordinary chat message: that's the escape hatch, and it's
+deliberate, not a gap.
+
+**The palette delists every session command and offers a handoff instead.** Typing a `/`-prefixed
+filter that matches a session command's name (built-in or plugin) shows exactly ONE row —
+"Continue in the composer: /goal …" — carrying the raw text as typed. Activating it inserts that
+text into the focused session's composer and moves focus there, closing the palette; the palette
+itself never executes a session mutation or makes a wire call for one. With no session focused,
+the same row explains that there's nowhere to hand off to yet, rather than silently doing nothing.
+
 ## 11. Mobile forms and honest cold starts
 
 Mobile forms use settings-style rows when several related choices must remain

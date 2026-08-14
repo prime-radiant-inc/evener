@@ -23,10 +23,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ThreadModel } from "../../protocol/model";
 import type { PaneProps } from "../../shell/paneRegistry";
+import { navigate, paneToURL } from "../../shell/routing";
+import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { useTreeStore } from "../../stores/tree";
-import { Cadence, EmptyState, PaneScaffold, RadioGroup, VirtualList, type VirtualListHandle } from "../../widgets";
+import {
+  Button,
+  Cadence,
+  EmptyState,
+  PaneScaffold,
+  RadioGroup,
+  VirtualList,
+  type VirtualListHandle,
+} from "../../widgets";
 import { modelLabel } from "./chrome/statusFormat";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { Composer } from "./composer/Composer";
@@ -176,6 +186,22 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // olderError with a Retry beside it - the recovery path, since Jesse ruled out
   // a standing "load more" button and silent failure is not an option.
   const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
+
+  // A DELETED ref never hydrates: the hub durably fences every request
+  // against a deleted target (cmd/serf-hub/app_sources.go's
+  // deletionFenceError, stamping data.mutationOutcome "targetDeleted" -
+  // hubcore.DeletionStore never clears that fence once set). threads.ts's own
+  // hydrateAndSubscribe records that specific rejection into `deletedRefs`
+  // (its own doc comment) as it happens - the SAME thread/read attempt
+  // ensureThread's claim above already keeps retrying, not a second request
+  // from here - while still retrying exactly as it always has, since
+  // ensureThread's returned promise never settles for a deleted ref (its
+  // retry loop has no terminal state and cannot otherwise tell "the daemon
+  // is slow" apart from "this ref is gone"). Reading the flag here is what
+  // lets this pane render an honest terminal state instead of "Loading
+  // transcript…" forever.
+  const deletedRef = useThreadsStore((s) => !model && s.deletedRefs.has(ref));
+
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);
   const openers = useMemo(() => (model ? exchangeOpenersFor(model.turns) : undefined), [model]);
@@ -280,9 +306,41 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // the tree store already knew the friendly title, while the dockview tab
   // right above it already showed that title.
   const tree = useTreeStore((s) => s.tree);
-  const title = resolveThreadName(model ? new Map([[ref, model]]) : EMPTY_THREADS, tree, ref) ?? ref;
+  // Never the raw ref while the deleted state is showing (below): the ref is
+  // the one thing about a gone session that means nothing to a person
+  // reading the pane's own header.
+  const title = deletedRef
+    ? "Session deleted"
+    : (resolveThreadName(model ? new Map([[ref, model]]) : EMPTY_THREADS, tree, ref) ?? ref);
+
+  // Closing follows Settings.tsx's own handleClose seam exactly (its own doc
+  // comment on the trap this avoids, and needsYouCycle.ts's identical note):
+  // navigate() to "/" FIRST, then closePane. AppShell reconciles the CURRENT
+  // pathname against the workspace on every pane change, so closePane alone
+  // - leaving window.location.pathname on /s/{ref} - would just get this
+  // pane reopened right back onto the same eternal loading state.
+  function handleCloseDeleted() {
+    const url = paneToURL("welcome", {});
+    if (url !== null) navigate(url);
+    workspaceStore.getState().closePane(paneId);
+  }
 
   if (!model) {
+    if (deletedRef) {
+      return (
+        <PaneScaffold paneId={paneId} focused={paneFocused} scaffoldMarker={`session:${ref}`} title={title}>
+          <EmptyState
+            title="This session was deleted"
+            hint="Its transcript is gone. You can close this pane."
+            action={
+              <Button variant="quiet" onClick={handleCloseDeleted}>
+                Close
+              </Button>
+            }
+          />
+        </PaneScaffold>
+      );
+    }
     return (
       <PaneScaffold paneId={paneId} focused={paneFocused} scaffoldMarker={`session:${ref}`} title={title}>
         <EmptyState title="Loading transcript…" />

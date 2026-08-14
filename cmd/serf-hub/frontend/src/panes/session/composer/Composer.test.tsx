@@ -2222,14 +2222,17 @@ function slashOptions() {
   return within(slashMenu()).getAllByRole("option");
 }
 
-test("a trailing slash token opens a completion menu filtered from the plugin command catalog", async () => {
+test("a trailing slash token opens a completion menu merging session-scoped built-ins with the plugin command catalog", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
   const user = userEvent.setup();
   await mountComposer("ref_slash3");
 
   await user.type(textarea(), "hi /re");
 
+  // "re" matches the built-in /reasoning-effort too (mergeSlashCommands puts
+  // built-ins first), not just the two catalog entries.
   expect(slashOptions().map((el) => el.textContent)).toEqual([
+    expect.stringContaining("/reasoning-effort"),
     expect.stringContaining("/review"),
     expect.stringContaining("/release"),
   ]);
@@ -2270,14 +2273,17 @@ test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", asyn
   const user = userEvent.setup();
   await mountComposer("ref_slash7");
   await user.type(textarea(), "hi /re");
+  // Three matches: the built-in /reasoning-effort, then /review, /release.
 
   expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowDown}");
   expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
+  await user.keyboard("{ArrowDown}");
+  expect(slashOptions()[2]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowDown}"); // wraps past the last option back to the first
   expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowUp}"); // wraps the other way, back to the last
-  expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
+  expect(slashOptions()[2]?.getAttribute("aria-selected")).toBe("true");
 });
 
 test("Tab commits the highlighted option: splices /name<space> at the token start, caret after the space", async () => {
@@ -2285,7 +2291,8 @@ test("Tab commits the highlighted option: splices /name<space> at the token star
   const user = userEvent.setup();
   await mountComposer("ref_slash8");
   await user.type(textarea(), "hi /re");
-  await user.keyboard("{ArrowDown}"); // highlight "release"
+  // index 0 is the built-in /reasoning-effort, 1 /review, 2 /release.
+  await user.keyboard("{ArrowDown}{ArrowDown}"); // highlight "release"
 
   await user.keyboard("{Tab}");
 
@@ -2300,14 +2307,16 @@ test("committing a plugin-sourced catalog entry inserts the QUALIFIED /plugin:na
   // registering that name on the hub side (app_rpc.go's dispatch) - see
   // shell/palette/commands.ts's slashCommandInvocation, the single source
   // of truth this insert and the modal palette's own activateCommand both
-  // go through.
+  // go through. Queries "/rev" rather than "/re" so the built-in
+  // /reasoning-effort (which also starts with "re") never enters this
+  // single-match scenario.
   useCommandCatalog.setState({
     commands: [{ name: "review", description: "review the diff", source: "plugin", pluginName: "p" }],
     loaded: true,
   });
   const user = userEvent.setup();
   await mountComposer("ref_slash_qualified");
-  await user.type(textarea(), "hi /re");
+  await user.type(textarea(), "hi /rev");
 
   await user.keyboard("{Tab}");
 
@@ -2328,7 +2337,7 @@ test("Enter commits the highlighted option and does NOT fall through to the comp
     },
     turn: { id: "turn_1", status: "inProgress", itemsView: "" },
   }));
-  await user.type(textarea(), "hi /re");
+  await user.type(textarea(), "hi /rev"); // single match (review) - avoids the /reasoning-effort built-in collision on "re"
 
   await user.keyboard("{Enter}");
 
@@ -2371,8 +2380,9 @@ test("clicking an option commits it without ever blurring the textarea", async (
   const user = userEvent.setup();
   await mountComposer("ref_slash12");
   await user.type(textarea(), "hi /re");
+  // index 0 is the built-in /reasoning-effort, 1 /review, 2 /release.
 
-  await user.click(slashOptions()[1]!); // "release"
+  await user.click(slashOptions()[2]!); // "release"
 
   expect(textarea().value).toBe("hi /release ");
   expect(document.activeElement).toBe(textarea());
@@ -2392,4 +2402,143 @@ test("the open menu wires listbox/option roles and aria-activedescendant on the 
 
   await user.keyboard("{Escape}");
   expect(textarea().getAttribute("aria-activedescendant")).toBeNull();
+});
+
+// --- Enter/submit interception: the composer as the session command line
+// (2026-08-14 decision, "the composer is where you act on this session") ---
+//
+// A draft that PARSES as a known BUILT-IN session command runs that
+// command's RPC instead of being sent as a chat message - matching Slack/
+// Discord muscle memory (decisions.md). Plugin catalog commands and any
+// unrecognized "/name" keep sending as plain text: the escape hatch.
+
+test("a built-in invocation (/goal) runs the RPC instead of sending, and clears the draft on success", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_builtin_goal");
+  let goalCall: unknown;
+  fake.on("goal/set", (params) => {
+    goalCall = params;
+    return { started: false };
+  });
+
+  await user.type(textarea(), "/goal fix the login bug");
+  await user.click(submitButton());
+
+  await waitFor(() => expect(textarea().value).toBe(""));
+  expect(goalCall).toEqual({ ref: "ref_builtin_goal", objective: "fix the login bug" });
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  expect(localStorage.getItem("serf.composer.draft.v1.ref_builtin_goal")).toBeNull();
+});
+
+test("a failed built-in invocation preserves the draft and toasts a friendly message", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_builtin_fail");
+  fake.on("goal/set", () => {
+    throw new Error("boom");
+  });
+
+  await user.type(textarea(), "/goal fix the login bug");
+  await user.click(submitButton());
+
+  await waitFor(() => expect(screen.getByText("Something went wrong.")).toBeTruthy());
+  expect(textarea().value).toBe("/goal fix the login bug");
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+test("an argless built-in invocation (/compact) runs and clears the draft", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_builtin_compact");
+  let compactCalled = false;
+  fake.on("thread/compact/start", () => {
+    compactCalled = true;
+    return {};
+  });
+
+  await user.type(textarea(), "/compact");
+  await user.click(submitButton());
+
+  await waitFor(() => expect(textarea().value).toBe(""));
+  expect(compactCalled).toBe(true);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+test("a no-active-turn built-in (/steer) is blocked with the floor's message, draft preserved", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_builtin_steer", { status: { type: "idle" } });
+
+  await user.type(textarea(), "/steer go left");
+  await user.click(submitButton());
+
+  await waitFor(() => expect(screen.getByText(/steer failed: no active turn/i)).toBeTruthy());
+  expect(textarea().value).toBe("/steer go left");
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+test("an unknown /foo sends as a plain message - the escape hatch", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_builtin_unknown", { status: { type: "idle" } });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+
+  await user.type(textarea(), "/foo bar");
+  await user.click(submitButton());
+
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  expect(textarea().value).toBe("");
+});
+
+test("a plugin catalog command still sends as text - only BUILT-INS are intercepted", async () => {
+  useCommandCatalog.setState({
+    commands: [{ name: "review", description: "review the diff", source: "plugin" }],
+    loaded: true,
+  });
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_builtin_plugin", { status: { type: "idle" } });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+
+  await user.type(textarea(), "/review please");
+  await user.click(submitButton());
+
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  expect(textarea().value).toBe("");
+  expect(fake.calls.some((call) => call.method === "goal/set")).toBe(false);
+});
+
+test("a message carrying an attachment is never read as a command invocation, even if the text looks like one", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_builtin_attachment", { status: { type: "idle" } });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+
+  await user.type(textarea(), "/goal fix it ");
+  pastePngInto(textarea());
+  await waitFor(() => expect(textarea().value).toBe("/goal fix it [image 1]"));
+
+  await user.click(submitButton());
+
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  expect(fake.calls.some((call) => call.method === "goal/set")).toBe(false);
 });

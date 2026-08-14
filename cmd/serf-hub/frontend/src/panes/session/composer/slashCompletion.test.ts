@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import type { CommandDescriptor } from "../../../protocol/types.gen";
-import { filterSlashCommands, parseSlashToken, spliceSlashCommand } from "./slashCompletion";
+import type { ScopedCommand } from "../../../shell/palette/commands";
+import { filterSlashMenuItems, mergeSlashCommands, parseSlashToken, spliceSlashCommand } from "./slashCompletion";
 
 // --- parseSlashToken ---------------------------------------------------
 //
@@ -69,7 +70,12 @@ test("a trailing non-word character right after the token breaks the match ('/fo
   expect(parseSlashToken("/foo.", 5)).toBeNull();
 });
 
-// --- filterSlashCommands -------------------------------------------------
+// --- mergeSlashCommands / filterSlashMenuItems ----------------------------
+//
+// 2026-08-14: the inline slash menu now merges session-scoped BUILT-INS
+// (shell/palette/commands.ts's sessionBuiltinCommands - "the composer is
+// where you act on this session") with the plugin catalog, instead of the
+// catalog alone.
 
 const CATALOG: CommandDescriptor[] = [
   { name: "review", description: "review the diff" },
@@ -77,20 +83,54 @@ const CATALOG: CommandDescriptor[] = [
   { name: "standup", description: "post standup" },
 ];
 
-test("filters the catalog to names starting with the query", () => {
-  expect(filterSlashCommands(CATALOG, "re").map((c) => c.name)).toEqual(["review", "release"]);
+function builtin(id: string, hint: string, overrides: Partial<ScopedCommand> = {}): ScopedCommand {
+  return { id, title: id, hint, keywords: [], scope: "session", ...overrides };
+}
+
+test("merges built-ins ahead of the catalog, each carrying its own invocation and hint", () => {
+  const items = mergeSlashCommands([builtin("goal", "sets the session goal")], CATALOG);
+  expect(items).toEqual([
+    { key: "builtin:goal", invocation: "/goal", label: "goal", hint: "sets the session goal", kind: "builtin" },
+    { key: "plugin::review", invocation: "/review", label: "review", hint: "review the diff", kind: "plugin" },
+    { key: "plugin::release", invocation: "/release", label: "release", hint: "cut a release", kind: "plugin" },
+    { key: "plugin::standup", invocation: "/standup", label: "standup", hint: "post standup", kind: "plugin" },
+  ]);
 });
 
-test("an empty query returns the whole catalog, in order", () => {
-  expect(filterSlashCommands(CATALOG, "").map((c) => c.name)).toEqual(["review", "release", "standup"]);
+test("a qualified plugin command's invocation is /pluginName:name, matching slashCommandInvocation", () => {
+  const items = mergeSlashCommands([], [{ name: "review", pluginName: "p", source: "plugin" }]);
+  expect(items).toEqual([
+    { key: "plugin:p:review", invocation: "/p:review", label: "review", hint: "plugin: p", kind: "plugin" },
+  ]);
 });
 
-test("a query matching nothing returns an empty list", () => {
-  expect(filterSlashCommands(CATALOG, "zzz")).toEqual([]);
+test("a plugin entry with no description falls back to naming its provenance, not a blank hint", () => {
+  const items = mergeSlashCommands([], [{ name: "review", source: "user" }]);
+  expect(items[0]?.hint).toBe("plugin: user");
 });
 
-test("matching is case-insensitive", () => {
-  expect(filterSlashCommands(CATALOG, "RE").map((c) => c.name)).toEqual(["review", "release"]);
+test("an unavailableReason built-in is dropped from the menu entirely - no disabled-row affordance here", () => {
+  const items = mergeSlashCommands(
+    [builtin("compact", "free up token space", { unavailableReason: "not available right now" })],
+    [],
+  );
+  expect(items).toEqual([]);
+});
+
+test("filterSlashMenuItems filters the merged list to labels starting with the query, case-insensitive", () => {
+  const items = mergeSlashCommands([builtin("goal", "sets the session goal")], CATALOG);
+  expect(filterSlashMenuItems(items, "re").map((i) => i.label)).toEqual(["review", "release"]);
+  expect(filterSlashMenuItems(items, "RE").map((i) => i.label)).toEqual(["review", "release"]);
+});
+
+test("filterSlashMenuItems with an empty query returns the whole merged list, in order", () => {
+  const items = mergeSlashCommands([builtin("goal", "sets the session goal")], CATALOG);
+  expect(filterSlashMenuItems(items, "").map((i) => i.label)).toEqual(["goal", "review", "release", "standup"]);
+});
+
+test("filterSlashMenuItems matching nothing returns an empty list", () => {
+  const items = mergeSlashCommands([builtin("goal", "sets the session goal")], CATALOG);
+  expect(filterSlashMenuItems(items, "zzz")).toEqual([]);
 });
 
 test("a colon is a valid token character (a typed qualified prefix keeps the menu alive)", () => {

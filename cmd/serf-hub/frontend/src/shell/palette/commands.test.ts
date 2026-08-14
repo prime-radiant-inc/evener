@@ -17,10 +17,13 @@ import { blockedMessage, isBlocked } from "./blocked";
 import {
   buildCommands,
   type Command,
+  commandSurface,
   commandsInScope,
   copyToClipboard,
   filterCommands,
   type PaletteRunContext,
+  sessionBuiltinCommands,
+  sessionScopedHandoffMatch,
   splitModelId,
   UNAVAILABLE_REASON,
 } from "./commands";
@@ -308,55 +311,95 @@ test("a focused session whose model has not hydrated yet leaves every command en
   expect(inScope.every((c) => c.unavailableReason === undefined)).toBe(true);
 });
 
-test("a focused session includes catalog commands with source labels and qualified invocations", () => {
-  focusSession("ref_a");
+// 2026-08-14: filterCommands is the palette's OWN browsable list, and it is
+// app-global only now (commandSurface's own doc comment) - a plugin catalog
+// entry is session-scoped (catalogCommands sets scope: "session"), so it
+// never appears there, focused session or not. commandsInScope (the fuller
+// resolver, still blending everything) is what sessionBuiltinCommands and
+// this file's OTHER catalog-shaped tests below exercise; slashCommandInvocation
+// itself is covered directly by slashCompletion.test.ts's mergeSlashCommands
+// cases and Composer.test.tsx's own qualified-invocation test.
+test("filterCommands never lists a plugin catalog entry, focused session or not", () => {
   useCommandCatalog.setState({
-    commands: [
-      { name: "review", pluginName: "p", description: "plugin cmd", source: "plugin" },
-      { name: "standup", description: "user cmd", source: "user" },
-    ],
+    commands: [{ name: "review", pluginName: "p", description: "plugin cmd", source: "plugin" }],
     loaded: true,
   });
+  expect(filterCommands(buildPaletteContext(), "/rev").commands.some((c) => c.id === "review")).toBe(false);
 
-  const { commands } = filterCommands(buildPaletteContext(), "/rev");
-  expect(commands).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        id: "review",
-        title: "review [plugin]",
-        description: "plugin cmd",
-        source: "plugin",
-        pluginName: "p",
-        slashCommandInvocation: "/p:review",
-      }),
-    ]),
-  );
-  const userCommand = filterCommands(buildPaletteContext(), "/stand").commands.find(
-    (command) => command.id === "standup",
-  );
-  expect(userCommand?.title).toBe("standup [user]");
-  expect(userCommand?.slashCommandInvocation).toBe("/standup");
-});
-
-test("a plugin catalog entry without pluginName still has an unqualified invocation", () => {
   focusSession("ref_a");
-  useCommandCatalog.setState({
-    commands: [{ name: "review", description: "plugin cmd", source: "plugin" }],
-    loaded: true,
-  });
-
-  const command = filterCommands(buildPaletteContext(), "/review").commands.find((entry) => entry.id === "review");
-  expect(command?.slashCommandInvocation).toBe("/review");
-  expect(command?.slashCommandInvocation).not.toContain("undefined");
+  expect(filterCommands(buildPaletteContext(), "/rev").commands.some((c) => c.id === "review")).toBe(false);
 });
 
-test("catalog commands are absent without a focused session", () => {
+test("catalog commands are absent from commandsInScope without a focused session", () => {
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", description: "plugin cmd", source: "plugin" }],
     loaded: true,
   });
 
   expect(commandsInScope(buildPaletteContext()).some((command) => command.id === "review")).toBe(false);
+});
+
+// --- commandSurface / sessionBuiltinCommands / sessionScopedHandoffMatch
+// (2026-08-14, "the palette is where you go; the composer is where you act
+// on this session" - decisions.md) ---
+
+test("commandSurface maps every registry command honestly: session scope -> session surface, global -> app-global", () => {
+  for (const command of buildCommands()) {
+    expect(commandSurface(command)).toBe(command.scope === "session" ? "session" : "app-global");
+  }
+});
+
+test("sessionBuiltinCommands is every session-scoped BUILT-IN, unavailableReason-resolved, never a plugin-catalog entry", () => {
+  focusSession("ref_a");
+  useCommandCatalog.setState({
+    commands: [{ name: "review", pluginName: "p", description: "plugin cmd", source: "plugin" }],
+    loaded: true,
+  });
+  seedModel("ref_a", { capabilities: { ...CAPS, compact: false } });
+
+  const builtins = sessionBuiltinCommands(buildPaletteContext());
+  expect(builtins.every((c) => c.scope === "session")).toBe(true);
+  expect(builtins.some((c) => c.id === "review")).toBe(false); // the catalog entry never leaks in
+  const ids = builtins.map((c) => c.id);
+  expect(ids).toEqual(
+    expect.arrayContaining([
+      "compact",
+      "interrupt",
+      "clear",
+      "aside",
+      "shutdown",
+      "model",
+      "reasoning-effort",
+      "steer",
+      "queue",
+      "goal",
+      "drain-as-steer",
+      "copy-id",
+      "tasks",
+      "status",
+      "project",
+    ]),
+  );
+  expect(builtins.find((c) => c.id === "compact")?.unavailableReason).toBe(UNAVAILABLE_REASON);
+});
+
+test("sessionScopedHandoffMatch matches a built-in id prefix, with or without a focused session", () => {
+  expect(sessionScopedHandoffMatch("/go", [])).toBe(true); // prefixes "goal"
+  expect(sessionScopedHandoffMatch("/goal fix the bug", [])).toBe(true); // args after the name still match on the first token
+  expect(sessionScopedHandoffMatch("/zzz", [])).toBe(false);
+  expect(sessionScopedHandoffMatch("/", [])).toBe(false); // empty first token: nothing to hand off yet
+  expect(sessionScopedHandoffMatch("", [])).toBe(false);
+});
+
+test("sessionScopedHandoffMatch also matches a plugin catalog entry's name", () => {
+  const catalog = [{ name: "review", description: "plugin cmd", source: "plugin" as const }];
+  expect(sessionScopedHandoffMatch("/rev", catalog)).toBe(true);
+  expect(sessionScopedHandoffMatch("/nomatch", catalog)).toBe(false);
+});
+
+test("sessionScopedHandoffMatch never matches an app-global command (those stay palette-native)", () => {
+  expect(sessionScopedHandoffMatch("/settings", [])).toBe(false);
+  expect(sessionScopedHandoffMatch("/theme", [])).toBe(false);
 });
 
 // --- filterCommands (search.js:637-651) ---

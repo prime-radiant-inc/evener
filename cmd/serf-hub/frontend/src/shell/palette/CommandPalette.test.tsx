@@ -237,7 +237,7 @@ test("a '/set' filter narrows to matching commands and drops non-matches", () =>
   expect(screen.queryByRole("option", { name: /New session/ })).toBeNull();
 });
 
-test("an async catalog refresh rerenders the open session palette", async () => {
+test("an async catalog refresh rerenders the open session palette - a newly-loaded plugin command now surfaces the handoff row", async () => {
   const fake = new FakeClient();
   fake.on("serf/command/list", async () => {
     await Promise.resolve();
@@ -249,24 +249,23 @@ test("an async catalog refresh rerenders the open session palette", async () => 
 
   act(() => openPalette("/review"));
 
-  await waitFor(() => expect(screen.getByRole("option", { name: /review \[plugin\]/ })).toBeTruthy());
+  await waitFor(() => expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy());
 });
 
-test("selecting a free-arg command enters args mode with a pill and placeholder, and Esc backs out (does not close)", async () => {
+test("selecting a free-arg APP-GLOBAL command enters args mode with a pill and placeholder, and Esc backs out (does not close)", async () => {
   const user = userEvent.setup();
-  focusSession("ref_a", { status: { type: "active" }, activeTurnId: "t1" });
   render(<CommandPalette />);
-  act(() => openPalette("/steer"));
-  await user.click(screen.getByRole("option", { name: /Steer model/ }));
+  act(() => openPalette("/spawn"));
+  await user.click(screen.getByRole("option", { name: /Spawn with prompt/ }));
 
   // Args-mode pill shows the command, and the input placeholder changes.
-  expect(screen.getByText("Steer model")).toBeTruthy();
-  expect(screen.getByRole("combobox").getAttribute("placeholder")).toBe("steer text…");
+  expect(screen.getByText("Spawn with prompt")).toBeTruthy();
+  expect(screen.getByRole("combobox").getAttribute("placeholder")).toBe("prompt to spawn…");
 
   await user.keyboard("{Escape}");
   // Backed out to command-filter, dialog still open (Esc did not close it).
   expect(screen.getByRole("dialog")).toBeTruthy();
-  expect(screen.getByRole("option", { name: /Steer model/ })).toBeTruthy();
+  expect(screen.getByRole("option", { name: /Spawn with prompt/ })).toBeTruthy();
 });
 
 // --- execution & error surfacing ---
@@ -280,29 +279,60 @@ test("running a navigation command closes the palette and navigates", async () =
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-test("a blocked command keeps the palette open and shows the inline error strip", async () => {
-  const user = userEvent.setup();
+// --- session-scoped commands: delisted, handed off to the composer
+// (2026-08-14 decision: "the palette is where you go; the composer is where
+// you act on this session") ---
+//
+// The palette itself is now capability-agnostic for these - it only ever
+// detects a NAME prefix match, never touches ThreadCapabilities, and never
+// makes a wire call for one. Whether a specific built-in can actually run
+// (an ended session, a false capability flag, no active turn) is entirely
+// the composer's own concern now - see builtinCommand.test.ts's own coverage
+// of that (runBuiltinCommand's unavailableReason / blocked-sentinel cases).
+
+test("a session-scoped built-in (/interrupt) is never listed as a runnable command row - only the ONE handoff row", async () => {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
   focusSession("ref_a", { status: { type: "idle" }, activeTurnId: undefined });
   render(<CommandPalette />);
   act(() => openPalette("/interrupt"));
-  await user.click(screen.getByRole("option", { name: /Interrupt agent/ }));
 
-  expect(screen.getByRole("alert").textContent).toBe("interrupt failed: no active turn");
-  expect(screen.getByRole("dialog")).toBeTruthy();
+  expect(screen.queryByRole("option", { name: /Interrupt agent/ })).toBeNull();
+  expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy();
   expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(false);
 });
 
-// --- unavailable commands: present and explained, never hidden (kata zshh) ---
-
-test("an ended session still lists /model, and it runs", async () => {
+test("with a focused session, activating the handoff row inserts the typed text into that session's composer and closes", async () => {
   const user = userEvent.setup();
-  const fake = new FakeClient("ready");
-  fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
-  fake.on("thread/model/set", () => ({}));
-  connectionStore.getState().connect(fake);
-  // pastEntryThread's advertisement for a cold exited thread.
+  focusSession("ref_a");
+  render(<CommandPalette />);
+  act(() => openPalette("/interrupt"));
+
+  await user.click(screen.getByRole("option", { name: /Continue in the composer/ }));
+
+  const { result: insert } = renderHook(() => useQuoteInsertRequest("ref_a"));
+  expect(insert.current?.text).toBe("/interrupt ");
+  expect(insert.current?.placement).toBe("prefix");
+  const { result: focus } = renderHook(() => useComposerFocusRequest("ref_a"));
+  expect(focus.current).not.toBeUndefined();
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("with NO focused session, the handoff row explains that instead and Enter shows an inline error, not an insert", async () => {
+  const user = userEvent.setup();
+  render(<CommandPalette />);
+  act(() => openPalette("/interrupt"));
+
+  const row = screen.getByRole("option", { name: /Focus a session to run this command/ });
+  expect(row.getAttribute("aria-disabled")).toBe("true");
+
+  await user.keyboard("{Enter}");
+
+  expect(screen.getByRole("alert").textContent).toBe("Focus a session first to run a session command.");
+  expect(screen.getByRole("dialog")).toBeTruthy(); // stays open, same as any other blocked action
+});
+
+test("the handoff row appears for /model even on an ended session with false capability flags - the palette does not gate on either", () => {
   focusSession("ref_a", {
     status: { type: "ended" },
     capabilities: { ...CAPS, steer: false, interrupt: false, queue: false },
@@ -310,32 +340,8 @@ test("an ended session still lists /model, and it runs", async () => {
   render(<CommandPalette />);
   act(() => openPalette("/model"));
 
-  const row = screen.getByRole("option", { name: /Switch model/ });
-  expect(row.getAttribute("aria-disabled")).toBeNull();
-  await user.click(row);
-  await user.click(await screen.findByRole("option", { name: /gpt-5\.5/ }));
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(true));
-});
-
-test("a command the wire refuses renders disabled with its reason, and choosing it explains itself", async () => {
-  const user = userEvent.setup();
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  focusSession("ref_a", { status: { type: "ended" }, capabilities: { ...CAPS, steer: false } });
-  render(<CommandPalette />);
-  act(() => openPalette("/steer"));
-
-  // Present, not hidden - a missing row is indistinguishable from one the user
-  // misremembered, and it breaks a keyboard user's motor pattern.
-  const row = screen.getByRole("option", { name: /Steer model/ });
-  expect(row.getAttribute("aria-disabled")).toBe("true");
-  expect(row.textContent).toContain("not available right now");
-
-  await user.click(row);
-  expect(screen.getByRole("alert").textContent).toBe("/steer is not available right now");
-  // Did NOT enter args mode, and made no wire call.
-  expect(screen.getByRole("combobox").getAttribute("placeholder")).not.toBe("steer text…");
-  expect(fake.calls.some((c) => c.method === "turn/steer")).toBe(false);
+  expect(screen.queryByRole("option", { name: /Switch model/ })).toBeNull();
+  expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy();
 });
 
 test("a failed auto-resume is attributed to the session, not blamed on the command", () => {
@@ -433,6 +439,18 @@ test("/help describes the leading-'/' row as opening the inline slash-command me
 
   expect(screen.getByText(/opens the inline slash-command menu/i)).toBeTruthy();
   expect(screen.queryByText(/opens command mode/i)).toBeNull();
+});
+
+// 2026-08-14: the legend teaches the new split explicitly - a user hunting
+// for /goal or /model in the palette's own "/" filter should learn WHY it
+// isn't there, not just find it silently missing.
+test("/help teaches the palette/composer split for session commands", async () => {
+  const user = userEvent.setup();
+  render(<CommandPalette />);
+  act(() => openPalette("/help"));
+  await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
+
+  expect(screen.getByText(/hands off to the composer instead/i)).toBeTruthy();
 });
 
 test("HELP_ROWS drops the mono-typeface rule (design bar bans mono for chrome labels)", () => {
@@ -595,7 +613,18 @@ test("ArrowDown moves the active row (aria-selected) with wraparound", async () 
   expect(screen.getAllByRole("option")[0]?.getAttribute("aria-selected")).toBe("false");
 });
 
-test("Enter on an exact built-in name runs the built-in", async () => {
+test("Enter on an exact app-global command name runs it", async () => {
+  const user = userEvent.setup();
+  render(<CommandPalette />);
+  act(() => openPalette("/settings"));
+
+  await user.keyboard("{Enter}");
+
+  expect(window.location.pathname).toBe("/settings");
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("Enter on an exact session-scoped command name (/status) hands off to the composer instead of running it", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
   focusSession("ref_a");
@@ -604,15 +633,16 @@ test("Enter on an exact built-in name runs the built-in", async () => {
 
   await user.keyboard("{Enter}");
 
-  // /status toggles the sessionDetails workspace pane directly at every
-  // viewport - the chrome trigger button it used to click no longer renders
-  // (the unified SessionMenu owns Details/Tasks).
-  expect(isPaneOpen(workspaceStore.getState(), "sessionDetails", { ref: "ref_a" })).toBe(true);
+  // /status used to toggle the sessionDetails workspace pane directly - the
+  // palette no longer runs ANY session command itself (2026-08-14 decision).
+  expect(isPaneOpen(workspaceStore.getState(), "sessionDetails", { ref: "ref_a" })).toBe(false);
   expect(send).not.toHaveBeenCalled();
+  const { result: insert } = renderHook(() => useQuoteInsertRequest("ref_a"));
+  expect(insert.current?.text).toBe("/status ");
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-test("Enter on a fuzzy near-miss falls through to the session", async () => {
+test("Enter on a fuzzy near-miss of a session-scoped command name (/stat) still hands off, not a raw send", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
   focusSession("ref_a");
@@ -621,30 +651,37 @@ test("Enter on a fuzzy near-miss falls through to the session", async () => {
 
   await user.keyboard("{Enter}");
 
-  expect(send).toHaveBeenCalledWith("ref_a", "/stat");
+  expect(send).not.toHaveBeenCalled();
+  const { result: insert } = renderHook(() => useQuoteInsertRequest("ref_a"));
+  expect(insert.current?.text).toBe("/stat ");
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-test("Enter on an unknown slash command sends the raw query", async () => {
+test("Enter on an unknown slash command sends the raw query - the escape hatch for genuinely unrecognized text", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
   focusSession("ref_a");
   render(<CommandPalette />);
-  act(() => openPalette("/review main"));
+  act(() => openPalette("/frobnicate main"));
 
   await user.keyboard("{Enter}");
 
-  expect(send).toHaveBeenCalledWith("ref_a", "/review main");
+  expect(send).toHaveBeenCalledWith("ref_a", "/frobnicate main");
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-// UX fix: a picked plugin slash-command used to send() immediately (no
-// chance to add arguments). It now inserts the qualified invocation into
-// the composer's draft instead - the user finishes typing and sends it
-// themselves - via the SAME per-ref insert/focus seams SelectionQuote's
-// "Quote in reply" already uses (quoteInsert.ts/composerFocus.ts).
+// 2026-08-14: a picked session-scoped command - built-in OR plugin catalog -
+// no longer runs from the palette at all (nor, for a plugin command, sends
+// its qualified form immediately). Both now resolve to the SAME single
+// handoff row, which inserts the RAW TEXT THE USER TYPED (not a resolved
+// invocation - sessionScopedHandoffMatch only ever answers "does something
+// match", never "which") via the SAME per-ref insert/focus seams
+// SelectionQuote's "Quote in reply" already uses (quoteInsert.ts/
+// composerFocus.ts). The composer's OWN inline slash menu is what resolves a
+// plugin command's qualified "/plugin:name" form, once the user keeps typing
+// there (slashCompletion.ts's mergeSlashCommands).
 
-test("selecting a plugin catalog entry inserts its qualified form into the composer instead of sending", async () => {
+test("selecting a plugin catalog entry's handoff row inserts the raw typed text into the composer instead of sending", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
   send.mockClear(); // isolate:false: threadsStore.send may already be spied by an earlier test in this worker
@@ -656,11 +693,11 @@ test("selecting a plugin catalog entry inserts its qualified form into the compo
   render(<CommandPalette />);
   act(() => openPalette("/review"));
 
-  await user.click(screen.getByRole("option", { name: /review \[plugin\]/ }));
+  await user.click(screen.getByRole("option", { name: /Continue in the composer/ }));
 
   expect(send).not.toHaveBeenCalled();
   const { result: insert } = renderHook(() => useQuoteInsertRequest("ref_a"));
-  expect(insert.current?.text).toBe("/p:review ");
+  expect(insert.current?.text).toBe("/review ");
   // SHOULD-FIX: "prefix", not the default "append" - a slash command only
   // parses at the draft's start, so it must land there even ahead of
   // whatever the user already typed, not after it.
@@ -670,7 +707,7 @@ test("selecting a plugin catalog entry inserts its qualified form into the compo
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-test("Enter on a plugin command with arguments preserves its qualified invocation in the inserted text", async () => {
+test("Enter on a plugin command with arguments hands off the FULL typed text, args included", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
   send.mockClear(); // isolate:false: threadsStore.send may already be spied by an earlier test in this worker
@@ -686,14 +723,11 @@ test("Enter on a plugin command with arguments preserves its qualified invocatio
 
   expect(send).not.toHaveBeenCalled();
   const { result: insert } = renderHook(() => useQuoteInsertRequest("ref_a"));
-  expect(insert.current?.text).toBe("/p:review main ");
+  expect(insert.current?.text).toBe("/review main ");
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-test("Arrow-selected catalog entry activates instead of the first result", async () => {
-  const user = userEvent.setup();
-  const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
-  send.mockClear(); // isolate:false: threadsStore.send may already be spied by an earlier test in this worker
+test("two catalog entries sharing a name still collapse to ONE handoff row, not one per entry", async () => {
   useCommandCatalog.setState({
     commands: [
       { name: "review", pluginName: "p", source: "plugin" },
@@ -705,12 +739,7 @@ test("Arrow-selected catalog entry activates instead of the first result", async
   render(<CommandPalette />);
   act(() => openPalette("/review"));
 
-  await user.keyboard("{ArrowDown}{Enter}");
-
-  expect(send).not.toHaveBeenCalled();
-  const { result: insert } = renderHook(() => useQuoteInsertRequest("ref_a"));
-  expect(insert.current?.text).toBe("/q:review ");
-  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getAllByRole("option", { name: /Continue in the composer/ })).toHaveLength(1);
 });
 
 // Mount the Toast region so any command toast has somewhere to render (not

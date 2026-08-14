@@ -10,7 +10,7 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { applySerfJobFinished, applySerfJobStarted } from "../panes/session/transcript/tools/subagentModuleStore";
-import { WireError } from "../protocol/errors";
+import { mutationErrorData, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
 import {
   applyNotification,
@@ -128,6 +128,20 @@ export interface ThreadsStoreState {
   // never disturb the other's tracked data or lifecycle.
   watchedThreads: Map<string, ThreadModel>;
   watchedFrameTimes: Map<string, number[]>;
+  // Refs whose hydration has been durably rejected by the hub's own
+  // deletion fence (data.mutationOutcome === "targetDeleted" - see
+  // hydrateAndSubscribe's catch below and cmd/serf-hub/app_sources.go's
+  // deletionFenceError). That fence never clears once set, so once a ref
+  // lands here it stays - unlike `threads`, this is not cleared on a
+  // re-hydration attempt, because a deleted ref never gets one that
+  // succeeds. A consumer (Session.tsx) reads this to tell "still loading" a
+  // ref apart from "gone", which ensureThread's own retry-forever contract
+  // (scheduleOwnedHydrationRetry has no terminal state - a rejection here is
+  // always presumed transport, never a proof the ref itself is gone) cannot
+  // otherwise distinguish: its returned promise never settles for a deleted
+  // ref, since nothing about that loop treats this error as different from
+  // an ordinary transient one.
+  deletedRefs: Set<string>;
   ensureThread(ref: string): Promise<void>;
   releaseThread(ref: string): void;
   // Additive, leaner subscription to a child thread for a subagent-module
@@ -620,12 +634,31 @@ async function hydrateAndSubscribe(
     // thread/read is answered from the daemon's in-memory snapshot, so a
     // rejection here is a transport failure, not a slow file read and not a
     // lost claim. Ask this ref's owner generation to read again.
+    markThreadDeletedIfFenced(ref, err);
     scheduleOwnedHydrationRetry("thread", ref, pending);
     throw err;
   }
   const model = hydrateThread(response, ref, now);
   applyHydrationResponseCut(pending, ref, model);
   return { model, response };
+}
+
+// The one place a rejection is checked for the hub's durable deletion fence
+// (data.mutationOutcome === "targetDeleted" - cmd/serf-hub/app_sources.go's
+// deletionFenceError) and recorded into `deletedRefs`, which Session.tsx
+// reads to tell a genuinely gone ref apart from one merely slow to hydrate.
+// Purely additive: it changes no control flow here (the retry above still
+// fires exactly as it always has, since retiring a deleted ref's retry loop
+// is a separate concern this function does not take on), only what state a
+// caller can observe once the retry loop is running.
+function markThreadDeletedIfFenced(ref: string, err: unknown): void {
+  if (mutationErrorData(err)?.mutationOutcome !== "targetDeleted") return;
+  threadsStore.setState((s) => {
+    if (s.deletedRefs.has(ref)) return s;
+    const deletedRefs = new Set(s.deletedRefs);
+    deletedRefs.add(ref);
+    return { deletedRefs };
+  });
 }
 
 // watchReadParams mirrors readParams but defaults includeTurns:false - a
@@ -1573,6 +1606,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   hydrations: new Map(),
   watchedThreads: new Map(),
   watchedFrameTimes: new Map(),
+  deletedRefs: new Set(),
 
   async ensureThread(ref) {
     let client = requireClient();
@@ -1720,12 +1754,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // holding onto a liveness trace a future ensureThread() of the same ref
     // should start fresh, the same way it re-reads a fresh model.
     threadsStore.setState((s) => {
-      if (!s.threads.has(ref) && !s.frameTimes.has(ref)) return s;
+      if (!s.threads.has(ref) && !s.frameTimes.has(ref) && !s.deletedRefs.has(ref)) return s;
       const nextThreads = new Map(s.threads);
       nextThreads.delete(ref);
       const nextFrameTimes = new Map(s.frameTimes);
       nextFrameTimes.delete(ref);
-      return { threads: nextThreads, frameTimes: nextFrameTimes };
+      const nextDeletedRefs = new Set(s.deletedRefs);
+      nextDeletedRefs.delete(ref);
+      return { threads: nextThreads, frameTimes: nextFrameTimes, deletedRefs: nextDeletedRefs };
     });
   },
 
@@ -2190,5 +2226,6 @@ export function resetThreadsStoreForTests(): void {
     hydrations: new Map(),
     watchedThreads: new Map(),
     watchedFrameTimes: new Map(),
+    deletedRefs: new Set(),
   });
 }

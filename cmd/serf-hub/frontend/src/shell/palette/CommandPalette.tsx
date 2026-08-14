@@ -22,14 +22,15 @@ import { navigate } from "../routing";
 import { isBlocked } from "./blocked";
 import styles from "./commandpalette.module.css";
 import {
+  appGlobalCommandsInScope,
   type Command,
   type CommandArgsEnumItem,
-  commandsInScope,
   filterCommands,
   type PaletteRunContext,
   type PaletteUi,
   rememberableId,
   type ScopedCommand,
+  sessionScopedHandoffMatch,
 } from "./commands";
 import { computeMode } from "./mode";
 import { buildPaletteContext, focusedModel } from "./paletteContext";
@@ -103,6 +104,10 @@ interface HelpRow {
 // dependent, not a duplicate, so both rows stay with their own desc.
 const HELP_ROWS: HelpRow[] = [
   { keys: ["Mod", "K"], desc: "open the command palette" },
+  {
+    keys: ["/"],
+    desc: "in the palette — filters app-global commands; a session command (goal, model, …) hands off to the composer instead",
+  },
   { keys: ["/"], desc: "at the start of an empty composer — opens the inline slash-command menu" },
   { keys: ["↑"], desc: "move up the results list" },
   { keys: ["↓"], desc: "move down the results list" },
@@ -144,7 +149,12 @@ type PaletteItem =
   | { kind: "arg"; item: CommandArgsEnumItem }
   // UX fix: the empty-query view's needs-you list (Mod+J's palette-visible
   // counterpart) - one row per tree.needs_you entry.
-  | { kind: "needsYou"; node: ApiTreeNode };
+  | { kind: "needsYou"; node: ApiTreeNode }
+  // 2026-08-14: the ONE row a session-scoped command name prefix-match
+  // resolves to (sessionScopedHandoffMatch) - see activateHandoff's own doc
+  // comment. hasFocusedSession decides both the row's own copy and whether
+  // it's actionable (Row's own `unavailable` calc, below).
+  | { kind: "handoff"; query: string; hasFocusedSession: boolean };
 
 // One render entry: a section header or a navigable row carrying its flat
 // index (which matches its position in the parallel `items` list, so
@@ -399,31 +409,47 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   // answers with its reason in the error strip rather than being unreachable:
   // a row you can see but cannot land on is as confusing as a missing one, and
   // silently running the NEXT command instead would be worse than either.
+  //
+  // Every command this can reach is app-global now (2026-08-20 decision:
+  // filterCommands only ever returns scope "global" rows) - a session-scoped
+  // command, built-in or plugin, is never in `view.items` as a "command" kind
+  // at all, only ever as the ONE "handoff" row activateHandoff (below)
+  // handles. There is therefore no unavailableReason to check here either:
+  // that gate is a session-capability question, and app-global commands
+  // carry no capability field to gate on (commands.ts's own Command.capability
+  // doc comment).
   function activateCommand(command: ScopedCommand) {
-    if (command.unavailableReason) {
-      setError(`/${command.id} is ${command.unavailableReason}`);
-      return;
-    }
-    if (command.slashCommandInvocation && ctx.sessionRef) {
-      // UX fix: a picked plugin slash-command no longer sends immediately -
-      // it inserts the qualified invocation into the composer's draft
-      // (trailing space, cursor after) via the SAME per-ref insert/focus
-      // seams SelectionQuote's "Quote in reply" already uses, so the user
-      // can add arguments (or reconsider) before sending it themselves.
-      const args = query.replace(/^\//, "").trim().slice(command.id.length).trim();
-      const text = args ? `${command.slashCommandInvocation} ${args} ` : `${command.slashCommandInvocation} `;
-      // "prefix" (SHOULD-FIX): a slash command only parses at the very start
-      // of the draft, so requestQuoteInsert's default "append" placement -
-      // right, for SelectionQuote's "Quote in reply" - would strand this
-      // mid-message, after whatever the user already typed, where it can
-      // never be recognized as a command.
-      requestQuoteInsert(ctx.sessionRef, text, "prefix");
-      requestComposerFocus(ctx.sessionRef);
-      closePalette();
-      return;
-    }
     if (command.args) enterArgsMode(command);
     else runArgless(command);
+  }
+
+  // activateHandoff is the ONE row a session-scoped command's name prefix
+  // resolves to (2026-08-14 decision: "the palette is where you go; the
+  // composer is where you act on this session") - it never runs anything
+  // itself. With a focused session, it hands the RAW text the user typed
+  // (not a resolved/qualified invocation - sessionScopedHandoffMatch only
+  // ever answers "does SOME session command's name prefix-match this", not
+  // which one, so there is nothing more specific to qualify) to that
+  // session's composer via the SAME per-ref insert/focus seams
+  // SelectionQuote's "Quote in reply" and the old plugin-insert path both
+  // used, then closes the palette - the composer's own inline slash menu
+  // (mergeSlashCommands) is what actually resolves a qualified plugin
+  // invocation from there, once the user keeps typing. With NO focused
+  // session, there is nowhere to hand off to - the row explains that
+  // instead (its own inline hint), and this shows the same reason in the
+  // error strip a disabled command row used to.
+  function activateHandoff() {
+    if (!ctx.sessionRef) {
+      setError("Focus a session first to run a session command.");
+      return;
+    }
+    const text = /\s$/.test(query) ? query : `${query} `;
+    // "prefix": a slash command only parses at the draft's very start - see
+    // the historical note on requestQuoteInsert's own "append" default,
+    // right for SelectionQuote's "Quote in reply" but wrong here.
+    requestQuoteInsert(ctx.sessionRef, text, "prefix");
+    requestComposerFocus(ctx.sessionRef);
+    closePalette();
   }
 
   function runArgless(command: Command) {
@@ -493,13 +519,26 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
         activateCommand(item.command);
         return;
       }
+      if (activeIndex !== 0 && item?.kind === "handoff") {
+        activateHandoff();
+        return;
+      }
       const firstToken = query.replace(/^\//, "").trim().split(/\s+/)[0] ?? "";
-      const exact = commandsInScope(ctx, catalogCommands).find((command) => command.id === firstToken);
+      const exact = appGlobalCommandsInScope(ctx).find((command) => command.id === firstToken);
       if (exact) {
         activateCommand(exact);
         return;
       }
-      // Slash fallthrough: forward the raw text to the session (TUI parity).
+      // The typed name prefixes a session-scoped command (built-in or
+      // plugin): hand off to the composer rather than falling through to a
+      // raw send - see activateHandoff's own doc comment.
+      if (sessionScopedHandoffMatch(query, catalogCommands)) {
+        activateHandoff();
+        return;
+      }
+      // Slash fallthrough: forward the raw text to the session (TUI parity) -
+      // reached only when NOTHING in the registry, global or session-scoped,
+      // recognizes this text at all.
       if (firstToken !== "" && ctx.sessionRef) {
         void threadsStore.getState().send(ctx.sessionRef, query);
         closePalette();
@@ -622,6 +661,10 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       activateCommand(item.command);
       return;
     }
+    if (mode === "command-filter" && item.kind === "handoff") {
+      activateHandoff();
+      return;
+    }
     if (mode === "command-args" && item.kind === "arg" && selectedCommand) {
       runWithArg(selectedCommand, item.item);
     }
@@ -687,10 +730,20 @@ function buildView(args: {
   }
 
   if (mode === "command-filter") {
-    const { recent, commands } = filterCommands(ctx, query, catalogCommands);
+    const { recent, commands } = filterCommands(ctx, query);
     if (recent.length) {
       entries.push({ type: "header", label: "Recent" });
       for (const command of recent) push({ kind: "command", command });
+    }
+    // The ONE handoff row (2026-08-14 decision): the typed name prefixes a
+    // session-scoped command (built-in or plugin) - shown ahead of the
+    // app-global Commands section, since it's the more specific answer to
+    // what was actually typed. sessionScopedHandoffMatch never fires on an
+    // empty query, so the palette's plain empty-query view (Recent +
+    // Commands, or the needs-you list above) is undisturbed.
+    if (sessionScopedHandoffMatch(query, catalogCommands)) {
+      entries.push({ type: "header", label: "Continue in the composer" });
+      push({ kind: "handoff", query, hasFocusedSession: ctx.sessionRef !== null });
     }
     entries.push({ type: "header", label: "Commands" });
     for (const command of commands) push({ kind: "command", command });
@@ -805,9 +858,11 @@ function Row({
   onActivate: (index: number) => void;
 }) {
   // aria-disabled, never the disabled attribute: the row must stay focusable
-  // and activatable so choosing it explains itself (activateCommand), instead
-  // of swallowing the keystroke.
-  const unavailable = item.kind === "command" && item.command.unavailableReason !== undefined;
+  // and activatable so choosing it explains itself (activateCommand /
+  // activateHandoff), instead of swallowing the keystroke.
+  const unavailable =
+    (item.kind === "command" && item.command.unavailableReason !== undefined) ||
+    (item.kind === "handoff" && !item.hasFocusedSession);
   return (
     <button
       type="button"
@@ -848,6 +903,25 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
       <>
         <span className={CLASS.title}>{item.item.label || item.item.id}</span>
         {item.item.hint && <span className={CLASS.hint}>{item.item.hint}</span>}
+      </>
+    );
+  }
+  if (item.kind === "handoff") {
+    return item.hasFocusedSession ? (
+      <>
+        <span className={CLASS.glyph} aria-hidden="true">
+          /
+        </span>
+        <span className={CLASS.title}>Continue in the composer</span>
+        <span className={CLASS.hint}>{item.query}</span>
+      </>
+    ) : (
+      <>
+        <span className={CLASS.glyph} aria-hidden="true">
+          /
+        </span>
+        <span className={CLASS.title}>Focus a session to run this command</span>
+        <span className={CLASS.hint}>{item.query}</span>
       </>
     );
   }

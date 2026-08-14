@@ -39,6 +39,61 @@
   white-space: nowrap;
 }
 
+/* Compact glyph-only trigger: takes over from .chipButton below 560px (see
+ * the @container rule at the bottom of this file) so a phone still has a
+ * goal affordance instead of the row hiding it outright. Sized like
+ * widgets/iconbutton's own "sm" (28px square, no padding) since this isn't
+ * an IconButton consumer - it needs to sit inside Popover's own trigger
+ * wrapper alongside .chipButton, not render one. Hidden by default; the
+ * container query below is the only place that shows it. */
+.compactTrigger {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--ink-mid);
+  cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.compactTrigger:hover {
+  background: var(--hover-1);
+}
+
+.compactTrigger:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* State parity with the chip text (which reads "Goal: active" / "Goal:
+ * complete"): a subtle ink shift for the active state. This file isn't
+ * hue-allowlisted (token-contract.test.ts), so only --accent - ungated
+ * interaction chrome, not one of the gated attention/alive/danger hues -
+ * or the ink scale may color it; complete/anything else stays plain
+ * --ink-mid above. */
+.compactTriggerActive {
+  color: var(--accent);
+}
+
+/* Phone tap floor (2026-07-30-mobile-session-layout-design.md, decision 4):
+ * below 560px the compact trigger is the ONLY way to reach the goal
+ * popover, so a coarse pointer needs the platform's 44px tap floor.
+ * min-*, not width/height, so the 28px square above stays the pointer:fine
+ * sizing and this only ever grows it - same recipe as modelswitch.module.
+ * css's own .trigger coarse-pointer block. */
+@media (pointer: coarse) {
+  .compactTrigger {
+    min-width: var(--tap-min);
+    min-height: var(--tap-min);
+  }
+}
+
 /* Popover content only - position/surface/border/radius/shadow/animation/
  * z-index all come from widgets/popover's own .panel (popover.module.css),
  * which portals this to document.body rather than positioning it relative
@@ -78,8 +133,16 @@
   gap: var(--space-2);
 }
 
+/* The swap point: below 560px the full text chip can't fit the row (see this
+ * file's sibling GoalControl.tsx header comment for the compression this
+ * row's .body container performs), so the compact glyph trigger takes over
+ * instead of the whole anchor vanishing. Never both at once. */
 @container (max-width: 559px) {
-  .anchor {
+  .chipButton {
     display: none;
+  }
+
+  .compactTrigger {
+    display: inline-flex;
   }
 }

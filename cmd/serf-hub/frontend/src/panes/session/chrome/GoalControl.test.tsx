@@ -15,9 +15,34 @@ import { GoalControl, resetGoalOverridesForTests } from "./GoalControl";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-test("goal CSS hides only the inline anchor below the full-row threshold", () => {
+// Below 560px the full text chip used to vanish outright, leaving phones with
+// no goal affordance at all. It now swaps for a compact glyph-only trigger
+// instead - the same container query, but toggling which of the two trigger
+// elements is visible rather than hiding the whole anchor.
+test("goal CSS shows the full chip and hides the compact trigger at/above the full-row threshold", () => {
   const css = readFileSync(join(here, "goalcontrol.module.css"), "utf8");
-  expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.anchor\s*\{[^}]*display:\s*none/);
+  expect(css).toMatch(/\.compactTrigger\s*\{[^}]*display:\s*none/);
+});
+
+test("goal CSS swaps to the compact trigger and hides the full chip below the full-row threshold", () => {
+  const css = readFileSync(join(here, "goalcontrol.module.css"), "utf8");
+  expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.chipButton\s*\{[^}]*display:\s*none/);
+  expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.compactTrigger\s*\{[^}]*display:\s*(inline-flex|flex)/);
+});
+
+// Mobile touch-target floor (2026-07-30-mobile-session-layout-design.md,
+// decision 4): the compact trigger is the ONLY way to reach the goal popover
+// below 560px, so a coarse pointer needs the platform's 44px tap floor.
+// jsdom has no layout, so this reads the CSS source directly - same approach
+// as button.module.css's own mobile tap-floor test.
+test("the compact trigger reaches the 44px tap floor under a coarse pointer", () => {
+  const css = readFileSync(join(here, "goalcontrol.module.css"), "utf8");
+  const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
+  expect(coarse, "goalcontrol.module.css must have a (pointer: coarse) media block").not.toBeNull();
+  const rule = coarse![1]!.match(/\.compactTrigger\s*\{([^}]*)\}/);
+  expect(rule, "the coarse-pointer block must override .compactTrigger").not.toBeNull();
+  expect(rule![1]).toContain("min-width: var(--tap-min)");
+  expect(rule![1]).toContain("min-height: var(--tap-min)");
 });
 
 // The clipping regression (live-verified): a hand-rolled `position: absolute;
@@ -91,11 +116,14 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
-// Opens the goal chip's popover (status + iterations + Clear goal). The chip
-// button's accessible name is "Goal: {status}" - the trailing colon keeps
-// this from matching the popover's own "Clear goal" button.
+// Opens the goal chip's popover (status + iterations + Clear goal) through
+// the full-width text chip. Below 560px a second, compact glyph-only trigger
+// (data-testid="goal-compact-trigger") opens the identical popover - see the
+// dedicated compact-trigger tests below - but both triggers carry the same
+// "Goal: {status}" accessible name, so a role/name query can't disambiguate
+// them; the testid picks the chip specifically.
 async function openGoalPopover(user: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> {
-  await user.click(screen.getByRole("button", { name: /goal:/i }));
+  await user.click(screen.getByTestId("goal-chip-trigger"));
   return screen.getByTestId("goal-popover");
 }
 
@@ -124,11 +152,33 @@ test("renders nothing when the thread has no goal (the set-goal entry point is t
 test("shows a chip once a goal is set; its popover carries the status and iteration count, singular for exactly one iteration", async () => {
   const user = userEvent.setup();
   render(<GoalControl sessionRef="ref_a" model={testModel({ goal: { status: "active", iterations: 1 } })} />);
-  expect(screen.getByRole("button", { name: /goal: active/i })).toBeTruthy();
+  expect(screen.getByTestId("goal-chip-trigger").textContent).toMatch(/goal: active/i);
 
   const popover = await openGoalPopover(user);
   expect(within(popover).getByText(/active/i)).toBeTruthy();
   expect(within(popover).getByText(/\b1 iteration\b/i)).toBeTruthy();
+});
+
+// --- compact glyph trigger (< 560px) -----------------------------------------
+
+test("the compact trigger's accessible name carries the same status text as the chip", () => {
+  render(<GoalControl sessionRef="ref_a" model={testModel({ goal: { status: "active", iterations: 1 } })} />);
+  expect(screen.getByTestId("goal-compact-trigger").getAttribute("aria-label")).toMatch(/^goal: active$/i);
+});
+
+test("the compact trigger's accessible name tracks a complete goal too", () => {
+  render(<GoalControl sessionRef="ref_a" model={testModel({ goal: { status: "complete", iterations: 3 } })} />);
+  expect(screen.getByTestId("goal-compact-trigger").getAttribute("aria-label")).toMatch(/^goal: complete$/i);
+});
+
+test("opens the same popover through the compact glyph trigger", async () => {
+  const user = userEvent.setup();
+  render(<GoalControl sessionRef="ref_a" model={testModel({ goal: { status: "active", iterations: 2 } })} />);
+  await user.click(screen.getByTestId("goal-compact-trigger"));
+
+  const popover = screen.getByTestId("goal-popover");
+  expect(within(popover).getByText(/active/i)).toBeTruthy();
+  expect(within(popover).getByRole("button", { name: /clear goal/i })).toBeTruthy();
 });
 
 test("pluralizes iterations in the popover for anything other than exactly one", async () => {

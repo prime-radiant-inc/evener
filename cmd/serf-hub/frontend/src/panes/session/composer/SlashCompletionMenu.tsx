@@ -6,8 +6,13 @@
 // listbox anchored above the composer's control row (see
 // slashcompletionmenu.module.css's own header comment for the float
 // recipe).
-import type { CommandDescriptor } from "../../../protocol/types.gen";
+//
+// items is slashCompletion.ts's own merged SlashMenuItem list (2026-08-14:
+// session-scoped BUILT-INS merged with the plugin catalog, mergeSlashCommands'
+// own doc comment) - this component itself has no notion of which source a
+// row came from beyond rendering its already-resolved label/hint/invocation.
 import { requireClass } from "../../../widgets/internal/requireClass";
+import type { SlashMenuItem } from "./slashCompletion";
 import styles from "./slashcompletionmenu.module.css";
 
 const CLASS = {
@@ -20,9 +25,9 @@ const CLASS = {
 
 export interface SlashCompletionMenuProps {
   id: string;
-  items: CommandDescriptor[];
+  items: SlashMenuItem[];
   highlightedIndex: number;
-  onSelect: (item: CommandDescriptor) => void;
+  onSelect: (item: SlashMenuItem) => void;
 }
 
 // optionId is exported so Composer.tsx's own aria-activedescendant wiring
@@ -39,10 +44,9 @@ export function SlashCompletionMenu({ id, items, highlightedIndex, onSelect }: S
     <div className={CLASS.menu} role="listbox" id={id} aria-label="Slash commands" data-testid="composer-slash-menu">
       {items.map((item, index) => {
         const active = index === highlightedIndex;
-        const hint = item.description || item.argumentHint;
         return (
           <button
-            key={item.name}
+            key={item.key}
             type="button"
             id={optionId(id, index)}
             role="option"
@@ -54,8 +58,8 @@ export function SlashCompletionMenu({ id, items, highlightedIndex, onSelect }: S
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => onSelect(item)}
           >
-            <span className={CLASS.name}>/{item.name}</span>
-            {hint && <span className={CLASS.hint}>{hint}</span>}
+            <span className={CLASS.name}>/{item.label}</span>
+            {item.hint && <span className={CLASS.hint}>{item.hint}</span>}
           </button>
         );
       })}

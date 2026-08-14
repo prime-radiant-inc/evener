@@ -157,8 +157,22 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   if (notifications.length > 0) {
     return (
       <>
-        {notifications.map((n) => (
-          <NotificationCard key={n.rawText} notification={n} sessionRef={sessionRef} />
+        {notifications.map((n, index) => (
+          // rawText is NOT a safe key: a generic notification the daemon
+          // never gave a job_id (e.g. a watch-timeout retry, kata rail-nav
+          // React invariant) can appear more than once in the same steer
+          // with byte-identical text, and rawText was colliding on it -
+          // "Encountered two children with the same key" in the console,
+          // and downstream React reconciler corruption (an "Expected static
+          // flag was missing" internal invariant) on the next update once a
+          // streamed delta rebuilds this same item with another duplicate.
+          // notifications is a fresh, order-stable parse of this one item's
+          // text every render (parseSteeringNotifications above), never a
+          // diffed/reordered list, so the array index is a safe, stable
+          // identity here - same reasoning as ExcerptText's own index key in
+          // NotificationCard.tsx.
+          // biome-ignore lint/suspicious/noArrayIndexKey: index is stable - see comment above
+          <NotificationCard key={index} notification={n} sessionRef={sessionRef} />
         ))}
         {leftover && (
           <SteeringDivider

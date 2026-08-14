@@ -860,6 +860,105 @@ test("kata xgk8: an Advanced-options model override satisfies the requirement wi
   expect(screen.getAllByRole("button", { name: /change model/i })[0]?.textContent).toContain("(default)"); // top-level chip untouched
 });
 
+// --- uncredentialed-default fallback ---------------------------------------
+//
+// A resolved default whose provider has no credentials is a guaranteed
+// thread/start failure (spawn.go's "provider credentials missing for
+// <provider>..."). model/list only enumerates providers it could actually
+// construct (launchcheck.go), so a default provider missing from that SET is
+// the honest signal this form has for "not credentialed" - see the effect's
+// own comment in Spawn.tsx. "(default)" is never an explicit row (only the
+// closed trigger's text for value === ""), so hiding it IS preselecting a
+// real model instead of leaving Model blank.
+
+test("preselects the first launchable model when the resolved default's provider isn't in the launchable set", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("model/list", () => ({
+      data: [
+        { provider: "anthropic", model: "claude-sonnet-4-5" },
+        { provider: "anthropic", model: "claude-opus-4" },
+      ],
+    }));
+    f.on("serf/launch/resolve", () => ({
+      effective: { model: "openai/gpt-5.5" }, // launch.toml's default; openai has no credentials here
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/launch/resolve")).toBe(true));
+
+  // Falls back to the FIRST launchable model, not merely "some" model -
+  // model/list's own order, which scopedCatalog.ts preserves into the picker.
+  await waitFor(() => expect(modelTrigger().textContent).toContain("anthropic/claude-sonnet-4-5"));
+  expect(modelTrigger().textContent).not.toContain("(default)");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({ model: "anthropic/claude-sonnet-4-5" });
+});
+
+test("keeps the form usable and leaves Model at '(default)' when no provider is credentialed at all", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("model/list", () => ({ data: [] })); // nothing launchable to fall back to
+    f.on("serf/launch/resolve", () => ({
+      effective: { model: "openai/gpt-5.5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/launch/resolve")).toBe(true));
+
+  // No new dead-end UI: the server's own "provider credentials missing"
+  // message on submit is what speaks here, not a form the picker can't
+  // resolve on its own - the field stays exactly as it always has.
+  expect(modelTrigger().textContent).toContain("(default)");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("a sticky per-project model default is never clobbered by the uncredentialed-default fallback", async () => {
+  // The sticky pref names a provider that IS launchable, but not the list's
+  // first entry - if the fallback logic ignored modelRef and ran anyway, it
+  // would silently overwrite this with models[0] ("anthropic/claude-opus-4").
+  localStorage.setItem("serf-hub.spawn-defaults.global.working_dir", "/p");
+  localStorage.setItem("serf-hub.spawn-defaults./p", JSON.stringify({ model: "anthropic/claude-sonnet-4-5" }));
+  const fake = readyClient((f) => {
+    f.on("model/list", () => ({
+      data: [
+        { provider: "anthropic", model: "claude-opus-4" },
+        { provider: "anthropic", model: "claude-sonnet-4-5" },
+      ],
+    }));
+    f.on("serf/launch/resolve", () => ({
+      effective: { model: "openai/gpt-5.5" }, // openai uncredentialed
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/launch/resolve")).toBe(true));
+
+  expect(modelTrigger().textContent).toContain("anthropic/claude-sonnet-4-5");
+  expect(modelTrigger().textContent).not.toContain("claude-opus-4");
+});
+
 test("surfaces the discard notice when a prefilled model is no longer offered (floor §1.10)", async () => {
   localStorage.setItem("serf-hub.spawn-defaults.global.working_dir", "/p");
   localStorage.setItem("serf-hub.spawn-defaults./p", JSON.stringify({ model: "openai/gpt-4o" }));

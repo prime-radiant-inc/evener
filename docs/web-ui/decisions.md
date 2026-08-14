@@ -643,3 +643,48 @@ misdiagnosed). The chip now renders in the inline status row, compressing
 away below 560px of container width per the pre-existing status-row rule.
 Known limitation: phones therefore have no goal affordance; a compact
 trigger or SessionMenu entry is the follow-up if goals matter on phones.
+
+## 2026-08-14 session commands move to the composer; the palette hands off
+
+Session commands (`/goal`, `/model`, `/steer`, `/compact`, and the rest of
+`shell/palette/commands.ts`'s session-scoped registry, built-in and plugin
+alike) were offered in two places at once: the command palette (`Mod+K`)
+could list and run any of them against the focused session, and the
+composer's own inline `/` menu separately completed the plugin catalog for
+sending as message text. Two entry points for the same action is a UX tax —
+a real user has to learn (and re-learn) which surface a given command lives
+in — and the split had drifted further than that: the palette could run a
+mutation on a session it wasn't showing, the composer's menu never offered
+the built-ins at all, and a plugin command picked from the palette inserted
+a qualified invocation the composer's own menu had no part in resolving.
+
+The fix picks ONE place per command, keyed on what the command is *for*:
+"the palette is where you go; the composer is where you act on this
+session" (design-system.md §9 has the full mechanics). App-global commands
+(new session, settings, theme, search, …) need no session and stay
+palette-native. Every session-scoped command now runs from that session's
+own composer, Slack-model — the composer becomes the session's real command
+line, not just a text box beside it.
+
+**The interception trade-off was accepted deliberately.** Making the
+composer intercept a submitted message that PARSES as a known `/command`
+means a literal chat message starting with, say, `/goal` no longer sends as
+written — it runs `/goal` instead. This is exactly Slack/Discord's own
+behavior, and it's the behavior most users bring with them already; the
+escape hatch (anything that doesn't parse as a known built-in, including
+every plugin catalog command, sends as plain text unchanged) covers the
+"I actually meant to say that" case without requiring an explicit "run as
+command" gesture. The alternative — a confirmation step, or requiring some
+other prefix to distinguish "run" from "send" — was rejected as friction
+the muscle-memory case doesn't need and the rare literal-message case can
+route around by rephrasing.
+
+**The handoff row is the bridge.** A user who still reaches for the palette
+out of habit and types a `/`-prefixed session command name isn't met with a
+missing command (which reads as a bug or a memory slip) or a command that
+runs against whatever session happens to be focused (which is exactly the
+"palette can mutate a session it isn't showing" problem this decision
+closes) — they get ONE row, "Continue in the composer: /goal …", that
+inserts their own typed text into the focused session's composer and moves
+focus there. With no session focused, the row says so instead of silently
+doing nothing. The palette never executes a session mutation itself again.

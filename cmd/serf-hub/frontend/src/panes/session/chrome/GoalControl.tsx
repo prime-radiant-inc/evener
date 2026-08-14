@@ -20,10 +20,13 @@
 // bridge the gap until the next one.
 //
 // Row presence: with no goal set, this renders nothing at all. SETTING a
-// goal happens through the command palette's /goal builtin - the unified
-// session menu deliberately carries no slash-command actions (see
-// SessionMenu.tsx's header comment), so the set-goal Dialog this component
-// used to render is gone with it. Once a goal IS set, a quiet chip appears;
+// goal happens through the session's own composer (its inline /goal built-in
+// - 2026-08-14, "the composer is where you act on this session"; the command
+// palette used to run it and now only hands off to the composer instead,
+// design-system.md §9) - the unified session menu deliberately carries no
+// slash-command actions either (see SessionMenu.tsx's header comment), so
+// the set-goal Dialog this component used to render is gone with it. Once a
+// goal IS set, a quiet chip appears;
 // clicking it opens a small popover with the goal's status and a clear
 // action, using the setGoal(ref, "") wiring.
 //
@@ -52,9 +55,34 @@ export interface GoalControlProps {
 const CLASS = {
   anchor: requireClass(styles.anchor, "goalcontrol.module.css", "anchor"),
   chipButton: requireClass(styles.chipButton, "goalcontrol.module.css", "chipButton"),
+  compactTrigger: requireClass(styles.compactTrigger, "goalcontrol.module.css", "compactTrigger"),
+  compactTriggerActive: requireClass(styles.compactTriggerActive, "goalcontrol.module.css", "compactTriggerActive"),
   popover: requireClass(styles.popover, "goalcontrol.module.css", "popover"),
   status: requireClass(styles.status, "goalcontrol.module.css", "status"),
 };
+
+// The compact trigger's glyph: serf has no dedicated goal icon (widgets/
+// toolicon is a closed enum of tool-row kinds, not extended here per the
+// approved design). A small flag on a pole reads as "goal"/milestone at
+// 16px and follows widgets/toolicon's own grammar exactly (see that
+// widget's header comment) - stroke currentColor, 1.75 width, round caps/
+// joins, fill none, square 16x16 block box - so it reads as one icon
+// family with the rest of the app even though it isn't drawn through that
+// widget.
+function GoalGlyph() {
+  return (
+    <svg viewBox="0 0 16 16" width={14} height={14} aria-hidden="true" focusable="false" style={{ display: "block" }}>
+      <path
+        d="M4 2 V14 M4 3 L11 5 L4 7"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </svg>
+  );
+}
 
 function goalEquals(a: GoalState | null, b: GoalState | null): boolean {
   if (a === null || b === null) return a === b;
@@ -144,9 +172,34 @@ export function GoalControl({ sessionRef, model }: GoalControlProps) {
         onClose={() => setPopoverOpen(false)}
         data-testid="goal-popover"
         trigger={
-          <button type="button" className={CLASS.chipButton} onClick={() => setPopoverOpen((v) => !v)}>
-            <Chip>Goal: {goal.status}</Chip>
-          </button>
+          // Two triggers, one Popover: the full text chip stays the trigger
+          // at full width, and a compact glyph-only button takes over below
+          // 560px (goalcontrol.module.css's @container rule shows exactly
+          // one of the two - see that file's own header comment). Both are
+          // direct children of the same Fragment, which Popover's own
+          // .trigger wrapper (an inline-flex span) renders in-flow with no
+          // DOM node of its own for the Fragment - so the wrapper's
+          // measured rect is always just the one visible child's rect,
+          // whichever that is.
+          <>
+            <button
+              type="button"
+              className={CLASS.chipButton}
+              data-testid="goal-chip-trigger"
+              onClick={() => setPopoverOpen((v) => !v)}
+            >
+              <Chip>Goal: {goal.status}</Chip>
+            </button>
+            <button
+              type="button"
+              className={`${CLASS.compactTrigger} ${goal.status === "active" ? CLASS.compactTriggerActive : ""}`}
+              data-testid="goal-compact-trigger"
+              aria-label={`Goal: ${goal.status}`}
+              onClick={() => setPopoverOpen((v) => !v)}
+            >
+              <GoalGlyph />
+            </button>
+          </>
         }
       >
         <div className={CLASS.popover}>

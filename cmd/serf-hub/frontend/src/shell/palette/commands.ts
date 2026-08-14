@@ -33,7 +33,35 @@ import { readRecentCommandIds } from "./recentCommands";
 // session too" scope: whether a session command can run is the hub's per-
 // action capability flag, which it publishes for cold exited threads as
 // readily as for live ones - see commandsInScope.
+//
+// CommandScope doubles as the 2026-08-14 surface split (decisions.md): "the
+// palette is where you go; the composer is where you act on this session".
+// A "session" command - every mutation or read that acts on the focused
+// session, built-in (goal, model, effort, status, compact, steer, queue,
+// clear, compact, interrupt, shutdown, aside, drain-as-steer, copy-id,
+// tasks, project) or plugin-catalog - now executes ONLY from the session's
+// own composer (panes/session/composer/builtinCommand.ts's interception,
+// SlashCompletionMenu's merged catalog): the palette delists it and offers a
+// one-row handoff instead (CommandPalette.tsx's buildView). A "global"
+// command (new session, spawn, settings, theme, dashboard, search, help,
+// upgrade, next-needs-you) needs no session and stays palette-native, exactly
+// as before. commandSurface below is the one place that names this mapping,
+// so a reader never has to infer "session scope" and "composer surface" are
+// the same fact from two different modules independently.
 export type CommandScope = "global" | "session";
+
+export type CommandSurface = "session" | "app-global";
+
+// commandSurface: which UI surface owns running this command. Derived
+// straight from `scope`, not a second independently-set field - the two
+// have been the same fact since the 2026-08-14 decision (see CommandScope's
+// own doc comment above), and a parallel field would only invite the two to
+// drift. sessionBuiltinCommands (composer's own resolved list) and the
+// palette's delisting/handoff logic (CommandPalette.tsx) both read this
+// instead of comparing against the literal string "session" themselves.
+export function commandSurface(command: Pick<Command, "scope">): CommandSurface {
+  return command.scope === "session" ? "session" : "app-global";
+}
 
 export interface CommandArgsEnumItem {
   id: string;
@@ -600,6 +628,43 @@ export function commandsInScope(ctx: PaletteContext, catalog = useCommandCatalog
     .map((c) => scopeCommand(c, model));
 }
 
+// sessionBuiltinCommands: the composer's own view of the registry - every
+// BUILT-IN (never plugin-catalog: those carry slashCommandInvocation, which
+// is what distinguishes a catalogCommands() entry from a buildCommands() one
+// here) session-scoped command, resolved against the focused session the
+// exact same way the palette used to resolve its whole list -
+// unavailableReason included. Composer.tsx's inline slash menu (merged with
+// the plugin catalog separately - slashCompletion.ts's mergeSlashCommands)
+// and its Enter/submit interception (builtinCommand.ts's
+// matchBuiltinInvocation) both read this SAME resolved list, so which
+// commands the composer offers and which it will actually run for a typed
+// "/name" can never drift apart.
+export function sessionBuiltinCommands(ctx: PaletteContext): ScopedCommand[] {
+  return commandsInScope(ctx).filter((c) => c.scope === "session" && c.slashCommandInvocation === undefined);
+}
+
+// sessionScopedHandoffMatch: does the palette filter's FIRST token (the
+// command name the user is mid-typing, args ignored) prefix-match a
+// session-scoped command's name - built-in id, or a catalog entry's own
+// name? Unlike commandsInScope's own catalog gating, this does NOT require a
+// focused session: the point of the handoff row this drives
+// (CommandPalette.tsx's buildView) is to explain the one-place-to-run-this
+// rule even to a user with nothing focused yet (design point 3: "No focused
+// session -> the handoff row explains that instead"), so the check has to
+// work with no session in play. An empty query never matches - there is
+// nothing to hand off yet, and the palette's own empty-query view (Recent +
+// global Commands, or the needs-you list) should render undisturbed.
+export function sessionScopedHandoffMatch(rawFilter: string, catalog: CommandDescriptor[]): boolean {
+  const q = rawFilter.replace(/^\//, "").toLowerCase().trim();
+  const firstToken = q.split(/\s+/)[0] ?? "";
+  if (!firstToken) return false;
+  const builtinIds = buildCommands()
+    .filter((c) => c.scope === "session")
+    .map((c) => c.id);
+  const catalogNames = catalog.map((c) => c.name.toLowerCase());
+  return [...builtinIds, ...catalogNames].some((name) => name.startsWith(firstToken));
+}
+
 // slashCommandInvocation is the one place that decides what a user actually
 // types to invoke a catalog command: a plugin-sourced command with a known
 // pluginName needs the qualified "/plugin:name" form (unqualified "/name"
@@ -645,18 +710,30 @@ export interface FilteredCommands {
   commands: ScopedCommand[];
 }
 
+// appGlobalCommandsInScope: the palette's own browsable universe - every
+// app-global command, unfiltered by any query. filterCommands (below) layers
+// the query/ranking on top of exactly this; CommandPalette.tsx's own exact-id
+// lookup (its enterPressed) uses it directly, unranked, so a typed command id
+// resolves regardless of how commandScore would have ranked it against the
+// REST of the query text.
+export function appGlobalCommandsInScope(ctx: PaletteContext): ScopedCommand[] {
+  return commandsInScope(ctx).filter((c) => c.scope === "global");
+}
+
 // filterCommands is renderCommands' data half (search.js:637-651): with an
 // EMPTY filter, a Recent section (from localStorage, excluded from the main
 // list to avoid duplication); with a NON-empty filter, commandScore ranking
 // (descending, registry order as a stable tiebreak, negatives excluded) and
 // no Recent section.
-export function filterCommands(
-  ctx: PaletteContext,
-  rawFilter: string,
-  catalog = useCommandCatalog.getState().commands,
-): FilteredCommands {
+//
+// app-global ONLY (2026-08-14 decision, commandSurface's own doc comment):
+// every session-scoped command - built-in or plugin-catalog - is delisted
+// here, whether or not a session is focused. The palette hands those off to
+// the composer instead (CommandPalette.tsx's buildView, via
+// sessionScopedHandoffMatch) rather than listing and running them itself.
+export function filterCommands(ctx: PaletteContext, rawFilter: string): FilteredCommands {
   const q = rawFilter.replace(/^\//, "").toLowerCase().trim();
-  const scoped = commandsInScope(ctx, catalog);
+  const scoped = appGlobalCommandsInScope(ctx);
   const recent = q
     ? []
     : readRecentCommandIds()

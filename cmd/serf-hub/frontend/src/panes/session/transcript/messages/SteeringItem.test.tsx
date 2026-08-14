@@ -3,8 +3,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { lazy } from "react";
-import { afterAll, afterEach, expect, test } from "vitest";
+import { lazy, StrictMode } from "react";
+import { afterAll, afterEach, expect, test, vi } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
@@ -482,4 +482,76 @@ test("the body opens with the SYSTEM-REMINDER wrapper stripped", () => {
   );
   fireEvent.click(screen.getByText("System steered: Hook context"));
   expect(screen.getByText("the note")).toBeTruthy();
+});
+
+// --- kata (rail nav React invariant): two notifications with byte-identical
+// rawText must not collide as React keys ----------------------------------
+//
+// A generic watch-timeout notification (job_id="" - the daemon never
+// assigned one, since a watch poller isn't itself a job) carries no field
+// that distinguishes one occurrence from the next: same event, same status,
+// same canned "Watch event triggered" body. Two of them landing in one
+// steer's text (a poller firing twice before its own turn settles) produce
+// two ParsedNotification objects whose `rawText` - the verbatim block - is
+// character-for-character identical. Keying NotificationCard by `n.rawText`
+// (the bug) collides on that, which React downgrades to "Encountered two
+// children with the same key" on mount and, on the following update (an
+// in-place streamed edit to `item`, the real-world trigger - reducer.ts
+// replaces the item object on every delta), corrupts the reconciler's
+// fiber-flags bookkeeping badly enough to also trip React's internal
+// "Expected static flag was missing" sanity check (ReactFiberHooks'
+// finishRenderingHooks, which compares the previous commit's fiber.flags
+// against this render's whenever `current !== null`, i.e. on any update,
+// not the first mount - hence the second render below, not just the first).
+const DUPLICATE_WATCH_NOTIFICATION = `<job-notification job_id="" event="watch" job_type="watch" status="watch" reason="event: JOB_FINISHED" output_bytes="0">
+Watch event triggered: event: JOB_FINISHED.
+</job-notification>`;
+
+test("two byte-identical job-notification blocks in one steer render two distinct cards, not one key collision", () => {
+  const errors: unknown[][] = [];
+  const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    errors.push(args);
+  });
+  try {
+    const first = item({ id: "item_dup_watch", text: DUPLICATE_WATCH_NOTIFICATION });
+    const { rerender } = render(
+      <StrictMode>
+        <SteeringItem item={first} turn={turn} live={true} />
+      </StrictMode>,
+    );
+
+    // The real-world trigger: a streamed delta rebuilds `item` (reducer.ts's
+    // immutable-update discipline - see ignoringTurn's own comment above) as
+    // a SECOND identical notification arrives, still under the same item id.
+    // This is the update pass (`current !== null`) that exposes the fiber
+    // mismatch - the bug shipped exactly this shape, not the first mount.
+    const second = item({
+      id: "item_dup_watch",
+      text: `${DUPLICATE_WATCH_NOTIFICATION}\n${DUPLICATE_WATCH_NOTIFICATION}`,
+    });
+    rerender(
+      <StrictMode>
+        <SteeringItem item={second} turn={turn} live={true} />
+      </StrictMode>,
+    );
+    const third = item({ id: "item_dup_watch", text: DUPLICATE_WATCH_NOTIFICATION });
+    rerender(
+      <StrictMode>
+        <SteeringItem item={third} turn={turn} live={true} />
+      </StrictMode>,
+    );
+    rerender(
+      <StrictMode>
+        <SteeringItem item={second} turn={turn} live={true} />
+      </StrictMode>,
+    );
+
+    expect(screen.getAllByTestId("notification-card")).toHaveLength(2);
+
+    const messages = errors.map((args) => String(args[0]));
+    expect(messages.some((m) => m.includes("two children with the same key"))).toBe(false);
+    expect(messages.some((m) => m.includes("Expected static flag was missing"))).toBe(false);
+  } finally {
+    spy.mockRestore();
+  }
 });

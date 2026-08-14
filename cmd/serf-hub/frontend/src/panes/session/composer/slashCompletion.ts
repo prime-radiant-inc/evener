@@ -10,6 +10,7 @@
 // commandCatalog.ts), the same catalog the modal command palette reads.
 
 import type { CommandDescriptor } from "../../../protocol/types.gen";
+import { type ScopedCommand, slashCommandInvocation } from "../../../shell/palette/commands";
 
 export interface SlashToken {
   // Index of the "/" itself, and the caret position the match was computed
@@ -50,13 +51,68 @@ export function parseSlashToken(text: string, caret: number): SlashToken | null 
   return { start, end: caret, query };
 }
 
-// filterSlashCommands: startsWith on the token body, case-insensitive (the
-// same normalization shell/palette/commands.ts's own filterCommands uses
-// for its query). An empty query matches every catalog entry, in catalog
-// order.
-export function filterSlashCommands(commands: CommandDescriptor[], query: string): CommandDescriptor[] {
+// SlashMenuItem: one row of the composer's inline slash menu, whether it
+// came from the session-scoped BUILT-IN registry (shell/palette/commands.ts's
+// sessionBuiltinCommands) or the plugin catalog (stores/commandCatalog.ts) -
+// mergeSlashCommands below is the ONE place that flattens both into this
+// shared shape, so SlashCompletionMenu.tsx never has to know which source a
+// row came from to render it.
+export interface SlashMenuItem {
+  // Stable React key: "builtin:<id>" or "plugin:<pluginName>:<name>" - a
+  // plain command id/name alone could collide between the two sources (or
+  // between two plugins registering the same unqualified name).
+  key: string;
+  // The full "/name" or "/plugin:name" text spliceSlashCommand inserts -
+  // slashCommandInvocation's own qualification rule for a plugin row, a bare
+  // "/id" for a built-in (built-ins have no plugin source to qualify against).
+  invocation: string;
+  // What the query matches against: the built-in's own id, or the catalog
+  // entry's unqualified name (never the qualified "plugin:name" form - a
+  // user filtering the menu types the command's own name, not its plugin
+  // prefix).
+  label: string;
+  // States what the row does ("sets the session goal") for a built-in, or
+  // the catalog entry's own description/argumentHint for a plugin row -
+  // falling back to naming its plugin provenance only when the catalog gave
+  // it no description at all (2026-08-14 decision: "the hint states what it
+  // does, or its plugin provenance").
+  hint: string;
+  kind: "builtin" | "plugin";
+}
+
+// mergeSlashCommands is the composer's own single merge point (2026-08-14,
+// "the composer is where you act on this session"): every session-scoped
+// BUILT-IN the palette used to also list, now unified with the plugin
+// catalog into the one inline menu Composer.tsx renders. `builtins` is
+// expected pre-resolved against the focused session
+// (shell/palette/commands.ts's sessionBuiltinCommands) - an unavailable one
+// (a false wire capability) is filtered out here rather than rendered
+// disabled, since this menu has no disabled-row affordance the way the
+// palette's does; matchBuiltinInvocation (builtinCommand.ts) still resolves
+// it from the FULL unfiltered list at submit time, so a typed invocation for
+// a momentarily-unavailable command still gets an honest "not available
+// right now" instead of silently being sent as a chat message.
+export function mergeSlashCommands(builtins: ScopedCommand[], catalog: CommandDescriptor[]): SlashMenuItem[] {
+  const builtinItems: SlashMenuItem[] = builtins
+    .filter((c) => c.unavailableReason === undefined)
+    .map((c) => ({ key: `builtin:${c.id}`, invocation: `/${c.id}`, label: c.id, hint: c.hint, kind: "builtin" }));
+  const pluginItems: SlashMenuItem[] = catalog.map((c) => ({
+    key: `plugin:${c.pluginName ?? ""}:${c.name}`,
+    invocation: slashCommandInvocation(c),
+    label: c.name,
+    hint: c.description || c.argumentHint || `plugin: ${c.pluginName ?? c.source ?? "unknown"}`,
+    kind: "plugin",
+  }));
+  return [...builtinItems, ...pluginItems];
+}
+
+// filterSlashMenuItems: startsWith on the item's own label, case-insensitive
+// (the same normalization shell/palette/commands.ts's own filterCommands
+// uses for its query). An empty query matches every item, in merge order
+// (built-ins first, then the catalog).
+export function filterSlashMenuItems(items: SlashMenuItem[], query: string): SlashMenuItem[] {
   const q = query.toLowerCase();
-  return commands.filter((command) => command.name.toLowerCase().startsWith(q));
+  return items.filter((item) => item.label.toLowerCase().startsWith(q));
 }
 
 export interface SlashSpliceResult {

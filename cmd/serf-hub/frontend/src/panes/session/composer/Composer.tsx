@@ -31,8 +31,8 @@ import {
 } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
-import type { CommandDescriptor } from "../../../protocol/types.gen";
-import { slashCommandInvocation } from "../../../shell/palette/commands";
+import type { PaletteRunContext } from "../../../shell/palette/commands";
+import { sessionBuiltinCommands } from "../../../shell/palette/commands";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
@@ -45,6 +45,7 @@ import { AskDock, useAskDockPending } from "./askDock";
 import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type PendingAttachment, type TextEditor, useAttachments } from "./attachments/useAttachments";
+import { type BuiltinMatch, matchBuiltinInvocation, runBuiltinCommand } from "./builtinCommand";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, useComposerFocusRequest } from "./composerFocus";
 import { clearDraft, readDraft, writeDraft } from "./draft";
@@ -59,7 +60,14 @@ import {
 import { consumeQuoteInsert, type QuoteInsertPlacement, useQuoteInsertRequest } from "./quoteInsert";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
-import { filterSlashCommands, parseSlashToken, type SlashToken, spliceSlashCommand } from "./slashCompletion";
+import {
+  filterSlashMenuItems,
+  mergeSlashCommands,
+  parseSlashToken,
+  type SlashMenuItem,
+  type SlashToken,
+  spliceSlashCommand,
+} from "./slashCompletion";
 import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
 
 export interface ComposerProps {
@@ -179,10 +187,19 @@ export function Composer({ ref }: ComposerProps) {
   const slashCatalog = useCommandCatalog((s) => s.commands);
   const [slashToken, setSlashToken] = useState<SlashToken | null>(null);
   const [slashHighlighted, setSlashHighlighted] = useState(0);
-  // The menu is only ever open when a token matched AND the catalog has at
-  // least one startsWith hit for it - a matched-but-empty token (e.g. "/zzz"
-  // against a real catalog) shows no menu at all, same as no token matching.
-  const slashItems = slashToken ? filterSlashCommands(slashCatalog, slashToken.query) : [];
+  // The composer's own single command line (2026-08-14: "the composer is
+  // where you act on this session"): the session-scoped BUILT-IN registry
+  // (shell/palette/commands.ts's sessionBuiltinCommands, unavailableReason-
+  // resolved against THIS ref) merged with the plugin catalog
+  // (slashCompletion.ts's mergeSlashCommands) - one list, one menu, whether a
+  // row's provenance is a built-in or a plugin.
+  const sessionBuiltins = sessionBuiltinCommands({ sessionRef: ref, onPage: "session" });
+  const slashMenuCatalog = mergeSlashCommands(sessionBuiltins, slashCatalog);
+  // The menu is only ever open when a token matched AND the merged catalog
+  // has at least one startsWith hit for it - a matched-but-empty token (e.g.
+  // "/zzz" against a real catalog) shows no menu at all, same as no token
+  // matching.
+  const slashItems = slashToken ? filterSlashMenuItems(slashMenuCatalog, slashToken.query) : [];
   const slashOpen = slashToken !== null && slashItems.length > 0;
   // Scoped by `ref`: dockview can have several session panes - and so
   // several mounted Composers - open at once, and a bare literal id would
@@ -557,19 +574,21 @@ export function Composer({ ref }: ComposerProps) {
 
   // commitSlashCompletion is Tab/Enter's (handleKeyDown below) and a mouse
   // click's (SlashCompletionMenu's own onSelect) shared "the user chose
-  // this command" path: splices the QUALIFIED invocation
-  // (shell/palette/commands.ts's slashCommandInvocation - "/plugin:name" for
-  // a plugin command, bare "/name" otherwise, matching exactly what the
-  // modal palette's own activateCommand inserts) in at the token's own
-  // start (never the caret, when the caret was left mid-token by an earlier
-  // Escape-then-retype - spliceSlashCommand's own doc comment), through the
-  // SAME textEditor.write() seam every other programmatic edit in this file
-  // uses (draft persistence, cursor restore), then closes the menu and
-  // returns focus to the field - mirrors restoreTextToComposer's own
-  // "write, then focus" shape.
-  function commitSlashCompletion(item: CommandDescriptor): void {
+  // this command" path: splices the item's own invocation (slashCompletion.ts's
+  // mergeSlashCommands - "/plugin:name" for a plugin command via
+  // shell/palette/commands.ts's slashCommandInvocation, bare "/id" for a
+  // built-in) in at the token's own start (never the caret, when the caret
+  // was left mid-token by an earlier Escape-then-retype - spliceSlashCommand's
+  // own doc comment), through the SAME textEditor.write() seam every other
+  // programmatic edit in this file uses (draft persistence, cursor restore),
+  // then closes the menu and returns focus to the field - mirrors
+  // restoreTextToComposer's own "write, then focus" shape. This only ever
+  // INSERTS the invocation text - whether it goes on to execute as a
+  // built-in RPC or simply sends as a message is handleFormSubmit's own
+  // interception, below.
+  function commitSlashCompletion(item: SlashMenuItem): void {
     if (!slashToken) return;
-    const spliced = spliceSlashCommand(textRef.current, slashToken, slashCommandInvocation(item));
+    const spliced = spliceSlashCommand(textRef.current, slashToken, item.invocation);
     textEditor.write(spliced.text, spliced.caret);
     setSlashToken(null);
     textareaRef.current?.focus();
@@ -759,6 +778,37 @@ export function Composer({ ref }: ComposerProps) {
     }
   }
 
+  // handleBuiltinSubmit is the Slack-model half of Enter/submit
+  // interception (2026-08-14 decision: "a literal message starting with a
+  // known /command executes instead of sending, matching Slack/Discord
+  // muscle memory"): runs the matched built-in's RPC instead of routing
+  // through send/queue, via builtinCommand.ts's runBuiltinCommand - which
+  // ALSO carries the toast/friendlyErrorMessage feedback and the
+  // no-double-toast guard, so this handler's only job is the composer-local
+  // half: busy-gating, and clearing vs. preserving the draft.
+  //
+  // submittedText is snapshotted the same way submitAction's own
+  // clearIfUnchanged is, so a clear on success never clobbers an edit made
+  // while the RPC was still in flight.
+  async function handleBuiltinSubmit(match: BuiltinMatch): Promise<void> {
+    const submittedText = textRef.current;
+    setBusyAction("submit");
+    const ctx: PaletteRunContext = {
+      sessionRef: ref,
+      onPage: "session",
+      toasts,
+      // Neither method is reachable here: both belong to app-global palette
+      // commands (/search, /help), never to a session-scoped built-in - see
+      // commandSurface's own doc comment on why the two never overlap.
+      ui: { clearToSearch: () => {}, showHelp: () => {} },
+    };
+    const outcome = await runBuiltinCommand(match, ctx);
+    setBusyAction(null);
+    if (outcome.ok) clearIfUnchanged(submittedText);
+    // On failure: the draft is left exactly as typed (clearIfUnchanged is
+    // simply never called) - runBuiltinCommand has already toasted why.
+  }
+
   function handleFormSubmit(event: FormEvent): void {
     event.preventDefault();
     if (busyAction !== null) return;
@@ -766,6 +816,22 @@ export function Composer({ ref }: ComposerProps) {
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing");
       return;
+    }
+    // The Slack-model interception: a draft with no attachments that parses
+    // as a known BUILT-IN session command (sessionBuiltins, above) runs that
+    // command instead of sending the text as a message. A message carrying
+    // an attachment is never read as a command, regardless of its text.
+    // Everything that does NOT match - an unknown "/foo", or a plugin
+    // catalog command (matchBuiltinInvocation only ever matches
+    // sessionBuiltins, never the catalog - see that function's own doc
+    // comment) - falls straight through to the ordinary routing below,
+    // unchanged: that's the escape hatch.
+    if (!hasAttachments) {
+      const match = matchBuiltinInvocation(text, sessionBuiltins);
+      if (match) {
+        void handleBuiltinSubmit(match);
+        return;
+      }
     }
     // A finished session routes as a plain send: the availability table reports
     // both-false for ended/closed because no turn is in flight to send to or

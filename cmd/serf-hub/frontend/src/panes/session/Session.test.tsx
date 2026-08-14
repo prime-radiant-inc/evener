@@ -6,9 +6,11 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { StrictMode } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
@@ -184,6 +186,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetPendingTurnsStoreForTests();
+  resetWorkspaceStoreForTests();
+  window.history.pushState({}, "", "/");
   vi.useRealTimers();
   vi.unstubAllGlobals();
   if (offsetHeightDescriptor) {
@@ -216,6 +220,74 @@ test("shows a loading placeholder before the thread hydrates", async () => {
   await flushUntil(() => box.resolve !== null);
   box.resolve?.(readResponse("ref_a"));
   await waitFor(() => expect(screen.queryByText(/loading/i)).toBeNull());
+});
+
+// A ref stays on "Loading transcript…" forever when thread/read simply never
+// resolves (a genuinely slow daemon, a connection still settling) - the
+// deleted-state check below must never fire for this shape of stall. Distinct
+// from the deleted case (a REJECTED read carrying the deletion fence's own
+// WireError), which is the next test.
+test("a slow-but-alive ref keeps showing the loading placeholder, never the deleted state", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => new Promise<ThreadReadResponse>(() => {})); // never resolves or rejects
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await flushUntil(() => fake.calls.some((c) => c.method === "thread/read"));
+  // Give the deletion probe's own microtask chain a few turns to (not) settle.
+  await flushUntil(() => false, 5);
+  expect(screen.getByText(/loading/i)).toBeTruthy();
+  expect(screen.queryByText(/deleted/i)).toBeNull();
+});
+
+// The daemon fences every request against a target it has actually deleted
+// with a WireError carrying data.mutationOutcome === "targetDeleted"
+// (cmd/serf-hub/app_sources.go's deletionFenceError, surfaced to thread/read
+// by app_rpc.go's own isTargetDeletedError branch) - and that fence is
+// durable (hubcore.DeletionStore never clears a target's record), so every
+// thread/read this pane's own hydration retries forever keeps hitting the
+// exact same rejection. That rejection is otherwise swallowed by the threads
+// store's transport-retry loop (it cannot tell "the daemon is slow" from
+// "this ref is gone" - see threads.ts's hydrateAndSubscribe), which is why
+// the eternal "Loading transcript…" bug exists at all: nothing upstream of
+// this pane ever gives up. This pane's own probe reads the same wire signal
+// directly instead of trusting that loop to surface it.
+test("a deleted ref shows an honest empty state instead of loading forever, and Close returns to welcome", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => {
+    throw new WireError("target has been deleted: local:ref_gone", -32001, {
+      serfErrorInfo: "actionUnavailable",
+      mutationOutcome: "targetDeleted",
+      retryDisposition: "none",
+    });
+  });
+  workspaceStore.setState({
+    panes: [{ id: "p1", type: "session", params: { ref: "local:ref_gone" }, slot: "main" }],
+    focusedPaneId: "p1",
+  });
+  window.history.pushState({}, "", "/s/local:ref_gone");
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "local:ref_gone" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByText(/this session was deleted/i)).toBeTruthy());
+  // The raw ref never appears anywhere while the deleted state is showing -
+  // the title uses a humane label instead (kata: the eternal-spinner papercut).
+  expect(screen.queryByText("local:ref_gone")).toBeNull();
+  expect(screen.getByText("Session deleted")).toBeTruthy();
+
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: /close/i }));
+
+  expect(workspaceStore.getState().panes.map((p) => p.id)).not.toContain("p1");
+  expect(window.location.pathname).toBe("/");
 });
 
 test("shows the thread's live name once hydrated, not the raw ref", async () => {

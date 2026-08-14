@@ -150,6 +150,13 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // label, which is the honest UI reflection of `busyRef` once React catches
   // up - this ref is only the guard of record.
   const busyRef = useRef(false);
+  // Mirrors `model` for the default-provider-credential effect below: that
+  // effect must read whether Model is CURRENTLY untouched without itself
+  // re-running (and re-issuing serf/launch/resolve + model/list) every time
+  // the user picks a model - same rationale as busyRef, a ref read at async
+  // resolution time rather than a dependency that reruns the effect.
+  const modelRef = useRef(model);
+  modelRef.current = model;
 
   function updatePrompt(next: string): void {
     textRef.current = next;
@@ -344,15 +351,44 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // preflightDir/branch resolution: no cwd yet, or a rejected preview (RPC
   // down), leaves noDefaultModel false rather than blocking Start on an
   // unconfirmed state.
+  //
+  // Uncredentialed-default fallback: offering "(default)" is a certain
+  // thread/start failure when the resolved default's provider has no
+  // credentials configured - the server now says so plainly
+  // ("provider credentials missing for openai...", spawn.go), but a UI that
+  // still points at that dead end is no better. There is no direct
+  // per-provider credential RPC the spawn form can key on, but model/list IS
+  // already keyed on it: launchCheckModels() (cmd/serf/internal/launchcheck)
+  // only adds a provider's models to the launchable SET once it can actually
+  // construct that provider's client, so a provider missing from model/list's
+  // result is - as far as this form can honestly tell - not credentialed. If
+  // the resolved default's provider is absent from that SET, preselect the
+  // first model model/list offers (same order the picker's provider groups
+  // render in, scopedCatalog.ts) instead of leaving Model at "" - which also
+  // removes "(default)" from the trigger, since that label only ever renders
+  // for value === "" (ModelCatalog's own contract). A sticky per-project
+  // model (or any value the user already picked) is never touched: the
+  // fallback only fires when Model is still untouched, read from modelRef so
+  // this effect doesn't itself re-run on every model change.
   useEffect(() => {
     if (cwd.trim() === "") {
       setNoDefaultModel(false);
       return undefined;
     }
     let active = true;
-    resolveConfig(advancedOverrides).then(
-      (result) => {
-        if (active) setNoDefaultModel((result.effective.model ?? "").trim() === "");
+    Promise.all([resolveConfig(advancedOverrides), loadModels().catch(() => null)]).then(
+      ([result, models]) => {
+        if (!active) return;
+        const defaultModel = (result.effective.model ?? "").trim();
+        setNoDefaultModel(defaultModel === "");
+        if (defaultModel === "" || modelRef.current !== "" || !models || models.length === 0) return;
+        const slash = defaultModel.indexOf("/");
+        const defaultProvider = slash === -1 ? defaultModel : defaultModel.slice(0, slash);
+        const defaultCredentialed = models.some((m) => m.provider === defaultProvider);
+        const fallback = models[0];
+        if (!defaultCredentialed && fallback) {
+          setModel(`${fallback.provider}/${fallback.model}`);
+        }
       },
       () => {
         if (active) setNoDefaultModel(false);
@@ -361,7 +397,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     return () => {
       active = false;
     };
-  }, [cwd, advancedOverrides, resolveConfig]);
+  }, [cwd, advancedOverrides, resolveConfig, loadModels]);
 
   function handleHarnessChange(next: string): void {
     setHarness(next);
