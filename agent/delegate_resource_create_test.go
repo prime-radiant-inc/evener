@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -959,21 +960,49 @@ func TestDelegateResourceCreate_RegisteredToolReturnsOnlyStableDelegateIdentity(
 
 func TestDelegateResourceCreate_RegisteredSchemaOmitsCreationMaxWait(t *testing.T) {
 	root, _, _ := newDelegateResourceBootstrapSession(t)
-	registered := root.reg.Get("delegate")
-	if registered == nil {
-		t.Fatal("registered delegate tool is absent")
-	}
-	properties, ok := registered.Tool.Definition.Parameters["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("registered delegate properties = %T, want map[string]any", registered.Tool.Definition.Parameters["properties"])
-	}
-	if _, exists := properties["max_wait_ms"]; exists {
-		t.Fatal("registered delegate schema exposes creation max_wait_ms")
+	for _, tc := range []struct {
+		name        string
+		wantMaxWait bool
+	}{
+		{name: "delegate", wantMaxWait: false},
+		{name: "delegate_send", wantMaxWait: true},
+		{name: "job_stop", wantMaxWait: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registered := root.reg.Get(tc.name)
+			if registered == nil {
+				t.Fatalf("registered %s tool is absent", tc.name)
+			}
+			properties, ok := registered.Tool.Definition.Parameters["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("registered %s properties = %T, want map[string]any", tc.name, registered.Tool.Definition.Parameters["properties"])
+			}
+			_, gotMaxWait := properties["max_wait_ms"]
+			if gotMaxWait != tc.wantMaxWait {
+				t.Fatalf("registered %s max_wait_ms presence = %t, want %t", tc.name, gotMaxWait, tc.wantMaxWait)
+			}
+		})
 	}
 }
 
 func TestDelegateResourceCreate_RegisteredRejectsCreationMaxWait(t *testing.T) {
-	root, _, _ := newDelegateResourceBootstrapSession(t)
+	root, client, _ := newDelegateResourceBootstrapSession(t)
+	provider := newTask6TranscriptBarrierAdapter()
+	client.Register(provider)
+	t.Cleanup(provider.releaseRun)
+
+	constructionReached := ""
+	root.cfg.testOnly.subagentPrepareFault = func(point string) error {
+		if point == "new_session" {
+			constructionReached = point
+		}
+		return nil
+	}
+	storePath := delegateResourceStorePath(root.stateDir, root.ID())
+	storeBefore, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	raw, err := json.Marshal(map[string]any{
 		"task":        "reject creation wait",
 		"max_wait_ms": 1,
@@ -986,8 +1015,36 @@ func TestDelegateResourceCreate_RegisteredRejectsCreationMaxWait(t *testing.T) {
 		Name:      "delegate",
 		Arguments: raw,
 	})
-	if !call.IsError || !strings.Contains(call.Output, "max_wait_ms") {
-		t.Fatalf("registered delegate result = %#v, want max_wait_ms rejection", call)
+	const wantRegistryRejection = "tool args schema validation failed: jsonschema: '' does not validate with urn:serf:tool-schema#/additionalProperties: additionalProperties 'max_wait_ms' not allowed"
+	if !call.IsError {
+		t.Errorf("registered delegate accepted creation max_wait_ms: %#v", call)
+	}
+	if call.Output != wantRegistryRejection {
+		t.Errorf("registered delegate rejection = %q, want %q", call.Output, wantRegistryRejection)
+	}
+	if !call.IsError {
+		select {
+		case childID := <-provider.entered:
+			t.Errorf("registered delegate reached provider for child %q", childID)
+		case <-time.After(5 * time.Second):
+			t.Error("registered delegate admitted creation max_wait_ms but did not reach the provider sentinel")
+		}
+	} else {
+		select {
+		case childID := <-provider.entered:
+			t.Errorf("registered delegate schema rejection reached provider for child %q", childID)
+		default:
+		}
+	}
+	if constructionReached != "" {
+		t.Errorf("registered delegate schema rejection reached child construction at %q", constructionReached)
+	}
+	storeAfter, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(storeAfter, storeBefore) {
+		t.Errorf("delegate store bytes changed after registered schema rejection: before=%d bytes after=%d bytes", len(storeBefore), len(storeAfter))
 	}
 	root.delegateController.mu.Lock()
 	defer root.delegateController.mu.Unlock()
