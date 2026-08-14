@@ -158,6 +158,92 @@ func TestDelegateResourceSupervision_PendingSteerPrecedesAutoNudge(t *testing.T)
 	}
 }
 
+func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) {
+	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal nudge turn", nil, nil)
+	enteredFatalNudge := make(chan struct{})
+	releaseFatalNudge := make(chan struct{})
+	adapter := &fakeErrAdapter{
+		name: "openai",
+		steps: []func(llm.Request) (llm.Response, error){
+			func(llm.Request) (llm.Response, error) {
+				return agenttest.EmptyResponse(), nil
+			},
+			func(llm.Request) (llm.Response, error) {
+				return agenttest.EmptyResponse(), nil
+			},
+			func(llm.Request) (llm.Response, error) {
+				return agenttest.EmptyResponse(), nil
+			},
+			func(llm.Request) (llm.Response, error) {
+				return agenttest.EmptyResponse(), nil
+			},
+			func(llm.Request) (llm.Response, error) {
+				close(enteredFatalNudge)
+				<-releaseFatalNudge
+				return llm.Response{}, fatalErr
+			},
+		},
+	}
+	fixture := newColdStableDelegateFixture(t, "")
+	client := llm.NewClient()
+	client.Register(adapter)
+	fixture.client = client
+	finalStatePublished := make(chan struct{})
+	restore := RestoreSessionConfig{
+		StateDir:    fixture.stateDir,
+		ForceRealIO: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			subagentAfterFinalStatePublish: func(*subagent) {
+				close(finalStatePublished)
+			},
+		},
+	}
+	root, err := RestoreSessionFromMetaWithConfig(client, fixture.profile, execenv.NewLocalExecutionEnvironment(fixture.workspace), fixture.meta, restore)
+	if err != nil {
+		t.Fatalf("restore fatal-nudge root: %v", err)
+	}
+	t.Cleanup(root.Close)
+	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start fatal nudge run", 0)
+	if started.result.Err != nil {
+		t.Fatalf("start fatal-nudge delegate: %v", started.result.Err)
+	}
+	<-enteredFatalNudge
+	sub := root.subagents.get(fixture.childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("stable child %q was not tracked", fixture.childID)
+	}
+	signaled := make(chan struct{}, 1)
+	ownedShell := &runningJob{
+		rec: &jobstore.JobRecord{
+			JobID:          "job_fatal_nudge_owned_shell",
+			Type:           jobstore.JobShell,
+			Status:         jobstore.StatusRunning,
+			OwnerSessionID: sub.sess.ID(),
+		},
+		signal:         func() { signaled <- struct{}{} },
+		done:           make(chan struct{}),
+		durableStarted: true,
+	}
+	sub.sess.jobManager.mu.Lock()
+	sub.sess.jobManager.running[ownedShell.rec.JobID] = ownedShell
+	sub.sess.jobManager.mu.Unlock()
+	t.Cleanup(func() {
+		sub.sess.jobManager.mu.Lock()
+		delete(sub.sess.jobManager.running, ownedShell.rec.JobID)
+		sub.sess.jobManager.mu.Unlock()
+		ownedShell.closeDone()
+	})
+	close(releaseFatalNudge)
+	<-finalStatePublished
+	select {
+	case <-signaled:
+	default:
+		t.Fatal("fatal stable nudge run published final state before stopping its owned shell")
+	}
+}
+
 func TestDelegateResourceSupervision_SubagentStopRunsAfterFinishAndBeforeContinuation(t *testing.T) {
 	observation := runStableSubagentStopHook(t, true)
 	if !observation.continuationSawHook || observation.providerRequests != 2 || observation.hookRuns != 1 {

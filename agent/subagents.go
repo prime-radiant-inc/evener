@@ -1545,7 +1545,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		kind = EntryContinuation
 		runStartedFromWatch = false
 	}
-	if err != nil && !stableRun {
+	if err != nil && (!stableRun || finish.outcome == delegatestore.OutcomeFailed) {
 		a.gateFatalRun(err)
 	}
 	exhaustion, budgetExhausted := budgetExhaustionFromError(err)
