@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -15,7 +17,10 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/skill"
+	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
@@ -268,6 +273,173 @@ func TestDelegateResourceCreate_ResultMatchesCommittedSnapshot(t *testing.T) {
 			t.Fatalf("append-failed delegate live state = %#v, want recovery fence", live)
 		}
 	})
+}
+
+func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
+	root, client, profile := newDelegateResourceBootstrapSession(t)
+	adapter := newTask6FrozenDescriptorAdapter()
+	client.Register(adapter)
+	t.Cleanup(adapter.releaseRun)
+
+	root.mu.Lock()
+	root.cfg.ReasoningEffort = "low"
+	root.cfg.testOnly.minimalSystemPrompt = false
+	root.mu.Unlock()
+
+	const (
+		agentType       = "task6-frozen-reviewer"
+		frozenRole      = "FROZEN ROLE PROMPT"
+		frozenTask      = "FROZEN TASK PROMPT"
+		frozenSkillBody = "FROZEN SKILL BODY"
+		mutatedTask     = "MUTATED TASK PROMPT"
+		mutatedSkill    = "MUTATED SKILL BODY"
+	)
+	tools := []string{"read_file"}
+	skills := []string{"task6-frozen-skill"}
+	tasks := []taskpkg.TaskTemplate{{Title: "Frozen workflow", Prompt: frozenTask}}
+	root.pluginAgents[agentType] = plugin.Agent{
+		Name:         "frozen-reviewer",
+		Description:  "Exercises committed delegate descriptors",
+		Model:        "inherit",
+		Tools:        tools,
+		Skills:       skills,
+		Tasks:        tasks,
+		SystemPrompt: frozenRole,
+		PluginName:   "task6-test",
+	}
+	frozenSkillFile := filepath.Join(t.TempDir(), "SKILL.md")
+	if err := os.WriteFile(frozenSkillFile, []byte(frozenSkillBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mutatedSkillFile := filepath.Join(t.TempDir(), "SKILL.md")
+	if err := os.WriteFile(mutatedSkillFile, []byte(mutatedSkill), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root.skills["task6-frozen-skill"] = skill.SkillMeta{Name: "task6-frozen-skill", SkillFile: frozenSkillFile}
+	root.skills["task6-mutated-skill"] = skill.SkillMeta{Name: "task6-mutated-skill", SkillFile: mutatedSkillFile}
+
+	resultSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"frozen": map[string]any{"type": "string"},
+		},
+		"required": []string{"frozen"},
+	}
+	originalWorkDir := root.currentEnv().WorkingDirectory()
+	originalProvenance := testProvenance("task6_frozen", "wg_original")
+	root.replaceActiveProvenance(originalProvenance)
+	mutatedWorkDir := t.TempDir()
+	mutatedProvenance := testProvenance("task6_mutated", "wg_mutated")
+
+	var mutateOnce sync.Once
+	root.delegateController.mu.Lock()
+	root.delegateController.emitUpdate = func(delegateUpdatePlan) {
+		mutateOnce.Do(func() {
+			mutated := root.pluginAgents[agentType]
+			mutated.Tools[0] = "shell"
+			mutated.Skills[0] = "task6-mutated-skill"
+			mutated.Tasks[0].Prompt = mutatedTask
+			root.pluginAgents[agentType] = mutated
+			root.skills["task6-frozen-skill"] = skill.SkillMeta{Name: "task6-frozen-skill", SkillFile: mutatedSkillFile}
+			resultSchema["properties"] = map[string]any{"mutated": map[string]any{"type": "boolean"}}
+			root.mu.Lock()
+			root.cfg.ReasoningEffort = "high"
+			root.mu.Unlock()
+			root.swapEnvAndRefresh(execenv.NewLocalExecutionEnvironment(mutatedWorkDir))
+			root.replaceActiveProvenance(mutatedProvenance)
+		})
+	}
+	root.delegateController.mu.Unlock()
+
+	result := root.createDelegate(context.Background(), delegateArgs{
+		Task:         "use the committed descriptor",
+		AgentType:    agentType,
+		Model:        "gpt-5.2",
+		WatchParent:  true,
+		ResultSchema: resultSchema,
+		Background:   true,
+	})
+	if result.Err != nil {
+		t.Fatalf("createDelegate: %v", result.Err)
+	}
+
+	var request llm.Request
+	select {
+	case request = <-adapter.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider did not receive the frozen delegate request")
+	}
+	adapter.releaseRun()
+
+	aggregate := delegateAggregateSnapshot(t, root.delegateController, result.DelegateID)
+	descriptor := aggregate.Descriptor
+	childRecord := root.subagents.get(descriptor.ChildSessionID)
+	if childRecord == nil || childRecord.sess == nil {
+		t.Fatalf("committed child %q is not retained", descriptor.ChildSessionID)
+	}
+	child := childRecord.sess
+
+	if descriptor.AgentType != agentType || descriptor.AgentName != "frozen-reviewer" || descriptor.RequestedModel != "gpt-5.2" || descriptor.ResolvedProfileID != profile.ID() || descriptor.ResolvedModel != profile.Model() {
+		t.Fatalf("committed identity/model descriptor = %#v", descriptor)
+	}
+	if request.SessionID != descriptor.ChildSessionID || request.Model != descriptor.ResolvedModel || child.currentProfile().ID() != descriptor.ResolvedProfileID || child.currentProfile().Model() != descriptor.ResolvedModel {
+		t.Fatalf("provider/child identity = session %q model %q profile %s/%s, want descriptor %#v", request.SessionID, request.Model, child.currentProfile().ID(), child.currentProfile().Model(), descriptor)
+	}
+	if request.ReasoningEffort == nil || *request.ReasoningEffort != "low" || child.cfg.ReasoningEffort != descriptor.ReasoningEffort {
+		t.Fatalf("provider/child reasoning = %#v/%q, want frozen %q", request.ReasoningEffort, child.cfg.ReasoningEffort, descriptor.ReasoningEffort)
+	}
+	if child.cfg.AgentName != descriptor.AgentName || childRecord.agentType != descriptor.AgentType {
+		t.Fatalf("child agent identity = %q/%q, want %q/%q", child.cfg.AgentName, childRecord.agentType, descriptor.AgentName, descriptor.AgentType)
+	}
+
+	requestText := task6RequestText(request)
+	for _, want := range []string{frozenRole, frozenTask, frozenSkillBody} {
+		if !strings.Contains(requestText, want) {
+			t.Fatalf("provider request omitted frozen prompt %q: %s", want, requestText)
+		}
+	}
+	for _, forbidden := range []string{mutatedTask, mutatedSkill} {
+		if strings.Contains(requestText, forbidden) {
+			t.Fatalf("provider request used post-commit prompt %q: %s", forbidden, requestText)
+		}
+	}
+	if got := child.cfg.spawn.activatedSkillBodies; !reflect.DeepEqual(got, descriptor.FrozenSkillBodies) {
+		t.Fatalf("child skill bodies = %#v, want descriptor %#v", got, descriptor.FrozenSkillBodies)
+	}
+
+	wantTools := append([]string(nil), descriptor.FrozenToolNames...)
+	gotTools := make([]string, 0, len(request.Tools))
+	for _, definition := range request.Tools {
+		gotTools = append(gotTools, definition.Name)
+	}
+	sort.Strings(wantTools)
+	sort.Strings(gotTools)
+	if !reflect.DeepEqual(gotTools, wantTools) {
+		t.Fatalf("provider tools = %v, want exact frozen tools %v", gotTools, wantTools)
+	}
+	if !child.reg.RegisteredNames()["read_file"] || child.reg.RegisteredNames()["shell"] || !child.reg.RegisteredNames()["job_watch"] {
+		t.Fatalf("child registry = %v, want frozen read_file + watch_parent grant without mutated shell", child.reg.Names())
+	}
+
+	var frozenResultSchema map[string]any
+	if err := json.Unmarshal(descriptor.ResultSchema, &frozenResultSchema); err != nil {
+		t.Fatalf("decode committed result schema: %v", err)
+	}
+	if got := task6CommunicateOutputSchema(t, request); !reflect.DeepEqual(got, frozenResultSchema) {
+		t.Fatalf("provider result schema = %#v, want frozen %#v", got, frozenResultSchema)
+	}
+	if !reflect.DeepEqual(child.cfg.spawn.communicateOutputSchema, frozenResultSchema) || child.delegationAllowance != descriptor.DelegationAllowance {
+		t.Fatalf("child result/allowance = %#v/%d, want %#v/%d", child.cfg.spawn.communicateOutputSchema, child.delegationAllowance, frozenResultSchema, descriptor.DelegationAllowance)
+	}
+	if child.currentEnv().WorkingDirectory() != descriptor.WorkingDir || descriptor.WorkingDir != originalWorkDir || localEnvPolicyName(child.currentEnv()) != descriptor.LocalEnvPolicy || child.cfg.spawn.isolation != descriptor.Isolation || sandboxSnapshotFromEnv(child.currentEnv()) != nil || descriptor.Sandbox != nil {
+		t.Fatalf("child environment diverged from descriptor: cwd=%q policy=%q isolation=%q sandbox=%#v descriptor=%#v", child.currentEnv().WorkingDirectory(), localEnvPolicyName(child.currentEnv()), child.cfg.spawn.isolation, sandboxSnapshotFromEnv(child.currentEnv()), descriptor)
+	}
+	if !reflect.DeepEqual(descriptor.Provenance, originalProvenance) || !reflect.DeepEqual(child.activeCausalProvenance(), originalProvenance) {
+		t.Fatalf("child provenance = %#v descriptor=%#v, want frozen %#v", child.activeCausalProvenance(), descriptor.Provenance, originalProvenance)
+	}
+	if !child.cfg.spawn.parentWatchGranted {
+		t.Fatal("watch_parent was not passed through to the committed child")
+	}
 }
 
 func TestDelegateResourceCreate_PostCommitFailureRemainsInspectableAfterRestart(t *testing.T) {
@@ -925,4 +1097,66 @@ func (a *task6TranscriptBarrierAdapter) Stream(context.Context, llm.Request) (ll
 
 func (a *task6TranscriptBarrierAdapter) releaseRun() {
 	a.releaseOnce.Do(func() { close(a.release) })
+}
+
+type task6FrozenDescriptorAdapter struct {
+	entered     chan llm.Request
+	release     chan struct{}
+	releaseOnce sync.Once
+}
+
+func newTask6FrozenDescriptorAdapter() *task6FrozenDescriptorAdapter {
+	return &task6FrozenDescriptorAdapter{
+		entered: make(chan llm.Request, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (a *task6FrozenDescriptorAdapter) Name() string { return "openai" }
+
+func (a *task6FrozenDescriptorAdapter) Complete(ctx context.Context, request llm.Request) (llm.Response, error) {
+	select {
+	case a.entered <- request:
+	case <-ctx.Done():
+		return llm.Response{}, ctx.Err()
+	}
+	select {
+	case <-a.release:
+	case <-ctx.Done():
+		return llm.Response{}, ctx.Err()
+	}
+	return llm.Response{Provider: "openai", Model: request.Model, Message: llm.Assistant("done")}, nil
+}
+
+func (a *task6FrozenDescriptorAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+
+func (a *task6FrozenDescriptorAdapter) releaseRun() {
+	a.releaseOnce.Do(func() { close(a.release) })
+}
+
+func task6RequestText(request llm.Request) string {
+	var text strings.Builder
+	for _, message := range request.Messages {
+		text.WriteString(message.Text())
+		text.WriteByte('\n')
+	}
+	return text.String()
+}
+
+func task6CommunicateOutputSchema(t *testing.T, request llm.Request) any {
+	t.Helper()
+	for _, definition := range request.Tools {
+		if definition.Name != "communicate" {
+			continue
+		}
+		properties, ok := definition.Parameters["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("communicate properties = %T, want map[string]any", definition.Parameters["properties"])
+		}
+		return properties["output"]
+	}
+	t.Fatal("provider request omitted communicate tool")
+	return nil
 }

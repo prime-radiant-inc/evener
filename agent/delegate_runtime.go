@@ -149,7 +149,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		runtime.retainAdoptedWithoutLaunch(prepared)
 		return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, err)
 	}
-	s.launchSubagentRun(prepared.runCtx, prepared.sub, prepared.runCancel, prepared.input, s.activeCausalProvenance())
+	s.launchSubagentRun(prepared.runCtx, prepared.sub, prepared.runCancel, prepared.input, started.descriptor.Provenance)
 	return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, nil)
 }
 
@@ -183,7 +183,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	if !allTools {
 		allowedTools = ensureRecoveryReader(allowedTools, s.reg)
 	}
-	frozenTools := frozenSubagentToolNames(allTools, allowedTools, deniedTools)
+	frozenTools := frozenStableDelegateToolNames(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.DelegationAllowance > 0, args.WatchParent, isolationName)
 	var frozenSkillNames, frozenSkillBodies []string
 	if selection.agent != nil {
 		for _, name := range selection.agent.Skills {
@@ -342,7 +342,7 @@ func (runtime delegateRuntime) construct(ctx context.Context, args delegateArgs,
 	}
 	ctx = context.WithValue(ctx, ctxParentJobID, "")
 	ctx = context.WithValue(ctx, ctxParentDelegateID, started.lease.delegateID)
-	ctx = context.WithValue(ctx, ctxDelegationAllowance, args.DelegationAllowance)
+	ctx = context.WithValue(ctx, ctxDelegationAllowance, started.descriptor.DelegationAllowance)
 	ctx = context.WithValue(ctx, delegateChildSessionIDContextKey{}, started.descriptor.ChildSessionID)
 	ctx = context.WithValue(ctx, delegatePreparedEnvironmentContextKey{}, delegatePreparedEnvironment{
 		env:              isolation.env,
@@ -358,10 +358,7 @@ func (runtime delegateRuntime) construct(ctx context.Context, args delegateArgs,
 	if args.WatchParent {
 		ctx = context.WithValue(ctx, ctxWatchParent, true)
 	}
-	if len(args.ResultSchema) > 0 {
-		ctx = context.WithValue(ctx, ctxCommunicateOutputSchema, args.ResultSchema)
-	}
-	prepared, err := s.prepareSubagentRunWithModelSelection(ctx, started.descriptor.Task, started.descriptor.WorkingDir, 0, args.AgentType, args.ReasoningEffort, nil, nil, selection)
+	prepared, err := s.prepareStableDelegateRun(ctx, started.descriptor, args.WatchParent, selection)
 	if err != nil {
 		return nil, err
 	}

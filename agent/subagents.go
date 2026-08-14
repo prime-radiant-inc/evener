@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/plugin"
@@ -279,6 +281,88 @@ func frozenSubagentToolNames(allTools bool, allowed, denied []string) []string {
 	}
 }
 
+func frozenStableDelegateToolNames(reg *tool.Registry, resultToolName string, allTools bool, allowed, denied []string, canDelegate, watchParent bool, isolation string) []string {
+	if reg == nil {
+		return nil
+	}
+	registered := reg.RegisteredNames()
+	selected := make(map[string]bool, len(registered))
+	switch {
+	case allTools:
+		maps.Copy(selected, registered)
+	case len(allowed) > 0:
+		allowed = ensureRecoveryReader(allowed, reg)
+		for _, name := range allowed {
+			if registered[name] {
+				selected[name] = true
+			}
+		}
+	default:
+		maps.Copy(selected, registered)
+		for _, name := range denied {
+			delete(selected, name)
+		}
+	}
+	if watchParent && registered["job_watch"] {
+		selected["job_watch"] = true
+	}
+	if registered[resultToolName] {
+		selected[resultToolName] = true
+	}
+	for _, name := range protectedGrantTools() {
+		delete(selected, name)
+	}
+	if !canDelegate {
+		for _, name := range rootOnlySubagentTools() {
+			if watchParent && name == "job_watch" {
+				continue
+			}
+			delete(selected, name)
+		}
+	}
+	if isolation == "worktree" && !canDelegate {
+		delete(selected, "manage_worktree")
+	}
+	names := make([]string, 0, len(selected))
+	for name := range selected {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func validateFrozenStableDelegateTools(reg *tool.Registry, names []string) error {
+	if reg == nil {
+		return errors.New("committed delegate tool registry is unavailable")
+	}
+	registered := reg.RegisteredNames()
+	missing := make([]string, 0)
+	for _, name := range names {
+		if name == "" || name == "*" || !registered[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	return fmt.Errorf("committed delegate tool(s) unavailable: %s", strings.Join(missing, ", "))
+}
+
+func frozenStableDelegateSandboxMatches(env execenv.ExecutionEnvironment, want *delegatestore.SandboxSnapshot) bool {
+	got := sandboxSnapshotFromEnv(env)
+	if got == nil || want == nil {
+		return got == nil && want == nil
+	}
+	if got.Mode != want.Mode || !slices.Equal(got.DenylistAdd, want.DenylistAdd) || !slices.Equal(got.DenylistRemove, want.DenylistRemove) || !slices.Equal(got.ExtraWritableRoots, want.ExtraWritableRoots) || !slices.Equal(got.ExtraReadRoots, want.ExtraReadRoots) {
+		return false
+	}
+	if got.Network == nil || want.Network == nil {
+		return got.Network == nil && want.Network == nil
+	}
+	return *got.Network == *want.Network
+}
+
 func localEnvPolicyName(env execenv.ExecutionEnvironment) string {
 	le, ok := env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
@@ -450,6 +534,49 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	grantTools []string,
 	selection subagentModelSelection,
 ) (*preparedSubagentRun, error) {
+	return s.prepareSubagentRunFromSelection(
+		ctx, task, workingDir, maxTurns, agentType, reasoningEffort,
+		parentTasks, grantTools, selection, nil,
+	)
+}
+
+func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor delegatestore.Descriptor, watchParent bool, selection subagentModelSelection) (*preparedSubagentRun, error) {
+	if selection.profile == nil || selection.profile.ID() != descriptor.ResolvedProfileID || selection.profile.Model() != descriptor.ResolvedModel {
+		actual := "<nil>"
+		if selection.profile != nil {
+			actual = selection.profile.ID() + "/" + selection.profile.Model()
+		}
+		return nil, fmt.Errorf("committed delegate profile %s/%s is unavailable from frozen selection %s", descriptor.ResolvedProfileID, descriptor.ResolvedModel, actual)
+	}
+	if len(descriptor.ResultSchema) > 0 {
+		var resultSchema map[string]any
+		if err := json.Unmarshal(descriptor.ResultSchema, &resultSchema); err != nil {
+			return nil, fmt.Errorf("decode committed delegate result schema: %w", err)
+		}
+		if len(resultSchema) > 0 {
+			ctx = context.WithValue(ctx, ctxCommunicateOutputSchema, resultSchema)
+		}
+	}
+	if watchParent {
+		ctx = context.WithValue(ctx, ctxWatchParent, true)
+	}
+	selection.agent = nil
+	return s.prepareSubagentRunFromSelection(
+		ctx, descriptor.Task, descriptor.WorkingDir, 0, descriptor.AgentType, descriptor.ReasoningEffort,
+		nil, nil, selection, &descriptor,
+	)
+}
+
+func (s *Session) prepareSubagentRunFromSelection(
+	ctx context.Context,
+	task, workingDir string,
+	maxTurns int,
+	agentType, reasoningEffort string,
+	parentTasks []taskpkg.TaskTemplate,
+	grantTools []string,
+	selection subagentModelSelection,
+	frozen *delegatestore.Descriptor,
+) (*preparedSubagentRun, error) {
 	s.mu.Lock()
 	depth := s.depth
 	allowance := s.delegationAllowance
@@ -477,6 +604,18 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	subCfg.spawn.parentWatchGranted = false
 	subCfg.spawn.parentInstallWatch = nil
 	subCfg.spawn.parentClearWatch = nil
+	subCfg.spawn.exactToolNames = false
+	if frozen != nil {
+		subCfg.spawn.rolePromptOverride = ""
+		subCfg.spawn.activatedSkillBodies = nil
+		subCfg.spawn.allowedToolNames = nil
+		subCfg.spawn.deniedToolNames = nil
+		subCfg.spawn.exactToolNames = true
+		subCfg.spawn.communicateOutputSchema = nil
+		subCfg.spawn.isolation = frozen.Isolation
+		subCfg.spawn.delegationAllowance = frozen.DelegationAllowance
+		subCfg.ReasoningEffort = frozen.ReasoningEffort
+	}
 	subCfg.spawn.parentSessionID = s.id
 	subCfg.spawn.subagentTask = task
 	subCfg.spawn.depth = depth + 1
@@ -535,7 +674,7 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	} else {
 		subCfg.MaxTurns = 500
 	}
-	if reasoningEffort = strings.TrimSpace(reasoningEffort); reasoningEffort != "" {
+	if reasoningEffort = strings.TrimSpace(reasoningEffort); frozen == nil && reasoningEffort != "" {
 		subCfg.ReasoningEffort = reasoningEffort
 	}
 	canonicalGrantTools := s.canonicalizeToolNames(grantTools)
@@ -544,7 +683,10 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	// Named agents use their own SystemPrompt; unnamed agents get the "subagent" persona.
 	var agentName string
 	var rolePrompt string
-	if agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" {
+	if frozen != nil {
+		agentName = frozen.AgentName
+		rolePrompt = frozen.FrozenRolePrompt
+	} else if agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" {
 		agentName = agent.Name
 		rolePrompt = agent.SystemPrompt
 	} else if agent == nil && childCanDelegate {
@@ -559,13 +701,23 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	}
 	subCfg.AgentName = agentName // ensure subagent gets its own tasks, not parent's
 
-	if (agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" && agent.PluginName != "builtin") ||
+	if frozen != nil {
+		subCfg.spawn.rolePromptOverride = rolePrompt
+	} else if (agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" && agent.PluginName != "builtin") ||
 		(agent == nil && childCanDelegate) {
 		subCfg.spawn.rolePromptOverride = rolePrompt
 	}
 	var activatedSkillNames []string
 	var activatedSkillBodies []string
-	if agent != nil && len(agent.Skills) > 0 {
+	if frozen != nil {
+		var err error
+		activatedSkillBodies, err = restoreFrozenSkillBodies(frozen.FrozenSkillNames, frozen.FrozenSkillBodies)
+		if err != nil {
+			return nil, err
+		}
+		activatedSkillNames = append([]string(nil), frozen.FrozenSkillNames...)
+		subCfg.spawn.activatedSkillBodies = append([]string(nil), activatedSkillBodies...)
+	} else if agent != nil && len(agent.Skills) > 0 {
 		for _, skillName := range agent.Skills {
 			body, err := skill.ResolveSkillContent(s.skills, skillName)
 			if fault := s.subagentPrepareFault("skill_resolve"); fault != nil {
@@ -582,15 +734,25 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 		}
 	}
 
-	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(agent, allowance > 0)
-	if subCfg.spawn.parentWatchGranted && !allTools {
-		if len(allowedTools) > 0 {
-			allowedTools = appendUniqueStrings(allowedTools, "job_watch")
-		} else {
-			deniedTools = removeStrings(deniedTools, []string{"job_watch"})
+	var allTools bool
+	var allowedTools, deniedTools []string
+	if frozen != nil {
+		if err := validateFrozenStableDelegateTools(s.reg, frozen.FrozenToolNames); err != nil {
+			return nil, err
+		}
+		allowedTools = append([]string(nil), frozen.FrozenToolNames...)
+		subCfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
+	} else {
+		allTools, allowedTools, deniedTools = baseSubagentToolPolicy(agent, allowance > 0)
+		if subCfg.spawn.parentWatchGranted && !allTools {
+			if len(allowedTools) > 0 {
+				allowedTools = appendUniqueStrings(allowedTools, "job_watch")
+			} else {
+				deniedTools = removeStrings(deniedTools, []string{"job_watch"})
+			}
 		}
 	}
-	if len(canonicalGrantTools) > 0 {
+	if frozen == nil && len(canonicalGrantTools) > 0 {
 		currentTools := s.reg.RegisteredNames()
 		for _, toolName := range canonicalGrantTools {
 			if isProtectedGrantTool(toolName) {
@@ -613,11 +775,14 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 			}
 		}
 	}
-	if !allTools {
+	if frozen == nil && !allTools {
 		allowedTools = ensureRecoveryReader(allowedTools, s.reg)
 	}
 
-	if allTools {
+	if frozen != nil {
+		// The descriptor's exact names were captured from the effective parent
+		// registry before CommitStart; session construction must not recompute them.
+	} else if allTools {
 		// Leave the registry unrestricted for explicit all-tools agents.
 	} else if len(allowedTools) > 0 {
 		subCfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
@@ -637,6 +802,15 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 		subEnv, ownsFreshEnv, err = s.prepareSubagentEnvironment(workingDir, reqSandbox)
 		if err != nil {
 			return nil, err
+		}
+	}
+	if frozen != nil {
+		if subEnv == nil || subEnv.WorkingDirectory() != frozen.WorkingDir || localEnvPolicyName(subEnv) != frozen.LocalEnvPolicy || !frozenStableDelegateSandboxMatches(subEnv, frozen.Sandbox) {
+			actualWorkingDir := ""
+			if subEnv != nil {
+				actualWorkingDir = subEnv.WorkingDirectory()
+			}
+			return nil, fmt.Errorf("committed delegate environment is unavailable: cwd %q/%q policy %q/%q", actualWorkingDir, frozen.WorkingDir, localEnvPolicyName(subEnv), frozen.LocalEnvPolicy)
 		}
 	}
 
@@ -672,6 +846,12 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	disposeUnadopted := func() {
 		disposeUnadoptedSubagentSession(subSess, ownsFreshEnv)
 	}
+	if frozen != nil {
+		if err := validateFrozenStableDelegateTools(subSess.reg, frozen.FrozenToolNames); err != nil {
+			disposeUnadopted()
+			return nil, err
+		}
+	}
 	if len(canonicalGrantTools) > 0 {
 		var missing []string
 		for _, toolName := range canonicalGrantTools {
@@ -686,9 +866,15 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	}
 
 	// Populate default tasks from agent definition + parent tasks.
-	if agent != nil && len(agent.Tasks) > 0 {
+	var defaultTasks []taskpkg.TaskTemplate
+	if frozen != nil && strings.TrimSpace(frozen.FrozenTaskPrompt) != "" {
+		defaultTasks = []taskpkg.TaskTemplate{{Title: frozen.Task, Prompt: frozen.FrozenTaskPrompt}}
+	} else if agent != nil {
+		defaultTasks = agent.Tasks
+	}
+	if len(defaultTasks) > 0 {
 		subStore := subSess.getOrCreateTaskStore()
-		populateErr := subStore.PopulateFromTemplates(agent.Tasks, parentTasks)
+		populateErr := subStore.PopulateFromTemplates(defaultTasks, parentTasks)
 		if fault := s.subagentPrepareFault("task_populate"); fault != nil {
 			populateErr = fault
 		}
@@ -744,6 +930,10 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	}
 
 	now := s.sclock().Now()
+	nudgeEnabled := subagentNeedsCommunicateNudge(agent)
+	if frozen != nil {
+		nudgeEnabled = frozen.AgentName == "subagent"
+	}
 	sub := &subagent{
 		id:           subSess.id,
 		sess:         subSess,
@@ -751,7 +941,7 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 		running:      true,
 		status:       SubagentRunning,
 		done:         make(chan struct{}),
-		nudgeEnabled: subagentNeedsCommunicateNudge(agent),
+		nudgeEnabled: nudgeEnabled,
 		agentType:    agentType,
 		createdAt:    now,
 		startedAt:    now,
@@ -807,7 +997,22 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 		explicitToolGrants: append([]string(nil), canonicalGrantTools...),
 		treeSlot:           treeSlot,
 	}
-	if agent != nil && len(agent.Tasks) > 0 {
+	if frozen != nil {
+		prepared.task = frozen.Task
+		prepared.agentType = frozen.AgentType
+		prepared.requestedModel = frozen.RequestedModel
+		prepared.resolvedAgentName = frozen.AgentName
+		prepared.reasoningEffort = frozen.ReasoningEffort
+		prepared.frozenRolePrompt = frozen.FrozenRolePrompt
+		prepared.frozenTaskPrompt = frozen.FrozenTaskPrompt
+		prepared.frozenToolNames = append([]string(nil), frozen.FrozenToolNames...)
+		prepared.frozenSkillNames = append([]string(nil), frozen.FrozenSkillNames...)
+		prepared.frozenSkillBodies = append([]string(nil), frozen.FrozenSkillBodies...)
+		prepared.workingDir = frozen.WorkingDir
+		prepared.localEnvPolicy = frozen.LocalEnvPolicy
+		prepared.isolation = frozen.Isolation
+		prepared.resultSchema = cloneMap(subCfg.spawn.communicateOutputSchema)
+	} else if agent != nil && len(agent.Tasks) > 0 {
 		if current, ok := subSess.getOrCreateTaskStore().CurrentInProgress(); ok {
 			prepared.frozenTaskPrompt = current.Prompt
 		}

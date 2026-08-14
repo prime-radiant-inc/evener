@@ -545,6 +545,7 @@ type spawnConfig struct {
 	activatedSkillBodies    []string
 	allowedToolNames        []string
 	deniedToolNames         []string
+	exactToolNames          bool
 	communicateOutputSchema map[string]any
 
 	// isolation is "worktree" for a delegate spawned with
