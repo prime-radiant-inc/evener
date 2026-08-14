@@ -83,9 +83,7 @@ func (c *delegateTreeController) CompleteSettlement(claim *delegateSettlementCla
 	if claim == nil || c.settlementClaims[claim.token] != claim {
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
-	delete(c.settlementClaims, claim.token)
 	if _, _, err := c.admitLeaseLocked(claim.lease, delegatestore.PhaseRunning); err != nil {
-		c.evidenceVersion++
 		return delegateMutationPlans{}, err
 	}
 	packet := delegateMissingTerminalPacket()
@@ -100,9 +98,9 @@ func (c *delegateTreeController) CompleteSettlement(claim *delegateSettlementCla
 			Packet:     packet,
 		},
 	}); err != nil {
-		c.evidenceVersion++
 		return delegateMutationPlans{}, err
 	}
+	delete(c.settlementClaims, claim.token)
 	c.evidenceVersion++
 	plan := c.capturedPlanLocked(claim.lease.delegateID)
 	return delegateMutationPlans{updates: []delegateUpdatePlan{plan}}, nil

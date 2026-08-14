@@ -335,21 +335,57 @@ func TestDelegateControllerFatalFinishPreparesAndFinishesAtomically(t *testing.T
 func TestDelegateControllerTerminalPreparedAppendFailureKeepsRunning(t *testing.T) {
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	claim, continueRun, err := c.BeginSettlement(lease)
+	if err != nil || continueRun || claim == nil {
+		t.Fatalf("BeginSettlement = claim:%#v continue:%t err:%v", claim, continueRun, err)
+	}
 	before := readDelegateControllerFile(t, path)
 	if err := c.store.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	continueRun, plans, err := c.prepareSettlementForTest(delegateLease{delegateID: "dlg_target", generation: 1}, nil)
+	plans, err := c.CompleteSettlement(claim, nil)
 	if err == nil {
-		t.Fatal("BeginSettlement succeeded after store close")
+		t.Fatal("CompleteSettlement succeeded after store close")
 	}
 	aggregate := c.durable["dlg_target"]
-	if continueRun || len(plans.updates) != 0 || aggregate.Phase != delegatestore.PhaseRunning || aggregate.PreparedTerminal != nil {
-		t.Fatalf("failed settlement mutated state = continue:%t plans:%#v aggregate:%#v", continueRun, plans, aggregate)
+	if len(plans.updates) != 0 || aggregate.Phase != delegatestore.PhaseRunning || aggregate.PreparedTerminal != nil {
+		t.Fatalf("failed settlement mutated state = plans:%#v aggregate:%#v", plans, aggregate)
 	}
 	if got := readDelegateControllerFile(t, path); !bytes.Equal(got, before) {
 		t.Fatalf("failed settlement changed bytes:\n got %q\nwant %q", got, before)
+	}
+	c.mu.Lock()
+	claimRetained := c.hasSettlementClaimLocked(lease)
+	c.mu.Unlock()
+	if !claimRetained {
+		t.Fatal("failed settlement released its admission fence")
+	}
+	if _, err := c.BeginSteerPersistence(rootDelegateActor("root-session"), lease.delegateID); !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("BeginSteerPersistence after failed settlement error = %v, want target busy", err)
+	}
+	if _, err := c.BeginModelRequest(lease); !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("BeginModelRequest after failed settlement error = %v, want target busy", err)
+	}
+
+	reopened, err := delegatestore.Open(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	c.mu.Lock()
+	c.store = reopened
+	c.mu.Unlock()
+	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), lease.delegateID); err != nil {
+		t.Fatalf("StopSubtree after failed settlement: %v", err)
+	}
+	c.mu.Lock()
+	claimRetained = c.hasSettlementClaimLocked(lease)
+	c.mu.Unlock()
+	if claimRetained {
+		t.Fatal("durable stop retained failed settlement claim")
 	}
 }
 

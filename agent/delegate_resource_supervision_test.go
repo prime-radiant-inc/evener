@@ -676,6 +676,11 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 	cleanupMarker := filepath.Join(lane, "ordinary-shell-cleanup.txt")
 	cleanupStarted := make(chan struct{})
 	releaseCleanup := make(chan struct{})
+	var releaseCleanupOnce sync.Once
+	releaseCleanupBarrier := func() {
+		releaseCleanupOnce.Do(func() { close(releaseCleanup) })
+	}
+	t.Cleanup(releaseCleanupBarrier)
 	signaled := make(chan struct{}, 1)
 	ownedShell := &runningJob{
 		rec: &jobstore.JobRecord{
@@ -708,9 +713,10 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 	<-cleanupStarted
 	lateSteer := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "steer after ordinary settlement claim", 0)
 	if !errors.Is(lateSteer.result.Err, errDelegateTargetBusy) {
+		releaseCleanupBarrier()
 		t.Fatalf("steer after ordinary settlement claim error = %v, want target busy", lateSteer.result.Err)
 	}
-	close(releaseCleanup)
+	releaseCleanupBarrier()
 	<-finalStatePublished
 	select {
 	case <-signaled:
