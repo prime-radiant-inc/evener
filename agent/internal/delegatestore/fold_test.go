@@ -181,6 +181,9 @@ func TestApplyStoppedExternalDeliveryRejectsInvalidTerminalPacketJSON(t *testing
 	}{
 		{name: "message", wantErr: "message", mutate: func(packet *TerminalPacket) { packet.Message = json.RawMessage(`not-json`) }},
 		{name: "structured result", wantErr: "structured result", mutate: func(packet *TerminalPacket) { packet.StructuredResult = json.RawMessage(`{`) }},
+		{name: "oversized structured result", wantErr: "exceeds", mutate: func(packet *TerminalPacket) {
+			packet.StructuredResult = json.RawMessage(`"` + strings.Repeat("x", MaxTerminalStructuredResultBytes) + `"`)
+		}},
 		{name: "metadata", wantErr: "metadata", mutate: func(packet *TerminalPacket) { packet.Metadata = json.RawMessage(`{`) }},
 	}
 
@@ -201,6 +204,60 @@ func TestApplyStoppedExternalDeliveryRejectsInvalidTerminalPacketJSON(t *testing
 			}
 			if got := stateJSON(t, state); got != want {
 				t.Fatalf("state mutated after invalid %s:\n got %s\nwant %s", test.name, got, want)
+			}
+		})
+	}
+}
+
+func TestApplyTypedExhaustionValidatesAndClonesResumability(t *testing.T) {
+	resumable := true
+	state := applyEvents(t,
+		createdEvent("dlg_alpha", ""),
+		startedEvent("dlg_alpha", 1, TriggerOwnerInput),
+		preparedEvent("dlg_alpha", 1, TerminalPacket{Kind: PacketTerminalError, Message: json.RawMessage(`"tool budget exhausted"`)}),
+	)
+	event := finishedEvent("dlg_alpha", 1, OutcomeExhausted, DispositionTerminalError, "dlg_alpha/delivery/1", nil)
+	event.RunFinished.Outcome.Reason = "tool_round_budget_exhausted"
+	event.RunFinished.Outcome.ExhaustionBudget = ExhaustionBudgetToolRounds
+	event.RunFinished.Outcome.ExhaustionLimit = 17
+	event.RunFinished.Outcome.Resumable = &resumable
+	if err := Apply(state, event); err != nil {
+		t.Fatalf("Apply typed exhaustion: %v", err)
+	}
+	resumable = false
+	got := state["dlg_alpha"].LatestOutcome
+	if got == nil || got.Status != OutcomeExhausted || got.ExhaustionBudget != ExhaustionBudgetToolRounds || got.ExhaustionLimit != 17 || got.Resumable == nil || !*got.Resumable {
+		t.Fatalf("typed exhaustion = %#v, want cloned tool-round metadata", got)
+	}
+}
+
+func TestApplyRejectsIncoherentTypedExhaustion(t *testing.T) {
+	trueValue := true
+	falseValue := false
+	tests := []struct {
+		name    string
+		outcome Outcome
+		want    string
+	}{
+		{name: "metadata on completed", outcome: Outcome{Status: OutcomeCompleted, ExhaustionBudget: ExhaustionBudgetTurns}, want: "non-exhausted"},
+		{name: "missing limit", outcome: Outcome{Status: OutcomeExhausted, Reason: "turn_budget_exhausted", ExhaustionBudget: ExhaustionBudgetTurns, Resumable: &falseValue}, want: "limit"},
+		{name: "missing resumability", outcome: Outcome{Status: OutcomeExhausted, Reason: "turn_budget_exhausted", ExhaustionBudget: ExhaustionBudgetTurns, ExhaustionLimit: 4}, want: "resumability"},
+		{name: "turn marked resumable", outcome: Outcome{Status: OutcomeExhausted, Reason: "turn_budget_exhausted", ExhaustionBudget: ExhaustionBudgetTurns, ExhaustionLimit: 4, Resumable: &trueValue}, want: "turn exhaustion is resumable"},
+		{name: "tool round marked terminal", outcome: Outcome{Status: OutcomeExhausted, Reason: "tool_round_budget_exhausted", ExhaustionBudget: ExhaustionBudgetToolRounds, ExhaustionLimit: 4, Resumable: &falseValue}, want: "tool-round exhaustion is not resumable"},
+		{name: "reason mismatch", outcome: Outcome{Status: OutcomeExhausted, Reason: "wrong", ExhaustionBudget: ExhaustionBudgetTurns, ExhaustionLimit: 4, Resumable: &falseValue}, want: "reason"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := applyEvents(t,
+				createdEvent("dlg_alpha", ""),
+				startedEvent("dlg_alpha", 1, TriggerOwnerInput),
+				preparedEvent("dlg_alpha", 1, TerminalPacket{Kind: PacketTerminalError, Message: json.RawMessage(`"exhausted"`)}),
+			)
+			event := finishedEvent("dlg_alpha", 1, test.outcome.Status, DispositionTerminalError, "dlg_alpha/delivery/1", nil)
+			event.RunFinished.Outcome = test.outcome
+			event.RunFinished.Outcome.EndedAt = time.Unix(40, 0).UTC()
+			if err := Apply(state, event); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Apply error = %v, want %q", err, test.want)
 			}
 		})
 	}

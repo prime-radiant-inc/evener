@@ -324,16 +324,20 @@ func (c *delegateTreeController) reconcileRuntimeLostFromEvidenceLocked() (deleg
 			if aggregate.PreparedTerminal == nil {
 				return delegateMutationPlans{}, fmt.Errorf("reconcile delegate %s: settling without prepared terminal", lease.delegateID)
 			}
-			outcome, disposition, reason := delegatePreparedFinish(*aggregate.PreparedTerminal)
+			finish := delegatePreparedFinish(*aggregate.PreparedTerminal)
+			if !finish.endedAt.IsZero() {
+				endedAt = finish.endedAt
+			}
 			events = []delegatestore.Event{delegateRunFinishedEvent(
 				lease,
-				outcome,
-				disposition,
-				reason,
+				finish.outcome,
+				finish.disposition,
+				finish.reason,
 				endedAt,
 				delegateDeliveryID(lease.delegateID, lease.generation),
 				nil,
 			)}
+			events = delegateFinishMetadataEvents(events, lease, finish, finish.outcome, finish.reason)
 		case delegatestore.PhaseStopping:
 			stoppedPacket := delegateStoppedTerminalPacket()
 			events = []delegatestore.Event{delegateRunFinishedEvent(

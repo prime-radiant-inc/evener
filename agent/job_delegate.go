@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/worktree"
 	"primeradiant.com/serf/agent/provenance"
@@ -2760,10 +2761,25 @@ func delegateTerminalResult(s *Session, jm *jobManager, run *runningJob) delegat
 // or the lane cannot be inspected (its sidecar or the worktree itself is gone,
 // or git fails) — a broken partial report is omitted rather than surfaced.
 func (s *Session) isolatedDelegateWorktreeReport(desc *jobstore.DelegateRestoreDescriptor) *delegateWorktreeReport {
-	if s == nil || desc == nil || strings.TrimSpace(desc.Isolation) != "worktree" {
+	if desc == nil {
 		return nil
 	}
-	lanePath := strings.TrimSpace(desc.WorkingDir)
+	report := s.delegateWorktreeReport(desc.Isolation, desc.WorkingDir)
+	if report != nil {
+		report.DisposalHint = s.delegateDisposalHint(desc, filepath.Base(report.Path))
+	}
+	return report
+}
+
+func (s *Session) stableDelegateWorktreeReport(desc delegatestore.Descriptor) *delegateWorktreeReport {
+	return s.delegateWorktreeReport(desc.Isolation, desc.WorkingDir)
+}
+
+func (s *Session) delegateWorktreeReport(isolation, workingDir string) *delegateWorktreeReport {
+	if s == nil || strings.TrimSpace(isolation) != "worktree" {
+		return nil
+	}
+	lanePath := strings.TrimSpace(workingDir)
 	if lanePath == "" {
 		return nil
 	}
@@ -2815,12 +2831,11 @@ func (s *Session) isolatedDelegateWorktreeReport(desc *jobstore.DelegateRestoreD
 		return nil
 	}
 	return &delegateWorktreeReport{
-		Path:         lanePath,
-		Branch:       sc.Branch,
-		HeadSHA:      headSHA,
-		Ahead:        ahead,
-		Dirty:        !clean,
-		DisposalHint: s.delegateDisposalHint(desc, filepath.Base(lanePath)),
+		Path:    lanePath,
+		Branch:  sc.Branch,
+		HeadSHA: headSHA,
+		Ahead:   ahead,
+		Dirty:   !clean,
 	}
 }
 

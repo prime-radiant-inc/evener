@@ -1222,6 +1222,12 @@ func (s *Session) CommunicateStructured() any {
 	return s.comm.structured
 }
 
+func (s *Session) communicateStructuredResult() (any, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.comm.structured, s.comm.structured != nil
+}
+
 // extractOriginalPrompt returns the text of the first user input in the session history.
 // If compaction removed it, falls back to the SubagentTask from config.
 func (s *Session) extractOriginalPrompt() string {

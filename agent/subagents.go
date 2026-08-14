@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	taskpkg "primeradiant.com/serf/agent/task"
 )
@@ -92,22 +93,23 @@ type subagent struct {
 	err                   error
 	resultConsumed        bool // true after the first wait returns this run's result
 	endEmitted            bool
-	runProvenance         *provenance.Causal // immutable causal provenance for the completed run result
-	runStructured         any                // communicate structured result captured before this run releases its finalization gate
-	runStructuredCaptured bool               // runStructured was captured, including an authoritative nil result
-	runFromWatch          bool               // true for a run resumed by job_watch.send; suppresses observer feedback loops
-	nudgeEnabled          bool               // true for default subagents that should be nudged to communicate
-	cancel                context.CancelFunc // cancels the current run's context
-	cancelRequested       bool               // set by parent stop so finalize maps a context.Canceled run to cancelled
-	agentType             string             // plugin agent type name; empty for default subagents
-	createdAt             time.Time          // set once at spawn; never reset on resume
-	startedAt             time.Time          // set at spawn; re-stamped at each idle-resume
-	endedAt               *time.Time         // set at run finalize; cleared to nil at idle-resume
-	closed                bool               // session torn down; record retained as terminal history
-	closeTimedOut         bool               // session-close wait exceeded its bound; close not confirmed
-	driving               bool               // a drive-down notification turn (§3) is in flight on this idle child
-	fatalRunGated         bool               // terminal run error freezes automatic drives until an explicit resume
-	finalizing            bool               // the run accepts no input while owned work drains and terminal state/notify ownership are handed off
+	runProvenance         *provenance.Causal        // immutable causal provenance for the completed run result
+	runStructured         any                       // communicate structured result captured before this run releases its finalization gate
+	runStructuredCaptured bool                      // runStructured was captured, including an authoritative nil result
+	runFromWatch          bool                      // true for a run resumed by job_watch.send; suppresses observer feedback loops
+	nudgeEnabled          bool                      // true for default subagents that should be nudged to communicate
+	cancel                context.CancelFunc        // cancels the current run's context
+	cancelRequested       bool                      // set by parent stop so finalize maps a context.Canceled run to cancelled
+	agentType             string                    // plugin agent type name; empty for default subagents
+	createdAt             time.Time                 // set once at spawn; never reset on resume
+	startedAt             time.Time                 // set at spawn; re-stamped at each idle-resume
+	endedAt               *time.Time                // set at run finalize; cleared to nil at idle-resume
+	stableDescriptor      *delegatestore.Descriptor // immutable committed identity/config for stable terminal evidence
+	closed                bool                      // session torn down; record retained as terminal history
+	closeTimedOut         bool                      // session-close wait exceeded its bound; close not confirmed
+	driving               bool                      // a drive-down notification turn (§3) is in flight on this idle child
+	fatalRunGated         bool                      // terminal run error freezes automatic drives until an explicit resume
+	finalizing            bool                      // the run accepts no input while owned work drains and terminal state/notify ownership are handed off
 	// disposeGated freezes a quiescent, retained TERMINAL child while a dispose op
 	// (spec §P1 step 4) evaluates and evicts it: no wake-edge drive may launch and
 	// no delegate_send may resume the child while it is set. Guarded by sub.mu; set
@@ -952,6 +954,10 @@ func (s *Session) prepareSubagentRunFromSelection(
 		// per-delegate sandbox; otherwise subEnv is the shared parent env.
 		ownsEnv: ownsFreshEnv,
 	}
+	if frozen != nil {
+		descriptor := cloneDelegateStartDescriptor(*frozen)
+		sub.stableDescriptor = &descriptor
+	}
 
 	// Drive-down wake (spec §3): a child's notify must reach its parent, which
 	// drives the child's own drain loop for a notification turn. This is the
@@ -1494,7 +1500,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				res = drained
 			}
 		}
-		finish = stableDelegateFinish(a.sess, res, err)
+		finish = a.stableDelegateFinish(res, err)
 		if !stableRun || a.sess.delegateController == nil {
 			break
 		}
@@ -1505,7 +1511,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		if settleErr != nil {
 			if !errors.Is(settleErr, errDelegateTargetBusy) {
 				err = errors.Join(err, settleErr)
-				finish = stableDelegateFinish(a.sess, res, err)
+				finish = a.stableDelegateFinish(res, err)
 			}
 			break
 		}
@@ -1533,7 +1539,10 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 
 	runProvenance := a.followUpProvenance(inputProvenance)
 	runStructured := a.sess.CommunicateStructured()
-	finalizeTime := a.sess.sclock().Now()
+	finalizeTime := finish.endedAt
+	if finalizeTime.IsZero() {
+		finalizeTime = a.sess.sclock().Now()
+	}
 	a.mu.Lock()
 	a.finalizing = true
 	a.result = res
@@ -1587,38 +1596,227 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 }
 
 func stableDelegateFinish(sess *Session, result string, runErr error) delegateFinish {
-	message := strings.TrimSpace(result)
-	if message == "" && runErr != nil {
-		message = runErr.Error()
+	inputs := delegateTerminalRunInputs{session: sess, result: result, runErr: runErr}
+	if sess != nil {
+		inputs.communicated = sess.Communicated()
+		inputs.structuredResult, inputs.structuredResultPresent = sess.communicateStructuredResult()
+	}
+	return stableDelegateFinishFromRun(inputs)
+}
+
+func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFinish {
+	if a == nil || a.sess == nil {
+		return stableDelegateFinish(nil, result, runErr)
+	}
+	endedAt := a.sess.sclock().Now()
+	a.mu.Lock()
+	startedAt := a.startedAt
+	var descriptor delegatestore.Descriptor
+	if a.stableDescriptor != nil {
+		descriptor = cloneDelegateStartDescriptor(*a.stableDescriptor)
+	}
+	a.mu.Unlock()
+	structuredResult, structuredResultPresent := a.sess.communicateStructuredResult()
+	inputs := delegateTerminalRunInputs{
+		session:                 a.sess,
+		result:                  result,
+		runErr:                  runErr,
+		communicated:            a.sess.Communicated(),
+		structuredResult:        structuredResult,
+		structuredResultPresent: structuredResultPresent,
+		descriptor:              descriptor,
+		startedAt:               startedAt,
+		endedAt:                 endedAt,
+		latestActivityAt:        endedAt,
+		usage:                   cumulativeUsageSnapshot(a.sess.CumulativeUsageSnapshot()),
+	}
+	reporter := a.sess
+	if controller := a.sess.delegateController; controller != nil {
+		controller.mu.Lock()
+		for _, live := range controller.live {
+			if live != nil && live.runtime == a.sess && !live.activityAt.IsZero() {
+				inputs.latestActivityAt = live.activityAt
+				break
+			}
+		}
+		if controller.rootRuntime != nil {
+			reporter = controller.rootRuntime
+		}
+		controller.mu.Unlock()
+	}
+	inputs.worktree = reporter.stableDelegateWorktreeReport(descriptor)
+	return stableDelegateFinishFromRun(inputs)
+}
+
+// delegateTerminalRunInputs is the immutable run evidence used to construct a
+// stable delegate's terminal result. The packet builder consumes this snapshot
+// after the run has finished all provider, transcript, and worktree activity.
+type delegateTerminalRunInputs struct {
+	session                 *Session
+	result                  string
+	runErr                  error
+	communicated            bool
+	structuredResult        any
+	structuredResultPresent bool
+	descriptor              delegatestore.Descriptor
+	startedAt               time.Time
+	endedAt                 time.Time
+	latestActivityAt        time.Time
+	usage                   schema.CumulativeUsage
+	warnings                []string
+	worktree                *delegateWorktreeReport
+}
+
+type delegateTerminalPacketMetadata struct {
+	Outcome             delegatestore.OutcomeStatus     `json:"outcome,omitempty"`
+	Reason              string                          `json:"reason,omitempty"`
+	Task                string                          `json:"task,omitempty"`
+	Description         string                          `json:"description,omitempty"`
+	AgentType           string                          `json:"agent_type,omitempty"`
+	RequestedModel      string                          `json:"requested_model,omitempty"`
+	ResolvedProfileID   string                          `json:"resolved_profile_id,omitempty"`
+	ResolvedModel       string                          `json:"resolved_model,omitempty"`
+	ReasoningEffort     string                          `json:"reasoning_effort,omitempty"`
+	RunStartedAt        string                          `json:"run_started_at,omitempty"`
+	RunEndedAt          string                          `json:"run_ended_at,omitempty"`
+	LatestActivityAt    string                          `json:"latest_activity_at,omitempty"`
+	CumulativeUsage     *schema.CumulativeUsage         `json:"cumulative_usage,omitempty"`
+	Worktree            *delegateTerminalWorktreeReport `json:"worktree,omitempty"`
+	ExhaustionBudget    delegatestore.ExhaustionBudget  `json:"exhaustion_budget,omitempty"`
+	ExhaustionLimit     int                             `json:"exhaustion_limit,omitempty"`
+	ExhaustionResumable *bool                           `json:"resumable,omitempty"`
+}
+
+type delegateTerminalWorktreeReport struct {
+	Path    string `json:"path"`
+	Branch  string `json:"branch"`
+	HeadSHA string `json:"head_sha"`
+	Ahead   int    `json:"ahead"`
+	Dirty   bool   `json:"dirty"`
+}
+
+// stableDelegateFinishFromRun constructs the one immutable packet used by
+// settlement, crash replay, and owner delivery.
+func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinish {
+	message := strings.TrimSpace(inputs.result)
+	if message == "" && inputs.runErr != nil {
+		message = inputs.runErr.Error()
 	}
 	rawMessage, _ := json.Marshal(message)
-	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: rawMessage}
+	packet := delegatestore.TerminalPacket{
+		Kind:     delegatestore.PacketTerminalError,
+		Message:  rawMessage,
+		Warnings: append([]string(nil), inputs.warnings...),
+	}
 	finish := delegateFinish{
 		outcome:     delegatestore.OutcomeFailed,
 		disposition: delegatestore.DispositionTerminalError,
 		reason:      "failed",
 		packet:      &packet,
+		endedAt:     inputs.endedAt,
 	}
-	if runErr == nil && sess != nil && sess.Communicated() {
+	metadata := delegateTerminalMetadataFromRun(inputs)
+	if inputs.runErr == nil && inputs.communicated {
 		packet.Kind = delegatestore.PacketReported
 		finish.outcome = delegatestore.OutcomeCompleted
 		finish.disposition = delegatestore.DispositionReported
 		finish.reason = ""
-		if structured := sess.CommunicateStructured(); structured != nil {
-			packet.StructuredResult, _ = json.Marshal(structured)
-			valid := true
-			packet.StructuredResultValid = &valid
-		}
-		return finish
-	}
-	if exhaustion, exhausted := budgetExhaustionFromError(runErr); exhausted {
+		captureDelegateStructuredResult(&packet, inputs)
+	} else if exhaustion, exhausted := budgetExhaustionFromError(inputs.runErr); exhausted {
 		finish.outcome = delegatestore.OutcomeExhausted
-		finish.reason = exhaustion.Error()
-	} else if errors.Is(runErr, context.Canceled) {
+		finish.reason = exhaustion.reason()
+		finish.exhaustionBudget = delegatestore.ExhaustionBudget(exhaustion.Budget)
+		finish.exhaustionLimit = exhaustion.Limit
+		resumable := exhaustion.Resumable
+		finish.exhaustionResumable = &resumable
+		metadata.ExhaustionBudget = finish.exhaustionBudget
+		metadata.ExhaustionLimit = exhaustion.Limit
+		metadata.ExhaustionResumable = &resumable
+	} else if errors.Is(inputs.runErr, context.Canceled) {
 		finish.outcome = delegatestore.OutcomeCancelled
 		finish.reason = "cancelled"
 	}
+	metadata.Outcome = finish.outcome
+	metadata.Reason = finish.reason
+	if raw, err := json.Marshal(metadata); err == nil && string(raw) != "{}" {
+		packet.Metadata = raw
+	}
 	return finish
+}
+
+func captureDelegateStructuredResult(packet *delegatestore.TerminalPacket, inputs delegateTerminalRunInputs) {
+	if packet == nil {
+		return
+	}
+	if !inputs.structuredResultPresent {
+		if len(inputs.descriptor.ResultSchema) != 0 {
+			valid := false
+			packet.StructuredResultValid = &valid
+			packet.StructuredResultReason = structuredResultReasonSchemaResultMissing
+		}
+		return
+	}
+	raw, err := json.Marshal(inputs.structuredResult)
+	if err != nil {
+		valid := false
+		packet.StructuredResultValid = &valid
+		packet.StructuredResultReason = structuredResultReasonSchemaCaptureFailed
+		return
+	}
+	if len(raw) > delegatestore.MaxTerminalStructuredResultBytes {
+		valid := false
+		packet.StructuredResultValid = &valid
+		packet.StructuredResultReason = structuredResultReasonSchemaResultTooLarge
+		return
+	}
+	packet.StructuredResult = append(json.RawMessage(nil), raw...)
+	valid := true
+	packet.StructuredResultValid = &valid
+	if len(inputs.descriptor.ResultSchema) == 0 {
+		return
+	}
+	var schemaValue any
+	var structuredValue any
+	if err := json.Unmarshal(inputs.descriptor.ResultSchema, &schemaValue); err != nil || json.Unmarshal(raw, &structuredValue) != nil || validateStructuredResult(structuredValue, schemaValue) != nil {
+		valid = false
+		packet.StructuredResultValid = &valid
+		packet.StructuredResultReason = structuredResultReasonSchemaValidationFailed
+	}
+}
+
+func delegateTerminalMetadataFromRun(inputs delegateTerminalRunInputs) delegateTerminalPacketMetadata {
+	metadata := delegateTerminalPacketMetadata{
+		Task:              inputs.descriptor.Task,
+		Description:       inputs.descriptor.Description,
+		AgentType:         inputs.descriptor.AgentType,
+		RequestedModel:    inputs.descriptor.RequestedModel,
+		ResolvedProfileID: inputs.descriptor.ResolvedProfileID,
+		ResolvedModel:     inputs.descriptor.ResolvedModel,
+		ReasoningEffort:   inputs.descriptor.Config.ReasoningEffort,
+	}
+	if !inputs.startedAt.IsZero() {
+		metadata.RunStartedAt = inputs.startedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !inputs.endedAt.IsZero() {
+		metadata.RunEndedAt = inputs.endedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !inputs.latestActivityAt.IsZero() {
+		metadata.LatestActivityAt = inputs.latestActivityAt.UTC().Format(time.RFC3339Nano)
+	}
+	if inputs.usage != (schema.CumulativeUsage{}) {
+		usage := inputs.usage
+		metadata.CumulativeUsage = &usage
+	}
+	if inputs.worktree != nil {
+		metadata.Worktree = &delegateTerminalWorktreeReport{
+			Path:    inputs.worktree.Path,
+			Branch:  inputs.worktree.Branch,
+			HeadSHA: inputs.worktree.HeadSHA,
+			Ahead:   inputs.worktree.Ahead,
+			Dirty:   inputs.worktree.Dirty,
+		}
+	}
+	return metadata
 }
 
 func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err error, inputProvenance *provenance.Causal) (string, error) {

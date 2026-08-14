@@ -51,16 +51,20 @@ type delegateStartCommit struct {
 	plan           delegateUpdatePlan
 	ctx            context.Context
 	descriptor     delegatestore.Descriptor
+	startedAt      time.Time
 	transcriptPath string
 	worktreePath   string
 }
 
 type delegateFinish struct {
-	outcome     delegatestore.OutcomeStatus
-	disposition delegatestore.RunDisposition
-	reason      string
-	packet      *delegatestore.TerminalPacket
-	endedAt     time.Time
+	outcome             delegatestore.OutcomeStatus
+	disposition         delegatestore.RunDisposition
+	reason              string
+	packet              *delegatestore.TerminalPacket
+	endedAt             time.Time
+	exhaustionBudget    delegatestore.ExhaustionBudget
+	exhaustionLimit     int
+	exhaustionResumable *bool
 }
 
 type delegateCommittedStartFailureDisposition uint8
@@ -590,6 +594,7 @@ func (c *delegateTreeController) CommitStart(reservation *delegateStartReservati
 		plan:           c.capturedPlanLocked(record.delegateID),
 		ctx:            record.ctx,
 		descriptor:     cloneDelegateStartDescriptor(record.descriptor),
+		startedAt:      startedAt,
 		transcriptPath: record.transcriptPath,
 		worktreePath:   record.worktreePath,
 	}, nil

@@ -319,6 +319,7 @@ func cloneEvent(event Event) Event {
 	}
 	if event.RunFinished != nil {
 		payload := *event.RunFinished
+		payload.Outcome = *cloneOutcome(&event.RunFinished.Outcome)
 		payload.Packet = cloneTerminalPacket(event.RunFinished.Packet)
 		clone.RunFinished = &payload
 	}

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/task"
 )
@@ -97,6 +98,85 @@ func TestStoreAppendBatchIsOneCrashAtomicLine(t *testing.T) {
 	}
 	if !reflect.DeepEqual(aggregate.Descriptor.ToolNameCeiling, wantToolNameCeiling) {
 		t.Fatalf("reopened tool name ceiling = %#v, want %#v", aggregate.Descriptor.ToolNameCeiling, wantToolNameCeiling)
+	}
+}
+
+func TestStoreRoundTripsCanonicalPacketAndTypedExhaustion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	_, state, err := store.AppendBatch(make(State), []Event{
+		createdEvent("dlg_alpha", ""),
+		startedEvent("dlg_alpha", 1, TriggerInitial),
+	})
+	if err != nil {
+		t.Fatalf("Append create/start: %v", err)
+	}
+	resumable := false
+	packet := TerminalPacket{
+		Kind:     PacketTerminalError,
+		Message:  json.RawMessage(`"max_turns exhausted at limit 23"`),
+		Warnings: []string{"terminal warning"},
+		Metadata: json.RawMessage(`{"exhaustion_budget":"max_turns","exhaustion_limit":23,"resumable":false}`),
+	}
+	assigned, accepted, err := store.AppendBatch(state, []Event{
+		preparedEvent("dlg_alpha", 1, packet),
+		{
+			Kind:       EventDelegateRunFinished,
+			DelegateID: "dlg_alpha",
+			RunFinished: &RunFinished{
+				Generation: 1,
+				Outcome: Outcome{
+					Status:           OutcomeExhausted,
+					Reason:           "turn_budget_exhausted",
+					EndedAt:          time.Unix(23, 0).UTC(),
+					ExhaustionBudget: ExhaustionBudgetTurns,
+					ExhaustionLimit:  23,
+					Resumable:        &resumable,
+				},
+				Disposition: DispositionTerminalError,
+				DeliveryID:  "dlg_alpha/delivery/1",
+			},
+		},
+		{
+			Kind:               EventDelegateResumabilityClosed,
+			DelegateID:         "dlg_alpha",
+			ResumabilityClosed: &ResumabilityClosed{Reason: "turn_budget_exhausted"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Append terminal batch: %v", err)
+	}
+	packet.Warnings[0] = "caller mutation"
+	packet.Metadata[2] = 'x'
+	resumable = true
+	if got := assigned[1].RunFinished.Outcome.Resumable; got == nil || *got {
+		t.Fatalf("assigned terminal event aliased caller resumability: %v", got)
+	}
+	if got := accepted["dlg_alpha"]; got.Phase != PhaseClosed || got.LatestOutcome == nil || got.LatestOutcome.Resumable == nil || *got.LatestOutcome.Resumable || got.PendingDeliveries[0].Packet.Warnings[0] != "terminal warning" || !json.Valid(got.PendingDeliveries[0].Packet.Metadata) {
+		t.Fatalf("accepted terminal aggregate aliased caller data: %#v", got)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	events, err := reopened.Load()
+	if err != nil {
+		t.Fatalf("Load reopened: %v", err)
+	}
+	replayed, err := Fold(events)
+	if err != nil {
+		t.Fatalf("Fold reopened: %v", err)
+	}
+	if !reflect.DeepEqual(replayed, accepted) {
+		t.Fatalf("replayed terminal aggregate differs:\n got %#v\nwant %#v", replayed["dlg_alpha"], accepted["dlg_alpha"])
 	}
 }
 

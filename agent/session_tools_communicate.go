@@ -93,7 +93,11 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			if endTurn {
 				deps.setCommunicateResult(message, resultText, structuredText)
 				if explicitStructuredOutput {
-					deps.setCommunicateStructured(rawOutput)
+					capturedOutput := rawOutput
+					if capturedOutput == nil && outputPresent {
+						capturedOutput = json.RawMessage(`null`)
+					}
+					deps.setCommunicateStructured(capturedOutput)
 				}
 				if deps.deliverWatchCallback != nil {
 					deps.deliverWatchCallback(watchCommunicateCallbackText(message, structuredText))

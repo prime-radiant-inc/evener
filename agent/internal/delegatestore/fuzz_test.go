@@ -58,13 +58,22 @@ func FuzzStoreReplay(f *testing.F) {
 			t.Fatalf("marshal message: %v", err)
 		}
 		packet := TerminalPacket{Kind: PacketReported, Message: messageJSON, StructuredResult: json.RawMessage(`{"ok":true}`)}
-		outcome := OutcomeCompleted
+		outcome := Outcome{Status: OutcomeCompleted, EndedAt: time.Unix(20, 0).UTC()}
 		disposition := DispositionReported
 		if terminalError {
 			packet.Kind = PacketTerminalError
 			packet.StructuredResult = nil
-			outcome = OutcomeFailed
+			outcome.Status = OutcomeFailed
 			disposition = DispositionTerminalError
+			if len(message) > 0 && message[0]&1 == 1 {
+				resumable := true
+				outcome.Status = OutcomeExhausted
+				outcome.Reason = "tool_round_budget_exhausted"
+				outcome.ExhaustionBudget = ExhaustionBudgetToolRounds
+				outcome.ExhaustionLimit = int(message[0]) + 1
+				outcome.Resumable = &resumable
+				packet.Metadata = json.RawMessage(fmt.Sprintf(`{"exhaustion_budget":"%s","exhaustion_limit":%d,"resumable":true}`, outcome.ExhaustionBudget, outcome.ExhaustionLimit))
+			}
 		}
 
 		path := filepath.Join(t.TempDir(), "delegates.jsonl")
@@ -95,7 +104,7 @@ func FuzzStoreReplay(f *testing.F) {
 				DelegateID: "dlg_fuzz",
 				RunFinished: &RunFinished{
 					Generation:  1,
-					Outcome:     Outcome{Status: outcome, EndedAt: time.Unix(20, 0).UTC()},
+					Outcome:     outcome,
 					Disposition: disposition,
 					DeliveryID:  "dlg_fuzz/delivery/1",
 				},

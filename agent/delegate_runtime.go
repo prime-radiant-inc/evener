@@ -145,7 +145,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	s.mu.Unlock()
 	sub.mu.Lock()
 	sub.fatalRunGated = false
-	resetSubagentForRunLocked(sub, runCancel, s.sclock().Now())
+	resetSubagentForRunLocked(sub, runCancel, started.startedAt)
 	sub.mu.Unlock()
 	if restored {
 		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
@@ -199,23 +199,58 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		return stableDelegateSendOutcome{result: result}
 	}
 	result.RunningInBackground = false
-	result.Status = jobstore.StatusCompleted
 	result.Action = "completed"
-	if resolution.packet.Kind != delegatestore.PacketReported {
+	populateStableDelegateSendResult(&result, *resolution.packet)
+	return stableDelegateSendOutcome{result: result, commit: resolution.commit}
+}
+
+func populateStableDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket) {
+	if result == nil {
+		return
+	}
+	finish := delegatePreparedFinish(packet)
+	switch finish.outcome {
+	case delegatestore.OutcomeCompleted:
+		result.Status = jobstore.StatusCompleted
+	case delegatestore.OutcomeCancelled:
+		result.Status = jobstore.StatusCancelled
+	case delegatestore.OutcomeStopped:
+		result.Status = jobstore.StatusStopped
+	case delegatestore.OutcomeExhausted:
+		result.Status = jobstore.StatusExhausted
+	default:
 		result.Status = jobstore.StatusFailed
 	}
-	if len(resolution.packet.Message) != 0 {
-		_ = json.Unmarshal(resolution.packet.Message, &result.Output)
+	result.Reason = finish.reason
+	result.ExhaustionBudget = string(finish.exhaustionBudget)
+	result.ExhaustionLimit = finish.exhaustionLimit
+	if finish.exhaustionResumable != nil {
+		resumable := *finish.exhaustionResumable
+		result.Resumable = &resumable
 	}
-	if len(resolution.packet.StructuredResult) != 0 {
+	if len(packet.Message) != 0 {
+		_ = json.Unmarshal(packet.Message, &result.Output)
+	}
+	if len(packet.StructuredResult) != 0 {
+		result.StructuredResult = append(json.RawMessage(nil), packet.StructuredResult...)
+	}
+	if len(packet.StructuredResult) != 0 || packet.StructuredResultValid != nil {
 		result.StructuredResultValidSet = true
-		if resolution.packet.StructuredResultValid != nil {
-			result.StructuredResultValid = *resolution.packet.StructuredResultValid
+		if packet.StructuredResultValid != nil {
+			result.StructuredResultValid = *packet.StructuredResultValid
 		}
-		result.StructuredResultReason = resolution.packet.StructuredResultReason
-		_ = json.Unmarshal(resolution.packet.StructuredResult, &result.StructuredResult)
+		result.StructuredResultReason = packet.StructuredResultReason
 	}
-	return stableDelegateSendOutcome{result: result, commit: resolution.commit}
+	var metadata delegateTerminalPacketMetadata
+	if err := json.Unmarshal(packet.Metadata, &metadata); err == nil && metadata.Worktree != nil {
+		result.Worktree = &delegateWorktreeReport{
+			Path:    metadata.Worktree.Path,
+			Branch:  metadata.Worktree.Branch,
+			HeadSHA: metadata.Worktree.HeadSHA,
+			Ahead:   metadata.Worktree.Ahead,
+			Dirty:   metadata.Worktree.Dirty,
+		}
+	}
 }
 
 func descriptorProvenance(descriptor delegatestore.Descriptor) *provenance.Causal {
@@ -575,6 +610,7 @@ func (runtime delegateRuntime) construct(ctx context.Context, args delegateArgs,
 	prepared.runCancel = runCancel
 	prepared.sub.mu.Lock()
 	prepared.sub.cancel = runCancel
+	prepared.sub.startedAt = started.startedAt
 	prepared.sub.mu.Unlock()
 	return prepared, nil
 }
@@ -696,17 +732,19 @@ func (runtime delegateRuntime) restoreIdle(reservation *delegateStartReservation
 		}
 	}
 	now := s.sclock().Now()
+	stableDescriptor := cloneDelegateStartDescriptor(descriptor)
 	sub := &subagent{
-		id:           descriptor.ChildSessionID,
-		sess:         child,
-		emit:         s.emit,
-		status:       SubagentCompleted,
-		nudgeEnabled: descriptor.Config.AgentName == "subagent",
-		agentType:    descriptor.AgentType,
-		createdAt:    now,
-		startedAt:    now,
-		endedAt:      &now,
-		ownsEnv:      ownsFresh,
+		id:               descriptor.ChildSessionID,
+		sess:             child,
+		emit:             s.emit,
+		status:           SubagentCompleted,
+		nudgeEnabled:     descriptor.Config.AgentName == "subagent",
+		agentType:        descriptor.AgentType,
+		createdAt:        now,
+		startedAt:        now,
+		endedAt:          &now,
+		stableDescriptor: &stableDescriptor,
+		ownsEnv:          ownsFresh,
 	}
 	child.SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })
 	return sub, true, nil

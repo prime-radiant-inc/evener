@@ -173,6 +173,9 @@ func applyRunFinished(state State, event Event) error {
 	if !validOutcomeStatus(payload.Outcome.Status) {
 		return fmt.Errorf("delegate %q has invalid outcome %q", event.DelegateID, payload.Outcome.Status)
 	}
+	if err := validateOutcome(payload.Outcome); err != nil {
+		return fmt.Errorf("delegate %q outcome: %w", event.DelegateID, err)
+	}
 	if payload.Outcome.EndedAt.IsZero() {
 		return fmt.Errorf("delegate %q finish time is zero", event.DelegateID)
 	}
@@ -200,13 +203,13 @@ func applyRunFinished(state State, event Event) error {
 				return err
 			}
 		}
-		aggregate.LatestOutcome = &outcome
+		aggregate.LatestOutcome = cloneOutcome(&outcome)
 	} else {
 		if err := validateFinishPacket(aggregate, payload, packet); err != nil {
 			return err
 		}
 		outcome := payload.Outcome
-		aggregate.LatestOutcome = &outcome
+		aggregate.LatestOutcome = cloneOutcome(&outcome)
 		if payload.Disposition != DispositionCompletedNoAction {
 			if err := appendDelivery(aggregate, payload.DeliveryID, payload.Generation, packet); err != nil {
 				return err
@@ -468,6 +471,9 @@ func validateTerminalPacket(packet TerminalPacket) error {
 	if len(packet.StructuredResult) > 0 && !json.Valid(packet.StructuredResult) {
 		return fmt.Errorf("structured result is not valid JSON")
 	}
+	if len(packet.StructuredResult) > MaxTerminalStructuredResultBytes {
+		return fmt.Errorf("structured result exceeds %d bytes", MaxTerminalStructuredResultBytes)
+	}
 	if len(packet.Metadata) > 0 && !json.Valid(packet.Metadata) {
 		return fmt.Errorf("metadata is not valid JSON")
 	}
@@ -581,6 +587,40 @@ func validOutcomeStatus(status OutcomeStatus) bool {
 	}
 }
 
+func validateOutcome(outcome Outcome) error {
+	if outcome.Status != OutcomeExhausted {
+		if outcome.ExhaustionBudget != "" || outcome.ExhaustionLimit != 0 || outcome.Resumable != nil {
+			return fmt.Errorf("non-exhausted outcome carries exhaustion metadata")
+		}
+		return nil
+	}
+	if outcome.ExhaustionLimit <= 0 {
+		return fmt.Errorf("exhaustion limit must be positive")
+	}
+	if outcome.Resumable == nil {
+		return fmt.Errorf("exhausted outcome omits resumability")
+	}
+	switch outcome.ExhaustionBudget {
+	case ExhaustionBudgetToolRounds:
+		if outcome.Reason != "tool_round_budget_exhausted" {
+			return fmt.Errorf("tool-round exhaustion reason is %q", outcome.Reason)
+		}
+		if !*outcome.Resumable {
+			return fmt.Errorf("tool-round exhaustion is not resumable")
+		}
+	case ExhaustionBudgetTurns:
+		if outcome.Reason != "turn_budget_exhausted" {
+			return fmt.Errorf("turn exhaustion reason is %q", outcome.Reason)
+		}
+		if *outcome.Resumable {
+			return fmt.Errorf("turn exhaustion is resumable")
+		}
+	default:
+		return fmt.Errorf("invalid exhaustion budget %q", outcome.ExhaustionBudget)
+	}
+	return nil
+}
+
 func validDisposition(disposition RunDisposition) bool {
 	return disposition == DispositionReported || disposition == DispositionTerminalError || disposition == DispositionCompletedNoAction
 }
@@ -675,5 +715,9 @@ func cloneOutcome(outcome *Outcome) *Outcome {
 		return nil
 	}
 	clone := *outcome
+	if outcome.Resumable != nil {
+		resumable := *outcome.Resumable
+		clone.Resumable = &resumable
+	}
 	return &clone
 }

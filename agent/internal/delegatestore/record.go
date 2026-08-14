@@ -47,7 +47,16 @@ const (
 	OutcomeStopped   OutcomeStatus = "stopped"
 )
 
+type ExhaustionBudget string
+
+const (
+	ExhaustionBudgetTurns      ExhaustionBudget = "max_turns"
+	ExhaustionBudgetToolRounds ExhaustionBudget = "max_tool_rounds_per_input"
+)
+
 type PacketKind string
+
+const MaxTerminalStructuredResultBytes = 1024 * 1024
 
 const (
 	PacketReported      PacketKind = "reported"
@@ -115,9 +124,12 @@ type Aggregate struct {
 }
 
 type Outcome struct {
-	Status  OutcomeStatus `json:"status"`
-	Reason  string        `json:"reason,omitempty"`
-	EndedAt time.Time     `json:"ended_at"`
+	Status           OutcomeStatus    `json:"status"`
+	Reason           string           `json:"reason,omitempty"`
+	EndedAt          time.Time        `json:"ended_at"`
+	ExhaustionBudget ExhaustionBudget `json:"exhaustion_budget,omitempty"`
+	ExhaustionLimit  int              `json:"exhaustion_limit,omitempty"`
+	Resumable        *bool            `json:"resumable,omitempty"`
 }
 
 type TerminalPacket struct {

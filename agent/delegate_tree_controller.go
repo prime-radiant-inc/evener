@@ -308,6 +308,10 @@ func captureDelegateSnapshot(aggregate *delegatestore.Aggregate) delegateSnapsho
 	var outcome *delegatestore.Outcome
 	if aggregate.LatestOutcome != nil {
 		value := *aggregate.LatestOutcome
+		if aggregate.LatestOutcome.Resumable != nil {
+			resumable := *aggregate.LatestOutcome.Resumable
+			value.Resumable = &resumable
+		}
 		outcome = &value
 	}
 	return delegateSnapshot{

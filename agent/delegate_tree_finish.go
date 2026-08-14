@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
@@ -74,7 +75,16 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 		if aggregate.PreparedTerminal == nil {
 			return delegateMutationPlans{}, fmt.Errorf("delegate %q settling without prepared terminal", lease.delegateID)
 		}
-		outcome, disposition, reason = delegatePreparedFinish(*aggregate.PreparedTerminal)
+		preparedFinish := delegatePreparedFinish(*aggregate.PreparedTerminal)
+		outcome, disposition, reason = preparedFinish.outcome, preparedFinish.disposition, preparedFinish.reason
+		if aggregate.PreparedTerminal.Kind == delegatestore.PacketTerminalError &&
+			!delegateIsMissingTerminalPacket(*aggregate.PreparedTerminal) && finish.outcome != "" && finish.outcome != delegatestore.OutcomeCompleted {
+			outcome = finish.outcome
+			disposition = delegatestore.DispositionTerminalError
+			reason = finish.reason
+		} else if preparedFinish.outcome == delegatestore.OutcomeExhausted {
+			finish = preparedFinish
+		}
 		deliveryID = delegateDeliveryID(lease.delegateID, lease.generation)
 		events = []delegatestore.Event{delegateRunFinishedEvent(lease, outcome, disposition, reason, endedAt, deliveryID, nil)}
 
@@ -125,6 +135,7 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 	default:
 		return delegateMutationPlans{}, errDelegateTargetBusy
 	}
+	events = delegateFinishMetadataEvents(events, lease, finish, outcome, reason)
 
 	if _, err := c.appendLocked(events...); err != nil {
 		return delegateMutationPlans{}, err
@@ -132,6 +143,33 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 	plans, generationCancel := c.generationFinishedPlansLocked(lease, deliveryID)
 	cancel = generationCancel
 	return plans, nil
+}
+
+func delegateFinishMetadataEvents(events []delegatestore.Event, lease delegateLease, finish delegateFinish, outcome delegatestore.OutcomeStatus, reason string) []delegatestore.Event {
+	if outcome != delegatestore.OutcomeExhausted {
+		return events
+	}
+	for i := range events {
+		if events[i].RunFinished == nil {
+			continue
+		}
+		events[i].RunFinished.Outcome.ExhaustionBudget = finish.exhaustionBudget
+		events[i].RunFinished.Outcome.ExhaustionLimit = finish.exhaustionLimit
+		if finish.exhaustionResumable != nil {
+			resumable := *finish.exhaustionResumable
+			events[i].RunFinished.Outcome.Resumable = &resumable
+		}
+	}
+	if finish.exhaustionResumable != nil && !*finish.exhaustionResumable {
+		events = append(events, delegatestore.Event{
+			Kind:       delegatestore.EventDelegateResumabilityClosed,
+			DelegateID: lease.delegateID,
+			ResumabilityClosed: &delegatestore.ResumabilityClosed{
+				Reason: reason,
+			},
+		})
+	}
+	return events
 }
 
 func (c *delegateTreeController) generationFinishedPlansLocked(lease delegateLease, deliveryID string) (delegateMutationPlans, context.CancelFunc) {
@@ -211,14 +249,70 @@ func delegatePacketDisposition(packet delegatestore.TerminalPacket) delegatestor
 	return delegatestore.DispositionTerminalError
 }
 
-func delegatePreparedFinish(packet delegatestore.TerminalPacket) (delegatestore.OutcomeStatus, delegatestore.RunDisposition, string) {
+func delegatePreparedFinish(packet delegatestore.TerminalPacket) delegateFinish {
+	finish := delegateFinish{outcome: delegatestore.OutcomeFailed, disposition: delegatestore.DispositionTerminalError, reason: "terminal_error"}
 	if packet.Kind == delegatestore.PacketReported {
-		return delegatestore.OutcomeCompleted, delegatestore.DispositionReported, ""
+		finish = delegateFinish{outcome: delegatestore.OutcomeCompleted, disposition: delegatestore.DispositionReported}
 	}
 	if delegateIsMissingTerminalPacket(packet) {
-		return delegatestore.OutcomeFailed, delegatestore.DispositionTerminalError, "missing_terminal"
+		return delegateFinish{outcome: delegatestore.OutcomeFailed, disposition: delegatestore.DispositionTerminalError, reason: "missing_terminal"}
 	}
-	return delegatestore.OutcomeFailed, delegatestore.DispositionTerminalError, "terminal_error"
+	if len(packet.Metadata) == 0 {
+		return finish
+	}
+	var metadata delegateTerminalPacketMetadata
+	if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
+		return finish
+	}
+	if endedAt, err := time.Parse(time.RFC3339Nano, metadata.RunEndedAt); err == nil {
+		finish.endedAt = endedAt
+	}
+	if packet.Kind == delegatestore.PacketReported {
+		return finish
+	}
+	switch metadata.Outcome {
+	case delegatestore.OutcomeCancelled:
+		if metadata.Reason == "cancelled" {
+			finish.outcome = delegatestore.OutcomeCancelled
+			finish.reason = metadata.Reason
+		}
+		return finish
+	case delegatestore.OutcomeFailed:
+		reason := strings.TrimSpace(metadata.Reason)
+		if reason != "" {
+			if len(reason) > delegateFinishReasonLimit {
+				reason = reason[:delegateFinishReasonLimit]
+			}
+			finish.reason = reason
+		}
+		return finish
+	case delegatestore.OutcomeExhausted:
+	default:
+		return finish
+	}
+	if metadata.ExhaustionLimit <= 0 || metadata.ExhaustionResumable == nil {
+		return finish
+	}
+	resumable := *metadata.ExhaustionResumable
+	switch metadata.ExhaustionBudget {
+	case delegatestore.ExhaustionBudgetToolRounds:
+		if !resumable {
+			return finish
+		}
+		finish.reason = "tool_round_budget_exhausted"
+	case delegatestore.ExhaustionBudgetTurns:
+		if resumable {
+			return finish
+		}
+		finish.reason = "turn_budget_exhausted"
+	default:
+		return finish
+	}
+	finish.outcome = delegatestore.OutcomeExhausted
+	finish.exhaustionBudget = metadata.ExhaustionBudget
+	finish.exhaustionLimit = metadata.ExhaustionLimit
+	finish.exhaustionResumable = &resumable
+	return finish
 }
 
 func cloneDelegateTerminalPacket(packet delegatestore.TerminalPacket) delegatestore.TerminalPacket {
