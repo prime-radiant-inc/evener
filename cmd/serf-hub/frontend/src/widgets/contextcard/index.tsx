@@ -26,9 +26,15 @@ const CLASS = {
 
 // A web source gets the globe glyph, anything else (a file path, a doc
 // name) gets the file glyph - the same "shape of source" distinction
-// ToolIcon's own kinds already draw for tool rows.
+// ToolIcon's own kinds already draw for tool rows. The same test decides
+// link behavior: a web href leaves the app, so it opens in the reader's
+// own browser with the opener severed; anything else stays in-app.
+function isWebHref(href: string | undefined): boolean {
+  return href !== undefined && /^https?:\/\//.test(href);
+}
+
 function glyphKindFor(href: string | undefined): "globe" | "file" {
-  return href !== undefined && /^https?:\/\//.test(href) ? "globe" : "file";
+  return isWebHref(href) ? "globe" : "file";
 }
 
 /**
@@ -52,8 +58,9 @@ export function ContextCard({ source, snippet, meta, href }: ContextCardProps) {
   );
 
   if (href !== undefined) {
+    const external = isWebHref(href) ? { target: "_blank", rel: "noopener noreferrer" } : {};
     return (
-      <a className={CLASS.card} href={href}>
+      <a className={CLASS.card} href={href} {...external}>
         {content}
       </a>
     );

@@ -47,6 +47,28 @@ test("web_fetch: body shows the extracted `answer` field, not the raw JSON envel
   expect(screen.queryByText(/"answer"/)).toBeNull();
 });
 
+test("web_fetch: body is a ContextCard - source line, snippet, and the page's real size as meta", () => {
+  const d = toolRendererFor("web_fetch");
+  const Body = d.body!;
+  const args = JSON.stringify({ url: "https://example.com/page", question: "q" });
+  const output = JSON.stringify({ answer: "The page says hello.", url: "https://example.com/page", size_bytes: 4096 });
+  render(<Body item={item({ toolName: "web_fetch", argumentsJSON: args, output })} live={false} />);
+  expect(screen.getByText("https://example.com/page")).toBeTruthy();
+  expect(screen.getByText("4096 bytes")).toBeTruthy();
+  expect(screen.getByText("The page says hello.")).toBeTruthy();
+});
+
+test("web_fetch: a non-http(s) url still shows as the source line's text, just never as a link", () => {
+  const d = toolRendererFor("web_fetch");
+  const Body = d.body!;
+  const args = JSON.stringify({ url: "ftp://example.com/file", question: "q" });
+  render(
+    <Body item={item({ toolName: "web_fetch", argumentsJSON: args, output: "unsupported scheme" })} live={false} />,
+  );
+  expect(screen.getByText("ftp://example.com/file")).toBeTruthy();
+  expect(screen.queryByRole("link")).toBeNull();
+});
+
 test("web_fetch: body falls back to the raw output text when it isn't parseable JSON", () => {
   const d = toolRendererFor("web_fetch");
   const Body = d.body!;
@@ -119,7 +141,7 @@ test("kata tcp9: body renders the fetched URL as a link that opens in the user's
   const args = JSON.stringify({ url: "https://example.com/page", question: "q" });
   const output = JSON.stringify({ answer: "Hello.", url: "https://example.com/page", size_bytes: 6 });
   render(<Body item={item({ toolName: "web_fetch", argumentsJSON: args, output })} live={false} />);
-  const link = screen.getByRole("link", { name: "https://example.com/page" }) as HTMLAnchorElement;
+  const link = screen.getByRole("link", { name: /https:\/\/example\.com\/page/ }) as HTMLAnchorElement;
   expect(link.getAttribute("href")).toBe("https://example.com/page");
   expect(link.getAttribute("target")).toBe("_blank");
   expect(link.getAttribute("rel")).toBe("noopener noreferrer");

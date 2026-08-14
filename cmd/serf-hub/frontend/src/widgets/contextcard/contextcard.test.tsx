@@ -41,6 +41,20 @@ test("renders as a link carrying the card class when href is given", () => {
   expect(link?.classList.contains(styles.card)).toBe(true);
 });
 
+test("an http(s) href opens in the user's own browser - new tab, opener severed", () => {
+  render(<ContextCard source="agent-notes.md" snippet="s" href="https://example.com/doc" />);
+  const link = screen.getByRole("link") as HTMLAnchorElement;
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+});
+
+test("a non-web href stays an in-app navigation - no forced new tab", () => {
+  render(<ContextCard source="agent-notes.md" snippet="s" href="/docs/agent-notes" />);
+  const link = screen.getByRole("link") as HTMLAnchorElement;
+  expect(link.getAttribute("target")).toBeNull();
+  expect(link.getAttribute("rel")).toBeNull();
+});
+
 test("renders a leading glyph before the source line", () => {
   const { container } = render(<ContextCard source="agent-notes.md" snippet="s" />);
   expect(container.querySelector("svg")).toBeTruthy();

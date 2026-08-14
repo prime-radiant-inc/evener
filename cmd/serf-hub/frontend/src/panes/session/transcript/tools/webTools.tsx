@@ -21,6 +21,7 @@
 
 import type { ReactNode } from "react";
 import type { ItemModel } from "../../../../protocol/model";
+import { ContextCard } from "../../../../widgets/contextcard";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { clip, formatByteCount, parseArgs, parseJSONObject, str } from "./helpers";
@@ -107,23 +108,23 @@ function webFetchLink(item: { argumentsJSON?: string }): string | undefined {
   return url.startsWith("https://") || url.startsWith("http://") ? url : undefined;
 }
 
+// The body is a ContextCard: the fetched URL as the source line, the
+// model's extracted answer as the snippet, the page's real size as the
+// meta caption. The card's href goes through webFetchLink's http(s)-only
+// rule (tcp9), so a non-web url still shows as source *text* but the card
+// never becomes a link for it.
 function WebFetchBody({ item }: ToolRenderProps) {
   const output = item.output ?? "";
   if (output === "") return null;
   const parsed = parseJSONObject(output);
   const answer = parsed ? str(parsed, "answer") : undefined;
-  const url = webFetchLink(item);
   return (
-    <div>
-      {url !== undefined && (
-        <div>
-          <a href={url} target="_blank" rel="noopener noreferrer">
-            {url}
-          </a>
-        </div>
-      )}
-      {clip(answer ?? output, 240)}
-    </div>
+    <ContextCard
+      source={str(parseArgs(item.argumentsJSON), "url") ?? ""}
+      snippet={clip(answer ?? output, 240)}
+      meta={formatByteCount(webFetchByteCount(output))}
+      href={webFetchLink(item)}
+    />
   );
 }
 
