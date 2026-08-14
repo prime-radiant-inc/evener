@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,6 +53,218 @@ type delegateIsolation struct {
 	ownsFreshEnv    bool
 	worktreePath    string
 	worktreeProject identifier.Project
+}
+
+type delegateQuietAttentionClaim struct {
+	token       uint64
+	lease       delegateLease
+	sequence    uint64
+	activityAt  time.Time
+	attentionID string
+	content     string
+	receiver    *Session
+}
+
+func (c *delegateTreeController) ReportActivity(lease delegateLease, at time.Time) error {
+	if c == nil {
+		return errDelegateStaleLease
+	}
+	if at.IsZero() {
+		at = c.now()
+	}
+	c.mu.Lock()
+	aggregate, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
+	if err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	if at.Before(live.activityAt) {
+		c.mu.Unlock()
+		return nil
+	}
+	rearm := live.quietNotified || live.quietClaim != nil && live.quietClaim.sequence == live.quietSequence
+	if at.Equal(live.activityAt) && !rearm {
+		c.mu.Unlock()
+		return nil
+	}
+	if rearm {
+		live.quietSequence++
+		live.quietNotified = false
+	}
+	live.activityAt = at
+	c.evidenceVersion++
+	plan := c.capturedPlanLocked(aggregate.DelegateID)
+	c.mu.Unlock()
+	c.emitDelegateUpdate(plan)
+	return nil
+}
+
+func (s *Session) runDelegateQuietWatchdogTick(lease delegateLease, now time.Time) error {
+	if s == nil || s.delegateController == nil {
+		return errDelegateDeliveryReceiverUnavailable
+	}
+	claim, err := s.delegateController.BeginQuietAttention(s, lease, now)
+	if err != nil || claim == nil {
+		return err
+	}
+	deferred, appendErr := s.appendQuietAttentionAtTurnBoundary(claim.attentionID, claim.content)
+	if deferred {
+		return s.delegateController.CompleteQuietAttention(claim, false)
+	}
+	completionErr := s.delegateController.CompleteQuietAttention(claim, appendErr == nil)
+	return errors.Join(appendErr, completionErr)
+}
+
+func (s *Session) startDelegateQuietWatchdog(ctx context.Context, lease delegateLease) context.CancelFunc {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	watchCtx, cancel := context.WithCancel(ctx)
+	ticker := s.sclock().NewTicker(delegateQuietCheckInterval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case now := <-ticker.C():
+				_ = s.runDelegateQuietWatchdogTick(lease, now)
+			case <-watchCtx.Done():
+				return
+			}
+		}
+	}()
+	return func() {
+		ticker.Stop()
+		cancel()
+	}
+}
+
+func delegateQuietAttentionID(lease delegateLease) string {
+	return delegateQuietAttentionIDForStretch(lease, 1)
+}
+
+func delegateQuietAttentionIDForStretch(lease delegateLease, sequence uint64) string {
+	return fmt.Sprintf("quiet:%s:%d:%d", lease.delegateID, lease.generation, sequence)
+}
+
+func delegateQuietAttentionContent(lease delegateLease, activityAt time.Time) string {
+	return fmt.Sprintf(
+		"<delegate-notification delegate_id=\"%s\">%s</delegate-notification>",
+		html.EscapeString(lease.delegateID),
+		html.EscapeString(quietWatchdogMessage(delegateQuietWindow, activityAt)),
+	)
+}
+
+func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease delegateLease, now time.Time) (*delegateQuietAttentionClaim, error) {
+	if c == nil || receiver == nil {
+		return nil, errDelegateDeliveryReceiverUnavailable
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
+	if err != nil {
+		return nil, err
+	}
+	expectedReceiver := c.rootRuntime
+	if aggregate.Descriptor.ParentDelegateID != "" {
+		parent := c.live[aggregate.Descriptor.ParentDelegateID]
+		if parent == nil {
+			return nil, errDelegateDeliveryReceiverUnavailable
+		}
+		expectedReceiver = parent.runtime
+	}
+	if expectedReceiver == nil || expectedReceiver != receiver {
+		return nil, errDelegateDeliveryReceiverUnavailable
+	}
+	activityAt := live.activityAt
+	if activityAt.IsZero() {
+		activityAt = aggregate.RunStartedAt
+	}
+	if now.IsZero() {
+		now = c.now()
+	}
+	if activityAt.IsZero() || now.Before(activityAt.Add(delegateQuietWindow)) || live.quietNotified || live.quietClaim != nil {
+		return nil, nil
+	}
+	if live.quietSequence == 0 {
+		live.quietSequence = 1
+	}
+	c.nextToken++
+	claim := &delegateQuietAttentionClaim{
+		token:       c.nextToken,
+		lease:       lease,
+		sequence:    live.quietSequence,
+		activityAt:  activityAt,
+		attentionID: delegateQuietAttentionIDForStretch(lease, live.quietSequence),
+		content:     delegateQuietAttentionContent(lease, activityAt),
+		receiver:    receiver,
+	}
+	live.quietClaim = claim
+	c.quietClaims[claim.token] = claim
+	c.evidenceVersion++
+	return claim, nil
+}
+
+func (c *delegateTreeController) CompleteQuietAttention(claim *delegateQuietAttentionClaim, committed bool) error {
+	if c == nil || claim == nil {
+		return errDelegateStaleLease
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.quietClaims[claim.token] != claim || claim.receiver == nil {
+		return errDelegateStaleLease
+	}
+	delete(c.quietClaims, claim.token)
+	live := c.live[claim.lease.delegateID]
+	if live != nil && live.quietClaim == claim {
+		live.quietClaim = nil
+	}
+	if c.stop != nil {
+		if _, tracked := c.stop.quietClaims[claim.token]; tracked {
+			delete(c.stop.quietClaims, claim.token)
+			c.signalStopProgressLocked()
+		}
+	}
+	if !committed {
+		c.evidenceVersion++
+		return nil
+	}
+	aggregate := c.durable[claim.lease.delegateID]
+	if aggregate == nil || aggregate.Generation != claim.lease.generation || !aggregate.CurrentRunOpen || aggregate.Phase != delegatestore.PhaseRunning || live == nil || live.binding == nil || live.binding.lease != claim.lease || live.quietSequence != claim.sequence || !live.activityAt.Equal(claim.activityAt) {
+		c.evidenceVersion++
+		return errDelegateStaleLease
+	}
+	live.quietNotified = true
+	c.evidenceVersion++
+	return nil
+}
+
+func (s *Session) appendQuietAttentionAtTurnBoundary(attentionID, content string) (bool, error) {
+	s.delegateDeliveryMu.Lock()
+	defer s.delegateDeliveryMu.Unlock()
+	s.mu.Lock()
+	processing := s.state == SessionProcessing
+	closed := s.closingOrClosedLocked()
+	s.mu.Unlock()
+	if closed {
+		return false, errors.New("delegate attention receiver is closed")
+	}
+	if processing {
+		return true, nil
+	}
+	_, err := s.appendDelegateNotificationDurably(attentionID, content)
+	return false, err
+}
+
+func bindStableDelegateActivity(child *Session, controller *delegateTreeController, lease delegateLease) {
+	if child == nil || controller == nil {
+		return
+	}
+	child.mu.Lock()
+	child.cfg.spawn.parentJobID = lease.delegateID
+	child.cfg.spawn.parentJobActivity = func(string, string) {
+		_ = controller.ReportActivity(lease, child.sclock().Now())
+	}
+	child.mu.Unlock()
 }
 
 func delegateInputWasPreseeded(ctx context.Context, sessionID, input string) bool {
@@ -174,6 +387,8 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		s.sendersWG.Done()
 		return failed(err)
 	}
+	bindStableDelegateActivity(sub.sess, s.delegateController, started.lease)
+	s.startDelegateQuietWatchdog(started.ctx, started.lease)
 	s.launchSubagentRun(runCtx, sub, runCancel, message, descriptorProvenance(started.descriptor))
 	result := sendMessageResult{
 		Target:              delegateID,
@@ -359,6 +574,8 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		runtime.retainAdoptedWithoutLaunch(prepared)
 		return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, err)
 	}
+	bindStableDelegateActivity(prepared.sub.sess, s.delegateController, started.lease)
+	s.startDelegateQuietWatchdog(started.ctx, started.lease)
 	s.launchSubagentRun(prepared.runCtx, prepared.sub, prepared.runCancel, prepared.input, started.descriptor.Provenance)
 	return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, nil)
 }

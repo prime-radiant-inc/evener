@@ -929,6 +929,7 @@ type coldStableDelegateFixture struct {
 	workspace  string
 	adapter    *fakeAdapter
 	delegateID string
+	childID    string
 }
 
 func newBlockingColdDelegateRuntime(t *testing.T) (*Session, coldStableDelegateFixture, <-chan struct{}, chan struct{}) {
@@ -957,6 +958,10 @@ func newBlockingColdDelegateRuntime(t *testing.T) (*Session, coldStableDelegateF
 }
 
 func newColdStableDelegateFixture(t *testing.T, sharedOwner string) coldStableDelegateFixture {
+	return newColdStableDelegateFixtureConfigured(t, sharedOwner, nil)
+}
+
+func newColdStableDelegateFixtureConfigured(t *testing.T, sharedOwner string, configure func(*delegatestore.Descriptor)) coldStableDelegateFixture {
 	t.Helper()
 	meta, client, profile, stateDir, workspace, adapter := closedDelegateResourceBootstrapFixture(t)
 	delegateID := identifier.MustNewDelegateID()
@@ -989,6 +994,9 @@ func newColdStableDelegateFixture(t *testing.T, sharedOwner string) coldStableDe
 		Config:                        config,
 		SharedTaskStoreOwnerSessionID: ownerID,
 		Resumable:                     true,
+	}
+	if configure != nil {
+		configure(&descriptor)
 	}
 	store, err := delegatestore.Open(delegateResourceStorePath(stateDir, meta.ID))
 	if err != nil {
@@ -1034,5 +1042,5 @@ func newColdStableDelegateFixture(t *testing.T, sharedOwner string) coldStableDe
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	return coldStableDelegateFixture{meta: meta, client: client, profile: profile, stateDir: stateDir, workspace: workspace, adapter: adapter, delegateID: delegateID}
+	return coldStableDelegateFixture{meta: meta, client: client, profile: profile, stateDir: stateDir, workspace: workspace, adapter: adapter, delegateID: delegateID, childID: childID}
 }

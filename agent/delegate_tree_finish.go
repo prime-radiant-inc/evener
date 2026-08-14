@@ -14,6 +14,35 @@ import (
 
 const delegateFinishReasonLimit = 512
 
+type delegateSupervisionBoundary uint8
+
+const (
+	delegateSupervisionProceed delegateSupervisionBoundary = iota
+	delegateSupervisionContinue
+	delegateSupervisionSuppress
+)
+
+// SupervisionBoundary linearizes pending-steer and stop precedence before
+// ordinary nudge and hook work begins outside the controller mutex.
+func (c *delegateTreeController) SupervisionBoundary(lease delegateLease) (delegateSupervisionBoundary, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate, live, err := c.exactLeaseLocked(lease)
+	if err != nil {
+		return delegateSupervisionSuppress, err
+	}
+	if c.closing || aggregate.Phase == delegatestore.PhaseStopping || aggregate.PendingStopSeq != 0 || live.recoveryRequired {
+		return delegateSupervisionSuppress, nil
+	}
+	if aggregate.Phase != delegatestore.PhaseRunning || !aggregate.Resumable || live.binding == nil || !live.binding.ready {
+		return delegateSupervisionSuppress, errDelegateTargetBusy
+	}
+	if len(live.pendingSteers) != 0 {
+		return delegateSupervisionContinue, nil
+	}
+	return delegateSupervisionProceed, nil
+}
+
 func (c *delegateTreeController) BeginSettlement(lease delegateLease, supplied *delegatestore.TerminalPacket) (bool, delegateMutationPlans, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

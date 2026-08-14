@@ -10,16 +10,17 @@ import (
 )
 
 type delegateStopState struct {
-	requestSeq uint64
-	targetID   string
-	members    map[string]struct{}
-	active     map[delegateLease]struct{}
-	starts     map[uint64]struct{}
-	work       map[delegateWorkToken]string
-	deliveries map[delegateDeliveryToken]struct{}
-	waiters    []*delegateInlineWaiter
-	done       chan struct{}
-	progress   chan struct{}
+	requestSeq  uint64
+	targetID    string
+	members     map[string]struct{}
+	active      map[delegateLease]struct{}
+	starts      map[uint64]struct{}
+	work        map[delegateWorkToken]string
+	deliveries  map[delegateDeliveryToken]struct{}
+	quietClaims map[uint64]struct{}
+	waiters     []*delegateInlineWaiter
+	done        chan struct{}
+	progress    chan struct{}
 }
 
 type delegateStopResult struct {
@@ -74,15 +75,16 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 		return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, err
 	}
 	stop := &delegateStopState{
-		requestSeq: appended[0].Seq,
-		targetID:   targetID,
-		members:    members,
-		active:     make(map[delegateLease]struct{}),
-		starts:     make(map[uint64]struct{}),
-		work:       make(map[delegateWorkToken]string),
-		deliveries: make(map[delegateDeliveryToken]struct{}),
-		done:       make(chan struct{}),
-		progress:   make(chan struct{}, 1),
+		requestSeq:  appended[0].Seq,
+		targetID:    targetID,
+		members:     members,
+		active:      make(map[delegateLease]struct{}),
+		starts:      make(map[uint64]struct{}),
+		work:        make(map[delegateWorkToken]string),
+		deliveries:  make(map[delegateDeliveryToken]struct{}),
+		quietClaims: make(map[uint64]struct{}),
+		done:        make(chan struct{}),
+		progress:    make(chan struct{}, 1),
 	}
 	plan := delegateCancelPlan{requestSeq: stop.requestSeq, targetID: targetID}
 	memberIDs := c.memberIDsLeafFirstLocked(members)
@@ -128,6 +130,14 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 	for _, receipt := range c.deliveries {
 		if c.deliveryIntersectsMembersLocked(receipt, members) {
 			stop.deliveries[receipt.token] = struct{}{}
+		}
+	}
+	for token, claim := range c.quietClaims {
+		if claim == nil {
+			continue
+		}
+		if _, covered := members[claim.lease.delegateID]; covered {
+			stop.quietClaims[token] = struct{}{}
 		}
 	}
 	c.dropRuntimeClaimsForMembersLocked(members)

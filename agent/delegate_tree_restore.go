@@ -117,7 +117,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		return plans, nil
 	}
 	stop := c.stop
-	if len(stop.active) != 0 || len(stop.starts) != 0 || len(stop.work) != 0 || len(stop.deliveries) != 0 {
+	if len(stop.active) != 0 || len(stop.starts) != 0 || len(stop.work) != 0 || len(stop.deliveries) != 0 || len(stop.quietClaims) != 0 {
 		return plans, nil
 	}
 	ids := make([]string, 0, len(stop.members))
@@ -411,15 +411,16 @@ func (c *delegateTreeController) restorePendingStop(events []delegatestore.Event
 		}
 	}
 	c.stop = &delegateStopState{
-		requestSeq: requestSeq,
-		targetID:   targetID,
-		members:    members,
-		active:     make(map[delegateLease]struct{}),
-		starts:     make(map[uint64]struct{}),
-		work:       make(map[delegateWorkToken]string),
-		deliveries: make(map[delegateDeliveryToken]struct{}),
-		done:       make(chan struct{}),
-		progress:   make(chan struct{}, 1),
+		requestSeq:  requestSeq,
+		targetID:    targetID,
+		members:     members,
+		active:      make(map[delegateLease]struct{}),
+		starts:      make(map[uint64]struct{}),
+		work:        make(map[delegateWorkToken]string),
+		deliveries:  make(map[delegateDeliveryToken]struct{}),
+		quietClaims: make(map[uint64]struct{}),
+		done:        make(chan struct{}),
+		progress:    make(chan struct{}, 1),
 	}
 	return nil
 }

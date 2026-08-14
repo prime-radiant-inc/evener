@@ -1460,6 +1460,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	}
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
 	nudgeAvailable := true
+	hookAvailable := true
 	var res string
 	var err error
 	var restoreParentDriveNotify func()
@@ -1470,6 +1471,21 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		a.mu.Lock()
 		cancelRequested := a.cancelRequested
 		a.mu.Unlock()
+		if stableRun && a.sess.delegateController != nil {
+			boundary, boundaryErr := a.sess.delegateController.SupervisionBoundary(lease)
+			if boundaryErr != nil && !errors.Is(boundaryErr, errDelegateTargetBusy) {
+				err = errors.Join(err, boundaryErr)
+			}
+			switch boundary {
+			case delegateSupervisionContinue:
+				input = "Continue with the newly received steering before settling."
+				kind = EntryContinuation
+				runStartedFromWatch = false
+				continue
+			case delegateSupervisionSuppress:
+				cancelRequested = true
+			}
+		}
 		shouldNudge := nudgeAvailable && !cancelRequested &&
 			!budgetExhausted &&
 			!runStartedFromWatch &&
@@ -1481,7 +1497,8 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			res, err = a.sess.processInputWithProvenance(ctx, communicateNudge(a.sess.resultToolName()), nil, a.followUpProvenance(inputProvenance))
 			_, budgetExhausted = budgetExhaustionFromError(err)
 		}
-		if !cancelRequested && !budgetExhausted {
+		if hookAvailable && !cancelRequested && !budgetExhausted {
+			hookAvailable = false
 			res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
 		}
 		restoreParentDriveNotify = nil
@@ -1645,7 +1662,11 @@ func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFin
 		controller.mu.Unlock()
 	}
 	inputs.worktree = reporter.stableDelegateWorktreeReport(descriptor)
-	return stableDelegateFinishFromRun(inputs)
+	finish := stableDelegateFinishFromRun(inputs)
+	if finish.outcome == delegatestore.OutcomeFailed && a.sess.hasSalvageFromFinalRound() && finish.packet != nil {
+		finish.packet.Warnings = appendUniqueStrings(finish.packet.Warnings, delegateSalvagedDraftNote)
+	}
+	return finish
 }
 
 // delegateTerminalRunInputs is the immutable run evidence used to construct a

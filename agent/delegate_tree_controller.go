@@ -62,6 +62,7 @@ type delegateTreeController struct {
 	work            map[uint64]*delegateShellWork
 	deliveries      map[uint64]*delegateDeliveryAdmission
 	deliveryClaims  map[string]*delegateDeliveryClaim
+	quietClaims     map[uint64]*delegateQuietAttentionClaim
 	stop            *delegateStopState
 	evidenceVersion uint64
 	closing         bool
@@ -95,6 +96,9 @@ type delegateLiveState struct {
 	waiters          map[uint64]*delegateInlineWaiter
 	recoveryRequired bool
 	activityAt       time.Time
+	quietSequence    uint64
+	quietNotified    bool
+	quietClaim       *delegateQuietAttentionClaim
 }
 
 type delegateSnapshot struct {
@@ -167,6 +171,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		work:           make(map[uint64]*delegateShellWork),
 		deliveries:     make(map[uint64]*delegateDeliveryAdmission),
 		deliveryClaims: make(map[string]*delegateDeliveryClaim),
+		quietClaims:    make(map[uint64]*delegateQuietAttentionClaim),
 		reconcileOrder: delegateOpenRunOrder(events, durable),
 	}
 	if err := c.restorePendingStop(events); err != nil {
