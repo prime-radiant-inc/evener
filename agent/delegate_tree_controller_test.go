@@ -711,6 +711,7 @@ func delegateControllerCreatedEvent(id, parentID string) delegatestore.Event {
 			OwnerSessionID:   "root-session",
 			Task:             "test task",
 			AgentType:        "general",
+			ToolNameCeiling:  []string{"communicate"},
 			Resumable:        true,
 		}},
 	}
