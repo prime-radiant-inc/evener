@@ -34,9 +34,9 @@ func containsString(values []string, want string) bool {
 	return slices.Contains(values, want)
 }
 
-// TestSchemaWaitKnobs asserts the one-wait-knob-per-tool invariant: shell's
-// execution mode replaces its former background boolean; the other three
-// wait-capable tools use `max_wait_ms`. No tool carries both, and
+// TestSchemaWaitKnobs asserts the one-wait-knob-per-tool invariant: delegate
+// creation and shell do not wait; the two wait-capable control tools use
+// `max_wait_ms`. No tool carries both, and
 // `block`/`block_timeout_ms` are gone
 // everywhere. (Supersedes the all-five max_wait_ms unification for shell — see
 // docs/superpowers/specs/2026-06-13-max-wait-unification.md.)
@@ -45,7 +45,6 @@ func TestSchemaWaitKnobs(t *testing.T) {
 		name string
 		def  func() map[string]any // returns the Parameters map
 	}{
-		{"delegate", func() map[string]any { return DefDelegate(nil).Parameters }},
 		{"delegate_send", func() map[string]any { return DefDelegateSend().Parameters }},
 		{"job_stop", func() map[string]any { return DefJobStop().Parameters }},
 	}
@@ -92,19 +91,31 @@ func TestSchemaWaitKnobs(t *testing.T) {
 		})
 	}
 
-	// shell is the exception: its execution mode replaces the old background
-	// boolean and it must NOT carry max_wait_ms/block/block_timeout_ms.
-	t.Run("shell", func(t *testing.T) {
-		params := DefShell().Parameters
-		if ap, ok := params["additionalProperties"]; !ok || ap != false {
-			t.Errorf("shell: additionalProperties = %v, want false", ap)
-		}
-		props := params["properties"].(map[string]any)
-		for _, banned := range []string{"max_wait_ms", "block", "block_timeout_ms"} {
-			if _, ok := props[banned]; ok {
-				t.Errorf("shell: property %q must not exist", banned)
+	for _, tc := range []struct {
+		name string
+		def  func() map[string]any
+	}{
+		{"delegate", func() map[string]any { return DefDelegate(nil).Parameters }},
+		{"shell", func() map[string]any { return DefShell().Parameters }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			params := tc.def()
+			if ap, ok := params["additionalProperties"]; !ok || ap != false {
+				t.Errorf("%s: additionalProperties = %v, want false", tc.name, ap)
 			}
-		}
+			props := params["properties"].(map[string]any)
+			for _, banned := range []string{"max_wait_ms", "block", "block_timeout_ms"} {
+				if _, ok := props[banned]; ok {
+					t.Errorf("%s: property %q must not exist", tc.name, banned)
+				}
+			}
+		})
+	}
+
+	// shell's execution mode replaces the old background boolean.
+	t.Run("shell_mode", func(t *testing.T) {
+		params := DefShell().Parameters
+		props := params["properties"].(map[string]any)
 		mode, ok := props["mode"].(map[string]any)
 		if !ok {
 			t.Fatal("shell: missing required property mode")
@@ -160,7 +171,7 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 		t.Fatalf("Strict = %v, want false", def.Strict)
 	}
 	props := def.Parameters["properties"].(map[string]any)
-	for _, p := range []string{"task", "agent_type", "model", "reasoning_effort", "max_wait_ms", "result_schema"} {
+	for _, p := range []string{"task", "agent_type", "model", "reasoning_effort", "result_schema"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("DefDelegate missing param %q", p)
 		}
@@ -170,6 +181,9 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 	}
 	if _, ok := props["block_timeout_ms"]; ok {
 		t.Errorf("DefDelegate must not have the removed block_timeout_ms param")
+	}
+	if _, ok := props["max_wait_ms"]; ok {
+		t.Errorf("DefDelegate must not expose creation max_wait_ms")
 	}
 	req := def.Parameters["required"].([]string)
 	if len(req) != 1 || req[0] != "task" {
@@ -191,14 +205,11 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 		t.Errorf("reasoning_effort enum = %v, want [low medium high]", effortEnum)
 	}
 
-	maxWaitDesc := props["max_wait_ms"].(map[string]any)["description"].(string)
-	for _, text := range []string{def.Description, maxWaitDesc} {
-		if !strings.Contains(text, "delegate_id") {
-			t.Fatalf("delegate schema text must mention delegate_id: %q", text)
-		}
-		if strings.Contains(text, "job_id") || strings.Contains(text, "started job") {
-			t.Fatalf("delegate schema text must not expose an activation job identity: %q", text)
-		}
+	if !strings.Contains(def.Description, "delegate_id") {
+		t.Fatalf("delegate schema text must mention delegate_id: %q", def.Description)
+	}
+	if strings.Contains(def.Description, "job_id") || strings.Contains(def.Description, "started job") {
+		t.Fatalf("delegate schema text must not expose an activation job identity: %q", def.Description)
 	}
 	if !strings.Contains(def.Description, "delegate_send(to=<delegate_id>)") {
 		t.Fatalf("delegate description must show delegate_send follow-up target:\n%s", def.Description)

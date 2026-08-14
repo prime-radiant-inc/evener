@@ -241,11 +241,11 @@ resumable. Permanent resumability is separate metadata:
 
 delegate creates a delegate and starts generation 1. It returns delegate_id,
 type=delegate, lifecycle/status, resumability, transcript_ref, and applicable
-model, sandbox, worktree, observation, and warning metadata. Existing
-background/max_wait behavior applies to that generation: a positive wait may
-return its canonical terminal packet, while a timeout leaves owner delivery
-pending. It never returns a job ID. watch_parent remains a non-transitive grant
-to the new child and is persisted in the stable descriptor.
+model, sandbox, worktree, observation, and warning metadata after the stable
+descriptor and initial input are durable. Creation has no inline-wait option and
+never returns a job ID. Completion is notification-driven; subsequent
+interaction uses delegate_send. watch_parent remains a non-transitive grant to
+the new child and is persisted in the stable descriptor.
 
 delegate_send accepts to=dlg_..., message, and max_wait_ms:
 

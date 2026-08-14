@@ -678,6 +678,45 @@ func TestDelegateResourceCreate_RegisteredToolReturnsOnlyStableDelegateIdentity(
 	}
 }
 
+func TestDelegateResourceCreate_RegisteredSchemaOmitsCreationMaxWait(t *testing.T) {
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	registered := root.reg.Get("delegate")
+	if registered == nil {
+		t.Fatal("registered delegate tool is absent")
+	}
+	properties, ok := registered.Tool.Definition.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("registered delegate properties = %T, want map[string]any", registered.Tool.Definition.Parameters["properties"])
+	}
+	if _, exists := properties["max_wait_ms"]; exists {
+		t.Fatal("registered delegate schema exposes creation max_wait_ms")
+	}
+}
+
+func TestDelegateResourceCreate_RegisteredRejectsCreationMaxWait(t *testing.T) {
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	raw, err := json.Marshal(map[string]any{
+		"task":        "reject creation wait",
+		"max_wait_ms": 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := root.reg.ExecuteCall(context.Background(), root.currentEnv(), llm.ToolCallData{
+		ID:        "task6-reject-creation-wait",
+		Name:      "delegate",
+		Arguments: raw,
+	})
+	if !call.IsError || !strings.Contains(call.Output, "max_wait_ms") {
+		t.Fatalf("registered delegate result = %#v, want max_wait_ms rejection", call)
+	}
+	root.delegateController.mu.Lock()
+	defer root.delegateController.mu.Unlock()
+	if len(root.delegateController.durable) != 0 || len(root.delegateController.reservations) != 0 || len(root.delegateController.live) != 0 {
+		t.Fatalf("rejected creation wait mutated controller: durable=%d reservations=%d live=%d", len(root.delegateController.durable), len(root.delegateController.reservations), len(root.delegateController.live))
+	}
+}
+
 func TestDelegateResourceCreate_RegisteredToolUsesRootController(t *testing.T) {
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	wantID := identifier.MustNewDelegateID()

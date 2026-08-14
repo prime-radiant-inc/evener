@@ -111,6 +111,9 @@ func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
 }
 
 func stableDelegateCreateTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
+	if _, exists := args["max_wait_ms"]; exists {
+		return "", errors.New("invalid_request: delegate creation does not accept max_wait_ms")
+	}
 	decoded, err := decodeDelegateArgs(args)
 	if err != nil {
 		return "", err

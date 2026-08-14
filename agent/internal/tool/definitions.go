@@ -118,8 +118,9 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 			"and stable conversation metadata, never an activation job identity. `delegate` never resumes an existing " +
 			"delegate: follow up on one with `delegate_send(to=<delegate_id>)`. Optional: `agent_type` picks a role from the " +
 			"enum (described in your agents section); `model` and `reasoning_effort` override the defaults; " +
-			"`result_schema` requests a validated structured result; `max_wait_ms` waits inline up to that many ms " +
-			"(a timeout leaves the delegate generation running). `delegation_allowance` lets the delegate itself delegate, up to one " +
+			"`result_schema` requests a validated structured result. Creation returns immediately after the delegate's stable " +
+			"metadata and initial input are durable; use notifications or `delegate_send` for subsequent interaction. " +
+			"`delegation_allowance` lets the delegate itself delegate, up to one " +
 			"level shallower than your own allowance. Set watch_parent=true for an observer sidecar: the child can call job_watch(source=\"parent\") and report findings with communicate(end_turn=true). For delegate readiness, status, findings, and final reports, ask the " +
 			"delegate to call `communicate` with the exact marker/report. Observer readiness results can include `watching:true` and `watches` when the observer installed watches. Use the delegate's output as the evidence for judging the work.",
 		Strict: &strictFalse,
@@ -131,7 +132,6 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 				"agent_type":           agentTypeSchema,
 				"model":                map[string]any{"type": "string", "description": "Model override. Default: the delegate captures your CURRENT model at the moment it is spawned (so a delegate spawned after you switch models inherits the new one, and one spawned before keeps the model it started with). An explicit value here pins the delegate to that model instead, regardless of your current or future model."},
 				"reasoning_effort":     map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
-				"max_wait_ms":          map[string]any{"type": "integer", "description": "0 (default): return the delegate_id and stable conversation metadata immediately; you are notified on completion. >0: wait inline up to this many ms; a timeout leaves the delegate generation running."},
 				"delegation_allowance": map[string]any{"type": "integer", "description": "0 (default): a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type actually has the `delegate` tool: the built-in `subagent` role is a non-delegating leaf, so a >0 allowance on it is a silent no-op. For a multi-level tree, omit agent_type (the default role can delegate)."},
 				"watch_parent":         map[string]any{"type": "boolean", "description": "Grant this child permission to observe your session with job_watch(source=\"parent\"). This does not grant delegation or any transitive watch permission."},
 				"isolation": map[string]any{
