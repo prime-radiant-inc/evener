@@ -610,6 +610,139 @@ func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) 
 	}
 }
 
+func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacketEvidence(t *testing.T) {
+	worktreeClient := llm.NewClient()
+	worktreeClient.Register(&fakeAdapter{name: "openai"})
+	worktreeRepo := newWtDlgRepo(t, worktreeClient)
+	lane, _, _, _, _, err := worktreeRepo.s.createDelegateWorktree(context.Background(), "dlg_01TASK7ORDINARYPACKET001")
+	if err != nil {
+		t.Fatalf("create ordinary-evidence worktree: %v", err)
+	}
+	enteredInitialRequest := make(chan struct{})
+	releaseInitialRequest := make(chan struct{})
+	bare := func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("bare text without communicate")}
+	}
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.Isolation = "worktree"
+		descriptor.WorkingDir = lane
+	})
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			close(enteredInitialRequest)
+			<-releaseInitialRequest
+			return bare(llm.Request{})
+		},
+		bare,
+		bare,
+		bare,
+		bare,
+		bare,
+		bare,
+		bare,
+	}
+	finalStatePublished := make(chan struct{})
+	restore := RestoreSessionConfig{
+		StateDir:    fixture.stateDir,
+		ForceRealIO: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			subagentAfterFinalStatePublish: func(*subagent) {
+				close(finalStatePublished)
+			},
+		},
+	}
+	root, err := RestoreSessionFromMetaWithConfig(fixture.client, fixture.profile, execenv.NewLocalExecutionEnvironment(fixture.workspace), fixture.meta, restore)
+	if err != nil {
+		t.Fatalf("restore ordinary-evidence root: %v", err)
+	}
+	t.Cleanup(root.Close)
+	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start ordinary missing-terminal run", 0)
+	if started.result.Err != nil {
+		t.Fatalf("start ordinary missing-terminal delegate: %v", started.result.Err)
+	}
+	<-enteredInitialRequest
+	sub := root.subagents.get(fixture.childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("stable child %q was not tracked", fixture.childID)
+	}
+	root.delegateController.mu.Lock()
+	descriptor := cloneDelegateStartDescriptor(root.delegateController.durable[fixture.delegateID].Descriptor)
+	root.delegateController.mu.Unlock()
+	if report := root.stableDelegateWorktreeReport(descriptor); report == nil || report.Dirty {
+		t.Fatalf("initial ordinary-evidence worktree report = %#v, want clean", report)
+	}
+	cleanupMarker := filepath.Join(lane, "ordinary-shell-cleanup.txt")
+	cleanupStarted := make(chan struct{})
+	releaseCleanup := make(chan struct{})
+	signaled := make(chan struct{}, 1)
+	ownedShell := &runningJob{
+		rec: &jobstore.JobRecord{
+			JobID:          "job_ordinary_owned_shell",
+			Type:           jobstore.JobShell,
+			Status:         jobstore.StatusRunning,
+			OwnerSessionID: sub.sess.ID(),
+		},
+		signal: func() {
+			close(cleanupStarted)
+			<-releaseCleanup
+			if err := os.WriteFile(cleanupMarker, []byte("cleaned\n"), 0o644); err != nil {
+				panic(err)
+			}
+			signaled <- struct{}{}
+		},
+		done:           make(chan struct{}),
+		durableStarted: true,
+	}
+	sub.sess.jobManager.mu.Lock()
+	sub.sess.jobManager.running[ownedShell.rec.JobID] = ownedShell
+	sub.sess.jobManager.mu.Unlock()
+	t.Cleanup(func() {
+		sub.sess.jobManager.mu.Lock()
+		delete(sub.sess.jobManager.running, ownedShell.rec.JobID)
+		sub.sess.jobManager.mu.Unlock()
+		ownedShell.closeDone()
+	})
+	close(releaseInitialRequest)
+	<-cleanupStarted
+	lateSteer := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "steer after ordinary settlement claim", 0)
+	if !errors.Is(lateSteer.result.Err, errDelegateTargetBusy) {
+		t.Fatalf("steer after ordinary settlement claim error = %v, want target busy", lateSteer.result.Err)
+	}
+	close(releaseCleanup)
+	<-finalStatePublished
+	select {
+	case <-signaled:
+	default:
+		t.Fatal("ordinary missing-terminal run published final state before stopping its owned shell")
+	}
+	if report := root.stableDelegateWorktreeReport(descriptor); report == nil || !report.Dirty {
+		t.Fatalf("post-cleanup ordinary worktree report = %#v, want dirty", report)
+	}
+	events, err := root.delegateController.store.Load()
+	if err != nil {
+		t.Fatalf("load ordinary terminal packet: %v", err)
+	}
+	var packet *delegatestore.TerminalPacket
+	for i := range events {
+		if events[i].DelegateID == fixture.delegateID && events[i].TerminalPrepared != nil {
+			value := events[i].TerminalPrepared.Packet
+			packet = &value
+		}
+	}
+	if packet == nil {
+		t.Fatal("ordinary missing-terminal generation has no terminal packet")
+	}
+	var metadata delegateTerminalPacketMetadata
+	if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
+		t.Fatalf("decode ordinary terminal metadata: %v", err)
+	}
+	if metadata.Worktree == nil || !metadata.Worktree.Dirty {
+		t.Fatalf("ordinary packet sampled worktree before shell cleanup: %#v", metadata.Worktree)
+	}
+}
+
 func TestDelegateResourceSupervision_SubagentStopRunsAfterFinishAndBeforeContinuation(t *testing.T) {
 	observation := runStableSubagentStopHook(t, true)
 	if !observation.continuationSawHook || observation.providerRequests != 2 || observation.hookRuns != 1 {

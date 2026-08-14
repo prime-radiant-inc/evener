@@ -45,30 +45,31 @@ type delegateTreeController struct {
 	live        map[string]*delegateLiveState
 	rootRuntime *Session
 
-	rootSessionID   string
-	stateDir        string
-	worktreeRoot    string
-	now             func() time.Time
-	newDelegateID   func() string
-	turnLimit       int
-	driveLimit      int
-	turnsInUse      int
-	drivesInUse     int
-	nextToken       uint64
-	reservations    map[uint64]*delegateStartRecord
-	inputClaims     map[uint64]delegateLease
-	steeringClaims  map[uint64]*delegateSteeringClaim
-	modelClaims     map[uint64]*delegateModelRequestClaim
-	work            map[uint64]*delegateShellWork
-	deliveries      map[uint64]*delegateDeliveryAdmission
-	deliveryClaims  map[string]*delegateDeliveryClaim
-	quietClaims     map[uint64]*delegateQuietAttentionClaim
-	stop            *delegateStopState
-	stopDriver      *delegateStopDriver
-	evidenceVersion uint64
-	closing         bool
-	reconcileOrder  []delegateLease
-	emitUpdate      func(delegateUpdatePlan)
+	rootSessionID    string
+	stateDir         string
+	worktreeRoot     string
+	now              func() time.Time
+	newDelegateID    func() string
+	turnLimit        int
+	driveLimit       int
+	turnsInUse       int
+	drivesInUse      int
+	nextToken        uint64
+	reservations     map[uint64]*delegateStartRecord
+	inputClaims      map[uint64]delegateLease
+	steeringClaims   map[uint64]*delegateSteeringClaim
+	modelClaims      map[uint64]*delegateModelRequestClaim
+	settlementClaims map[uint64]*delegateSettlementClaim
+	work             map[uint64]*delegateShellWork
+	deliveries       map[uint64]*delegateDeliveryAdmission
+	deliveryClaims   map[string]*delegateDeliveryClaim
+	quietClaims      map[uint64]*delegateQuietAttentionClaim
+	stop             *delegateStopState
+	stopDriver       *delegateStopDriver
+	evidenceVersion  uint64
+	closing          bool
+	reconcileOrder   []delegateLease
+	emitUpdate       func(delegateUpdatePlan)
 }
 
 type delegateActor struct {
@@ -154,26 +155,27 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		return nil, err
 	}
 	c := &delegateTreeController{
-		store:          cfg.store,
-		durable:        durable,
-		live:           make(map[string]*delegateLiveState),
-		rootRuntime:    cfg.rootRuntime,
-		rootSessionID:  cfg.rootSessionID,
-		stateDir:       cfg.stateDir,
-		worktreeRoot:   cfg.worktreeRoot,
-		now:            cfg.now,
-		turnLimit:      cfg.turnLimit,
-		driveLimit:     cfg.driveLimit,
-		newDelegateID:  cfg.newDelegateID,
-		reservations:   make(map[uint64]*delegateStartRecord),
-		inputClaims:    make(map[uint64]delegateLease),
-		steeringClaims: make(map[uint64]*delegateSteeringClaim),
-		modelClaims:    make(map[uint64]*delegateModelRequestClaim),
-		work:           make(map[uint64]*delegateShellWork),
-		deliveries:     make(map[uint64]*delegateDeliveryAdmission),
-		deliveryClaims: make(map[string]*delegateDeliveryClaim),
-		quietClaims:    make(map[uint64]*delegateQuietAttentionClaim),
-		reconcileOrder: delegateOpenRunOrder(events, durable),
+		store:            cfg.store,
+		durable:          durable,
+		live:             make(map[string]*delegateLiveState),
+		rootRuntime:      cfg.rootRuntime,
+		rootSessionID:    cfg.rootSessionID,
+		stateDir:         cfg.stateDir,
+		worktreeRoot:     cfg.worktreeRoot,
+		now:              cfg.now,
+		turnLimit:        cfg.turnLimit,
+		driveLimit:       cfg.driveLimit,
+		newDelegateID:    cfg.newDelegateID,
+		reservations:     make(map[uint64]*delegateStartRecord),
+		inputClaims:      make(map[uint64]delegateLease),
+		steeringClaims:   make(map[uint64]*delegateSteeringClaim),
+		modelClaims:      make(map[uint64]*delegateModelRequestClaim),
+		settlementClaims: make(map[uint64]*delegateSettlementClaim),
+		work:             make(map[uint64]*delegateShellWork),
+		deliveries:       make(map[uint64]*delegateDeliveryAdmission),
+		deliveryClaims:   make(map[string]*delegateDeliveryClaim),
+		quietClaims:      make(map[uint64]*delegateQuietAttentionClaim),
+		reconcileOrder:   delegateOpenRunOrder(events, durable),
 	}
 	if err := c.restorePendingStop(events); err != nil {
 		return nil, err

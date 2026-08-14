@@ -445,7 +445,7 @@ func TestDelegateControllerRunFinishedAppendFailureKeepsPreparedAndWaiter(t *tes
 	if _, err := c.AdmitStartInput(lease, func() error { return nil }); err != nil {
 		t.Fatalf("AdmitStartInput: %v", err)
 	}
-	if _, _, err := c.BeginSettlement(lease, nil); err != nil {
+	if _, _, err := c.prepareSettlementForTest(lease, nil); err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}
 	if err := c.store.Close(); err != nil {

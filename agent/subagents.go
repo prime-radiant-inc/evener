@@ -1545,43 +1545,56 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		if stableRun && settlementMode == delegateSettlementTerminal && stableDelegateFatalRun(err) {
 			a.gateFatalRun(err)
 		}
-		finish = a.stableDelegateFinish(res, err)
 		if !stableRun || a.sess.delegateController == nil {
+			finish = a.stableDelegateFinish(res, err)
 			break
 		}
 		if settlementMode == delegateSettlementTerminal {
+			finish = a.stableDelegateFinish(res, err)
 			break
 		}
-		continueRun, plans, settleErr := a.sess.delegateController.BeginSettlement(lease, finish.packet)
+		settlementClaim, continueRun, settleErr := a.sess.delegateController.BeginSettlement(lease)
+		if settleErr != nil {
+			if !errors.Is(settleErr, errDelegateTargetBusy) {
+				err = errors.Join(err, settleErr)
+			}
+			if err != nil {
+				a.gateFatalRun(err)
+			}
+			finish = a.stableDelegateFinish(res, err)
+			break
+		}
+		if continueRun {
+			if restoreParentDriveNotify != nil {
+				a.sess.SetNotifyFunc(restoreParentDriveNotify)
+			}
+			a.mu.Lock()
+			a.finalizing = false
+			a.settlementClaimed = false
+			a.mu.Unlock()
+			input = "Continue with the newly received steering before settling."
+			kind = EntryContinuation
+			runStartedFromWatch = false
+			continue
+		}
+		if err != nil {
+			a.gateFatalRun(err)
+		}
+		finish = a.stableDelegateFinish(res, err)
+		plans, settleErr := a.sess.delegateController.CompleteSettlement(settlementClaim, finish.packet)
 		if executeErr := a.sess.executeDelegateMutationPlans(plans); settleErr == nil {
 			settleErr = executeErr
 		}
 		if settleErr != nil {
 			if !errors.Is(settleErr, errDelegateTargetBusy) {
 				err = errors.Join(err, settleErr)
-				finish = a.stableDelegateFinish(res, err)
 			}
 			if err != nil {
 				a.gateFatalRun(err)
 			}
-			break
+			finish = a.stableDelegateFinish(res, err)
 		}
-		if !continueRun {
-			if err != nil {
-				a.gateFatalRun(err)
-			}
-			break
-		}
-		if restoreParentDriveNotify != nil {
-			a.sess.SetNotifyFunc(restoreParentDriveNotify)
-		}
-		a.mu.Lock()
-		a.finalizing = false
-		a.settlementClaimed = false
-		a.mu.Unlock()
-		input = "Continue with the newly received steering before settling."
-		kind = EntryContinuation
-		runStartedFromWatch = false
+		break
 	}
 	if !stableRun && err != nil {
 		a.gateFatalRun(err)

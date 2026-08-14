@@ -69,6 +69,9 @@ func (c *delegateTreeController) BeginSteerPersistence(actor delegateActor, dele
 	if _, _, err := c.admitLeaseLocked(live.binding.lease, delegatestore.PhaseRunning); err != nil {
 		return nil, err
 	}
+	if c.hasSettlementClaimLocked(live.binding.lease) {
+		return nil, errDelegateTargetBusy
+	}
 	c.nextToken++
 	claim := &delegateSteeringClaim{
 		token:      c.nextToken,
@@ -123,6 +126,9 @@ func (c *delegateTreeController) BeginModelRequest(lease delegateLease) (*delega
 		return nil, err
 	}
 	if live.binding.runtime == nil {
+		return nil, errDelegateTargetBusy
+	}
+	if c.hasSettlementClaimLocked(lease) {
 		return nil, errDelegateTargetBusy
 	}
 	for _, existing := range c.modelClaims {
@@ -202,6 +208,14 @@ func (c *delegateTreeController) dropRuntimeClaimsForMembersLocked(members map[s
 			}
 		}
 		delete(c.modelClaims, token)
+	}
+	for token, claim := range c.settlementClaims {
+		if claim != nil {
+			if _, covered := members[claim.lease.delegateID]; !covered {
+				continue
+			}
+		}
+		delete(c.settlementClaims, token)
 	}
 }
 

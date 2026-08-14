@@ -242,7 +242,7 @@ func TestDelegateResourceRuntime_PendingSteerWinsAtTerminalBoundary(t *testing.T
 		t.Fatalf("Steer: %v", err)
 	}
 	packet := delegateControllerReportedPacket("premature finish")
-	continued, plans, err := c.BeginSettlement(delegateLease{delegateID: "dlg_target", generation: 1}, &packet)
+	continued, plans, err := c.prepareSettlementForTest(delegateLease{delegateID: "dlg_target", generation: 1}, &packet)
 	if err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestDelegateResourceRuntime_CommunicateSettlesExactlyOnce(t *testing.T) {
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
 	packet := delegateControllerReportedPacket("done")
-	continued, _, err := c.BeginSettlement(lease, &packet)
+	continued, _, err := c.prepareSettlementForTest(lease, &packet)
 	if err != nil || continued {
 		t.Fatalf("BeginSettlement = continued:%t err:%v", continued, err)
 	}
@@ -287,7 +287,7 @@ func TestDelegateResourceRuntime_CanonicalPacketReusedAcrossFinishReplayAndDeliv
 	})
 	want := cloneDelegateTerminalPacket(*finish.packet)
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
-	if continued, _, err := c.BeginSettlement(lease, finish.packet); err != nil || continued {
+	if continued, _, err := c.prepareSettlementForTest(lease, finish.packet); err != nil || continued {
 		t.Fatalf("BeginSettlement = continued:%t err:%v", continued, err)
 	}
 	if err := c.store.Close(); err != nil {
@@ -885,7 +885,7 @@ func runStableDelegateInlinePacket(t *testing.T, finish delegateFinish) sendMess
 	var err error
 	if finish.outcome == delegatestore.OutcomeCompleted {
 		var continued bool
-		continued, plans, err = root.delegateController.BeginSettlement(lease, finish.packet)
+		continued, plans, err = root.delegateController.prepareSettlementForTest(lease, finish.packet)
 		if err != nil || continued {
 			t.Fatalf("BeginSettlement inline = continued:%t err:%v", continued, err)
 		}

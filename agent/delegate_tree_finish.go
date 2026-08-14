@@ -29,6 +29,11 @@ const (
 	delegateSettlementTerminal
 )
 
+type delegateSettlementClaim struct {
+	token uint64
+	lease delegateLease
+}
+
 // SupervisionBoundary linearizes pending-steer and stop precedence before
 // ordinary nudge and hook work begins outside the controller mutex.
 func (c *delegateTreeController) SupervisionBoundary(lease delegateLease, mode delegateSettlementMode) (delegateSupervisionBoundary, error) {
@@ -50,15 +55,38 @@ func (c *delegateTreeController) SupervisionBoundary(lease delegateLease, mode d
 	return delegateSupervisionProceed, nil
 }
 
-func (c *delegateTreeController) BeginSettlement(lease delegateLease, supplied *delegatestore.TerminalPacket) (bool, delegateMutationPlans, error) {
+// BeginSettlement makes the final pending-steer decision and fences new work
+// while the runtime performs its last cleanup and samples terminal evidence.
+func (c *delegateTreeController) BeginSettlement(lease delegateLease) (*delegateSettlementClaim, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
 	if err != nil {
-		return false, delegateMutationPlans{}, err
+		return nil, false, err
 	}
-	if len(live.pendingSteers) != 0 {
-		return true, delegateMutationPlans{}, nil
+	if len(live.pendingSteers) != 0 || c.hasSteeringClaimLocked(lease) {
+		return nil, true, nil
+	}
+	if c.hasSettlementClaimLocked(lease) {
+		return nil, false, errDelegateTargetBusy
+	}
+	c.nextToken++
+	claim := &delegateSettlementClaim{token: c.nextToken, lease: lease}
+	c.settlementClaims[claim.token] = claim
+	c.evidenceVersion++
+	return claim, false, nil
+}
+
+func (c *delegateTreeController) CompleteSettlement(claim *delegateSettlementClaim, supplied *delegatestore.TerminalPacket) (delegateMutationPlans, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if claim == nil || c.settlementClaims[claim.token] != claim {
+		return delegateMutationPlans{}, errDelegateStaleLease
+	}
+	delete(c.settlementClaims, claim.token)
+	if _, _, err := c.admitLeaseLocked(claim.lease, delegatestore.PhaseRunning); err != nil {
+		c.evidenceVersion++
+		return delegateMutationPlans{}, err
 	}
 	packet := delegateMissingTerminalPacket()
 	if supplied != nil {
@@ -66,17 +94,36 @@ func (c *delegateTreeController) BeginSettlement(lease delegateLease, supplied *
 	}
 	if _, err := c.appendLocked(delegatestore.Event{
 		Kind:       delegatestore.EventDelegateTerminalPrepared,
-		DelegateID: lease.delegateID,
+		DelegateID: claim.lease.delegateID,
 		TerminalPrepared: &delegatestore.TerminalPrepared{
-			Generation: lease.generation,
+			Generation: claim.lease.generation,
 			Packet:     packet,
 		},
 	}); err != nil {
-		return false, delegateMutationPlans{}, err
+		c.evidenceVersion++
+		return delegateMutationPlans{}, err
 	}
 	c.evidenceVersion++
-	plan := c.capturedPlanLocked(lease.delegateID)
-	return false, delegateMutationPlans{updates: []delegateUpdatePlan{plan}}, nil
+	plan := c.capturedPlanLocked(claim.lease.delegateID)
+	return delegateMutationPlans{updates: []delegateUpdatePlan{plan}}, nil
+}
+
+func (c *delegateTreeController) hasSettlementClaimLocked(lease delegateLease) bool {
+	for _, claim := range c.settlementClaims {
+		if claim != nil && claim.lease == lease {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *delegateTreeController) hasSteeringClaimLocked(lease delegateLease) bool {
+	for _, claim := range c.steeringClaims {
+		if claim != nil && claim.lease == lease {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish delegateFinish) (delegateMutationPlans, error) {
