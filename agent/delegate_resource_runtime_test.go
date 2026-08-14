@@ -328,6 +328,10 @@ func TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects(t *te
 	}
 	restoreReady := make(chan struct{})
 	releaseRestore := make(chan struct{})
+	closeReachedReconstructionWait := make(chan struct{})
+	root.subagents.testBeforeReconstructionWait = func() {
+		close(closeReachedReconstructionWait)
+	}
 	root.cfg.testOnly.sessionInitFault = func(point string) error {
 		if point == "reconcile_lost_jobs" {
 			close(restoreReady)
@@ -346,12 +350,13 @@ func TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects(t *te
 		root.Close()
 		close(closeDone)
 	}()
+	<-closeReachedReconstructionWait
 	select {
 	case <-closeDone:
 		close(releaseRestore)
 		<-sendDone
 		t.Fatal("parent Close returned before cold-restore side effects drained")
-	case <-time.After(25 * time.Millisecond):
+	default:
 	}
 	close(releaseRestore)
 	select {
@@ -359,6 +364,72 @@ func TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects(t *te
 	case <-time.After(5 * time.Second):
 		t.Fatal("parent Close did not return after cold-restore side effects drained")
 	}
+	<-sendDone
+}
+
+func TestDelegateResourceRuntime_ParentCloseDoesNotWaitForFailedInlineResult(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	root.cfg.testOnly.sessionInitFault = func(point string) error {
+		if point == "builtin_agents" {
+			return errors.New("injected cold restore failure before inline wait")
+		}
+		return nil
+	}
+	c := root.delegateController
+	firstReservation, err := c.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart first delivery: %v", err)
+	}
+	first, err := c.CommitStart(firstReservation)
+	if err != nil {
+		t.Fatalf("CommitStart first delivery: %v", err)
+	}
+	firstPlans := finishDelegateDeliveryGeneration(t, c, first.lease, "generation one blocks inline result")
+	if len(firstPlans.deliveries) != 1 {
+		t.Fatalf("first delivery plans = %#v", firstPlans.deliveries)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sendDone := make(chan stableDelegateSendOutcome, 1)
+	go func() {
+		sendDone <- (delegateRuntime{owner: root}).send(ctx, fixture.delegateID, "failed generation two", 60_000)
+	}()
+	waitForCondition(t, 5*time.Second, "failed generation queued behind prior delivery", func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		aggregate := c.durable[fixture.delegateID]
+		return aggregate != nil && aggregate.Generation == 2 && len(aggregate.PendingDeliveries) == 2
+	})
+	select {
+	case outcome := <-sendDone:
+		t.Fatalf("failed generation returned before prior delivery: %#v", outcome)
+	default:
+	}
+
+	closeReachedReconstructionWait := make(chan struct{})
+	root.subagents.testBeforeReconstructionWait = func() {
+		close(closeReachedReconstructionWait)
+	}
+	closeDone := make(chan struct{})
+	go func() {
+		root.Close()
+		close(closeDone)
+	}()
+	<-closeReachedReconstructionWait
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		cancel()
+		<-sendDone
+		<-closeDone
+		t.Fatal("parent Close waited for a failed generation's optional inline result")
+	}
+	cancel()
 	<-sendDone
 }
 

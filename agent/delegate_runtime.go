@@ -322,9 +322,9 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	}
 	sub, restored, finishRestore, err := runtime.restoreIdleForSend(started)
 	if err != nil {
-		outcome := runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, err)
-		finishRestore(nil, err)
-		return outcome
+		return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, err, func() {
+			finishRestore(nil, err)
+		})
 	}
 	if restored {
 		candidate := sub
@@ -333,9 +333,9 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		})
 		if trackErr != nil {
 			candidate.sess.discardRestoredCandidate()
-			outcome := runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, trackErr)
-			finishRestore(nil, trackErr)
-			return outcome
+			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, trackErr, func() {
+				finishRestore(nil, trackErr)
+			})
 		}
 		if !inserted {
 			candidate.sess.discardRestoredCandidate()
@@ -348,15 +348,15 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	}
 	if sub == nil || sub.sess == nil {
 		cause := errors.New("delegate runtime is unavailable")
-		outcome := runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, cause)
-		finishRestore(nil, cause)
-		return outcome
+		return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, func() {
+			finishRestore(nil, cause)
+		})
 	}
 	if !restored {
 		if err := s.delegateController.AttachRuntime(started.lease, sub.sess); err != nil {
-			outcome := runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, err)
-			finishRestore(nil, err)
-			return outcome
+			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, err, func() {
+				finishRestore(nil, err)
+			})
 		}
 	}
 	if restored {
@@ -368,9 +368,9 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		cause := errors.New("session is closed")
-		outcome := runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, cause)
-		finishRestore(sub, nil)
-		return outcome
+		return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, func() {
+			finishRestore(sub, nil)
+		})
 	}
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
@@ -492,12 +492,23 @@ func descriptorProvenance(descriptor delegatestore.Descriptor) *provenance.Causa
 }
 
 func (runtime delegateRuntime) failStableSendStart(ctx context.Context, started delegateStartCommit, delegateID string, waiter *delegateInlineWaiter, maxWaitMS int, cause error) stableDelegateSendOutcome {
+	return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, nil)
+}
+
+func (runtime delegateRuntime) failStableSendStartAfterDispatch(ctx context.Context, started delegateStartCommit, delegateID string, waiter *delegateInlineWaiter, maxWaitMS int, cause error, afterDispatch func()) stableDelegateSendOutcome {
 	plans, finishErr := runtime.owner.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(cause, "construction_failed"))
-	return runtime.stableSendFailureOutcome(ctx, started, waiter, maxWaitMS, plans, errors.Join(cause, finishErr))
+	return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, plans, errors.Join(cause, finishErr), afterDispatch)
 }
 
 func (runtime delegateRuntime) stableSendFailureOutcome(ctx context.Context, started delegateStartCommit, waiter *delegateInlineWaiter, maxWaitMS int, plans delegateMutationPlans, cause error) stableDelegateSendOutcome {
+	return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, plans, cause, nil)
+}
+
+func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context.Context, started delegateStartCommit, waiter *delegateInlineWaiter, maxWaitMS int, plans delegateMutationPlans, cause error, afterDispatch func()) stableDelegateSendOutcome {
 	executeErr := runtime.owner.executeDelegateMutationPlans(plans)
+	if afterDispatch != nil {
+		afterDispatch()
+	}
 	result := stableDelegateFailedSendResult(started, plans, errors.Join(cause, executeErr))
 	if waiter == nil || result.Action == "recovery_required" {
 		return stableDelegateSendOutcome{result: result}

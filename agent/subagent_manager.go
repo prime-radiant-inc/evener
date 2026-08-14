@@ -27,7 +27,10 @@ type subagentManager struct {
 	closing                  bool
 	activeRestoreSideEffects int
 	restoreSideEffectsCond   *sync.Cond
-	emit                     func(events.EventKind, events.EventData)
+	// testBeforeReconstructionWait observes the exact parent-close join boundary.
+	// Nil in production.
+	testBeforeReconstructionWait func()
+	emit                         func(events.EventKind, events.EventData)
 	// maxRetainedTerminal bounds how many terminal records (completed|failed|
 	// cancelled) the manager retains per parent; a closed record still counts until
 	// reclaimed. Enforced at spawn time via reserveSlot, which GCs reclaimable
@@ -186,6 +189,9 @@ func (m *subagentManager) waitForReconstructions() {
 		pending = append(pending, reconstruction)
 	}
 	m.mu.Unlock()
+	if m.testBeforeReconstructionWait != nil {
+		m.testBeforeReconstructionWait()
+	}
 	for _, reconstruction := range pending {
 		_, _ = reconstruction.wait()
 	}
