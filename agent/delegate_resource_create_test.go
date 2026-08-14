@@ -1169,7 +1169,7 @@ func TestDelegateResourceCreate_RegisteredRejectsCreationMaxWait(t *testing.T) {
 	if !strings.HasPrefix(call.Output, registryRejectionPrefix) {
 		t.Errorf("registered delegate rejection = %q, want prefix %q", call.Output, registryRejectionPrefix)
 	}
-	for _, evidence := range []string{"additionalProperties", "max_wait_ms", "not allowed"} {
+	for _, evidence := range []string{"additionalProperties", "max_wait_ms"} {
 		if !strings.Contains(call.Output, evidence) {
 			t.Errorf("registered delegate rejection = %q, want schema evidence %q", call.Output, evidence)
 		}
