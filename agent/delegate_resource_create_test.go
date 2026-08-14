@@ -334,7 +334,7 @@ func TestDelegateResourceCreate_StopBeforeAttachDisposesUnadoptedSession(t *test
 	}
 	executeDelegateCancelPlan(cancelPlan)
 
-	result := runtime.failCommittedStart(started, isolation, prepared, context.Canceled, "construction_failed")
+	result := runtime.failCommittedStart(started, isolation, prepared, true, context.Canceled, "construction_failed")
 	if result.DelegateID != started.lease.delegateID {
 		t.Fatalf("failed create delegate ID = %q, want %q", result.DelegateID, started.lease.delegateID)
 	}
@@ -348,6 +348,32 @@ func TestDelegateResourceCreate_StopBeforeAttachDisposesUnadoptedSession(t *test
 	if !aggregate.Resumable || aggregate.CurrentRunOpen {
 		t.Fatalf("stop-winning delegate = %#v, want settled with durable resumability retained", aggregate)
 	}
+	root.delegateController.mu.Lock()
+	live := root.delegateController.live[started.lease.delegateID]
+	var resident *Session
+	if live != nil {
+		resident = live.runtime
+	}
+	root.delegateController.mu.Unlock()
+	if resident != nil {
+		t.Errorf("stop-winning delegate retained runtime %p in state %q, want no closed controller runtime", resident, resident.State())
+	}
+
+	if _, err := root.delegateController.Reconcile(emptyDelegateReconcileEvidence(root.delegateController)); err != nil {
+		t.Fatalf("complete stop: %v", err)
+	}
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.ID()), started.lease.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart replacement: %v", err)
+	}
+	replacementStart, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart replacement: %v", err)
+	}
+	replacement := newTestSession(t)
+	if err := root.delegateController.AttachRuntime(replacementStart.lease, replacement); err != nil {
+		t.Fatalf("AttachRuntime replacement after stopped-start cleanup: %v", err)
+	}
 }
 
 func TestDelegateResourceCreate_CloseAfterDrainRefusesFailedStartRetention(t *testing.T) {
@@ -359,7 +385,7 @@ func TestDelegateResourceCreate_CloseAfterDrainRefusesFailedStartRetention(t *te
 	}
 
 	constructionErr := errors.New("construction failed after controller attachment")
-	result := runtime.failCommittedStart(started, isolation, prepared, constructionErr, "construction_failed")
+	result := runtime.failCommittedStart(started, isolation, prepared, true, constructionErr, "construction_failed")
 	if !errors.Is(result.Err, constructionErr) || !strings.Contains(result.Err.Error(), "store is closed") {
 		t.Fatalf("failed create error = %v, want construction and append failures", result.Err)
 	}

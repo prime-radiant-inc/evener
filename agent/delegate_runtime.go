@@ -119,13 +119,13 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	s.delegateController.emitDelegateUpdate(started.plan)
 	prepared, err := runtime.construct(ctx, args, selection, started, isolation)
 	if err != nil {
-		return runtime.failCommittedStart(started, isolation, nil, err, "construction_failed")
+		return runtime.failCommittedStart(started, isolation, nil, false, err, "construction_failed")
 	}
 	if err := s.delegateController.AttachRuntime(started.lease, prepared.sub.sess); err != nil {
-		return runtime.failCommittedStart(started, isolation, prepared, err, "construction_failed")
+		return runtime.failCommittedStart(started, isolation, prepared, false, err, "construction_failed")
 	}
 	if err := runtime.adopt(prepared); err != nil {
-		return runtime.failCommittedStart(started, isolation, prepared, err, "construction_failed")
+		return runtime.failCommittedStart(started, isolation, prepared, true, err, "construction_failed")
 	}
 	claim, err := s.delegateController.BeginStartInput(started.lease)
 	if err != nil {
@@ -442,14 +442,20 @@ func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPat
 	return errors.New("read back child input transcript: user input is absent")
 }
 
-func (runtime delegateRuntime) failCommittedStart(started delegateStartCommit, isolation delegateIsolation, prepared *preparedSubagentRun, constructionErr error, reason string) delegateResult {
+func (runtime delegateRuntime) failCommittedStart(started delegateStartCommit, isolation delegateIsolation, prepared *preparedSubagentRun, controllerAttached bool, constructionErr error, reason string) delegateResult {
 	finish := delegatePermanentStartFailure(constructionErr, reason)
 	plans, finishErr := runtime.owner.delegateController.FailCommittedStart(started.lease, finish, reason)
 	runtime.owner.delegateController.emitDelegateUpdates(plans)
 	if committedStartFailureDisposition(finishErr) == delegateCommittedStartFailureStopWon {
 		if prepared != nil {
-			prepared.runCancel()
-			prepared.disposeUnadopted()
+			claimedForClose := !controllerAttached
+			if controllerAttached {
+				claimedForClose = runtime.owner.delegateController.ClaimStoppedRuntime(started.lease, prepared.sub.sess)
+			}
+			if claimedForClose {
+				prepared.runCancel()
+				prepared.disposeUnadopted()
+			}
 		}
 		return stableDelegateResult(started.descriptor, started.lease.delegateID, constructionErr)
 	}

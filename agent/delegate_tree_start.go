@@ -244,6 +244,34 @@ func (c *delegateTreeController) AttachRuntime(lease delegateLease, runtime *Ses
 	return nil
 }
 
+// ClaimStoppedRuntime returns true only when its caller exclusively owns the
+// stopped-start runtime for post-unlock close. It either clears the exact
+// matching controller pointer or observes that the controller no longer owns
+// the runtime. False leaves controller ownership unchanged, so delayed cleanup
+// can never detach or close a successor runtime.
+func (c *delegateTreeController) ClaimStoppedRuntime(lease delegateLease, runtime *Session) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if runtime == nil {
+		return false
+	}
+	ownerID, owner, err := c.runtimeOwnerLocked(runtime)
+	if err != nil {
+		return false
+	}
+	if owner == nil {
+		return true
+	}
+	aggregate := c.durable[lease.delegateID]
+	live := c.live[lease.delegateID]
+	if ownerID != lease.delegateID || aggregate == nil || aggregate.Generation != lease.generation || aggregate.CurrentRunOpen || aggregate.Phase != delegatestore.PhaseStopping || aggregate.PendingStopSeq == 0 || live == nil || live.binding != nil || live.runtime != runtime {
+		return false
+	}
+	live.runtime = nil
+	c.evidenceVersion++
+	return true
+}
+
 func (c *delegateTreeController) runtimeOwnerLocked(runtime *Session) (string, *delegateLiveState, error) {
 	var ownerID string
 	var owner *delegateLiveState
