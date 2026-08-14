@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/clock"
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/llm"
 )
@@ -105,6 +106,7 @@ type ownedJobDrainFixture struct {
 	freshHandled chan struct{}
 	drainClock   *ownedJobDrainClock
 	result       delegateResult
+	shellJobID   string
 	runDone      <-chan struct{}
 }
 
@@ -190,12 +192,10 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 		t.Fatal("subagent did not enter its owned job-tree drain")
 	}
 
-	parent.jobManager.mu.Lock()
-	run := parent.jobManager.running[result.JobID]
-	parent.jobManager.mu.Unlock()
-	if run == nil {
-		t.Fatalf("delegate job %s finalized before its owned shell drained", result.JobID)
-	}
+	shellJobID := liveOwnedShellJobID(t, child.sess.jobManager)
+	child.mu.Lock()
+	runDone := child.done
+	child.mu.Unlock()
 
 	return &ownedJobDrainFixture{
 		parent:       parent,
@@ -205,8 +205,49 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 		freshHandled: freshHandled,
 		drainClock:   drainClock,
 		result:       result,
-		runDone:      run.done,
+		shellJobID:   shellJobID,
+		runDone:      runDone,
 	}
+}
+
+func liveOwnedShellJobID(t *testing.T, manager *jobManager) string {
+	t.Helper()
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	var shellJobID string
+	for jobID, run := range manager.running {
+		if run == nil || run.rec == nil || run.rec.Type != jobstore.JobShell {
+			continue
+		}
+		if shellJobID != "" {
+			t.Fatalf("multiple live child-owned shell jobs: %q and %q", shellJobID, jobID)
+		}
+		shellJobID = jobID
+	}
+	if shellJobID == "" {
+		t.Fatal("registered child has no live owned shell job")
+	}
+	return shellJobID
+}
+
+func loadStableDelegateTerminalPacket(t *testing.T, owner *Session, delegateID string) delegatestore.TerminalPacket {
+	t.Helper()
+	events, err := owner.delegateController.store.Load()
+	if err != nil {
+		t.Fatalf("load stable delegate events: %v", err)
+	}
+	var packet *delegatestore.TerminalPacket
+	for i := range events {
+		if events[i].DelegateID != delegateID || events[i].TerminalPrepared == nil {
+			continue
+		}
+		value := cloneDelegateTerminalPacket(events[i].TerminalPrepared.Packet)
+		packet = &value
+	}
+	if packet == nil {
+		t.Fatalf("stable delegate %s has no canonical terminal packet", delegateID)
+	}
+	return *packet
 }
 
 func TestSubagentDrainRestoresParentDriveCallbackForFreshChildNotification(t *testing.T) {
@@ -215,7 +256,7 @@ func TestSubagentDrainRestoresParentDriveCallbackForFreshChildNotification(t *te
 	select {
 	case <-fixture.runDone:
 	case <-time.After(30 * time.Second):
-		t.Fatalf("delegate job %s did not finish after its owned shell exited", fixture.result.JobID)
+		t.Fatalf("stable delegate %s did not finish after its owned shell exited", fixture.result.DelegateID)
 	}
 	fixture.requireHandledResult(t)
 
@@ -255,7 +296,7 @@ func TestSubagentDrainRestoresParentDriveAfterTerminalStatePublication(t *testin
 	}
 }
 
-func TestSubagentOwnedJobDrainGatesMessagesWithoutBlockingNotifications(t *testing.T) {
+func TestSubagentOwnedJobDrainAcceptsStableSteeringWithoutBlockingNotifications(t *testing.T) {
 	fixture := newOwnedJobDrainFixture(t)
 	fixture.child.mu.Lock()
 	finalizing := fixture.child.finalizing
@@ -265,26 +306,26 @@ func TestSubagentOwnedJobDrainGatesMessagesWithoutBlockingNotifications(t *testi
 		t.Fatalf("active drain state = running %v finalizing %v, want running finalization gate", running, finalizing)
 	}
 
-	plain := fixture.parent.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:  fixture.result.DelegateID,
-		Message: "plain send during owned-job drain",
-	})
-	if plain.Err == nil || !strings.Contains(plain.Err.Error(), "target_busy") {
-		t.Fatalf("plain delegate_send during owned-job drain = %+v, want target_busy", plain)
+	plain := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "plain send during owned-job drain", 0).result
+	if plain.Err != nil || plain.Action != "steered" {
+		t.Fatalf("plain delegate_send during owned-job drain = %+v, want durable steer", plain)
 	}
-	watch := fixture.parent.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:    fixture.result.DelegateID,
-		Message:   "watch send during owned-job drain",
-		FromWatch: true,
-	})
-	if watch.Err != nil || !watch.WatchSendDeliveryClassSet || watch.WatchSendDeliveryClass != watchSendBusy {
-		t.Fatalf("watch delegate_send during owned-job drain = %+v, want retryable busy", watch)
+	second := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "second send during owned-job drain", 0).result
+	if second.Err != nil || second.Action != "steered" {
+		t.Fatalf("second delegate_send during owned-job drain = %+v, want durable steer", second)
 	}
 	if queue := fixture.child.sess.SteeringQueueSnapshot(); len(queue) != 0 {
-		t.Fatalf("steering queue during owned-job drain = %+v, want empty", queue)
+		t.Fatalf("legacy steering queue during stable owned-job drain = %+v, want empty", queue)
 	}
 
 	fixture.releaseAndWait(t)
+	requests := fixture.adapter.Requests()
+	shellSeen := len(requests) == 3 && requestsContain(requests[2:3], "child shell complete")
+	plainSeen := len(requests) == 3 && requestsContain(requests[2:3], "plain send during owned-job drain")
+	secondSeen := len(requests) == 3 && requestsContain(requests[2:3], "second send during owned-job drain")
+	if !shellSeen || !plainSeen || !secondSeen {
+		t.Fatalf("stable drain/steering requests = count %d shell %t plain %t second %t, want the shell notification and both accepted steers at the next model boundary", len(requests), shellSeen, plainSeen, secondSeen)
+	}
 	fixture.requireHandledResult(t)
 	fixture.child.mu.Lock()
 	finalizing = fixture.child.finalizing
@@ -294,44 +335,39 @@ func TestSubagentOwnedJobDrainGatesMessagesWithoutBlockingNotifications(t *testi
 	}
 }
 
-func TestSubagentDrainReturnHandoffRefusesMessagesBeforeTerminalPublication(t *testing.T) {
+func TestSubagentDrainReturnHandoffPreservesStableSteeringBeforeTerminalPublication(t *testing.T) {
 	fixture := newOwnedJobDrainFixture(t)
 	type handoffResult struct {
 		finalizing bool
 		running    bool
-		launched   bool
-		resumeErr  error
+		resume     sendMessageResult
 		plain      sendMessageResult
-		watch      sendMessageResult
+		second     sendMessageResult
 		queue      []SteeringEntry
 		pending    int
 	}
 	handoffDone := make(chan handoffResult, 1)
+	var handoffOnce sync.Once
 	fixture.drainClock.onDrainStop = func() {
-		fixture.child.mu.Lock()
-		finalizing := fixture.child.finalizing
-		running := fixture.child.running
-		fixture.child.mu.Unlock()
-		launched, resumeErr := fixture.parent.startOrSteerSubagentRun(fixture.child, "resume during drain return")
-		plain := fixture.parent.sendDelegateMessage(context.Background(), sendMessageArgs{
-			Target:  fixture.result.DelegateID,
-			Message: "plain send during drain return",
+		handoffOnce.Do(func() {
+			fixture.child.mu.Lock()
+			finalizing := fixture.child.finalizing
+			running := fixture.child.running
+			fixture.child.mu.Unlock()
+			runtime := delegateRuntime{owner: fixture.parent}
+			resume := runtime.send(context.Background(), fixture.result.DelegateID, "resume during drain return", 0).result
+			plain := runtime.send(context.Background(), fixture.result.DelegateID, "plain send during drain return", 0).result
+			second := runtime.send(context.Background(), fixture.result.DelegateID, "second send during drain return", 0).result
+			handoffDone <- handoffResult{
+				finalizing: finalizing,
+				running:    running,
+				resume:     resume,
+				plain:      plain,
+				second:     second,
+				queue:      fixture.child.sess.SteeringQueueSnapshot(),
+				pending:    fixture.child.sess.peekNotifications(),
+			}
 		})
-		watch := fixture.parent.sendDelegateMessage(context.Background(), sendMessageArgs{
-			Target:    fixture.result.DelegateID,
-			Message:   "watch send during drain return",
-			FromWatch: true,
-		})
-		handoffDone <- handoffResult{
-			finalizing: finalizing,
-			running:    running,
-			launched:   launched,
-			resumeErr:  resumeErr,
-			plain:      plain,
-			watch:      watch,
-			queue:      fixture.child.sess.SteeringQueueSnapshot(),
-			pending:    fixture.child.sess.peekNotifications(),
-		}
 	}
 
 	fixture.env.releaseJob()
@@ -344,14 +380,14 @@ func TestSubagentDrainReturnHandoffRefusesMessagesBeforeTerminalPublication(t *t
 	if !got.running || !got.finalizing {
 		t.Fatalf("drain-return state = running %v finalizing %v, want running finalization gate", got.running, got.finalizing)
 	}
-	if got.launched || got.resumeErr == nil || !strings.Contains(got.resumeErr.Error(), "target_busy") {
-		t.Fatalf("startOrSteer during drain return = launched %v err %v, want target_busy", got.launched, got.resumeErr)
+	if got.resume.Err != nil || got.resume.Action != "steered" {
+		t.Fatalf("first stable send during drain return = %+v, want durable steer", got.resume)
 	}
-	if got.plain.Err == nil || !strings.Contains(got.plain.Err.Error(), "target_busy") {
-		t.Fatalf("plain delegate_send during drain return = %+v, want target_busy", got.plain)
+	if got.plain.Err != nil || got.plain.Action != "steered" {
+		t.Fatalf("plain delegate_send during drain return = %+v, want durable steer", got.plain)
 	}
-	if got.watch.Err != nil || !got.watch.WatchSendDeliveryClassSet || got.watch.WatchSendDeliveryClass != watchSendBusy {
-		t.Fatalf("watch delegate_send during drain return = %+v, want retryable busy", got.watch)
+	if got.second.Err != nil || got.second.Action != "steered" {
+		t.Fatalf("second delegate_send during drain return = %+v, want durable steer", got.second)
 	}
 	if len(got.queue) != 0 {
 		t.Fatalf("steering queue after drain-return sends = %+v, want empty", got.queue)
@@ -365,7 +401,13 @@ func TestSubagentDrainReturnHandoffRefusesMessagesBeforeTerminalPublication(t *t
 	case <-time.After(30 * time.Second):
 		t.Fatal("delegate did not publish terminal state after drain return")
 	}
-	fixture.requireHandledResult(t)
+	requests := fixture.adapter.Requests()
+	resumeSeen := len(requests) >= 4 && requestsContain(requests[3:], "resume during drain return")
+	plainSeen := len(requests) >= 4 && requestsContain(requests[3:], "plain send during drain return")
+	secondSeen := len(requests) >= 4 && requestsContain(requests[3:], "second send during drain return")
+	if len(requests) != 4 || !resumeSeen || !plainSeen || !secondSeen {
+		t.Fatalf("drain-return stable steering requests = count %d resume %t plain %t second %t, want one continuation containing all accepted sends", len(requests), resumeSeen, plainSeen, secondSeen)
+	}
 }
 
 func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T) {
@@ -443,9 +485,16 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 		_, driveErr := child.sess.ProcessInputKind(context.Background(), "", nil, EntryNotification)
 		lateDriveDone <- driveErr
 	})
+	child.mu.Lock()
+	runDone := child.done
+	child.mu.Unlock()
 	releaseOnce.Do(func() { close(releaseInitial) })
 
-	waitForShellDone(t, parent.jobManager, result.JobID)
+	select {
+	case <-runDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("stable delegate did not publish its original structured result")
+	}
 	select {
 	case driveErr := <-lateDriveDone:
 		if driveErr != nil {
@@ -458,10 +507,11 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 	if !ok || liveStructured["summary"] != "late structured overwrite" {
 		t.Fatalf("live child structured result = %#v, want the late notification overwrite", child.sess.CommunicateStructured())
 	}
-	rec := loadShellRecord(t, parent.jobManager, result.JobID)
-	structured, ok := rec.StructuredResult.(map[string]any)
-	if !ok || structured["summary"] != "original structured result" {
-		t.Fatalf("durable delegate structured result = %#v, want original run snapshot", rec.StructuredResult)
+	packet := loadStableDelegateTerminalPacket(t, parent, result.DelegateID)
+	var structured map[string]any
+	err = json.Unmarshal(packet.StructuredResult, &structured)
+	if err != nil || structured["summary"] != "original structured result" {
+		t.Fatalf("durable stable structured result = %#v (error %v), want original run snapshot", structured, err)
 	}
 }
 
@@ -502,25 +552,19 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 
 			switch action {
 			case "explicit resume":
-				if _, err := fixture.parent.startOrSteerSubagentRun(fixture.child, "resume too early"); err == nil || !strings.Contains(err.Error(), "target_busy") {
-					t.Fatalf("early explicit resume error = %v, want target_busy", err)
+				res := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "resume too early", 0).result
+				if !errors.Is(res.Err, errDelegateTargetBusy) {
+					t.Fatalf("early explicit resume result = %+v, want target_busy", res)
 				}
 			case "delegate send":
-				res := fixture.parent.sendDelegateMessage(context.Background(), sendMessageArgs{
-					Target:  fixture.result.DelegateID,
-					Message: "resume too early",
-				})
-				if res.Err == nil || !strings.Contains(res.Err.Error(), "target_busy") {
+				res := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "resume too early", 0).result
+				if !errors.Is(res.Err, errDelegateTargetBusy) {
 					t.Fatalf("early delegate_send result = %+v, want target_busy", res)
 				}
 			case "watch delegate send":
-				res := fixture.parent.sendDelegateMessage(context.Background(), sendMessageArgs{
-					Target:    fixture.result.DelegateID,
-					Message:   "resume too early",
-					FromWatch: true,
-				})
-				if res.Err != nil || !res.WatchSendDeliveryClassSet || res.WatchSendDeliveryClass != watchSendBusy {
-					t.Fatalf("early watch delegate_send result = %+v, want retryable busy", res)
+				res := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "resume too early", 0).result
+				if !errors.Is(res.Err, errDelegateTargetBusy) {
+					t.Fatalf("early watch-origin stable send result = %+v, want retryable target_busy", res)
 				}
 			}
 			if queue := fixture.child.sess.SteeringQueueSnapshot(); len(queue) != 0 {
@@ -548,9 +592,9 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 					return !fixture.child.driving
 				})
 				fixture.child.sess.cfg.testOnly.subagentAfterFinalStatePublish = nil
-				launched, err := fixture.parent.startOrSteerSubagentRun(fixture.child, "resume after finalization")
-				if err != nil || !launched {
-					t.Fatalf("explicit resume after finalization = launched %v err %v, want launched", launched, err)
+				resumed := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "resume after finalization", 0).result
+				if resumed.Err != nil || resumed.Action != "started" {
+					t.Fatalf("explicit resume after finalization = %+v, want started", resumed)
 				}
 				fixture.child.mu.Lock()
 				resumedDone := fixture.child.done
@@ -567,6 +611,10 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 
 func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) {
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "provider failed after shell launch", nil, nil)
+	enteredFatal := make(chan struct{})
+	releaseFatal := make(chan struct{})
+	var releaseFatalOnce sync.Once
+	t.Cleanup(func() { releaseFatalOnce.Do(func() { close(releaseFatal) }) })
 	adapter := &fakeErrAdapter{
 		name: "openai",
 		steps: []func(llm.Request) (llm.Response, error){
@@ -579,6 +627,8 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 				}), nil
 			},
 			func(llm.Request) (llm.Response, error) {
+				close(enteredFatal)
+				<-releaseFatal
 				return llm.Response{}, fatalErr
 			},
 			func(llm.Request) (llm.Response, error) {
@@ -628,17 +678,16 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	case <-time.After(30 * time.Second):
 		t.Fatal("child shell did not start")
 	}
-
-	parent.jobManager.mu.Lock()
-	run := parent.jobManager.running[result.JobID]
-	parent.jobManager.mu.Unlock()
-	if run == nil {
-		t.Fatalf("delegate job %s finalized before fatal child run completed", result.JobID)
-	}
+	<-enteredFatal
+	shellJobID := liveOwnedShellJobID(t, child.sess.jobManager)
+	child.mu.Lock()
+	childDone := child.done
+	child.mu.Unlock()
+	releaseFatalOnce.Do(func() { close(releaseFatal) })
 	select {
-	case <-run.done:
+	case <-childDone:
 	case <-time.After(30 * time.Second):
-		t.Fatal("parent delegate did not finalize after fatal child run")
+		t.Fatal("stable delegate did not finalize after fatal child run")
 	}
 	select {
 	case <-env.signaled:
@@ -654,7 +703,6 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	status := child.status
 	childErr := child.err
 	fatalRunGated := child.fatalRunGated
-	childDone := child.done
 	child.mu.Unlock()
 	if status != SubagentFailed || !errors.Is(childErr, fatalErr) {
 		t.Fatalf("child terminal state = %s, err %v; want failed with original provider error", status, childErr)
@@ -667,33 +715,27 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	default:
 		t.Fatal("child done channel remained open after parent delegate finalized")
 	}
-	rec := loadShellRecord(t, parent.jobManager, result.JobID)
-	if rec.Status != jobstore.StatusFailed || rec.Reason == "stopped_by_parent" {
-		t.Fatalf("delegate record = status %s reason %q, want failed without stopped_by_parent", rec.Status, rec.Reason)
+	rec := loadShellRecord(t, child.sess.jobManager, shellJobID)
+	if rec.Status != jobstore.StatusCancelled || rec.Reason != "stopped_by_parent" {
+		t.Fatalf("child-owned shell record = status %s reason %q, want cancelled/stopped_by_parent", rec.Status, rec.Reason)
 	}
-	stored, _, _, err := parent.jobManager.readOutput(result.JobID, shellInlineOutputBytes)
-	if err != nil {
-		t.Fatalf("read delegate output: %v", err)
+	aggregate := delegateAggregateSnapshot(t, parent.delegateController, result.DelegateID)
+	if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeFailed || aggregate.LatestOutcome.Reason != "failed" {
+		t.Fatalf("stable delegate outcome = %#v, want failed", aggregate.LatestOutcome)
 	}
-	if !strings.Contains(stored, fatalErr.Error()) {
-		t.Fatalf("delegate output = %q, want original fatal error", stored)
+	packet := loadStableDelegateTerminalPacket(t, parent, result.DelegateID)
+	var message string
+	if err := json.Unmarshal(packet.Message, &message); err != nil || !strings.Contains(message, fatalErr.Error()) {
+		t.Fatalf("stable terminal message = %q (error %v), want original fatal error", message, err)
 	}
 
-	watchResume := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:    result.DelegateID,
-		Message:   "automatic resume after fatal run",
-		FromWatch: true,
-	})
-	if watchResume.Err == nil || !watchResume.WatchSendDeliveryClassSet || watchResume.WatchSendDeliveryClass != watchSendHardFailure {
-		t.Fatalf("watch resume after fatal run = %+v, want hard failure requiring explicit resume", watchResume)
+	if parent.driveSubagentNotificationTurn(child) {
+		t.Fatal("fatal-gated child admitted an automatic notification drive")
 	}
 	if requests := adapter.Requests(); len(requests) != 2 {
-		t.Fatalf("provider requests after refused watch resume = %d, want 2", len(requests))
+		t.Fatalf("provider requests after refused automatic drive = %d, want 2", len(requests))
 	}
-	explicitResume := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:  result.DelegateID,
-		Message: "resume after fatal run",
-	})
+	explicitResume := (delegateRuntime{owner: parent}).send(context.Background(), result.DelegateID, "resume after fatal run", 0).result
 	if explicitResume.Err != nil || explicitResume.Action != "started" {
 		t.Fatalf("explicit child resume = %+v, want started", explicitResume)
 	}
@@ -723,10 +765,7 @@ func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 				return llm.Response{}, fatalErr
 			},
 			func(llm.Request) (llm.Response, error) {
-				return finalResponse("failed delegate notification handled"), nil
-			},
-			func(llm.Request) (llm.Response, error) {
-				return finalResponse("dropped watch diagnostic handled"), nil
+				return finalResponse("failed delegate and dropped watch diagnostics handled"), nil
 			},
 			func(llm.Request) (llm.Response, error) {
 				return finalResponse("explicit recovery completed"), nil
@@ -757,13 +796,23 @@ func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 	if result.Err != nil {
 		t.Fatalf("createDelegate: %v", result.Err)
 	}
-	waitForShellDone(t, parent.jobManager, result.JobID)
 	_, childID, err := decodeRef(result.TranscriptRef)
 	if err != nil {
 		t.Fatalf("decodeRef(%q): %v", result.TranscriptRef, err)
 	}
 	child := parent.subagents.get(childID)
-	if child == nil || !child.fatalRunGatedSnapshot() {
+	if child == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+	child.mu.Lock()
+	runDone := child.done
+	child.mu.Unlock()
+	select {
+	case <-runDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("stable delegate did not settle its fatal initial run")
+	}
+	if !child.fatalRunGatedSnapshot() {
 		t.Fatalf("retained child %q is not fatal-gated", childID)
 	}
 	if _, err := parent.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
@@ -800,8 +849,11 @@ func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 		if got.err != nil {
 			t.Fatalf("DrainJobTree: %v", got.err)
 		}
-		if got.output != "dropped watch diagnostic handled" {
-			t.Fatalf("DrainJobTree output = %q, want dropped-watch diagnostic result", got.output)
+		requests := adapter.Requests()
+		watchSeen := len(requests) == 2 && requestsContain(requests[1:2], "watch send failed")
+		fatalSeen := len(requests) == 2 && requestsContain(requests[1:2], "fatal before watch delivery")
+		if got.output != "failed delegate and dropped watch diagnostics handled" || !watchSeen || !fatalSeen {
+			t.Fatalf("DrainJobTree output = %q with %d provider requests (watch diagnostic %t fatal attention %t), want one turn handling both notifications", got.output, len(requests), watchSeen, fatalSeen)
 		}
 	case recheck <- now.Add(time.Second):
 		cancelDrain()
@@ -824,10 +876,7 @@ func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 		t.Fatal("watch send drop was not persisted")
 	}
 
-	recovered := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:  result.DelegateID,
-		Message: "explicitly recover after dropped watch send",
-	})
+	recovered := (delegateRuntime{owner: parent}).send(context.Background(), result.DelegateID, "explicitly recover after dropped watch send", 0).result
 	if recovered.Err != nil || recovered.Action != "started" {
 		t.Fatalf("explicit recovery = %+v, want started", recovered)
 	}
@@ -846,6 +895,10 @@ func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 
 func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T) {
 	driveErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal notification turn", nil, nil)
+	enteredFatalDrive := make(chan struct{})
+	releaseFatalDrive := make(chan struct{})
+	var releaseFatalDriveOnce sync.Once
+	t.Cleanup(func() { releaseFatalDriveOnce.Do(func() { close(releaseFatalDrive) }) })
 	adapter := &fakeErrAdapter{
 		name: "openai",
 		steps: []func(llm.Request) (llm.Response, error){
@@ -861,6 +914,8 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 				}), nil
 			},
 			func(llm.Request) (llm.Response, error) {
+				close(enteredFatalDrive)
+				<-releaseFatalDrive
 				return llm.Response{}, driveErr
 			},
 		},
@@ -891,7 +946,6 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	if result.Err != nil {
 		t.Fatalf("createDelegate: %v", result.Err)
 	}
-	waitForShellDone(t, parent.jobManager, result.JobID)
 	_, childID, err := decodeRef(result.TranscriptRef)
 	if err != nil {
 		t.Fatalf("decodeRef(%q): %v", result.TranscriptRef, err)
@@ -899,6 +953,14 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	child := parent.subagents.get(childID)
 	if child == nil || child.sess == nil {
 		t.Fatalf("subagent %s not found", childID)
+	}
+	child.mu.Lock()
+	initialDone := child.done
+	child.mu.Unlock()
+	select {
+	case <-initialDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("stable delegate did not finish before notification drive")
 	}
 	child.mu.Lock()
 	statusBeforeDrive := child.status
@@ -913,6 +975,9 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	case <-time.After(30 * time.Second):
 		t.Fatal("automatic notification drive did not launch its owned shell")
 	}
+	<-enteredFatalDrive
+	shellJobID := liveOwnedShellJobID(t, child.sess.jobManager)
+	releaseFatalDriveOnce.Do(func() { close(releaseFatalDrive) })
 	select {
 	case <-env.signaled:
 	case <-time.After(30 * time.Second):
@@ -931,6 +996,10 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	}
 	if !child.fatalRunGatedSnapshot() {
 		t.Fatal("fatal notification drive did not retain the automatic-drive gate")
+	}
+	rec := loadShellRecord(t, child.sess.jobManager, shellJobID)
+	if rec.Status != jobstore.StatusCancelled || rec.Reason != "stopped_by_parent" {
+		t.Fatalf("fatal-drive shell record = status %s reason %q, want cancelled/stopped_by_parent", rec.Status, rec.Reason)
 	}
 	child.mu.Lock()
 	statusAfterDrive := child.status
@@ -951,7 +1020,7 @@ func (f *ownedJobDrainFixture) releaseAndWait(t *testing.T) {
 	select {
 	case <-f.runDone:
 	case <-time.After(30 * time.Second):
-		t.Fatalf("delegate job %s did not finish after its owned shell exited", f.result.JobID)
+		t.Fatalf("stable delegate %s did not finish after its owned shell exited", f.result.DelegateID)
 	}
 }
 
@@ -974,19 +1043,35 @@ func (f *ownedJobDrainFixture) requireHandledResult(t *testing.T) {
 		t.Fatalf("child terminal state = %s, result %q; want completed with drained result", status, result)
 	}
 
-	stored, _, _, err := f.parent.jobManager.readOutput(f.result.JobID, shellInlineOutputBytes)
+	stored, _, _, err := f.child.sess.jobManager.readOutput(f.shellJobID, shellInlineOutputBytes)
 	if err != nil {
-		t.Fatalf("read delegate output: %v", err)
+		t.Fatalf("read child-owned shell output: %v", err)
 	}
-	if strings.TrimSpace(stored) != "owned shell handled" {
-		t.Fatalf("stored delegate output = %q, want drained result", stored)
+	if !strings.Contains(stored, "child shell complete") {
+		t.Fatalf("stored child-owned shell output = %q, want completed shell output", stored)
 	}
-	rec := loadShellRecord(t, f.parent.jobManager, f.result.JobID)
-	if rec.Status != jobstore.StatusCompleted || rec.NotifyState != jobstore.NotifyPending {
-		t.Fatalf("delegate record = status %s notification %s, want completed/pending", rec.Status, rec.NotifyState)
+	rec := loadShellRecord(t, f.child.sess.jobManager, f.shellJobID)
+	if rec.Status != jobstore.StatusCompleted {
+		t.Fatalf("child-owned shell record = status %s reason %q, want completed", rec.Status, rec.Reason)
 	}
-	if got := f.parent.peekNotifications(); got != 1 {
-		t.Fatalf("parent pending notifications = %d, want one delegate terminal notification", got)
+	aggregate := delegateAggregateSnapshot(t, f.parent.delegateController, f.result.DelegateID)
+	if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeCompleted {
+		t.Fatalf("stable delegate aggregate = %#v, want completed outcome", aggregate)
+	}
+	packet := loadStableDelegateTerminalPacket(t, f.parent, f.result.DelegateID)
+	var message string
+	if err := json.Unmarshal(packet.Message, &message); err != nil {
+		t.Fatalf("decode canonical terminal message: %v", err)
+	}
+	if packet.Kind != delegatestore.PacketReported || strings.TrimSpace(message) != "owned shell handled" {
+		t.Fatalf("canonical terminal packet = kind %s message %q, want reported drained result", packet.Kind, message)
+	}
+	pending, err := readPendingDelegateAttention(transcriptPath(f.parent.stateDir, f.parent.id), f.parent.id)
+	if err != nil {
+		t.Fatalf("read parent stable attention: %v", err)
+	}
+	if len(pending) != 1 || !strings.HasPrefix(pending[0], "delegate:") {
+		t.Fatalf("parent pending stable attention = %#v, want one delegate terminal delivery", pending)
 	}
 }
 
@@ -1001,11 +1086,11 @@ func TestSubagentRunDrainsOwnedShellBeforeFinalizingDelegate(t *testing.T) {
 	if !running || status != SubagentRunning {
 		t.Fatalf("child state while owned shell runs = running %v, status %s; want true/running", running, status)
 	}
-	fixture.parent.jobManager.mu.Lock()
-	parentRun := fixture.parent.jobManager.running[fixture.result.JobID]
-	fixture.parent.jobManager.mu.Unlock()
-	if parentRun == nil {
-		t.Fatalf("parent delegate job %s was finalized while its child shell was running", fixture.result.JobID)
+	fixture.child.sess.jobManager.mu.Lock()
+	ownedShell := fixture.child.sess.jobManager.running[fixture.shellJobID]
+	fixture.child.sess.jobManager.mu.Unlock()
+	if ownedShell == nil {
+		t.Fatalf("child-owned shell %s was finalized before the stable delegate drain", fixture.shellJobID)
 	}
 	select {
 	case <-done:

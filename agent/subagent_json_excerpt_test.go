@@ -57,6 +57,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	}
 
 	cfg := SessionConfig{
+		StateDir:              t.TempDir(),
 		clock:                 clk,
 		MaxSubagentDepth:      1,
 		MaxToolRoundsPerInput: 10,
@@ -85,6 +86,18 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
 	}
+	_, childID, err := decodeRef(res.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decodeRef(%q): %v", res.TranscriptRef, err)
+	}
+	child := sess.subagents.get(childID)
+	if child == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+	child.mu.Lock()
+	done := child.done
+	child.mu.Unlock()
+	<-done
 	if factoryCalls.Load() != 1 {
 		t.Fatalf("childClientFactory calls = %d, want 1", factoryCalls.Load())
 	}
@@ -116,7 +129,12 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 			t.Fatalf("subagent recovery request missing %q\nrequest: %s", want, got)
 		}
 	}
-	if !strings.Contains(res.Output, "child recovered") {
-		t.Fatalf("subagent did not report recovery: output=%q", res.Output)
+	packet := loadStableDelegateTerminalPacket(t, sess, res.DelegateID)
+	var output string
+	if err := json.Unmarshal(packet.Message, &output); err != nil {
+		t.Fatalf("decode stable terminal message: %v", err)
+	}
+	if !strings.Contains(output, "child recovered") {
+		t.Fatalf("subagent did not report recovery: output=%q", output)
 	}
 }
