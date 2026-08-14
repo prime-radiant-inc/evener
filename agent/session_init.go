@@ -1116,11 +1116,8 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	if err := s.initMCP(); err != nil {
 		return nil, fmt.Errorf("MCP initialization: %w", err)
 	}
-	effectiveAllowedToolNames := s.cfg.spawn.allowedToolNames
-	if !s.cfg.spawn.exactToolNames {
-		effectiveAllowedToolNames = ensureRecoveryReader(effectiveAllowedToolNames, reg)
-	}
-	if s.cfg.spawn.exactToolNames || len(effectiveAllowedToolNames) > 0 {
+	effectiveAllowedToolNames := ensureRecoveryReader(s.cfg.spawn.allowedToolNames, reg)
+	if len(effectiveAllowedToolNames) > 0 {
 		allowed := make(map[string]bool, len(effectiveAllowedToolNames))
 		for _, name := range effectiveAllowedToolNames {
 			allowed[name] = true

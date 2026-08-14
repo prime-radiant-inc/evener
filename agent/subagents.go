@@ -604,13 +604,11 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.spawn.parentWatchGranted = false
 	subCfg.spawn.parentInstallWatch = nil
 	subCfg.spawn.parentClearWatch = nil
-	subCfg.spawn.exactToolNames = false
 	if frozen != nil {
 		subCfg.spawn.rolePromptOverride = ""
 		subCfg.spawn.activatedSkillBodies = nil
 		subCfg.spawn.allowedToolNames = nil
 		subCfg.spawn.deniedToolNames = nil
-		subCfg.spawn.exactToolNames = true
 		subCfg.spawn.communicateOutputSchema = nil
 		subCfg.spawn.isolation = frozen.Isolation
 		subCfg.spawn.delegationAllowance = frozen.DelegationAllowance
@@ -851,6 +849,11 @@ func (s *Session) prepareSubagentRunFromSelection(
 			disposeUnadopted()
 			return nil, err
 		}
+		allowed := make(map[string]bool, len(frozen.FrozenToolNames))
+		for _, name := range frozen.FrozenToolNames {
+			allowed[name] = true
+		}
+		subSess.reg.RestrictKeepingResultTool(allowed, subSess.resultToolName())
 	}
 	if len(canonicalGrantTools) > 0 {
 		var missing []string
