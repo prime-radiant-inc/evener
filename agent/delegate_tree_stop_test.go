@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/internal/delegatestore"
 )
 
@@ -313,6 +315,55 @@ func TestDelegateControllerStopPersistsBeforeCancellationPlan(t *testing.T) {
 	plan.cancel[0]()
 	if !cancelled {
 		t.Fatal("captured cancellation plan did not cancel exact runtime")
+	}
+}
+
+func TestDelegateControllerStopDrainsSteeringAndModelClaims(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	steeringClaim, err := c.BeginSteerPersistence(rootDelegateActor("root-session"), lease.delegateID)
+	if err != nil {
+		t.Fatalf("BeginSteerPersistence: %v", err)
+	}
+	steeringEntry, err := steeringClaim.runtime.appendDelegateSteeringDurably("stop-racing steer", steeringClaim.entryID)
+	if err != nil {
+		t.Fatalf("append steering: %v", err)
+	}
+	modelClaim, err := c.BeginModelRequest(lease)
+	if err != nil {
+		t.Fatalf("BeginModelRequest: %v", err)
+	}
+	modelSnapshot := modelClaim.runtime.delegateModelHistorySnapshot()
+	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), lease.delegateID)
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	if _, err := c.FinishGeneration(lease, delegateFinish{}); err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("Reconcile with claims in flight: %v", err)
+	}
+	select {
+	case <-result.done:
+		t.Fatal("stop completed before steering and model claims drained")
+	default:
+	}
+	if _, err := c.CompleteSteerPersistence(steeringClaim, steeringEntry); !errors.Is(err, errDelegateStaleLease) {
+		t.Fatalf("CompleteSteerPersistence after stop error = %v, want stale lease", err)
+	}
+	if _, err := c.CompleteModelRequest(modelClaim, modelSnapshot, replayScope{}); !errors.Is(err, errDelegateStaleLease) {
+		t.Fatalf("CompleteModelRequest after stop error = %v, want stale lease", err)
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("Reconcile after claim drain: %v", err)
+	}
+	select {
+	case <-result.done:
+	default:
+		t.Fatal("stop remained pending after steering and model claims drained")
 	}
 }
 

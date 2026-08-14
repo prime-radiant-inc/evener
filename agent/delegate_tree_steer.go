@@ -92,7 +92,7 @@ func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteerin
 	if claim == nil || c.steeringClaims[claim.token] != claim || entry.entryID == "" || entry.entryID != claim.entryID {
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
-	delete(c.steeringClaims, claim.token)
+	c.releaseSteeringClaimLocked(claim.token)
 	_, live, err := c.admitLeaseLocked(claim.lease, delegatestore.PhaseRunning)
 	if err != nil || live.binding.runtime != claim.runtime || claim.delegateID != claim.lease.delegateID {
 		c.evidenceVersion++
@@ -115,7 +115,7 @@ func (c *delegateTreeController) AbortSteerPersistence(claim *delegateSteeringCl
 	if claim == nil || c.steeringClaims[claim.token] != claim {
 		return errDelegateStaleLease
 	}
-	delete(c.steeringClaims, claim.token)
+	c.releaseSteeringClaimLocked(claim.token)
 	c.evidenceVersion++
 	return nil
 }
@@ -158,7 +158,7 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 	if claim == nil || c.modelClaims[claim.token] != claim {
 		return nil, errDelegateStaleLease
 	}
-	delete(c.modelClaims, claim.token)
+	c.releaseModelClaimLocked(claim.token)
 	_, live, err := c.admitLeaseLocked(claim.lease, delegatestore.PhaseRunning)
 	if err != nil || live.binding.runtime != claim.runtime {
 		c.evidenceVersion++
@@ -204,9 +204,29 @@ func (c *delegateTreeController) AbortModelRequest(claim *delegateModelRequestCl
 	if claim == nil || c.modelClaims[claim.token] != claim {
 		return errDelegateStaleLease
 	}
-	delete(c.modelClaims, claim.token)
+	c.releaseModelClaimLocked(claim.token)
 	c.evidenceVersion++
 	return nil
+}
+
+func (c *delegateTreeController) releaseSteeringClaimLocked(token uint64) {
+	delete(c.steeringClaims, token)
+	if c.stop != nil {
+		if _, tracked := c.stop.steeringClaims[token]; tracked {
+			delete(c.stop.steeringClaims, token)
+			c.signalStopProgressLocked()
+		}
+	}
+}
+
+func (c *delegateTreeController) releaseModelClaimLocked(token uint64) {
+	delete(c.modelClaims, token)
+	if c.stop != nil {
+		if _, tracked := c.stop.modelClaims[token]; tracked {
+			delete(c.stop.modelClaims, token)
+			c.signalStopProgressLocked()
+		}
+	}
 }
 
 func (c *delegateTreeController) dropRuntimeClaimsForMembersLocked(members map[string]struct{}) {
@@ -216,11 +236,21 @@ func (c *delegateTreeController) dropRuntimeClaimsForMembersLocked(members map[s
 				continue
 			}
 		}
+		if c.stop != nil {
+			if _, tracked := c.stop.steeringClaims[token]; tracked {
+				continue
+			}
+		}
 		delete(c.steeringClaims, token)
 	}
 	for token, claim := range c.modelClaims {
 		if claim != nil {
 			if _, covered := members[claim.lease.delegateID]; !covered {
+				continue
+			}
+		}
+		if c.stop != nil {
+			if _, tracked := c.stop.modelClaims[token]; tracked {
 				continue
 			}
 		}
