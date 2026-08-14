@@ -1484,6 +1484,56 @@ func TestSession_UserInstructionOverride_AppendedLastToSystemPrompt(t *testing.T
 	}
 }
 
+func TestSession_SubagentUserInstructionOverride_AppendedLastToSystemPrompt(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("ok") },
+		},
+	}
+	c.Register(f)
+
+	override := "SUBAGENT OVERRIDE: highest priority"
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		NoProjectPrompts:        true,
+		UserInstructionOverride: override,
+		spawn: spawnConfig{
+			parentSessionID:      "01PARENT",
+			depth:                1,
+			subagentTask:         "perform the delegated task",
+			rolePromptOverride:   "SUBAGENT ROLE INSTRUCTION",
+			activatedSkillBodies: []string{"SUBAGENT ACTIVATED SKILL"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	reqs := f.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests: got %d want 1", len(reqs))
+	}
+	sys := reqs[0].Messages[0].Text()
+	for _, want := range []string{"SUBAGENT ROLE INSTRUCTION", "SUBAGENT ACTIVATED SKILL"} {
+		if !strings.Contains(sys, want) {
+			t.Fatalf("system prompt missing %q:\n%s", want, sys)
+		}
+	}
+	if !strings.HasSuffix(strings.TrimSpace(sys), override) {
+		t.Fatalf("expected subagent system prompt to end with override, got:\n%s", sys)
+	}
+}
+
 func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
