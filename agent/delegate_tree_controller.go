@@ -62,6 +62,7 @@ type delegateTreeController struct {
 	evidenceVersion uint64
 	closing         bool
 	reconcileOrder  []delegateLease
+	emitUpdate      func(delegateUpdatePlan)
 }
 
 type delegateActor struct {
@@ -260,6 +261,24 @@ func (c *delegateTreeController) Snapshot() delegateUpdatePlan {
 		rows = append(rows, c.captureDelegateSnapshotLocked(id))
 	}
 	return delegateUpdatePlan{rows: rows}
+}
+
+func (c *delegateTreeController) emitDelegateUpdate(plan delegateUpdatePlan) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	emit := c.emitUpdate
+	c.mu.Unlock()
+	if emit != nil {
+		emit(plan)
+	}
+}
+
+func (c *delegateTreeController) emitDelegateUpdates(plans delegateMutationPlans) {
+	for _, plan := range plans.updates {
+		c.emitDelegateUpdate(plan)
+	}
 }
 
 func (c *delegateTreeController) capturedPlanLocked(id string) delegateUpdatePlan {

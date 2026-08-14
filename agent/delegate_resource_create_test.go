@@ -83,6 +83,65 @@ func TestDelegateResourceCreate_StableIdentityCommitsBeforeRuntimeLaunch(t *test
 	}
 }
 
+func TestDelegateResourceCreate_CommittedUpdatePrecedesConstruction(t *testing.T) {
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	constructorEntered := make(chan struct{})
+	releaseConstructor := make(chan struct{})
+	createDone := make(chan delegateResult, 1)
+	wantErr := errors.New("injected constructor barrier failure")
+	var updatesMu sync.Mutex
+	var updates []delegateUpdatePlan
+	root.delegateController.mu.Lock()
+	root.delegateController.emitUpdate = func(plan delegateUpdatePlan) {
+		updatesMu.Lock()
+		updates = append(updates, plan)
+		updatesMu.Unlock()
+	}
+	root.delegateController.mu.Unlock()
+	root.cfg.testOnly.subagentPrepareFault = func(point string) error {
+		if point != "new_session" {
+			return nil
+		}
+		close(constructorEntered)
+		<-releaseConstructor
+		return wantErr
+	}
+
+	go func() {
+		createDone <- root.createDelegate(context.Background(), delegateArgs{
+			Task:                "publish before construction",
+			Background:          true,
+			DelegationAllowance: 0,
+		})
+	}()
+	<-constructorEntered
+	updatesMu.Lock()
+	var committed delegateUpdatePlan
+	if len(updates) != 0 {
+		committed = updates[0]
+	}
+	updatesMu.Unlock()
+	close(releaseConstructor)
+	result := <-createDone
+	if !errors.Is(result.Err, wantErr) {
+		t.Fatalf("createDelegate error = %v, want constructor failure", result.Err)
+	}
+	if len(committed.rows) != 1 {
+		t.Fatalf("stable updates before construction = %#v, want one committed row", committed.rows)
+	}
+	row := committed.rows[0]
+	if row.id != result.DelegateID || row.phase != delegatestore.PhaseRunning || row.lifecycle != delegateLifecycleRunning || !row.resumable {
+		t.Fatalf("committed update = %#v, want running resumable delegate %q", row, result.DelegateID)
+	}
+	aggregate := delegateAggregateSnapshot(t, root.delegateController, result.DelegateID)
+	if aggregate.Phase != delegatestore.PhaseClosed || aggregate.Resumable {
+		t.Fatalf("post-construction-failure aggregate = %#v, want closed and not resumable", aggregate)
+	}
+	if committed.rows[0].phase != delegatestore.PhaseRunning || !committed.rows[0].resumable {
+		t.Fatalf("captured committed update changed after later failure: %#v", committed.rows[0])
+	}
+}
+
 func TestDelegateResourceCreate_PostCommitConstructionFailureClosesResumability(t *testing.T) {
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	wantErr := errors.New("injected permanent child construction failure")

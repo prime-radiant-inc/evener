@@ -119,6 +119,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		isolation.cleanup(s, reservation.delegateID)
 		return delegateStartFailed(err)
 	}
+	s.delegateController.emitDelegateUpdate(started.plan)
 	prepared, err := runtime.construct(ctx, args, selection, started, isolation)
 	if err != nil {
 		return runtime.failCommittedStart(started, isolation, nil, err, "construction_failed")
@@ -136,7 +137,8 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	preseedErr := runtime.preseedInput(prepared.sub.sess, task, started.transcriptPath)
 	if preseedErr != nil {
 		finish := delegatePermanentStartFailure(preseedErr, "input_persist_failed")
-		_, completeErr := s.delegateController.CompleteStartInput(claim, false, finish)
+		plans, completeErr := s.delegateController.CompleteStartInput(claim, false, finish)
+		s.delegateController.emitDelegateUpdates(plans)
 		if completeErr != nil {
 			runtime.retainAdoptedWithoutLaunch(prepared)
 			return stableDelegateResult(started.descriptor, started.lease.delegateID, errors.Join(preseedErr, completeErr))
@@ -144,7 +146,9 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		runtime.retainAdoptedWithoutLaunch(prepared)
 		return stableDelegateResult(started.descriptor, started.lease.delegateID, preseedErr)
 	}
-	if _, err := s.delegateController.CompleteStartInput(claim, true, delegateFinish{}); err != nil {
+	plans, err := s.delegateController.CompleteStartInput(claim, true, delegateFinish{})
+	s.delegateController.emitDelegateUpdates(plans)
+	if err != nil {
 		runtime.retainAdoptedWithoutLaunch(prepared)
 		return stableDelegateResult(started.descriptor, started.lease.delegateID, err)
 	}
@@ -461,7 +465,8 @@ func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPat
 
 func (runtime delegateRuntime) failCommittedStart(started delegateStartCommit, isolation delegateIsolation, prepared *preparedSubagentRun, constructionErr error, reason string) delegateResult {
 	finish := delegatePermanentStartFailure(constructionErr, reason)
-	_, finishErr := runtime.owner.delegateController.FailCommittedStart(started.lease, finish, reason)
+	plans, finishErr := runtime.owner.delegateController.FailCommittedStart(started.lease, finish, reason)
+	runtime.owner.delegateController.emitDelegateUpdates(plans)
 	if finishErr != nil {
 		if prepared != nil {
 			runtime.owner.subagents.track(prepared.sub)
@@ -478,7 +483,8 @@ func (runtime delegateRuntime) failCommittedStart(started delegateStartCommit, i
 
 func (runtime delegateRuntime) failAdoptedStart(started delegateStartCommit, isolation delegateIsolation, prepared *preparedSubagentRun, startErr error, reason string) delegateResult {
 	finish := delegatePermanentStartFailure(startErr, reason)
-	_, finishErr := runtime.owner.delegateController.FailCommittedStart(started.lease, finish, reason)
+	plans, finishErr := runtime.owner.delegateController.FailCommittedStart(started.lease, finish, reason)
+	runtime.owner.delegateController.emitDelegateUpdates(plans)
 	if finishErr != nil {
 		runtime.retainAdoptedWithoutLaunch(prepared)
 		return stableDelegateResult(started.descriptor, started.lease.delegateID, errors.Join(startErr, finishErr))
