@@ -580,15 +580,32 @@ func (s *Session) prepareSubagentRunFromSelection(
 	s.mu.Lock()
 	depth := s.depth
 	allowance := s.delegationAllowance
+	parentCfg := s.cfg
+	subscriberCount := s.subscriberCountFn
 	s.mu.Unlock()
 	agentType = strings.TrimSpace(agentType)
 	agent := selection.agent
 	subProfile := selection.profile
 
-	s.mu.Lock()
-	subCfg := s.cfg
-	subscriberCount := s.subscriberCountFn
-	s.mu.Unlock()
+	subCfg := parentCfg
+	if frozen != nil {
+		subCfg = configFromSnapshot(frozen.Config.Clone())
+		subCfg.Project = parentCfg.Project
+		subCfg.SessionStartKind = parentCfg.SessionStartKind
+		subCfg.LLMRetryPolicy = parentCfg.LLMRetryPolicy
+		subCfg.LLMSleep = parentCfg.LLMSleep
+		subCfg.clock = parentCfg.clock
+		subCfg.StateDir = parentCfg.StateDir
+		subCfg.AcquireSessionOwnership = parentCfg.AcquireSessionOwnership
+		subCfg.ExportATIFPath = parentCfg.ExportATIFPath
+		subCfg.ExportATIFProviderHandles = parentCfg.ExportATIFProviderHandles
+		subCfg.ResolveProfile = parentCfg.ResolveProfile
+		subCfg.testOnly = parentCfg.testOnly
+		subCfg.ForceRealIO = parentCfg.ForceRealIO
+		subCfg.spawn.descendantEvent = parentCfg.spawn.descendantEvent
+		subCfg.spawn.driveCounter = parentCfg.spawn.driveCounter
+		subCfg.spawn.treeCounter = parentCfg.spawn.treeCounter
+	}
 	subCfg.artifactStore = s.artifactStore
 	subCfg.MCPConfigFiles = nil
 	subCfg.MCPInline = nil
@@ -612,7 +629,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 		subCfg.spawn.communicateOutputSchema = nil
 		subCfg.spawn.isolation = frozen.Isolation
 		subCfg.spawn.delegationAllowance = frozen.DelegationAllowance
-		subCfg.ReasoningEffort = frozen.ReasoningEffort
 	}
 	subCfg.spawn.parentSessionID = s.id
 	subCfg.spawn.subagentTask = task
@@ -623,10 +639,19 @@ func (s *Session) prepareSubagentRunFromSelection(
 	if s.jobManager != nil {
 		subCfg.spawn.parentMarkCallerCallbackDelivered = s.jobManager.markWatchOriginCallerCallbackDelivered
 	}
-	if s.cfg.ShareTasksWithChildren {
+	if subCfg.ShareTasksWithChildren {
+		ownerSessionID := parentCfg.spawn.sharedTaskStoreOwnerSessionID
+		if ownerSessionID == "" {
+			ownerSessionID = s.id
+		}
+		if frozen != nil && ownerSessionID != frozen.SharedTaskStoreOwnerSessionID {
+			return nil, fmt.Errorf("committed shared task store owner %q is unavailable from live owner %q", frozen.SharedTaskStoreOwnerSessionID, ownerSessionID)
+		}
 		subCfg.spawn.sharedTaskStore = s.getOrCreateTaskStore()
+		subCfg.spawn.sharedTaskStoreOwnerSessionID = ownerSessionID
 	} else {
 		subCfg.spawn.sharedTaskStore = nil
+		subCfg.spawn.sharedTaskStoreOwnerSessionID = ""
 	}
 	if callID, ok := ctx.Value(ctxToolCallID).(string); ok {
 		subCfg.spawn.parentToolCallID = callID
@@ -667,13 +692,15 @@ func (s *Session) prepareSubagentRunFromSelection(
 	if schema, ok := ctx.Value(ctxCommunicateOutputSchema).(map[string]any); ok && len(schema) > 0 {
 		subCfg.spawn.communicateOutputSchema = schema
 	}
-	if maxTurns > 0 {
-		subCfg.MaxTurns = maxTurns
-	} else {
-		subCfg.MaxTurns = 500
-	}
-	if reasoningEffort = strings.TrimSpace(reasoningEffort); frozen == nil && reasoningEffort != "" {
-		subCfg.ReasoningEffort = reasoningEffort
+	if frozen == nil {
+		if maxTurns > 0 {
+			subCfg.MaxTurns = maxTurns
+		} else {
+			subCfg.MaxTurns = 500
+		}
+		if reasoningEffort = strings.TrimSpace(reasoningEffort); reasoningEffort != "" {
+			subCfg.ReasoningEffort = reasoningEffort
+		}
 	}
 	canonicalGrantTools := s.canonicalizeToolNames(grantTools)
 
@@ -820,7 +847,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	// harness's per-child adapter seam); production leaves it nil and shares the
 	// parent's client.
 	childClient := s.client
-	if factory := s.cfg.testOnly.childClientFactory; factory != nil {
+	if factory := parentCfg.testOnly.childClientFactory; factory != nil {
 		childClient = factory()
 	}
 	var subSess *Session

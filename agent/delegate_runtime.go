@@ -168,6 +168,10 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 
 func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, task, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection) (delegatestore.Descriptor, identifier.Project, error) {
 	s := runtime.owner
+	s.mu.Lock()
+	childConfig := s.cfg.toSnapshot().Clone()
+	sharedTaskStoreOwnerSessionID := s.cfg.spawn.sharedTaskStoreOwnerSessionID
+	s.mu.Unlock()
 	agentType := strings.TrimSpace(args.AgentType)
 	if agentType == "" {
 		agentType = "default"
@@ -175,9 +179,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	agentName, rolePrompt := stableDelegateRole(selection, args.DelegationAllowance > 0, s)
 	reasoningEffort := strings.TrimSpace(args.ReasoningEffort)
 	if reasoningEffort == "" {
-		s.mu.Lock()
-		reasoningEffort = strings.TrimSpace(s.cfg.ReasoningEffort)
-		s.mu.Unlock()
+		reasoningEffort = strings.TrimSpace(childConfig.ReasoningEffort)
 	}
 	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.DelegationAllowance > 0)
 	if !allTools {
@@ -208,28 +210,51 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 			sandboxSnapshot = stableDelegateSandboxSnapshot(&inherited)
 		}
 	}
+	childConfig.MaxTurns = 500
+	childConfig.AgentName = agentName
+	childConfig.ReasoningEffort = reasoningEffort
+	childConfig.MCPConfigFiles = nil
+	childConfig.MCPInline = nil
+	childConfig.Sandbox = ""
+	childConfig.SandboxNet = nil
+	if sandboxSnapshot != nil {
+		childConfig.Sandbox = sandboxSnapshot.Mode
+		if sandboxSnapshot.Network != nil {
+			network := *sandboxSnapshot.Network
+			childConfig.SandboxNet = &network
+		}
+	}
+	if childConfig.ShareTasksWithChildren {
+		if sharedTaskStoreOwnerSessionID == "" {
+			sharedTaskStoreOwnerSessionID = s.id
+		}
+	} else {
+		sharedTaskStoreOwnerSessionID = ""
+	}
 	descriptor := delegatestore.Descriptor{
-		VisibleSessionID:    s.id,
-		Task:                task,
-		Description:         task,
-		AgentType:           agentType,
-		RequestedModel:      selection.requestedModel,
-		ResolvedProfileID:   selection.profile.ID(),
-		ResolvedModel:       selection.profile.Model(),
-		ReasoningEffort:     reasoningEffort,
-		AgentName:           agentName,
-		FrozenRolePrompt:    rolePrompt,
-		FrozenToolNames:     frozenTools,
-		FrozenSkillNames:    frozenSkillNames,
-		FrozenSkillBodies:   frozenSkillBodies,
-		LocalEnvPolicy:      localEnvPolicyName(s.currentEnv()),
-		ResultSchema:        resultSchema,
-		DelegationAllowance: args.DelegationAllowance,
-		WorkingDir:          s.currentEnv().WorkingDirectory(),
-		Isolation:           isolationName,
-		Sandbox:             sandboxSnapshot,
-		Provenance:          s.activeCausalProvenance(),
-		Resumable:           true,
+		VisibleSessionID:              s.id,
+		Task:                          task,
+		Description:                   task,
+		AgentType:                     agentType,
+		RequestedModel:                selection.requestedModel,
+		ResolvedProfileID:             selection.profile.ID(),
+		ResolvedModel:                 selection.profile.Model(),
+		ReasoningEffort:               reasoningEffort,
+		AgentName:                     agentName,
+		FrozenRolePrompt:              rolePrompt,
+		FrozenToolNames:               frozenTools,
+		FrozenSkillNames:              frozenSkillNames,
+		FrozenSkillBodies:             frozenSkillBodies,
+		LocalEnvPolicy:                localEnvPolicyName(s.currentEnv()),
+		ResultSchema:                  resultSchema,
+		DelegationAllowance:           args.DelegationAllowance,
+		WorkingDir:                    s.currentEnv().WorkingDirectory(),
+		Isolation:                     isolationName,
+		Sandbox:                       sandboxSnapshot,
+		Config:                        childConfig,
+		SharedTaskStoreOwnerSessionID: sharedTaskStoreOwnerSessionID,
+		Provenance:                    s.activeCausalProvenance(),
+		Resumable:                     true,
 	}
 	if selection.agent != nil && len(selection.agent.Tasks) > 0 {
 		descriptor.FrozenTaskPrompt = selection.agent.Tasks[0].Prompt
@@ -329,16 +354,15 @@ func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
 
 func (runtime delegateRuntime) construct(ctx context.Context, args delegateArgs, selection subagentModelSelection, started delegateStartCommit, isolation delegateIsolation) (*preparedSubagentRun, error) {
 	s := runtime.owner
-	sourceContext := ctx
 	ctx = started.ctx
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if callID, ok := sourceContext.Value(ctxToolCallID).(string); ok {
-		ctx = context.WithValue(ctx, ctxToolCallID, callID)
+	if started.descriptor.OriginToolCallID != "" {
+		ctx = context.WithValue(ctx, ctxToolCallID, started.descriptor.OriginToolCallID)
 	}
-	if itemID, ok := sourceContext.Value(ctxToolItemID).(string); ok {
-		ctx = context.WithValue(ctx, ctxToolItemID, itemID)
+	if started.descriptor.OriginItemID != "" {
+		ctx = context.WithValue(ctx, ctxToolItemID, started.descriptor.OriginItemID)
 	}
 	ctx = context.WithValue(ctx, ctxParentJobID, "")
 	ctx = context.WithValue(ctx, ctxParentDelegateID, started.lease.delegateID)

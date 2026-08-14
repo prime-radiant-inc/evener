@@ -282,18 +282,49 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 	client.Register(adapter)
 	t.Cleanup(adapter.releaseRun)
 
+	loopDetection := false
 	root.mu.Lock()
 	root.cfg.ReasoningEffort = "low"
+	root.cfg.UserInstructionOverride = "FROZEN USER INSTRUCTION"
+	root.cfg.ShareTasksWithChildren = true
+	root.cfg.ToolOutputLimits = map[string]schema.ToolOutputLimit{
+		"read_file": {MaxChars: 111, MaxLines: 7, Strategy: schema.TruncHeadTail},
+	}
+	root.cfg.ModelFallbacks = []string{"openai/frozen-fallback"}
+	root.cfg.EnableLoopDetection = &loopDetection
+	root.cfg.MCPConfigFiles = []string{"parent-only.mcp.json"}
+	root.cfg.MCPInline = []string{"parent-only:inline"}
 	root.cfg.testOnly.minimalSystemPrompt = false
+	wantConfig := root.cfg.toSnapshot()
+	wantConfig.ToolOutputLimits = map[string]schema.ToolOutputLimit{
+		"read_file": wantConfig.ToolOutputLimits["read_file"],
+	}
+	wantConfig.ModelFallbacks = append([]string(nil), wantConfig.ModelFallbacks...)
+	wantLoopDetection := *wantConfig.EnableLoopDetection
+	wantConfig.EnableLoopDetection = &wantLoopDetection
 	root.mu.Unlock()
+	rootTaskStore := root.getOrCreateTaskStore()
+	rootTasks, err := rootTaskStore.Append([]taskpkg.TaskInput{{
+		Type:        taskpkg.TaskTypeVerify,
+		Description: "keep the committed root task store",
+		Prompt:      "FROZEN TASK PROMPT",
+	}})
+	if err != nil {
+		t.Fatalf("append root task: %v", err)
+	}
+	if err := rootTaskStore.Update([]taskpkg.TaskUpdate{{ID: rootTasks[0].ID, Status: taskpkg.TaskInProgress}}); err != nil {
+		t.Fatalf("start root task: %v", err)
+	}
 
 	const (
 		agentType       = "task6-frozen-reviewer"
 		frozenRole      = "FROZEN ROLE PROMPT"
 		frozenTask      = "FROZEN TASK PROMPT"
 		frozenSkillBody = "FROZEN SKILL BODY"
+		frozenUser      = "FROZEN USER INSTRUCTION"
 		mutatedTask     = "MUTATED TASK PROMPT"
 		mutatedSkill    = "MUTATED SKILL BODY"
+		mutatedUser     = "MUTATED USER INSTRUCTION"
 	)
 	tools := []string{"read_file"}
 	skills := []string{"task6-frozen-skill"}
@@ -318,6 +349,13 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 	}
 	root.skills["task6-frozen-skill"] = skill.SkillMeta{Name: "task6-frozen-skill", SkillFile: frozenSkillFile}
 	root.skills["task6-mutated-skill"] = skill.SkillMeta{Name: "task6-mutated-skill", SkillFile: mutatedSkillFile}
+	wantConfig.MaxTurns = 500
+	wantConfig.AgentName = "frozen-reviewer"
+	wantConfig.ReasoningEffort = "low"
+	wantConfig.MCPConfigFiles = nil
+	wantConfig.MCPInline = nil
+	wantConfig.Sandbox = ""
+	wantConfig.SandboxNet = nil
 
 	resultSchema := map[string]any{
 		"type": "object",
@@ -345,6 +383,11 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 			resultSchema["properties"] = map[string]any{"mutated": map[string]any{"type": "boolean"}}
 			root.mu.Lock()
 			root.cfg.ReasoningEffort = "high"
+			root.cfg.UserInstructionOverride = mutatedUser
+			root.cfg.ShareTasksWithChildren = false
+			root.cfg.ToolOutputLimits["read_file"] = schema.ToolOutputLimit{MaxChars: 999, MaxLines: 99, Strategy: schema.TruncTail}
+			root.cfg.ModelFallbacks[0] = "openai/mutated-fallback"
+			*root.cfg.EnableLoopDetection = true
 			root.mu.Unlock()
 			root.swapEnvAndRefresh(execenv.NewLocalExecutionEnvironment(mutatedWorkDir))
 			root.replaceActiveProvenance(mutatedProvenance)
@@ -394,12 +437,12 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 	}
 
 	requestText := task6RequestText(request)
-	for _, want := range []string{frozenRole, frozenTask, frozenSkillBody} {
+	for _, want := range []string{frozenRole, frozenTask, frozenSkillBody, frozenUser} {
 		if !strings.Contains(requestText, want) {
 			t.Fatalf("provider request omitted frozen prompt %q: %s", want, requestText)
 		}
 	}
-	for _, forbidden := range []string{mutatedTask, mutatedSkill} {
+	for _, forbidden := range []string{mutatedTask, mutatedSkill, mutatedUser} {
 		if strings.Contains(requestText, forbidden) {
 			t.Fatalf("provider request used post-commit prompt %q: %s", forbidden, requestText)
 		}
@@ -440,6 +483,18 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 	}
 	if !child.cfg.spawn.parentWatchGranted {
 		t.Fatal("watch_parent was not passed through to the committed child")
+	}
+	if got := child.getOrCreateTaskStore(); got != rootTaskStore {
+		t.Errorf("child task store = %p, want exact committed root store %p", got, rootTaskStore)
+	}
+	if got := child.Meta().Config; !reflect.DeepEqual(got, descriptor.Config) {
+		t.Errorf("child meta config = %#v, want committed descriptor config %#v", got, descriptor.Config)
+	}
+	if !reflect.DeepEqual(descriptor.Config, wantConfig) {
+		t.Errorf("committed descriptor config = %#v, want effective child config %#v", descriptor.Config, wantConfig)
+	}
+	if got := descriptor.SharedTaskStoreOwnerSessionID; got != root.ID() {
+		t.Errorf("shared task store owner = %q, want root session %q", got, root.ID())
 	}
 }
 

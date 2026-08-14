@@ -546,6 +546,9 @@ type spawnConfig struct {
 	// sharedTaskStore, when non-nil, is used instead of creating a per-session
 	// task store. Set by spawnAgent when ShareTasksWithChildren is true.
 	sharedTaskStore *task.TaskStore
+	// sharedTaskStoreOwnerSessionID identifies the session whose durable task
+	// file backs sharedTaskStore. Descendants propagate it with the exact pointer.
+	sharedTaskStoreOwnerSessionID string
 
 	// rolePromptOverride and the three fields below carry internal prompt and
 	// session shaping for restricted subagents and reviewer runs.
