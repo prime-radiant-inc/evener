@@ -606,9 +606,12 @@ func TestDelegateControllerCommittedStartFailureStopWins(t *testing.T) {
 	}
 	executeDelegateCancelPlan(cancelPlan)
 
-	plans, err := c.FailCommittedStart(started.lease, delegatePermanentStartFailure(errors.New("construction failed"), "construction_failed"), "construction_failed")
+	plans, claimedForClose, err := c.FailCommittedStart(started.lease, delegatePermanentStartFailure(errors.New("construction failed"), "construction_failed"), "construction_failed", nil)
 	if !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("FailCommittedStart after stop error = %v, want target busy", err)
+	}
+	if claimedForClose {
+		t.Fatal("FailCommittedStart claimed a runtime without an exact close candidate")
 	}
 	if len(plans.updates) != 1 {
 		t.Fatalf("FailCommittedStart after stop plans = %#v, want stopped update", plans)

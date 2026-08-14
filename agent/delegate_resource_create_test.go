@@ -376,6 +376,90 @@ func TestDelegateResourceCreate_StopBeforeAttachDisposesUnadoptedSession(t *test
 	}
 }
 
+func TestDelegateResourceCreate_StopSettlementTransfersRuntimeBeforeUpdateEmission(t *testing.T) {
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	runtime, started, isolation, prepared := prepareCommittedUnadoptedDelegate(t, root, "stop settlement runtime transfer")
+	_, cancelPlan, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.ID()), started.lease.delegateID)
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	executeDelegateCancelPlan(cancelPlan)
+
+	updateEntered := make(chan struct{})
+	releaseUpdate := make(chan struct{})
+	var updateOnce sync.Once
+	root.delegateController.mu.Lock()
+	root.delegateController.emitUpdate = func(delegateUpdatePlan) {
+		updateOnce.Do(func() { close(updateEntered) })
+		<-releaseUpdate
+	}
+	root.delegateController.mu.Unlock()
+
+	constructionErr := errors.New("construction failed after controller attachment")
+	resultCh := make(chan delegateResult, 1)
+	go func() {
+		resultCh <- runtime.failCommittedStart(started, isolation, prepared, true, constructionErr, "construction_failed")
+	}()
+	<-updateEntered
+
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseUpdate) })
+	}
+	t.Cleanup(release)
+
+	root.delegateController.mu.Lock()
+	live := root.delegateController.live[started.lease.delegateID]
+	var resident *Session
+	if live != nil {
+		resident = live.runtime
+	}
+	root.delegateController.mu.Unlock()
+	if resident != nil {
+		t.Errorf("controller retained stopped unadopted runtime %p before update emission, want close ownership already transferred", resident)
+	}
+
+	_, reconcileErr := root.delegateController.Reconcile(emptyDelegateReconcileEvidence(root.delegateController))
+	var reserveErr, commitErr, attachErr error
+	var replacement *Session
+	if reconcileErr == nil {
+		var reservation *delegateStartReservation
+		reservation, reserveErr = root.delegateController.ReserveStart(rootDelegateActor(root.ID()), started.lease.delegateID)
+		if reserveErr == nil {
+			var replacementStart delegateStartCommit
+			replacementStart, commitErr = root.delegateController.CommitStart(reservation)
+			if commitErr == nil {
+				replacement = newTestSession(t)
+				attachErr = root.delegateController.AttachRuntime(replacementStart.lease, replacement)
+			}
+		}
+	}
+	release()
+	result := <-resultCh
+
+	if reconcileErr != nil {
+		t.Errorf("complete stop while cleanup blocked: %v", reconcileErr)
+	}
+	if reserveErr != nil {
+		t.Errorf("ReserveStart replacement while cleanup blocked: %v", reserveErr)
+	}
+	if commitErr != nil {
+		t.Errorf("CommitStart replacement while cleanup blocked: %v", commitErr)
+	}
+	if attachErr != nil {
+		t.Errorf("AttachRuntime replacement while cleanup blocked: %v", attachErr)
+	}
+	if replacement == nil && reconcileErr == nil && reserveErr == nil && commitErr == nil {
+		t.Error("replacement runtime was not constructed")
+	}
+	if !errors.Is(result.Err, constructionErr) {
+		t.Errorf("failed create error = %v, want %v", result.Err, constructionErr)
+	}
+	if got := prepared.sub.sess.State(); got != SessionClosed {
+		t.Errorf("stop-winning unadopted child state = %q after cleanup, want %q", got, SessionClosed)
+	}
+}
+
 func TestDelegateResourceCreate_CloseAfterDrainRefusesFailedStartRetention(t *testing.T) {
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	runtime, started, isolation, prepared := prepareCommittedUnadoptedDelegate(t, root, "close after manager drain")

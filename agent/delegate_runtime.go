@@ -444,18 +444,16 @@ func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPat
 
 func (runtime delegateRuntime) failCommittedStart(started delegateStartCommit, isolation delegateIsolation, prepared *preparedSubagentRun, controllerAttached bool, constructionErr error, reason string) delegateResult {
 	finish := delegatePermanentStartFailure(constructionErr, reason)
-	plans, finishErr := runtime.owner.delegateController.FailCommittedStart(started.lease, finish, reason)
+	var runtimeForClose *Session
+	if controllerAttached && prepared != nil {
+		runtimeForClose = prepared.sub.sess
+	}
+	plans, claimedForClose, finishErr := runtime.owner.delegateController.FailCommittedStart(started.lease, finish, reason, runtimeForClose)
 	runtime.owner.delegateController.emitDelegateUpdates(plans)
 	if committedStartFailureDisposition(finishErr) == delegateCommittedStartFailureStopWon {
-		if prepared != nil {
-			claimedForClose := !controllerAttached
-			if controllerAttached {
-				claimedForClose = runtime.owner.delegateController.ClaimStoppedRuntime(started.lease, prepared.sub.sess)
-			}
-			if claimedForClose {
-				prepared.runCancel()
-				prepared.disposeUnadopted()
-			}
+		if prepared != nil && (!controllerAttached || claimedForClose) {
+			prepared.runCancel()
+			prepared.disposeUnadopted()
 		}
 		return stableDelegateResult(started.descriptor, started.lease.delegateID, constructionErr)
 	}
@@ -490,7 +488,7 @@ func (runtime delegateRuntime) retainFailedStartCandidate(prepared *preparedSuba
 
 func (runtime delegateRuntime) failAdoptedStart(started delegateStartCommit, isolation delegateIsolation, prepared *preparedSubagentRun, startErr error, reason string) delegateResult {
 	finish := delegatePermanentStartFailure(startErr, reason)
-	plans, finishErr := runtime.owner.delegateController.FailCommittedStart(started.lease, finish, reason)
+	plans, _, finishErr := runtime.owner.delegateController.FailCommittedStart(started.lease, finish, reason, nil)
 	runtime.owner.delegateController.emitDelegateUpdates(plans)
 	if finishErr != nil {
 		runtime.retainAdoptedWithoutLaunch(prepared)

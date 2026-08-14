@@ -244,34 +244,6 @@ func (c *delegateTreeController) AttachRuntime(lease delegateLease, runtime *Ses
 	return nil
 }
 
-// ClaimStoppedRuntime returns true only when its caller exclusively owns the
-// stopped-start runtime for post-unlock close. It either clears the exact
-// matching controller pointer or observes that the controller no longer owns
-// the runtime. False leaves controller ownership unchanged, so delayed cleanup
-// can never detach or close a successor runtime.
-func (c *delegateTreeController) ClaimStoppedRuntime(lease delegateLease, runtime *Session) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if runtime == nil {
-		return false
-	}
-	ownerID, owner, err := c.runtimeOwnerLocked(runtime)
-	if err != nil {
-		return false
-	}
-	if owner == nil {
-		return true
-	}
-	aggregate := c.durable[lease.delegateID]
-	live := c.live[lease.delegateID]
-	if ownerID != lease.delegateID || aggregate == nil || aggregate.Generation != lease.generation || aggregate.CurrentRunOpen || aggregate.Phase != delegatestore.PhaseStopping || aggregate.PendingStopSeq == 0 || live == nil || live.binding != nil || live.runtime != runtime {
-		return false
-	}
-	live.runtime = nil
-	c.evidenceVersion++
-	return true
-}
-
 func (c *delegateTreeController) runtimeOwnerLocked(runtime *Session) (string, *delegateLiveState, error) {
 	var ownerID string
 	var owner *delegateLiveState
@@ -352,7 +324,7 @@ func (c *delegateTreeController) CompleteStartInput(claim delegateInputClaim, co
 	return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, nil
 }
 
-func (c *delegateTreeController) FailCommittedStart(lease delegateLease, failure delegateFinish, closeReason string) (delegateMutationPlans, error) {
+func (c *delegateTreeController) FailCommittedStart(lease delegateLease, failure delegateFinish, closeReason string, runtimeForClose *Session) (delegateMutationPlans, bool, error) {
 	c.mu.Lock()
 	var cancel context.CancelFunc
 	defer func() {
@@ -363,20 +335,34 @@ func (c *delegateTreeController) FailCommittedStart(lease delegateLease, failure
 	}()
 	aggregate, live, err := c.exactLeaseLocked(lease)
 	if err != nil {
-		return delegateMutationPlans{}, err
+		return delegateMutationPlans{}, false, err
 	}
 	if aggregate.Phase == delegatestore.PhaseStopping {
+		claimable := false
+		if runtimeForClose != nil && live.binding != nil {
+			ownerID, owner, ownerErr := c.runtimeOwnerLocked(runtimeForClose)
+			claimable = ownerErr == nil && ownerID == lease.delegateID && owner == live && live.runtime == runtimeForClose && live.binding.runtime == runtimeForClose
+		}
 		plans, generationCancel, finishErr := c.finishStoppedStartLocked(lease, live)
 		cancel = generationCancel
 		disposition := delegateCommittedStartFailureStopWon
 		if finishErr != errDelegateTargetBusy {
 			disposition = delegateCommittedStartFailureAppendFailed
 		}
-		return plans, &delegateCommittedStartFailureError{disposition: disposition, cause: finishErr}
+		claimedForClose := false
+		if disposition == delegateCommittedStartFailureStopWon && claimable {
+			settled := c.live[lease.delegateID]
+			if settled != nil && settled.binding == nil && settled.runtime == runtimeForClose {
+				settled.runtime = nil
+				c.evidenceVersion++
+				claimedForClose = true
+			}
+		}
+		return plans, claimedForClose, &delegateCommittedStartFailureError{disposition: disposition, cause: finishErr}
 	}
 	closeReason = strings.TrimSpace(closeReason)
 	if closeReason == "" || aggregate.Phase != delegatestore.PhaseRunning || live.recoveryRequired || live.binding.ready {
-		return delegateMutationPlans{}, errDelegateTargetBusy
+		return delegateMutationPlans{}, false, errDelegateTargetBusy
 	}
 	terminal, finish := c.committedStartFailureBatch(lease, failure)
 	closure := delegatestore.Event{
@@ -386,14 +372,14 @@ func (c *delegateTreeController) FailCommittedStart(lease delegateLease, failure
 	}
 	if _, appendErr := c.appendLocked(terminal, finish, closure); appendErr != nil {
 		live.recoveryRequired = true
-		return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, &delegateCommittedStartFailureError{
+		return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, false, &delegateCommittedStartFailureError{
 			disposition: delegateCommittedStartFailureAppendFailed,
 			cause:       appendErr,
 		}
 	}
 	plans, generationCancel := c.generationFinishedPlansLocked(lease, finish.RunFinished.DeliveryID)
 	cancel = generationCancel
-	return plans, nil
+	return plans, false, nil
 }
 
 func (c *delegateTreeController) finishStoppedStartLocked(lease delegateLease, live *delegateLiveState) (delegateMutationPlans, context.CancelFunc, error) {
