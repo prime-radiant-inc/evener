@@ -130,6 +130,7 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 			stop.deliveries[receipt.token] = struct{}{}
 		}
 	}
+	c.dropRuntimeClaimsForMembersLocked(members)
 	claimIDs := make([]string, 0, len(c.deliveryClaims))
 	for deliveryID := range c.deliveryClaims {
 		claimIDs = append(claimIDs, deliveryID)

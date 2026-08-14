@@ -557,7 +557,7 @@ func TestDelegateControllerAdmitStartInputSuccessMarksReady(t *testing.T) {
 	if row := plan.updates[0].rows[0]; row.lifecycle != delegateLifecycleRunning {
 		t.Fatalf("successful input plan = %#v, want running", row)
 	}
-	if _, err := c.BeginModelRequest(started.lease); err != nil {
+	if _, err := completeDelegateModelRequest(c, started.lease); err != nil {
 		t.Fatalf("BeginModelRequest ready start: %v", err)
 	}
 	if err := c.BeginTool(started.lease); err != nil {
@@ -750,7 +750,7 @@ func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t
 	if live.binding == nil || live.binding.runtime != runtime || !live.binding.ready {
 		t.Fatalf("attention binding = %#v, want exact ready resident runtime", live.binding)
 	}
-	if _, err := c.BeginModelRequest(attention.lease); err != nil {
+	if _, err := completeDelegateModelRequest(c, attention.lease); err != nil {
 		t.Fatalf("BeginModelRequest attention: %v", err)
 	}
 }

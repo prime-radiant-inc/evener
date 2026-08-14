@@ -622,13 +622,18 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	if subCfg.ShareTasksWithChildren {
 		ownerSessionID := parentCfg.spawn.sharedTaskStoreOwnerSessionID
-		if ownerSessionID == "" {
+		sharedStore := s.getOrCreateTaskStore()
+		if frozen != nil {
+			ownerSessionID = frozen.SharedTaskStoreOwnerSessionID
+			var err error
+			sharedStore, err = s.resolveStableSharedTaskStore(ownerSessionID)
+			if err != nil {
+				return nil, err
+			}
+		} else if ownerSessionID == "" {
 			ownerSessionID = s.id
 		}
-		if frozen != nil && ownerSessionID != frozen.SharedTaskStoreOwnerSessionID {
-			return nil, fmt.Errorf("committed shared task store owner %q is unavailable from live owner %q", frozen.SharedTaskStoreOwnerSessionID, ownerSessionID)
-		}
-		subCfg.spawn.sharedTaskStore = s.getOrCreateTaskStore()
+		subCfg.spawn.sharedTaskStore = sharedStore
 		subCfg.spawn.sharedTaskStoreOwnerSessionID = ownerSessionID
 	} else {
 		subCfg.spawn.sharedTaskStore = nil
@@ -1443,59 +1448,81 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	a.mu.Lock()
 	runStartedFromWatch := a.runFromWatch
 	a.mu.Unlock()
-
 	kind := EntryUserInput
 	if runStartedFromWatch {
 		kind = EntryWatchDelivery
 	}
-	res, err := a.sess.processInputKindWithProvenance(ctx, input, nil, kind, inputProvenance)
-	_, budgetExhausted := budgetExhaustionFromError(err)
-
-	// A requested cancel suppresses both the communicate-nudge and the
-	// SubagentStop blocking-continuation: neither should run another turn on the
-	// already-cancelled run context. This covers the late-cancel err==nil case
-	// the status switch below still treats as completed.
-	a.mu.Lock()
-	cancelRequested := a.cancelRequested
-	a.mu.Unlock()
-
-	// Auto-nudge: if a default subagent stops without calling communicate,
-	// send one reminder and let it try again. This covers both empty stops
-	// and repeated bare-text responses that exhausted the session-level retry
-	// loop before the subagent had a chance to report back.
-	shouldNudge := !cancelRequested &&
-		!budgetExhausted &&
-		!runStartedFromWatch &&
-		a.nudgeEnabled &&
-		!a.sess.Communicated() &&
-		(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
-	if shouldNudge {
-		res, err = a.sess.processInputWithProvenance(ctx, communicateNudge(a.sess.resultToolName()), nil, a.followUpProvenance(inputProvenance))
-		_, budgetExhausted = budgetExhaustionFromError(err)
-	}
-	if !cancelRequested && !budgetExhausted {
-		res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
-	}
+	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	nudgeAvailable := true
+	var res string
+	var err error
 	var restoreParentDriveNotify func()
-	if err == nil {
-		// DrainJobTree temporarily owns the session's notification callback. A
-		// retained child still needs its parent-drive callback after this run so
-		// later idle notifications and resumed work remain deliverable.
-		a.sess.mu.Lock()
-		parentDriveNotify := a.sess.notifyFunc
-		a.sess.mu.Unlock()
+	var finish delegateFinish
+	for {
+		res, err = a.sess.processInputKindWithProvenance(ctx, input, nil, kind, inputProvenance)
+		_, budgetExhausted := budgetExhaustionFromError(err)
 		a.mu.Lock()
-		a.finalizing = true
+		cancelRequested := a.cancelRequested
 		a.mu.Unlock()
-		drained, drainErr := a.sess.DrainJobTree(ctx)
-		restoreParentDriveNotify = parentDriveNotify
-		if drainErr != nil {
-			err = drainErr
-		} else if drained != "" {
-			res = drained
+		shouldNudge := nudgeAvailable && !cancelRequested &&
+			!budgetExhausted &&
+			!runStartedFromWatch &&
+			a.nudgeEnabled &&
+			!a.sess.Communicated() &&
+			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
+		if shouldNudge {
+			nudgeAvailable = false
+			res, err = a.sess.processInputWithProvenance(ctx, communicateNudge(a.sess.resultToolName()), nil, a.followUpProvenance(inputProvenance))
+			_, budgetExhausted = budgetExhaustionFromError(err)
 		}
+		if !cancelRequested && !budgetExhausted {
+			res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
+		}
+		restoreParentDriveNotify = nil
+		if err == nil {
+			a.sess.mu.Lock()
+			parentDriveNotify := a.sess.notifyFunc
+			a.sess.mu.Unlock()
+			a.mu.Lock()
+			a.finalizing = true
+			a.mu.Unlock()
+			drained, drainErr := a.sess.DrainJobTree(ctx)
+			restoreParentDriveNotify = parentDriveNotify
+			if drainErr != nil {
+				err = drainErr
+			} else if drained != "" {
+				res = drained
+			}
+		}
+		finish = stableDelegateFinish(a.sess, res, err)
+		if !stableRun || a.sess.delegateController == nil {
+			break
+		}
+		continueRun, plans, settleErr := a.sess.delegateController.BeginSettlement(lease, finish.packet)
+		if executeErr := a.sess.executeDelegateMutationPlans(plans); settleErr == nil {
+			settleErr = executeErr
+		}
+		if settleErr != nil {
+			if !errors.Is(settleErr, errDelegateTargetBusy) {
+				err = errors.Join(err, settleErr)
+				finish = stableDelegateFinish(a.sess, res, err)
+			}
+			break
+		}
+		if !continueRun {
+			break
+		}
+		if restoreParentDriveNotify != nil {
+			a.sess.SetNotifyFunc(restoreParentDriveNotify)
+		}
+		a.mu.Lock()
+		a.finalizing = false
+		a.mu.Unlock()
+		input = "Continue with the newly received steering before settling."
+		kind = EntryContinuation
+		runStartedFromWatch = false
 	}
-	if err != nil {
+	if err != nil && !stableRun {
 		a.gateFatalRun(err)
 	}
 	exhaustion, budgetExhausted := budgetExhaustionFromError(err)
@@ -1534,6 +1561,16 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	if hook := a.sess.cfg.testOnly.subagentAfterFinalStatePublish; hook != nil {
 		hook(a)
 	}
+	if stableRun && a.sess.delegateController != nil {
+		finish.endedAt = finalizeTime
+		plans, finishErr := a.sess.delegateController.FinishGeneration(lease, finish)
+		if executeErr := a.sess.executeDelegateMutationPlans(plans); finishErr == nil {
+			finishErr = executeErr
+		}
+		if finishErr != nil {
+			a.sess.emit(events.EventWarning, warningDataFromError("delegate generation settlement incomplete", finishErr))
+		}
+	}
 	if restoreParentDriveNotify != nil {
 		a.sess.SetNotifyFunc(restoreParentDriveNotify)
 	}
@@ -1547,6 +1584,41 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	if done != nil {
 		close(done)
 	}
+}
+
+func stableDelegateFinish(sess *Session, result string, runErr error) delegateFinish {
+	message := strings.TrimSpace(result)
+	if message == "" && runErr != nil {
+		message = runErr.Error()
+	}
+	rawMessage, _ := json.Marshal(message)
+	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: rawMessage}
+	finish := delegateFinish{
+		outcome:     delegatestore.OutcomeFailed,
+		disposition: delegatestore.DispositionTerminalError,
+		reason:      "failed",
+		packet:      &packet,
+	}
+	if runErr == nil && sess != nil && sess.Communicated() {
+		packet.Kind = delegatestore.PacketReported
+		finish.outcome = delegatestore.OutcomeCompleted
+		finish.disposition = delegatestore.DispositionReported
+		finish.reason = ""
+		if structured := sess.CommunicateStructured(); structured != nil {
+			packet.StructuredResult, _ = json.Marshal(structured)
+			valid := true
+			packet.StructuredResultValid = &valid
+		}
+		return finish
+	}
+	if exhaustion, exhausted := budgetExhaustionFromError(runErr); exhausted {
+		finish.outcome = delegatestore.OutcomeExhausted
+		finish.reason = exhaustion.Error()
+	} else if errors.Is(runErr, context.Canceled) {
+		finish.outcome = delegatestore.OutcomeCancelled
+		finish.reason = "cancelled"
+	}
+	return finish
 }
 
 func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err error, inputProvenance *provenance.Causal) (string, error) {

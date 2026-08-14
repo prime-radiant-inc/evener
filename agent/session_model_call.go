@@ -125,6 +125,14 @@ func contextUsageWarning(contextWindow int, estimatedTokens int) (warn bool, app
 // and HistoryExpand phase timings into t. It never returns an error: the input
 // phases only emit warnings.
 func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, reasoningEffort string) {
+	profile, sys, history, req, reasoningEffort, _ = s.prepareModelRequestWithError(ctx, round, t)
+	return profile, sys, history, req, reasoningEffort
+}
+
+func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, reasoningEffort string, err error) {
+	if err := s.flushPendingDelegateDeliveries(); err != nil {
+		return nil, "", nil, llm.Request{}, "", err
+	}
 	// --- Phase: SystemPrompt ---
 	tPhaseStart := s.sclock().Now()
 
@@ -209,21 +217,35 @@ func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.
 	s.mu.Unlock()
 
 	// Reuse historyTurns from context management — no redundant copy.
-	history = expandHistory(historyTurns, replayScope{
+	scope := replayScope{
 		Provider:       profile.ID(),
 		Model:          profile.Model(),
 		BehaviorTag:    profile.BehaviorTag(),
 		InFlightFrom:   inFlightFrom,
 		behaviorTagOf:  s.client.BehaviorTagOf,
 		canonicalModel: canonicalModelID,
-	})
+	}
+	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
+		claim, claimErr := s.delegateController.BeginModelRequest(lease)
+		if claimErr != nil {
+			return nil, "", nil, llm.Request{}, "", claimErr
+		}
+		snapshot := s.delegateModelHistorySnapshot()
+		history, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot)
+		if claimErr != nil {
+			_ = s.delegateController.AbortModelRequest(claim)
+			return nil, "", nil, llm.Request{}, "", claimErr
+		}
+	} else {
+		history = expandHistory(historyTurns, scope)
+	}
 
 	t.HistoryExpand = time.Since(tPhaseStart)
 
 	// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
 	req = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns, profile.SupportsStreaming())
-	return profile, sys, history, req, reasoningEffort
+	return profile, sys, history, req, reasoningEffort, nil
 }
 
 func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, req llm.Request, historyTurns []schema.Turn, stream bool) llm.Request {

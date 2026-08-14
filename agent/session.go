@@ -635,7 +635,10 @@ type Session struct {
 	transcript *transcript.Writer
 	// attentionMu serializes transcript-backed attention resolution for this
 	// resident Session. The transcript remains the only stored attention state.
-	attentionMu sync.Mutex
+	attentionMu               sync.Mutex
+	delegateDeliveryMu        sync.Mutex
+	delegateDeliveryCommits   map[string][]*delegateToolResultCommit
+	pendingDelegateDeliveries []delegateDeliveryPlan
 	// transcriptReady records that attachTranscript has run, i.e. that the
 	// session has finished deciding whether it has a transcript at all. Until
 	// then a turn has nowhere to go and is held in pendingTranscriptTurns; a

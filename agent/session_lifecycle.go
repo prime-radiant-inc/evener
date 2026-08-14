@@ -910,6 +910,9 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// Idle transition: clear the in-turn flag and kick a goal that was set in the
 		// turn-tail window (after the gate's store read) so it is not stranded until
 		// the next user message (spec §7). No-op when no fresh goal is pending.
+		if err := s.flushPendingDelegateDeliveries(); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: "delegate delivery retry at processing boundary failed: " + err.Error()})
+		}
 		goalKicked := s.settleGoalOnIdle()
 		s.armAwaitingAtSettle(strings.TrimSpace(strings.Join(outputs, "\n")) != "", goalKicked)
 		s.mu.Lock()
@@ -971,9 +974,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}()
 	defer cancel()
 
+	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
+		s.delegateDeliveryMu.Unlock()
 		return "", false, errors.New("session is closed")
 	}
 	s.setStateIfOpenLocked(SessionProcessing)
@@ -985,6 +990,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.askPending = nil
 	s.watchCallbackDelivered = false
 	s.mu.Unlock()
+	s.delegateDeliveryMu.Unlock()
 
 	select {
 	case <-ctx.Done():
@@ -1046,7 +1052,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		default:
 		}
 
-		profile, sys, _, req, reqEffort := s.prepareModelRequest(ctx, round, &timings)
+		profile, sys, _, req, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
+		if prepareErr != nil {
+			return "", progressed, prepareErr
+		}
 		if kind == EntryWatchDelivery {
 			req.ToolChoice = &llm.ToolChoice{Mode: "auto"}
 		}

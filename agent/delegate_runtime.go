@@ -10,13 +10,18 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
+	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
@@ -24,6 +29,11 @@ import (
 
 type delegateRuntime struct {
 	owner *Session
+}
+
+type stableDelegateSendOutcome struct {
+	result sendMessageResult
+	commit *delegateToolResultCommit
 }
 
 type delegateRunLeaseContextKey struct{}
@@ -51,6 +61,171 @@ func delegateInputWasPreseeded(ctx context.Context, sessionID, input string) boo
 
 func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegateResult {
 	return (delegateRuntime{owner: s}).create(ctx, args)
+}
+
+func (runtime delegateRuntime) send(ctx context.Context, delegateID, message string, maxWaitMS int) stableDelegateSendOutcome {
+	s := runtime.owner
+	failed := func(err error) stableDelegateSendOutcome {
+		return stableDelegateSendOutcome{result: sendMessageFailed(delegateID, err)}
+	}
+	if s == nil || s.delegateController == nil {
+		return failed(errors.New("delegate controller is unavailable"))
+	}
+	if delegateID == "" || message == "" {
+		return failed(errors.New("invalid_request: delegate_id and message are required"))
+	}
+	actor, err := s.delegateActor(ctx)
+	if err != nil {
+		return failed(err)
+	}
+	if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
+		_ = s.executeDelegateMutationPlans(plans)
+		return stableDelegateSendOutcome{result: sendMessageResult{
+			Target:              delegateID,
+			DelegateID:          delegateID,
+			Type:                string(jobstore.JobDelegate),
+			Status:              jobstore.StatusRunning,
+			RunningInBackground: true,
+			Action:              "steered",
+		}}
+	} else if !errors.Is(steerErr, errDelegateTargetBusy) {
+		return failed(steerErr)
+	}
+	reservation, err := s.delegateController.ReserveStart(actor, delegateID)
+	if err != nil {
+		return failed(err)
+	}
+	var waiter *delegateInlineWaiter
+	if maxWaitMS > 0 {
+		waiter, err = s.delegateController.RegisterInlineWaiter(reservation)
+		if err != nil {
+			_ = s.delegateController.AbortStart(reservation)
+			return failed(err)
+		}
+	}
+	sub, restored, err := runtime.restoreIdle(reservation)
+	if err != nil {
+		_ = s.delegateController.AbortStart(reservation)
+		return failed(err)
+	}
+	started, err := s.delegateController.CommitStart(reservation)
+	if err != nil {
+		if restored {
+			sub.sess.discardRestoredCandidate()
+		}
+		return failed(err)
+	}
+	if restored {
+		tracked, inserted, trackErr := s.subagents.trackIfAbsent(sub)
+		if trackErr != nil {
+			sub.sess.discardRestoredCandidate()
+			return runtime.failStableSendStart(started, delegateID, trackErr)
+		}
+		if !inserted {
+			sub.sess.discardRestoredCandidate()
+			sub = tracked
+		}
+	}
+	if sub == nil || sub.sess == nil {
+		return runtime.failStableSendStart(started, delegateID, errors.New("delegate runtime is unavailable"))
+	}
+	if err := s.delegateController.AttachRuntime(started.lease, sub.sess); err != nil {
+		return runtime.failStableSendStart(started, delegateID, err)
+	}
+	runCtx, runCancel := context.WithCancel(started.ctx)
+	runCtx = context.WithValue(runCtx, delegateRunLeaseContextKey{}, started.lease)
+	runCtx = context.WithValue(runCtx, delegatePreseededInputContextKey{}, delegatePreseededInput{sessionID: sub.sess.id, input: message})
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		runCancel()
+		return runtime.failStableSendStart(started, delegateID, errors.New("session is closed"))
+	}
+	s.sendersWG.Add(1)
+	s.mu.Unlock()
+	sub.mu.Lock()
+	sub.fatalRunGated = false
+	resetSubagentForRunLocked(sub, runCancel, s.sclock().Now())
+	sub.mu.Unlock()
+	if restored {
+		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
+			s.emit(events.EventWarning, warningDataFromError("restored delegate side effects incomplete", err))
+		}
+	}
+	claim, err := s.delegateController.BeginStartInput(started.lease)
+	if err != nil {
+		runCancel()
+		s.sendersWG.Done()
+		return runtime.failStableSendStart(started, delegateID, err)
+	}
+	if err := runtime.preseedInput(sub.sess, message, started.transcriptPath); err != nil {
+		plans, completeErr := s.delegateController.CompleteStartInput(claim, false, delegatePermanentStartFailure(err, "input_persist_failed"))
+		_ = s.executeDelegateMutationPlans(plans)
+		runCancel()
+		s.sendersWG.Done()
+		return failed(errors.Join(err, completeErr))
+	}
+	plans, err := s.delegateController.CompleteStartInput(claim, true, delegateFinish{})
+	if executeErr := s.executeDelegateMutationPlans(plans); err == nil {
+		err = executeErr
+	}
+	if err != nil {
+		runCancel()
+		s.sendersWG.Done()
+		return failed(err)
+	}
+	s.launchSubagentRun(runCtx, sub, runCancel, message, descriptorProvenance(started.descriptor))
+	result := sendMessageResult{
+		Target:              delegateID,
+		DelegateID:          delegateID,
+		Type:                string(jobstore.JobDelegate),
+		Status:              jobstore.StatusRunning,
+		RunningInBackground: true,
+		Action:              "started",
+		TranscriptRef:       started.descriptor.TranscriptRef,
+	}
+	if waiter == nil {
+		return stableDelegateSendOutcome{result: result}
+	}
+	waitCtx := ctx
+	if maxWaitMS > 0 {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(ctx, time.Duration(maxWaitMS)*time.Millisecond)
+		defer cancel()
+	}
+	resolution := s.delegateController.waitForDelegateInline(waitCtx, waiter)
+	if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
+		result.TimedOut = true
+		return stableDelegateSendOutcome{result: result}
+	}
+	result.RunningInBackground = false
+	result.Status = jobstore.StatusCompleted
+	result.Action = "completed"
+	if resolution.packet.Kind != delegatestore.PacketReported {
+		result.Status = jobstore.StatusFailed
+	}
+	if len(resolution.packet.Message) != 0 {
+		_ = json.Unmarshal(resolution.packet.Message, &result.Output)
+	}
+	if len(resolution.packet.StructuredResult) != 0 {
+		result.StructuredResultValidSet = true
+		if resolution.packet.StructuredResultValid != nil {
+			result.StructuredResultValid = *resolution.packet.StructuredResultValid
+		}
+		result.StructuredResultReason = resolution.packet.StructuredResultReason
+		_ = json.Unmarshal(resolution.packet.StructuredResult, &result.StructuredResult)
+	}
+	return stableDelegateSendOutcome{result: result, commit: resolution.commit}
+}
+
+func descriptorProvenance(descriptor delegatestore.Descriptor) *provenance.Causal {
+	return provenance.Clone(descriptor.Provenance)
+}
+
+func (runtime delegateRuntime) failStableSendStart(started delegateStartCommit, delegateID string, cause error) stableDelegateSendOutcome {
+	plans, finishErr := runtime.owner.delegateController.FinishGeneration(started.lease, delegatePermanentStartFailure(cause, "construction_failed"))
+	_ = runtime.owner.executeDelegateMutationPlans(plans)
+	return stableDelegateSendOutcome{result: sendMessageFailed(delegateID, errors.Join(cause, finishErr))}
 }
 
 func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) delegateResult {
@@ -404,6 +579,139 @@ func (runtime delegateRuntime) construct(ctx context.Context, args delegateArgs,
 	return prepared, nil
 }
 
+func (runtime delegateRuntime) restoreIdle(reservation *delegateStartReservation) (*subagent, bool, error) {
+	s := runtime.owner
+	if s == nil || reservation == nil {
+		return nil, false, errors.New("delegate restore reservation is unavailable")
+	}
+	descriptor := cloneDelegateStartDescriptor(reservation.descriptor)
+	if retained := s.subagents.get(descriptor.ChildSessionID); retained != nil && retained.sess != nil {
+		return retained, false, nil
+	}
+	meta, err := schema.LoadSessionMeta(s.stateDir, descriptor.ChildSessionID)
+	if err != nil {
+		return nil, false, fmt.Errorf("load committed delegate session metadata: %w", err)
+	}
+	if meta.ID != descriptor.ChildSessionID {
+		return nil, false, errors.New("committed delegate session metadata has the wrong identity")
+	}
+	meta.Config = descriptor.Config.Clone()
+	profile, err := s.resolveDelegateRestoreProfileRef(s.currentProfile(), descriptor.ResolvedProfileID, descriptor.ResolvedModel)
+	if err != nil {
+		return nil, false, fmt.Errorf("resolve committed delegate profile: %w", err)
+	}
+	resultSchema := make(map[string]any)
+	if len(descriptor.ResultSchema) != 0 {
+		if err := json.Unmarshal(descriptor.ResultSchema, &resultSchema); err != nil {
+			return nil, false, fmt.Errorf("decode committed delegate result schema: %w", err)
+		}
+		if len(resultSchema) != 0 {
+			profile = provider.WithCommunicateOutputSchema(profile, resultSchema)
+		}
+	}
+	policy := sandboxPolicyFromStableSnapshot(descriptor.Sandbox)
+	childEnv, ownsFresh, err := s.prepareSubagentEnvironment(descriptor.WorkingDir, policy)
+	if err != nil {
+		return nil, false, err
+	}
+	discardEnv := true
+	defer func() {
+		if discardEnv && ownsFresh {
+			if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
+				local.DisposeSandboxScratch()
+			}
+		}
+	}()
+	if childEnv == nil || childEnv.WorkingDirectory() != descriptor.WorkingDir || localEnvPolicyName(childEnv) != descriptor.LocalEnvPolicy || !frozenStableDelegateSandboxMatches(childEnv, descriptor.Sandbox) {
+		return nil, false, errors.New("committed delegate environment is unavailable")
+	}
+	activatedSkillBodies, err := restoreFrozenSkillBodies(descriptor.FrozenSkillNames, descriptor.FrozenSkillBodies)
+	if err != nil {
+		return nil, false, err
+	}
+	var sharedStore *task.TaskStore
+	if descriptor.Config.ShareTasksWithChildren {
+		sharedStore, err = s.resolveStableSharedTaskStore(descriptor.SharedTaskStoreOwnerSessionID)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	restoreCfg := RestoreSessionConfig{
+		StateDir:                s.stateDir,
+		Project:                 s.cfg.Project,
+		ResolveProfile:          s.resolveProfile,
+		AcquireSessionOwnership: s.cfg.AcquireSessionOwnership,
+		ModelFallbacks:          append([]string(nil), descriptor.Config.ModelFallbacks...),
+		LLMRetryPolicy:          s.cfg.LLMRetryPolicy,
+		LLMSleep:                s.cfg.LLMSleep,
+		clock:                   s.clock,
+		testOnly:                s.cfg.testOnly,
+		ForceRealIO:             s.cfg.ForceRealIO,
+		artifactStore:           s.artifactStore,
+		deferRestoreSideEffects: true,
+		spawn: spawnConfig{
+			delegateController:            s.delegateController,
+			delegateRootSessionID:         s.delegateRootSessionID,
+			owningDelegateID:              reservation.delegateID,
+			subscriberCount:               s.subscriberCountFn,
+			parentSessionID:               s.id,
+			parentToolCallID:              descriptor.OriginToolCallID,
+			parentItemID:                  descriptor.OriginItemID,
+			parentDelegateID:              reservation.delegateID,
+			descendantEvent:               s.cfg.spawn.descendantEvent,
+			parentSteer:                   s.SteerWithProvenance,
+			parentSteerDelivered:          s.trySteerWithProvenanceAndNotify,
+			parentSystemNotification:      s.routeSystemNotification,
+			subagentTask:                  descriptor.Task,
+			depth:                         s.depth + 1,
+			delegationAllowance:           descriptor.DelegationAllowance,
+			sharedTaskStore:               sharedStore,
+			sharedTaskStoreOwnerSessionID: descriptor.SharedTaskStoreOwnerSessionID,
+			rolePromptOverride:            descriptor.FrozenRolePrompt,
+			activatedSkillBodies:          activatedSkillBodies,
+			toolNameCeiling:               append([]string(nil), descriptor.ToolNameCeiling...),
+			isolation:                     descriptor.Isolation,
+			communicateOutputSchema:       cloneMap(resultSchema),
+		},
+	}
+	child, err := RestoreSessionFromMetaWithConfig(s.client, profile, childEnv, meta, restoreCfg)
+	if err != nil {
+		return nil, false, err
+	}
+	discardEnv = false
+	if child.delegateController != s.delegateController || child.owningDelegateID != reservation.delegateID {
+		child.discardRestoredCandidate()
+		return nil, false, errors.New("restored delegate did not inherit the exact controller binding")
+	}
+	for name := range child.reg.RegisteredNames() {
+		if !hasString(descriptor.ToolNameCeiling, name) {
+			child.discardRestoredCandidate()
+			return nil, false, fmt.Errorf("restored delegate tool %q exceeds the committed ceiling", name)
+		}
+	}
+	if len(descriptor.TaskTemplates) != 0 && len(child.getOrCreateTaskStore().View()) == 0 {
+		if err := child.getOrCreateTaskStore().PopulateFromTemplates(descriptor.TaskTemplates, nil); err != nil {
+			child.discardRestoredCandidate()
+			return nil, false, fmt.Errorf("restore committed delegate tasks: %w", err)
+		}
+	}
+	now := s.sclock().Now()
+	sub := &subagent{
+		id:           descriptor.ChildSessionID,
+		sess:         child,
+		emit:         s.emit,
+		status:       SubagentCompleted,
+		nudgeEnabled: descriptor.Config.AgentName == "subagent",
+		agentType:    descriptor.AgentType,
+		createdAt:    now,
+		startedAt:    now,
+		endedAt:      &now,
+		ownsEnv:      ownsFresh,
+	}
+	child.SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })
+	return sub, true, nil
+}
+
 func sandboxPolicyFromStableSnapshot(snapshot *delegatestore.SandboxSnapshot) *sandbox.SandboxPolicy {
 	if snapshot == nil {
 		return nil
@@ -424,6 +732,31 @@ func sandboxPolicyFromStableSnapshot(snapshot *delegatestore.SandboxSnapshot) *s
 		policy.Network = &network
 	}
 	return policy
+}
+
+func (s *Session) resolveStableSharedTaskStore(ownerSessionID string) (*task.TaskStore, error) {
+	if s == nil || s.delegateController == nil || strings.TrimSpace(ownerSessionID) == "" {
+		return nil, errors.New("committed shared task store owner is unavailable")
+	}
+	c := s.delegateController
+	c.mu.Lock()
+	var owner *Session
+	if c.rootRuntime != nil && c.rootRuntime.id == ownerSessionID {
+		owner = c.rootRuntime
+	}
+	if owner == nil {
+		for _, live := range c.live {
+			if live != nil && live.runtime != nil && live.runtime.id == ownerSessionID {
+				owner = live.runtime
+				break
+			}
+		}
+	}
+	c.mu.Unlock()
+	if owner == nil {
+		return nil, fmt.Errorf("committed shared task store owner %q is not resident", ownerSessionID)
+	}
+	return owner.getOrCreateTaskStore(), nil
 }
 
 func (runtime delegateRuntime) adopt(prepared *preparedSubagentRun) error {
@@ -616,6 +949,7 @@ func (s *Session) bootstrapDelegateResources() error {
 	}
 	controller, err := openDelegateTreeController(delegateTreeControllerConfig{
 		store:         store,
+		rootRuntime:   s,
 		rootSessionID: s.id,
 		stateDir:      s.stateDir,
 		worktreeRoot:  filepath.Join(jobsDir(s.stateDir, s.id), "worktrees"),

@@ -70,6 +70,12 @@ type AttentionResolutionInfo struct {
 	Disposition string `json:"disposition"`
 }
 
+// DelegateDeliveryCommit records that this exact tool-result turn durably
+// received a delegate delivery. It is persistence metadata, not model content.
+type DelegateDeliveryCommit struct {
+	DeliveryID string `json:"delivery_id"`
+}
+
 // HookInfo is the persisted detail of one completed hook: the same fields the
 // live events.HookEndData carries, so a reloaded transcript describes the hook
 // exactly as the live session did rather than in a poorer summary of it.
@@ -159,7 +165,8 @@ type Turn struct {
 	// It is empty for ordinary steering and all non-steering turns.
 	AttentionID string `json:"attention_id,omitempty"`
 	// AttentionResolution is set only on TurnAttentionResolution turns.
-	AttentionResolution *AttentionResolutionInfo `json:"attention_resolution,omitempty"`
+	AttentionResolution     *AttentionResolutionInfo `json:"attention_resolution,omitempty"`
+	DelegateDeliveryCommits []DelegateDeliveryCommit `json:"delegate_delivery_commits,omitempty"`
 	// ClientMutationID and StableTurnID identify retry-safe client-authored
 	// user and steering turns across live events, transcript recovery, and
 	// mutation replay.

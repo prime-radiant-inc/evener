@@ -17,6 +17,20 @@ type delegateSteeringAdmission struct {
 	entryID string
 }
 
+type delegateSteeringClaim struct {
+	token      uint64
+	delegateID string
+	lease      delegateLease
+	runtime    *Session
+}
+
+type delegateModelRequestClaim struct {
+	token       uint64
+	lease       delegateLease
+	runtime     *Session
+	steeringIDs []string
+}
+
 type delegateTranscriptEntry struct {
 	entryID   string
 	timestamp time.Time
@@ -30,31 +44,78 @@ func (c *delegateTreeController) Steer(ctx context.Context, actor delegateActor,
 		return delegateMutationPlans{}, errDelegateTargetBusy
 	}
 
+	claim, err := c.BeginSteerPersistence(actor, delegateID)
+	if err != nil {
+		return delegateMutationPlans{}, err
+	}
+	entry, err := claim.runtime.appendDelegateSteeringDurably(message)
+	if err != nil {
+		_ = c.AbortSteerPersistence(claim)
+		return delegateMutationPlans{}, err
+	}
+	return c.CompleteSteerPersistence(claim, entry)
+}
+
+func (c *delegateTreeController) BeginSteerPersistence(actor delegateActor, delegateID string) (*delegateSteeringClaim, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.authorizeMutationLocked(actor, delegateID); err != nil {
-		return delegateMutationPlans{}, err
+		return nil, err
 	}
 	live := c.live[delegateID]
 	if live == nil || live.binding == nil || live.binding.runtime == nil {
-		return delegateMutationPlans{}, errDelegateTargetBusy
+		return nil, errDelegateTargetBusy
 	}
 	if _, _, err := c.admitLeaseLocked(live.binding.lease, delegatestore.PhaseRunning); err != nil {
-		return delegateMutationPlans{}, err
+		return nil, err
 	}
-	entry, err := live.binding.runtime.appendDelegateSteeringDurably(message)
-	if err != nil {
-		return delegateMutationPlans{}, err
+	c.nextToken++
+	claim := &delegateSteeringClaim{
+		token:      c.nextToken,
+		delegateID: delegateID,
+		lease:      live.binding.lease,
+		runtime:    live.binding.runtime,
+	}
+	c.steeringClaims[claim.token] = claim
+	c.evidenceVersion++
+	return claim, nil
+}
+
+func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteeringClaim, entry delegateTranscriptEntry) (delegateMutationPlans, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if claim == nil || c.steeringClaims[claim.token] != claim || entry.entryID == "" {
+		return delegateMutationPlans{}, errDelegateStaleLease
+	}
+	delete(c.steeringClaims, claim.token)
+	_, live, err := c.admitLeaseLocked(claim.lease, delegatestore.PhaseRunning)
+	if err != nil || live.binding.runtime != claim.runtime || claim.delegateID != claim.lease.delegateID {
+		c.evidenceVersion++
+		if err != nil {
+			return delegateMutationPlans{}, err
+		}
+		return delegateMutationPlans{}, errDelegateStaleLease
 	}
 	live.pendingSteers = append(live.pendingSteers, delegateSteeringAdmission{entryID: entry.entryID})
 	if entry.timestamp.After(live.activityAt) {
 		live.activityAt = entry.timestamp
 	}
 	c.evidenceVersion++
-	return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(delegateID)}}, nil
+	return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(claim.delegateID)}}, nil
 }
 
-func (c *delegateTreeController) BeginModelRequest(lease delegateLease) ([]llm.Message, error) {
+func (c *delegateTreeController) AbortSteerPersistence(claim *delegateSteeringClaim) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if claim == nil || c.steeringClaims[claim.token] != claim {
+		return errDelegateStaleLease
+	}
+	delete(c.steeringClaims, claim.token)
+	c.evidenceVersion++
+	return nil
+}
+
+func (c *delegateTreeController) BeginModelRequest(lease delegateLease) (*delegateModelRequestClaim, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
@@ -64,17 +125,84 @@ func (c *delegateTreeController) BeginModelRequest(lease delegateLease) ([]llm.M
 	if live.binding.runtime == nil {
 		return nil, errDelegateTargetBusy
 	}
-	history := live.binding.runtime.delegateModelHistorySnapshot()
-	history, bound := projectDelegatePendingSteers(history, live.pendingSteers)
+	for _, existing := range c.modelClaims {
+		if existing.lease == lease {
+			return nil, errDelegateTargetBusy
+		}
+	}
+	c.nextToken++
+	claim := &delegateModelRequestClaim{
+		token:   c.nextToken,
+		lease:   lease,
+		runtime: live.binding.runtime,
+	}
+	for _, pending := range live.pendingSteers {
+		claim.steeringIDs = append(claim.steeringIDs, pending.entryID)
+	}
+	c.modelClaims[claim.token] = claim
+	c.evidenceVersion++
+	return claim, nil
+}
+
+func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelRequestClaim, history []schema.Turn) ([]llm.Message, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if claim == nil || c.modelClaims[claim.token] != claim {
+		return nil, errDelegateStaleLease
+	}
+	delete(c.modelClaims, claim.token)
+	_, live, err := c.admitLeaseLocked(claim.lease, delegatestore.PhaseRunning)
+	if err != nil || live.binding.runtime != claim.runtime {
+		c.evidenceVersion++
+		if err != nil {
+			return nil, err
+		}
+		return nil, errDelegateStaleLease
+	}
+	pending := make([]delegateSteeringAdmission, 0, len(claim.steeringIDs))
+	for _, entryID := range claim.steeringIDs {
+		pending = append(pending, delegateSteeringAdmission{entryID: entryID})
+	}
+	history, bound := projectDelegatePendingSteers(history, pending)
 	kept := live.pendingSteers[:0]
 	for _, pending := range live.pendingSteers {
-		if _, ok := bound[pending.entryID]; !ok {
+		if _, claimed := bound[pending.entryID]; !claimed {
 			kept = append(kept, pending)
 		}
 	}
 	live.pendingSteers = kept
 	c.evidenceVersion++
 	return expandHistory(history, replayScope{}), nil
+}
+
+func (c *delegateTreeController) AbortModelRequest(claim *delegateModelRequestClaim) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if claim == nil || c.modelClaims[claim.token] != claim {
+		return errDelegateStaleLease
+	}
+	delete(c.modelClaims, claim.token)
+	c.evidenceVersion++
+	return nil
+}
+
+func (c *delegateTreeController) dropRuntimeClaimsForMembersLocked(members map[string]struct{}) {
+	for token, claim := range c.steeringClaims {
+		if claim != nil {
+			if _, covered := members[claim.delegateID]; !covered {
+				continue
+			}
+		}
+		delete(c.steeringClaims, token)
+	}
+	for token, claim := range c.modelClaims {
+		if claim != nil {
+			if _, covered := members[claim.lease.delegateID]; !covered {
+				continue
+			}
+		}
+		delete(c.modelClaims, token)
+	}
 }
 
 func projectDelegatePendingSteers(history []schema.Turn, pending []delegateSteeringAdmission) ([]schema.Turn, map[string]struct{}) {

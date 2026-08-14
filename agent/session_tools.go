@@ -100,14 +100,53 @@ type stableDelegateCreateResult struct {
 
 func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
 	reg.Remove("delegate")
-	return reg.Register(tool.RegisteredTool{
+	if err := reg.Register(tool.RegisteredTool{
 		Tool:  llm.Tool{Definition: tool.DefDelegate(s.delegateAgentTypeNames())},
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			return stableDelegateCreateTool(ctx, s, args, jobToolResultMaxChars(reg, "delegate"))
 		},
+	}); err != nil {
+		return err
+	}
+	reg.Remove("delegate_send")
+	return reg.Register(tool.RegisteredTool{
+		Tool:  llm.Tool{Definition: tool.DefDelegateSend()},
+		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = env
+			return stableDelegateSendTool(ctx, s, args, jobToolResultMaxChars(reg, "delegate_send"))
+		},
 	})
+}
+
+func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
+	target := strings.TrimSpace(stringArg(args, "to"))
+	message := strings.TrimSpace(stringArg(args, "message"))
+	if target == runtimeMessageAliasCaller {
+		return nil, errors.New("invalid_request: delegate_send sends to child delegate_id only")
+	}
+	wait := 0
+	if n, ok := shellIntArg(args, "max_wait_ms"); ok {
+		if n < 0 {
+			return nil, errors.New("invalid_request: max_wait_ms must be non-negative")
+		}
+		wait = n
+	}
+	outcome := (delegateRuntime{owner: s}).send(ctx, target, message, wait)
+	if outcome.result.Err != nil {
+		return nil, outcome.result.Err
+	}
+	if outcome.commit != nil {
+		callID, _ := ctx.Value(ctxToolCallID).(string)
+		if callID == "" {
+			_, _ = outcome.commit.Complete(false)
+			return nil, errors.New("delegate result cannot be committed outside a tool round")
+		}
+		s.queueDelegateDeliveryCommit(callID, outcome.commit)
+	}
+	return marshalDelegateSendResult(outcome.result, maxChars)
 }
 
 func stableDelegateCreateTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
@@ -379,6 +418,11 @@ func providerVisibleToolNames(names []string, nameMap map[string]string) []strin
 func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishReason string) tool.ExecResult {
 	if err := s.abortIfClosing(ctx); err != nil {
 		return skippedToolResult(call, err)
+	}
+	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
+		if err := s.delegateController.BeginTool(lease); err != nil {
+			return skippedToolResult(call, err)
+		}
 	}
 
 	// Self-heal off-distribution tool calls before hooks/dispatch. Snapshot the
@@ -724,14 +768,21 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallData, results []tool.ExecResult, parts []llm.ContentPart) error {
 	var persistErr error
 	if abortErr := s.withResponseSideEffects(ctx, func() {
+		commits := s.takeDelegateDeliveryCommits(calls)
 		persistedParts := projectToolResultsForTranscript(calls, results, parts)
 		live := llm.Message{Role: llm.RoleTool, Content: parts}
 		persisted := llm.Message{Role: llm.RoleTool, Content: persistedParts}
-		if hasSuccessfulTerminalJobStatusResult(calls, results) {
+		if len(commits) != 0 {
+			persistErr = s.appendToolResultsWithDeliveryCommitsDurably(live, persisted, commits)
+		} else if hasSuccessfulTerminalJobStatusResult(calls, results) {
 			persistErr = s.appendTurnWithDurableTranscriptMessage(schema.TurnToolResults, live, persisted)
 		} else {
 			s.appendTurnWithTranscriptMessage(schema.TurnToolResults, live, persisted)
 		}
+		if persistErr != nil {
+			return
+		}
+		persistErr = s.flushPendingDelegateDeliveries()
 		if persistErr != nil {
 			return
 		}
@@ -746,6 +797,64 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		return abortErr
 	}
 	return persistErr
+}
+
+func (s *Session) queueDelegateDeliveryCommit(callID string, commit *delegateToolResultCommit) {
+	if s == nil || callID == "" || commit == nil {
+		return
+	}
+	s.delegateDeliveryMu.Lock()
+	if s.delegateDeliveryCommits == nil {
+		s.delegateDeliveryCommits = make(map[string][]*delegateToolResultCommit)
+	}
+	s.delegateDeliveryCommits[callID] = append(s.delegateDeliveryCommits[callID], commit)
+	s.delegateDeliveryMu.Unlock()
+}
+
+func (s *Session) takeDelegateDeliveryCommits(calls []llm.ToolCallData) []*delegateToolResultCommit {
+	s.delegateDeliveryMu.Lock()
+	defer s.delegateDeliveryMu.Unlock()
+	var commits []*delegateToolResultCommit
+	for _, call := range calls {
+		commits = append(commits, s.delegateDeliveryCommits[call.ID]...)
+		delete(s.delegateDeliveryCommits, call.ID)
+	}
+	return commits
+}
+
+func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted llm.Message, commits []*delegateToolResultCommit) error {
+	liveTurn := schema.NewTurn(schema.TurnToolResults, live)
+	persistedTurn := liveTurn
+	persistedTurn.Message = persisted
+	for _, commit := range commits {
+		if commit != nil {
+			persistedTurn.DelegateDeliveryCommits = append(persistedTurn.DelegateDeliveryCommits, schema.DelegateDeliveryCommit{DeliveryID: commit.deliveryID})
+		}
+	}
+	if err := s.writeTranscriptDurable(persistedTurn); err != nil {
+		for _, commit := range commits {
+			if commit != nil {
+				_, _ = commit.Complete(false)
+			}
+		}
+		return err
+	}
+	s.mu.Lock()
+	s.history = append(s.history, liveTurn)
+	s.mu.Unlock()
+	for _, commit := range commits {
+		if commit == nil {
+			continue
+		}
+		plans, err := commit.Complete(true)
+		if err != nil {
+			return err
+		}
+		if err := s.executeDelegateMutationPlans(plans); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // announceReadableToolResultImages names the round's tool calls whose result

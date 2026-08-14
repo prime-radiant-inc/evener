@@ -44,8 +44,8 @@ func TestDelegateControllerSteerPersistsBeforeAcknowledgement(t *testing.T) {
 	if err := <-result; err != nil {
 		t.Fatalf("Steer: %v", err)
 	}
-	if fs.controllerWasUnlocked {
-		t.Fatal("controller mutex was not held at the transcript durability boundary")
+	if !fs.controllerWasUnlocked {
+		t.Fatal("controller mutex was held at the transcript durability boundary")
 	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
@@ -117,7 +117,7 @@ func TestDelegateControllerBeginModelRequestBindsPendingEntriesOnce(t *testing.T
 		}
 	}
 
-	history, err := c.BeginModelRequest(lease)
+	history, err := completeDelegateModelRequest(c, lease)
 	if err != nil {
 		t.Fatalf("BeginModelRequest: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestDelegateControllerBeginModelRequestBindsPendingEntriesOnce(t *testing.T
 		t.Fatalf("pending steers after bind = %#v", got)
 	}
 	c.mu.Unlock()
-	if _, err := c.BeginModelRequest(lease); err != nil {
+	if _, err := completeDelegateModelRequest(c, lease); err != nil {
 		t.Fatalf("second BeginModelRequest: %v", err)
 	}
 	c.mu.Lock()
@@ -148,7 +148,7 @@ func TestDelegateControllerBeginModelRequestProjectsInFlightSteersAfterResponseO
 	initial := schema.NewTurn(schema.TurnUserInput, llm.User("initial"))
 	initial.StableTurnID = "turn_initial"
 	runtime.recordTurn(initial, initial)
-	if _, err := c.BeginModelRequest(lease); err != nil {
+	if _, err := completeDelegateModelRequest(c, lease); err != nil {
 		t.Fatalf("initial BeginModelRequest: %v", err)
 	}
 
@@ -190,7 +190,7 @@ func TestDelegateControllerBeginModelRequestProjectsInFlightSteersAfterResponseO
 		t.Fatalf("durable steer IDs = %#v, want distinct stable IDs", steerIDs)
 	}
 
-	request, err := c.BeginModelRequest(lease)
+	request, err := completeDelegateModelRequest(c, lease)
 	if err != nil {
 		t.Fatalf("next BeginModelRequest: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestDelegateControllerSteerAfterRequestBindWaitsForNextRequest(t *testing.T
 	if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), "dlg_target", "first"); err != nil {
 		t.Fatalf("first Steer: %v", err)
 	}
-	if _, err := c.BeginModelRequest(lease); err != nil {
+	if _, err := completeDelegateModelRequest(c, lease); err != nil {
 		t.Fatalf("first BeginModelRequest: %v", err)
 	}
 	if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), "dlg_target", "next"); err != nil {
@@ -240,7 +240,7 @@ func TestDelegateControllerSteerAfterRequestBindWaitsForNextRequest(t *testing.T
 	if len(pending) != 1 || pending[0].entryID == "" {
 		t.Fatalf("pending steers before next request = %#v", pending)
 	}
-	if _, err := c.BeginModelRequest(lease); err != nil {
+	if _, err := completeDelegateModelRequest(c, lease); err != nil {
 		t.Fatalf("second BeginModelRequest: %v", err)
 	}
 	c.mu.Lock()
@@ -248,6 +248,14 @@ func TestDelegateControllerSteerAfterRequestBindWaitsForNextRequest(t *testing.T
 	if len(c.live["dlg_target"].pendingSteers) != 0 {
 		t.Fatalf("next request did not bind later steer: %#v", c.live["dlg_target"].pendingSteers)
 	}
+}
+
+func completeDelegateModelRequest(c *delegateTreeController, lease delegateLease) ([]llm.Message, error) {
+	claim, err := c.BeginModelRequest(lease)
+	if err != nil {
+		return nil, err
+	}
+	return c.CompleteModelRequest(claim, claim.runtime.delegateModelHistorySnapshot())
 }
 
 func TestDelegateControllerBeginToolRejectsStoppingOrStaleLease(t *testing.T) {

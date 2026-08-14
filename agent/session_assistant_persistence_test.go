@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -17,6 +19,50 @@ import (
 )
 
 var errInjectedTranscriptWrite = errors.New("injected transcript write failure")
+
+func TestDelegateAttention_AppendIsIdempotentByIdentityAndContent(t *testing.T) {
+	sess := newDelegateAttentionTestSession(t)
+	if appended, err := sess.appendDelegateNotificationDurably("attention-1", "first"); err != nil || !appended {
+		t.Fatalf("first append = %t, %v", appended, err)
+	}
+	if appended, err := sess.appendDelegateNotificationDurably("attention-1", "first"); err != nil || appended {
+		t.Fatalf("duplicate append = %t, %v", appended, err)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(sess.stateDir, sess.id), sess.id)
+	if err != nil {
+		t.Fatalf("read attention fold: %v", err)
+	}
+	if len(fold.order) != 1 || fold.order[0] != "attention-1" || fold.content["attention-1"].Text() != "first" {
+		t.Fatalf("attention fold = %#v", fold)
+	}
+}
+
+func TestDelegateAttention_ConflictingIdentityIsCorruption(t *testing.T) {
+	sess := newDelegateAttentionTestSession(t)
+	if _, err := sess.appendDelegateNotificationDurably("attention-1", "first"); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+	if _, err := sess.appendDelegateNotificationDurably("attention-1", "different"); err == nil {
+		t.Fatal("conflicting attention content was accepted")
+	}
+}
+
+func newDelegateAttentionTestSession(t *testing.T) *Session {
+	t.Helper()
+	stateDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	const sessionID = "attention-session"
+	writer, err := transcript.NewWriter(transcriptPath(stateDir, sessionID), transcript.Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	sess := &Session{id: sessionID, stateDir: stateDir}
+	sess.attachTranscript(writer)
+	return sess
+}
 
 type transcriptWriteFailFS struct {
 	afero.Fs

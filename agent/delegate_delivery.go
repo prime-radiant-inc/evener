@@ -67,6 +67,7 @@ type delegateDeliveryPlan struct {
 	waiter          *delegateInlineWaiter
 	packet          delegatestore.TerminalPacket
 	claim           delegateDeliveryClaimToken
+	receiver        delegateDeliveryReceiver
 }
 
 type delegateDeliveryReceiver interface {
@@ -354,6 +355,87 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 		waiter:          waiter,
 		packet:          cloneDelegateTerminalPacket(head.Packet),
 		claim:           claimToken,
+		receiver:        c.deliveryReceiverLocked(head.OwnerDelegateID),
+	}
+}
+
+func (c *delegateTreeController) deliveryReceiverLocked(ownerDelegateID string) delegateDeliveryReceiver {
+	if ownerDelegateID == "" {
+		return c.rootRuntime
+	}
+	if live := c.live[ownerDelegateID]; live != nil {
+		return live.runtime
+	}
+	return nil
+}
+
+func (s *Session) executeDelegateMutationPlans(plans delegateMutationPlans) error {
+	if s == nil || s.delegateController == nil {
+		return errDelegateDeliveryReceiverUnavailable
+	}
+	s.delegateController.emitDelegateUpdates(plans)
+	queue := append([]delegateDeliveryPlan(nil), plans.deliveries...)
+	for len(queue) != 0 {
+		plan := queue[0]
+		queue = queue[1:]
+		var next delegateMutationPlans
+		var err error
+		if receiver, ok := plan.receiver.(*Session); ok {
+			var deferred bool
+			next, deferred, err = receiver.acceptDelegateDeliveryPlan(plan)
+			if deferred {
+				continue
+			}
+		} else {
+			next, err = deliverDelegatePacket(plan, plan.receiver)
+		}
+		if err != nil {
+			return err
+		}
+		s.delegateController.emitDelegateUpdates(next)
+		queue = append(queue, next.deliveries...)
+	}
+	return nil
+}
+
+func (s *Session) acceptDelegateDeliveryPlan(plan delegateDeliveryPlan) (delegateMutationPlans, bool, error) {
+	if s == nil {
+		return delegateMutationPlans{}, false, errDelegateDeliveryReceiverUnavailable
+	}
+	s.delegateDeliveryMu.Lock()
+	defer s.delegateDeliveryMu.Unlock()
+	s.mu.Lock()
+	processing := s.state == SessionProcessing
+	s.mu.Unlock()
+	if processing {
+		s.pendingDelegateDeliveries = append(s.pendingDelegateDeliveries, plan)
+		return delegateMutationPlans{}, true, nil
+	}
+	plans, err := deliverDelegatePacket(plan, s)
+	return plans, false, err
+}
+
+func (s *Session) flushPendingDelegateDeliveries() error {
+	if s == nil {
+		return nil
+	}
+	for {
+		s.delegateDeliveryMu.Lock()
+		if len(s.pendingDelegateDeliveries) == 0 {
+			s.delegateDeliveryMu.Unlock()
+			return nil
+		}
+		plan := s.pendingDelegateDeliveries[0]
+		s.pendingDelegateDeliveries = s.pendingDelegateDeliveries[1:]
+		s.delegateDeliveryMu.Unlock()
+
+		plans, err := deliverDelegatePacket(plan, s)
+		if err != nil {
+			return err
+		}
+		if err := s.executeDelegateMutationPlans(plans); err != nil {
+			return err
+		}
 	}
 }
 

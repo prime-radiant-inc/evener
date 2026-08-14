@@ -604,6 +604,7 @@ func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) co
 	if live.binding.inputClaim != 0 {
 		delete(c.inputClaims, live.binding.inputClaim)
 	}
+	c.dropRuntimeClaimsForMembersLocked(map[string]struct{}{lease.delegateID: {}})
 	if live.binding.runtime != nil {
 		live.runtime = live.binding.runtime
 	}

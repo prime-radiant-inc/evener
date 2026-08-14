@@ -79,7 +79,7 @@ func FuzzDelegateConversationTransitions(f *testing.F) {
 					break
 				}
 				pending := delegateConversationPendingSteers(c, lease.delegateID)
-				if _, err := c.BeginModelRequest(lease); err == nil {
+				if _, err := completeDelegateModelRequest(c, lease); err == nil {
 					present := delegateConversationHistoryIDSet(runtime)
 					for _, id := range pending {
 						if !present[id] {

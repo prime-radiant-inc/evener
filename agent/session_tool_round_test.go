@@ -1,11 +1,20 @@
 package agent
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"errors"
+	"sync"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/llm"
 )
 
 // These two tests cover part of review round 2's finding:
@@ -68,4 +77,183 @@ func TestInjectPostToolSteering_PersistsTaskReminderKind(t *testing.T) {
 	if last.SteeringKind != events.SteeringKindTaskNudge {
 		t.Errorf("SteeringKind = %q, want %q", last.SteeringKind, events.SteeringKindTaskNudge)
 	}
+}
+
+func TestDelegateAttention_DeliveryCommitUsesCallerToolResultFsync(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	lease, firstWaiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
+	firstPlan := finishDelegateDeliveryGeneration(t, c, lease, "first").deliveries[0]
+	if _, err := deliverDelegatePacket(firstPlan, nil); err != nil {
+		t.Fatalf("handoff inline delivery: %v", err)
+	}
+	resolution := <-firstWaiter.resolution
+	fs := newDelegateToolResultBarrierFS()
+	sess := newDelegateToolResultPersistenceSession(t, c, fs)
+	fs.blockSync = true
+	sess.queueDelegateDeliveryCommit("delegate-send", resolution.commit)
+
+	done := make(chan error, 1)
+	go func() { done <- appendDelegateToolResultFixture(sess, "delegate-send") }()
+	select {
+	case <-fs.syncEntered:
+	case err := <-done:
+		t.Fatalf("caller tool-result append returned before fsync: %v", err)
+	}
+	if got := len(c.durable["dlg_target"].PendingDeliveries); got != 1 {
+		t.Fatalf("pending deliveries at blocked fsync = %d, want 1", got)
+	}
+	close(fs.allowSync)
+	if err := <-done; err != nil {
+		t.Fatalf("append caller tool results: %v", err)
+	}
+	entries := decodeTranscriptEntries(t, fs.Fs, "/caller.jsonl")
+	last := entries[len(entries)-1].Turn
+	if len(last.DelegateDeliveryCommits) != 1 || last.DelegateDeliveryCommits[0].DeliveryID != firstPlan.deliveryID {
+		t.Fatalf("persisted delivery commits = %#v", last.DelegateDeliveryCommits)
+	}
+}
+
+func TestDelegateAttention_DeliveryCommitAppendFailureLeavesNAndNPlusOnePending(t *testing.T) {
+	c, firstPlan, firstWaiter, _, secondWaiter := controllerWithTwoDelegateDeliveries(t, true, true)
+	if _, err := deliverDelegatePacket(firstPlan, nil); err != nil {
+		t.Fatalf("handoff inline delivery: %v", err)
+	}
+	resolution := <-firstWaiter.resolution
+	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
+	sess := newDelegateToolResultPersistenceSession(t, c, fs)
+	sess.queueDelegateDeliveryCommit("delegate-send", resolution.commit)
+	fs.fail = true
+
+	if err := appendDelegateToolResultFixture(sess, "delegate-send"); !errors.Is(err, errInjectedTranscriptWrite) {
+		t.Fatalf("append caller tool results = %v, want injected failure", err)
+	}
+	if got := len(c.durable["dlg_target"].PendingDeliveries); got != 2 {
+		t.Fatalf("pending deliveries after append failure = %d, want 2", got)
+	}
+	c.mu.Lock()
+	secondStillWaiting := c.live["dlg_target"].waiters[2] == secondWaiter
+	c.mu.Unlock()
+	if !secondStillWaiting {
+		t.Fatal("N+1 waiter was released after N caller append failure")
+	}
+}
+
+func TestDelegateAttention_DeliveryCommitReleasesNPlusOneOnlyAfterNFsync(t *testing.T) {
+	c, firstPlan, firstWaiter, _, secondWaiter := controllerWithTwoDelegateDeliveries(t, true, true)
+	if _, err := deliverDelegatePacket(firstPlan, nil); err != nil {
+		t.Fatalf("handoff inline delivery: %v", err)
+	}
+	resolution := <-firstWaiter.resolution
+	fs := newDelegateToolResultBarrierFS()
+	sess := newDelegateToolResultPersistenceSession(t, c, fs)
+	fs.blockSync = true
+	sess.queueDelegateDeliveryCommit("delegate-send", resolution.commit)
+
+	done := make(chan error, 1)
+	go func() { done <- appendDelegateToolResultFixture(sess, "delegate-send") }()
+	select {
+	case <-fs.syncEntered:
+	case err := <-done:
+		t.Fatalf("caller tool-result append returned before fsync: %v", err)
+	}
+	select {
+	case got := <-secondWaiter.resolution:
+		t.Fatalf("N+1 released before N fsync: %#v", got)
+	default:
+	}
+	close(fs.allowSync)
+	if err := <-done; err != nil {
+		t.Fatalf("append caller tool results: %v", err)
+	}
+	select {
+	case got := <-secondWaiter.resolution:
+		if got.packet == nil || got.commit == nil || got.fallback {
+			t.Fatalf("N+1 resolution = %#v", got)
+		}
+	default:
+		t.Fatal("N+1 was not released after N caller fsync")
+	}
+}
+
+func newDelegateToolResultPersistenceSession(t *testing.T, c *delegateTreeController, fs afero.Fs) *Session {
+	t.Helper()
+	writer, err := transcript.NewWriterWithFS(fs, "/caller.jsonl", transcript.Header{SessionID: "caller"})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	sess := &Session{id: "caller", delegateController: c}
+	sess.attachTranscript(writer)
+	c.rootRuntime = sess
+	return sess
+}
+
+func appendDelegateToolResultFixture(sess *Session, callID string) error {
+	calls := []llm.ToolCallData{{ID: callID, Name: "delegate_send"}}
+	results := []tool.ExecResult{{CallID: callID, ToolName: "delegate_send", Output: `{"status":"completed"}`}}
+	parts := []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: callID, Name: "delegate_send", Content: results[0].Output}}}
+	return sess.appendToolResults(context.Background(), calls, results, parts)
+}
+
+func decodeTranscriptEntries(t *testing.T, fs afero.Fs, path string) []transcript.Entry {
+	t.Helper()
+	data, err := afero.ReadFile(fs, path)
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	if !scanner.Scan() {
+		t.Fatal("transcript header missing")
+	}
+	var entries []transcript.Entry
+	for scanner.Scan() {
+		entry, err := transcript.DecodeEntry(scanner.Bytes())
+		if err != nil {
+			t.Fatalf("decode transcript entry: %v", err)
+		}
+		entries = append(entries, entry)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan transcript: %v", err)
+	}
+	return entries
+}
+
+type delegateToolResultBarrierFS struct {
+	afero.Fs
+	syncEntered chan struct{}
+	allowSync   chan struct{}
+	blockSync   bool
+	once        sync.Once
+}
+
+func newDelegateToolResultBarrierFS() *delegateToolResultBarrierFS {
+	return &delegateToolResultBarrierFS{
+		Fs:          afero.NewMemMapFs(),
+		syncEntered: make(chan struct{}),
+		allowSync:   make(chan struct{}),
+	}
+}
+
+func (fs *delegateToolResultBarrierFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &delegateToolResultBarrierFile{File: file, fs: fs}, nil
+}
+
+type delegateToolResultBarrierFile struct {
+	afero.File
+	fs *delegateToolResultBarrierFS
+}
+
+func (file *delegateToolResultBarrierFile) Sync() error {
+	if !file.fs.blockSync {
+		return file.File.Sync()
+	}
+	file.fs.once.Do(func() { close(file.fs.syncEntered) })
+	<-file.fs.allowSync
+	return file.File.Sync()
 }

@@ -27,6 +27,7 @@ const (
 
 type delegateTreeControllerConfig struct {
 	store         *delegatestore.Store
+	rootRuntime   *Session
 	rootSessionID string
 	stateDir      string
 	worktreeRoot  string
@@ -39,9 +40,10 @@ type delegateTreeControllerConfig struct {
 type delegateTreeController struct {
 	mu sync.Mutex
 
-	store   *delegatestore.Store
-	durable delegatestore.State
-	live    map[string]*delegateLiveState
+	store       *delegatestore.Store
+	durable     delegatestore.State
+	live        map[string]*delegateLiveState
+	rootRuntime *Session
 
 	rootSessionID   string
 	stateDir        string
@@ -55,6 +57,8 @@ type delegateTreeController struct {
 	nextToken       uint64
 	reservations    map[uint64]*delegateStartRecord
 	inputClaims     map[uint64]delegateLease
+	steeringClaims  map[uint64]*delegateSteeringClaim
+	modelClaims     map[uint64]*delegateModelRequestClaim
 	work            map[uint64]*delegateShellWork
 	deliveries      map[uint64]*delegateDeliveryAdmission
 	deliveryClaims  map[string]*delegateDeliveryClaim
@@ -148,6 +152,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		store:          cfg.store,
 		durable:        durable,
 		live:           make(map[string]*delegateLiveState),
+		rootRuntime:    cfg.rootRuntime,
 		rootSessionID:  cfg.rootSessionID,
 		stateDir:       cfg.stateDir,
 		worktreeRoot:   cfg.worktreeRoot,
@@ -157,6 +162,8 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		newDelegateID:  cfg.newDelegateID,
 		reservations:   make(map[uint64]*delegateStartRecord),
 		inputClaims:    make(map[uint64]delegateLease),
+		steeringClaims: make(map[uint64]*delegateSteeringClaim),
+		modelClaims:    make(map[uint64]*delegateModelRequestClaim),
 		work:           make(map[uint64]*delegateShellWork),
 		deliveries:     make(map[uint64]*delegateDeliveryAdmission),
 		deliveryClaims: make(map[string]*delegateDeliveryClaim),
