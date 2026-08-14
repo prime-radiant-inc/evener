@@ -6,6 +6,8 @@
 
 **Architecture:** Tasks 1–5 built and proved a dormant `delegatestore` plus a synchronous one-mutex `delegateTreeController` while the legacy route remained active. Tasks 6–14 complete one flag-day vertical branch: bootstrap and runtime first, preserved delivery/supervision/retention behavior next, every tool and client consumer after that, and legacy-authority deletion only after those replacements are live. Intermediate commits are review checkpoints, not deployable compatibility phases. The first deployable branch accepts the stable store and stable watch journal, rejects legacy delegate JobRecord and delegate-job-addressed watch state, and contains no dual writer or fallback route.
 
+**Execution status (2026-08-14):** Task 6 is complete at immutable commit `5df4ad5f487f3674f4016f40eeb82d3cf49b7aa4`; Task 7 is complete at immutable commit `521a4892d977927154f34636343d84e8dda15508`. The recovery branch remains an intentionally nondeployable flag-day checkpoint. Tasks 8–14, final integration verification, merge, and deployment remain incomplete.
+
 **Tech Stack:** Go, append-only JSONL with fsync, Serf Session/transcript/provider seams, deterministic channel barriers, Rapid/native fuzz replay, AppWire Go/TypeScript generation, React/Vitest/Biome, Kata, and repository Make gates.
 
 ## Global Constraints
@@ -835,6 +837,8 @@ Each row is a required behavioral RED before its owner slice and a count-20 norm
 
 ### Task 6: Flag-day authority/bootstrap and stable create/restore
 
+**Status:** Complete at immutable commit `5df4ad5f487f3674f4016f40eeb82d3cf49b7aa4`. Final Task 6 verification and sequential review closure are recorded in `.superpowers/sdd/2026-08-12-delegate-resource-recovery/task-6-stabilization-report.md`.
+
 **Files:**
 
 - Create: agent/delegate_runtime.go, agent/delegate_legacy_state.go, agent/delegate_resource_bootstrap_test.go, agent/delegate_resource_create_test.go.
@@ -855,7 +859,7 @@ Each row is a required behavioral RED before its owner slice and a count-20 norm
 - Replace AdmitStartInput with BeginStartInput(lease delegateLease) (delegateInputClaim, error) and CompleteStartInput(claim delegateInputClaim, committed bool, failure delegateFinish) (delegateMutationPlans, error). The first method claims the exact non-launched binding; the transcript append/fsync occurs after unlock; the second revalidates the claim and either marks ready or atomically settles input_persist_failed. No transcript callback runs under the controller.
 - Add FailCommittedStart(lease delegateLease, finish delegateFinish, closeReason string) (delegateMutationPlans, error) on the controller. For a permanently unrestorable post-commit construction/admission failure it appends terminal preparation, run finish, and resumability closure in one existing-event batch; it adds no event kind or failure record.
 
-- [ ] **Step 1: Prove fail-closed bootstrap and single authority**
+- [x] **Step 1: Prove fail-closed bootstrap and single authority**
 
 Add these behavioral tests:
 
@@ -886,7 +890,7 @@ go test ./agent -run '^TestDelegateResourceBootstrap_' -count=20
 go test -race ./agent -run '^TestDelegateResourceBootstrap_' -count=20
 ~~~
 
-- [ ] **Step 2: Prove isolation-before-durable-publication and recoverable post-commit failure**
+- [x] **Step 2: Prove isolation-before-durable-publication and recoverable post-commit failure**
 
 Add:
 
@@ -930,7 +934,7 @@ go test ./agent -run '^TestDelegateResourceCreate_' -count=20
 go test -race ./agent -run '^TestDelegateResourceCreate_' -count=20
 ~~~
 
-- [ ] **Step 3: Register stable creation without activation aliases**
+- [x] **Step 3: Register stable creation without activation aliases**
 
 Update the registered delegate tool schema and implementation so creation returns delegate_id, child_session_id, transcript_ref, and durable metadata from the stable descriptor. Do not return an activation job ID. Keep shell job registration unchanged. Add:
 
@@ -979,6 +983,8 @@ Do not deploy this intermediate commit; the branch is atomic only after Task 14.
 
 ### Task 7: Registered runtime lifecycle
 
+**Status:** Complete at immutable commit `521a4892d977927154f34636343d84e8dda15508`. Final Task 7 review and verification closure are recorded in `.superpowers/sdd/2026-08-12-delegate-resource-recovery/task-7-report.md`.
+
 **Files:**
 
 - Create: agent/delegate_resource_runtime_test.go, agent/delegate_resource_supervision_test.go.
@@ -999,7 +1005,7 @@ Do not deploy this intermediate commit; the branch is atomic only after Task 14.
 - Change BeginModelRequest to return a delegateModelRequestClaim containing the exact lease/runtime and claimed pending-steer entry IDs. Snapshot child history after unlock. CompleteModelRequest(claim, history) revalidates the claim and returns expanded immutable provider history while consuming only claimed IDs found in that snapshot. AbortModelRequest releases a failed snapshot claim. Stop drains these claims; no provider starts before completion.
 - Complete the live receiver persistence foundation in this task. `DelegateDeliveryCommit` is private metadata on the same `TurnToolResults` turn as the caller's aggregated tool results and is excluded from provider/public projections. The Session append helper is idempotent by attention identity plus content. A round carrying a delivery commit must use the durable append path even when it has no terminal shell result; call `CompleteDelivery(true)` only after that fsync succeeds, and call `CompleteDelivery(false)` on append/fsync failure. The same helper serves quiet-watchdog attention. The controller continues to fence delivery N+1 until N's durable completion.
 
-- [ ] **Step 1: Prove running, idle, caller, and settlement behavior**
+- [x] **Step 1: Prove running, idle, caller, and settlement behavior**
 
 Add:
 
@@ -1037,7 +1043,7 @@ go test ./agent -run '^(TestDelegateResourceRuntime_(Running|Idle|Concurrent|Cal
 go test -race ./agent -run '^(TestDelegateResourceRuntime_(Running|Idle|Concurrent|Caller|ModelHistory|PendingSteer|Communicate)|TestDelegateAttention_(Append|Conflicting|DeliveryCommit))' -count=20
 ~~~
 
-- [ ] **Step 2: Prove one canonical packet and lossless exhaustion**
+- [x] **Step 2: Prove one canonical packet and lossless exhaustion**
 
 Add:
 
@@ -1059,7 +1065,7 @@ go test ./agent -run '^TestDelegateResourceRuntime_(Canonical|Structured|Invalid
 
 Build the canonical TerminalPacket once from durable run inputs. Track structured-result presence separately from decoding so raw JSON null is present. Bound invalid bytes and carry structured_result_valid plus structured_result_reason. Extend the existing Outcome in record.go/fold.go with typed exhaustion budget, limit, and explicit resumability so metadata-only status never reads packet contents. Encode tool_round_budget_exhausted in both packet metadata and latest outcome with budget/limit and resumable=true. Encode turn_budget_exhausted the same way with resumable=false, and append finish plus resumability closure in one batch. Preserve descriptor, resolved model, effort, start/end/activity timestamps, cumulative self-only usage, worktree evidence, validation, and warnings. Run the selector GREEN count 20 and race.
 
-- [ ] **Step 3: Prove hooks, nudge, salvage, and quiet supervision**
+- [x] **Step 3: Prove hooks, nudge, salvage, and quiet supervision**
 
 Add:
 
@@ -1085,7 +1091,7 @@ go test ./agent -run '^TestDelegateResourceSupervision_' -count=1
 
 Route activity through the exact lease at retry, awaiting-model, streaming, and tool-running boundaries. The binding timer only requests controller admission of ordinary owner attention after unlock. Set the quiet latch only after receiver transcript fsync. Preserve exact hook ordering, one eligible auto-nudge, one blocking-hook continuation, pending-steer precedence, suppression rules, and final-round-only salvage wording. Restart replays none of them. Run GREEN count 20 and race.
 
-- [ ] **Step 4: Prove generic Stop and positive wait keep reconciliation alive**
+- [x] **Step 4: Prove generic Stop and positive wait keep reconciliation alive**
 
 Add:
 
