@@ -880,23 +880,53 @@ func TestDelegateResourceCreate_ChildTranscriptIsPreseededBeforeRun(t *testing.T
 }
 
 func TestDelegateResourceCreate_InputTranscriptAppendRunsAfterControllerUnlock(t *testing.T) {
-	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, controller, "dlg_target", "")
-	started, _ := commitAttachedDelegateControllerStart(t, controller, "dlg_target")
-	claim, err := controller.BeginStartInput(started.lease)
+	root, client, _ := newDelegateResourceBootstrapSession(t)
+	adapter := newTask6TranscriptBarrierAdapter()
+	client.Register(adapter)
+	t.Cleanup(adapter.releaseRun)
+
+	observerCalls := 0
+	controllerUnlocked := false
+	root.cfg.testOnly.delegateInitialInputAppend = func(*Session) {
+		observerCalls++
+		controllerUnlocked = root.delegateController.mu.TryLock()
+		if controllerUnlocked {
+			root.delegateController.mu.Unlock()
+		}
+	}
+
+	const task = "registered input persists outside controller lock"
+	result := executeTask6RegisteredDelegate(t, context.Background(), root, task, 0)
+	var providerChildID string
+	select {
+	case providerChildID = <-adapter.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider was not reached after registered stable create")
+	}
+	if observerCalls != 1 {
+		t.Fatalf("initial input append observer calls = %d, want 1 real boundary", observerCalls)
+	}
+	if !controllerUnlocked {
+		t.Fatal("real initial transcript append boundary ran while the delegate controller mutex was held")
+	}
+	childID, _ := result["child_session_id"].(string)
+	if providerChildID != childID {
+		t.Fatalf("provider child = %q, want registered child %q", providerChildID, childID)
+	}
+	_, entries, _, err := readTranscript(filepath.Join(root.stateDir, sessionsSubdir, childID+".transcript.jsonl"))
 	if err != nil {
-		t.Fatalf("begin initial transcript input: %v", err)
+		t.Fatalf("read real child transcript at provider boundary: %v", err)
 	}
-	unlocked := controller.mu.TryLock()
-	if unlocked {
-		controller.mu.Unlock()
+	matches := 0
+	for _, entry := range entries {
+		if entry.Turn.Kind == schema.TurnUserInput && entry.Turn.Message.Text() == task {
+			matches++
+		}
 	}
-	if !unlocked {
-		t.Fatal("initial transcript append ran while the delegate controller mutex was held")
+	if matches != 1 {
+		t.Fatalf("real child transcript at provider boundary has %d exact user inputs, want 1: %#v", matches, entries)
 	}
-	if _, err := controller.CompleteStartInput(claim, true, delegateFinish{}); err != nil {
-		t.Fatalf("complete initial transcript input: %v", err)
-	}
+	adapter.releaseRun()
 }
 
 func TestDelegateResourceCreate_RegisteredToolReturnsOnlyStableDelegateIdentity(t *testing.T) {

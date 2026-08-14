@@ -420,6 +420,9 @@ func (runtime delegateRuntime) adopt(prepared *preparedSubagentRun) error {
 func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPath string) error {
 	child.maybeAppendEnvironmentContext()
 	message := buildUserInputMessage(input, nil)
+	if observer := child.cfg.testOnly.delegateInitialInputAppend; observer != nil {
+		observer(child)
+	}
 	if err := child.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, message, message); err != nil {
 		return err
 	}

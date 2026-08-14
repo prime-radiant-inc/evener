@@ -253,6 +253,9 @@ type testConfig struct {
 	// subagentAfterPrepare runs after spawnAgent has prepared a child but before
 	// it tracks the child, allowing tests to reproduce the close race.
 	subagentAfterPrepare func(*Session)
+	// delegateInitialInputAppend observes the real stable-create boundary
+	// immediately before the child transcript receives its initial user input.
+	delegateInitialInputAppend func(*Session)
 	// subagentReserveSlot replaces only the retained-terminal reservation boundary.
 	subagentReserveSlot func(*Session) ([]*subagent, error)
 	// subagentReserveTreeSlot replaces only the tree-capacity reservation boundary.
