@@ -1135,7 +1135,7 @@ git commit -m "feat: run delegates through stable lifecycle" -m "Route registere
 
 **Files:**
 
-- Modify: agent/session_attention.go. Create: agent/session_attention_test.go, agent/session_attention_fuzz_test.go for cold fold, resolution, compaction, and watch-delivery coverage; the Task 7 inline delivery-commit tests remain in their caller-persistence owners.
+- Modify: agent/session_attention.go. Create: agent/session_attention_test.go, agent/session_attention_fuzz_test.go for cold fold, caller delivery crash replay, resolution, compaction, and watch-delivery coverage; the Task 7 live inline delivery-commit tests remain in their caller-persistence owners.
 - Create: agent/delegate_resource_watch_test.go, agent/delegate_resource_shell_test.go.
 - Modify: agent/schema/turn.go, agent/transcript_read.go, agent/history_repair.go, agent/internal/contextmgr/context_manager.go, agent/internal/contextmgr/context_manager_test.go.
 - Modify: agent/delegate_shell_repair.go, agent/delegate_shell_repair_test.go.
@@ -1150,7 +1150,7 @@ git commit -m "feat: run delegates through stable lifecycle" -m "Route registere
 **Interfaces:**
 
 - Consume the Task 7 idempotent live attention append and inline caller delivery-commit bridge, controller terminal packets, stop membership, shell work receipts, the existing jobstore watch journal, and receiver Session transcripts.
-- Produce cold attention fold and durable resolution helpers; typed session/shell/delegate watch endpoints; enqueue/delivery receipts; stable parent grants; exact observer folding; unreachable-owner escalation; and shell completion routing through ParentDelegateID.
+- Produce cold attention and caller delivery-commit fold helpers plus durable resolution; typed session/shell/delegate watch endpoints; enqueue/delivery receipts; stable parent grants; exact observer folding; unreachable-owner escalation; and shell completion routing through ParentDelegateID.
 - The watch journal remains authoritative. No watch state enters delegatestore and no arbitrary receiver field is added.
 
 - [ ] **Step 1: Prove attention resolution durability and tool-round transparency**
@@ -1162,6 +1162,7 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T)
 func TestDelegateAttention_ResolutionMarkerDoesNotSplitToolCallAndResult(t *testing.T)
 func TestDelegateAttention_HistoryRepairCannotCreateOrphanedToolResult(t *testing.T)
 func TestDelegateAttention_RestartFoldIsProviderFreeAndReadOnly(t *testing.T)
+func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToolResult(t *testing.T)
 func FuzzDelegateAttentionFold(f *testing.F)
 ~~~
 
@@ -1170,10 +1171,14 @@ Put this target and the Step 2 watch-delivery target in session_attention_fuzz_t
 Immediately before adding the turn/helper implementation, run:
 
 ~~~bash
-go test ./agent -run '^TestDelegateAttention_(ResolutionFsyncPrecedesSourceAck|ResolutionMarkerDoesNotSplitToolCallAndResult|HistoryRepairCannotCreateOrphanedToolResult|RestartFoldIsProviderFreeAndReadOnly)$' -count=1
+go test ./agent -run '^TestDelegateAttention_(ResolutionFsyncPrecedesSourceAck|ResolutionMarkerDoesNotSplitToolCallAndResult|HistoryRepairCannotCreateOrphanedToolResult|RestartFoldIsProviderFreeAndReadOnly|RestartReplaysCallerDeliveryCommitWithoutDuplicateToolResult)$' -count=1
 ~~~
 
-Consume Task 7's `DelegateDeliveryCommit` and idempotent live append without redefining their caller-fsync boundary. Extend the existing AttentionID, provider-excluded AttentionResolution, and live append foundation with missing-file-tolerant readPendingAttention, durable resolution, and cold append-after-identity-validation helpers. Move the generic attention fold/cold helpers from delegate_shell_repair.go into session_attention.go so shell repair keeps only shell-specific orchestration and the registered fuzz surface names its real owner. Ensure context compaction and history repair treat the marker as transparent. Run the focused selector GREEN count 20/race plus the registered deterministic fuzz replay.
+Consume Task 7's `DelegateDeliveryCommit` and idempotent live append without redefining their caller-fsync boundary. Extend the existing AttentionID, provider-excluded AttentionResolution, and live append foundation with missing-file-tolerant readPendingAttention, durable resolution, and cold append-after-identity-validation helpers. The cold caller-delivery helper must recognize the exact `ToolCallID` plus `DeliveryID` pair on a durable `TurnToolResults`; neither field alone is sufficient.
+
+Place the caller crash-replay test in `agent/session_attention_test.go`. Persist N's real caller tool-result turn with its `DelegateDeliveryCommit`, crash after transcript fsync but before controller acknowledgement, then reopen the transcript and delegate store through fresh process/controller state. Replay the durable head through the actual cold transcript fold and prove that it acknowledges N without appending a second tool-result or attention turn before releasing N+1 in order. Install panic sentinels for provider calls and Session construction so cold replay cannot pass through a live-runtime path or reuse a process-local fake map.
+
+Move the generic attention fold/cold helpers from delegate_shell_repair.go into session_attention.go so shell repair keeps only shell-specific orchestration and the registered fuzz surface names its real owner. Ensure context compaction and history repair treat the marker as transparent. Run the focused selector GREEN count 20/race plus the registered deterministic fuzz replay.
 
 - [ ] **Step 2: Prove typed watches and crash-safe delivery**
 
@@ -1970,8 +1975,8 @@ go test ./agent/internal/jobstore -run '^FuzzOutputMatcher$' -count=1
 Run these exact tests from their Task 6/8/12 files:
 
 ~~~bash
-go test ./agent -run '^(TestDelegateResourceBootstrap_RestartIsProviderFreeAndLazy|TestDelegateResourceBootstrap_LegacyDelegateStateFailsClosed|TestDelegateResourceBootstrap_LegacyDelegateWatchStateFailsClosed|TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked|TestDelegateResourceStop_RestartCompletesPendingStopProviderFree|TestDelegateLegacyDormancy_LegacyLifecycleAndWatchRowsFailClosed)$' -count=20
-go test -race ./agent -run '^(TestDelegateResourceBootstrap_RestartIsProviderFreeAndLazy|TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked|TestDelegateResourceStop_RestartCompletesPendingStopProviderFree)$' -count=20
+go test ./agent -run '^(TestDelegateResourceBootstrap_RestartIsProviderFreeAndLazy|TestDelegateResourceBootstrap_LegacyDelegateStateFailsClosed|TestDelegateResourceBootstrap_LegacyDelegateWatchStateFailsClosed|TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToolResult|TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked|TestDelegateResourceStop_RestartCompletesPendingStopProviderFree|TestDelegateLegacyDormancy_LegacyLifecycleAndWatchRowsFailClosed)$' -count=20
+go test -race ./agent -run '^(TestDelegateResourceBootstrap_RestartIsProviderFreeAndLazy|TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToolResult|TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked|TestDelegateResourceStop_RestartCompletesPendingStopProviderFree)$' -count=20
 ~~~
 
 Use fresh temporary state directories. Assert no provider, Session, timer, hook, nudge, salvage, worktree, notification, or metadata mutation occurs during bootstrap/reconcile.
