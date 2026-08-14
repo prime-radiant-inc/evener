@@ -137,7 +137,10 @@ func assertSubagentPolicyHelpers(t *testing.T, selector byte) {
 		wantDeny    bool
 	}{
 		{agent: &plugin.Agent{AllTools: true}, wantAll: true},
-		{agent: &plugin.Agent{Tools: []string{"read_file"}}, wantAllow: []string{"read_file", "task_list"}},
+		// task_list and compact_context ride along on every explicit allow-list:
+		// compact_context is context hygiene, not an opt-in capability (commit
+		// cec0b9bb5, "fix(subagents): compact_context in the default surface").
+		{agent: &plugin.Agent{Tools: []string{"read_file"}}, wantAllow: []string{"read_file", "task_list", "compact_context"}},
 		{canDelegate: true},
 		{wantDeny: true},
 	}

@@ -188,25 +188,35 @@ func watpTerminalFlush(t *testing.T, r *watpReader) {
 	if err != nil {
 		t.Fatalf("configure terminal-flush watch: %v", err)
 	}
-	if !result.Watching || result.Fired {
-		t.Fatalf("unterminated attach result = %+v, want live no fire", result)
+	// The byte-window scanner (commit fac0f049f) does not wait for a line
+	// terminator: the attach-time level scan sees the unterminated match and
+	// fires immediately instead of parking it for the terminal flush.
+	if !result.Watching || !result.Fired {
+		t.Fatalf("unterminated attach result = %+v, want live attach fire", result)
+	}
+	if got := watpCountReason(notifications, "needle flush-"+label); got != 1 {
+		t.Fatalf("attach notifications = %+v, want one match", notifications)
 	}
 	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "fixture complete", nil); err != nil {
 		t.Fatalf("finalize terminal-flush fixture: %v", err)
 	}
-	if !watpHasReason(notifications, "needle flush-"+label) {
-		t.Fatalf("terminal flush notifications = %+v", notifications)
+	// The attach scan already delivered the match; the terminal flush must not
+	// replay those bytes. Finalize still enqueues the ordinary job-finished
+	// notification, so only the match cardinality is pinned.
+	if got := watpCountReason(notifications, "needle flush-"+label); got != 1 {
+		t.Fatalf("terminal flush notifications = %+v, want no match replay", notifications)
 	}
 	if jm.watchCount() != 0 {
 		t.Fatalf("terminal flush retained a live watch: %d", jm.watchCount())
 	}
 }
 
-func watpHasReason(notifications []jobNotification, want string) bool {
+func watpCountReason(notifications []jobNotification, want string) int {
+	count := 0
 	for _, notification := range notifications {
 		if strings.Contains(notification.Reason, want) {
-			return true
+			count++
 		}
 	}
-	return false
+	return count
 }

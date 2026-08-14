@@ -70,8 +70,12 @@ func stceFileTools(t *testing.T) {
 		return reg.ExecuteCall(context.Background(), env, llm.ToolCallData{ID: id, Name: name, Arguments: stmMarshal(t, args)})
 	}
 	root := t.TempDir()
+	// Image reads must carry decodable raster bytes: dispatchedResult fully
+	// decodes ImageResult data before it reaches the model (commit 1f85c01d3,
+	// "Reject malformed raster tool results before model calls"). PDF payloads
+	// are exempt from raster decoding.
 	for _, tc := range []struct{ path, output string }{
-		{"pic.png", "[image: pic.png]\n" + base64.StdEncoding.EncodeToString([]byte("png"))},
+		{"pic.png", "[image: pic.png]\n" + base64.StdEncoding.EncodeToString(validPNGFixture(t))},
 		{"doc.pdf", "[document: doc.pdf]\n" + base64.StdEncoding.EncodeToString([]byte("pdf"))},
 		{"plain.txt", "plain"},
 	} {
@@ -79,6 +83,10 @@ func stceFileTools(t *testing.T) {
 		if res.IsError || tracked != tc.path {
 			t.Fatalf("read %s = %#v tracked=%q", tc.path, res, tracked)
 		}
+	}
+	badRaster := "[image: bad.png]\n" + base64.StdEncoding.EncodeToString([]byte("png"))
+	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, readOutput: badRaster}, "read-bad-image", "read_file", map[string]any{"file_path": "bad.png"}); !res.IsError || !strings.Contains(res.Output, "invalid image data") || len(res.ImageData) != 0 {
+		t.Fatalf("malformed raster read = %#v", res)
 	}
 	readErr := errors.New("read failure")
 	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, readErr: readErr}, "read-error", "read_file", map[string]any{"file_path": "bad"}); !res.IsError {

@@ -370,6 +370,11 @@ func stpDecodeProgram(data []byte) stpProgram {
 	return p
 }
 
+// stpWorkDir is the fake environment's working directory. With no cwd argument
+// in the program, the shell tool resolves this directory and passes it to the
+// executor.
+const stpWorkDir = "/virtual/work"
+
 type stpError string
 
 func (e stpError) Error() string { return string(e) }
@@ -486,7 +491,7 @@ type stpRunResult struct {
 func stpRunProgram(t *testing.T, p stpProgram) stpRunResult {
 	t.Helper()
 	env := &stpEnv{
-		FakeEnv:     agenttest.FakeEnv{WorkDir: "/virtual/work"},
+		FakeEnv:     agenttest.FakeEnv{WorkDir: stpWorkDir},
 		execResult:  execenv.ExecResult{Stdout: p.stdout, Stderr: p.stderr, ExitCode: p.exitCode, TimedOut: p.timedOut, DurationMS: p.durationMS},
 		listEntries: append([]execenv.DirEntry(nil), p.listEntries...),
 		grepOutput:  p.grepOutput,
@@ -603,8 +608,12 @@ func stpAssertShell(t *testing.T, p stpProgram, result stpToolResult, calls []st
 		t.Fatalf("shell executor calls = %#v, want one", calls)
 	}
 	wantTimeout := stpExpectedTimeout(p.defaultTimeout, p.maxTimeout)
-	if call := calls[0]; call.command != p.command || call.timeoutMS != wantTimeout || call.workDir != "" {
-		t.Fatalf("shell executor call = %#v, want command=%q timeout=%d workdir=empty", call, p.command, wantTimeout)
+	// The program never sends a cwd argument, so resolveShellWorkingDir falls
+	// back to the environment's working directory (commit f404322a3, "feat(agent):
+	// add validated, optional cwd to the shell exec tool") and the executor
+	// receives it explicitly.
+	if call := calls[0]; call.command != p.command || call.timeoutMS != wantTimeout || call.workDir != stpWorkDir {
+		t.Fatalf("shell executor call = %#v, want command=%q timeout=%d workdir=%q", call, p.command, wantTimeout, stpWorkDir)
 	}
 	wantError := p.execErrorKind != 0
 	if result.isError != wantError {

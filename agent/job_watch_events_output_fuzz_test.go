@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,8 +179,11 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			jm.mu.Lock()
 			_, scan, prepErr := jm.prepareAttachScanLocked(cfg, &runningJob{})
 			jm.mu.Unlock()
-			if scan || prepErr != nil {
-				t.Fatalf("invalid run scan=%v err=%v", scan, prepErr)
+			// A watchable running job with no output store is not a quiet
+			// no-fire: it reports unable-to-scan via the error return (commit
+			// fac0f049f, byte-window output_match scanner).
+			if scan || prepErr == nil || !strings.Contains(prepErr.Error(), "no readable output store") {
+				t.Fatalf("output-less run scan=%v err=%v", scan, prepErr)
 			}
 		case 19:
 			rec := createWatchOutputJob(t, jm)
