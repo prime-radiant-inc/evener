@@ -22,7 +22,7 @@ func TestDelegateControllerNormalSettlementDefersEarlierSteer(t *testing.T) {
 		t.Fatalf("Steer: %v", err)
 	}
 
-	continueRun, plans, err := c.BeginSettlement(lease, nil, delegateSettlementOrdinary)
+	continueRun, plans, err := c.BeginSettlement(lease, nil)
 	if err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestDelegateControllerCommunicateSettlementDefersEarlierSteer(t *testing.T)
 	}
 	packet := delegateControllerReportedPacket("must defer")
 
-	continueRun, plans, err := c.BeginSettlement(lease, &packet, delegateSettlementOrdinary)
+	continueRun, plans, err := c.BeginSettlement(lease, &packet)
 	if err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestDelegateControllerNormalSettlementPreparesMissingTerminal(t *testing.T)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
 
-	continueRun, plans, err := c.BeginSettlement(lease, nil, delegateSettlementOrdinary)
+	continueRun, plans, err := c.BeginSettlement(lease, nil)
 	if err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestDelegateControllerCrashAfterNormalSettlementFinishesPreparedOnce(t *tes
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
-	if _, _, err := c.BeginSettlement(lease, nil, delegateSettlementOrdinary); err != nil {
+	if _, _, err := c.BeginSettlement(lease, nil); err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}
 	if err := c.store.Close(); err != nil {
@@ -105,7 +105,7 @@ func TestDelegateControllerCrashAfterReportedSettlementPreservesPacket(t *testin
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
 	want := delegateControllerReportedPacket("accepted")
-	if _, _, err := c.BeginSettlement(lease, &want, delegateSettlementOrdinary); err != nil {
+	if _, _, err := c.BeginSettlement(lease, &want); err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}
 	if err := c.store.Close(); err != nil {
@@ -134,7 +134,7 @@ func TestDelegateControllerSettlingReportedPacketOverridesLaterRuntimeError(t *t
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
 	wantPacket := delegateControllerReportedPacket("accepted before runtime error")
-	if _, _, err := c.BeginSettlement(lease, &wantPacket, delegateSettlementOrdinary); err != nil {
+	if _, _, err := c.BeginSettlement(lease, &wantPacket); err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}
 	endedAt := time.Unix(250, 0).UTC()
@@ -165,7 +165,7 @@ func TestDelegateControllerSettlingMissingPacketOverridesMisleadingFinish(t *tes
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
-	if _, _, err := c.BeginSettlement(lease, nil, delegateSettlementOrdinary); err != nil {
+	if _, _, err := c.BeginSettlement(lease, nil); err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}
 	endedAt := time.Unix(251, 0).UTC()
@@ -234,7 +234,7 @@ func TestDelegateControllerRestartFinishesEachPreparedPacketShape(t *testing.T) 
 			c, path := newDelegateControllerTestHarness(t, 1, 1)
 			seedDelegateControllerRunning(t, c, "dlg_target", "")
 			lease := delegateLease{delegateID: "dlg_target", generation: 1}
-			if _, _, err := c.BeginSettlement(lease, test.packet, delegateSettlementOrdinary); err != nil {
+			if _, _, err := c.BeginSettlement(lease, test.packet); err != nil {
 				t.Fatalf("BeginSettlement: %v", err)
 			}
 			if err := c.store.Close(); err != nil {
@@ -296,7 +296,7 @@ func TestDelegateControllerTerminalPreparedAppendFailureKeepsRunning(t *testing.
 		t.Fatalf("Close: %v", err)
 	}
 
-	continueRun, plans, err := c.BeginSettlement(delegateLease{delegateID: "dlg_target", generation: 1}, nil, delegateSettlementOrdinary)
+	continueRun, plans, err := c.BeginSettlement(delegateLease{delegateID: "dlg_target", generation: 1}, nil)
 	if err == nil {
 		t.Fatal("BeginSettlement succeeded after store close")
 	}
@@ -314,7 +314,7 @@ func TestDelegateControllerStopOverridesPreparedNormalPacket(t *testing.T) {
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
 	packet := delegateControllerReportedPacket("normal")
-	if _, _, err := c.BeginSettlement(lease, &packet, delegateSettlementOrdinary); err != nil {
+	if _, _, err := c.BeginSettlement(lease, &packet); err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}
 	requestSeq := appendDelegateControllerStopRequest(t, c, "dlg_target")
@@ -337,7 +337,7 @@ func TestDelegateControllerStoppedFinishRemainsStoppingWithDiagnostic(t *testing
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
 	packet := delegateControllerReportedPacket("diagnostic")
-	if _, _, err := c.BeginSettlement(lease, &packet, delegateSettlementOrdinary); err != nil {
+	if _, _, err := c.BeginSettlement(lease, &packet); err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}
 	appendDelegateControllerStopRequest(t, c, "dlg_target")
@@ -355,7 +355,7 @@ func TestDelegateControllerRestartStoppingFinishUsesCanonicalPacket(t *testing.T
 	seedDelegateControllerRunning(t, live, "dlg_live", "")
 	liveLease := delegateLease{delegateID: "dlg_live", generation: 1}
 	liveDiagnostic := delegateControllerReportedPacket("live diagnostic")
-	if _, _, err := live.BeginSettlement(liveLease, &liveDiagnostic, delegateSettlementOrdinary); err != nil {
+	if _, _, err := live.BeginSettlement(liveLease, &liveDiagnostic); err != nil {
 		t.Fatalf("live BeginSettlement: %v", err)
 	}
 	appendDelegateControllerStopRequest(t, live, "dlg_live")
@@ -371,7 +371,7 @@ func TestDelegateControllerRestartStoppingFinishUsesCanonicalPacket(t *testing.T
 	seedDelegateControllerRunning(t, restarting, "dlg_restart", "")
 	restartLease := delegateLease{delegateID: "dlg_restart", generation: 1}
 	restartDiagnostic := delegateControllerReportedPacket("restart diagnostic")
-	if _, _, err := restarting.BeginSettlement(restartLease, &restartDiagnostic, delegateSettlementOrdinary); err != nil {
+	if _, _, err := restarting.BeginSettlement(restartLease, &restartDiagnostic); err != nil {
 		t.Fatalf("restart BeginSettlement: %v", err)
 	}
 	appendDelegateControllerStopRequest(t, restarting, "dlg_restart")
@@ -414,7 +414,7 @@ func TestDelegateControllerStopCompletedClearsPreparedDiagnostic(t *testing.T) {
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
 	packet := delegateControllerReportedPacket("diagnostic")
-	if _, _, err := c.BeginSettlement(lease, &packet, delegateSettlementOrdinary); err != nil {
+	if _, _, err := c.BeginSettlement(lease, &packet); err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}
 	requestSeq := appendDelegateControllerStopRequest(t, c, "dlg_target")
@@ -477,7 +477,7 @@ func TestDelegateControllerOwnerInputWithoutCommunicateFailsMissingTerminal(t *t
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
-	if _, _, err := c.BeginSettlement(lease, nil, delegateSettlementOrdinary); err != nil {
+	if _, _, err := c.BeginSettlement(lease, nil); err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}
 	plans, err := c.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeCompleted})

@@ -94,13 +94,13 @@ func FuzzDelegateConversationTransitions(f *testing.F) {
 
 			case 3:
 				if lease, ok := firstDelegateControllerBinding(c, true); ok {
-					_, _, _ = c.BeginSettlement(lease, nil, delegateSettlementOrdinary)
+					_, _, _ = c.BeginSettlement(lease, nil)
 				}
 
 			case 4:
 				if lease, ok := firstDelegateControllerBinding(c, true); ok {
 					packet := delegateControllerReportedPacket(fmt.Sprintf("report-%d", step))
-					_, _, _ = c.BeginSettlement(lease, &packet, delegateSettlementTerminal)
+					_, _, _ = c.BeginSettlement(lease, &packet)
 				}
 
 			case 5, 6:

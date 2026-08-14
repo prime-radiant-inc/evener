@@ -242,7 +242,7 @@ func TestDelegateResourceRuntime_PendingSteerWinsAtTerminalBoundary(t *testing.T
 		t.Fatalf("Steer: %v", err)
 	}
 	packet := delegateControllerReportedPacket("premature finish")
-	continued, plans, err := c.BeginSettlement(delegateLease{delegateID: "dlg_target", generation: 1}, &packet, delegateSettlementOrdinary)
+	continued, plans, err := c.BeginSettlement(delegateLease{delegateID: "dlg_target", generation: 1}, &packet)
 	if err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestDelegateResourceRuntime_CommunicateSettlesExactlyOnce(t *testing.T) {
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
 	packet := delegateControllerReportedPacket("done")
-	continued, _, err := c.BeginSettlement(lease, &packet, delegateSettlementOrdinary)
+	continued, _, err := c.BeginSettlement(lease, &packet)
 	if err != nil || continued {
 		t.Fatalf("BeginSettlement = continued:%t err:%v", continued, err)
 	}
@@ -287,7 +287,7 @@ func TestDelegateResourceRuntime_CanonicalPacketReusedAcrossFinishReplayAndDeliv
 	})
 	want := cloneDelegateTerminalPacket(*finish.packet)
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
-	if continued, _, err := c.BeginSettlement(lease, finish.packet, delegateSettlementOrdinary); err != nil || continued {
+	if continued, _, err := c.BeginSettlement(lease, finish.packet); err != nil || continued {
 		t.Fatalf("BeginSettlement = continued:%t err:%v", continued, err)
 	}
 	if err := c.store.Close(); err != nil {
@@ -344,8 +344,8 @@ func TestDelegateResourceRuntime_CanonicalPacketReusedAcrossFinishReplayAndDeliv
 			runErr: &budgetExhaustionError{Budget: exhaustedBudgetTurns, Limit: 23, Resumable: false},
 		})
 		lease := delegateLease{delegateID: "dlg_exhausted", generation: 1}
-		if continued, _, err := controller.BeginSettlement(lease, exhausted.packet, delegateSettlementTerminal); err != nil || continued {
-			t.Fatalf("BeginSettlement exhaustion = continued:%t err:%v", continued, err)
+		if _, err := controller.FinishGeneration(lease, exhausted); err != nil {
+			t.Fatalf("FinishGeneration exhaustion: %v", err)
 		}
 		if err := controller.store.Close(); err != nil {
 			t.Fatalf("close exhaustion store: %v", err)
@@ -374,7 +374,7 @@ func TestDelegateResourceRuntime_CanonicalPacketReusedAcrossFinishReplayAndDeliv
 		if len(aggregate.PendingDeliveries) != 1 || !reflect.DeepEqual(aggregate.PendingDeliveries[0].Packet, *exhausted.packet) {
 			t.Fatalf("replayed exhaustion delivery = %#v, want canonical packet %#v", aggregate.PendingDeliveries, exhausted.packet)
 		}
-		assertLastDelegateBatchKinds(t, replayPath, delegatestore.EventDelegateRunFinished, delegatestore.EventDelegateResumabilityClosed)
+		assertLastDelegateBatchKinds(t, replayPath, delegatestore.EventDelegateTerminalPrepared, delegatestore.EventDelegateRunFinished, delegatestore.EventDelegateResumabilityClosed)
 	})
 
 	t.Run("cancellation replay", func(t *testing.T) {
@@ -383,8 +383,8 @@ func TestDelegateResourceRuntime_CanonicalPacketReusedAcrossFinishReplayAndDeliv
 		endedAt := time.Date(2026, 8, 14, 12, 30, 0, 0, time.UTC)
 		cancelled := stableDelegateFinishFromRun(delegateTerminalRunInputs{runErr: context.Canceled, endedAt: endedAt})
 		lease := delegateLease{delegateID: "dlg_cancelled", generation: 1}
-		if continued, _, err := controller.BeginSettlement(lease, cancelled.packet, delegateSettlementTerminal); err != nil || continued {
-			t.Fatalf("BeginSettlement cancellation = continued:%t err:%v", continued, err)
+		if _, err := controller.FinishGeneration(lease, cancelled); err != nil {
+			t.Fatalf("FinishGeneration cancellation: %v", err)
 		}
 		if err := controller.store.Close(); err != nil {
 			t.Fatalf("close cancellation store: %v", err)
@@ -881,12 +881,17 @@ func runStableDelegateInlinePacket(t *testing.T, finish delegateFinish) sendMess
 	}()
 	<-entered
 	lease := delegateLease{delegateID: fixture.delegateID, generation: 1}
-	continued, plans, err := root.delegateController.BeginSettlement(lease, finish.packet, delegateSettlementOrdinary)
-	if err != nil || continued {
-		t.Fatalf("BeginSettlement inline = continued:%t err:%v", continued, err)
-	}
-	if err := root.executeDelegateMutationPlans(plans); err != nil {
-		t.Fatalf("execute settlement plans: %v", err)
+	var plans delegateMutationPlans
+	var err error
+	if finish.outcome == delegatestore.OutcomeCompleted {
+		var continued bool
+		continued, plans, err = root.delegateController.BeginSettlement(lease, finish.packet)
+		if err != nil || continued {
+			t.Fatalf("BeginSettlement inline = continued:%t err:%v", continued, err)
+		}
+		if err := root.executeDelegateMutationPlans(plans); err != nil {
+			t.Fatalf("execute settlement plans: %v", err)
+		}
 	}
 	plans, err = root.delegateController.FinishGeneration(lease, finish)
 	if err != nil {
@@ -1061,7 +1066,7 @@ func TestDelegateResourceRuntime_TurnExhaustionClosesResumabilityAtomically(t *t
 	}
 	assertDelegateExhaustionJSON(t, aggregate.LatestOutcome, string(exhaustedBudgetTurns), 23, false)
 	assertDelegatePacketExhaustionMetadata(t, aggregate.PendingDeliveries[0].Packet, string(exhaustedBudgetTurns), 23, false)
-	assertLastDelegateBatchKinds(t, path, delegatestore.EventDelegateRunFinished, delegatestore.EventDelegateResumabilityClosed)
+	assertLastDelegateBatchKinds(t, path, delegatestore.EventDelegateTerminalPrepared, delegatestore.EventDelegateRunFinished, delegatestore.EventDelegateResumabilityClosed)
 }
 
 func TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsageAndWorktree(t *testing.T) {
@@ -1155,10 +1160,6 @@ func TestDelegateResourceRuntime_StaleGenerationCannotPublishPacket(t *testing.T
 
 func settleDelegateTerminalRun(t *testing.T, c *delegateTreeController, lease delegateLease, finish delegateFinish) {
 	t.Helper()
-	continued, _, err := c.BeginSettlement(lease, finish.packet, delegateSettlementOrdinary)
-	if err != nil || continued {
-		t.Fatalf("BeginSettlement = continued:%t err:%v", continued, err)
-	}
 	if _, err := c.FinishGeneration(lease, finish); err != nil {
 		t.Fatalf("FinishGeneration: %v", err)
 	}

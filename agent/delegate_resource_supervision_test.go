@@ -147,6 +147,18 @@ func TestDelegateResourceSupervision_FatalFailureBeatsPendingSteer(t *testing.T)
 		t.Fatalf("start stable delegate: %v", started.result.Err)
 	}
 	<-entered
+	child := root.subagents.get(fixture.childID)
+	if child == nil || child.sess == nil {
+		t.Fatalf("stable child %q was not tracked", fixture.childID)
+	}
+	phaseBeforeFinish := make(chan delegatestore.Phase, 1)
+	child.sess.cfg.testOnly.subagentAfterFinalStatePublish = func(got *subagent) {
+		got.sess.delegateController.mu.Lock()
+		aggregate := got.sess.delegateController.durable[fixture.delegateID]
+		phase := aggregate.Phase
+		got.sess.delegateController.mu.Unlock()
+		phaseBeforeFinish <- phase
+	}
 	steered := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "accepted before fatal failure", 0)
 	if steered.result.Err != nil || steered.result.Action != "steered" {
 		t.Fatalf("steer stable delegate = %#v", steered.result)
@@ -155,6 +167,9 @@ func TestDelegateResourceSupervision_FatalFailureBeatsPendingSteer(t *testing.T)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	if got := len(adapter.Requests()); got != 1 {
 		t.Fatalf("provider requests after fatal failure = %d, want no steering continuation", got)
+	}
+	if got := <-phaseBeforeFinish; got != delegatestore.PhaseRunning {
+		t.Fatalf("fatal generation phase before atomic finish = %s, want running without a prepared-only state", got)
 	}
 	assertStableSupervisionOutcome(t, root, fixture.delegateID, delegatestore.OutcomeFailed)
 }
@@ -295,6 +310,172 @@ func TestDelegateResourceSupervision_PendingSteerPrecedesAutoNudge(t *testing.T)
 	if !requestMessagesContain(requests[4], "priority steering") {
 		t.Fatalf("steering continuation omitted accepted steer: %#v", requests[4].Messages)
 	}
+}
+
+func TestDelegateResourceSupervision_LateOrdinarySteerPreservesOwnedWorkForContinuation(t *testing.T) {
+	enteredInitialRequest := make(chan struct{})
+	releaseInitialRequest := make(chan struct{})
+	ownedWorkStopped := make(chan struct{}, 1)
+	stoppedBeforeContinuation := make(chan bool, 1)
+	releaseContinuation := make(chan struct{})
+	lateSteer := make(chan sendMessageResult, 1)
+	var child *subagent
+	var ownedShell *runningJob
+	bare := func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("bare text without communicate")}
+	}
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			close(enteredInitialRequest)
+			<-releaseInitialRequest
+			return bare(llm.Request{})
+		},
+		bare,
+		bare,
+		bare,
+		bare,
+		bare,
+		bare,
+		bare,
+		func(llm.Request) llm.Response {
+			select {
+			case <-ownedWorkStopped:
+				stoppedBeforeContinuation <- true
+			default:
+				stoppedBeforeContinuation <- false
+			}
+			<-releaseContinuation
+			return finalResponse("continued after late nudge steering")
+		},
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
+	if started.result.Err != nil {
+		t.Fatalf("start stable delegate: %v", started.result.Err)
+	}
+	<-enteredInitialRequest
+	child = root.subagents.get(fixture.childID)
+	if child == nil || child.sess == nil || child.sess.jobManager == nil {
+		t.Fatalf("stable child %q has no managed-work runtime", fixture.childID)
+	}
+	ownedShell = &runningJob{
+		rec: &jobstore.JobRecord{
+			JobID:          "job_late_nudge_owned_shell",
+			Type:           jobstore.JobShell,
+			Status:         jobstore.StatusRunning,
+			OwnerSessionID: child.sess.ID(),
+		},
+		signal: func() {
+			ownedWorkStopped <- struct{}{}
+			ownedShell.closeDone()
+		},
+		done:           make(chan struct{}),
+		durableStarted: true,
+	}
+	child.sess.jobManager.mu.Lock()
+	child.sess.jobManager.running[ownedShell.rec.JobID] = ownedShell
+	child.sess.jobManager.mu.Unlock()
+	t.Cleanup(func() {
+		child.sess.jobManager.mu.Lock()
+		delete(child.sess.jobManager.running, ownedShell.rec.JobID)
+		child.sess.jobManager.mu.Unlock()
+		ownedShell.closeDone()
+	})
+	var steerOnce sync.Once
+	child.sess.cfg.testOnly.subagentBeforeSettlement = func(*subagent) {
+		steerOnce.Do(func() {
+			lateSteer <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "late steering at ordinary settlement", 0).result
+		})
+	}
+	close(releaseInitialRequest)
+	child.mu.Lock()
+	done := child.done
+	child.mu.Unlock()
+	if steered := <-lateSteer; steered.Err != nil || steered.Action != "steered" {
+		t.Fatalf("late ordinary steer = %#v", steered)
+	}
+	var stopped bool
+	select {
+	case stopped = <-stoppedBeforeContinuation:
+		child.sess.jobManager.mu.Lock()
+		delete(child.sess.jobManager.running, ownedShell.rec.JobID)
+		child.sess.jobManager.mu.Unlock()
+		ownedShell.closeDone()
+		close(releaseContinuation)
+		<-done
+	case <-done:
+		close(releaseContinuation)
+		t.Fatal("ordinary missing-terminal path settled without honoring late steering")
+	}
+	if stopped {
+		t.Fatal("ordinary missing-terminal path stopped owned work before honoring late steering")
+	}
+	requests := fixture.adapter.Requests()
+	if len(requests) != 9 || !requestMessagesContain(requests[8], "late steering at ordinary settlement") {
+		t.Fatalf("late nudge continuation requests = %d, final history %#v", len(requests), requests[len(requests)-1].Messages)
+	}
+}
+
+func TestDelegateResourceSupervision_LateCancellationBeatsSettlementSteer(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	continued := make(chan struct{})
+	lateCancel := make(chan sendMessageResult, 1)
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			close(entered)
+			<-release
+			return finalResponse("result before late cancellation")
+		},
+		func(llm.Request) llm.Response {
+			return finalResponse("unexpected continuation after late cancellation")
+		},
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
+	if started.result.Err != nil {
+		t.Fatalf("start stable delegate: %v", started.result.Err)
+	}
+	<-entered
+	child := root.subagents.get(fixture.childID)
+	if child == nil || child.sess == nil {
+		t.Fatalf("stable child %q was not tracked", fixture.childID)
+	}
+	var cancelOnce sync.Once
+	child.sess.cfg.testOnly.subagentRunIteration = func(_ *subagent, iteration int) {
+		if iteration > 1 {
+			select {
+			case <-continued:
+			default:
+				close(continued)
+			}
+		}
+	}
+	child.sess.cfg.testOnly.subagentBeforeSettlement = func(got *subagent) {
+		cancelOnce.Do(func() {
+			lateCancel <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "steer admitted at cancellation boundary", 0).result
+			got.mu.Lock()
+			got.cancelRequested = true
+			cancel := got.cancel
+			got.mu.Unlock()
+			if cancel != nil {
+				cancel()
+			}
+		})
+	}
+	close(release)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	if steered := <-lateCancel; steered.Err != nil || steered.Action != "steered" {
+		t.Fatalf("late cancellation steer = %#v", steered)
+	}
+	select {
+	case <-continued:
+		t.Fatal("cancellation admitted at the settlement boundary entered a steering continuation")
+	default:
+	}
+	assertStableSupervisionOutcome(t, root, fixture.delegateID, delegatestore.OutcomeCancelled)
 }
 
 func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) {

@@ -404,7 +404,7 @@ func TestDelegateControllerRestartRepairsPreparedTerminalOnce(t *testing.T) {
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	packet := delegateControllerReportedPacket("prepared")
-	if _, _, err := c.BeginSettlement(delegateLease{delegateID: "dlg_target", generation: 1}, &packet, delegateSettlementOrdinary); err != nil {
+	if _, _, err := c.BeginSettlement(delegateLease{delegateID: "dlg_target", generation: 1}, &packet); err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}
 	restarted := reopenDelegateController(t, c, path)

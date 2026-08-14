@@ -270,6 +270,9 @@ type testConfig struct {
 	// subagentRunIteration observes each production subagent input iteration.
 	// Tests use it only as a deterministic barrier around continuation decisions.
 	subagentRunIteration func(*subagent, int)
+	// subagentBeforeSettlement observes the final unlocked boundary before a
+	// stable generation enters controller settlement.
+	subagentBeforeSettlement func(*subagent)
 	// subagentAfterFinalStatePublish observes the interval after a retained child
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)

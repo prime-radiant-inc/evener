@@ -100,6 +100,7 @@ type subagent struct {
 	nudgeEnabled          bool                      // true for default subagents that should be nudged to communicate
 	cancel                context.CancelFunc        // cancels the current run's context
 	cancelRequested       bool                      // set by parent stop so finalize maps a context.Canceled run to cancelled
+	settlementClaimed     bool                      // cancellation admission closes after the run's final pre-settlement check
 	agentType             string                    // plugin agent type name; empty for default subagents
 	createdAt             time.Time                 // set once at spawn; never reset on resume
 	startedAt             time.Time                 // set at spawn; re-stamped at each idle-resume
@@ -1375,6 +1376,7 @@ func resetSubagentForRunLockedFromWatch(sub *subagent, cancel context.CancelFunc
 	sub.runFromWatch = fromWatch
 	sub.cancel = cancel
 	sub.cancelRequested = false
+	sub.settlementClaimed = false
 	sub.startedAt = startedAt
 	sub.endedAt = nil
 	sub.closed = false
@@ -1399,6 +1401,10 @@ func (s *Session) cancelAgent(agentID string) (any, error) {
 	if !sub.running {
 		sub.mu.Unlock()
 		return "", fmt.Errorf("agent %s is not running", agentID)
+	}
+	if sub.settlementClaimed {
+		sub.mu.Unlock()
+		return "", fmt.Errorf("agent %s is completing its current run", agentID)
 	}
 	sub.cancelRequested = true
 	cancel := sub.cancel
@@ -1523,18 +1529,30 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				res = drained
 			}
 		}
+		if observer := a.sess.cfg.testOnly.subagentBeforeSettlement; observer != nil {
+			observer(a)
+		}
 		a.mu.Lock()
 		cancelRequested = a.cancelRequested
+		if stableRun && a.sess.delegateController != nil {
+			a.settlementClaimed = true
+		}
 		a.mu.Unlock()
+		if cancelRequested && err == nil {
+			err = context.Canceled
+		}
 		settlementMode = delegateSettlementModeForRun(err, cancelRequested)
-		if err != nil && (!stableRun || stableDelegateFatalRun(err)) {
+		if stableRun && settlementMode == delegateSettlementTerminal && stableDelegateFatalRun(err) {
 			a.gateFatalRun(err)
 		}
 		finish = a.stableDelegateFinish(res, err)
 		if !stableRun || a.sess.delegateController == nil {
 			break
 		}
-		continueRun, plans, settleErr := a.sess.delegateController.BeginSettlement(lease, finish.packet, settlementMode)
+		if settlementMode == delegateSettlementTerminal {
+			break
+		}
+		continueRun, plans, settleErr := a.sess.delegateController.BeginSettlement(lease, finish.packet)
 		if executeErr := a.sess.executeDelegateMutationPlans(plans); settleErr == nil {
 			settleErr = executeErr
 		}
@@ -1543,9 +1561,15 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				err = errors.Join(err, settleErr)
 				finish = a.stableDelegateFinish(res, err)
 			}
+			if err != nil {
+				a.gateFatalRun(err)
+			}
 			break
 		}
 		if !continueRun {
+			if err != nil {
+				a.gateFatalRun(err)
+			}
 			break
 		}
 		if restoreParentDriveNotify != nil {
@@ -1553,10 +1577,14 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		}
 		a.mu.Lock()
 		a.finalizing = false
+		a.settlementClaimed = false
 		a.mu.Unlock()
 		input = "Continue with the newly received steering before settling."
 		kind = EntryContinuation
 		runStartedFromWatch = false
+	}
+	if !stableRun && err != nil {
+		a.gateFatalRun(err)
 	}
 	exhaustion, budgetExhausted := budgetExhaustionFromError(err)
 
@@ -1636,7 +1664,7 @@ func delegateSettlementModeForRun(err error, cancelRequested bool) delegateSettl
 }
 
 func stableDelegateFatalRun(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted) {
 		return false
 	}
 	_, exhausted := budgetExhaustionFromError(err)

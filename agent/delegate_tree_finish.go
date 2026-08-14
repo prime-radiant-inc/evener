@@ -50,14 +50,14 @@ func (c *delegateTreeController) SupervisionBoundary(lease delegateLease, mode d
 	return delegateSupervisionProceed, nil
 }
 
-func (c *delegateTreeController) BeginSettlement(lease delegateLease, supplied *delegatestore.TerminalPacket, mode delegateSettlementMode) (bool, delegateMutationPlans, error) {
+func (c *delegateTreeController) BeginSettlement(lease delegateLease, supplied *delegatestore.TerminalPacket) (bool, delegateMutationPlans, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
 	if err != nil {
 		return false, delegateMutationPlans{}, err
 	}
-	if len(live.pendingSteers) != 0 && mode == delegateSettlementOrdinary {
+	if len(live.pendingSteers) != 0 {
 		return true, delegateMutationPlans{}, nil
 	}
 	packet := delegateMissingTerminalPacket()
