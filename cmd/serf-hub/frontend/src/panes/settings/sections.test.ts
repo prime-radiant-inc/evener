@@ -9,10 +9,12 @@ import {
 } from "./sections";
 
 // Section inventory verified against templates/partials/settings.html:13-31
-// (16 exact) - see the wave-7 floor doc's own citation of that range.
+// (16 exact) - see the wave-7 floor doc's own citation of that range - plus
+// one section with no legacy counterpart, "about" (see sections.ts's own
+// doc comment).
 
-test("has exactly 16 sections", () => {
-  expect(SETTINGS_SECTIONS).toHaveLength(16);
+test("has exactly 17 sections", () => {
+  expect(SETTINGS_SECTIONS).toHaveLength(17);
 });
 
 test("every section id is unique", () => {
@@ -44,10 +46,14 @@ test('the "Extensions" cluster has exactly these 4 sections, in order, right aft
   expect(SETTINGS_SECTIONS.slice(10, 14)).toEqual(cluster);
 });
 
-test('the "Daemon" cluster has exactly these 2 sections, in order, last', () => {
+test('the "Daemon" cluster has exactly these 3 sections, in order, last', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "daemon");
-  expect(cluster.map((s) => s.label)).toEqual(["Hub", "Storage"]);
-  expect(SETTINGS_SECTIONS.slice(14, 16)).toEqual(cluster);
+  expect(cluster.map((s) => s.label)).toEqual(["Hub", "Storage", "About"]);
+  expect(SETTINGS_SECTIONS.slice(14, 17)).toEqual(cluster);
+});
+
+test('"About" is the very last section overall', () => {
+  expect(SETTINGS_SECTIONS[SETTINGS_SECTIONS.length - 1]?.label).toBe("About");
 });
 
 test("the credentials section's id is exactly credentials (the /credentials alias resolves to this id)", () => {

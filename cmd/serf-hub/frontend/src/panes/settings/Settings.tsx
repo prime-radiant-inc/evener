@@ -10,6 +10,7 @@ import { CloseIcon } from "../../widgets/dialog/CloseIcon";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { SettingsNav } from "./SettingsNav";
 import { DEFAULT_SECTION_ID, settingsSectionLabel } from "./sections";
+import { AboutSection } from "./sections/about";
 import { AgentsSection } from "./sections/agents";
 import { CredentialsSection } from "./sections/credentials/CredentialsSection";
 import { DisplaySection } from "./sections/display";
@@ -76,6 +77,7 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   notifications: NotificationsSection,
   hub: HubSection,
   storage: StorageSection,
+  about: AboutSection,
 };
 
 /**
