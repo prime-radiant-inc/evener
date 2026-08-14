@@ -526,18 +526,12 @@ func (s *Session) stopDelegateSubtreeWithReceipts(childSession *Session) ([]*job
 	if jm == nil || jm.store == nil {
 		return stopped, receipts, stopErr
 	}
-	for _, jobID := range jm.runningJobIDs() {
-		rec, receipt, err := jm.stopWithReceipt(jobID)
-		if err != nil {
-			stopErr = errors.Join(stopErr, err)
-			continue
-		}
-		if rec != nil {
-			stopped = append(stopped, rec)
-		}
-		if receipt != nil {
-			receipts = append(receipts, *receipt)
-		}
+	managerStopped, managerReceipts, err := jm.stopRunningWithReceipts()
+	stopped = append(stopped, managerStopped...)
+	receipts = append(receipts, managerReceipts...)
+	stopErr = errors.Join(stopErr, err)
+	if jm.stopReceiptsAfterCapture != nil {
+		jm.stopReceiptsAfterCapture()
 	}
 	return stopped, receipts, stopErr
 }

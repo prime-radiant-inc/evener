@@ -724,7 +724,7 @@ func TestDelegateResourceSupervision_FatalCleanupFailureIsObservable(t *testing.
 	}
 }
 
-func TestDelegateResourceSupervision_RootCloseAbandonmentIsCleanupFailure(t *testing.T) {
+func TestDelegateResourceSupervision_RootCloseBeforeReceiptCaptureIsCleanupFailure(t *testing.T) {
 	clock := agenttest.NewFakeClock()
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal close-abandon turn", nil, nil)
 	entered := make(chan struct{})
@@ -766,28 +766,27 @@ func TestDelegateResourceSupervision_RootCloseAbandonmentIsCleanupFailure(t *tes
 	if ownedShell.JobID == "" || !ownedShell.RunningInBackground {
 		t.Fatalf("start close-abandon owned shell = %#v", ownedShell)
 	}
-	joinStarted := make(chan struct{})
-	var joinOnce sync.Once
 	jm := sub.sess.jobManager
 	jm.closeGrace = time.Second
-	jm.stopReceiptBeforeWait = func(jobID string) {
-		if jobID == ownedShell.JobID {
-			joinOnce.Do(func() { close(joinStarted) })
-		}
+	var closeErr error
+	var closeOnce sync.Once
+	jm.stopReceiptsAfterCapture = func() {
+		closeOnce.Do(func() {
+			blockedBeforeClose := clock.BlockedCount()
+			closeResult := make(chan error, 1)
+			go func() {
+				closeResult <- jm.closeRuntimeState()
+			}()
+			clock.BlockUntil(blockedBeforeClose + 1)
+			clock.Advance(time.Second)
+			closeErr = <-closeResult
+		})
 	}
 	close(release)
-	<-joinStarted
-	blockedBeforeClose := clock.BlockedCount()
-	closeResult := make(chan error, 1)
-	go func() {
-		closeResult <- jm.closeRuntimeState()
-	}()
-	clock.BlockUntil(blockedBeforeClose + 1)
-	clock.Advance(time.Second)
-	if err := <-closeResult; err == nil || !strings.Contains(err.Error(), "timed out waiting for running jobs") {
-		t.Fatalf("close runtime result = %v, want bounded running-job timeout", err)
-	}
 	<-finalStatePublished
+	if closeErr == nil || !strings.Contains(closeErr.Error(), "timed out waiting for running jobs") {
+		t.Fatalf("close runtime result = %v, want bounded running-job timeout", closeErr)
+	}
 	select {
 	case <-executor.waitReturned:
 		t.Fatal("blocked executor Wait returned before the test released it")

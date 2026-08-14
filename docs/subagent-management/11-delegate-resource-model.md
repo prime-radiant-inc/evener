@@ -1577,15 +1577,18 @@ the caller's direct stable delegate handle under the existing authorization
 rule; stable lineage does not synthesize a delegate parent JobRecord.
 
 Failed delegate finalization captures each owned job's private completion
-receipt under that job manager's lock before signalling it. It signals the
-entire live subtree before waiting, holds no job-manager or Session lock while
-joining, and samples terminal worktree evidence only after every accepted stop
-has reached its exact durable terminal boundary. This join belongs only to
-delegate finalization; ordinary job_stop keeps its established nonblocking
-request semantics. Closing a process receipt during root-close abandonment is
-not durable terminal completion: the join returns an exact cleanup failure for
-that job rather than treating teardown release as proof that process Wait and
-terminal persistence finished.
+receipt under that job manager's lock before signalling it. A manager enumerates
+its durably started runs, captures their exact receipts, and accepts their stops
+in one critical section, so finalization or abandonment cannot fall between an
+ID snapshot and receipt capture. It signals the entire live subtree before
+waiting, holds no job-manager or Session lock while joining, and samples
+terminal worktree evidence only after every accepted stop has reached its exact
+durable terminal boundary. This join belongs only to delegate finalization;
+ordinary job_stop keeps its established nonblocking request semantics. Closing
+a process receipt during root-close abandonment is not durable terminal
+completion: the join returns an exact cleanup failure for that job rather than
+treating teardown release as proof that process Wait and terminal persistence
+finished.
 
 Terminal attention markup follows the same identity split. Shell completion
 retains `<job-notification job_id="job_..." job_type="shell">`. Delegate owner

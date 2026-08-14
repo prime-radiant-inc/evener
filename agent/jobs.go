@@ -157,7 +157,10 @@ type jobManager struct {
 	// It is nil in production and exists so concurrency tests can release an
 	// asynchronously terminating shell only after the exact receipt is awaited.
 	stopReceiptBeforeWait func(string)
-	clock                 clock.Clock
+	// stopReceiptsAfterCapture observes the subtree-stop boundary after exact
+	// live receipts are captured and before they are consumed. Nil in production.
+	stopReceiptsAfterCapture func()
+	clock                    clock.Clock
 	// closeGrace bounds how long closeRuntimeState waits for each still-running
 	// job to finalize before abandoning it. Seeded from defaultCloseGrace at
 	// construction so tests can shrink the graceful-shutdown window.
@@ -1460,10 +1463,7 @@ func (jm *jobManager) outputPathForJob(rec *jobstore.JobRecord, jobID string) st
 	return filepath.Join(jm.dir, "jobs", jobID+".log")
 }
 
-// runningJobIDs returns a snapshot of the durably-started running job IDs. The
-// snapshot is taken under jm.mu and the lock is released before the caller acts
-// on it, so the stop cascade never holds a job-manager lock while it stops jobs
-// or recurses into descendant stores (the leaf-lock discipline of the live walk).
+// runningJobIDs returns a snapshot of the durably-started running job IDs.
 func (jm *jobManager) runningJobIDs() []string {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
@@ -1504,6 +1504,57 @@ func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 	return rec, err
 }
 
+func (jm *jobManager) stopRunningJobLocked(jobID string, run *runningJob) (*jobstore.JobRecord, *jobStopReceipt, func(), error) {
+	rec := cloneJobRecord(run.rec)
+	receipt := &jobStopReceipt{manager: jm, jobID: jobID, run: run}
+	if run.finalize != nil || run.terminal != nil || run.rec.Status.IsTerminal() {
+		return rec, receipt, nil, nil
+	}
+	if err := jm.appendDelegateStopGateForRecord(rec); err != nil {
+		return nil, nil, nil, err
+	}
+	run.stopStatus = jobstore.StatusCancelled
+	run.stopReason = "stopped_by_parent"
+	rec.Status = run.stopStatus
+	rec.Reason = run.stopReason
+	return rec, receipt, run.signal, nil
+}
+
+// stopRunningWithReceipts captures every durably-started run and accepts its
+// stop while one jm.mu critical section excludes finalization and abandonment.
+// Signal callbacks run only after the lock is released.
+func (jm *jobManager) stopRunningWithReceipts() ([]*jobstore.JobRecord, []jobStopReceipt, error) {
+	jm.mu.Lock()
+	var stopped []*jobstore.JobRecord
+	var receipts []jobStopReceipt
+	var signals []func()
+	var stopErr error
+	for jobID, run := range jm.running {
+		if !run.durableStarted {
+			continue
+		}
+		rec, receipt, signal, err := jm.stopRunningJobLocked(jobID, run)
+		if err != nil {
+			stopErr = errors.Join(stopErr, err)
+			continue
+		}
+		if rec != nil {
+			stopped = append(stopped, rec)
+		}
+		if receipt != nil {
+			receipts = append(receipts, *receipt)
+		}
+		if signal != nil {
+			signals = append(signals, signal)
+		}
+	}
+	jm.mu.Unlock()
+	for _, signal := range signals {
+		signal()
+	}
+	return stopped, receipts, stopErr
+}
+
 // stopWithReceipt preserves stop's nonblocking contract while giving the
 // delegate fatal-finalization path an exact run receipt to join. Callers must
 // wait only after all subtree jobs have been signalled and no manager or
@@ -1512,22 +1563,11 @@ func (jm *jobManager) stopWithReceipt(jobID string) (*jobstore.JobRecord, *jobSt
 	jm.mu.Lock()
 	run := jm.running[jobID]
 	if run != nil {
-		rec := cloneJobRecord(run.rec)
-		receipt := &jobStopReceipt{manager: jm, jobID: jobID, run: run}
-		if run.finalize != nil || run.terminal != nil || run.rec.Status.IsTerminal() {
-			jm.mu.Unlock()
-			return rec, receipt, nil
-		}
-		if err := jm.appendDelegateStopGateForRecord(rec); err != nil {
-			jm.mu.Unlock()
+		rec, receipt, signal, err := jm.stopRunningJobLocked(jobID, run)
+		jm.mu.Unlock()
+		if err != nil {
 			return nil, nil, err
 		}
-		run.stopStatus = jobstore.StatusCancelled
-		run.stopReason = "stopped_by_parent"
-		signal := run.signal
-		rec.Status = run.stopStatus
-		rec.Reason = run.stopReason
-		jm.mu.Unlock()
 		if signal != nil {
 			signal()
 		}
