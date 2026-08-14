@@ -1019,7 +1019,11 @@ func assertRegisteredDelegateCreationMaxWaitRejected(t *testing.T, result toolde
 	if !result.IsError {
 		t.Fatalf("registered delegate accepted creation max_wait_ms: %s", result.Output)
 	}
-	for _, want := range []string{"additionalProperties", "max_wait_ms", "not allowed"} {
+	const rejectionPrefix = "tool args schema validation failed:"
+	if !strings.HasPrefix(result.Output, rejectionPrefix) {
+		t.Fatalf("registered delegate error = %q, want prefix %q", result.Output, rejectionPrefix)
+	}
+	for _, want := range []string{"additionalProperties", "max_wait_ms"} {
 		if !strings.Contains(result.Output, want) {
 			t.Fatalf("registered delegate error = %q, want schema rejection containing %q", result.Output, want)
 		}

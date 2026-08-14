@@ -587,13 +587,35 @@ step 4, after applying child-specific turn, agent, effort, MCP, and sandbox
 decisions. Stable child construction starts from that snapshot and overlays
 only process-local engine dependencies, callbacks, and tree linkage. The live
 parent configuration is not a post-commit source for model-visible child
-semantics.
+semantics. Config is the sole durable authority for the child agent name and
+reasoning effort. Its sandbox mode and network fields are the configuration
+projection of the descriptor's richer Sandbox execution-policy snapshot; the
+durable fold rejects any disagreement between them.
+
+TaskTemplates stores a copy of every template in the selected named agent's
+ordered workflow, including each title, prompt, reasoning effort, type, and
+insertion directive. Stable construction populates the child task store from
+that complete committed slice. Registered delegate creation supplies no parent
+task templates, preserving the existing child-workflow behavior without
+consulting the live agent registry after commit.
+
+ToolNameCeiling stores the sorted, unique, pre-commit ceiling derived from the
+effective parent registry, named-agent policy, watch and delegation grants,
+isolation restrictions, and result-tool policy. It is not a promise that every
+name can be constructed by the child: parent runtime or MCP-shaped tools may be
+absent there. Child construction applies the final intersection between its
+fully built registry and this ceiling before caching the provider-facing tool
+surface. The ceiling is never widened by intrinsic child tools and always
+contains Config's effective result tool.
 
 When Config.ShareTasksWithChildren is enabled, the descriptor also records
 SharedTaskStoreOwnerSessionID. Live construction may attach the current shared
 TaskStore pointer only when that owner identity matches. Cold restoration must
 resolve this owner key to the existing shared store before constructing the
 child; creating a separate child store would fork the committed task history.
+Cold restoration must likewise reconstruct from the committed effective Config,
+complete TaskTemplates, and ToolNameCeiling rather than live parent or plugin
+semantics.
 
 ### Start an idle delegate
 
@@ -1183,8 +1205,10 @@ The durable fold retains:
 - stable parent delegate ID or root owner;
 - child Session ID and transcript ref;
 - original task/description and agent type;
-- model/profile/tool policy and result schema;
-- sandbox, worktree, isolation, and restore configuration;
+- model/profile, effective Config, complete task templates, tool-name ceiling,
+  and result schema;
+- the rich sandbox execution snapshot, its matching Config projection,
+  worktree, isolation, and restore configuration;
 - delegation allowance and public visibility metadata;
 - per-delegate public projection revision, deterministically incremented by
   every applied event that changes that delegate's public snapshot;
@@ -1458,6 +1482,8 @@ The stable delegate descriptor stores the inputs required to restore the same
 execution policy. Existing rules remain:
 
 - a child cannot widen its parent's effective tool or sandbox authority;
+- the rich Sandbox snapshot is canonical for full execution policy, while its
+  mode and network must exactly match the effective Config projection;
 - sandbox policy is re-resolved from persisted inputs and current host facts;
 - a worktree delegate resumes in its original lane only when the recorded lane
   and revision policy remain valid;
