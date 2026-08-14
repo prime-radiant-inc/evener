@@ -64,7 +64,7 @@ func seed100ToolsRangeA(t *testing.T) {
 		TestDecodeDelegateArgs_SandboxNetMalformed,
 		TestDelegateSendNegativeBlockTimeoutDoesNotStart,
 		TestDelegateSendMaxWaitMSDecodeTable,
-		TestDelegateAndDelegateSendAcceptZeroMaxWaitMS,
+		TestMaxWaitMSDecoders,
 		TestJobWatchParentSourceRequiresGrant,
 		TestJobWatchParentSourceInstallsOnParentWithChildReceiver,
 		TestJobWatchParentSourcePublicClearRoutesToParent,
