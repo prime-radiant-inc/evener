@@ -203,10 +203,13 @@ func TestSandboxReprovisionAfterCleanup(t *testing.T) {
 		t.Fatalf("first session tmp must exist: %v", err)
 	}
 
-	// The old session's Close() disposes the SHARED env (the /clear scenario).
+	// The old session's Close() releases the SHARED env's lease but RETAINS
+	// the scratch dir on disk for human handoff (6190f9d46, "retain delegate
+	// scratch for handoff") - the /clear scenario must not destroy artifacts
+	// a person may still want.
 	env.Cleanup()
-	if _, err := os.Stat(tmp1); err == nil {
-		t.Error("Cleanup must dispose the first session tmp")
+	if _, err := os.Stat(tmp1); err != nil {
+		t.Errorf("first session tmp must be retained after Cleanup (handoff contract): %v", err)
 	}
 
 	// The /clear fix: re-provisioning rebuilds an enforced env with a FRESH tmp.

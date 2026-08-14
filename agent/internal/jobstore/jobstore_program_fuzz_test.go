@@ -577,19 +577,22 @@ func jcpOutputErrorPaths(t *testing.T, root string) {
 	}
 	_ = pruneFile.Close()
 
+	// Prune no longer truncates or rewrites through the old handle: the tail is
+	// staged in a sibling file and renamed over the output (commit 0d9b0fb23,
+	// "Replace the output tail atomically during prune"). The old handle only
+	// stats, seeks/reads the tail and the boundary byte, and is closed after the
+	// replacement; the staging file's open/write/sync/rename failures are
+	// exercised at the fs boundary by jcpFaultOutputPrune's sweep.
 	for _, test := range []struct {
 		label string
 		file  *jcpHookFile
 	}{
 		{"prune stat", &jcpHookFile{statErr: jcpInjectedErr}},
 		{"prune seek tail", &jcpHookFile{seekErr: jcpInjectedErr, seekFailAt: 1}},
-		{"prune read tail", &jcpHookFile{readErr: jcpInjectedErr}},
-		{"prune truncate", &jcpHookFile{truncateErr: jcpInjectedErr, truncateFailAt: 1}},
-		{"prune seek rewrite", &jcpHookFile{seekErr: jcpInjectedErr, seekFailAt: 2}},
-		{"prune rewrite", &jcpHookFile{writeErr: jcpInjectedErr}},
-		{"prune short rewrite", &jcpHookFile{shortWrite: true}},
-		{"prune trim", &jcpHookFile{truncateErr: jcpInjectedErr, truncateFailAt: 2}},
-		{"prune seek eof", &jcpHookFile{seekErr: jcpInjectedErr, seekFailAt: 3}},
+		{"prune read tail", &jcpHookFile{readErr: jcpInjectedErr, readFailAt: 1}},
+		{"prune seek boundary", &jcpHookFile{seekErr: jcpInjectedErr, seekFailAt: 2}},
+		{"prune read boundary", &jcpHookFile{readErr: jcpInjectedErr, readFailAt: 2}},
+		{"prune close replaced", &jcpHookFile{closeErr: jcpInjectedErr}},
 	} {
 		jcpRequireError(t, test.label, jcpPruneWithHook(t, test.file))
 	}
@@ -1189,12 +1192,17 @@ func jcpFaultOutputPrune(t *testing.T) {
 		}
 		return o.Close()
 	})
+	// Prune stages the retained tail in a sibling file, fsyncs it, and renames
+	// it over the output (commit 0d9b0fb23, "Replace the output tail atomically
+	// during prune"); the in-place truncate/trim arms are gone. The close of the
+	// replaced handle is not swept because fault.FS does not instrument Close.
 	for _, arm := range []string{
 		"jobstore: seek output prune tail",
 		"jobstore: read output prune tail",
-		"jobstore: truncate output",
+		"jobstore: open output tail rewrite",
 		"jobstore: rewrite output tail",
-		"jobstore: trim output tail",
+		"jobstore: sync output tail rewrite",
+		"jobstore: replace output with retained tail",
 	} {
 		jcpRequireFaultArm(t, errs, arm)
 	}
@@ -1373,8 +1381,10 @@ type jcpHookFile struct {
 	closeErr        error
 	shortWrite      bool
 	seekFailAt      int
+	readFailAt      int
 	truncateFailAt  int
 	seekCalls       int
+	readCalls       int
 	truncateCalls   int
 }
 
@@ -1386,7 +1396,8 @@ func (f *jcpHookFile) Stat() (os.FileInfo, error) {
 }
 
 func (f *jcpHookFile) Read(p []byte) (int, error) {
-	if f.readErr != nil {
+	f.readCalls++
+	if f.readErr != nil && (f.readFailAt == 0 || f.readCalls >= f.readFailAt) {
 		return 0, f.readErr
 	}
 	n, err := f.File.Read(p)

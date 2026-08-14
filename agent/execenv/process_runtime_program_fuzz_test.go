@@ -242,9 +242,15 @@ func (c *processRuntimeCommand) Kill() {
 	c.doneOnce.Do(func() { close(c.terminated) })
 }
 
-func (c *processRuntimeCommand) appendTrace(root string) {
+func (c *processRuntimeCommand) appendTrace(root string, scratch map[string]string) {
 	env := append([]string(nil), c.config.Env...)
 	for i := range env {
+		// Scratch dirs are fresh random paths per environment (commit
+		// bf79673f5: every spawn exports SERF_SCRATCH_DIR/TMPDIR), so they must
+		// be normalized like root for the determinism oracle.
+		for dir, placeholder := range scratch {
+			env[i] = strings.ReplaceAll(env[i], dir, placeholder)
+		}
 		env[i] = strings.ReplaceAll(env[i], root, "$ROOT")
 	}
 	sort.Strings(env)
@@ -527,10 +533,33 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 
 	processRuntimeCheckSystemAdapter(t)
 	factory.assertConsumed()
+	// Every spawn exports the lazily provisioned per-session scratch dir as
+	// SERF_SCRATCH_DIR and TMPDIR under every env policy (commit bf79673f5,
+	// "feat(execenv): preserve developer PATH and always export session scratch
+	// vars"). SessionScratchDir reports it without provisioning; the spawns
+	// above already provisioned it. A WithWorkingDirectory clone does not
+	// inherit the parent's scratch: it provisions its own on first use.
+	scratch := env.SessionScratchDir()
+	childScratch := child.SessionScratchDir()
+	if scratch == "" || childScratch == "" || childScratch == scratch {
+		t.Fatalf("session scratch dirs = %q / child %q, want distinct nonempty", scratch, childScratch)
+	}
+	for _, name := range []string{"argv-none", "argv-default", "argv-all", "argv-core"} {
+		processRuntimeAssertEnv(t, factory.command(name).config.Env, map[string]string{
+			"SERF_SCRATCH_DIR": scratch,
+			"TMPDIR":           scratch,
+		}, nil)
+	}
+	processRuntimeAssertEnv(t, factory.command("child-argv").config.Env, map[string]string{
+		"SERF_SCRATCH_DIR": childScratch,
+		"TMPDIR":           childScratch,
+	}, nil)
+	scratchPlaceholders := map[string]string{scratch: "$SCRATCH", childScratch: "$CHILD_SCRATCH"}
 	for _, command := range factory.byName {
-		command.appendTrace(root)
+		command.appendTrace(root, scratchPlaceholders)
 	}
 	sort.Slice(trace.Commands, func(i, j int) bool { return trace.Commands[i].Name < trace.Commands[j].Name })
+	child.Cleanup()
 	env.Cleanup()
 	env.DisposeSandboxScratch()
 	return trace
