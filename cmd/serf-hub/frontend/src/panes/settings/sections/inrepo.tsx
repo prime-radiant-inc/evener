@@ -11,7 +11,7 @@
 // this settings cluster, this field intentionally gets no directory-picker
 // assist (parity floor's own note - matches the legacy exactly).
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
-import { errorText } from "../../../protocol/errors";
+import { friendlyErrorMessage } from "../../../protocol/errors";
 import type { LaunchConfigResolved, RepoLaunchConfigStatus } from "../../../protocol/types.gen";
 import { launchConfigStore } from "../../../stores/launchConfig";
 import { Button, FormRow, Input, Loader } from "../../../widgets";
@@ -65,7 +65,7 @@ export function InRepoSection(_props: InRepoSectionProps) {
       const resolved: LaunchConfigResolved = await launchConfigStore.getState().resolve(trimmed);
       setStatus({ phase: "resolved", repo: resolved.repo });
     } catch (err) {
-      setStatus({ phase: "error", message: errorText(err) });
+      setStatus({ phase: "error", message: friendlyErrorMessage(err) });
     }
   }
 
@@ -112,7 +112,7 @@ export function InRepoSection(_props: InRepoSectionProps) {
       await launchConfigStore.getState().trustRepo(cwd.trim(), hash);
       await refresh(cwd);
     } catch (err) {
-      setTrustError(`Trust failed: ${errorText(err)}`);
+      setTrustError(`Trust failed: ${friendlyErrorMessage(err)}`);
     } finally {
       setTrusting(false);
     }

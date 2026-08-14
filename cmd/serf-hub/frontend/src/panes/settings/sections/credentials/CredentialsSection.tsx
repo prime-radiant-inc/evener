@@ -7,7 +7,7 @@
 // whatever was open, matching the legacy's own single module-level
 // `openEditor` variable - no per-row state, no dirty-check on replace.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { errorText } from "../../../../protocol/errors";
+import { friendlyErrorMessage } from "../../../../protocol/errors";
 import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, ConfirmDialog, EmptyState, Skeleton, useToasts } from "../../../../widgets";
@@ -94,7 +94,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         });
       }
     } catch (err) {
-      toast.push("error", `Sign-in failed: ${errorText(err)}`);
+      toast.push("error", `Sign-in failed: ${friendlyErrorMessage(err)}`);
     }
   }
 
@@ -104,7 +104,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
     try {
       await credentialsStore.getState().setDefault(name);
     } catch (err) {
-      toast.push("error", `Set default failed: ${errorText(err)}`);
+      toast.push("error", `Set default failed: ${friendlyErrorMessage(err)}`);
     }
   }
 
@@ -152,7 +152,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
       setPendingConfirm(null);
     } catch (err) {
       const verb = kind === "clear" ? "Clear" : "Remove";
-      toast.push("error", `${verb} failed: ${errorText(err)}`);
+      toast.push("error", `${verb} failed: ${friendlyErrorMessage(err)}`);
     } finally {
       setConfirmBusy(false);
     }
@@ -182,7 +182,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
       </div>
 
       {loading && <Skeleton />}
-      {error && <p className={CLASS.error}>Failed to load: {error}</p>}
+      {error && <p className={CLASS.error}>Failed to load: {friendlyErrorMessage(error)}</p>}
       {!loading &&
         !error &&
         (instances.length === 0 ? (

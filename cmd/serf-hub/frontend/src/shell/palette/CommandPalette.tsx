@@ -72,7 +72,11 @@ const CLASS = {
   emptyBody: requireClass(styles.emptyBody, "commandpalette.module.css", "emptyBody"),
 };
 
-const SEARCH_PLACEHOLDER = "search live + past sessions";
+// FIX 2: mentions "?" once, on the one thing every empty-query open shows -
+// the placeholder itself - since a user hunting for the shortcut legend
+// (real-browser report) checked every settings section but never learned
+// this palette even has a "/" command mode or a "?" shortcut view.
+const SEARCH_PLACEHOLDER = "search live + past sessions · / for commands · ? for shortcuts";
 const SEARCH_DEBOUNCE_MS = 150;
 
 // A stable empty-array reference for the needsYouNodes selector below: `?? []`
@@ -572,9 +576,16 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
         placeholder={placeholder}
         value={query}
         onChange={(e) => {
-          setQuery(e.target.value);
-          // Typing anything leaves the help panel and resumes filtering (§2.8).
-          setShowingHelp(false);
+          const next = e.target.value;
+          setQuery(next);
+          // Typing anything leaves the help panel and resumes filtering
+          // (§2.8) - EXCEPT a bare "?" (FIX 2), which opens it: a user
+          // hunting for the shortcut legend reasonably types the
+          // conventional "?" gesture, and mode.ts's own leading-"/" rule
+          // never routes a bare "?" into command-filter mode at all, so
+          // without this it silently searches live/past sessions for a
+          // literal "?" and finds nothing (observed with a real user).
+          setShowingHelp(next.trim() === "?");
         }}
         onKeyDown={onKeyDown}
       />

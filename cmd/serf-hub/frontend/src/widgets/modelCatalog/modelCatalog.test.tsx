@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { WireError } from "../../protocol/errors";
 // ModelCatalog is both the component (value) and the envelope interface (type);
 // a single import brings in both meanings via declaration merging.
 import { ModelCatalog, type ModelCatalogEntry } from "./index";
@@ -165,13 +166,27 @@ describe("open state", () => {
     expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
   });
 
-  test("surfaces an inline error when the catalog fails to load", async () => {
+  // A plain Error's own message is internal detail (not something the hub
+  // wrote for a person to read), so friendlyErrorMessage replaces it with a
+  // generic sentence - see protocol/errors.test.ts for that contract.
+  test("surfaces a friendly inline error when the catalog fails to load", async () => {
     const user = userEvent.setup();
     renderPicker({ loadCatalog: vi.fn().mockRejectedValue(new Error("providers unavailable")) });
 
     await user.click(openTrigger());
 
-    expect(await screen.findByText(/providers unavailable/i)).toBeTruthy();
+    const message = await screen.findByText("Couldn't load models: Something went wrong.");
+    expect(message).toBeTruthy();
+    expect(screen.queryByText(/providers unavailable/i)).toBeNull();
+  });
+
+  test("keeps a WireError's own server-provided message, since it was written for a person to read", async () => {
+    const user = userEvent.setup();
+    renderPicker({ loadCatalog: vi.fn().mockRejectedValue(new WireError("no providers configured", -32001)) });
+
+    await user.click(openTrigger());
+
+    expect(await screen.findByText("Couldn't load models: no providers configured")).toBeTruthy();
   });
 });
 

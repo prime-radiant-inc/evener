@@ -86,8 +86,13 @@ export function buildPathRows(input: {
   value: string;
   recents: string[];
   showRecents: boolean;
+  /** Set when `entries` is `[]` because the listing REJECTED, as opposed to
+   * the directory genuinely being empty - the two must never render the same
+   * status line (see the "Nothing here." vs the error text below). Ignored
+   * while `entries` is still `null` (a fresh request in flight always wins). */
+  listError?: string | null;
 }): PathRow[] {
-  const { kind, currentDir, entries, value, recents, showRecents } = input;
+  const { kind, currentDir, entries, value, recents, showRecents, listError } = input;
   const rows: PathRow[] = [];
 
   if (showRecents && recents.length > 0) {
@@ -114,7 +119,7 @@ export function buildPathRows(input: {
     return rows;
   }
   if (entries.length === 0) {
-    rows.push({ kind: "status", key: "status", text: EMPTY_TEXT });
+    rows.push({ kind: "status", key: "status", text: listError ?? EMPTY_TEXT });
     return rows;
   }
 

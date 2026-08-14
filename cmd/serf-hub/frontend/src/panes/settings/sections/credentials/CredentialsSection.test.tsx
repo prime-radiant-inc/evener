@@ -86,7 +86,10 @@ describe("initial load", () => {
       throw new Error("network down");
     });
     render(<CredentialsSection sectionId="credentials" />);
-    await screen.findByText(/Failed to load: network down/);
+    // error is converted via friendlyErrorMessage: raw JS errors become the generic message
+    await screen.findByText(/Failed to load: Something went wrong/);
+    // Assert the raw string no longer appears
+    expect(screen.queryByText(/network down/)).toBeNull();
   });
 
   // The integration-level proof of useConnectedEffect: a direct deep link
@@ -352,7 +355,10 @@ describe("OAuth start branches", () => {
     await screen.findByText("personal");
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Sign in…" }));
-    await screen.findByText("Sign-in failed: provider unavailable");
+    // error is converted via friendlyErrorMessage: raw JS errors become the generic message
+    await screen.findByText("Sign-in failed: Something went wrong.");
+    // Assert the raw string no longer appears
+    expect(screen.queryByText(/provider unavailable/)).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
@@ -457,7 +463,10 @@ describe("set default", () => {
     await screen.findByText("personal");
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /make default/i }));
-    await screen.findByText("Set default failed: boom");
+    // error is converted via friendlyErrorMessage: raw JS errors become the generic message
+    await screen.findByText("Set default failed: Something went wrong.");
+    // Assert the raw string no longer appears
+    expect(screen.queryByText(/boom/)).toBeNull();
   });
 });
 

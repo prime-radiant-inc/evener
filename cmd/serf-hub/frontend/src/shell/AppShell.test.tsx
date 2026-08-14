@@ -1715,3 +1715,32 @@ test("kata p5w9: a desktop boot issues exactly one GET /api/tree", async () => {
 
   expect(fetchMock.mock.calls.filter(([url]) => url === "/api/tree")).toHaveLength(1);
 });
+
+// FIX 1 (real-browser bug): Settings' Escape/close used to call
+// workspaceStore.closePane directly, which replaces the main pane with
+// welcome IN THE STORE but leaves window.location.pathname on /settings/* -
+// so AppShell's own route-reconciliation effect (routePlacementIsApplied /
+// openRouteAsPane above) sees the URL still asking for settings, decides
+// placement has drifted, and reinstates the settings pane right back into
+// main. A pane-store-only assertion (Settings.test.tsx's own unit tests)
+// can't see this at all, because nothing there mounts AppShell's
+// reconciliation effect - hence this integration test through the real
+// shell, matching needsYouCycle.ts's own documented rationale for routing
+// exits through navigate()/paneToURL rather than poking the store.
+test("Escape in Settings exits to welcome and the URL stays there, not reinstated by route reconciliation", async () => {
+  window.history.pushState({}, "", "/settings");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByRole("navigation", { name: "Settings sections" });
+
+  fireEvent.keyDown(screen.getByRole("button", { name: "General" }), { key: "Escape" });
+
+  await screen.findByText("No session open");
+  expect(window.location.pathname).toBe("/");
+  expect(workspaceStore.getState().mainPane()?.type).not.toBe("settings");
+  // Give the reconciliation effect a chance to run again (it fires off the
+  // pathname/tree/workspacePanes deps below) and confirm it did NOT undo it.
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.type).not.toBe("settings");
+  });
+  expect(screen.queryByRole("navigation", { name: "Settings sections" })).toBeNull();
+});

@@ -86,7 +86,10 @@ describe("3-state loaded contract", () => {
     });
     render(<ProjectSection sectionId="project" />);
     await screen.findByText(/Failed to load project launch settings/i);
-    expect(screen.getByText(/boom/)).toBeTruthy();
+    // error is converted via friendlyErrorMessage: raw JS errors become the generic message
+    expect(screen.getByText(/Something went wrong/)).toBeTruthy();
+    // Assert the raw string no longer appears
+    expect(screen.queryByText(/boom/)).toBeNull();
   });
 
   test("no diagnostics panel anywhere on this page", async () => {

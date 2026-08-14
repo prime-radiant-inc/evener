@@ -1390,6 +1390,22 @@ describe("touch target (pointer: coarse)", () => {
     expect(rule, "the coarse-pointer block must override .railRow").not.toBeNull();
     expect(rule![1]).toContain("min-height: var(--tap-min)");
   });
+
+  // UX fix, real-phone measurement: the row's "..."/"+" actions buttons
+  // (RailRow.tsx's ActionsMenu trigger and ProjectRow's IconButton, both
+  // plain <button> descendants of `.actions`) measured ~47x32 - under the
+  // 44px tap floor even though `.railRow` itself already reaches it. A
+  // plain `.actions button` descendant selector reaches both without this
+  // file touching widgets/menu or widgets/iconbutton, whose desktop sizing
+  // every OTHER consumer still relies on.
+  test(".actions buttons reach the 44px tap floor on a coarse pointer", () => {
+    const css = railCSS();
+    const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
+    expect(coarse, "Rail.module.css must have a (pointer: coarse) media block").not.toBeNull();
+    const rule = coarse![1]!.match(/\.actions button\s*\{([^}]*)\}/);
+    expect(rule, "the coarse-pointer block must override .actions button").not.toBeNull();
+    expect(rule![1]).toContain("min-height: var(--tap-min)");
+  });
 });
 
 describe("hide affordance (onHide)", () => {

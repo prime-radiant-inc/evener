@@ -84,6 +84,22 @@
   outline-offset: 2px;
 }
 
+/* Touch target (FIX 5, real-phone measurement): a coarse pointer (phone/
+ * tablet touch) needs the platform's 44px tap floor, the same treatment
+ * Rail.module.css's own .actions button rule gets - .closeButton is a
+ * plain <button>, not the shared IconButton widget (see OverlayPanel.tsx's
+ * own comment on why), so it never inherited IconButton's own pointer:
+ * coarse floor (iconbutton.module.css). min-width/min-height, not
+ * width/height, so this only ever grows the hit area beyond the 24px
+ * glyph box, never changes its desktop sizing.
+ */
+@media (pointer: coarse) {
+  .closeButton {
+    min-width: var(--tap-min);
+    min-height: var(--tap-min);
+  }
+}
+
 /* --- dialog variant: centered, 120ms fade-scale ---------------------- */
 
 @keyframes dialogFadeScale {

@@ -88,6 +88,58 @@ export class ConnectionClosedError extends Error {
   }
 }
 
+// GENERIC_ERROR_MESSAGE is friendlyErrorMessage's last resort: anything that
+// isn't a WireError (a message the hub itself composed for a person) or a
+// recognized client-unreachable rejection gets this, never the error's own
+// text - an arbitrary JS exception's message can name a class, a method, a
+// file path, none of which means anything to the person looking at it.
+const GENERIC_ERROR_MESSAGE = "Something went wrong.";
+
+// HUB_UNREACHABLE_MESSAGE covers the family of rejections AppwireClient (and
+// its testing/fakeClient.ts stand-in) throws locally when a request is
+// attempted against a socket that isn't open: close() was called, the
+// connection dropped, or a call landed before the handshake finished. None
+// of that is meaningful to a person - "the hub" is the concept they
+// understand, not "the client's internal state".
+const HUB_UNREACHABLE_MESSAGE = "Can't reach the hub right now.";
+
+// CLIENT_UNREACHABLE_PATTERN matches the shape both AppwireClient
+// (protocol/client.ts's request()/close()) and FakeClient (protocol/testing/
+// fakeClient.ts, used throughout the test suite) throw for that family:
+// `"<Name>Client: cannot call "<method>" while state is "<state>""`,
+// `"<Name>Client: cannot call "<method>"; not connected"`, and
+// `"<Name>Client: closed"` (ConnectionClosedError's own message). Matching
+// the text rather than a specific class catches plain Error, the FakeClient
+// stand-in, AND a bare string, without hard-coding every connectionState
+// value - deliberately narrow so it never swallows a genuinely different
+// AppwireClient rejection (a socket error, a timeout) that a caller might
+// still want to distinguish.
+const CLIENT_UNREACHABLE_PATTERN = /^\w*Client: (cannot call ".*"(?: while state is ".*"|; not connected)|closed)$/;
+
+function isClientUnreachableError(error: unknown): boolean {
+  if (error instanceof ConnectionClosedError) return true;
+  if (error instanceof WireError) return false; // a server-reported error is never this family
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
+  return message !== undefined && CLIENT_UNREACHABLE_PATTERN.test(message);
+}
+
+// friendlyErrorMessage is the one conversion every user-facing error display
+// must go through instead of errorText/err.message: a WireError's message
+// came from the hub and was written for a person to read, so it survives
+// untouched; the client-unreachable family (see CLIENT_UNREACHABLE_PATTERN)
+// becomes one plain sentence; everything else - a plain JS exception, a
+// timeout, a string, anything this module doesn't otherwise recognize -
+// becomes the same generic sentence. Never returns a class name or an
+// internal method name.
+export function friendlyErrorMessage(error: unknown): string {
+  if (error instanceof WireError) {
+    const detail = error.message.trim();
+    return detail === "" ? GENERIC_ERROR_MESSAGE : detail;
+  }
+  if (isClientUnreachableError(error)) return HUB_UNREACHABLE_MESSAGE;
+  return GENERIC_ERROR_MESSAGE;
+}
+
 export type MutationOutcome = "notAccepted" | "unknown" | "targetDeleted";
 export type MutationRetryDisposition = "automatic" | "blocked" | "none";
 

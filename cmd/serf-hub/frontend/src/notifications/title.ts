@@ -7,10 +7,11 @@
 // paneRegistry.title() — the same threadName-backed ctx DockHost builds for a
 // pane's tab (DockHost.tsx:210). The "· serf hub" suffix is preserved, so the
 // shape stays exactly the legacy's, only the left-hand source differs.
+import { resolveThreadName } from "../panes/session/threadTitle";
 import { paneFor } from "../shell/paneRegistry";
 import { workspaceStore } from "../shell/workspace";
 import { threadsStore } from "../stores/threads";
-import type { AttentionSummary } from "../stores/tree";
+import { type AttentionSummary, treeStore } from "../stores/tree";
 
 // Base title from the focused pane, or bare "serf hub" with none focused. A
 // pane whose title() throws (an unregistered type — never expected, since
@@ -21,7 +22,13 @@ export function baseTitle(): string {
   const pane = panes.find((p) => p.id === focusedPaneId);
   if (!pane) return "serf hub";
   try {
-    const ctx = { threadName: (ref: string) => threadsStore.getState().threads.get(ref)?.name };
+    // The same fallback chain the dockview tab and in-pane header use
+    // (threadTitle.ts): live thread name, else the rail's tree title —
+    // three surfaces, one resolver, no disagreements.
+    const ctx = {
+      threadName: (ref: string) =>
+        resolveThreadName(threadsStore.getState().threads, treeStore.getState().tree, ref),
+    };
     const paneTitle = paneFor(pane.type).title(pane.params, ctx);
     return paneTitle ? `${paneTitle} · serf hub` : "serf hub";
   } catch {

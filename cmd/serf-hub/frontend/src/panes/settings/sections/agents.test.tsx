@@ -33,7 +33,10 @@ describe("AgentsSection", () => {
 
   test("shows an error message on failure", () => {
     render(<AgentsSection sectionId="agents" useOverview={fixture({ error: "network down" })} />);
-    expect(screen.getByText(/Failed to load: network down/)).toBeTruthy();
+    // error is converted via friendlyErrorMessage: raw strings like "network down" become the generic message
+    expect(screen.getByText(/Failed to load: Something went wrong/)).toBeTruthy();
+    // Assert the raw string no longer appears
+    expect(screen.queryByText(/network down/)).toBeNull();
   });
 
   test("empty state: 'No agents discovered.'", () => {

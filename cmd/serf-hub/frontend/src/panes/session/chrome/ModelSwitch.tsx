@@ -22,7 +22,7 @@
 // the existing ReasoningEffortControl picks up the new model's profile
 // for free.
 import { useRef, useState } from "react";
-import { sessionActionError } from "../../../protocol/errors";
+import { friendlyErrorMessage, sessionActionError, sessionActionHeadline } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
 import {
@@ -85,7 +85,14 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
       ]);
       setCatalog(mergeScopedCatalog(scoped.data, enrichment));
     } catch (err) {
-      setError(sessionActionError("Couldn't load models", err));
+      // Not sessionActionError: that composes its detail from errorText,
+      // which is the RAW rejection text - fine for a WireError (the hub
+      // wrote it for a person) but not for AppwireClient's own internal
+      // "cannot call ... while state is closed" rejections, which is
+      // exactly what a mid-teardown model/list lands here. Same headline
+      // rule (sessionActionHeadline), friendlyErrorMessage detail instead.
+      const headline = sessionActionHeadline("Couldn't load models", err);
+      setError(`${headline}: ${friendlyErrorMessage(err)}`);
     } finally {
       setLoading(false);
     }

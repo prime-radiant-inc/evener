@@ -40,7 +40,8 @@ export function DisplaySection() {
         />
         <p className={CLASS.help}>
           Default off: ⌘/Ctrl-Enter sends, Enter inserts a newline. On: Enter sends, Shift-Enter inserts a newline (the
-          steer keyboard shortcut is unavailable in this mode — the steer button still works).
+          Shift-Enter shortcut for steering — sending the agent a mid-run correction — is unavailable in this mode; the
+          steer button still works).
         </p>
       </div>
 

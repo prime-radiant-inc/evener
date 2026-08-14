@@ -41,7 +41,16 @@ export function TreeDrawer({ children }: TreeDrawerProps) {
   // shows Badge(needsYou) beside its glyph - this trigger carries the same
   // Badge, overlaid on its corner since an icon-only button has no room for
   // an inline second element.
-  const needsYou = useTreeStore((s) => s.tree?.attentionSummary.needsYou ?? 0);
+  //
+  // FIX 4: reads tree.needs_you (the server's own ordered needs-you list -
+  // needsYouCycle.ts's own "one source of truth" for every other needs-you
+  // surface in the app), NOT attentionSummary.needsYou - a separate,
+  // narrower aggregate (hubcore's DeriveAttention/tierEligible: top-level,
+  // non-subagent, non-archived sessions only) that can undercount relative
+  // to what the drawer's own rows show once opened, leaving the trigger
+  // unbadged for a session the rows plainly present as needing you
+  // (real-browser observation).
+  const needsYou = useTreeStore((s) => s.tree?.needs_you.length ?? 0);
 
   // Auto-close on navigation: whatever eventually fills the slot above
   // only ever needs to call openPane() for this to work - see the module

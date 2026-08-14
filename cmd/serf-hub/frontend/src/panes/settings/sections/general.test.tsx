@@ -101,6 +101,9 @@ test("omits Past index and Past results per page when no past-session index is c
   expect(screen.queryByText("Past results per page")).toBeNull();
 });
 
+// A plain Error's own message is internal detail (not something the hub
+// wrote for a person to read), so friendlyErrorMessage replaces it with a
+// generic sentence - see protocol/errors.test.ts for that contract.
 test("shows an inline error state with retry on load failure, not a toast", async () => {
   const fake = connectFakeClient();
   fake.on("serf/settings/overview", () => {
@@ -110,5 +113,23 @@ test("shows an inline error state with retry on load failure, not a toast", asyn
   render(<GeneralSection />);
 
   expect(await screen.findByText("Couldn't load general settings")).toBeTruthy();
-  expect(screen.getByText("hub unreachable")).toBeTruthy();
+  expect(await screen.findByText("Something went wrong.")).toBeTruthy();
+  expect(screen.queryByText("hub unreachable")).toBeNull();
+});
+
+// The verbatim bug report (user testing): this section showed "AppwireClient:
+// cannot call "serf/settings/overview" while state is "closed"" when the
+// fetch landed while the client was tearing down - internal wiring detail,
+// never meant for the screen.
+test("a client-unreachable rejection (the reported bug) shows the friendly hub-unreachable sentence", async () => {
+  const fake = connectFakeClient();
+  fake.on("serf/settings/overview", () => {
+    throw new Error('AppwireClient: cannot call "serf/settings/overview" while state is "closed"');
+  });
+
+  render(<GeneralSection />);
+
+  expect(await screen.findByText("Couldn't load general settings")).toBeTruthy();
+  expect(await screen.findByText("Can't reach the hub right now.")).toBeTruthy();
+  expect(screen.queryByText(/AppwireClient/i)).toBeNull();
 });

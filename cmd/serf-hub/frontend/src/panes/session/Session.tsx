@@ -21,9 +21,11 @@
 // 76rem measure so the input aligns with the transcript's own content
 // column; SessionChrome now lives in the composer's own PromptCard control row.
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ThreadModel } from "../../protocol/model";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
+import { useTreeStore } from "../../stores/tree";
 import { Cadence, EmptyState, PaneScaffold, RadioGroup, VirtualList, type VirtualListHandle } from "../../widgets";
 import { modelLabel } from "./chrome/statusFormat";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
@@ -31,6 +33,7 @@ import { Composer } from "./composer/Composer";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "./liveness";
 import { PendingChips } from "./pending/PendingChips";
+import { resolveThreadName } from "./threadTitle";
 import { exchangeOpenersFor } from "./transcript/exchangeOpeners";
 import { isItemLive, TurnBlock } from "./transcript/TurnBlock";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
@@ -59,6 +62,7 @@ export interface SessionPaneParams {
 }
 
 const EMPTY_FRAME_TIMES: number[] = [];
+const EMPTY_THREADS = new Map<string, ThreadModel>();
 
 // An empty transcript is two situations wearing one face, and no single line
 // is true for both.
@@ -268,9 +272,19 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // this pane was last open, so a reopened session shows where to pick up.
   const seenDividerTurnId = useSeenDivider(ref, model);
 
+  // Same fallback chain, and same shared resolver, as DockHost's dockview
+  // tab title (shell/threadTitle's own doc comment) - the live thread name
+  // wins once hydrated, else the rail's already-loaded tree store's title
+  // for this ref, else the raw ref as the last resort. Without this, a pane
+  // opened before its transcript hydrates showed the raw ref here even when
+  // the tree store already knew the friendly title, while the dockview tab
+  // right above it already showed that title.
+  const tree = useTreeStore((s) => s.tree);
+  const title = resolveThreadName(model ? new Map([[ref, model]]) : EMPTY_THREADS, tree, ref) ?? ref;
+
   if (!model) {
     return (
-      <PaneScaffold paneId={paneId} focused={paneFocused} scaffoldMarker={`session:${ref}`} title={ref}>
+      <PaneScaffold paneId={paneId} focused={paneFocused} scaffoldMarker={`session:${ref}`} title={title}>
         <EmptyState title="Loading transcript…" />
       </PaneScaffold>
     );
@@ -416,7 +430,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       paneId={paneId}
       focused={paneFocused}
       scaffoldMarker={`session:${ref}`}
-      title={model.name || ref}
+      title={title}
       cadence={cadence}
       actions={
         <div className={styles.viewSelector}>

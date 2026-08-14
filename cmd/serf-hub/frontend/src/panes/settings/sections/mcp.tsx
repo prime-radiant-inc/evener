@@ -12,7 +12,7 @@
 // legacy gave the directory lists (plugins/skills) a picker and left config
 // files typeahead-only, an asymmetry with no principled reason.
 import { type FormEvent, useEffect, useId, useState } from "react";
-import { errorText } from "../../../protocol/errors";
+import { friendlyErrorMessage } from "../../../protocol/errors";
 import type { MCPServerSpec, SettingsOverviewResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { extensionsStore, useExtensionsStore } from "../../../stores/extensions";
@@ -118,7 +118,7 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
       await extensionsStore.getState().setLaunchLayer({ ...current, mcpConfigs: nextList });
       return { ok: true };
     } catch (err) {
-      return { ok: false, error: errorText(err) };
+      return { ok: false, error: friendlyErrorMessage(err) };
     }
   }
 
@@ -128,7 +128,7 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
     try {
       await extensionsStore.getState().setLaunchLayer({ ...current, mcpConfigs: nextList });
     } catch (err) {
-      toasts.push("error", `Remove failed: ${errorText(err)}`);
+      toasts.push("error", `Remove failed: ${friendlyErrorMessage(err)}`);
     }
   }
 
@@ -156,7 +156,7 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
       setServerCommand("");
       setServerArgs("");
     } catch (err) {
-      setServerAddError(errorText(err));
+      setServerAddError(friendlyErrorMessage(err));
     } finally {
       setServerAddBusy(false);
     }
@@ -171,7 +171,7 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
     try {
       await extensionsStore.getState().setLaunchLayer({ ...current, mcps: nextList });
     } catch (err) {
-      toasts.push("error", `Remove failed: ${errorText(err)}`);
+      toasts.push("error", `Remove failed: ${friendlyErrorMessage(err)}`);
     } finally {
       setRemoveServerBusy(false);
       setPendingRemoveServerIndex(null);

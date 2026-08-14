@@ -17,7 +17,7 @@
 // CollectionEditor's own immediate-fire onRemove, keyed on a `pending` path
 // exactly like every other confirm-gated row in this settings cluster.
 import { useId, useState } from "react";
-import { errorText } from "../../../protocol/errors";
+import { friendlyErrorMessage } from "../../../protocol/errors";
 import type { LaunchConfigLayer } from "../../../protocol/types.gen";
 import { extensionsStore, useExtensionsStore } from "../../../stores/extensions";
 import {
@@ -206,7 +206,7 @@ export function DirListSetting({ wireField, label, copy }: DirListSettingProps) 
       await extensionsStore.getState().setLaunchLayer({ ...current, [wireField]: nextList });
       return { ok: true };
     } catch (err) {
-      return { ok: false, error: errorText(err) };
+      return { ok: false, error: friendlyErrorMessage(err) };
     }
   }
 
@@ -216,7 +216,7 @@ export function DirListSetting({ wireField, label, copy }: DirListSettingProps) 
     try {
       await extensionsStore.getState().setLaunchLayer({ ...current, [wireField]: nextList });
     } catch (err) {
-      toasts.push("error", `Remove failed: ${errorText(err)}`);
+      toasts.push("error", `Remove failed: ${friendlyErrorMessage(err)}`);
     }
   }
 

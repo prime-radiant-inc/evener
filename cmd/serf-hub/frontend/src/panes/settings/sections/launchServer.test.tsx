@@ -67,7 +67,10 @@ describe("load sequence", () => {
     });
     render(<LaunchServerSection sectionId="launch-serf" />);
     await screen.findByText(/Failed to load launch settings/i);
-    expect(screen.getByText(/network down/)).toBeTruthy();
+    // error is converted via friendlyErrorMessage: raw JS errors become the generic message
+    expect(screen.getByText(/Something went wrong/)).toBeTruthy();
+    // Assert the raw string no longer appears
+    expect(screen.queryByText(/network down/)).toBeNull();
   });
 
   test("a best-effort resolve('/') populates the diagnostics panel after load; its own failure is non-fatal", async () => {

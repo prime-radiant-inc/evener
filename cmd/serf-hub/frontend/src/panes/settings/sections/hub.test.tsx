@@ -51,6 +51,9 @@ test("shows a loading skeleton before the overview resolves", () => {
 });
 
 describe("on load failure", () => {
+  // A plain Error's own message is internal detail (not something the hub
+  // wrote for a person to read), so friendlyErrorMessage replaces it with a
+  // generic sentence - see protocol/errors.test.ts for that contract.
   test("shows an inline error state with a retry action instead of a toast", async () => {
     const fake = connectFakeClient();
     fake.on("serf/settings/overview", () => {
@@ -60,7 +63,8 @@ describe("on load failure", () => {
     render(<HubSection />);
 
     expect(await screen.findByText("Couldn't load hub settings")).toBeTruthy();
-    expect(screen.getByText("hub unreachable")).toBeTruthy();
+    expect(await screen.findByText("Something went wrong.")).toBeTruthy();
+    expect(screen.queryByText("hub unreachable")).toBeNull();
   });
 
   test("Retry re-requests the overview", async () => {

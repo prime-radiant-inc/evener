@@ -1,9 +1,28 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { SettingsNav } from "./SettingsNav";
 
 afterEach(cleanup);
+
+// FIX 3a (real-browser report): the selected nav item's text used
+// var(--accent) - the raw hue, meant for glyphs/borders, not text
+// (tokens.css's own "-ink companions" comment) - which read at borderline
+// contrast against --accent-bg's own pale tint in the light theme, close
+// enough to the neutral grey .link:hover wash that a real user read the
+// selected item as barely distinguishable from a merely-hovered one.
+// --accent-ink is the AA-derived text form of the same hue (the same
+// substitution toast.module.css already makes for text on this exact
+// --accent-bg fill).
+test("the selected nav item's text uses the AA-derived --accent-ink, not the raw --accent hue", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "settings.module.css"), "utf8");
+  const linkActiveRule = /\.linkActive\s*\{[^}]*\}/.exec(css);
+  expect(linkActiveRule).not.toBeNull();
+  expect(linkActiveRule?.[0]).toMatch(/color:\s*var\(--accent-ink\)/);
+});
 
 test("renders a nav landmark labelled Settings sections", () => {
   render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);

@@ -230,7 +230,10 @@ describe("trust action", () => {
     render(<InRepoSection sectionId="inrepo" />);
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: /trust this file/i }));
-    await screen.findByText(/Trust failed: file changed since review/);
+    // error is converted via friendlyErrorMessage: raw JS errors become the generic message
+    await screen.findByText(/Trust failed: Something went wrong/);
+    // Assert the raw string no longer appears
+    expect(screen.queryByText(/file changed since review/)).toBeNull();
     expect(screen.getByText("model = 'x'")).toBeTruthy();
     expect(screen.getByText(/Untrusted/)).toBeTruthy();
   });
@@ -244,6 +247,9 @@ describe("resolve failure", () => {
       throw new Error("boom");
     });
     render(<InRepoSection sectionId="inrepo" />);
-    await screen.findByText("Failed to load: boom");
+    // error is converted via friendlyErrorMessage: raw JS errors become the generic message
+    await screen.findByText("Failed to load: Something went wrong.");
+    // Assert the raw string no longer appears
+    expect(screen.queryByText(/boom/)).toBeNull();
   });
 });

@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -476,4 +479,23 @@ test("a pathList field rejects a path already in the list", async () => {
 
   expect(await screen.findByRole("alert")).toBeTruthy();
   expect(onOverridesChange).not.toHaveBeenCalled();
+});
+
+// Touch target (UX fix, real-phone measurement): the hand-rolled toggle
+// (not a widgets/disclosure consumer - it renders its own <button>, see
+// this file's own header comment) measured 127x24, low-contrast next to the
+// 48px rows around it. Comfortable desktop padding plus a (pointer: coarse)
+// tap floor, same pattern as askdock.module.css's own .tab rule and
+// askquestioncard.module.css's own .option/.toggleButton rules.
+test("the Advanced options toggle gets comfortable padding and reaches the tap floor on a coarse pointer", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "advancedOptions.module.css"), "utf8");
+  const desktopRule = css.match(/\.toggle\s*\{([^}]*)\}/);
+  expect(desktopRule, "advancedOptions.module.css must declare a base .toggle rule").not.toBeNull();
+  expect(desktopRule![1]).toMatch(/padding:\s*var\(--space-2\) var\(--space-3\)/);
+
+  const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
+  expect(coarse, "advancedOptions.module.css must have a (pointer: coarse) media block").not.toBeNull();
+  const rule = coarse![1]!.match(/\.toggle\s*\{([^}]*)\}/);
+  expect(rule, "the coarse-pointer block must override .toggle").not.toBeNull();
+  expect(rule![1]).toContain("min-height: var(--tap-min)");
 });

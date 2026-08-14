@@ -4,6 +4,7 @@
 // (parity-m7-settings.md §8). See overviewSeam.ts's own top comment for why
 // `useOverview` is injected rather than importing stores/settingsOverview.ts
 // directly.
+import { friendlyErrorMessage } from "../../../protocol/errors";
 import { EmptyState, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agents.module.css";
@@ -50,7 +51,7 @@ export function AgentsSection({ useOverview = useSettingsOverview }: AgentsSecti
         definition.
       </p>
       {loading && <Skeleton />}
-      {error && <p className={CLASS.error}>Failed to load: {error}</p>}
+      {error && <p className={CLASS.error}>Failed to load: {friendlyErrorMessage(error)}</p>}
       {!loading &&
         !error &&
         (agents.length === 0 ? (

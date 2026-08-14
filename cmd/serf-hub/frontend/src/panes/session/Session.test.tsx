@@ -12,6 +12,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { connectionStore } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
+import { resetTreeStoreForTests, type TreeNode, type TreeResponse, treeStore } from "../../stores/tree";
 import { Toast } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
@@ -170,6 +171,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetTreeStoreForTests();
   mutationStorage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(mutationStorage);
   resetPendingTurnsStoreForTests();
@@ -240,6 +242,59 @@ test("falls back to the raw ref as the title when the thread has no name yet", a
   );
 
   await waitFor(() => expect(screen.getByText("ref_a")).toBeTruthy());
+});
+
+// Minimal, well-formed TreeNode - only the fields findSessionNode/title
+// resolution actually touch (mirrors shell/DockHost.test.tsx's identical
+// fixture, kept separate per-file rather than shared: the two suites don't
+// otherwise import from each other).
+function fixtureTreeNode(ref: string, title: string): TreeNode {
+  return {
+    row_id: `row_${ref}`,
+    ref,
+    host_id: "local",
+    session_id: ref,
+    title,
+    project: "test-project",
+    state: "idle",
+    kind: "session",
+    live: true,
+    children: [],
+  };
+}
+
+function fixtureTree(nodes: TreeNode[]): TreeResponse {
+  return {
+    generated_at: "2026-01-01T00:00:00Z",
+    sources: [],
+    live: nodes,
+    needs_you: [],
+    pin_sections: [],
+    projects: [],
+    archived_projects: [],
+    test_runs: [],
+    attentionSummary: { needsYou: 0, error: 0, working: 0 },
+  };
+}
+
+// kata (session-pane header fix): the pane's own in-pane header (this
+// PaneScaffold title) used to fall straight to the raw ref whenever the
+// thread hadn't hydrated a name yet, even when the rail's already-loaded
+// tree store knew the real title - the same bug DockHost.test.tsx's "tab
+// title falls back to the tree store's title" test pins for the dockview
+// tab. This is that same fallback, applied to the in-pane header.
+test("falls back to the tree store's title as the header when no thread name is known yet", async () => {
+  treeStore.setState({ tree: fixtureTree([fixtureTreeNode("ref_a", "Fix the flaky CI job")]) });
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByText("Fix the flaky CI job")).toBeTruthy());
 });
 
 // An empty transcript is two different situations wearing one face, and the

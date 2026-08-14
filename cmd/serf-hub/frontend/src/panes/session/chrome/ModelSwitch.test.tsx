@@ -333,7 +333,12 @@ test("picking an option calls setModel with that option's provider/model and clo
 // A failed load surfaces the reason inline, in the open panel, over the search
 // field (which stays: the panel is still dismissable and the field still holds
 // the current model). No option list, since there is no catalog to list.
-test("a failed catalog fetch surfaces the error inline, keeping the field and the trigger", async () => {
+//
+// A plain Error's own message is internal detail (not something the hub
+// wrote for a person), so friendlyErrorMessage replaces it with a generic
+// sentence rather than leaking "catalog boom" - see protocol/errors.test.ts
+// for friendlyErrorMessage's own contract.
+test("a failed catalog fetch surfaces a friendly message inline, keeping the field and the trigger", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("model/list", () => {
@@ -348,10 +353,36 @@ test("a failed catalog fetch surfaces the error inline, keeping the field and th
   );
   await user.click(trigger());
 
-  expect((await screen.findByRole("alert")).textContent).toMatch(/catalog boom/i);
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toBe("Couldn't load models: Something went wrong.");
+  expect(alert.textContent).not.toMatch(/catalog boom/i);
   expect(screen.queryByRole("listbox")).toBeNull();
   expect(screen.getByRole("combobox")).toBeTruthy();
   expect(trigger()).toBeTruthy();
+});
+
+// The verbatim bug report (kata, jesse@primeradiant.com's user testing):
+// the model picker showed "AppwireClient: cannot call "model/list" while
+// state is "closed"" when the client wasn't ready yet - internal wiring
+// detail, never meant for the screen.
+test("a client-unreachable rejection (the reported bug) shows the friendly hub-unreachable sentence, not the raw AppwireClient text", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("model/list", () => {
+    throw new Error('AppwireClient: cannot call "model/list" while state is "closed"');
+  });
+
+  render(
+    <>
+      <ModelSwitch sessionRef="ref_a" model={testModel()} />
+      <Toast />
+    </>,
+  );
+  await user.click(trigger());
+
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toBe("Couldn't load models: Can't reach the hub right now.");
+  expect(alert.textContent).not.toMatch(/AppwireClient/i);
 });
 
 // The picker is dismissable by Escape and by an outside click, not only by

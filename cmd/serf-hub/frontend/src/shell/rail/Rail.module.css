@@ -361,6 +361,16 @@
   .railRow {
     min-height: var(--tap-min);
   }
+
+  /* UX fix, real-phone measurement: the row's "..."/"+" actions buttons
+   * (ActionsMenu's trigger, ProjectRow's IconButton - both plain <button>
+   * descendants of `.actions`) measured ~47x32, under the tap floor even
+   * though `.railRow` itself already reaches it. min-height, not height, so
+   * each button's own desktop sizing (owned by widgets/menu /
+   * widgets/iconbutton, not this file) stays untouched everywhere else. */
+  .actions button {
+    min-height: var(--tap-min);
+  }
 }
 
 /* Nested-level guide rail (§2.3): widgets/tree exposes no depth class of

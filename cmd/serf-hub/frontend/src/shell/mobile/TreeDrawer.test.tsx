@@ -7,12 +7,31 @@ import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { TreeDrawer } from "./TreeDrawer";
 
+function needsYouNode(n: number) {
+  return {
+    row_id: `r${n}`,
+    ref: `local:s${n}`,
+    host_id: "local",
+    session_id: `s${n}`,
+    title: `Needs you ${n}`,
+    project: "proj",
+    state: "awaiting",
+    kind: "session",
+    live: true,
+    children: [],
+  };
+}
+
+// FIX 4: needs_you (not attentionSummary.needsYou) is the trigger's real
+// source now - see TreeDrawer.tsx's own comment - so this fixture builds a
+// needs_you list of the requested length, matching attentionSummary for the
+// tests that don't care about the two diverging.
 function emptyTree(needsYou = 0) {
   return {
     generated_at: "2026-01-01T00:00:00Z",
     sources: [],
     live: [],
-    needs_you: [],
+    needs_you: Array.from({ length: needsYou }, (_, i) => needsYouNode(i)),
     pin_sections: [],
     projects: [],
     archived_projects: [],
@@ -77,6 +96,24 @@ test("no Badge overlay when nothing needs attention", () => {
   treeStore.setState({ tree: emptyTree(0) });
   render(<TreeDrawer />);
   expect(screen.queryByText("0")).toBeNull();
+});
+
+// FIX 4 (real-browser report): the trigger's badge read
+// attentionSummary.needsYou, a SEPARATE, more narrowly-scoped aggregate
+// (hubcore's DeriveAttention: top-level, non-subagent, non-archived
+// sessions only - attention.go's own tierEligible) than tree.needs_you (the
+// server's own ordered needs-you list every OTHER needs-you surface in this
+// app reads from - see needsYouCycle.ts's own header comment on why it is
+// the one source of truth). A session that needs you but falls outside
+// attentionSummary's narrower population (e.g. reached only via the tree's
+// own needs_you list) left the drawer's rows showing "your move" while its
+// trigger stayed unbadged. Keying the badge off tree.needs_you.length
+// instead matches every other needs-you surface and can never disagree
+// with what the drawer's own rows show once opened.
+test("the trigger badges off tree.needs_you, not the narrower attentionSummary aggregate", () => {
+  treeStore.setState({ tree: { ...emptyTree(0), needs_you: [needsYouNode(1)] } });
+  render(<TreeDrawer />);
+  expect(screen.getByText("1")).toBeTruthy();
 });
 
 test("the drawer is closed until the trigger is clicked", () => {

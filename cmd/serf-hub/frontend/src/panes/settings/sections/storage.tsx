@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { friendlyErrorMessage } from "../../../protocol/errors";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
 import { Button, EmptyState, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -42,7 +43,10 @@ export function StorageSection() {
     return (
       <EmptyState
         title="Couldn't load storage settings"
-        hint={error}
+        // friendlyErrorMessage, not the raw store error - see general.tsx's
+        // matching comment for why (settingsOverview.ts stores errorText(err)
+        // verbatim, including AppwireClient's own internal-wiring text).
+        hint={friendlyErrorMessage(error)}
         action={
           <Button size="sm" onClick={() => void settingsOverviewStore.getState().refresh()}>
             Retry

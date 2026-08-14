@@ -8,7 +8,12 @@
 
 .toggle {
   align-self: flex-start;
-  padding: var(--space-1) var(--space-2);
+  /* Touch target (UX fix, real-phone measurement): measured 127x24,
+   * low-contrast next to the 48px rows around it. space-2/space-3 (was
+   * space-1/space-2) gives it a comfortable click area at every pointer
+   * type; the (pointer: coarse) block below grows it the rest of the way
+   * to --tap-min on touch. */
+  padding: var(--space-2) var(--space-3);
   border: none;
   border-radius: var(--radius-control);
   background: transparent;
@@ -26,6 +31,12 @@
 .toggle:focus-visible {
   outline: var(--focus-ring);
   outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  .toggle {
+    min-height: var(--tap-min);
+  }
 }
 
 .panel {

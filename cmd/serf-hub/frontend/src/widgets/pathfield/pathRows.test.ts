@@ -222,6 +222,43 @@ describe("buildPathRows", () => {
     ]);
   });
 
+  // A rejected listing degrades to entries: [] the same as a genuinely empty
+  // directory (the caller has no other row shape to fall back to), but the
+  // two must never render the SAME status line - "Nothing here." tells a
+  // person their directory is empty when the truth is the hub couldn't be
+  // asked. listError carries that distinction through.
+  test("a failed listing (entries: [] with listError set) renders the error, never Nothing-here", () => {
+    const rows = buildPathRows({
+      kind: "dir",
+      currentDir: "/home/jesse",
+      entries: [],
+      value: "",
+      recents: [],
+      showRecents: false,
+      listError: "Can't reach the hub right now.",
+    });
+
+    expect(shape(rows)).toEqual(["group:/home/jesse", "parent:/home", "status:Can't reach the hub right now."]);
+  });
+
+  // A null listing (still in flight) must show Loading even if a PREVIOUS
+  // request's listError is still sitting in state - the caller is expected to
+  // clear listError when it starts a new request, but this is the belt: the
+  // row builder itself never lets a stale error win over an in-flight fetch.
+  test("a null listing renders Loading even when listError is set", () => {
+    const rows = buildPathRows({
+      kind: "dir",
+      currentDir: "/home/jesse",
+      entries: null,
+      value: "",
+      recents: [],
+      showRecents: false,
+      listError: "Can't reach the hub right now.",
+    });
+
+    expect(shape(rows)).toEqual(["group:/home/jesse", "parent:/home", "status:Loading…"]);
+  });
+
   // The panel tracks its highlighted row BY KEY, so a Recent group arriving
   // from a late listRecents must not renumber the listing rows underneath it -
   // that would silently move the highlight onto a different row.

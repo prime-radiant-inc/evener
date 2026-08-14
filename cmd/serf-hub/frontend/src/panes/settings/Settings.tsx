@@ -124,7 +124,19 @@ export default function Settings({ params, paneId }: PaneProps<SettingsPaneParam
   // main slot is never left empty, so DockHost relaunches welcome there -
   // which makes it the correct exit here too, just reached from inside the
   // pane instead of a tab (x) that main panes intentionally don't have.
+  //
+  // navigate() to "/" FIRST, same seam needsYouCycle.ts documents for the
+  // identical trap: closePane alone changes the workspace store but leaves
+  // window.location.pathname on /settings/*, and AppShell's own
+  // route-reconciliation effect reconciles the CURRENT pathname against the
+  // workspace on every pane change - so a pane change with no matching URL
+  // change gets undone, reinstating settings right back into main (observed
+  // in a real browser: Escape/close did nothing). Routing through
+  // paneToURL/navigate keeps the URL and the workspace in agreement, so
+  // there is nothing left for reconciliation to "fix".
   function handleClose() {
+    const url = paneToURL("welcome", {});
+    if (url !== null) navigate(url);
     workspaceStore.getState().closePane(paneId);
   }
 

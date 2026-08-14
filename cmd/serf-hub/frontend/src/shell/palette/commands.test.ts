@@ -758,6 +758,14 @@ test("/tasks and /status toggle-close already-open panes", () => {
   expect(workspaceStore.getState().panes.some((p) => p.type === "sessionDetails")).toBe(false);
 });
 
+// FIX 2 (real-user report): a user hunting for the keyboard shortcut legend
+// tried "?" and searched "shortcut" in the palette and never found it - the
+// "help" command's own keywords didn't cover "hotkey", one of the terms a
+// user reasonably reaches for.
+test('the keyboard-shortcuts command is findable by keyword "hotkey"', () => {
+  expect(cmd("help").keywords).toContain("hotkey");
+});
+
 test("/tasks and /status still toggle the workspace panes on a mobile viewport", () => {
   window.matchMedia = vi.fn(() => ({
     matches: true,

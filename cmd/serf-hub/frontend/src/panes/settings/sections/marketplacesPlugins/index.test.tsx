@@ -51,7 +51,10 @@ test("shows one failed-to-load message replacing everything when the marketplace
   fake.on("serf/plugin/list", () => ({ plugins: [] }));
   render(<MarketplacesPluginsSection />);
   expect(await screen.findByText("Failed to load")).toBeTruthy();
-  expect(screen.getByText("network down")).toBeTruthy();
+  // error is converted via friendlyErrorMessage: raw JS errors become the generic message
+  expect(screen.getByText("Something went wrong.")).toBeTruthy();
+  // Assert the raw string no longer appears
+  expect(screen.queryByText("network down")).toBeNull();
   expect(screen.queryByText("Marketplaces")).toBeNull();
   expect(screen.queryByText("Browse")).toBeNull();
   expect(screen.queryByText("Installed")).toBeNull();
@@ -65,5 +68,8 @@ test("shows one failed-to-load message when the plugin list fails to load", asyn
   });
   render(<MarketplacesPluginsSection />);
   expect(await screen.findByText("Failed to load")).toBeTruthy();
-  expect(screen.getByText("boom")).toBeTruthy();
+  // error is converted via friendlyErrorMessage: raw JS errors become the generic message
+  expect(screen.getByText("Something went wrong.")).toBeTruthy();
+  // Assert the raw string no longer appears
+  expect(screen.queryByText("boom")).toBeNull();
 });

@@ -8,6 +8,7 @@
 // and, where recents mean something, `listRecents` (serf/projects/recent).
 // includeFiles is derived from `kind` here, never passed in.
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
+import { friendlyErrorMessage } from "../../protocol/errors";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
@@ -208,6 +209,11 @@ export function PathFieldPanel({
   const [typed, setTyped] = useState<string | null>(null);
   const [currentDir, setCurrentDir] = useState(() => openingDir(kind, value, fallbackDir));
   const [entries, setEntries] = useState<string[] | null>(null);
+  // Set only when the LATEST request rejected - distinct from entries: []
+  // meaning a genuinely empty directory. See buildPathRows's own doc comment
+  // for why the two must never share a status line ("Nothing here." hides a
+  // real failure from the user - the bug this state exists to fix).
+  const [listError, setListError] = useState<string | null>(null);
   const [recents, setRecents] = useState<string[]>([]);
   // Recents are dropped permanently by the first keystroke, for this panel's
   // lifetime: once the user is typing a path, a recents list is noise.
@@ -250,8 +256,8 @@ export function PathFieldPanel({
     return entries.filter((entry) => basename(entry).toLowerCase().startsWith(wanted));
   }, [entries, filter]);
   const rows = useMemo(
-    () => buildPathRows({ kind, currentDir, entries: visibleEntries, value, recents, showRecents }),
-    [kind, currentDir, visibleEntries, value, recents, showRecents],
+    () => buildPathRows({ kind, currentDir, entries: visibleEntries, value, recents, showRecents, listError }),
+    [kind, currentDir, visibleEntries, value, recents, showRecents, listError],
   );
   const picks = useMemo(() => pickableRows(rows), [rows]);
   // A key that no longer names a row (its listing was replaced) highlights
@@ -279,15 +285,22 @@ export function PathFieldPanel({
     reqIdRef.current += 1;
     const reqId = reqIdRef.current;
     setEntries(null);
+    setListError(null);
     complete(prefix, includesFiles(kind)).then(
       (result) => {
         if (reqId === reqIdRef.current) setEntries(result);
       },
-      // A rejection is "couldn't read this directory", not an error to
-      // surface: the hub itself returns an empty result for an unreadable
-      // prefix, so the two are indistinguishable here by design.
-      () => {
-        if (reqId === reqIdRef.current) setEntries([]);
+      // A rejection still degrades to an empty listing (there is no other
+      // row shape for it, and an unreadable prefix legitimately looks the
+      // same from here), but it must not read as "Nothing here." - that
+      // hides a real failure (a closed client, a permissions error) behind
+      // the same words an actually-empty directory gets. listError carries
+      // the distinction into buildPathRows, which renders it instead.
+      (err) => {
+        if (reqId === reqIdRef.current) {
+          setEntries([]);
+          setListError(friendlyErrorMessage(err));
+        }
       },
     );
   }

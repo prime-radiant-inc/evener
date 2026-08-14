@@ -509,6 +509,47 @@ test("in-session search scans the focused ThreadModel's turns", async () => {
   expect(screen.getByText("turn 1")).toBeTruthy();
 });
 
+// FIX 2 (real-user report): the same user also checked every settings
+// section for a shortcuts legend and never learned the palette even has a
+// "/" command mode - the placeholder is the one thing visible on every
+// empty-query open, so it now mentions "?" once, matching the bare-"?"
+// affordance below.
+test('the search-mode placeholder hints at "?" for keyboard shortcuts', () => {
+  render(<CommandPalette />);
+  act(() => openPalette());
+
+  expect(screen.getByRole("combobox").getAttribute("placeholder")).toMatch(/\?.*shortcut/i);
+});
+
+// FIX 2 (real-user report): a user hunting for the keyboard shortcut legend
+// tried typing "?" in the palette (not "/help" or "/?" - a bare "?", the
+// conventional "show me help" gesture) and, since "?" alone stays in search
+// mode (mode.ts's computeMode only switches on a leading "/"), it searched
+// live/past sessions for a literal "?" and found nothing. Typing "?" now
+// opens the same help view HELP_ROWS renders for "/help", directly from
+// search mode, with no "/" prefix required.
+test('typing a bare "?" in search mode opens the keyboard-shortcuts help view', async () => {
+  const user = userEvent.setup();
+  render(<CommandPalette />);
+  act(() => openPalette());
+
+  await user.type(screen.getByRole("combobox"), "?");
+
+  expect(screen.getByText("Keyboard shortcuts")).toBeTruthy();
+});
+
+test('typing past a bare "?" leaves the help view and resumes filtering, same as after /help', async () => {
+  const user = userEvent.setup();
+  render(<CommandPalette />);
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "?");
+  expect(screen.getByText("Keyboard shortcuts")).toBeTruthy();
+
+  await user.type(screen.getByRole("combobox"), "x");
+
+  expect(screen.queryByText("Keyboard shortcuts")).toBeNull();
+});
+
 // --- search-result navigation ---
 
 // Typed against the real SearchResult, not Record<string, unknown>: `ref` is

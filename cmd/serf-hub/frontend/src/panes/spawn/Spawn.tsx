@@ -16,7 +16,7 @@
 // parity-m6-surfaces.md). The recent-prompts row is a decided parity drop
 // (Jesse 2026-07-22).
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { errorText } from "../../protocol/errors";
+import { friendlyErrorMessage } from "../../protocol/errors";
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption } from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
 import type { PaneProps } from "../../shell/paneRegistry";
@@ -478,7 +478,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       }
       await doSpawn();
     } catch (err) {
-      toasts.push("error", `Spawn failed: ${errorText(err)}`);
+      // friendlyErrorMessage, not errorText: doSpawn's thread/start call can
+      // reject with AppwireClient's own "cannot call ... while state is
+      // closed" text if the client tears down mid-submit, which is internal
+      // wiring detail, never something to toast at a person.
+      toasts.push("error", `Spawn failed: ${friendlyErrorMessage(err)}`);
       busyRef.current = false;
       setBusy(false);
       setBusyStartedAt(null);
@@ -496,7 +500,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       await createDir(path);
       await doSpawn();
     } catch (err) {
-      toasts.push("error", `Spawn failed: ${errorText(err)}`);
+      // friendlyErrorMessage, not errorText: doSpawn's thread/start call can
+      // reject with AppwireClient's own "cannot call ... while state is
+      // closed" text if the client tears down mid-submit, which is internal
+      // wiring detail, never something to toast at a person.
+      toasts.push("error", `Spawn failed: ${friendlyErrorMessage(err)}`);
       busyRef.current = false;
       setBusy(false);
       setBusyStartedAt(null);

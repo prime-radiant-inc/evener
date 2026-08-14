@@ -269,7 +269,7 @@ export function buildCommands(): Command[] {
       id: "help",
       title: "Show keyboard shortcuts",
       hint: "TUI parity reference",
-      keywords: ["?", "keys", "shortcuts"],
+      keywords: ["?", "keys", "shortcuts", "hotkey"],
       scope: "global",
       stayOpen: true,
       run: (ctx) => {

@@ -4,7 +4,7 @@
 // 3-state contract, a load failure has no distinct recoverable state, just a
 // permanent failure message (parity-m7-settings.md §9).
 import { useState } from "react";
-import { errorText } from "../../../protocol/errors";
+import { friendlyErrorMessage } from "../../../protocol/errors";
 import type { LaunchConfigDiagnostic, LaunchConfigLayer, LaunchOption } from "../../../protocol/types.gen";
 import { launchConfigStore } from "../../../stores/launchConfig";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -78,7 +78,7 @@ export function LaunchServerSection(_props: LaunchServerSectionProps) {
         // non-fatal: the form is fully usable without the diagnostics hint
       }
     } catch (err) {
-      if (!isCancelled()) setLoad({ phase: "error", message: errorText(err) });
+      if (!isCancelled()) setLoad({ phase: "error", message: friendlyErrorMessage(err) });
     }
   }, []);
 

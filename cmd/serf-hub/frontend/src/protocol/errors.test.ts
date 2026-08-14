@@ -1,7 +1,15 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
-import { errorText, isHubLaunchError, sessionActionError, sessionActionHeadline, WireError } from "./errors";
+import {
+  ConnectionClosedError,
+  errorText,
+  friendlyErrorMessage,
+  isHubLaunchError,
+  sessionActionError,
+  sessionActionHeadline,
+  WireError,
+} from "./errors";
 
 test("errorText prefers an Error's message and stringifies anything else", () => {
   expect(errorText(new Error("switch boom"))).toBe("switch boom");
@@ -61,4 +69,65 @@ test("sessionActionHeadline picks the same headline sessionActionError would", (
   expect(sessionActionError("Couldn't load tasks", launch)).toBe(
     `${sessionActionHeadline("Couldn't load tasks", launch)}: serf launch-check timed out`,
   );
+});
+
+// friendlyErrorMessage is the one conversion every user-facing error display
+// must go through: a WireError's message came from the hub and is meant to
+// be read, but AppwireClient's own internal rejections (thrown client-side
+// when a request is attempted against a socket that isn't open) are
+// implementation detail that must never reach the screen - see client.ts's
+// request() and close(). Both the real client and testing/fakeClient.ts's
+// stand-in phrase these identically ("<Name>Client: cannot call ... while
+// state is ..." / "; not connected"), so the match is on that shape, not on
+// a specific class.
+test("friendlyErrorMessage keeps a WireError's own message untouched", () => {
+  expect(friendlyErrorMessage(new WireError("turn t1 is active", -32013, { serfErrorInfo: "conflict" }))).toBe(
+    "turn t1 is active",
+  );
+});
+
+test("friendlyErrorMessage falls back to a generic sentence for a WireError with no message text", () => {
+  expect(friendlyErrorMessage(new WireError("", -32013))).toBe("Something went wrong.");
+});
+
+test("friendlyErrorMessage maps ConnectionClosedError to a plain sentence naming the hub, not the class", () => {
+  expect(friendlyErrorMessage(new ConnectionClosedError("AppwireClient: closed"))).toBe(
+    "Can't reach the hub right now.",
+  );
+});
+
+test("friendlyErrorMessage maps AppwireClient's cannot-call-while-closed rejection to the same plain sentence", () => {
+  expect(friendlyErrorMessage(new Error('AppwireClient: cannot call "model/list" while state is "closed"'))).toBe(
+    "Can't reach the hub right now.",
+  );
+  expect(friendlyErrorMessage(new Error('AppwireClient: cannot call "thread/start" while state is "connecting"'))).toBe(
+    "Can't reach the hub right now.",
+  );
+  expect(friendlyErrorMessage(new Error('AppwireClient: cannot call "thread/start"; not connected'))).toBe(
+    "Can't reach the hub right now.",
+  );
+});
+
+test("friendlyErrorMessage recognizes the same shape from FakeClient, tests' own stand-in", () => {
+  expect(friendlyErrorMessage(new Error('FakeClient: cannot call "thread/start" while state is "closed"'))).toBe(
+    "Can't reach the hub right now.",
+  );
+});
+
+test("friendlyErrorMessage recognizes the closed-client shape even as a bare string, not just an Error", () => {
+  expect(friendlyErrorMessage('AppwireClient: cannot call "model/list" while state is "closed"')).toBe(
+    "Can't reach the hub right now.",
+  );
+});
+
+test("friendlyErrorMessage never leaks a class name or method name for an unrelated internal error", () => {
+  const message = friendlyErrorMessage(new TypeError("Cannot read properties of undefined (reading 'foo')"));
+  expect(message).toBe("Something went wrong.");
+  expect(message).not.toMatch(/TypeError|properties of undefined/);
+});
+
+test("friendlyErrorMessage gives every other unknown rejection the same generic sentence", () => {
+  expect(friendlyErrorMessage("plain string failure")).toBe("Something went wrong.");
+  expect(friendlyErrorMessage(404)).toBe("Something went wrong.");
+  expect(friendlyErrorMessage(undefined)).toBe("Something went wrong.");
 });

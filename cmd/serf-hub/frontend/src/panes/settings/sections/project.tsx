@@ -22,7 +22,7 @@
 // (routing.ts's own navigate() dispatches popstate on every push, the same
 // signal AppShell itself listens for).
 import { useEffect, useState } from "react";
-import { errorText } from "../../../protocol/errors";
+import { friendlyErrorMessage } from "../../../protocol/errors";
 import type { LaunchConfigLayer, LaunchOption } from "../../../protocol/types.gen";
 import { launchConfigStore } from "../../../stores/launchConfig";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -90,7 +90,7 @@ export function ProjectSection(_props: ProjectSectionProps) {
         if (isCancelled()) return;
         setLoad({ phase: "ready", options: schema.options, current, globalDefaults });
       } catch (err) {
-        if (!isCancelled()) setLoad({ phase: "error", message: errorText(err) });
+        if (!isCancelled()) setLoad({ phase: "error", message: friendlyErrorMessage(err) });
       }
     },
     [cwd],

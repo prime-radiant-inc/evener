@@ -361,7 +361,11 @@ describe("DirListSetting", () => {
     await screen.findByText("/opt/plugins");
     await user.click(screen.getByRole("button", { name: "Remove /opt/plugins" }));
     await user.click(screen.getByRole("button", { name: "Remove" }));
-    await waitFor(() => expect(getToasts().some((t) => t.kind === "error" && t.text.includes("disk full"))).toBe(true));
+    await waitFor(() =>
+      expect(getToasts().some((t) => t.kind === "error" && t.text.includes("Remove failed:"))).toBe(true),
+    );
+    // Assert raw JS error text no longer appears in toast
+    expect(getToasts().some((t) => t.text.includes("disk full"))).toBe(false);
     expect(screen.getByText("/opt/plugins")).toBeTruthy();
   });
 });

@@ -5,6 +5,7 @@ import type { ThreadModel } from "../protocol/model";
 import { type PaneProps, registerPaneForTests } from "../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
+import { resetTreeStoreForTests, treeStore } from "../stores/tree";
 import type { AttentionSummary } from "../stores/tree";
 import { applyTitle, baseTitle, formatTitle } from "./title";
 
@@ -37,6 +38,7 @@ afterAll(() => {
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetThreadsStoreForTests();
+  resetTreeStoreForTests();
   document.title = "";
 });
 afterEach(() => {
@@ -72,6 +74,37 @@ describe("baseTitle", () => {
   test("a focused pane: '<pane title> · serf hub' (the honest divergence)", () => {
     workspaceStore.getState().openPane("doc", {});
     expect(baseTitle()).toBe("New session · serf hub");
+  });
+
+  test("with no hydrated thread, the tree store's title backs the tab title", () => {
+    treeStore.setState({
+      tree: {
+        generated_at: "2026-01-01T00:00:00Z",
+        sources: [],
+        live: [
+          {
+            row_id: "row_r2",
+            ref: "local:r2",
+            host_id: "local",
+            session_id: "local:r2",
+            title: "Fix Four Open Issues",
+            project: "test-project",
+            state: "idle",
+            kind: "session",
+            live: true,
+            children: [],
+          },
+        ],
+        needs_you: [],
+        pin_sections: [],
+        projects: [],
+        archived_projects: [],
+        test_runs: [],
+        attentionSummary: { needsYou: 0, error: 0, working: 0 },
+      },
+    });
+    workspaceStore.getState().openPane("doc", { ref: "local:r2" });
+    expect(baseTitle()).toBe("Fix Four Open Issues · serf hub");
   });
 
   test("a session pane resolves its live name via the threadName ctx", () => {

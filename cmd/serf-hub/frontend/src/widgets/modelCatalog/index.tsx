@@ -11,7 +11,7 @@
 // options-list: it needs provider group heads, non-interactive diagnostic
 // lines, and a list expanded the moment it opens.
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
-import { errorText } from "../../protocol/errors";
+import { friendlyErrorMessage } from "../../protocol/errors";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
@@ -340,7 +340,12 @@ export function ModelCatalog({
     try {
       setCatalog(await loadCatalog());
     } catch (err) {
-      setError(`Couldn't load models: ${errorText(err)}`);
+      // friendlyErrorMessage, not errorText: loadCatalog is wired to a real
+      // RPC at both call sites (spawn's harness-scoped fetch, settings'
+      // unscoped one) and a mid-teardown call can reject with
+      // AppwireClient's own "cannot call ... while state is closed" text -
+      // internal wiring detail that must never reach this panel.
+      setError(`Couldn't load models: ${friendlyErrorMessage(err)}`);
     } finally {
       setLoading(false);
     }

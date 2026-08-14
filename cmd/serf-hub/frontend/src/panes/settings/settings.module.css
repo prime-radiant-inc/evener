@@ -51,9 +51,18 @@
   outline-offset: -2px;
 }
 
+/* FIX 3a: var(--accent) is the raw hue (meant for glyphs/borders, not text -
+ * see tokens.css's own "-ink companions" comment) - on --accent-bg's own pale
+ * tint it read at borderline/failing contrast in the light theme, close
+ * enough to the neutral grey .link:hover wash (--hover-1) that a real user
+ * testing this read the selected item as barely-there next to a plain
+ * grey-background link (FIX 3b, below). --accent-ink is the AA-derived
+ * text form of the same hue, the same substitution toast.module.css already
+ * makes for text sitting on this exact --accent-bg fill.
+ */
 .linkActive {
   background: var(--accent-bg);
-  color: var(--accent);
+  color: var(--accent-ink);
   font-weight: var(--font-weight-medium);
 }
 

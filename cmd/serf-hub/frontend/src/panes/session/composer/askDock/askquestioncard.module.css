@@ -61,6 +61,13 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1) var(--space-2);
+  /* Touch target (UX fix, real-phone measurement): an option WITH a detail
+   * line stood ~46-68px tall from its own wrapped content, but a short
+   * option with no detail collapsed to ~21px - just the chip's line height.
+   * Vertical padding gives every row the same comfortable size regardless
+   * of whether it carries a detail, at every pointer type; the (pointer:
+   * coarse) block below grows it the rest of the way to --tap-min on touch. */
+  padding: var(--space-2) 0;
 }
 
 .optionChip {
@@ -160,4 +167,20 @@
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
+}
+
+/* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
+ * 4; UX fix, real-phone measurement: an option row with no detail measured
+ * ~21px tall, and the skip/fallback .toggleButton pair measured 41x25) -
+ * min-height, not height, so the desktop sizing above stays the desktop
+ * rule and this only ever grows it. Same (pointer: coarse) pattern as
+ * askdock.module.css's own .tab rule, since neither .option nor
+ * .toggleButton is a widgets/button consumer. */
+@media (pointer: coarse) {
+  .option {
+    min-height: var(--tap-min);
+  }
+  .toggleButton {
+    min-height: var(--tap-min);
+  }
 }

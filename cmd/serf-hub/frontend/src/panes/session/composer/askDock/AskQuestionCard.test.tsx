@@ -268,3 +268,36 @@ test("options render inside a group whose role reflects single vs multi select",
   render(<Harness q={question({ multiSelect: true })} />);
   expect(screen.getByRole("group")).toBeTruthy();
 });
+
+// Touch target (UX fix, real-phone measurement): an option WITH a detail
+// line stands ~46-68px tall (chip + wrapped detail), but an option with no
+// detail collapsed to ~21px - just the chip's own line height, well under
+// the platform's 44px tap floor. padding gives every option row a
+// consistent comfortable size at desktop regardless of whether it has a
+// detail; the (pointer: coarse) block (same pattern as askdock.module.css's
+// own .tab rule) grows short rows the rest of the way to --tap-min on touch.
+test("every option row gets comfortable padding, and reaches the tap floor on a coarse pointer", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askquestioncard.module.css"), "utf8");
+  const desktopRule = css.match(/\.option\s*\{([^}]*)\}/);
+  expect(desktopRule, "askquestioncard.module.css must declare a base .option rule").not.toBeNull();
+  expect(desktopRule![1]).toMatch(/padding:/);
+
+  const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
+  expect(coarse, "askquestioncard.module.css must have a (pointer: coarse) media block").not.toBeNull();
+  const rule = coarse![1]!.match(/\.option\s*\{([^}]*)\}/);
+  expect(rule, "the coarse-pointer block must override .option").not.toBeNull();
+  expect(rule![1]).toContain("min-height: var(--tap-min)");
+});
+
+// Touch target (UX fix, real-phone measurement): the skip button (and its
+// sibling if_unanswered fallback button, same .toggleButton class) measured
+// 41x25 - well under the 44px tap floor. Same (pointer: coarse) pattern as
+// .option/.tab above.
+test("the skip/fallback toggle buttons reach the tap floor on a coarse pointer", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askquestioncard.module.css"), "utf8");
+  const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
+  expect(coarse, "askquestioncard.module.css must have a (pointer: coarse) media block").not.toBeNull();
+  const rule = coarse![1]!.match(/\.toggleButton\s*\{([^}]*)\}/);
+  expect(rule, "the coarse-pointer block must override .toggleButton").not.toBeNull();
+  expect(rule![1]).toContain("min-height: var(--tap-min)");
+});

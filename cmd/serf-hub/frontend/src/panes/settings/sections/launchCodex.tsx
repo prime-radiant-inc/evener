@@ -5,6 +5,7 @@
 // (parity-m7-settings.md §10). See overviewSeam.ts's own top comment for why
 // `useOverview` is injected rather than importing stores/settingsOverview.ts
 // directly.
+import { friendlyErrorMessage } from "../../../protocol/errors";
 import type { SettingsCodexLaunchEntry } from "../../../protocol/types.gen";
 import { Loader } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -102,7 +103,7 @@ export function CodexLaunchSection({ useOverview = useSettingsOverview }: CodexL
         the current configuration (read-only).
       </p>
       {loading && <Loader label="Loading" />}
-      {error && <p className={CLASS.help}>Failed to load: {error}</p>}
+      {error && <p className={CLASS.help}>Failed to load: {friendlyErrorMessage(error)}</p>}
       {!loading && !error && entries.length === 0 && (
         <div>
           <p className={CLASS.help}>No codex launch entries configured.</p>

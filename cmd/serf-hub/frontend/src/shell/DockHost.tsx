@@ -11,9 +11,9 @@ import { DockviewReact, type DockviewReadyEvent, type IDockviewPanelProps } from
 import { Suspense, useEffect, useRef, useState } from "react";
 import "dockview-react/dist/styles/dockview.css";
 import "./dockview-theme.css";
-import type { ThreadModel } from "../protocol/model";
+import { resolveThreadName } from "../panes/session/threadTitle";
 import { threadsStore, useThreadsStore } from "../stores/threads";
-import { findSessionNode, type TreeResponse, treeStore, useTreeStore } from "../stores/tree";
+import { treeStore, useTreeStore } from "../stores/tree";
 import { EmptyState } from "../widgets/emptystate";
 import styles from "./DockHost.module.css";
 import { PaneTab } from "./PaneTab";
@@ -109,28 +109,6 @@ const PANE_COMPONENT_KEY = "pane";
 // params object shaped exactly like PanePanelParams, so the cast reflects a
 // real, enforced invariant rather than papering over a type mismatch.
 const COMPONENTS = { [PANE_COMPONENT_KEY]: PaneHost as React.FunctionComponent<IDockviewPanelProps> };
-
-// Resolves a pane title's threadName lookup (PaneTitleCtx) against BOTH
-// data sources a session pane's tab can draw a friendly title from: the
-// live ThreadModel (threads, keyed by ref) first, since it is the thread's
-// own current name and wins the moment it's hydrated - falling back to the
-// rail's already-loaded tree/session-index snapshot (findSessionNode) when
-// the thread hasn't hydrated a name yet, or isn't tracked at all. A pane
-// opened before its transcript hydrates (or with the WS down) would
-// otherwise show paneFor("session").title's own last-resort fallback, the
-// raw ref, even though the tree the rail already fetched knows the real
-// title - see this file's own doc comment on paneFor("session")'s title()
-// in panes/session/index.tsx, whose "fall back to the raw ref" branch this
-// keeps honest by only ever reaching it when NEITHER source has a title.
-function resolveThreadName(
-  threads: Map<string, ThreadModel>,
-  tree: TreeResponse | null,
-  ref: string,
-): string | undefined {
-  const live = threads.get(ref)?.name;
-  if (live !== undefined) return live;
-  return tree ? findSessionNode(tree, ref)?.title : undefined;
-}
 
 function readStoredLayout(): unknown {
   try {

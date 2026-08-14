@@ -246,5 +246,9 @@ test("a failed save while removing a config file toasts failure", async () => {
   await screen.findByText("/etc/mcp.json");
   await user.click(screen.getByRole("button", { name: "Remove /etc/mcp.json" }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
-  await waitFor(() => expect(getToasts().some((t) => t.kind === "error" && t.text.includes("disk full"))).toBe(true));
+  await waitFor(() =>
+    expect(getToasts().some((t) => t.kind === "error" && t.text.includes("Remove failed:"))).toBe(true),
+  );
+  // Assert raw JS error text no longer appears in toast
+  expect(getToasts().some((t) => t.text.includes("disk full"))).toBe(false);
 });

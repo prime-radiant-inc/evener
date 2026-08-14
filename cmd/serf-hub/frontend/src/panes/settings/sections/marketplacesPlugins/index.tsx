@@ -7,6 +7,7 @@
 // rather than owned by BrowseSection alone, because MarketplacesSection's
 // Refresh action needs to read it too (see that component's own comment).
 import { useEffect, useState } from "react";
+import { friendlyErrorMessage } from "../../../../protocol/errors";
 import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { EmptyState, Skeleton } from "../../../../widgets";
@@ -68,7 +69,7 @@ export function MarketplacesPluginsSection() {
         you need — installed, enabled plugins load into every new serf session.
       </p>
       {loadError !== null ? (
-        <EmptyState title="Failed to load" hint={loadError} />
+        <EmptyState title="Failed to load" hint={friendlyErrorMessage(loadError)} />
       ) : stillLoading ? (
         <Skeleton />
       ) : (

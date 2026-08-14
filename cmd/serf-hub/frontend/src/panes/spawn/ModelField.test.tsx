@@ -71,7 +71,12 @@ test("Change model loads the catalog and picking one reports the qualified id", 
   expect(loadModels).toHaveBeenCalledTimes(1);
 });
 
-test("surfaces an inline error when the model catalog fails to load", async () => {
+// A plain Error's own message is internal detail (not something the hub
+// wrote for a person to read), so the underlying ModelCatalog widget's
+// friendlyErrorMessage replaces it with a generic sentence - see
+// widgets/modelCatalog/modelCatalog.test.tsx and protocol/errors.test.ts for
+// that contract.
+test("surfaces a friendly inline error when the model catalog fails to load", async () => {
   const user = userEvent.setup();
   render(
     <ModelField
@@ -82,7 +87,8 @@ test("surfaces an inline error when the model catalog fails to load", async () =
   );
 
   await user.click(screen.getByRole("button", { name: /change model/i }));
-  expect(await screen.findByText(/providers unavailable/i)).toBeTruthy();
+  expect(await screen.findByText("Couldn't load models: Something went wrong.")).toBeTruthy();
+  expect(screen.queryByText(/providers unavailable/i)).toBeNull();
 });
 
 test("Escape returns to the closed display without changing the value", async () => {

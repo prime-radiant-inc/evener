@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { friendlyErrorMessage } from "../../../protocol/errors";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
 import { Button, EmptyState, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -41,7 +42,11 @@ export function GeneralSection() {
     return (
       <EmptyState
         title="Couldn't load general settings"
-        hint={error}
+        // friendlyErrorMessage, not the raw store error: settingsOverview.ts
+        // stores errorText(err) as-is, which is AppwireClient's own message
+        // verbatim for a client-unreachable rejection - internal wiring
+        // detail, never something to show here.
+        hint={friendlyErrorMessage(error)}
         action={
           <Button size="sm" onClick={() => void settingsOverviewStore.getState().refresh()}>
             Retry

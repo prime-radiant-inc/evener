@@ -509,13 +509,68 @@ test("a completion resolving AFTER a newer one never overwrites the newer entrie
   expect(screen.getByRole("option", { name: /log/ })).toBeTruthy();
 });
 
-test("a rejected complete renders the empty status line rather than throwing", async () => {
+// A rejected listing must not read as "Nothing here." - that hides a real
+// failure (a permissions error, a closed client) behind the words an
+// actually-empty directory gets, which is exactly the reported bug: the
+// working-directory browse panel showed the empty state when the listing RPC
+// failed. friendlyErrorMessage's own generic sentence stands in for a plain
+// Error's internal message - see protocol/errors.test.ts for that contract.
+test("a rejected complete renders the friendly error, never the empty status line", async () => {
   const user = userEvent.setup();
   renderField({ value: "/home/jesse", complete: vi.fn().mockRejectedValue(new Error("permission denied")) });
 
   await open(user);
 
+  expect(await screen.findByText("Something went wrong.")).toBeTruthy();
+  expect(screen.queryByText("Nothing here.")).toBeNull();
+  expect(screen.queryByText(/permission denied/i)).toBeNull();
+});
+
+// The reported bug, verbatim: a client-unreachable rejection specifically -
+// AppwireClient's own "cannot call ... while state is closed" text - must
+// show the friendly hub-unreachable sentence, not leak internal wiring.
+test("a client-unreachable rejection renders the friendly hub-unreachable sentence, not the raw text", async () => {
+  const user = userEvent.setup();
+  renderField({
+    value: "/home/jesse",
+    complete: vi.fn().mockRejectedValue(new Error('AppwireClient: cannot call "serf/paths/complete"; not connected')),
+  });
+
+  await open(user);
+
+  expect(await screen.findByText("Can't reach the hub right now.")).toBeTruthy();
+  expect(screen.queryByText("Nothing here.")).toBeNull();
+});
+
+// A genuinely empty directory (the listing RESOLVES to []) is a completely
+// different situation from a rejection, and must keep its own honest text.
+test("a resolved-but-empty listing still renders Nothing here, not an error", async () => {
+  const user = userEvent.setup();
+  renderField({ value: "/home/jesse", complete: vi.fn().mockResolvedValue([]) });
+
+  await open(user);
+
   expect(await screen.findByText("Nothing here.")).toBeTruthy();
+});
+
+// A later successful listing (e.g. after browsing into a readable directory)
+// must clear a prior failure's listError - otherwise a directory that
+// genuinely has no children would misreport the OLD error instead of
+// "Nothing here."
+test("browsing into a directory that loads fine clears an earlier rejection's error", async () => {
+  const user = userEvent.setup();
+  const complete = vi.fn((prefix: string) =>
+    prefix === "/home/jesse/" ? Promise.reject(new Error("permission denied")) : Promise.resolve(["/home/other"]),
+  );
+  renderField({ value: "/home/jesse", complete });
+
+  await open(user);
+  await screen.findByText("Something went wrong.");
+
+  await user.click(await screen.findByRole("option", { name: "../" }));
+
+  expect(await screen.findByRole("option", { name: /other/ })).toBeTruthy();
+  expect(screen.queryByText("Something went wrong.")).toBeNull();
 });
 
 // --- keyboard ---------------------------------------------------------------
