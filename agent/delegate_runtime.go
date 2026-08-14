@@ -109,11 +109,6 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		isolation.cleanup(s, reservation.delegateID)
 		return delegateStartFailed(errors.Join(err, abortErr))
 	}
-	if err := runtime.reserveRetainedSlot(); err != nil {
-		abortErr := s.delegateController.AbortStart(reservation)
-		isolation.cleanup(s, reservation.delegateID)
-		return delegateStartFailed(errors.Join(err, abortErr))
-	}
 	started, err := s.delegateController.CommitStart(reservation)
 	if err != nil {
 		isolation.cleanup(s, reservation.delegateID)
@@ -328,24 +323,6 @@ func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
 	if isolation.worktreePath != "" {
 		s.rollbackFreshDelegateWorktree(delegateID, isolation.worktreePath, isolation.worktreeProject)
 	}
-}
-
-func (runtime delegateRuntime) reserveRetainedSlot() error {
-	s := runtime.owner
-	var evicted []*subagent
-	var err error
-	if reserve := s.cfg.testOnly.subagentReserveSlot; reserve != nil {
-		evicted, err = reserve(s)
-	} else {
-		evicted, err = s.subagents.reserveSlot()
-	}
-	if err != nil {
-		return err
-	}
-	for _, child := range evicted {
-		child.sess.Close()
-	}
-	return nil
 }
 
 func (runtime delegateRuntime) construct(ctx context.Context, args delegateArgs, selection subagentModelSelection, started delegateStartCommit, isolation delegateIsolation) (*preparedSubagentRun, error) {

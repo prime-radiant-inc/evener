@@ -49,6 +49,27 @@ func TestDelegateResourceCreate_IsolationFailurePublishesNothing(t *testing.T) {
 	}
 }
 
+func TestDelegateResourceCreate_StableRouteSkipsLegacyRetentionReservation(t *testing.T) {
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	legacyReservationCalled := false
+	root.cfg.testOnly.subagentReserveSlot = func(*Session) ([]*subagent, error) {
+		legacyReservationCalled = true
+		return nil, errors.New("legacy retained-session reservation invoked")
+	}
+
+	result := root.createDelegate(context.Background(), delegateArgs{
+		Task:                "do not reclaim legacy sessions",
+		Background:          true,
+		DelegationAllowance: 0,
+	})
+	if legacyReservationCalled {
+		t.Fatal("stable create invoked the legacy retained-session reservation seam")
+	}
+	if result.Err != nil {
+		t.Fatalf("createDelegate: %v", result.Err)
+	}
+}
+
 func TestDelegateResourceCreate_StableIdentityCommitsBeforeRuntimeLaunch(t *testing.T) {
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	wantErr := errors.New("injected child construction failure")
