@@ -22,6 +22,7 @@ type delegateSteeringClaim struct {
 	delegateID string
 	lease      delegateLease
 	runtime    *Session
+	entryID    string
 }
 
 type delegateModelRequestClaim struct {
@@ -48,7 +49,7 @@ func (c *delegateTreeController) Steer(ctx context.Context, actor delegateActor,
 	if err != nil {
 		return delegateMutationPlans{}, err
 	}
-	entry, err := claim.runtime.appendDelegateSteeringDurably(message)
+	entry, err := claim.runtime.appendDelegateSteeringDurably(message, claim.entryID)
 	if err != nil {
 		_ = c.AbortSteerPersistence(claim)
 		return delegateMutationPlans{}, err
@@ -78,6 +79,7 @@ func (c *delegateTreeController) BeginSteerPersistence(actor delegateActor, dele
 		delegateID: delegateID,
 		lease:      live.binding.lease,
 		runtime:    live.binding.runtime,
+		entryID:    newQueueEntryID(),
 	}
 	c.steeringClaims[claim.token] = claim
 	c.evidenceVersion++
@@ -87,7 +89,7 @@ func (c *delegateTreeController) BeginSteerPersistence(actor delegateActor, dele
 func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteeringClaim, entry delegateTranscriptEntry) (delegateMutationPlans, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if claim == nil || c.steeringClaims[claim.token] != claim || entry.entryID == "" {
+	if claim == nil || c.steeringClaims[claim.token] != claim || entry.entryID == "" || entry.entryID != claim.entryID {
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
 	delete(c.steeringClaims, claim.token)
@@ -150,7 +152,7 @@ func (c *delegateTreeController) BeginModelRequest(lease delegateLease) (*delega
 	return claim, nil
 }
 
-func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelRequestClaim, history []schema.Turn) ([]llm.Message, error) {
+func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelRequestClaim, history []schema.Turn, scope replayScope) ([]llm.Message, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if claim == nil || c.modelClaims[claim.token] != claim {
@@ -166,10 +168,25 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 		return nil, errDelegateStaleLease
 	}
 	pending := make([]delegateSteeringAdmission, 0, len(claim.steeringIDs))
+	claimedIDs := make(map[string]struct{}, len(claim.steeringIDs))
 	for _, entryID := range claim.steeringIDs {
 		pending = append(pending, delegateSteeringAdmission{entryID: entryID})
+		claimedIDs[entryID] = struct{}{}
 	}
-	history, bound := projectDelegatePendingSteers(history, pending)
+	lateIDs := make(map[string]struct{})
+	for _, admission := range live.pendingSteers {
+		if _, claimed := claimedIDs[admission.entryID]; !claimed {
+			lateIDs[admission.entryID] = struct{}{}
+		}
+	}
+	for _, steeringClaim := range c.steeringClaims {
+		if steeringClaim != nil && steeringClaim.lease == claim.lease {
+			if _, claimed := claimedIDs[steeringClaim.entryID]; !claimed {
+				lateIDs[steeringClaim.entryID] = struct{}{}
+			}
+		}
+	}
+	history, bound := projectDelegatePendingSteers(history, pending, lateIDs)
 	kept := live.pendingSteers[:0]
 	for _, pending := range live.pendingSteers {
 		if _, claimed := bound[pending.entryID]; !claimed {
@@ -178,7 +195,7 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 	}
 	live.pendingSteers = kept
 	c.evidenceVersion++
-	return expandHistory(history, replayScope{}), nil
+	return expandHistory(history, scope), nil
 }
 
 func (c *delegateTreeController) AbortModelRequest(claim *delegateModelRequestClaim) error {
@@ -219,7 +236,7 @@ func (c *delegateTreeController) dropRuntimeClaimsForMembersLocked(members map[s
 	}
 }
 
-func projectDelegatePendingSteers(history []schema.Turn, pending []delegateSteeringAdmission) ([]schema.Turn, map[string]struct{}) {
+func projectDelegatePendingSteers(history []schema.Turn, pending []delegateSteeringAdmission, excluded map[string]struct{}) ([]schema.Turn, map[string]struct{}) {
 	order := make(map[string]int, len(pending))
 	for i, admission := range pending {
 		order[admission.entryID] = i
@@ -228,6 +245,11 @@ func projectDelegatePendingSteers(history []schema.Turn, pending []delegateSteer
 	steers := make([]schema.Turn, len(pending))
 	found := make([]bool, len(pending))
 	for _, turn := range history {
+		if turn.Kind == schema.TurnSteering {
+			if _, exclude := excluded[turn.StableTurnID]; exclude {
+				continue
+			}
+		}
 		index, waiting := order[turn.StableTurnID]
 		if waiting && turn.Kind == schema.TurnSteering && !found[index] {
 			steers[index] = turn
@@ -251,7 +273,7 @@ func (c *delegateTreeController) BeginTool(lease delegateLease) error {
 	return c.beginRuntimeBoundary(lease)
 }
 
-func (s *Session) appendDelegateSteeringDurably(message string) (delegateTranscriptEntry, error) {
+func (s *Session) appendDelegateSteeringDurably(message, stableTurnID string) (delegateTranscriptEntry, error) {
 	s.mu.Lock()
 	ready := s.transcriptReady && s.transcript != nil
 	s.mu.Unlock()
@@ -261,7 +283,7 @@ func (s *Session) appendDelegateSteeringDurably(message string) (delegateTranscr
 	turn := schema.NewTurn(schema.TurnSteering, llm.User(message))
 	turn.Timestamp = s.sclock().Now().UTC()
 	turn.SteeringSource = "user"
-	turn.StableTurnID = newQueueEntryID()
+	turn.StableTurnID = stableTurnID
 	if err := s.writeTranscriptDurable(turn); err != nil {
 		return delegateTranscriptEntry{}, err
 	}

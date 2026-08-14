@@ -231,7 +231,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			return nil, "", nil, llm.Request{}, "", claimErr
 		}
 		snapshot := s.delegateModelHistorySnapshot()
-		history, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot)
+		history, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot, scope)
 		if claimErr != nil {
 			_ = s.delegateController.AbortModelRequest(claim)
 			return nil, "", nil, llm.Request{}, "", claimErr

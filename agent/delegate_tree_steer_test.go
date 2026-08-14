@@ -9,10 +9,13 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 func TestDelegateControllerSteerPersistsBeforeAcknowledgement(t *testing.T) {
@@ -250,12 +253,119 @@ func TestDelegateControllerSteerAfterRequestBindWaitsForNextRequest(t *testing.T
 	}
 }
 
+func TestDelegateControllerModelSnapshotDefersUncompletedSteerUntilNextRequest(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	steerClaim, err := c.BeginSteerPersistence(rootDelegateActor("root-session"), lease.delegateID)
+	if err != nil {
+		t.Fatalf("BeginSteerPersistence: %v", err)
+	}
+	entry, err := steerClaim.runtime.appendDelegateSteeringDurably("in-flight steer", steerClaim.entryID)
+	if err != nil {
+		t.Fatalf("append steering: %v", err)
+	}
+
+	current, err := completeDelegateModelRequest(c, lease)
+	if err != nil {
+		t.Fatalf("current model request: %v", err)
+	}
+	if countMessageText(current, "in-flight steer") != 0 {
+		t.Fatalf("uncompleted steer entered current request: %#v", current)
+	}
+	if _, err := c.CompleteSteerPersistence(steerClaim, entry); err != nil {
+		t.Fatalf("CompleteSteerPersistence: %v", err)
+	}
+	next, err := completeDelegateModelRequest(c, lease)
+	if err != nil {
+		t.Fatalf("next model request: %v", err)
+	}
+	if got := countMessageText(next, "in-flight steer"); got != 1 {
+		t.Fatalf("next request contains in-flight steer %d times, want once: %#v", got, next)
+	}
+}
+
+func TestDelegateControllerModelSnapshotDefersSteerAcceptedAfterRequestBind(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	runtime := attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	modelClaim, err := c.BeginModelRequest(lease)
+	if err != nil {
+		t.Fatalf("BeginModelRequest: %v", err)
+	}
+	if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), lease.delegateID, "late accepted steer"); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+	current, err := c.CompleteModelRequest(modelClaim, runtime.delegateModelHistorySnapshot(), replayScope{})
+	if err != nil {
+		t.Fatalf("CompleteModelRequest: %v", err)
+	}
+	if countMessageText(current, "late accepted steer") != 0 {
+		t.Fatalf("late accepted steer entered already-bound request: %#v", current)
+	}
+	next, err := completeDelegateModelRequest(c, lease)
+	if err != nil {
+		t.Fatalf("next model request: %v", err)
+	}
+	if got := countMessageText(next, "late accepted steer"); got != 1 {
+		t.Fatalf("next request contains late accepted steer %d times, want once: %#v", got, next)
+	}
+}
+
+func TestDelegateControllerModelRequestUsesOutgoingReplayScope(t *testing.T) {
+	profile, err := provider.ResolveProfileFromConfig(providercfg.Config{
+		Instances: []providercfg.InstanceConfig{{Name: "ant", Type: "anthropic"}},
+	}, "ant/claude-sonnet-4-5")
+	if err != nil {
+		t.Fatalf("resolve anthropic profile: %v", err)
+	}
+	runtime := newSession(t, withAdapter(&fakeAdapter{name: "ant"}), withProfile(profile), withoutGitSnapshot())
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	runtime.delegateController = c
+	c.mu.Lock()
+	c.live[lease.delegateID].runtime = runtime
+	c.live[lease.delegateID].binding.runtime = runtime
+	c.mu.Unlock()
+	prior := assistantThinkingTurn("ant", "claude-opus-4-6", "claude-opus-4-6")
+	prior.StableTurnID = "turn_prior_model"
+	runtime.mu.Lock()
+	runtime.history = []schema.Turn{prior}
+	runtime.turnHistoryBaseline = len(runtime.history)
+	runtime.mu.Unlock()
+	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
+	var timings events.RoundTimings
+	_, _, history, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings)
+	if err != nil {
+		t.Fatalf("prepare delegate model request: %v", err)
+	}
+	if hasContentKind(history, llm.ContentThinking) {
+		t.Fatalf("delegate request replayed thinking from a different anthropic model: %#v", history)
+	}
+	if !hasContentKind(history, llm.ContentText) {
+		t.Fatalf("delegate request stripped ordinary answer text: %#v", history)
+	}
+}
+
+func countMessageText(messages []llm.Message, want string) int {
+	count := 0
+	for _, message := range messages {
+		if message.Text() == want {
+			count++
+		}
+	}
+	return count
+}
+
 func completeDelegateModelRequest(c *delegateTreeController, lease delegateLease) ([]llm.Message, error) {
 	claim, err := c.BeginModelRequest(lease)
 	if err != nil {
 		return nil, err
 	}
-	return c.CompleteModelRequest(claim, claim.runtime.delegateModelHistorySnapshot())
+	return c.CompleteModelRequest(claim, claim.runtime.delegateModelHistorySnapshot(), replayScope{})
 }
 
 func TestDelegateControllerBeginToolRejectsStoppingOrStaleLease(t *testing.T) {

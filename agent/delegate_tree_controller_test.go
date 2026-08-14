@@ -303,7 +303,7 @@ func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing
 		{name: "lifecycle method expression", source: `package agent; func probe() { commit := (*delegateTreeController).CommitStart; _ = commit }`, symbol: "CommitStart"},
 		{name: "bound lifecycle reference through type alias", source: `package agent; type active = delegateTreeController; func probe(controller *active) { commit := controller.CommitStart; _ = commit }`, symbol: "CommitStart"},
 		{name: "lifecycle method expression through type alias", source: `package agent; type active = delegateTreeController; func probe() { commit := (*active).CommitStart; _ = commit }`, symbol: "CommitStart"},
-		{name: "session steering call", source: `package agent; func probe(session *Session) { session.appendDelegateSteeringDurably("steer") }`, symbol: "appendDelegateSteeringDurably"},
+		{name: "session steering call", source: `package agent; func probe(session *Session) { session.appendDelegateSteeringDurably("steer", "turn_id") }`, symbol: "appendDelegateSteeringDurably"},
 		{name: "bound session steering alias", source: `package agent; func probe(session *Session) { appendSteer := session.appendDelegateSteeringDurably; _ = appendSteer }`, symbol: "appendDelegateSteeringDurably"},
 		{name: "session steering method expression", source: `package agent; func probe() { appendSteer := (*Session).appendDelegateSteeringDurably; _ = appendSteer }`, symbol: "appendDelegateSteeringDurably"},
 		{name: "session steering method expression through type alias", source: `package agent; type child = Session; func probe() { appendSteer := (*child).appendDelegateSteeringDurably; _ = appendSteer }`, symbol: "appendDelegateSteeringDurably"},
@@ -351,8 +351,8 @@ func TestDelegateControllerDormancyGuardRejectsOmittedProductionFile(t *testing.
 func TestDelegateControllerDormancyGuardRejectsExtraSameFunctionReference(t *testing.T) {
 	files, file, info, pkg := typeCheckDelegateControllerDormancyFixture(t, "delegate_tree_steer.go", `package agent
 func probe(session *Session) {
-	session.appendDelegateSteeringDurably("first")
-	session.appendDelegateSteeringDurably("second")
+	session.appendDelegateSteeringDurably("first", "turn_first")
+	session.appendDelegateSteeringDurably("second", "turn_second")
 }`)
 	violations := delegateControllerDormancyViolations(files, file, info, pkg)
 	expected := map[delegateControllerDormancyInventoryKey]int{
@@ -637,7 +637,7 @@ type delegateToolResultCommit struct{}
 func openDelegateTreeController(delegateTreeControllerConfig) (*delegateTreeController, error) { return nil, nil }
 func deliverDelegatePacket() {}
 func (*delegateTreeController) CommitStart(*delegateStartReservation) (delegateStartCommit, error) { return delegateStartCommit{}, nil }
-func (*Session) appendDelegateSteeringDurably(string) {}
+func (*Session) appendDelegateSteeringDurably(string, string) {}
 func (*Session) resolveAttentionDurably([]string, string) {}
 func (*delegateToolResultCommit) Complete(bool) {}
 `, 0)
