@@ -325,6 +325,103 @@ func TestDelegateResourceCreate_ResumabilityAppendFailureDestroysNothing(t *test
 	}
 }
 
+func TestDelegateResourceCreate_StopBeforeAttachDisposesUnadoptedSession(t *testing.T) {
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	runtime, started, isolation, prepared := prepareCommittedUnadoptedDelegate(t, root, "stop before parent attach")
+	_, cancelPlan, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.ID()), started.lease.delegateID)
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	executeDelegateCancelPlan(cancelPlan)
+
+	result := runtime.failCommittedStart(started, isolation, prepared, context.Canceled, "construction_failed")
+	if result.DelegateID != started.lease.delegateID {
+		t.Fatalf("failed create delegate ID = %q, want %q", result.DelegateID, started.lease.delegateID)
+	}
+	if got := root.subagents.get(prepared.sub.id); got != nil {
+		t.Fatalf("stop-winning unadopted child was inserted into parent manager: result_err=%v disposition=%d child=%#v", result.Err, committedStartFailureDisposition(result.Err), got)
+	}
+	if got := prepared.sub.sess.State(); got != SessionClosed {
+		t.Fatalf("stop-winning unadopted child state = %q, want %q", got, SessionClosed)
+	}
+	aggregate := delegateAggregateSnapshot(t, root.delegateController, started.lease.delegateID)
+	if !aggregate.Resumable || aggregate.CurrentRunOpen {
+		t.Fatalf("stop-winning delegate = %#v, want settled with durable resumability retained", aggregate)
+	}
+}
+
+func TestDelegateResourceCreate_CloseAfterDrainRefusesFailedStartRetention(t *testing.T) {
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	runtime, started, isolation, prepared := prepareCommittedUnadoptedDelegate(t, root, "close after manager drain")
+	root.subagents.drainForClose()
+	if err := root.delegateController.store.Close(); err != nil {
+		t.Fatalf("close delegate store: %v", err)
+	}
+
+	constructionErr := errors.New("construction failed after controller attachment")
+	result := runtime.failCommittedStart(started, isolation, prepared, constructionErr, "construction_failed")
+	if !errors.Is(result.Err, constructionErr) || !strings.Contains(result.Err.Error(), "store is closed") {
+		t.Fatalf("failed create error = %v, want construction and append failures", result.Err)
+	}
+	if got := root.subagents.get(prepared.sub.id); got != nil {
+		t.Fatalf("late failed-start retention escaped the close drain: %#v", got)
+	}
+	if got := prepared.sub.sess.State(); got != SessionClosed {
+		t.Fatalf("late failed-start candidate state = %q, want %q", got, SessionClosed)
+	}
+	aggregate := delegateAggregateSnapshot(t, root.delegateController, started.lease.delegateID)
+	root.delegateController.mu.Lock()
+	live := root.delegateController.live[started.lease.delegateID]
+	root.delegateController.mu.Unlock()
+	if aggregate.Phase != delegatestore.PhaseRunning || !aggregate.CurrentRunOpen || !aggregate.Resumable || live == nil || !live.recoveryRequired {
+		t.Fatalf("append-failed delegate = aggregate %#v live %#v, want fenced exact generation", aggregate, live)
+	}
+	for _, path := range []string{
+		started.transcriptPath,
+		filepath.Join(root.stateDir, sessionsSubdir, prepared.sub.id+".meta.json"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("durable isolation artifact %s was not retained: %v", path, err)
+		}
+	}
+}
+
+func prepareCommittedUnadoptedDelegate(t *testing.T, root *Session, task string) (delegateRuntime, delegateStartCommit, delegateIsolation, *preparedSubagentRun) {
+	t.Helper()
+	runtime := delegateRuntime{owner: root}
+	ctx := context.Background()
+	args := delegateArgs{Task: task, Background: true, DelegationAllowance: 0}
+	selection, err := root.selectSubagentModel(ctx, args.Model, args.AgentType)
+	if err != nil {
+		t.Fatalf("selectSubagentModel: %v", err)
+	}
+	descriptor, project, err := runtime.describe(ctx, args, task, "", nil, selection)
+	if err != nil {
+		t.Fatalf("describe delegate: %v", err)
+	}
+	reservation, err := root.delegateController.ReserveCreate(rootDelegateActor(root.ID()), descriptor)
+	if err != nil {
+		t.Fatalf("ReserveCreate: %v", err)
+	}
+	isolation, err := runtime.prepareIsolation(ctx, reservation, project, nil)
+	if err != nil {
+		t.Fatalf("prepareIsolation: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	prepared, err := runtime.construct(ctx, args, selection, started, isolation)
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	t.Cleanup(prepared.disposeUnadopted)
+	if err := root.delegateController.AttachRuntime(started.lease, prepared.sub.sess); err != nil {
+		t.Fatalf("AttachRuntime: %v", err)
+	}
+	return runtime, started, isolation, prepared
+}
+
 func TestDelegateResourceCreate_DescendantEventCallbackSurvivesSpawnConfig(t *testing.T) {
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	observed := make(chan events.SessionEvent, 1)

@@ -62,6 +62,34 @@ type delegateFinish struct {
 	endedAt     time.Time
 }
 
+type delegateCommittedStartFailureDisposition uint8
+
+const (
+	delegateCommittedStartFailureStopWon delegateCommittedStartFailureDisposition = iota + 1
+	delegateCommittedStartFailureAppendFailed
+)
+
+type delegateCommittedStartFailureError struct {
+	disposition delegateCommittedStartFailureDisposition
+	cause       error
+}
+
+func (e *delegateCommittedStartFailureError) Error() string {
+	return e.cause.Error()
+}
+
+func (e *delegateCommittedStartFailureError) Unwrap() error {
+	return e.cause
+}
+
+func committedStartFailureDisposition(err error) delegateCommittedStartFailureDisposition {
+	var failure *delegateCommittedStartFailureError
+	if errors.As(err, &failure) {
+		return failure.disposition
+	}
+	return 0
+}
+
 type delegateInputClaim struct {
 	lease delegateLease
 	token uint64
@@ -312,7 +340,11 @@ func (c *delegateTreeController) FailCommittedStart(lease delegateLease, failure
 	if aggregate.Phase == delegatestore.PhaseStopping {
 		plans, generationCancel, finishErr := c.finishStoppedStartLocked(lease, live)
 		cancel = generationCancel
-		return plans, finishErr
+		disposition := delegateCommittedStartFailureStopWon
+		if finishErr != errDelegateTargetBusy {
+			disposition = delegateCommittedStartFailureAppendFailed
+		}
+		return plans, &delegateCommittedStartFailureError{disposition: disposition, cause: finishErr}
 	}
 	closeReason = strings.TrimSpace(closeReason)
 	if closeReason == "" || aggregate.Phase != delegatestore.PhaseRunning || live.recoveryRequired || live.binding.ready {
@@ -326,7 +358,10 @@ func (c *delegateTreeController) FailCommittedStart(lease delegateLease, failure
 	}
 	if _, appendErr := c.appendLocked(terminal, finish, closure); appendErr != nil {
 		live.recoveryRequired = true
-		return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, appendErr
+		return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, &delegateCommittedStartFailureError{
+			disposition: delegateCommittedStartFailureAppendFailed,
+			cause:       appendErr,
+		}
 	}
 	plans, generationCancel := c.generationFinishedPlansLocked(lease, finish.RunFinished.DeliveryID)
 	cancel = generationCancel

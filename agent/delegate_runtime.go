@@ -446,11 +446,16 @@ func (runtime delegateRuntime) failCommittedStart(started delegateStartCommit, i
 	finish := delegatePermanentStartFailure(constructionErr, reason)
 	plans, finishErr := runtime.owner.delegateController.FailCommittedStart(started.lease, finish, reason)
 	runtime.owner.delegateController.emitDelegateUpdates(plans)
-	if finishErr != nil {
+	if committedStartFailureDisposition(finishErr) == delegateCommittedStartFailureStopWon {
 		if prepared != nil {
-			runtime.owner.subagents.track(prepared.sub)
+			prepared.runCancel()
+			prepared.disposeUnadopted()
 		}
-		return stableDelegateResult(started.descriptor, started.lease.delegateID, errors.Join(constructionErr, finishErr))
+		return stableDelegateResult(started.descriptor, started.lease.delegateID, constructionErr)
+	}
+	if finishErr != nil {
+		retainErr := runtime.retainFailedStartCandidate(prepared)
+		return stableDelegateResult(started.descriptor, started.lease.delegateID, errors.Join(constructionErr, finishErr, retainErr))
 	}
 	if prepared != nil {
 		prepared.runCancel()
@@ -458,6 +463,23 @@ func (runtime delegateRuntime) failCommittedStart(started delegateStartCommit, i
 	}
 	isolation.cleanup(runtime.owner, started.lease.delegateID)
 	return closedStableDelegateResult(started.descriptor, started.lease.delegateID, constructionErr)
+}
+
+func (runtime delegateRuntime) retainFailedStartCandidate(prepared *preparedSubagentRun) error {
+	if prepared == nil {
+		return nil
+	}
+	prepared.runCancel()
+	existing, retained, err := runtime.owner.subagents.trackIfAbsent(prepared.sub)
+	if err != nil {
+		prepared.disposeUnadopted()
+		return err
+	}
+	if retained || existing == prepared.sub {
+		return nil
+	}
+	prepared.disposeUnadopted()
+	return errDelegateTargetBusy
 }
 
 func (runtime delegateRuntime) failAdoptedStart(started delegateStartCommit, isolation delegateIsolation, prepared *preparedSubagentRun, startErr error, reason string) delegateResult {
