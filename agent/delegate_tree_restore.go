@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -77,14 +78,30 @@ func (c *delegateTreeController) ReconcileRequirements() delegateReconcileRequir
 
 func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (delegateMutationPlans, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	var cancel context.CancelFunc
+	defer func() {
+		c.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	}()
 	if evidence.evidenceVersion != c.evidenceVersion {
 		return delegateMutationPlans{}, errDelegateTargetBusy
 	}
 	if !delegateReconcileEvidenceMatchesState(evidence, c.durable) {
 		return delegateMutationPlans{}, errDelegateTargetBusy
 	}
-	plans, err := c.reconcileRuntimeLostFromEvidenceLocked()
+	plans, generationCancel, err := c.reconcileRecoveryRequiredStopLocked()
+	if err != nil {
+		return delegateMutationPlans{}, err
+	}
+	if generationCancel != nil {
+		cancel = generationCancel
+	}
+	if len(plans.updates) != 0 {
+		return plans, nil
+	}
+	plans, err = c.reconcileRuntimeLostFromEvidenceLocked()
 	if err != nil {
 		return delegateMutationPlans{}, err
 	}
@@ -181,6 +198,49 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		}
 	}
 	return plans, nil
+}
+
+func (c *delegateTreeController) reconcileRecoveryRequiredStopLocked() (delegateMutationPlans, context.CancelFunc, error) {
+	if c.stop == nil {
+		return delegateMutationPlans{}, nil, nil
+	}
+	stop := c.stop
+	leases := make([]delegateLease, 0, len(stop.active))
+	for lease := range stop.active {
+		leases = append(leases, lease)
+	}
+	sort.Slice(leases, func(i, j int) bool {
+		if leases[i].delegateID != leases[j].delegateID {
+			return leases[i].delegateID < leases[j].delegateID
+		}
+		return leases[i].generation < leases[j].generation
+	})
+	for _, lease := range leases {
+		if _, covered := stop.members[lease.delegateID]; !covered {
+			continue
+		}
+		aggregate := c.durable[lease.delegateID]
+		live := c.live[lease.delegateID]
+		if aggregate == nil || aggregate.Generation != lease.generation || !aggregate.CurrentRunOpen || aggregate.Phase != delegatestore.PhaseStopping || aggregate.PendingStopSeq != stop.requestSeq || live == nil || live.binding == nil || live.binding.lease != lease || !live.recoveryRequired {
+			continue
+		}
+		packet := delegateStoppedTerminalPacket()
+		deliveryID := delegateDeliveryID(lease.delegateID, lease.generation)
+		if _, err := c.appendLocked(delegateRunFinishedEvent(
+			lease,
+			delegatestore.OutcomeStopped,
+			delegatestore.DispositionTerminalError,
+			"stopped_by_parent",
+			c.now(),
+			deliveryID,
+			&packet,
+		)); err != nil {
+			return delegateMutationPlans{}, nil, fmt.Errorf("reconcile delegate %s recovery-required stop: %w", lease.delegateID, err)
+		}
+		plans, cancel := c.generationFinishedPlansLocked(lease, deliveryID)
+		return plans, cancel, nil
+	}
+	return delegateMutationPlans{}, nil, nil
 }
 
 func (c *delegateTreeController) closeMissingRestoreInputs(reasons map[string]string) (delegateMutationPlans, error) {

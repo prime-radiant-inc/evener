@@ -663,6 +663,14 @@ Explicit stop may settle that exact lease, and restart deterministically folds
 the durable running generation as failed/runtime_lost. The provider is never
 launched through this failure path.
 
+The same recovery-required latch protects an exact running binding when a
+terminal-preparation append fails and the fallback atomic finish cannot be
+persisted. The controller retains the binding, capacity, and finalization
+claim. Only an exact covering stop may repair the generation: it fsyncs the
+canonical stopped run finish first and releases process state only after that
+append succeeds. A failed repair leaves the same stop and exact binding intact
+for retry.
+
 ### Steer a running delegate
 
 Running steering resolves the delegate directly in the controller; it never
@@ -905,6 +913,10 @@ If the stop-request append fails, no cancellation is dispatched and aggregate
 state is unchanged. Once the append succeeds, cancellation-plan failures leave
 the stop pending and return an honest error; retry reuses the same pending
 operation rather than reopening the subtree or appending a competing stop.
+If a stop reconciliation driver previously returned an append error, close
+joins that exact driver and retries the same pending stop. Persistent store
+failure returns promptly; a successful retry clears the failed driver result
+and lets close continue without inventing a second stop identity.
 
 After restart, a requested but incomplete stop is reconstructed before any
 new admission. No old runtime exists, so running generations settle

@@ -378,14 +378,32 @@ func TestDelegateControllerTerminalPreparedAppendFailureKeepsRunning(t *testing.
 	c.mu.Lock()
 	c.store = reopened
 	c.mu.Unlock()
-	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), lease.delegateID); err != nil {
+	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), lease.delegateID)
+	if err != nil {
 		t.Fatalf("StopSubtree after failed settlement: %v", err)
 	}
 	c.mu.Lock()
 	claimRetained = c.hasSettlementClaimLocked(lease)
 	c.mu.Unlock()
+	if !claimRetained {
+		t.Fatal("durable stop released failed settlement claim before recovery fsync")
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("Reconcile failed settlement: %v", err)
+	}
+	c.mu.Lock()
+	claimRetained = c.hasSettlementClaimLocked(lease)
+	c.mu.Unlock()
 	if claimRetained {
-		t.Fatal("durable stop retained failed settlement claim")
+		t.Fatal("successful stopped finish retained failed settlement claim")
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("Reconcile stop completion: %v", err)
+	}
+	select {
+	case <-result.done:
+	default:
+		t.Fatal("stop remained pending after failed settlement recovery")
 	}
 }
 

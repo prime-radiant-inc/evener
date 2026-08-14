@@ -215,7 +215,6 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 		}
 	}
 	c.stop = stop
-	c.dropRuntimeClaimsForMembersLocked(members)
 	claimIDs := make([]string, 0, len(c.deliveryClaims))
 	for deliveryID := range c.deliveryClaims {
 		claimIDs = append(claimIDs, deliveryID)
@@ -567,8 +566,24 @@ func (c *delegateTreeController) joinOrDrainStopForClose(ctx context.Context, st
 	if driver == nil {
 		return c.drainStopForClose(ctx, stop)
 	}
-	_, err := c.joinStopReconcileDriver(ctx)
-	return err
+	joined, err := c.joinExactStopReconcileDriver(ctx, driver)
+	if !joined {
+		return err
+	}
+	if err != nil {
+		if retryErr := c.drainStopForClose(ctx, stop); retryErr != nil {
+			return retryErr
+		}
+		c.mu.Lock()
+		if stop.driver == driver {
+			stop.driver = nil
+		}
+		if c.stopDriver == driver {
+			c.stopDriver = nil
+		}
+		c.mu.Unlock()
+	}
+	return nil
 }
 
 func (c *delegateTreeController) joinStopReconcileDriver(ctx context.Context) (bool, error) {

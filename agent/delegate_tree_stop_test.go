@@ -626,6 +626,223 @@ func TestDelegateControllerStopCompletionAppendFailureKeepsFence(t *testing.T) {
 	}
 }
 
+func TestDelegateControllerStopReconcilesRecoveryRequiredInputFailure(t *testing.T) {
+	c, path := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+	if err := c.store.Close(); err != nil {
+		t.Fatalf("Close store before input failure: %v", err)
+	}
+	if _, err := c.AdmitStartInput(started.lease, func() error { return errors.New("input persistence failed") }); err == nil {
+		t.Fatal("AdmitStartInput double failure returned nil")
+	}
+	reopened, err := delegatestore.Open(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	c.mu.Lock()
+	c.store = reopened
+	c.mu.Unlock()
+
+	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("Reconcile recovery-required input: %v", err)
+	}
+	if aggregate := c.durable["dlg_target"]; aggregate.CurrentRunOpen || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeStopped {
+		t.Fatalf("aggregate after recovery reconciliation = %#v, want stopped closed run", aggregate)
+	}
+	if live := c.live["dlg_target"]; live == nil || live.binding != nil || live.recoveryRequired {
+		t.Fatalf("live state after recovery reconciliation = %#v, want released binding and latch", live)
+	}
+	if turns, _ := c.capacityInUse(); turns != 0 {
+		t.Fatalf("turn capacity after recovery reconciliation = %d, want zero", turns)
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("Reconcile stop completion: %v", err)
+	}
+	select {
+	case <-result.done:
+	default:
+		t.Fatal("stop did not complete after fresh reconciliation evidence")
+	}
+}
+
+func TestDelegateControllerStopReconcilesRecoveryRequiredSettlementFailure(t *testing.T) {
+	c, path := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	claim, continueRun, err := c.BeginSettlement(lease)
+	if err != nil || continueRun || claim == nil {
+		t.Fatalf("BeginSettlement = claim:%#v continue:%t err:%v", claim, continueRun, err)
+	}
+	if err := c.store.Close(); err != nil {
+		t.Fatalf("Close store before settlement failure: %v", err)
+	}
+	if _, err := c.CompleteSettlement(claim, nil); err == nil {
+		t.Fatal("CompleteSettlement succeeded after store close")
+	}
+	if _, err := c.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeFailed, reason: "settlement persistence failed"}); err == nil {
+		t.Fatal("fallback FinishGeneration succeeded after store close")
+	}
+	reopened, err := delegatestore.Open(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	c.mu.Lock()
+	c.store = reopened
+	c.mu.Unlock()
+
+	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), lease.delegateID)
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	c.mu.Lock()
+	claimRetained := c.hasSettlementClaimLocked(lease)
+	c.mu.Unlock()
+	if !claimRetained {
+		t.Fatal("durable stop released the failed settlement claim before recovery fsync")
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("Reconcile recovery-required settlement: %v", err)
+	}
+	if aggregate := c.durable[lease.delegateID]; aggregate.CurrentRunOpen || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeStopped {
+		t.Fatalf("aggregate after recovery reconciliation = %#v, want stopped closed run", aggregate)
+	}
+	c.mu.Lock()
+	claimRetained = c.hasSettlementClaimLocked(lease)
+	c.mu.Unlock()
+	if claimRetained {
+		t.Fatal("successful recovery retained the settlement claim")
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("Reconcile stop completion: %v", err)
+	}
+	select {
+	case <-result.done:
+	default:
+		t.Fatal("stop did not complete after settlement recovery")
+	}
+}
+
+func TestDelegateControllerRecoveryStopAppendFailureReturnsAndRetries(t *testing.T) {
+	c, path := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+	if err := c.store.Close(); err != nil {
+		t.Fatalf("Close store before input failure: %v", err)
+	}
+	if _, err := c.AdmitStartInput(started.lease, func() error { return errors.New("input persistence failed") }); err == nil {
+		t.Fatal("AdmitStartInput double failure returned nil")
+	}
+	reopened, err := delegatestore.Open(path)
+	if err != nil {
+		t.Fatalf("reopen store for stop request: %v", err)
+	}
+	c.mu.Lock()
+	c.store = reopened
+	c.mu.Unlock()
+	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), started.lease.delegateID)
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("Close store before recovery append: %v", err)
+	}
+
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err == nil {
+		t.Fatal("Reconcile recovery append succeeded after store close")
+	}
+	select {
+	case <-result.done:
+		t.Fatal("failed recovery append completed stop")
+	default:
+	}
+	if live := c.live[started.lease.delegateID]; live == nil || live.binding == nil || !live.recoveryRequired {
+		t.Fatalf("failed recovery append released exact state: %#v", live)
+	}
+	if turns, _ := c.capacityInUse(); turns != 1 {
+		t.Fatalf("turn capacity after failed recovery append = %d, want one", turns)
+	}
+
+	retryStore, err := delegatestore.Open(path)
+	if err != nil {
+		t.Fatalf("reopen store for retry: %v", err)
+	}
+	t.Cleanup(func() { _ = retryStore.Close() })
+	c.mu.Lock()
+	c.store = retryStore
+	c.mu.Unlock()
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("retry recovery append: %v", err)
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("retry stop completion: %v", err)
+	}
+	select {
+	case <-result.done:
+	default:
+		t.Fatal("same stop did not complete after recovery append retry")
+	}
+}
+
+func TestDelegateControllerCloseRetriesFailedStopDriver(t *testing.T) {
+	c, path := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+	if err := c.store.Close(); err != nil {
+		t.Fatalf("Close store before input failure: %v", err)
+	}
+	if _, err := c.AdmitStartInput(started.lease, func() error { return errors.New("input persistence failed") }); err == nil {
+		t.Fatal("AdmitStartInput double failure returned nil")
+	}
+	reopened, err := delegatestore.Open(path)
+	if err != nil {
+		t.Fatalf("reopen store for stop request: %v", err)
+	}
+	c.mu.Lock()
+	c.store = reopened
+	c.mu.Unlock()
+	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), started.lease.delegateID)
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	stop := c.stopForResult(result)
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("Close store before driver recovery append: %v", err)
+	}
+	driver := &delegateStopDriver{done: make(chan struct{}), err: errors.New("recovery append failed")}
+	close(driver.done)
+	c.mu.Lock()
+	stop.driver = driver
+	c.stopDriver = driver
+	c.mu.Unlock()
+	retryStore, err := delegatestore.Open(path)
+	if err != nil {
+		t.Fatalf("reopen store for close retry: %v", err)
+	}
+	t.Cleanup(func() { _ = retryStore.Close() })
+	c.mu.Lock()
+	c.store = retryStore
+	c.mu.Unlock()
+
+	if err := c.joinOrDrainStopForClose(context.Background(), stop); err != nil {
+		t.Fatalf("joinOrDrainStopForClose did not retry failed driver: %v", err)
+	}
+	select {
+	case <-result.done:
+	default:
+		t.Fatal("close retry did not complete the same pending stop")
+	}
+	if joined, err := c.joinStopReconcileDriver(context.Background()); !joined || err != nil {
+		t.Fatalf("recovered driver remained a failed close result: joined=%t err=%v", joined, err)
+	}
+}
+
 func TestDelegateControllerResumabilityAppendFailureMutatesNothing(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")

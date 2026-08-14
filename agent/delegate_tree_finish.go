@@ -98,6 +98,9 @@ func (c *delegateTreeController) CompleteSettlement(claim *delegateSettlementCla
 			Packet:     packet,
 		},
 	}); err != nil {
+		if live := c.live[claim.lease.delegateID]; live != nil && live.binding != nil && live.binding.lease == claim.lease {
+			live.recoveryRequired = true
+		}
 		return delegateMutationPlans{}, err
 	}
 	delete(c.settlementClaims, claim.token)
@@ -133,7 +136,7 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 			cancel()
 		}
 	}()
-	aggregate, _, err := c.exactLeaseLocked(lease)
+	aggregate, live, err := c.exactLeaseLocked(lease)
 	if err != nil {
 		if errors.Is(err, errDelegateStaleLease) {
 			return delegateMutationPlans{}, nil
@@ -219,6 +222,7 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 	events = delegateFinishMetadataEvents(events, lease, finish, outcome, reason)
 
 	if _, err := c.appendLocked(events...); err != nil {
+		live.recoveryRequired = true
 		return delegateMutationPlans{}, err
 	}
 	plans, generationCancel := c.generationFinishedPlansLocked(lease, deliveryID)
