@@ -1,5 +1,5 @@
-import type { ComponentType, KeyboardEvent } from "react";
-import { useState } from "react";
+import type { ComponentType } from "react";
+import { useEffect, useState } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useIsMobile } from "../../shell/useIsMobile";
@@ -140,17 +140,23 @@ export default function Settings({ params, paneId }: PaneProps<SettingsPaneParam
     workspaceStore.getState().closePane(paneId);
   }
 
-  // Escape closes the pane, but only when nothing inside settings already
-  // claimed the key - a Dialog/Menu open in a section (e.g. credentials'
-  // instance dialogs) handles its own Escape first as the keydown bubbles
-  // up through this div, and this checks defaultPrevented rather than
-  // stopping propagation itself so it stays a HANDLER, not a global
-  // listener: it only ever sees keydowns that started inside this pane.
-  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key !== "Escape") return;
-    if (event.defaultPrevented) return;
-    handleClose();
-  }
+  // Escape closes the pane. A React onKeyDown on the pane's own div only
+  // fires when focus is INSIDE it — and the common open path (clicking the
+  // rail's gear) leaves focus on the gear button, so in a real browser the
+  // pane-scoped handler never saw the key (live-verified regression). A
+  // document-level bubble-phase listener sees Escape regardless of where
+  // focus sits, and still yields to anything inside settings that claimed
+  // the key first: a Dialog/Menu preventDefaults its own Escape (see
+  // OverlayPanel/Menu), which this checks before closing.
+  useEffect(() => {
+    function onDocumentKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      if (event.defaultPrevented) return;
+      handleClose();
+    }
+    document.addEventListener("keydown", onDocumentKeyDown);
+    return () => document.removeEventListener("keydown", onDocumentKeyDown);
+  });
 
   const showNav = !isMobile || mobileShowingNav;
   const showContent = !isMobile || !mobileShowingNav;
@@ -162,8 +168,7 @@ export default function Settings({ params, paneId }: PaneProps<SettingsPaneParam
         <IconButton label="Close settings" icon={<CloseIcon />} variant="quiet" size="sm" onClick={handleClose} />
       }
     >
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: keydown only closes the pane on Escape; the div is a layout container, not itself interactive - see OverlayPanel's identical precedent */}
-      <div className={CLASS.shell} onKeyDown={handleKeyDown}>
+      <div className={CLASS.shell}>
         {showNav && <SettingsNav activeId={activeId} onNavigate={handleNavigate} />}
         {showContent && (
           <div className={CLASS.content}>

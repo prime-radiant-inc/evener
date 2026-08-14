@@ -20,6 +20,21 @@ test("goal CSS hides only the inline anchor below the full-row threshold", () =>
   expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.anchor\s*\{[^}]*display:\s*none/);
 });
 
+// The clipping regression (live-verified): a hand-rolled `position: absolute;
+// bottom: calc(100% + ...)` popover, opening upward from an anchor inside the
+// composer status row, was clipped entirely by that row's overflow: hidden
+// container - correct geometry, opacity 1, never painted. The popover is now
+// the portalled, viewport-positioned widgets/popover (same as ModelSwitch's
+// own), so goalcontrol.module.css must never again declare the positioning
+// that caused it - only content styling stays.
+test("goalcontrol.module.css no longer hand-rolls popover positioning", () => {
+  const css = readFileSync(join(here, "goalcontrol.module.css"), "utf8");
+  const popoverRule = css.match(/\.popover\s*\{([^}]*)\}/);
+  expect(popoverRule, "goalcontrol.module.css must still declare .popover for content styling").not.toBeNull();
+  expect(popoverRule![1]).not.toMatch(/position:\s*absolute/);
+  expect(popoverRule![1]).not.toMatch(/bottom:/);
+});
+
 const FULL_CAPABILITIES: ThreadCapabilities = {
   send: true,
   steer: true,
@@ -169,6 +184,34 @@ test("Clear goal calls setGoal with an empty objective directly, no confirmation
   expect(screen.queryByRole("dialog")).toBeNull();
   // Cleared: the optimistic override is null, so the chip is gone.
   await waitFor(() => expect(screen.queryByRole("button", { name: /goal:/i })).toBeNull());
+});
+
+// --- dismissal (mirrors ModelSwitch.test.tsx's own Popover-dismissal tests,
+// since GoalControl's popover is now the same widget) --------------------
+
+test("pressing Escape closes an open popover", async () => {
+  const user = userEvent.setup();
+  render(<GoalControl sessionRef="ref_a" model={testModel({ goal: { status: "active", iterations: 1 } })} />);
+  await openGoalPopover(user);
+  await user.keyboard("{Escape}");
+
+  await waitFor(() => expect(screen.queryByTestId("goal-popover")).toBeNull());
+});
+
+test("a click outside the open popover closes it", async () => {
+  const user = userEvent.setup();
+  render(
+    <div>
+      <button type="button" data-testid="outside">
+        outside
+      </button>
+      <GoalControl sessionRef="ref_a" model={testModel({ goal: { status: "active", iterations: 1 } })} />
+    </div>,
+  );
+  await openGoalPopover(user);
+  await user.click(screen.getByTestId("outside"));
+
+  await waitFor(() => expect(screen.queryByTestId("goal-popover")).toBeNull());
 });
 
 test("a failed Clear goal surfaces an error toast and leaves the goal displayed as it was", async () => {

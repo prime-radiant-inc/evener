@@ -1727,6 +1727,20 @@ test("kata p5w9: a desktop boot issues exactly one GET /api/tree", async () => {
 // reconciliation effect - hence this integration test through the real
 // shell, matching needsYouCycle.ts's own documented rationale for routing
 // exits through navigate()/paneToURL rather than poking the store.
+test("Escape closes Settings even when focus never entered the pane (gear-click leaves focus in the rail)", async () => {
+  window.history.pushState({}, "", "/settings");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByRole("navigation", { name: "Settings sections" });
+
+  // The real-browser repro: focus sits outside the settings subtree (the
+  // gear button / body), so a React onKeyDown scoped to the pane's div
+  // never fires. The exit must listen at the document level.
+  fireEvent.keyDown(document.body, { key: "Escape" });
+
+  await screen.findByText("No session open");
+  expect(workspaceStore.getState().mainPane()?.type).not.toBe("settings");
+});
+
 test("Escape in Settings exits to welcome and the URL stays there, not reinstated by route reconciliation", async () => {
   window.history.pushState({}, "", "/settings");
   render(<AppShell client={new FakeClient("ready")} />);

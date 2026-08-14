@@ -200,7 +200,11 @@ test("friendlyLaunchErrorMessage passes a hubLaunch config/credentials message t
 });
 
 test("friendlyLaunchErrorMessage masks only the no-diagnosis subset with the guidance copy", () => {
-  for (const raw of ["serf launch-check timed out", "serf launch-check canceled", "fork/exec serf: no such file or directory"]) {
+  for (const raw of [
+    "serf launch-check timed out",
+    "serf launch-check canceled",
+    "fork/exec serf: no such file or directory",
+  ]) {
     expect(friendlyLaunchErrorMessage(new WireError(raw, -32014, { serfErrorInfo: "hubLaunch" }))).toBe(
       "No agent daemon responded for this project. Start one by running serf in the repo, then retry.",
     );
@@ -224,7 +228,9 @@ test("friendlyLaunchErrorMessage passes wrapped and resume-advice messages throu
     "session s1 is still held by live daemon pid 42. Stop it and resume again. Replacement spawn failed: provider credentials missing for openai: set via serf/auth/apiKey/set or set the matching env var";
   expect(friendlyLaunchErrorMessage(new WireError(wrapped, -32014, { serfErrorInfo: "hubLaunch" }))).toBe(wrapped);
   expect(
-    friendlyLaunchErrorMessage(new WireError("codex launch not configured: src1", -32014, { serfErrorInfo: "hubLaunch" })),
+    friendlyLaunchErrorMessage(
+      new WireError("codex launch not configured: src1", -32014, { serfErrorInfo: "hubLaunch" }),
+    ),
   ).toBe("codex launch not configured: src1");
 });
 

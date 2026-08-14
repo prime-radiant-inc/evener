@@ -39,45 +39,18 @@
   white-space: nowrap;
 }
 
-/* Floating popover - zero layout shift when opened. Recipe matches
- * widgets/menu's own .popup and ModelSwitch's own .popover - anchored from
- * the bottom, not the top, for the same reason ModelSwitch's own .popover
- * is (see that file's own comment): this chip lives in the footer row,
- * hard against the pane's bottom edge, so opening downward clips off the
- * viewport entirely. */
+/* Popover content only - position/surface/border/radius/shadow/animation/
+ * z-index all come from widgets/popover's own .panel (popover.module.css),
+ * which portals this to document.body rather than positioning it relative
+ * to an ancestor in this row (see this file's sibling GoalControl.tsx header
+ * comment for why the hand-rolled version this replaced was clipped). */
 .popover {
-  position: absolute;
-  bottom: calc(100% + var(--space-1));
-  left: 0;
-  z-index: var(--z-menu);
   min-width: 200px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-2);
   padding: var(--space-3);
-  background: var(--surface-2);
-  border-radius: var(--radius-pane);
-  box-shadow: var(--shadow-overlay);
-  animation: goalPopoverFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
-}
-
-@keyframes goalPopoverFadeScale {
-  from {
-    opacity: 0;
-    transform: scale(0.96);
-  }
-
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .popover {
-    animation: none;
-  }
 }
 
 .status {

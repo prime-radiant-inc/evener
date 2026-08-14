@@ -26,12 +26,21 @@
 // used to render is gone with it. Once a goal IS set, a quiet chip appears;
 // clicking it opens a small popover with the goal's status and a clear
 // action, using the setGoal(ref, "") wiring.
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+//
+// The popover is the shared widgets/popover, same as this row's sibling
+// ModelSwitch - not a hand-rolled `position: absolute` panel. This chip
+// lives inside sessionchrome.module.css's `.body` (overflow: hidden, for
+// inline-size compression), and a panel positioned relative to an anchor
+// inside that row is clipped there entirely: correct geometry, opacity 1,
+// never painted (live-verified). Popover portals the panel to document.body
+// at a position: fixed coordinate computed off the trigger's own
+// getBoundingClientRect(), so the clipping ancestor can't cut it off.
+import { useState, useSyncExternalStore } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import type { GoalState } from "../../../protocol/types.gen";
 import { threadsStore } from "../../../stores/threads";
-import { Button, Chip, useToasts } from "../../../widgets";
+import { Button, Chip, Popover, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./goalcontrol.module.css";
 
@@ -114,7 +123,6 @@ export function GoalControl({ sessionRef, model }: GoalControlProps) {
   const toasts = useToasts();
   const goal = useDisplayedGoal(sessionRef, model.goal);
   const [popoverOpen, setPopoverOpen] = useState(false);
-  const popoverRef = useRef<HTMLDivElement>(null);
   const canSetGoal = model.capabilities.goal;
 
   async function handleClear() {
@@ -127,33 +135,21 @@ export function GoalControl({ sessionRef, model }: GoalControlProps) {
     }
   }
 
-  // Escape and an outside click dismiss the open popover - same containment
-  // idiom widgets/menu and ModelSwitch's own popover use.
-  useEffect(() => {
-    if (!popoverOpen) return;
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setPopoverOpen(false);
-    }
-    function onMouseDown(event: MouseEvent) {
-      if (popoverRef.current && !popoverRef.current.contains(event.target as Node)) setPopoverOpen(false);
-    }
-    document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("mousedown", onMouseDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      document.removeEventListener("mousedown", onMouseDown);
-    };
-  }, [popoverOpen]);
-
   if (!goal) return null;
 
   return (
-    <div className={CLASS.anchor} ref={popoverRef}>
-      <button type="button" className={CLASS.chipButton} onClick={() => setPopoverOpen((v) => !v)}>
-        <Chip>Goal: {goal.status}</Chip>
-      </button>
-      {popoverOpen && (
-        <div className={CLASS.popover} data-testid="goal-popover">
+    <div className={CLASS.anchor}>
+      <Popover
+        open={popoverOpen}
+        onClose={() => setPopoverOpen(false)}
+        data-testid="goal-popover"
+        trigger={
+          <button type="button" className={CLASS.chipButton} onClick={() => setPopoverOpen((v) => !v)}>
+            <Chip>Goal: {goal.status}</Chip>
+          </button>
+        }
+      >
+        <div className={CLASS.popover}>
           <p className={CLASS.status}>
             {goal.status} · {iterationsLabel(goal.iterations)}
           </p>
@@ -161,7 +157,7 @@ export function GoalControl({ sessionRef, model }: GoalControlProps) {
             Clear goal
           </Button>
         </div>
-      )}
+      </Popover>
     </div>
   );
 }
