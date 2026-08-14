@@ -252,6 +252,9 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		if jobManagerCloseErr != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("job manager close incomplete: %v", jobManagerCloseErr)})
 		}
+		if err := s.closeOwnedDelegateStore(); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate store close incomplete: %v", err)})
+		}
 
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
 		if cleanupEnv {
@@ -336,6 +339,7 @@ func (s *Session) discardRestoredCandidate() {
 		if s.ownsArtifactStore && s.artifactStore != nil {
 			_ = s.artifactStore.Close()
 		}
+		_ = s.closeOwnedDelegateStore()
 		// restoreDelegateChildEnvironment always hands a restored delegate a
 		// FRESH environment (a re-rooted clone, and its own per-lane sandbox
 		// scratch when sandboxed) — never the parent's shared one. A discarded

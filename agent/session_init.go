@@ -264,6 +264,15 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}
 	s.createdAt = s.sclock().Now().UTC()
 	s.initEnvContext(nil)
+	if err := s.bootstrapDelegateResources(); err != nil {
+		return nil, err
+	}
+	closeDelegateStoreOnError := true
+	defer func() {
+		if closeDelegateStoreOnError {
+			_ = s.closeOwnedDelegateStore()
+		}
+	}()
 	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
 	newJM := newJobManager
 	if cfg.testOnly.noSyncJobStore || testSpeedIO(cfg) {
@@ -430,6 +439,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	initComplete = true
 	closeJobManagerOnError = false
 	closeMCPManagerOnError = false
+	closeDelegateStoreOnError = false
 	return s, nil
 }
 
@@ -702,6 +712,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		ownsArtifactStore:           ownsArtifactStore,
 	}
 	s.initEnvContext(meta.EnvContext)
+	if err := s.bootstrapDelegateResources(); err != nil {
+		return nil, err
+	}
+	closeDelegateStoreOnError := true
+	defer func() {
+		if closeDelegateStoreOnError {
+			_ = s.closeOwnedDelegateStore()
+		}
+	}()
 	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
 	newJM := newJobManager
 	if cfg.testOnly.noSyncJobStore || testSpeedIO(cfg) {
@@ -963,6 +982,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	closeJobManagerOnError = false
 	closeMCPManagerOnError = false
 	restoreComplete = true
+	closeDelegateStoreOnError = false
 	return s, nil
 }
 

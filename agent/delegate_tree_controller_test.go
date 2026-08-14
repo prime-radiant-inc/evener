@@ -251,7 +251,7 @@ func TestDelegateControllerCapturedSnapshotsCarryMonotonicRevision(t *testing.T)
 	}
 }
 
-func TestDelegateControllerRemainsDormant(t *testing.T) {
+func TestDelegateControllerProductionIntegrationMatchesInventory(t *testing.T) {
 	loaded, err := packages.Load(&packages.Config{Mode: packages.LoadSyntax, Dir: "."}, ".")
 	if err != nil {
 		t.Fatalf("load agent package: %v", err)
@@ -396,6 +396,9 @@ var delegateControllerLifecycleMethods = map[string]bool{
 }
 
 var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancyInventoryKey]int{
+	{filename: "delegate_runtime.go", function: "(*Session).bootstrapDelegateResources", kind: "dormant function", symbol: "openDelegateTreeController"}:                               1,
+	{filename: "delegate_runtime.go", function: "(*Session).bootstrapDelegateResources", kind: "lifecycle method", symbol: "ReconcileRequirements"}:                                    1,
+	{filename: "delegate_runtime.go", function: "(*Session).bootstrapDelegateResources", kind: "lifecycle method", symbol: "Reconcile"}:                                                1,
 	{filename: "delegate_tree_controller.go", function: "openDelegateTreeController", kind: "composite literal", symbol: "delegateTreeController"}:                                     1,
 	{filename: "delegate_tree_steer.go", function: "(*delegateTreeController).Steer", kind: "session steering method", symbol: "appendDelegateSteeringDurably"}:                        1,
 	{filename: "delegate_delivery.go", function: "deliverDelegatePacket", kind: "lifecycle method", symbol: "BeginDelivery"}:                                                           1,

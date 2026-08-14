@@ -467,6 +467,9 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	subCfg.spawn.parentJobID = ""
 	subCfg.spawn.parentJobActivity = nil
 	subCfg.spawn.parentDelegateID = ""
+	subCfg.spawn.delegateController = s.delegateController
+	subCfg.spawn.delegateRootSessionID = s.delegateRootSessionID
+	subCfg.spawn.owningDelegateID = ""
 	subCfg.spawn.forwardJobEvent = nil
 	subCfg.spawn.parentWatchGranted = false
 	subCfg.spawn.parentInstallWatch = nil
@@ -500,6 +503,7 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	}
 	if delegateID, ok := ctx.Value(ctxParentDelegateID).(string); ok {
 		subCfg.spawn.parentDelegateID = delegateID
+		subCfg.spawn.owningDelegateID = delegateID
 	}
 	if isolation, ok := ctx.Value(ctxIsolation).(string); ok {
 		subCfg.spawn.isolation = isolation

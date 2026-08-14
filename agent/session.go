@@ -120,13 +120,17 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
-	id                string
-	cfg               SessionConfig
-	artifactStore     artifactStore
-	ownsArtifactStore bool
-	client            *llm.Client
-	profile           *provider.Profile
-	resolveProfile    func(ref string) (*provider.Profile, error) // cross-provider resolver; may be nil
+	id                     string
+	cfg                    SessionConfig
+	delegateController     *delegateTreeController
+	delegateRootSessionID  string
+	owningDelegateID       string
+	ownsDelegateController bool
+	artifactStore          artifactStore
+	ownsArtifactStore      bool
+	client                 *llm.Client
+	profile                *provider.Profile
+	resolveProfile         func(ref string) (*provider.Profile, error) // cross-provider resolver; may be nil
 	// lastDroppedModelFallbacks records the cfg.ModelFallbacks entries dropped
 	// by the most recent SetModel's post-switch revalidation (entries that no
 	// longer validate against the new profile). Nil until a switch drops any.

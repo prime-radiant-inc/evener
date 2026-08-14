@@ -427,6 +427,18 @@ type testConfig struct {
 // would gain a non-zero depth and break ATIF root-export gating and the
 // subagent-management-is-top-level guards.
 type spawnConfig struct {
+	// delegateController is the single root-owned authority inherited by every
+	// child session in the live tree.
+	delegateController *delegateTreeController
+
+	// delegateRootSessionID identifies the root session that owns the inherited
+	// controller. It is stable across every child construction in the tree.
+	delegateRootSessionID string
+
+	// owningDelegateID is the immutable stable delegate identity that owns this
+	// child session. It is empty on the root session.
+	owningDelegateID string
+
 	// parentSessionID links sub-agent sessions to their parent (set by spawnAgent).
 	parentSessionID string
 
