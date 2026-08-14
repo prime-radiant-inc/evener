@@ -387,6 +387,37 @@ func (c *delegateTreeController) FailCommittedStart(lease delegateLease, failure
 	return plans, false, nil
 }
 
+func (c *delegateTreeController) FailCommittedRestart(lease delegateLease, failure delegateFinish) (delegateMutationPlans, error) {
+	c.mu.Lock()
+	var cancel context.CancelFunc
+	defer func() {
+		c.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	}()
+	aggregate, live, err := c.exactLeaseLocked(lease)
+	if err != nil {
+		return delegateMutationPlans{}, err
+	}
+	if aggregate.Phase == delegatestore.PhaseStopping {
+		plans, generationCancel, finishErr := c.finishStoppedStartLocked(lease, live)
+		cancel = generationCancel
+		return plans, finishErr
+	}
+	if aggregate.Phase != delegatestore.PhaseRunning || live.recoveryRequired || live.binding.ready {
+		return delegateMutationPlans{}, errDelegateTargetBusy
+	}
+	terminal, finish := c.committedStartFailureBatch(lease, failure)
+	if _, appendErr := c.appendLocked(terminal, finish); appendErr != nil {
+		live.recoveryRequired = true
+		return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, appendErr
+	}
+	plans, generationCancel := c.generationFinishedPlansLocked(lease, finish.RunFinished.DeliveryID)
+	cancel = generationCancel
+	return plans, nil
+}
+
 func (c *delegateTreeController) finishStoppedStartLocked(lease delegateLease, live *delegateLiveState) (delegateMutationPlans, context.CancelFunc, error) {
 	packet := delegateStoppedTerminalPacket()
 	deliveryID := delegateDeliveryID(lease.delegateID, lease.generation)

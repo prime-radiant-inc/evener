@@ -135,7 +135,7 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 		wait = n
 	}
 	outcome := (delegateRuntime{owner: s}).send(ctx, target, message, wait)
-	if outcome.result.Err != nil {
+	if outcome.result.Err != nil && outcome.result.DelegateID == "" {
 		return nil, outcome.result.Err
 	}
 	if outcome.commit != nil {

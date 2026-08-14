@@ -316,23 +316,19 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			return failed(err)
 		}
 	}
-	sub, restored, err := runtime.restoreIdle(reservation)
-	if err != nil {
-		_ = s.delegateController.AbortStart(reservation)
-		return failed(err)
-	}
 	started, err := s.delegateController.CommitStart(reservation)
 	if err != nil {
-		if restored {
-			sub.sess.discardRestoredCandidate()
-		}
 		return failed(err)
+	}
+	sub, restored, err := runtime.restoreIdle(started)
+	if err != nil {
+		return runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, err)
 	}
 	if restored {
 		tracked, inserted, trackErr := s.subagents.trackIfAbsent(sub)
 		if trackErr != nil {
 			sub.sess.discardRestoredCandidate()
-			return runtime.failStableSendStart(started, delegateID, trackErr)
+			return runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, trackErr)
 		}
 		if !inserted {
 			sub.sess.discardRestoredCandidate()
@@ -340,56 +336,53 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		}
 	}
 	if sub == nil || sub.sess == nil {
-		return runtime.failStableSendStart(started, delegateID, errors.New("delegate runtime is unavailable"))
+		return runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, errors.New("delegate runtime is unavailable"))
 	}
 	if err := s.delegateController.AttachRuntime(started.lease, sub.sess); err != nil {
-		return runtime.failStableSendStart(started, delegateID, err)
+		return runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, err)
 	}
-	runCtx, runCancel := context.WithCancel(started.ctx)
-	runCtx = context.WithValue(runCtx, delegateRunLeaseContextKey{}, started.lease)
-	runCtx = context.WithValue(runCtx, delegatePreseededInputContextKey{}, delegatePreseededInput{sessionID: sub.sess.id, input: message})
-	s.mu.Lock()
-	if s.closingOrClosedLocked() {
-		s.mu.Unlock()
-		runCancel()
-		return runtime.failStableSendStart(started, delegateID, errors.New("session is closed"))
-	}
-	s.sendersWG.Add(1)
-	s.mu.Unlock()
-	sub.mu.Lock()
-	sub.fatalRunGated = false
-	resetSubagentForRunLocked(sub, runCancel, started.startedAt)
-	sub.mu.Unlock()
 	if restored {
 		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
 			s.emit(events.EventWarning, warningDataFromError("restored delegate side effects incomplete", err))
 		}
 	}
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, errors.New("session is closed"))
+	}
+	s.sendersWG.Add(1)
+	s.mu.Unlock()
 	claim, err := s.delegateController.BeginStartInput(started.lease)
 	if err != nil {
-		runCancel()
 		s.sendersWG.Done()
-		return runtime.failStableSendStart(started, delegateID, err)
+		return runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, err)
 	}
 	if err := runtime.preseedInput(sub.sess, message, started.transcriptPath); err != nil {
 		plans, completeErr := s.delegateController.CompleteStartInput(claim, false, delegatePermanentStartFailure(err, "input_persist_failed"))
-		_ = s.executeDelegateMutationPlans(plans)
-		runCancel()
 		s.sendersWG.Done()
-		return failed(errors.Join(err, completeErr))
+		return runtime.stableSendFailureOutcome(ctx, started, waiter, maxWaitMS, plans, errors.Join(err, completeErr))
 	}
 	plans, err := s.delegateController.CompleteStartInput(claim, true, delegateFinish{})
-	if executeErr := s.executeDelegateMutationPlans(plans); err == nil {
-		err = executeErr
-	}
 	if err != nil {
-		runCancel()
 		s.sendersWG.Done()
-		return failed(err)
+		return runtime.stableSendFailureOutcome(ctx, started, waiter, maxWaitMS, plans, err)
+	}
+	if err := s.executeDelegateMutationPlans(plans); err != nil {
+		s.sendersWG.Done()
+		failurePlans, finishErr := s.delegateController.FinishGeneration(started.lease, delegatePermanentStartFailure(err, "launch_failed"))
+		return runtime.stableSendFailureOutcome(ctx, started, waiter, maxWaitMS, failurePlans, errors.Join(err, finishErr))
 	}
 	bindStableDelegateActivity(sub.sess, s.delegateController, started.lease)
-	s.startDelegateQuietWatchdog(started.ctx, started.lease)
+	runCtx, runCancel := context.WithCancel(started.ctx)
+	runCtx = context.WithValue(runCtx, delegateRunLeaseContextKey{}, started.lease)
+	runCtx = context.WithValue(runCtx, delegatePreseededInputContextKey{}, delegatePreseededInput{sessionID: sub.sess.id, input: message})
+	sub.mu.Lock()
+	sub.fatalRunGated = false
+	resetSubagentForRunLocked(sub, runCancel, started.startedAt)
+	sub.mu.Unlock()
 	s.launchSubagentRun(runCtx, sub, runCancel, message, descriptorProvenance(started.descriptor))
+	s.startDelegateQuietWatchdog(started.ctx, started.lease)
 	result := sendMessageResult{
 		Target:              delegateID,
 		DelegateID:          delegateID,
@@ -424,18 +417,7 @@ func populateStableDelegateSendResult(result *sendMessageResult, packet delegate
 		return
 	}
 	finish := delegatePreparedFinish(packet)
-	switch finish.outcome {
-	case delegatestore.OutcomeCompleted:
-		result.Status = jobstore.StatusCompleted
-	case delegatestore.OutcomeCancelled:
-		result.Status = jobstore.StatusCancelled
-	case delegatestore.OutcomeStopped:
-		result.Status = jobstore.StatusStopped
-	case delegatestore.OutcomeExhausted:
-		result.Status = jobstore.StatusExhausted
-	default:
-		result.Status = jobstore.StatusFailed
-	}
+	result.Status = stableDelegateOutcomeJobStatus(finish.outcome)
 	result.Reason = finish.reason
 	result.ExhaustionBudget = string(finish.exhaustionBudget)
 	result.ExhaustionLimit = finish.exhaustionLimit
@@ -468,14 +450,90 @@ func populateStableDelegateSendResult(result *sendMessageResult, packet delegate
 	}
 }
 
+func stableDelegateOutcomeJobStatus(outcome delegatestore.OutcomeStatus) jobstore.Status {
+	switch outcome {
+	case delegatestore.OutcomeCompleted:
+		return jobstore.StatusCompleted
+	case delegatestore.OutcomeCancelled:
+		return jobstore.StatusCancelled
+	case delegatestore.OutcomeStopped:
+		return jobstore.StatusStopped
+	case delegatestore.OutcomeExhausted:
+		return jobstore.StatusExhausted
+	default:
+		return jobstore.StatusFailed
+	}
+}
+
 func descriptorProvenance(descriptor delegatestore.Descriptor) *provenance.Causal {
 	return provenance.Clone(descriptor.Provenance)
 }
 
-func (runtime delegateRuntime) failStableSendStart(started delegateStartCommit, delegateID string, cause error) stableDelegateSendOutcome {
-	plans, finishErr := runtime.owner.delegateController.FinishGeneration(started.lease, delegatePermanentStartFailure(cause, "construction_failed"))
-	_ = runtime.owner.executeDelegateMutationPlans(plans)
-	return stableDelegateSendOutcome{result: sendMessageFailed(delegateID, errors.Join(cause, finishErr))}
+func (runtime delegateRuntime) failStableSendStart(ctx context.Context, started delegateStartCommit, delegateID string, waiter *delegateInlineWaiter, maxWaitMS int, cause error) stableDelegateSendOutcome {
+	plans, finishErr := runtime.owner.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(cause, "construction_failed"))
+	return runtime.stableSendFailureOutcome(ctx, started, waiter, maxWaitMS, plans, errors.Join(cause, finishErr))
+}
+
+func (runtime delegateRuntime) stableSendFailureOutcome(ctx context.Context, started delegateStartCommit, waiter *delegateInlineWaiter, maxWaitMS int, plans delegateMutationPlans, cause error) stableDelegateSendOutcome {
+	executeErr := runtime.owner.executeDelegateMutationPlans(plans)
+	result := stableDelegateFailedSendResult(started, plans, errors.Join(cause, executeErr))
+	if waiter == nil || result.Action == "recovery_required" {
+		return stableDelegateSendOutcome{result: result}
+	}
+	waitCtx := ctx
+	if maxWaitMS > 0 {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(ctx, time.Duration(maxWaitMS)*time.Millisecond)
+		defer cancel()
+	}
+	resolution := runtime.owner.delegateController.waitForDelegateInline(waitCtx, waiter)
+	if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
+		result.TimedOut = true
+		return stableDelegateSendOutcome{result: result}
+	}
+	durableReason := result.Reason
+	populateStableDelegateSendResult(&result, *resolution.packet)
+	if durableReason != "" {
+		result.Reason = durableReason
+	}
+	result.Action = "completed"
+	result.RunningInBackground = false
+	return stableDelegateSendOutcome{result: result, commit: resolution.commit}
+}
+
+func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateMutationPlans, cause error) sendMessageResult {
+	snapshot := latestDelegateMutationSnapshot(started.lease.delegateID, started.plan, plans)
+	resumable := snapshot.resumable
+	result := sendMessageResult{
+		Target:              started.lease.delegateID,
+		DelegateID:          started.lease.delegateID,
+		Type:                string(jobstore.JobDelegate),
+		Status:              jobstore.StatusRunning,
+		Resumable:           &resumable,
+		RunningInBackground: false,
+		Action:              "recovery_required",
+		TranscriptRef:       started.descriptor.TranscriptRef,
+		Err:                 cause,
+	}
+	if snapshot.lastOutcome != nil {
+		result.Status = stableDelegateOutcomeJobStatus(snapshot.lastOutcome.Status)
+		result.Reason = snapshot.lastOutcome.Reason
+		result.Action = "completed"
+	}
+	deliveryID := delegateDeliveryID(started.lease.delegateID, started.lease.generation)
+	for _, delivery := range plans.deliveries {
+		if delivery.delegateID == started.lease.delegateID && delivery.deliveryID == deliveryID {
+			durableReason := result.Reason
+			populateStableDelegateSendResult(&result, delivery.packet)
+			if durableReason != "" {
+				result.Reason = durableReason
+			}
+			result.Action = "completed"
+			result.RunningInBackground = false
+			break
+		}
+	}
+	return result
 }
 
 func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) delegateResult {
@@ -832,12 +890,12 @@ func (runtime delegateRuntime) construct(ctx context.Context, args delegateArgs,
 	return prepared, nil
 }
 
-func (runtime delegateRuntime) restoreIdle(reservation *delegateStartReservation) (*subagent, bool, error) {
+func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subagent, bool, error) {
 	s := runtime.owner
-	if s == nil || reservation == nil {
+	if s == nil || started.lease.delegateID == "" {
 		return nil, false, errors.New("delegate restore reservation is unavailable")
 	}
-	descriptor := cloneDelegateStartDescriptor(reservation.descriptor)
+	descriptor := cloneDelegateStartDescriptor(started.descriptor)
 	if retained := s.subagents.get(descriptor.ChildSessionID); retained != nil && retained.sess != nil {
 		return retained, false, nil
 	}
@@ -905,12 +963,12 @@ func (runtime delegateRuntime) restoreIdle(reservation *delegateStartReservation
 		spawn: spawnConfig{
 			delegateController:            s.delegateController,
 			delegateRootSessionID:         s.delegateRootSessionID,
-			owningDelegateID:              reservation.delegateID,
+			owningDelegateID:              started.lease.delegateID,
 			subscriberCount:               s.subscriberCountFn,
 			parentSessionID:               s.id,
 			parentToolCallID:              descriptor.OriginToolCallID,
 			parentItemID:                  descriptor.OriginItemID,
-			parentDelegateID:              reservation.delegateID,
+			parentDelegateID:              started.lease.delegateID,
 			descendantEvent:               s.cfg.spawn.descendantEvent,
 			parentSteer:                   s.SteerWithProvenance,
 			parentSteerDelivered:          s.trySteerWithProvenanceAndNotify,
@@ -932,7 +990,7 @@ func (runtime delegateRuntime) restoreIdle(reservation *delegateStartReservation
 		return nil, false, err
 	}
 	discardEnv = false
-	if child.delegateController != s.delegateController || child.owningDelegateID != reservation.delegateID {
+	if child.delegateController != s.delegateController || child.owningDelegateID != started.lease.delegateID {
 		child.discardRestoredCandidate()
 		return nil, false, errors.New("restored delegate did not inherit the exact controller binding")
 	}

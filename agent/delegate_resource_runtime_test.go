@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -91,6 +92,196 @@ func TestDelegateResourceRuntime_IdleSendReservesOneSuccessor(t *testing.T) {
 		t.Fatalf("successor state = generation:%d phase:%s reservations:%d", generation, phase, reservations)
 	}
 	close(release)
+}
+
+func TestDelegateResourceRuntime_IdleRestoreFailureCommitsBeforeConstruction(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	wantErr := errors.New("injected cold delegate construction failure")
+	committedBeforeConstruction := false
+	root.cfg.testOnly.sessionInitFault = func(point string) error {
+		if point != "builtin_agents" {
+			return nil
+		}
+		root.delegateController.mu.Lock()
+		aggregate := root.delegateController.durable[fixture.delegateID]
+		committedBeforeConstruction = aggregate != nil && aggregate.Generation == 1 && aggregate.CurrentRunOpen && aggregate.Phase == delegatestore.PhaseRunning
+		root.delegateController.mu.Unlock()
+		return wantErr
+	}
+
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "resume after commit", 0)
+	if !committedBeforeConstruction {
+		t.Fatal("cold delegate construction began before run_started committed")
+	}
+	if outcome.result.DelegateID != fixture.delegateID || !errors.Is(outcome.result.Err, wantErr) {
+		t.Fatalf("post-commit restore failure = %#v, want stable identity and construction error", outcome.result)
+	}
+	if outcome.result.Status != jobstore.StatusFailed || outcome.result.Reason != "construction_failed" || outcome.result.Resumable == nil || !*outcome.result.Resumable || outcome.result.RunningInBackground || outcome.result.Action != "completed" {
+		t.Fatalf("post-commit restore failure state = %#v, want completed failed/resumable", outcome.result)
+	}
+	aggregate := delegateAggregateSnapshot(t, root.delegateController, fixture.delegateID)
+	if aggregate.Generation != 1 || aggregate.Phase != delegatestore.PhaseIdle || aggregate.CurrentRunOpen || !aggregate.Resumable || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeFailed || aggregate.LatestOutcome.Reason != "construction_failed" {
+		t.Fatalf("durable restore failure = %#v, want generation-1 failed/resumable idle", aggregate)
+	}
+	if got := len(fixture.adapter.Requests()); got != 0 {
+		t.Fatalf("provider requests after cold construction failure = %d", got)
+	}
+}
+
+func TestDelegateResourceRuntime_RegisteredIdleRestoreFailureReturnsStableResult(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	root.cfg.testOnly.sessionInitFault = func(point string) error {
+		if point == "builtin_agents" {
+			return errors.New("injected registered cold restore failure")
+		}
+		return nil
+	}
+
+	call := root.reg.ExecuteCall(context.Background(), root.env, llm.ToolCallData{
+		ID:        "registered-cold-restore-failure",
+		Name:      "delegate_send",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"resume through registered tool"}`, fixture.delegateID)),
+	})
+	if call.IsError {
+		t.Fatalf("registered post-commit restore failure returned a transport error: %s", call.Output)
+	}
+	var result struct {
+		DelegateID          string `json:"delegate_id"`
+		Status              string `json:"status"`
+		Reason              string `json:"reason"`
+		Resumable           *bool  `json:"resumable"`
+		RunningInBackground bool   `json:"running_in_background"`
+		Action              string `json:"action"`
+		TranscriptRef       string `json:"transcript_ref"`
+	}
+	if err := json.Unmarshal(toolResultJSON(call), &result); err != nil {
+		t.Fatalf("decode registered post-commit result: %v", err)
+	}
+	if result.DelegateID != fixture.delegateID || result.Status != string(jobstore.StatusFailed) || result.Reason != "construction_failed" || result.Resumable == nil || !*result.Resumable || result.RunningInBackground || result.Action != "completed" || result.TranscriptRef == "" {
+		t.Fatalf("registered post-commit restore failure = %#v", result)
+	}
+}
+
+func TestDelegateResourceRuntime_PostCommitFailureWaitsForPriorDelivery(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "missing-owner")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	c := root.delegateController
+	firstReservation, err := c.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart first delivery: %v", err)
+	}
+	first, err := c.CommitStart(firstReservation)
+	if err != nil {
+		t.Fatalf("CommitStart first delivery: %v", err)
+	}
+	firstPlans := finishDelegateDeliveryGeneration(t, c, first.lease, "generation one")
+	if len(firstPlans.deliveries) != 1 {
+		t.Fatalf("first delivery plans = %#v", firstPlans.deliveries)
+	}
+
+	outcomes := make(chan stableDelegateSendOutcome, 1)
+	go func() {
+		outcomes <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "generation two restore failure", 60_000)
+	}()
+	waitForCondition(t, 5*time.Second, "post-commit failure queued behind prior delivery", func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		aggregate := c.durable[fixture.delegateID]
+		return aggregate != nil && aggregate.Generation == 2 && len(aggregate.PendingDeliveries) == 2
+	})
+	select {
+	case outcome := <-outcomes:
+		t.Fatalf("generation two returned before generation one receiver commit: %#v", outcome)
+	default:
+	}
+	if err := root.executeDelegateMutationPlans(firstPlans); err != nil {
+		t.Fatalf("commit generation one delivery: %v", err)
+	}
+	outcome := <-outcomes
+	if outcome.result.DelegateID != fixture.delegateID || outcome.result.Status != jobstore.StatusFailed || outcome.commit == nil || outcome.commit.deliveryID != delegateDeliveryID(fixture.delegateID, 2) {
+		t.Fatalf("generation two failure handoff = %#v", outcome)
+	}
+	ackPlans, err := outcome.commit.Complete(true)
+	if err != nil {
+		t.Fatalf("acknowledge generation two: %v", err)
+	}
+	if err := root.executeDelegateMutationPlans(ackPlans); err != nil {
+		t.Fatalf("execute generation two acknowledgement: %v", err)
+	}
+}
+
+func TestDelegateResourceRuntime_InputCompensationFailureLatchesBeforeRunReset(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	var childID string
+	root.cfg.testOnly.delegateInitialInputAppend = func(child *Session) {
+		childID = child.id
+		child.mu.Lock()
+		writer := child.transcript
+		child.mu.Unlock()
+		if writer == nil {
+			t.Fatal("restored child transcript is unavailable")
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close child transcript: %v", err)
+		}
+		if err := root.delegateController.store.Close(); err != nil {
+			t.Fatalf("close delegate store: %v", err)
+		}
+	}
+
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "fail input and compensation", 0)
+	if outcome.result.DelegateID != fixture.delegateID || outcome.result.Err == nil || !strings.Contains(outcome.result.Err.Error(), "store is closed") {
+		t.Fatalf("double-failure send result = %#v, want stable identity and durable append error", outcome.result)
+	}
+	c := root.delegateController
+	c.mu.Lock()
+	aggregate := c.durable[fixture.delegateID]
+	live := c.live[fixture.delegateID]
+	turnsInUse := c.turnsInUse
+	c.mu.Unlock()
+	if aggregate == nil || aggregate.Generation != 1 || aggregate.Phase != delegatestore.PhaseRunning || !aggregate.CurrentRunOpen || live == nil || live.binding == nil || !live.recoveryRequired || turnsInUse != 1 {
+		t.Fatalf("double-failure durable state = aggregate:%#v live:%#v capacity:%d", aggregate, live, turnsInUse)
+	}
+	sub := root.subagents.get(childID)
+	if sub == nil {
+		t.Fatal("failed restored runtime was not retained")
+	}
+	sub.mu.Lock()
+	running := sub.running
+	sub.mu.Unlock()
+	if running {
+		t.Fatal("subagent run state was reset before durable input admission")
+	}
+	if got := len(fixture.adapter.Requests()); got != 0 {
+		t.Fatalf("provider requests after input compensation failure = %d", got)
+	}
+
+	reopened, err := delegatestore.Open(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
+	if err != nil {
+		t.Fatalf("reopen delegate store for cleanup: %v", err)
+	}
+	c.mu.Lock()
+	c.store = reopened
+	c.mu.Unlock()
 }
 
 func TestDelegateResourceRuntime_ConcurrentIdleSendsStartOneGeneration(t *testing.T) {
@@ -1251,8 +1442,14 @@ func TestDelegateResourceRuntime_ColdIdleUsesCommittedConfigTemplatesAndToolCeil
 	if err != nil {
 		t.Fatalf("ReserveStart: %v", err)
 	}
-	defer func() { _ = root.delegateController.AbortStart(reservation) }()
-	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(reservation)
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	defer func() {
+		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(errors.New("test complete"), "construction_failed"))
+	}()
+	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
 	if err != nil {
 		t.Fatalf("restoreIdle: %v", err)
 	}
@@ -1287,8 +1484,14 @@ func TestDelegateResourceRuntime_ColdIdleReusesExactSharedRootTaskStore(t *testi
 	if err != nil {
 		t.Fatalf("ReserveStart: %v", err)
 	}
-	defer func() { _ = root.delegateController.AbortStart(reservation) }()
-	sub, _, err := (delegateRuntime{owner: root}).restoreIdle(reservation)
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	defer func() {
+		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(errors.New("test complete"), "construction_failed"))
+	}()
+	sub, _, err := (delegateRuntime{owner: root}).restoreIdle(started)
 	if err != nil {
 		t.Fatalf("restoreIdle: %v", err)
 	}
@@ -1312,8 +1515,14 @@ func TestDelegateResourceRuntime_ColdIdleUnavailableAncestorStoreFailsClosedProv
 	if err != nil {
 		t.Fatalf("ReserveStart: %v", err)
 	}
-	defer func() { _ = root.delegateController.AbortStart(reservation) }()
-	if _, _, err := (delegateRuntime{owner: root}).restoreIdle(reservation); err == nil {
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	defer func() {
+		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(errors.New("test complete"), "construction_failed"))
+	}()
+	if _, _, err := (delegateRuntime{owner: root}).restoreIdle(started); err == nil {
 		t.Fatal("missing shared task-store owner was accepted")
 	}
 	if got := len(fixture.adapter.Requests()); got != 0 {
