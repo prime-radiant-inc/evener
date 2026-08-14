@@ -1,0 +1,122 @@
+scenes:
+  - id: s00-title
+    kind: image
+    src: shots/card-title.png
+    narration: >-
+      This is serf's web U I, before and after the redesign. Every frame here
+      is a real screenshot of the running product.
+
+  - id: s01-old-welcome
+    kind: image
+    src: shots/old-welcome.png
+    narration: >-
+      Before. The old app shell, with its indigo accent, I B M Plex type,
+      and a quiet sidebar that kept its signals to itself.
+
+  - id: s02-new-welcome
+    kind: image
+    src: shots/new-welcome.png
+    narration: >-
+      After. A neutral palette, Inter type, attention badges, projects with
+      the same name told apart, and a welcome pane that teaches the keyboard
+      shortcuts.
+
+  - id: s03-old-button
+    kind: image
+    src: shots/old-button.png
+    narration: >-
+      Buttons before, in both themes. Frost blue on the dark side, deep
+      indigo on warm paper.
+
+  - id: s04-new-button
+    kind: image
+    src: shots/new-button.png
+    narration: >-
+      Buttons after. One clear accent, softer radii, and hover states that
+      actually respond.
+
+  - id: s05-old-card
+    kind: image
+    src: shots/old-card.png
+    narration: >-
+      Cards and chips before. Depth came from borders alone, and the dark
+      theme sometimes swallowed its own text.
+
+  - id: s06-new-card
+    kind: image
+    src: shots/new-card.png
+    narration: >-
+      After, a card's ring is part of its shadow, and every tinted chip keeps
+      its text at accessible contrast in both themes.
+
+  - id: s07-old-dialog
+    kind: image
+    src: shots/old-dialog.png
+    narration: >-
+      Dialogs before. Flat panels with plain headers and footers.
+
+  - id: s08-new-dialog
+    kind: image
+    src: shots/new-dialog.png
+    narration: >-
+      Dialogs after. Inset chrome bands for the header and footer, and one
+      floating shadow that carries the border with it.
+
+  - id: s09-old-input
+    kind: image
+    src: shots/old-input.png
+    narration: >-
+      Form fields before sat flat on the surface.
+
+  - id: s10-new-input
+    kind: image
+    src: shots/new-input.png
+    narration: >-
+      After, fields read as sunken wells. Below them, two of the widgets the
+      redesign added: insight cards with live sparklines, and a property
+      inspector.
+
+  - id: s11-old-panescaffold
+    kind: image
+    src: shots/old-panescaffold.png
+    narration: >-
+      Pane headers before were bold titles, and this dark theme body text is
+      a bug the redesign retired.
+
+  - id: s12-new-panescaffold
+    kind: image
+    src: shots/new-panescaffold.png
+    narration: >-
+      After, pane headers are quiet uppercase micro labels on an inset band,
+      and the body text reads in both themes.
+
+  - id: s13-new-session
+    kind: image
+    src: shots/new-session.png
+    narration: >-
+      The live session view, shown new only, because the old front end can
+      no longer speak to today's hub. A real transcript, streaming over the
+      live wire, with tool rows, a task checklist, thought blocks, and the
+      composer, which is now a full session command line.
+
+  - id: s14-new-surfaces
+    kind: image
+    src: shots/new-surfaces.png
+    narration: >-
+      A second gallery renders every real surface on fixture data, like this
+      full transcript turn, so the whole app can be reviewed without a live
+      agent.
+
+  - id: s15-new-table
+    kind: image
+    src: shots/new-table.png
+    narration: >-
+      And the widget library grew to fifty, including a sortable, filterable
+      table, shown here actually sorting.
+
+  - id: s99-end
+    kind: image
+    src: shots/card-end.png
+    narration: >-
+      One design system, fifty widgets, two galleries, and a keyboard first
+      core loop. All of it tested against the live product.
