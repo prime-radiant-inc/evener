@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/agent/task"
 )
 
 func TestStoreAppendBatchIsOneCrashAtomicLine(t *testing.T) {
@@ -36,6 +38,11 @@ func TestStoreAppendBatchIsOneCrashAtomicLine(t *testing.T) {
 	}
 	if aggregate := accepted["dlg_alpha"]; aggregate == nil || !aggregate.CurrentRunOpen || aggregate.Generation != 1 {
 		t.Fatalf("accepted aggregate = %#v, want open generation 1", aggregate)
+	}
+	wantTaskTemplates := append([]task.TaskTemplate(nil), accepted["dlg_alpha"].Descriptor.TaskTemplates...)
+	created.Created.Descriptor.TaskTemplates[0].Prompt = "caller-mutated"
+	if got := accepted["dlg_alpha"].Descriptor.TaskTemplates; !reflect.DeepEqual(got, wantTaskTemplates) {
+		t.Fatalf("accepted task templates aliased caller mutation: got %#v want %#v", got, wantTaskTemplates)
 	}
 
 	raw, err := os.ReadFile(path)
@@ -79,6 +86,9 @@ func TestStoreAppendBatchIsOneCrashAtomicLine(t *testing.T) {
 	}
 	if !reflect.DeepEqual(aggregate.Descriptor.Config, created.Created.Descriptor.Config) {
 		t.Fatalf("reopened descriptor config = %#v, want %#v", aggregate.Descriptor.Config, created.Created.Descriptor.Config)
+	}
+	if !reflect.DeepEqual(aggregate.Descriptor.TaskTemplates, wantTaskTemplates) {
+		t.Fatalf("reopened task templates = %#v, want %#v", aggregate.Descriptor.TaskTemplates, wantTaskTemplates)
 	}
 }
 

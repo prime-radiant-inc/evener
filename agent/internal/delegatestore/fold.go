@@ -6,6 +6,7 @@ import (
 	"reflect"
 
 	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/agent/task"
 )
 
 func Fold(events []Event) (State, error) {
@@ -578,6 +579,7 @@ func cloneAggregate(aggregate *Aggregate) *Aggregate {
 
 func cloneDescriptor(descriptor Descriptor) Descriptor {
 	clone := descriptor
+	clone.TaskTemplates = append([]task.TaskTemplate(nil), descriptor.TaskTemplates...)
 	clone.FrozenToolNames = append([]string(nil), descriptor.FrozenToolNames...)
 	clone.FrozenSkillNames = append([]string(nil), descriptor.FrozenSkillNames...)
 	clone.FrozenSkillBodies = append([]string(nil), descriptor.FrozenSkillBodies...)

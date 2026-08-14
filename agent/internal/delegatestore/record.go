@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/task"
 )
 
 type State map[string]*Aggregate
@@ -71,7 +72,7 @@ type Descriptor struct {
 	ReasoningEffort               string                `json:"reasoning_effort,omitempty"`
 	AgentName                     string                `json:"agent_name,omitempty"`
 	FrozenRolePrompt              string                `json:"frozen_role_prompt,omitempty"`
-	FrozenTaskPrompt              string                `json:"frozen_task_prompt,omitempty"`
+	TaskTemplates                 []task.TaskTemplate   `json:"task_templates,omitempty"`
 	FrozenToolNames               []string              `json:"frozen_tool_names,omitempty"`
 	FrozenSkillNames              []string              `json:"frozen_skill_names,omitempty"`
 	FrozenSkillBodies             []string              `json:"frozen_skill_bodies,omitempty"`

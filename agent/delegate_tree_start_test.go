@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/schema"
+	taskpkg "primeradiant.com/serf/agent/task"
 )
 
 // AdmitStartInput is the test-only callback adapter used by controller fuzz
@@ -783,6 +784,7 @@ func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) 
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	descriptor := delegateControllerCreateDescriptor()
 	loopDetection := false
+	descriptor.TaskTemplates = []taskpkg.TaskTemplate{{Title: "frozen", Prompt: "frozen prompt", ReasoningEffort: "high", Type: "verify", Insert: "parent_tasks"}}
 	descriptor.FrozenToolNames = []string{"communicate"}
 	descriptor.ResultSchema = json.RawMessage(`{"type":"object"}`)
 	descriptor.Config = schema.ConfigSnapshot{
@@ -800,6 +802,7 @@ func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) 
 	wantTranscriptRef := reservation.descriptor.TranscriptRef
 	wantWorkingDir := reservation.descriptor.WorkingDir
 	wantTask := reservation.descriptor.Task
+	wantTaskTemplates := append([]taskpkg.TaskTemplate(nil), reservation.descriptor.TaskTemplates...)
 	wantSchema := append(json.RawMessage(nil), reservation.descriptor.ResultSchema...)
 	wantConfig := reservation.descriptor.Config.Clone()
 	wantSharedTaskStoreOwner := reservation.descriptor.SharedTaskStoreOwnerSessionID
@@ -815,11 +818,13 @@ func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) 
 	}
 
 	descriptor.FrozenToolNames[0] = "caller-mutated"
+	descriptor.TaskTemplates[0].Prompt = "caller-mutated"
 	descriptor.Config.ToolOutputLimits["read_file"] = schema.ToolOutputLimit{MaxChars: 999}
 	descriptor.Config.ModelFallbacks[0] = "openai/caller-mutated"
 	*descriptor.Config.EnableLoopDetection = true
 	reservation.delegateID = "dlg_redirected"
 	reservation.descriptor.Task = "redirected task"
+	reservation.descriptor.TaskTemplates[0].Prompt = "receipt-mutated"
 	reservation.descriptor.FrozenToolNames[0] = "receipt-mutated"
 	reservation.descriptor.TranscriptRef = "local:redirected"
 	reservation.descriptor.WorkingDir = filepath.Join(t.TempDir(), "redirected")
@@ -838,7 +843,7 @@ func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) 
 	if started.lease.delegateID != wantID {
 		t.Fatalf("committed delegate ID = %q, want reserved %q", started.lease.delegateID, wantID)
 	}
-	if started.ctx == nil || started.ctx.Err() != nil || started.transcriptPath != wantTranscriptPath || started.worktreePath != wantWorktreePath || started.descriptor.Task != wantTask || started.descriptor.TranscriptRef != wantTranscriptRef || started.descriptor.WorkingDir != wantWorkingDir || !bytes.Equal(started.descriptor.ResultSchema, wantSchema) || !reflect.DeepEqual(started.descriptor.Config, wantConfig) || started.descriptor.SharedTaskStoreOwnerSessionID != wantSharedTaskStoreOwner {
+	if started.ctx == nil || started.ctx.Err() != nil || started.transcriptPath != wantTranscriptPath || started.worktreePath != wantWorktreePath || started.descriptor.Task != wantTask || !reflect.DeepEqual(started.descriptor.TaskTemplates, wantTaskTemplates) || started.descriptor.TranscriptRef != wantTranscriptRef || started.descriptor.WorkingDir != wantWorkingDir || !bytes.Equal(started.descriptor.ResultSchema, wantSchema) || !reflect.DeepEqual(started.descriptor.Config, wantConfig) || started.descriptor.SharedTaskStoreOwnerSessionID != wantSharedTaskStoreOwner {
 		t.Fatalf("committed construction outputs = %#v, want authoritative reserved descriptor and paths", started)
 	}
 	if c.durable["dlg_redirected"] != nil || c.live["dlg_redirected"] != nil {
@@ -848,7 +853,7 @@ func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) 
 	if aggregate == nil {
 		t.Fatalf("reserved delegate %q was not committed", wantID)
 	}
-	if got := aggregate.Descriptor; got.Task != wantTask || got.TranscriptRef != wantTranscriptRef || got.WorkingDir != wantWorkingDir || !reflect.DeepEqual(got.FrozenToolNames, []string{"communicate"}) || !bytes.Equal(got.ResultSchema, wantSchema) || !reflect.DeepEqual(got.Config, wantConfig) || got.SharedTaskStoreOwnerSessionID != wantSharedTaskStoreOwner {
+	if got := aggregate.Descriptor; got.Task != wantTask || !reflect.DeepEqual(got.TaskTemplates, wantTaskTemplates) || got.TranscriptRef != wantTranscriptRef || got.WorkingDir != wantWorkingDir || !reflect.DeepEqual(got.FrozenToolNames, []string{"communicate"}) || !bytes.Equal(got.ResultSchema, wantSchema) || !reflect.DeepEqual(got.Config, wantConfig) || got.SharedTaskStoreOwnerSessionID != wantSharedTaskStoreOwner {
 		t.Fatalf("committed descriptor trusted caller mutation:\n got %#v\nwant task=%q transcript=%q working_dir=%q tools=[communicate] schema=%s", got, wantTask, wantTranscriptRef, wantWorkingDir, wantSchema)
 	}
 	if turns, drives := c.capacityInUse(); turns != 1 || drives != 0 {

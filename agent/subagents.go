@@ -896,8 +896,8 @@ func (s *Session) prepareSubagentRunFromSelection(
 
 	// Populate default tasks from agent definition + parent tasks.
 	var defaultTasks []taskpkg.TaskTemplate
-	if frozen != nil && strings.TrimSpace(frozen.FrozenTaskPrompt) != "" {
-		defaultTasks = []taskpkg.TaskTemplate{{Title: frozen.Task, Prompt: frozen.FrozenTaskPrompt}}
+	if frozen != nil {
+		defaultTasks = append(defaultTasks, frozen.TaskTemplates...)
 	} else if agent != nil {
 		defaultTasks = agent.Tasks
 	}
@@ -1033,7 +1033,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 		prepared.resolvedAgentName = frozen.AgentName
 		prepared.reasoningEffort = frozen.ReasoningEffort
 		prepared.frozenRolePrompt = frozen.FrozenRolePrompt
-		prepared.frozenTaskPrompt = frozen.FrozenTaskPrompt
 		prepared.frozenToolNames = append([]string(nil), frozen.FrozenToolNames...)
 		prepared.frozenSkillNames = append([]string(nil), frozen.FrozenSkillNames...)
 		prepared.frozenSkillBodies = append([]string(nil), frozen.FrozenSkillBodies...)

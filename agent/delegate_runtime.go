@@ -256,8 +256,8 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		Provenance:                    s.activeCausalProvenance(),
 		Resumable:                     true,
 	}
-	if selection.agent != nil && len(selection.agent.Tasks) > 0 {
-		descriptor.FrozenTaskPrompt = selection.agent.Tasks[0].Prompt
+	if selection.agent != nil {
+		descriptor.TaskTemplates = append(descriptor.TaskTemplates, selection.agent.Tasks...)
 	}
 	if callID, ok := ctx.Value(ctxToolCallID).(string); ok {
 		descriptor.OriginToolCallID = callID

@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/identifier"
 )
 
@@ -718,6 +719,7 @@ func (c *delegateTreeController) releaseCapacityLocked(kind delegateCapacityKind
 
 func cloneDelegateStartDescriptor(descriptor delegatestore.Descriptor) delegatestore.Descriptor {
 	clone := descriptor
+	clone.TaskTemplates = append([]task.TaskTemplate(nil), descriptor.TaskTemplates...)
 	clone.FrozenToolNames = append([]string(nil), descriptor.FrozenToolNames...)
 	clone.FrozenSkillNames = append([]string(nil), descriptor.FrozenSkillNames...)
 	clone.FrozenSkillBodies = append([]string(nil), descriptor.FrozenSkillBodies...)

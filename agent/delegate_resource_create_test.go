@@ -498,6 +498,101 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 	}
 }
 
+func TestDelegateResourceCreate_PreservesCompleteNamedAgentWorkflowAfterCommit(t *testing.T) {
+	root, client, _ := newDelegateResourceBootstrapSession(t)
+	adapter := newTask6FrozenDescriptorAdapter()
+	client.Register(adapter)
+	t.Cleanup(adapter.releaseRun)
+
+	const agentType = "task6-complete-workflow"
+	templates := []taskpkg.TaskTemplate{
+		{
+			Title:           "Investigate the failure",
+			Prompt:          "Trace the failing behavior to its source.",
+			ReasoningEffort: "high",
+			Type:            string(taskpkg.TaskTypeResearch),
+		},
+		{
+			Title:  "Preserve the insertion step",
+			Prompt: "Keep this literal step when no parent task templates are supplied.",
+			Type:   string(taskpkg.TaskTypeVerify),
+			Insert: "parent_tasks",
+		},
+		{
+			Title:           "Implement the correction",
+			Prompt:          "Make the smallest source-level correction.",
+			ReasoningEffort: "low",
+			Type:            string(taskpkg.TaskTypeFix),
+		},
+	}
+	wantTemplates := append([]taskpkg.TaskTemplate(nil), templates...)
+	root.pluginAgents[agentType] = plugin.Agent{
+		Name:         "complete-workflow",
+		Description:  "Exercises durable named-agent workflows",
+		Model:        "inherit",
+		Tools:        []string{"read_file"},
+		Tasks:        templates,
+		SystemPrompt: "Follow the complete workflow.",
+		PluginName:   "task6-test",
+	}
+
+	var mutateOnce sync.Once
+	root.delegateController.mu.Lock()
+	root.delegateController.emitUpdate = func(delegateUpdatePlan) {
+		mutateOnce.Do(func() {
+			mutated := root.pluginAgents[agentType]
+			for i := range mutated.Tasks {
+				mutated.Tasks[i] = taskpkg.TaskTemplate{
+					Title:           "MUTATED TITLE",
+					Prompt:          "MUTATED PROMPT",
+					ReasoningEffort: "medium",
+					Type:            string(taskpkg.TaskTypeImplement),
+					Insert:          "mutated_insert",
+				}
+			}
+			root.pluginAgents[agentType] = mutated
+		})
+	}
+	root.delegateController.mu.Unlock()
+
+	result := root.createDelegate(context.Background(), delegateArgs{
+		Task:       "run the complete committed workflow",
+		AgentType:  agentType,
+		Background: true,
+	})
+	if result.Err != nil {
+		t.Fatalf("createDelegate: %v", result.Err)
+	}
+	select {
+	case <-adapter.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider did not receive the named-agent workflow request")
+	}
+	adapter.releaseRun()
+
+	descriptor := delegateAggregateSnapshot(t, root.delegateController, result.DelegateID).Descriptor
+	if !reflect.DeepEqual(descriptor.TaskTemplates, wantTemplates) {
+		t.Fatalf("committed task templates = %#v, want %#v", descriptor.TaskTemplates, wantTemplates)
+	}
+	childRecord := root.subagents.get(descriptor.ChildSessionID)
+	if childRecord == nil || childRecord.sess == nil {
+		t.Fatalf("committed child %q is not retained", descriptor.ChildSessionID)
+	}
+	got := childRecord.sess.getOrCreateTaskStore().View()
+	if len(got) != len(wantTemplates) {
+		t.Fatalf("child workflow task count = %d, want %d: %#v", len(got), len(wantTemplates), got)
+	}
+	for i, want := range wantTemplates {
+		wantStatus := taskpkg.TaskOpen
+		if i == 0 {
+			wantStatus = taskpkg.TaskInProgress
+		}
+		if got[i].ID != i+1 || got[i].Description != want.Title || got[i].Prompt != want.Prompt || got[i].ReasoningEffort != want.ReasoningEffort || got[i].Type != taskpkg.TaskType(want.Type) || got[i].Insert != want.Insert || got[i].Status != wantStatus {
+			t.Errorf("child workflow task %d = %#v, want id=%d title=%q prompt=%q reasoning=%q type=%q insert=%q status=%q", i, got[i], i+1, want.Title, want.Prompt, want.ReasoningEffort, want.Type, want.Insert, wantStatus)
+		}
+	}
+}
+
 func TestDelegateResourceCreate_RestoredRootStartsNewChildWithStartupHooks(t *testing.T) {
 	const (
 		startupMarker = "TASK6 STARTUP CHILD HOOK"

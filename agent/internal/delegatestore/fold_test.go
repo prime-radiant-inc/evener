@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/task"
 )
 
 func TestApplyAndFoldCloneCreatedDescriptor(t *testing.T) {
@@ -16,6 +17,9 @@ func TestApplyAndFoldCloneCreatedDescriptor(t *testing.T) {
 		name   string
 		mutate func(*Descriptor)
 	}{
+		{name: "task templates", mutate: func(descriptor *Descriptor) {
+			descriptor.TaskTemplates[0] = task.TaskTemplate{Title: "mutated", Prompt: "mutated", ReasoningEffort: "low", Type: "fix", Insert: "mutated"}
+		}},
 		{name: "frozen tool names", mutate: func(descriptor *Descriptor) { descriptor.FrozenToolNames[0] = "mutated" }},
 		{name: "frozen skill names", mutate: func(descriptor *Descriptor) { descriptor.FrozenSkillNames[0] = "mutated" }},
 		{name: "frozen skill bodies", mutate: func(descriptor *Descriptor) { descriptor.FrozenSkillBodies[0] = "mutated" }},
@@ -457,6 +461,11 @@ func createdEventWithReferenceDescriptor(id string) Event {
 	loopDetection := false
 	configNetwork := false
 	descriptor := testDescriptor(id, "")
+	descriptor.TaskTemplates = []task.TaskTemplate{
+		{Title: "research", Prompt: "investigate", ReasoningEffort: "high", Type: "research"},
+		{Title: "insert", Prompt: "preserve", Type: "verify", Insert: "parent_tasks"},
+		{Title: "fix", Prompt: "implement", ReasoningEffort: "low", Type: "fix"},
+	}
 	descriptor.FrozenToolNames = []string{"shell"}
 	descriptor.FrozenSkillNames = []string{"review"}
 	descriptor.FrozenSkillBodies = []string{"review instructions"}
