@@ -212,7 +212,9 @@ fi
 new_seeds=()
 while IFS= read -r seed_path; do
 	new_seeds+=("$seed_path")
-done < <(cd "$repo_root" && git status --porcelain | grep -E 'testdata/fuzz/' | awk '{print $NF}')
+# -uall lists files inside untracked directories; without it a brand-new fuzz
+# target dir collapses to one "?? dir/" line and its seeds are never staged.
+done < <(cd "$repo_root" && git status --porcelain -uall | grep -E 'testdata/fuzz/' | awk '{print $NF}')
 if [ "${#new_seeds[@]}" -eq 0 ]; then
 	note "harvest added no new seeds (corpus already covers this traffic)"
 	exit 0

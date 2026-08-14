@@ -30,7 +30,10 @@ new_repo() {
 	cp "$script" "$r/scripts/fuzz-drive.sh"
 	printf 'normal task one\n' >"$r/fuzz/drive-tasks/01-a.txt"
 	printf 'normal task two\n' >"$r/fuzz/drive-tasks/02-b.txt"
-	( cd "$r" && git init -q && git config user.email t@t && git config user.name t \
+	# Pin the initial branch: the seed-branch check resolves "main", and without
+	# this a host lacking init.defaultBranch (e.g. CI) inits on "master".
+	( cd "$r" && git init -q && git symbolic-ref HEAD refs/heads/main \
+		&& git config user.email t@t && git config user.name t \
 		&& git add -A && git commit -qm init )
 
 	# serf stub: records env + cwd per invocation; emits a recording line; fails

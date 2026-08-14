@@ -107,7 +107,16 @@ for row in "${sized[@]}"; do
 	listed=$((listed + 1))
 	kb=${row%%	*}
 	path=${row#*	}
-	mtime=$(stat -f '%Sm' -t '%Y-%m-%d' "$path" 2>/dev/null || date -r "$(stat -c '%Y' "$path" 2>/dev/null || echo 0)" '+%Y-%m-%d' 2>/dev/null || echo "unknown")
+	# Epoch first, formatted second, each tried GNU-then-BSD. The two steps
+	# cannot share one fallback chain: GNU stat treats -f as "filesystem
+	# status" and prints that to stdout before failing, which a single `a || b`
+	# command substitution would capture alongside b's output.
+	epoch=$(stat -c '%Y' "$path" 2>/dev/null) || epoch=$(stat -f '%m' "$path" 2>/dev/null) || epoch=""
+	if [ -n "$epoch" ]; then
+		mtime=$(date -d "@$epoch" '+%Y-%m-%d' 2>/dev/null) || mtime=$(date -r "$epoch" '+%Y-%m-%d' 2>/dev/null) || mtime="unknown"
+	else
+		mtime="unknown"
+	fi
 	# RECENT is a ONE-WAY signal: touched in the last day, so a session may
 	# still be using it. Its absence proves nothing — a directory's mtime does
 	# not move when something writes deeper inside it.
