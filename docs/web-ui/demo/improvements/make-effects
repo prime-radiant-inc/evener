@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# make-effects — render effect frame sequences for the improvements movie.
+#
+# The assemble step (proving-it-works-with-a-movie) has no transitions of its
+# own, so visual effects are baked into `frames`-kind scenes here:
+#
+#   make-effects pan TALL.png OUTDIR NFRAMES      # vertical Ken Burns crop
+#   make-effects dissolve A.png B.png OUTDIR N    # crossfade A -> B
+#
+# All frames are 1920x1080 PNGs named frame-NNNN.png (assemble plays a frames
+# dir at its scene's `rate`). Requires ImageMagick.
+set -euo pipefail
+
+W=1920
+H=1080
+
+die() { echo "make-effects: $*" >&2; exit 1; }
+[ $# -ge 1 ] || die "usage: make-effects pan|dissolve ..."
+mode=$1; shift
+
+ease() { # ease-in-out cubic on t in [0,1], printed as float
+  python3 -c "t=$1
+print(4*t*t*t if t < 0.5 else 1 - ((-2*t+2)**3)/2)"
+}
+
+case "$mode" in
+  pan)
+    [ $# -eq 3 ] || die "usage: make-effects pan TALL.png OUTDIR NFRAMES"
+    src=$1; out=$2; n=$3
+    mkdir -p "$out"; rm -f "$out"/frame-*.png
+    ih=$(identify -format '%h' "$src")
+    iw=$(identify -format '%w' "$src")
+    # A visible scrollbar shaves ~15px off a full-page capture; scale such a
+    # source back to the frame width rather than rejecting it.
+    if [ "$iw" -ne "$W" ]; then
+      scaled=$(mktemp --suffix=.png)
+      convert "$src" -resize "${W}x" "$scaled"
+      src=$scaled
+      ih=$(identify -format '%h' "$src")
+    fi
+    span=$((ih - H))
+    [ "$span" -gt 0 ] || die "pan source must be taller than ${H}px"
+    for i in $(seq 0 $((n - 1))); do
+      t=$(python3 -c "print($i / max(1, $n - 1))")
+      e=$(ease "$t")
+      y=$(python3 -c "print(round($e * $span))")
+      convert "$src" -crop "${W}x${H}+0+${y}" +repage \
+        "$(printf '%s/frame-%04d.png' "$out" "$i")"
+    done
+    echo "pan: $n frames -> $out"
+    ;;
+  dissolve)
+    [ $# -eq 4 ] || die "usage: make-effects dissolve A.png B.png OUTDIR NFRAMES"
+    a=$1; b=$2; out=$3; n=$4
+    mkdir -p "$out"; rm -f "$out"/frame-*.png
+    for i in $(seq 0 $((n - 1))); do
+      t=$(python3 -c "print($i / max(1, $n - 1))")
+      e=$(ease "$t")
+      pct=$(python3 -c "print(round($e * 100))")
+      composite -blend "${pct}" "$b" "$a" \
+        "$(printf '%s/frame-%04d.png' "$out" "$i")"
+    done
+    echo "dissolve: $n frames -> $out"
+    ;;
+  *)
+    die "unknown mode $mode"
+    ;;
+esac

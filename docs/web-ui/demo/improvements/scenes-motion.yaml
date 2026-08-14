@@ -1,0 +1,126 @@
+# Motion scenes for the improvements movie — driven by record.mjs, which
+# also makes each scene a live E2E: assert_* failures abort the pass, so a
+# shipped movie is a passed test. One continuous pass against the vite dev
+# server (5199) and a scratch repo at /home/jesse/tmp/serf-demo-e2e: the
+# session spawned in the first scene is the one deleted in the last.
+scenes:
+  - id: spawn-live
+    note: Spawn a real session from the rail; the agent answers for real.
+    actions:
+      - goto: /
+      - wait_for: '[data-testid="rail-brand"]'
+      - pause: 1
+      - eval: "[...document.querySelectorAll('button')].find(b => b.textContent.trim() === '+ New session')?.click()"
+      - wait_for: 'textarea[aria-label="Prompt"]'
+      - click: '#spawn-cwd'
+      - wait_for: 'input[role="combobox"]'
+      - type: "/home/jesse/tmp/serf-demo-e2e"
+      - key: Enter
+      - pause: 0.8
+      - key: Escape
+      - click_text: (default)
+      - wait_for: 'input[aria-label="Model"]'
+      - wait_for: '[role="option"]'
+      - type: "5.6"
+      - pause: 0.8
+      - click_text: Sol
+      - pause: 0.6
+      - click: 'textarea[aria-label="Prompt"]'
+      - type: "Say exactly: demo ready. Then wait for further instructions."
+      - click: '[data-testid="spawn-submit"]'
+      - pause: 6
+      - eval: "[...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Retry')?.click()"
+      - wait_for: { selector: 'textarea[aria-label="Message"]', timeout: "120000" }
+      - assert_text: demo ready
+
+  - id: slash-completion
+    note: Typing / in the composer completes session commands inline.
+    actions:
+      - click: 'textarea[aria-label="Message"]'
+      - type: "/"
+      - wait_for: '[data-testid="composer-slash-menu"]'
+      - pause: 1.4
+      - type: "go"
+      - pause: 1.4
+      - key: Escape
+
+  - id: goal-live
+    note: /goal sets the session goal live; the chip and popover are real.
+    actions:
+      - click: 'textarea[aria-label="Message"]'
+      - eval: "(() => { const t = document.querySelector('textarea[aria-label=\"Message\"]'); const set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set; set.call(t, ''); t.dispatchEvent(new Event('input', { bubbles: true })); })()"
+      - type: "/goal Answer questions briefly; start nothing new"
+      - key: Ctrl+Enter
+      - wait_for: '[data-testid="goal-chip-trigger"]'
+      - pause: 1.5
+      - click: '[data-testid="goal-chip-trigger"]'
+      - wait_for: '[data-testid="goal-popover"]'
+      - pause: 1.6
+      - key: Escape
+
+  - id: model-live
+    note: /model switches the session's model live; the status row updates.
+    actions:
+      - click: 'textarea[aria-label="Message"]'
+      - type: "/model openai/gpt-5.6-terra"
+      - pause: 1
+      - key: Ctrl+Enter
+      - assert_text: gpt-5.6-terra
+      - pause: 1.5
+
+  - id: unknown-slash
+    note: An unknown /word is a message, not a command — it reaches the agent.
+    actions:
+      - click: 'textarea[aria-label="Message"]'
+      - type: "/frobnicate is not a command. If you can read this, say exactly: got your message."
+      - key: Ctrl+Enter
+      - assert_text: got your message
+
+  - id: palette-handoff
+    note: The palette is where you go; it hands session commands to the composer.
+    actions:
+      - key: Ctrl+k
+      - wait_for: 'input[aria-label="Command palette"]'
+      - type: "/goal"
+      - pause: 1.4
+      - click_text: Continue in the composer
+      - pause: 0.8
+      - eval: "(() => { const t = document.querySelector('textarea[aria-label=\"Message\"]'); if (!t || !t.value.startsWith('/goal')) throw new Error('palette handoff did not prefix /goal, got: ' + (t ? t.value : 'no textarea')); })()"
+      - pause: 1
+      - eval: "(() => { const t = document.querySelector('textarea[aria-label=\"Message\"]'); const set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set; set.call(t, ''); t.dispatchEvent(new Event('input', { bubbles: true })); })()"
+
+  - id: ask-and-answer
+    note: The agent asks via its ask tool; an answer plus Mod+Enter resolves it.
+    actions:
+      - click: 'textarea[aria-label="Message"]'
+      - type: "Use your ask tool to ask me one yes/no question about this demo recording."
+      - key: Ctrl+Enter
+      - wait_for: { selector: 'input[type="radio"]', timeout: "120000" }
+      - pause: 1.5
+      - eval: "document.querySelector('input[type=\"radio\"]')?.click()"
+      - pause: 1.2
+      - key: Ctrl+Enter
+      - pause: 2.5
+      - assert_gone: Send answers
+
+  - id: delete-fence
+    note: Shut down and delete the session; the rail drops the row immediately and the pane closes out honestly.
+    actions:
+      - wait_for: '[data-testid="session-chrome-inline"]'
+      - assert_text: Session actions
+      - pause: 0.5
+      - click_text: Session actions
+      - pause: 0.8
+      - click_text: Shut down
+      - pause: 0.8
+      - click_text: Shut down
+      - pause: 2.5
+      - click_text: Session actions
+      - pause: 0.8
+      - click_text: Delete…
+      - pause: 1
+      - click_text: Delete
+      - pause: 2
+      - assert_text: No session open
+      - assert_gone: Demo Ready
+      - pause: 1.5

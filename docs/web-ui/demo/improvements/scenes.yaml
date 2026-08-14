@@ -1,0 +1,126 @@
+# Improvements-tour movie: what shipped, proven live. Frame sources:
+#   - shots/<id>/            recorded by record.mjs from scenes-motion.yaml
+#                            (each motion scene is also a live E2E - its
+#                            assertions passed or the frames wouldn't exist)
+#   - shots/*-pan, *-dissolve  effect sequences from make-effects
+# shots/ is a symlink to the capture workspace; captures are regenerable and
+# not committed (they contain live session data). Build:
+#   record.mjs scenes-motion.yaml shots/   (drives + verifies the live beats)
+#   make-effects ...                       (pan/dissolve sequences, README)
+#   narrate scenes.yaml narration/
+#   assemble scenes.yaml silent-cut.mp4
+#   make-subtitles narration/manifest.json movie.srt --offsets-json segments/offsets.json
+#   burn-subtitles silent-cut.mp4 movie.srt movie.mp4
+#   check-movie movie.mp4   # then LOOK at the contact sheet
+scenes:
+  # Cards are pre-rendered HTML screenshots (card-*.html via a browser), not
+  # assemble's own card kind - its headless card renderer produced Chrome
+  # error pages on this box both times it was tried.
+  - id: s00-title
+    kind: image
+    src: shots/card-title.png
+    narration: >-
+      This is a tour of serf's web U I after the redesign. Everything you are
+      about to see is the real product, driven live. The interactive scenes
+      are also end to end tests. Their assertions passed while the camera
+      rolled.
+
+  - id: s01-theme
+    kind: frames
+    src: shots/theme-dissolve
+    rate: 10
+    narration: >-
+      The new design system. One neutral palette in two themes, Inter for
+      text, JetBrains Mono for the machine facts, and a six step surface
+      ramp. This dissolve is the same app, dark to light.
+
+  - id: s02-surfaces
+    kind: frames
+    src: shots/surfaces-pan
+    rate: 12
+    narration: >-
+      Every pane level surface has a gallery page, rendered from fixture
+      data by the real production components. Session chrome, composer, ask
+      cards, the rail, and the transcript, in both themes side by side.
+
+  - id: s03-widgets
+    kind: frames
+    src: shots/widgets-pan
+    rate: 12
+    narration: >-
+      The widget library is now fifty widgets, including the full set ported
+      from Beautiful U I, with attribution and an About page credit. Same
+      tokens, same motion rules, no Tailwind.
+
+  - id: s04-spawn
+    kind: frames
+    src: shots/spawn-live
+    rate: 8
+    narration: >-
+      Now the proof. From the rail, a new session. Pick the working
+      directory, pick a model, type a prompt, and spawn. A real agent
+      daemon starts, and the words demo ready in the transcript came from a
+      real model answering.
+
+  - id: s05-slash
+    kind: frames
+    src: shots/slash-completion
+    rate: 8
+    narration: >-
+      The composer is the session's command line. Type a slash and every
+      session command completes inline, narrowing as you type.
+
+  - id: s06-goal
+    kind: frames
+    src: shots/goal-live
+    rate: 8
+    narration: >-
+      Slash goal sets the session's goal for real. The chip appears in the
+      composer's status row, and its popover shows the live status.
+
+  - id: s06b-model
+    kind: frames
+    src: shots/model-live
+    rate: 8
+    narration: >-
+      Slash model switches the model mid session. The status row now says
+      terra, and the next turn will use it.
+
+  - id: s07-unknown
+    kind: frames
+    src: shots/unknown-slash
+    rate: 8
+    narration: >-
+      An unknown slash word is not swallowed. It is just a message, and the
+      agent read it and answered.
+
+  - id: s08-palette
+    kind: frames
+    src: shots/palette-handoff
+    rate: 8
+    narration: >-
+      The palette is where you go. For session commands it hands off,
+      dropping you into the composer with the command prefilled.
+
+  - id: s09-ask
+    kind: frames
+    src: shots/ask-and-answer
+    rate: 8
+    narration: >-
+      When the agent needs you, it asks. The question arrives as a card in
+      the composer's place, you pick an answer, and control enter sends it.
+
+  - id: s10-delete
+    kind: frames
+    src: shots/delete-fence
+    rate: 8
+    narration: >-
+      Cleanup is honest. Shut the session down, confirm the delete, and the
+      rail drops the row immediately while the pane closes out.
+
+  - id: s99-end
+    kind: image
+    src: shots/card-end.png
+    narration: >-
+      All of it shipped on main, gated by the token contract, the browser
+      guards, and the tests you just watched pass.
