@@ -834,6 +834,43 @@ func TestGrepNative_SkipsBinaryFiles(t *testing.T) {
 	}
 }
 
+// A grep whose target is a single explicitly named file must format output the
+// way ripgrep does for one file argument: no filename prefix on match, context,
+// or count lines. Otherwise the tool's output differs between environments with
+// and without rg on PATH (e.g. CI runners), breaking receipt replay parsing.
+func TestGrepNative_SingleFileTargetOmitsFilenamePrefix(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "single.txt")
+	if err := os.WriteFile(file, []byte("b1\nb2\nneedle one\na1\nx1\nx2\nb3\nneedle two\na2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := NewLocalExecutionEnvironment(dir)
+
+	content, err := env.grepNative("needle", file, "", false, 100, "")
+	if err != nil {
+		t.Fatalf("content mode: %v", err)
+	}
+	if want := "3:needle one\n8:needle two"; content != want {
+		t.Fatalf("content mode = %q, want %q", content, want)
+	}
+
+	withContext, err := env.grepNative("needle", file, "", false, 100, "content", 1)
+	if err != nil {
+		t.Fatalf("context mode: %v", err)
+	}
+	if want := "2-b2\n3:needle one\n4-a1\n--\n7-b3\n8:needle two\n9-a2"; withContext != want {
+		t.Fatalf("context mode = %q, want %q", withContext, want)
+	}
+
+	count, err := env.grepNative("needle", file, "", false, 100, "count")
+	if err != nil {
+		t.Fatalf("count mode: %v", err)
+	}
+	if count != "2" {
+		t.Fatalf("count mode = %q, want %q", count, "2")
+	}
+}
+
 func TestGrepNative_MaxResults(t *testing.T) {
 	dir := t.TempDir()
 	// Create file with many matching lines

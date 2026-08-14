@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -84,7 +85,14 @@ func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMo
 
 // feed scans one file's lines and records matches per output mode; it returns true
 // when maxResults has been reached and the walk should stop.
+//
+// A relPath of "." means the search target was the file itself (the walk root),
+// not a file found under a directory. Ripgrep omits the filename entirely when
+// given a single explicit file argument, so content and count output do the
+// same here; otherwise the tool's output would differ between environments with
+// and without rg on PATH.
 func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
+	singleFile := relPath == "."
 	lines := strings.Split(string(data), "\n")
 	for i, line := range lines {
 		if !a.re.MatchString(line) {
@@ -123,8 +131,14 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 					if j == i {
 						sep = ":"
 					}
-					a.results = append(a.results, fmt.Sprintf("%s%s%d%s%s", relPath, sep, j+1, sep, lines[j]))
+					if singleFile {
+						a.results = append(a.results, fmt.Sprintf("%d%s%s", j+1, sep, lines[j]))
+					} else {
+						a.results = append(a.results, fmt.Sprintf("%s%s%d%s%s", relPath, sep, j+1, sep, lines[j]))
+					}
 				}
+			} else if singleFile {
+				a.results = append(a.results, fmt.Sprintf("%d:%s", i+1, line))
 			} else {
 				a.results = append(a.results, fmt.Sprintf("%s:%d:%s", relPath, i+1, line))
 			}
@@ -142,6 +156,11 @@ func (a *grepAccum) finish() string {
 	if a.outputMode == "count" {
 		var countResults []string
 		for file, cnt := range a.fileCounts {
+			if file == "." {
+				// Single explicit file target: rg prints the bare count.
+				countResults = append(countResults, strconv.Itoa(cnt))
+				continue
+			}
 			countResults = append(countResults, fmt.Sprintf("%s:%d", file, cnt))
 		}
 		sort.Strings(countResults)
