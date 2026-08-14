@@ -73,13 +73,14 @@ func taskReminderForInactivity(store *taskpkg.TaskStore, canUseTaskList bool) st
 }
 
 // taskReminderAllDone signals that the agent has completed all tasks on its
-// list and should either add new work or finish up. resultTool is the session's
-// own name for the result tool, which a session may rename — "communicate" is
-// a tool some sessions do not have.
+// list and should either reopen invalidated work, add new work, or finish up.
+// resultTool is the session's own name for the result tool, which a session may
+// rename — "communicate" is a tool some sessions do not have.
 func taskReminderAllDone(resultTool string) string {
 	return "<SYSTEM-REMINDER>\n" +
 		"You have completed all tasks on your task list. " +
-		"If you have other work to do, add it to the task list now. " +
+		"If later input invalidates completed work, reopen the affected existing tasks with task_list update instead of adding replacements. " +
+		"Add tasks only for genuinely new work. " +
 		"Otherwise, deliver your final output with the " + resultTool + " tool.\n" +
 		"</SYSTEM-REMINDER>"
 }
