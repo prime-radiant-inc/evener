@@ -1154,6 +1154,16 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 			s.reg.Remove(name)
 		}
 	}
+	if len(s.cfg.spawn.toolNameCeiling) > 0 {
+		ceiling := make(map[string]bool, len(s.cfg.spawn.toolNameCeiling))
+		for _, name := range s.cfg.spawn.toolNameCeiling {
+			ceiling[name] = true
+		}
+		// Stable delegates freeze a capability ceiling before their durable start.
+		// Apply the final intersection after NewSession has added every intrinsic
+		// tool so neither the live registry nor its model-facing cache can widen it.
+		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
+	}
 
 	// Cache project docs once; reused every round for system prompt rebuilds.
 	s.projectDocs, s.projectDocsTruncated = LoadProjectDocs(s.currentEnv(), s.profile.ProjectDocFiles()...)

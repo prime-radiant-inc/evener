@@ -73,7 +73,7 @@ type Descriptor struct {
 	AgentName                     string                `json:"agent_name,omitempty"`
 	FrozenRolePrompt              string                `json:"frozen_role_prompt,omitempty"`
 	TaskTemplates                 []task.TaskTemplate   `json:"task_templates,omitempty"`
-	FrozenToolNames               []string              `json:"frozen_tool_names,omitempty"`
+	ToolNameCeiling               []string              `json:"tool_name_ceiling,omitempty"`
 	FrozenSkillNames              []string              `json:"frozen_skill_names,omitempty"`
 	FrozenSkillBodies             []string              `json:"frozen_skill_bodies,omitempty"`
 	WorkingDir                    string                `json:"working_dir,omitempty"`

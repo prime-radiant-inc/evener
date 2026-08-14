@@ -401,9 +401,36 @@ func validateDescriptor(descriptor Descriptor) error {
 		return fmt.Errorf("shared task store owner session id is empty")
 	case !descriptor.Config.ShareTasksWithChildren && descriptor.SharedTaskStoreOwnerSessionID != "":
 		return fmt.Errorf("shared task store owner requires task sharing")
-	default:
-		return nil
 	}
+	return validateToolNameCeiling(descriptor)
+}
+
+func validateToolNameCeiling(descriptor Descriptor) error {
+	if len(descriptor.ToolNameCeiling) == 0 {
+		return fmt.Errorf("tool name ceiling is empty")
+	}
+	resultToolName := descriptor.Config.ResultToolName
+	if resultToolName == "" {
+		resultToolName = "communicate"
+	}
+	containsResultTool := false
+	for i, name := range descriptor.ToolNameCeiling {
+		switch {
+		case name == "":
+			return fmt.Errorf("tool name ceiling contains an empty name")
+		case name == "*":
+			return fmt.Errorf("tool name ceiling contains wildcard %q", name)
+		case i > 0 && descriptor.ToolNameCeiling[i-1] == name:
+			return fmt.Errorf("tool name ceiling contains duplicate %q", name)
+		case i > 0 && descriptor.ToolNameCeiling[i-1] > name:
+			return fmt.Errorf("tool name ceiling is not sorted")
+		}
+		containsResultTool = containsResultTool || name == resultToolName
+	}
+	if !containsResultTool {
+		return fmt.Errorf("tool name ceiling omits result tool %q", resultToolName)
+	}
+	return nil
 }
 
 func validateTerminalPacket(packet TerminalPacket) error {
@@ -580,7 +607,7 @@ func cloneAggregate(aggregate *Aggregate) *Aggregate {
 func cloneDescriptor(descriptor Descriptor) Descriptor {
 	clone := descriptor
 	clone.TaskTemplates = append([]task.TaskTemplate(nil), descriptor.TaskTemplates...)
-	clone.FrozenToolNames = append([]string(nil), descriptor.FrozenToolNames...)
+	clone.ToolNameCeiling = append([]string(nil), descriptor.ToolNameCeiling...)
 	clone.FrozenSkillNames = append([]string(nil), descriptor.FrozenSkillNames...)
 	clone.FrozenSkillBodies = append([]string(nil), descriptor.FrozenSkillBodies...)
 	clone.ResultSchema = append(json.RawMessage(nil), descriptor.ResultSchema...)

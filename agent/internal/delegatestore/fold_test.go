@@ -20,7 +20,7 @@ func TestApplyAndFoldCloneCreatedDescriptor(t *testing.T) {
 		{name: "task templates", mutate: func(descriptor *Descriptor) {
 			descriptor.TaskTemplates[0] = task.TaskTemplate{Title: "mutated", Prompt: "mutated", ReasoningEffort: "low", Type: "fix", Insert: "mutated"}
 		}},
-		{name: "frozen tool names", mutate: func(descriptor *Descriptor) { descriptor.FrozenToolNames[0] = "mutated" }},
+		{name: "tool name ceiling", mutate: func(descriptor *Descriptor) { descriptor.ToolNameCeiling[0] = "mutated" }},
 		{name: "frozen skill names", mutate: func(descriptor *Descriptor) { descriptor.FrozenSkillNames[0] = "mutated" }},
 		{name: "frozen skill bodies", mutate: func(descriptor *Descriptor) { descriptor.FrozenSkillBodies[0] = "mutated" }},
 		{name: "result schema", mutate: func(descriptor *Descriptor) { descriptor.ResultSchema[9] = 'b' }},
@@ -81,6 +81,35 @@ func TestApplyAndFoldCloneCreatedDescriptor(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestApplyRejectsInvalidToolNameCeiling(t *testing.T) {
+	tests := []struct {
+		name       string
+		ceiling    []string
+		resultTool string
+		want       string
+	}{
+		{name: "empty", want: "ceiling is empty"},
+		{name: "empty name", ceiling: []string{"", "communicate"}, want: "empty name"},
+		{name: "wildcard", ceiling: []string{"*", "communicate"}, want: "wildcard"},
+		{name: "duplicate", ceiling: []string{"communicate", "communicate"}, want: "duplicate"},
+		{name: "unsorted", ceiling: []string{"shell", "communicate"}, want: "not sorted"},
+		{name: "missing default result tool", ceiling: []string{"shell"}, want: `omits result tool "communicate"`},
+		{name: "missing configured result tool", ceiling: []string{"communicate"}, resultTool: "report", want: `omits result tool "report"`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			event := createdEvent("dlg_alpha", "")
+			event.Seq = 1
+			event.Created.Descriptor.ToolNameCeiling = tc.ceiling
+			event.Created.Descriptor.Config.ResultToolName = tc.resultTool
+			err := Apply(make(State), event)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Apply error = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -466,7 +495,7 @@ func createdEventWithReferenceDescriptor(id string) Event {
 		{Title: "insert", Prompt: "preserve", Type: "verify", Insert: "parent_tasks"},
 		{Title: "fix", Prompt: "implement", ReasoningEffort: "low", Type: "fix"},
 	}
-	descriptor.FrozenToolNames = []string{"shell"}
+	descriptor.ToolNameCeiling = []string{"communicate", "shell"}
 	descriptor.FrozenSkillNames = []string{"review"}
 	descriptor.FrozenSkillBodies = []string{"review instructions"}
 	descriptor.ResultSchema = json.RawMessage(`{"type":"alpha"}`)
@@ -576,6 +605,7 @@ func testDescriptor(id, parentID string) Descriptor {
 		Task:             "task for " + id,
 		Description:      "description for " + id,
 		AgentType:        "worker",
+		ToolNameCeiling:  []string{"communicate"},
 		Resumable:        true,
 	}
 }

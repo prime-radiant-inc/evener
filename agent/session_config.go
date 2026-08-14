@@ -552,10 +552,14 @@ type spawnConfig struct {
 
 	// rolePromptOverride and the three fields below carry internal prompt and
 	// session shaping for restricted subagents and reviewer runs.
-	rolePromptOverride      string
-	activatedSkillBodies    []string
-	allowedToolNames        []string
-	deniedToolNames         []string
+	rolePromptOverride   string
+	activatedSkillBodies []string
+	allowedToolNames     []string
+	deniedToolNames      []string
+	// toolNameCeiling is the durable stable-delegate capability ceiling carried
+	// into construction. NewSession applies it after all intrinsic tools and
+	// ordinary spawn policy so the model-facing cache cannot exceed the ceiling.
+	toolNameCeiling         []string
 	communicateOutputSchema map[string]any
 
 	// isolation is "worktree" for a delegate spawned with

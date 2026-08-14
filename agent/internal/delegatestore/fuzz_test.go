@@ -247,12 +247,13 @@ func fuzzCreatedEvent(id string) Event {
 		Kind:       EventDelegateCreated,
 		DelegateID: id,
 		Created: &DelegateCreated{Descriptor: Descriptor{
-			ChildSessionID: "session_" + id,
-			TranscriptRef:  "transcript:" + id,
-			OwnerSessionID: "root",
-			Task:           "fuzz task",
-			AgentType:      "worker",
-			Resumable:      true,
+			ChildSessionID:  "session_" + id,
+			TranscriptRef:   "transcript:" + id,
+			OwnerSessionID:  "root",
+			Task:            "fuzz task",
+			AgentType:       "worker",
+			ToolNameCeiling: []string{"communicate"},
+			Resumable:       true,
 		}},
 	}
 }

@@ -451,7 +451,7 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 		t.Fatalf("child skill bodies = %#v, want descriptor %#v", got, descriptor.FrozenSkillBodies)
 	}
 
-	wantTools := append([]string(nil), descriptor.FrozenToolNames...)
+	wantTools := append([]string(nil), descriptor.ToolNameCeiling...)
 	gotTools := make([]string, 0, len(request.Tools))
 	for _, definition := range request.Tools {
 		gotTools = append(gotTools, definition.Name)
@@ -591,6 +591,148 @@ func TestDelegateResourceCreate_PreservesCompleteNamedAgentWorkflowAfterCommit(t
 			t.Errorf("child workflow task %d = %#v, want id=%d title=%q prompt=%q reasoning=%q type=%q insert=%q status=%q", i, got[i], i+1, want.Title, want.Prompt, want.ReasoningEffort, want.Type, want.Insert, wantStatus)
 		}
 	}
+}
+
+func TestDelegateResourceCreate_ToolCapabilityCeiling(t *testing.T) {
+	requestToolNames := func(request llm.Request) map[string]bool {
+		names := make(map[string]bool, len(request.Tools))
+		for _, definition := range request.Tools {
+			names[definition.Name] = true
+		}
+		return names
+	}
+
+	t.Run("parent runtime-only tool is not required from child", func(t *testing.T) {
+		root, client, _ := newDelegateResourceBootstrapSession(t)
+		adapter := newTask6FrozenDescriptorAdapter()
+		client.Register(adapter)
+		t.Cleanup(adapter.releaseRun)
+
+		const runtimeOnlyTool = "mcp__task6__runtime_only"
+		root.RegisterTool(runtimeOnlyTool, "exists only on the live parent", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+			return nil, nil
+		})
+
+		result := root.createDelegate(context.Background(), delegateArgs{
+			Task:       "construct below the committed capability ceiling",
+			Background: true,
+		})
+		if result.Err != nil {
+			t.Fatalf("createDelegate with parent runtime-only tool: %v", result.Err)
+		}
+		var request llm.Request
+		select {
+		case request = <-adapter.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("provider did not receive the capability-ceiling request")
+		}
+		adapter.releaseRun()
+
+		descriptor := delegateAggregateSnapshot(t, root.delegateController, result.DelegateID).Descriptor
+		if !hasString(descriptor.ToolNameCeiling, runtimeOnlyTool) {
+			t.Fatalf("committed ceiling = %v, want parent-authorized runtime-only tool", descriptor.ToolNameCeiling)
+		}
+		child := root.subagents.get(descriptor.ChildSessionID)
+		if child == nil || child.sess == nil {
+			t.Fatalf("committed child %q is not retained", descriptor.ChildSessionID)
+		}
+		if child.sess.reg.RegisteredNames()[runtimeOnlyTool] || requestToolNames(request)[runtimeOnlyTool] {
+			t.Fatalf("parent runtime-only tool reached child/provider: child=%v provider=%v", child.sess.reg.Names(), requestToolNames(request))
+		}
+	})
+
+	t.Run("named policy survives post-commit parent registry mutation", func(t *testing.T) {
+		root, client, _ := newDelegateResourceBootstrapSession(t)
+		adapter := newTask6FrozenDescriptorAdapter()
+		client.Register(adapter)
+		t.Cleanup(adapter.releaseRun)
+
+		const agentType = "task6-tool-ceiling-agent"
+		root.pluginAgents[agentType] = plugin.Agent{
+			Name:         "tool-ceiling-agent",
+			Description:  "Freezes an explicit named-agent policy",
+			Model:        "inherit",
+			Tools:        []string{"read_file"},
+			SystemPrompt: "Use only the committed tools.",
+			PluginName:   "task6-test",
+		}
+		var mutateOnce sync.Once
+		root.delegateController.mu.Lock()
+		root.delegateController.emitUpdate = func(delegateUpdatePlan) {
+			mutateOnce.Do(func() {
+				mutated := root.pluginAgents[agentType]
+				mutated.Tools[0] = "shell"
+				root.pluginAgents[agentType] = mutated
+				root.reg.Remove("read_file")
+			})
+		}
+		root.delegateController.mu.Unlock()
+
+		result := root.createDelegate(context.Background(), delegateArgs{
+			Task:       "retain the committed named-agent policy",
+			AgentType:  agentType,
+			Background: true,
+		})
+		if result.Err != nil {
+			t.Fatalf("createDelegate after parent registry mutation: %v", result.Err)
+		}
+		var request llm.Request
+		select {
+		case request = <-adapter.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("provider did not receive the frozen named-policy request")
+		}
+		adapter.releaseRun()
+
+		descriptor := delegateAggregateSnapshot(t, root.delegateController, result.DelegateID).Descriptor
+		if !hasString(descriptor.ToolNameCeiling, "read_file") || hasString(descriptor.ToolNameCeiling, "shell") {
+			t.Fatalf("committed named-agent ceiling = %v, want read_file without shell", descriptor.ToolNameCeiling)
+		}
+		child := root.subagents.get(descriptor.ChildSessionID)
+		if child == nil || child.sess == nil {
+			t.Fatalf("committed child %q is not retained", descriptor.ChildSessionID)
+		}
+		childTools := child.sess.reg.RegisteredNames()
+		providerTools := requestToolNames(request)
+		if !childTools["read_file"] || !providerTools["read_file"] || childTools["shell"] || providerTools["shell"] {
+			t.Fatalf("post-commit mutation changed named policy: child=%v provider=%v", child.sess.reg.Names(), providerTools)
+		}
+	})
+
+	t.Run("recovery core tool absent from parent cannot reappear", func(t *testing.T) {
+		root, client, _ := newDelegateResourceBootstrapSession(t)
+		adapter := newTask6FrozenDescriptorAdapter()
+		client.Register(adapter)
+		t.Cleanup(adapter.releaseRun)
+		root.reg.Remove("read_transcript")
+
+		result := root.createDelegate(context.Background(), delegateArgs{
+			Task:       "do not regain the parent-removed recovery reader",
+			Background: true,
+		})
+		if result.Err != nil {
+			t.Fatalf("createDelegate without parent recovery reader: %v", result.Err)
+		}
+		var request llm.Request
+		select {
+		case request = <-adapter.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("provider did not receive the parent-restricted request")
+		}
+		adapter.releaseRun()
+
+		descriptor := delegateAggregateSnapshot(t, root.delegateController, result.DelegateID).Descriptor
+		if hasString(descriptor.ToolNameCeiling, "read_transcript") {
+			t.Fatalf("committed ceiling regained parent-removed recovery reader: %v", descriptor.ToolNameCeiling)
+		}
+		child := root.subagents.get(descriptor.ChildSessionID)
+		if child == nil || child.sess == nil {
+			t.Fatalf("committed child %q is not retained", descriptor.ChildSessionID)
+		}
+		if child.sess.reg.RegisteredNames()["read_transcript"] || requestToolNames(request)["read_transcript"] {
+			t.Fatalf("parent-removed recovery reader reappeared: child=%v provider=%v", child.sess.reg.Names(), requestToolNames(request))
+		}
+	})
 }
 
 func TestDelegateResourceCreate_RestoredRootStartsNewChildWithStartupHooks(t *testing.T) {
@@ -1384,6 +1526,7 @@ func task6DelegateDescriptor(task string) delegatestore.Descriptor {
 		AgentType:         "default",
 		ResolvedProfileID: "openai",
 		ResolvedModel:     "gpt-5.2",
+		ToolNameCeiling:   []string{"communicate"},
 		Resumable:         true,
 	}
 }

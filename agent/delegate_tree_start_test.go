@@ -785,7 +785,7 @@ func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) 
 	descriptor := delegateControllerCreateDescriptor()
 	loopDetection := false
 	descriptor.TaskTemplates = []taskpkg.TaskTemplate{{Title: "frozen", Prompt: "frozen prompt", ReasoningEffort: "high", Type: "verify", Insert: "parent_tasks"}}
-	descriptor.FrozenToolNames = []string{"communicate"}
+	descriptor.ToolNameCeiling = []string{"communicate"}
 	descriptor.ResultSchema = json.RawMessage(`{"type":"object"}`)
 	descriptor.Config = schema.ConfigSnapshot{
 		ToolOutputLimits:       map[string]schema.ToolOutputLimit{"read_file": {MaxChars: 111}},
@@ -817,7 +817,7 @@ func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) 
 		t.Fatalf("capacity after forged abort = (%d,%d), want (1,0)", turns, drives)
 	}
 
-	descriptor.FrozenToolNames[0] = "caller-mutated"
+	descriptor.ToolNameCeiling[0] = "caller-mutated"
 	descriptor.TaskTemplates[0].Prompt = "caller-mutated"
 	descriptor.Config.ToolOutputLimits["read_file"] = schema.ToolOutputLimit{MaxChars: 999}
 	descriptor.Config.ModelFallbacks[0] = "openai/caller-mutated"
@@ -825,7 +825,7 @@ func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) 
 	reservation.delegateID = "dlg_redirected"
 	reservation.descriptor.Task = "redirected task"
 	reservation.descriptor.TaskTemplates[0].Prompt = "receipt-mutated"
-	reservation.descriptor.FrozenToolNames[0] = "receipt-mutated"
+	reservation.descriptor.ToolNameCeiling[0] = "receipt-mutated"
 	reservation.descriptor.TranscriptRef = "local:redirected"
 	reservation.descriptor.WorkingDir = filepath.Join(t.TempDir(), "redirected")
 	reservation.descriptor.ResultSchema = json.RawMessage(`{"type":"number"}`)
@@ -853,7 +853,7 @@ func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) 
 	if aggregate == nil {
 		t.Fatalf("reserved delegate %q was not committed", wantID)
 	}
-	if got := aggregate.Descriptor; got.Task != wantTask || !reflect.DeepEqual(got.TaskTemplates, wantTaskTemplates) || got.TranscriptRef != wantTranscriptRef || got.WorkingDir != wantWorkingDir || !reflect.DeepEqual(got.FrozenToolNames, []string{"communicate"}) || !bytes.Equal(got.ResultSchema, wantSchema) || !reflect.DeepEqual(got.Config, wantConfig) || got.SharedTaskStoreOwnerSessionID != wantSharedTaskStoreOwner {
+	if got := aggregate.Descriptor; got.Task != wantTask || !reflect.DeepEqual(got.TaskTemplates, wantTaskTemplates) || got.TranscriptRef != wantTranscriptRef || got.WorkingDir != wantWorkingDir || !reflect.DeepEqual(got.ToolNameCeiling, []string{"communicate"}) || !bytes.Equal(got.ResultSchema, wantSchema) || !reflect.DeepEqual(got.Config, wantConfig) || got.SharedTaskStoreOwnerSessionID != wantSharedTaskStoreOwner {
 		t.Fatalf("committed descriptor trusted caller mutation:\n got %#v\nwant task=%q transcript=%q working_dir=%q tools=[communicate] schema=%s", got, wantTask, wantTranscriptRef, wantWorkingDir, wantSchema)
 	}
 	if turns, drives := c.capacityInUse(); turns != 1 || drives != 0 {
@@ -863,11 +863,12 @@ func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) 
 
 func delegateControllerCreateDescriptor() delegatestore.Descriptor {
 	return delegatestore.Descriptor{
-		Task:        "create a dormant delegate",
-		Description: "controller test",
-		AgentType:   "general",
-		Isolation:   "worktree",
-		Resumable:   true,
+		Task:            "create a dormant delegate",
+		Description:     "controller test",
+		AgentType:       "general",
+		ToolNameCeiling: []string{"communicate"},
+		Isolation:       "worktree",
+		Resumable:       true,
 	}
 }
 

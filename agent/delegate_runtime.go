@@ -185,7 +185,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	if !allTools {
 		allowedTools = ensureRecoveryReader(allowedTools, s.reg)
 	}
-	frozenTools := frozenStableDelegateToolNames(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.DelegationAllowance > 0, args.WatchParent, isolationName)
+	toolNameCeiling := stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.DelegationAllowance > 0, args.WatchParent, isolationName)
 	var frozenSkillNames, frozenSkillBodies []string
 	if selection.agent != nil {
 		for _, name := range selection.agent.Skills {
@@ -242,7 +242,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		ReasoningEffort:               reasoningEffort,
 		AgentName:                     agentName,
 		FrozenRolePrompt:              rolePrompt,
-		FrozenToolNames:               frozenTools,
+		ToolNameCeiling:               toolNameCeiling,
 		FrozenSkillNames:              frozenSkillNames,
 		FrozenSkillBodies:             frozenSkillBodies,
 		LocalEnvPolicy:                localEnvPolicyName(s.currentEnv()),

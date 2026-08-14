@@ -281,7 +281,7 @@ func frozenSubagentToolNames(allTools bool, allowed, denied []string) []string {
 	}
 }
 
-func frozenStableDelegateToolNames(reg *tool.Registry, resultToolName string, allTools bool, allowed, denied []string, canDelegate, watchParent bool, isolation string) []string {
+func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, allTools bool, allowed, denied []string, canDelegate, watchParent bool, isolation string) []string {
 	if reg == nil {
 		return nil
 	}
@@ -329,24 +329,6 @@ func frozenStableDelegateToolNames(reg *tool.Registry, resultToolName string, al
 	}
 	sort.Strings(names)
 	return names
-}
-
-func validateFrozenStableDelegateTools(reg *tool.Registry, names []string) error {
-	if reg == nil {
-		return errors.New("committed delegate tool registry is unavailable")
-	}
-	registered := reg.RegisteredNames()
-	missing := make([]string, 0)
-	for _, name := range names {
-		if name == "" || name == "*" || !registered[name] {
-			missing = append(missing, name)
-		}
-	}
-	if len(missing) == 0 {
-		return nil
-	}
-	sort.Strings(missing)
-	return fmt.Errorf("committed delegate tool(s) unavailable: %s", strings.Join(missing, ", "))
 }
 
 func frozenStableDelegateSandboxMatches(env execenv.ExecutionEnvironment, want *delegatestore.SandboxSnapshot) bool {
@@ -761,11 +743,8 @@ func (s *Session) prepareSubagentRunFromSelection(
 	var allTools bool
 	var allowedTools, deniedTools []string
 	if frozen != nil {
-		if err := validateFrozenStableDelegateTools(s.reg, frozen.FrozenToolNames); err != nil {
-			return nil, err
-		}
-		allowedTools = append([]string(nil), frozen.FrozenToolNames...)
-		subCfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
+		allowedTools = append([]string(nil), frozen.ToolNameCeiling...)
+		subCfg.spawn.toolNameCeiling = append([]string(nil), allowedTools...)
 	} else {
 		allTools, allowedTools, deniedTools = baseSubagentToolPolicy(agent, allowance > 0)
 		if subCfg.spawn.parentWatchGranted && !allTools {
@@ -804,8 +783,9 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 
 	if frozen != nil {
-		// The descriptor's exact names were captured from the effective parent
-		// registry before CommitStart; session construction must not recompute them.
+		// The descriptor's ceiling was captured from the effective parent registry
+		// before CommitStart. NewSession intersects it with the complete registry the
+		// child can build, including intrinsic recovery tools, before caching tools.
 	} else if allTools {
 		// Leave the registry unrestricted for explicit all-tools agents.
 	} else if len(allowedTools) > 0 {
@@ -869,17 +849,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	disposeUnadopted := func() {
 		disposeUnadoptedSubagentSession(subSess, ownsFreshEnv)
-	}
-	if frozen != nil {
-		if err := validateFrozenStableDelegateTools(subSess.reg, frozen.FrozenToolNames); err != nil {
-			disposeUnadopted()
-			return nil, err
-		}
-		allowed := make(map[string]bool, len(frozen.FrozenToolNames))
-		for _, name := range frozen.FrozenToolNames {
-			allowed[name] = true
-		}
-		subSess.reg.RestrictKeepingResultTool(allowed, subSess.resultToolName())
 	}
 	if len(canonicalGrantTools) > 0 {
 		var missing []string
@@ -1033,7 +1002,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 		prepared.resolvedAgentName = frozen.AgentName
 		prepared.reasoningEffort = frozen.ReasoningEffort
 		prepared.frozenRolePrompt = frozen.FrozenRolePrompt
-		prepared.frozenToolNames = append([]string(nil), frozen.FrozenToolNames...)
+		prepared.frozenToolNames = append([]string(nil), frozen.ToolNameCeiling...)
 		prepared.frozenSkillNames = append([]string(nil), frozen.FrozenSkillNames...)
 		prepared.frozenSkillBodies = append([]string(nil), frozen.FrozenSkillBodies...)
 		prepared.workingDir = frozen.WorkingDir

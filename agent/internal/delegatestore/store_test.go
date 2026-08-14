@@ -40,9 +40,14 @@ func TestStoreAppendBatchIsOneCrashAtomicLine(t *testing.T) {
 		t.Fatalf("accepted aggregate = %#v, want open generation 1", aggregate)
 	}
 	wantTaskTemplates := append([]task.TaskTemplate(nil), accepted["dlg_alpha"].Descriptor.TaskTemplates...)
+	wantToolNameCeiling := append([]string(nil), accepted["dlg_alpha"].Descriptor.ToolNameCeiling...)
 	created.Created.Descriptor.TaskTemplates[0].Prompt = "caller-mutated"
+	created.Created.Descriptor.ToolNameCeiling[0] = "caller-mutated"
 	if got := accepted["dlg_alpha"].Descriptor.TaskTemplates; !reflect.DeepEqual(got, wantTaskTemplates) {
 		t.Fatalf("accepted task templates aliased caller mutation: got %#v want %#v", got, wantTaskTemplates)
+	}
+	if got := accepted["dlg_alpha"].Descriptor.ToolNameCeiling; !reflect.DeepEqual(got, wantToolNameCeiling) {
+		t.Fatalf("accepted tool name ceiling aliased caller mutation: got %#v want %#v", got, wantToolNameCeiling)
 	}
 
 	raw, err := os.ReadFile(path)
@@ -89,6 +94,9 @@ func TestStoreAppendBatchIsOneCrashAtomicLine(t *testing.T) {
 	}
 	if !reflect.DeepEqual(aggregate.Descriptor.TaskTemplates, wantTaskTemplates) {
 		t.Fatalf("reopened task templates = %#v, want %#v", aggregate.Descriptor.TaskTemplates, wantTaskTemplates)
+	}
+	if !reflect.DeepEqual(aggregate.Descriptor.ToolNameCeiling, wantToolNameCeiling) {
+		t.Fatalf("reopened tool name ceiling = %#v, want %#v", aggregate.Descriptor.ToolNameCeiling, wantToolNameCeiling)
 	}
 }
 

@@ -720,7 +720,7 @@ func (c *delegateTreeController) releaseCapacityLocked(kind delegateCapacityKind
 func cloneDelegateStartDescriptor(descriptor delegatestore.Descriptor) delegatestore.Descriptor {
 	clone := descriptor
 	clone.TaskTemplates = append([]task.TaskTemplate(nil), descriptor.TaskTemplates...)
-	clone.FrozenToolNames = append([]string(nil), descriptor.FrozenToolNames...)
+	clone.ToolNameCeiling = append([]string(nil), descriptor.ToolNameCeiling...)
 	clone.FrozenSkillNames = append([]string(nil), descriptor.FrozenSkillNames...)
 	clone.FrozenSkillBodies = append([]string(nil), descriptor.FrozenSkillBodies...)
 	clone.ResultSchema = append(json.RawMessage(nil), descriptor.ResultSchema...)
