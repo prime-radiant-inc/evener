@@ -71,14 +71,14 @@ func TestStableDelegateShell_AncestorCanSeeDescendantShell(t *testing.T) {
 		t.Fatalf("job_list(include_descendants): %v", err)
 	}
 	var payload struct {
-		Jobs []map[string]any `json:"jobs"`
+		Items []map[string]any `json:"items"`
 	}
 	if err := json.Unmarshal(handlerJSON(t, out), &payload); err != nil {
 		t.Fatalf("decode descendant list: %v", err)
 	}
-	row := stableShellJobRow(payload.Jobs, rec.JobID)
+	row := stableShellJobRow(payload.Items, rec.JobID)
 	if row == nil {
-		t.Fatalf("ancestor jobs = %+v, want descendant shell %q", payload.Jobs, rec.JobID)
+		t.Fatalf("ancestor items = %+v, want descendant shell %q", payload.Items, rec.JobID)
 	}
 	if got := row["parent_delegate_id"]; got != "dlg_grandchild" {
 		t.Fatalf("descendant public parent_delegate_id = %v, want dlg_grandchild", got)
@@ -118,7 +118,7 @@ func TestStableDelegateShell_OutputStatusWatchAndStopRemainJobAddressed(t *testi
 		t.Fatalf("append shell output: %v", err)
 	}
 
-	status, err := jobStatusTool(tree.root, map[string]any{"job_id": rec.JobID}, 1<<20)
+	status, err := jobStatusTool(tree.root, map[string]any{"target": rec.JobID}, 1<<20)
 	if err != nil {
 		t.Fatalf("job_status(%s): %v", rec.JobID, err)
 	}
@@ -151,7 +151,7 @@ func TestStableDelegateShell_OutputStatusWatchAndStopRemainJobAddressed(t *testi
 		t.Fatalf("job watch state = %s, want job source %q", handlerJSON(t, watch), rec.JobID)
 	}
 
-	stopped, err := jobStopTool(context.Background(), tree.root, map[string]any{"job_id": rec.JobID}, 1<<20)
+	stopped, err := jobStopTool(context.Background(), tree.root, map[string]any{"target": rec.JobID}, 1<<20)
 	if err != nil {
 		t.Fatalf("job_stop(%s): %v", rec.JobID, err)
 	}
