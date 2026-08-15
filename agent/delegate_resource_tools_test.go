@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	toolpkg "primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/llm"
 )
 
 func TestStableDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
@@ -101,6 +102,68 @@ func TestStableDelegateTools_StatusReadsMetadataWithoutPacketOrAck(t *testing.T)
 	}
 	if !reflect.DeepEqual(after, before) {
 		t.Fatal("metadata-only status mutated the delegate journal")
+	}
+}
+
+func TestStableDelegateTools_StatusAndListProjectPublicLifecycle(t *testing.T) {
+	s := newSession(t, withoutGitSnapshot())
+	settlingID := "dlg_public_settling"
+	seedStableToolRunningDelegate(t, s, settlingID, "", time.Unix(10, 0).UTC())
+	lease := delegateLease{delegateID: settlingID, generation: 1}
+	claim, continueRun, err := s.delegateController.BeginSettlement(lease)
+	if err != nil || continueRun {
+		t.Fatalf("BeginSettlement = claim:%#v continue:%t err:%v", claim, continueRun, err)
+	}
+	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: json.RawMessage(`"done"`)}
+	if _, err := s.delegateController.CompleteSettlement(claim, &packet); err != nil {
+		t.Fatalf("CompleteSettlement: %v", err)
+	}
+
+	closedID := "dlg_public_closed"
+	seedStableToolDelegate(t, s, closedID, "", time.Unix(20, 0).UTC(), time.Unix(21, 0).UTC())
+	if _, err := s.delegateController.CloseResumability(rootDelegateActor(s.ID()), closedID, "test closed"); err != nil {
+		t.Fatalf("CloseResumability: %v", err)
+	}
+
+	for _, tc := range []struct {
+		id         string
+		wantStatus string
+	}{
+		{id: settlingID, wantStatus: "running"},
+		{id: closedID, wantStatus: "idle"},
+	} {
+		value, err := jobStatusTool(s, map[string]any{"target": tc.id}, 1<<20)
+		if err != nil {
+			t.Fatalf("job_status(%s): %v", tc.id, err)
+		}
+		if got := stableToolStateMap(t, value)["status"]; got != tc.wantStatus {
+			t.Errorf("job_status(%s) status = %q, want public lifecycle %q", tc.id, got, tc.wantStatus)
+		}
+	}
+
+	listed := stableToolListResult(t, s, map[string]any{"type": []any{"delegate"}})
+	want := map[string]string{settlingID: "running", closedID: "idle"}
+	for _, item := range listed.Items {
+		if wantStatus, ok := want[item.ID]; ok {
+			if item.Status != wantStatus {
+				t.Errorf("job_list(%s) status = %q, want public lifecycle %q", item.ID, item.Status, wantStatus)
+			}
+			delete(want, item.ID)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("job_list omitted stable delegates: %v", want)
+	}
+
+	for _, internalPhase := range []string{"settling", "stopping", "closed"} {
+		call := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "list-" + internalPhase,
+			Name:      "job_list",
+			Arguments: json.RawMessage(`{"status":["` + internalPhase + `"]}`),
+		})
+		if !call.IsError {
+			t.Errorf("job_list accepted internal delegate phase %q as a public status", internalPhase)
+		}
 	}
 }
 

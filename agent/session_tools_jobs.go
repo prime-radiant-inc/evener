@@ -987,7 +987,7 @@ func projectStableDelegateStatus(now time.Time, snapshot delegateSnapshot) stabl
 	out := stableDelegateStatusResult{
 		ID:                 snapshot.id,
 		Type:               "delegate",
-		Status:             string(snapshot.phase),
+		Status:             string(snapshot.lifecycle),
 		Task:               descriptor.Task,
 		Description:        descriptor.Description,
 		AgentType:          descriptor.AgentType,
