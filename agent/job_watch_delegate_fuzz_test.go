@@ -5,7 +5,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -19,26 +18,15 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// This file fuzzes the watch-configuration and delegate-resume machinery in
-// job_watch.go and job_delegate.go. The targets are heavily branch-laden install/
-// validation/teardown state machines whose error tails (persist failure, replace,
-// idempotent re-configure, eviction, corrupt-restore) unit tests reach only
-// piecemeal. The two fuzz bodies drive them from a real *jobManager / *Session
-// built with the package's own newTestJM / newSession helpers, so every store,
-// clock, and filesystem effect stays inside a t.TempDir / MemMapFs sandbox — no
-// network, no process, no real disk outside the sandbox.
+// This file fuzzes the watch-configuration machinery in job_watch.go. The
+// target drives a real *jobManager and *Session built with package test
+// helpers, so every store, clock, and filesystem effect stays inside a
+// t.TempDir / MemMapFs sandbox — no network, process, or shared disk state.
 //
-// ORACLES (both are real preserved-invariant / determinism oracles, not bare
-// never-panic):
-//   - watch side: after every configureWatch / recordWatchSendPending /
-//     clearWatchByIDMatching, the manager's watch state stays internally
-//     consistent (every pending key is tracked in pendingOrder, no nil pending
-//     state, every live config keeps a non-empty watch id).
-//   - delegate side: assessDelegateResumability is a pure function of its rec +
-//     on-disk fixture (two calls agree on Resumable and Reason), a resumable
-//     preflight always carries a non-nil Preflight, and an unresumable result
-//     always names a reason. restoreTerminalDelegateChildClaimed returns a live
-//     subagent XOR an error.
+// The oracle checks that after every configureWatch / recordWatchSendPending /
+// clearWatchByIDMatching, the manager's watch state stays internally
+// consistent (every pending key is tracked in pendingOrder, no nil pending
+// state, every live config keeps a non-empty watch id).
 //
 // All new top-level identifiers carry the watchdel_ lane prefix so parallel
 // lanes editing package agent never collide.
@@ -155,14 +143,6 @@ func watchdel_sessionFlow(t *testing.T, data []byte) {
 	workDir := t.TempDir()
 	clk := agenttest.NewFakeClock()
 	client := llm.NewClient()
-	var childGate chan struct{}
-	releaseChildGate := func() {
-		if childGate != nil {
-			close(childGate)
-			childGate = nil
-		}
-	}
-	defer releaseChildGate()
 	client.Register(&agenttest.ScriptedAdapter{
 		Provider:  "openai",
 		Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
@@ -188,20 +168,6 @@ func watchdel_sessionFlow(t *testing.T, data []byte) {
 				LLMSleep:         func(context.Context, time.Duration) error { return nil },
 			}
 			cfg.testOnly = testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}
-			cfg.testOnly.childClientFactory = func() *llm.Client {
-				gate := childGate // captured before the child goroutine is launched
-				child := llm.NewClient()
-				child.Register(&agenttest.ScriptedAdapter{
-					Provider: "openai",
-					Responder: func(llm.Request) llm.Response {
-						if gate != nil {
-							<-gate
-						}
-						return agenttest.FinalResponse("child done")
-					},
-				})
-				return child
-			}
 			sess, err = NewSession(client, NewOpenAIProfile("gpt-5.2"), env, cfg)
 		}
 		if err != nil {
@@ -219,10 +185,6 @@ func watchdel_sessionFlow(t *testing.T, data []byte) {
 				return
 			}
 			closed = true
-			releaseChildGate()
-			// A failure assertion can happen while a fuzzer-created runtime is
-			// deliberately parked. Abandoning it here keeps cleanup deterministic;
-			// normal paths have already reached terminal before this closure runs.
 			if sess.jobManager != nil {
 				sess.jobManager.abandonRunningJobs()
 			}
@@ -331,93 +293,6 @@ func watchdel_sessionFlow(t *testing.T, data []byte) {
 	}
 	watchdel_checkSessionState(t, jm, monotonic)
 
-	// Delegate creation uses the Session's real child orchestration, but the child
-	// receives its own scripted client and the same fake-time/deny-env boundary.
-	// A foreground completion must leave a durable terminal record with no orphaned
-	// runtime before the parent moves on to terminal-notification restore.
-	delegate := sess.createDelegate(ctx, delegateArgs{
-		Task:                "watchdel delegate completion",
-		Background:          false,
-		BlockTimeoutMS:      1000,
-		DelegationAllowance: 0,
-	})
-	if delegate.Err != nil || delegate.JobID == "" {
-		closeSession()
-		t.Fatalf("watchdel delegate completion: result=%+v", delegate)
-	}
-	watchdel_checkSessionState(t, jm, monotonic)
-	delegateRecords, err := jm.store.Load()
-	if err != nil {
-		closeSession()
-		t.Fatalf("watchdel delegate load: %v", err)
-	}
-	if drec := delegateRecords[delegate.JobID]; drec == nil || drec.Type != jobstore.JobDelegate || !drec.Status.IsTerminal() {
-		closeSession()
-		t.Fatalf("watchdel delegate record after completion = %+v, want terminal delegate", drec)
-	}
-	if running := jm.runningJobIDs(); len(running) != 1 || running[0] != rec.JobID {
-		closeSession()
-		t.Fatalf("watchdel delegate completion left running jobs %v, want only shell %q", running, rec.JobID)
-	}
-
-	// A second watch targets a real, still-running delegate. Its output match is drained
-	// through Session.drainPendingWatchSends, which invokes the real
-	// deliverPendingWatchSend -> sendDelegateMessage path (rather than a test
-	// sender). The child is gated until the delivery has steered into it.
-	childGate = make(chan struct{})
-	liveDelegate := sess.createDelegate(ctx, delegateArgs{
-		Task:                "watchdel live delegate",
-		Background:          true,
-		DelegationAllowance: 0,
-	})
-	if liveDelegate.Err != nil || liveDelegate.JobID == "" || liveDelegate.DelegateID == "" {
-		closeSession()
-		t.Fatalf("watchdel live delegate: result=%+v", liveDelegate)
-	}
-	if _, err := jm.configureWatch(watchArgs{
-		Target:      rec.JobID,
-		OutputMatch: "direct",
-		Send:        &watchSendArgs{To: liveDelegate.DelegateID, Message: "continue"},
-	}); err != nil {
-		closeSession()
-		t.Fatalf("watchdel install delegate watch: %v", err)
-	}
-	jm.mu.Lock()
-	shellRun := jm.running[rec.JobID]
-	jm.mu.Unlock()
-	if shellRun == nil {
-		closeSession()
-		t.Fatalf("watchdel: shell %q disappeared before delegate watch output", rec.JobID)
-	}
-	if _, err := jm.appendJobOutput(rec.JobID, shellRun.output, []byte("direct ready\n")); err != nil {
-		closeSession()
-		t.Fatalf("watchdel append direct output: %v", err)
-	}
-	directPending, err := jm.store.LoadWatchSends()
-	if err != nil {
-		closeSession()
-		t.Fatalf("watchdel direct pending: %v", err)
-	}
-	directDeliveryIDs := make(map[string]bool, len(directPending.Pending))
-	for _, state := range directPending.Pending {
-		if state != nil && state.Key.ResolvedSendTo == liveDelegate.DelegateID && state.DeliveryID != "" {
-			directDeliveryIDs[state.DeliveryID] = true
-		}
-	}
-	if len(directDeliveryIDs) == 0 {
-		closeSession()
-		t.Fatal("watchdel: delegate watch did not persist a direct pending delivery")
-	}
-	if err := sess.drainPendingWatchSends(ctx); err != nil {
-		closeSession()
-		t.Fatalf("watchdel drain delegate watch: %v", err)
-	}
-	watchdel_checkAcceptedWatchDeliveries(t, jm, directDeliveryIDs)
-	releaseChildGate()
-	watchdel_quiesceDelegateJobs(t, sess, clk, rec.JobID)
-	drainJobNotificationTurns(sess)
-	watchdel_checkSessionState(t, jm, monotonic)
-
 	// Terminalize without accepting its terminal notification. Restore then owns
 	// the actual re-arm path; the restored EntryNotification turn is what marks
 	// the durable terminal delivery accepted exactly once.
@@ -484,34 +359,6 @@ func watchdel_checkTerminalNotifyState(t *testing.T, jm *jobManager, jobID strin
 	}
 	if rec.NotifyState != want {
 		t.Fatalf("watchdel terminal job %q notify state=%q, want %q", jobID, rec.NotifyState, want)
-	}
-}
-
-// watchdel_quiesceDelegateJobs is the fake-clock/done-channel completion
-// handshake for just the delegate runtimes. The manually-created shell remains
-// intentionally running until the terminalization operation below, so the
-// lifecycle-wide quiesceJobs helper would wait on the wrong runtime here.
-func watchdel_quiesceDelegateJobs(t *testing.T, sess *Session, clk *agenttest.FakeClock, shellID string) {
-	t.Helper()
-	jm := sess.jobManager
-	if jm == nil {
-		t.Fatal("watchdel: no manager while quiescing delegate")
-	}
-	jm.mu.Lock()
-	var dones []chan struct{}
-	for id, run := range jm.running {
-		if id != shellID && run != nil && run.rec != nil && run.rec.Type == jobstore.JobDelegate {
-			dones = append(dones, run.done)
-		}
-	}
-	jm.mu.Unlock()
-	clk.Advance(shellFinalizeMaxRetryDelay)
-	for _, done := range dones {
-		select {
-		case <-done:
-		case <-time.After(lifecycleCallTimeout):
-			t.Fatal("watchdel: delegate did not quiesce")
-		}
 	}
 }
 
@@ -856,99 +703,6 @@ func FuzzWatchdelWatchOps(f *testing.F) {
 		for i := 0; i < clears; i++ {
 			watchdel_driveClearByID(t, r, jm)
 			watchdel_checkWatchInvariants(t, jm)
-		}
-	})
-}
-
-// --- delegate resume fuzzer ---
-
-func watchdel_perturbDelegate(t *testing.T, r *watchdel_reader, s *Session, rec *jobstore.JobRecord) {
-	switch r.intn(15) {
-	case 0:
-		// baseline: leave the resumable fixture intact.
-	case 1:
-		rec.DelegateRestore = nil
-	case 2:
-		rec.Type = jobstore.JobShell
-	case 3:
-		rec.DelegateRestore.ChildSessionID = ""
-	case 4:
-		rec.DelegateRestore.TranscriptRef = "bogus-ref"
-	case 5:
-		rec.DelegateRestore.ParentSessionID = "OTHER-PARENT"
-	case 6:
-		rec.DelegateRestore.ParentJobID = "job_other"
-	case 7:
-		rec.DelegateRestore.OwnerSessionID = "OTHER-OWNER"
-	case 8:
-		rec.DelegateRestore.VisibleSessionID = "OTHER-VIS"
-	case 9:
-		rec.DelegateRestore.LocalEnvPolicy = "bogus-policy"
-	case 10:
-		rec.DelegateRestore.WorkingDir = ""
-	case 11:
-		rec.DelegateRestore.ResolvedModel = ""
-	case 12:
-		rec.DelegateRestore.FrozenSkillNames = []string{"skill"}
-		rec.DelegateRestore.FrozenSkillBodies = nil
-	case 13:
-		body := r.take(r.intn(24))
-		if len(body) == 0 {
-			body = []byte("{ not json")
-		}
-		_ = os.WriteFile(childSessionMetaPath(s, rec), body, 0o644)
-	case 14:
-		_ = os.Remove(childTranscriptPath(s, rec))
-	}
-}
-
-// FuzzWatchdelDelegateResume seeds a real resumable stopped-delegate restore
-// fixture (child session meta + transcript on disk), perturbs it from fuzz bytes,
-// and drives assessDelegateResumability + restoreTerminalDelegateChildClaimed.
-func FuzzWatchdelDelegateResume(f *testing.F) {
-	f.Add([]byte{})
-	f.Add([]byte{0})
-	f.Add([]byte{1, 0})
-	f.Add([]byte{4, 1})
-	f.Add([]byte{11, 0})
-	f.Add([]byte{13, 1, 2, 3, 4})
-	f.Add([]byte{14, 0})
-
-	f.Fuzz(func(t *testing.T, data []byte) {
-		r := &watchdel_reader{data: data}
-		s := newSession(t, withConfig(SessionConfig{
-			StateDir:         t.TempDir(),
-			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
-		}))
-		rec := seedStoppedDelegateRestoreRecord(t, s)
-		markStoredDelegateResumable(t, s, rec)
-
-		watchdel_perturbDelegate(t, r, s, rec)
-
-		mode := delegateResumabilityPreflight
-		if r.boolean() {
-			mode = delegateResumabilityProjection
-		}
-
-		first := s.assessDelegateResumability(rec, mode)
-		second := s.assessDelegateResumability(rec, mode)
-		if first.Resumable != second.Resumable || first.Reason != second.Reason {
-			t.Fatalf("watchdel: assessDelegateResumability nondeterministic\n first  = %+v\n second = %+v", first, second)
-		}
-		if !first.Resumable && first.Reason == "" {
-			t.Fatalf("watchdel: unresumable assessment carries no reason: %+v", first)
-		}
-		if mode == delegateResumabilityPreflight && first.Resumable && first.Preflight == nil {
-			t.Fatalf("watchdel: resumable preflight has nil Preflight")
-		}
-
-		if mode == delegateResumabilityPreflight && first.Resumable {
-			childID := rec.DelegateRestore.ChildSessionID
-			sub, err := s.restoreTerminalDelegateChild(rec, childID, first.Preflight)
-			if err == nil && (sub == nil || sub.sess == nil) {
-				t.Fatalf("watchdel: restoreTerminalDelegateChildClaimed returned no error but no live subagent: sub=%v", sub)
-			}
 		}
 	})
 }

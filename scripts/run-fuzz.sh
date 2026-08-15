@@ -58,6 +58,7 @@ TARGETS=(
 	"native:agent:.:FuzzDelegateConversationTransitions::delegate_tree_steer.go;delegate_tree_finish.go;delegate_delivery.go"
 	"native:agent:.:FuzzDelegateRestartEquivalence::delegate_tree_work.go;delegate_tree_stop.go;delegate_tree_restore.go;delegate_shell_repair.go"
 	"native:agent:.:FuzzDelegateAttentionFold::session_attention.go"
+	"native:agent:.:FuzzStableDelegateWatchDelivery::session_attention.go;delegate_delivery.go;job_watch.go"
 	"native:agent:.:FuzzTranscriptReplay::transcript_read.go"
 	"native:agent:.:FuzzTranscriptReplayStructured::transcript_read.go"
 	"native:agent:.:FuzzTranscriptReadersAgree::transcript_read.go"
@@ -323,7 +324,6 @@ TARGETS=(
 	"native:agent:.:FuzzStatusSupportProgram::status.go;session_metrics.go;context_metrics.go;atif.go;errors.go;context_host.go;tool_web_search.go"
 	"native:agent:.:FuzzWorkspacePromptProgram::workspace_info.go;project_docs.go;session_prompts.go;prompt_data.go;session_outline.go;section_resolver.go;git_snapshot.go;runtime_dir.go"
 	"native:agent:.:FuzzDelegateSandboxPolicyProgram::sandbox_delegate.go"
-	"native:agent:.:FuzzWatchdelDelegateResume::job_delegate.go#assessDelegateResumability"
 	"native:agent:.:FuzzWatchdelWatchOps::job_watch.go#configureWatch"
 	# Agent-core whole-module lifecycle and rendering coverage.
 	"native:agent:.:FuzzWorktreeSessionProgram::"

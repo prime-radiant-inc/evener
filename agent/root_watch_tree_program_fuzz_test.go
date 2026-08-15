@@ -86,7 +86,7 @@ func FuzzRootWatchTreeProgram(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		r := &rwlpReader{data: data}
 		rwlpRunManagerProgram(t, r)
-		rwlpRunDrainProgram(t, r)
+		rwlpRunStableDeliveryProgram(t, r)
 		rwlpRunRestoreRetryProgram(t, r)
 	})
 }
@@ -300,37 +300,24 @@ func rwlpRunManagerProgram(t *testing.T, r *rwlpReader) {
 	rwlpAssertWatchLedger(t, jm, notifications)
 }
 
-func rwlpRunDrainProgram(t *testing.T, r *rwlpReader) {
+func rwlpRunStableDeliveryProgram(t *testing.T, r *rwlpReader) {
 	t.Helper()
-	clock := agenttest.NewFakeClock()
-	sess := newSession(t,
-		withSteps(func(llm.Request) llm.Response { return finalResponse("rwlp child complete") }),
-		withConfig(SessionConfig{
-			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
-			clock:            clock,
-			LLMSleep:         func(context.Context, time.Duration) error { return nil },
-			testOnly: testConfig{
-				skipGitSnapshot:     true,
-				minimalSystemPrompt: true,
-				noSyncJobStore:      true,
-			},
-		}),
-	)
-
-	res := sess.createDelegate(context.Background(), delegateArgs{
-		Task:           fmt.Sprintf("rwlp drain %d", r.intn(8)),
-		Background:     false,
-		BlockTimeoutMS: 1000,
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{
+		Message: fmt.Sprintf("rwlp stable delivery %d", r.intn(8)),
 	})
-	if res.Err != nil || res.JobID == "" {
-		t.Fatalf("create completed delegate = %+v", res)
+	pending := fixture.requireOnePending(t)
+	if !pending.state.StableReceiver || pending.state.SourceDelegateID != "dlg_source" {
+		t.Fatalf("stable watch route = %+v", pending.state)
 	}
-	if _, err := sess.DrainJobTree(context.Background()); err != nil {
-		t.Fatalf("drain completed delegate tree: %v", err)
+	if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, ""); err != nil {
+		t.Fatalf("drain stable watch delivery: %v", err)
 	}
-	if outstanding, err := sess.treeHasOutstandingWork(); err != nil || outstanding {
-		t.Fatalf("drained tree still outstanding=%v err=%v", outstanding, err)
+	if got := fixture.sourceJM.pendingWatchSendDeliveries(nil); len(got) != 0 {
+		t.Fatalf("drained stable watch remained pending: %+v", got)
+	}
+	if got := countAttentionEntries(t, fixture.rootTranscriptPath, stableWatchAttentionID(pending.state)); got != 1 {
+		t.Fatalf("stable watch receiver attention count = %d, want 1", got)
 	}
 }
 

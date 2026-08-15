@@ -4,6 +4,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"reflect"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
@@ -80,6 +82,59 @@ func FuzzDelegateAttentionFold(f *testing.F) {
 		}
 		if !bytes.Equal(before, after) || beforeInfo.Size() != afterInfo.Size() || !beforeInfo.ModTime().Equal(afterInfo.ModTime()) {
 			t.Fatalf("cold fold mutated transcript: before=%d/%s after=%d/%s", beforeInfo.Size(), beforeInfo.ModTime(), afterInfo.Size(), afterInfo.ModTime())
+		}
+	})
+}
+
+func FuzzStableDelegateWatchDelivery(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0})
+	f.Add([]byte{1, 2, 3})
+
+	f.Fuzz(func(t *testing.T, program []byte) {
+		if len(program) > 8 {
+			program = program[:8]
+		}
+		fixture := newStableWatchRuntimeFixture(t, nil)
+		for i := 0; i <= len(program); i++ {
+			var value byte
+			if i < len(program) {
+				value = program[i]
+			}
+			onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{
+				Message: fmt.Sprintf("stable-watch-%d-%02x", i, value),
+			})
+		}
+
+		pending := fixture.requireOnePending(t)
+		state := pending.state
+		if state.SourceDelegateID != "dlg_source" || state.SourceDelegateGeneration != 1 {
+			t.Fatalf("stable source identity = %q/%d, want dlg_source/1", state.SourceDelegateID, state.SourceDelegateGeneration)
+		}
+		if !state.StableReceiver || state.ReceiverSessionID != fixture.root.ID() || state.ReceiverDelegateID != "" {
+			t.Fatalf("stable receiver identity = session:%q delegate:%q stable:%t", state.ReceiverSessionID, state.ReceiverDelegateID, state.StableReceiver)
+		}
+
+		attentionID := stableWatchAttentionID(state)
+		result, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		if err != nil {
+			t.Fatalf("deliver stable watch: %v", err)
+		}
+		if !result.observerHandoff {
+			t.Fatal("stable watch delivery did not report observer handoff")
+		}
+		if pending := fixture.sourceJM.pendingWatchSendDeliveries(nil); len(pending) != 0 {
+			t.Fatalf("stable watch source remained pending: %#v", pending)
+		}
+		if got := countAttentionEntries(t, fixture.rootTranscriptPath, attentionID); got != 1 {
+			t.Fatalf("stable watch attention count = %d, want 1", got)
+		}
+
+		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, ""); err != nil {
+			t.Fatalf("repeat stable watch drain: %v", err)
+		}
+		if got := countAttentionEntries(t, fixture.rootTranscriptPath, attentionID); got != 1 {
+			t.Fatalf("repeat drain duplicated stable watch attention: %d", got)
 		}
 	})
 }

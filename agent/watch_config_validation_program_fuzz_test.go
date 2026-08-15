@@ -126,7 +126,7 @@ func wcvpAssertPureContracts(t *testing.T, r *wcvpReader) {
 		{"parent", watchSourceParentSession, true},
 		{"job_wcvp", watchSourceConcreteJob, true},
 		{"", 0, false},
-		{"dlg_wcvp", 0, false},
+		{"dlg_wcvp", watchSourceStableDelegate, true},
 	} {
 		got, err := normalizeWatchSource(tc.input)
 		if (err == nil) != tc.ok || (tc.ok && got.Kind != tc.kind) {
