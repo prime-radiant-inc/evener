@@ -194,13 +194,19 @@ func appendColdDelegateNotificationDurably(path, expectedSessionID, attentionID,
 }
 
 func appendColdDelegateNotificationDurablyWithOpen(path, expectedSessionID, attentionID, content string, now time.Time, open delegateAttentionWriterOpener) (appended bool, err error) {
+	return appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, attentionID, llm.User(content), now, open)
+}
+
+func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, attentionID string, message llm.Message, now time.Time, open delegateAttentionWriterOpener) (appended bool, err error) {
 	if expectedSessionID == "" || attentionID == "" {
 		return false, errors.New("cold delegate attention identity is incomplete")
+	}
+	if message.Role != llm.RoleUser || len(message.Content) == 0 {
+		return false, errors.New("cold delegate attention message is invalid")
 	}
 	if open == nil {
 		return false, errors.New("cold delegate attention writer opener is nil")
 	}
-	message := llm.User(content)
 	preflight, err := readDelegateAttentionFold(path, expectedSessionID)
 	if err != nil {
 		return false, err

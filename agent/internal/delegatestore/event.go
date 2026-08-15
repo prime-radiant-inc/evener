@@ -49,11 +49,12 @@ type TerminalPrepared struct {
 }
 
 type RunFinished struct {
-	Generation  uint64          `json:"generation"`
-	Outcome     Outcome         `json:"outcome"`
-	Disposition RunDisposition  `json:"disposition"`
-	DeliveryID  string          `json:"delivery_id,omitempty"`
-	Packet      *TerminalPacket `json:"packet,omitempty"`
+	Generation                uint64          `json:"generation"`
+	Outcome                   Outcome         `json:"outcome"`
+	Disposition               RunDisposition  `json:"disposition"`
+	DeliveryID                string          `json:"delivery_id,omitempty"`
+	Packet                    *TerminalPacket `json:"packet,omitempty"`
+	ObserverCallbackDelivered bool            `json:"observer_callback_delivered,omitempty"`
 }
 
 type ResumabilityClosed struct {

@@ -189,6 +189,9 @@ func applyRunFinished(state State, event Event) error {
 		packet = aggregate.PreparedTerminal
 	}
 	if stopping {
+		if payload.ObserverCallbackDelivered {
+			return fmt.Errorf("delegate %q stopped finish cannot report observer callback", event.DelegateID)
+		}
 		outcome := payload.Outcome
 		outcome.Status = OutcomeStopped
 		outcome.Reason = "stopped_by_parent"
@@ -210,7 +213,7 @@ func applyRunFinished(state State, event Event) error {
 		}
 		outcome := payload.Outcome
 		aggregate.LatestOutcome = cloneOutcome(&outcome)
-		if payload.Disposition != DispositionCompletedNoAction {
+		if payload.Disposition != DispositionCompletedNoAction && !payload.ObserverCallbackDelivered {
 			if err := appendDelivery(aggregate, payload.DeliveryID, payload.Generation, packet); err != nil {
 				return err
 			}
@@ -504,6 +507,12 @@ func validateFinishPacket(aggregate *Aggregate, finish *RunFinished, packet *Ter
 	}
 	if finish.Disposition == DispositionTerminalError && packet.Kind != PacketTerminalError {
 		return fmt.Errorf("delegate %q terminal-error finish has packet kind %q", aggregate.DelegateID, packet.Kind)
+	}
+	if finish.ObserverCallbackDelivered {
+		if aggregate.Trigger != TriggerAttention || aggregate.PreparedTerminal == nil || finish.Disposition != DispositionReported || finish.DeliveryID != "" || finish.Packet != nil {
+			return fmt.Errorf("delegate %q observer callback finish is not an attention-triggered prepared report", aggregate.DelegateID)
+		}
+		return nil
 	}
 	if finish.DeliveryID == "" {
 		return fmt.Errorf("delegate %q finish delivery id is empty", aggregate.DelegateID)

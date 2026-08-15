@@ -1725,7 +1725,11 @@ func stableDelegateFinish(sess *Session, result string, runErr error) delegateFi
 		inputs.communicated = sess.Communicated()
 		inputs.structuredResult, inputs.structuredResultPresent = sess.communicateStructuredResult()
 	}
-	return stableDelegateFinishFromRun(inputs)
+	finish := stableDelegateFinishFromRun(inputs)
+	if sess != nil {
+		finish.observerCallbackDelivered = sess.currentEntryKind() == EntryWatchDelivery && sess.watchCallbackDeliveredForCurrentTurn()
+	}
+	return finish
 }
 
 func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFinish {
@@ -1770,6 +1774,7 @@ func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFin
 	}
 	inputs.worktree = reporter.stableDelegateWorktreeReport(descriptor)
 	finish := stableDelegateFinishFromRun(inputs)
+	finish.observerCallbackDelivered = a.sess.currentEntryKind() == EntryWatchDelivery && a.sess.watchCallbackDeliveredForCurrentTurn()
 	if finish.outcome == delegatestore.OutcomeFailed && a.sess.hasSalvageFromFinalRound() && finish.packet != nil {
 		finish.packet.Warnings = appendUniqueStrings(finish.packet.Warnings, delegateSalvagedDraftNote)
 	}

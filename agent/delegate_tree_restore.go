@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -59,6 +60,13 @@ type delegateReconcileEvidence struct {
 	evidenceVersion uint64
 	shells          map[string]shellRuntimeLossEvidence
 	attention       map[string][]string
+}
+
+type delegateAttentionTransferPlan struct {
+	sourceDelegateID string
+	sourceRef        string
+	targetDelegateID string
+	targetRef        string
 }
 
 func (c *delegateTreeController) ReconcileRequirements() delegateReconcileRequirements {
@@ -288,6 +296,88 @@ func (c *delegateTreeController) closeMissingRestoreInputs(reasons map[string]st
 		plans.updates = append(plans.updates, c.capturedPlanLocked(id))
 	}
 	return plans, nil
+}
+
+// repairPermanentlyUnreachableDelegateAttention transfers pending model-bound
+// input only after resumability has closed monotonically. Transcript I/O is
+// performed from an immutable tree snapshot without the controller mutex.
+func repairPermanentlyUnreachableDelegateAttention(c *delegateTreeController) error {
+	if c == nil {
+		return errors.New("delegate controller is nil")
+	}
+	c.mu.Lock()
+	stateDir := c.stateDir
+	rootSessionID := c.rootSessionID
+	open := c.attentionOpen
+	now := c.now
+	ids := make([]string, 0, len(c.durable))
+	for id, aggregate := range c.durable {
+		if aggregate != nil && !aggregate.Resumable && aggregate.Phase == delegatestore.PhaseClosed {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	plans := make([]delegateAttentionTransferPlan, 0, len(ids))
+	for _, id := range ids {
+		aggregate := c.durable[id]
+		targetID := nearestReachableAttentionAncestorLocked(c.durable, aggregate.Descriptor.ParentDelegateID)
+		targetRef := ""
+		if targetID != "" {
+			targetRef = c.durable[targetID].Descriptor.TranscriptRef
+		}
+		plans = append(plans, delegateAttentionTransferPlan{
+			sourceDelegateID: id,
+			sourceRef:        aggregate.Descriptor.TranscriptRef,
+			targetDelegateID: targetID,
+			targetRef:        targetRef,
+		})
+	}
+	c.mu.Unlock()
+	if open == nil {
+		open = transcript.OpenWriterForSession
+	}
+	for _, plan := range plans {
+		sourcePath, sourceSessionID, err := delegateTranscriptPathFromRef(stateDir, plan.sourceRef)
+		if err != nil {
+			return fmt.Errorf("delegate %s source transcript: %w", plan.sourceDelegateID, err)
+		}
+		targetPath := transcriptPath(stateDir, rootSessionID)
+		targetSessionID := rootSessionID
+		if plan.targetDelegateID != "" {
+			targetPath, targetSessionID, err = delegateTranscriptPathFromRef(stateDir, plan.targetRef)
+			if err != nil {
+				return fmt.Errorf("delegate %s ancestor %s transcript: %w", plan.sourceDelegateID, plan.targetDelegateID, err)
+			}
+		}
+		fold, err := readDelegateAttentionFold(sourcePath, sourceSessionID)
+		if err != nil {
+			return fmt.Errorf("delegate %s attention fold: %w", plan.sourceDelegateID, err)
+		}
+		for _, attentionID := range fold.pendingIDs() {
+			message := fold.content[attentionID]
+			if _, err := appendColdDelegateAttentionMessageDurablyWithOpen(targetPath, targetSessionID, attentionID, message, now(), open); err != nil {
+				return fmt.Errorf("delegate %s transfer attention %s: %w", plan.sourceDelegateID, attentionID, err)
+			}
+			if err := appendColdAttentionResolutionWithOpen(sourcePath, sourceSessionID, []string{attentionID}, delegateAttentionDiscarded, open); err != nil {
+				return fmt.Errorf("delegate %s discard transferred attention %s: %w", plan.sourceDelegateID, attentionID, err)
+			}
+		}
+	}
+	return nil
+}
+
+func nearestReachableAttentionAncestorLocked(state delegatestore.State, parentID string) string {
+	for parentID != "" {
+		parent := state[parentID]
+		if parent == nil {
+			return ""
+		}
+		if parent.Resumable && parent.Phase == delegatestore.PhaseIdle && parent.PendingStopSeq == 0 {
+			return parentID
+		}
+		parentID = parent.Descriptor.ParentDelegateID
+	}
+	return ""
 }
 
 // repairableShellEvidenceLocked removes process work that still has an exact

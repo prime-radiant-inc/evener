@@ -1367,6 +1367,10 @@ func (s *Session) bootstrapDelegateResources() error {
 		_ = store.Close()
 		return fmt.Errorf("close delegates with missing restore inputs: %w", err)
 	}
+	if err := repairPermanentlyUnreachableDelegateAttention(controller); err != nil {
+		_ = store.Close()
+		return fmt.Errorf("repair unreachable delegate attention: %w", err)
+	}
 	deliveryPlans := append([]delegateDeliveryPlan(nil), reconcileDeliveries...)
 	deliveryPlans = append(deliveryPlans, missingPlans.deliveries...)
 	deliveryPlans = append(deliveryPlans, controller.ReplayDeliveries()...)

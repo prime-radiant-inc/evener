@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -21,11 +22,123 @@ import (
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/contextmgr"
 	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
+
+func TestStableDelegateObserver_EmitsExactlyOneControllerTerminalPacket(t *testing.T) {
+	result := finishStableObserverCallbackGeneration(t)
+	packetEvents := 0
+	var finished *delegatestore.RunFinished
+	for i := range result.events {
+		event := result.events[i]
+		if event.TerminalPrepared != nil {
+			packetEvents++
+		}
+		if event.RunFinished != nil {
+			finished = event.RunFinished
+			if event.RunFinished.Packet != nil {
+				packetEvents++
+			}
+		}
+	}
+	if len(result.callbacks) != 1 {
+		t.Fatalf("observer callbacks = %#v, want one accepted callback", result.callbacks)
+	}
+	if packetEvents != 1 || finished == nil || finished.DeliveryID != "" {
+		t.Fatalf("controller observer terminal packet count=%d finished=%#v, want one packet folded into callback", packetEvents, finished)
+	}
+}
+
+func TestStableDelegateObserver_NoOrdinaryDuplicateAfterCallback(t *testing.T) {
+	result := finishStableObserverCallbackGeneration(t)
+	result.controller.mu.Lock()
+	pending := append([]delegatestore.PendingDelivery(nil), result.controller.durable["dlg_observer"].PendingDeliveries...)
+	result.controller.mu.Unlock()
+	if len(result.finishPlans.deliveries) != 0 || len(pending) != 0 {
+		t.Fatalf("observer callback also created ordinary delivery: plans=%#v pending=%#v", result.finishPlans.deliveries, pending)
+	}
+}
+
+type stableObserverCallbackResult struct {
+	controller  *delegateTreeController
+	finishPlans delegateMutationPlans
+	events      []delegatestore.Event
+	callbacks   []string
+}
+
+func finishStableObserverCallbackGeneration(t *testing.T) stableObserverCallbackResult {
+	t.Helper()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_observer", "")
+	const (
+		sessionID   = "child-dlg_observer"
+		attentionID = "watch:observer-delivery:1"
+	)
+	path := transcriptPath(c.stateDir, sessionID)
+	writeDelegateAttentionTranscript(t, path, sessionID, attentionID)
+	writer, _, err := transcript.OpenWriterForSession(path, sessionID)
+	if err != nil {
+		t.Fatalf("open observer transcript: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	callbacks := make([]string, 0, 1)
+	runtime := &Session{
+		id:                 sessionID,
+		stateDir:           c.stateDir,
+		delegateController: c,
+		comm:               communicateResult{called: true, reply: "observer result"},
+		cfg: SessionConfig{spawn: spawnConfig{parentSteerDelivered: func(message string, _ *provenance.Causal, _ string) bool {
+			callbacks = append(callbacks, message)
+			return true
+		}}},
+	}
+	runtime.attachTranscript(writer)
+	runtime.setActiveEntryKind(EntryWatchDelivery)
+	c.mu.Lock()
+	c.live["dlg_observer"] = &delegateLiveState{runtime: runtime}
+	c.mu.Unlock()
+	reservation, err := c.ReserveAttention(runtime, attentionID)
+	if err != nil {
+		t.Fatalf("reserve observer attention: %v", err)
+	}
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("commit observer attention generation: %v", err)
+	}
+	runtime.deliverWatchCommunicateCallback(watchCommunicateCallbackText("observer result", "observer result"))
+	claim, continueRun, err := c.BeginSettlement(started.lease)
+	if err != nil || continueRun {
+		t.Fatalf("begin observer settlement = continue:%t err:%v", continueRun, err)
+	}
+	resolutionPlans, err := c.AttentionResolutionsForFinalization(claim)
+	if err != nil {
+		t.Fatalf("plan observer attention resolution: %v", err)
+	}
+	if err := runtime.executeDelegateMutationPlans(resolutionPlans); err != nil {
+		t.Fatalf("resolve observer attention: %v", err)
+	}
+	finish := stableDelegateFinish(runtime, "observer result", nil)
+	settlementPlans, err := c.CompleteSettlement(claim, finish.packet)
+	if err != nil {
+		t.Fatalf("complete observer settlement: %v", err)
+	}
+	if err := runtime.executeDelegateMutationPlans(settlementPlans); err != nil {
+		t.Fatalf("execute observer settlement plans: %v", err)
+	}
+	finishPlans, err := c.FinishGeneration(started.lease, finish)
+	if err != nil {
+		t.Fatalf("finish observer generation: %v", err)
+	}
+	events, err := c.store.Load()
+	if err != nil {
+		t.Fatalf("load observer controller events: %v", err)
+	}
+	return stableObserverCallbackResult{controller: c, finishPlans: finishPlans, events: events, callbacks: callbacks}
+}
 
 func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
@@ -2557,4 +2670,309 @@ func (file *attentionFailNextSyncFile) Sync() error {
 		return errors.New("injected attention resolution sync failure")
 	}
 	return file.File.Sync()
+}
+
+func TestStableDelegateAttention_ReachableColdOwnerRetainsAttentionAfterRestoreFailure(t *testing.T) {
+	c, journalPath := newDelegateControllerTestHarness(t, 2, 1)
+	seedStableAttentionRepairDelegate(t, c, "dlg_owner", "", true)
+	const attentionID = "delegate:reachable-owner"
+	ownerPath := transcriptPath(c.stateDir, "child-dlg_owner")
+	writeDelegateAttentionTranscript(t, ownerPath, "child-dlg_owner", attentionID)
+	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "root-session"), "root-session")
+	copyDelegateJournalForBootstrap(t, c, journalPath)
+
+	metaPath := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_owner.meta.json")
+	fresh := newAttentionRepairRoot(c.stateDir, nil)
+	fresh.cfg.testOnly.delegateRestoreReadFile = func(path string) ([]byte, error) {
+		if path == metaPath {
+			return nil, &os.PathError{Op: "read", Path: path, Err: syscall.EIO}
+		}
+		return os.ReadFile(path)
+	}
+	if err := fresh.bootstrapDelegateResources(); err == nil {
+		t.Fatal("bootstrap accepted a transient cold-owner restore inspection failure")
+	}
+	ownerFold, err := readDelegateAttentionFold(ownerPath, "child-dlg_owner")
+	if err != nil {
+		t.Fatalf("read reachable owner attention: %v", err)
+	}
+	if pending := ownerFold.pendingIDs(); !reflect.DeepEqual(pending, []string{attentionID}) {
+		t.Fatalf("reachable cold owner attention after transient failure = %#v, want retained", pending)
+	}
+	rootFold, err := readDelegateAttentionFold(transcriptPath(c.stateDir, "root-session"), "root-session")
+	if err != nil {
+		t.Fatalf("read root attention: %v", err)
+	}
+	if _, escalated := rootFold.content[attentionID]; escalated {
+		t.Fatal("transient cold-owner restore failure escalated attention to root")
+	}
+}
+
+func TestStableDelegateAttention_UnreachableOwnerTransfersToNearestReachableAncestor(t *testing.T) {
+	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
+	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
+	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
+	const attentionID = "delegate:unreachable-child"
+	parentPath := transcriptPath(c.stateDir, "child-dlg_parent")
+	childPath := transcriptPath(c.stateDir, "child-dlg_child")
+	writeEmptyAttentionTranscript(t, parentPath, "child-dlg_parent")
+	writeDelegateAttentionTranscript(t, childPath, "child-dlg_child", attentionID)
+	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "root-session"), "root-session")
+	copyDelegateJournalForBootstrap(t, c, journalPath)
+
+	fresh := newAttentionRepairRoot(c.stateDir, nil)
+	if err := fresh.bootstrapDelegateResources(); err != nil {
+		t.Fatalf("bootstrap unreachable attention repair: %v", err)
+	}
+	t.Cleanup(func() { _ = fresh.closeOwnedDelegateStore() })
+	parentFold, err := readDelegateAttentionFold(parentPath, "child-dlg_parent")
+	if err != nil {
+		t.Fatalf("read ancestor attention: %v", err)
+	}
+	if pending := parentFold.pendingIDs(); !reflect.DeepEqual(pending, []string{attentionID}) || parentFold.content[attentionID].Text() != "attention" {
+		t.Fatalf("nearest ancestor attention = pending:%#v content:%#v", pending, parentFold.content[attentionID])
+	}
+	childFold, err := readDelegateAttentionFold(childPath, "child-dlg_child")
+	if err != nil {
+		t.Fatalf("read child attention: %v", err)
+	}
+	if got := childFold.resolutions[attentionID]; got != delegateAttentionDiscarded {
+		t.Fatalf("unreachable child resolution = %q, want discarded after transfer", got)
+	}
+	rootFold, err := readDelegateAttentionFold(transcriptPath(c.stateDir, "root-session"), "root-session")
+	if err != nil {
+		t.Fatalf("read root attention: %v", err)
+	}
+	if _, present := rootFold.content[attentionID]; present {
+		t.Fatal("attention skipped the nearest reachable delegate ancestor")
+	}
+}
+
+func TestStableDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T) {
+	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
+	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
+	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
+	const attentionID = "delegate:ordered-transfer"
+	parentPath := transcriptPath(c.stateDir, "child-dlg_parent")
+	childPath := transcriptPath(c.stateDir, "child-dlg_child")
+	writeEmptyAttentionTranscript(t, parentPath, "child-dlg_parent")
+	writeDelegateAttentionTranscript(t, childPath, "child-dlg_child", attentionID)
+	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "root-session"), "root-session")
+	copyDelegateJournalForBootstrap(t, c, journalPath)
+
+	fs := newAttentionPathOrderFS()
+	fresh := newAttentionRepairRoot(c.stateDir, nil)
+	fresh.cfg.testOnly.delegateAttentionOpenWriter = func(path, expectedSessionID string) (*transcript.Writer, []transcript.Entry, error) {
+		return transcript.OpenWriterForSessionWithFS(fs, path, expectedSessionID)
+	}
+	if err := fresh.bootstrapDelegateResources(); err != nil {
+		t.Fatalf("bootstrap ordered attention repair: %v", err)
+	}
+	t.Cleanup(func() { _ = fresh.closeOwnedDelegateStore() })
+	paths := fs.syncedPaths()
+	parentIndex, childIndex := pathIndex(paths, parentPath), pathIndex(paths, childPath)
+	if parentIndex < 0 || childIndex < 0 || parentIndex >= childIndex {
+		t.Fatalf("attention repair fsync order = %#v, want ancestor %q before child %q", paths, parentPath, childPath)
+	}
+}
+
+func TestStableDelegateAttention_ConsumedEntryIsNeverEscalated(t *testing.T) {
+	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
+	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
+	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
+	const attentionID = "delegate:already-consumed"
+	parentPath := transcriptPath(c.stateDir, "child-dlg_parent")
+	childPath := transcriptPath(c.stateDir, "child-dlg_child")
+	writeEmptyAttentionTranscript(t, parentPath, "child-dlg_parent")
+	writeDelegateAttentionTranscript(t, childPath, "child-dlg_child", attentionID)
+	if err := appendColdAttentionResolution(childPath, "child-dlg_child", []string{attentionID}, delegateAttentionConsumed); err != nil {
+		t.Fatalf("append consumed resolution: %v", err)
+	}
+	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "root-session"), "root-session")
+	copyDelegateJournalForBootstrap(t, c, journalPath)
+
+	fresh := newAttentionRepairRoot(c.stateDir, nil)
+	if err := fresh.bootstrapDelegateResources(); err != nil {
+		t.Fatalf("bootstrap consumed attention repair: %v", err)
+	}
+	t.Cleanup(func() { _ = fresh.closeOwnedDelegateStore() })
+	parentFold, err := readDelegateAttentionFold(parentPath, "child-dlg_parent")
+	if err != nil {
+		t.Fatalf("read ancestor attention: %v", err)
+	}
+	if _, present := parentFold.content[attentionID]; present {
+		t.Fatal("consumed child attention was escalated")
+	}
+	childFold, err := readDelegateAttentionFold(childPath, "child-dlg_child")
+	if err != nil {
+		t.Fatalf("read consumed child attention: %v", err)
+	}
+	if got := childFold.resolutions[attentionID]; got != delegateAttentionConsumed {
+		t.Fatalf("consumed child resolution changed to %q", got)
+	}
+}
+
+func TestStableDelegateAttention_StartupRepairUsesNoProvider(t *testing.T) {
+	c, journalPath := newDelegateControllerTestHarness(t, 2, 1)
+	seedStableAttentionRepairDelegate(t, c, "dlg_child", "", false)
+	const attentionID = "delegate:provider-free-transfer"
+	childPath := transcriptPath(c.stateDir, "child-dlg_child")
+	rootPath := transcriptPath(c.stateDir, "root-session")
+	writeDelegateAttentionTranscript(t, childPath, "child-dlg_child", attentionID)
+	writeEmptyAttentionTranscript(t, rootPath, "root-session")
+	copyDelegateJournalForBootstrap(t, c, journalPath)
+
+	client := llm.NewClient()
+	client.Register(&delegateAttentionPanicProvider{})
+	fresh := newAttentionRepairRoot(c.stateDir, client)
+	fresh.cfg.testOnly.sessionInitFault = func(point string) error {
+		panic("startup attention repair constructed a Session at " + point)
+	}
+	if err := fresh.bootstrapDelegateResources(); err != nil {
+		t.Fatalf("provider-free startup attention repair: %v", err)
+	}
+	t.Cleanup(func() { _ = fresh.closeOwnedDelegateStore() })
+	rootFold, err := readDelegateAttentionFold(rootPath, "root-session")
+	if err != nil {
+		t.Fatalf("read root attention: %v", err)
+	}
+	if pending := rootFold.pendingIDs(); !reflect.DeepEqual(pending, []string{attentionID}) {
+		t.Fatalf("provider-free root transfer = %#v, want %q", pending, attentionID)
+	}
+	childFold, err := readDelegateAttentionFold(childPath, "child-dlg_child")
+	if err != nil {
+		t.Fatalf("read child attention: %v", err)
+	}
+	if got := childFold.resolutions[attentionID]; got != delegateAttentionDiscarded {
+		t.Fatalf("provider-free child discard = %q", got)
+	}
+}
+
+func seedStableAttentionRepairDelegate(t *testing.T, c *delegateTreeController, id, parentID string, reachable bool) {
+	t.Helper()
+	event := delegateControllerCreatedEvent(id, parentID)
+	event.Created.Descriptor.ResolvedProfileID = "openai"
+	event.Created.Descriptor.ResolvedModel = "gpt-5.2"
+	c.mu.Lock()
+	_, err := c.appendLocked(event)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("seed attention repair delegate %s: %v", id, err)
+	}
+	if !reachable {
+		return
+	}
+	parentSessionID := "root-session"
+	if parentID != "" {
+		parentSessionID = "child-" + parentID
+	}
+	if err := schema.SaveSessionMeta(c.stateDir, schema.SessionMeta{
+		ID:              "child-" + id,
+		ParentSessionID: parentSessionID,
+		ProfileID:       "openai",
+		Model:           "gpt-5.2",
+		IsSubagent:      true,
+	}); err != nil {
+		t.Fatalf("save reachable delegate metadata %s: %v", id, err)
+	}
+}
+
+func writeEmptyAttentionTranscript(t *testing.T, path, sessionID string) {
+	t.Helper()
+	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("create empty attention transcript %s: %v", sessionID, err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close empty attention transcript %s: %v", sessionID, err)
+	}
+}
+
+func copyDelegateJournalForBootstrap(t *testing.T, c *delegateTreeController, sourcePath string) {
+	t.Helper()
+	raw, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("read delegate journal: %v", err)
+	}
+	if err := c.store.Close(); err != nil {
+		t.Fatalf("close delegate journal: %v", err)
+	}
+	destination := filepath.Join(jobsDir(c.stateDir, "root-session"), "delegates.jsonl")
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatalf("create bootstrap delegate directory: %v", err)
+	}
+	if err := os.WriteFile(destination, raw, 0o644); err != nil {
+		t.Fatalf("write bootstrap delegate journal: %v", err)
+	}
+}
+
+func newAttentionRepairRoot(stateDir string, client *llm.Client) *Session {
+	return &Session{
+		id:       "root-session",
+		stateDir: stateDir,
+		client:   client,
+		state:    SessionIdle,
+		cfg: SessionConfig{
+			StateDir:                   stateDir,
+			MaxConcurrentDelegateTurns: 4,
+		},
+	}
+}
+
+type attentionPathOrderFS struct {
+	afero.Fs
+	mu    sync.Mutex
+	paths []string
+}
+
+func newAttentionPathOrderFS() *attentionPathOrderFS {
+	return &attentionPathOrderFS{Fs: afero.NewOsFs()}
+}
+
+func (fs *attentionPathOrderFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &attentionPathOrderFile{File: file, fs: fs, path: filepath.Clean(name)}, nil
+}
+
+func (fs *attentionPathOrderFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &attentionPathOrderFile{File: file, fs: fs, path: filepath.Clean(name)}, nil
+}
+
+func (fs *attentionPathOrderFS) syncedPaths() []string {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return append([]string(nil), fs.paths...)
+}
+
+type attentionPathOrderFile struct {
+	afero.File
+	fs   *attentionPathOrderFS
+	path string
+}
+
+func (file *attentionPathOrderFile) Sync() error {
+	if err := file.File.Sync(); err != nil {
+		return err
+	}
+	file.fs.mu.Lock()
+	file.fs.paths = append(file.fs.paths, file.path)
+	file.fs.mu.Unlock()
+	return nil
+}
+
+func pathIndex(paths []string, want string) int {
+	want = filepath.Clean(want)
+	for index, path := range paths {
+		if filepath.Clean(path) == want {
+			return index
+		}
+	}
+	return -1
 }
