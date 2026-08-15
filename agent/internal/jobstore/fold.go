@@ -338,6 +338,7 @@ func applyEvent(r *JobRecord, e Event) {
 		r.OwnerSessionID = e.OwnerSessionID
 		r.VisibleToSession = e.VisibleToSession
 		r.ParentJobID = e.ParentJobID
+		r.ParentDelegateID = e.ParentDelegateID
 		r.DelegateID = e.DelegateID
 		r.OriginTurnID = e.OriginTurnID
 		r.OriginToolCallID = e.OriginToolCallID

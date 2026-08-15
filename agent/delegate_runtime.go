@@ -264,12 +264,40 @@ func bindStableDelegateActivity(child *Session, controller *delegateTreeControll
 	if child == nil || controller == nil {
 		return
 	}
+	owner := controller.stableDelegateOwnerRuntime(lease)
+	var forward func(jobstore.Event) error
+	if owner != nil && owner.jobManager != nil {
+		forward = owner.jobManager.forwardEvent
+	}
 	child.mu.Lock()
-	child.cfg.spawn.parentJobID = lease.delegateID
+	child.cfg.spawn.parentJobID = ""
+	child.cfg.spawn.parentDelegateID = lease.delegateID
+	child.cfg.spawn.forwardJobEvent = forward
 	child.cfg.spawn.parentJobActivity = func(string, string) {
 		_ = controller.ReportActivity(lease, child.sclock().Now())
 	}
+	jm := child.jobManager
 	child.mu.Unlock()
+	if jm != nil {
+		jm.bindStableDelegateParent(lease.delegateID, forward)
+	}
+}
+
+func (c *delegateTreeController) stableDelegateOwnerRuntime(lease delegateLease) *Session {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate, _, err := c.exactLeaseLocked(lease)
+	if err != nil {
+		return nil
+	}
+	if aggregate.Descriptor.ParentDelegateID == "" {
+		return c.rootRuntime
+	}
+	parent := c.live[aggregate.Descriptor.ParentDelegateID]
+	if parent == nil {
+		return nil
+	}
+	return parent.runtime
 }
 
 func delegateInputWasPreseeded(ctx context.Context, sessionID, input string) bool {
@@ -1011,6 +1039,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			parentToolCallID:              descriptor.OriginToolCallID,
 			parentItemID:                  descriptor.OriginItemID,
 			parentDelegateID:              started.lease.delegateID,
+			forwardJobEvent:               s.jobManager.forwardEvent,
 			descendantEvent:               s.cfg.spawn.descendantEvent,
 			parentSteer:                   s.SteerWithProvenance,
 			parentSteerDelivered:          s.trySteerWithProvenanceAndNotify,

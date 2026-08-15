@@ -658,6 +658,9 @@ func (s *Session) prepareSubagentRunFromSelection(
 	if delegateID, ok := ctx.Value(ctxParentDelegateID).(string); ok {
 		subCfg.spawn.parentDelegateID = delegateID
 		subCfg.spawn.owningDelegateID = delegateID
+		if s.jobManager != nil {
+			subCfg.spawn.forwardJobEvent = s.jobManager.forwardEvent
+		}
 	}
 	if childSessionID, ok := ctx.Value(delegateChildSessionIDContextKey{}).(string); ok {
 		subCfg.spawn.sessionID = childSessionID
@@ -1079,10 +1082,16 @@ func (s *Session) trackAndLaunchPreparedSubagent(prepared *preparedSubagentRun) 
 }
 
 func (s *Session) noteParentJobActivity(phase string) {
-	if s == nil || s.cfg.spawn.parentJobActivity == nil || s.cfg.spawn.parentJobID == "" {
+	if s == nil || s.cfg.spawn.parentJobActivity == nil {
 		return
 	}
-	s.cfg.spawn.parentJobActivity(s.cfg.spawn.parentJobID, phase)
+	parentID := s.cfg.spawn.parentJobID
+	if parentID == "" {
+		parentID = s.cfg.spawn.parentDelegateID
+	}
+	if parentID != "" {
+		s.cfg.spawn.parentJobActivity(parentID, phase)
+	}
 }
 
 // markSalvagedTurnPersisted records that Component 3 settlement just appended

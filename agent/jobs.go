@@ -121,9 +121,10 @@ type jobManager struct {
 	finalizeShellAsync     func(string, jobstore.Status, string, *int)
 	emit                   func(events.EventKind, events.EventData, *provenance.Causal)
 
-	forward     func(jobstore.Event) error
-	parentJobID string
-	enqueue     func(jobNotification)
+	forward          func(jobstore.Event) error
+	parentJobID      string
+	parentDelegateID string
+	enqueue          func(jobNotification)
 	// consume removes the owner's in-memory wake after the corresponding
 	// terminal status result is durable in the session transcript.
 	consume func(jobID string)
@@ -215,6 +216,20 @@ func (jm *jobManager) currentParentJobID() string {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	return jm.parentJobID
+}
+
+func (jm *jobManager) bindStableDelegateParent(delegateID string, forward func(jobstore.Event) error) {
+	jm.mu.Lock()
+	jm.parentJobID = ""
+	jm.parentDelegateID = delegateID
+	jm.forward = forward
+	jm.mu.Unlock()
+}
+
+func (jm *jobManager) currentJobParent() (jobID, delegateID string) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.parentJobID, jm.parentDelegateID
 }
 
 func (jm *jobManager) appendJobEvents(events []jobstore.Event) error {
@@ -845,7 +860,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 	if err != nil {
 		return nil, err
 	}
-	parentJobID := jm.currentParentJobID()
+	parentJobID, parentDelegateID := jm.currentJobParent()
 	jobProvenance := jm.currentCausalProvenance()
 	rec := &jobstore.JobRecord{
 		JobID:            jobID,
@@ -856,6 +871,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		OwnerSessionID:   jm.sessionID,
 		VisibleToSession: jm.sessionID,
 		ParentJobID:      parentJobID,
+		ParentDelegateID: parentDelegateID,
 		StartedAt:        startedAt,
 		Phase:            jobPhaseProcessRunning,
 		LastActivity:     &startedAt,
@@ -887,6 +903,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		OwnerSessionID:   rec.OwnerSessionID,
 		VisibleToSession: rec.VisibleToSession,
 		ParentJobID:      rec.ParentJobID,
+		ParentDelegateID: rec.ParentDelegateID,
 		StartedAt:        &startedAt,
 		OutputPath:       rec.OutputPath,
 		Provenance:       provenance.Clone(jobProvenance),
@@ -990,7 +1007,7 @@ func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, i
 // it merely calls this to decide inclusion. Behavior mirrors the original
 // clause order exactly.
 func keepListedJobRow(rec *jobstore.JobRecord, filter listFilter, sessionID string) bool {
-	if !filter.IncludeNested && rec.ParentJobID != "" && rec.OwnerSessionID != sessionID {
+	if !filter.IncludeNested && (rec.ParentJobID != "" || rec.ParentDelegateID != "") && rec.OwnerSessionID != sessionID {
 		return false
 	}
 	if filter.Status != "" && rec.Status != filter.Status {

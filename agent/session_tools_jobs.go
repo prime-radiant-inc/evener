@@ -979,16 +979,17 @@ type recentWatchEntry struct {
 }
 
 type jobListEntry struct {
-	JobID          string  `json:"job_id"`
-	DelegateID     string  `json:"delegate_id,omitempty"`
-	Kind           string  `json:"kind"`
-	Type           string  `json:"type"`
-	Status         string  `json:"status"`
-	Phase          string  `json:"phase,omitempty"`
-	Reason         *string `json:"reason,omitempty"`
-	Description    string  `json:"description"`
-	ParentJobID    *string `json:"parent_job_id,omitempty"`
-	OwnerSessionID string  `json:"owner_session_id"`
+	JobID            string  `json:"job_id"`
+	DelegateID       string  `json:"delegate_id,omitempty"`
+	Kind             string  `json:"kind"`
+	Type             string  `json:"type"`
+	Status           string  `json:"status"`
+	Phase            string  `json:"phase,omitempty"`
+	Reason           *string `json:"reason,omitempty"`
+	Description      string  `json:"description"`
+	ParentJobID      *string `json:"parent_job_id,omitempty"`
+	ParentDelegateID *string `json:"parent_delegate_id,omitempty"`
+	OwnerSessionID   string  `json:"owner_session_id"`
 	// VisibleToSessionID is internal visibility routing — in a plain list it always
 	// equals the owner, so it is kept for tooling but omitted from the model wire.
 	VisibleToSessionID string `json:"-"`
@@ -1915,6 +1916,7 @@ func projectJobRecordForViewer(viewer *Session, assessor *Session, rec *jobstore
 		Reason:             stringPtrOrNil(rec.Reason),
 		Description:        jobRecordDisplayLabel(rec),
 		ParentJobID:        stringPtrOrNil(rec.ParentJobID),
+		ParentDelegateID:   stringPtrOrNil(rec.ParentDelegateID),
 		OwnerSessionID:     rec.OwnerSessionID,
 		VisibleToSessionID: rec.VisibleToSession,
 		TranscriptRef:      stringPtrOrNil(statusView.TranscriptRef),

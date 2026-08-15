@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
@@ -19,7 +20,7 @@ func (s *Session) ownerJobManagerFor(jobID string) (*jobManager, *jobstore.JobRe
 		return nil, nil
 	}
 	rec := recs[jobID]
-	if rec == nil || rec.ParentJobID == "" || rec.OwnerSessionID == "" || rec.OwnerSessionID == s.id {
+	if rec == nil || (rec.ParentJobID == "" && rec.ParentDelegateID == "") || rec.OwnerSessionID == "" || rec.OwnerSessionID == s.id {
 		return nil, rec
 	}
 	if s.subagents == nil {
@@ -27,6 +28,9 @@ func (s *Session) ownerJobManagerFor(jobID string) (*jobManager, *jobstore.JobRe
 	}
 	sub := s.subagents.get(rec.OwnerSessionID)
 	if sub == nil || sub.sess == nil || sub.sess.jobManager == nil {
+		return nil, rec
+	}
+	if rec.ParentDelegateID != "" && sub.sess.owningDelegateID != rec.ParentDelegateID {
 		return nil, rec
 	}
 	sub.mu.Lock()
@@ -355,7 +359,7 @@ func (s *Session) stopNestedOrLocal(jobID string) (*jobstore.JobRecord, error) {
 		}
 		return rec, nil
 	}
-	if forwarded != nil && forwarded.ParentJobID != "" && forwarded.OwnerSessionID != s.id {
+	if forwarded != nil && (forwarded.ParentJobID != "" || forwarded.ParentDelegateID != "") && forwarded.OwnerSessionID != s.id {
 		if forwarded.Status.IsTerminal() {
 			return cloneJobRecord(forwarded), nil
 		}
@@ -393,9 +397,15 @@ func (s *Session) notControllableDescendantError(jobID string) error {
 	if ownerRec != nil && ownerRec.OwnerSessionID != "" {
 		ownerID = ownerRec.OwnerSessionID
 	}
-	handle := s.directDelegateJobForChild(child.id)
+	handle := child.owningDelegateID
+	if handle == "" {
+		handle = s.directDelegateJobForChild(child.id)
+	}
 	if handle == "" {
 		return fmt.Errorf("not_controllable: job %q is owned by descendant session %q, not your direct delegate; stop your direct delegate for session %q to cascade-stop its subtree", jobID, ownerID, child.id)
+	}
+	if strings.HasPrefix(handle, "dlg_") {
+		return fmt.Errorf("not_controllable: job %q is owned by descendant session %q; stop your direct delegate %q to cascade-stop its subtree", jobID, ownerID, handle)
 	}
 	return fmt.Errorf("not_controllable: job %q is owned by descendant session %q, not your direct delegate; stop your direct delegate job %q (which owns session %q) to cascade-stop its subtree", jobID, ownerID, handle, child.id)
 }
@@ -590,7 +600,7 @@ func (s *Session) directDelegateJobForChild(childID string) string {
 }
 
 func (jm *jobManager) forwardLocked(e jobstore.Event) error {
-	if jm.forward == nil || jm.parentJobID == "" {
+	if jm.forward == nil || (jm.parentJobID == "" && jm.parentDelegateID == "") {
 		return nil
 	}
 	return jm.forward(e)
@@ -600,8 +610,9 @@ func (jm *jobManager) forwardSnapshot(e jobstore.Event) error {
 	jm.mu.Lock()
 	forward := jm.forward
 	parentJobID := jm.parentJobID
+	parentDelegateID := jm.parentDelegateID
 	jm.mu.Unlock()
-	if forward == nil || parentJobID == "" {
+	if forward == nil || (parentJobID == "" && parentDelegateID == "") {
 		return nil
 	}
 	return forward(e)
@@ -611,8 +622,9 @@ func (jm *jobManager) recoverForwardedTerminalEvents() error {
 	jm.mu.Lock()
 	forward := jm.forward
 	parentJobID := jm.parentJobID
+	parentDelegateID := jm.parentDelegateID
 	jm.mu.Unlock()
-	if forward == nil || parentJobID == "" {
+	if forward == nil || (parentJobID == "" && parentDelegateID == "") {
 		return nil
 	}
 
@@ -621,7 +633,7 @@ func (jm *jobManager) recoverForwardedTerminalEvents() error {
 		return err
 	}
 	for _, rec := range recs {
-		if !jm.shouldRecoverForwardedTerminalRecord(rec, parentJobID) {
+		if !jm.shouldRecoverForwardedTerminalRecord(rec, parentJobID, parentDelegateID) {
 			continue
 		}
 		startedAt := rec.StartedAt
@@ -637,6 +649,7 @@ func (jm *jobManager) recoverForwardedTerminalEvents() error {
 			OwnerSessionID:   rec.OwnerSessionID,
 			VisibleToSession: rec.VisibleToSession,
 			ParentJobID:      rec.ParentJobID,
+			ParentDelegateID: rec.ParentDelegateID,
 			DelegateID:       rec.DelegateID,
 			OriginTurnID:     rec.OriginTurnID,
 			OriginToolCallID: rec.OriginToolCallID,
@@ -678,8 +691,9 @@ func (jm *jobManager) recoverForwardedPendingNotifications() error {
 	jm.mu.Lock()
 	forward := jm.forward
 	parentJobID := jm.parentJobID
+	parentDelegateID := jm.parentDelegateID
 	jm.mu.Unlock()
-	if forward == nil || parentJobID == "" {
+	if forward == nil || (parentJobID == "" && parentDelegateID == "") {
 		return nil
 	}
 
@@ -688,7 +702,7 @@ func (jm *jobManager) recoverForwardedPendingNotifications() error {
 		return err
 	}
 	for _, rec := range recs {
-		if !jm.shouldRecoverForwardedTerminalRecord(rec, parentJobID) || rec.NotifyState != jobstore.NotifyPending {
+		if !jm.shouldRecoverForwardedTerminalRecord(rec, parentJobID, parentDelegateID) || rec.NotifyState != jobstore.NotifyPending {
 			continue
 		}
 		if err := forward(jobstore.Event{
@@ -704,9 +718,9 @@ func (jm *jobManager) recoverForwardedPendingNotifications() error {
 	return nil
 }
 
-func (jm *jobManager) shouldRecoverForwardedTerminalRecord(rec *jobstore.JobRecord, parentJobID string) bool {
+func (jm *jobManager) shouldRecoverForwardedTerminalRecord(rec *jobstore.JobRecord, parentJobID, parentDelegateID string) bool {
 	if rec == nil ||
-		rec.ParentJobID != parentJobID ||
+		(rec.ParentJobID != parentJobID || rec.ParentDelegateID != parentDelegateID) ||
 		rec.OwnerSessionID != jm.sessionID ||
 		!rec.Status.IsTerminal() ||
 		rec.TerminalGen == "" {

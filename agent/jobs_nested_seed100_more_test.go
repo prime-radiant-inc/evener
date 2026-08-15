@@ -300,7 +300,7 @@ func seed100JobsNestedMore(t *testing.T) {
 	start(t, recovery, "running", recovery.sessionID, "parent", jobstore.JobShell, "")
 	_ = recovery.recoverForwardedTerminalEvents()
 	_ = recovery.recoverForwardedPendingNotifications()
-	_ = recovery.shouldRecoverForwardedTerminalRecord(&jobstore.JobRecord{JobID: "no-gen", ParentJobID: "parent", OwnerSessionID: recovery.sessionID, Status: jobstore.StatusCompleted}, "parent")
+	_ = recovery.shouldRecoverForwardedTerminalRecord(&jobstore.JobRecord{JobID: "no-gen", ParentJobID: "parent", OwnerSessionID: recovery.sessionID, Status: jobstore.StatusCompleted}, "parent", "")
 	ended := started
 	_ = recovery.recoveredEventTime(&jobstore.JobRecord{EndedAt: &ended})
 	enqueued := false

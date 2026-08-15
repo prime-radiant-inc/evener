@@ -283,6 +283,7 @@ type JobRecord struct {
 	OwnerSessionID   string                     `json:"owner_session_id"`
 	VisibleToSession string                     `json:"visible_to_session_id"`
 	ParentJobID      string                     `json:"parent_job_id,omitempty"`
+	ParentDelegateID string                     `json:"parent_delegate_id,omitempty"`
 	DelegateID       string                     `json:"delegate_id,omitempty"`
 	OriginTurnID     string                     `json:"origin_turn_id,omitempty"`
 	OriginToolCallID string                     `json:"origin_tool_call_id,omitempty"`

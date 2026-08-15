@@ -432,7 +432,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 	if err != nil {
 		return nil, err
 	}
-	parentJobID := jm.currentParentJobID()
+	parentJobID, parentDelegateID := jm.currentJobParent()
 	run := &runningJob{
 		rec: &jobstore.JobRecord{
 			JobID:            jobID,
@@ -445,6 +445,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 			OwnerSessionID:   jm.sessionID,
 			VisibleToSession: jm.sessionID,
 			ParentJobID:      parentJobID,
+			ParentDelegateID: parentDelegateID,
 			StartedAt:        startedAt,
 			Phase:            jobPhaseProcessRunning,
 			LastActivity:     &startedAt,
@@ -514,6 +515,7 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		OwnerSessionID:   rec.OwnerSessionID,
 		VisibleToSession: rec.VisibleToSession,
 		ParentJobID:      rec.ParentJobID,
+		ParentDelegateID: rec.ParentDelegateID,
 		StartedAt:        &startedAt,
 		OutputPath:       rec.OutputPath,
 		WorkingDir:       rec.WorkingDir,
