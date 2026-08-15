@@ -3890,8 +3890,8 @@ func (jm *jobManager) isCurrentWatchSendDeliveryLocked(d watchSendDelivery) bool
 }
 
 func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d watchSendDelivery) (jobstore.WatchSendState, bool, error) {
-	jm.watchPersistMu.Lock()
-	defer jm.watchPersistMu.Unlock()
+	releasePersistence := jm.beginWatchPersistence()
+	defer releasePersistence()
 
 	record := jm.planWatchSendPending(state, d)
 	if len(record.pendingEvents) == 0 {
@@ -3904,6 +3904,7 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 	enqueueCompleted := false
 	defer func() {
 		if enqueueReceipt != nil && !enqueueCompleted {
+			jm.observeWatchReceiptBoundary()
 			enqueueReceipt.controller.AbortWatchEnqueue(enqueueReceipt)
 		}
 	}()
@@ -3915,6 +3916,7 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 	}
 	jm.commitWatchSendPendingRecord(record, d.allowAfterTerminalExpiry)
 	if enqueueReceipt != nil {
+		jm.observeWatchReceiptBoundary()
 		deliveryReceipt, err := enqueueReceipt.controller.CompleteWatchEnqueue(enqueueReceipt)
 		if err != nil {
 			return record.persisted, true, err
@@ -3952,6 +3954,26 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 	return record.persisted, true, nil
 }
 
+func (jm *jobManager) beginWatchPersistence() func() {
+	for {
+		jm.watchPersistMu.Lock()
+		if jm.watchPersistDone == nil {
+			done := make(chan struct{})
+			jm.watchPersistDone = done
+			jm.watchPersistMu.Unlock()
+			return func() {
+				jm.watchPersistMu.Lock()
+				jm.watchPersistDone = nil
+				close(done)
+				jm.watchPersistMu.Unlock()
+			}
+		}
+		done := jm.watchPersistDone
+		jm.watchPersistMu.Unlock()
+		<-done
+	}
+}
+
 func (jm *jobManager) beginStableWatchEnqueue(state jobstore.WatchSendState) (*delegateWatchReceipt, error) {
 	if !state.StableReceiver {
 		return nil, nil
@@ -3959,6 +3981,7 @@ func (jm *jobManager) beginStableWatchEnqueue(state jobstore.WatchSendState) (*d
 	if jm.delegateController == nil {
 		return nil, errors.New("stable watch controller is unavailable")
 	}
+	jm.observeWatchReceiptBoundary()
 	return jm.delegateController.BeginWatchEnqueue(
 		state.SourceDelegateID,
 		state.SourceDelegateGeneration,
@@ -3967,6 +3990,12 @@ func (jm *jobManager) beginStableWatchEnqueue(state jobstore.WatchSendState) (*d
 		state.UpdateSeq,
 		state.EndNotice,
 	)
+}
+
+func (jm *jobManager) observeWatchReceiptBoundary() {
+	if jm.watchReceiptBoundary != nil {
+		jm.watchReceiptBoundary()
+	}
 }
 
 func (jm *jobManager) rememberStableWatchReceipt(receipt *delegateWatchReceipt) {
@@ -3990,6 +4019,7 @@ func (jm *jobManager) releaseStableWatchReceipt(deliveryID string) {
 	delete(jm.stableWatchReceipts, deliveryID)
 	jm.mu.Unlock()
 	if receipt != nil {
+		jm.observeWatchReceiptBoundary()
 		_ = receipt.controller.CompleteWatchDelivery(receipt)
 	}
 }

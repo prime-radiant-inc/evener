@@ -317,6 +317,23 @@ func TestStableDelegateWatch_EnqueueFsyncPrecedesCursorAdvance(t *testing.T) {
 	}
 }
 
+func TestStableDelegateWatch_ControllerReceiptRunsAfterJobManagerUnlock(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	boundaries := 0
+	fixture.sourceJM.watchReceiptBoundary = func() {
+		boundaries++
+		if !fixture.sourceJM.watchPersistMu.TryLock() {
+			t.Fatal("stable watch entered the delegate controller while holding the job-manager persistence lock")
+		}
+		fixture.sourceJM.watchPersistMu.Unlock()
+	}
+
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "lock order"})
+	if boundaries != 2 {
+		t.Fatalf("controller receipt boundaries = %d, want enqueue admission and completion", boundaries)
+	}
+}
+
 func TestStableDelegateWatch_ReceiverFsyncPrecedesDeliveredAck(t *testing.T) {
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)

@@ -65,7 +65,11 @@ type jobManager struct {
 	mu             sync.Mutex
 	watchNotifyMu  sync.Mutex
 	watchPersistMu sync.Mutex
-	dir            string
+	// watchPersistDone is non-nil while one watch-journal transition owns the
+	// process-local serialization token. Waiters observe it under watchPersistMu
+	// and wait only after releasing that mutex.
+	watchPersistDone chan struct{}
+	dir              string
 	// stateDir is the project state dir (parent of sessions/), where session
 	// .meta.json files live. Empty for the temp/test fallback where no project
 	// state dir is configured; observer-link stamping is skipped in that case.
@@ -162,7 +166,11 @@ type jobManager struct {
 	// stopReceiptsAfterCapture observes the subtree-stop boundary after exact
 	// live receipts are captured and before they are consumed. Nil in production.
 	stopReceiptsAfterCapture func()
-	clock                    clock.Clock
+	// watchReceiptBoundary observes entry into the delegate controller for a
+	// stable-watch receipt. Nil in production; lock-order tests use it to prove
+	// the job manager released its local persistence lock first.
+	watchReceiptBoundary func()
+	clock                clock.Clock
 	// closeGrace bounds how long closeRuntimeState waits for each still-running
 	// job to finalize before abandoning it. Seeded from defaultCloseGrace at
 	// construction so tests can shrink the graceful-shutdown window.
