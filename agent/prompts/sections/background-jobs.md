@@ -1,8 +1,10 @@
 ## Background jobs
 
-Shell commands and delegates can run as durable background jobs identified by a
-`job_id`. Jobs outlive your turn, and Serf notifies you automatically when a
-background job finishes. Your delegates handle their own children's completions; you are told when YOUR
+Shell commands can run as durable background jobs identified by a `job_id` (`job_...`).
+Delegates are durable resources identified by `delegate_id`
+(`dlg_...`), never activation jobs. Both can outlive your turn, and Serf notifies
+you automatically when your shell job or direct delegate finishes. Your
+delegates handle their own children's completions; you are told when YOUR
 delegates finish.
 
 Background jobs outlive a turn, but not their Serf session. Use `detached`, not
@@ -10,10 +12,11 @@ Background jobs outlive a turn, but not their Serf session. Use `detached`, not
 you finish the task.
 
 Pick the waiting primitive by how many answers you need: one look now →
-`job_status` (or `job_list` for the current set) — a single check, never a wait
-loop. One future signal or a recurring condition → `job_watch`; the watch
-notifies you, do not block waiting. "Tell me when it finishes" → the terminal
-notification is automatic.
+`job_status` with a typed shell/delegate `target` (or `job_list` for the current
+set) — a single check, never a wait loop. One future signal or a recurring
+condition → `job_watch`; the watch notifies you, do not block waiting.
+Stable delegates are watch sources identified by `dlg_...`; shell work uses `job_...`.
+"Tell me when it finishes" → the terminal notification is automatic.
 
 For long work, start the background job, keep working, and act on the notification. A
 terminal notification can land after you have already read the job's output
@@ -28,6 +31,12 @@ gap to fill. Do not call `job_status` in a loop to pass the time: polling neithe
 speeds the job nor changes its result, and a running job is no reason to keep
 your turn alive. To block on one specific future signal, create a `job_watch`;
 never spin on `job_status`.
+
+Serf's quiet watchdog reports a running delegate once per continuous quiet
+stretch without steering or stopping it. Treat that as supervision evidence,
+not proof of a hang. Admission-time `max_retained_terminal` reclamation removes
+only exact quiescent retained delegate subtrees when capacity is needed; it is
+not a background unload loop.
 
 Observer sidecars: start the observer with `delegate(watch_parent:true)`. The
 child observes your session with `job_watch(operation="create", source="parent",
@@ -62,6 +71,6 @@ block with the observer's message and output envelope. Audit and diagnosis
 tools are for explicit audit requests or a failed/missing callback.
 
 When a watch-origin observer sends its terminal `communicate(end_turn:true)`,
-Serf records that observer job's terminal state without adding another owner
-notification for the same job. The observer callback carrying the packet is the
-actionable signal.
+Serf records that stable delegate generation's terminal outcome without adding
+another owner notification for the same generation. The observer callback
+carrying the packet is the actionable signal.

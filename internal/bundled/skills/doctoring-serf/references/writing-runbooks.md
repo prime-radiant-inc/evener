@@ -37,6 +37,13 @@ HEALTHY/INSPECT/CLASSIFY), each a heading:
       predicate.
 - [ ] **Confirm through the tools.** Every INSPECT step is a `serf-doctor`
       invocation, never an ad-hoc grep/jq over raw JSONL.
+- [ ] **Keep cold reads pure.** Inspect delegates with `serf-doctor jobs` /
+      `tree`; never open or repair `jobs.jsonl` or `delegates.jsonl`, construct a
+      Session, or call a provider as part of diagnosis.
+- [ ] **Treat legacy delegate state exactly.** Only the tool-reported
+      `legacy_delegate_state` and `legacy_delegate_watch_state` codes justify a
+      `legacy_state` Finding. Route it to diagnosis/fresh-state guidance, never
+      an in-place migration.
 - [ ] **Registered by path.** Drop it in `runbooks/`, name it to the doctor.
 
 ## Skeleton

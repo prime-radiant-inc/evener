@@ -114,26 +114,34 @@ children-of-a-parent are just which filters you set, and all return the same rec
   *approximate*; it can differ from a `read` outline's exact `turns_total`. `is_current`
   flags the live session (which also sorts last), so you don't audit yourself by mistake.
 
-## `read_transcript` — show me this session or job
+## `read_transcript` — show me retained evidence
 
-Views one session at one of three verbosities, selected by `format`, or reads the
-bounded retained output of a `job:<job_id>` ref.
+Views one session at one of three verbosities, selected by `format`, reads the
+bounded retained output of a shell `job:<job_id>` ref, or reads an exact
+truncated-result `artifact:<id>` capability. A delegate is not a job: use the
+stable delegate's session `transcript_ref` from `delegate`, `job_status`, or
+`job_list` to read its conversation.
 
 **Parameters:**
 
 | Param | Applies to | Meaning |
 |-------|-----------|---------|
-| `transcript_ref` | all | session ref / bare id / omitted = current session, or `job:<job_id>` |
+| `transcript_ref` | all | session ref / bare id / omitted = current session, or `job:<job_id>` for shell output |
 | `format` | session | `outline` \| `markdown` (default) \| `jsonl`; job refs accept `markdown` only |
 | `range` | session | turn window; defaults to the last 40 turns |
 | `expand_turn` | session markdown | any semantic `Turn N`; returns byte-paged exact `transcript_v2_jsonl` for that turn or its assistant/result span |
-| `offset_bytes` | session expansion | continuation byte offset |
+| `offset_bytes` | session expansion, shell job, artifact | continuation or raw-page start; shell offsets use lifetime coordinates |
+| `output_match` | shell job, artifact | bounded RE2 line search (maximum 65,536 characters) |
+| `context_lines` | shell job, artifact search | 0–10 lines before and after each match; requires `output_match` |
 
 Registered `strict:false`, so every parameter is optional. The three formats are one
 escalating ladder — outline to see the shape, markdown to read it, JSONL to inspect its structure —
 and each session read returns the same envelope skeleton (`transcript_ref`, `format`,
-`content`, format-specific `meta`). Job reads return bounded markdown evidence and
-retention metadata; API-log selectors are not part of this tool.
+`content`, format-specific `meta`). A shell-job ref defaults to bounded markdown;
+an explicit `offset_bytes` returns a fixed 16 KiB raw page, and `output_match`
+returns bounded exact line matches. An `artifact:<id>` ref reads the same paged or
+searched evidence shape without job status. API-log selectors are not part of
+this tool.
 
 **`range` grammar** (over `Turn` numbers, length = `turns_total`):
 
@@ -163,8 +171,9 @@ number `range`/`expand_turn` take):
 58 · Assistant · exec_command · "run tests" · ok · 18 lines [truncated]
 ```
 
-A delegate lifecycle turn (`delegate`/`delegate_send`) replaces the size note with one
-**audit-pivot bracket per lifecycle call**, so the parent-to-child handle is right in the map:
+A stable delegate lifecycle turn (`delegate`/`delegate_send`) replaces the size
+note with one **audit-pivot bracket per lifecycle call**, so the durable child
+session handle is right in the map without inventing an activation job:
 
 ```
 27 · Assistant · delegate · delegate[status=completed child=local:01KT…]
@@ -221,6 +230,30 @@ comprehension, use markdown; for provider forensics, use `serf-doctor apilog <se
             "hint":"semantic transcript JSONL; for comprehension, re-read with format=markdown.",
             "range_warning"? } }
 ```
+
+### Shell `job:` evidence
+
+`read_transcript(transcript_ref="job:<job_id>")` reads shell output only. With
+no explicit operation it returns the bounded markdown view. Set `offset_bytes`
+to read an exact fixed-size raw page in lifetime byte coordinates, following the
+returned continuation. Set `output_match` (and optional `context_lines`) for a
+bounded RE2 search of retained complete lines. A search on a running job defers
+an incomplete EOF fragment; continue from the returned offset only when you
+explicitly need later evidence—never as a completion poll.
+
+Page and search envelopes report `total_bytes`, `retained_start_bytes`, and
+`job_status`. `output_unavailable` means retention pruned or removed requested
+bytes. `format` cannot be combined with job paging/search; `range` and
+`expand_turn` remain session-only. Delegate conversations never use `job:`:
+read the session `transcript_ref` carried by the stable `dlg_...` resource.
+
+### Truncated-result `artifact:` evidence
+
+An `artifact:<id>` ref is an exact capability for generic tool output truncated
+in the current root session tree. It supports default page zero,
+`offset_bytes`, or `output_match`/`context_lines`, but not an explicit format,
+range, or turn expansion. It omits `job_status`; expired capabilities report
+`artifact_expired`.
 
 ### Provider forensics
 
@@ -280,8 +313,8 @@ section naming its real Turn number.
 
 - **Read-only.** No tool mutates a transcript. Both are `ReadOnly:true` and wired in only
   when state persistence is enabled.
-- **One ref per read.** `find` does corpus discovery and never reads a session; `read`
-  consumes one session or job transcript ref.
+- **One ref per read.** `find` does corpus discovery and never reads a session;
+  `read` consumes one session, shell-job, or artifact ref.
 - **One turn numbering.** What the outline and markdown show is what `range` and `expand_turn`
   take. No second index is ever exposed.
 - **The registry never truncates.** Each format bounds its own output, always rune-safe and

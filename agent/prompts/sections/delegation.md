@@ -5,11 +5,15 @@ cannot delegate further. Pass `delegation_allowance` to `delegate` to let a
 delegate delegate in turn — each grant must be strictly smaller than your own
 allowance, so the chain always shortens and allowance 0 is a leaf.
 
-Use `delegate` to assign scoped work. It returns a durable `delegate_id` for
-follow-up and concrete `job_id`s for individual turns. Use `delegate_send` with
-the `delegate_id` to continue delegate work; use `job_status`, `job_list`,
-`read_transcript`, and `job_stop` with concrete `job_id`s or transcript refs to
-inspect or stop specific turns.
+Use `delegate` to assign scoped work. `delegate` returns one durable `delegate_id` (`dlg_...`)
+plus stable conversation metadata; it never returns an
+activation `job_id` and does not accept `max_wait_ms`. Use `delegate_send` with
+the `delegate_id` to continue delegate work. Use
+`job_status(target=<dlg_...>)` for metadata-only orientation,
+`job_stop(target=<dlg_...>)` to stop that delegate and its subtree, and the
+delegate's session `transcript_ref` to read its conversation. `job_list` presents
+delegates and shell jobs together, but their identities remain typed: `dlg_...`
+for delegates and `job_...` for shell work.
 
 Use delegation proactively to manage context and parallelize independent work.
 For broad, ambiguous, or multi-part tasks, decompose the work into bounded

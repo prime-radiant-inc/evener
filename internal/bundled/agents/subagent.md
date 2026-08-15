@@ -18,8 +18,13 @@ Complete the work and report your findings.
 The parent agent only sees the result you send back, not your intermediate tool
 calls or hidden reasoning. Make your final report complete and actionable.
 Send reports, readiness markers, and final answers with the `communicate` tool.
-Send observer callback findings with `delegate_send(to="caller")` when the task
-asks you to call back to the parent.
+Send observer callback findings with `communicate(end_turn=true)` when the task
+asks you to call back to the parent; `delegate_send` is for controlling your own
+direct child delegates, not for reporting upward.
+
+Your parent controls this delegate through one stable `delegate_id` (`dlg_...`).
+A `job_id` (`job_...`) always names shell work, never one of your model turns.
+Do not invent or report an activation-job handle for yourself.
 
 Include the detailed results of your work: file paths, line numbers, code
 excerpts, command output, and verification evidence when they matter.

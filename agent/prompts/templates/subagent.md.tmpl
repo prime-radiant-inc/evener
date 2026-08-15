@@ -11,6 +11,8 @@
 Your `delegation_allowance` is {{ .DelegationAllowance }}: you may delegate, and
 each delegate you start may itself delegate with an allowance strictly smaller
 than yours (pass `delegation_allowance` to `delegate`; allowance 0 is a leaf).
+Delegate control uses stable `dlg_...` identities; `job_...` identities are
+reserved for shell jobs.
 
 {{ section "delegation" }}
 

@@ -90,7 +90,7 @@ warnings](#misconfiguration-warnings-loud-not-silent)).
 | `PreToolUse` | before a tool runs (before schema validation) | tool name |
 | `PostToolUse` | after a tool runs | tool name |
 | `Stop` | before the assistant/session stops | (none) |
-| `SubagentStop` | before a subagent stops | agent type (not yet wired) |
+| `SubagentStop` | after a delegate run finishes and before it settles | (not yet wired) |
 | `PreCompact` | before context compaction | `manual`/`auto` (not yet wired) |
 | `SessionEnd` | at session teardown | session end reason (not yet wired) |
 | `Notification` | on a user-visible notification | notification type (not yet wired) |
@@ -157,7 +157,7 @@ matcher must name the **Claude** tool:
 | file writes | `write_file` | `Write` |
 | file edits | `edit_file` | `Edit` |
 | grep / glob | `grep` / `glob` | `Grep` / `Glob` |
-| starting a delegate job | `delegate` | `Task` |
+| starting a delegate | `delegate` | `Task` |
 | web fetch / search | `web_fetch` / `web_search` | `WebFetch` / `WebSearch` |
 | notebook edits | `notebook_edit` | `NotebookEdit` |
 | asking the user a question | `ask_user` | `AskUserQuestion` |
@@ -216,8 +216,13 @@ For the events serf fires, the matcher is tested against:
 - **`SubagentStop`**, **`SessionEnd`**, **`Notification`**, **`PreCompact`**:
   these fire, but their matcher target is **not yet wired** — the runner matches
   with an empty target today, so use `"*"` or omit the matcher. (The intended
-  targets — agent type, end reason, notification type, `manual`/`auto` — are a
-  reserved compatibility item.)
+  targets — delegate agent type, end reason, notification type, `manual`/`auto`
+  — are a reserved compatibility item.)
+
+`SubagentStop` runs once for a completed stable delegate generation before
+terminal settlement. A blocking result starts one continuation; subtree stop
+suppresses hook replay. Restart reconciliation never replays this hook, the
+built-in communicate nudge, or final-round salvage.
 
 ### Go RE2, not JavaScript regex
 

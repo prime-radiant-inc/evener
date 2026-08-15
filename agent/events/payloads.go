@@ -599,6 +599,8 @@ type DelegateUpdatedData struct {
 	Worktree            *DelegateWorktreeData `json:"worktree,omitempty"`
 }
 
+// DelegateUsageData reports cumulative model-token usage for a stable delegate
+// snapshot.
 type DelegateUsageData struct {
 	InputTokens     int64 `json:"input_tokens"`
 	OutputTokens    int64 `json:"output_tokens"`
@@ -606,6 +608,8 @@ type DelegateUsageData struct {
 	TotalTokens     int64 `json:"total_tokens"`
 }
 
+// DelegateWorktreeData reports the retained isolated-worktree state attached
+// to a stable delegate snapshot.
 type DelegateWorktreeData struct {
 	Path    string `json:"path"`
 	Branch  string `json:"branch"`

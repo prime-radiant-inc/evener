@@ -1,6 +1,6 @@
 # Delegate Resource Model
 
-Status: Approved evergreen product authority for the stable-delegate flag-day
+Status: Shipped evergreen product authority for the stable-delegate flag-day
 recovery.
 
 ## Decision

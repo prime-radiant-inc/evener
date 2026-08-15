@@ -41,13 +41,14 @@ tasks:
       task list directly in the task prompt. The delegate task must contain
       ALL critical constraints from the spec — the implementer reads this first
       and may start work immediately. Do not summarize — include constraints
-      verbatim. Keep the returned delegate_id, job_id, and transcript_ref for
-      follow-up, verification, and final reporting.
+      verbatim. Keep the returned delegate_id and transcript_ref for follow-up,
+      verification, and final reporting. Delegate creation has no job_id or
+      max_wait_ms surface; the completion notification resumes you.
     reasoning_effort: low
   - title: Verify
     prompt: >
       Start a verifier with delegate to check the implementer's work. Use
-      agent_type="verifier", reasoning_effort=low, max_wait_ms=120000. The
+      agent_type="verifier", reasoning_effort=low. The
       verifier's task parameter must include:
       (1) the COMPLETE task spec verbatim, (2) the acceptance
       criteria, (3) what the implementer reported doing, and
@@ -102,6 +103,11 @@ When you verify, check every detail against the actual deliverable.
 Your task list defines your workflow. Adapt it as needed — add, reorder,
 or skip tasks based on what you discover.
 
+Delegate control uses `delegate_id` (`dlg_...`); shell control uses `job_id` (`job_...`).
+Use `job_status(target=<dlg_...>)` only for delegate metadata and
+`job_stop(target=<dlg_...>)` for recursive delegate stop. Read delegate work
+through its session `transcript_ref`; `job:<job_id>` reads are shell-only.
+
 ### CRITICAL: You normally spawn an implementer
 
 You are the quality gate, not the worker. A gate cannot inspect what it built.
@@ -113,7 +119,7 @@ You have exactly three delegate roles:
 - `implementer` — does all coding
 - `verifier` — checks the implementer's work and returns a structured report
 
-For fixes, use delegate_send on the existing implementer delegate_id — do not start a new implementer.
+For fixes, use `delegate_send` on the existing implementer `delegate_id` — do not start a new implementer.
 
 You NEVER write or modify files yourself. That is the implementer's job.
 Small tasks and simple workspaces are not exceptions.

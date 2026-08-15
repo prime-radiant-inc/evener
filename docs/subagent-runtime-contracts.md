@@ -2,15 +2,18 @@
 
 Status: Evergreen reference for the shipped subagent runtime. This documents what
 serf **does today** across the cross-cutting runtime concerns that subagents,
-plugins, hooks, helpers, and lineage share. It is the current-reality counterpart to
-the point-in-time design specs in [`subagent-management/`](subagent-management/)
-(`06`–`10`), which propose contracts and target states; where this doc and a spec
-disagree, **this doc describes what ships** and the spec is the design record.
+plugins, hooks, helpers, and lineage share. It is the current-reality counterpart
+to the point-in-time design specs `06`–`10` in
+[`subagent-management/`](subagent-management/). The shipped stable-delegate
+authority is
+[`11-delegate-resource-model.md`](subagent-management/11-delegate-resource-model.md);
+where this doc disagrees with it on delegate lifecycle, model 11 wins.
 
 Scope boundaries with the other evergreen docs:
 
-- The **job-control tools** (`shell`, `delegate`, `job_watch`, `job_list`, `job_stop`,
-  `job_send_message`) — their parameters, return shapes, delegation allowance, and the
+- The **job-control tools** (`shell`, `delegate`, `delegate_send`, `job_watch`,
+  `job_status`, `job_list`, `job_stop`) — their parameters, return shapes,
+  delegation allowance, and the
   per-context tool-availability matrix — are owned by [`job-control.md`](job-control.md).
   This doc covers the runtime *policy* those tools sit inside and does not restate them.
 - The job-control runtime **mechanics** (the watch outbox, drive-down, single-hop
@@ -48,10 +51,12 @@ not by parallel policy checks:
   contract is in [`job-control.md`](job-control.md) ("Delegation allowance",
   "V1 tool availability"); the strip happens in `agent/session_init.go`
   (`rootOnlySubagentTools`).
-- **Close/cancel denies new child work.** Once a session/job-manager is closing,
-  starting or resuming child work is refused (`trackAndLaunchPreparedSubagent`,
-  `startOrSteerSubagentRun`, `agent/subagents.go`; `resumeOrFindRunningDelegate`,
-  `agent/job_delegate.go`; `attachDelegateJobWithRestore`'s `errJobManagerClosing`).
+- **Close/cancel denies new child work.** The stable delegate-tree controller
+  admits starts and sends against one fenced lifecycle aggregate. Once a session
+  or subtree is closing/stopping, new child/model/shell admission cannot commit
+  below that fence (`delegateTreeController`,
+  `agent/delegate_tree_controller.go`;
+  `delegateRuntime`, `agent/delegate_runtime.go`).
 
 Not yet centralized (these hold today via code ordering / per-feature resolution, not a
 single enforced gate — see `subagent-management/10-runtime-contracts.md` Contract 1 for
@@ -163,22 +168,23 @@ and the `http`/`mcp_tool`/`agent` handlers are parsed-but-inert. See
 
 ## Events and diagnostics
 
-- **Job event payloads** (`agent/events/payloads.go`): `JOB_STARTED` carries `job_id`,
-  `job_type`, `status`, `from_watch`; `JOB_FINISHED` carries `job_id`, `job_type`,
-  `status`, `reason`, `exit_code`, `output_bytes`, `transcript_ref`, `from_watch`. The
-  emitting session's ID — the job's owner — rides on the envelope
-  (`SessionEvent.SessionID`). (Model-facing job *notifications* — what an
-  agent actually sees — are documented in [`job-control.md`](job-control.md); these are
-  the internal event-bus payloads.)
+- **Typed lifecycle payloads** (`agent/events/payloads.go`): `JOB_STARTED` and
+  `JOB_FINISHED` carry only shell `job_id` / `job_type="shell"` state.
+  `DELEGATE_UPDATED` carries the immutable stable delegate snapshot keyed by
+  `delegate_id`, with its monotonic projection revision. The emitting session's
+  ID rides on the envelope (`SessionEvent.SessionID`). Model-facing shell and
+  delegate notifications remain separately typed; see
+  [`job-control.md`](job-control.md).
 - **Warnings are first-class and surfaced, never silent.** `WarningData`
   (`agent/events/payloads.go`), carried on the `EventWarning` event, flows on the session
   event stream that TUI/Hub/SDK consume; emitting paths include plugin hook-config
   warnings (built in `agent/session_init.go`, emitted via `emitDiagnosticWarning`) and
-  subagent task-seed failures (`agent/subagents.go`). A warning with no display surface
+  delegate task-seed failures (`agent/subagents.go`). A warning with no display surface
   is treated as a bug.
 - **Policy denials name the action and the boundary**, not just "not allowed" — e.g. the
   `grant_tools` rejections above, `"agent_type %q is top-level only: it requires root-only
-  tools"`, and the delegation-allowance / ownership errors in `agent/job_delegate.go`.
+  tools"`, and the delegation-allowance / ownership errors in the stable delegate
+  controller.
 - **Compatibility gaps are reported, not half-accepted.** Recognized-but-unsupported and
   unknown hook events are recorded (`Instance.UnsupportedHooks`/`UnknownHooks`) and turned
   into load-time warnings; reserved handler fields are captured for diagnostics rather
@@ -197,10 +203,11 @@ hook-author behavior, not a serf leak, but nothing redacts it.
 
 ## Lightweight helper isolation
 
-Several operations make a one-shot LLM call that is **not** a subagent. These helper
-calls route through `llm.Client.Complete`/`llm.GenerateObject` directly and never
-register a subagent, create a child transcript, mutate the task store, run tools, or
-appear in `job_list`. Verified call sites:
+Several operations make a one-shot LLM call that is **not** a delegate. These
+helper calls route through `llm.Client.Complete`/`llm.GenerateObject` directly
+and never register a stable delegate, create a child transcript, mutate the task
+store, run tools, or appear as a delegate item in `job_list`. Verified call
+sites:
 
 - `web_fetch` cheap-model summarization (`agent/tool_web_fetch.go` `webFetch`),
 - session auto-naming (`agent/session_namer.go` `nameSession`, advisory — failure does
@@ -211,9 +218,10 @@ appear in `job_list`. Verified call sites:
 - context-manager strategies (fork-summarize, recursive distill, checkpoint prediction,
   memory crystals — `agent/internal/contextmgr/*`).
 
-The isolation is structural: a session enters `job_list` only via `s.subagents.track`,
-called only on the spawn/delegate paths (`agent/subagents.go`, `agent/job_delegate.go`),
-which none of the helper sites reach. Because they all route through `llm.Client.Complete`
+The isolation is structural: a delegate enters the stable controller only
+through the registered create path (`agent/delegate_runtime.go` and
+`agent/delegate_tree_controller.go`), which none of the helper sites reach.
+Because helpers all route through `llm.Client.Complete`
 (`llm/client.go`) — directly, or via `llm.GenerateObject`/`Generate` for the schema'd
 ones like session naming — they still inherit request validation, provider resolution,
 middleware/logging, and error stamping. The proposed shared helper API
@@ -275,5 +283,7 @@ The proposals, target contracts, acceptance criteria, and test matrices behind t
 shipped behaviors are in [`subagent-management/`](subagent-management/):
 `06-plugin-agent-validation`, `07-lifecycle-hooks-claude-compat`,
 `08-standalone-llm-calls`, `09-session-tree-history-assessment`, and
-`10-runtime-contracts`. Those are point-in-time design records; this doc is the
-current-reality reference. When a behavior described here changes, update this doc.
+`10-runtime-contracts`. Those are point-in-time design records. The shipped
+stable-delegate model is `11-delegate-resource-model`; this doc remains the
+current-reality reference for the cross-cutting runtime around it. When a
+behavior described here changes, update both applicable evergreen authorities.

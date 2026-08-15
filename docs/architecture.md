@@ -236,9 +236,10 @@ arguments or the approach is what clears it.
 ### Ownership and mailboxes
 
 A `Session` runs no persistent goroutine; it is driven by `ProcessInput` and woken by
-its server. Background machinery — the `jobManager`, job-output pumps, event emitters —
-observes a session's activity and needs to feed work back to it. The rule that keeps
-this safe is one invariant:
+its server. Background machinery — the shell-only `jobManager`, stable
+delegate-tree controller, job-output pumps, and event emitters — observes a
+session's activity and needs to feed work back to it. The rule that keeps this
+safe is one invariant:
 
 > **Event observation records durable intent and wakes the owner. Only a session's own
 > loop mutates that session.**
@@ -265,22 +266,33 @@ appenders and exactly one drainer:
   drained by `drainPendingWatchSends` (`agent/job_watch.go`), the **sole** executor
   of watch-send delivery.
 
+Stable delegate attention is deliberately not a fourth durable queue. Delegate,
+quiet, observer, and shell attention is appended to the receiver transcript,
+which is its sole durable authority. A process-local set keyed by unresolved
+attention ID arms the existing notification wake; successful notification turns
+append exact consumed markers, failures leave the IDs pending, and restore folds
+the transcript to rearm without constructing a provider runtime.
+
 **Who drains where.** `drainPendingWatchSends` runs only from loop-owned boundaries:
 between tool rounds (`injectPostToolSteering`, `agent/session_tool_round.go`), at the
 processing-finish boundary (`finishProcessingAtBoundary`, `agent/session_state.go`),
 in the notification-accept path (`acceptNotificationInput`), and after restore /
 history-repair (`agent/history_repair.go`). Caller-targeted sends ride the
 notification queue as wake tokens keyed by watch ID; the accept path deduplicates them
-against current pending state and settles delivery in that turn; delegate-targeted sends are steered (running) or started
-(idle/resumable) directly by the drain, the same path a model-initiated
-`delegate_send` takes.
+against current pending state and settles delivery in that turn. Stable
+delegate-source deliveries bind the typed `dlg_...` source/receiver through the
+controller and append durable attention to the receiver transcript; they do not
+resolve an activation job.
 
 **The wake path.** `jm.wake` (wired to `Session.notify` at construction,
 `agent/session_init.go`) → `Session.notify` (`agent/session.go`) → the server's
 input channel → an `EntryNotification` (`agent/session_lifecycle.go`) that runs the
-accept path. An empty accept is a no-op that still calls
+accept path. The same entry kind consumes transcript-backed root delegate
+attention after a successful turn and durable resolution append. An empty
+accept is otherwise a no-op that still calls
 `finishProcessingAtBoundary` → `drainPendingWatchSends` (`agent/session_lifecycle.go`),
-so a wake carrying only delegate-targeted sends delivers with zero model turns.
+so a wake carrying only already-settled shell/watch bookkeeping can finish with
+zero model turns; model-bound transcript attention always runs the owner turn.
 
 **The forbidden re-entry.** `responseSideEffectsMu` is held across event emits
 (`emitAssistantResponse`, the tool-call-end emit). Observation paths and the `jobManager`'s
@@ -321,30 +333,32 @@ it only **runs** the child, and the child's loop delivers. A child's terminal no
 firing also kicks its parent directly — `SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })`
 (`agent/subagents.go`) — so a child wake propagates up to the parent's boundary the same
 way the root's `jm.wake` propagates to its server. The drive mints no job record and arms
-nothing new; it is the child processing its own durable queue, gated only by the tree-wide
-running-delegate counter for the turn's duration.
+nothing new; it is the child processing its own durable attention, using the
+separately bounded tree-wide drive counter for the turn's duration.
 
 So the invariant — *observation records durable intent and wakes the owner; only a session's
 own loop mutates that session* — holds unchanged at every depth. At depth 0 the server is the
 driver; at depth N the parent is. A deep idle tree is woken level by level: the root drives the
 coordinator, the coordinator (now running) drives its worker at *its* next boundary, and so on.
 
-**The notification rule, stated plainly: every job notifies only its OWNER.** A subagent's
-jobs notify the subagent, never its ancestors. A forwarded copy of a child-owned terminal that
+**The notification rule, stated plainly: every shell job notifies only its OWNER,
+and every delegate notifies only its direct owner.** A subagent's shell jobs
+notify the subagent, never its ancestors. A forwarded copy of a child-owned terminal that
 lands in an ancestor's store is a **drive signal**, not a render target: the ancestor is *not*
 interrupted about a job a descendant created — it drives the descendant so the descendant
 renders its own notification (`forwardEvent` returns before `enqueue` when
 `rec.OwnerSessionID != jm.sessionID`, `agent/jobs_nested.go`; the restore path filters
 the same way at `agent/jobs.go`, so there is no restart wake-storm). A parent still
-**renders** its OWN jobs' terminals, including its direct delegates finishing — that is the
-parent's own job ending, not noise about a descendant. Ancestors retain on-demand visibility
+**renders** its own shell terminals and stable `<delegate-notification
+delegate_id="dlg_...">` attention for direct delegates. Delegate notifications
+never masquerade as `JOB_FINISHED` or `<job-notification>`. Ancestors retain on-demand visibility
 into the whole subtree through `job_list(include_descendants=true)`, which walks the live tree
 at read time rather than pushing notifications upward. This realizes the durable principle that
 an agent is never interrupted about a *subagent's* children: attention escalates only one honest
 level (the `child unreachable:` fallback when a child cannot be driven,
 `renderUnreachableChildPendings`, `agent/job_watch.go`).
 
-**Forwarding is single-hop.** A job's events forward exactly one level: a child's `jm.forward`
+**Shell forwarding is single-hop.** A shell job's events forward exactly one level: a child's `jm.forward`
 is its direct parent's `forwardEvent`, which appends the event to the parent's store and
 returns **without** re-forwarding to its own parent (`agent/jobs_nested.go`). So a descendant's
 forwarded copy lives only in its **direct parent's** store — it is not propagated up to
@@ -353,6 +367,8 @@ descendants only by walking the live tree (`job_list(include_descendants=true)`)
 forwarded copies sitting at the root; and a depth-≥2 job output read
 (`read_transcript(transcript_ref="job:<job_id>")`) whose owner store closes mid-read falls back
 to the **owner's parent** store (where the single-hop copy lives), not the root caller's store.
+Stable delegates are never forwarded JobRecords: their `dlg_...` hierarchy and
+projection come from the root delegate journal/controller.
 
 ## Current status
 

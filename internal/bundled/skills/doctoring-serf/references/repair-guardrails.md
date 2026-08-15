@@ -22,6 +22,14 @@ The discipline is adopted wholesale from meta-doctor's repair pipeline:
 > propose-plus-validate. Core-skill and doctor-tool repair are **propose-only
 > behind review + a validation gate** — that tier can corrupt the doctor itself.
 
+Diagnosis is pure over cold artifacts. `serf-doctor` reads the shell/watch and
+stable delegate journals through read-only event readers and folds; it must not
+open an append-capable store, truncate a tail, construct a Session, call a
+provider, or trigger hooks/nudges/salvage. The exact
+`legacy_delegate_state` and `legacy_delegate_watch_state` findings are flag-day
+refusals, not migration invitations: preserve the evidence and direct the
+operator to a fresh compatible state root.
+
 ## Core-skill / doctor-tool repair — the two gates
 
 **Go-tool repair** (the `agent/doctor` package + the `cmd/serf-doctor` main):

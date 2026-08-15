@@ -3,6 +3,7 @@ package bundled
 import (
 	"errors"
 	"io/fs"
+	"strings"
 	"testing"
 )
 
@@ -37,4 +38,30 @@ func TestMustSubPanics(t *testing.T) {
 		}
 	}()
 	_ = mustSub("missing")
+}
+
+func TestBundledCoordinatorUsesStableDelegateAndShellIdentities(t *testing.T) {
+	body, err := fs.ReadFile(Plugins(), "coordinator-workflow/agents/coordinator.md")
+	if err != nil {
+		t.Fatalf("read bundled coordinator: %v", err)
+	}
+	prompt := string(body)
+
+	for _, want := range []string{
+		"Delegate control uses `delegate_id` (`dlg_...`); shell control uses `job_id` (`job_...`).",
+		"`job_status(target=<dlg_...>)`",
+		"`job_stop(target=<dlg_...>)`",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("bundled coordinator missing stable identity contract %q", want)
+		}
+	}
+	for _, stale := range []string{
+		"returned delegate_id, job_id, and transcript_ref",
+		"max_wait_ms=120000",
+	} {
+		if strings.Contains(prompt, stale) {
+			t.Errorf("bundled coordinator retains activation-job guidance %q", stale)
+		}
+	}
 }

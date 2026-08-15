@@ -13,13 +13,16 @@ it — you should rarely open these files by hand.
 ## The big picture
 
 A serf session's durable state lives under a per-project **bucket** directory.
-Up to five artifacts per session:
+Up to six artifacts per root/session tree:
 
 - the **transcript** — the append-only semantic conversation/lifecycle log.
 - the **API log** — exact provider attempts and outer-call settlements.
 - the **meta** — session metadata (model, config, lineage, observers).
-- **jobs.jsonl** — an append-only *event log* for jobs, watches, delegates, and
-  grants; the records you reason about are *folded* from it.
+- **jobs.jsonl** — an append-only event log for shell jobs and watches; the
+  records you reason about are folded from it. It is never delegate lifecycle
+  authority.
+- **delegates.jsonl** — the root-owned append-only stable delegate-tree journal.
+  Its `delegatestore` fold is the only durable delegate lifecycle authority.
 - the **client-mutation store** — the journal of every client mutation the
   daemon accepted AND every one it rejected, plus the durable input queue.
 
@@ -41,6 +44,7 @@ it was never read). Under an XDG home the layout is:
     <SID>.api.jsonl             ← API log      (flat, SID-prefixed, private)
     <SID>.meta.json             ← meta         (flat, SID-prefixed)
     <SID>/jobs.jsonl            ← jobs         (per-session SUBDIR)
+    <ROOT-SID>/delegates.jsonl  ← stable delegate tree (root session SUBDIR)
 <stateHome>/serf/projects/<bucket>/mutations/
     <SID>.json                  ← client mutations (SIBLING of sessions/)
 ```
@@ -54,6 +58,9 @@ it was never read). Under an XDG home the layout is:
 - **jobs.jsonl is in a per-session SUBDIR**: `<bucket>/sessions/<SID>/jobs.jsonl`
   (`jobsDir` → `filepath.Join(dir, "jobs.jsonl")`). It is **not** a flat
   `<SID>.jobs.jsonl` beside the transcript — a recurring mistake.
+- **delegates.jsonl is in the root session's SUBDIR**:
+  `<bucket>/sessions/<ROOT-SID>/delegates.jsonl`. Descendant sessions do not own
+  competing delegate journals; their stable rows fold from this root journal.
 - **the client-mutation store is a third shape again**: a flat `<SID>.json` in a
   bucket-level `mutations/` dir that is a **sibling** of `sessions/`, not a file
   under it (`clientMutationFilePath`).
@@ -64,7 +71,7 @@ it was never read). Under an XDG home the layout is:
 Parent, observer, and delegate sub-sessions are different SIDs and frequently
 live in **different buckets**. Don't assume one bucket.
 
-**Read it via:** `serf-doctor locate <selector>` (resolves all five paths +
+**Read it via:** `serf-doctor locate <selector>` (resolves all six paths +
 bucket hash; never recompute the hash by hand — resolve by glob).
 
 ---
@@ -129,11 +136,9 @@ record). You never read raw events for answers — you read the **folds**:
 
 | Fold | Produces | Reads events |
 |---|---|---|
-| `Fold` / `FoldOrdered` | `JobRecord`s | job_started/session_assigned/finished/… |
+| `Fold` / `FoldOrdered` | shell `JobRecord`s | job_started/output/finished/notification… |
 | `FoldWatches` | `WatchRecord`s (the watch registry) | `watch_registered` / `watch_cleared` |
 | `FoldWatchSends` | **pending** `WatchSendState`s only | `watch_send_*` |
-| `FoldDelegates` | `DelegateRecord`s | `delegate_created` / job_started / … |
-| `FoldGrants` | observer→watched-job grants | `watch_read_grant` |
 
 ### Jobs
 
@@ -144,10 +149,11 @@ failed / cancelled / stopped / exhausted), the `Reason` that produced it (e.g.
 `pending` never told its caller; `delivered` was rendered into the caller's own
 notification turn, and `consumed` means the caller read the terminal
 `job_status` itself, settling the notification without a turn), and the links to
-pivot on (`DelegateID`,
-`TranscriptRef`, `ParentJobID`). Note what the durable log does **not** carry: `Background` and
-`Phase` live only on the runtime's in-memory record, so no folded record can say
-whether a job ran in the background.
+pivot on (`TranscriptRef`, shell-to-shell `ParentJobID`, and typed
+`ParentDelegateID` for a delegate-owned shell). A JobRecord never represents a
+delegate. Note what the durable log does **not** carry: `Background` and `Phase`
+live only on the shell runtime's in-memory record, so no folded record can say
+whether a shell job ran in the background.
 
 **Read it via:** `serf-doctor jobs <selector>` (every job in durable append
 order), or `serf-doctor jobs <selector> --job <job_id>` for one job's state.
@@ -172,21 +178,33 @@ deliveries (terminal kind + `DiagnosticReason` + provenance) are read by a **raw
 scan** of the `watch_send_delivered/dropped/evicted` events. The doctor tool does
 this for you.
 
-A watch targets either a concrete `job_<id>` or the session itself, so a watch
-row is only half the story: the other half is the **target job's** folded state.
-A watch that ended unfired on a job that was already `stopped` with zero output
-bytes never had a matchable condition — nothing was wrong with delivery.
+A watch has a typed public source: `self`, a granted `parent`, a concrete shell
+`job_...`, or a stable delegate `dlg_...`. The watch journal remains the sole
+registration/pending/delivery authority. Its stable source/receiver bindings are
+derived from the delegate controller and do not create a second delegate
+lifecycle fold. For a shell source, the watch row is only half the story: join
+the target shell's folded state before diagnosing a missing match.
 
 **Read it via:** `serf-doctor watches <selector>` (distinct deliveries vs pending
 lines, per-delivery terminal + reason + provenance, self-influence/breaker
 telemetry, and the joined `target job:` state — `target_job` / `target_job_missing`
 under `--json`).
 
-### Delegates and grants → the session tree
+### delegates.jsonl → the stable session tree
 
-`DelegateRecord` carries `ChildSessionID`, `AgentType`, `Status`, and a
-`TranscriptRef` that may point into another bucket. Observer links are stamped on
-the **worker's** `SessionMeta.ObservedBy[]` and mirrored by `FoldGrants`.
+`delegatestore.Fold` produces one `Aggregate` per `dlg_...`, rooted in the
+selected root session. Its immutable `Descriptor` carries child session and
+transcript identity, parent delegate, task/agent/model configuration,
+`ParentWatchGranted`, allowance, sandbox/worktree, and resumability. Run events
+carry private generations, phases, terminal packets/outcomes, subtree-stop
+state, and delivery acknowledgements; they never mint an activation `job_...`.
+Observer links remain stamped on the worker's `SessionMeta.ObservedBy[]`.
+
+Doctor commands read both journals through `ReadEvents` plus pure folds. They do
+not call append-capable `Open`, repair a tail, migrate state, construct a Session,
+or invoke a provider. A retired delegate JobRecord fails closed as
+`legacy_delegate_state`; a watch addressed through that retired activation
+fails as `legacy_delegate_watch_state`.
 
 **Read it via:** `serf-doctor tree <selector> [--observers]`.
 

@@ -91,10 +91,11 @@ gotchas" are seeded from this. Cite Go **symbols**, never `file:line`.
 - **What it is:** parent / delegate / observer sessions live in **different
   project-hash buckets** (origin/cwd differ).
 - **Confirm:** `serf-doctor tree <sel> --observers` links them — delegate edges
-  from `jobstore.FoldDelegates` (each child resolved by its transcript ref, so a
-  cross-bucket child links), observer edges from `schema.SessionMeta.ObservedBy`.
+  from the root `delegatestore.Fold` (each stable descriptor resolves its child
+  transcript ref, so a cross-bucket child links), observer edges from
+  `schema.SessionMeta.ObservedBy`.
 - **Mechanics:** bucket = `hexHash(originURL else workDir)`. A child's
-  `DelegateRecord.TranscriptRef` carries `proj:<hash>:<sid>`, which the tree
+  stable descriptor `TranscriptRef` carries `proj:<hash>:<sid>`, which the tree
   resolves directly.
 
 ---
@@ -107,7 +108,9 @@ and be honest where `serf-doctor` cannot yet confirm one directly.
 | Symptom | What it is | Confirm with |
 |---|---|---|
 | A coordinator stops reacting ("deaf coordinator"); turns stall | the agent loop is wedged or a watch-outbox drain stalled (`docs/architecture.md` level-by-level coordinator / single-hop forwarding) | `serf-doctor transcript <sel> --format outline` (last turns) + `serf-doctor watches <sel>` (undrained pending); root-cause is partly live-only — say so |
-| A job shows `runtime_lost` / `supervision_lost` | the runtime supervising the job vanished (`docs/job-control.md` status×reason) | the `JobRecord` status/reason via the jobs log (a future `serf-doctor jobs` view; today, `serf-doctor locate` + read the record) |
+| A shell job or stable delegate shows `runtime_lost` / `supervision_lost` | the runtime vanished (`docs/job-control.md` status/reason) | `serf-doctor jobs <sel>` reads shell JobRecords and stable delegate aggregates without repairing either journal |
+| `legacy_delegate_state` | retired delegate activation JobRecords remain in `jobs.jsonl`; flag-day restore must refuse them | `serf-doctor jobs <sel>` reports the exact fail-closed code and IDs; do not migrate or delete the evidence |
+| `legacy_delegate_watch_state` | a watch still addresses a retired delegate activation job | `serf-doctor jobs <sel>` reports the exact fail-closed code and watch IDs; start from fresh compatible state |
 | A hook blocked or failed a tool | `hook_blocked` / `hook_failed` (`docs/hooks.md`) | not yet a `serf-doctor` view — read the transcript turn; emit category `hook_blocked`/`hook_failed` |
 | A provider error stalled a call | `provider_error` (`docs/llm-providers.md`) | `serf-doctor apilog <sel> --errors` reads canonical attempt outcomes. Correlate `attempt_group_id` with semantic turn provenance when a model-produced assistant turn exists. A terminal provider failure may exist only in the API log: no assistant turn is appended, so there is no assistant-turn join to require or infer. |
 

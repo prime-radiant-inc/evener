@@ -82,6 +82,46 @@ func TestShippedPromptsOnlyNameToolsTheSessionHas(t *testing.T) {
 	}
 }
 
+func TestBundledDelegatePromptUsesStableControlIdentity(t *testing.T) {
+	t.Parallel()
+	prompt := renderSubagentPromptWithAllowance(t, 2)
+
+	for _, want := range []string{
+		"`delegate` returns one durable `delegate_id` (`dlg_...`)",
+		"`job_status(target=<dlg_...>)`",
+		"`job_stop(target=<dlg_...>)`",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("assembled delegate prompt missing stable control contract %q", want)
+		}
+	}
+	for _, stale := range []string{
+		"concrete `job_id`s for individual turns",
+		"Shell commands and delegates can run as durable background jobs",
+	} {
+		if strings.Contains(prompt, stale) {
+			t.Errorf("assembled delegate prompt retains activation-job guidance %q", stale)
+		}
+	}
+}
+
+func TestBundledDelegatePromptPreservesWatchSupervisionAndShellGuidance(t *testing.T) {
+	t.Parallel()
+	prompt := renderSubagentPromptWithAllowance(t, 2)
+
+	for _, want := range []string{
+		"Shell commands can run as durable background jobs identified by a `job_id` (`job_...`)",
+		"Stable delegates are watch sources identified by `dlg_...`",
+		"`delegate(watch_parent:true)`",
+		"quiet watchdog",
+		"`max_retained_terminal`",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("assembled delegate prompt missing preserved capability %q", want)
+		}
+	}
+}
+
 // promptSweepParentSession is a root session that renders REAL system prompts
 // (no minimalSystemPrompt shortcut) and can delegate, so its children render
 // theirs too.
