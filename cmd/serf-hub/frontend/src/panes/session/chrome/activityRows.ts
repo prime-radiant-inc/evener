@@ -64,15 +64,13 @@ function sessionIsActive(session: ActivitySessionNode): boolean {
 
 function entryIsActive(entry: ActivityEntry): boolean {
   if (entry.kind === "shell") return jobIsActive(entry.job);
-  return (
-    entry.delegate.turns.some(jobIsActive) || (entry.delegate.child ? sessionIsActive(entry.delegate.child) : false)
-  );
+  return !entry.delegate.terminal || (entry.delegate.child ? sessionIsActive(entry.delegate.child) : false);
 }
 
 function entryIsFailed(entry: ActivityEntry): boolean {
   if (entry.kind === "shell") return isFailedStatus(entry.job.status);
   const delegate: ActivityDelegate = entry.delegate;
-  return delegate.turns.some((turn) => isFailedStatus(turn.status)) || (delegate.child?.counts.failed ?? 0) > 0;
+  return isFailedStatus(delegate.status ?? delegate.outcome ?? "") || (delegate.child?.counts.failed ?? 0) > 0;
 }
 
 export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet<string>): ActivityRow[] {

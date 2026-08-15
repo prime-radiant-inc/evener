@@ -23,6 +23,7 @@ export interface ActivityJob {
   status: string;
   outcome?: string;
   transcriptRef?: string;
+  parentDelegateId?: string;
   terminal: boolean;
   background: boolean;
   hasOutput: boolean;
@@ -55,13 +56,64 @@ export interface ActivitySessionNode {
 
 export interface ActivityDelegate {
   delegateId: string;
+  ownerSessionId?: string;
+  rootSessionId?: string;
   childSessionId: string;
   childRef: string;
+  transcriptRef?: string;
+  parentDelegateId?: string;
+  type?: string;
+  lifecycle?: string;
+  phase?: string;
+  status?: string;
+  projectionRevision?: number;
+  outcome?: string;
+  reason?: string;
+  terminal?: boolean;
+  resumable?: boolean;
+  notResumableReason?: string;
   mandate?: string;
+  task?: string;
+  description?: string;
+  agentType?: string;
+  requestedModel?: string;
+  resolvedProfileId?: string;
+  resolvedModel?: string;
+  model?: string;
+  reasoningEffort?: string;
+  originTurnId?: string;
+  originToolCallId?: string;
+  originItemId?: string;
+  runStartedAt?: string;
+  runEndedAt?: string;
+  latestActivityAt?: string;
+  runningForMs?: number | null;
+  quietForMs?: number | null;
+  durationMs?: number | null;
+  packetKind?: string;
+  message?: unknown;
+  structuredResult?: unknown;
+  structuredResultValid?: boolean;
+  structuredResultReason?: string;
+  warnings?: string[];
+  diagnostics?: string[];
+  exhaustionBudget?: string;
+  exhaustionLimit?: number;
+  exhaustionResumable?: boolean;
+  delegationAllowance?: number;
+  parentWatchGranted?: boolean;
+  worktree?: ActivityWorktree;
   usage?: ActivityUsage;
-  turns: ActivityJob[];
   child?: ActivitySessionNode;
   branch: ActivityBranchState;
+}
+
+export interface ActivityWorktree {
+  path: string;
+  branch: string;
+  headSha: string;
+  ahead: number;
+  dirty: boolean;
 }
 
 export interface ActivityUsage {
@@ -183,6 +235,55 @@ function parseUsage(raw: unknown): ActivityUsage | null | undefined {
   return usage;
 }
 
+function parseStringArray(raw: unknown): string[] | null | undefined {
+  if (typeof raw === "undefined") return undefined;
+  if (!Array.isArray(raw) || raw.some((value) => typeof value !== "string")) return null;
+  return [...raw];
+}
+
+function parseWorktree(raw: unknown): ActivityWorktree | null | undefined {
+  if (typeof raw === "undefined") return undefined;
+  if (!isPlainObject(raw)) return null;
+  const path = readString(raw, "path");
+  const branch = readString(raw, "branch");
+  const headSha = readString(raw, "headSha");
+  const ahead = readInteger(raw, "ahead");
+  const dirty = readBoolean(raw, "dirty");
+  if (path === null || branch === null || headSha === null || ahead === null || dirty === null) return null;
+  return { path, branch, headSha, ahead, dirty };
+}
+
+function copyOptionalString(raw: Record<string, unknown>, target: Record<string, unknown>, key: string): boolean {
+  if (typeof raw[key] === "undefined") return true;
+  if (typeof raw[key] !== "string") return false;
+  target[key] = raw[key];
+  return true;
+}
+
+function copyOptionalBoolean(raw: Record<string, unknown>, target: Record<string, unknown>, key: string): boolean {
+  if (typeof raw[key] === "undefined") return true;
+  if (typeof raw[key] !== "boolean") return false;
+  target[key] = raw[key];
+  return true;
+}
+
+function copyOptionalInteger(
+  raw: Record<string, unknown>,
+  target: Record<string, unknown>,
+  key: string,
+  nullable = false,
+): boolean {
+  const value = raw[key];
+  if (typeof value === "undefined") return true;
+  if (nullable && value === null) {
+    target[key] = null;
+    return true;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value)) return false;
+  target[key] = value;
+  return true;
+}
+
 function parseJob(raw: unknown): ActivityJob | null {
   if (!isPlainObject(raw)) return null;
   const jobId = readString(raw, "jobId");
@@ -226,6 +327,7 @@ function parseJob(raw: unknown): ActivityJob | null {
   };
   const outcome = readOptionalString(raw, "outcome");
   const transcriptRef = readOptionalString(raw, "transcriptRef");
+  const parentDelegateId = readOptionalString(raw, "parentDelegateId");
   const command = readOptionalString(raw, "command");
   const task = readOptionalString(raw, "task");
   const reason = readOptionalString(raw, "reason");
@@ -234,6 +336,7 @@ function parseJob(raw: unknown): ActivityJob | null {
   const exitCode = raw.exitCode;
   if (typeof raw.outcome !== "undefined" && typeof raw.outcome !== "string") return null;
   if (typeof raw.transcriptRef !== "undefined" && typeof raw.transcriptRef !== "string") return null;
+  if (typeof raw.parentDelegateId !== "undefined" && typeof raw.parentDelegateId !== "string") return null;
   if (typeof raw.command !== "undefined" && typeof raw.command !== "string") return null;
   if (typeof raw.task !== "undefined" && typeof raw.task !== "string") return null;
   if (typeof raw.reason !== "undefined" && typeof raw.reason !== "string") return null;
@@ -242,6 +345,7 @@ function parseJob(raw: unknown): ActivityJob | null {
   if (typeof exitCode !== "undefined" && !Number.isInteger(exitCode)) return null;
   if (outcome) job.outcome = outcome;
   if (transcriptRef) job.transcriptRef = transcriptRef;
+  if (parentDelegateId) job.parentDelegateId = parentDelegateId;
   if (command) job.command = command;
   if (task) job.task = task;
   if (reason) job.reason = reason;
@@ -286,29 +390,67 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
   const childSessionId = readString(raw, "childSessionId");
   const childRef = readString(raw, "childRef");
   const branch = parseBranchState(raw.branch);
-  const turnsRaw = raw.turns;
-  if (
-    delegateId === null ||
-    childSessionId === null ||
-    childRef === null ||
-    branch === null ||
-    !Array.isArray(turnsRaw)
-  ) {
+  if (delegateId === null || childSessionId === null || childRef === null || branch === null) {
     return { value: null, incomplete: true };
-  }
-  const turns: ActivityJob[] = [];
-  for (const turnRaw of turnsRaw) {
-    const turn = parseJob(turnRaw);
-    if (!turn) return { value: null, incomplete: true };
-    turns.push(turn);
   }
   const delegate: ActivityDelegate = {
     delegateId,
     childSessionId,
     childRef,
-    turns,
     branch,
   };
+  const target = delegate as unknown as Record<string, unknown>;
+  const stringFields = [
+    "ownerSessionId",
+    "rootSessionId",
+    "transcriptRef",
+    "parentDelegateId",
+    "type",
+    "lifecycle",
+    "phase",
+    "status",
+    "outcome",
+    "reason",
+    "notResumableReason",
+    "task",
+    "description",
+    "agentType",
+    "requestedModel",
+    "resolvedProfileId",
+    "resolvedModel",
+    "model",
+    "reasoningEffort",
+    "originTurnId",
+    "originToolCallId",
+    "originItemId",
+    "runStartedAt",
+    "runEndedAt",
+    "latestActivityAt",
+    "packetKind",
+    "structuredResultReason",
+    "exhaustionBudget",
+  ];
+  for (const field of stringFields) {
+    if (!copyOptionalString(raw, target, field)) return { value: null, incomplete: true };
+  }
+  for (const field of ["terminal", "resumable", "structuredResultValid", "exhaustionResumable", "parentWatchGranted"]) {
+    if (!copyOptionalBoolean(raw, target, field)) return { value: null, incomplete: true };
+  }
+  for (const field of ["projectionRevision", "exhaustionLimit", "delegationAllowance"]) {
+    if (!copyOptionalInteger(raw, target, field)) return { value: null, incomplete: true };
+  }
+  for (const field of ["runningForMs", "quietForMs", "durationMs"]) {
+    if (!copyOptionalInteger(raw, target, field, true)) return { value: null, incomplete: true };
+  }
+  if (Object.hasOwn(raw, "message")) delegate.message = raw.message;
+  if (Object.hasOwn(raw, "structuredResult")) delegate.structuredResult = raw.structuredResult;
+  const warnings = parseStringArray(raw.warnings);
+  const diagnostics = parseStringArray(raw.diagnostics);
+  const worktree = parseWorktree(raw.worktree);
+  if (warnings === null || diagnostics === null || worktree === null) return { value: null, incomplete: true };
+  if (warnings) delegate.warnings = warnings;
+  if (diagnostics) delegate.diagnostics = diagnostics;
+  if (worktree) delegate.worktree = worktree;
   const mandate = readOptionalString(raw, "mandate");
   if (typeof raw.mandate !== "undefined" && typeof raw.mandate !== "string") {
     return { value: null, incomplete: true };
@@ -404,7 +546,7 @@ function jobIsActive(job: ActivityJob): boolean {
 }
 
 function delegateHasActiveWork(delegate: ActivityDelegate): boolean {
-  return delegate.turns.some(jobIsActive) || (delegate.child ? sessionHasActiveWork(delegate.child) : false);
+  return !delegate.terminal || (delegate.child ? sessionHasActiveWork(delegate.child) : false);
 }
 
 function entryHasActiveWork(entry: ActivityEntry): boolean {
@@ -454,11 +596,6 @@ function indexTree(tree: ActivityTree): TreeIndex {
       const delegateID = activityNodeID(entry);
       ids.add(delegateID);
       parents.set(delegateID, sessionID);
-      for (const turn of entry.delegate.turns) {
-        const turnID = activityNodeID({ kind: "shell", jobId: turn.jobId });
-        ids.add(turnID);
-        parents.set(turnID, delegateID);
-      }
       if (entry.delegate.child) visitSession(entry.delegate.child, delegateID);
     }
   };

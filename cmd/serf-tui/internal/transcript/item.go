@@ -26,6 +26,11 @@ func MessagesFromThread(thread appwire.Thread) []ChatMessage {
 			reducer.messages = append(reducer.messages, ChatMessage{Kind: MsgSystem, Text: hubdiagnostics.FormatHubTurnError(turn.Error, "Session error")})
 		}
 	}
+	if thread.Serf.Diagnostics != nil {
+		for _, delegate := range thread.Serf.Diagnostics.Delegates {
+			reducer.ApplySerfDelegate(delegate)
+		}
+	}
 	return reducer.messages
 }
 
@@ -49,7 +54,7 @@ func toolInfoFromThreadItem(item appwire.ThreadItem, done bool, cwd string) *Too
 		Hidden:      item.ToolName == "communicate",
 	}
 	if info.Name == "delegate" || info.Name == "delegate_send" {
-		if run := subagentRunFromToolItem(item); run.JobID != "" || run.DelegateID != "" {
+		if run := subagentRunFromToolItem(item); run.DelegateID != "" {
 			merged := mergeSubagentRun(info.Subagent, run)
 			info.Subagent = &merged
 		}
@@ -81,7 +86,7 @@ func mergeThreadItemIntoToolInfo(info *ToolCallInfo, item appwire.ThreadItem, do
 		info.Raw = string(item.Raw)
 	}
 	if info.Name == "delegate" || info.Name == "delegate_send" {
-		if run := subagentRunFromToolItem(item); run.JobID != "" || run.DelegateID != "" {
+		if run := subagentRunFromToolItem(item); run.DelegateID != "" {
 			merged := mergeSubagentRun(info.Subagent, run)
 			info.Subagent = &merged
 		}

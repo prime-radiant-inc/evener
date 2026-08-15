@@ -294,6 +294,20 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 			// expose the in-process child's turn start time.
 		},
 	}
+	delegates, delegateDiagnostics, err := pastEntryDelegateStatus(entry)
+	if err != nil {
+		return appwire.Thread{}, err
+	}
+	if len(delegates) != 0 {
+		if thread.Serf.Diagnostics == nil {
+			thread.Serf.Diagnostics = &appwire.SerfDiagnostics{}
+		}
+		for _, delegate := range delegates {
+			projected := appwireDelegateFromAgentStatus(delegate)
+			projected.Diagnostics = append(projected.Diagnostics, delegateDiagnostics...)
+			thread.Serf.Diagnostics.Delegates = append(thread.Serf.Diagnostics.Delegates, projected)
+		}
+	}
 	if includeTurns {
 		var err error
 		thread.Turns, err = pastEntryTurns(entry)
@@ -304,6 +318,75 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 	}
 	annotateThreadProjects([]appwire.Thread{thread})
 	return thread, nil
+}
+
+func pastEntryDelegateStatus(entry hubcore.PastEntry) ([]agent.DelegateStatusInfo, []string, error) {
+	sessionID := strings.TrimSpace(entry.Meta.ID)
+	if schema.ValidateSessionID(sessionID) != nil {
+		return nil, nil, nil
+	}
+	rootID := strings.TrimSpace(entry.Meta.JobTreeRootSessionID)
+	if rootID == "" {
+		rootID = sessionID
+	}
+	if schema.ValidateSessionID(rootID) != nil {
+		return nil, nil, nil
+	}
+	path := filepath.Join(entry.StateDir, "sessions", rootID, "delegates.jsonl")
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+	return agent.LoadSessionDelegateStatus(entry.StateDir, sessionID)
+}
+
+func appwireDelegateFromAgentStatus(delegate agent.DelegateStatusInfo) appwire.SerfDelegateInfo {
+	out := appwire.SerfDelegateInfo{
+		DelegateID: delegate.DelegateID, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
+		ChildSessionID: delegate.ChildSessionID, TranscriptRef: delegate.TranscriptRef, ParentDelegateID: delegate.ParentDelegateID,
+		Type: delegate.Type, Lifecycle: delegate.Lifecycle, Phase: delegate.Phase, Status: delegate.Status,
+		Outcome: delegate.Outcome, Reason: delegate.Reason, Terminal: delegate.Terminal, Resumable: delegate.Resumable,
+		NotResumableReason: delegate.NotResumableReason, ProjectionRevision: delegate.ProjectionRevision,
+		Task: delegate.Task, Description: delegate.Description, AgentType: delegate.AgentType, RequestedModel: delegate.RequestedModel,
+		ResolvedProfileID: delegate.ResolvedProfileID, ResolvedModel: delegate.ResolvedModel, Model: delegate.Model,
+		ReasoningEffort: delegate.ReasoningEffort, OriginTurnID: delegate.OriginTurnID, OriginToolCallID: delegate.OriginToolCallID,
+		OriginItemID: delegate.OriginItemID, RunStartedAt: delegate.RunStartedAt, RunEndedAt: delegate.RunEndedAt,
+		LatestActivityAt: delegate.LatestActivityAt, RunningForMS: cloneHubInt64(delegate.RunningForMS),
+		QuietForMS: cloneHubInt64(delegate.QuietForMS), DurationMS: cloneHubInt64(delegate.DurationMS), PacketKind: delegate.PacketKind,
+		Message: append(json.RawMessage(nil), delegate.Message...), StructuredResult: append(json.RawMessage(nil), delegate.StructuredResult...),
+		StructuredValid: cloneHubBool(delegate.StructuredValid), StructuredReason: delegate.StructuredReason,
+		Warnings: append([]string(nil), delegate.Warnings...), Diagnostics: append([]string(nil), delegate.Diagnostics...),
+		ExhaustionBudget: delegate.ExhaustionBudget, ExhaustionLimit: delegate.ExhaustionLimit,
+		ExhaustionResumable: cloneHubBool(delegate.ExhaustionResumable), DelegationAllowance: delegate.DelegationAllowance,
+		ParentWatchGranted: delegate.ParentWatchGranted,
+	}
+	if delegate.Usage != nil {
+		usage := *delegate.Usage
+		out.Usage = &usage
+	}
+	if delegate.Worktree != nil {
+		worktree := *delegate.Worktree
+		out.Worktree = &worktree
+	}
+	return out
+}
+
+func cloneHubBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func cloneHubInt64(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 // persistedTaskAggregate returns a task count only when the session has a

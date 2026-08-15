@@ -10,12 +10,56 @@ import type {
   InputItem,
   OutputImage,
   SandboxEscalationRequested,
+  SerfDelegateInfo,
   Thread,
   ThreadItem,
   ThreadReadResponse,
   ThreadTurnsListResponse,
   Turn,
 } from "./types.gen";
+
+function cloneStableDelegate(delegate: SerfDelegateInfo): SerfDelegateInfo {
+  // JSON objects are open at runtime. Explicitly discard the delegate_send
+  // result's call-scoped wait field if an older/mixed producer accidentally
+  // places it beside a stable snapshot; every durable stable field remains.
+  const { waitIgnoredReason: _callScoped, ...stable } = delegate as SerfDelegateInfo & {
+    waitIgnoredReason?: unknown;
+  };
+  return {
+    ...stable,
+    warnings: stable.warnings ? [...stable.warnings] : undefined,
+    diagnostics: stable.diagnostics ? [...stable.diagnostics] : undefined,
+    usage: stable.usage ? { ...stable.usage } : undefined,
+    worktree: stable.worktree ? { ...stable.worktree } : undefined,
+  };
+}
+
+function laterActivity(current: string | undefined, incoming: string | undefined): string | undefined {
+  if (!incoming) return current;
+  if (!current) return incoming;
+  const currentMillis = Date.parse(current);
+  const incomingMillis = Date.parse(incoming);
+  if (Number.isNaN(incomingMillis)) return current;
+  if (Number.isNaN(currentMillis) || incomingMillis > currentMillis) return incoming;
+  return current;
+}
+
+function mergeStableDelegate(current: SerfDelegateInfo, incoming: SerfDelegateInfo): SerfDelegateInfo {
+  const activity = laterActivity(current.latestActivityAt, incoming.latestActivityAt);
+  const state = incoming.projectionRevision > current.projectionRevision ? cloneStableDelegate(incoming) : current;
+  if (activity === state.latestActivityAt) return state;
+  return { ...state, latestActivityAt: activity };
+}
+
+function upsertStableDelegate(delegates: readonly SerfDelegateInfo[], incoming: SerfDelegateInfo): SerfDelegateInfo[] {
+  const index = delegates.findIndex((delegate) => delegate.delegateId === incoming.delegateId);
+  if (index === -1) return [...delegates, cloneStableDelegate(incoming)];
+  const current = delegates[index];
+  if (!current) return [...delegates, cloneStableDelegate(incoming)];
+  const merged = mergeStableDelegate(current, incoming);
+  if (merged === current) return delegates as SerfDelegateInfo[];
+  return delegates.map((delegate, delegateIndex) => (delegateIndex === index ? merged : delegate));
+}
 
 function epochMsToISO(ms: number | undefined): string | undefined {
   // Go's zero value leaks through the wire as 0: a non-positive (or NaN)
@@ -288,6 +332,8 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     // An absent aggregate means the daemon could not authoritatively read
     // tasks; preserve a present zero so an empty task list stays distinct.
     tasks: thread.serf.tasks ?? null,
+    delegates: (thread.serf.diagnostics?.delegates ?? []).map(cloneStableDelegate),
+    turnSlots: thread.serf.diagnostics?.turnSlots ? { ...thread.serf.diagnostics.turnSlots } : null,
     jobsUpdatedAt: null,
     jobsTreeRevision: null,
     olderCursor: resp.olderCursor,
@@ -870,6 +916,13 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     case "serf/job/finished": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, jobsUpdatedAt: now, lastFrameAt: now };
+    }
+
+    case "serf/delegate/updated": {
+      if (!notificationTargetsThread(n, model)) return model;
+      const delegates = upsertStableDelegate(model.delegates ?? [], n.params.delegate);
+      if (delegates === model.delegates) return { ...model, jobsUpdatedAt: now, lastFrameAt: now };
+      return { ...model, delegates, jobsUpdatedAt: now, lastFrameAt: now };
     }
 
     case "serf/jobs/treeUpdated": {

@@ -31,7 +31,7 @@ func TestJobTreeRevisionSharedAcrossSpawnAndRestore(t *testing.T) {
 	defer childPrepared.runCancel()
 	child := childPrepared.sub.sess
 	defer child.Close()
-	if child.jobTreeClock != root.jobTreeClock {
+	if child.jobActivityClock != root.jobActivityClock {
 		t.Fatal("child did not inherit root tree clock")
 	}
 
@@ -40,7 +40,7 @@ func TestJobTreeRevisionSharedAcrossSpawnAndRestore(t *testing.T) {
 	defer grandPrepared.runCancel()
 	grandchild := grandPrepared.sub.sess
 	defer grandchild.Close()
-	if grandchild.jobTreeClock != root.jobTreeClock {
+	if grandchild.jobActivityClock != root.jobActivityClock {
 		t.Fatal("grandchild did not inherit root tree clock")
 	}
 
@@ -72,7 +72,7 @@ func TestJobTreeRevisionSharedAcrossSpawnAndRestore(t *testing.T) {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}
 	defer restored.Close()
-	if restored.jobTreeClock != root.jobTreeClock {
+	if restored.jobActivityClock != root.jobActivityClock {
 		t.Fatal("restored child did not inherit root tree clock")
 	}
 

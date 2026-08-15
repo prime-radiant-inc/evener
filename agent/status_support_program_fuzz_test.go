@@ -81,7 +81,7 @@ func statusSupportStatusAndMetrics(t *testing.T, token string) {
 	for i := 0; i < detailedStatusTerminalJobsLimit+2; i++ {
 		records = append(records, &jobstore.JobRecord{
 			JobID:         "job_terminal_" + token + "_" + string(rune('a'+i%26)),
-			Type:          jobstore.JobDelegate,
+			Type:          jobstore.JobShell,
 			Status:        jobstore.StatusCompleted,
 			Reason:        "done",
 			TranscriptRef: "local:" + token,
@@ -93,7 +93,7 @@ func statusSupportStatusAndMetrics(t *testing.T, token string) {
 		t.Fatalf("bounded status records = %d first=%#v", len(bounded), bounded)
 	}
 	info := projectJobStatusInfos(bounded[:2])
-	if len(info) != 2 || info[1].JobType != string(jobstore.JobDelegate) || info[1].TranscriptRef != "local:"+token {
+	if len(info) != 2 || info[1].JobType != string(jobstore.JobShell) || info[1].TranscriptRef != "local:"+token {
 		t.Fatalf("projected status = %#v", info)
 	}
 
@@ -219,7 +219,8 @@ func statusSupportEnvironmentInfo(env execenv.ExecutionEnvironment, clk clock.Cl
 }
 
 func statusSupportEqualStatus(a, b DetailedStatus) bool {
-	return len(a.Tools) == len(b.Tools) && len(a.Jobs) == len(b.Jobs) && len(a.Agents) == len(b.Agents) && strings.Join(a.Agents, "\x00") == strings.Join(b.Agents, "\x00")
+	return len(a.Tools) == len(b.Tools) && len(a.Jobs) == len(b.Jobs) && len(a.Delegates) == len(b.Delegates) &&
+		reflect.DeepEqual(a.TurnSlots, b.TurnSlots) && len(a.Agents) == len(b.Agents) && strings.Join(a.Agents, "\x00") == strings.Join(b.Agents, "\x00")
 }
 
 func statusSupportHasTool(tools []ToolInfo, name, source string) bool {

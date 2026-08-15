@@ -3,8 +3,46 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 )
+
+// jobActivityClock orders shell-job activity snapshots across one live session
+// tree. It is projection metadata only and carries no lifecycle, generation,
+// capacity, authorization, phase, or stop state.
+type jobActivityClock struct {
+	rootSessionID string
+	revision      atomic.Uint64
+}
+
+func newJobActivityClock(rootSessionID string) *jobActivityClock {
+	if strings.TrimSpace(rootSessionID) == "" {
+		return nil
+	}
+	return &jobActivityClock{rootSessionID: rootSessionID}
+}
+
+func (c *jobActivityClock) nextRevision() (string, uint64, bool) {
+	if c == nil || strings.TrimSpace(c.rootSessionID) == "" {
+		return "", 0, false
+	}
+	return c.rootSessionID, c.revision.Add(1), true
+}
+
+func (c *jobActivityClock) ensureAtLeast(revision uint64) uint64 {
+	if c == nil {
+		return 0
+	}
+	for {
+		current := c.revision.Load()
+		if current >= revision {
+			return current
+		}
+		if c.revision.CompareAndSwap(current, revision) {
+			return revision
+		}
+	}
+}
 
 // defaultMaxConcurrentDelegateTurns is the default tree-wide cap on
 // concurrently running delegate turns (spec §4). Configurable per root session

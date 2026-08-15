@@ -31,6 +31,28 @@ excerpt:
 did the thing
 </job-notification>`;
 
+test("delegate notification markup is distinct from shell job notification markup", () => {
+  const text = `<delegate-notification delegate_id="dlg_42" event="completed" status="completed" reason="" transcript_ref="local:sess_child">
+Delegate dlg_42 completed.
+excerpt:
+done
+</delegate-notification>
+<job-notification job_id="job_shell" event="completed" job_type="shell" status="completed" reason="" output_bytes="12" transcript_ref="job:job_shell">
+Job job_shell completed.
+</job-notification>`;
+
+  const { notifications } = parseSteeringNotifications(text);
+  expect(notifications).toHaveLength(2);
+  expect(notifications[0]).toMatchObject({
+    type: "delegate",
+    title: "Delegate completed",
+    delegateId: "dlg_42",
+    transcriptRef: "local:sess_child",
+  });
+  expect(notifications[0]).not.toHaveProperty("jobId");
+  expect(notifications[1]).toMatchObject({ type: "job", title: "Job completed", jobId: "job_shell", jobType: "shell" });
+});
+
 test("a delegate-completion job-notification parses one block", () => {
   const { notifications } = parseSteeringNotifications(oneBlock);
   expect(notifications).toHaveLength(1);

@@ -131,13 +131,11 @@ func (jm *jobManager) hasRunningDrainJob() bool {
 
 // treeHasOutstandingWork reports whether this session or any live descendant in
 // its managed-job subtree still owes drain work: an outstanding managed job, a
-// pending job notification, a pending caller-targeted watch send, or an
-// in-flight drive turn. These are the same "undelivered attention" signals
-// driveChildrenWithUndeliveredAttention acts on, so the drain settles exactly
-// what the drive machinery can still deliver. Close() cancels the whole subtree,
-// so the one-shot drain must settle all of it — a root whose direct managed job
-// finished after spawning its own fire-and-return managed job is not quiescent
-// until that descendant's work drains too.
+// pending job notification, a pending caller-targeted watch send, an in-flight
+// stable delegate run, or an in-flight drive turn. Close() cancels the whole
+// subtree, so the one-shot drain must settle all of it — a root whose direct
+// managed job finished after spawning its own fire-and-return managed job or
+// stable delegate is not quiescent until that descendant's work drains too.
 //
 // A store read error is propagated (not folded into quiescence): the drain must
 // neither Close() on an unreadable store nor spin on it forever, so the loop
@@ -155,9 +153,12 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 	if s.peekNotifications() > 0 {
 		return true, nil
 	}
+	if s.hasPendingRootDelegateAttention() {
+		return true, nil
+	}
 	for _, sub := range s.liveDirectSubagents() {
 		sub.mu.Lock()
-		driving := sub.driving
+		active := sub.running || sub.finalizing || sub.driving
 		child := sub.sess
 		sub.mu.Unlock()
 		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id)) {
@@ -168,7 +169,7 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 			// so match the drive gate and skip it.
 			continue
 		}
-		if driving {
+		if active {
 			return true, nil
 		}
 		if child != nil {
@@ -190,10 +191,12 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 // stall watchdog is allowed to give up, and it is deliberately narrow so it can
 // never cut legitimate work.
 //
-// The four live/deliverable components — any of them anywhere in the subtree
+// The five live/deliverable components — any of them anywhere in the subtree
 // means NOT stalled — are:
 //   - a managed job still in some jm.running (hasRunningDrainJob): live work such
 //     as a long build produces no drain progress for minutes yet is not wedged;
+//   - a running or finalizing stable delegate: live work that no longer has a
+//     delegate JobRecord after the stable-resource cutover;
 //   - a driving child (sub.driving): a drive turn is in flight;
 //   - a pending caller-targeted watch send (hasPendingWatchSends): deliverable;
 //   - a queued notification at any level (peekNotifications > 0): deliverable now.
@@ -231,15 +234,18 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	if s.peekNotifications() > 0 {
 		return true, nil
 	}
+	if s.hasPendingRootDelegateAttention() {
+		return true, nil
+	}
 	for _, sub := range s.liveDirectSubagents() {
 		sub.mu.Lock()
-		driving := sub.driving
+		active := sub.running || sub.finalizing || sub.driving
 		child := sub.sess
 		sub.mu.Unlock()
 		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id)) {
 			continue
 		}
-		if driving {
+		if active {
 			return true, nil
 		}
 		if child != nil {
@@ -324,7 +330,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		if err := kick(ctx); err != nil {
 			return lastResult, err
 		}
-		if s.peekNotifications() > 0 {
+		if s.peekNotifications() > 0 || s.hasPendingRootDelegateAttention() {
 			// A completion is queued on this (root) rail: run a notification turn so
 			// the coordinator's model receives it and can dispatch more work or wrap
 			// up. The turn's boundary also drives any idle descendant that has

@@ -4,7 +4,12 @@
 // thread items. It depends only on appwire + toolsummary + hubdiagnostics.
 package transcript
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+
+	"primeradiant.com/serf/appwire"
+)
 
 type MessageKind int
 
@@ -19,23 +24,62 @@ const (
 )
 
 type SubagentRunInfo struct {
-	DelegateID       string
-	JobID            string
-	JobType          string
-	Status           string
-	Reason           string
-	Background       bool
-	Command          string
-	Activity         string // the child's latest live step (verb-led)
-	Steps            int    // advances only when Activity actually changes (honest progress)
-	Headline         string // result headline pulled from a tied job notification
-	HeadlineError    bool   // the tied notification reported a failure
-	Task             string
-	TranscriptRef    string
-	OriginTurnID     string
-	OriginToolCallID string
-	OriginItemID     string
-	OutputBytes      int64
+	DelegateID          string
+	JobID               string
+	JobType             string
+	ParentDelegateID    string
+	OwnerSessionID      string
+	RootSessionID       string
+	ChildSessionID      string
+	Type                string
+	Lifecycle           string
+	Phase               string
+	Status              string
+	Outcome             string
+	Reason              string
+	Terminal            bool
+	Resumable           bool
+	NotResumableReason  string
+	ProjectionRevision  uint64
+	Background          bool
+	Command             string
+	Activity            string // the child's latest live step (verb-led)
+	Steps               int    // advances only when Activity actually changes (honest progress)
+	Headline            string // result headline pulled from a tied notification
+	HeadlineError       bool   // the tied notification reported a failure
+	Task                string
+	Description         string
+	AgentType           string
+	RequestedModel      string
+	ResolvedProfileID   string
+	ResolvedModel       string
+	Model               string
+	ReasoningEffort     string
+	TranscriptRef       string
+	OriginTurnID        string
+	OriginToolCallID    string
+	OriginItemID        string
+	RunStartedAt        string
+	RunEndedAt          string
+	LatestActivityAt    string
+	RunningForMS        *int64
+	QuietForMS          *int64
+	DurationMS          *int64
+	PacketKind          string
+	Message             json.RawMessage
+	StructuredResult    json.RawMessage
+	StructuredValid     *bool
+	StructuredReason    string
+	Warnings            []string
+	Diagnostics         []string
+	ExhaustionBudget    string
+	ExhaustionLimit     int
+	ExhaustionResumable *bool
+	DelegationAllowance int
+	ParentWatchGranted  bool
+	Usage               *appwire.SerfUsage
+	Worktree            *appwire.JobActivityWorktree
+	OutputBytes         int64
 }
 
 type ToolCallInfo struct {

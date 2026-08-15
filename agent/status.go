@@ -1,12 +1,17 @@
 package agent
 
 import (
+	"encoding/json"
 	"sort"
+	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
+	"primeradiant.com/serf/appwire"
 )
 
 var detailedStatusMCPServers = func(s *Session) []mcpconfig.ServerInfo { return s.mcpMgr.Servers() }
@@ -41,6 +46,59 @@ type JobStatusInfo struct {
 	ExitCode         *int   `json:"exit_code,omitempty"`
 }
 
+// DelegateStatusInfo is the stable delegate read model exposed by DetailedStatus.
+// Its JSON names follow the daemon /status convention; AppWire maps the same
+// values into SerfDelegateInfo without deriving them from Jobs.
+type DelegateStatusInfo struct {
+	DelegateID          string                       `json:"delegate_id"`
+	OwnerSessionID      string                       `json:"owner_session_id"`
+	RootSessionID       string                       `json:"root_session_id"`
+	ChildSessionID      string                       `json:"child_session_id"`
+	TranscriptRef       string                       `json:"transcript_ref"`
+	ParentDelegateID    string                       `json:"parent_delegate_id,omitempty"`
+	Type                string                       `json:"type"`
+	Lifecycle           string                       `json:"lifecycle"`
+	Phase               string                       `json:"phase"`
+	Status              string                       `json:"status"`
+	Outcome             string                       `json:"outcome,omitempty"`
+	Reason              string                       `json:"reason,omitempty"`
+	Terminal            bool                         `json:"terminal,omitempty"`
+	Resumable           bool                         `json:"resumable"`
+	NotResumableReason  string                       `json:"not_resumable_reason,omitempty"`
+	ProjectionRevision  uint64                       `json:"projection_revision"`
+	Task                string                       `json:"task,omitempty"`
+	Description         string                       `json:"description,omitempty"`
+	AgentType           string                       `json:"agent_type,omitempty"`
+	RequestedModel      string                       `json:"requested_model,omitempty"`
+	ResolvedProfileID   string                       `json:"resolved_profile_id,omitempty"`
+	ResolvedModel       string                       `json:"resolved_model,omitempty"`
+	Model               string                       `json:"model,omitempty"`
+	ReasoningEffort     string                       `json:"reasoning_effort,omitempty"`
+	OriginTurnID        string                       `json:"origin_turn_id,omitempty"`
+	OriginToolCallID    string                       `json:"origin_tool_call_id,omitempty"`
+	OriginItemID        string                       `json:"origin_item_id,omitempty"`
+	RunStartedAt        string                       `json:"run_started_at,omitempty"`
+	RunEndedAt          string                       `json:"run_ended_at,omitempty"`
+	LatestActivityAt    string                       `json:"latest_activity_at,omitempty"`
+	RunningForMS        *int64                       `json:"running_for_ms,omitempty"`
+	QuietForMS          *int64                       `json:"quiet_for_ms,omitempty"`
+	DurationMS          *int64                       `json:"duration_ms,omitempty"`
+	PacketKind          string                       `json:"packet_kind,omitempty"`
+	Message             json.RawMessage              `json:"message,omitempty"`
+	StructuredResult    json.RawMessage              `json:"structured_result,omitempty"`
+	StructuredValid     *bool                        `json:"structured_result_valid,omitempty"`
+	StructuredReason    string                       `json:"structured_result_reason,omitempty"`
+	Warnings            []string                     `json:"warnings,omitempty"`
+	Diagnostics         []string                     `json:"diagnostics,omitempty"`
+	ExhaustionBudget    string                       `json:"exhaustion_budget,omitempty"`
+	ExhaustionLimit     int                          `json:"exhaustion_limit,omitempty"`
+	ExhaustionResumable *bool                        `json:"exhaustion_resumable,omitempty"`
+	DelegationAllowance int                          `json:"delegation_allowance,omitempty"`
+	ParentWatchGranted  bool                         `json:"parent_watch_granted,omitempty"`
+	Usage               *appwire.SerfUsage           `json:"usage,omitempty"`
+	Worktree            *appwire.JobActivityWorktree `json:"worktree,omitempty"`
+}
+
 // HookEventStatus describes a single hook event's registration state and
 // compatibility tier for the /status endpoint.
 // Tier: Supported=true events are "claude-compatible-subset";
@@ -64,9 +122,10 @@ type DetailedStatus struct {
 	Hooks map[plugin.HookEvent]int `json:"hooks,omitempty"`
 	// HookEvents lists all registered hook events (supported) plus any
 	// recognized-but-unsupported events declared by loaded plugins.
-	HookEvents []HookEventStatus `json:"hook_events,omitempty"`
-	Jobs       []JobStatusInfo   `json:"jobs,omitempty"`   // active and recent jobs
-	Agents     []string          `json:"agents,omitempty"` // public agent names
+	HookEvents []HookEventStatus    `json:"hook_events,omitempty"`
+	Jobs       []JobStatusInfo      `json:"jobs,omitempty"` // active and recent jobs
+	Delegates  []DelegateStatusInfo `json:"delegates,omitempty"`
+	Agents     []string             `json:"agents,omitempty"` // public agent names
 	// TurnSlots reports tree-counter occupancy while any delegate-turn slot is
 	// held; nil when idle.
 	TurnSlots *turnSlotOccupancy `json:"turn_slots,omitempty"`
@@ -78,6 +137,7 @@ const detailedStatusTerminalJobsLimit = 50
 // skills, plugins, hooks, jobs, and public agent names.
 func (s *Session) DetailedStatus() DetailedStatus {
 	var ds DetailedStatus
+	now := s.sclock().Now().UTC()
 
 	// Build MCP tool → server name map for tool categorization.
 	mcpToolServer := map[string]string{}
@@ -164,6 +224,14 @@ func (s *Session) DetailedStatus() DetailedStatus {
 	if s.jobManager != nil {
 		ds.Jobs = projectJobStatusInfos(detailedStatusJobRecords(s.jobManager.list(listFilter{})))
 	}
+	if s.delegateController != nil {
+		rootID := s.delegateController.rootSessionID
+		for _, row := range s.delegateController.Snapshot().rows {
+			if row.descriptor.OwnerSessionID == s.ID() {
+				ds.Delegates = append(ds.Delegates, delegateStatusInfoFromSnapshot(now, rootID, row))
+			}
+		}
+	}
 
 	// Plugin agent names (sorted).
 	for name := range s.pluginAgents {
@@ -176,10 +244,153 @@ func (s *Session) DetailedStatus() DetailedStatus {
 	return ds
 }
 
+// LoadSessionDelegateStatus projects a cold session's stable delegate rows
+// from the root journal without constructing a Session or opening an
+// append-capable store.
+func LoadSessionDelegateStatus(stateDir, sessionID string) ([]DelegateStatusInfo, []string, error) {
+	meta, err := schema.LoadSessionMeta(stateDir, sessionID)
+	if err != nil {
+		return nil, nil, err
+	}
+	rootID := activityRootIDFromMeta(sessionID, meta)
+	rows, diagnostics, err := loadHistoricalStableActivity(stateDir, rootID, sessionID)
+	if err != nil {
+		return nil, nil, err
+	}
+	ids := make([]string, 0, len(rows))
+	for id := range rows {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]DelegateStatusInfo, 0, len(ids))
+	now := time.Now().UTC()
+	for _, id := range ids {
+		out = append(out, delegateStatusInfoFromSnapshot(now, rootID, rows[id]))
+	}
+	return out, diagnostics, nil
+}
+
+func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSnapshot) DelegateStatusInfo {
+	descriptor := row.descriptor
+	timing := projectStableDelegateStatus(now, row)
+	out := DelegateStatusInfo{
+		DelegateID:          row.id,
+		OwnerSessionID:      descriptor.OwnerSessionID,
+		RootSessionID:       rootID,
+		ChildSessionID:      descriptor.ChildSessionID,
+		TranscriptRef:       descriptor.TranscriptRef,
+		ParentDelegateID:    descriptor.ParentDelegateID,
+		Type:                "delegate",
+		Lifecycle:           string(row.lifecycle),
+		Phase:               string(row.phase),
+		Status:              string(row.phase),
+		Resumable:           row.resumable,
+		NotResumableReason:  row.notResumableReason,
+		ProjectionRevision:  row.revision,
+		Task:                descriptor.Task,
+		Description:         descriptor.Description,
+		AgentType:           descriptor.AgentType,
+		RequestedModel:      descriptor.RequestedModel,
+		ResolvedProfileID:   descriptor.ResolvedProfileID,
+		ResolvedModel:       descriptor.ResolvedModel,
+		Model:               descriptor.ResolvedModel,
+		ReasoningEffort:     descriptor.Config.ReasoningEffort,
+		OriginTurnID:        descriptor.OriginTurnID,
+		OriginToolCallID:    descriptor.OriginToolCallID,
+		OriginItemID:        descriptor.OriginItemID,
+		RunStartedAt:        timing.RunStartedAt,
+		LatestActivityAt:    timing.LatestActivityAt,
+		RunningForMS:        cloneInt64(timing.RunningForMS),
+		QuietForMS:          cloneInt64(timing.QuietForMS),
+		DurationMS:          cloneInt64(timing.DurationMS),
+		DelegationAllowance: descriptor.DelegationAllowance,
+		ParentWatchGranted:  descriptor.ParentWatchGranted,
+	}
+	if row.lastOutcome != nil {
+		out.Outcome = string(row.lastOutcome.Status)
+		out.Reason = row.lastOutcome.Reason
+		out.Terminal = !row.currentRunOpen
+		if !row.lastOutcome.EndedAt.IsZero() {
+			out.RunEndedAt = row.lastOutcome.EndedAt.UTC().Format(time.RFC3339Nano)
+		}
+		out.ExhaustionBudget = string(row.lastOutcome.ExhaustionBudget)
+		out.ExhaustionLimit = row.lastOutcome.ExhaustionLimit
+		out.ExhaustionResumable = cloneBool(row.lastOutcome.Resumable)
+	}
+	if packet := row.latestPacket; packet != nil {
+		out.PacketKind = string(packet.Kind)
+		out.Message = append(json.RawMessage(nil), packet.Message...)
+		out.StructuredResult = append(json.RawMessage(nil), packet.StructuredResult...)
+		out.StructuredValid = cloneBool(packet.StructuredResultValid)
+		out.StructuredReason = packet.StructuredResultReason
+		out.Warnings = append([]string(nil), packet.Warnings...)
+		if len(packet.Metadata) != 0 {
+			var metadata delegateTerminalPacketMetadata
+			if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
+				out.Diagnostics = append(out.Diagnostics, "delegate terminal metadata is invalid")
+			} else {
+				out.Usage = activityUsageFromCumulative(metadata.CumulativeUsage)
+				if metadata.Worktree != nil {
+					out.Worktree = &appwire.JobActivityWorktree{
+						Path: metadata.Worktree.Path, Branch: metadata.Worktree.Branch,
+						HeadSHA: metadata.Worktree.HeadSHA, Ahead: metadata.Worktree.Ahead, Dirty: metadata.Worktree.Dirty,
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func delegateUpdatedDataFromStatus(info DelegateStatusInfo) events.DelegateUpdatedData {
+	out := events.DelegateUpdatedData{
+		DelegateID: info.DelegateID, OwnerSessionID: info.OwnerSessionID, RootSessionID: info.RootSessionID,
+		ChildSessionID: info.ChildSessionID, TranscriptRef: info.TranscriptRef, ParentDelegateID: info.ParentDelegateID,
+		Type: info.Type, Lifecycle: info.Lifecycle, Phase: info.Phase, Status: info.Status, Outcome: info.Outcome,
+		Reason: info.Reason, Terminal: info.Terminal, Resumable: info.Resumable, NotResumableReason: info.NotResumableReason,
+		ProjectionRevision: info.ProjectionRevision, Task: info.Task, Description: info.Description, AgentType: info.AgentType,
+		RequestedModel: info.RequestedModel, ResolvedProfileID: info.ResolvedProfileID, ResolvedModel: info.ResolvedModel,
+		Model: info.Model, ReasoningEffort: info.ReasoningEffort, OriginTurnID: info.OriginTurnID,
+		OriginToolCallID: info.OriginToolCallID, OriginItemID: info.OriginItemID, RunStartedAt: info.RunStartedAt,
+		RunEndedAt: info.RunEndedAt, LatestActivityAt: info.LatestActivityAt, RunningForMS: cloneInt64(info.RunningForMS),
+		QuietForMS: cloneInt64(info.QuietForMS), DurationMS: cloneInt64(info.DurationMS), PacketKind: info.PacketKind,
+		Message: append(json.RawMessage(nil), info.Message...), StructuredResult: append(json.RawMessage(nil), info.StructuredResult...),
+		StructuredValid: cloneBool(info.StructuredValid), StructuredReason: info.StructuredReason,
+		Warnings: append([]string(nil), info.Warnings...), Diagnostics: append([]string(nil), info.Diagnostics...),
+		ExhaustionBudget: info.ExhaustionBudget, ExhaustionLimit: info.ExhaustionLimit,
+		ExhaustionResumable: cloneBool(info.ExhaustionResumable), DelegationAllowance: info.DelegationAllowance,
+		ParentWatchGranted: info.ParentWatchGranted,
+	}
+	if info.Usage != nil {
+		out.Usage = &events.DelegateUsageData{
+			InputTokens: info.Usage.InputTokens, OutputTokens: info.Usage.OutputTokens,
+			CacheReadTokens: info.Usage.CacheReadTokens, TotalTokens: info.Usage.TotalTokens,
+		}
+	}
+	if info.Worktree != nil {
+		out.Worktree = &events.DelegateWorktreeData{
+			Path: info.Worktree.Path, Branch: info.Worktree.Branch, HeadSHA: info.Worktree.HeadSHA,
+			Ahead: info.Worktree.Ahead, Dirty: info.Worktree.Dirty,
+		}
+	}
+	return out
+}
+
 func detailedStatusJobRecords(records []*jobstore.JobRecord) []*jobstore.JobRecord {
 	jobs := make([]*jobstore.JobRecord, 0, len(records))
 	terminal := 0
 	for _, rec := range records {
+		if rec == nil || rec.Type != jobstore.JobShell {
+			continue
+		}
 		if rec.Status.IsTerminal() {
 			if terminal >= detailedStatusTerminalJobsLimit {
 				continue

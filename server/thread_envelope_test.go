@@ -197,6 +197,20 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 			},
 		},
 		{
+			name: "diagnostics on DELEGATE_UPDATED",
+			move: func(e *stubThreadEnvelopeSource) {
+				e.detailedStatus = DetailedStatus{Delegates: []DelegateStatusInfo{{DelegateID: "dlg_1", ProjectionRevision: 3}}}
+			},
+			event: events.SessionEvent{Kind: events.EventDelegateUpdated, SessionID: "th_1", Data: events.DelegateUpdatedData{
+				DelegateID: "dlg_1", OwnerSessionID: "th_1", ProjectionRevision: 3,
+			}},
+			want: func(t *testing.T, thread appwire.Thread) {
+				if thread.Serf.Diagnostics == nil || len(thread.Serf.Diagnostics.Delegates) != 1 || thread.Serf.Diagnostics.Delegates[0].DelegateID != "dlg_1" {
+					t.Fatalf("diagnostics = %+v, want the stable delegate status", thread.Serf.Diagnostics)
+				}
+			},
+		},
+		{
 			name: "context on ASSISTANT_TEXT_END",
 			move: func(e *stubThreadEnvelopeSource) {
 				e.contextPressure = 0.75

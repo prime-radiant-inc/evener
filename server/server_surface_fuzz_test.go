@@ -21,6 +21,7 @@ func exerciseServerFuzzSurface(t *testing.T) {
 	// callback; equivalent serial cases live in exerciseServerFuzzResiduals.
 	exerciseServerFuzzResiduals(t)
 	t.Run("TestAppDiagnosticsFromDetailedStatus_MCPStatusError", TestAppDiagnosticsFromDetailedStatus_MCPStatusError)
+	t.Run("TestAppDiagnosticsFromDetailedStatus_DelegatesLossless", TestAppDiagnosticsFromDetailedStatus_DelegatesLossless)
 	t.Run("TestAppStatus", TestAppStatus)
 	t.Run("TestAppStatusPreservesAttentionStates", TestAppStatusPreservesAttentionStates)
 	t.Run("TestAppThread_OverlaysPendingAskFunc", TestAppThread_OverlaysPendingAskFunc)
@@ -149,6 +150,7 @@ func exerciseServerFuzzSurface(t *testing.T) {
 	t.Run("TestStatusCapabilities_QueueGatedByProcessing", TestStatusCapabilities_QueueGatedByProcessing)
 	t.Run("TestStatusEndpoint_ContextPressure", TestStatusEndpoint_ContextPressure)
 	t.Run("TestStatusEndpoint_DetailedStatus", TestStatusEndpoint_DetailedStatus)
+	t.Run("TestStatusEndpoint_DetailedStatusIncludesStableDelegates", TestStatusEndpoint_DetailedStatusIncludesStableDelegates)
 	t.Run("TestStatusEndpoint_Idle", TestStatusEndpoint_Idle)
 	t.Run("TestStatusEndpoint_MethodNotAllowed", TestStatusEndpoint_MethodNotAllowed)
 	t.Run("TestStatusEndpoint_NoDetailedStatusFunc", TestStatusEndpoint_NoDetailedStatusFunc)

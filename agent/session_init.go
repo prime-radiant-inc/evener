@@ -225,11 +225,11 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	} else if err := identifier.ValidateSessionID(sessionID); err != nil {
 		return nil, fmt.Errorf("reserved child session ID: %w", err)
 	}
-	jobClock := resolveJobTreeClock(tc)
+	jobClock := cfg.spawn.jobActivityClock
 	if cfg.spawn.parentSessionID == "" && jobClock == nil {
-		jobClock = newJobTreeClock(sessionID)
+		jobClock = newJobActivityClock(sessionID)
 	}
-	registerJobTreeClock(tc, jobClock)
+	cfg.spawn.jobActivityClock = jobClock
 	clientMutations, err := newClientMutationStore(cfg.StateDir, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("load client mutation state: %w", err)
@@ -256,7 +256,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		stateDir:                      cfg.StateDir,
 		installID:                     resolveInstallationID(cfg, cfg.StateDir),
 		state:                         SessionIdle,
-		jobTreeClock:                  jobClock,
+		jobActivityClock:              jobClock,
 		events:                        make(chan events.SessionEvent, 256),
 		history:                       []schema.Turn{},
 		responsesContinuationDisabled: map[responsesContinuationDisabledKey]bool{},
@@ -414,6 +414,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	s.attachTranscript(tw)
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
+	}
+	if err := s.rearmRootDelegateAttentionFromTranscript(); err != nil {
+		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
 
 	contextmgr.ApplyThresholdScale(s.contextMgr, cfg.testOnly.compactionThresholdScale)
@@ -666,17 +669,17 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// down the tree.
 	cfg.spawn.treeCounter = tc
 	cfg.spawn.driveCounter = dc
-	jobClock := resolveJobTreeClock(tc)
+	jobClock := cfg.spawn.jobActivityClock
 	if cfg.spawn.parentSessionID == "" && jobClock == nil {
 		// A restore without the parent's live tree carrier is a new root runtime.
 		// Persisted ancestor identity remains useful to durable history traversal,
 		// but must not route new lifecycle notifications to that old tree.
-		jobClock = newJobTreeClock(meta.ID)
+		jobClock = newJobActivityClock(meta.ID)
 	}
 	if jobClock != nil {
 		jobClock.ensureAtLeast(meta.JobTreeRevision)
 	}
-	registerJobTreeClock(tc, jobClock)
+	cfg.spawn.jobActivityClock = jobClock
 	s := &Session{
 		id:                       meta.ID,
 		cfg:                      cfg,
@@ -686,7 +689,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		resolveProfile:           cfg.ResolveProfile,
 		depth:                    cfg.spawn.depth,
 		delegationAllowance:      delegationAllowance,
-		jobTreeClock:             jobClock,
+		jobActivityClock:         jobClock,
 		treeCounter:              tc,
 		driveCounter:             dc,
 		env:                      env,
@@ -916,6 +919,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			return nil, fmt.Errorf("refresh transcript after delegate delivery replay: header session %q does not match %q", refreshed.Header.SessionID, s.id)
 		}
 		transcriptEntries = refreshed.Entries
+	}
+	if err := s.rearmRootDelegateAttentionFromTranscript(); err != nil {
+		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
 	if err := s.recoverClientMutationFailures(); err != nil {
 		return nil, fmt.Errorf("recover client mutation failures: %w", err)

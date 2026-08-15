@@ -301,9 +301,52 @@ export interface JobActivityCounts {
 
 export interface JobActivityDelegate {
   delegateId: string;
+  ownerSessionId?: string;
+  rootSessionId?: string;
   childSessionId: string;
   childRef: string;
+  parentDelegateId?: string;
+  type?: string;
+  lifecycle?: string;
+  phase?: string;
+  status?: string;
+  projectionRevision?: number;
+  outcome?: string;
+  reason?: string;
+  terminal?: boolean;
+  resumable?: boolean;
+  notResumableReason?: string;
   mandate?: string;
+  task?: string;
+  description?: string;
+  agentType?: string;
+  requestedModel?: string;
+  resolvedProfileId?: string;
+  resolvedModel?: string;
+  model?: string;
+  reasoningEffort?: string;
+  originTurnId?: string;
+  originToolCallId?: string;
+  originItemId?: string;
+  runStartedAt?: string;
+  runEndedAt?: string;
+  latestActivityAt?: string;
+  runningForMs?: number;
+  quietForMs?: number;
+  durationMs?: number;
+  packetKind?: string;
+  message?: unknown;
+  structuredResult?: unknown;
+  structuredResultValid?: boolean;
+  structuredResultReason?: string;
+  warnings?: string[];
+  diagnostics?: string[];
+  exhaustionBudget?: string;
+  exhaustionLimit?: number;
+  exhaustionResumable?: boolean;
+  delegationAllowance?: number;
+  parentWatchGranted?: boolean;
+  worktree?: JobActivityWorktree;
   turns: JobActivityJob[];
   child?: JobActivitySession;
   branch: JobActivityBranchState;
@@ -345,12 +388,21 @@ export interface JobActivitySession {
   aggregate: string;
   counts: JobActivityCounts;
   entries: JobActivityEntry[];
+  diagnostics?: string[];
   branch: JobActivityBranchState;
 }
 
 export interface JobActivityTree {
   revision: number;
   root: JobActivitySession;
+}
+
+export interface JobActivityWorktree {
+  path: string;
+  branch: string;
+  headSha: string;
+  ahead: number;
+  dirty: boolean;
 }
 
 export interface JobsListParams {
@@ -709,6 +761,62 @@ export interface SerfAuthUpdatedParams {
   activeSource?: string;
 }
 
+export interface SerfDelegateInfo {
+  delegateId: string;
+  ownerSessionId: string;
+  rootSessionId: string;
+  childSessionId: string;
+  transcriptRef: string;
+  parentDelegateId?: string;
+  type: string;
+  lifecycle: string;
+  phase: string;
+  status: string;
+  outcome?: string;
+  reason?: string;
+  terminal?: boolean;
+  resumable: boolean;
+  notResumableReason?: string;
+  projectionRevision: number;
+  task?: string;
+  description?: string;
+  agentType?: string;
+  requestedModel?: string;
+  resolvedProfileId?: string;
+  resolvedModel?: string;
+  model?: string;
+  reasoningEffort?: string;
+  originTurnId?: string;
+  originToolCallId?: string;
+  originItemId?: string;
+  runStartedAt?: string;
+  runEndedAt?: string;
+  latestActivityAt?: string;
+  runningForMs?: number;
+  quietForMs?: number;
+  durationMs?: number;
+  packetKind?: string;
+  message?: unknown;
+  structuredResult?: unknown;
+  structuredResultValid?: boolean;
+  structuredResultReason?: string;
+  warnings?: string[];
+  diagnostics?: string[];
+  exhaustionBudget?: string;
+  exhaustionLimit?: number;
+  exhaustionResumable?: boolean;
+  delegationAllowance?: number;
+  parentWatchGranted?: boolean;
+  usage?: SerfUsage;
+  worktree?: JobActivityWorktree;
+}
+
+export interface SerfDelegateParams {
+  threadId: string;
+  ref: string;
+  delegate: SerfDelegateInfo;
+}
+
 export interface SerfDiagnostics {
   tools?: SerfToolInfo[];
   mcp?: SerfMCPServerInfo[];
@@ -716,6 +824,8 @@ export interface SerfDiagnostics {
   plugins?: SerfPluginInfo[];
   hooks?: Record<string, number>;
   jobs?: SerfJobInfo[];
+  delegates?: SerfDelegateInfo[];
+  turnSlots?: SerfTurnSlots;
   agents?: string[];
 }
 
@@ -733,6 +843,7 @@ export interface SerfJobInfo {
   fromWatch?: boolean;
   background?: boolean;
   command?: string;
+  parentDelegateId?: string;
   delegateId?: string;
   task?: string;
   originTurnId?: string;
@@ -824,6 +935,13 @@ export interface SerfThread {
 export interface SerfToolInfo {
   name: string;
   source: string;
+}
+
+export interface SerfTurnSlots {
+  inUse: number;
+  cap: number;
+  jobs: number;
+  driveTurns: number;
 }
 
 export interface SerfUsage {
@@ -1454,6 +1572,7 @@ export const NOTIFICATION_NAMES = [
   "serf/steering/injected",
   "serf/job/started",
   "serf/job/finished",
+  "serf/delegate/updated",
   "serf/jobs/treeUpdated",
   "serf/auth/updated",
   "serf/launch/updated",
@@ -1606,6 +1725,7 @@ export interface NotificationTypes {
   "serf/steering/injected": SerfSteeringInjectedParams;
   "serf/job/started": SerfJobParams;
   "serf/job/finished": SerfJobParams;
+  "serf/delegate/updated": SerfDelegateParams;
   "serf/jobs/treeUpdated": JobsTreeUpdatedParams;
   "serf/auth/updated": SerfAuthUpdatedParams;
   "serf/launch/updated": SerfLaunchUpdatedParams;

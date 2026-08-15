@@ -488,7 +488,7 @@ func TestHubThreadFixtureKeepsSplitToolResultsGrouped(t *testing.T) {
 	}
 }
 
-func TestHubModelAppliesSerfJobNotificationsToDelegateTool(t *testing.T) {
+func TestHubModelAppliesStableDelegateNotificationsToDelegateTool(t *testing.T) {
 	m := newHubModel(nil, "")
 	m.mode = hubModeSession
 	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
@@ -508,12 +508,12 @@ func TestHubModelAppliesSerfJobNotificationsToDelegateTool(t *testing.T) {
 		},
 	}).Notification})
 
-	updated, _ = updated.(hubModel).Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifySerfJobFinished, map[string]any{
+	updated, _ = updated.(hubModel).Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifySerfDelegateUpdated, map[string]any{
 		"threadId": "th_1",
 		"ref":      "local:th_1",
-		"job": appwire.SerfJobInfo{
-			JobID: "job_A", JobType: "delegate", Status: "completed", DelegateID: "dlg_A", Task: "inspect billing",
-			TranscriptRef: "local:child", OriginToolCallID: "call_delegate", OriginItemID: "item_delegate", OutputBytes: 42,
+		"delegate": appwire.SerfDelegateInfo{
+			DelegateID: "dlg_A", Status: "completed", Terminal: true, ProjectionRevision: 2, Task: "inspect billing",
+			TranscriptRef: "local:child", OriginToolCallID: "call_delegate", OriginItemID: "item_delegate",
 		},
 	}).Notification})
 
@@ -522,7 +522,7 @@ func TestHubModelAppliesSerfJobNotificationsToDelegateTool(t *testing.T) {
 		t.Fatalf("messages=%+v, want delegate message with Subagent metadata", got.session.messages)
 	}
 	run := got.session.messages[0].Tool.Subagent
-	if run.Status != "completed" || run.JobID != "job_A" || run.DelegateID != "dlg_A" || !got.session.messages[0].Tool.Done {
+	if run.Status != "completed" || run.JobID != "" || run.DelegateID != "dlg_A" || run.ProjectionRevision != 2 || !got.session.messages[0].Tool.Done {
 		t.Fatalf("run=%+v tool=%+v", run, got.session.messages[0].Tool)
 	}
 }

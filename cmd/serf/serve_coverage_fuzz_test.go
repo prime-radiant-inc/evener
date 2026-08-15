@@ -54,6 +54,7 @@ func FuzzServeSeedCoverage(f *testing.F) {
 			{"resume missing", TestRunServe_ResumeNonexistent},
 			{"status empty", TestAgentToServerDetailedStatus_Empty},
 			{"status partial", TestAgentToServerDetailedStatus_Partial},
+			{"status stable delegates", TestAgentToServerDetailedStatus_DelegatesLossless},
 			{"usage zero", TestSerfUsageFromLLM_ZeroReturnsNil},
 			{"usage totals", TestSerfUsageFromLLM_MapsTotals},
 			{"usage cache", TestSerfUsageFromLLM_NonZeroCacheReadOnlyStillReturns},

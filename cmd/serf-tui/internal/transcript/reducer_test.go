@@ -521,7 +521,7 @@ func TestHubTranscriptReducerReasoningSupersededAndTurnFinalized(t *testing.T) {
 	}
 }
 
-func TestTranscriptReducerAppliesSerfJobNotificationsToDelegateTool(t *testing.T) {
+func TestTranscriptReducerAppliesStableDelegateNotificationsToDelegateTool(t *testing.T) {
 	reducer := NewTranscriptReducer(nil, nil, nil)
 	reducer.ApplyThreadItem(appwire.ThreadItem{
 		Type:          "commandExecution",
@@ -534,16 +534,15 @@ func TestTranscriptReducerAppliesSerfJobNotificationsToDelegateTool(t *testing.T
 		Status:        appwire.TurnStatusCompleted,
 	}, 1, true)
 
-	reducer.ApplySerfJob(appwire.SerfJobInfo{
-		JobID:            "job_A",
-		JobType:          "delegate",
-		Status:           "completed",
-		OutputBytes:      42,
-		TranscriptRef:    "local:child",
-		DelegateID:       "dlg_A",
-		Task:             "inspect billing",
-		OriginToolCallID: "call_delegate",
-		OriginItemID:     "item_delegate",
+	reducer.ApplySerfDelegate(appwire.SerfDelegateInfo{
+		DelegateID:         "dlg_A",
+		Status:             "completed",
+		Terminal:           true,
+		ProjectionRevision: 2,
+		TranscriptRef:      "local:child",
+		Task:               "inspect billing",
+		OriginToolCallID:   "call_delegate",
+		OriginItemID:       "item_delegate",
 	})
 
 	tools := transcriptTools(reducer.messages)
@@ -551,11 +550,71 @@ func TestTranscriptReducerAppliesSerfJobNotificationsToDelegateTool(t *testing.T
 		t.Fatalf("tools=%+v, want one delegate tool with Subagent metadata", tools)
 	}
 	got := tools[0].Subagent
-	if got.JobID != "job_A" || got.DelegateID != "dlg_A" || got.Status != "completed" || got.Task != "inspect billing" || got.TranscriptRef != "local:child" || got.OriginToolCallID != "call_delegate" || got.OutputBytes != 42 {
+	if got.JobID != "" || got.DelegateID != "dlg_A" || got.Status != "completed" || got.Task != "inspect billing" || got.TranscriptRef != "local:child" || got.OriginToolCallID != "call_delegate" || got.ProjectionRevision != 2 {
 		t.Fatalf("Subagent = %+v", got)
 	}
 	if !tools[0].Done {
 		t.Fatalf("delegate tool should be marked done after terminal job")
+	}
+}
+
+func TestDelegateToolItemDoesNotExposeActivationJobIdentity(t *testing.T) {
+	reducer := NewTranscriptReducer(nil, nil, nil)
+	reducer.ApplyThreadItem(appwire.ThreadItem{
+		Type:          "commandExecution",
+		ID:            "item_delegate",
+		CallID:        "call_delegate",
+		TurnID:        "turn_1",
+		ToolName:      "delegate",
+		ArgumentsJSON: `{"task":"inspect billing"}`,
+		Output:        `{"job_id":"job_activation","delegate_id":"dlg_stable","status":"running","transcript_ref":"local:child"}`,
+		Status:        appwire.TurnStatusCompleted,
+	}, 1, true)
+
+	tools := transcriptTools(reducer.messages)
+	if len(tools) != 1 || tools[0].Subagent == nil {
+		t.Fatalf("tools=%+v, want one stable delegate tool row", tools)
+	}
+	if tools[0].Subagent.DelegateID != "dlg_stable" || tools[0].Subagent.JobID != "" {
+		t.Fatalf("delegate tool row exposed activation identity: %+v", tools[0].Subagent)
+	}
+}
+
+func TestMessagesFromThreadFoldsStableDelegateDiagnosticsAfterTranscript(t *testing.T) {
+	thread := appwire.Thread{
+		Serf: appwire.SerfThread{Diagnostics: &appwire.SerfDiagnostics{Delegates: []appwire.SerfDelegateInfo{{
+			DelegateID:         "dlg_stable",
+			Status:             "completed",
+			Terminal:           true,
+			ProjectionRevision: 4,
+			Task:               "inspect billing",
+			TranscriptRef:      "local:child",
+			OriginToolCallID:   "call_delegate",
+			OriginItemID:       "item_delegate",
+		}}}},
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{{
+				Type:          "commandExecution",
+				ID:            "item_delegate",
+				CallID:        "call_delegate",
+				TurnID:        "turn_1",
+				ToolName:      "delegate",
+				ArgumentsJSON: `{"task":"inspect billing"}`,
+				Output:        `{"job_id":"job_activation","delegate_id":"dlg_stable","status":"running","transcript_ref":"local:child"}`,
+				Status:        appwire.TurnStatusCompleted,
+			}},
+		}},
+	}
+
+	tools := transcriptTools(MessagesFromThread(thread))
+	if len(tools) != 1 || tools[0].Subagent == nil {
+		t.Fatalf("tools=%+v, want one stable delegate row", tools)
+	}
+	run := tools[0].Subagent
+	if run.JobID != "" || run.Status != "completed" || run.ProjectionRevision != 4 || !tools[0].Done {
+		t.Fatalf("cold thread fold did not make stable diagnostics authoritative: %+v", tools[0])
 	}
 }
 
@@ -565,13 +624,13 @@ func TestSubagentTerminalStatus_Exhausted(t *testing.T) {
 	}
 
 	reducer := NewTranscriptReducer(nil, nil, nil)
-	reducer.ApplySerfJob(appwire.SerfJobInfo{
-		JobID:      "job_exhausted",
-		JobType:    "delegate",
-		Status:     "exhausted",
-		Reason:     "tool_round_budget_exhausted",
-		DelegateID: "dlg_exhausted",
-		Task:       "bounded work",
+	reducer.ApplySerfDelegate(appwire.SerfDelegateInfo{
+		DelegateID:         "dlg_exhausted",
+		Status:             "exhausted",
+		Terminal:           true,
+		ProjectionRevision: 1,
+		Reason:             "tool_round_budget_exhausted",
+		Task:               "bounded work",
 	})
 	tools := transcriptTools(reducer.messages)
 	if len(tools) != 1 || tools[0].Subagent == nil {
@@ -582,41 +641,34 @@ func TestSubagentTerminalStatus_Exhausted(t *testing.T) {
 	}
 }
 
-func TestTranscriptReducerResumedDelegateJobWithSameOriginCreatesNewRun(t *testing.T) {
+func TestTranscriptReducerResumedDelegateKeepsOneStableResourceRow(t *testing.T) {
 	reducer := NewTranscriptReducer(nil, nil, nil)
-	first := appwire.SerfJobInfo{
-		JobID:            "job_first",
-		JobType:          "delegate",
-		Status:           "running",
-		TranscriptRef:    "local:child-first",
-		DelegateID:       "dlg_same",
-		Task:             "inspect billing",
-		OriginToolCallID: "call_delegate",
-		OriginItemID:     "item_delegate",
+	first := appwire.SerfDelegateInfo{
+		DelegateID:         "dlg_same",
+		Status:             "running",
+		ProjectionRevision: 1,
+		TranscriptRef:      "local:child-first",
+		Task:               "inspect billing",
+		OriginToolCallID:   "call_delegate",
+		OriginItemID:       "item_delegate",
 	}
-	reducer.ApplySerfJob(first)
+	reducer.ApplySerfDelegate(first)
 	first.Status = "completed"
-	reducer.ApplySerfJob(first)
-	reducer.ApplySerfJob(appwire.SerfJobInfo{
-		JobID:            "job_second",
-		JobType:          "delegate",
-		Status:           "running",
-		TranscriptRef:    "local:child-second",
-		DelegateID:       "dlg_same",
-		Task:             "inspect billing",
-		OriginToolCallID: "call_delegate",
-		OriginItemID:     "item_delegate",
-	})
+	first.Terminal = true
+	first.ProjectionRevision = 2
+	reducer.ApplySerfDelegate(first)
+	first.Status = "running"
+	first.Terminal = false
+	first.ProjectionRevision = 3
+	first.TranscriptRef = "local:child-second"
+	reducer.ApplySerfDelegate(first)
 
 	tools := transcriptTools(reducer.messages)
-	if len(tools) != 2 {
-		t.Fatalf("tools=%+v messages=%+v, want two delegate run rows", tools, reducer.messages)
+	if len(tools) != 1 {
+		t.Fatalf("tools=%+v messages=%+v, want one stable delegate row", tools, reducer.messages)
 	}
-	if tools[0].Subagent == nil || tools[0].Subagent.JobID != "job_first" || tools[0].Subagent.Status != "completed" || !tools[0].Done {
-		t.Fatalf("first run overwritten or not completed: %+v", tools[0])
-	}
-	if tools[1].Subagent == nil || tools[1].Subagent.JobID != "job_second" || tools[1].Subagent.Status != "running" || tools[1].Done {
-		t.Fatalf("second run missing or not running: %+v", tools[1])
+	if tools[0].Subagent == nil || tools[0].Subagent.JobID != "" || tools[0].Subagent.Status != "running" || tools[0].Subagent.ProjectionRevision != 3 || tools[0].Done {
+		t.Fatalf("stable delegate resource was duplicated or retained activation state: %+v", tools[0])
 	}
 }
 
@@ -749,7 +801,7 @@ func transcriptTools(messages []ChatMessage) []ToolCallInfo {
 
 func TestApplyChildActivityTracksRunningRunHonestly(t *testing.T) {
 	reducer := NewTranscriptReducer(nil, nil, nil)
-	reducer.ApplySerfJob(appwire.SerfJobInfo{JobID: "job_a", JobType: "delegate", Status: "running", TranscriptRef: "local:c1", Task: "port webhook"})
+	reducer.ApplySerfDelegate(appwire.SerfDelegateInfo{DelegateID: "dlg_a", Status: "running", ProjectionRevision: 1, TranscriptRef: "local:c1", Task: "port webhook"})
 
 	if !reducer.ApplyChildActivity("local:c1", "shell: go test ./...") {
 		t.Fatalf("activity for a watched running child should apply")
@@ -773,7 +825,7 @@ func TestApplyChildActivityTracksRunningRunHonestly(t *testing.T) {
 		t.Fatalf("activity for an unknown ref must not apply")
 	}
 	// Once terminal, activity no longer applies.
-	reducer.ApplySerfJob(appwire.SerfJobInfo{JobID: "job_a", JobType: "delegate", Status: "completed", TranscriptRef: "local:c1"})
+	reducer.ApplySerfDelegate(appwire.SerfDelegateInfo{DelegateID: "dlg_a", Status: "completed", Terminal: true, ProjectionRevision: 2, TranscriptRef: "local:c1"})
 	if reducer.ApplyChildActivity("local:c1", "late frame") {
 		t.Fatalf("activity must not apply to a finished run")
 	}
@@ -804,7 +856,7 @@ func TestParseJobNotificationHeadlineAndTie(t *testing.T) {
 
 	// The headline ties onto the matching rail run.
 	reducer := NewTranscriptReducer(nil, nil, nil)
-	reducer.ApplySerfJob(appwire.SerfJobInfo{JobID: "job_T", JobType: "delegate", Status: "completed", TranscriptRef: "local:ct", Task: "port webhook"})
+	reducer.ApplySerfJob(appwire.SerfJobInfo{JobID: "job_T", JobType: "shell", Background: true, Status: "completed", TranscriptRef: "local:ct", Task: "port webhook"})
 	if !reducer.ApplyTieHeadline(jobID, headline, isError) {
 		t.Fatalf("headline should tie to the run with the matching job id")
 	}

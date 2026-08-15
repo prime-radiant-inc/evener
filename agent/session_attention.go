@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -307,7 +308,7 @@ func delegateAttentionResolutionTurn(attentionID string, disposition delegateAtt
 // appendDelegateNotificationDurably appends one private, model-bound attention
 // item. Replaying the same identity and content is a no-op; reusing an identity
 // for different content is corruption.
-func (s *Session) appendDelegateNotificationDurably(attentionID, content string) (bool, error) {
+func (s *Session) appendDelegateNotificationDurably(attentionID, content string) (appended bool, err error) {
 	if s == nil {
 		return false, errors.New("delegate attention session is nil")
 	}
@@ -315,7 +316,12 @@ func (s *Session) appendDelegateNotificationDurably(attentionID, content string)
 		return false, errors.New("delegate attention ID is empty")
 	}
 	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
+	defer func() {
+		s.attentionMu.Unlock()
+		if err == nil {
+			s.armRootDelegateAttention(attentionID)
+		}
+	}()
 
 	s.mu.Lock()
 	ready := s.transcriptReady
@@ -382,6 +388,186 @@ func (s *Session) appendDelegateNotificationDurably(attentionID, content string)
 		return false, err
 	}
 	return true, nil
+}
+
+// isRootDelegateAttentionReceiver reports whether this Session is the stable
+// controller's root receiver. Stable delegate runtimes use controller-governed
+// attention generations; only the root consumes attention through its existing
+// EntryNotification loop.
+func (s *Session) isRootDelegateAttentionReceiver() bool {
+	if s == nil || s.delegateController == nil {
+		return false
+	}
+	s.delegateController.mu.Lock()
+	isRoot := s.delegateController.rootRuntime == s
+	s.delegateController.mu.Unlock()
+	return isRoot
+}
+
+// armRootDelegateAttention caches one already-durable root attention ID and
+// coalesces an autonomous notification wake. The cache is never authority: an
+// append/readback succeeds before admission here, and restart replaces it from
+// the receiver transcript fold.
+func (s *Session) armRootDelegateAttention(attentionID string) {
+	if attentionID == "" || !s.isRootDelegateAttentionReceiver() {
+		return
+	}
+	s.attentionMu.Lock()
+	if s.rootAttentionWakeIDs == nil {
+		s.rootAttentionWakeIDs = make(map[string]struct{})
+	}
+	s.rootAttentionWakeIDs[attentionID] = struct{}{}
+	shouldWake := !s.rootAttentionWake
+	if shouldWake {
+		s.rootAttentionWake = true
+	}
+	s.attentionMu.Unlock()
+	if shouldWake {
+		s.notify()
+	}
+}
+
+func (s *Session) hasPendingRootDelegateAttention() bool {
+	if s == nil {
+		return false
+	}
+	s.attentionMu.Lock()
+	pending := len(s.rootAttentionWakeIDs) != 0
+	s.attentionMu.Unlock()
+	return pending
+}
+
+// beginRootDelegateAttentionTurn snapshots the exact durable IDs selected for
+// this notification turn and consumes only the process-local wake. The IDs stay
+// cached until a consumed-resolution fsync succeeds.
+func (s *Session) beginRootDelegateAttentionTurn() []string {
+	s.attentionMu.Lock()
+	ids := make([]string, 0, len(s.rootAttentionWakeIDs))
+	for id := range s.rootAttentionWakeIDs {
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		s.attentionMu.Unlock()
+		return nil
+	}
+	s.rootAttentionWake = false
+	if s.rootAttentionRetry.active {
+		s.rootAttentionRetry.generation++
+		s.rootAttentionRetry.active = false
+	}
+	s.attentionMu.Unlock()
+	sort.Strings(ids)
+	return ids
+}
+
+// finishRootDelegateAttentionTurn consumes the exact selected IDs only after a
+// successful model turn and durable resolution markers. Failures keep the
+// transcript-owned IDs pending and arrange a paced retry wake.
+func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	var resolutionErr error
+	if turnErr == nil {
+		if err := s.resolveAttentionDurably(ids, delegateAttentionConsumed); err == nil {
+			s.attentionMu.Lock()
+			for _, id := range ids {
+				delete(s.rootAttentionWakeIDs, id)
+			}
+			if len(s.rootAttentionWakeIDs) == 0 {
+				s.rootAttentionWake = false
+				s.resetRootAttentionRetryLocked()
+			}
+			s.attentionMu.Unlock()
+			return nil
+		} else {
+			resolutionErr = err
+		}
+	}
+	s.attentionMu.Lock()
+	s.scheduleRootAttentionRetryLocked()
+	s.attentionMu.Unlock()
+	return resolutionErr
+}
+
+func (s *Session) scheduleRootAttentionRetryLocked() {
+	if s.rootAttentionRetry.active || s.rootAttentionWake || len(s.rootAttentionWakeIDs) == 0 {
+		return
+	}
+	delay := s.rootAttentionRetry.delay
+	if delay <= 0 {
+		delay = jobNotificationRetryInitialDelay
+	}
+	s.rootAttentionRetry.active = true
+	s.rootAttentionRetry.generation++
+	generation := s.rootAttentionRetry.generation
+	s.sclock().AfterFunc(delay, func() {
+		s.attentionMu.Lock()
+		if s.rootAttentionRetry.generation != generation {
+			s.attentionMu.Unlock()
+			return
+		}
+		s.rootAttentionRetry.active = false
+		pending := len(s.rootAttentionWakeIDs) != 0
+		shouldWake := pending && !s.rootAttentionWake
+		if shouldWake {
+			s.rootAttentionWake = true
+		}
+		if pending {
+			s.rootAttentionRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
+		} else {
+			s.rootAttentionRetry.delay = jobNotificationRetryInitialDelay
+		}
+		s.attentionMu.Unlock()
+		if shouldWake {
+			s.notify()
+		}
+	})
+}
+
+func (s *Session) resetRootAttentionRetryLocked() {
+	s.rootAttentionRetry.generation++
+	s.rootAttentionRetry.active = false
+	s.rootAttentionRetry.delay = jobNotificationRetryInitialDelay
+}
+
+// rearmRootDelegateAttentionFromTranscript reconstructs the root wake cache
+// from the only durable attention authority. It performs no provider or Session
+// construction and is called after the root transcript is attached/replayed.
+func (s *Session) rearmRootDelegateAttentionFromTranscript() error {
+	if !s.isRootDelegateAttentionReceiver() {
+		return nil
+	}
+	s.attentionMu.Lock()
+	s.mu.Lock()
+	ready := s.transcriptReady
+	writer := s.transcript
+	sessionID := s.id
+	stateDir := s.stateDir
+	s.mu.Unlock()
+	if !ready || writer == nil || sessionID == "" || stateDir == "" {
+		s.attentionMu.Unlock()
+		return nil
+	}
+	fold, err := s.readDelegateAttentionFold(transcriptPath(stateDir, sessionID), sessionID)
+	if err != nil {
+		s.attentionMu.Unlock()
+		return err
+	}
+	ids := fold.pendingIDs()
+	s.rootAttentionWakeIDs = make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		s.rootAttentionWakeIDs[id] = struct{}{}
+	}
+	shouldWake := len(ids) != 0 && !s.rootAttentionWake
+	if shouldWake {
+		s.rootAttentionWake = true
+	}
+	s.attentionMu.Unlock()
+	if shouldWake {
+		s.notify()
+	}
+	return nil
 }
 
 func (s *Session) retainDelegateAttentionTurn(turn schema.Turn) error {

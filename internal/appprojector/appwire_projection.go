@@ -81,6 +81,7 @@ type AppEventProjector struct {
 	// TOOL_RESULT_IMAGES_PERSISTED, or with the turn that opened them.
 	heldToolResultImages map[string]appwire.ThreadItem
 	skillCandidate       skillActivationCandidate
+	delegates            map[string]appwire.SerfDelegateInfo
 
 	lastAssistantTurnID string
 	lastAssistantText   string
@@ -115,6 +116,7 @@ func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 		toolStartByKey:       map[string]time.Time{},
 		suppressedTools:      map[string]struct{}{},
 		heldToolResultImages: map[string]appwire.ThreadItem{},
+		delegates:            map[string]appwire.SerfDelegateInfo{},
 	}
 }
 
@@ -933,6 +935,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventJobStarted:
 		p.clearSkillCandidate()
 		data := eventData[events.JobStartedData](event.Data)
+		if data.JobType != "shell" {
+			return nil
+		}
 		out := []AppNotification{p.notification(appwire.NotifySerfJobStarted, appwire.SerfJobParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
@@ -943,6 +948,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				FromWatch:        data.FromWatch,
 				Background:       data.Background,
 				Command:          data.Command,
+				ParentDelegateID: data.ParentDelegateID,
 				DelegateID:       data.DelegateID,
 				Task:             data.Task,
 				TranscriptRef:    data.TranscriptRef,
@@ -962,6 +968,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventJobFinished:
 		p.clearSkillCandidate()
 		data := eventData[events.JobFinishedData](event.Data)
+		if data.JobType != "shell" {
+			return nil
+		}
 		out := []AppNotification{p.notification(appwire.NotifySerfJobFinished, appwire.SerfJobParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
@@ -979,6 +988,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				FromWatch:        data.FromWatch,
 				Background:       data.Background,
 				Command:          data.Command,
+				ParentDelegateID: data.ParentDelegateID,
 				DelegateID:       data.DelegateID,
 				Task:             data.Task,
 				OriginTurnID:     data.OriginTurnID,
@@ -994,6 +1004,23 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			}))
 		}
 		return out
+	case events.EventDelegateUpdated:
+		p.clearSkillCandidate()
+		data := eventData[events.DelegateUpdatedData](event.Data)
+		if data.OwnerSessionID != p.threadID || data.DelegateID == "" {
+			return nil
+		}
+		incoming := appwireDelegateInfo(data)
+		merged, changed := mergeAppwireDelegateInfo(p.delegates[data.DelegateID], incoming)
+		if !changed {
+			return nil
+		}
+		p.delegates[data.DelegateID] = cloneAppwireDelegateInfo(merged)
+		return []AppNotification{p.notification(appwire.NotifySerfDelegateUpdated, appwire.SerfDelegateParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			Delegate: cloneAppwireDelegateInfo(merged),
+		})}
 	case events.EventTurnEnded:
 		if p.activeTurnID == "" {
 			return nil // turn already completed (e.g. failed via EventError)
@@ -1058,6 +1085,105 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	default:
 		return nil
 	}
+}
+
+func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.SerfDelegateInfo {
+	out := appwire.SerfDelegateInfo{
+		DelegateID: data.DelegateID, OwnerSessionID: data.OwnerSessionID, RootSessionID: data.RootSessionID,
+		ChildSessionID: data.ChildSessionID, TranscriptRef: data.TranscriptRef, ParentDelegateID: data.ParentDelegateID,
+		Type: data.Type, Lifecycle: data.Lifecycle, Phase: data.Phase, Status: data.Status, Outcome: data.Outcome,
+		Reason: data.Reason, Terminal: data.Terminal, Resumable: data.Resumable, NotResumableReason: data.NotResumableReason,
+		ProjectionRevision: data.ProjectionRevision, Task: data.Task, Description: data.Description, AgentType: data.AgentType,
+		RequestedModel: data.RequestedModel, ResolvedProfileID: data.ResolvedProfileID, ResolvedModel: data.ResolvedModel,
+		Model: data.Model, ReasoningEffort: data.ReasoningEffort, OriginTurnID: data.OriginTurnID,
+		OriginToolCallID: data.OriginToolCallID, OriginItemID: data.OriginItemID, RunStartedAt: data.RunStartedAt,
+		RunEndedAt: data.RunEndedAt, LatestActivityAt: data.LatestActivityAt, RunningForMS: cloneInt64Pointer(data.RunningForMS),
+		QuietForMS: cloneInt64Pointer(data.QuietForMS), DurationMS: cloneInt64Pointer(data.DurationMS), PacketKind: data.PacketKind,
+		Message: append(json.RawMessage(nil), data.Message...), StructuredResult: append(json.RawMessage(nil), data.StructuredResult...),
+		StructuredValid: cloneBoolPointer(data.StructuredValid), StructuredReason: data.StructuredReason,
+		Warnings: append([]string(nil), data.Warnings...), Diagnostics: append([]string(nil), data.Diagnostics...),
+		ExhaustionBudget: data.ExhaustionBudget, ExhaustionLimit: data.ExhaustionLimit,
+		ExhaustionResumable: cloneBoolPointer(data.ExhaustionResumable), DelegationAllowance: data.DelegationAllowance,
+		ParentWatchGranted: data.ParentWatchGranted,
+	}
+	if data.Usage != nil {
+		out.Usage = &appwire.SerfUsage{
+			InputTokens: data.Usage.InputTokens, OutputTokens: data.Usage.OutputTokens,
+			CacheReadTokens: data.Usage.CacheReadTokens, TotalTokens: data.Usage.TotalTokens,
+		}
+	}
+	if data.Worktree != nil {
+		out.Worktree = &appwire.JobActivityWorktree{
+			Path: data.Worktree.Path, Branch: data.Worktree.Branch, HeadSHA: data.Worktree.HeadSHA,
+			Ahead: data.Worktree.Ahead, Dirty: data.Worktree.Dirty,
+		}
+	}
+	return out
+}
+
+func mergeAppwireDelegateInfo(current, incoming appwire.SerfDelegateInfo) (appwire.SerfDelegateInfo, bool) {
+	if current.DelegateID == "" || incoming.ProjectionRevision > current.ProjectionRevision {
+		merged := cloneAppwireDelegateInfo(incoming)
+		if delegateActivityAfter(current.LatestActivityAt, merged.LatestActivityAt) {
+			merged.LatestActivityAt = current.LatestActivityAt
+		}
+		return merged, true
+	}
+	if delegateActivityAfter(incoming.LatestActivityAt, current.LatestActivityAt) {
+		merged := cloneAppwireDelegateInfo(current)
+		merged.LatestActivityAt = incoming.LatestActivityAt
+		return merged, true
+	}
+	return current, false
+}
+
+func delegateActivityAfter(candidate, current string) bool {
+	if strings.TrimSpace(candidate) == "" {
+		return false
+	}
+	if strings.TrimSpace(current) == "" {
+		return true
+	}
+	candidateAt, candidateErr := time.Parse(time.RFC3339Nano, candidate)
+	currentAt, currentErr := time.Parse(time.RFC3339Nano, current)
+	return candidateErr == nil && currentErr == nil && candidateAt.After(currentAt)
+}
+
+func cloneAppwireDelegateInfo(value appwire.SerfDelegateInfo) appwire.SerfDelegateInfo {
+	value.Message = append(json.RawMessage(nil), value.Message...)
+	value.StructuredResult = append(json.RawMessage(nil), value.StructuredResult...)
+	value.StructuredValid = cloneBoolPointer(value.StructuredValid)
+	value.ExhaustionResumable = cloneBoolPointer(value.ExhaustionResumable)
+	value.RunningForMS = cloneInt64Pointer(value.RunningForMS)
+	value.QuietForMS = cloneInt64Pointer(value.QuietForMS)
+	value.DurationMS = cloneInt64Pointer(value.DurationMS)
+	value.Warnings = append([]string(nil), value.Warnings...)
+	value.Diagnostics = append([]string(nil), value.Diagnostics...)
+	if value.Usage != nil {
+		usage := *value.Usage
+		value.Usage = &usage
+	}
+	if value.Worktree != nil {
+		worktree := *value.Worktree
+		value.Worktree = &worktree
+	}
+	return value
+}
+
+func cloneBoolPointer(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func cloneInt64Pointer(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 func useSkillNameFromArgs(raw string) string {

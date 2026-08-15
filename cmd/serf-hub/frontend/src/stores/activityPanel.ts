@@ -123,21 +123,39 @@ function cloneSession(session: ActivitySessionNode): ActivitySessionNode {
 function cloneDelegate(delegate: ActivityDelegate): ActivityDelegate {
   return {
     ...delegate,
-    turns: delegate.turns.map((turn) => ({ ...turn })),
+    warnings: delegate.warnings ? [...delegate.warnings] : undefined,
+    diagnostics: delegate.diagnostics ? [...delegate.diagnostics] : undefined,
+    usage: delegate.usage ? { ...delegate.usage } : undefined,
+    worktree: delegate.worktree ? { ...delegate.worktree } : undefined,
     branch: { ...delegate.branch },
     child: delegate.child ? cloneSession(delegate.child) : undefined,
   };
 }
 
+function maxActivity(current: string | undefined, incoming: string | undefined): string | undefined {
+  if (!incoming) return current;
+  if (!current) return incoming;
+  const currentMillis = Date.parse(current);
+  const incomingMillis = Date.parse(incoming);
+  if (Number.isNaN(incomingMillis)) return current;
+  return Number.isNaN(currentMillis) || incomingMillis > currentMillis ? incoming : current;
+}
+
+function revisionFencedDelegate(current: ActivityDelegate, patch: ActivityDelegate): ActivityDelegate {
+  const currentRevision = current.projectionRevision ?? 0;
+  const patchRevision = patch.projectionRevision ?? 0;
+  const state = patchRevision > currentRevision ? cloneDelegate(patch) : cloneDelegate(current);
+  const latestActivityAt = maxActivity(current.latestActivityAt, patch.latestActivityAt);
+  if (latestActivityAt !== state.latestActivityAt) state.latestActivityAt = latestActivityAt;
+  return state;
+}
+
 function mergeDelegate(current: ActivityDelegate, patch: ActivityDelegate, targetID: string): ActivityDelegate {
   const delegateID = activityNodeID({ kind: "delegate", delegateId: current.delegateId });
-  if (delegateID === targetID) return cloneDelegate(patch);
+  const state = revisionFencedDelegate(current, patch);
+  if (delegateID === targetID) return state;
   return {
-    ...current,
-    childSessionId: patch.childSessionId,
-    childRef: patch.childRef,
-    mandate: patch.mandate,
-    turns: patch.turns.map((turn) => ({ ...turn })),
+    ...state,
     branch: { ...patch.branch },
     child:
       current.child && patch.child && current.child.sessionId === patch.child.sessionId
@@ -147,6 +165,30 @@ function mergeDelegate(current: ActivityDelegate, patch: ActivityDelegate, targe
           : current.child
             ? cloneSession(current.child)
             : undefined,
+  };
+}
+
+function fenceRootSession(current: ActivitySessionNode, incoming: ActivitySessionNode): ActivitySessionNode {
+  const currentByID = new Map(current.entries.map((entry) => [activityNodeID(entry), entry]));
+  const entries = incoming.entries.map((entry): ActivityEntry => {
+    if (entry.kind === "shell") return cloneEntry(entry);
+    const prior = currentByID.get(activityNodeID(entry));
+    if (prior?.kind !== "delegate") return cloneEntry(entry);
+    const delegate = revisionFencedDelegate(prior.delegate, entry.delegate);
+    delegate.branch = { ...entry.delegate.branch };
+    delegate.child =
+      prior.delegate.child && entry.delegate.child && prior.delegate.child.sessionId === entry.delegate.child.sessionId
+        ? fenceRootSession(prior.delegate.child, entry.delegate.child)
+        : entry.delegate.child
+          ? cloneSession(entry.delegate.child)
+          : undefined;
+    return { kind: "delegate", delegate };
+  });
+  return {
+    ...incoming,
+    counts: { ...incoming.counts },
+    branch: { ...incoming.branch },
+    entries,
   };
 }
 
@@ -376,13 +418,14 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
 
 function readyRoot(current: ActivityPanelEntry, tree: ActivityTree): ActivityPanelEntry {
   const previousTree = retainedTree(current.load);
+  const fencedTree = previousTree ? { ...tree, root: fenceRootSession(previousTree.root, tree.root) } : tree;
   const disclosure = previousTree
-    ? reconcileActivityState({ ...current.disclosure, tree: previousTree }, tree)
-    : initialDisclosure(tree);
+    ? reconcileActivityState({ ...current.disclosure, tree: previousTree }, fencedTree)
+    : initialDisclosure(fencedTree);
   return {
     ...current,
-    load: { kind: "ready", tree },
-    disclosure: { ...disclosure, tree },
+    load: { kind: "ready", tree: fencedTree },
+    disclosure: { ...disclosure, tree: fencedTree },
     established: true,
     continuationLoadingID: undefined,
     pending: undefined,

@@ -353,6 +353,9 @@ func (s *Session) SetDescendantEventFunc(f func(events.SessionEvent)) {
 	s.mu.Lock()
 	s.cfg.spawn.descendantEvent = f
 	s.mu.Unlock()
+	if f != nil && s.delegateController != nil && s.ownsDelegateController {
+		s.delegateController.emitDelegateUpdate(s.delegateController.Snapshot())
+	}
 }
 
 // fireNotificationHook runs the Notification hook for a genuine, model-facing

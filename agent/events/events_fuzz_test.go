@@ -13,9 +13,10 @@ func FuzzSessionEventToStreamEvent(f *testing.F) {
 	f.Add(uint8(4), "", "", "")
 	f.Add(uint8(7), "mismatch", "call-2", "write_file")
 	f.Add(uint8(8), "agent only", "call-3", "shell")
+	f.Add(uint8(9), "stable delegate", "dlg_1", "delegate")
 
 	f.Fuzz(func(t *testing.T, variant uint8, text, callID, toolName string) {
-		switch variant % 9 {
+		switch variant % 10 {
 		case 0:
 			assertFuzzStreamMapping(t, SessionStartData{Model: text}, EventSessionStart, llm.StreamEventStreamStart, "", "", "", false)
 		case 1:
@@ -39,6 +40,11 @@ func FuzzSessionEventToStreamEvent(f *testing.F) {
 			ev := SessionEvent{Kind: EventWarning, Data: WarningData{Message: text}}
 			if got := ev.ToStreamEvent(); got != nil {
 				t.Fatalf("agent-only event produced stream event: %+v", got)
+			}
+		case 9:
+			ev := SessionEvent{Kind: EventDelegateUpdated, Data: DelegateUpdatedData{DelegateID: callID, Task: text}}
+			if got := ev.ToStreamEvent(); got != nil {
+				t.Fatalf("stable delegate event produced stream event: %+v", got)
 			}
 		}
 	})

@@ -229,6 +229,7 @@ var Notifications = []NotificationSpec{
 	{NotifySerfSteeringInjected, SerfSteeringInjectedParams{}, "A steering message was injected into the active turn."},
 	{NotifySerfJobStarted, SerfJobParams{}, "A background job started."},
 	{NotifySerfJobFinished, SerfJobParams{}, "A background job finished; the job carries status/reason/exitCode/output."},
+	{NotifySerfDelegateUpdated, SerfDelegateParams{}, "A stable delegate projection changed."},
 	{NotifySerfJobsTreeUpdated, JobsTreeUpdatedParams{}, "The current-session activity tree changed; clients refresh the jobs tree."},
 	{NotifySerfAuthUpdated, SerfAuthUpdatedParams{}, "Broadcast after a successful auth mutation. Clients refresh auth state."},
 	{NotifySerfLaunchUpdated, SerfLaunchUpdatedParams{}, "Broadcast after a launch layer/trust mutation. Clients refresh launch config."},

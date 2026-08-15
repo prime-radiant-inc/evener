@@ -1305,8 +1305,63 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.SerfDiagnostic
 			TranscriptRef:    job.TranscriptRef,
 		})
 	}
+	for _, delegate := range ds.Delegates {
+		out.Delegates = append(out.Delegates, appDelegateFromDetailedStatus(delegate))
+	}
+	if ds.TurnSlots != nil {
+		out.TurnSlots = &appwire.SerfTurnSlots{
+			InUse: ds.TurnSlots.InUse, Cap: ds.TurnSlots.Cap, Jobs: ds.TurnSlots.Jobs, Drives: ds.TurnSlots.Drives,
+		}
+	}
 	out.Agents = append(out.Agents, ds.Agents...)
 	return out
+}
+
+func appDelegateFromDetailedStatus(delegate DelegateStatusInfo) appwire.SerfDelegateInfo {
+	out := appwire.SerfDelegateInfo{
+		DelegateID: delegate.DelegateID, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
+		ChildSessionID: delegate.ChildSessionID, TranscriptRef: delegate.TranscriptRef, ParentDelegateID: delegate.ParentDelegateID,
+		Type: delegate.Type, Lifecycle: delegate.Lifecycle, Phase: delegate.Phase, Status: delegate.Status,
+		Outcome: delegate.Outcome, Reason: delegate.Reason, Terminal: delegate.Terminal, Resumable: delegate.Resumable,
+		NotResumableReason: delegate.NotResumableReason, ProjectionRevision: delegate.ProjectionRevision,
+		Task: delegate.Task, Description: delegate.Description, AgentType: delegate.AgentType, RequestedModel: delegate.RequestedModel,
+		ResolvedProfileID: delegate.ResolvedProfileID, ResolvedModel: delegate.ResolvedModel, Model: delegate.Model,
+		ReasoningEffort: delegate.ReasoningEffort, OriginTurnID: delegate.OriginTurnID, OriginToolCallID: delegate.OriginToolCallID,
+		OriginItemID: delegate.OriginItemID, RunStartedAt: delegate.RunStartedAt, RunEndedAt: delegate.RunEndedAt,
+		LatestActivityAt: delegate.LatestActivityAt, RunningForMS: cloneServerInt64(delegate.RunningForMS),
+		QuietForMS: cloneServerInt64(delegate.QuietForMS), DurationMS: cloneServerInt64(delegate.DurationMS),
+		PacketKind: delegate.PacketKind, Message: append(json.RawMessage(nil), delegate.Message...),
+		StructuredResult: append(json.RawMessage(nil), delegate.StructuredResult...), StructuredValid: cloneServerBool(delegate.StructuredValid),
+		StructuredReason: delegate.StructuredReason, Warnings: append([]string(nil), delegate.Warnings...),
+		Diagnostics: append([]string(nil), delegate.Diagnostics...), ExhaustionBudget: delegate.ExhaustionBudget,
+		ExhaustionLimit: delegate.ExhaustionLimit, ExhaustionResumable: cloneServerBool(delegate.ExhaustionResumable),
+		DelegationAllowance: delegate.DelegationAllowance, ParentWatchGranted: delegate.ParentWatchGranted,
+	}
+	if delegate.Usage != nil {
+		usage := *delegate.Usage
+		out.Usage = &usage
+	}
+	if delegate.Worktree != nil {
+		worktree := *delegate.Worktree
+		out.Worktree = &worktree
+	}
+	return out
+}
+
+func cloneServerBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func cloneServerInt64(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCapabilities {

@@ -67,9 +67,18 @@ function delegateRow(
 ): ActivityDelegateRow {
   const delegate = {
     delegateId: "dlg_x",
+    ownerSessionId: "sess_root",
+    rootSessionId: "sess_root",
     childSessionId: "sess_child",
     childRef: "ref_child",
-    turns: [],
+    transcriptRef: "ref_child",
+    type: "delegate",
+    lifecycle: "active",
+    phase: "running",
+    status: "running",
+    projectionRevision: 1,
+    terminal: false,
+    resumable: true,
     branch: {},
     ...delegateOverrides,
   } as ActivityDelegate;
@@ -175,33 +184,19 @@ describe("ActivityRowDetail", () => {
     expect(screen.getByText(`running 12s · 512b · started ${localHHMM("2026-08-05T14:58:00Z")}`)).toBeTruthy();
   });
 
-  test("live delegate row meta measures quiet from the latest turn and sums turn output bytes", () => {
+  test("live delegate row meta uses stable timing and quiet evidence", () => {
     render(
       <ActivityRowDetail
         row={delegateRow({
           mandate: "Inspect the repo",
-          turns: [
-            shellJob({
-              jobId: "job_turn_1",
-              type: "delegate",
-              startedAt: "2026-08-05T14:59:00Z",
-              endedAt: "2026-08-05T14:59:30Z",
-              terminal: true,
-              outputBytes: 100,
-            }),
-            shellJob({
-              jobId: "job_turn_2",
-              type: "delegate",
-              startedAt: "2026-08-05T14:59:30Z",
-              lastOutputAt: "2026-08-05T15:00:00Z",
-              outputBytes: 412,
-            }),
-          ],
+          runStartedAt: "2026-08-05T14:59:00Z",
+          latestActivityAt: "2026-08-05T15:00:00Z",
+          quietForMs: 12_000,
         })}
         now={NOW}
       />,
     );
-    expect(screen.getByText(`running 12s · 512b · started ${localHHMM("2026-08-05T14:59:00Z")}`)).toBeTruthy();
+    expect(screen.getByText(`running 12s · 0b · started ${localHHMM("2026-08-05T14:59:00Z")}`)).toBeTruthy();
   });
 
   test("terminal row meta drops the duplicated runtime and a successful exit code", () => {

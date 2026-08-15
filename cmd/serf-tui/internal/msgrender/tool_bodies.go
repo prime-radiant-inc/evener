@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
@@ -265,21 +266,74 @@ func SubagentRunBody(run transcript.SubagentRunInfo, width int) string {
 	if status == "" {
 		status = "running"
 	}
-	label := strings.TrimSpace(run.Task)
-	if label == "" {
-		label = "delegate"
+	parts := make([]string, 0, 12)
+	if strings.EqualFold(strings.TrimSpace(run.JobType), "shell") {
+		label := strings.TrimSpace(run.Command)
+		if label == "" {
+			label = "Shell"
+		}
+		parts = append(parts, label, "("+status+")")
+	} else {
+		label := "Delegate"
+		if run.DelegateID != "" {
+			label += " " + run.DelegateID
+		}
+		parts = append(parts, label)
+		if task := strings.TrimSpace(firstNonEmpty(run.Task, run.Description)); task != "" {
+			parts = append(parts, task)
+		}
+		parts = append(parts, "("+status+")")
 	}
-	parts := []string{label, "(" + status + ")"}
 	if run.JobID != "" {
 		parts = append(parts, "job "+identifier.AbbreviateJobID(run.JobID, 26))
 	}
-	if run.DelegateID != "" && width >= 60 {
-		parts = append(parts, "delegate "+shortID(run.DelegateID))
+	if run.ParentDelegateID != "" {
+		parts = append(parts, "parent "+run.ParentDelegateID)
 	}
 	if run.TranscriptRef != "" && width >= 70 {
 		parts = append(parts, "transcript "+run.TranscriptRef)
 	}
+	if run.DurationMS != nil {
+		parts = append(parts, formatDur(time.Duration(*run.DurationMS)*time.Millisecond))
+	} else if run.RunningForMS != nil {
+		parts = append(parts, "running "+formatDur(time.Duration(*run.RunningForMS)*time.Millisecond))
+	}
+	if run.Usage != nil {
+		parts = append(parts, fmt.Sprintf("%d in / %d out", run.Usage.InputTokens, run.Usage.OutputTokens))
+	}
+	if run.QuietForMS != nil {
+		parts = append(parts, "quiet "+formatDur(time.Duration(*run.QuietForMS)*time.Millisecond))
+	}
+	if run.Worktree != nil {
+		worktree := strings.TrimSpace(run.Worktree.Branch)
+		if worktree == "" {
+			worktree = strings.TrimSpace(run.Worktree.Path)
+		}
+		if worktree != "" {
+			parts = append(parts, worktree)
+		}
+		if run.Worktree.Ahead > 0 {
+			parts = append(parts, fmt.Sprintf("ahead %d", run.Worktree.Ahead))
+		}
+		if run.Worktree.Dirty {
+			parts = append(parts, "dirty")
+		}
+	}
+	for _, warning := range run.Warnings {
+		if warning = strings.TrimSpace(warning); warning != "" {
+			parts = append(parts, "warning: "+warning)
+		}
+	}
 	return lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().StateSubagent).Render(strings.Join(parts, " · "))
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // RenderSubagentRail consolidates a contiguous run of subagent / background-job

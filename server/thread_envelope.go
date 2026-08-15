@@ -218,9 +218,10 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// a correctness field: no notification announces diagnostics, so nothing
 	// about the response cut depends on it, and no consumer treats it as
 	// terminal.
-	events.EventJobStarted:   facetDiagnostics,
-	events.EventJobFinished:  facetDiagnostics,
-	events.EventPluginLoaded: facetDiagnostics,
+	events.EventJobStarted:      facetDiagnostics,
+	events.EventJobFinished:     facetDiagnostics,
+	events.EventDelegateUpdated: facetDiagnostics,
+	events.EventPluginLoaded:    facetDiagnostics,
 }
 
 // SetThreadEnvelopeSource installs the seam the bridge samples session state

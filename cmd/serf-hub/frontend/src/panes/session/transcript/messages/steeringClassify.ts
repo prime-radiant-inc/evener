@@ -11,12 +11,13 @@
 export type NotificationTone = "success" | "warning" | "error" | "neutral";
 
 export interface ParsedNotification {
-  type: string; // job | watch | watch-send | observer-callback
+  type: string; // delegate | job | watch | watch-send | observer-callback
   title: string;
   tone: NotificationTone;
   secondary: string; // job_type · exit N · reason (quiet plumbing stays in raw)
   jobId?: string;
   jobType?: string;
+  delegateId?: string;
   description?: string;
   status?: string;
   reason?: string;
@@ -72,15 +73,47 @@ function optionalNonNegativeInteger(attrs: Record<string, string>, key: string):
 // steering turn can carry several blocks joined by newlines, and a greedy match
 // would span the first opening tag to the last closing tag and aggregate
 // distinct notifications into one (contracts §17).
-function splitJobNotificationBlocks(text: string): { blocks: string[]; leftover: string } {
+function splitNotificationBlocks(text: string): { blocks: string[]; leftover: string } {
   const blocks: string[] = [];
   const leftover = text
-    .replace(/<job-notification\s+[^>]*>[\s\S]*?<\/job-notification>/g, (block) => {
+    .replace(/<(job|delegate)-notification\s+[^>]*>[\s\S]*?<\/\1-notification>/g, (block) => {
       blocks.push(block);
       return "";
     })
     .trim();
   return { blocks, leftover };
+}
+
+function parseDelegateNotification(block: string): ParsedNotification | null {
+  const match = block.match(/^<delegate-notification\s+([^>]*)>([\s\S]*)<\/delegate-notification>$/);
+  if (!match) return null;
+  const attrs = parseQuotedAttrs(match[1] ?? "");
+  const body = (match[2] ?? "").trim();
+  const { excerpt } = splitNotificationExcerpt(body);
+  const communicate = parseCommunicateEnvelope(decodeNotificationEntities(excerpt));
+  const tone = notificationTone(attrs, communicate);
+  const transcriptRef = isValidTranscriptRef(attrs.transcript_ref) ? attrs.transcript_ref : undefined;
+  const description = decodeNotificationEntities(attrs.description ?? "").trim();
+  const status = (attrs.status || attrs.event || "notification").trim();
+  const reason = attrs.reason?.trim();
+  const secondary = [description || attrs.delegate_id?.trim(), tone === "error" || tone === "warning" ? reason : ""]
+    .filter(Boolean)
+    .join(" · ");
+  return {
+    type: "delegate",
+    title: status ? `Delegate ${status}` : "Delegate notification",
+    tone,
+    secondary,
+    delegateId: attrs.delegate_id?.trim() || undefined,
+    description: description || undefined,
+    status: attrs.status?.trim() || undefined,
+    reason: reason || undefined,
+    transcriptRef,
+    excerpt,
+    message: communicate?.message || undefined,
+    concerns: communicate?.concerns ?? [],
+    rawText: block,
+  };
 }
 
 function splitNotificationExcerpt(body: string): { prose: string; excerpt: string } {
@@ -273,8 +306,12 @@ export function parseSteeringNotifications(text: string): {
   leftover: string;
 } {
   const stripped = stripSystemReminder(text);
-  const { blocks, leftover } = splitJobNotificationBlocks(stripped);
-  const notifications = blocks.map(parseJobNotification).filter((n): n is ParsedNotification => n !== null);
+  const { blocks, leftover } = splitNotificationBlocks(stripped);
+  const notifications = blocks
+    .map((block) =>
+      block.startsWith("<delegate-notification") ? parseDelegateNotification(block) : parseJobNotification(block),
+    )
+    .filter((n): n is ParsedNotification => n !== null);
   if (notifications.length > 0) return { notifications, leftover };
   const observer = parseObserverCallback(stripped);
   if (observer) return { notifications: [observer], leftover: "" };

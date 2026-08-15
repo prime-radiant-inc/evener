@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"primeradiant.com/serf/appwire"
 )
@@ -323,18 +324,16 @@ func (r *TranscriptReducer) ApplyThreadItem(item appwire.ThreadItem, turnIndex i
 
 func (r *TranscriptReducer) ApplySerfJob(job appwire.SerfJobInfo) {
 	run := subagentRunFromJob(job)
-	if run.JobID == "" && run.DelegateID == "" && run.OriginToolCallID == "" && run.OriginItemID == "" {
+	if run.JobID == "" && run.OriginToolCallID == "" && run.OriginItemID == "" {
 		return
 	}
-	// Delegate subagents and long-lived (background) shell jobs are tracked as
-	// subagent runs; a foreground shell stays an ordinary tool call.
-	if run.JobType != "" && !isDelegateJobType(run.JobType) && !isBackgroundShellRun(run) {
+	// Stable delegates arrive through ApplySerfDelegate. Job notifications are
+	// reserved for long-lived shell activity; foreground shells remain ordinary
+	// tool calls.
+	if !isBackgroundShellRun(run) {
 		return
 	}
 	idx, matched := r.subagentMessageIndex(run)
-	if !matched && !hasDelegateJobSignal(run) {
-		return
-	}
 	if matched {
 		info := r.messages[idx].Tool
 		// subagentMessageIndex only matches rows with non-nil tool info.
@@ -348,17 +347,65 @@ func (r *TranscriptReducer) ApplySerfJob(job appwire.SerfJobInfo) {
 		}
 		return
 	}
-	name := "delegate"
+	name := "shell"
 	desc := run.Task
-	if isBackgroundShellRun(run) {
-		name = "shell"
-		if desc == "" {
-			desc = run.Command
-		}
+	if desc == "" {
+		desc = run.Command
 	}
 	info := &ToolCallInfo{Name: name, Description: desc, Done: subagentTerminalStatus(run.Status)}
 	info.Subagent = &run
 	r.messages = append(r.messages, ChatMessage{Kind: MsgTool, ItemID: run.OriginItemID, ToolCallID: run.OriginToolCallID, Tool: info})
+}
+
+// ApplySerfDelegate folds one immutable stable delegate snapshot into the
+// transcript rail. The delegate id is the control identity; activation job ids
+// never enter this path.
+func (r *TranscriptReducer) ApplySerfDelegate(delegate appwire.SerfDelegateInfo) {
+	run := subagentRunFromDelegate(delegate)
+	if run.DelegateID == "" {
+		return
+	}
+	idx, matched := r.stableDelegateMessageIndex(run)
+	if matched {
+		info := r.messages[idx].Tool
+		if info.Subagent != nil {
+			if run.ProjectionRevision <= info.Subagent.ProjectionRevision {
+				mergeLatestDelegateActivity(info.Subagent, run.LatestActivityAt)
+				return
+			}
+			run.Activity = info.Subagent.Activity
+			run.Steps = info.Subagent.Steps
+			run.Headline = info.Subagent.Headline
+			run.HeadlineError = info.Subagent.HeadlineError
+		}
+		info.Subagent = &run
+		info.Name = "delegate"
+		info.Description = firstNonEmptyString(run.Task, run.Description)
+		info.Done = run.Terminal || subagentTerminalStatus(run.Status)
+		return
+	}
+	info := &ToolCallInfo{
+		Name:        "delegate",
+		Description: firstNonEmptyString(run.Task, run.Description),
+		Done:        run.Terminal || subagentTerminalStatus(run.Status),
+		Subagent:    &run,
+	}
+	r.messages = append(r.messages, ChatMessage{Kind: MsgTool, ItemID: run.OriginItemID, ToolCallID: run.OriginToolCallID, Tool: info})
+}
+
+func mergeLatestDelegateActivity(existing *SubagentRunInfo, incoming string) {
+	incoming = strings.TrimSpace(incoming)
+	if existing == nil || incoming == "" {
+		return
+	}
+	incomingAt, err := time.Parse(time.RFC3339Nano, incoming)
+	if err != nil {
+		return
+	}
+	existingAt, err := time.Parse(time.RFC3339Nano, existing.LatestActivityAt)
+	if err != nil || incomingAt.After(existingAt) {
+		existing.LatestActivityAt = incoming
+	}
 }
 
 func isBackgroundShellRun(run SubagentRunInfo) bool {
@@ -450,12 +497,23 @@ func (r *TranscriptReducer) subagentMessageIndex(run SubagentRunInfo) (int, bool
 	return 0, false
 }
 
-func hasDelegateJobSignal(run SubagentRunInfo) bool {
-	return isDelegateJobType(run.JobType) || run.DelegateID != "" || isBackgroundShellRun(run)
-}
-
-func isDelegateJobType(jobType string) bool {
-	return strings.EqualFold(strings.TrimSpace(jobType), "delegate")
+func (r *TranscriptReducer) stableDelegateMessageIndex(run SubagentRunInfo) (int, bool) {
+	for i := range r.messages {
+		msg := r.messages[i]
+		if msg.Kind != MsgTool || msg.Tool == nil || msg.Tool.Name != "delegate" {
+			continue
+		}
+		if msg.Tool.Subagent != nil && msg.Tool.Subagent.DelegateID == run.DelegateID {
+			return i, true
+		}
+		if run.OriginItemID != "" && msg.ItemID == run.OriginItemID {
+			return i, true
+		}
+		if run.OriginToolCallID != "" && msg.ToolCallID == run.OriginToolCallID {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 func isDelegateToolName(name string) bool {
@@ -472,6 +530,7 @@ func subagentRunFromJob(job appwire.SerfJobInfo) SubagentRunInfo {
 		DelegateID:       strings.TrimSpace(job.DelegateID),
 		JobID:            strings.TrimSpace(job.JobID),
 		JobType:          strings.TrimSpace(job.JobType),
+		ParentDelegateID: strings.TrimSpace(job.ParentDelegateID),
 		Status:           strings.TrimSpace(job.Status),
 		Reason:           strings.TrimSpace(job.Reason),
 		Background:       job.Background,
@@ -485,6 +544,90 @@ func subagentRunFromJob(job appwire.SerfJobInfo) SubagentRunInfo {
 	}
 }
 
+func subagentRunFromDelegate(delegate appwire.SerfDelegateInfo) SubagentRunInfo {
+	return SubagentRunInfo{
+		DelegateID:          strings.TrimSpace(delegate.DelegateID),
+		ParentDelegateID:    strings.TrimSpace(delegate.ParentDelegateID),
+		OwnerSessionID:      strings.TrimSpace(delegate.OwnerSessionID),
+		RootSessionID:       strings.TrimSpace(delegate.RootSessionID),
+		ChildSessionID:      strings.TrimSpace(delegate.ChildSessionID),
+		Type:                strings.TrimSpace(delegate.Type),
+		Lifecycle:           strings.TrimSpace(delegate.Lifecycle),
+		Phase:               strings.TrimSpace(delegate.Phase),
+		Status:              strings.TrimSpace(delegate.Status),
+		Outcome:             strings.TrimSpace(delegate.Outcome),
+		Reason:              strings.TrimSpace(delegate.Reason),
+		Terminal:            delegate.Terminal,
+		Resumable:           delegate.Resumable,
+		NotResumableReason:  strings.TrimSpace(delegate.NotResumableReason),
+		ProjectionRevision:  delegate.ProjectionRevision,
+		Task:                strings.TrimSpace(delegate.Task),
+		Description:         strings.TrimSpace(delegate.Description),
+		AgentType:           strings.TrimSpace(delegate.AgentType),
+		RequestedModel:      strings.TrimSpace(delegate.RequestedModel),
+		ResolvedProfileID:   strings.TrimSpace(delegate.ResolvedProfileID),
+		ResolvedModel:       strings.TrimSpace(delegate.ResolvedModel),
+		Model:               strings.TrimSpace(delegate.Model),
+		ReasoningEffort:     strings.TrimSpace(delegate.ReasoningEffort),
+		TranscriptRef:       strings.TrimSpace(delegate.TranscriptRef),
+		OriginTurnID:        strings.TrimSpace(delegate.OriginTurnID),
+		OriginToolCallID:    strings.TrimSpace(delegate.OriginToolCallID),
+		OriginItemID:        strings.TrimSpace(delegate.OriginItemID),
+		RunStartedAt:        strings.TrimSpace(delegate.RunStartedAt),
+		RunEndedAt:          strings.TrimSpace(delegate.RunEndedAt),
+		LatestActivityAt:    strings.TrimSpace(delegate.LatestActivityAt),
+		RunningForMS:        cloneInt64(delegate.RunningForMS),
+		QuietForMS:          cloneInt64(delegate.QuietForMS),
+		DurationMS:          cloneInt64(delegate.DurationMS),
+		PacketKind:          strings.TrimSpace(delegate.PacketKind),
+		Message:             append([]byte(nil), delegate.Message...),
+		StructuredResult:    append([]byte(nil), delegate.StructuredResult...),
+		StructuredValid:     cloneBool(delegate.StructuredValid),
+		StructuredReason:    strings.TrimSpace(delegate.StructuredReason),
+		Warnings:            append([]string(nil), delegate.Warnings...),
+		Diagnostics:         append([]string(nil), delegate.Diagnostics...),
+		ExhaustionBudget:    strings.TrimSpace(delegate.ExhaustionBudget),
+		ExhaustionLimit:     delegate.ExhaustionLimit,
+		ExhaustionResumable: cloneBool(delegate.ExhaustionResumable),
+		DelegationAllowance: delegate.DelegationAllowance,
+		ParentWatchGranted:  delegate.ParentWatchGranted,
+		Usage:               cloneUsage(delegate.Usage),
+		Worktree:            cloneWorktree(delegate.Worktree),
+	}
+}
+
+func cloneInt64(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneUsage(value *appwire.SerfUsage) *appwire.SerfUsage {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneWorktree(value *appwire.JobActivityWorktree) *appwire.JobActivityWorktree {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
 func subagentRunFromToolItem(item appwire.ThreadItem) SubagentRunInfo {
 	raw := item.Raw
 	if len(raw) == 0 && strings.TrimSpace(item.Output) != "" {
@@ -492,10 +635,6 @@ func subagentRunFromToolItem(item appwire.ThreadItem) SubagentRunInfo {
 	}
 	var payload struct {
 		DelegateID       string `json:"delegate_id"`
-		JobID            string `json:"job_id"`
-		StartedJobID     string `json:"started_job_id"`
-		CurrentJobID     string `json:"current_job_id"`
-		LatestJobID      string `json:"latest_job_id"`
 		Type             string `json:"type"`
 		Status           string `json:"status"`
 		Reason           string `json:"reason"`
@@ -510,14 +649,12 @@ func subagentRunFromToolItem(item appwire.ThreadItem) SubagentRunInfo {
 	if len(raw) == 0 || json.Unmarshal(raw, &payload) != nil {
 		return SubagentRunInfo{}
 	}
-	jobID := firstNonEmptyString(payload.JobID, payload.StartedJobID, payload.CurrentJobID, payload.LatestJobID)
 	outputBytes := payload.OutputBytes
 	if outputBytes == 0 {
 		outputBytes = payload.TotalBytes
 	}
 	return SubagentRunInfo{
 		DelegateID:       strings.TrimSpace(payload.DelegateID),
-		JobID:            strings.TrimSpace(jobID),
 		JobType:          strings.TrimSpace(payload.Type),
 		Status:           strings.TrimSpace(payload.Status),
 		Reason:           strings.TrimSpace(payload.Reason),

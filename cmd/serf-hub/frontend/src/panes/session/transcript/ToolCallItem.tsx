@@ -23,6 +23,7 @@ import {
   classifyJobStatus,
   effectiveRowKind,
   itemScopeKey,
+  removeSubagentRow,
   rowKeyForDelegateItem,
   type SubagentRow,
   turnScopeKey,
@@ -89,16 +90,23 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   const descriptor = toolRendererFor(item.toolName ?? "");
   const Body = descriptor.body;
   const isDelegate = item.toolName === "delegate";
+  const delegateOutput = isDelegate ? parseJSONObject(item.output) : undefined;
+  const stableDelegateId = delegateOutput ? str(delegateOutput, "delegate_id") : undefined;
   const delegateRows = useSubagentRows(isDelegate ? turnScopeKey(sessionRef, item.turnId) : "");
   const delegateRow = isDelegate ? delegateRows.find((row) => row.rowKey === rowKeyForDelegateItem(item)) : undefined;
-  const delegateTranscriptRef = isDelegate ? str(parseJSONObject(item.output) ?? {}, "transcript_ref") : undefined;
+  const delegateTranscriptRef = stableDelegateId ? str(delegateOutput ?? {}, "transcript_ref") : undefined;
   const delegateKind = delegateStatusForItem(item, delegateRow, live);
   const delegateStatus = isDelegate ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
   const delegateScopeKey = turnScopeKey(sessionRef, item.turnId);
 
   useLayoutEffect(() => {
     if (!isDelegate) return;
-    const { rowKey, migrateFromRowKey, row } = rowFromDelegateItem(item);
+    const projected = rowFromDelegateItem(item);
+    if (!projected) {
+      removeSubagentRow(delegateScopeKey, rowKeyForDelegateItem(item));
+      return;
+    }
+    const { rowKey, migrateFromRowKey, row } = projected;
     upsertSubagentRow(delegateScopeKey, { rowKey, ...row }, migrateFromRowKey);
   }, [delegateScopeKey, isDelegate, item]);
 

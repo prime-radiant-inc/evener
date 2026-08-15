@@ -255,6 +255,22 @@ excerpt:
 finished the lane
 </job-notification>`;
 
+test("delegate-notification renders a Delegate card distinct from a shell Job card", () => {
+  const text = `<delegate-notification delegate_id="dlg_7" event="completed" status="completed" transcript_ref="local:ref_x">
+Delegate dlg_7 completed.
+</delegate-notification>
+<job-notification job_id="job_shell" event="completed" job_type="shell" status="completed" transcript_ref="job:job_shell">
+Job job_shell completed.
+</job-notification>`;
+
+  render(<SteeringItem item={item({ text, steeringKind: "notification" })} turn={turn} live={false} />);
+  const cards = screen.getAllByTestId("notification-card");
+  expect(cards).toHaveLength(2);
+  expect(cards[0]?.textContent).toContain("Delegate completed");
+  expect(cards[0]?.textContent).not.toContain("Job completed");
+  expect(cards[1]?.textContent).toContain("Job completed");
+});
+
 test("a job-notification steer renders a notification card (not a steering divider)", () => {
   render(<SteeringItem item={item({ text: JOB_NOTIFICATION_STEERING })} turn={turn} live={false} />);
   expect(screen.getByTestId("notification-card")).toBeTruthy();

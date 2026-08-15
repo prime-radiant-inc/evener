@@ -151,6 +151,16 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			// Subscribe to any newly-running child so its activity pushes live.
 			cmd = m.subscribeNewChildren()
 		}
+	case appwire.NotifySerfDelegateUpdated:
+		var params appwire.SerfDelegateParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			reducer := m.sessionTranscriptReducer()
+			reducer.ApplySerfDelegate(params.Delegate)
+			m.applySessionTranscriptReducer(reducer)
+			// Stable delegates carry their child transcript directly; subscribe
+			// without waiting for any activation-job notification.
+			cmd = m.subscribeNewChildren()
+		}
 	case appwire.NotifyTurnCompleted:
 		var params appwire.TurnCompletedParams
 		if json.Unmarshal(notification.Params, &params) == nil {

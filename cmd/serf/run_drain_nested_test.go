@@ -14,7 +14,7 @@ import (
 )
 
 func scriptedDelegateCallWithAllowance(id, task string, allowance int) llm.Response {
-	args, _ := json.Marshal(map[string]any{"task": task, "max_wait_ms": 0, "delegation_allowance": allowance})
+	args, _ := json.Marshal(map[string]any{"task": task, "delegation_allowance": allowance})
 	return scriptedToolCalls(llm.ToolCallData{ID: id, Name: "delegate", Arguments: args, Type: "function"})
 }
 
@@ -42,7 +42,7 @@ func TestRunDrainsNestedDelegateSubtree(t *testing.T) {
 		case strings.Contains(text, rootPrompt):
 			// Root coordinator.
 			switch {
-			case strings.Contains(text, "<job-notification"):
+			case strings.Contains(text, "<delegate-notification"):
 				return scriptedCommunicate(finalMsg)
 			case strings.Contains(text, "COORD-TASK"):
 				return scriptedCommunicate("root waiting on coordinator")
@@ -52,7 +52,7 @@ func TestRunDrainsNestedDelegateSubtree(t *testing.T) {
 		case strings.Contains(text, "COORD-TASK"):
 			// Mid-tree coordinator: delegate the worker, then wait for it.
 			switch {
-			case strings.Contains(text, "<job-notification"):
+			case strings.Contains(text, "<delegate-notification"):
 				return scriptedCommunicate("coordinator done")
 			case strings.Contains(text, "WORKER-TASK"):
 				return scriptedCommunicate("coordinator waiting on worker")

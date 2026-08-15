@@ -1165,7 +1165,7 @@ func projectStableDelegateStatus(now time.Time, snapshot delegateSnapshot) stabl
 // turnSlotOccupancy is the diagnostic tree-counter snapshot surfaced in
 // job_list while any delegate-turn slot is held: spawn-budget total in use,
 // cap, and jobs, plus drive turns in flight on the separate drive budget.
-type turnSlotOccupancy struct {
+type TurnSlotOccupancy struct {
 	InUse int64 `json:"in_use"`
 	Cap   int64 `json:"cap"`
 	Jobs  int64 `json:"jobs"`
@@ -1173,6 +1173,8 @@ type turnSlotOccupancy struct {
 	// (driveCounter); drive turns do not hold spawn-budget slots.
 	Drives int64 `json:"drive_turns"`
 }
+
+type turnSlotOccupancy = TurnSlotOccupancy
 
 type jobListResult struct {
 	Items     []jobListEntry      `json:"items"`

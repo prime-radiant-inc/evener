@@ -87,18 +87,23 @@ const TREE: ActivityTreeData = {
         kind: "delegate",
         delegate: {
           delegateId: "dlg_live",
+          ownerSessionId: "sess_root",
+          rootSessionId: "sess_root",
           childSessionId: "sess_child",
           childRef: "ref_child",
+          transcriptRef: "ref_child",
+          type: "delegate",
+          lifecycle: "active",
+          phase: "running",
+          status: "running",
+          projectionRevision: 1,
+          terminal: false,
+          resumable: true,
           mandate: "Inspect the repo",
+          runStartedAt: "2026-08-05T15:00:00Z",
+          latestActivityAt: "2026-08-05T15:00:00Z",
+          quietForMs: 12_000,
           usage: { inputTokens: 41_000, outputTokens: 6_000 },
-          turns: [
-            shellJob({
-              jobId: "job_dlg_turn",
-              type: "delegate",
-              description: "delegate turn",
-              lastOutputAt: "2026-08-05T15:00:00Z",
-            }),
-          ],
           branch: {},
         },
       },
@@ -162,6 +167,71 @@ afterEach(() => {
 });
 
 describe("ActivityTree", () => {
+  test("stable delegate rows keep navigation and control evidence without activation cards", async () => {
+    const user = userEvent.setup();
+    const stableTree = {
+      revision: 8,
+      root: {
+        kind: "session",
+        sessionId: "sess_root",
+        ref: "ref_root",
+        label: "Root",
+        aggregate: "running",
+        counts: { active: 1, failed: 0, completed: 0, complete: true },
+        entries: [
+          {
+            kind: "delegate",
+            delegate: {
+              delegateId: "dlg_stable",
+              ownerSessionId: "sess_root",
+              rootSessionId: "sess_root",
+              childSessionId: "sess_child",
+              childRef: "local:sess_child",
+              transcriptRef: "local:sess_child",
+              type: "delegate",
+              lifecycle: "active",
+              phase: "running",
+              status: "running",
+              projectionRevision: 5,
+              terminal: false,
+              resumable: true,
+              task: "Inspect stable state",
+              originTurnId: "turn_1",
+              parentWatchGranted: true,
+              warnings: ["watch delivery delayed"],
+              diagnostics: ["observer armed"],
+              runStartedAt: "2026-08-15T10:00:00Z",
+              latestActivityAt: "2026-08-15T10:00:03Z",
+              quietForMs: 3000,
+              branch: {},
+            },
+          },
+        ],
+        branch: {},
+      },
+    } as unknown as ActivityTreeData;
+
+    render(<ActivityTree tree={stableTree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+
+    const row = screen.getByRole("treeitem", { name: "Inspect stable state" });
+    expect(row.textContent).toContain("running");
+    expect(row.textContent).not.toContain("job_");
+    const open = within(row).getByRole("button", { name: "Open transcript" });
+    await user.click(open);
+    expect(openTranscript).toHaveBeenCalledWith("local:sess_child", "ref_root");
+    expect(openButtonProps).toContainEqual(
+      expect.objectContaining({
+        transcriptRef: "local:sess_child",
+        parentRef: "ref_root",
+        iconOnly: true,
+      }),
+    );
+
+    expect(screen.getByText(/delegate dlg_stable/i)).toBeTruthy();
+    expect(screen.getByText(/watch enabled/i)).toBeTruthy();
+    expect(screen.getByText(/observer armed/i)).toBeTruthy();
+  });
+
   test("renders one dense row per live entry with kind glyph and meta", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
@@ -335,17 +405,22 @@ describe("ActivityTree", () => {
             kind: "delegate",
             delegate: {
               delegateId: "dlg_parent",
+              ownerSessionId: "sess_root",
+              rootSessionId: "sess_root",
               childSessionId: "sess_child",
               childRef: "ref_child",
+              transcriptRef: "ref_child",
+              type: "delegate",
+              lifecycle: "active",
+              phase: "running",
+              status: "running",
+              projectionRevision: 1,
+              terminal: false,
+              resumable: true,
               mandate: "Parent agent",
-              turns: [
-                shellJob({
-                  jobId: "job_parent_turn",
-                  type: "delegate",
-                  description: "delegate turn",
-                  lastOutputAt: "2026-08-05T15:00:00Z",
-                }),
-              ],
+              runStartedAt: "2026-08-05T15:00:00Z",
+              latestActivityAt: "2026-08-05T15:00:00Z",
+              quietForMs: 12_000,
               branch: {},
               child: {
                 kind: "session",
@@ -484,10 +559,10 @@ describe("ActivityTree", () => {
     expect(screen.queryByRole("treeitem", { name: "finished build" })).toBeNull();
   });
 
-  test("old-daemon shape: no usage and no lastOutputAt renders dash plus quiet from startedAt", () => {
+  test("a delegate with no usage or quiet evidence omits inferred quiet age", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
-    const oldDaemonTree: ActivityTreeData = {
+    const sparseTree: ActivityTreeData = {
       revision: 1,
       root: {
         ...TREE.root,
@@ -496,26 +571,30 @@ describe("ActivityTree", () => {
             kind: "delegate",
             delegate: {
               delegateId: "dlg_old",
+              ownerSessionId: "sess_root",
+              rootSessionId: "sess_root",
               childSessionId: "sess_old_child",
               childRef: "ref_old_child",
-              turns: [
-                shellJob({
-                  jobId: "job_old_turn",
-                  type: "delegate",
-                  description: "delegate turn",
-                  startedAt: "2026-08-05T15:00:00Z",
-                }),
-              ],
+              transcriptRef: "ref_old_child",
+              type: "delegate",
+              lifecycle: "active",
+              phase: "running",
+              status: "running",
+              projectionRevision: 1,
+              terminal: false,
+              resumable: true,
+              runStartedAt: "2026-08-05T15:00:00Z",
               branch: {},
             },
           },
         ],
       },
     };
-    render(<ActivityTree tree={oldDaemonTree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+    render(<ActivityTree tree={sparseTree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
     const row = screen.getByRole("treeitem", { name: "sess_old_child" });
-    expect(row.textContent).toContain("— · 12s");
+    expect(row.textContent).toContain("— · running");
+    expect(row.textContent).not.toContain("12s");
     expect(row.textContent).not.toContain("↑");
     expect(row.textContent).not.toContain("↓");
   });

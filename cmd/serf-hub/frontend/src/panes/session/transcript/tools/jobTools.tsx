@@ -262,10 +262,12 @@ function delegateSendTarget(args: Record<string, unknown>): string {
 }
 
 type DelegateSendRawState = {
+  delegate_id?: string;
   action: string;
   running_in_background: boolean;
   output?: string;
   transcript_ref?: string;
+  wait_ignored_reason?: string;
 };
 
 function delegateSendResult(raw: unknown): raw is DelegateSendRawState {
@@ -275,8 +277,10 @@ function delegateSendResult(raw: unknown): raw is DelegateSendRawState {
     typeof state.action === "string" &&
     state.action.trim() !== "" &&
     typeof state.running_in_background === "boolean" &&
+    (state.delegate_id === undefined || typeof state.delegate_id === "string") &&
     (state.output === undefined || typeof state.output === "string") &&
-    (state.transcript_ref === undefined || typeof state.transcript_ref === "string")
+    (state.transcript_ref === undefined || typeof state.transcript_ref === "string") &&
+    (state.wait_ignored_reason === undefined || typeof state.wait_ignored_reason === "string")
   );
 }
 
@@ -370,6 +374,18 @@ function delegateSendResponse(item: ItemModel): string | undefined {
   return response.trim() === "" ? undefined : response;
 }
 
+function delegateSendWaitIgnoredReason(item: ItemModel): string | undefined {
+  if (delegateSendResult(item.raw)) {
+    const reason = item.raw.wait_ignored_reason?.trim();
+    if (reason) return reason;
+  }
+  const footer = delegateSendFooter(item.output ?? "");
+  if (!footer) return undefined;
+  const field = footer.text.split(" · ").find((part) => part.startsWith("wait ignored: "));
+  const reason = field?.slice("wait ignored: ".length).trim();
+  return reason || undefined;
+}
+
 // The target's transcript ref rides the tool call's raw state
 // (agent/session_tools_jobs.go's delegateSendResult.TranscriptRef), so the
 // collapsed row can offer the same open-in-pane link the subagent module rows
@@ -406,6 +422,7 @@ function DelegateSendBody(props: ToolRenderProps) {
   const args = parseArgs(item.argumentsJSON);
   const message = str(args, "message");
   const response = delegateSendResponse(item);
+  const waitIgnoredReason = delegateSendWaitIgnoredReason(item);
   const target = clip(delegateSendTarget(args), ID_CLIP);
 
   useCorrelateSubagentRow(props, {
@@ -445,6 +462,7 @@ function DelegateSendBody(props: ToolRenderProps) {
           />
         </section>
       ) : null}
+      {waitIgnoredReason ? <div data-testid="delegate-send-wait-ignored">Wait ignored: {waitIgnoredReason}</div> : null}
     </div>
   );
 }

@@ -589,6 +589,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 		subCfg.spawn.descendantEvent = parentCfg.spawn.descendantEvent
 		subCfg.spawn.driveCounter = parentCfg.spawn.driveCounter
 		subCfg.spawn.treeCounter = parentCfg.spawn.treeCounter
+		subCfg.spawn.jobActivityClock = parentCfg.spawn.jobActivityClock
 	}
 	subCfg.artifactStore = s.artifactStore
 	subCfg.MCPConfigFiles = nil

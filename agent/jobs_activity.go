@@ -149,23 +149,23 @@ func (s *Session) JobActivityTree(params appwire.JobsListParams) (appwire.JobAct
 	}
 	root := activitySessionLocator{live: s, stateDir: s.stateDir, sessionID: s.ID()}
 	now := s.sclock().Now().UTC()
-	if s.jobTreeClock == nil {
+	if s.jobActivityClock == nil {
 		snapshot, startDepth, err := loadActivitySnapshotForParams(root, params)
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
 		return projectBoundedActivityTree(*snapshot, root.sessionID, startDepth, 0, now)
 	}
-	return projectStableLiveActivityTreeAt(s.jobTreeClock, root.sessionID, now, func() (*activitySessionSnapshot, int, error) {
+	return projectStableLiveActivityTreeAt(s.jobActivityClock, root.sessionID, now, func() (*activitySessionSnapshot, int, error) {
 		return loadActivitySnapshotForParams(root, params)
 	})
 }
 
-func projectStableLiveActivityTree(clock *jobTreeClock, rootID string, load func() (*activitySessionSnapshot, int, error)) (appwire.JobActivityTree, error) {
+func projectStableLiveActivityTree(clock *jobActivityClock, rootID string, load func() (*activitySessionSnapshot, int, error)) (appwire.JobActivityTree, error) {
 	return projectStableLiveActivityTreeAt(clock, rootID, time.Now().UTC(), load)
 }
 
-func projectStableLiveActivityTreeAt(clock *jobTreeClock, rootID string, now time.Time, load func() (*activitySessionSnapshot, int, error)) (appwire.JobActivityTree, error) {
+func projectStableLiveActivityTreeAt(clock *jobActivityClock, rootID string, now time.Time, load func() (*activitySessionSnapshot, int, error)) (appwire.JobActivityTree, error) {
 	for range 8 {
 		before := activityCurrentRootRevision(clock)
 		snapshot, startDepth, err := load()
@@ -180,14 +180,14 @@ func projectStableLiveActivityTreeAt(clock *jobTreeClock, rootID string, now tim
 	return appwire.JobActivityTree{}, errors.New("activity tree changed while snapshot was being built; retry")
 }
 
-func activityCurrentRootRevision(clock *jobTreeClock) uint64 {
+func activityCurrentRootRevision(clock *jobActivityClock) uint64 {
 	if clock == nil {
 		return 0
 	}
 	return clock.revision.Load()
 }
 
-func activityCurrentRootID(clock *jobTreeClock, fallback string) string {
+func activityCurrentRootID(clock *jobActivityClock, fallback string) string {
 	if clock != nil && strings.TrimSpace(clock.rootSessionID) != "" {
 		return clock.rootSessionID
 	}
@@ -373,8 +373,8 @@ func loadLiveActivityBase(s *Session) (activityLoadedBase, error) {
 		SessionID:       s.ID(),
 		Ref:             encodeRef("", s.ID()),
 		Label:           liveActivitySessionLabel(s),
-		RootID:          activityCurrentRootID(s.jobTreeClock, s.ID()),
-		Revision:        activityCurrentRootRevision(s.jobTreeClock),
+		RootID:          activityCurrentRootID(s.jobActivityClock, s.ID()),
+		Revision:        activityCurrentRootRevision(s.jobActivityClock),
 		Jobs:            []*jobstore.JobRecord{},
 		LiveJobs:        map[string]*jobstore.JobRecord{},
 		Delegates:       map[string]*jobstore.DelegateRecord{},
@@ -836,6 +836,8 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 	status := projectStableDelegateStatus(budget.now, row)
 	delegate := appwire.JobActivityDelegate{
 		DelegateID:          row.id,
+		OwnerSessionID:      descriptor.OwnerSessionID,
+		RootSessionID:       snapshot.RootID,
 		ChildSessionID:      descriptor.ChildSessionID,
 		ChildRef:            descriptor.TranscriptRef,
 		ParentDelegateID:    descriptor.ParentDelegateID,
@@ -843,6 +845,7 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		Lifecycle:           string(row.lifecycle),
 		Phase:               string(row.phase),
 		Status:              string(row.phase),
+		ProjectionRevision:  row.revision,
 		Resumable:           row.resumable,
 		NotResumableReason:  row.notResumableReason,
 		Mandate:             descriptor.Task,
@@ -854,6 +857,9 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		ResolvedModel:       descriptor.ResolvedModel,
 		Model:               descriptor.ResolvedModel,
 		ReasoningEffort:     descriptor.Config.ReasoningEffort,
+		OriginTurnID:        descriptor.OriginTurnID,
+		OriginToolCallID:    descriptor.OriginToolCallID,
+		OriginItemID:        descriptor.OriginItemID,
 		RunStartedAt:        status.RunStartedAt,
 		LatestActivityAt:    status.LatestActivityAt,
 		RunningForMS:        cloneInt64(status.RunningForMS),
@@ -878,6 +884,7 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		}
 	}
 	if packet := row.latestPacket; packet != nil {
+		delegate.PacketKind = string(packet.Kind)
 		delegate.Message = append(json.RawMessage(nil), packet.Message...)
 		delegate.StructuredResult = append(json.RawMessage(nil), packet.StructuredResult...)
 		delegate.StructuredReason = packet.StructuredResultReason
@@ -890,6 +897,7 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 			var metadata delegateTerminalPacketMetadata
 			if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
 				appendActivityBranchError(&delegate.Branch, "delegate terminal metadata is invalid")
+				delegate.Diagnostics = append(delegate.Diagnostics, "delegate terminal metadata is invalid")
 			} else {
 				delegate.Usage = activityUsageFromCumulative(metadata.CumulativeUsage)
 				if metadata.Worktree != nil {

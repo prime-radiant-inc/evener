@@ -558,6 +558,10 @@ type spawnConfig struct {
 	// spawn/resume/drive paths (reserveTreeSlot) and the finalize/abandon paths.
 	treeCounter *treeCounter
 
+	// jobActivityClock is inherited explicitly by descendants and orders only
+	// shell-job activity projections across the live tree.
+	jobActivityClock *jobActivityClock
+
 	// sharedTaskStore, when non-nil, is used instead of creating a per-session
 	// task store. Set by spawnAgent when ShareTasksWithChildren is true.
 	sharedTaskStore *task.TaskStore

@@ -23,6 +23,7 @@ var notifyMethods = []string{
 	appwire.NotifyThreadQueueChanged,
 	appwire.NotifySerfJobStarted,
 	appwire.NotifySerfJobFinished,
+	appwire.NotifySerfDelegateUpdated,
 	appwire.NotifySerfSteeringInjected,
 	appwire.NotifySerfThreadModelRetry,
 	appwire.NotifyWarning,

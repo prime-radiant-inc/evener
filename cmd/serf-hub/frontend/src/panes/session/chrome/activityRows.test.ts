@@ -27,23 +27,21 @@ function delegate(delegateId: string, opts: { active?: boolean; failed?: boolean
     kind: "delegate" as const,
     delegate: {
       delegateId,
+      ownerSessionId: "sess_root",
+      rootSessionId: "sess_root",
       childSessionId: `sess_${delegateId}`,
       childRef: `ref_${delegateId}`,
-      turns: [
-        {
-          jobId: `job_${delegateId}_t1`,
-          ownerSessionId: "sess_root",
-          ownerRef: "ref_root",
-          type: "delegate",
-          status,
-          terminal: !opts.active,
-          background: true,
-          hasOutput: false,
-          description: `turn of ${delegateId}`,
-          startedAt: "2026-08-05T15:00:00Z",
-          outputBytes: 0,
-        },
-      ],
+      transcriptRef: `ref_${delegateId}`,
+      type: "delegate",
+      lifecycle: opts.active ? "active" : "retained",
+      phase: opts.active ? "running" : "idle",
+      status,
+      projectionRevision: 1,
+      terminal: !opts.active,
+      resumable: true,
+      runStartedAt: "2026-08-05T15:00:00Z",
+      runEndedAt: opts.active ? undefined : "2026-08-05T15:01:00Z",
+      latestActivityAt: "2026-08-05T15:01:00Z",
       branch: {},
       child: opts.child,
     },
@@ -66,6 +64,69 @@ function session(entries: unknown[], counts = { active: 0, failed: 0, completed:
 function tree(entries: unknown[]): ActivityTree {
   return { revision: 1, root: session(entries) as ActivityTree["root"] };
 }
+
+test("stable delegate lineage stays one row and nests its ParentDelegateID shell", () => {
+  const stable = {
+    kind: "delegate" as const,
+    delegate: {
+      delegateId: "dlg_stable",
+      ownerSessionId: "sess_root",
+      rootSessionId: "sess_root",
+      childSessionId: "sess_child",
+      childRef: "local:sess_child",
+      transcriptRef: "local:sess_child",
+      type: "delegate",
+      lifecycle: "active",
+      phase: "running",
+      status: "running",
+      projectionRevision: 3,
+      terminal: false,
+      resumable: true,
+      originTurnId: "turn_1",
+      branch: {},
+      child: {
+        kind: "session" as const,
+        sessionId: "sess_child",
+        ref: "local:sess_child",
+        label: "Child",
+        aggregate: "running",
+        counts: { active: 1, failed: 0, completed: 0, complete: true },
+        entries: [
+          {
+            kind: "shell" as const,
+            job: {
+              jobId: "job_shell",
+              ownerSessionId: "sess_child",
+              ownerRef: "local:sess_child",
+              parentDelegateId: "dlg_stable",
+              transcriptRef: "job:job_shell",
+              type: "shell",
+              status: "running",
+              terminal: false,
+              background: true,
+              hasOutput: true,
+              description: "run checks",
+              startedAt: "2026-08-15T10:00:00Z",
+              outputBytes: 1,
+            },
+          },
+        ],
+        branch: {},
+      },
+    },
+  };
+
+  const rows = buildActivityRows(tree([stable]) as ActivityTree, new Set());
+  expect(rows).toHaveLength(2);
+  expect(rows[0]).toMatchObject({ kind: "delegate", id: "delegate:dlg_stable", live: true });
+  expect(rows[1]).toMatchObject({
+    kind: "job",
+    id: "job:job_shell",
+    parentID: "delegate:dlg_stable",
+    level: 2,
+    job: { parentDelegateId: "dlg_stable" },
+  });
+});
 
 test("live entries render in order; terminal entries fold behind one row", () => {
   const rows = buildActivityRows(

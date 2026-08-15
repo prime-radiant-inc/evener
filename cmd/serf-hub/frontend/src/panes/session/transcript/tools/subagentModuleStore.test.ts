@@ -1,15 +1,16 @@
 import { renderHook } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import type { SerfJobInfo } from "../../../../protocol/types.gen";
+import type { ItemModel } from "../../../../protocol/model";
+import type { SerfDelegateInfo } from "../../../../protocol/types.gen";
 import {
-  applySerfJobFinished,
-  applySerfJobStarted,
+  applySerfDelegateUpdated,
   claimLeader,
   classifyJobStatus,
   itemScopeKey,
   releaseLeader,
   resetSubagentModuleStoreForTests,
   resolveRowKey,
+  rowKeyForDelegateItem,
   setWatchedLiveKind,
   turnScopeKey,
   updateSubagentRowIfExists,
@@ -18,6 +19,34 @@ import {
 } from "./subagentModuleStore";
 
 afterEach(resetSubagentModuleStoreForTests);
+
+test("delegate module keys use delegate_id and never turn activation job_id into a stable row", () => {
+  const delegateItem = (output: Record<string, unknown>, id: string): ItemModel => ({
+    id,
+    callId: `call_${id}`,
+    turnId: "turn_stable",
+    type: "commandExecution",
+    toolName: "delegate",
+    text: "",
+    output: JSON.stringify(output),
+  });
+
+  expect(
+    rowKeyForDelegateItem(
+      delegateItem(
+        {
+          delegate_id: "dlg_stable",
+          status: "running",
+          wait_ignored_reason: "must not enter stable state",
+        },
+        "stable",
+      ),
+    ),
+  ).toBe("dlg:dlg_stable");
+  expect(rowKeyForDelegateItem(delegateItem({ job_id: "job_legacy", status: "running" }, "legacy"))).toBe(
+    "call:call_legacy",
+  );
+});
 
 // subagentModuleStore.ts is the cross-item aggregation side-channel this
 // directory needs but the locked ToolRenderProps/ItemRenderProps interfaces
@@ -201,87 +230,77 @@ test("upsertSubagentRow preserves liveReason/resumable/exhaustion fields a deleg
   });
 });
 
-// --- applySerfJobStarted / applySerfJobFinished (dr7e) --------------------
+// --- applySerfDelegateUpdated ---------------------------------------------
 
-function job(overrides: Partial<SerfJobInfo> = {}): SerfJobInfo {
-  return { jobId: "job_1", jobType: "delegate", status: "running", outputBytes: 0, ...overrides };
+function stableDelegate(overrides: Partial<SerfDelegateInfo> = {}): SerfDelegateInfo {
+  return {
+    delegateId: "dlg_1",
+    ownerSessionId: "sess_owner",
+    rootSessionId: "sess_root",
+    childSessionId: "sess_child",
+    transcriptRef: "local:sess_child",
+    type: "delegate",
+    lifecycle: "active",
+    phase: "running",
+    status: "running",
+    resumable: true,
+    projectionRevision: 1,
+    originTurnId: "turn_1",
+    task: "inspect the repository",
+    latestActivityAt: "2026-08-15T10:00:00Z",
+    ...overrides,
+  };
 }
 
-// A fixed test sessionRef - every scope-key-building call below routes
-// through turnScopeKey exactly as production call sites do (kata 8525),
-// so a test that only touched a bare turnId string before this fix would
-// silently stop matching the row applySerfJobStarted/Finished actually
-// patch (they always scope by sessionRef now).
-const SESS = "sess_x";
+const SESS = "ref_root";
 
-test("applySerfJobStarted: no-op when the job carries no originTurnId (never fabricates a row)", () => {
-  applySerfJobStarted(job(), SESS);
-  const { result } = renderHook(() => useSubagentRows(turnScopeKey(SESS, "turn_never_seen")));
+test("applySerfDelegateUpdated requires durable turn identity before creating a row", () => {
+  applySerfDelegateUpdated(stableDelegate({ originTurnId: undefined }), SESS);
+  const { result } = renderHook(() => useSubagentRows(turnScopeKey(SESS, "turn_1")));
   expect(result.current).toEqual([]);
 });
 
-test("applySerfJobStarted: no-op when no row exists for the resolved rowKey (only patches an EXISTING row)", () => {
-  applySerfJobStarted(job({ originTurnId: "turn_js1", delegateId: "dlg_1" }), SESS);
-  const { result } = renderHook(() => useSubagentRows(turnScopeKey(SESS, "turn_js1")));
-  expect(result.current).toEqual([]);
-});
+test("applySerfDelegateUpdated creates a stable dlg-keyed row without call-scoped wait evidence", () => {
+  applySerfDelegateUpdated(
+    {
+      ...stableDelegate({ exhaustionBudget: "30m", exhaustionLimit: 60, exhaustionResumable: true }),
+      waitIgnoredReason: "call scoped only",
+    } as SerfDelegateInfo & { waitIgnoredReason: string },
+    SESS,
+  );
 
-test("applySerfJobStarted: resets liveKind to running and clears prior terminal detail (delegate_send resume)", () => {
-  const scope = turnScopeKey(SESS, "turn_js2");
-  upsertSubagentRow(scope, { rowKey: "dlg:dlg_2", kind: "done", task: "t", resultPreview: "" });
-  updateSubagentRowIfExists(scope, "dlg:dlg_2", {
-    liveKind: "failed",
-    liveReason: "exhausted",
-    resumable: true,
-    exhaustionBudget: "1m",
-    exhaustionLimit: 5,
-  });
-
-  applySerfJobStarted(job({ originTurnId: "turn_js2", delegateId: "dlg_2", jobId: "job_2" }), SESS);
-
-  const { result } = renderHook(() => useSubagentRows(scope));
+  const { result } = renderHook(() => useSubagentRows(turnScopeKey(SESS, "turn_1")));
   expect(result.current[0]).toMatchObject({
-    liveKind: "running",
-    liveReason: undefined,
-    resumable: undefined,
-    exhaustionBudget: undefined,
-    exhaustionLimit: undefined,
+    rowKey: "dlg:dlg_1",
+    delegateId: "dlg_1",
+    task: "inspect the repository",
+    transcriptRef: "local:sess_child",
+    resumable: true,
+    exhaustionBudget: "30m",
+    exhaustionLimit: 60,
+    stable: { projectionRevision: 1, status: "running" },
   });
+  expect(result.current[0]?.stable).not.toHaveProperty("waitIgnoredReason");
 });
 
-test("applySerfJobFinished: patches liveKind/liveReason/resumable/exhaustion from the notification", () => {
-  const scope = turnScopeKey(SESS, "turn_jf1");
-  upsertSubagentRow(scope, { rowKey: "dlg:dlg_3", kind: "running", task: "t", resultPreview: "" });
-
-  applySerfJobFinished(
-    job({
-      originTurnId: "turn_jf1",
-      delegateId: "dlg_3",
-      status: "exhausted",
-      reason: "ran out of turns",
-      resumable: true,
-      exhaustionBudget: "30m",
-      exhaustionLimit: 60,
+test("applySerfDelegateUpdated fences state by revision and max-merges latest activity", () => {
+  applySerfDelegateUpdated(stableDelegate({ projectionRevision: 3, status: "completed" }), SESS);
+  applySerfDelegateUpdated(
+    stableDelegate({
+      projectionRevision: 2,
+      status: "running",
+      latestActivityAt: "2026-08-15T10:01:00Z",
     }),
     SESS,
   );
 
-  const { result } = renderHook(() => useSubagentRows(scope));
-  expect(result.current[0]).toMatchObject({
-    liveKind: "failed",
-    liveReason: "ran out of turns",
-    resumable: true,
-    exhaustionBudget: "30m",
-    exhaustionLimit: 60,
+  const { result } = renderHook(() => useSubagentRows(turnScopeKey(SESS, "turn_1")));
+  expect(result.current[0]?.stable).toMatchObject({
+    projectionRevision: 3,
+    status: "completed",
+    latestActivityAt: "2026-08-15T10:01:00Z",
   });
-});
-
-test("applySerfJobFinished: rowKey resolution matches resolveRowKey (delegateId over jobId over originToolCallId)", () => {
-  const scope = turnScopeKey(SESS, "turn_jf2");
-  upsertSubagentRow(scope, { rowKey: "job:job_4", kind: "running", task: "t", resultPreview: "" });
-  applySerfJobFinished(job({ originTurnId: "turn_jf2", jobId: "job_4", status: "completed" }), SESS);
-  const { result } = renderHook(() => useSubagentRows(scope));
-  expect(result.current[0]?.liveKind).toBe("done");
+  expect(result.current[0]?.kind).toBe("done");
 });
 
 // --- kata 8525: cross-session isolation ------------------------------------
@@ -290,27 +309,32 @@ test("turnScopeKey: two different sessionRefs with the SAME turnId never produce
   expect(turnScopeKey("session_a", "turn_1")).not.toBe(turnScopeKey("session_b", "turn_1"));
 });
 
-test("applySerfJobFinished: a job from one session never patches an existing row planted under the same turnId in a different session", () => {
+test("applySerfDelegateUpdated scopes the same turn id to the notification's session ref", () => {
   // Both sessions' first real turn lands on the identical "turn_1" string
   // (turn ids restart at 0 per session - internal/appprojector's own
   // nextTurn counter) - exactly the collision kata 8525 was reproduced with.
   const scopeA = turnScopeKey("session_a", "turn_1");
-  const scopeB = turnScopeKey("session_b", "turn_1");
   upsertSubagentRow(scopeA, { rowKey: "dlg:dlg_a", kind: "running", task: "session A's own task", resultPreview: "" });
-  upsertSubagentRow(scopeB, { rowKey: "dlg:dlg_b", kind: "running", task: "session B's own task", resultPreview: "" });
-
-  applySerfJobFinished(job({ originTurnId: "turn_1", delegateId: "dlg_b", status: "completed" }), "session_b");
+  applySerfDelegateUpdated(
+    stableDelegate({
+      delegateId: "dlg_b",
+      childSessionId: "sess_b",
+      transcriptRef: "local:sess_b",
+      status: "completed",
+    }),
+    "session_b",
+  );
 
   const { result: rowsA } = renderHook(() => useSubagentRows(scopeA));
-  const { result: rowsB } = renderHook(() => useSubagentRows(scopeB));
+  const { result: rowsB } = renderHook(() => useSubagentRows(turnScopeKey("session_b", "turn_1")));
   expect(rowsA.current).toHaveLength(1);
-  expect(rowsA.current[0]?.liveKind).toBeUndefined(); // session A's row untouched
+  expect(rowsA.current[0]?.delegateId).toBeUndefined();
   expect(rowsB.current).toHaveLength(1);
-  expect(rowsB.current[0]?.liveKind).toBe("done");
+  expect(rowsB.current[0]?.delegateId).toBe("dlg_b");
 });
 
-// --- setWatchedLiveKind: the guard that keeps a lagging watch from --------
-// --- resurrecting a row a serf/job/finished notification already settled -
+// --- setWatchedLiveKind: the guard that keeps a lagging child watch from ---
+// --- resurrecting a row stable projection has already settled -------------
 
 test("setWatchedLiveKind: a 'running' write is suppressed once the row is already terminal", () => {
   upsertSubagentRow("turn_wg1", { rowKey: "job_1", kind: "running", task: "t", resultPreview: "" });

@@ -74,6 +74,11 @@ var projectorCases = []struct {
 	{events.EventError, func(b []byte) events.EventData { var d events.ErrorData; _ = json.Unmarshal(b, &d); return d }},
 	{events.EventJobStarted, func(b []byte) events.EventData { var d events.JobStartedData; _ = json.Unmarshal(b, &d); return d }},
 	{events.EventJobFinished, func(b []byte) events.EventData { var d events.JobFinishedData; _ = json.Unmarshal(b, &d); return d }},
+	{events.EventDelegateUpdated, func(b []byte) events.EventData {
+		var d events.DelegateUpdatedData
+		_ = json.Unmarshal(b, &d)
+		return d
+	}},
 	{events.EventPluginLoaded, func(b []byte) events.EventData { var d events.PluginLoadedData; _ = json.Unmarshal(b, &d); return d }},
 	{events.EventHookStart, func(b []byte) events.EventData { var d events.HookStartData; _ = json.Unmarshal(b, &d); return d }},
 	{events.EventHookEnd, func(b []byte) events.EventData { var d events.HookEndData; _ = json.Unmarshal(b, &d); return d }},

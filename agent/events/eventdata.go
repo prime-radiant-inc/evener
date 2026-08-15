@@ -69,6 +69,7 @@ func (WarningData) eventKind() EventKind           { return EventWarning }
 func (ErrorData) eventKind() EventKind             { return EventError }
 func (JobStartedData) eventKind() EventKind        { return EventJobStarted }
 func (JobFinishedData) eventKind() EventKind       { return EventJobFinished }
+func (DelegateUpdatedData) eventKind() EventKind   { return EventDelegateUpdated }
 func (PluginLoadedData) eventKind() EventKind      { return EventPluginLoaded }
 func (HookStartData) eventKind() EventKind         { return EventHookStart }
 func (HookEndData) eventKind() EventKind           { return EventHookEnd }
@@ -117,6 +118,7 @@ var (
 	_ EventData = ErrorData{}
 	_ EventData = JobStartedData{}
 	_ EventData = JobFinishedData{}
+	_ EventData = DelegateUpdatedData{}
 	_ EventData = PluginLoadedData{}
 	_ EventData = HookStartData{}
 	_ EventData = HookEndData{}

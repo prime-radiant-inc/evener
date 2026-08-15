@@ -35,6 +35,7 @@ interface DetailSubject {
   endedAt?: string;
   exitCode?: number;
   outputBytes: number;
+  quietForMs?: number | null;
   quietAnchor?: { lastOutputAt?: string; startedAt: string };
 }
 
@@ -52,18 +53,15 @@ function subjectOf(row: ActivityJobRow | ActivityDelegateRow): DetailSubject {
     return subject;
   }
   const { delegate } = row;
-  const firstTurn = delegate.turns[0];
-  const lastTurn = delegate.turns.at(-1);
   const subject: DetailSubject = {
-    // Mirrors ActivityTree's delegateStatusText: latest turn's status, else
-    // the child session's aggregate, else "unknown".
-    status: lastTurn?.status ?? delegate.child?.aggregate ?? "unknown",
-    outputBytes: delegate.turns.reduce((sum, turn) => sum + turn.outputBytes, 0),
+    status: delegate.status ?? delegate.outcome ?? delegate.child?.aggregate ?? "unknown",
+    startedAt: delegate.runStartedAt,
+    outputBytes: 0,
+    quietForMs: delegate.quietForMs,
   };
-  if (firstTurn) subject.startedAt = firstTurn.startedAt;
-  if (lastTurn?.endedAt !== undefined) subject.endedAt = lastTurn.endedAt;
-  if (lastTurn?.exitCode !== undefined) subject.exitCode = lastTurn.exitCode;
-  if (lastTurn) subject.quietAnchor = lastTurn;
+  if (delegate.runEndedAt !== undefined) subject.endedAt = delegate.runEndedAt;
+  const anchor = delegate.latestActivityAt ?? delegate.runStartedAt;
+  if (anchor) subject.quietAnchor = { startedAt: anchor };
   return subject;
 }
 
@@ -86,9 +84,11 @@ function metaText(row: ActivityJobRow | ActivityDelegateRow, now: number): strin
   const bytes = `${subject.outputBytes}b`;
   if (row.live) {
     const segments: string[] = [
-      subject.quietAnchor
-        ? `${subject.status} ${formatQuietAge(now - quietAnchorMillis(subject.quietAnchor))}`
-        : subject.status,
+      subject.quietForMs !== undefined && subject.quietForMs !== null
+        ? `${subject.status} ${formatQuietAge(subject.quietForMs)}`
+        : subject.quietAnchor
+          ? `${subject.status} ${formatQuietAge(now - quietAnchorMillis(subject.quietAnchor))}`
+          : subject.status,
       bytes,
     ];
     const started = formatClockTime(subject.startedAt);
@@ -179,7 +179,7 @@ export function ActivityRowDetail({
   now: number;
 }): JSX.Element {
   const delegate = row.kind === "delegate" ? row.delegate : undefined;
-  const mandate = delegate?.mandate;
+  const mandate = delegate?.mandate ?? delegate?.task ?? delegate?.description;
   const command =
     row.kind === "job"
       ? (row.job.command ?? row.job.task ?? row.job.description)
@@ -204,6 +204,18 @@ export function ActivityRowDetail({
         <code className={CLASS.detailCommand}>{command}</code>
       )}
       <span className={CLASS.detailMeta}>{metaText(row, now)}</span>
+      {delegate && <span className={CLASS.detailMeta}>Delegate {delegate.delegateId} · send · stop · status</span>}
+      {delegate?.parentWatchGranted && <span className={CLASS.detailMeta}>Watch enabled</span>}
+      {delegate?.diagnostics?.map((diagnostic) => (
+        <span className={CLASS.detailMeta} key={diagnostic}>
+          {diagnostic}
+        </span>
+      ))}
+      {delegate?.warnings?.map((warning) => (
+        <span className={CLASS.detailMeta} key={warning}>
+          {warning}
+        </span>
+      ))}
       {row.kind === "job" && row.job.hasOutput && <JobOutputPreview ownerRef={row.parentRef} jobId={row.job.jobId} />}
     </div>
   );

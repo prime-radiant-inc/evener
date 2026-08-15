@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -90,6 +91,38 @@ func TestAppDiagnosticsFromDetailedStatus_Exhaustion(t *testing.T) {
 		job.ExhaustionBudget != "max_tool_rounds_per_input" || job.ExhaustionLimit != 1 ||
 		job.Resumable == nil || !*job.Resumable {
 		t.Fatalf("job = %+v", job)
+	}
+}
+
+func TestAppDiagnosticsFromDetailedStatus_DelegatesLossless(t *testing.T) {
+	valid := true
+	message := json.RawMessage("null")
+	input := DelegateStatusInfo{
+		DelegateID: "dlg_wire", OwnerSessionID: "root", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
+		ParentDelegateID: "dlg_parent", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", Outcome: "completed",
+		Resumable: true, ProjectionRevision: 6, Task: "task", Message: message, StructuredResult: json.RawMessage("null"), StructuredValid: &valid,
+		Warnings: []string{"warning"}, Diagnostics: []string{"diagnostic"}, Usage: &appwire.SerfUsage{InputTokens: 3, TotalTokens: 3},
+		Worktree: &appwire.JobActivityWorktree{Path: "/tmp/lane", Branch: "delegate/lane"},
+	}
+	got := appDiagnosticsFromDetailedStatus(DetailedStatus{Delegates: []DelegateStatusInfo{input}, TurnSlots: &TurnSlotStatus{InUse: 2, Cap: 50, Jobs: 1, Drives: 1}})
+	if len(got.Delegates) != 1 {
+		t.Fatalf("delegates = %+v", got.Delegates)
+	}
+	delegate := got.Delegates[0]
+	if delegate.DelegateID != input.DelegateID || delegate.ParentDelegateID != input.ParentDelegateID || delegate.ProjectionRevision != input.ProjectionRevision ||
+		!bytes.Equal(delegate.Message, message) || delegate.StructuredValid == nil || !*delegate.StructuredValid || delegate.Usage == nil || delegate.Worktree == nil ||
+		!reflect.DeepEqual(delegate.Warnings, input.Warnings) || !reflect.DeepEqual(delegate.Diagnostics, input.Diagnostics) {
+		t.Fatalf("app delegate diagnostics = %+v", delegate)
+	}
+	if got.TurnSlots == nil || got.TurnSlots.InUse != 2 || got.TurnSlots.Cap != 50 || got.TurnSlots.Jobs != 1 || got.TurnSlots.Drives != 1 {
+		t.Fatalf("app turn slots = %+v", got.TurnSlots)
+	}
+	raw, err := json.Marshal(delegate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("waitIgnoredReason")) || bytes.Contains(raw, []byte("wait_ignored_reason")) {
+		t.Fatalf("stable diagnostics leaked call-scoped wait result: %s", raw)
 	}
 }
 

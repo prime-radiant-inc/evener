@@ -21,6 +21,48 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
+func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	sessionID := strings.TrimPrefix(params.Ref, "local:")
+	entry, ok := cfg.Past.Find(sessionID)
+	if !ok {
+		t.Fatal("past entry missing")
+	}
+	path := filepath.Join(entry.StateDir, "sessions", sessionID, "delegates.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := map[string]any{
+		"child_session_id": "child-cold", "transcript_ref": "local:child-cold", "owner_session_id": sessionID,
+		"task": "cold task", "description": "cold description", "agent_type": "explorer", "resolved_profile_id": "openai", "resolved_model": "gpt-5",
+		"tool_name_ceiling": []string{"communicate"}, "delegation_allowance": 2, "parent_watch_granted": true, "resumable": true, "config": map[string]any{},
+	}
+	batch, err := json.Marshal(map[string]any{"events": []any{map[string]any{
+		"kind": "delegate_created", "seq": 1, "ts": time.Unix(10, 0).UTC(), "delegate_id": "dlg_cold", "created": map[string]any{"descriptor": descriptor},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawJournal := append([]byte("{\"version\":1}\n"), append(batch, '\n')...)
+	if err := os.WriteFile(path, rawJournal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	thread, found := requirePastThreadForRead(t, cfg, params)
+	if !found {
+		t.Fatal("past thread not found")
+	}
+	if thread.Serf.Diagnostics == nil || len(thread.Serf.Diagnostics.Delegates) != 1 {
+		t.Fatalf("cold thread delegates = %+v", thread.Serf.Diagnostics)
+	}
+	got := thread.Serf.Diagnostics.Delegates[0]
+	if got.DelegateID != "dlg_cold" || got.ChildSessionID != "child-cold" || got.TranscriptRef != "local:child-cold" ||
+		got.OwnerSessionID != sessionID || got.Type != "delegate" || got.Lifecycle != "idle" || got.Phase != "idle" || got.ProjectionRevision != 1 ||
+		got.Task != "cold task" || got.Description != "cold description" || got.DelegationAllowance != 2 || !got.ParentWatchGranted {
+		t.Fatalf("cold stable delegate = %+v", got)
+	}
+}
+
 func TestHubThreadReadStableDelegateDoesNotExtractActivationID(t *testing.T) {
 	raw := json.RawMessage(`{"job_id":"job_retired_activation","delegate_id":"dlg_stable","status":"running"}`)
 	item := appwire.ThreadItem{Type: "commandExecution", ToolName: "delegate", Raw: bytes.Clone(raw), Status: appwire.TurnStatusInProgress}
@@ -116,24 +158,18 @@ func requirePastEntryThread(t testing.TB, cfg hubcore.WebConfig, entry hubcore.P
 	return thread
 }
 
-func TestThreadReadReconcilesDelegateRawWithTerminalJobstoreState(t *testing.T) {
+func TestThreadReadDoesNotReconcileStableDelegateFromActivationJob(t *testing.T) {
 	raw := json.RawMessage(`{"job_id":"job_A","delegate_id":"dlg_A","status":"running","task":"inspect billing","transcript_ref":"local:child"}`)
 	item := appwire.ThreadItem{Type: "commandExecution", ID: "item_delegate", CallID: "call_delegate", ToolName: "delegate", Raw: raw, Status: appwire.TurnStatusCompleted}
 	rec := agent.HistoricalJobRecord{JobID: "job_A", DelegateID: "dlg_A", Type: "delegate", Status: "completed", Task: "inspect billing", TranscriptRef: "local:child", OriginToolCallID: "call_delegate", OutputBytes: 42}
 
 	got := reconcileDelegateThreadItemForTest(item, rec)
-	if got.Status != "completed" {
-		t.Fatalf("item status=%q, want completed", got.Status)
-	}
-	if !strings.Contains(string(got.Raw), `"status":"completed"`) || !strings.Contains(string(got.Raw), `"output_bytes":42`) {
-		t.Fatalf("raw after reconcile = %s", got.Raw)
+	if got.Status != item.Status || !bytes.Equal(got.Raw, raw) {
+		t.Fatalf("activation job mutated stable delegate transcript item: status=%q raw=%s", got.Status, got.Raw)
 	}
 }
 
-func TestHistoricalJob_ExhaustedIsTerminal(t *testing.T) {
-	if !isTerminalHistoricalJobStatus("exhausted") {
-		t.Fatal("exhausted historical job reported as non-terminal")
-	}
+func TestHistoricalDelegateActivationExhaustionDoesNotRewriteStableTranscript(t *testing.T) {
 	raw := json.RawMessage(`{"job_id":"job_exhausted","delegate_id":"dlg_exhausted","status":"running","task":"bounded work","transcript_ref":"local:child-exhausted"}`)
 	item := appwire.ThreadItem{
 		Type:     "commandExecution",
@@ -154,13 +190,8 @@ func TestHistoricalJob_ExhaustedIsTerminal(t *testing.T) {
 	}
 
 	got := reconcileDelegateThreadItemForTest(item, rec)
-	if got.Status != "exhausted" {
-		t.Fatalf("item status = %q, want exhausted", got.Status)
-	}
-	for _, want := range []string{`"status":"exhausted"`, `"reason":"tool_round_budget_exhausted"`} {
-		if !strings.Contains(string(got.Raw), want) {
-			t.Fatalf("raw missing %s: %s", want, got.Raw)
-		}
+	if got.Status != item.Status || !bytes.Equal(got.Raw, raw) {
+		t.Fatalf("activation exhaustion mutated stable delegate transcript item: status=%q raw=%s", got.Status, got.Raw)
 	}
 }
 
@@ -187,7 +218,7 @@ func TestThreadReadReconciliationIgnoresMismatchedJobID(t *testing.T) {
 	}
 }
 
-func TestPastThreadReadReconcilesDelegateRawWithTerminalJobstoreState(t *testing.T) {
+func TestPastThreadReadDoesNotReconcileStableDelegateFromActivationJob(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
 	parentID := "02wMz5Txv1C3Hut0M8GCeB"
@@ -249,12 +280,10 @@ func TestPastThreadReadReconcilesDelegateRawWithTerminalJobstoreState(t *testing
 	}
 	item := thread.Turns[0].Items[0]
 	if item.Status != appwire.TurnStatusCompleted {
-		t.Fatalf("status=%q, want completed", item.Status)
+		t.Fatalf("status=%q, want transcript-projected completed", item.Status)
 	}
-	for _, want := range []string{`"status":"completed"`, `"output_bytes":42`, `"origin_tool_call_id":"call_delegate"`} {
-		if !strings.Contains(string(item.Raw), want) {
-			t.Fatalf("raw missing %s: %s", want, item.Raw)
-		}
+	if !bytes.Equal(item.Raw, runningRaw) {
+		t.Fatalf("activation job mutated transcript raw: got %s want %s", item.Raw, runningRaw)
 	}
 }
 

@@ -50,9 +50,9 @@ export function WatchedChildIndicator({
   const now = useNowTick(NOW_TICK_MS);
 
   // Write the live child status back onto the row as its liveKind overlay
-  // (yd16), through setWatchedLiveKind's guard (dr7e) so a stale "running"
-  // read never resurrects a row a serf/job/finished notification already
-  // settled into a terminal kind. Effect-guarded and keyed on the derived
+  // (yd16), through setWatchedLiveKind's guard so a stale "running" read
+  // never resurrects a row stable projection already settled into a terminal
+  // kind. Effect-guarded and keyed on the derived
   // liveKind so it fires only on an actual status change - never a
   // render-time store write, which would be an infinite re-render loop
   // (updateSubagentRowIfExists returns a fresh useSubagentRows reference

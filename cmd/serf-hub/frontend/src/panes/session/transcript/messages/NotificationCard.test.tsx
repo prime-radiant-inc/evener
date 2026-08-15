@@ -36,6 +36,40 @@ test("renders the title and tags the tone", () => {
   expect(screen.getByTestId("notification-card").getAttribute("data-tone")).toBe("success");
 });
 
+test("renders stable delegate identity as Delegate while shell identity remains Job", async () => {
+  const user = userEvent.setup();
+  const { rerender } = render(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        title: "Delegate completed",
+        secondary: "dlg_42",
+        delegateId: "dlg_42",
+        jobId: undefined,
+        jobType: undefined,
+        rawText: '<delegate-notification delegate_id="dlg_42">done</delegate-notification>',
+      })}
+    />,
+  );
+  expect(screen.getByTestId("notification-card").textContent).toContain("Delegate completed");
+  await user.click(screen.getByTestId("notification-card"));
+  expect(screen.getByText(/delegate id/i).parentElement?.textContent).toContain("dlg_42");
+  expect(screen.queryByText(/job id/i)).toBeNull();
+
+  rerender(
+    <NotificationCard
+      notification={notif({
+        type: "job",
+        title: "Job completed",
+        secondary: "shell",
+        jobId: "job_shell",
+        jobType: "shell",
+      })}
+    />,
+  );
+  expect(screen.getByTestId("notification-card").textContent).toContain("Job completed");
+});
+
 test("collapses to a single row by default; card chrome appears on expand", () => {
   render(<NotificationCard notification={notif({ tone: "neutral", title: "explorer finished" })} />);
   const row = screen.getByTestId("notification-card");

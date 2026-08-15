@@ -92,6 +92,8 @@ const (
 	EventJobStarted EventKind = "JOB_STARTED"
 	// EventJobFinished marks the end of a job.
 	EventJobFinished EventKind = "JOB_FINISHED"
+	// EventDelegateUpdated carries one immutable stable delegate projection.
+	EventDelegateUpdated EventKind = "DELEGATE_UPDATED"
 	// EventPluginLoaded reports that a plugin was loaded.
 	EventPluginLoaded EventKind = "PLUGIN_LOADED"
 	// EventHookStart marks the start of a hook execution.

@@ -924,8 +924,8 @@ test("task-only delegates show a bounded purpose preview and fold the multi-line
         id: "task_only_delegate",
         callId: "call_task_only_delegate",
         toolName: "delegate",
-        argumentsJSON: JSON.stringify({ task, mode: "foreground_timeout", delegateId: "dlg_task_only" }),
-        output: JSON.stringify({ job_id: "job_task_only", status: "completed", transcript_ref: "ref_task_only" }),
+        argumentsJSON: JSON.stringify({ task, mode: "foreground_timeout" }),
+        output: JSON.stringify({ delegate_id: "dlg_task_only", status: "completed", transcript_ref: "ref_task_only" }),
       })}
       turn={turn}
       live={false}
@@ -953,6 +953,45 @@ test("task-only delegates show a bounded purpose preview and fold the multi-line
   expect(openTranscript.textContent).toContain("open");
   expect(openTranscript.querySelector("svg")).toBeTruthy();
   expect(container.querySelectorAll('[data-testid="tool-row"]')).toHaveLength(1);
+});
+
+test("delegate controls require stable delegate_id and reject activation-only job_id", () => {
+  render(
+    <>
+      <ToolCallItem
+        item={item({
+          id: "stable_delegate",
+          callId: "call_stable_delegate",
+          toolName: "delegate",
+          argumentsJSON: JSON.stringify({ task: "stable" }),
+          output: JSON.stringify({
+            delegate_id: "dlg_stable",
+            status: "running",
+            transcript_ref: "local:sess_child",
+          }),
+        })}
+        turn={turn}
+        live={false}
+      />
+      <ToolCallItem
+        item={item({
+          id: "activation_only_delegate",
+          callId: "call_activation_only_delegate",
+          toolName: "delegate",
+          argumentsJSON: JSON.stringify({ task: "legacy activation" }),
+          output: JSON.stringify({ job_id: "job_legacy", status: "running", transcript_ref: "job:job_legacy" }),
+        })}
+        turn={turn}
+        live={false}
+      />
+    </>,
+  );
+
+  const rows = screen.getAllByTestId("subagent-row");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.textContent).toContain("stable");
+  expect(rows[0]?.textContent).not.toContain("legacy activation");
+  expect(screen.getAllByRole("button", { name: "Open transcript" })).toHaveLength(1);
 });
 
 test("malformed delegate arguments keep status without inventing a purpose", () => {

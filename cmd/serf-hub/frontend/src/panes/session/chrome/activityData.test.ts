@@ -99,38 +99,22 @@ const VALID_TREE_WIRE = {
         kind: "delegate",
         delegate: {
           delegateId: "dlg_1",
+          ownerSessionId: "sess_root",
+          rootSessionId: "sess_root",
           childSessionId: "sess_child",
           childRef: "ref_child",
+          transcriptRef: "ref_child",
+          type: "delegate",
+          lifecycle: "retained",
+          phase: "idle",
+          status: "queuedForRetry",
+          projectionRevision: 2,
+          terminal: true,
+          resumable: true,
           mandate: "inspect branch",
-          turns: [
-            {
-              jobId: "job_delegate_1",
-              ownerSessionId: "sess_root",
-              ownerRef: "ref_root",
-              type: "delegate",
-              status: "running",
-              terminal: false,
-              background: true,
-              hasOutput: false,
-              description: "delegate turn 1",
-              startedAt: "2026-08-03T00:02:00Z",
-              outputBytes: 0,
-            },
-            {
-              jobId: "job_delegate_2",
-              ownerSessionId: "sess_root",
-              ownerRef: "ref_root",
-              type: "delegate",
-              status: "queuedForRetry",
-              terminal: true,
-              background: true,
-              hasOutput: false,
-              description: "delegate turn 2",
-              startedAt: "2026-08-03T00:03:00Z",
-              endedAt: "2026-08-03T00:04:00Z",
-              outputBytes: 0,
-            },
-          ],
+          runStartedAt: "2026-08-03T00:02:00Z",
+          runEndedAt: "2026-08-03T00:04:00Z",
+          latestActivityAt: "2026-08-03T00:04:00Z",
           child: {
             sessionId: "sess_child",
             ref: "ref_child",
@@ -159,24 +143,21 @@ const VALID_TREE_WIRE = {
                 kind: "delegate",
                 delegate: {
                   delegateId: "dlg_nested",
+                  ownerSessionId: "sess_child",
+                  rootSessionId: "sess_root",
                   childSessionId: "sess_leaf",
                   childRef: "ref_leaf",
-                  turns: [
-                    {
-                      jobId: "job_nested_delegate",
-                      ownerSessionId: "sess_child",
-                      ownerRef: "ref_child",
-                      type: "delegate",
-                      status: "completed",
-                      terminal: true,
-                      background: true,
-                      hasOutput: false,
-                      description: "nested delegate turn",
-                      startedAt: "2026-08-03T00:06:00Z",
-                      endedAt: "2026-08-03T00:07:00Z",
-                      outputBytes: 0,
-                    },
-                  ],
+                  transcriptRef: "ref_leaf",
+                  type: "delegate",
+                  lifecycle: "retained",
+                  phase: "idle",
+                  status: "completed",
+                  projectionRevision: 1,
+                  terminal: true,
+                  resumable: false,
+                  runStartedAt: "2026-08-03T00:06:00Z",
+                  runEndedAt: "2026-08-03T00:07:00Z",
+                  latestActivityAt: "2026-08-03T00:07:00Z",
                   child: {
                     sessionId: "sess_leaf",
                     ref: "ref_leaf",
@@ -211,9 +192,18 @@ const VALID_TREE_WIRE = {
                 kind: "delegate",
                 delegate: {
                   delegateId: "dlg_unavailable",
+                  ownerSessionId: "sess_child",
+                  rootSessionId: "sess_root",
                   childSessionId: "sess_missing",
                   childRef: "ref_missing",
-                  turns: [],
+                  transcriptRef: "ref_missing",
+                  type: "delegate",
+                  lifecycle: "retained",
+                  phase: "idle",
+                  status: "completed",
+                  projectionRevision: 1,
+                  terminal: true,
+                  resumable: false,
                   branch: { error: "child unavailable" },
                 },
               },
@@ -221,9 +211,18 @@ const VALID_TREE_WIRE = {
                 kind: "delegate",
                 delegate: {
                   delegateId: "dlg_truncated",
+                  ownerSessionId: "sess_child",
+                  rootSessionId: "sess_root",
                   childSessionId: "sess_truncated",
                   childRef: "ref_truncated",
-                  turns: [],
+                  transcriptRef: "ref_truncated",
+                  type: "delegate",
+                  lifecycle: "retained",
+                  phase: "idle",
+                  status: "completed",
+                  projectionRevision: 1,
+                  terminal: true,
+                  resumable: false,
                   branch: { truncated: true, continuation: "page-2" },
                 },
               },
@@ -231,23 +230,18 @@ const VALID_TREE_WIRE = {
                 kind: "delegate",
                 delegate: {
                   delegateId: "dlg_bad_sibling",
+                  ownerSessionId: "sess_child",
+                  rootSessionId: "sess_root",
                   childSessionId: "sess_bad",
                   childRef: "ref_bad",
-                  turns: [
-                    {
-                      jobId: 5,
-                      ownerSessionId: "sess_child",
-                      ownerRef: "ref_child",
-                      type: "delegate",
-                      status: "failed",
-                      terminal: true,
-                      background: true,
-                      hasOutput: false,
-                      description: "broken turn",
-                      startedAt: "2026-08-03T00:10:00Z",
-                      outputBytes: 0,
-                    },
-                  ],
+                  transcriptRef: "ref_bad",
+                  type: "delegate",
+                  lifecycle: "retained",
+                  phase: "idle",
+                  status: "failed",
+                  projectionRevision: 1.5,
+                  terminal: true,
+                  resumable: false,
                   branch: {},
                 },
               },
@@ -261,6 +255,91 @@ const VALID_TREE_WIRE = {
     branch: {},
   },
 };
+
+it("parses stable delegate lineage and ParentDelegateID shell ancestry without activation turns", () => {
+  const parsed = parseActivityTree({
+    revision: 12,
+    root: {
+      sessionId: "sess_root",
+      ref: "ref_root",
+      label: "Root",
+      aggregate: "running",
+      counts: { active: 2, failed: 0, completed: 0, complete: true },
+      entries: [
+        {
+          kind: "delegate",
+          delegate: {
+            delegateId: "dlg_parent",
+            ownerSessionId: "sess_root",
+            rootSessionId: "sess_root",
+            childSessionId: "sess_child",
+            childRef: "local:sess_child",
+            transcriptRef: "local:sess_child",
+            type: "delegate",
+            lifecycle: "active",
+            phase: "running",
+            status: "running",
+            projectionRevision: 4,
+            terminal: false,
+            resumable: true,
+            originTurnId: "turn_1",
+            runStartedAt: "2026-08-15T10:00:00Z",
+            latestActivityAt: "2026-08-15T10:00:03Z",
+            quietForMs: 3000,
+            delegationAllowance: 1,
+            parentWatchGranted: true,
+            branch: {},
+            child: {
+              sessionId: "sess_child",
+              ref: "local:sess_child",
+              label: "Child",
+              aggregate: "running",
+              counts: { active: 1, failed: 0, completed: 0, complete: true },
+              entries: [
+                {
+                  kind: "shell",
+                  job: {
+                    jobId: "job_shell",
+                    ownerSessionId: "sess_child",
+                    ownerRef: "local:sess_child",
+                    parentDelegateId: "dlg_parent",
+                    transcriptRef: "job:job_shell",
+                    type: "shell",
+                    status: "running",
+                    terminal: false,
+                    background: true,
+                    hasOutput: true,
+                    description: "run checks",
+                    startedAt: "2026-08-15T10:00:01Z",
+                    outputBytes: 12,
+                  },
+                },
+              ],
+              branch: {},
+            },
+          },
+        },
+      ],
+      branch: {},
+    },
+  });
+
+  const entry = parsed?.root.entries[0];
+  expect(entry?.kind).toBe("delegate");
+  if (entry?.kind !== "delegate") throw new Error("expected stable delegate");
+  expect(entry.delegate).toMatchObject({
+    delegateId: "dlg_parent",
+    ownerSessionId: "sess_root",
+    rootSessionId: "sess_root",
+    status: "running",
+    projectionRevision: 4,
+    parentWatchGranted: true,
+  });
+  const shell = entry.delegate.child?.entries[0];
+  expect(shell?.kind).toBe("shell");
+  if (shell?.kind !== "shell") throw new Error("expected child shell");
+  expect(shell.job.parentDelegateId).toBe("dlg_parent");
+});
 
 function makeDepthWire(depth: number): unknown {
   let session = {
@@ -284,23 +363,20 @@ function makeDepthWire(depth: number): unknown {
           kind: "delegate",
           delegate: {
             delegateId: `dlg_${level}`,
+            ownerSessionId: `sess_${level}`,
+            rootSessionId: "sess_0",
             childSessionId: session.sessionId,
             childRef: session.ref,
-            turns: [
-              {
-                jobId: `job_${level}`,
-                ownerSessionId: `sess_${level}`,
-                ownerRef: `ref_${level}`,
-                type: "delegate",
-                status: "running",
-                terminal: false,
-                background: true,
-                hasOutput: false,
-                description: `delegate ${level}`,
-                startedAt: "2026-08-03T00:00:00Z",
-                outputBytes: 0,
-              },
-            ],
+            transcriptRef: session.ref,
+            type: "delegate",
+            lifecycle: "active",
+            phase: "running",
+            status: "running",
+            projectionRevision: 1,
+            terminal: false,
+            resumable: true,
+            runStartedAt: "2026-08-03T00:00:00Z",
+            latestActivityAt: "2026-08-03T00:00:00Z",
             child: session,
             branch: {},
           },
@@ -410,8 +486,8 @@ describe("parseActivityTree", () => {
 
     expect(tree?.revision).toBe(7);
     expect(rootDelegate?.delegate.delegateId).toBe("dlg_1");
-    expect(rootDelegate?.delegate.turns).toHaveLength(2);
-    expect(rootDelegate?.delegate.turns[1]?.status).toBe("queuedForRetry");
+    expect(rootDelegate?.delegate.status).toBe("queuedForRetry");
+    expect(rootDelegate?.delegate.projectionRevision).toBe(2);
     expect(getDelegateEntry(tree, 1, 1)?.kind).toBe("delegate");
     expect(unavailable?.delegate.branch.error).toBe("child unavailable");
     expect(truncated?.delegate.branch).toEqual({
@@ -422,9 +498,9 @@ describe("parseActivityTree", () => {
 
   it("preserves unknown status text and authoritative terminal bits", () => {
     const tree = parseActivityTree(VALID_TREE_WIRE) as ActivityTree;
-    const delegateTurn = getDelegateEntry(tree, 1)?.delegate.turns[1];
-    expect(delegateTurn?.status).toBe("queuedForRetry");
-    expect(delegateTurn?.terminal).toBe(true);
+    const delegate = getDelegateEntry(tree, 1)?.delegate;
+    expect(delegate?.status).toBe("queuedForRetry");
+    expect(delegate?.terminal).toBe(true);
   });
 
   it("drops malformed siblings while preserving valid siblings and marking the owning session incomplete", () => {
@@ -500,13 +576,9 @@ describe("parseActivityTree", () => {
     expect(getDelegateEntry(tree, 1, 2)?.delegate.branch.error).toBe("child unavailable");
   });
 
-  it("drops a sibling whose required integer field is fractional or negative", () => {
+  it("drops a sibling whose stable integer field is fractional", () => {
     const fractional = cloneWire(VALID_TREE_WIRE);
-    const fractionalTurn = assertDefined(
-      getMalformedSiblingWire(fractional).turns[0],
-      "expected malformed sibling turn",
-    );
-    fractionalTurn.outputBytes = 1.5;
+    getMalformedSiblingWire(fractional).projectionRevision = 2.5;
     const fractionalTree = parseActivityTree(fractional) as ActivityTree;
     const fractionalChild = getDelegateEntry(fractionalTree, 1)?.delegate.child;
     expect(fractionalChild?.entries.map((entry: (typeof fractionalChild.entries)[number]) => entry.kind)).toEqual([
@@ -516,19 +588,6 @@ describe("parseActivityTree", () => {
       "delegate",
     ]);
     expect(fractionalChild?.branch.error).toBe("incomplete");
-
-    const negative = cloneWire(VALID_TREE_WIRE);
-    const negativeTurn = assertDefined(getMalformedSiblingWire(negative).turns[0], "expected malformed sibling turn");
-    negativeTurn.outputBytes = -1;
-    const negativeTree = parseActivityTree(negative) as ActivityTree;
-    const negativeChild = getDelegateEntry(negativeTree, 1)?.delegate.child;
-    expect(negativeChild?.entries.map((entry: (typeof negativeChild.entries)[number]) => entry.kind)).toEqual([
-      "shell",
-      "delegate",
-      "delegate",
-      "delegate",
-    ]);
-    expect(negativeChild?.branch.error).toBe("incomplete");
   });
 
   it("accepts a signed integer exitCode but rejects a fractional one", () => {
@@ -540,21 +599,10 @@ describe("parseActivityTree", () => {
     });
 
     const malformed = cloneWire(VALID_TREE_WIRE);
-    const malformedTurn = assertDefined(
-      getMalformedSiblingWire(malformed).turns[0],
-      "expected malformed sibling turn",
-    ) as {
-      exitCode?: number;
-    };
-    malformedTurn.exitCode = 1.5;
+    getRootShellWire(malformed).exitCode = 1.5;
     const tree = parseActivityTree(malformed) as ActivityTree;
-    const child = getDelegateEntry(tree, 1)?.delegate.child;
-    expect(child?.entries.map((entry: (typeof child.entries)[number]) => entry.kind)).toEqual([
-      "shell",
-      "delegate",
-      "delegate",
-      "delegate",
-    ]);
+    expect(tree.root.entries[0]).toMatchObject({ kind: "delegate" });
+    expect(tree.root.branch.error).toBe("incomplete");
   });
 });
 
@@ -600,9 +648,8 @@ describe("reconcileActivityState", () => {
     previousWire.root.aggregate = "completed";
     previousWire.root.counts = { active: 0, failed: 0, completed: 5, complete: true };
     const previousRootDelegate = getRootDelegateWire(previousWire);
-    const previousTurn = assertDefined(previousRootDelegate.turns[0], "expected previous active delegate turn");
-    previousTurn.status = "completed";
-    previousTurn.terminal = true;
+    previousRootDelegate.status = "completed";
+    previousRootDelegate.terminal = true;
     const previousChild = getChildSessionWire(previousWire);
     previousChild.aggregate = "completed";
     previousChild.counts = { active: 0, failed: 0, completed: 4, complete: true };
@@ -646,9 +693,18 @@ describe("reconcileActivityState", () => {
             kind: "delegate",
             delegate: {
               delegateId: "dlg_keep",
+              ownerSessionId: "sess_root",
+              rootSessionId: "sess_root",
               childSessionId: "sess_keep",
               childRef: "ref_keep",
-              turns: [],
+              transcriptRef: "ref_keep",
+              type: "delegate",
+              lifecycle: "retained",
+              phase: "idle",
+              status: "completed",
+              projectionRevision: 1,
+              terminal: true,
+              resumable: false,
               child: {
                 sessionId: "sess_keep",
                 ref: "ref_keep",
@@ -678,9 +734,18 @@ describe("reconcileActivityState", () => {
             kind: "delegate",
             delegate: {
               delegateId: "dlg_keep",
+              ownerSessionId: "sess_root",
+              rootSessionId: "sess_root",
               childSessionId: "sess_keep",
               childRef: "ref_keep",
-              turns: [],
+              transcriptRef: "ref_keep",
+              type: "delegate",
+              lifecycle: "active",
+              phase: "running",
+              status: "running",
+              projectionRevision: 2,
+              terminal: false,
+              resumable: true,
               child: {
                 sessionId: "sess_keep",
                 ref: "ref_keep",
@@ -692,23 +757,20 @@ describe("reconcileActivityState", () => {
                     kind: "delegate",
                     delegate: {
                       delegateId: "dlg_new_active",
+                      ownerSessionId: "sess_keep",
+                      rootSessionId: "sess_root",
                       childSessionId: "sess_new",
                       childRef: "ref_new",
-                      turns: [
-                        {
-                          jobId: "job_active",
-                          ownerSessionId: "sess_keep",
-                          ownerRef: "ref_keep",
-                          type: "delegate",
-                          status: "running",
-                          terminal: false,
-                          background: true,
-                          hasOutput: false,
-                          description: "active delegate turn",
-                          startedAt: "2026-08-03T00:00:00Z",
-                          outputBytes: 0,
-                        },
-                      ],
+                      transcriptRef: "ref_new",
+                      type: "delegate",
+                      lifecycle: "active",
+                      phase: "running",
+                      status: "running",
+                      projectionRevision: 1,
+                      terminal: false,
+                      resumable: true,
+                      runStartedAt: "2026-08-03T00:00:00Z",
+                      latestActivityAt: "2026-08-03T00:00:00Z",
                       child: {
                         sessionId: "sess_new",
                         ref: "ref_new",
@@ -842,9 +904,18 @@ describe("lastOutputAt and usage wire fields", () => {
           kind: "delegate",
           delegate: {
             delegateId: "dlg_1",
+            ownerSessionId: "sess_root",
+            rootSessionId: "sess_root",
             childSessionId: "sess_child",
             childRef: "ref_child",
-            turns: [],
+            transcriptRef: "ref_child",
+            type: "delegate",
+            lifecycle: "retained",
+            phase: "idle",
+            status: "completed",
+            projectionRevision: 1,
+            terminal: true,
+            resumable: false,
             branch: {},
             usage: { inputTokens: 41200, outputTokens: 6100 },
           },
@@ -857,7 +928,7 @@ describe("lastOutputAt and usage wire fields", () => {
     });
   });
 
-  it("omits both fields when absent (old daemon)", () => {
+  it("omits optional activity fields when absent", () => {
     const tree = parseActivityTree(treeFixture([{ kind: "shell", job: jobFixture() }]));
     const entry = tree?.root.entries[0];
     expect(entry?.kind === "shell" && entry.job.lastOutputAt).toBeUndefined();
@@ -870,9 +941,18 @@ describe("lastOutputAt and usage wire fields", () => {
           kind: "delegate",
           delegate: {
             delegateId: "dlg_1",
+            ownerSessionId: "sess_root",
+            rootSessionId: "sess_root",
             childSessionId: "sess_child",
             childRef: "ref_child",
-            turns: [],
+            transcriptRef: "ref_child",
+            type: "delegate",
+            lifecycle: "retained",
+            phase: "idle",
+            status: "completed",
+            projectionRevision: 1,
+            terminal: true,
+            resumable: false,
             branch: {},
             usage: { inputTokens: "many", outputTokens: 1 },
           },

@@ -2331,6 +2331,169 @@ func TestDelegateAttention_DeliveryDeferredDuringProcessingArmsWake(t *testing.T
 	}
 }
 
+func TestRootDelegateAttention_DurableAppendArmsWake(t *testing.T) {
+	stateDir := t.TempDir()
+	root := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+	)
+	wakes := make(chan struct{}, 1)
+	root.SetNotifyFunc(func() { wakes <- struct{}{} })
+
+	const attentionID = "delegate:dlg_wake/delivery/1"
+	if appended, err := root.appendDelegateNotificationDurably(attentionID, `<delegate-notification delegate_id="dlg_wake">done</delegate-notification>`); err != nil || !appended {
+		t.Fatalf("append root attention = appended:%t err:%v", appended, err)
+	}
+	select {
+	case <-wakes:
+	default:
+		t.Fatal("durable root attention emitted no autonomous wake")
+	}
+	if !root.sessionWorkPending() {
+		t.Fatal("durable root attention is absent from root work-pending state")
+	}
+}
+
+func TestRootDelegateAttention_SuccessfulNotificationConsumesExactIDs(t *testing.T) {
+	stateDir := t.TempDir()
+	const (
+		attentionID = "delegate:dlg_consume/delivery/1"
+		content     = `<delegate-notification delegate_id="dlg_consume">complete</delegate-notification>`
+	)
+	requestSawAttention := false
+	root := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withSteps(func(req llm.Request) llm.Response {
+			requestSawAttention = requestContainsText(req, content)
+			return toolCallResponse(communicateCall("root-attention-consumed", "completion received"))
+		}),
+	)
+	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
+		t.Fatalf("append root attention: %v", err)
+	}
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("process root attention: %v", err)
+	}
+	if !requestSawAttention {
+		t.Fatal("root notification turn did not deliver durable attention to the model")
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read root attention fold: %v", err)
+	}
+	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
+		t.Fatalf("root attention disposition = %q, want consumed", got)
+	}
+	if pending := fold.pendingIDs(); len(pending) != 0 {
+		t.Fatalf("root attention remains pending after successful turn: %#v", pending)
+	}
+}
+
+func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testing.T) {
+	stateDir := t.TempDir()
+	clock := agenttest.NewFakeClock()
+	root := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, clock: clock}),
+		withSteps(
+			func(llm.Request) llm.Response {
+				return toolCallResponse(communicateCall("root-attention-first", "first attempt"))
+			},
+			func(llm.Request) llm.Response {
+				return toolCallResponse(communicateCall("root-attention-retry", "retry complete"))
+			},
+		),
+	)
+	installResolutionSyncFailureWriter(t, root)
+	wakes := make(chan struct{}, 2)
+	root.SetNotifyFunc(func() { wakes <- struct{}{} })
+
+	const attentionID = "delegate:dlg_retry/delivery/1"
+	if _, err := root.appendDelegateNotificationDurably(attentionID, `<delegate-notification delegate_id="dlg_retry">retry me</delegate-notification>`); err != nil {
+		t.Fatalf("append root attention: %v", err)
+	}
+	select {
+	case <-wakes:
+	default:
+		t.Fatal("initial root attention wake absent")
+	}
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil || !strings.Contains(err.Error(), "injected root attention resolution sync failure") {
+		t.Fatalf("first root attention turn error = %v, want injected resolution failure", err)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read failed root attention fold: %v", err)
+	}
+	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{attentionID}) {
+		t.Fatalf("pending after failed consumption = %#v, want exact attention", pending)
+	}
+	if !root.sessionWorkPending() {
+		t.Fatal("failed root attention consumption cleared autonomous work")
+	}
+	clock.Advance(jobNotificationRetryInitialDelay)
+	select {
+	case <-wakes:
+	case <-time.After(time.Second):
+		t.Fatal("failed root attention consumption did not re-arm a paced wake")
+	}
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("retry root attention turn: %v", err)
+	}
+	fold, err = readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read retried root attention fold: %v", err)
+	}
+	if pending := fold.pendingIDs(); len(pending) != 0 {
+		t.Fatalf("pending after successful retry = %#v", pending)
+	}
+}
+
+func TestRootDelegateAttention_RestoreRearmsPendingIDsWithoutProviderCall(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := identifier.MustNewSessionID()
+	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	const attentionID = "delegate:dlg_restore/delivery/1"
+	writer, err := transcript.NewWriter(transcriptPath(stateDir, rootID), transcript.Header{SessionID: rootID, ProfileID: "openai", Model: "gpt-5.2"})
+	if err != nil {
+		t.Fatalf("create root transcript: %v", err)
+	}
+	attention := schema.NewTurn(schema.TurnSteering, llm.User(`<delegate-notification delegate_id="dlg_restore">restore me</delegate-notification>`))
+	attention.AttentionID = attentionID
+	attention.StableTurnID = newQueueEntryID()
+	if err := writer.AppendDurable(attention); err != nil {
+		_ = writer.Close()
+		t.Fatalf("append pending root attention: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close root transcript: %v", err)
+	}
+	meta := schema.SessionMeta{ID: rootID, ProfileID: "openai", Model: "gpt-5.2"}
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatalf("save root metadata: %v", err)
+	}
+	client := llm.NewClient()
+	adapter := &delegateAttentionListModelsAdapter{}
+	client.Register(adapter)
+	restored, err := RestoreSessionFromMeta(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer restored.Close()
+	wakes := make(chan struct{}, 1)
+	restored.SetNotifyFunc(func() { wakes <- struct{}{} })
+	select {
+	case <-wakes:
+	default:
+		t.Fatal("restored pending root attention emitted no provider-free wake")
+	}
+	if !restored.sessionWorkPending() {
+		t.Fatal("restored pending root attention is absent from autonomous work")
+	}
+}
+
 func TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
@@ -2532,6 +2695,84 @@ type attentionFailNextSyncFS struct {
 	failNext  bool
 	failAfter int
 	onFail    func()
+}
+
+func installResolutionSyncFailureWriter(t *testing.T, s *Session) {
+	t.Helper()
+	fs := &rootAttentionResolutionFailFS{Fs: afero.NewOsFs()}
+	path := transcriptPath(s.stateDir, s.id)
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	s.mu.Lock()
+	old := s.transcript
+	s.mu.Unlock()
+	if old == nil {
+		t.Fatal("root attention session has no transcript writer")
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("close original root attention writer: %v", err)
+	}
+	replacement, entries, err := transcript.OpenWriterForSessionWithFS(fs, path, s.id)
+	if err != nil {
+		t.Fatalf("open resolution-failing root attention writer: %v", err)
+	}
+	replacement.TrackFailures(entries, s.fork.divergence)
+	s.mu.Lock()
+	s.transcript = replacement
+	s.mu.Unlock()
+}
+
+type rootAttentionResolutionFailFS struct {
+	afero.Fs
+	mu     sync.Mutex
+	armed  bool
+	failed bool
+}
+
+func (fs *rootAttentionResolutionFailFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &rootAttentionResolutionFailFile{File: file, fs: fs}, nil
+}
+
+func (fs *rootAttentionResolutionFailFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &rootAttentionResolutionFailFile{File: file, fs: fs}, nil
+}
+
+type rootAttentionResolutionFailFile struct {
+	afero.File
+	fs *rootAttentionResolutionFailFS
+}
+
+func (file *rootAttentionResolutionFailFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"kind":"ATTENTION_RESOLUTION"`)) {
+		file.fs.mu.Lock()
+		if !file.fs.failed {
+			file.fs.armed = true
+		}
+		file.fs.mu.Unlock()
+	}
+	return file.File.Write(p)
+}
+
+func (file *rootAttentionResolutionFailFile) Sync() error {
+	file.fs.mu.Lock()
+	fail := file.fs.armed && !file.fs.failed
+	if fail {
+		file.fs.armed = false
+		file.fs.failed = true
+	}
+	file.fs.mu.Unlock()
+	if fail {
+		return errors.New("injected root attention resolution sync failure")
+	}
+	return file.File.Sync()
 }
 
 func newAttentionFailNextSyncFS() *attentionFailNextSyncFS {

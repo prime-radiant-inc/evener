@@ -43,7 +43,7 @@ func requestFullText(req llm.Request) string {
 }
 
 func scriptedDelegateCall(id, task string) llm.Response {
-	args, _ := json.Marshal(map[string]any{"task": task, "max_wait_ms": 0})
+	args, _ := json.Marshal(map[string]any{"task": task})
 	return scriptedToolCalls(llm.ToolCallData{ID: id, Name: "delegate", Arguments: args, Type: "function"})
 }
 
@@ -124,7 +124,7 @@ func installHeldRunShell(t *testing.T, executor *heldShellExecutor) {
 // one-shot `serf run` whose coordinator fires a fire-and-return delegate must
 // keep re-driving until the delegated work completes, instead of SIGKILLing the
 // child at Close(). The coordinator's real final answer (BUILD-COMPLETE) is only
-// produced on the post-completion <job-notification> turn, so its presence on
+// produced on the post-completion <delegate-notification> turn, so its presence on
 // stdout proves the drain ran.
 func TestRunDrainsDelegatedJobTreeBeforeExit(t *testing.T) {
 	tmp := t.TempDir()
@@ -141,7 +141,7 @@ func TestRunDrainsDelegatedJobTreeBeforeExit(t *testing.T) {
 		isRoot := strings.Contains(text, rootPrompt)
 		if isRoot {
 			switch {
-			case strings.Contains(text, "<job-notification"):
+			case strings.Contains(text, "<delegate-notification"):
 				// The delegate finished and its completion was drained back to the
 				// coordinator: emit the real final answer.
 				return scriptedCommunicate(finalMsg)

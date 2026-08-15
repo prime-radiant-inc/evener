@@ -9,7 +9,7 @@ import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/dis
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
-import { classifyJobStatus, resolveRowKey, rowKindFromChildStatus } from "./subagentModule";
+import { classifyJobStatus, resolveRowKey, rowFromDelegateItem, rowKindFromChildStatus } from "./subagentModule";
 import { resetSubagentModuleStoreForTests, turnScopeKey, updateSubagentRowIfExists } from "./subagentModuleStore";
 import "./subagentModule";
 import type { DockviewApi } from "dockview-core";
@@ -113,6 +113,35 @@ test("resolveRowKey: prefers delegateId, then jobId, then the fallback", () => {
   expect(resolveRowKey(undefined, "job_1", "call_1")).not.toBe(resolveRowKey("dlg_1", "job_1", "call_1"));
 });
 
+test("rowFromDelegateItem uses stable delegate_id and rejects activation-only job_id", () => {
+  const stable = rowFromDelegateItem(
+    delegateItem({
+      callId: "call_stable",
+      argumentsJSON: JSON.stringify({ task: "inspect" }),
+      output: JSON.stringify({
+        delegate_id: "dlg_stable",
+        status: "running",
+        transcript_ref: "local:sess_child",
+      }),
+    }),
+  );
+  expect(stable).toMatchObject({
+    rowKey: "dlg:dlg_stable",
+    row: { delegateId: "dlg_stable", transcriptRef: "local:sess_child", task: "inspect" },
+  });
+  expect(stable?.row).not.toHaveProperty("jobId");
+
+  expect(
+    rowFromDelegateItem(
+      delegateItem({
+        callId: "call_legacy",
+        argumentsJSON: JSON.stringify({ task: "legacy" }),
+        output: JSON.stringify({ job_id: "job_legacy", status: "running" }),
+      }),
+    ),
+  ).toBeNull();
+});
+
 // --- rowKindFromChildStatus (pure, unit-level) -----------------------------
 
 test("rowKindFromChildStatus: a live child (working/needs-you/idle) reads as running", () => {
@@ -172,13 +201,13 @@ test("the first delegate item in a turn renders the module; a second one in the 
     id: "d1",
     callId: "call_d1",
     argumentsJSON: JSON.stringify({ task: "first child" }),
-    output: JSON.stringify({ job_id: "job_1", status: "running", transcript_ref: "ref_child_1" }),
+    output: JSON.stringify({ delegate_id: "job_1", status: "running", transcript_ref: "ref_child_1" }),
   });
   const second = delegateItem({
     id: "d2",
     callId: "call_d2",
     argumentsJSON: JSON.stringify({ task: "second child" }),
-    output: JSON.stringify({ job_id: "job_2", status: "running", transcript_ref: "ref_child_2" }),
+    output: JSON.stringify({ delegate_id: "job_2", status: "running", transcript_ref: "ref_child_2" }),
   });
   render(
     <>
@@ -234,14 +263,14 @@ test("kata 8525: two sessions sharing the SAME turnId never bleed into each othe
     turnId: "turn_21",
     callId: "call_sess_a",
     argumentsJSON: JSON.stringify({ task: "session A's own task" }),
-    output: JSON.stringify({ job_id: "job_sess_a", status: "running" }),
+    output: JSON.stringify({ delegate_id: "job_sess_a", status: "running" }),
   });
   const sessionB = delegateItem({
     id: "d_sess_b",
     turnId: "turn_21",
     callId: "call_sess_b",
     argumentsJSON: JSON.stringify({ task: "session B's own task" }),
-    output: JSON.stringify({ job_id: "job_sess_b", status: "running" }),
+    output: JSON.stringify({ delegate_id: "job_sess_b", status: "running" }),
   });
   render(
     <>
@@ -350,7 +379,11 @@ test("a collapsed live delegate updates its top-level status when the child sett
     callId: "call_collapsed_live",
     description: "Collapsed live delegate",
     argumentsJSON: JSON.stringify({ task: "wait for child" }),
-    output: JSON.stringify({ job_id: "job_collapsed_live", status: "running", transcript_ref: "ref_collapsed_live" }),
+    output: JSON.stringify({
+      delegate_id: "job_collapsed_live",
+      status: "running",
+      transcript_ref: "ref_collapsed_live",
+    }),
   });
   render(<ToolCallItem item={started} turn={turn} live={false} />);
 
@@ -385,7 +418,7 @@ test("a genuinely live collapsed delegate has a status row before its child sett
     description: "Genuinely live delegate",
     argumentsJSON: JSON.stringify({ task: "keep working" }),
     output: JSON.stringify({
-      job_id: "job_live_collapsed_initial",
+      delegate_id: "job_live_collapsed_initial",
       status: "running",
       transcript_ref: "ref_live_collapsed_initial",
     }),
@@ -440,7 +473,7 @@ test("a mounted follower takes over when the current delegate leader unmounts", 
   expect(screen.getByText("follower task")).toBeTruthy();
 });
 
-test("a delegate row migrates fallback identity to job identity without losing its live overlay", () => {
+test("a delegate row migrates fallback identity to stable delegate identity without losing its live overlay", () => {
   const Body = toolRendererFor("delegate").body!;
   const scopeKey = turnScopeKey(undefined, "turn_row_migrates");
   const beforeJob = delegateItem({
@@ -448,7 +481,7 @@ test("a delegate row migrates fallback identity to job identity without losing i
     turnId: "turn_row_migrates",
     callId: "call_row_migrates",
     argumentsJSON: JSON.stringify({ task: "migrate this row" }),
-    output: JSON.stringify({ status: "running" }),
+    output: undefined,
   });
   const { rerender } = render(<Body item={beforeJob} live={false} />);
 
@@ -459,7 +492,7 @@ test("a delegate row migrates fallback identity to job identity without losing i
     });
   });
 
-  const withJob = { ...beforeJob, output: JSON.stringify({ job_id: "job_row_migrates", status: "completed" }) };
+  const withJob = { ...beforeJob, output: JSON.stringify({ delegate_id: "job_row_migrates", status: "completed" }) };
   rerender(<Body item={withJob} live={false} />);
 
   const rows = screen.getAllByTestId("subagent-row");
@@ -477,13 +510,13 @@ test("a running row in a multi-row aggregate shows the task and running kind", (
     id: "d_run",
     callId: "call_run",
     argumentsJSON: JSON.stringify({ task: "still working" }),
-    output: JSON.stringify({ job_id: "job_r", status: "running", transcript_ref: "ref_r" }),
+    output: JSON.stringify({ delegate_id: "job_r", status: "running", transcript_ref: "ref_r" }),
   });
   const done = delegateItem({
     id: "d_done_task_row",
     callId: "call_done_task_row",
     argumentsJSON: JSON.stringify({ task: "other task" }),
-    output: JSON.stringify({ job_id: "job_d_row", status: "completed", transcript_ref: "ref_done" }),
+    output: JSON.stringify({ delegate_id: "job_d_row", status: "completed", transcript_ref: "ref_done" }),
   });
   render(
     <>
@@ -510,7 +543,7 @@ test("a settled delegate row renders an honest ms-scale duration", () => {
     id: "d_done",
     callId: "call_done",
     argumentsJSON: JSON.stringify({ task: "did the thing" }),
-    output: JSON.stringify({ job_id: "job_d", status: "completed", transcript_ref: "ref_d" }),
+    output: JSON.stringify({ delegate_id: "job_d", status: "completed", transcript_ref: "ref_d" }),
     startedAt: new Date(startedMs).toISOString(),
     completedAt: new Date(startedMs + 12_000).toISOString(),
   });
@@ -545,7 +578,7 @@ test("a running row with a transcriptRef watches the child and updates live stat
     id: "d_watch",
     callId: "call_watch",
     argumentsJSON: JSON.stringify({ task: "watched task" }),
-    output: JSON.stringify({ job_id: "job_w", status: "running", transcript_ref: "ref_watched_child" }),
+    output: JSON.stringify({ delegate_id: "job_w", status: "running", transcript_ref: "ref_watched_child" }),
   });
   render(<Body item={running} live={false} />);
 
@@ -561,7 +594,7 @@ test("a failed row is flagged at module level via data-has-failure, not averaged
     id: "d_fail",
     callId: "call_fail",
     argumentsJSON: JSON.stringify({ task: "will fail" }),
-    output: JSON.stringify({ job_id: "job_f", status: "failed", transcript_ref: "ref_f", reason: "build error" }),
+    output: JSON.stringify({ delegate_id: "job_f", status: "failed", transcript_ref: "ref_f", reason: "build error" }),
   });
   render(<Body item={failed} live={false} />);
   const module = screen.getByTestId("subagent-module");
@@ -591,7 +624,7 @@ test("3zf8: a cancelled/stopped child gets its own distinct kind - never rendere
     id: "d_stopped",
     callId: "call_stopped",
     argumentsJSON: JSON.stringify({ task: "misbehaving, killed" }),
-    output: JSON.stringify({ job_id: "job_stopped", status: "cancelled", transcript_ref: "ref_stopped" }),
+    output: JSON.stringify({ delegate_id: "job_stopped", status: "cancelled", transcript_ref: "ref_stopped" }),
   });
   render(<Body item={stopped} live={false} />);
   const module = screen.getByTestId("subagent-module");
@@ -616,7 +649,7 @@ test("beyond 6 done rows, the extras fold behind a '+N more' control; running/fa
           id: `d_done_${i}`,
           callId: `call_done_${i}`,
           argumentsJSON: JSON.stringify({ task: `done task ${i}` }),
-          output: JSON.stringify({ job_id: `job_done_${i}`, status: "completed", transcript_ref: `ref_${i}` }),
+          output: JSON.stringify({ delegate_id: `job_done_${i}`, status: "completed", transcript_ref: `ref_${i}` }),
         })}
         live={false}
       />,
@@ -629,7 +662,7 @@ test("beyond 6 done rows, the extras fold behind a '+N more' control; running/fa
         id: "d_running_extra",
         callId: "call_running_extra",
         argumentsJSON: JSON.stringify({ task: "still running extra" }),
-        output: JSON.stringify({ job_id: "job_running_extra", status: "running" }),
+        output: JSON.stringify({ delegate_id: "job_running_extra", status: "running" }),
       })}
       live={false}
     />,
@@ -655,7 +688,7 @@ test("clicking '+N more' expands to show every done row, and offers a collapse c
           id: `d_fold_${i}`,
           callId: `call_fold_${i}`,
           argumentsJSON: JSON.stringify({ task: `fold task ${i}` }),
-          output: JSON.stringify({ job_id: `job_fold_${i}`, status: "completed" }),
+          output: JSON.stringify({ delegate_id: `job_fold_${i}`, status: "completed" }),
         })}
         live={false}
       />,
@@ -679,7 +712,7 @@ function delegateWithTranscriptRef(ref: string): ItemModel {
     id: "d_ref",
     callId: "call_ref",
     argumentsJSON: JSON.stringify({ task: "has a transcript" }),
-    output: JSON.stringify({ job_id: "job_ref", status: "running", transcript_ref: ref }),
+    output: JSON.stringify({ delegate_id: "job_ref", status: "running", transcript_ref: ref }),
   });
 }
 
@@ -762,7 +795,7 @@ test("a still-running row (with a transcriptRef) offers Open transcript, not gat
     id: "d_run_link",
     callId: "call_run_link",
     argumentsJSON: JSON.stringify({ task: "still running" }),
-    output: JSON.stringify({ job_id: "job_rl", status: "running", transcript_ref: "ref_run_link" }),
+    output: JSON.stringify({ delegate_id: "job_rl", status: "running", transcript_ref: "ref_run_link" }),
   });
   render(<Body item={running} live={false} />);
   const row = screen.getByTestId("subagent-row");
@@ -852,7 +885,7 @@ test("a delegate card body shows the Prompt, a live Activity feed, and the Summa
     id: "d_expand",
     callId: "call_expand",
     argumentsJSON: JSON.stringify({ task: "audit the reducer" }),
-    output: JSON.stringify({ job_id: "job_e", status: "running", transcript_ref: "ref_expand_child" }),
+    output: JSON.stringify({ delegate_id: "job_e", status: "running", transcript_ref: "ref_expand_child" }),
   });
   render(<Body item={running} live={false} />);
 
@@ -923,7 +956,7 @@ test("mhcf: the Activity feed caps to the 5 most recent steps, not the first 5",
     id: "d_cap",
     callId: "call_cap",
     argumentsJSON: JSON.stringify({ task: "long running audit" }),
-    output: JSON.stringify({ job_id: "job_cap", status: "running", transcript_ref: "ref_cap_child" }),
+    output: JSON.stringify({ delegate_id: "job_cap", status: "running", transcript_ref: "ref_cap_child" }),
   });
   render(<Body item={running} live={false} />);
 
@@ -944,7 +977,7 @@ test("mhcf: the capped window renders chronologically (most recent last), the li
     id: "d_order",
     callId: "call_order",
     argumentsJSON: JSON.stringify({ task: "order audit" }),
-    output: JSON.stringify({ job_id: "job_order", status: "running", transcript_ref: "ref_order_child" }),
+    output: JSON.stringify({ delegate_id: "job_order", status: "running", transcript_ref: "ref_order_child" }),
   });
   render(<Body item={running} live={false} />);
 
@@ -1017,7 +1050,7 @@ test("the Activity feed elides round_timings items and ordinals count only real 
     id: "d_rt",
     callId: "call_rt",
     argumentsJSON: JSON.stringify({ task: "timing audit" }),
-    output: JSON.stringify({ job_id: "job_rt", status: "running", transcript_ref: "ref_rt_child" }),
+    output: JSON.stringify({ delegate_id: "job_rt", status: "running", transcript_ref: "ref_rt_child" }),
   });
   render(<Body item={running} live={false} />);
 
@@ -1041,7 +1074,7 @@ test("the Prompt shows its first line as markdown and folds the rest behind a di
     id: "d_prompt_fold",
     callId: "call_prompt_fold",
     argumentsJSON: JSON.stringify({ task }),
-    output: JSON.stringify({ job_id: "job_pf", status: "running" }),
+    output: JSON.stringify({ delegate_id: "job_pf", status: "running" }),
   });
   render(<Body item={running} live={false} />);
 
@@ -1065,7 +1098,7 @@ test("a single-line Prompt renders in full with no disclosure", async () => {
     id: "d_prompt_single",
     callId: "call_prompt_single",
     argumentsJSON: JSON.stringify({ task: "audit the reducer" }),
-    output: JSON.stringify({ job_id: "job_ps", status: "running" }),
+    output: JSON.stringify({ delegate_id: "job_ps", status: "running" }),
   });
   render(<Body item={running} live={false} />);
 
@@ -1087,7 +1120,7 @@ test("the collapsed pill reads the LIVE watched status, not the frozen tool-outp
     id: "d_live_pill",
     callId: "call_live_pill",
     argumentsJSON: JSON.stringify({ task: "will break" }),
-    output: JSON.stringify({ job_id: "job_lp", status: "running", transcript_ref: "ref_live_pill_child" }),
+    output: JSON.stringify({ delegate_id: "job_lp", status: "running", transcript_ref: "ref_live_pill_child" }),
   });
   render(<Body item={running} live={false} />);
 
@@ -1112,7 +1145,7 @@ test("g5kf: a child that leaves the live roster (notLoaded) demotes off running 
     id: "d_notloaded",
     callId: "call_notloaded",
     argumentsJSON: JSON.stringify({ task: "orphaned by a hub restart" }),
-    output: JSON.stringify({ job_id: "job_nl", status: "running", transcript_ref: "ref_notloaded_child" }),
+    output: JSON.stringify({ delegate_id: "job_nl", status: "running", transcript_ref: "ref_notloaded_child" }),
   });
   render(<Body item={running} live={false} />);
 
@@ -1124,18 +1157,18 @@ test("g5kf: a child that leaves the live roster (notLoaded) demotes off running 
 
 // --- dr7e: serf/job/finished's own reason/resumable/exhaustion detail -----
 
-test("dr7e: the collapsed preview prefers a job-notification liveReason over the frozen tool-output reason", () => {
+test("the collapsed preview prefers a live overlay reason over the frozen tool-output reason", () => {
   const d = toolRendererFor("delegate");
   const Body = d.body!;
   const running = delegateItem({
     id: "d_livereason",
     callId: "call_livereason",
     argumentsJSON: JSON.stringify({ task: "still working" }),
-    output: JSON.stringify({ job_id: "job_lr", status: "running", reason: "frozen reason" }),
+    output: JSON.stringify({ delegate_id: "job_lr", status: "running", reason: "frozen reason" }),
   });
   render(<Body item={running} live={false} />);
   act(() =>
-    updateSubagentRowIfExists(turnScopeKey(undefined, "turn_1"), "job:job_lr", { liveReason: "exhausted budget" }),
+    updateSubagentRowIfExists(turnScopeKey(undefined, "turn_1"), "dlg:job_lr", { liveReason: "exhausted budget" }),
   );
 
   const row = screen.getByTestId("subagent-row");
@@ -1143,18 +1176,18 @@ test("dr7e: the collapsed preview prefers a job-notification liveReason over the
   expect(within(row).queryByText("frozen reason")).toBeNull();
 });
 
-test("dr7e: an expanded card shows exhaustion budget/limit and resumable once a serf/job/finished notification sets them", async () => {
+test("an expanded card shows stable exhaustion budget, limit, and resumable evidence", async () => {
   const d = toolRendererFor("delegate");
   const Body = d.body!;
   const settled = delegateItem({
     id: "d_exhaust",
     callId: "call_exhaust",
     argumentsJSON: JSON.stringify({ task: "long running task" }),
-    output: JSON.stringify({ job_id: "job_ex", status: "exhausted" }),
+    output: JSON.stringify({ delegate_id: "job_ex", status: "exhausted" }),
   });
   render(<Body item={settled} live={false} />);
   act(() =>
-    updateSubagentRowIfExists(turnScopeKey(undefined, "turn_1"), "job:job_ex", {
+    updateSubagentRowIfExists(turnScopeKey(undefined, "turn_1"), "dlg:job_ex", {
       resumable: true,
       exhaustionBudget: "30m",
       exhaustionLimit: 60,
@@ -1173,7 +1206,7 @@ test("dr7e: no Job detail section renders when neither resumable nor exhaustion 
     id: "d_noexhaust",
     callId: "call_noexhaust",
     argumentsJSON: JSON.stringify({ task: "quick task" }),
-    output: JSON.stringify({ job_id: "job_noex", status: "completed" }),
+    output: JSON.stringify({ delegate_id: "job_noex", status: "completed" }),
   });
   render(<Body item={settled} live={false} />);
 
@@ -1197,7 +1230,7 @@ test("a single delegate has one top-level disclosure, one status rail, and one v
     callId: "call_evch",
     description: "Single delegation",
     argumentsJSON: JSON.stringify({ task: "Inspect one row, one task" }),
-    output: JSON.stringify({ job_id: "job_evch", status: "running" }),
+    output: JSON.stringify({ delegate_id: "job_evch", status: "running" }),
   });
   render(<ToolCallItem item={started} turn={turn} live={false} />);
   const tool = screen.getByTestId("tool-call-item");
@@ -1225,7 +1258,11 @@ test("a multi-row aggregate shows task text in row summary and suppresses duplic
           callId: "call_multi_running",
           description: "running purpose",
           argumentsJSON: JSON.stringify({ task: "Running mandate text" }),
-          output: JSON.stringify({ job_id: "job_multi_running", status: "running", transcript_ref: "ref_multi_run" }),
+          output: JSON.stringify({
+            delegate_id: "job_multi_running",
+            status: "running",
+            transcript_ref: "ref_multi_run",
+          }),
         })}
         live={false}
       />
@@ -1236,7 +1273,11 @@ test("a multi-row aggregate shows task text in row summary and suppresses duplic
           callId: "call_multi_done",
           description: "done purpose",
           argumentsJSON: JSON.stringify({ task: "Done mandate text" }),
-          output: JSON.stringify({ job_id: "job_multi_done", status: "completed", transcript_ref: "ref_multi_done" }),
+          output: JSON.stringify({
+            delegate_id: "job_multi_done",
+            status: "completed",
+            transcript_ref: "ref_multi_done",
+          }),
         })}
         live={false}
       />
@@ -1275,7 +1316,7 @@ test("a multi-row aggregate updates its tally from the watched live kind", async
           callId: "call_multi_live_failed",
           argumentsJSON: JSON.stringify({ task: "live failure" }),
           output: JSON.stringify({
-            job_id: "job_multi_live_failed",
+            delegate_id: "job_multi_live_failed",
             status: "running",
             transcript_ref: "ref_multi_live_failed",
           }),
@@ -1289,7 +1330,7 @@ test("a multi-row aggregate updates its tally from the watched live kind", async
           callId: "call_multi_live_done",
           argumentsJSON: JSON.stringify({ task: "live completion" }),
           output: JSON.stringify({
-            job_id: "job_multi_live_done",
+            delegate_id: "job_multi_live_done",
             status: "running",
             transcript_ref: "ref_multi_live_done",
           }),
@@ -1323,7 +1364,7 @@ test("7f7c: the Prompt section shows the full, unclipped task text past the 80-c
     id: "d_full_mandate",
     callId: "call_full_mandate",
     argumentsJSON: JSON.stringify({ task: longTask }),
-    output: JSON.stringify({ job_id: "job_fm", status: "running" }),
+    output: JSON.stringify({ delegate_id: "job_fm", status: "running" }),
   });
   render(<Body item={running} live={false} />);
   const mandate = await screen.findByTestId("subagent-mandate");

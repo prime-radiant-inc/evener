@@ -31,6 +31,42 @@ func TestJobFinishedData_ExhaustionMetadata(t *testing.T) {
 	}
 }
 
+func TestDelegateUpdatedDataJSONRoundTrip(t *testing.T) {
+	valid := true
+	exhaustionResumable := false
+	runningForMS := int64(1200)
+	in := DelegateUpdatedData{
+		DelegateID: "dlg_1", OwnerSessionID: "owner", RootSessionID: "root", ChildSessionID: "child",
+		TranscriptRef: "local:child", ParentDelegateID: "dlg_parent", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle",
+		Resumable: true, ProjectionRevision: 9, Message: json.RawMessage("null"), StructuredResult: json.RawMessage("null"),
+		StructuredValid: &valid, StructuredReason: "valid null", ExhaustionBudget: "max_tool_rounds_per_input", ExhaustionLimit: 4,
+		ExhaustionResumable: &exhaustionResumable, RunningForMS: &runningForMS, Warnings: []string{"warning"}, Diagnostics: []string{"diagnostic"},
+		Usage:    &DelegateUsageData{InputTokens: 3, OutputTokens: 2, CacheReadTokens: 1, TotalTokens: 5},
+		Worktree: &DelegateWorktreeData{Path: "/tmp/lane", Branch: "delegate/lane", HeadSHA: "abc", Ahead: 2, Dirty: true},
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal DelegateUpdatedData: %v", err)
+	}
+	for _, want := range []string{`"message":null`, `"structured_result":null`, `"projection_revision":9`, `"parent_delegate_id":"dlg_parent"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("DelegateUpdatedData JSON %s missing %s", raw, want)
+		}
+	}
+	if strings.Contains(string(raw), "wait_ignored_reason") {
+		t.Fatalf("stable delegate payload leaked call-scoped wait result: %s", raw)
+	}
+	var out DelegateUpdatedData
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal DelegateUpdatedData: %v", err)
+	}
+	if out.DelegateID != in.DelegateID || out.ProjectionRevision != in.ProjectionRevision || string(out.Message) != "null" || string(out.StructuredResult) != "null" ||
+		out.StructuredValid == nil || !*out.StructuredValid || out.ExhaustionResumable == nil || *out.ExhaustionResumable || out.RunningForMS == nil || *out.RunningForMS != runningForMS ||
+		out.Usage == nil || out.Usage.TotalTokens != 5 || out.Worktree == nil || !out.Worktree.Dirty || len(out.Warnings) != 1 || len(out.Diagnostics) != 1 {
+		t.Fatalf("DelegateUpdatedData round trip = %+v", out)
+	}
+}
+
 func TestToolCallEndDataMarshalsOutputRef(t *testing.T) {
 	encoded, err := json.Marshal(ToolCallEndData{OutputRef: "artifact:abc"})
 	if err != nil {

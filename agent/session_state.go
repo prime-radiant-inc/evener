@@ -63,7 +63,7 @@ func (s *Session) WireState() string {
 // without user input. Child activity is excluded because it is projected on
 // the child session, while its eventual notification is included once queued.
 func (s *Session) sessionWorkPending() bool {
-	return s.peekNotifications() > 0 || s.QueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries()
+	return s.peekNotifications() > 0 || s.QueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention()
 }
 
 // autonomyInFlight reports whether autonomous work will move this session
@@ -116,11 +116,11 @@ func (s *Session) Meta() schema.SessionMeta {
 	}
 	jobTreeRootSessionID := ""
 	jobTreeRevision := uint64(0)
-	if s.jobTreeClock != nil {
-		if s.jobTreeClock.rootSessionID != "" && s.jobTreeClock.rootSessionID != s.id {
-			jobTreeRootSessionID = s.jobTreeClock.rootSessionID
+	if s.jobActivityClock != nil {
+		if s.jobActivityClock.rootSessionID != "" && s.jobActivityClock.rootSessionID != s.id {
+			jobTreeRootSessionID = s.jobActivityClock.rootSessionID
 		}
-		jobTreeRevision = s.jobTreeClock.revision.Load()
+		jobTreeRevision = s.jobActivityClock.revision.Load()
 	}
 	return schema.SessionMeta{
 		ID:                       s.id,

@@ -255,6 +255,93 @@ test("a zero or negative activeTurnStartedAt hydrates as absent, never an epoch 
   expect(negative.activeTurnStartedAt).toBeUndefined();
 });
 
+test("stable delegate diagnostics preserve lossless fields and omit call-scoped wait reasons", () => {
+  const thread = testThread();
+  (thread.serf as unknown as Record<string, unknown>).diagnostics = {
+    delegates: [
+      {
+        delegateId: "dlg_lossless",
+        ownerSessionId: "sess_t",
+        rootSessionId: "sess_t",
+        childSessionId: "sess_child",
+        transcriptRef: "local:sess_child",
+        parentDelegateId: "dlg_parent",
+        type: "delegate",
+        lifecycle: "retained",
+        phase: "idle",
+        status: "exhausted",
+        outcome: "exhausted",
+        reason: "turn_budget_exhausted",
+        terminal: true,
+        resumable: false,
+        notResumableReason: "turn_budget_exhausted",
+        projectionRevision: 9,
+        task: "Inspect the repo",
+        description: "repository inspection",
+        agentType: "explorer",
+        requestedModel: "fast",
+        resolvedProfileId: "anthropic",
+        resolvedModel: "claude-sonnet",
+        model: "anthropic/claude-sonnet",
+        reasoningEffort: "high",
+        originTurnId: "turn_1",
+        originToolCallId: "call_1",
+        originItemId: "item_1",
+        runStartedAt: "2026-08-15T10:00:00Z",
+        runEndedAt: "2026-08-15T10:01:00Z",
+        latestActivityAt: "2026-08-15T10:00:59Z",
+        runningForMs: null,
+        quietForMs: 1000,
+        durationMs: 60000,
+        packetKind: "communicate",
+        message: null,
+        structuredResult: null,
+        structuredResultValid: true,
+        structuredResultReason: "explicit null",
+        warnings: ["warning one"],
+        diagnostics: ["observer armed"],
+        exhaustionBudget: "turns",
+        exhaustionLimit: 12,
+        exhaustionResumable: false,
+        delegationAllowance: 2,
+        parentWatchGranted: true,
+        usage: { inputTokens: 41, outputTokens: 7, cacheReadTokens: 3, totalTokens: 48 },
+        worktree: { path: "/tmp/wt", branch: "delegate/dlg_lossless", headSha: "abc", ahead: 2, dirty: true },
+        waitIgnoredReason: "must never enter stable state",
+      },
+    ],
+    turnSlots: { inUse: 1, cap: 4, jobs: 2, driveTurns: 1 },
+  };
+
+  const model = hydrateThread({ thread }, thread.serf.ref, 1000) as ThreadModel & {
+    delegates?: Array<Record<string, unknown>>;
+    turnSlots?: Record<string, unknown>;
+  };
+
+  expect(model.delegates).toHaveLength(1);
+  expect(model.delegates?.[0]).toMatchObject({
+    delegateId: "dlg_lossless",
+    message: null,
+    structuredResult: null,
+    structuredResultValid: true,
+    structuredResultReason: "explicit null",
+    exhaustionBudget: "turns",
+    exhaustionLimit: 12,
+    exhaustionResumable: false,
+    runningForMs: null,
+    quietForMs: 1000,
+    durationMs: 60000,
+    usage: { inputTokens: 41, outputTokens: 7, cacheReadTokens: 3, totalTokens: 48 },
+    worktree: { path: "/tmp/wt", branch: "delegate/dlg_lossless", headSha: "abc", ahead: 2, dirty: true },
+    warnings: ["warning one"],
+    diagnostics: ["observer armed"],
+    delegationAllowance: 2,
+    parentWatchGranted: true,
+  });
+  expect(model.delegates?.[0]).not.toHaveProperty("waitIgnoredReason");
+  expect(model.turnSlots).toEqual({ inUse: 1, cap: 4, jobs: 2, driveTurns: 1 });
+});
+
 test("delta accumulates into pendingText chunks and joins on completion", () => {
   let model = testHydrate();
   model = applyNotification(

@@ -110,6 +110,17 @@ function Field({ label, value, testId }: { label: string; value: string | number
 
 function NotificationMetadata({ notification }: { notification: ParsedNotification }) {
   const fields = [
+    notification.delegateId && (
+      <Field
+        key="delegate-id"
+        label="Delegate id"
+        value={notification.delegateId}
+        testId="notification-field-delegate-id"
+      />
+    ),
+    notification.jobId && (
+      <Field key="job-id" label="Job id" value={notification.jobId} testId="notification-field-job-id" />
+    ),
     notification.status && (
       <Field key="status" label="Status" value={notification.status} testId="notification-field-status" />
     ),

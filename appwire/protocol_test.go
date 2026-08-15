@@ -51,6 +51,7 @@ func TestNotificationCatalogWellFormed(t *testing.T) {
 		}
 	}
 	for name, want := range map[string]any{
+		NotifySerfDelegateUpdated: SerfDelegateParams{},
 		NotifySerfJobsTreeUpdated: JobsTreeUpdatedParams{},
 	} {
 		for _, n := range Notifications {

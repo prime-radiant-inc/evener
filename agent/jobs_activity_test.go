@@ -404,7 +404,7 @@ func TestJobActivityTree_LiveResponseRevisionMatchesRootClock(t *testing.T) {
 	saveActivityMeta(t, stateDir, root)
 	saveActivityMeta(t, stateDir, child)
 
-	want := root.jobTreeClock.revision.Load()
+	want := root.jobActivityClock.revision.Load()
 	if want == 0 {
 		t.Fatal("root tree clock did not advance")
 	}
@@ -419,7 +419,7 @@ func TestJobActivityTree_LiveResponseRevisionMatchesRootClock(t *testing.T) {
 
 func TestProjectStableLiveActivityTree_RejectsSnapshotAfterBoundedRevisionChurn(t *testing.T) {
 	t.Parallel()
-	clock := newJobTreeClock("root")
+	clock := newJobActivityClock("root")
 	loads := 0
 	load := func() (*activitySessionSnapshot, int, error) {
 		loads++
@@ -770,7 +770,7 @@ func TestJobActivityTree_ContinuationResponseRetainsRootRevision(t *testing.T) {
 		}
 	}
 
-	want := root.jobTreeClock.revision.Load()
+	want := root.jobActivityClock.revision.Load()
 	if want == 0 {
 		t.Fatal("root tree clock did not advance")
 	}
@@ -889,8 +889,8 @@ func newActivityTestSession(t *testing.T, stateDir string) *Session {
 func linkActivityChild(t *testing.T, parent, child *Session, task string) (*subagent, *runningJob) {
 	t.Helper()
 	sub := &subagent{id: child.ID(), sess: child, status: SubagentRunning, done: make(chan struct{})}
-	if parent.jobTreeClock != nil {
-		child.jobTreeClock = parent.jobTreeClock
+	if parent.jobActivityClock != nil {
+		child.jobActivityClock = parent.jobActivityClock
 	}
 	parent.subagents.track(sub)
 	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), task, sub)

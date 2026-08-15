@@ -1063,6 +1063,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			parentWatchGranted:            descriptor.ParentWatchGranted,
 			parentInstallWatch:            s.installParentSourceWatchForChild,
 			parentClearWatch:              s.clearParentSourceWatchForChild,
+			jobActivityClock:              s.jobActivityClock,
 		},
 	}
 	child, err := RestoreSessionFromMetaWithConfig(s.client, profile, childEnv, meta, restoreCfg)
@@ -1418,7 +1419,50 @@ func (s *Session) bootstrapDelegateResources() error {
 	s.delegateController = controller
 	s.delegateRootSessionID = s.id
 	s.ownsDelegateController = true
+	controller.emitUpdate = s.emitStableDelegateUpdate
 	s.pendingDelegateDeliveries = append(s.pendingDelegateDeliveries, pendingDeliveries...)
+	return nil
+}
+
+func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
+	if s == nil || s.delegateController == nil {
+		return
+	}
+	now := s.sclock().Now().UTC()
+	rootID := s.delegateController.rootSessionID
+	for _, row := range plan.rows {
+		ownerID := row.descriptor.OwnerSessionID
+		data := delegateUpdatedDataFromStatus(delegateStatusInfoFromSnapshot(now, rootID, row))
+		if runtime := s.delegateController.runtimeForDelegateOwner(row); runtime != nil {
+			runtime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)
+			continue
+		}
+		s.mu.Lock()
+		forward := s.cfg.spawn.descendantEvent
+		s.mu.Unlock()
+		if ownerID == "" || forward == nil {
+			continue
+		}
+		event := events.New(data)
+		event.Timestamp = now
+		event.SessionID = ownerID
+		event.Provenance = provenance.Clone(row.descriptor.Provenance)
+		forward(event)
+	}
+}
+
+func (c *delegateTreeController) runtimeForDelegateOwner(row delegateSnapshot) *Session {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if row.descriptor.OwnerSessionID == c.rootSessionID {
+		return c.rootRuntime
+	}
+	if live := c.live[row.parentID]; live != nil && live.runtime != nil && live.runtime.ID() == row.descriptor.OwnerSessionID {
+		return live.runtime
+	}
 	return nil
 }
 

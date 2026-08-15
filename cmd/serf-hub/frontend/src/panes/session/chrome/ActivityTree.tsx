@@ -70,13 +70,11 @@ const CLASS = {
 };
 
 function delegateStatusText(delegate: ActivityDelegate): string {
-  const latest = delegate.turns.at(-1);
-  if (latest) return latest.status;
-  return delegate.child?.aggregate ?? "unknown";
+  return delegate.status ?? delegate.outcome ?? delegate.child?.aggregate ?? "unknown";
 }
 
 function delegateName(delegate: ActivityDelegate): string {
-  return delegate.mandate ?? delegate.child?.label ?? delegate.childSessionId;
+  return delegate.mandate ?? delegate.task ?? delegate.description ?? delegate.child?.label ?? delegate.childSessionId;
 }
 
 // The kind glyph ($/⌘) carries the status hue the StatusDot used to: working
@@ -155,20 +153,25 @@ function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
 function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegment[] {
   const { delegate } = row;
   const tokens = formatUsagePair(delegate.usage);
-  const lastTurn = delegate.turns.at(-1);
   if (row.live) {
     const segments: MetaSegment[] = [{ key: "tokens", text: tokens ?? "—" }];
-    // The delegate's own startedAt is unknown; with no turns there is no
-    // anchor to measure quiet from, so the quiet segment is hidden entirely.
-    if (lastTurn) {
-      segments.push({ key: "quiet", text: formatQuietAge(now - quietAnchorMillis(lastTurn)), tone: "quiet" });
-    }
+    if (!tokens) segments.push({ key: "status", text: delegateStatusText(delegate) });
+    const quiet =
+      delegate.quietForMs ??
+      (delegate.latestActivityAt ? Math.max(0, now - (parseMillis(delegate.latestActivityAt) ?? now)) : undefined);
+    if (quiet !== undefined) segments.push({ key: "quiet", text: formatQuietAge(quiet), tone: "quiet" });
     return segments;
   }
   const statusText = delegateStatusText(delegate);
   const segments: MetaSegment[] = [];
   if (tokens) segments.push({ key: "tokens", text: tokens });
-  segments.push(terminalSegment(lastTurn, statusText));
+  if (delegate.durationMs !== undefined && delegate.durationMs !== null) {
+    segments.push({ key: "duration", text: formatQuietAge(delegate.durationMs) });
+  } else {
+    segments.push(
+      terminalSegment({ startedAt: delegate.runStartedAt ?? "", endedAt: delegate.runEndedAt }, statusText),
+    );
+  }
   return segments;
 }
 

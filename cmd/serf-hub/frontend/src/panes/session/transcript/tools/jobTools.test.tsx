@@ -333,6 +333,29 @@ test("delegate_send: a complete delegate footer is stripped from the response te
   );
 });
 
+test("delegate_send preserves wait_ignored_reason in result rendering without inventing a delegate job", () => {
+  const descriptor = toolRendererFor("delegate_send");
+  const settled = item({
+    toolName: "delegate_send",
+    argumentsJSON: JSON.stringify({ to: "dlg_wait", message: "status?", wait: true }),
+    raw: {
+      delegate_id: "dlg_wait",
+      action: "steered",
+      running_in_background: true,
+      wait_ignored_reason: "delegate is already running",
+      transcript_ref: "local:sess_child",
+    },
+    output:
+      "[delegate_id dlg_wait · steered · running · running in background · wait ignored: delegate is already running]",
+  });
+
+  expect(descriptor.summary(settled)).toContain("running");
+  const Body = descriptor.body!;
+  render(<Body item={settled} live={false} />);
+  expect(screen.getByText(/wait ignored: delegate is already running/i)).toBeTruthy();
+  expect(screen.queryByText(/started_job_id/i)).toBeNull();
+});
+
 test("delegate_send: malformed or missing message arguments omit Message without hiding a response", () => {
   renderDelegateSendBody({ argumentsJSON: "not json", output: "reply from historical data" });
   expect(screen.queryByTestId("delegate-send-message")).toBeNull();
@@ -385,25 +408,25 @@ test("the generic job_* descriptor never wins over an exact match", () => {
 // (never spawning a fresh row of their own - mirrors the legacy
 // reconcileSubagent's identical "update only" rule) ------------------------
 
-function spawnRow(turnId: string, jobId: string, transcriptRef: string) {
+function spawnRow(turnId: string, delegateId: string, transcriptRef: string) {
   const d = toolRendererFor("delegate");
   const Body = d.body!;
   render(
     <Body
       item={item({
-        id: `spawn_${jobId}`,
+        id: `spawn_${delegateId}`,
         turnId,
-        callId: `call_spawn_${jobId}`,
+        callId: `call_spawn_${delegateId}`,
         toolName: "delegate",
         argumentsJSON: JSON.stringify({ task: "spawn" }),
-        output: JSON.stringify({ job_id: jobId, status: "running", transcript_ref: transcriptRef }),
+        output: JSON.stringify({ delegate_id: delegateId, status: "running", transcript_ref: transcriptRef }),
       })}
       live={false}
     />,
   );
 }
 
-test("job_status checking on a delegate spawned earlier in the SAME turn updates its existing row", () => {
+test("job_status for an activation job never updates a stable delegate row", () => {
   spawnRow("turn_wire_status", "job_wired", "ref_wired");
   expect(screen.getByTestId("subagent-row").dataset.kind).toBe("running");
 
@@ -424,10 +447,10 @@ test("job_status checking on a delegate spawned earlier in the SAME turn updates
     />,
   );
 
-  expect(screen.getByTestId("subagent-row").dataset.kind).toBe("failed");
+  expect(screen.getByTestId("subagent-row").dataset.kind).toBe("running");
 });
 
-test("job_stop's own footer status updates the existing row for its job_id", () => {
+test("job_stop's activation footer never updates a stable delegate row", () => {
   spawnRow("turn_wire_stop", "job_stopme", "ref_stopme");
 
   const d = toolRendererFor("job_stop");
@@ -446,7 +469,7 @@ test("job_stop's own footer status updates the existing row for its job_id", () 
     />,
   );
 
-  expect(screen.getByTestId("subagent-row").dataset.kind).toBe("stopped"); // cancelled -> stopped: not a failure, but not a clean done either (3zf8)
+  expect(screen.getByTestId("subagent-row").dataset.kind).toBe("running");
 });
 
 test("delegate_send checking on a delegate (by delegate_id) updates its existing row", () => {

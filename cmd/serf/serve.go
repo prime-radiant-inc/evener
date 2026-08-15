@@ -1298,9 +1298,68 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 			TranscriptRef:    job.TranscriptRef,
 		})
 	}
+	for _, delegate := range ds.Delegates {
+		out.Delegates = append(out.Delegates, server.DelegateStatusInfo{
+			DelegateID: delegate.DelegateID, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
+			ChildSessionID: delegate.ChildSessionID, TranscriptRef: delegate.TranscriptRef, ParentDelegateID: delegate.ParentDelegateID,
+			Type: delegate.Type, Lifecycle: delegate.Lifecycle, Phase: delegate.Phase, Status: delegate.Status,
+			Outcome: delegate.Outcome, Reason: delegate.Reason, Terminal: delegate.Terminal, Resumable: delegate.Resumable,
+			NotResumableReason: delegate.NotResumableReason, ProjectionRevision: delegate.ProjectionRevision,
+			Task: delegate.Task, Description: delegate.Description, AgentType: delegate.AgentType, RequestedModel: delegate.RequestedModel,
+			ResolvedProfileID: delegate.ResolvedProfileID, ResolvedModel: delegate.ResolvedModel, Model: delegate.Model,
+			ReasoningEffort: delegate.ReasoningEffort, OriginTurnID: delegate.OriginTurnID, OriginToolCallID: delegate.OriginToolCallID,
+			OriginItemID: delegate.OriginItemID, RunStartedAt: delegate.RunStartedAt, RunEndedAt: delegate.RunEndedAt,
+			LatestActivityAt: delegate.LatestActivityAt, RunningForMS: cloneServeInt64(delegate.RunningForMS),
+			QuietForMS: cloneServeInt64(delegate.QuietForMS), DurationMS: cloneServeInt64(delegate.DurationMS),
+			PacketKind: delegate.PacketKind, Message: append(json.RawMessage(nil), delegate.Message...),
+			StructuredResult: append(json.RawMessage(nil), delegate.StructuredResult...), StructuredValid: cloneServeBool(delegate.StructuredValid),
+			StructuredReason: delegate.StructuredReason, Warnings: append([]string(nil), delegate.Warnings...),
+			Diagnostics: append([]string(nil), delegate.Diagnostics...), ExhaustionBudget: delegate.ExhaustionBudget,
+			ExhaustionLimit: delegate.ExhaustionLimit, ExhaustionResumable: cloneServeBool(delegate.ExhaustionResumable),
+			DelegationAllowance: delegate.DelegationAllowance, ParentWatchGranted: delegate.ParentWatchGranted,
+			Usage: cloneServeUsage(delegate.Usage), Worktree: cloneServeWorktree(delegate.Worktree),
+		})
+	}
+	if ds.TurnSlots != nil {
+		out.TurnSlots = &server.TurnSlotStatus{
+			InUse: ds.TurnSlots.InUse, Cap: ds.TurnSlots.Cap, Jobs: ds.TurnSlots.Jobs, Drives: ds.TurnSlots.Drives,
+		}
+	}
 	out.Agents = ds.Agents
 
 	return out
+}
+
+func cloneServeBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func cloneServeInt64(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func cloneServeUsage(value *appwire.SerfUsage) *appwire.SerfUsage {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func cloneServeWorktree(value *appwire.JobActivityWorktree) *appwire.JobActivityWorktree {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 // liveThreadEnvelopeSource is the daemon's one window onto live session state

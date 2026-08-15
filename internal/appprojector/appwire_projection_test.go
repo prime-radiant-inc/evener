@@ -1079,15 +1079,15 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 		SessionID: "th_1",
 		Data: events.JobStartedData{
 			JobID:            "job_1",
-			JobType:          "delegate",
+			JobType:          "shell",
 			Status:           "running",
 			FromWatch:        true,
-			DelegateID:       "dlg_1",
-			Task:             "inspect invoices",
-			TranscriptRef:    "local:child-start",
+			Background:       true,
+			Command:          "make test",
+			ParentDelegateID: "dlg_parent",
 			OriginTurnID:     "turn_parent",
-			OriginToolCallID: "call_delegate",
-			OriginItemID:     "item_delegate",
+			OriginToolCallID: "call_shell",
+			OriginItemID:     "item_shell",
 		},
 	})
 	if len(started) != 1 || started[0].Method != appwire.NotifySerfJobStarted {
@@ -1098,9 +1098,9 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 		t.Fatalf("started params=%T", started[0].Params)
 	}
 	startedJob := startedParams.Job
-	if startedJob.JobID != "job_1" || startedJob.JobType != "delegate" || startedJob.Status != "running" || !startedJob.FromWatch ||
-		startedJob.DelegateID != "dlg_1" || startedJob.Task != "inspect invoices" || startedJob.TranscriptRef != "local:child-start" ||
-		startedJob.OriginTurnID != "turn_parent" || startedJob.OriginToolCallID != "call_delegate" || startedJob.OriginItemID != "item_delegate" {
+	if startedJob.JobID != "job_1" || startedJob.JobType != "shell" || startedJob.Status != "running" || !startedJob.FromWatch || !startedJob.Background ||
+		startedJob.Command != "make test" || startedJob.ParentDelegateID != "dlg_parent" ||
+		startedJob.OriginTurnID != "turn_parent" || startedJob.OriginToolCallID != "call_shell" || startedJob.OriginItemID != "item_shell" {
 		t.Fatalf("started job=%+v", startedJob)
 	}
 
@@ -1110,17 +1110,17 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 		SessionID: "th_1",
 		Data: events.JobFinishedData{
 			JobID:            "job_1",
-			JobType:          "delegate",
+			JobType:          "shell",
 			Status:           "failed",
 			Reason:           "signal",
 			ExitCode:         &exitCode,
 			OutputBytes:      0,
-			TranscriptRef:    "local:child",
-			DelegateID:       "dlg_1",
-			Task:             "inspect invoices",
+			Background:       true,
+			Command:          "make test",
+			ParentDelegateID: "dlg_parent",
 			OriginTurnID:     "turn_parent",
-			OriginToolCallID: "call_delegate",
-			OriginItemID:     "item_delegate",
+			OriginToolCallID: "call_shell",
+			OriginItemID:     "item_shell",
 		},
 	})
 	if len(finished) != 1 || finished[0].Method != appwire.NotifySerfJobFinished {
@@ -1131,11 +1131,10 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 		t.Fatalf("finished params=%T", finished[0].Params)
 	}
 	finishedJob := finishedParams.Job
-	if finishedJob.JobID != "job_1" || finishedJob.JobType != "delegate" || finishedJob.Status != "failed" ||
+	if finishedJob.JobID != "job_1" || finishedJob.JobType != "shell" || finishedJob.Status != "failed" ||
 		finishedJob.Reason != "signal" || finishedJob.ExitCode == nil || *finishedJob.ExitCode != exitCode ||
-		finishedJob.OutputBytes != 0 || finishedJob.TranscriptRef != "local:child" ||
-		finishedJob.DelegateID != "dlg_1" || finishedJob.Task != "inspect invoices" ||
-		finishedJob.OriginTurnID != "turn_parent" || finishedJob.OriginToolCallID != "call_delegate" || finishedJob.OriginItemID != "item_delegate" {
+		finishedJob.OutputBytes != 0 || !finishedJob.Background || finishedJob.Command != "make test" || finishedJob.ParentDelegateID != "dlg_parent" ||
+		finishedJob.OriginTurnID != "turn_parent" || finishedJob.OriginToolCallID != "call_shell" || finishedJob.OriginItemID != "item_shell" {
 		t.Fatalf("finished job=%+v", finishedJob)
 	}
 	finishedJSON := string(notificationParamsJSON(t, finished, appwire.NotifySerfJobFinished))
@@ -1152,7 +1151,7 @@ func TestProjectJobFinished_ExhaustionMetadata(t *testing.T) {
 		SessionID: "th_1",
 		Data: events.JobFinishedData{
 			JobID:            "job_exhausted",
-			JobType:          "delegate",
+			JobType:          "shell",
 			Status:           "exhausted",
 			Reason:           "tool_round_budget_exhausted",
 			ExhaustionBudget: "max_tool_rounds_per_input",

@@ -653,6 +653,30 @@ func TestStatusEndpoint_DetailedStatus(t *testing.T) {
 	}
 }
 
+func TestStatusEndpoint_DetailedStatusIncludesStableDelegates(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetStatus(StatusInfo{SessionID: "root", State: "idle"})
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.detailedStatus = DetailedStatus{Delegates: []DelegateStatusInfo{{
+			DelegateID: "dlg_status", OwnerSessionID: "root", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
+			ParentDelegateID: "dlg_parent", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", ProjectionRevision: 5,
+		}}}
+	})
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code = %d", w.Code)
+	}
+	var status StatusInfo
+	if err := json.NewDecoder(w.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Detailed == nil || len(status.Detailed.Delegates) != 1 || status.Detailed.Delegates[0].DelegateID != "dlg_status" || status.Detailed.Delegates[0].ParentDelegateID != "dlg_parent" || status.Detailed.Delegates[0].ProjectionRevision != 5 {
+		t.Fatalf("status stable delegates = %+v", status.Detailed)
+	}
+}
+
 func TestStatusEndpoint_NoDetailedStatusFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetStatus(StatusInfo{

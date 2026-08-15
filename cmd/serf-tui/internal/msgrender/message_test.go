@@ -224,7 +224,6 @@ func TestRenderToolCallUsesStructuredSubagentBody(t *testing.T) {
 		Done:     true,
 		Expanded: true,
 		Subagent: &transcript.SubagentRunInfo{
-			JobID:         "job_ABCDEFGH1234",
 			DelegateID:    "dlg_ABCDEFGH1234",
 			Status:        "completed",
 			Task:          "inspect billing",
@@ -232,8 +231,11 @@ func TestRenderToolCallUsesStructuredSubagentBody(t *testing.T) {
 		},
 	}, 90, false)
 
-	if !strings.Contains(got, "inspect billing") || !strings.Contains(got, "completed") || !strings.Contains(got, "job job_ABCD") || !strings.Contains(got, "delegate dlg_ABCD") || !strings.Contains(got, "transcript local:child") {
+	if !strings.Contains(got, "inspect billing") || !strings.Contains(got, "completed") || !strings.Contains(got, "Delegate dlg_ABCD") || !strings.Contains(got, "transcript local:child") {
 		t.Fatalf("structured subagent body missing metadata: %q", got)
+	}
+	if strings.Contains(got, "job ") {
+		t.Fatalf("stable delegate body exposed activation job identity: %q", got)
 	}
 	if strings.Contains(got, "inspect billing (running)") {
 		t.Fatalf("structured subagent body should replace fallback delegate body, got %q", got)

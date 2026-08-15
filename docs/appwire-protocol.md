@@ -182,6 +182,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `serf/steering/injected` | `SerfSteeringInjectedParams` | A steering message was injected into the active turn. |
 | `serf/job/started` | `SerfJobParams` | A background job started. |
 | `serf/job/finished` | `SerfJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
+| `serf/delegate/updated` | `SerfDelegateParams` | A stable delegate projection changed. |
 | `serf/jobs/treeUpdated` | `JobsTreeUpdatedParams` | The current-session activity tree changed; clients refresh the jobs tree. |
 | `serf/auth/updated` | `SerfAuthUpdatedParams` | Broadcast after a successful auth mutation. Clients refresh auth state. |
 | `serf/launch/updated` | `SerfLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
@@ -509,9 +510,52 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `delegateId` | `string` |  |  |
+| `ownerSessionId` | `string` | yes |  |
+| `rootSessionId` | `string` | yes |  |
 | `childSessionId` | `string` |  |  |
 | `childRef` | `string` |  |  |
+| `parentDelegateId` | `string` | yes |  |
+| `type` | `string` | yes |  |
+| `lifecycle` | `string` | yes |  |
+| `phase` | `string` | yes |  |
+| `status` | `string` | yes |  |
+| `projectionRevision` | `uint64` | yes |  |
+| `outcome` | `string` | yes |  |
+| `reason` | `string` | yes |  |
+| `terminal` | `bool` | yes |  |
+| `resumable` | `bool` | yes |  |
+| `notResumableReason` | `string` | yes |  |
 | `mandate` | `string` | yes |  |
+| `task` | `string` | yes |  |
+| `description` | `string` | yes |  |
+| `agentType` | `string` | yes |  |
+| `requestedModel` | `string` | yes |  |
+| `resolvedProfileId` | `string` | yes |  |
+| `resolvedModel` | `string` | yes |  |
+| `model` | `string` | yes |  |
+| `reasoningEffort` | `string` | yes |  |
+| `originTurnId` | `string` | yes |  |
+| `originToolCallId` | `string` | yes |  |
+| `originItemId` | `string` | yes |  |
+| `runStartedAt` | `string` | yes |  |
+| `runEndedAt` | `string` | yes |  |
+| `latestActivityAt` | `string` | yes |  |
+| `runningForMs` | `*int64` | yes |  |
+| `quietForMs` | `*int64` | yes |  |
+| `durationMs` | `*int64` | yes |  |
+| `packetKind` | `string` | yes |  |
+| `message` | `json.RawMessage` | yes |  |
+| `structuredResult` | `json.RawMessage` | yes |  |
+| `structuredResultValid` | `*bool` | yes |  |
+| `structuredResultReason` | `string` | yes |  |
+| `warnings` | `[]string` | yes |  |
+| `diagnostics` | `[]string` | yes |  |
+| `exhaustionBudget` | `string` | yes |  |
+| `exhaustionLimit` | `int` | yes |  |
+| `exhaustionResumable` | `*bool` | yes |  |
+| `delegationAllowance` | `int` | yes |  |
+| `parentWatchGranted` | `bool` | yes |  |
+| `worktree` | `*appwire.JobActivityWorktree` | yes |  |
 | `turns` | `[]appwire.JobActivityJob` |  |  |
 | `child` | `*appwire.JobActivitySession` | yes |  |
 | `branch` | `appwire.JobActivityBranchState` |  |  |
@@ -562,6 +606,7 @@ _(no fields)_
 | `aggregate` | `string` |  |  |
 | `counts` | `appwire.JobActivityCounts` |  |  |
 | `entries` | `[]appwire.JobActivityEntry` |  |  |
+| `diagnostics` | `[]string` | yes |  |
 | `branch` | `appwire.JobActivityBranchState` |  |  |
 
 
@@ -571,6 +616,17 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `revision` | `uint64` |  |  |
 | `root` | `appwire.JobActivitySession` |  |  |
+
+
+### `JobActivityWorktree`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `path` | `string` |  |  |
+| `branch` | `string` |  |  |
+| `headSha` | `string` |  |  |
+| `ahead` | `int` |  |  |
+| `dirty` | `bool` |  |  |
 
 
 ### `JobsListParams`
@@ -893,6 +949,15 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `provider` | `string` | yes |  |
 | `activeSource` | `string` | yes |  |
+
+
+### `SerfDelegateParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `delegate` | `appwire.SerfDelegateInfo` |  |  |
 
 
 ### `SerfJobParams`

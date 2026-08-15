@@ -4386,19 +4386,12 @@ describe("frameTimes tracking (threads store)", () => {
   });
 });
 
-// serf/job/started|finished (dr7e): the "Signal merging" step from
-// docs/superpowers/specs/2026-06-25-subagent-run-rendering-design.md.
-// handleNotification routes these into subagentModuleStore independent of
-// ThreadModel entirely (see applySubagentJobSignal's own comment in
-// threads.ts) - these tests exercise that wiring end to end through the
-// SAME client.emitNotification path the ThreadModel-routing tests above use,
-// then read the result back out of subagentModuleStore's own useSubagentRows
-// hook (not out of ThreadModel, which these notifications never touch beyond
-// lastFrameAt).
-describe("serf/job/started|finished routing into subagentModuleStore (dr7e)", () => {
+// Shell-job notifications are activation state only. Stable delegate rows are
+// owned by serf/delegate/updated and must never be rewritten from a job event.
+describe("serf/job/started|finished stay out of stable delegate rows", () => {
   afterEach(resetSubagentModuleStoreForTests);
 
-  test("serf/job/finished patches an existing row's liveKind/liveReason/resumable/exhaustion", async () => {
+  test("serf/job/finished does not patch a stable delegate row", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
@@ -4426,16 +4419,11 @@ describe("serf/job/started|finished routing into subagentModuleStore (dr7e)", ()
     });
 
     const { result } = renderHook(() => useSubagentRows(scope));
-    expect(result.current[0]).toMatchObject({
-      liveKind: "failed",
-      liveReason: "ran out of turns",
-      resumable: true,
-      exhaustionBudget: "30m",
-      exhaustionLimit: 60,
-    });
+    expect(result.current[0]).toMatchObject({ rowKey: "dlg:dlg_1", kind: "running" });
+    expect(result.current[0]?.liveKind).toBeUndefined();
   });
 
-  test("serf/job/started resets an existing row to running", async () => {
+  test("serf/job/started does not reset a stable delegate row", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
@@ -4460,7 +4448,7 @@ describe("serf/job/started|finished routing into subagentModuleStore (dr7e)", ()
     });
 
     const { result } = renderHook(() => useSubagentRows(scope));
-    expect(result.current[0]).toMatchObject({ liveKind: "running", liveReason: undefined });
+    expect(result.current[0]).toMatchObject({ liveKind: "failed", liveReason: "boom" });
   });
 
   test("a job with no originTurnId (not run via delegate) is silently ignored, no row touched", async () => {
@@ -4511,6 +4499,113 @@ describe("serf/job/started|finished routing into subagentModuleStore (dr7e)", ()
 
     const { result } = renderHook(() => useSubagentRows(scope));
     expect(result.current[0]?.liveKind).toBeUndefined();
+  });
+});
+
+function responseWithStableDelegate(ref: string, revision: number, status: string, latestActivityAt: string) {
+  const response = readResponse(ref);
+  (response.thread.serf as unknown as Record<string, unknown>).diagnostics = {
+    delegates: [
+      {
+        delegateId: "dlg_1",
+        ownerSessionId: response.thread.sessionId,
+        rootSessionId: response.thread.sessionId,
+        childSessionId: "sess_child",
+        transcriptRef: "local:sess_child",
+        type: "delegate",
+        lifecycle: "retained",
+        phase: status === "running" ? "running" : "idle",
+        status,
+        terminal: status !== "running",
+        resumable: true,
+        projectionRevision: revision,
+        latestActivityAt,
+        originTurnId: "turn_1",
+      },
+    ],
+    turnSlots: { inUse: status === "running" ? 1 : 0, cap: 4, jobs: 0, driveTurns: status === "running" ? 1 : 0 },
+  };
+  return response;
+}
+
+describe("stable delegate projection routing", () => {
+  test("restores a late stable delegate snapshot from thread/read", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => responseWithStableDelegate("ref_root", 7, "running", "2026-08-15T10:00:00Z"));
+
+    await threadsStore.getState().ensureThread("ref_root");
+
+    const model = threadsStore.getState().threads.get("ref_root") as
+      | (ThreadModel & { delegates?: Array<Record<string, unknown>> })
+      | undefined;
+    expect(model?.delegates).toEqual([
+      expect.objectContaining({ delegateId: "dlg_1", projectionRevision: 7, status: "running" }),
+    ]);
+  });
+
+  test("ignores a stale delegate revision while max-merging latest activity", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => responseWithStableDelegate("ref_root", 7, "completed", "2026-08-15T10:00:00Z"));
+    await threadsStore.getState().ensureThread("ref_root");
+
+    fake.emitNotification({
+      method: "serf/delegate/updated",
+      params: {
+        threadId: "thr_ref_root",
+        ref: "ref_root",
+        delegate: {
+          delegateId: "dlg_1",
+          ownerSessionId: "sess_ref_root",
+          rootSessionId: "sess_ref_root",
+          childSessionId: "sess_child",
+          transcriptRef: "local:sess_child",
+          type: "delegate",
+          lifecycle: "active",
+          phase: "running",
+          status: "running",
+          terminal: false,
+          resumable: true,
+          projectionRevision: 6,
+          latestActivityAt: "2026-08-15T10:01:00Z",
+          originTurnId: "turn_1",
+        },
+      },
+    });
+
+    const model = threadsStore.getState().threads.get("ref_root") as ThreadModel & {
+      delegates?: Array<Record<string, unknown>>;
+    };
+    expect(model.delegates?.[0]).toMatchObject({
+      projectionRevision: 7,
+      status: "completed",
+      latestActivityAt: "2026-08-15T10:01:00Z",
+    });
+  });
+
+  test("preserves descendant ordinary events beside the root stable snapshot", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) =>
+      params.ref === "ref_root"
+        ? responseWithStableDelegate("ref_root", 7, "running", "2026-08-15T10:00:00Z")
+        : readResponse("ref_child"),
+    );
+    await threadsStore.getState().ensureThread("ref_root");
+    await threadsStore.getState().ensureThread("ref_child");
+
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thr_ref_child",
+        ref: "ref_child",
+        turn: { id: "turn_child", status: "inProgress", itemsView: "" },
+      },
+    });
+
+    expect(threadsStore.getState().threads.get("ref_child")?.activeTurnId).toBe("turn_child");
+    const root = threadsStore.getState().threads.get("ref_root") as ThreadModel & {
+      delegates?: Array<Record<string, unknown>>;
+    };
+    expect(root.delegates?.[0]).toMatchObject({ delegateId: "dlg_1", projectionRevision: 7 });
   });
 });
 

@@ -116,6 +116,7 @@ const (
 	NotifySerfSteeringInjected         = "serf/steering/injected"
 	NotifySerfJobStarted               = "serf/job/started"
 	NotifySerfJobFinished              = "serf/job/finished"
+	NotifySerfDelegateUpdated          = "serf/delegate/updated"
 	NotifySerfJobsTreeUpdated          = "serf/jobs/treeUpdated"
 	NotifySerfAuthUpdated              = "serf/auth/updated"
 	NotifySerfLaunchUpdated            = "serf/launch/updated"
@@ -503,13 +504,15 @@ type ThreadCapabilities struct {
 }
 
 type SerfDiagnostics struct {
-	Tools   []SerfToolInfo      `json:"tools,omitempty"`
-	MCP     []SerfMCPServerInfo `json:"mcp,omitempty"`
-	Skills  []SerfSkillInfo     `json:"skills,omitempty"`
-	Plugins []SerfPluginInfo    `json:"plugins,omitempty"`
-	Hooks   map[string]int      `json:"hooks,omitempty"`
-	Jobs    []SerfJobInfo       `json:"jobs,omitempty"`
-	Agents  []string            `json:"agents,omitempty"`
+	Tools     []SerfToolInfo      `json:"tools,omitempty"`
+	MCP       []SerfMCPServerInfo `json:"mcp,omitempty"`
+	Skills    []SerfSkillInfo     `json:"skills,omitempty"`
+	Plugins   []SerfPluginInfo    `json:"plugins,omitempty"`
+	Hooks     map[string]int      `json:"hooks,omitempty"`
+	Jobs      []SerfJobInfo       `json:"jobs,omitempty"`
+	Delegates []SerfDelegateInfo  `json:"delegates,omitempty"`
+	TurnSlots *SerfTurnSlots      `json:"turnSlots,omitempty"`
+	Agents    []string            `json:"agents,omitempty"`
 }
 
 type SerfToolInfo struct {
@@ -552,11 +555,78 @@ type SerfJobInfo struct {
 	FromWatch        bool   `json:"fromWatch,omitempty"`
 	Background       bool   `json:"background,omitempty"`
 	Command          string `json:"command,omitempty"`
+	ParentDelegateID string `json:"parentDelegateId,omitempty"`
 	DelegateID       string `json:"delegateId,omitempty"`
 	Task             string `json:"task,omitempty"`
 	OriginTurnID     string `json:"originTurnId,omitempty"`
 	OriginToolCallID string `json:"originToolCallId,omitempty"`
 	OriginItemID     string `json:"originItemId,omitempty"`
+}
+
+// SerfDelegateInfo is the turn-free stable delegate projection shared by live
+// notifications and thread diagnostics. It contains no activation job fields
+// and no call-scoped wait result.
+type SerfDelegateInfo struct {
+	DelegateID          string               `json:"delegateId"`
+	OwnerSessionID      string               `json:"ownerSessionId"`
+	RootSessionID       string               `json:"rootSessionId"`
+	ChildSessionID      string               `json:"childSessionId"`
+	TranscriptRef       string               `json:"transcriptRef"`
+	ParentDelegateID    string               `json:"parentDelegateId,omitempty"`
+	Type                string               `json:"type"`
+	Lifecycle           string               `json:"lifecycle"`
+	Phase               string               `json:"phase"`
+	Status              string               `json:"status"`
+	Outcome             string               `json:"outcome,omitempty"`
+	Reason              string               `json:"reason,omitempty"`
+	Terminal            bool                 `json:"terminal,omitempty"`
+	Resumable           bool                 `json:"resumable"`
+	NotResumableReason  string               `json:"notResumableReason,omitempty"`
+	ProjectionRevision  uint64               `json:"projectionRevision"`
+	Task                string               `json:"task,omitempty"`
+	Description         string               `json:"description,omitempty"`
+	AgentType           string               `json:"agentType,omitempty"`
+	RequestedModel      string               `json:"requestedModel,omitempty"`
+	ResolvedProfileID   string               `json:"resolvedProfileId,omitempty"`
+	ResolvedModel       string               `json:"resolvedModel,omitempty"`
+	Model               string               `json:"model,omitempty"`
+	ReasoningEffort     string               `json:"reasoningEffort,omitempty"`
+	OriginTurnID        string               `json:"originTurnId,omitempty"`
+	OriginToolCallID    string               `json:"originToolCallId,omitempty"`
+	OriginItemID        string               `json:"originItemId,omitempty"`
+	RunStartedAt        string               `json:"runStartedAt,omitempty"`
+	RunEndedAt          string               `json:"runEndedAt,omitempty"`
+	LatestActivityAt    string               `json:"latestActivityAt,omitempty"`
+	RunningForMS        *int64               `json:"runningForMs,omitempty"`
+	QuietForMS          *int64               `json:"quietForMs,omitempty"`
+	DurationMS          *int64               `json:"durationMs,omitempty"`
+	PacketKind          string               `json:"packetKind,omitempty"`
+	Message             json.RawMessage      `json:"message,omitempty"`
+	StructuredResult    json.RawMessage      `json:"structuredResult,omitempty"`
+	StructuredValid     *bool                `json:"structuredResultValid,omitempty"`
+	StructuredReason    string               `json:"structuredResultReason,omitempty"`
+	Warnings            []string             `json:"warnings,omitempty"`
+	Diagnostics         []string             `json:"diagnostics,omitempty"`
+	ExhaustionBudget    string               `json:"exhaustionBudget,omitempty"`
+	ExhaustionLimit     int                  `json:"exhaustionLimit,omitempty"`
+	ExhaustionResumable *bool                `json:"exhaustionResumable,omitempty"`
+	DelegationAllowance int                  `json:"delegationAllowance,omitempty"`
+	ParentWatchGranted  bool                 `json:"parentWatchGranted,omitempty"`
+	Usage               *SerfUsage           `json:"usage,omitempty"`
+	Worktree            *JobActivityWorktree `json:"worktree,omitempty"`
+}
+
+type SerfDelegateParams struct {
+	ThreadID string           `json:"threadId"`
+	Ref      string           `json:"ref"`
+	Delegate SerfDelegateInfo `json:"delegate"`
+}
+
+type SerfTurnSlots struct {
+	InUse  int64 `json:"inUse"`
+	Cap    int64 `json:"cap"`
+	Jobs   int64 `json:"jobs"`
+	Drives int64 `json:"driveTurns"`
 }
 
 type Turn struct {
@@ -1239,6 +1309,8 @@ type JobActivityJob struct {
 
 type JobActivityDelegate struct {
 	DelegateID          string                 `json:"delegateId"`
+	OwnerSessionID      string                 `json:"ownerSessionId,omitempty"`
+	RootSessionID       string                 `json:"rootSessionId,omitempty"`
 	ChildSessionID      string                 `json:"childSessionId"`
 	ChildRef            string                 `json:"childRef"`
 	ParentDelegateID    string                 `json:"parentDelegateId,omitempty"`
@@ -1246,6 +1318,7 @@ type JobActivityDelegate struct {
 	Lifecycle           string                 `json:"lifecycle,omitempty"`
 	Phase               string                 `json:"phase,omitempty"`
 	Status              string                 `json:"status,omitempty"`
+	ProjectionRevision  uint64                 `json:"projectionRevision,omitempty"`
 	Outcome             string                 `json:"outcome,omitempty"`
 	Reason              string                 `json:"reason,omitempty"`
 	Terminal            bool                   `json:"terminal,omitempty"`
@@ -1260,17 +1333,22 @@ type JobActivityDelegate struct {
 	ResolvedModel       string                 `json:"resolvedModel,omitempty"`
 	Model               string                 `json:"model,omitempty"`
 	ReasoningEffort     string                 `json:"reasoningEffort,omitempty"`
+	OriginTurnID        string                 `json:"originTurnId,omitempty"`
+	OriginToolCallID    string                 `json:"originToolCallId,omitempty"`
+	OriginItemID        string                 `json:"originItemId,omitempty"`
 	RunStartedAt        string                 `json:"runStartedAt,omitempty"`
 	RunEndedAt          string                 `json:"runEndedAt,omitempty"`
 	LatestActivityAt    string                 `json:"latestActivityAt,omitempty"`
 	RunningForMS        *int64                 `json:"runningForMs,omitempty"`
 	QuietForMS          *int64                 `json:"quietForMs,omitempty"`
 	DurationMS          *int64                 `json:"durationMs,omitempty"`
+	PacketKind          string                 `json:"packetKind,omitempty"`
 	Message             json.RawMessage        `json:"message,omitempty"`
 	StructuredResult    json.RawMessage        `json:"structuredResult,omitempty"`
 	StructuredValid     *bool                  `json:"structuredResultValid,omitempty"`
 	StructuredReason    string                 `json:"structuredResultReason,omitempty"`
 	Warnings            []string               `json:"warnings,omitempty"`
+	Diagnostics         []string               `json:"diagnostics,omitempty"`
 	ExhaustionBudget    string                 `json:"exhaustionBudget,omitempty"`
 	ExhaustionLimit     int                    `json:"exhaustionLimit,omitempty"`
 	ExhaustionResumable *bool                  `json:"exhaustionResumable,omitempty"`

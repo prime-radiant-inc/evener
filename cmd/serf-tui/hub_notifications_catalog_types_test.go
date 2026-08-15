@@ -58,8 +58,8 @@ func TestApplyHubNotification_DecodesEveryCatalogedNotification(t *testing.T) {
 	// item/completed: ItemLifecycleParams.Item (same struct as item/started).
 	send(appwire.NotifyItemCompleted, `{"item":{"id":"i1","type":"userMessage","text":"hi","status":"completed"}}`)
 
-	// serf/job/started: SerfJobParams.Job.
-	send(appwire.NotifySerfJobStarted, `{"job":{"jobId":"j1","jobType":"delegate","status":"running"}}`)
+	// serf/job/started: SerfJobParams.Job. Job notifications are shell-only.
+	send(appwire.NotifySerfJobStarted, `{"job":{"jobId":"j1","jobType":"shell","status":"running","background":true}}`)
 	sawJob := false
 	for _, msg := range m.session.messages {
 		if msg.Kind == transcript.MsgTool && msg.Tool != nil && msg.Tool.Subagent != nil && msg.Tool.Subagent.JobID == "j1" {
@@ -67,7 +67,19 @@ func TestApplyHubNotification_DecodesEveryCatalogedNotification(t *testing.T) {
 		}
 	}
 	if !sawJob {
-		t.Fatalf("session.messages = %+v, want a subagent row for job j1", m.session.messages)
+		t.Fatalf("session.messages = %+v, want a shell row for job j1", m.session.messages)
+	}
+
+	// serf/delegate/updated: SerfDelegateParams.Delegate.
+	send(appwire.NotifySerfDelegateUpdated, `{"delegate":{"delegateId":"dlg1","status":"running","projectionRevision":1}}`)
+	sawDelegate := false
+	for _, msg := range m.session.messages {
+		if msg.Kind == transcript.MsgTool && msg.Tool != nil && msg.Tool.Subagent != nil && msg.Tool.Subagent.DelegateID == "dlg1" {
+			sawDelegate = true
+		}
+	}
+	if !sawDelegate {
+		t.Fatalf("session.messages = %+v, want a stable delegate row for dlg1", m.session.messages)
 	}
 
 	// serf/steering/injected: SerfSteeringInjectedParams.Text. Also exercises

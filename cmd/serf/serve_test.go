@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,47 @@ import (
 	"primeradiant.com/serf/rendezvous"
 	"primeradiant.com/serf/server"
 )
+
+func TestAgentToServerDetailedStatus_DelegatesLossless(t *testing.T) {
+	valid, resumable := true, false
+	running, quiet, duration := int64(100), int64(40), int64(60)
+	in := agent.DelegateStatusInfo{
+		DelegateID: "dlg_bridge", OwnerSessionID: "owner", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
+		ParentDelegateID: "dlg_parent", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", Outcome: "exhausted",
+		Reason: "tool_round_budget_exhausted", Terminal: true, Resumable: true, ProjectionRevision: 9,
+		Task: "inspect", Description: "inspect carefully", AgentType: "explorer", RequestedModel: "openai/gpt-5",
+		ResolvedProfileID: "openai", ResolvedModel: "gpt-5", Model: "gpt-5", ReasoningEffort: "high",
+		OriginTurnID: "turn", OriginToolCallID: "call", OriginItemID: "item", RunStartedAt: "start", RunEndedAt: "end", LatestActivityAt: "latest",
+		RunningForMS: &running, QuietForMS: &quiet, DurationMS: &duration, PacketKind: "reported", Message: json.RawMessage("null"),
+		StructuredResult: json.RawMessage("null"), StructuredValid: &valid, StructuredReason: "valid null", Warnings: []string{"warning"}, Diagnostics: []string{"diagnostic"},
+		ExhaustionBudget: "max_tool_rounds_per_input", ExhaustionLimit: 4, ExhaustionResumable: &resumable,
+		DelegationAllowance: 2, ParentWatchGranted: true, Usage: &appwire.SerfUsage{InputTokens: 11, OutputTokens: 7, CacheReadTokens: 3, TotalTokens: 18},
+		Worktree: &appwire.JobActivityWorktree{Path: "/tmp/lane", Branch: "delegate/lane", HeadSHA: "abc", Ahead: 2, Dirty: true},
+	}
+	out := agentToServerDetailedStatus(agent.DetailedStatus{Delegates: []agent.DelegateStatusInfo{in}, TurnSlots: &agent.TurnSlotOccupancy{InUse: 3, Cap: 50, Jobs: 2, Drives: 1}})
+	if len(out.Delegates) != 1 {
+		t.Fatalf("delegates = %+v, want one", out.Delegates)
+	}
+	want := server.DelegateStatusInfo{
+		DelegateID: in.DelegateID, OwnerSessionID: in.OwnerSessionID, RootSessionID: in.RootSessionID, ChildSessionID: in.ChildSessionID, TranscriptRef: in.TranscriptRef,
+		ParentDelegateID: in.ParentDelegateID, Type: in.Type, Lifecycle: in.Lifecycle, Phase: in.Phase, Status: in.Status, Outcome: in.Outcome,
+		Reason: in.Reason, Terminal: in.Terminal, Resumable: in.Resumable, NotResumableReason: in.NotResumableReason, ProjectionRevision: in.ProjectionRevision,
+		Task: in.Task, Description: in.Description, AgentType: in.AgentType, RequestedModel: in.RequestedModel, ResolvedProfileID: in.ResolvedProfileID,
+		ResolvedModel: in.ResolvedModel, Model: in.Model, ReasoningEffort: in.ReasoningEffort, OriginTurnID: in.OriginTurnID,
+		OriginToolCallID: in.OriginToolCallID, OriginItemID: in.OriginItemID, RunStartedAt: in.RunStartedAt, RunEndedAt: in.RunEndedAt,
+		LatestActivityAt: in.LatestActivityAt, RunningForMS: in.RunningForMS, QuietForMS: in.QuietForMS, DurationMS: in.DurationMS,
+		PacketKind: in.PacketKind, Message: in.Message, StructuredResult: in.StructuredResult, StructuredValid: in.StructuredValid,
+		StructuredReason: in.StructuredReason, Warnings: in.Warnings, Diagnostics: in.Diagnostics, ExhaustionBudget: in.ExhaustionBudget,
+		ExhaustionLimit: in.ExhaustionLimit, ExhaustionResumable: in.ExhaustionResumable, DelegationAllowance: in.DelegationAllowance,
+		ParentWatchGranted: in.ParentWatchGranted, Usage: in.Usage, Worktree: in.Worktree,
+	}
+	if !reflect.DeepEqual(out.Delegates[0], want) {
+		t.Fatalf("delegate bridge lost fields:\ngot=%+v\nwant=%+v", out.Delegates[0], want)
+	}
+	if out.TurnSlots == nil || out.TurnSlots.InUse != 3 || out.TurnSlots.Cap != 50 || out.TurnSlots.Jobs != 2 || out.TurnSlots.Drives != 1 {
+		t.Fatalf("turn slots = %+v", out.TurnSlots)
+	}
+}
 
 func TestProcessNextServeInputClaimsDurableStartAfterCoalescedWake(t *testing.T) {
 	input := make(chan server.InputMessage, 1)

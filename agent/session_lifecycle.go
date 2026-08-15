@@ -1004,12 +1004,27 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	default:
 	}
 
+	var rootAttentionIDs []string
+	rootAttentionAccepted := false
+	if kind == EntryNotification {
+		rootAttentionIDs = s.beginRootDelegateAttentionTurn()
+		defer func() {
+			if !rootAttentionAccepted || len(rootAttentionIDs) == 0 {
+				return
+			}
+			if finishErr := s.finishRootDelegateAttentionTurn(rootAttentionIDs, err); finishErr != nil {
+				err = errors.Join(err, finishErr)
+			}
+		}()
+	}
+
 	if kind == EntryContinuation {
 		s.acceptContinuationInput(ctx, input)
 	} else if kind == EntryNotification {
 		if !s.acceptNotificationInput(ctx) {
 			return "", false, nil
 		}
+		rootAttentionAccepted = true
 	} else if err := s.acceptUserInput(ctx, input, images, inputProvenance, kind == EntryUserInput); err != nil {
 		return "", false, err
 	}
@@ -1489,10 +1504,11 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 		})
 	}
 	hasSteering := s.hasPendingSteering()
+	hasRootAttention := s.hasPendingRootDelegateAttention()
 	s.requeueJobNotifications(retryJobNotifs)
 	injectedFailures := s.markJobNotificationsDelivered(injectedJobNotifs)
 	s.requeueJobNotifications(injectedFailures)
-	if len(jobNotifs) == 0 && !hasSteering {
+	if len(jobNotifs) == 0 && !hasSteering && !hasRootAttention {
 		if len(retryJobNotifs) == 0 && len(injectedFailures) == 0 {
 			s.resetJobNotificationRetry()
 		}

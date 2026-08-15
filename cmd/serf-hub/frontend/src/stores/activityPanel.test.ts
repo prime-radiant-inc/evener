@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import type { ActivityTree } from "../panes/session/chrome/activityData";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "./activityPanel";
 import { schedulePanelStoreEviction } from "./panelStoreEviction";
@@ -20,6 +21,65 @@ function tree(revision = 1) {
 }
 
 describe("activityPanelStore", () => {
+  test("stable delegate selection survives reconnect and keeps the child transcript target", () => {
+    resetActivityPanelStoreForTests();
+    const stableTree = (revision: number, status: string): ActivityTree =>
+      ({
+        revision,
+        root: {
+          kind: "session",
+          sessionId: "sess_a",
+          ref: "ref_a",
+          label: "A",
+          aggregate: "running",
+          counts: { active: status === "running" ? 1 : 0, failed: 0, completed: 0, complete: true },
+          entries: [
+            {
+              kind: "delegate",
+              delegate: {
+                delegateId: "dlg_stable",
+                ownerSessionId: "sess_a",
+                rootSessionId: "sess_a",
+                childSessionId: "sess_child",
+                childRef: "local:sess_child",
+                transcriptRef: "local:sess_child",
+                type: "delegate",
+                lifecycle: "retained",
+                phase: status === "running" ? "running" : "idle",
+                status,
+                projectionRevision: revision,
+                terminal: status !== "running",
+                resumable: true,
+                originTurnId: "turn_1",
+                parentWatchGranted: true,
+                diagnostics: ["observer armed"],
+                branch: {},
+              },
+            },
+          ],
+          branch: {},
+        },
+      }) as unknown as ActivityTree;
+
+    const first = activityPanelStore.getState().beginFetch("ref_a");
+    activityPanelStore.getState().publishFetch("ref_a", first, { kind: "ready", tree: stableTree(1, "running") });
+    activityPanelStore.getState().setSelected("ref_a", "delegate:dlg_stable");
+
+    const reconnect = activityPanelStore.getState().beginFetch("ref_a");
+    activityPanelStore.getState().publishFetch("ref_a", reconnect, {
+      kind: "ready",
+      tree: stableTree(2, "completed"),
+    });
+
+    const entry = activityPanelStore.getState().entries.get("ref_a");
+    expect(entry?.disclosure.selectedID).toBe("delegate:dlg_stable");
+    if (entry?.load.kind !== "ready") throw new Error("expected ready activity tree");
+    const delegate = entry.load.tree.root.entries[0];
+    expect(delegate?.kind).toBe("delegate");
+    if (delegate?.kind !== "delegate") throw new Error("expected stable delegate entry");
+    expect(delegate.delegate.childRef).toBe("local:sess_child");
+  });
+
   test("retains disclosure selection and expansion across root refresh", () => {
     resetActivityPanelStoreForTests();
     const first = activityPanelStore.getState().beginFetch("ref_a");

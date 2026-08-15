@@ -626,6 +626,50 @@ func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
 	requireNotificationState(t, jm, "shell-batch-two", jobstore.NotifyDelivered)
 }
 
+func TestDrainJobTreeConsumesRootDelegateAttentionBeforeCompletion(t *testing.T) {
+	stateDir := t.TempDir()
+	const (
+		attentionID = "delegate:dlg_drain/delivery/1"
+		content     = `<delegate-notification delegate_id="dlg_drain">drain me</delegate-notification>`
+	)
+	requestSawAttention := false
+	root := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withSteps(func(req llm.Request) llm.Response {
+			requestSawAttention = requestContainsText(req, content)
+			return toolCallResponse(communicateCall("root-attention-drain", "root attention drained"))
+		}),
+	)
+	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
+		t.Fatalf("append root attention: %v", err)
+	}
+
+	result, err := root.drainJobTreeWith(context.Background(), make(chan time.Time), root.kickDriveTree, root.ProcessInputKind)
+	if err != nil {
+		t.Fatalf("DrainJobTree: %v", err)
+	}
+	if result != "root attention drained" {
+		t.Fatalf("DrainJobTree result = %q, want root attention drained", result)
+	}
+	if !requestSawAttention {
+		t.Fatal("DrainJobTree completed without delivering durable root attention")
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read root attention fold: %v", err)
+	}
+	if pending := fold.pendingIDs(); len(pending) != 0 {
+		t.Fatalf("DrainJobTree left root attention pending: %#v", pending)
+	}
+	if outstanding, err := root.treeHasOutstandingWork(); err != nil || outstanding {
+		t.Fatalf("root work after DrainJobTree = %v, err %v; want quiescent", outstanding, err)
+	}
+	if root.sessionWorkPending() {
+		t.Fatal("root work-pending remained set after DrainJobTree consumed attention")
+	}
+}
+
 // TestDrainJobTreeWaitsForRunningDelegate verifies the drain re-drives the
 // coordinator when a backgrounded delegate completes, rather than returning
 // while the child is still running.

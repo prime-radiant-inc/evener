@@ -88,6 +88,7 @@ func TestNewDerivesCorrectKind(t *testing.T) {
 		{"Error", events.ErrorData{Error: "err"}, events.EventError},
 		{"JobStarted", events.JobStartedData{JobID: "j", JobType: "t"}, events.EventJobStarted},
 		{"JobFinished", events.JobFinishedData{JobID: "j", JobType: "t", Status: "done", Reason: "r"}, events.EventJobFinished},
+		{"DelegateUpdated", events.DelegateUpdatedData{DelegateID: "dlg_1"}, events.EventDelegateUpdated},
 		{"PluginLoaded", events.PluginLoadedData{Name: "p", Dir: "/p"}, events.EventPluginLoaded},
 		{"HookStart", events.HookStartData{Event: "e", HookType: "t", Matcher: "m", PluginName: "p"}, events.EventHookStart},
 		{"HookEnd", events.HookEndData{Event: "e", HookType: "t", Matcher: "m", PluginName: "p", ExitCode: 0}, events.EventHookEnd},
@@ -130,6 +131,7 @@ func TestEventKindWireStrings(t *testing.T) {
 		{events.EventCommunicate, "COMMUNICATE"},
 		{events.EventWarning, "WARNING"},
 		{events.EventError, "ERROR"},
+		{events.EventDelegateUpdated, "DELEGATE_UPDATED"},
 	}
 	for _, tt := range tests {
 		if string(tt.kind) != tt.want {

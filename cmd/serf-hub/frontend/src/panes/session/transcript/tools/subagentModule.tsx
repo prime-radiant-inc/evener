@@ -46,6 +46,7 @@ import {
   classifyJobStatus,
   effectiveRowKind,
   releaseLeader,
+  removeSubagentRow,
   resolveRowKey,
   type SubagentRow,
   type SubagentRowKind,
@@ -82,11 +83,10 @@ const CLASS = {
   summaryText: requireClass(styles.summaryText, "subagentmodule.module.css", "summaryText"),
 };
 
-// classifyJobStatus and resolveRowKey now live in subagentModuleStore.ts (dr7e):
-// applySerfJobStarted/applySerfJobFinished there need the exact same
-// classification/keying a delegate item's own frozen tool output uses, and
-// subagentModuleStore.ts is the layer stores/threads.ts is allowed to import
-// (a plain data store, no React/UI deps) - subagentModule.tsx itself pulls in
+// classifyJobStatus and resolveRowKey live in subagentModuleStore.ts so stable
+// projection and a delegate item's frozen output use identical
+// classification/keying. That plain data store is also the layer
+// stores/threads.ts can import without transitively pulling in
 // Button/CSS modules a core store must never transitively
 // bundle. Re-exported here unchanged so every existing import site (this
 // file's own uses below, subagentModule.test.tsx) keeps working.
@@ -205,11 +205,9 @@ function durationLabel(row: SubagentRow): string | undefined {
 // how much the child has actually done. round_timings items are elided
 // outright: a timing annotation is not an action, and a chatty child's feed
 // otherwise drowns real steps in them (every round produces one).
-// JobDetailSection surfaces the exhaustion/resumable detail a
-// serf/job/finished notification carries that no other UI shows (dr7e) -
-// reason is already visible in the collapsed one-liner via row.resultPreview/
-// liveReason, so it isn't repeated here. Renders nothing once neither field
-// is present (most rows: shell jobs and any delegate that finished cleanly).
+// JobDetailSection surfaces stable exhaustion/resumable evidence. Reason is
+// already visible in the collapsed one-liner via row.resultPreview/liveReason,
+// so it isn't repeated here. Renders nothing once neither field is present.
 function JobDetailSection({ row }: { row: SubagentRow }) {
   if (row.resumable === undefined && row.exhaustionBudget === undefined && row.exhaustionLimit === undefined) {
     return null;
@@ -365,9 +363,7 @@ function SubagentRowView({
   // (subagentModuleStore.ts, kata hzq9) so rendering and ordering never
   // disagree about which kind a row is currently showing.
   const displayKind = effectiveRowKind(row);
-  // Prefers the serf/job/finished notification's own reason (dr7e) - richer
-  // and arrives independent of the delegate item's frozen tool output - over
-  // the frozen output's own reason.
+  // Prefer the stable projection's reason over the frozen tool output.
   const preview = row.liveReason ?? row.resultPreview;
   const openTranscriptButton = transcriptRef ? (
     <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} />
@@ -480,7 +476,7 @@ export function rowFromDelegateItem(item: ItemModel): {
   rowKey: string;
   migrateFromRowKey?: string;
   row: Omit<SubagentRow, "spawnIndex" | "rowKey">;
-} {
+} | null {
   const args = parseArgs(item.argumentsJSON);
   // Full, unclipped task text - it is the entire specification of what the
   // delegate was asked to do (7f7c). Callers that need a one-line preview
@@ -490,19 +486,22 @@ export function rowFromDelegateItem(item: ItemModel): {
   const task = str(args, "task") ?? "";
   const parsed = parseJSONObject(item.output);
   const status = parsed ? str(parsed, "status") : undefined;
-  const jobId = parsed ? str(parsed, "job_id") : undefined;
   const delegateId = parsed ? str(parsed, "delegate_id") : undefined;
+  // A settled activation-only result is historical data, not a stable
+  // delegate control identity. Keep an in-flight call-keyed placeholder, but
+  // never turn job_id into a delegate row.
+  if (parsed && !delegateId) return null;
   const transcriptRef = parsed ? str(parsed, "transcript_ref") : undefined;
   const reason = parsed ? str(parsed, "reason") : undefined;
   const fallbackRowKey = resolveRowKey(undefined, undefined, item.callId ?? item.id);
-  const rowKey = resolveRowKey(delegateId, jobId, item.callId ?? item.id);
+  const rowKey = resolveRowKey(delegateId, undefined, item.callId ?? item.id);
   return {
     rowKey,
     migrateFromRowKey: rowKey === fallbackRowKey ? undefined : fallbackRowKey,
     row: {
       kind: classifyJobStatus(status),
       task,
-      jobId,
+      delegateId,
       transcriptRef,
       startedAt: item.startedAt,
       completedAt: item.completedAt,
@@ -517,7 +516,12 @@ function DelegateBody({ item, sessionRef }: ToolRenderProps) {
   const isLeader = leaderId === item.id;
 
   useLayoutEffect(() => {
-    const { rowKey, migrateFromRowKey, row } = rowFromDelegateItem(item);
+    const projected = rowFromDelegateItem(item);
+    if (!projected) {
+      removeSubagentRow(scopeKey, resolveRowKey(undefined, undefined, item.callId ?? item.id));
+      return;
+    }
+    const { rowKey, migrateFromRowKey, row } = projected;
     upsertSubagentRow(scopeKey, { rowKey, ...row }, migrateFromRowKey);
   }, [scopeKey, item]);
 

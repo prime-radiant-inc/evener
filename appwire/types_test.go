@@ -79,14 +79,15 @@ func TestSerfDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 	in := SerfDiagnostics{
 		Jobs: []SerfJobInfo{
 			{
-				JobID:         "job_1",
-				JobType:       "delegate",
-				Status:        "failed",
-				Reason:        "exit",
-				ExitCode:      &exitCode,
-				OutputBytes:   0,
-				TranscriptRef: "local:child",
-				FromWatch:     true,
+				JobID:            "job_1",
+				JobType:          "shell",
+				Status:           "failed",
+				Reason:           "exit",
+				ExitCode:         &exitCode,
+				OutputBytes:      0,
+				TranscriptRef:    "local:child",
+				FromWatch:        true,
+				ParentDelegateID: "dlg_parent",
 			},
 		},
 	}
@@ -98,13 +99,14 @@ func TestSerfDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 	for _, want := range []string{
 		`"jobs"`,
 		`"jobId":"job_1"`,
-		`"jobType":"delegate"`,
+		`"jobType":"shell"`,
 		`"status":"failed"`,
 		`"reason":"exit"`,
 		`"exitCode":2`,
 		`"outputBytes":0`,
 		`"transcriptRef":"local:child"`,
 		`"fromWatch":true`,
+		`"parentDelegateId":"dlg_parent"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("marshal=%s missing %s", got, want)
@@ -123,10 +125,51 @@ func TestSerfDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 		t.Fatalf("roundtrip jobs len=%d, want 1", len(out.Jobs))
 	}
 	job := out.Jobs[0]
-	if job.JobID != "job_1" || job.JobType != "delegate" || job.Status != "failed" ||
+	if job.JobID != "job_1" || job.JobType != "shell" || job.Status != "failed" ||
 		job.Reason != "exit" || job.ExitCode == nil || *job.ExitCode != exitCode ||
-		job.OutputBytes != 0 || job.TranscriptRef != "local:child" || !job.FromWatch {
+		job.OutputBytes != 0 || job.TranscriptRef != "local:child" || !job.FromWatch || job.ParentDelegateID != "dlg_parent" {
 		t.Fatalf("roundtrip job=%+v", job)
+	}
+}
+
+func TestSerfDiagnosticsDelegatesJSONRoundTrip(t *testing.T) {
+	valid := true
+	exhaustionResumable := false
+	runningForMS := int64(1200)
+	in := SerfDiagnostics{
+		Delegates: []SerfDelegateInfo{{
+			DelegateID: "dlg_1", OwnerSessionID: "owner", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
+			ParentDelegateID: "dlg_parent", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", Resumable: true,
+			ProjectionRevision: 9, Message: json.RawMessage("null"), StructuredResult: json.RawMessage("null"), StructuredValid: &valid,
+			StructuredReason: "valid null", ExhaustionBudget: "max_tool_rounds_per_input", ExhaustionLimit: 4,
+			ExhaustionResumable: &exhaustionResumable, RunningForMS: &runningForMS, Warnings: []string{"warning"}, Diagnostics: []string{"diagnostic"},
+			Usage:    &SerfUsage{InputTokens: 3, OutputTokens: 2, CacheReadTokens: 1, TotalTokens: 5},
+			Worktree: &JobActivityWorktree{Path: "/tmp/lane", Branch: "delegate/lane", HeadSHA: "abc", Ahead: 2, Dirty: true},
+		}},
+		TurnSlots: &SerfTurnSlots{InUse: 2, Cap: 50, Jobs: 1, Drives: 1},
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal delegates diagnostics: %v", err)
+	}
+	for _, want := range []string{`"delegates"`, `"delegateId":"dlg_1"`, `"message":null`, `"structuredResult":null`, `"projectionRevision":9`, `"turnSlots"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("marshal=%s missing %s", raw, want)
+		}
+	}
+	for _, forbidden := range []string{"waitIgnoredReason", "jobId", "generation"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("stable delegate diagnostics leaked %s: %s", forbidden, raw)
+		}
+	}
+	var out SerfDiagnostics
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal delegates diagnostics: %v", err)
+	}
+	if len(out.Delegates) != 1 || out.Delegates[0].DelegateID != "dlg_1" || string(out.Delegates[0].Message) != "null" ||
+		out.Delegates[0].Usage == nil || out.Delegates[0].Usage.TotalTokens != 5 || out.Delegates[0].Worktree == nil || !out.Delegates[0].Worktree.Dirty ||
+		out.TurnSlots == nil || out.TurnSlots.InUse != 2 || out.TurnSlots.Drives != 1 {
+		t.Fatalf("roundtrip delegates diagnostics = %+v", out)
 	}
 }
 

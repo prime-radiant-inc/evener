@@ -85,6 +85,7 @@ func runRegisteredCoverageSuite(t *testing.T) {
 		{"Request", TestRequestRoundTrip},
 		{"Sandbox", TestSandboxEscalationWireKeys},
 		{"DiagnosticsJobs", TestSerfDiagnosticsJobsJSONRoundTrip},
+		{"DiagnosticsDelegates", TestSerfDiagnosticsDelegatesJSONRoundTrip},
 		{"ThreadMetrics", TestSerfThreadMetricsJSONRoundTrip},
 		{"ThreadMetricsOmit", TestSerfThreadMetricsOmitEmpty},
 		{"AskPending", TestSerfThread_AskPendingRoundTrips},

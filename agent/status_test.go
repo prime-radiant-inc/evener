@@ -2,20 +2,52 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/llm"
 )
+
+func TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen(t *testing.T) {
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.Description = "stable status description"
+		descriptor.ParentWatchGranted = true
+		descriptor.DelegationAllowance = 2
+	})
+	want, _, err := LoadSessionDelegateStatus(fixture.stateDir, fixture.meta.ID)
+	if err != nil {
+		t.Fatalf("cold stable status: %v", err)
+	}
+	reopened, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	defer reopened.Close()
+	gotStatus := reopened.DetailedStatus()
+	if len(want) != 1 || len(gotStatus.Delegates) != 1 {
+		t.Fatalf("cold/reopened stable delegates = %d/%d, want 1/1", len(want), len(gotStatus.Delegates))
+	}
+	if !reflect.DeepEqual(want, gotStatus.Delegates) {
+		t.Fatalf("stable status differs from reopened fold:\ncold=%+v\nreopened=%+v", want, gotStatus.Delegates)
+	}
+	got := gotStatus.Delegates[0]
+	if got.DelegateID != fixture.delegateID || got.ChildSessionID != fixture.childID || got.OwnerSessionID != fixture.meta.ID || got.Type != "delegate" || got.Phase != "idle" || got.ProjectionRevision == 0 {
+		t.Fatalf("stable delegate status = %+v", got)
+	}
+	if got.Description != "stable status description" || !got.ParentWatchGranted || got.DelegationAllowance != 2 {
+		t.Fatalf("descriptor fidelity = %+v", got)
+	}
+}
 
 func TestSession_DetailedStatus_CoreTools(t *testing.T) {
 	t.Parallel()
@@ -254,7 +286,7 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
 		JobID:            jobID,
-		Type:             jobstore.JobDelegate,
+		Type:             jobstore.JobShell,
 		OwnerSessionID:   sess.ID(),
 		VisibleToSession: sess.ID(),
 		StartedAt:        &startedAt,
@@ -288,14 +320,14 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 		t.Fatalf("expected 1 job, got %d", len(ds.Jobs))
 	}
 	job := ds.Jobs[0]
-	if job.JobID != jobID || job.JobType != string(jobstore.JobDelegate) || job.Status != string(jobstore.StatusFailed) ||
+	if job.JobID != jobID || job.JobType != string(jobstore.JobShell) || job.Status != string(jobstore.StatusFailed) ||
 		job.Reason != "exit_nonzero" || job.TranscriptRef != "local:child-status" ||
 		job.OutputBytes != 128 || job.ExitCode == nil || *job.ExitCode != exitCode {
 		t.Fatalf("job status = %+v", job)
 	}
 }
 
-func TestSession_DetailedStatus_JobsIncludesExhaustion(t *testing.T) {
+func TestSession_DetailedStatus_OmitsDelegateActivations(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
@@ -310,7 +342,6 @@ func TestSession_DetailedStatus_JobsIncludesExhaustion(t *testing.T) {
 
 	startedAt := time.Now().UTC()
 	endedAt := startedAt.Add(time.Second)
-	resumable := true
 	const jobID = "job_exhausted"
 	if err := sess.jobManager.store.AppendBatch([]jobstore.Event{
 		{
@@ -323,47 +354,20 @@ func TestSession_DetailedStatus_JobsIncludesExhaustion(t *testing.T) {
 			StartedAt:        &startedAt,
 		},
 		{
-			Kind:             jobstore.EventJobFinished,
-			TS:               endedAt,
-			JobID:            jobID,
-			Status:           jobstore.StatusExhausted,
-			Reason:           "tool_round_budget_exhausted",
-			ExhaustionBudget: "max_tool_rounds_per_input",
-			ExhaustionLimit:  1,
-			Resumable:        &resumable,
-			EndedAt:          &endedAt,
+			Kind:    jobstore.EventJobFinished,
+			TS:      endedAt,
+			JobID:   jobID,
+			Status:  jobstore.StatusExhausted,
+			Reason:  "tool_round_budget_exhausted",
+			EndedAt: &endedAt,
 		},
 	}); err != nil {
 		t.Fatalf("append job events: %v", err)
 	}
 
 	ds := sess.DetailedStatus()
-	if len(ds.Jobs) != 1 {
-		t.Fatalf("jobs = %+v, want one exhausted job", ds.Jobs)
-	}
-	job := ds.Jobs[0]
-	if job.JobID != jobID || job.Status != string(jobstore.StatusExhausted) || job.Reason != "tool_round_budget_exhausted" {
-		t.Fatalf("job status = %+v", job)
-	}
-	if job.ExhaustionBudget != "max_tool_rounds_per_input" || job.ExhaustionLimit != 1 {
-		t.Fatalf("exhaustion metadata = (%q, %d), want (max_tool_rounds_per_input, 1)", job.ExhaustionBudget, job.ExhaustionLimit)
-	}
-	if job.Resumable == nil || !*job.Resumable {
-		t.Fatalf("resumable = %v, want true", job.Resumable)
-	}
-	raw, err := json.Marshal(job)
-	if err != nil {
-		t.Fatalf("marshal job status: %v", err)
-	}
-	var diagnostic map[string]any
-	if err := json.Unmarshal(raw, &diagnostic); err != nil {
-		t.Fatalf("unmarshal job status: %v", err)
-	}
-	if diagnostic["exhaustion_budget"] != "max_tool_rounds_per_input" || diagnostic["exhaustion_limit"] != float64(1) {
-		t.Fatalf("diagnostic exhaustion fields = %+v", diagnostic)
-	}
-	if _, ok := diagnostic["exhaustionBudget"]; ok {
-		t.Fatalf("agent diagnostic used AppWire camelCase: %+v", diagnostic)
+	if len(ds.Jobs) != 0 {
+		t.Fatalf("delegate activation leaked through DetailedStatus.Jobs: %+v", ds.Jobs)
 	}
 }
 

@@ -9,7 +9,7 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { applySerfJobFinished, applySerfJobStarted } from "../panes/session/transcript/tools/subagentModuleStore";
+import { applySerfDelegateUpdated } from "../panes/session/transcript/tools/subagentModuleStore";
 import { mutationErrorData, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
 import {
@@ -1109,25 +1109,12 @@ function applyToMap(
   return { next, changedRefs };
 }
 
-// applySubagentJobSignal is the "Signal merging" step from
-// docs/superpowers/specs/2026-06-25-subagent-run-rendering-design.md (dr7e):
-// serf/job/started|finished carry (originTurnId, delegateId/jobId) linkage
-// straight back to a subagentModuleStore row, independent of ThreadModel
-// entirely (a SEPARATE store this one has no other reason to import - see
-// applySerfJobStarted/applySerfJobFinished's own comments for why this
-// supplements, not replaces, watchedChild.tsx's per-child watch). Runs
-// unconditionally on every notification, same as applyToMap below; both
-// functions already no-op silently when the job carries no originTurnId or
-// matches no tracked row, so no pre-filtering is needed here.
-//
-// n.params.ref (kata 8525) is passed straight through as the owning
-// session's ref: originTurnId alone is per-session, not globally unique, so
-// applySerfJobStarted/Finished need it to scope the write correctly in this
-// page-lifetime singleton store (same reasoning as every other call site -
-// see subagentModuleStore.ts's own turnScopeKey comment).
-function applySubagentJobSignal(n: AnyNotification): void {
-  if (n.method === "serf/job/started") applySerfJobStarted(n.params.job, n.params.ref);
-  else if (n.method === "serf/job/finished") applySerfJobFinished(n.params.job, n.params.ref);
+// Stable delegate snapshots update the transcript module independently of
+// ThreadModel rendering. Shell job lifecycle notifications deliberately do
+// not enter this path: a shell keeps its job row and can never mutate or
+// synthesize a delegate row.
+function applyStableDelegateSignal(n: AnyNotification): void {
+  if (n.method === "serf/delegate/updated") applySerfDelegateUpdated(n.params.delegate, n.params.ref);
 }
 
 function handleNotification(n: AnyNotification): void {
@@ -1150,7 +1137,7 @@ function handleNotification(n: AnyNotification): void {
         });
     }
   }
-  applySubagentJobSignal(n);
+  applyStableDelegateSignal(n);
   const now = Date.now();
   const { threads, frameTimes, watchedThreads, watchedFrameTimes } = threadsStore.getState();
   const pendingRefs = new Set<string>();
