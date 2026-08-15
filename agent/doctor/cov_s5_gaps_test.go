@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -243,10 +244,14 @@ func TestTree_DelegateChildTranscriptMissing(t *testing.T) {
 	bucket := stateHomeBucket(base, hash1)
 	sid := sidA
 	writeSession(t, bucket, sid)
-	jobs := filepath.Join(bucket, "sessions", sid, "jobs.jsonl")
-	writeJobsEvents(t, jobs, []jobstore.Event{
-		{Kind: jobstore.EventDelegateCreated, DelegateID: "d1", Delegate: &jobstore.DelegateEvent{
-			ChildSessionID: "01MISSINGCHILDSESSIONXXXXXX", AgentType: "ghost"}},
+	delegates := filepath.Join(bucket, "sessions", sid, "delegates.jsonl")
+	missing := "01MISSINGCHILDSESSIONXXXXXX"
+	writeDelegateEvents(t, delegates, []delegatestore.Event{
+		{Kind: delegatestore.EventDelegateCreated, DelegateID: "d1", Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
+			ChildSessionID: missing, TranscriptRef: "local:" + missing,
+			OwnerSessionID: sid, VisibleSessionID: sid, Task: "inspect missing child",
+			AgentType: "ghost", ToolNameCeiling: []string{"communicate"}, Resumable: true,
+		}}},
 	})
 	root, err := Tree(base, sid, TreeOpts{})
 	if err != nil {

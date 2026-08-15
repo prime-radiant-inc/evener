@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/sandbox"
 )
 
@@ -222,7 +222,7 @@ func provisionRestoredSandbox(cfg SessionConfig, env execenv.ExecutionEnvironmen
 // identical to today. The captured value is the lane-INDEPENDENT policy request
 // (mode/net/denylist-deltas/extra-roots), so a resumed delegate re-resolves it
 // against its own lane rather than replaying a parent's worktree-anchored roots.
-func sandboxSnapshotFromEnv(env execenv.ExecutionEnvironment) *jobstore.SandboxSnapshot {
+func sandboxSnapshotFromEnv(env execenv.ExecutionEnvironment) *delegatestore.SandboxSnapshot {
 	le, ok := env.(*execenv.LocalExecutionEnvironment)
 	if !ok || le.Sandbox == nil || !le.Sandbox.Enforced() {
 		return nil
@@ -233,11 +233,11 @@ func sandboxSnapshotFromEnv(env execenv.ExecutionEnvironment) *jobstore.SandboxS
 // sandboxSnapshotFromInputs converts a live SandboxPolicy request into its durable
 // snapshot, decoupling the persisted schema from the live type. An off request
 // persists nothing.
-func sandboxSnapshotFromInputs(in sandbox.SandboxPolicy) *jobstore.SandboxSnapshot {
+func sandboxSnapshotFromInputs(in sandbox.SandboxPolicy) *delegatestore.SandboxSnapshot {
 	if in.Mode == sandbox.ModeOff {
 		return nil
 	}
-	snap := &jobstore.SandboxSnapshot{
+	snap := &delegatestore.SandboxSnapshot{
 		Mode:               in.Mode.String(),
 		DenylistAdd:        append([]string(nil), in.DenylistAdd...),
 		DenylistRemove:     append([]string(nil), in.DenylistRemove...),
@@ -254,11 +254,11 @@ func sandboxSnapshotFromInputs(in sandbox.SandboxPolicy) *jobstore.SandboxSnapsh
 // cloneSandboxSnapshot deep-copies a persisted snapshot so a resumed-turn
 // descriptor does not alias the previous descriptor's slices (mirroring the other
 // resume-path clones in resumedDelegateRestoreDescriptor). nil stays nil.
-func cloneSandboxSnapshot(in *jobstore.SandboxSnapshot) *jobstore.SandboxSnapshot {
+func cloneSandboxSnapshot(in *delegatestore.SandboxSnapshot) *delegatestore.SandboxSnapshot {
 	if in == nil {
 		return nil
 	}
-	out := &jobstore.SandboxSnapshot{
+	out := &delegatestore.SandboxSnapshot{
 		Mode:               in.Mode,
 		DenylistAdd:        append([]string(nil), in.DenylistAdd...),
 		DenylistRemove:     append([]string(nil), in.DenylistRemove...),
@@ -276,7 +276,7 @@ func cloneSandboxSnapshot(in *jobstore.SandboxSnapshot) *jobstore.SandboxSnapsho
 // persisted snapshot for re-resolution on restore. ok is false when the mode name
 // is unparseable (a corrupt/hand-edited descriptor), which the restore path treats
 // as not-resumable rather than resuming with a guessed policy.
-func sandboxPolicyFromSnapshot(snap *jobstore.SandboxSnapshot) (sandbox.SandboxPolicy, bool) {
+func sandboxPolicyFromSnapshot(snap *delegatestore.SandboxSnapshot) (sandbox.SandboxPolicy, bool) {
 	if snap == nil {
 		return sandbox.SandboxPolicy{}, false
 	}

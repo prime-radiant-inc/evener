@@ -5,12 +5,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/agenttest"
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
@@ -28,10 +29,10 @@ func FuzzJobWatchDrainRenderTail(f *testing.F) {
 		freezeClock(jm)
 		jm.clock = agenttest.NewFakeClock()
 		t.Cleanup(func() { _ = jm.store.Close() })
-		s := &Session{id: testOwnerSessionID, jobManager: jm}
+		controller, _ := newDelegateControllerTestHarness(t, 2, 1)
+		s := &Session{id: testOwnerSessionID, jobManager: jm, delegateController: controller, delegateRootSessionID: testOwnerSessionID}
 
 		steps := []func(){
-			func() { jdrExerciseClassifier(t, s) },
 			func() { jdrExercisePendingAndRender(t, s) },
 			func() { jdrExerciseGuardsAndFailures(t, s) },
 			func() { jdrExerciseSuccessfulChildDrive(t) },
@@ -66,7 +67,10 @@ func jdrExerciseSuccessfulChildDrive(t *testing.T) {
 	safzWaitDone(t, sub)
 	sub.sess.enqueueJobNotification(jobNotification{JobID: "job_drive_tail", Reason: "drive tail"})
 	parent.driveChildrenWithUndeliveredAttention()
-	safzWaitCounterZero(t, parent)
+	parent.sendersWG.Wait()
+	if parent.treeCounter.n.Load() != 0 || parent.driveCounter.n.Load() != 0 {
+		t.Fatalf("child drive counters = tree:%d drive:%d, want zero", parent.treeCounter.n.Load(), parent.driveCounter.n.Load())
+	}
 
 	// sessions() retains a real child Session even when its job manager has not
 	// been initialized, covering the defensive drain-report guard.
@@ -75,98 +79,18 @@ func jdrExerciseSuccessfulChildDrive(t *testing.T) {
 	_, _ = nilJMParent.drainPendingWatchSendsReport(context.Background())
 }
 
-func jdrExerciseClassifier(t *testing.T, s *Session) {
-	t.Helper()
-	trueValue, falseValue := true, false
-	base := watchSendTargetResolver{
-		sessionID: testOwnerSessionID, hasJobManager: true,
-		loadDelegates: func() (map[string]*jobstore.DelegateRecord, error) { return nil, errors.New("load") },
-		findJobRecord: func(string) (*jobstore.JobRecord, error) { return nil, errors.New("missing") },
-		assessResumable: func(*jobstore.JobRecord) delegateResumability {
-			return delegateResumability{Resumable: false, Reason: "denied"}
-		},
-	}
-	targets := []string{"caller", "", "parent", "plain", "job_bad", "dlg_load"}
-	for _, target := range targets {
-		classifyWatchSendDeliveryTarget(target, base)
-	}
-	classifyWatchSendDeliveryTarget("plain", watchSendTargetResolver{})
-
-	delegateCases := []struct {
-		d *jobstore.DelegateRecord
-		r *jobstore.JobRecord
-	}{
-		{d: nil},
-		{d: &jobstore.DelegateRecord{OwnerSessionID: "OTHER"}},
-		{d: &jobstore.DelegateRecord{Resumable: true}},
-		{d: &jobstore.DelegateRecord{Resumable: true, LatestJobID: "latest"}},
-		{d: &jobstore.DelegateRecord{Resumable: true, CurrentJobID: "cur"}, r: &jobstore.JobRecord{OwnerSessionID: "OTHER"}},
-		{d: &jobstore.DelegateRecord{Resumable: true, CurrentJobID: "cur"}, r: &jobstore.JobRecord{Type: jobstore.JobShell}},
-		{d: &jobstore.DelegateRecord{Status: jobstore.DelegateNotResumable, CurrentJobID: "cur"}, r: &jobstore.JobRecord{Type: jobstore.JobDelegate}},
-		{d: &jobstore.DelegateRecord{Resumable: true, CurrentJobID: "cur"}, r: &jobstore.JobRecord{Type: jobstore.JobDelegate, Status: jobstore.StatusRunning}},
-		{d: &jobstore.DelegateRecord{Resumable: true, CurrentJobID: "cur"}, r: &jobstore.JobRecord{Type: jobstore.JobDelegate}},
-		{d: &jobstore.DelegateRecord{Resumable: true, CurrentJobID: "cur"}, r: &jobstore.JobRecord{Type: jobstore.JobDelegate, Status: jobstore.StatusCompleted, Resumable: &falseValue}},
-		{d: &jobstore.DelegateRecord{Resumable: true, CurrentJobID: "cur"}, r: &jobstore.JobRecord{Type: jobstore.JobDelegate, Status: jobstore.StatusCompleted, Resumable: &trueValue}},
-	}
-	for _, tc := range delegateCases {
-		r := base
-		r.loadDelegates = func() (map[string]*jobstore.DelegateRecord, error) {
-			return map[string]*jobstore.DelegateRecord{"dlg_x": tc.d}, nil
-		}
-		r.findJobRecord = func(string) (*jobstore.JobRecord, error) {
-			if tc.r == nil {
-				return nil, errors.New("missing")
-			}
-			return tc.r, nil
-		}
-		classifyWatchSendDeliveryTarget("dlg_x", r)
-	}
-
-	plainRecords := []*jobstore.JobRecord{
-		{Type: jobstore.JobShell},
-		{Type: jobstore.JobDelegate, Status: jobstore.StatusRunning},
-		{Type: jobstore.JobDelegate},
-		{Type: jobstore.JobDelegate, Status: jobstore.StatusCompleted, Resumable: &falseValue},
-		{Type: jobstore.JobDelegate, Status: jobstore.StatusCompleted, Resumable: &trueValue},
-	}
-	for _, rec := range plainRecords {
-		r := base
-		r.findJobRecord = func(string) (*jobstore.JobRecord, error) { return rec, nil }
-		classifyWatchSendDeliveryTarget("legacy", r)
-		r.assessResumable = func(*jobstore.JobRecord) delegateResumability { return delegateResumability{Resumable: true} }
-		classifyWatchSendDeliveryTarget("legacy", r)
-	}
-	for _, resumable := range []bool{false, true} {
-		r := base
-		r.findJobRecord = func(string) (*jobstore.JobRecord, error) {
-			return &jobstore.JobRecord{Type: jobstore.JobDelegate, Status: jobstore.StatusStopped, Reason: "runtime_lost"}, nil
-		}
-		r.assessResumable = func(*jobstore.JobRecord) delegateResumability {
-			return delegateResumability{Resumable: resumable, Reason: "lost"}
-		}
-		classifyWatchSendDeliveryTarget("legacy-lost", r)
-	}
-	_, _ = s.classifyRestoredWatchSendTarget("caller")
-	_ = (&Session{}).watchSendTargetResolver()
-}
-
 func jdrExercisePendingAndRender(t *testing.T, s *Session) {
 	t.Helper()
 	jm := s.jobManager
 	key := jobstore.WatchSendKey{ResolvedWatchedIdentity: "missing", ResolvedSendTo: runtimeMessageAliasCaller, VisibleSessionID: testOwnerSessionID}
 	state := &jobstore.WatchSendState{Key: key, UpdateSeq: 1, TriggerReason: "trigger"}
 	cfg := &watchConfig{watchID: "w", send: &watchSendArgs{Message: "hello", IncludeExcerpt: true}, pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{key: state}, pendingOrder: []jobstore.WatchSendKey{key, {}}}
-	delegateKey := jobstore.WatchSendKey{ResolvedWatchedIdentity: "missing", ResolvedSendTo: "dlg_missing", VisibleSessionID: testOwnerSessionID}
-	delegateState := &jobstore.WatchSendState{Key: delegateKey, UpdateSeq: 2, TriggerReason: "delegate"}
-	delegateCfg := &watchConfig{watchID: "wd", send: &watchSendArgs{To: "dlg_missing"}, pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{delegateKey: delegateState}, pendingOrder: []jobstore.WatchSendKey{delegateKey}}
 	jm.mu.Lock()
 	jm.watches[watchKey{VisibleSessionID: testOwnerSessionID, Target: "missing"}] = cfg
-	jm.watches[watchKey{VisibleSessionID: testOwnerSessionID, Target: "missing-delegate"}] = delegateCfg
 	if jm.terminalFlush == nil {
 		jm.terminalFlush = make(map[*watchConfig]bool)
 	}
 	jm.terminalFlush[cfg] = true
-	jm.terminalFlush[delegateCfg] = true
 	jm.mu.Unlock()
 	jm.pendingWatchSendDeliveries(func(st *jobstore.WatchSendState) bool { return st.UpdateSeq == 1 })
 	jm.pendingWatchSendDeliveries(func(*jobstore.WatchSendState) bool { return false })
@@ -186,16 +110,6 @@ func jdrExercisePendingAndRender(t *testing.T, s *Session) {
 	jm.mu.Unlock()
 	failAppendN(jm, jobstore.EventWatchSendDropped, 1)
 	_ = s.retryRestoredPendingWatchSends(context.Background())
-	seedWatchSendDelegateTarget(t, jm, "dlg_busy_tail")
-	busyKey := jobstore.WatchSendKey{WatchTarget: "busy", ResolvedWatchedIdentity: "busy", ResolvedSendTo: "dlg_busy_tail", VisibleSessionID: testOwnerSessionID}
-	busyState := &jobstore.WatchSendState{Key: busyKey, UpdateSeq: 4, DeliveryID: "delivery-busy-tail"}
-	busyCfg := &watchConfig{send: &watchSendArgs{To: "dlg_busy_tail"}, pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{busyKey: busyState}, pendingOrder: []jobstore.WatchSendKey{busyKey}}
-	jm.mu.Lock()
-	jm.terminalFlush[busyCfg] = true
-	jm.mu.Unlock()
-	if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
-		t.Fatal(err)
-	}
 
 	if resolve, err := resolveWatchSendTarget(runtimeMessageAliasWatched, ""); resolve != "" || err == nil {
 		t.Fatal("unresolved watched alias")
@@ -250,7 +164,6 @@ func jdrExercisePendingAndRender(t *testing.T, s *Session) {
 	jm.mu.Lock()
 	jm.closing = false
 	delete(jm.watches, watchKey{VisibleSessionID: testOwnerSessionID, Target: "missing"})
-	delete(jm.watches, watchKey{VisibleSessionID: testOwnerSessionID, Target: "missing-delegate"})
 	delete(jm.watches, watchKey{VisibleSessionID: testOwnerSessionID, Target: "bad"})
 	jm.mu.Unlock()
 	jm.hasPendingWatchSends()
@@ -308,33 +221,31 @@ func jdrExerciseGuardsAndFailures(t *testing.T, s *Session) {
 	// exercised through successful tombstoning and escalation.
 	s.renderUnreachableChildPendings(map[string]bool{"child-live": true})
 
-	resumableSession := newDelegateRestorePreflightSession(t, nil)
-	resumableRec := seedStoppedDelegateRestoreRecord(t, resumableSession)
-	_, resumableChildID, err := decodeRef(resumableRec.TranscriptRef)
+	now := s.jobManager.now()
+	seedStableToolDelegate(t, s, "dlg_resumable_tail", "", now.Add(-2*time.Second), now.Add(-time.Second))
+	resumableChildID := "child-dlg_resumable_tail"
+	if !s.childResumable(resumableChildID) {
+		t.Fatal("retained child fixture is not resumable")
+	}
+	appendForwardedChildTerminalPending(t, s.jobManager, "job_resumable_tail", resumableChildID)
+	appendForwardedChildCallerWatchSendPending(t, s.jobManager, resumableChildID, "job_resumable_watch_tail")
+	s.renderUnreachableChildPendings(nil)
+
+	descriptor := stableToolDescriptor(s, "dlg_stop_gate_tail", "")
+	lease := delegateLease{delegateID: "dlg_stop_gate_tail", generation: 1}
+	packet := delegateStoppedTerminalPacket()
+	s.delegateController.mu.Lock()
+	_, err = s.delegateController.appendLocked(
+		delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: lease.delegateID, Created: &delegatestore.DelegateCreated{Descriptor: descriptor}},
+		delegateControllerRunStartedEvent(lease.delegateID, lease.generation, delegatestore.TriggerInitial, now),
+		delegatestore.Event{Kind: delegatestore.EventDelegateSubtreeStopRequested, DelegateID: lease.delegateID, SubtreeStopRequested: &delegatestore.SubtreeStopRequested{TargetDelegateID: lease.delegateID}},
+		delegateRunFinishedEvent(lease, delegatestore.OutcomeStopped, delegatestore.DispositionTerminalError, "stopped_by_parent", now, delegateDeliveryID(lease.delegateID, lease.generation), &packet),
+	)
+	s.delegateController.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resumableSession.childResumable(resumableChildID) {
-		t.Fatal("retained child fixture is not resumable")
-	}
-	appendForwardedChildTerminalPending(t, resumableSession.jobManager, "job_resumable_tail", resumableChildID)
-	appendForwardedChildCallerWatchSendPending(t, resumableSession.jobManager, resumableChildID, "job_resumable_watch_tail")
-	resumableSession.renderUnreachableChildPendings(nil)
-
-	now := s.jobManager.now()
-	if err := s.jobManager.appendEvent(jobstore.Event{
-		Kind: jobstore.EventJobStarted, TS: now, JobID: "job_stop_gate_tail", Type: jobstore.JobDelegate,
-		OwnerSessionID: s.id, VisibleToSession: s.id, TranscriptRef: encodeRef("", "child-stop-gated"), StartedAt: &now,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.jobManager.appendEvent(jobstore.Event{
-		Kind: jobstore.EventJobFinished, TS: now, JobID: "job_stop_gate_tail", Status: jobstore.StatusCancelled,
-		Reason: "stopped_by_parent", EndedAt: &now, TerminalGen: "gen-stop-gate-tail",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	child := &Session{id: "child-stop-gated", jobManager: s.jobManager}
+	child := &Session{id: descriptor.ChildSessionID, jobManager: s.jobManager}
 	stopped := &subagent{id: child.id, sess: child}
 	if !s.childStopGated(child.id) {
 		t.Fatal("synthetic stopped delegate did not close the child drive gate")
@@ -343,4 +254,55 @@ func jdrExerciseGuardsAndFailures(t *testing.T, s *Session) {
 	s.subagents = newSubagentManager(nil, 0)
 	s.subagents.track(stopped)
 	s.driveChildrenWithUndeliveredAttention()
+}
+
+func appendForwardedChildTerminalPending(t *testing.T, jm *jobManager, jobID, childSessionID string) {
+	t.Helper()
+	now := jm.now()
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               now,
+		JobID:            jobID,
+		Type:             jobstore.JobShell,
+		OwnerSessionID:   childSessionID,
+		VisibleToSession: jm.sessionID,
+		StartedAt:        &now,
+		Command:          "true",
+		Description:      "forwarded child shell",
+	}); err != nil {
+		t.Fatalf("append forwarded start %q: %v", jobID, err)
+	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		TS:          now,
+		JobID:       jobID,
+		Status:      jobstore.StatusCompleted,
+		Reason:      "completed",
+		EndedAt:     &now,
+		TerminalGen: "gen-" + jobID,
+	}); err != nil {
+		t.Fatalf("append forwarded finish %q: %v", jobID, err)
+	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:        jobstore.EventJobNotificationPending,
+		TS:          now,
+		JobID:       jobID,
+		TerminalGen: "gen-" + jobID,
+	}); err != nil {
+		t.Fatalf("append forwarded pending %q: %v", jobID, err)
+	}
+}
+
+func appendForwardedChildCallerWatchSendPending(t *testing.T, jm *jobManager, childSessionID, watchedJobID string) jobstore.WatchSendState {
+	t.Helper()
+	var state jobstore.WatchSendState
+	for _, event := range restoredWatchSendPendingEvents(childSessionID, watchedJobID, runtimeMessageAliasCaller, jm.now()) {
+		if event.WatchSend != nil {
+			state = *event.WatchSend
+		}
+		if err := jm.appendEvent(event); err != nil {
+			t.Fatalf("append forwarded caller watch-send pending %q: %v", watchedJobID, err)
+		}
+	}
+	return state
 }

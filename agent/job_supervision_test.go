@@ -3,22 +3,15 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/llm"
 )
 
-// mutableClock is a race-safe, advanceable clock for supervision tests. The
-// watchdog goroutine reads jm.now() under jm.mu and the test advances it from
-// the test goroutine, so the backing store is atomic.
 type mutableClock struct {
 	nanos atomic.Int64
 }
@@ -33,7 +26,6 @@ func (c *mutableClock) now() time.Time { return time.Unix(0, c.nanos.Load()).UTC
 
 func (c *mutableClock) advance(d time.Duration) { c.nanos.Add(int64(d)) }
 
-// runningJobByID returns the live runningJob for jobID or fails the test.
 func runningJobByID(t *testing.T, jm *jobManager, jobID string) *runningJob {
 	t.Helper()
 	jm.mu.Lock()
@@ -45,7 +37,6 @@ func runningJobByID(t *testing.T, jm *jobManager, jobID string) *runningJob {
 	return run
 }
 
-// readJobListEntry drives the real job_list tool and returns the row for jobID.
 func readJobListEntry(t *testing.T, s *Session, jobID string) jobListToolEntry {
 	t.Helper()
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -84,21 +75,6 @@ func readJobStatus(t *testing.T, s *Session, jobID string) jobStatusToolOutput {
 	return out
 }
 
-func waitForJobPhase(t *testing.T, s *Session, jobID, want string) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	var got string
-	for time.Now().Before(deadline) {
-		status := readJobStatus(t, s, jobID)
-		got = status.Phase
-		if got == want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("phase = %q, want %q", got, want)
-}
-
 type jobStatusToolOutput struct {
 	JobID              string `json:"job_id"`
 	Kind               string `json:"kind"`
@@ -128,19 +104,7 @@ func TestJobStatusRunningShellProjectsSupervisionFields(t *testing.T) {
 	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
 
 	clk.advance(90 * time.Second)
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "status",
-		Name:      "job_status",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, rec.JobID)),
-	})
-	if res.IsError {
-		t.Fatalf("job_status returned error: %s", res.Output)
-	}
-
-	var out jobStatusToolOutput
-	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
-		t.Fatalf("unmarshal job_status: %v (output: %s)", err, res.Output)
-	}
+	out := readJobStatus(t, s, rec.JobID)
 	if out.JobID != rec.JobID {
 		t.Fatalf("job_id = %q, want %q", out.JobID, rec.JobID)
 	}
@@ -201,388 +165,6 @@ func TestJobListRowsIncludeStatusSupervisionFields(t *testing.T) {
 	}
 }
 
-func TestAgentJobStatusUpdatesFromChildObservablePhases(t *testing.T) {
-	parent := newTestSession(t)
-	child := newTestSession(t)
-	clk := newMutableClock(time.Unix(7000, 0).UTC())
-	parent.jobManager.now = clk.now
-
-	sub := completedDelegateSubagent(child, "report")
-	parent.subagents.track(sub)
-	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
-	if err != nil {
-		t.Fatalf("attachDelegateJob: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = parent.finalizeDelegate(run.rec.JobID, child.ID(), sub)
-		waitForShellDone(t, parent.jobManager, run.rec.JobID)
-	})
-
-	clk.advance(2 * time.Second)
-	parent.jobManager.noteJobActivity(run.rec.JobID, jobPhaseAwaitingModel)
-	status := readJobStatus(t, parent, run.rec.JobID)
-	if status.Kind != "agent" {
-		t.Fatalf("kind = %q, want agent", status.Kind)
-	}
-	if status.Phase != "awaiting_model" {
-		t.Fatalf("phase = %q, want awaiting_model", status.Phase)
-	}
-	if status.QuietForMS != 0 {
-		t.Fatalf("quiet_for_ms immediately after event = %d, want 0", status.QuietForMS)
-	}
-
-	clk.advance(5 * time.Second)
-	status = readJobStatus(t, parent, run.rec.JobID)
-	if status.QuietForMS != 5000 {
-		t.Fatalf("quiet_for_ms after no events = %d, want 5000", status.QuietForMS)
-	}
-
-	parent.jobManager.noteJobActivity(run.rec.JobID, jobPhaseToolRunning)
-	status = readJobStatus(t, parent, run.rec.JobID)
-	if status.Phase != "tool_running" {
-		t.Fatalf("phase = %q, want tool_running", status.Phase)
-	}
-	if status.QuietForMS != 0 {
-		t.Fatalf("quiet_for_ms after tool event = %d, want 0", status.QuietForMS)
-	}
-}
-
-func TestPreparedSubagentReportsParentJobActivity(t *testing.T) {
-	parent := newTestSession(t)
-	child := newTestSession(t)
-	clk := newMutableClock(time.Unix(7100, 0).UTC())
-	parent.jobManager.now = clk.now
-
-	sub := completedDelegateSubagent(child, "report")
-	parent.subagents.track(sub)
-	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
-	if err != nil {
-		t.Fatalf("attachDelegateJob: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = parent.finalizeDelegate(run.rec.JobID, child.ID(), sub)
-		waitForShellDone(t, parent.jobManager, run.rec.JobID)
-	})
-
-	ctx := context.WithValue(context.Background(), ctxParentJobID, run.rec.JobID)
-	ctx = context.WithValue(ctx, ctxDelegationAllowance, 0)
-	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	defer releasePreparedTreeSlot(prepared)
-	defer prepared.sub.sess.Close()
-
-	clk.advance(4 * time.Second)
-	prepared.sub.sess.noteParentJobActivity(jobPhaseAwaitingModel)
-	status := readJobStatus(t, parent, run.rec.JobID)
-	if status.Phase != "awaiting_model" {
-		t.Fatalf("phase = %q, want awaiting_model", status.Phase)
-	}
-	if status.QuietForMS != 0 {
-		t.Fatalf("quiet_for_ms after child activity = %d, want 0", status.QuietForMS)
-	}
-}
-
-func TestSubagentTurnReportsAwaitingModelAndToolRunning(t *testing.T) {
-	var parent *Session
-	var run *runningJob
-	adapter := &fakeAdapter{name: "openai"}
-	adapter.steps = []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			_ = req
-			status := readJobStatus(t, parent, run.rec.JobID)
-			if status.Phase != "awaiting_model" {
-				t.Fatalf("phase during model request = %q, want awaiting_model", status.Phase)
-			}
-			return finalResponse("done")
-		},
-	}
-	client := llm.NewClient()
-	client.Register(adapter)
-	var err error
-	parent, err = NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
-		MaxSubagentDepth: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() { parent.Close() })
-	clk := newMutableClock(time.Unix(7200, 0).UTC())
-	parent.jobManager.now = clk.now
-
-	jobID := jobstore.NewJobID(parent.ID())
-	ctx := context.WithValue(context.Background(), ctxParentJobID, jobID)
-	ctx = context.WithValue(ctx, ctxDelegationAllowance, 0)
-	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	defer prepared.runCancel()
-	defer prepared.sub.sess.Close()
-	run, err = parent.attachDelegateJobWithPrepared(parent.jobManager, prepared.sub.sess.ID(), "child task", prepared.sub, jobID, nil, false, prepared)
-	if err != nil {
-		t.Fatalf("attachDelegateJobWithPrepared: %v", err)
-	}
-	t.Cleanup(func() {
-		finishRunningTestJob(t, parent.jobManager, run.rec.JobID)
-		waitForShellDone(t, parent.jobManager, run.rec.JobID)
-	})
-
-	if _, err := prepared.sub.sess.ProcessInput(context.Background(), "go", nil); err != nil {
-		t.Fatalf("child ProcessInput: %v", err)
-	}
-	status := readJobStatus(t, parent, run.rec.JobID)
-	if status.Phase != "tool_running" {
-		t.Fatalf("phase after tool execution = %q, want tool_running", status.Phase)
-	}
-}
-
-func TestSubagentStreamEventsReportModelStreaming(t *testing.T) {
-	parent := newTestSession(t)
-	child := newTestSession(t)
-	clk := newMutableClock(time.Unix(7300, 0).UTC())
-	parent.jobManager.now = clk.now
-
-	sub := completedDelegateSubagent(child, "report")
-	parent.subagents.track(sub)
-	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
-	if err != nil {
-		t.Fatalf("attachDelegateJob: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = parent.finalizeDelegate(run.rec.JobID, child.ID(), sub)
-		waitForShellDone(t, parent.jobManager, run.rec.JobID)
-	})
-	child.cfg.spawn.parentJobID = run.rec.JobID
-	child.cfg.spawn.parentJobActivity = parent.jobManager.noteJobActivity
-
-	st := llm.NewChanStream(nil)
-	errCh := make(chan error, 1)
-	go func() {
-		_, _, err := child.consumeModelStream(context.Background(), llm.Request{Provider: "openai", Model: "gpt-5.2"}, st)
-		errCh <- err
-	}()
-
-	st.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
-	st.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "t0"})
-	st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: "t0", Delta: "hello"})
-	waitForJobPhase(t, parent, run.rec.JobID, jobPhaseModelStreaming)
-	finish := llm.FinishReason{Reason: llm.FinishReasonStop}
-	st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
-	st.CloseSend()
-
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Fatalf("consumeModelStream: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("consumeModelStream did not finish")
-	}
-}
-
-// TestSubagentModelRetrySurfacesJobPhaseModelRetrying: a child grinding
-// through a provider retry storm must not read as opaque "awaiting model" to
-// the parent (Component 3's delegate-scope addition) — emitModelRetry's
-// OnRetry hook, which fires once per retry before its backoff sleep, surfaces
-// jobPhaseModelRetrying into the parent's job activity the same way
-// consumeModelStream surfaces model_streaming.
-func TestSubagentModelRetrySurfacesJobPhaseModelRetrying(t *testing.T) {
-	parent := newTestSession(t)
-	child := newTestSession(t)
-	clk := newMutableClock(time.Unix(7400, 0).UTC())
-	parent.jobManager.now = clk.now
-
-	sub := completedDelegateSubagent(child, "report")
-	parent.subagents.track(sub)
-	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
-	if err != nil {
-		t.Fatalf("attachDelegateJob: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = parent.finalizeDelegate(run.rec.JobID, child.ID(), sub)
-		waitForShellDone(t, parent.jobManager, run.rec.JobID)
-	})
-	child.cfg.spawn.parentJobID = run.rec.JobID
-	child.cfg.spawn.parentJobActivity = parent.jobManager.noteJobActivity
-
-	policy := llm.RetryPolicy{MaxRetries: 10}
-	req := llm.Request{Model: "gpt-5.2"}
-	group := &groupRecord{}
-	onRetry := child.emitModelRetry(policy, req, group)
-	onRetry(errors.New("stream ended without completion"), 1, time.Millisecond)
-
-	waitForJobPhase(t, parent, run.rec.JobID, jobPhaseModelRetrying)
-}
-
-// TestDelegateTerminalResult_FailedChildWithSalvagedDraftNotesResume: a
-// failed delegate whose child transcript already holds a Component 3
-// salvaged turn must tell the parent to resume it via delegate_send rather
-// than re-dispatch a fresh child that regenerates the same work. Detection
-// reads the child session's persisted-turn latch directly
-// (hasSalvageFromFinalRound), never sub.err's text. Here the salvage happens
-// in the same (and only) round the child ever ran, so it trivially IS the
-// round whose failure ended the session.
-func TestDelegateTerminalResult_FailedChildWithSalvagedDraftNotesResume(t *testing.T) {
-	parent := newTestSession(t)
-	child := newTestSession(t)
-	clk := newMutableClock(time.Unix(7500, 0).UTC())
-	parent.jobManager.now = clk.now
-
-	// A real settlement never fires before totalRounds is at least 1 (it is
-	// always incremented at the start of the round it settles); stamp that
-	// here so the round-scoped check below sees a realistic "salvaged during
-	// the one round this child ran" round count rather than the fresh
-	// session's zero value.
-	child.totalRounds = 1
-	if err := child.persistSalvagedTurn("the plan so far", "gpt-5.2", "openai"); err != nil {
-		t.Fatalf("persistSalvagedTurn: %v", err)
-	}
-
-	sub := &subagent{
-		id:     child.ID(),
-		sess:   child,
-		status: SubagentFailed,
-		err:    errors.New("provider unhealthy: repeated mid-stream stalls"),
-		done:   make(chan struct{}),
-	}
-	parent.subagents.track(sub)
-	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
-	if err != nil {
-		t.Fatalf("attachDelegateJob: %v", err)
-	}
-	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
-		t.Fatalf("finalizeDelegate: %v", err)
-	}
-	waitForShellDone(t, parent.jobManager, run.rec.JobID)
-
-	res := delegateTerminalResult(parent, parent.jobManager, run)
-	if res.Status != jobstore.StatusFailed {
-		t.Fatalf("res.Status = %q, want %q", res.Status, jobstore.StatusFailed)
-	}
-	const want = "partial draft salvaged in the child transcript — resume it with delegate_send rather than re-dispatching"
-	if !strings.Contains(res.Output, want) {
-		t.Fatalf("res.Output = %q, want it to contain %q", res.Output, want)
-	}
-}
-
-// TestDelegateTerminalResult_StaleSalvageFromEarlierRoundIsNotRecommended:
-// round 2 salvages a transient stall, the child then runs six more rounds
-// (3-8), and round 8 dies of an unrelated, non-salvageable failure (e.g.
-// context length) that persists no new salvage. The stale round-2 salvage
-// must NOT tell the parent to resume: Component 3 deliberately excludes
-// context-length failures from salvage/steering because appending more
-// input to an already-overflowing history makes it worse, and recommending
-// delegate_send here would defeat that exclusion by a side door.
-func TestDelegateTerminalResult_StaleSalvageFromEarlierRoundIsNotRecommended(t *testing.T) {
-	parent := newTestSession(t)
-	child := newTestSession(t)
-	clk := newMutableClock(time.Unix(7600, 0).UTC())
-	parent.jobManager.now = clk.now
-
-	child.totalRounds = 2
-	if err := child.persistSalvagedTurn("early transient stall draft", "gpt-5.2", "openai"); err != nil {
-		t.Fatalf("persistSalvagedTurn: %v", err)
-	}
-	child.totalRounds = 8 // more rounds ran after the salvage; none produced a new one
-
-	sub := &subagent{
-		id:     child.ID(),
-		sess:   child,
-		status: SubagentFailed,
-		err:    errors.New("context length exceeded"),
-		done:   make(chan struct{}),
-	}
-	parent.subagents.track(sub)
-	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
-	if err != nil {
-		t.Fatalf("attachDelegateJob: %v", err)
-	}
-	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
-		t.Fatalf("finalizeDelegate: %v", err)
-	}
-	waitForShellDone(t, parent.jobManager, run.rec.JobID)
-
-	res := delegateTerminalResult(parent, parent.jobManager, run)
-	if res.Status != jobstore.StatusFailed {
-		t.Fatalf("res.Status = %q, want %q", res.Status, jobstore.StatusFailed)
-	}
-	if strings.Contains(res.Output, "partial draft salvaged") {
-		t.Fatalf("res.Output = %q, must not recommend resuming a round-2 salvage for a round-8 failure", res.Output)
-	}
-}
-
-// TestDelegateTerminalResult_CompletedChildWithSalvageHasNoNote: the note is
-// gated on Status == Failed, so a delegate that salvaged mid-conversation but
-// went on to complete successfully must never carry it.
-func TestDelegateTerminalResult_CompletedChildWithSalvageHasNoNote(t *testing.T) {
-	parent := newTestSession(t)
-	child := newTestSession(t)
-	clk := newMutableClock(time.Unix(7700, 0).UTC())
-	parent.jobManager.now = clk.now
-
-	if err := child.persistSalvagedTurn("draft", "gpt-5.2", "openai"); err != nil {
-		t.Fatalf("persistSalvagedTurn: %v", err)
-	}
-
-	sub := completedDelegateSubagent(child, "final report")
-	parent.subagents.track(sub)
-	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
-	if err != nil {
-		t.Fatalf("attachDelegateJob: %v", err)
-	}
-	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
-		t.Fatalf("finalizeDelegate: %v", err)
-	}
-	waitForShellDone(t, parent.jobManager, run.rec.JobID)
-
-	res := delegateTerminalResult(parent, parent.jobManager, run)
-	if res.Status != jobstore.StatusCompleted {
-		t.Fatalf("res.Status = %q, want %q", res.Status, jobstore.StatusCompleted)
-	}
-	if strings.Contains(res.Output, "partial draft salvaged") {
-		t.Fatalf("res.Output = %q, a completed delegate must never carry the salvage note", res.Output)
-	}
-}
-
-// TestDelegateTerminalResult_FailedChildWithNoSalvageHasNoNote: the note is
-// gated on the child having actually persisted a salvaged turn — a plain
-// failure with nothing salvaged must not carry it.
-func TestDelegateTerminalResult_FailedChildWithNoSalvageHasNoNote(t *testing.T) {
-	parent := newTestSession(t)
-	child := newTestSession(t)
-	clk := newMutableClock(time.Unix(7800, 0).UTC())
-	parent.jobManager.now = clk.now
-
-	sub := &subagent{
-		id:     child.ID(),
-		sess:   child,
-		status: SubagentFailed,
-		err:    errors.New("provider unhealthy"),
-		done:   make(chan struct{}),
-	}
-	parent.subagents.track(sub)
-	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
-	if err != nil {
-		t.Fatalf("attachDelegateJob: %v", err)
-	}
-	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
-		t.Fatalf("finalizeDelegate: %v", err)
-	}
-	waitForShellDone(t, parent.jobManager, run.rec.JobID)
-
-	res := delegateTerminalResult(parent, parent.jobManager, run)
-	if res.Status != jobstore.StatusFailed {
-		t.Fatalf("res.Status = %q, want %q", res.Status, jobstore.StatusFailed)
-	}
-	if strings.Contains(res.Output, "partial draft salvaged") {
-		t.Fatalf("res.Output = %q, a failed delegate with nothing salvaged must not carry the note", res.Output)
-	}
-}
-
-// TestJobListLastActivityAdvancesWithShellOutput proves last_activity is stamped
-// at the clock's value when output is appended for a running shell job.
 func TestJobListLastActivityAdvancesWithShellOutput(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
@@ -597,14 +179,10 @@ func TestJobListLastActivityAdvancesWithShellOutput(t *testing.T) {
 	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
 
 	start := readJobListEntry(t, s, rec.JobID)
-	if start.LastActivity == nil {
-		t.Fatalf("running shell row has no last_activity; want StartedAt seed")
-	}
-	if *start.LastActivity != start.StartedAt {
-		t.Fatalf("initial last_activity = %q, want StartedAt %q", *start.LastActivity, start.StartedAt)
+	if start.LastActivity == nil || *start.LastActivity != start.StartedAt {
+		t.Fatalf("initial last_activity = %v, want StartedAt %q", start.LastActivity, start.StartedAt)
 	}
 
-	// Advance the clock and append output: the stamp must follow the new now().
 	clk.advance(5 * time.Minute)
 	run := runningJobByID(t, jm, rec.JobID)
 	if _, err := jm.appendJobOutput(rec.JobID, run.output, []byte("progress\n")); err != nil {
@@ -613,7 +191,7 @@ func TestJobListLastActivityAdvancesWithShellOutput(t *testing.T) {
 
 	after := readJobListEntry(t, s, rec.JobID)
 	if after.LastActivity == nil {
-		t.Fatalf("after output, last_activity is nil")
+		t.Fatal("after output, last_activity is nil")
 	}
 	want := clk.now().Format(time.RFC3339Nano)
 	if *after.LastActivity != want {
@@ -624,41 +202,6 @@ func TestJobListLastActivityAdvancesWithShellOutput(t *testing.T) {
 	}
 }
 
-// TestJobListDelegateLastActivitySeededAtStart proves a running delegate row
-// carries last_activity (at least the StartedAt seed).
-func TestJobListDelegateLastActivitySeededAtStart(t *testing.T) {
-	t.Parallel()
-	parent := newTestSession(t)
-	child := newTestSession(t)
-	clk := newMutableClock(time.Unix(2000, 0).UTC())
-	parent.jobManager.now = clk.now
-
-	sub := completedDelegateSubagent(child, "report")
-	parent.subagents.track(sub)
-	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
-	if err != nil {
-		t.Fatalf("attachDelegateJob: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = parent.finalizeDelegate(run.rec.JobID, child.ID(), sub)
-		waitForShellDone(t, parent.jobManager, run.rec.JobID)
-	})
-
-	entry := readJobListEntry(t, parent, run.rec.JobID)
-	if entry.Type != string(jobstore.JobDelegate) {
-		t.Fatalf("entry type = %q, want delegate", entry.Type)
-	}
-	if entry.LastActivity == nil {
-		t.Fatalf("running delegate row has no last_activity")
-	}
-	if *entry.LastActivity != entry.StartedAt {
-		t.Fatalf("delegate last_activity = %q, want StartedAt %q", *entry.LastActivity, entry.StartedAt)
-	}
-}
-
-// TestJobListTerminalLastActivityFallsBackToEndedAt proves that a terminal
-// record reloaded from the store (no live LastActivity stamp) falls back to
-// EndedAt in the projection.
 func TestJobListTerminalLastActivityFallsBackToEndedAt(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
@@ -670,18 +213,12 @@ func TestJobListTerminalLastActivityFallsBackToEndedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createShell: %v", err)
 	}
-	// Finish at a later instant so EndedAt differs from StartedAt.
 	clk.advance(2 * time.Minute)
 	finishRunningTestJob(t, jm, rec.JobID)
 
-	// After finalize the runningJob is gone; the projection reads the durable
-	// store record, whose LastActivity is nil, and must fall back to EndedAt.
 	entry := readJobListEntry(t, s, rec.JobID)
-	if entry.EndedAt == nil {
-		t.Fatalf("terminal job row has no ended_at: %+v", entry)
-	}
-	if entry.LastActivity == nil {
-		t.Fatalf("terminal job row has no last_activity fallback: %+v", entry)
+	if entry.EndedAt == nil || entry.LastActivity == nil {
+		t.Fatalf("terminal job row missing ended_at or last_activity: %+v", entry)
 	}
 	if *entry.LastActivity != *entry.EndedAt {
 		t.Fatalf("terminal last_activity = %q, want EndedAt fallback %q", *entry.LastActivity, *entry.EndedAt)
@@ -691,11 +228,6 @@ func TestJobListTerminalLastActivityFallsBackToEndedAt(t *testing.T) {
 	}
 }
 
-// --- Quiet-job watchdog ---
-
-// TestQuietWatchdogMessageNamesProductionWindow locks the production message
-// wording: the default 10-minute window must read "quiet for 10m" (not
-// "10m0s"), and the message carries the last-activity timestamp.
 func TestQuietWatchdogMessageNamesProductionWindow(t *testing.T) {
 	t.Parallel()
 	last := time.Unix(1000, 0).UTC()
@@ -706,213 +238,4 @@ func TestQuietWatchdogMessageNamesProductionWindow(t *testing.T) {
 	if !strings.Contains(msg, last.Format(time.RFC3339Nano)) {
 		t.Fatalf("quiet message = %q, want it to carry last activity %q", msg, last.Format(time.RFC3339Nano))
 	}
-}
-
-// scaleQuietWatchdog shrinks a job manager's quiet-watchdog timing so a test
-// exercises the watchdog in milliseconds. Per-manager (not a shared global), so
-// it is safe under parallel tests whose own watchdogs read their own values.
-func scaleQuietWatchdog(jm *jobManager, window, check time.Duration) {
-	jm.quietWindow = window
-	jm.quietCheckInterval = check
-}
-
-// quietCapture records quiet notifications enqueued for a job id.
-type quietCapture struct {
-	mu      sync.Mutex
-	all     []jobNotification
-	kicks   atomic.Int64
-	deliver func(jobNotification)
-}
-
-func newQuietCapture() *quietCapture { return &quietCapture{} }
-
-func (q *quietCapture) enqueue(n jobNotification) {
-	q.mu.Lock()
-	q.all = append(q.all, n)
-	q.mu.Unlock()
-	if q.deliver != nil {
-		q.deliver(n)
-	}
-}
-
-func (q *quietCapture) quietFor(jobID string) []jobNotification {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	var out []jobNotification
-	for _, n := range q.all {
-		if n.JobID == jobID && strings.Contains(n.Reason, "quiet") {
-			out = append(out, n)
-		}
-	}
-	return out
-}
-
-func (q *quietCapture) waitForQuiet(t *testing.T, jobID string, want int, timeout time.Duration) []jobNotification {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		got := q.quietFor(jobID)
-		if len(got) >= want {
-			return got
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	return q.quietFor(jobID)
-}
-
-// startRunningDelegateForWatchdog attaches a delegate runningJob on a parent
-// jobManager driven by the supplied clock and returns the parent session, job
-// id, the quiet-capture, and a cleanup that finalizes the delegate.
-func startRunningDelegateForWatchdog(t *testing.T, clk *mutableClock) (*Session, string, *quietCapture, func()) {
-	t.Helper()
-	parent := newTestSession(t)
-	child := newTestSession(t)
-	parent.jobManager.now = clk.now
-	scaleQuietWatchdog(parent.jobManager, 50*time.Millisecond, 5*time.Millisecond)
-
-	qc := newQuietCapture()
-	// Wire enqueue + kick capture without touching delivery (spec §3).
-	parent.jobManager.enqueue = qc.enqueue
-	parent.jobManager.wake = func() { qc.kicks.Add(1) }
-
-	sub := completedDelegateSubagent(child, "report")
-	parent.subagents.track(sub)
-	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "long task", sub)
-	if err != nil {
-		t.Fatalf("attachDelegateJob: %v", err)
-	}
-	jobID := run.rec.JobID
-	cleanup := func() {
-		_ = parent.finalizeDelegate(jobID, child.ID(), sub)
-		waitForShellDone(t, parent.jobManager, jobID)
-	}
-	return parent, jobID, qc, cleanup
-}
-
-func TestQuietWatchdogFiresOnceForQuietDelegate(t *testing.T) {
-	t.Parallel()
-	clk := newMutableClock(time.Unix(5000, 0).UTC())
-	parent, jobID, qc, cleanup := startRunningDelegateForWatchdog(t, clk)
-	defer cleanup()
-	_ = parent
-
-	// Push the clock well past the quiet window with no activity.
-	clk.advance(10 * time.Minute)
-
-	got := qc.waitForQuiet(t, jobID, 1, 2*time.Second)
-	if len(got) != 1 {
-		t.Fatalf("quiet notifications = %d, want exactly 1; all=%+v", len(got), got)
-	}
-	n := got[0]
-	if n.JobID != jobID {
-		t.Fatalf("quiet notification job_id = %q, want %q", n.JobID, jobID)
-	}
-	if !strings.Contains(n.Reason, "quiet") {
-		t.Fatalf("quiet notification reason = %q, want it to mention quiet", n.Reason)
-	}
-	if qc.kicks.Load() == 0 {
-		t.Fatalf("watchdog enqueued a notification but never kicked the drain loop")
-	}
-
-	// Latch: more ticks with still-no-activity must not fire a second time.
-	again := qc.waitForQuiet(t, jobID, 2, 200*time.Millisecond)
-	if len(again) != 1 {
-		t.Fatalf("quiet notifications after latch = %d, want still 1; all=%+v", len(again), again)
-	}
-}
-
-func TestQuietWatchdogResetsOnActivity(t *testing.T) {
-	t.Parallel()
-	clk := newMutableClock(time.Unix(6000, 0).UTC())
-	parent, jobID, qc, cleanup := startRunningDelegateForWatchdog(t, clk)
-	defer cleanup()
-
-	clk.advance(10 * time.Minute)
-	if got := qc.waitForQuiet(t, jobID, 1, 2*time.Second); len(got) != 1 {
-		t.Fatalf("first quiet notifications = %d, want 1", len(got))
-	}
-
-	// Stamp activity (advance LastActivity to "now") and let quiet build again.
-	run := runningJobByID(t, parent.jobManager, jobID)
-	parent.jobManager.mu.Lock()
-	now := parent.jobManager.now()
-	run.rec.LastActivity = &now
-	parent.jobManager.mu.Unlock()
-
-	// Within window after the stamp: latch must have cleared and not re-fired yet.
-	if got := qc.waitForQuiet(t, jobID, 2, 100*time.Millisecond); len(got) != 1 {
-		t.Fatalf("quiet notifications right after activity = %d, want still 1", len(got))
-	}
-
-	// Build quiet again past the window: a SECOND notification must fire.
-	clk.advance(10 * time.Minute)
-	if got := qc.waitForQuiet(t, jobID, 2, 2*time.Second); len(got) != 2 {
-		t.Fatalf("quiet notifications after second quiet stretch = %d, want 2", len(got))
-	}
-}
-
-func TestQuietWatchdogIgnoresShellJobs(t *testing.T) {
-	t.Parallel()
-	s := newTestSession(t)
-	jm := s.jobManager
-	clk := newMutableClock(time.Unix(7000, 0).UTC())
-	jm.now = clk.now
-	qc := newQuietCapture()
-	jm.enqueue = qc.enqueue
-
-	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
-	if err != nil {
-		t.Fatalf("createShell: %v", err)
-	}
-	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
-
-	clk.advance(10 * time.Minute)
-	got := qc.waitForQuiet(t, rec.JobID, 1, 300*time.Millisecond)
-	if len(got) != 0 {
-		t.Fatalf("shell job produced quiet notifications = %d, want 0 (watchdog is delegate-only)", len(got))
-	}
-}
-
-func TestQuietWatchdogStopsOnFinalize(t *testing.T) {
-	t.Parallel()
-	clk := newMutableClock(time.Unix(8000, 0).UTC())
-	parent, jobID, qc, cleanup := startRunningDelegateForWatchdog(t, clk)
-
-	// Finalize immediately (no quiet stretch yet). The watchdog goroutine must
-	// exit; no quiet notification may appear after finalize.
-	cleanup()
-
-	clk.advance(10 * time.Minute)
-	got := qc.waitForQuiet(t, jobID, 1, 300*time.Millisecond)
-	if len(got) != 0 {
-		t.Fatalf("quiet notifications after finalize = %d, want 0 (watchdog must stop)", len(got))
-	}
-	_ = parent
-}
-
-// TestQuietWatchdogDoesNotDeliver asserts the watchdog only enqueues an owner
-// notification and never steers/delivers to the delegate (spec §3): the child
-// session must receive no injected input from the watchdog firing.
-func TestQuietWatchdogDoesNotDeliver(t *testing.T) {
-	t.Parallel()
-	clk := newMutableClock(time.Unix(9000, 0).UTC())
-	parent, jobID, qc, cleanup := startRunningDelegateForWatchdog(t, clk)
-	defer cleanup()
-
-	clk.advance(10 * time.Minute)
-	got := qc.waitForQuiet(t, jobID, 1, 2*time.Second)
-	if len(got) != 1 {
-		t.Fatalf("quiet notifications = %d, want 1", len(got))
-	}
-	// The notification is a watch-style owner notification: no WatchSend frame
-	// (that would be a delivery to a target), and it targets the owner via the
-	// job id, not the child runtime.
-	n := got[0]
-	if n.WatchSend != nil {
-		t.Fatalf("quiet notification carried a WatchSend frame; watchdog must not deliver")
-	}
-	if n.Status != jobNotificationEventWatch {
-		t.Fatalf("quiet notification status = %q, want %q (owner notification, not delivery)", n.Status, jobNotificationEventWatch)
-	}
-	_ = parent
 }

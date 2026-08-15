@@ -11,7 +11,6 @@ type EventKind string
 
 const (
 	EventJobStarted               EventKind = "job_started"
-	EventJobSessionAssigned       EventKind = "job_session_assigned"
 	EventJobFinished              EventKind = "job_finished"
 	EventJobMessageSent           EventKind = "job_message_sent"
 	EventJobNotificationPending   EventKind = "job_notification_pending"
@@ -21,9 +20,6 @@ const (
 	EventWatchSendDelivered       EventKind = "watch_send_delivered"
 	EventWatchSendDropped         EventKind = "watch_send_dropped"
 	EventWatchSendEvicted         EventKind = "watch_send_evicted"
-	EventDelegateCreated          EventKind = "delegate_created"
-	EventDelegateStopGateClosed   EventKind = "delegate_stop_gate_closed"
-	EventDelegateDisposed         EventKind = "delegate_disposed"
 	EventWatchRegistered          EventKind = "watch_registered"
 	EventWatchCleared             EventKind = "watch_cleared"
 )
@@ -40,31 +36,23 @@ type Event struct {
 	WatchID string `json:"watch_id,omitempty"`
 
 	// job_started payload
-	Type             JobType                    `json:"type,omitempty"`
-	Command          string                     `json:"command,omitempty"`
-	Task             string                     `json:"task,omitempty"`
-	Description      string                     `json:"description,omitempty"`
-	ParentSessionID  string                     `json:"parent_session_id,omitempty"`
-	OwnerSessionID   string                     `json:"owner_session_id,omitempty"`
-	VisibleToSession string                     `json:"visible_to_session_id,omitempty"`
-	ParentJobID      string                     `json:"parent_job_id,omitempty"`
-	ParentDelegateID string                     `json:"parent_delegate_id,omitempty"`
-	DelegateID       string                     `json:"delegate_id,omitempty"`
-	OriginTurnID     string                     `json:"origin_turn_id,omitempty"`
-	OriginToolCallID string                     `json:"origin_tool_call_id,omitempty"`
-	OriginItemID     string                     `json:"origin_item_id,omitempty"`
-	StartedAt        *time.Time                 `json:"started_at,omitempty"`
-	OutputPath       string                     `json:"output_path,omitempty"`
-	DelegateRestore  *DelegateRestoreDescriptor `json:"delegate_restore,omitempty"`
+	Type             JobType    `json:"type,omitempty"`
+	Command          string     `json:"command,omitempty"`
+	Task             string     `json:"task,omitempty"`
+	Description      string     `json:"description,omitempty"`
+	ParentSessionID  string     `json:"parent_session_id,omitempty"`
+	OwnerSessionID   string     `json:"owner_session_id,omitempty"`
+	VisibleToSession string     `json:"visible_to_session_id,omitempty"`
+	ParentJobID      string     `json:"parent_job_id,omitempty"`
+	ParentDelegateID string     `json:"parent_delegate_id,omitempty"`
+	OriginTurnID     string     `json:"origin_turn_id,omitempty"`
+	OriginToolCallID string     `json:"origin_tool_call_id,omitempty"`
+	OriginItemID     string     `json:"origin_item_id,omitempty"`
+	StartedAt        *time.Time `json:"started_at,omitempty"`
+	OutputPath       string     `json:"output_path,omitempty"`
 	// WorkingDir carries JobRecord.WorkingDir for shell jobs (see its doc
-	// comment); empty for delegate jobs, which carry theirs inside
-	// DelegateRestore.WorkingDir instead.
+	// comment).
 	WorkingDir string `json:"working_dir,omitempty"`
-
-	// job_session_assigned payload
-	TranscriptRef   string `json:"transcript_ref,omitempty"`
-	Resumable       *bool  `json:"resumable,omitempty"`
-	NotResumableWhy string `json:"not_resumable_reason,omitempty"`
 
 	// job_finished payload
 	Status                 Status     `json:"status,omitempty"`
@@ -86,27 +74,11 @@ type Event struct {
 	// watch_send_* payload
 	WatchSend *WatchSendState `json:"watch_send,omitempty"`
 
-	// delegate_* payload
-	Delegate *DelegateEvent `json:"delegate,omitempty"`
-
 	// watch_registered/watch_cleared payload
 	Watch *WatchEvent `json:"watch,omitempty"`
 
 	// causal provenance carried by job_started, job_finished, and job_notification_pending events
 	Provenance *provenance.Causal `json:"provenance,omitempty"`
-}
-
-type DelegateEvent struct {
-	ChildSessionID   string `json:"child_session_id,omitempty"`
-	TranscriptRef    string `json:"transcript_ref,omitempty"`
-	OwnerSessionID   string `json:"owner_session_id,omitempty"`
-	VisibleSessionID string `json:"visible_session_id,omitempty"`
-	ParentDelegateID string `json:"parent_delegate_id,omitempty"`
-	AgentType        string `json:"agent_type,omitempty"`
-	Generation       string `json:"generation,omitempty"`
-	Resumable        bool   `json:"resumable,omitempty"`
-	NotResumableWhy  string `json:"not_resumable_reason,omitempty"`
-	StopJobID        string `json:"stop_job_id,omitempty"`
 }
 
 type WatchEvent struct {

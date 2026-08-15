@@ -27,7 +27,7 @@ func rejectLegacyDelegateState(stateDir, rootSessionID string) error {
 func legacyDelegateJobIDs(events []jobstore.Event) map[string]struct{} {
 	ids := make(map[string]struct{})
 	for _, event := range events {
-		if event.Kind == jobstore.EventJobStarted && event.Type == jobstore.JobDelegate && event.JobID != "" {
+		if event.Kind == jobstore.EventJobStarted && string(event.Type) == "delegate" && event.JobID != "" {
 			ids[event.JobID] = struct{}{}
 		}
 	}
@@ -36,11 +36,11 @@ func legacyDelegateJobIDs(events []jobstore.Event) map[string]struct{} {
 
 func containsLegacyDelegateLifecycle(events []jobstore.Event) bool {
 	for _, event := range events {
-		switch event.Kind {
-		case jobstore.EventDelegateCreated, jobstore.EventDelegateStopGateClosed, jobstore.EventDelegateDisposed:
+		switch string(event.Kind) {
+		case "delegate_created", "delegate_stop_gate_closed", "delegate_disposed":
 			return true
 		}
-		if event.Kind == jobstore.EventJobStarted && event.Type == jobstore.JobDelegate {
+		if event.Kind == jobstore.EventJobStarted && string(event.Type) == "delegate" {
 			return true
 		}
 	}

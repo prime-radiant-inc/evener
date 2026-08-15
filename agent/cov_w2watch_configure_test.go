@@ -30,7 +30,6 @@ func TestW2Watch_configureWatchOutputMatchStoreLoadError(t *testing.T) {
 // branch re-validates the send target and returns its error.
 func TestW2Watch_configureWatchTerminalCatchupRejectsBadSendTarget(t *testing.T) {
 	jm := newTestJM(t)
-	seedCommonWatchSendTargets(t, jm)
 	jobID := terminalShellWithOutput(t, jm, "ready\n")
 
 	_, err := jm.configureWatch(watchArgs{

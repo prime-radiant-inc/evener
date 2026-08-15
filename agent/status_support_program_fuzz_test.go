@@ -80,12 +80,11 @@ func statusSupportStatusAndMetrics(t *testing.T, token string) {
 	records = append(records, &jobstore.JobRecord{JobID: "job_running_" + token, Type: jobstore.JobShell, Status: jobstore.StatusRunning})
 	for i := 0; i < detailedStatusTerminalJobsLimit+2; i++ {
 		records = append(records, &jobstore.JobRecord{
-			JobID:         "job_terminal_" + token + "_" + string(rune('a'+i%26)),
-			Type:          jobstore.JobShell,
-			Status:        jobstore.StatusCompleted,
-			Reason:        "done",
-			TranscriptRef: "local:" + token,
-			OutputBytes:   int64(i),
+			JobID:       "job_terminal_" + token + "_" + string(rune('a'+i%26)),
+			Type:        jobstore.JobShell,
+			Status:      jobstore.StatusCompleted,
+			Reason:      "done",
+			OutputBytes: int64(i),
 		})
 	}
 	bounded := detailedStatusJobRecords(records)
@@ -93,7 +92,7 @@ func statusSupportStatusAndMetrics(t *testing.T, token string) {
 		t.Fatalf("bounded status records = %d first=%#v", len(bounded), bounded)
 	}
 	info := projectJobStatusInfos(bounded[:2])
-	if len(info) != 2 || info[1].JobType != string(jobstore.JobShell) || info[1].TranscriptRef != "local:"+token {
+	if len(info) != 2 || info[1].JobType != string(jobstore.JobShell) || info[1].TranscriptRef != shellTranscriptRef(bounded[1].JobID) {
 		t.Fatalf("projected status = %#v", info)
 	}
 

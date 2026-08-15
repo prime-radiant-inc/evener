@@ -19,9 +19,9 @@ import (
 // This rapid state machine does. It draws sequences of legal job-lifecycle
 // operations — the exact event shapes the real writer emits — building up a
 // jobs.jsonl event log one op at a time while maintaining a thin parallel model
-// of the essential state (per-job status + notify, per-delegate current/latest
-// job, watch active flag, and watch-send coalescing slots).
-// After each op it re-folds the WHOLE log through all six reducers and checks,
+// of the essential state (per-job status + notify, watch active flag, and
+// watch-send coalescing slots).
+// After each op it re-folds the WHOLE log through all four reducers and checks,
 // weakest-first:
 //
 //	I1 (determinism/idempotence): re-applying the just-appended event a second
@@ -36,14 +36,10 @@ import (
 //	I3 (notify monotonic): the terminal-notification state climbs not_armed→
 //	   pending→delivered and never falls back; a notification whose generation
 //	   does not match the job's terminal generation is inert.
-//	I4 (delegate↔job coherence): a delegate's CurrentJobID is set iff that job is
-//	   running (non-terminal) in Fold, and both CurrentJobID and LatestJobID name
-//	   real jobs whose DelegateID points back at the delegate — the cross-reducer
-//	   (FoldDelegates vs Fold) consistency the task calls out.
-//	I5 (watch active monotonic): a watch is active until cleared with its matching
+//	I4 (watch active monotonic): a watch is active until cleared with its matching
 //	   generation; a wrong-generation clear is inert and a cleared watch never
 //	   reactivates.
-//	I6 (watch-send coalescing): the pending set folds exactly to the highest
+//	I5 (watch-send coalescing): the pending set folds exactly to the highest
 //	   un-settled update_seq per key; a settle of seq≥pending clears it and a
 //	   stale (seq≤settled) pending is ignored.
 //
@@ -78,15 +74,12 @@ type seqOp int
 
 const (
 	opStartShell seqOp = iota
-	opStartDelegate
-	opAssignSession
 	opFinishJob
 	opRefinishJob
 	opArmNotify
 	opArmNotifyStale
 	opDeliverNotify
 	opMessageSent
-	opSecondDelegateJob
 	opRegisterWatch
 	opClearWatch
 	opClearWatchStale
@@ -102,13 +95,6 @@ type jobModel struct {
 	status      Status // "" never seen, then running, then a terminal status
 	terminalGen string
 	notify      NotifyState
-	delegateID  string // non-empty for delegate-owned jobs
-}
-
-type delegateModel struct {
-	id           string
-	currentJobID string
-	latestJobID  string
 }
 
 type watchModel struct {
@@ -131,12 +117,10 @@ type seqModel struct {
 	seq   int64
 	idCtr int
 
-	jobs      []*jobModel
-	jobByID   map[string]*jobModel
-	delegates []*delegateModel
-	delByID   map[string]*delegateModel
-	watches   []*watchModel
-	wsKeys    []*wsKeyModel
+	jobs    []*jobModel
+	jobByID map[string]*jobModel
+	watches []*watchModel
+	wsKeys  []*wsKeyModel
 
 	// Cross-fold monotonicity trackers, independent of the model so a buggy
 	// model cannot mask a real regression.
@@ -153,7 +137,6 @@ var (
 func newSeqModel() *seqModel {
 	return &seqModel{
 		jobByID:    make(map[string]*jobModel),
-		delByID:    make(map[string]*delegateModel),
 		prevStatus: make(map[string]Status),
 		prevNotify: make(map[string]int),
 		wsKeys: []*wsKeyModel{
@@ -180,10 +163,10 @@ func (m *seqModel) emit(e Event) {
 func (m *seqModel) legalOps() []seqOp {
 	// Always available: starting work, registering a watch, emitting a fresh
 	// watch-send pending (the three slots always exist).
-	ops := []seqOp{opStartShell, opStartDelegate, opRegisterWatch, opWatchSendPending}
+	ops := []seqOp{opStartShell, opRegisterWatch, opWatchSendPending}
 
 	if len(m.jobs) > 0 {
-		ops = append(ops, opAssignSession, opMessageSent, opArmNotifyStale)
+		ops = append(ops, opMessageSent, opArmNotifyStale)
 	}
 	if len(m.nonterminalJobs()) > 0 {
 		ops = append(ops, opFinishJob)
@@ -196,9 +179,6 @@ func (m *seqModel) legalOps() []seqOp {
 	}
 	if len(m.deliverableJobs()) > 0 {
 		ops = append(ops, opDeliverNotify)
-	}
-	if len(m.idleDelegates()) > 0 {
-		ops = append(ops, opSecondDelegateJob)
 	}
 	if len(m.activeWatches()) > 0 {
 		ops = append(ops, opClearWatch, opClearWatchStale)
@@ -252,16 +232,6 @@ func (m *seqModel) deliverableJobs() []*jobModel {
 	return out
 }
 
-func (m *seqModel) idleDelegates() []*delegateModel {
-	var out []*delegateModel
-	for _, d := range m.delegates {
-		if d.currentJobID == "" {
-			out = append(out, d)
-		}
-	}
-	return out
-}
-
 func (m *seqModel) activeWatches() []*watchModel {
 	var out []*watchModel
 	for _, w := range m.watches {
@@ -308,38 +278,6 @@ func (m *seqModel) applyOp(rt *rapid.T, op seqOp) {
 		m.jobs = append(m.jobs, jm)
 		m.jobByID[id] = jm
 
-	case opStartDelegate:
-		did := m.nextID("dlg_")
-		gen := m.nextID("dg_")
-		jid := m.nextID("job_")
-		owner := pickOf(rt, "owner", seqSessions)
-		m.emit(Event{Kind: EventDelegateCreated, DelegateID: did, Delegate: &DelegateEvent{
-			ChildSessionID: "c_" + did, AgentType: "engineer", Generation: gen, Resumable: true,
-		}})
-		m.emit(Event{Kind: EventJobStarted, JobID: jid, Type: JobDelegate, DelegateID: did, OwnerSessionID: owner, VisibleToSession: owner})
-		jm := &jobModel{id: jid, status: StatusRunning, notify: NotifyNotArmed, delegateID: did}
-		m.jobs = append(m.jobs, jm)
-		m.jobByID[jid] = jm
-		dm := &delegateModel{id: did, currentJobID: jid, latestJobID: jid}
-		m.delegates = append(m.delegates, dm)
-		m.delByID[did] = dm
-
-	case opSecondDelegateJob:
-		dm := pickOf(rt, "idleDelegate", m.idleDelegates())
-		jid := m.nextID("job_")
-		owner := pickOf(rt, "owner", seqSessions)
-		m.emit(Event{Kind: EventJobStarted, JobID: jid, Type: JobDelegate, DelegateID: dm.id, OwnerSessionID: owner, VisibleToSession: owner})
-		jm := &jobModel{id: jid, status: StatusRunning, notify: NotifyNotArmed, delegateID: dm.id}
-		m.jobs = append(m.jobs, jm)
-		m.jobByID[jid] = jm
-		dm.currentJobID = jid
-		dm.latestJobID = jid
-
-	case opAssignSession:
-		jm := pickOf(rt, "assignJob", m.jobs)
-		res := true
-		m.emit(Event{Kind: EventJobSessionAssigned, JobID: jm.id, TranscriptRef: "t_" + jm.id, Resumable: &res})
-
 	case opFinishJob:
 		jm := pickOf(rt, "finishJob", m.nonterminalJobs())
 		st := pickOf(rt, "finishStatus", terminalSet)
@@ -347,11 +285,6 @@ func (m *seqModel) applyOp(rt *rapid.T, op seqOp) {
 		m.emit(Event{Kind: EventJobFinished, JobID: jm.id, Status: st, TerminalGen: gen})
 		jm.status = st
 		jm.terminalGen = gen
-		if jm.delegateID != "" {
-			if dm := m.delByID[jm.delegateID]; dm != nil && dm.currentJobID == jm.id {
-				dm.currentJobID = ""
-			}
-		}
 
 	case opRefinishJob:
 		// Second terminal write with a DIFFERENT status+generation: first wins,
@@ -472,48 +405,7 @@ func (m *seqModel) checkInvariants(rt *rapid.T, step int) {
 		m.prevNotify[jm.id] = notifyRank(rec.NotifyState)
 	}
 
-	// I4: delegate↔job coherence across FoldDelegates and Fold.
-	delg := FoldDelegates(m.log)
-	for _, dm := range m.delegates {
-		d := delg[dm.id]
-		if d == nil {
-			rt.Fatalf("step %d: delegate %s missing from FoldDelegates", step, dm.id)
-			continue // rapid.T.Fatalf halts the test; continue satisfies nil-flow analysis.
-		}
-		if d.CurrentJobID != dm.currentJobID {
-			rt.Fatalf("step %d: delegate %s currentJob=%q, model=%q", step, dm.id, d.CurrentJobID, dm.currentJobID)
-		}
-		if d.LatestJobID != dm.latestJobID {
-			rt.Fatalf("step %d: delegate %s latestJob=%q, model=%q", step, dm.id, d.LatestJobID, dm.latestJobID)
-		}
-	}
-	for id, d := range delg {
-		if d.CurrentJobID != "" {
-			cur := fold[d.CurrentJobID]
-			if cur == nil {
-				rt.Fatalf("step %d: delegate %s currentJob %s absent from Fold", step, id, d.CurrentJobID)
-				continue // rapid.T.Fatalf halts the test; continue satisfies nil-flow analysis.
-			}
-			if cur.Status.IsTerminal() {
-				rt.Fatalf("step %d: delegate %s currentJob %s is terminal (%s) but still current", step, id, d.CurrentJobID, cur.Status)
-			}
-			if cur.DelegateID != id {
-				rt.Fatalf("step %d: delegate %s currentJob %s points at delegate %q", step, id, d.CurrentJobID, cur.DelegateID)
-			}
-		}
-		if d.LatestJobID != "" {
-			l := fold[d.LatestJobID]
-			if l == nil {
-				rt.Fatalf("step %d: delegate %s latestJob %s absent from Fold", step, id, d.LatestJobID)
-				continue // rapid.T.Fatalf halts the test; continue satisfies nil-flow analysis.
-			}
-			if l.DelegateID != id {
-				rt.Fatalf("step %d: delegate %s latestJob %s points at delegate %q", step, id, d.LatestJobID, l.DelegateID)
-			}
-		}
-	}
-
-	// I5: watch active flag matches the model (monotonic by construction: a
+	// I4: watch active flag matches the model (monotonic by construction: a
 	// cleared watch id is never re-registered, a wrong-gen clear is inert).
 	watches := FoldWatches(m.log)
 	for _, wm := range m.watches {
@@ -527,7 +419,7 @@ func (m *seqModel) checkInvariants(rt *rapid.T, step int) {
 		}
 	}
 
-	// I6: watch-send pending set folds to exactly the highest un-settled seq per key.
+	// I5: watch-send pending set folds to exactly the highest un-settled seq per key.
 	ws := FoldWatchSends(m.log)
 	expPending := map[WatchSendKey]uint64{}
 	for _, k := range m.wsKeys {
@@ -574,7 +466,6 @@ func (m *seqModel) assertReplayIdempotent(rt *rapid.T, step int) {
 	}{
 		{"Fold", Fold(m.log), Fold(withDup)},
 		{"FoldOrdered", FoldOrdered(m.log), FoldOrdered(withDup)},
-		{"FoldDelegates", FoldDelegates(m.log), FoldDelegates(withDup)},
 		{"FoldWatches", FoldWatches(m.log), FoldWatches(withDup)},
 		{"FoldWatchSends", canonicalWatchSends(FoldWatchSends(m.log)), canonicalWatchSends(FoldWatchSends(withDup))},
 	}

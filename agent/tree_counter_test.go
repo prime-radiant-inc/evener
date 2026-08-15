@@ -2,16 +2,12 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -140,146 +136,6 @@ func TestTreeCounterSharedAcrossTree(t *testing.T) {
 	child.treeCounter.releaseKind(slotKindJob)
 }
 
-// TestCounterReservesOnSpawnResumeDrive proves that each of the three paths that
-// launch a running delegate turn reserves a tree-counter slot while its turn
-// runs, and that terminal finalize AND the abandon path release it.
-func TestCounterReservesOnSpawnResumeDrive(t *testing.T) {
-	t.Parallel()
-	t.Run("spawn reserves and terminal finalize releases", func(t *testing.T) {
-		t.Parallel()
-		release := make(chan struct{})
-		var releaseOnce sync.Once
-		c := llm.NewClient()
-		c.Register(&fakeAdapter{
-			name: "openai",
-			steps: []func(req llm.Request) llm.Response{
-				func(_ llm.Request) llm.Response {
-					<-release
-					return communicateWithDefaultOutput("spawn done")
-				},
-			},
-		})
-		sess := newDelegateTestSession(t, c)
-		t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-
-		spawned := sess.createDelegate(context.Background(), delegateArgs{
-			Task:       "hold a slot",
-			Background: true,
-		})
-		if spawned.Err != nil {
-			t.Fatalf("createDelegate: %v", spawned.Err)
-		}
-		// The spawn launched a running delegate turn; its slot must be reserved.
-		waitForTreeCount(t, sess.treeCounter, 1)
-
-		// Releasing the blocking step lets the turn end → terminal finalize releases.
-		releaseOnce.Do(func() { close(release) })
-		waitForShellDone(t, sess.jobManager, spawned.JobID)
-		waitForTreeCount(t, sess.treeCounter, 0)
-	})
-
-	t.Run("resume reserves and abandon releases", func(t *testing.T) {
-		t.Parallel()
-		adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
-		c := llm.NewClient()
-		c.Register(adapter)
-		sess := newDelegateTestSession(t, c)
-
-		first := sess.createDelegate(context.Background(), delegateArgs{
-			Task:           "first finishes",
-			Background:     false,
-			BlockTimeoutMS: 5000,
-		})
-		if first.Err != nil {
-			t.Fatalf("createDelegate: %v", first.Err)
-		}
-		if first.Status != jobstore.StatusCompleted {
-			t.Fatalf("first = %+v, want completed", first)
-		}
-		// The first turn ended: idle delegate holds no reservation.
-		waitForTreeCount(t, sess.treeCounter, 0)
-
-		res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-			Target:         first.DelegateID,
-			Message:        "resume and block",
-			Background:     true,
-			BackgroundSet:  true,
-			BlockTimeoutMS: 1000,
-		})
-		if res.Err != nil {
-			t.Fatalf("sendDelegateMessage: %v", res.Err)
-		}
-		<-adapter.secondStarted
-		// The resume launched a running delegate turn; its slot must be reserved.
-		waitForTreeCount(t, sess.treeCounter, 1)
-
-		// Abandon the running resume job → the abandon path releases the slot.
-		sess.jobManager.abandonRunningJob(res.JobID)
-		waitForTreeCount(t, sess.treeCounter, 0)
-	})
-
-	t.Run("drive reserves and turn end releases", func(t *testing.T) {
-		t.Parallel()
-		release := make(chan struct{})
-		var releaseOnce sync.Once
-		c := llm.NewClient()
-		c.Register(&fakeAdapter{
-			name: "openai",
-			steps: []func(req llm.Request) llm.Response{
-				// Step 0: coordinator's initial turn ends cleanly.
-				func(_ llm.Request) llm.Response {
-					return finalResponse("coordinator idle")
-				},
-				// Step 1: the drive turn (EntryNotification). Block so the drive
-				// goroutine holds its reservation while we observe the counter.
-				func(_ llm.Request) llm.Response {
-					<-release
-					return finalResponse("ack")
-				},
-			},
-		})
-		sess := newDelegateTestSession(t, c)
-		t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-
-		coord := sess.createDelegate(context.Background(), delegateArgs{
-			Task:       "coordinate",
-			Background: true,
-		})
-		if coord.Err != nil {
-			t.Fatalf("createDelegate (coordinator): %v", coord.Err)
-		}
-		waitForShellDone(t, sess.jobManager, coord.JobID)
-		// Coordinator ended its own turn → idle → no reservation.
-		waitForTreeCount(t, sess.treeCounter, 0)
-
-		_, coordID, err := decodeRef(coord.TranscriptRef)
-		if err != nil {
-			t.Fatalf("decodeRef: %v", err)
-		}
-		coordSub := sess.subagents.get(coordID)
-		if coordSub == nil || coordSub.sess == nil {
-			t.Fatalf("coordinator subagent %q not found", coordID)
-		}
-		// Queue a worker completion on the coordinator so a drive turn has work.
-		enqueueCompletedDelegateNotification(t, coordSub.sess, "worker-1")
-
-		// Drive the coordinator's notification turn directly.
-		if !sess.driveSubagentNotificationTurn(coordSub) {
-			t.Fatal("driveSubagentNotificationTurn returned false; expected a launched drive turn")
-		}
-		// The drive turn is running and holds a DRIVE-budget reservation; the
-		// spawn budget is untouched.
-		waitForDriveCount(t, sess.driveCounter, 1)
-		if got := sess.treeCounter.n.Load(); got != 0 {
-			t.Fatalf("drive turn consumed a spawn-budget slot: tree counter = %d, want 0", got)
-		}
-
-		// Let the drive turn finish → its turn end releases the slot.
-		releaseOnce.Do(func() { close(release) })
-		waitForDriveCount(t, sess.driveCounter, 0)
-	})
-}
-
 // TestDriveAtCapacityDoesNotLaunchOrSettle proves the drive-budget/§3
 // interaction: when the drive budget is at capacity, a drive does NOT launch
 // (driveSubagentNotificationTurn returns false), does NOT settle, and the
@@ -296,27 +152,22 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 			func(_ llm.Request) llm.Response { return finalResponse("must not run") },
 		},
 	})
-	sess := newDelegateTestSession(t, c)
+	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, NoProjectPrompts: true}), withoutGitSnapshot())
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
-		Task:       "coordinate",
-		Background: true,
+		Task: "coordinate",
 	})
 	if coord.Err != nil {
 		t.Fatalf("createDelegate (coordinator): %v", coord.Err)
 	}
-	waitForShellDone(t, sess.jobManager, coord.JobID)
+	waitForRuntimeSubagent(t, sess, coord.ChildSessionID)
 	waitForTreeCount(t, sess.treeCounter, 0)
 
-	_, coordID, err := decodeRef(coord.TranscriptRef)
-	if err != nil {
-		t.Fatalf("decodeRef: %v", err)
-	}
-	coordSub := sess.subagents.get(coordID)
+	coordSub := sess.subagents.get(coord.ChildSessionID)
 	if coordSub == nil || coordSub.sess == nil {
-		t.Fatalf("coordinator subagent %q not found", coordID)
+		t.Fatalf("coordinator subagent %q not found", coord.ChildSessionID)
 	}
-	enqueueCompletedDelegateNotification(t, coordSub.sess, "worker-1")
+	enqueueCompletedJobNotification(t, coordSub.sess, "worker-1")
 	if got := coordSub.sess.peekNotifications(); got == 0 {
 		t.Fatal("coordinator has no pending notification; test setup failed")
 	}
@@ -352,106 +203,6 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 	if got := coordSub.sess.peekNotifications(); got != 0 {
 		t.Fatalf("coordinator still has %d pending after the retry drive drained it", got)
 	}
-}
-
-// TestCounter17thFails proves the tree-wide cap (16): with all 16 reservations
-// held, the 17th spawn returns the exact tree_at_capacity error and does NOT
-// launch.
-func TestCounter17thFails(t *testing.T) {
-	t.Parallel()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-	sess := newDelegateTestSession(t, c)
-
-	// Pin the cap at 16 (the default is 50) and saturate the tree counter
-	// directly so the next spawn cannot claim a slot.
-	sess.treeCounter = newTreeCounter(16)
-	for i := range 16 {
-		if !sess.treeCounter.reserve(slotKindJob) {
-			t.Fatalf("saturating reserve %d failed", i+1)
-		}
-	}
-
-	// The 17th must fail loudly with the exact tree_at_capacity text.
-	seventeenth := sess.createDelegate(context.Background(), delegateArgs{
-		Task:       "one too many",
-		Background: true,
-	})
-	if seventeenth.Err == nil {
-		t.Fatal("17th createDelegate succeeded; want tree_at_capacity error")
-	}
-	wantErr := "tree_at_capacity: 16 delegate turn slots in use across this session tree (16 delegate jobs, 0 drive turns). " +
-		"Wait for completions to free slots, job_stop work you no longer need, or narrow your fan-out and retry."
-	if got := seventeenth.Err.Error(); !strings.Contains(got, wantErr) {
-		t.Fatalf("17th error = %q, want it to contain %q", got, wantErr)
-	}
-	// The counter must still be exactly 16 — the failed spawn reserved nothing.
-	if got := sess.treeCounter.n.Load(); got != 16 {
-		t.Fatalf("tree counter = %d after rejected 17th, want 16", got)
-	}
-}
-
-// TestCounterIdleFreesAndRestartRebuild proves two §4 properties:
-//   - a delegate whose turn ended holds NO reservation (its slot is freed), so a
-//     fresh spawn after it reuses the slot rather than stacking;
-//   - a restart rebuilds the counter from the post-reconciliation state (zero),
-//     and a descendant re-reserves as it re-attaches/resumes.
-func TestCounterIdleFreesAndRestartRebuild(t *testing.T) {
-	t.Parallel()
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			// Step 0: the first delegate completes and goes idle.
-			func(_ llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
-			// Step 1: the post-restart re-attach delegate blocks so its reservation
-			// against the rebuilt counter is observable.
-			func(_ llm.Request) llm.Response {
-				<-release
-				return communicateWithDefaultOutput("re-attach done")
-			},
-		},
-	})
-	sess := newDelegateTestSession(t, c)
-	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-
-	// A delegate that runs to completion: its turn ends, so it must hold no slot.
-	first := sess.createDelegate(context.Background(), delegateArgs{
-		Task:           "complete then idle",
-		Background:     false,
-		BlockTimeoutMS: 5000,
-	})
-	if first.Err != nil {
-		t.Fatalf("createDelegate: %v", first.Err)
-	}
-	if first.Status != jobstore.StatusCompleted {
-		t.Fatalf("first = %+v, want completed", first)
-	}
-	waitForTreeCount(t, sess.treeCounter, 0)
-
-	// Restart rebuilds the counter from the post-reconciliation state (zero). The
-	// production root mints a fresh counter; model that here.
-	rebuilt := newTreeCounter(0)
-	if got := rebuilt.n.Load(); got != 0 {
-		t.Fatalf("rebuilt counter = %d, want 0 (root rebuilds from post-reconciliation state)", got)
-	}
-	sess.treeCounter = rebuilt
-
-	// A descendant re-reserves as it re-attaches: a fresh delegate turn against the
-	// rebuilt counter must move it to 1, then back to 0 when its turn ends.
-	second := sess.createDelegate(context.Background(), delegateArgs{
-		Task:       "re-attach descendant",
-		Background: true,
-	})
-	if second.Err != nil {
-		t.Fatalf("createDelegate (re-attach): %v", second.Err)
-	}
-	waitForTreeCount(t, sess.treeCounter, 1)
-	releaseOnce.Do(func() { close(release) })
-	waitForShellDone(t, sess.jobManager, second.JobID)
-	waitForTreeCount(t, sess.treeCounter, 0)
 }
 
 // TestRestoredRootMintsTreeCounter proves that restoring a ROOT session through
@@ -607,12 +358,7 @@ func TestDriveBudgetIndependentOfSpawnBudget(t *testing.T) {
 	t.Parallel()
 
 	// Part 1: saturated drive budget never blocks a spawn reservation.
-	sess := newDelegateTestSession(t, func() *llm.Client {
-		c := llm.NewClient()
-		c.Register(&fakeAdapter{name: "openai"})
-		return c
-	}())
-	sess.driveCounter = newTreeCounter(1)
+	sess := &Session{treeCounter: newTreeCounter(50), driveCounter: newTreeCounter(1)}
 	if !sess.driveCounter.reserve(slotKindDrive) {
 		t.Fatal("setup: drive reserve failed")
 	}
@@ -641,27 +387,22 @@ func TestDriveTurnReservesFromDriveCounter(t *testing.T) {
 		},
 	})
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-	sess := newDelegateTestSession(t, c)
+	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, NoProjectPrompts: true}), withoutGitSnapshot())
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
-		Task:       "coordinate",
-		Background: true,
+		Task: "coordinate",
 	})
 	if coord.Err != nil {
 		t.Fatalf("createDelegate (coordinator): %v", coord.Err)
 	}
-	waitForShellDone(t, sess.jobManager, coord.JobID)
+	waitForRuntimeSubagent(t, sess, coord.ChildSessionID)
 	waitForTreeCount(t, sess.treeCounter, 0)
 
-	_, coordID, err := decodeRef(coord.TranscriptRef)
-	if err != nil {
-		t.Fatalf("decodeRef: %v", err)
-	}
-	coordSub := sess.subagents.get(coordID)
+	coordSub := sess.subagents.get(coord.ChildSessionID)
 	if coordSub == nil || coordSub.sess == nil {
-		t.Fatalf("coordinator subagent %q not found", coordID)
+		t.Fatalf("coordinator subagent %q not found", coord.ChildSessionID)
 	}
-	enqueueCompletedDelegateNotification(t, coordSub.sess, "worker-1")
+	enqueueCompletedJobNotification(t, coordSub.sess, "worker-1")
 
 	// Saturate the spawn budget: the drive must still launch.
 	sess.treeCounter = newTreeCounter(1)
@@ -722,25 +463,20 @@ func TestDriveTurnTimeoutFreesSlot(t *testing.T) {
 
 	c := llm.NewClient()
 	c.Register(&firstCompleteThenBlockAdapter{})
-	sess := newDelegateTestSession(t, c)
+	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, NoProjectPrompts: true}), withoutGitSnapshot())
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
-		Task:       "coordinate",
-		Background: true,
+		Task: "coordinate",
 	})
 	if coord.Err != nil {
 		t.Fatalf("createDelegate (coordinator): %v", coord.Err)
 	}
-	waitForShellDone(t, sess.jobManager, coord.JobID)
-	_, coordID, err := decodeRef(coord.TranscriptRef)
-	if err != nil {
-		t.Fatalf("decodeRef: %v", err)
-	}
-	coordSub := sess.subagents.get(coordID)
+	waitForRuntimeSubagent(t, sess, coord.ChildSessionID)
+	coordSub := sess.subagents.get(coord.ChildSessionID)
 	if coordSub == nil || coordSub.sess == nil {
-		t.Fatalf("coordinator subagent %q not found", coordID)
+		t.Fatalf("coordinator subagent %q not found", coord.ChildSessionID)
 	}
-	enqueueCompletedDelegateNotification(t, coordSub.sess, "worker-1")
+	enqueueCompletedJobNotification(t, coordSub.sess, "worker-1")
 
 	if !sess.driveSubagentNotificationTurn(coordSub) {
 		t.Fatal("drive did not launch")
@@ -769,27 +505,22 @@ func TestDriveRedriveIsPaced(t *testing.T) {
 			func(_ llm.Request) llm.Response { return finalResponse("drive done") },
 		},
 	})
-	sess := newDelegateTestSession(t, c)
+	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, NoProjectPrompts: true}), withoutGitSnapshot())
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
-		Task:       "coordinate",
-		Background: true,
+		Task: "coordinate",
 	})
 	if coord.Err != nil {
 		t.Fatalf("createDelegate (coordinator): %v", coord.Err)
 	}
-	waitForShellDone(t, sess.jobManager, coord.JobID)
-	_, coordID, err := decodeRef(coord.TranscriptRef)
-	if err != nil {
-		t.Fatalf("decodeRef: %v", err)
-	}
-	coordSub := sess.subagents.get(coordID)
+	waitForRuntimeSubagent(t, sess, coord.ChildSessionID)
+	coordSub := sess.subagents.get(coord.ChildSessionID)
 	if coordSub == nil || coordSub.sess == nil {
-		t.Fatalf("coordinator subagent %q not found", coordID)
+		t.Fatalf("coordinator subagent %q not found", coord.ChildSessionID)
 	}
 	// Queue attention on the child but drive nothing: the re-check owns the
 	// (paced) launch.
-	enqueueCompletedDelegateNotification(t, coordSub.sess, "worker-1")
+	enqueueCompletedJobNotification(t, coordSub.sess, "worker-1")
 
 	done := make(chan struct{})
 	go func() {
@@ -828,76 +559,4 @@ func TestDriveRedriveIsPaced(t *testing.T) {
 	}
 	// The drive released its budget slot once the turn completed.
 	waitForDriveCount(t, sess.driveCounter, 0)
-}
-
-// TestRegressionIdleDelegatesNeverBlockSpawn reproduces the 2026-07-19 field
-// failure (session 033rRr4hCSjZLuIs7XT5Nw): a session with a large fleet of
-// completed, idle delegates hit tree_at_capacity with zero jobs running
-// because drive activity shared the spawn budget. After the budget split, 50
-// sequential delegates complete, the drive budget is fully saturated, and the
-// next spawn still succeeds — idle delegates never count, and drives never
-// starve spawns.
-func TestRegressionIdleDelegatesNeverBlockSpawn(t *testing.T) {
-	t.Parallel()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(_ llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
-		},
-	})
-	sess := newDelegateTestSession(t, c)
-
-	// 50 sequential foreground delegates, each completing before the next
-	// spawns: the spawn budget must return to zero every time.
-	for i := 1; i <= 50; i++ {
-		res := sess.createDelegate(context.Background(), delegateArgs{
-			Task:           fmt.Sprintf("seq-%d", i),
-			Background:     false,
-			BlockTimeoutMS: 10000,
-		})
-		if res.Err != nil {
-			t.Fatalf("spawn %d failed: %v", i, res.Err)
-		}
-	}
-	if got := sess.treeCounter.n.Load(); got != 0 {
-		t.Fatalf("idle delegates hold spawn slots: tree counter = %d, want 0", got)
-	}
-
-	// Saturate the drive budget completely: the 51st spawn must still succeed.
-	for i := range defaultMaxConcurrentDriveTurns {
-		if !sess.driveCounter.reserve(slotKindDrive) {
-			t.Fatalf("setup: drive reserve %d failed", i+1)
-		}
-	}
-	res := sess.createDelegate(context.Background(), delegateArgs{
-		Task:           "seq-51",
-		Background:     false,
-		BlockTimeoutMS: 10000,
-	})
-	if res.Err != nil {
-		t.Fatalf("spawn 51 blocked by saturated drive budget: %v", res.Err)
-	}
-
-	// While a spawn slot is held, job_list reports the occupancy tuple.
-	if !sess.treeCounter.reserve(slotKindJob) {
-		t.Fatal("setup: tree reserve failed")
-	}
-	call := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "list",
-		Name:      "job_list",
-		Arguments: json.RawMessage(`{"limit": 50}`),
-	})
-	if call.IsError {
-		t.Fatalf("job_list: %s", call.Output)
-	}
-	// The drive budget is saturated by setup above; the footer must report the
-	// live drive occupancy (8), not a structurally dead 0 (issue: occupancy
-	// honesty for the split budgets).
-	if !strings.Contains(call.Output, "delegate turn slots: 1/50 in use (1 jobs, 8 drive turns).") {
-		t.Fatalf("job_list missing occupancy line: %q", call.Output[len(call.Output)-300:])
-	}
-	if !strings.Contains(call.Output, "showing 1-50 of 51 jobs.") {
-		t.Fatalf("job_list missing window footer: %q", call.Output[len(call.Output)-300:])
-	}
 }

@@ -246,7 +246,7 @@ func miscStatusAndPersistenceProgram(t *testing.T, token string) {
 		t.Fatal(err)
 	}
 	events := []jobstore.Event{
-		{Kind: jobstore.EventJobStarted, JobID: "good", Type: jobstore.JobDelegate},
+		{Kind: jobstore.EventJobStarted, JobID: "good", Type: jobstore.JobShell},
 		{Kind: jobstore.EventJobStarted, JobID: "shell", Type: jobstore.JobShell},
 	}
 	if err := store.AppendBatch(events); err != nil {

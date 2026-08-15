@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/internal/jobstore"
 	tooldefs "primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -449,7 +450,11 @@ func TestJobWatchListAndInspectReturnWatchIDs(t *testing.T) {
 
 func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	t.Parallel()
-	s := newPersistentTestSession(t)
+	s := newSession(t, withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		StateDir:         packageFixtureTempDir(t, "watch-state-*"),
+	}))
 	const token = "WATCH_OUTPUT_TOKEN_ONCE"
 
 	// Use a long-running shell so the job stays alive without a timing
@@ -511,15 +516,21 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	// synchronous delivery, spec §3). The live loop would wake and accept; here
 	// we wait for the wake and accept it, which renders the frame into the
 	// notification turn (a TurnSteering in history) and settles the pending.
-	waitForJobNotification(t, s)
+	if pending := s.peekNotifications(); pending == 0 {
+		t.Fatal("watch output match did not synchronously enqueue a notification")
+	}
 	drainAndAccept(t, s)
 
-	first := waitForSteeringEntryContaining(t, s, token)
-	if !strings.Contains(first, token) {
-		t.Fatalf("watch delivery = %q, want token", first)
+	s.mu.Lock()
+	deliveries := 0
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), token) {
+			deliveries++
+		}
 	}
-	if got := countSteeringEntriesContaining(s, token); got != 1 {
-		t.Fatalf("watch deliveries containing %q = %d, want 1", token, got)
+	s.mu.Unlock()
+	if deliveries != 1 {
+		t.Fatalf("watch deliveries containing %q = %d, want 1", token, deliveries)
 	}
 }
 

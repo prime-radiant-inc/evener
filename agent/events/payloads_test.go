@@ -11,7 +11,7 @@ func TestJobFinishedData_ExhaustionMetadata(t *testing.T) {
 	resumable := false
 	payload := JobFinishedData{
 		JobID:            "job_exhausted",
-		JobType:          "delegate",
+		JobType:          "shell",
 		Status:           "exhausted",
 		ExhaustionBudget: "max_turns",
 		ExhaustionLimit:  500,

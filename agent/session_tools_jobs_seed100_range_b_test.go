@@ -38,23 +38,10 @@ func seed100ToolsRangeB(t *testing.T) {
 
 	exit := 7
 
-	_ = jobListDelegatesForJobs(s, nil, nil)
-	_ = jobListDelegatesForJobs(s, map[string]*jobstore.DelegateRecord{"dlg": {}}, []jobListEntry{{JobID: "job"}})
-	_ = jobListDelegatesForJobs(s, map[string]*jobstore.DelegateRecord{
-		"missing":   nil,
-		"foreign":   {DelegateID: "foreign", OwnerSessionID: "other", CurrentJobID: "job"},
-		"unrelated": {DelegateID: "unrelated", OwnerSessionID: s.ID(), CurrentJobID: "elsewhere"},
-		"dlg":       {DelegateID: "dlg", OwnerSessionID: s.ID(), CurrentJobID: "job", LatestJobID: "old"},
-	}, []jobListEntry{{JobID: "job", DelegateID: "dlg"}, {JobID: "second", DelegateID: "missing"}, {JobID: "third", DelegateID: "foreign"}, {JobID: "fourth", DelegateID: "unrelated"}})
-
 	command, reason, resumable := "cmd", "reason", true
 	_ = formatJobList(jobListResult{
 		Count: 1, DelegationAllowance: 3,
-		Jobs: []jobListEntry{{JobID: "job", Type: "shell", Status: "done", Depth: 2, Command: &command, Reason: &reason, ExitCode: &exit, DelegateID: "dlg", TotalBytes: 4, Resumable: &resumable}},
-		Delegates: []delegateListEntry{
-			{DelegateID: "a", Status: "running", CurrentJobID: "job", LatestJobID: "old", TranscriptRef: "tx", Resumable: true, ParentDelegateID: "parent"},
-			{DelegateID: "b", Status: "stopped", NotResumableWhy: "expired"},
-		},
+		Jobs:          []jobListEntry{{JobID: "job", Type: "shell", Status: "done", Depth: 2, Command: &command, Reason: &reason, ExitCode: &exit, TotalBytes: 4, Resumable: &resumable}},
 		Watches:       []watchListEntry{{ID: "w", Source: "job", Condition: "done"}},
 		RecentWatches: []recentWatchEntry{{ID: "rw", Source: "job", EndReason: "fired", Deliveries: 2}},
 	})

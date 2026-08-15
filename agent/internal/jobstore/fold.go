@@ -26,7 +26,6 @@ func Fold(events []Event) map[string]*JobRecord {
 		}
 		applyEvent(r, e)
 	}
-	markDisposedDelegates(recs, sorted)
 	return recs
 }
 
@@ -52,7 +51,6 @@ func FoldOrdered(events []Event) []*JobRecord {
 		}
 		applyEvent(r, e)
 	}
-	markDisposedDelegates(recs, sorted)
 	ordered := make([]*JobRecord, 0, len(order))
 	for _, id := range order {
 		ordered = append(ordered, recs[id])
@@ -60,38 +58,9 @@ func FoldOrdered(events []Event) []*JobRecord {
 	return ordered
 }
 
-// markDisposedDelegates sets Disposed on every job record whose delegate was
-// disposed at its creator session's close (native worktree tools spec §9
-// step 4-5). Disposal is keyed by delegate id — a delegate_disposed event
-// carries no job id — so every job record for that delegate, across resumes,
-// is marked; assessDelegateResumability then refuses revival regardless of
-// which of the delegate's jobs it resolves. sorted is the seq-ordered event
-// slice the caller already built.
-func markDisposedDelegates(recs map[string]*JobRecord, sorted []Event) {
-	var disposed map[string]bool
-	for _, e := range sorted {
-		if e.Kind != EventDelegateDisposed || e.DelegateID == "" {
-			continue
-		}
-		if disposed == nil {
-			disposed = make(map[string]bool)
-		}
-		disposed[e.DelegateID] = true
-	}
-	if disposed == nil {
-		return
-	}
-	for _, r := range recs {
-		if r.DelegateID != "" && disposed[r.DelegateID] {
-			r.Disposed = true
-		}
-	}
-}
-
 func isJobRecordEventKind(kind EventKind) bool {
 	switch kind {
 	case EventJobStarted,
-		EventJobSessionAssigned,
 		EventJobFinished,
 		EventJobMessageSent,
 		EventJobNotificationPending,
@@ -101,124 +70,6 @@ func isJobRecordEventKind(kind EventKind) bool {
 	default:
 		return false
 	}
-}
-
-func FoldDelegates(events []Event) map[string]*DelegateRecord {
-	sorted := append([]Event(nil), events...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
-
-	delegates := make(map[string]*DelegateRecord)
-	jobToDelegate := make(map[string]string)
-	for _, e := range sorted {
-		switch e.Kind {
-		case EventDelegateCreated:
-			if e.DelegateID == "" || e.Delegate == nil {
-				continue
-			}
-			d := delegates[e.DelegateID]
-			if d == nil {
-				d = &DelegateRecord{DelegateID: e.DelegateID, Status: DelegateIdle}
-				delegates[e.DelegateID] = d
-			}
-			d.ChildSessionID = e.Delegate.ChildSessionID
-			d.TranscriptRef = e.Delegate.TranscriptRef
-			d.OwnerSessionID = e.Delegate.OwnerSessionID
-			d.VisibleSessionID = e.Delegate.VisibleSessionID
-			d.ParentDelegateID = e.Delegate.ParentDelegateID
-			d.AgentType = e.Delegate.AgentType
-			d.Generation = e.Delegate.Generation
-			d.Resumable = e.Delegate.Resumable
-			d.NotResumableWhy = e.Delegate.NotResumableWhy
-		case EventJobStarted:
-			if e.DelegateID == "" {
-				continue
-			}
-			d := delegates[e.DelegateID]
-			if d == nil {
-				d = &DelegateRecord{DelegateID: e.DelegateID}
-				delegates[e.DelegateID] = d
-			}
-			jobToDelegate[e.JobID] = e.DelegateID
-			if e.OwnerSessionID != "" {
-				d.OwnerSessionID = e.OwnerSessionID
-			}
-			if e.VisibleToSession != "" {
-				d.VisibleSessionID = e.VisibleToSession
-			}
-			d.CurrentJobID = e.JobID
-			d.LatestJobID = e.JobID
-			d.Status = DelegateRunning
-			d.StopGateClosed = false
-		case EventJobSessionAssigned:
-			delegateID := jobToDelegate[e.JobID]
-			if delegateID == "" {
-				continue
-			}
-			d := delegates[delegateID]
-			if e.TranscriptRef != "" {
-				d.TranscriptRef = e.TranscriptRef
-			}
-			if e.Resumable != nil {
-				d.Resumable = *e.Resumable
-				d.NotResumableWhy = e.NotResumableWhy
-			}
-		case EventJobFinished:
-			delegateID := jobToDelegate[e.JobID]
-			if delegateID == "" {
-				continue
-			}
-			d := delegates[delegateID]
-			if d.CurrentJobID != e.JobID {
-				continue
-			}
-			d.CurrentJobID = ""
-			if e.Status == StatusStopped || e.Status == StatusCancelled {
-				d.Status = DelegateStopped
-			} else if d.Resumable {
-				d.Status = DelegateIdle
-			} else {
-				d.Status = DelegateNotResumable
-			}
-		case EventDelegateDisposed:
-			if e.DelegateID == "" {
-				continue
-			}
-			d := delegates[e.DelegateID]
-			if d == nil {
-				d = &DelegateRecord{DelegateID: e.DelegateID}
-				delegates[e.DelegateID] = d
-			}
-			// Additive and monotonic: disposal keyed by delegate id, order-
-			// independent (a disposed event before delegate_created leaves the
-			// record pre-marked; later events never clear it).
-			d.Disposed = true
-		case EventDelegateStopGateClosed:
-			if e.DelegateID == "" || e.Delegate == nil {
-				continue
-			}
-			d := delegates[e.DelegateID]
-			if d == nil {
-				d = &DelegateRecord{DelegateID: e.DelegateID}
-				delegates[e.DelegateID] = d
-			}
-			if d.CurrentJobID != "" && d.CurrentJobID != e.Delegate.StopJobID {
-				continue
-			}
-			if d.CurrentJobID == "" && d.LatestJobID != "" && d.LatestJobID != e.Delegate.StopJobID {
-				continue
-			}
-			d.Generation = e.Delegate.Generation
-			d.StopGateClosed = true
-			d.StopGateClosedJobID = e.Delegate.StopJobID
-			if d.CurrentJobID == e.Delegate.StopJobID {
-				d.CurrentJobID = ""
-			}
-			if d.Status == "" || d.Status == DelegateRunning {
-				d.Status = DelegateStopped
-			}
-		}
-	}
-	return delegates
 }
 
 func FoldWatches(events []Event) map[string]*WatchRecord {
@@ -339,24 +190,17 @@ func applyEvent(r *JobRecord, e Event) {
 		r.VisibleToSession = e.VisibleToSession
 		r.ParentJobID = e.ParentJobID
 		r.ParentDelegateID = e.ParentDelegateID
-		r.DelegateID = e.DelegateID
 		r.OriginTurnID = e.OriginTurnID
 		r.OriginToolCallID = e.OriginToolCallID
 		r.OriginItemID = e.OriginItemID
-		r.DelegateRestore = e.DelegateRestore
 		r.Provenance = provenance.Clone(e.Provenance)
 		r.OutputPath = e.OutputPath
-		r.TranscriptRef = e.TranscriptRef
 		if e.StartedAt != nil {
 			r.StartedAt = *e.StartedAt
 		}
 		if r.Status == "" {
 			r.Status = StatusRunning
 		}
-	case EventJobSessionAssigned:
-		r.TranscriptRef = e.TranscriptRef
-		r.Resumable = e.Resumable
-		r.NotResumableWhy = e.NotResumableWhy
 	case EventJobFinished:
 		// First terminal write wins; later ones are duplicates/reconstructions.
 		if r.Status.IsTerminal() {
@@ -366,7 +210,6 @@ func applyEvent(r *JobRecord, e Event) {
 		r.Reason = e.Reason
 		r.ExhaustionBudget = e.ExhaustionBudget
 		r.ExhaustionLimit = e.ExhaustionLimit
-		r.Resumable = e.Resumable
 		r.ExitCode = e.ExitCode
 		r.EndedAt = e.EndedAt
 		r.OutputBytes = e.OutputBytes

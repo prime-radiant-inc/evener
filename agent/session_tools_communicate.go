@@ -159,9 +159,6 @@ func (s *Session) deliverWatchCommunicateCallback(message string) {
 	if !steer(message, s.activeCausalProvenance(), events.SteeringKindNotification) {
 		return
 	}
-	if mark := s.cfg.spawn.parentMarkCallerCallbackDelivered; mark != nil {
-		mark(s.cfg.spawn.parentJobID)
-	}
 	s.markWatchCallbackDeliveredForCurrentTurn()
 }
 

@@ -3,9 +3,6 @@
 package agent
 
 import (
-	"encoding/json"
-	"errors"
-	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
@@ -22,24 +19,18 @@ func seed100ToolsRangeC(t *testing.T) {
 	_ = delegateSandboxToolResultFrom(sb)
 
 	_, _ = marshalDelegateSendResult(sendMessageResult{
-		MessageType: "runtime", Delivered: true, Action: "steer",
-	}, 1)
-	_, _ = marshalDelegateSendResult(sendMessageResult{
-		DelegateID: "dlg_seed", StartedJobID: "job_start", JobID: "job_current",
-		LatestJobID: "job_latest", Type: "message", Status: jobstore.StatusCompleted,
+		DelegateID: "dlg_seed", Type: delegateResourceType, Status: jobstore.StatusCompleted,
 		Action: "send", Output: "reply", Truncated: true, TimedOut: true,
 		StructuredResult: map[string]any{"ok": true}, StructuredResultValidSet: true,
 		StructuredResultValid: true, Worktree: wt,
 	}, 1)
-	_ = deliveredStatus(false)
-
 	valid := true
 	output := "reply\n"
 	_ = formatDelegateSend(delegateSendResult{
-		DelegateID: "dlg_seed", StartedJobID: "job_seed", Status: "completed",
-		Action: "send", Output: &output, RunningInBackground: true, Watching: true,
-		WaitIgnoredReason: "idle", Watches: []watchListEntry{{ID: "watch_seed", Source: "self", Condition: "terminal"}},
-		StructuredResult: map[string]any{"ok": true}, StructuredResultValid: &valid,
+		DelegateID: "dlg_seed", Status: "completed",
+		Action: "send", Output: &output, RunningInBackground: true,
+		WaitIgnoredReason: "idle",
+		StructuredResult:  map[string]any{"ok": true}, StructuredResultValid: &valid,
 	})
 	_ = formatDelegateSend(delegateSendResult{Action: "send", StructuredResult: make(chan int)})
 
@@ -73,25 +64,11 @@ func seed100ToolsRangeC(t *testing.T) {
 		_ = formatJobWatchInspect(out)
 	}
 
-	_, _ = marshalDelegateResult(delegateResult{
-		DelegateID: "dlg_seed", JobID: "job_seed", Type: "task",
-		Status: jobstore.StatusCompleted, Output: "done", TimedOut: true,
-		StructuredResult: map[string]any{"ok": true}, StructuredResultValidSet: true,
-		StructuredResultValid: true, Worktree: wt, Sandbox: sb,
+	_, _ = marshalStableDelegateCreateResult(stableDelegateCreateResult{
+		DelegateID: "dlg_seed", ChildSessionID: "child-dlg_seed", Type: delegateResourceType,
+		Status: string(jobstore.StatusRunning), TranscriptRef: "local:child-dlg_seed",
+		Sandbox: delegateSandboxToolResultFrom(sb),
 	}, 4096)
-	_, _ = marshalBoundedDelegateResult(delegateToolResult{
-		JobID: "job_seed", Output: ptrString(strings.Repeat("x", 64)),
-		StructuredResult: strings.Repeat("y", 256),
-	}, 16)
-	changing := &seed100ChangingJSON{}
-	_, _ = marshalBoundedDelegateResult(delegateToolResult{
-		JobID: "job_seed", Output: ptrString(""), StructuredResult: changing,
-	}, 256)
-	_, _, _ = marshalDelegateResultWithOutputLimit(delegateToolResult{
-		JobID: "job_seed", Output: ptrString("x"), StructuredResult: make(chan int),
-	}, 100)
-	want := errors.New("seed marshal fault")
-	_, _, _ = marshalWithOutputLimit(100, 1, func(int) (string, error) { return "", want })
 
 	_, _ = jobListFilterFromArgs(map[string]any{"status": "running"})
 	_, _ = jobListFilterFromArgs(map[string]any{"type": "shell"})
@@ -104,14 +81,4 @@ func seed100ToolsRangeC(t *testing.T) {
 		"events": "terminal",
 	})
 	_, _ = watchArgsFromToolArgs(map[string]any{"operation": "create", "source": "dlg_seed"})
-}
-
-type seed100ChangingJSON struct{ calls int }
-
-func (v *seed100ChangingJSON) MarshalJSON() ([]byte, error) {
-	v.calls++
-	if v.calls == 1 {
-		return json.Marshal(strings.Repeat("x", 512))
-	}
-	return []byte(`"ok"`), nil
 }

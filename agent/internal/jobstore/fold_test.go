@@ -1,7 +1,6 @@
 package jobstore
 
 import (
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -80,7 +79,7 @@ func TestFoldAppliesOutputPathFromStarted(t *testing.T) {
 	start := time.Unix(1, 0).UTC()
 	events := []Event{
 		ev(EventJobStarted, 1, "job_A", func(e *Event) {
-			e.Type = JobDelegate
+			e.Type = JobShell
 			e.Task = "summarize"
 			e.OwnerSessionID = "S1"
 			e.VisibleToSession = "S1"
@@ -91,337 +90,6 @@ func TestFoldAppliesOutputPathFromStarted(t *testing.T) {
 	r := Fold(events)["job_A"]
 	if r.OutputPath != "/tmp/serf/jobs/job_A.log" {
 		t.Errorf("output_path = %q, want /tmp/serf/jobs/job_A.log", r.OutputPath)
-	}
-}
-
-func TestFoldAppliesDelegateIDFromStarted(t *testing.T) {
-	start := time.Unix(1, 0).UTC()
-	events := []Event{
-		ev(EventJobStarted, 1, "job_A", func(e *Event) {
-			e.Type = JobDelegate
-			e.DelegateID = "dlg_A"
-			e.OwnerSessionID = "S1"
-			e.VisibleToSession = "S1"
-			e.StartedAt = &start
-		}),
-	}
-
-	r := Fold(events)["job_A"]
-	if r == nil {
-		t.Fatal("job_A missing")
-	}
-	if r.DelegateID != "dlg_A" {
-		t.Fatalf("delegate_id = %q, want dlg_A", r.DelegateID)
-	}
-}
-
-func TestFoldDelegateDescriptorSchemaAndStructuredReason(t *testing.T) {
-	valid := false
-	events := []Event{
-		{
-			Kind:  EventJobStarted,
-			Seq:   1,
-			JobID: "job_1",
-			Type:  JobDelegate,
-			DelegateRestore: &DelegateRestoreDescriptor{
-				Version:        1,
-				ChildSessionID: "child_1",
-				TranscriptRef:  "transcript_1",
-				ResultSchema:   map[string]any{"type": "object"},
-			},
-		},
-		{
-			Kind:                   EventJobFinished,
-			Seq:                    2,
-			JobID:                  "job_1",
-			Status:                 StatusCompleted,
-			StructuredResultValid:  &valid,
-			StructuredResultReason: "schema_result_missing",
-		},
-	}
-	rec := Fold(events)["job_1"]
-	if rec.DelegateRestore == nil || rec.DelegateRestore.ResultSchema == nil {
-		t.Fatalf("delegate restore/schema not folded: %+v", rec.DelegateRestore)
-	}
-	if rec.StructuredResultReason != "schema_result_missing" {
-		t.Fatalf("reason = %q", rec.StructuredResultReason)
-	}
-}
-
-func TestFoldDelegatesLinksJobsAndProjectsCurrentLatest(t *testing.T) {
-	start1 := time.Unix(1, 0).UTC()
-	end1 := time.Unix(2, 0).UTC()
-	start2 := time.Unix(3, 0).UTC()
-	events := []Event{
-		ev(EventDelegateCreated, 1, "", func(e *Event) {
-			e.DelegateID = "dlg_A"
-			e.Delegate = &DelegateEvent{
-				ChildSessionID:   "child_A",
-				TranscriptRef:    "local:child_A",
-				OwnerSessionID:   "owner",
-				VisibleSessionID: "owner",
-				AgentType:        "default",
-				Generation:       "dg_1",
-				Resumable:        true,
-			}
-		}),
-		ev(EventJobStarted, 2, "job_1", func(e *Event) {
-			e.Type = JobDelegate
-			e.DelegateID = "dlg_A"
-			e.OwnerSessionID = "owner"
-			e.VisibleToSession = "owner"
-			e.TranscriptRef = "local:child_A"
-			e.StartedAt = &start1
-		}),
-		ev(EventJobFinished, 3, "job_1", func(e *Event) {
-			e.Status = StatusCompleted
-			e.EndedAt = &end1
-		}),
-		ev(EventJobStarted, 4, "job_2", func(e *Event) {
-			e.Type = JobDelegate
-			e.DelegateID = "dlg_A"
-			e.OwnerSessionID = "owner"
-			e.VisibleToSession = "owner"
-			e.TranscriptRef = "local:child_A"
-			e.StartedAt = &start2
-		}),
-	}
-
-	delegates := FoldDelegates(events)
-	d := delegates["dlg_A"]
-	if d == nil {
-		t.Fatal("delegate dlg_A missing")
-	}
-	if d.CurrentJobID != "job_2" || d.LatestJobID != "job_2" || d.Status != DelegateRunning {
-		t.Fatalf("delegate projection = %+v, want current/latest job_2 running", d)
-	}
-	if d.ChildSessionID != "child_A" || d.TranscriptRef != "local:child_A" || !d.Resumable {
-		t.Fatalf("delegate identity = %+v, want durable child metadata", d)
-	}
-}
-
-func TestFoldDelegatesProjectsOwnerFromJobStarted(t *testing.T) {
-	start := time.Unix(1, 0).UTC()
-	events := []Event{
-		ev(EventJobStarted, 1, "job_child_delegate", func(e *Event) {
-			e.Type = JobDelegate
-			e.DelegateID = "dlg_child"
-			e.OwnerSessionID = "CHILD"
-			e.VisibleToSession = "ROOT"
-			e.TranscriptRef = "local:child"
-			e.StartedAt = &start
-		}),
-	}
-
-	delegates := FoldDelegates(events)
-	d := delegates["dlg_child"]
-	if d == nil {
-		t.Fatal("delegate dlg_child missing")
-	}
-	if d.OwnerSessionID != "CHILD" || d.VisibleSessionID != "ROOT" {
-		t.Fatalf("delegate ownership = owner %q visible %q, want CHILD/ROOT", d.OwnerSessionID, d.VisibleSessionID)
-	}
-}
-
-func TestFoldDelegatesAppliesSessionAssignedResumability(t *testing.T) {
-	start := time.Unix(1, 0).UTC()
-	end := time.Unix(2, 0).UTC()
-	resumable := false
-	events := []Event{
-		ev(EventDelegateCreated, 1, "", func(e *Event) {
-			e.DelegateID = "dlg_A"
-			e.Delegate = &DelegateEvent{
-				ChildSessionID: "child_A",
-				TranscriptRef:  "local:child_A",
-				Generation:     "dg_1",
-				Resumable:      true,
-			}
-		}),
-		ev(EventJobStarted, 2, "job_1", func(e *Event) {
-			e.Type = JobDelegate
-			e.DelegateID = "dlg_A"
-			e.TranscriptRef = "local:child_A"
-			e.StartedAt = &start
-		}),
-		ev(EventJobSessionAssigned, 3, "job_1", func(e *Event) {
-			e.TranscriptRef = "local:child_A"
-			e.Resumable = &resumable
-			e.NotResumableWhy = "missing checkpoint"
-		}),
-		ev(EventJobFinished, 4, "job_1", func(e *Event) {
-			e.Status = StatusCompleted
-			e.EndedAt = &end
-		}),
-	}
-
-	d := FoldDelegates(events)["dlg_A"]
-	if d == nil {
-		t.Fatal("delegate dlg_A missing")
-	}
-	if d.Resumable {
-		t.Fatalf("delegate resumable = true, want false: %+v", d)
-	}
-	if d.Status != DelegateNotResumable {
-		t.Fatalf("delegate status = %q, want %q", d.Status, DelegateNotResumable)
-	}
-	if d.NotResumableWhy != "missing checkpoint" {
-		t.Fatalf("delegate not_resumable_reason = %q, want missing checkpoint", d.NotResumableWhy)
-	}
-}
-
-// TestFoldDelegatesMarksDisposed covers delegate-lane disposal spec §P1: a
-// mid-life delegate_disposed event marks the DelegateRecord Disposed, and the
-// mark survives regardless of whether the disposal event precedes or follows the
-// other events for the same delegate (additive, monotonic — nothing un-disposes).
-func TestFoldDelegatesMarksDisposed(t *testing.T) {
-	start := time.Unix(1, 0).UTC()
-	makeEvents := func(disposeSeq int64) []Event {
-		return []Event{
-			ev(EventDelegateCreated, 2, "", func(e *Event) {
-				e.DelegateID = "dlg_A"
-				e.Delegate = &DelegateEvent{
-					ChildSessionID: "child_A",
-					TranscriptRef:  "local:child_A",
-					Generation:     "dg_1",
-					Resumable:      true,
-				}
-			}),
-			ev(EventJobStarted, 3, "job_1", func(e *Event) {
-				e.Type = JobDelegate
-				e.DelegateID = "dlg_A"
-				e.TranscriptRef = "local:child_A"
-				e.StartedAt = &start
-			}),
-			ev(EventDelegateDisposed, disposeSeq, "", func(e *Event) {
-				e.DelegateID = "dlg_A"
-			}),
-		}
-	}
-
-	// Disposal after the delegate's other events.
-	after := FoldDelegates(makeEvents(4))["dlg_A"]
-	if after == nil || !after.Disposed {
-		t.Fatalf("disposed-after: Disposed = %v, want true (%+v)", after != nil && after.Disposed, after)
-	}
-
-	// Disposal before delegate_created (lower seq) — the record is pre-marked and
-	// the later creation/start events must not clear it.
-	before := FoldDelegates(makeEvents(1))["dlg_A"]
-	if before == nil || !before.Disposed {
-		t.Fatalf("disposed-before: Disposed = %v, want true (%+v)", before != nil && before.Disposed, before)
-	}
-	if before.ChildSessionID != "child_A" {
-		t.Fatalf("disposed-before: identity dropped, got %+v", before)
-	}
-}
-
-func TestFoldDelegatesClosesStopGateForCurrentJob(t *testing.T) {
-	start := time.Unix(1, 0).UTC()
-	end := time.Unix(2, 0).UTC()
-	events := []Event{
-		ev(EventDelegateCreated, 1, "", func(e *Event) {
-			e.DelegateID = "dlg_A"
-			e.Delegate = &DelegateEvent{ChildSessionID: "child_A", TranscriptRef: "local:child_A", Generation: "dg_1", Resumable: true}
-		}),
-		ev(EventJobStarted, 2, "job_1", func(e *Event) {
-			e.Type = JobDelegate
-			e.DelegateID = "dlg_A"
-			e.StartedAt = &start
-		}),
-		ev(EventJobFinished, 3, "job_1", func(e *Event) {
-			e.Status = StatusCancelled
-			e.Reason = "stopped_by_parent"
-			e.EndedAt = &end
-		}),
-		ev(EventDelegateStopGateClosed, 4, "", func(e *Event) {
-			e.DelegateID = "dlg_A"
-			e.Delegate = &DelegateEvent{Generation: "dg_2", StopJobID: "job_1"}
-		}),
-	}
-
-	d := FoldDelegates(events)["dlg_A"]
-	if d == nil {
-		t.Fatal("delegate dlg_A missing")
-	}
-	if !d.StopGateClosed || d.Generation != "dg_2" || d.CurrentJobID != "" || d.LatestJobID != "job_1" || d.Status != DelegateStopped {
-		t.Fatalf("delegate after stop = %+v, want closed gate with latest job_1 stopped and no current job", d)
-	}
-}
-
-func TestFoldDelegatesIgnoresStaleStopGateAfterNewerStart(t *testing.T) {
-	start1 := time.Unix(1, 0).UTC()
-	end1 := time.Unix(2, 0).UTC()
-	start2 := time.Unix(3, 0).UTC()
-	events := []Event{
-		ev(EventDelegateCreated, 1, "", func(e *Event) {
-			e.DelegateID = "dlg_A"
-			e.Delegate = &DelegateEvent{ChildSessionID: "child_A", TranscriptRef: "local:child_A", Generation: "dg_1", Resumable: true}
-		}),
-		ev(EventJobStarted, 2, "job_1", func(e *Event) {
-			e.Type = JobDelegate
-			e.DelegateID = "dlg_A"
-			e.StartedAt = &start1
-		}),
-		ev(EventJobFinished, 3, "job_1", func(e *Event) {
-			e.Status = StatusCancelled
-			e.Reason = "stopped_by_parent"
-			e.EndedAt = &end1
-		}),
-		ev(EventDelegateCreated, 4, "", func(e *Event) {
-			e.DelegateID = "dlg_A"
-			e.Delegate = &DelegateEvent{ChildSessionID: "child_A", TranscriptRef: "local:child_A", Generation: "dg_3", Resumable: true}
-		}),
-		ev(EventJobStarted, 5, "job_2", func(e *Event) {
-			e.Type = JobDelegate
-			e.DelegateID = "dlg_A"
-			e.StartedAt = &start2
-		}),
-		ev(EventDelegateStopGateClosed, 6, "", func(e *Event) {
-			e.DelegateID = "dlg_A"
-			e.Delegate = &DelegateEvent{Generation: "dg_stale", StopJobID: "job_1"}
-		}),
-	}
-
-	d := FoldDelegates(events)["dlg_A"]
-	if d == nil {
-		t.Fatal("delegate dlg_A missing")
-	}
-	if d.StopGateClosed || d.Generation != "dg_3" || d.CurrentJobID != "job_2" || d.Status != DelegateRunning {
-		t.Fatalf("delegate after stale gate = %+v, want job_2 running with generation dg_3", d)
-	}
-}
-
-func TestFoldDelegatesIgnoresFinishedNonCurrentJob(t *testing.T) {
-	start1 := time.Unix(1, 0).UTC()
-	start2 := time.Unix(2, 0).UTC()
-	end1 := time.Unix(3, 0).UTC()
-	events := []Event{
-		ev(EventDelegateCreated, 1, "", func(e *Event) {
-			e.DelegateID = "dlg_A"
-			e.Delegate = &DelegateEvent{ChildSessionID: "child_A", TranscriptRef: "local:child_A", Generation: "dg_1", Resumable: true}
-		}),
-		ev(EventJobStarted, 2, "job_1", func(e *Event) {
-			e.Type = JobDelegate
-			e.DelegateID = "dlg_A"
-			e.StartedAt = &start1
-		}),
-		ev(EventJobStarted, 3, "job_2", func(e *Event) {
-			e.Type = JobDelegate
-			e.DelegateID = "dlg_A"
-			e.StartedAt = &start2
-		}),
-		ev(EventJobFinished, 4, "job_1", func(e *Event) {
-			e.Status = StatusCompleted
-			e.EndedAt = &end1
-		}),
-	}
-
-	d := FoldDelegates(events)["dlg_A"]
-	if d == nil {
-		t.Fatal("delegate dlg_A missing")
-	}
-	if d.CurrentJobID != "job_2" || d.LatestJobID != "job_2" || d.Status != DelegateRunning {
-		t.Fatalf("delegate after stale finish = %+v, want current/latest job_2 running", d)
 	}
 }
 
@@ -533,115 +201,6 @@ func TestFoldWatchesPreservesFirstClearReason(t *testing.T) {
 	}
 }
 
-func TestDelegateRestoreDescriptorSurvivesStoreReopenAndFold(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "jobs.jsonl")
-	store, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	start := time.Unix(10, 0).UTC()
-	desc := &DelegateRestoreDescriptor{
-		Version:            1,
-		ChildSessionID:     "child_1",
-		TranscriptRef:      "local:child_1",
-		ParentSessionID:    "parent_1",
-		ParentJobID:        "job_1",
-		OwnerSessionID:     "owner_1",
-		VisibleSessionID:   "visible_1",
-		OriginTurnID:       "turn_1",
-		OriginToolCallID:   "call_1",
-		Task:               "inspect",
-		AgentType:          "reviewer",
-		RequestedModel:     "openai/gpt-5.3",
-		ResolvedProfileID:  "openai",
-		ResolvedModel:      "gpt-5.3",
-		ReasoningEffort:    "high",
-		AgentName:          "reviewer",
-		FrozenRolePrompt:   "Review carefully.",
-		FrozenTaskPrompt:   "Check the patch.",
-		FrozenToolNames:    []string{"read_file", "task_list"},
-		FrozenSkillNames:   []string{"review-skill"},
-		FrozenSkillBodies:  []string{"Use the stored review checklist."},
-		WorkingDir:         "/work",
-		LocalEnvPolicy:     "core_only",
-		ResultSchema:       map[string]any{"type": "object", "required": []any{"message"}},
-		ExplicitToolGrants: []string{"shell"},
-		Isolation:          "worktree",
-	}
-	if err := store.Append(Event{
-		Kind:             EventJobStarted,
-		JobID:            "job_1",
-		Type:             JobDelegate,
-		Task:             "inspect",
-		OwnerSessionID:   "owner_1",
-		VisibleToSession: "visible_1",
-		StartedAt:        &start,
-		TranscriptRef:    "local:child_1",
-		DelegateRestore:  desc,
-	}); err != nil {
-		t.Fatalf("append start: %v", err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatalf("close store: %v", err)
-	}
-
-	reopened, err := Open(path)
-	if err != nil {
-		t.Fatalf("reopen store: %v", err)
-	}
-	t.Cleanup(func() { _ = reopened.Close() })
-	recs, err := reopened.Load()
-	if err != nil {
-		t.Fatalf("load reopened store: %v", err)
-	}
-	rec := recs["job_1"]
-	if rec == nil || rec.DelegateRestore == nil {
-		t.Fatalf("reopened record missing descriptor: %+v", rec)
-	}
-	got := rec.DelegateRestore
-	if got.ChildSessionID != desc.ChildSessionID ||
-		got.TranscriptRef != desc.TranscriptRef ||
-		got.ParentSessionID != desc.ParentSessionID ||
-		got.ParentJobID != desc.ParentJobID ||
-		got.OwnerSessionID != desc.OwnerSessionID ||
-		got.VisibleSessionID != desc.VisibleSessionID ||
-		got.OriginTurnID != desc.OriginTurnID ||
-		got.OriginToolCallID != desc.OriginToolCallID ||
-		got.OriginItemID != desc.OriginItemID ||
-		got.Task != desc.Task ||
-		got.AgentType != desc.AgentType ||
-		got.RequestedModel != desc.RequestedModel ||
-		got.ResolvedProfileID != desc.ResolvedProfileID ||
-		got.ResolvedModel != desc.ResolvedModel ||
-		got.ReasoningEffort != desc.ReasoningEffort ||
-		got.AgentName != desc.AgentName ||
-		got.FrozenRolePrompt != desc.FrozenRolePrompt ||
-		got.FrozenTaskPrompt != desc.FrozenTaskPrompt ||
-		got.WorkingDir != desc.WorkingDir ||
-		got.LocalEnvPolicy != desc.LocalEnvPolicy ||
-		got.ParentWatchGranted != desc.ParentWatchGranted ||
-		got.DelegationAllowance != desc.DelegationAllowance ||
-		got.Isolation != desc.Isolation {
-		t.Fatalf("reopened descriptor = %+v, want %+v", got, desc)
-	}
-	if len(got.FrozenToolNames) != 2 || got.FrozenToolNames[0] != "read_file" || got.FrozenToolNames[1] != "task_list" {
-		t.Fatalf("frozen tool names = %+v", got.FrozenToolNames)
-	}
-	if len(got.FrozenSkillNames) != 1 || got.FrozenSkillNames[0] != "review-skill" {
-		t.Fatalf("frozen skill names = %+v", got.FrozenSkillNames)
-	}
-	if len(got.FrozenSkillBodies) != 1 || got.FrozenSkillBodies[0] != "Use the stored review checklist." {
-		t.Fatalf("frozen skill bodies = %+v", got.FrozenSkillBodies)
-	}
-	if len(got.ExplicitToolGrants) != 1 || got.ExplicitToolGrants[0] != "shell" {
-		t.Fatalf("explicit tool grants = %+v", got.ExplicitToolGrants)
-	}
-	schema, ok := got.ResultSchema.(map[string]any)
-	if !ok || schema["type"] != "object" {
-		t.Fatalf("result_schema = %#v", got.ResultSchema)
-	}
-}
-
 func TestFoldStructuredResultReasonOnlyForInvalidStructuredResult(t *testing.T) {
 	valid := true
 	events := []Event{
@@ -713,10 +272,9 @@ func TestFoldAppliesFinishAndKeepsFirstGeneration(t *testing.T) {
 
 func TestFold_ExhaustedPreservesBudgetMetadataAndFirstTerminalWins(t *testing.T) {
 	start := time.Unix(1, 0).UTC()
-	resumable := false
 	events := []Event{
 		ev(EventJobStarted, 1, "job_A", func(e *Event) {
-			e.Type = JobDelegate
+			e.Type = JobShell
 			e.OwnerSessionID = "S1"
 			e.VisibleToSession = "S1"
 			e.StartedAt = &start
@@ -727,7 +285,6 @@ func TestFold_ExhaustedPreservesBudgetMetadataAndFirstTerminalWins(t *testing.T)
 			e.TerminalGen = "GEN1"
 			e.ExhaustionBudget = "max_turns"
 			e.ExhaustionLimit = 500
-			e.Resumable = &resumable
 		}),
 	}
 
@@ -741,18 +298,12 @@ func TestFold_ExhaustedPreservesBudgetMetadataAndFirstTerminalWins(t *testing.T)
 	if r.ExhaustionBudget != "max_turns" || r.ExhaustionLimit != 500 {
 		t.Fatalf("exhaustion metadata = (%q, %d), want (max_turns, 500)", r.ExhaustionBudget, r.ExhaustionLimit)
 	}
-	if r.Resumable == nil || *r.Resumable {
-		t.Fatalf("resumable = %v, want false", r.Resumable)
-	}
-
-	laterResumable := true
 	events = append(events, ev(EventJobFinished, 3, "job_A", func(e *Event) {
 		e.Status = StatusCompleted
 		e.Reason = "completed_later"
 		e.TerminalGen = "GEN2"
 		e.ExhaustionBudget = "max_continuations"
 		e.ExhaustionLimit = 1
-		e.Resumable = &laterResumable
 	}))
 
 	r = Fold(events)["job_A"]
@@ -761,9 +312,6 @@ func TestFold_ExhaustedPreservesBudgetMetadataAndFirstTerminalWins(t *testing.T)
 	}
 	if r.ExhaustionBudget != "max_turns" || r.ExhaustionLimit != 500 {
 		t.Fatalf("later terminal event replaced exhaustion metadata: %+v", r)
-	}
-	if r.Resumable == nil || *r.Resumable {
-		t.Fatalf("later terminal event replaced resumable: %v", r.Resumable)
 	}
 }
 
@@ -788,34 +336,6 @@ func TestFoldAppliesEventsInSeqOrder(t *testing.T) {
 	r := Fold(events)["job_A"]
 	if r.TerminalGen != "GEN1" {
 		t.Errorf("terminal_generation = %q, want GEN1 from lower seq event", r.TerminalGen)
-	}
-}
-
-func TestFoldAppliesSessionAssigned(t *testing.T) {
-	start := time.Unix(1, 0).UTC()
-	resumable := false
-	events := []Event{
-		ev(EventJobStarted, 1, "job_A", func(e *Event) {
-			e.Type = JobShell
-			e.OwnerSessionID = "S1"
-			e.VisibleToSession = "S1"
-			e.StartedAt = &start
-		}),
-		ev(EventJobSessionAssigned, 2, "job_A", func(e *Event) {
-			e.TranscriptRef = "sessions/S2.transcript.jsonl"
-			e.Resumable = &resumable
-			e.NotResumableWhy = "missing checkpoint"
-		}),
-	}
-	r := Fold(events)["job_A"]
-	if r.TranscriptRef != "sessions/S2.transcript.jsonl" {
-		t.Errorf("transcript_ref = %q, want sessions/S2.transcript.jsonl", r.TranscriptRef)
-	}
-	if r.Resumable == nil || *r.Resumable {
-		t.Errorf("resumable = %v, want false", r.Resumable)
-	}
-	if r.NotResumableWhy != "missing checkpoint" {
-		t.Errorf("not_resumable_reason = %q, want missing checkpoint", r.NotResumableWhy)
 	}
 }
 
@@ -890,7 +410,7 @@ func TestFoldStoresJobProvenanceFromStartedEvent(t *testing.T) {
 	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", "session_1", "caller")
 	events := []Event{
 		ev(EventJobStarted, 1, "job_A", func(e *Event) {
-			e.Type = JobDelegate
+			e.Type = JobShell
 			e.OwnerSessionID = "session_1"
 			e.VisibleToSession = "session_1"
 			e.Provenance = p
@@ -911,7 +431,7 @@ func TestFoldStoresRicherJobProvenanceFromFinishedEvent(t *testing.T) {
 	finishProvenance := provenance.WithWatch(startProvenance, "watch_finish", "wg_1", "wd_finish", "session_1", "caller")
 	events := []Event{
 		ev(EventJobStarted, 1, "job_A", func(e *Event) {
-			e.Type = JobDelegate
+			e.Type = JobShell
 			e.OwnerSessionID = "session_1"
 			e.VisibleToSession = "session_1"
 			e.Provenance = startProvenance
@@ -937,7 +457,7 @@ func TestFoldStoresNotificationProvenanceFromPendingEvent(t *testing.T) {
 	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", "session_1", "caller")
 	events := []Event{
 		ev(EventJobStarted, 1, "job_A", func(e *Event) {
-			e.Type = JobDelegate
+			e.Type = JobShell
 			e.OwnerSessionID = "session_1"
 			e.VisibleToSession = "session_1"
 		}),
@@ -957,58 +477,5 @@ func TestFoldStoresNotificationProvenanceFromPendingEvent(t *testing.T) {
 	}
 	if !provenance.ContainsWatch(rec.NotificationProvenance, "watch_A", "wg_1") {
 		t.Fatalf("notification provenance = %+v, want watch_A/wg_1", rec.NotificationProvenance)
-	}
-}
-
-// TestFoldMarksDisposedDelegate covers the native worktree tools spec §9 step 5
-// disposed flag: a delegate_disposed event keyed by delegate id marks every job
-// record of that delegate (across resumes) Disposed, and only that delegate's
-// records.
-func TestFoldMarksDisposedDelegate(t *testing.T) {
-	start := time.Unix(1, 0).UTC()
-	events := []Event{
-		ev(EventJobStarted, 1, "job_A", func(e *Event) {
-			e.Type = JobDelegate
-			e.DelegateID = "dlg_1"
-			e.OwnerSessionID = "S1"
-			e.VisibleToSession = "S1"
-			e.StartedAt = &start
-		}),
-		ev(EventJobStarted, 2, "job_A2", func(e *Event) {
-			e.Type = JobDelegate
-			e.DelegateID = "dlg_1"
-			e.OwnerSessionID = "S1"
-			e.VisibleToSession = "S1"
-			e.StartedAt = &start
-		}),
-		ev(EventJobStarted, 3, "job_B", func(e *Event) {
-			e.Type = JobDelegate
-			e.DelegateID = "dlg_2"
-			e.OwnerSessionID = "S1"
-			e.VisibleToSession = "S1"
-			e.StartedAt = &start
-		}),
-		ev(EventDelegateDisposed, 4, "", func(e *Event) {
-			e.DelegateID = "dlg_1"
-		}),
-	}
-
-	recs := Fold(events)
-	if recs["job_A"] == nil || !recs["job_A"].Disposed {
-		t.Errorf("job_A Disposed = %v, want true", recs["job_A"] != nil && recs["job_A"].Disposed)
-	}
-	if !recs["job_A2"].Disposed {
-		t.Error("job_A2 (same delegate, later resume) not marked disposed")
-	}
-	if recs["job_B"].Disposed {
-		t.Error("job_B (different delegate) wrongly marked disposed")
-	}
-
-	// Round-trips through FoldOrdered too.
-	ordered := FoldOrdered(events)
-	for _, r := range ordered {
-		if r.DelegateID == "dlg_1" && !r.Disposed {
-			t.Errorf("FoldOrdered: %s not marked disposed", r.JobID)
-		}
 	}
 }

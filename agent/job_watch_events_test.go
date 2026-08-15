@@ -277,13 +277,12 @@ func TestEventWatchIgnoresUnwatchedKind(t *testing.T) {
 func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	seedCommonWatchSendTargets(t, jm)
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	_, err := jm.configureWatch(watchArgs{
 		Target: rec.JobID,
 		Events: []string{"assistant.tool"},
-		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
 	})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
@@ -300,8 +299,8 @@ func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
 	for _, p := range pending {
 		state = p
 	}
-	if state.Key.ResolvedSendTo != "dlg_obs" {
-		t.Fatalf("pending target = %q, want dlg_obs", state.Key.ResolvedSendTo)
+	if state.Key.ResolvedSendTo != runtimeMessageAliasCaller {
+		t.Fatalf("pending target = %q, want caller", state.Key.ResolvedSendTo)
 	}
 	if state.Key.WatchID == "" {
 		t.Fatalf("pending watch_id is empty: %+v", state.Key)
@@ -524,7 +523,6 @@ func TestAttachScanSendArmFiresOnce(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
-	seedCommonWatchSendTargets(t, jm)
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("ready one\nready two\nready three\n")); err != nil {
@@ -534,7 +532,7 @@ func TestAttachScanSendArmFiresOnce(t *testing.T) {
 	res, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
 	})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
@@ -544,7 +542,7 @@ func TestAttachScanSendArmFiresOnce(t *testing.T) {
 	}
 
 	jm.mu.Lock()
-	cfg := jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "dlg_obs"}]
+	cfg := jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: runtimeMessageAliasCaller}]
 	var pendingCount int
 	var lastReason string
 	if cfg != nil {

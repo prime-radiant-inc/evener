@@ -139,7 +139,6 @@ func TestClassifySelfInfluenceLocked(t *testing.T) {
 func TestRecordWatchSendRunawayFuse(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}, Send: &watchSendArgs{To: "dlg_obs"}})
 	cfg := onlyWatchConfigForTest(t, jm)
 
@@ -265,7 +264,6 @@ func TestSelfInfluenceNotice(t *testing.T) {
 func TestSnapshotWatchSendFrameAddsSelfInfluenceNotice(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}, Send: &watchSendArgs{To: "dlg_obs"}})
 	cfg := onlyWatchConfigForTest(t, jm)
 
@@ -309,7 +307,6 @@ func TestSnapshotWatchSendFrameAddsSelfInfluenceNotice(t *testing.T) {
 func TestRecordWatchSendRunawayFuseSeesCoalescedDepth(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}, Send: &watchSendArgs{To: "dlg_obs"}})
 	cfg := onlyWatchConfigForTest(t, jm)
 
@@ -383,7 +380,6 @@ func TestRecordWatchSendRunawayFuseSeesCoalescedDepth(t *testing.T) {
 func TestClassifySelfInfluenceCountsReplacedLineage(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "caller",
 		Events: []string{"job.notification"},
@@ -436,7 +432,6 @@ func TestClassifySelfInfluenceCountsReplacedLineage(t *testing.T) {
 func TestClassifySelfInfluenceCountsClearedLineage(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 	args := watchArgs{
 		Target: "caller",
 		Events: []string{"job.notification"},

@@ -103,16 +103,13 @@ func TestW2Conc_FireProgressTickOverBudgetAutoClears(t *testing.T) {
 func TestW2Conc_FireProgressTickSendPathSnapshots(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	if _, err := jm.configureWatch(watchArgs{
+	installWatchBelowValidation(t, jm, watchArgs{
 		Target:             rec.JobID,
 		ProgressIntervalMS: minWatchProgressIntervalMS,
 		Send:               &watchSendArgs{To: "dlg_obs", Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
+	})
 	cfg := onlyWatchConfigForTest(t, jm)
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "dlg_obs"}
 

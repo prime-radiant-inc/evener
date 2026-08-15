@@ -239,115 +239,6 @@ func TestSubagentStatusExhaustedIsTerminal(t *testing.T) {
 	}
 }
 
-// TestBlockingSpawn_SnapshotHasAgentID verifies that a blocking spawn result carries agent_id directly from the snapshot.
-func TestDelegateForeground_SnapshotHasJobID(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return finalResponse("subagent done")
-			},
-		},
-	})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	result := sess.createDelegate(ctx, delegateArgs{Task: "test task", Background: false, BlockTimeoutMS: 5000})
-	if result.Err != nil {
-		t.Fatalf("delegate returned error: %v", result.Err)
-	}
-	if result.JobID == "" {
-		t.Fatalf("job_id must be set in delegate result: %+v", result)
-	}
-	if result.Status != "completed" {
-		t.Errorf("status = %q, want completed", result.Status)
-	}
-	if result.TranscriptRef == "" {
-		t.Error("transcript_ref must be set")
-	}
-}
-
-// TestDelegateJobStartedEmittedBeforeJobFinished asserts that JOB_STARTED for
-// the delegate job appears in the event stream, and that it precedes
-// JOB_FINISHED in program order.
-func TestDelegateJobStartedEmittedBeforeJobFinished(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("child done") },
-		},
-	})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Collect events into a slice; closed after sess.Close().
-	var evs []events.SessionEvent
-	evDone := make(chan struct{})
-	go func() {
-		defer close(evDone)
-		for ev := range sess.Events() {
-			evs = append(evs, ev)
-		}
-	}()
-
-	res := sess.createDelegate(context.Background(), delegateArgs{Task: "do work", BlockTimeoutMS: 5000})
-	if res.Err != nil {
-		t.Fatalf("delegate error: %v", res.Err)
-	}
-	if res.JobID == "" {
-		t.Fatal("delegate returned empty job_id")
-	}
-
-	sess.Close()
-	<-evDone
-
-	// Locate the positions of JOB_STARTED and JOB_FINISHED for our job_id.
-	startIdx := -1
-	endIdx := -1
-	for i, ev := range evs {
-		switch d := ev.Data.(type) {
-		case events.JobStartedData:
-			if d.JobID == res.JobID {
-				startIdx = i
-			}
-		case events.JobFinishedData:
-			if d.JobID == res.JobID {
-				endIdx = i
-			}
-		}
-	}
-
-	if startIdx == -1 {
-		t.Fatalf("JOB_STARTED not found for job_id %q in events: %v", res.JobID, evs)
-	}
-	if endIdx == -1 {
-		t.Fatalf("JOB_FINISHED not found for job_id %q in events: %v", res.JobID, evs)
-	}
-	if startIdx >= endIdx {
-		t.Fatalf("JOB_STARTED (idx=%d) must precede JOB_FINISHED (idx=%d)", startIdx, endIdx)
-	}
-}
-
 // TestJobFinishedData_JSONShape verifies JOB_FINISHED carries the job terminal
 // notification fields under the wire keys used by appwire/UI consumers.
 func TestJobFinishedData_JSONShape(t *testing.T) {
@@ -355,7 +246,7 @@ func TestJobFinishedData_JSONShape(t *testing.T) {
 	code := 0
 	d := events.JobFinishedData{
 		JobID:         "job_X",
-		JobType:       "delegate",
+		JobType:       "shell",
 		Status:        "completed",
 		Reason:        "communicated",
 		ExitCode:      &code,
@@ -366,7 +257,7 @@ func TestJobFinishedData_JSONShape(t *testing.T) {
 	if !strings.Contains(string(b), `"status":"completed"`) {
 		t.Fatalf("missing status: %s", b)
 	}
-	for _, want := range []string{`"job_id":"job_X"`, `"job_type":"delegate"`, `"reason":"communicated"`, `"exit_code":0`, `"output_bytes":42`, `"transcript_ref":"local:child"`} {
+	for _, want := range []string{`"job_id":"job_X"`, `"job_type":"shell"`, `"reason":"communicated"`, `"exit_code":0`, `"output_bytes":42`, `"transcript_ref":"local:child"`} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("missing %s: %s", want, b)
 		}
@@ -869,9 +760,6 @@ func TestWatchParentGrantIsNotInheritedByGrandchild(t *testing.T) {
 	grandchild := prepared.sub.sess
 	if grandchild.cfg.spawn.parentWatchGranted {
 		t.Fatal("grandchild must not inherit parentWatchGranted without watch_parent")
-	}
-	if grandchild.cfg.spawn.parentInstallWatch != nil {
-		t.Fatal("grandchild must not inherit parentInstallWatch without watch_parent")
 	}
 	if grandchild.reg.Get("job_watch") != nil {
 		t.Fatal("grandchild without watch_parent must not have job_watch registered")

@@ -39,7 +39,6 @@ func TestDelegateResourceCreate_IsolationFailurePublishesNothing(t *testing.T) {
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "remain unpublished",
 		Sandbox:             "workspace-write",
-		Background:          true,
 		DelegationAllowance: 0,
 	})
 	if !errors.Is(result.Err, wantErr) {
@@ -65,7 +64,6 @@ func TestDelegateResourceCreate_StableRouteSkipsLegacyRetentionReservation(t *te
 
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "do not reclaim legacy sessions",
-		Background:          true,
 		DelegationAllowance: 0,
 	})
 	if legacyReservationCalled {
@@ -96,7 +94,6 @@ func TestDelegateResourceCreate_StableIdentityCommitsBeforeRuntimeLaunch(t *test
 
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "commit before construction",
-		Background:          true,
 		DelegationAllowance: 0,
 	})
 	if !errors.Is(result.Err, wantErr) {
@@ -137,7 +134,6 @@ func TestDelegateResourceCreate_CommittedUpdatePrecedesConstruction(t *testing.T
 	go func() {
 		createDone <- root.createDelegate(context.Background(), delegateArgs{
 			Task:                "publish before construction",
-			Background:          true,
 			DelegationAllowance: 0,
 		})
 	}()
@@ -181,7 +177,6 @@ func TestDelegateResourceCreate_PostCommitConstructionFailureClosesResumability(
 
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "fail after commit",
-		Background:          true,
 		DelegationAllowance: 0,
 	})
 	if !errors.Is(result.Err, wantErr) {
@@ -255,7 +250,7 @@ func TestDelegateResourceCreate_RegisteredPostCommitFailureRetainsStableIdentity
 	if result.ChildSessionID != aggregate.Descriptor.ChildSessionID {
 		t.Fatalf("registered child_session_id = %q, durable descriptor = %q", result.ChildSessionID, aggregate.Descriptor.ChildSessionID)
 	}
-	if result.Type != string(jobstore.JobDelegate) {
+	if result.Type != delegateResourceType {
 		t.Fatalf("registered type = %q, want delegate", result.Type)
 	}
 	if result.Status != string(aggregate.LatestOutcome.Status) || result.Reason != aggregate.LatestOutcome.Reason {
@@ -293,7 +288,7 @@ func TestDelegateResourceCreate_ResultMatchesCommittedSnapshot(t *testing.T) {
 			return constructionErr
 		}
 
-		result := root.createDelegate(context.Background(), delegateArgs{Task: "stop before attach", Background: true})
+		result := root.createDelegate(context.Background(), delegateArgs{Task: "stop before attach"})
 		if !errors.Is(result.Err, constructionErr) {
 			t.Fatalf("create error = %v, want construction diagnostic", result.Err)
 		}
@@ -312,7 +307,7 @@ func TestDelegateResourceCreate_ResultMatchesCommittedSnapshot(t *testing.T) {
 			return nil
 		}
 
-		result := root.createDelegate(context.Background(), delegateArgs{Task: "close failed start", Background: true})
+		result := root.createDelegate(context.Background(), delegateArgs{Task: "close failed start"})
 		if !errors.Is(result.Err, constructionErr) {
 			t.Fatalf("create error = %v, want construction diagnostic", result.Err)
 		}
@@ -334,7 +329,7 @@ func TestDelegateResourceCreate_ResultMatchesCommittedSnapshot(t *testing.T) {
 			return constructionErr
 		}
 
-		result := root.createDelegate(context.Background(), delegateArgs{Task: "retain fenced start", Background: true})
+		result := root.createDelegate(context.Background(), delegateArgs{Task: "retain fenced start"})
 		if !errors.Is(result.Err, constructionErr) || !strings.Contains(result.Err.Error(), "store is closed") {
 			t.Fatalf("create error = %v, want construction and compensating append diagnostics", result.Err)
 		}
@@ -475,7 +470,6 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 		Model:        "gpt-5.2",
 		WatchParent:  true,
 		ResultSchema: resultSchema,
-		Background:   true,
 	})
 	if result.Err != nil {
 		t.Fatalf("createDelegate: %v", result.Err)
@@ -630,9 +624,8 @@ func TestDelegateResourceCreate_PreservesCompleteNamedAgentWorkflowAfterCommit(t
 	root.delegateController.mu.Unlock()
 
 	result := root.createDelegate(context.Background(), delegateArgs{
-		Task:       "run the complete committed workflow",
-		AgentType:  agentType,
-		Background: true,
+		Task:      "run the complete committed workflow",
+		AgentType: agentType,
 	})
 	if result.Err != nil {
 		t.Fatalf("createDelegate: %v", result.Err)
@@ -688,8 +681,7 @@ func TestDelegateResourceCreate_ToolCapabilityCeiling(t *testing.T) {
 		})
 
 		result := root.createDelegate(context.Background(), delegateArgs{
-			Task:       "construct below the committed capability ceiling",
-			Background: true,
+			Task: "construct below the committed capability ceiling",
 		})
 		if result.Err != nil {
 			t.Fatalf("createDelegate with parent runtime-only tool: %v", result.Err)
@@ -743,9 +735,8 @@ func TestDelegateResourceCreate_ToolCapabilityCeiling(t *testing.T) {
 		root.delegateController.mu.Unlock()
 
 		result := root.createDelegate(context.Background(), delegateArgs{
-			Task:       "retain the committed named-agent policy",
-			AgentType:  agentType,
-			Background: true,
+			Task:      "retain the committed named-agent policy",
+			AgentType: agentType,
 		})
 		if result.Err != nil {
 			t.Fatalf("createDelegate after parent registry mutation: %v", result.Err)
@@ -781,8 +772,7 @@ func TestDelegateResourceCreate_ToolCapabilityCeiling(t *testing.T) {
 		root.reg.Remove("read_transcript")
 
 		result := root.createDelegate(context.Background(), delegateArgs{
-			Task:       "do not regain the parent-removed recovery reader",
-			Background: true,
+			Task: "do not regain the parent-removed recovery reader",
 		})
 		if result.Err != nil {
 			t.Fatalf("createDelegate without parent recovery reader: %v", result.Err)
@@ -877,7 +867,6 @@ func TestDelegateResourceCreate_RestoredRootStartsNewChildWithStartupHooks(t *te
 
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "start a new child from the restored root",
-		Background:          true,
 		DelegationAllowance: 0,
 	})
 	if result.Err != nil {
@@ -913,7 +902,6 @@ func TestDelegateResourceCreate_PostCommitFailureRemainsInspectableAfterRestart(
 
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "remain inspectable",
-		Background:          true,
 		DelegationAllowance: 0,
 	})
 	if !errors.Is(result.Err, wantErr) {
@@ -1011,7 +999,6 @@ func TestDelegateResourceCreate_ResumabilityAppendFailureDestroysNothing(t *test
 
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "retain after append failure",
-		Background:          true,
 		DelegationAllowance: 0,
 	})
 	if !errors.Is(result.Err, wantErr) || !strings.Contains(result.Err.Error(), "store is closed") {
@@ -1208,7 +1195,7 @@ func prepareCommittedUnadoptedDelegate(t *testing.T, root *Session, task string)
 	t.Helper()
 	runtime := delegateRuntime{owner: root}
 	ctx := context.Background()
-	args := delegateArgs{Task: task, Background: true, DelegationAllowance: 0}
+	args := delegateArgs{Task: task, DelegationAllowance: 0}
 	selection, err := root.selectSubagentModel(ctx, args.Model, args.AgentType)
 	if err != nil {
 		t.Fatalf("selectSubagentModel: %v", err)
@@ -1256,7 +1243,6 @@ func TestDelegateResourceCreate_DescendantEventCallbackSurvivesSpawnConfig(t *te
 	})
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "preserve descendant callback",
-		Background:          true,
 		DelegationAllowance: 0,
 	})
 	if result.Err != nil {
@@ -1310,7 +1296,6 @@ func TestDelegateResourceCreate_ChildTranscriptIsPreseededBeforeRun(t *testing.T
 	const task = "preseed this exact task"
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                task,
-		Background:          true,
 		DelegationAllowance: 0,
 	})
 	if result.Err != nil {
@@ -1532,7 +1517,7 @@ func TestDelegateResourceCreate_RegisteredToolUsesRootController(t *testing.T) {
 		t.Fatalf("registered owner session = %q, want root %q", aggregate.Descriptor.OwnerSessionID, root.ID())
 	}
 	for _, record := range root.jobManager.list(listFilter{IncludeNested: true}) {
-		if record.Type == jobstore.JobDelegate {
+		if string(record.Type) == delegateResourceType {
 			t.Fatalf("registered stable create wrote delegate JobRecord %#v", record)
 		}
 	}

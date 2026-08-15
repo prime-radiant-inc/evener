@@ -51,10 +51,8 @@ func seed100JobsMore(t *testing.T) {
 	jm.stampLastActivityLocked("nil-rec")
 	delete(jm.running, "nil-rec")
 	jm.running["shell-dir"] = &runningJob{rec: &jobstore.JobRecord{JobID: "shell-dir", Type: jobstore.JobShell, WorkingDir: "/tmp/shell"}}
-	jm.running["delegate-dir"] = &runningJob{rec: &jobstore.JobRecord{JobID: "delegate-dir", Type: jobstore.JobDelegate, DelegateRestore: &jobstore.DelegateRestoreDescriptor{WorkingDir: "/tmp/delegate"}}}
 	_ = jm.liveWorkHandles()
 	delete(jm.running, "shell-dir")
-	delete(jm.running, "delegate-dir")
 
 	// A forwarded start whose compensating terminal append also fails is kept
 	// live for durable retry. Suppress only the asynchronous retry in this test.
@@ -245,8 +243,6 @@ func seed100JobsMore(t *testing.T) {
 	forwardRun.forwardDisabled = true
 	_ = jm3.forwardFinishedJob(forwardRun, forwardRun.terminal)
 	_ = jm3.forwardPendingJobNotification(forwardRun, forwardRun.terminal)
-	forwardRun.fromWatch.Store(true)
-	jm3.markWatchOriginCallerCallbackDelivered(forwardRun.rec.JobID)
 	delete(jm3.running, forwardRun.rec.JobID)
 	writeOut, err := jm3.openOutput(filepath.Join(jm3.dir, "jobs", "write-forward.log"), 64)
 	if err != nil {

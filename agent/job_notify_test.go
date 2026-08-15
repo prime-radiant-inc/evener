@@ -248,105 +248,6 @@ func TestJobNotification_ResumableExhaustionProvidesRecoveryGuidance(t *testing.
 	}
 }
 
-func TestJobNotification_ExhaustedPendingReplayIsDeduplicated(t *testing.T) {
-	t.Parallel()
-	stateDir := t.TempDir()
-	workDir := t.TempDir()
-	client := llm.NewClient()
-	adapter := &fakeAdapter{name: "openai"}
-	client.Register(adapter)
-	original, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
-		StateDir:         stateDir,
-		NoProjectPrompts: true,
-		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
-	})
-	if err != nil {
-		t.Fatalf("new original session: %v", err)
-	}
-	started := time.Unix(1000, 0).UTC()
-	ended := time.Unix(1001, 0).UTC()
-	resumable := false
-	const terminalGen = "GEN_EXHAUSTED_REPLAY"
-	if err := original.jobManager.appendJobEvents([]jobstore.Event{
-		{
-			Kind:             jobstore.EventJobStarted,
-			TS:               started,
-			JobID:            "job_exhausted",
-			Type:             jobstore.JobDelegate,
-			OwnerSessionID:   original.ID(),
-			VisibleToSession: original.ID(),
-			StartedAt:        &started,
-		},
-		{
-			Kind:             jobstore.EventJobFinished,
-			TS:               ended,
-			JobID:            "job_exhausted",
-			Status:           jobstore.StatusExhausted,
-			ExhaustionBudget: "max_turns",
-			ExhaustionLimit:  500,
-			Resumable:        &resumable,
-			EndedAt:          &ended,
-			TerminalGen:      terminalGen,
-		},
-		{
-			Kind:        jobstore.EventJobNotificationPending,
-			TS:          ended,
-			JobID:       "job_exhausted",
-			TerminalGen: terminalGen,
-		},
-	}); err != nil {
-		t.Fatalf("persist exhausted pending notification: %v", err)
-	}
-	meta := original.Meta()
-	if err := original.jobManager.closeStoreOnly(); err != nil {
-		t.Fatalf("close original job store: %v", err)
-	}
-	if original.transcript != nil {
-		if err := original.transcript.Close(); err != nil {
-			t.Fatalf("close original transcript: %v", err)
-		}
-	}
-	if original.cancelFunc != nil {
-		original.cancelFunc()
-	}
-
-	restored, err := RestoreSessionFromMetaWithConfig(
-		client,
-		NewOpenAIProfile("gpt-5.2"),
-		execenv.NewLocalExecutionEnvironment(workDir),
-		meta,
-		RestoreSessionConfig{
-			StateDir: stateDir,
-			testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
-		},
-	)
-	if err != nil {
-		t.Fatalf("restore session: %v", err)
-	}
-	defer restored.Close()
-
-	deliverable, retry, injected := restored.filterDeliverableJobNotifications(restored.drainJobNotifications())
-	if len(retry) != 0 || len(injected) != 0 {
-		t.Fatalf("restored notification partitions = deliverable:%d retry:%d injected:%d", len(deliverable), len(retry), len(injected))
-	}
-	if len(deliverable) != 1 {
-		t.Fatalf("restored exhausted notifications = %d, want 1", len(deliverable))
-	}
-	got := deliverable[0]
-	if got.terminalGen != terminalGen {
-		t.Fatalf("terminal generation = %q, want %q", got.terminalGen, terminalGen)
-	}
-	if got.notification.Status != "exhausted" || got.notification.ExhaustionBudget != "max_turns" || got.notification.ExhaustionLimit != 500 || got.notification.Resumable == nil || *got.notification.Resumable {
-		t.Fatalf("restored exhausted notification = %+v", got.notification)
-	}
-	if requests := adapter.Requests(); len(requests) != 0 {
-		t.Fatalf("restore made %d model requests, want 0", len(requests))
-	}
-	if children := restored.subagents.sessions(); len(children) != 0 {
-		t.Fatalf("restore recreated %d child sessions, want 0", len(children))
-	}
-}
-
 func appendPendingJobNotificationRecord(t *testing.T, jm *jobManager, sessionID string) {
 	t.Helper()
 	started := time.Unix(1000, 0).UTC()
@@ -399,7 +300,7 @@ func appendPendingJobNotificationRecordWithProvenance(t *testing.T, jm *jobManag
 		Kind:             jobstore.EventJobStarted,
 		TS:               started,
 		JobID:            jobID,
-		Type:             jobstore.JobDelegate,
+		Type:             jobstore.JobShell,
 		OwnerSessionID:   sessionID,
 		VisibleToSession: sessionID,
 		StartedAt:        &started,
@@ -986,32 +887,6 @@ func TestTerminalNotificationShellExcerptPreservesEightKBeforeTruncation(t *test
 	}
 }
 
-func TestTerminalNotificationDelegateExcerptIsHead(t *testing.T) {
-	t.Parallel()
-	sess, adapter := newNotificationExcerptSession(t)
-	head := "HEAD_MARKER_" + strings.Repeat("h", 600)
-	tail := strings.Repeat("t", 9000) + "_TAIL_MARKER"
-	writeFinishedJobWithOutput(t, sess.jobManager, "job_D", jobstore.JobDelegate, head+tail)
-
-	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
-		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
-	}
-
-	text := deliveredNotificationText(t, adapter)
-	if !strings.Contains(text, "excerpt:") {
-		t.Fatalf("delegate terminal block missing excerpt section:\n%s", text)
-	}
-	if !strings.Contains(text, "HEAD_MARKER_") {
-		t.Fatalf("delegate excerpt must contain the head of the report:\n%s", text)
-	}
-	if strings.Contains(text, "_TAIL_MARKER") {
-		t.Fatalf("delegate excerpt must be the head, not the tail; tail marker present:\n%s", text)
-	}
-	if !strings.Contains(text, "[excerpt truncated]") {
-		t.Fatalf("delegate excerpt over budget must carry truncation marker:\n%s", text)
-	}
-}
-
 func TestTerminalNotificationShortOutputHasNoTruncationMarker(t *testing.T) {
 	t.Parallel()
 	sess, adapter := newNotificationExcerptSession(t)
@@ -1148,7 +1023,7 @@ func TestJobNotificationFromRecordUsesNotificationProvenance(t *testing.T) {
 	notificationProv := provenance.WithWatch(nil, "watch_note", "wg_1", "wd_note", "session_1", "caller")
 	n := jobNotificationFromRecord(&jobstore.JobRecord{
 		JobID:                  "job_A",
-		Type:                   jobstore.JobDelegate,
+		Type:                   jobstore.JobShell,
 		Status:                 jobstore.StatusCompleted,
 		Provenance:             jobProv,
 		NotificationProvenance: notificationProv,
@@ -1166,7 +1041,7 @@ func TestJobNotificationFromRecordFallsBackToJobProvenance(t *testing.T) {
 	jobProv := provenance.WithWatch(nil, "watch_job", "wg_1", "wd_job", "session_1", "caller")
 	n := jobNotificationFromRecord(&jobstore.JobRecord{
 		JobID:      "job_A",
-		Type:       jobstore.JobDelegate,
+		Type:       jobstore.JobShell,
 		Status:     jobstore.StatusCompleted,
 		Provenance: jobProv,
 	})
@@ -1208,7 +1083,7 @@ func TestJobNotificationFromRecordUsesDisplayLabelFallback(t *testing.T) {
 			t.Parallel()
 			n := jobNotificationFromRecord(&jobstore.JobRecord{
 				JobID:       "job_A",
-				Type:        jobstore.JobDelegate,
+				Type:        jobstore.JobShell,
 				Status:      jobstore.StatusCompleted,
 				Description: tt.description,
 				Command:     tt.command,

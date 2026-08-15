@@ -78,8 +78,6 @@ type JobView struct {
 	OwnerSessionID   string `json:"owner_session_id,omitempty"`
 	VisibleToSession string `json:"visible_to_session_id,omitempty"`
 	ParentJobID      string `json:"parent_job_id,omitempty"`
-	DelegateID       string `json:"delegate_id,omitempty"`
-	TranscriptRef    string `json:"transcript_ref,omitempty"`
 	OutputPath       string `json:"output_path,omitempty"`
 
 	// NotifyState is the terminal-notification progress: a terminal job still
@@ -90,12 +88,6 @@ type JobView struct {
 	NotifyState      string `json:"terminal_notification_state,omitempty"`
 	ExhaustionBudget string `json:"exhaustion_budget,omitempty"`
 	ExhaustionLimit  int    `json:"exhaustion_limit,omitempty"`
-
-	// Resumable / Disposed answer "can this delegate job be revived": a disposed
-	// isolation lane makes a job not-resumable however Resumable itself folded.
-	Resumable       *bool  `json:"resumable,omitempty"`
-	NotResumableWhy string `json:"not_resumable_reason,omitempty"`
-	Disposed        bool   `json:"disposed,omitempty"`
 }
 
 // JobOpts narrows a job report.
@@ -191,7 +183,7 @@ func projectDoctorDelegates(ownerSessionID string, state delegatestore.State) []
 func legacyDelegateFailures(events []jobstore.Event) []StateFailure {
 	legacyIDs := make(map[string]bool)
 	for _, record := range jobstore.Fold(events) {
-		if record != nil && record.Type == jobstore.JobDelegate {
+		if record != nil && string(record.Type) == "delegate" {
 			legacyIDs[record.JobID] = true
 		}
 	}
@@ -239,15 +231,10 @@ func jobViewFrom(rec *jobstore.JobRecord) JobView {
 		OwnerSessionID:   rec.OwnerSessionID,
 		VisibleToSession: rec.VisibleToSession,
 		ParentJobID:      rec.ParentJobID,
-		DelegateID:       rec.DelegateID,
-		TranscriptRef:    rec.TranscriptRef,
 		OutputPath:       rec.OutputPath,
 		NotifyState:      string(rec.NotifyState),
 		ExhaustionBudget: rec.ExhaustionBudget,
 		ExhaustionLimit:  rec.ExhaustionLimit,
-		Resumable:        rec.Resumable,
-		NotResumableWhy:  rec.NotResumableWhy,
-		Disposed:         rec.Disposed,
 	}
 }
 
@@ -279,9 +266,6 @@ func RenderJobs(r JobReport) string {
 		if j.OwnerSessionID != "" || j.VisibleToSession != "" {
 			fmt.Fprintf(&b, "  owner=%s  visible=%s\n", dash(j.OwnerSessionID), dash(j.VisibleToSession))
 		}
-		if j.DelegateID != "" || j.TranscriptRef != "" {
-			fmt.Fprintf(&b, "  delegate=%s  transcript=%s\n", dash(j.DelegateID), dash(j.TranscriptRef))
-		}
 		if j.ParentJobID != "" {
 			fmt.Fprintf(&b, "  parent_job=%s\n", j.ParentJobID)
 		}
@@ -290,10 +274,6 @@ func RenderJobs(r JobReport) string {
 		}
 		if j.ExhaustionBudget != "" || j.ExhaustionLimit > 0 {
 			fmt.Fprintf(&b, "  exhaustion: budget=%s  limit=%d\n", dash(j.ExhaustionBudget), j.ExhaustionLimit)
-		}
-		if j.Resumable != nil || j.NotResumableWhy != "" || j.Disposed {
-			fmt.Fprintf(&b, "  resumable=%s  disposed=%t  not_resumable_reason=%s\n",
-				optionalBoolString(j.Resumable), j.Disposed, dash(j.NotResumableWhy))
 		}
 	}
 	for _, d := range r.Delegates {

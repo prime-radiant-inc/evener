@@ -7,56 +7,82 @@ import (
 	"time"
 )
 
-// FuzzWvQuietWatchdogTick drives decideQuietWatchdogTick — the pure decision core
-// lifted out of fireQuietWatchdogTick — over adversarial timing snapshots.
+// FuzzWvQuietWatchdogTick drives the stable delegate controller's quiet
+// attention admission over adversarial elapsed times and latch state.
 //
 // Oracles (beyond never-panic):
-//   - determinism: the same snapshot yields the same decision;
-//   - latch monotonicity: an already-notified stretch never fires again;
-//   - quiet < window never latches the notified flag (it clears it);
-//   - a fire always latches the notified flag;
-//   - the window boundary is inclusive: quiet == window latches;
-//   - a dead tick (closing or non-delegate) never fires or latches.
+//   - identical controller states make the same admission decision;
+//   - quiet attention is admitted only at or beyond the inclusive window;
+//   - an already-notified stretch never admits another attention;
+//   - an outstanding claim suppresses duplicates; and
+//   - aborting persistence re-arms the same durable attention identity.
 func FuzzWvQuietWatchdogTick(f *testing.F) {
-	f.Add(false, true, int64(0), int64(600), int64(300), false)
-	f.Add(false, true, int64(0), int64(300), int64(300), false)
-	f.Add(false, true, int64(0), int64(600), int64(300), true)
-	f.Add(false, true, int64(0), int64(100), int64(300), false)
-	f.Add(true, true, int64(0), int64(600), int64(300), false)
-	f.Add(false, false, int64(0), int64(600), int64(300), false)
+	f.Add(int64(0), false)
+	f.Add(int64(599), false)
+	f.Add(int64(600), false)
+	f.Add(int64(601), false)
+	f.Add(int64(600), true)
+	f.Add(int64(-1), false)
 
-	f.Fuzz(func(t *testing.T, closing, isDelegate bool, lastSec, nowSec, windowSec int64, alreadyNotified bool) {
-		base := time.Unix(1_700_000_000, 0).UTC()
-		snap := quietTickSnapshot{
-			closing:         closing,
-			isDelegate:      isDelegate,
-			last:            base.Add(time.Duration(lastSec) * time.Second),
-			now:             base.Add(time.Duration(nowSec) * time.Second),
-			window:          time.Duration(windowSec) * time.Second,
-			alreadyNotified: alreadyNotified,
-		}
-		dec := decideQuietWatchdogTick(snap)
-		if dec2 := decideQuietWatchdogTick(snap); dec != dec2 {
-			t.Fatalf("non-deterministic: %+v vs %+v", dec, dec2)
-		}
-		if alreadyNotified && dec.fire {
-			t.Fatalf("already-notified stretch must not fire again: %+v", dec)
-		}
-		if dec.fire && !dec.newNotifiedLatch {
-			t.Fatalf("a fire must latch the notified flag: %+v", dec)
-		}
-		if !dec.keepAlive {
-			if dec.fire || dec.newNotifiedLatch {
-				t.Fatalf("dead tick must not fire or latch: %+v", dec)
+	f.Fuzz(func(t *testing.T, elapsedSec int64, alreadyNotified bool) {
+		elapsed := time.Duration(elapsedSec%int64((24*time.Hour)/time.Second)) * time.Second
+		begin := func() (*delegateQuietAttentionClaim, *delegateTreeController, *Session, delegateLease) {
+			root, controller, lease, clock := newStableQuietSupervisionHarness(t)
+			controller.mu.Lock()
+			controller.live[lease.delegateID].quietNotified = alreadyNotified
+			controller.mu.Unlock()
+			clock.Advance(elapsed)
+			claim, err := controller.BeginQuietAttention(root, lease, clock.Now())
+			if err != nil {
+				t.Fatalf("BeginQuietAttention: %v", err)
 			}
-		} else {
-			quiet := snap.now.Sub(snap.last)
-			if quiet < snap.window && dec.newNotifiedLatch {
-				t.Fatalf("quiet<window must clear the latch: quiet=%v window=%v dec=%+v", quiet, snap.window, dec)
+			return claim, controller, root, lease
+		}
+
+		first, firstController, firstRoot, firstLease := begin()
+		second, secondController, _, _ := begin()
+		firstID, secondID := "", ""
+		if first != nil {
+			firstID = first.attentionID
+		}
+		if second != nil {
+			secondID = second.attentionID
+		}
+		if (first == nil) != (second == nil) || firstID != secondID {
+			t.Fatalf("non-deterministic quiet admission: first=%q second=%q", firstID, secondID)
+		}
+
+		wantClaim := elapsed >= delegateQuietWindow && !alreadyNotified
+		if (first != nil) != wantClaim {
+			t.Fatalf("quiet admission at %v with notified=%v: claim=%#v want=%v", elapsed, alreadyNotified, first, wantClaim)
+		}
+		if second != nil {
+			if err := secondController.CompleteQuietAttention(second, false); err != nil {
+				t.Fatalf("abort duplicate harness claim: %v", err)
 			}
-			if quiet >= snap.window && !dec.newNotifiedLatch {
-				t.Fatalf("quiet>=window must latch: quiet=%v window=%v dec=%+v", quiet, snap.window, dec)
-			}
+		}
+		if first == nil {
+			return
+		}
+		if first.attentionID != delegateQuietAttentionID(firstLease) {
+			t.Fatalf("quiet attention id = %q, want %q", first.attentionID, delegateQuietAttentionID(firstLease))
+		}
+		duplicate, err := firstController.BeginQuietAttention(firstRoot, firstLease, first.activityAt.Add(elapsed))
+		if err != nil || duplicate != nil {
+			t.Fatalf("outstanding quiet claim admitted duplicate=%#v err=%v", duplicate, err)
+		}
+		if err := firstController.CompleteQuietAttention(first, false); err != nil {
+			t.Fatalf("abort quiet claim: %v", err)
+		}
+		retry, err := firstController.BeginQuietAttention(firstRoot, firstLease, first.activityAt.Add(elapsed))
+		if err != nil || retry == nil {
+			t.Fatalf("retry quiet admission = %#v, %v", retry, err)
+		}
+		if retry.attentionID != first.attentionID {
+			t.Fatalf("retry quiet attention id = %q, want %q", retry.attentionID, first.attentionID)
+		}
+		if err := firstController.CompleteQuietAttention(retry, false); err != nil {
+			t.Fatalf("abort retried quiet claim: %v", err)
 		}
 	})
 }

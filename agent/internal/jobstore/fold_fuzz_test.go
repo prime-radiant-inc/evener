@@ -108,19 +108,14 @@ func FuzzJobEventLogReplay(f *testing.F) {
 	seeds := []string{
 		// One job's full lifecycle, with provenance + structured result.
 		`{"kind":"job_started","seq":1,"ts":"2026-06-01T10:00:00Z","job_id":"job_A","type":"shell","command":"ls","owner_session_id":"s1","visible_to_session_id":"s1","started_at":"2026-06-01T10:00:00Z","output_path":"/o/A"}
-{"kind":"job_session_assigned","seq":2,"ts":"2026-06-01T10:00:01Z","job_id":"job_A","transcript_ref":"local:job_A","resumable":true}
 {"kind":"job_finished","seq":3,"ts":"2026-06-01T10:00:05Z","job_id":"job_A","status":"completed","exit_code":0,"ended_at":"2026-06-01T10:00:05Z","output_bytes":42,"terminal_generation":"g1","structured_result":{"status":"DONE","data":{"n":1}},"structured_result_valid":true}`,
 		// Duplicate job_finished: first-terminal-write-wins.
-		`{"kind":"job_started","seq":1,"ts":"2026-06-01T10:00:00Z","job_id":"job_B","type":"delegate","owner_session_id":"s1","visible_to_session_id":"s1","delegate_id":"dlg_1","started_at":"2026-06-01T10:00:00Z"}
+		`{"kind":"job_started","seq":1,"ts":"2026-06-01T10:00:00Z","job_id":"job_B","type":"shell","owner_session_id":"s1","visible_to_session_id":"s1","started_at":"2026-06-01T10:00:00Z"}
 {"kind":"job_finished","seq":2,"ts":"2026-06-01T10:00:05Z","job_id":"job_B","status":"completed","terminal_generation":"g1"}
 {"kind":"job_finished","seq":3,"ts":"2026-06-01T10:00:09Z","job_id":"job_B","status":"failed","terminal_generation":"g2"}`,
 		// Out-of-order seqs: pins the sort-then-strip discipline.
 		`{"kind":"job_finished","seq":9,"ts":"2026-06-01T10:00:05Z","job_id":"job_C","status":"stopped","terminal_generation":"g1"}
 {"kind":"job_started","seq":2,"ts":"2026-06-01T10:00:00Z","job_id":"job_C","type":"shell","owner_session_id":"s1","visible_to_session_id":"s1"}`,
-		// Delegate lifecycle (FoldDelegates).
-		`{"kind":"delegate_created","seq":1,"ts":"2026-06-01T10:00:00Z","job_id":"job_D","delegate_id":"dlg_2","delegate":{"child_session_id":"c1","agent_type":"engineer","generation":"dg_1","resumable":true}}
-{"kind":"job_started","seq":2,"ts":"2026-06-01T10:00:01Z","job_id":"job_D","delegate_id":"dlg_2","owner_session_id":"s1","visible_to_session_id":"s1"}
-{"kind":"job_finished","seq":3,"ts":"2026-06-01T10:00:05Z","job_id":"job_D","status":"completed","terminal_generation":"g1"}`,
 		// Watch register + clear (FoldWatches).
 		`{"kind":"watch_registered","seq":1,"ts":"2026-06-01T10:00:00Z","watch_id":"watch_1","watch":{"generation":"wg_1","owner_session_id":"s1","visible_session_id":"s1","target":"job_A","config_hash":"h1","deliveries":2}}
 {"kind":"watch_cleared","seq":2,"ts":"2026-06-01T10:00:05Z","watch_id":"watch_1","watch":{"generation":"wg_1","end_reason":"done"}}`,
@@ -142,7 +137,7 @@ func FuzzJobEventLogReplay(f *testing.F) {
 		// No-panic + determinism across every reducer.
 		assertFoldDeterministic(t, events)
 
-		// Persist → reload idempotence for all six reducer/loader pairs.
+		// Persist → reload idempotence for all four reducer/loader pairs.
 		sorted := bySeqAscStripped(events)
 		dir := t.TempDir()
 		s, err := openNoSync(filepath.Join(dir, "jobs.jsonl"))
@@ -169,9 +164,6 @@ func assertFoldDeterministic(t *testing.T, events []Event) {
 	}
 	if eq, a, b := jsonEq(t, FoldOrdered(events), FoldOrdered(events)); !eq {
 		t.Fatalf("FoldOrdered is non-deterministic:\n a=%s\n b=%s", a, b)
-	}
-	if eq, a, b := jsonEq(t, FoldDelegates(events), FoldDelegates(events)); !eq {
-		t.Fatalf("FoldDelegates is non-deterministic:\n a=%s\n b=%s", a, b)
 	}
 	if eq, a, b := jsonEq(t, FoldWatches(events), FoldWatches(events)); !eq {
 		t.Fatalf("FoldWatches is non-deterministic:\n a=%s\n b=%s", a, b)
@@ -202,14 +194,6 @@ func assertReloadMatchesFold(t *testing.T, s *Store, sorted []Event) {
 	}
 	if eq, a, b := jsonEq(t, FoldOrdered(sorted), loadOrdered); !eq {
 		t.Fatalf("FoldOrdered/LoadOrdered persist→reload diverged:\n fold=%s\n load=%s", a, b)
-	}
-
-	loadDelegates, err := s.LoadDelegates()
-	if err != nil {
-		t.Fatalf("LoadDelegates: %v", err)
-	}
-	if eq, a, b := jsonEq(t, FoldDelegates(sorted), loadDelegates); !eq {
-		t.Fatalf("FoldDelegates/LoadDelegates persist→reload diverged:\n fold=%s\n load=%s", a, b)
 	}
 
 	loadWatches, err := s.LoadWatches()

@@ -72,7 +72,6 @@ func TestOutstandingDrainJobCountIncludesRunningManagedJobs(t *testing.T) {
 		name string
 		rec  *jobstore.JobRecord
 	}{
-		{name: "delegate", rec: &jobstore.JobRecord{JobID: "del-live", Type: jobstore.JobDelegate, Status: jobstore.StatusRunning}},
 		{name: "explicit background shell", rec: &jobstore.JobRecord{JobID: "sh-bg", Type: jobstore.JobShell, Status: jobstore.StatusRunning, Background: true}},
 		{name: "foreground-promoted shell", rec: &jobstore.JobRecord{JobID: "sh-promoted", Type: jobstore.JobShell, Status: jobstore.StatusRunning, Background: false}},
 	}
@@ -106,7 +105,6 @@ func TestDrainJobTreeReturnsOnContextCancel(t *testing.T) {
 		name string
 		typ  jobstore.JobType
 	}{
-		{name: "delegate", typ: jobstore.JobDelegate},
 		{name: "shell", typ: jobstore.JobShell},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -245,29 +243,23 @@ func TestCancelledManagedShellDrainStopsOnSessionClose(t *testing.T) {
 	}
 }
 
-// TestOutstandingDelegateCountCoversPendingNotifyWindow is the roborev
-// regression: finalization deletes a delegate from the running map (jobs.go
-// armFinalizedJob) BEFORE enqueueing its in-memory owner notification, leaving a
-// window where the job is neither running nor pending in memory. The durable
-// EventJobNotificationPending is written before that delete, so a delegate whose
-// notification is NotifyPending but not yet in the in-memory queue must still
-// count as outstanding — otherwise DrainJobTree could return in that window and
-// let Close() skip the coordinator's final turn.
-func TestOutstandingDelegateCountCoversPendingNotifyWindow(t *testing.T) {
+// TestOutstandingJobCountCoversPendingNotifyWindow verifies a terminal shell
+// remains outstanding between its durable pending marker and in-memory enqueue.
+func TestOutstandingJobCountCoversPendingNotifyWindow(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t)
 	jm := sess.jobManager
 
-	// Reproduce the post-delete/pre-enqueue state durably: the delegate finished
+	// Reproduce the post-delete/pre-enqueue state durably: the shell finished
 	// and its notification-pending event is recorded, but it is not in the running
 	// map and not yet in the in-memory notification queue.
 	started := frozenTestTime.Add(-time.Second)
 	ended := frozenTestTime
 	code := 0
 	for _, ev := range []jobstore.Event{
-		{Kind: jobstore.EventJobStarted, TS: started, JobID: "del-window", Type: jobstore.JobDelegate, OwnerSessionID: sess.ID(), VisibleToSession: sess.ID(), StartedAt: &started},
-		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "del-window", Status: jobstore.StatusCompleted, Reason: "communicated", ExitCode: &code, EndedAt: &ended, TerminalGen: "gen-window"},
-		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "del-window", TerminalGen: "gen-window"},
+		{Kind: jobstore.EventJobStarted, TS: started, JobID: "shell-window", Type: jobstore.JobShell, OwnerSessionID: sess.ID(), VisibleToSession: sess.ID(), StartedAt: &started},
+		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "shell-window", Status: jobstore.StatusCompleted, Reason: "exit_zero", ExitCode: &code, EndedAt: &ended, TerminalGen: "gen-window"},
+		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "shell-window", TerminalGen: "gen-window"},
 	} {
 		if err := jm.appendEvent(ev); err != nil {
 			t.Fatalf("append %s: %v", ev.Kind, err)
@@ -278,74 +270,7 @@ func TestOutstandingDelegateCountCoversPendingNotifyWindow(t *testing.T) {
 		t.Fatalf("precondition: expected empty in-memory queue, got %d", p)
 	}
 	if n, err := jm.outstandingDrainJobCount(); err != nil || n != 1 {
-		t.Fatalf("a NotifyPending delegate absent from the running map must still count as outstanding, got %d (err %v)", n, err)
-	}
-}
-
-// TestTreeHasOutstandingWorkSkipsStopGatedChild is the roborev regression: the
-// drive path (driveChildrenWithUndeliveredAttention) skips stop-gated children,
-// so the quiescence walk must too. A deliberately stopped child's leftover
-// attention is never delivered, so counting it would hang DrainJobTree until
-// ctx cancellation.
-func TestTreeHasOutstandingWorkSkipsStopGatedChild(t *testing.T) {
-	t.Parallel()
-	root := newSession(t)
-	childAdapter := &fakeAdapter{name: "openai"}
-	child := newSession(t, withAdapter(childAdapter))
-	childID := child.ID()
-
-	// Give the child an owned shell completion that exists only in its durable
-	// ledger. A drain kick must not materialize or deliver it after the parent
-	// deliberately stop-gates the child.
-	seedOwnedDurablePending(t, child.jobManager, "shell-leftover", jobstore.JobShell)
-
-	// Track it as a live direct subagent of root, and untrack before close.
-	root.subagents.mu.Lock()
-	root.subagents.subs[childID] = &subagent{id: childID, sess: child}
-	root.subagents.mu.Unlock()
-	defer func() {
-		root.subagents.mu.Lock()
-		delete(root.subagents.subs, childID)
-		root.subagents.mu.Unlock()
-	}()
-
-	// Before stop-gating, the child's pending attention is outstanding.
-	if out, err := root.treeHasOutstandingWork(); err != nil || !out {
-		t.Fatalf("precondition: expected outstanding work from child pending attention, got out=%v err=%v", out, err)
-	}
-
-	// Stop-gate the child: its latest delegate record is Cancelled/stopped_by_parent.
-	started := frozenTestTime.Add(-time.Second)
-	ended := frozenTestTime
-	for _, ev := range []jobstore.Event{
-		{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_sc", Type: jobstore.JobDelegate, OwnerSessionID: root.ID(), VisibleToSession: root.ID(), TranscriptRef: encodeRef("", childID), StartedAt: &started},
-		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_sc", Status: jobstore.StatusCancelled, Reason: "stopped_by_parent", EndedAt: &ended, TerminalGen: "gen_sc"},
-	} {
-		if err := root.jobManager.appendEvent(ev); err != nil {
-			t.Fatalf("append %s: %v", ev.Kind, err)
-		}
-	}
-	if !root.childStopGated(childID) {
-		t.Fatal("precondition: child should be stop-gated after Cancelled/stopped_by_parent")
-	}
-
-	requestsBefore := len(childAdapter.Requests())
-	queuedBefore := child.peekNotifications()
-	if err := root.kickDriveTree(context.Background()); err != nil {
-		t.Fatalf("kickDriveTree: %v", err)
-	}
-
-	// The stop-gated child's leftover durable attention must stay outside the
-	// live drain tree: it is neither re-materialized nor delivered, and it no
-	// longer counts as outstanding.
-	if out, err := root.treeHasOutstandingWork(); err != nil || out {
-		t.Fatalf("stop-gated child must not count as outstanding, got out=%v err=%v", out, err)
-	}
-	if requestsAfter := len(childAdapter.Requests()); requestsAfter != requestsBefore {
-		t.Fatalf("child provider requests changed across stop-gated drain kick: before=%d after=%d", requestsBefore, requestsAfter)
-	}
-	if queuedAfter := child.peekNotifications(); queuedAfter != queuedBefore {
-		t.Fatalf("child notification queue changed across stop-gated drain kick: before=%d after=%d", queuedBefore, queuedAfter)
+		t.Fatalf("a pending shell absent from the running map must still count as outstanding, got %d (err %v)", n, err)
 	}
 }
 
@@ -361,7 +286,6 @@ func TestOutstandingDrainJobCountIgnoresForwardedDescendantPending(t *testing.T)
 		name string
 		typ  jobstore.JobType
 	}{
-		{name: "delegate", typ: jobstore.JobDelegate},
 		{name: "shell", typ: jobstore.JobShell},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -370,7 +294,7 @@ func TestOutstandingDrainJobCountIgnoresForwardedDescendantPending(t *testing.T)
 			started := frozenTestTime.Add(-time.Second)
 			ended := frozenTestTime
 			for _, ev := range []jobstore.Event{
-				{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_fwd", Type: tt.typ, OwnerSessionID: "CHILD-SESSION", VisibleToSession: sess.ID(), TranscriptRef: encodeRef("", "grandchild"), StartedAt: &started},
+				{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_fwd", Type: tt.typ, OwnerSessionID: "CHILD-SESSION", VisibleToSession: sess.ID(), StartedAt: &started},
 				{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_fwd", Status: jobstore.StatusCompleted, Reason: "communicated", EndedAt: &ended, TerminalGen: "gen_fwd"},
 				{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "job_fwd", TerminalGen: "gen_fwd"},
 			} {
@@ -393,7 +317,6 @@ func TestRematerializeOwnedDrainJobPendings(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t)
 	jm := sess.jobManager
-	seedOwnedDurablePending(t, jm, "del-owned", jobstore.JobDelegate)
 	seedOwnedDurablePending(t, jm, "shell-owned", jobstore.JobShell)
 
 	started := frozenTestTime.Add(-time.Second)
@@ -414,15 +337,15 @@ func TestRematerializeOwnedDrainJobPendings(t *testing.T) {
 	sess.pendingJobNotifsMu.Lock()
 	got := append([]jobNotification(nil), sess.pendingJobNotifs...)
 	sess.pendingJobNotifsMu.Unlock()
-	if len(got) != 2 {
-		t.Fatalf("rematerialized notifications = %+v, want two owned jobs", got)
+	if len(got) != 1 {
+		t.Fatalf("rematerialized notifications = %+v, want one owned shell", got)
 	}
 	gotTypes := make(map[string]string, len(got))
 	for _, notification := range got {
 		gotTypes[notification.JobID] = notification.JobType
 	}
-	if gotTypes["del-owned"] != "delegate" || gotTypes["shell-owned"] != "shell" {
-		t.Fatalf("rematerialized job ids and types = %v, want del-owned delegate and shell-owned shell", gotTypes)
+	if gotTypes["shell-owned"] != "shell" {
+		t.Fatalf("rematerialized job ids and types = %v, want shell-owned shell", gotTypes)
 	}
 }
 
@@ -441,7 +364,6 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 		jobID string
 		typ   jobstore.JobType
 	}{
-		{name: "delegate", jobID: "del-root", typ: jobstore.JobDelegate},
 		{name: "shell", jobID: "shell-root", typ: jobstore.JobShell},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -483,7 +405,6 @@ func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
 		jobID string
 		typ   jobstore.JobType
 	}{
-		{name: "delegate", jobID: "del-injected", typ: jobstore.JobDelegate},
 		{name: "shell", jobID: "shell-injected", typ: jobstore.JobShell},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -553,7 +474,6 @@ func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
 		jobID string
 		typ   jobstore.JobType
 	}{
-		{name: "delegate", jobID: "del-child", typ: jobstore.JobDelegate},
 		{name: "shell", jobID: "shell-child", typ: jobstore.JobShell},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -690,8 +610,7 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 	// Background a delegate; it runs to completion in its own goroutine and
 	// enqueues a completion notification on this session.
 	res := sess.createDelegate(context.Background(), delegateArgs{
-		Task:       "do a small unit of work and communicate done",
-		Background: true,
+		Task: "do a small unit of work and communicate done",
 	})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v", res.Err)
@@ -703,9 +622,13 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 		t.Fatalf("DrainJobTree: %v", err)
 	}
 
-	// After draining, no delegate may remain in flight and nothing may be pending.
-	if n, err := sess.jobManager.outstandingDrainJobCount(); err != nil || n != 0 {
-		t.Fatalf("expected 0 in-flight delegates after drain, got %d (err %v)", n, err)
+	// After draining, the stable delegate run is settled and nothing is pending.
+	aggregate := delegateAggregateSnapshot(t, sess.delegateController, res.DelegateID)
+	if aggregate.CurrentRunOpen {
+		t.Fatalf("delegate %s still has an open run after drain: %#v", res.DelegateID, aggregate)
+	}
+	if outstanding, err := sess.treeHasOutstandingWork(); err != nil || outstanding {
+		t.Fatalf("tree remains outstanding after delegate drain: outstanding=%v err=%v", outstanding, err)
 	}
 	if p := sess.peekNotifications(); p != 0 {
 		t.Fatalf("expected 0 pending notifications after drain, got %d", p)

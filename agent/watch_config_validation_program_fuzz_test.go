@@ -3,7 +3,6 @@
 package agent
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -248,9 +247,9 @@ func wcvpAssertPureContracts(t *testing.T, r *wcvpReader) {
 		_, err := newWatchConfig(watchArgs{Target: "job_wcvp", OutputMatch: "("}, frozenTestTime)
 		return err
 	}(), "invalid_request: output_match")
-	receiver := watchArgs{ReceiverDelegateID: " dlg_receiver "}
-	applyReceiverWatchSend(&receiver)
-	if receiver.Send == nil || receiver.Send.To != "dlg_receiver" || !receiver.ReceiverSendInternal {
+	receiver := watchArgs{StableReceiver: true}
+	applyStableReceiverWatchSend(&receiver)
+	if receiver.Send == nil || receiver.Send.To != stableWatchReceiverTarget || !receiver.ReceiverSendInternal {
 		t.Fatalf("receiver send projection = %+v", receiver)
 	}
 
@@ -262,38 +261,6 @@ func wcvpAssertPureContracts(t *testing.T, r *wcvpReader) {
 
 func wcvpAssertSendTargetValidation(t *testing.T, r *wcvpReader) {
 	t.Helper()
-	owned := "S1"
-	resumable := true
-	notResumable := false
-	delegates := map[string]*jobstore.DelegateRecord{
-		"dlg_good":    {DelegateID: "dlg_good", OwnerSessionID: owned, CurrentJobID: "job_good", Resumable: true},
-		"dlg_latest":  {DelegateID: "dlg_latest", OwnerSessionID: owned, LatestJobID: "job_good", Resumable: true},
-		"dlg_foreign": {DelegateID: "dlg_foreign", OwnerSessionID: "OTHER", CurrentJobID: "job_good", Resumable: true},
-		"dlg_nojob":   {DelegateID: "dlg_nojob", OwnerSessionID: owned, Resumable: true},
-		"dlg_desc":    {DelegateID: "dlg_desc", OwnerSessionID: owned, CurrentJobID: "job_desc", Resumable: true},
-		"dlg_shell":   {DelegateID: "dlg_shell", OwnerSessionID: owned, CurrentJobID: "job_shell", Resumable: true},
-		"dlg_off":     {DelegateID: "dlg_off", OwnerSessionID: owned, CurrentJobID: "job_good", Resumable: false},
-		"dlg_status":  {DelegateID: "dlg_status", OwnerSessionID: owned, CurrentJobID: "job_good", Resumable: true, Status: jobstore.DelegateNotResumable},
-		"dlg_term":    {DelegateID: "dlg_term", OwnerSessionID: owned, CurrentJobID: "job_term", Resumable: true},
-		"dlg_finderr": {DelegateID: "dlg_finderr", OwnerSessionID: owned, CurrentJobID: "job_finderr", Resumable: true},
-	}
-	records := map[string]*jobstore.JobRecord{
-		"job_good":  {JobID: "job_good", Type: jobstore.JobDelegate, OwnerSessionID: owned, Status: jobstore.StatusRunning, Resumable: &resumable},
-		"job_desc":  {JobID: "job_desc", Type: jobstore.JobDelegate, OwnerSessionID: "CHILD", Status: jobstore.StatusRunning, Resumable: &resumable},
-		"job_shell": {JobID: "job_shell", Type: jobstore.JobShell, OwnerSessionID: owned, Status: jobstore.StatusRunning, Resumable: &resumable},
-		"job_term":  {JobID: "job_term", Type: jobstore.JobDelegate, OwnerSessionID: owned, Status: jobstore.StatusCompleted, Resumable: &notResumable},
-	}
-	resolver := watchSendTargetResolver{
-		sessionID:     owned,
-		hasJobManager: true,
-		loadDelegates: func() (map[string]*jobstore.DelegateRecord, error) { return delegates, nil },
-		findJobRecord: func(jobID string) (*jobstore.JobRecord, error) {
-			if jobID == "job_finderr" {
-				return nil, errors.New("injected job lookup")
-			}
-			return records[jobID], nil
-		},
-	}
 	cases := []struct {
 		target string
 		prefix string
@@ -305,22 +272,12 @@ func wcvpAssertSendTargetValidation(t *testing.T, r *wcvpReader) {
 		{"*", "target_not_found:"},
 		{"job_wcvp", "invalid_request: job_id"},
 		{"unknown", "target_not_found:"},
-		{"dlg_missing", "target_not_found: delegate"},
-		{"dlg_foreign", "not_controllable: delegate"},
-		{"dlg_nojob", "target_not_resumable: delegate"},
-		{"dlg_finderr", "target_not_found:"},
-		{"dlg_desc", "not_controllable: delegate job"},
-		{"dlg_shell", "target_not_messageable: job"},
-		{"dlg_off", "target_not_resumable: delegate"},
-		{"dlg_status", "target_not_resumable: delegate"},
-		{"dlg_term", "target_not_resumable: delegate job"},
-		{"dlg_good", ""},
-		{"dlg_latest", ""},
+		{"dlg_missing", "target_not_found:"},
 	}
 	for _, tc := range cases {
 		args := watchArgs{Source: r.text()}
-		first := wcvpErrorString(validateWatchSendDeliveryTarget(tc.target, args, resolver))
-		second := wcvpErrorString(validateWatchSendDeliveryTarget(tc.target, args, resolver))
+		first := wcvpErrorString(validateWatchSendDeliveryTarget(tc.target, args))
+		second := wcvpErrorString(validateWatchSendDeliveryTarget(tc.target, args))
 		if first != second {
 			t.Fatalf("send validation is not deterministic for %q: %q then %q", tc.target, first, second)
 		}
@@ -331,14 +288,6 @@ func wcvpAssertSendTargetValidation(t *testing.T, r *wcvpReader) {
 		} else if !strings.HasPrefix(first, tc.prefix) {
 			t.Fatalf("send validation %q = %q, want prefix %q", tc.target, first, tc.prefix)
 		}
-	}
-
-	loadErr := resolver
-	loadErr.loadDelegates = func() (map[string]*jobstore.DelegateRecord, error) {
-		return nil, errors.New("injected delegate lookup")
-	}
-	if got := wcvpErrorString(validateWatchSendDeliveryTarget("dlg_good", watchArgs{}, loadErr)); got != "injected delegate lookup" {
-		t.Fatalf("delegate lookup failure = %q", got)
 	}
 }
 
@@ -486,7 +435,6 @@ func wcvpConfigure(t *testing.T, jm *jobManager, args watchArgs) watchResult {
 func wcvpAssertConfigureLifecycle(t *testing.T, r *wcvpReader) {
 	t.Helper()
 	jm := wcvpNewManager(t)
-	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 	run, err := jm.createShell(createShellOpts{Command: "wcvp target record"})
 	if err != nil {
 		t.Fatalf("create config target: %v", err)
@@ -535,10 +483,10 @@ func wcvpAssertConfigureLifecycle(t *testing.T, r *wcvpReader) {
 	callerArgs := watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"job.notification", "assistant.tool"},
-		Send:   &watchSendArgs{To: "dlg_obs", Message: "watch " + r.text()},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "watch " + r.text()},
 	}
 	first := wcvpConfigure(t, jm, callerArgs)
-	if !first.Watching || first.WatchID == "" || first.Send == nil || first.Send.To != "dlg_obs" {
+	if !first.Watching || first.WatchID == "" || first.Send == nil || first.Send.To != runtimeMessageAliasCaller {
 		t.Fatalf("caller watch = %+v", first)
 	}
 	again := wcvpConfigure(t, jm, callerArgs)
@@ -546,7 +494,7 @@ func wcvpAssertConfigureLifecycle(t *testing.T, r *wcvpReader) {
 		t.Fatalf("idempotent caller configure = %+v, first=%+v", again, first)
 	}
 	replacementArgs := callerArgs
-	replacementArgs.Send = &watchSendArgs{To: "dlg_obs", Message: "replacement " + r.text()}
+	replacementArgs.Send = &watchSendArgs{To: runtimeMessageAliasCaller, Message: "replacement " + r.text()}
 	replacement := wcvpConfigure(t, jm, replacementArgs)
 	if replacement.WatchID == first.WatchID || !replacement.ReplacedExisting {
 		t.Fatalf("caller replacement = %+v, first=%+v", replacement, first)
@@ -723,8 +671,7 @@ func wcvpAssertTokenAndSnapshotContracts(t *testing.T, r *wcvpReader) {
 		t.Fatalf("settlement ledger delivered=%v pending=%v", delivered, pending)
 	}
 
-	seedWatchSendDelegateTarget(t, root, "dlg_obs")
-	watchCfg, err := newWatchConfig(watchArgs{Target: "job_wcvp", Events: []string{"assistant.tool"}, Send: &watchSendArgs{To: "dlg_obs", Message: r.text()}}, frozenTestTime)
+	watchCfg, err := newWatchConfig(watchArgs{Target: "job_wcvp", Events: []string{"assistant.tool"}, Send: &watchSendArgs{To: runtimeMessageAliasCaller, Message: r.text()}}, frozenTestTime)
 	if err != nil {
 		t.Fatalf("new snapshot config: %v", err)
 	}
@@ -755,17 +702,11 @@ func wcvpAssertTokenAndSnapshotContracts(t *testing.T, r *wcvpReader) {
 
 	event := events.SessionEvent{SessionID: root.sessionID, Kind: events.EventToolCallEnd, Data: events.ToolCallEndData{ToolName: "read_file"}, Provenance: storedProvenance}
 	delivery := root.watchSendSnapshot(watchCfg, "job_wcvp", "event: assistant.tool", event)
-	if delivery.updateSeq != 1 || delivery.deliveryID == "" || delivery.delegateGeneration == "" || delivery.provenance == nil {
+	if delivery.updateSeq != 1 || delivery.deliveryID == "" || delivery.provenance == nil {
 		t.Fatalf("watch send snapshot = %+v", delivery)
 	}
 	if second := root.watchSendSnapshot(watchCfg, "job_wcvp", "event: assistant.tool", event); second.updateSeq != 2 || second.deliveryID == delivery.deliveryID {
 		t.Fatalf("second watch send snapshot = %+v", second)
-	}
-	if got := root.watchSendDelegateGeneration(runtimeMessageAliasCaller, "job_wcvp"); got != "" {
-		t.Fatalf("caller delegate generation = %q", got)
-	}
-	if got := root.watchSendDelegateGeneration("dlg_missing", "job_wcvp"); got != "" {
-		t.Fatalf("missing delegate generation = %q", got)
 	}
 }
 
@@ -780,9 +721,6 @@ func wcvpAssertClosedStoreFailures(t *testing.T) {
 	}
 	if _, _, err := jm.terminalWatchTargetStatus("job_wcvp_missing"); err == nil {
 		t.Fatal("closed store terminal-status lookup unexpectedly succeeded")
-	}
-	if got := jm.watchSendDelegateGeneration("dlg_wcvp", "job_wcvp"); got != "" {
-		t.Fatalf("closed store delegate generation = %q", got)
 	}
 	if got := jobProvenanceForWatch(jm, "job_wcvp"); got != nil {
 		t.Fatalf("closed store provenance = %+v", got)

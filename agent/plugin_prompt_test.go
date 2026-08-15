@@ -5,6 +5,7 @@ import (
 	"maps"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/plugin"
@@ -156,16 +157,18 @@ func TestSubagentPromptSuppressesDelegationWhenToolsUnavailable(t *testing.T) {
 func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	var childPrompt string
+	childPromptSeen := make(chan string, 1)
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
+			var childPrompt string
 			for _, msg := range req.Messages {
 				if msg.Role == llm.RoleSystem {
 					childPrompt = msg.Text()
 					break
 				}
 			}
-			return communicateWithDefaultOutput("done")
+			childPromptSeen <- childPrompt
+			return finalResponse("done")
 		},
 	}})
 
@@ -180,12 +183,16 @@ func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
 
 	res := sess.createDelegate(context.Background(), delegateArgs{
 		Task:                "coordinate follow-up work",
-		Background:          false,
-		BlockTimeoutMS:      5000,
 		DelegationAllowance: 1,
 	})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v", res.Err)
+	}
+	var childPrompt string
+	select {
+	case childPrompt = <-childPromptSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("delegate child never requested a model turn")
 	}
 	if !strings.Contains(childPrompt, "You may delegate scoped subwork") {
 		t.Fatalf("delegating untyped child prompt missing delegating role guidance:\n%s", childPrompt)

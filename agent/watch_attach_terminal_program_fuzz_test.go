@@ -117,13 +117,12 @@ func watpAttachNoSend(t *testing.T, r *watpReader) {
 func watpAttachSidecar(t *testing.T, r *watpReader) {
 	t.Helper()
 	jm := watpNewJM(t)
-	seedWatchSendDelegateTarget(t, jm, "dlg_attach")
 	label := r.word()
 	rec := watpCreateOutputJob(t, jm, "before\nneedle sidecar-"+label+"\n")
 	result, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "needle",
-		Send:        &watchSendArgs{To: "dlg_attach", Message: "observe " + label},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe " + label},
 	})
 	if err != nil {
 		t.Fatalf("configure sidecar attach watch: %v", err)
@@ -132,7 +131,7 @@ func watpAttachSidecar(t *testing.T, r *watpReader) {
 		t.Fatalf("sidecar attach result = %+v, want live one-shot fire", result)
 	}
 	pending := jm.pendingWatchSendDeliveries(nil)
-	if len(pending) != 1 || pending[0].state.Key.ResolvedSendTo != "dlg_attach" || !strings.Contains(pending[0].state.TriggerReason, "needle sidecar-"+label) {
+	if len(pending) != 1 || pending[0].state.Key.ResolvedSendTo != runtimeMessageAliasCaller || !strings.Contains(pending[0].state.TriggerReason, "needle sidecar-"+label) {
 		t.Fatalf("sidecar attach pending = %+v", pending)
 	}
 }
@@ -159,11 +158,10 @@ func watpTerminalCatchup(t *testing.T, r *watpReader) {
 		t.Fatalf("terminal catch-up notifications = %+v", notifications)
 	}
 
-	seedWatchSendDelegateTarget(t, jm, "dlg_terminal")
 	sendResult, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "needle",
-		Send:        &watchSendArgs{To: "dlg_terminal", Message: "terminal observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "terminal observe"},
 	})
 	if err != nil {
 		t.Fatalf("configure terminal sidecar catch-up: %v", err)
@@ -172,7 +170,7 @@ func watpTerminalCatchup(t *testing.T, r *watpReader) {
 		t.Fatalf("terminal sidecar catch-up result = %+v", sendResult)
 	}
 	pending := jm.pendingWatchSendDeliveries(nil)
-	if len(pending) != 1 || pending[0].state.Key.ResolvedSendTo != "dlg_terminal" {
+	if len(pending) != 1 || pending[0].state.Key.ResolvedSendTo != runtimeMessageAliasCaller {
 		t.Fatalf("terminal sidecar pending = %+v", pending)
 	}
 }

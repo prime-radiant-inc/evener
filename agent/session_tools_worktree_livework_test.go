@@ -8,18 +8,19 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/internal/delegatestore"
 )
 
 // Task 20: real liveWorkUnder plumbing (spec §5 remove step 4, §7
 // liveWorkUnder). These tests exercise the production scan directly — real
-// background shell jobs, a real live subagent env, and a synthetic-but-real
-// jm.running delegate record — never the worktreeLiveWorkStub test seam
+// background shell jobs and real live subagent envs — never the
+// worktreeLiveWorkStub test seam
 // (session_tools_worktree_remove_test.go's stub tests cover the guard CALL
 // site only).
 //
 // The subject throughout is serf's own guard: what liveWorkUnder enumerates from
-// serf's job records and subagent envs, and how remove and prune respond to it.
+// serf's shell jobs, stable delegate descriptors, and subagent envs, and how
+// remove and prune respond to it.
 // The blockers stay real (real background shell jobs, real child sessions); only
 // the lane the guard is asked about is built on the scripted git boundary
 // (scriptedLaneRepo, driven through wtRepo's shared operation helpers). See
@@ -156,69 +157,12 @@ func TestWorktreeRemove_LiveWorkGuardRefusesLiveSubagentEnv(t *testing.T) {
 	}
 }
 
-// --- real delegate job record ---
-
-// TestWorktreeRemove_LiveWorkGuardRefusesLiveDelegateJobRecord covers the
-// brief's "delegate WorkingDir ... enumerated": a running delegate job
-// record (DelegateRestore.WorkingDir), inserted directly into jm.running the
-// way session_jobtree_drain_test.go's synthetic entries are (real recorded
-// state, not the worktreeLiveWorkStub seam), refuses removal even with no
-// subagent tracked for it — the job-record source is independent of the
-// subagent-env source.
-func TestWorktreeRemove_LiveWorkGuardRefusesLiveDelegateJobRecord(t *testing.T) {
-	t.Parallel()
-	r := newScriptedLaneRepo(t).wt()
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	nested := filepath.Join(path, "nested")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
-		t.Fatalf("mkdir nested: %v", err)
-	}
-	if _, err := r.exitOp(t); err != nil {
-		t.Fatalf("exit: %v", err)
-	}
-
-	jm := r.s.jobManager
-	jm.mu.Lock()
-	jm.running["job_dlg1"] = &runningJob{rec: &jobstore.JobRecord{
-		JobID:           "job_dlg1",
-		Type:            jobstore.JobDelegate,
-		Status:          jobstore.StatusRunning,
-		DelegateRestore: &jobstore.DelegateRestoreDescriptor{WorkingDir: nested},
-	}}
-	jm.mu.Unlock()
-	t.Cleanup(func() {
-		jm.mu.Lock()
-		delete(jm.running, "job_dlg1")
-		jm.mu.Unlock()
-	})
-
-	if _, err := r.removeOp(t, map[string]any{"name": "lane", "force": true}); err == nil {
-		t.Fatal("expected remove to be refused by the live delegate job record")
-	} else if !strings.Contains(err.Error(), "job_dlg1") {
-		t.Errorf("error should surface the live delegate job id, got: %v", err)
-	}
-	if _, statErr := os.Stat(path); statErr != nil {
-		t.Errorf("worktree removed despite the live delegate job record: %v", statErr)
-	}
-
-	jm.mu.Lock()
-	delete(jm.running, "job_dlg1")
-	jm.mu.Unlock()
-	if _, err := r.removeOp(t, map[string]any{"name": "lane"}); err != nil {
-		t.Fatalf("remove after the delegate job record cleared: %v", err)
-	}
-}
-
 // --- negative: unrelated live work must not false-positive ---
 
 // TestWorktreeRemove_LiveWorkGuardIgnoresUnrelatedWork checks a live shell
 // job rooted in a SIBLING worktree lane (a different worktree under the same
-// Project.ID), plus a delegate record with no recorded working dir at all,
-// neither block removing the target lane.
+// Project.ID); that unrelated sibling shell job does not block removing the
+// target lane.
 func TestWorktreeRemove_LiveWorkGuardIgnoresUnrelatedWork(t *testing.T) {
 	t.Parallel()
 	r := newScriptedLaneRepo(t).wt()
@@ -255,21 +199,6 @@ func TestWorktreeRemove_LiveWorkGuardIgnoresUnrelatedWork(t *testing.T) {
 	if siblingPath != env.WorkingDirectory() {
 		t.Fatalf("sibling lane path mismatch: %q vs %q", siblingPath, env.WorkingDirectory())
 	}
-
-	jm := r.s.jobManager
-	jm.mu.Lock()
-	jm.running["job_dlg_nowd"] = &runningJob{rec: &jobstore.JobRecord{
-		JobID:           "job_dlg_nowd",
-		Type:            jobstore.JobDelegate,
-		Status:          jobstore.StatusRunning,
-		DelegateRestore: &jobstore.DelegateRestoreDescriptor{},
-	}}
-	jm.mu.Unlock()
-	t.Cleanup(func() {
-		jm.mu.Lock()
-		delete(jm.running, "job_dlg_nowd")
-		jm.mu.Unlock()
-	})
 
 	if _, err := r.exitOp(t); err != nil {
 		t.Fatalf("exit sibling: %v", err)
@@ -347,68 +276,35 @@ func TestWorktreeLiveWorkUnder_SkipsSubagentEmptyWorkingDirectory(t *testing.T) 
 
 // --- remove refusal legibility: dispose hint ---
 
-// seedRetainedDelegate appends a retained delegate record mapping delegateID to
-// childID in the session's own store, so LoadDelegates resolves the child
-// session id (what liveWorkUnder surfaces) back to a dlg_ id for the refusal.
-func seedRetainedDelegate(t *testing.T, s *Session, delegateID, childID string) {
-	seedRetainedDelegateWithIsolation(t, s, delegateID, childID, "worktree")
-}
-
-func seedRetainedDelegateWithIsolation(t *testing.T, s *Session, delegateID, childID, isolation string) {
+func seedStableRetainedDelegateAtPath(t *testing.T, s *Session, path, isolation string) (delegateID, childID string) {
 	t.Helper()
-	jm := s.jobManager
-	now := jm.now()
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:       jobstore.EventDelegateCreated,
-		TS:         now,
+	c := s.delegateController
+	delegateID = c.newDelegateID()
+	childID = "child-" + delegateID
+	descriptor := delegatestore.Descriptor{
+		ChildSessionID:   childID,
+		TranscriptRef:    encodeRef("", childID),
+		OwnerSessionID:   s.id,
+		VisibleSessionID: s.id,
+		Task:             "stable retained fixture",
+		AgentType:        "default",
+		ToolNameCeiling:  []string{"communicate"},
+		WorkingDir:       path,
+		LocalEnvPolicy:   "default",
+		Isolation:        isolation,
+		Resumable:        true,
+	}
+	c.mu.Lock()
+	_, err := c.appendLocked(delegatestore.Event{
+		Kind:       delegatestore.EventDelegateCreated,
 		DelegateID: delegateID,
-		Delegate: &jobstore.DelegateEvent{
-			ChildSessionID:   childID,
-			TranscriptRef:    encodeRef("", childID),
-			OwnerSessionID:   jm.sessionID,
-			VisibleSessionID: jm.sessionID,
-			Generation:       "dg_1",
-			Resumable:        true,
-		},
-	}); err != nil {
+		Created:    &delegatestore.DelegateCreated{Descriptor: descriptor},
+	})
+	c.mu.Unlock()
+	if err != nil {
 		t.Fatalf("append delegate: %v", err)
 	}
-
-	jobID := jobstore.NewJobID(jm.sessionID)
-	ref := encodeRef("", childID)
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:             jobstore.EventJobStarted,
-		TS:               now,
-		JobID:            jobID,
-		DelegateID:       delegateID,
-		Type:             jobstore.JobDelegate,
-		OwnerSessionID:   jm.sessionID,
-		VisibleToSession: jm.sessionID,
-		StartedAt:        &now,
-		TranscriptRef:    ref,
-		DelegateRestore: &jobstore.DelegateRestoreDescriptor{
-			Version:          1,
-			ChildSessionID:   childID,
-			TranscriptRef:    ref,
-			ParentSessionID:  jm.sessionID,
-			OwnerSessionID:   jm.sessionID,
-			VisibleSessionID: jm.sessionID,
-			Isolation:        isolation,
-		},
-	}); err != nil {
-		t.Fatalf("append delegate job: %v", err)
-	}
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:        jobstore.EventJobFinished,
-		TS:          now,
-		JobID:       jobID,
-		Status:      jobstore.StatusStopped,
-		Reason:      "runtime_lost",
-		EndedAt:     &now,
-		TerminalGen: jobstore.NewWatchGeneration(),
-	}); err != nil {
-		t.Fatalf("finish delegate job: %v", err)
-	}
+	return delegateID, childID
 }
 
 // TestWorktreeRemove_RetainedIdleDelegate_SuggestsDispose covers the brief's
@@ -420,9 +316,8 @@ func seedRetainedDelegateWithIsolation(t *testing.T, s *Session, delegateID, chi
 // refusal path. WS8 Task 2's force-cascade tests
 // (session_tools_worktree_remove_force_dispose_test.go) cover what force:true
 // does instead — it attempts the sanctioned dispose cascade rather than just
-// suggesting it, so this delegate record (no recorded WorkingDir, a fixture
-// scoped to hint-text assertions only) is not a fixture a real cascade
-// attempt could complete against.
+// suggesting it, so the stable retained descriptor remains scoped to these
+// hint-text assertions.
 func TestWorktreeRemove_RetainedIdleDelegate_SuggestsDispose(t *testing.T) {
 	t.Parallel()
 	r := newScriptedLaneRepo(t).wt()
@@ -439,31 +334,31 @@ func TestWorktreeRemove_RetainedIdleDelegate_SuggestsDispose(t *testing.T) {
 		t.Fatalf("exit: %v", err)
 	}
 
-	child := newSession(t, withDir(nested), withConfig(worktreeTestSessionConfig()))
-	// A retained, idle delegate child: running=false, driving=false.
-	r.s.subagents.track(&subagent{id: child.id, sess: child})
-	seedRetainedDelegate(t, r.s, "dlg_retained", child.id)
+	delegateID, childID := seedStableRetainedDelegateAtPath(t, r.s, nested, "worktree")
 
 	_, err = r.removeOp(t, map[string]any{"name": "lane", "force": false})
 	if err == nil {
 		t.Fatal("expected remove to be refused by the retained idle delegate")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, child.id) {
-		t.Errorf("refusal should still name the blocker %q, got: %v", child.id, msg)
+	if !strings.Contains(msg, childID) {
+		t.Errorf("refusal should still name the blocker %q, got: %v", childID, msg)
 	}
-	if !strings.Contains(msg, "dlg_retained") {
-		t.Errorf("refusal should name the delegate id dlg_retained, got: %v", msg)
+	if !strings.Contains(msg, delegateID) {
+		t.Errorf("refusal should name the delegate id %q, got: %v", delegateID, msg)
 	}
 	if !strings.Contains(msg, "op=dispose") {
 		t.Errorf("refusal should suggest op=dispose, got: %v", msg)
 	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("lane should remain after refusal: %v", err)
+	}
 }
 
-// TestWorktreeRemove_RetainedIdleNonWorktreeDelegate_NoDisposeHint keeps an
-// ordinary/shared delegate as a removal blocker without suggesting an
-// operation that can only reclaim an isolated worktree lane.
-func TestWorktreeRemove_RetainedIdleNonWorktreeDelegate_NoDisposeHint(t *testing.T) {
+// TestWorktreeRemove_RetainedIdleSubagent_NoDisposeHint keeps an unowned
+// retained idle subagent as a removal blocker without suggesting an operation
+// that can only reclaim an isolated worktree lane.
+func TestWorktreeRemove_RetainedIdleSubagent_NoDisposeHint(t *testing.T) {
 	t.Parallel()
 	r := newScriptedLaneRepo(t).wt()
 	res, err := r.create(t, map[string]any{"name": "lane"})
@@ -481,7 +376,6 @@ func TestWorktreeRemove_RetainedIdleNonWorktreeDelegate_NoDisposeHint(t *testing
 
 	child := newSession(t, withDir(nested), withConfig(worktreeTestSessionConfig()))
 	r.s.subagents.track(&subagent{id: child.id, sess: child})
-	seedRetainedDelegateWithIsolation(t, r.s, "dlg_shared", child.id, "")
 
 	_, err = r.removeOp(t, map[string]any{"name": "lane", "force": true})
 	if err == nil {
@@ -531,9 +425,7 @@ func TestWorktreeRemove_RunningBlocker_NoDisposeHint(t *testing.T) {
 		t.Fatalf("exit: %v", err)
 	}
 
-	child := newSession(t, withDir(nested), withConfig(worktreeTestSessionConfig()))
-	r.s.subagents.track(&subagent{id: child.id, sess: child})
-	seedRetainedDelegate(t, r.s, "dlg_retained", child.id)
+	_, _ = seedStableRetainedDelegateAtPath(t, r.s, nested, "worktree")
 
 	_, err = r.removeOp(t, map[string]any{"name": "lane", "force": true})
 	if err == nil {

@@ -82,7 +82,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	res := sess.createDelegate(ctx, delegateArgs{Task: "write the report", DelegationAllowance: 0, Background: false})
+	res := sess.createDelegate(ctx, delegateArgs{Task: "write the report", DelegationAllowance: 0})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
 	}

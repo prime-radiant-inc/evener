@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/internal/delegatestore"
 )
 
 func seed100JobtreeDrainMore(t *testing.T) {
@@ -96,13 +96,20 @@ func seed100JobtreeDrainMore(t *testing.T) {
 
 	started := frozenTestTime.Add(-time.Second)
 	ended := frozenTestTime
-	for _, event := range []jobstore.Event{
-		{Kind: jobstore.EventJobStarted, TS: started, JobID: "seed100-stop-gate", Type: jobstore.JobDelegate, OwnerSessionID: kickRoot.ID(), VisibleToSession: kickRoot.ID(), TranscriptRef: encodeRef("", kickChild.ID()), StartedAt: &started},
-		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "seed100-stop-gate", Status: jobstore.StatusCancelled, Reason: "stopped_by_parent", EndedAt: &ended, TerminalGen: "seed100-stop-gen"},
-	} {
-		if err := kickRoot.jobManager.appendEvent(event); err != nil {
-			t.Fatal(err)
-		}
+	descriptor := stableToolDescriptor(kickRoot, "dlg_seed100_stop_gate", "")
+	descriptor.ChildSessionID = kickChild.ID()
+	lease := delegateLease{delegateID: "dlg_seed100_stop_gate", generation: 1}
+	packet := delegateStoppedTerminalPacket()
+	kickRoot.delegateController.mu.Lock()
+	_, err := kickRoot.delegateController.appendLocked(
+		delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: lease.delegateID, Created: &delegatestore.DelegateCreated{Descriptor: descriptor}},
+		delegateControllerRunStartedEvent(lease.delegateID, lease.generation, delegatestore.TriggerInitial, started),
+		delegatestore.Event{Kind: delegatestore.EventDelegateSubtreeStopRequested, DelegateID: lease.delegateID, SubtreeStopRequested: &delegatestore.SubtreeStopRequested{TargetDelegateID: lease.delegateID}},
+		delegateRunFinishedEvent(lease, delegatestore.OutcomeStopped, delegatestore.DispositionTerminalError, "stopped_by_parent", ended, delegateDeliveryID(lease.delegateID, lease.generation), &packet),
+	)
+	kickRoot.delegateController.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
 	}
 	if err := kickRoot.kickDriveTreeWith(context.Background(), func(sess *Session, _ context.Context) error {
 		if sess == kickChild {

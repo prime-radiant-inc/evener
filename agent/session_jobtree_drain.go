@@ -40,12 +40,7 @@ func isOwnedDrainJob(rec *jobstore.JobRecord, sessionID string) bool {
 	if rec.OwnerSessionID != "" && rec.OwnerSessionID != sessionID {
 		return false
 	}
-	switch rec.Type {
-	case jobstore.JobDelegate, jobstore.JobShell:
-		return true
-	default:
-		return false
-	}
+	return rec.Type == jobstore.JobShell
 }
 
 // outstandingDrainJobCount reports how many managed jobs still owe this session

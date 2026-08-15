@@ -62,9 +62,6 @@ func requireIncrementalMatchesFullReread(t *testing.T, s *Store, path, when stri
 	if !reflect.DeepEqual(FoldOrdered(got), FoldOrdered(want)) {
 		t.Fatalf("%s: FoldOrdered differs between incremental and full reread", when)
 	}
-	if !reflect.DeepEqual(FoldDelegates(got), FoldDelegates(want)) {
-		t.Fatalf("%s: FoldDelegates differs between incremental and full reread", when)
-	}
 	if !reflect.DeepEqual(FoldWatches(got), FoldWatches(want)) {
 		t.Fatalf("%s: FoldWatches differs between incremental and full reread", when)
 	}
@@ -79,31 +76,19 @@ func requireIncrementalMatchesFullReread(t *testing.T, s *Store, path, when stri
 func incrementalTestEvent(i int) Event {
 	ts := time.Unix(1700000000, int64(i)).UTC()
 	jobID := fmt.Sprintf("job_%d", i%7)
-	delegateID := fmt.Sprintf("dlg_%d", i%3)
 	switch i % 6 {
 	case 0:
 		started := ts
-		resumable := i%2 == 0
 		return Event{
-			Kind: EventJobStarted, TS: ts, JobID: jobID, Type: JobDelegate,
+			Kind: EventJobStarted, TS: ts, JobID: jobID, Type: JobShell,
 			Task: strings.Repeat("t", i%17), OwnerSessionID: "ses_owner",
-			VisibleToSession: "ses_owner", DelegateID: delegateID, StartedAt: &started,
-			OutputPath: "/tmp/out", TranscriptRef: "local:ses_child",
-			DelegateRestore: &DelegateRestoreDescriptor{
-				Version: 1, ChildSessionID: "ses_child", TranscriptRef: "local:ses_child",
-				Task: "task", FrozenToolNames: []string{"read_file", "bash"},
-				FrozenSkillBodies: []string{strings.Repeat("b", i%11)},
-				ResultSchema:      map[string]any{"type": "object", "n": float64(i)},
-				Sandbox:           &SandboxSnapshot{Mode: "workspace", Network: &resumable, DenylistAdd: []string{"x"}},
-				Provenance:        &provenance.Causal{Chain: []provenance.Entry{{Kind: "watch", JobID: jobID}}},
-			},
+			VisibleToSession: "ses_owner", StartedAt: &started, OutputPath: "/tmp/out",
 			Provenance: &provenance.Causal{WatchKeys: []provenance.WatchKey{{WatchID: "w1", WatchGeneration: "g1"}}},
 		}
 	case 1:
-		resumable := i%3 == 0
 		return Event{
-			Kind: EventJobSessionAssigned, TS: ts, JobID: jobID,
-			TranscriptRef: "local:ses_child", Resumable: &resumable, NotResumableWhy: "why",
+			Kind: EventJobNotificationPending, TS: ts, JobID: jobID, TerminalGen: fmt.Sprintf("gen_%d", i),
+			Provenance: &provenance.Causal{Chain: []provenance.Entry{{Kind: "job", JobID: jobID}}},
 		}
 	case 2:
 		code := i % 5
@@ -118,12 +103,7 @@ func incrementalTestEvent(i int) Event {
 		}
 	case 3:
 		return Event{
-			Kind: EventDelegateCreated, TS: ts, DelegateID: delegateID,
-			Delegate: &DelegateEvent{
-				ChildSessionID: "ses_child", TranscriptRef: "local:ses_child",
-				OwnerSessionID: "ses_owner", VisibleSessionID: "ses_owner",
-				AgentType: "worker", Generation: fmt.Sprintf("g%d", i), Resumable: true,
-			},
+			Kind: EventJobMessageSent, TS: ts, JobID: jobID, Target: "ses_target", Action: "note",
 		}
 	case 4:
 		return Event{
@@ -389,9 +369,7 @@ func TestStoreIncrementalReloadTornTrailingLine(t *testing.T) {
 
 // TestStoreIncrementalReloadIndependentSnapshots pins the other half of the
 // cursor's contract: each load hands back its own objects. A caller that
-// mutates a loaded event or record — agent tests reach into
-// JobRecord.DelegateRestore to plant bogus durable state — must not change what
-// the next load reports.
+// mutates a loaded event or record must not change what the next load reports.
 func TestStoreIncrementalReloadIndependentSnapshots(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "jobs.jsonl")
@@ -419,10 +397,6 @@ func TestStoreIncrementalReloadIndependentSnapshots(t *testing.T) {
 		t.Fatalf("fold load: %v", err)
 	}
 	for _, r := range recs {
-		if r.DelegateRestore != nil {
-			r.DelegateRestore.WorkingDir = "/mutated"
-			r.DelegateRestore.FrozenToolNames = []string{"mutated"}
-		}
 		r.StructuredResult = "mutated"
 	}
 
@@ -448,9 +422,6 @@ func mutateEventDeeply(e *Event) {
 	if e.ExitCode != nil {
 		*e.ExitCode = 99
 	}
-	if e.Resumable != nil {
-		*e.Resumable = !*e.Resumable
-	}
 	if e.StructuredResultValid != nil {
 		*e.StructuredResultValid = !*e.StructuredResultValid
 	}
@@ -461,34 +432,9 @@ func mutateEventDeeply(e *Event) {
 		}
 	}
 	mutateCausal(e.Provenance)
-	if d := e.DelegateRestore; d != nil {
-		d.WorkingDir = "/mutated"
-		if len(d.FrozenToolNames) > 0 {
-			d.FrozenToolNames[0] = "mutated"
-		}
-		if len(d.FrozenSkillBodies) > 0 {
-			d.FrozenSkillBodies[0] = "mutated"
-		}
-		if m, ok := d.ResultSchema.(map[string]any); ok {
-			m["mutated"] = true
-		}
-		mutateCausal(d.Provenance)
-		if sb := d.Sandbox; sb != nil {
-			sb.Mode = "mutated"
-			if sb.Network != nil {
-				*sb.Network = !*sb.Network
-			}
-			if len(sb.DenylistAdd) > 0 {
-				sb.DenylistAdd[0] = "mutated"
-			}
-		}
-	}
 	if ws := e.WatchSend; ws != nil {
 		ws.Message = "mutated"
 		mutateCausal(ws.Provenance)
-	}
-	if d := e.Delegate; d != nil {
-		d.AgentType = "mutated"
 	}
 	if w := e.Watch; w != nil {
 		w.Condition = "mutated"
@@ -525,28 +471,11 @@ func mutateCausal(p *provenance.Causal) {
 func TestCloneEventCoversEveryReferenceField(t *testing.T) {
 	t.Parallel()
 	want := []string{
-		"Event.Delegate",
-		"Event.DelegateRestore",
-		"Event.DelegateRestore.ExplicitToolGrants",
-		"Event.DelegateRestore.FrozenSkillBodies",
-		"Event.DelegateRestore.FrozenSkillNames",
-		"Event.DelegateRestore.FrozenToolNames",
-		"Event.DelegateRestore.Provenance",
-		"Event.DelegateRestore.Provenance.Chain",
-		"Event.DelegateRestore.Provenance.WatchKeys",
-		"Event.DelegateRestore.ResultSchema",
-		"Event.DelegateRestore.Sandbox",
-		"Event.DelegateRestore.Sandbox.DenylistAdd",
-		"Event.DelegateRestore.Sandbox.DenylistRemove",
-		"Event.DelegateRestore.Sandbox.ExtraReadRoots",
-		"Event.DelegateRestore.Sandbox.ExtraWritableRoots",
-		"Event.DelegateRestore.Sandbox.Network",
 		"Event.EndedAt",
 		"Event.ExitCode",
 		"Event.Provenance",
 		"Event.Provenance.Chain",
 		"Event.Provenance.WatchKeys",
-		"Event.Resumable",
 		"Event.StartedAt",
 		"Event.StructuredResult",
 		"Event.StructuredResultValid",

@@ -83,9 +83,6 @@ func FuzzSessionInitSeed100Exact(f *testing.F) {
 			{"git-snapshot", TestSession_SystemPrompt_IncludesGitSnapshot_WhenInGitRepo},
 			{"restore-transcript", TestRestoreSession_FromMetaAndTranscript},
 			{"invalid-hook-matcher", TestNewSession_InvalidMatcherWarnsOnce},
-			{"deferred-nested-terminal", TestDeferredRestoreSideEffectsRecoverNestedTerminalForward},
-			{"deferred-runtime-lost", TestDeferredRestoreSideEffectsForwardsReconciledNestedRuntimeLost},
-			{"deferred-forward-failed", TestDeferredRestoreSideEffectsSkipsStartForwardFailedNestedTerminal},
 		}
 		for _, program := range programs {
 			t.Run(program.name, program.run)

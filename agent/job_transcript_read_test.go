@@ -29,10 +29,10 @@ func localJobProjectBucket(t *testing.T, stateHome, projectID string) string {
 }
 
 func seedLocalJob(t *testing.T, stateDir, ownerSessionID, jobID, outputPath, output string, terminal bool) {
-	seedLocalJobRecord(t, stateDir, ownerSessionID, jobID, outputPath, output, maxJobOutputRetentionBytes, jobstore.JobShell, terminal, int64(len(output)), nil)
+	seedLocalJobRecord(t, stateDir, ownerSessionID, jobID, outputPath, output, maxJobOutputRetentionBytes, terminal, int64(len(output)), nil)
 }
 
-func seedLocalJobRecord(t *testing.T, stateDir, ownerSessionID, jobID, outputPath, output string, retentionBytes int64, jobType jobstore.JobType, terminal bool, terminalOutputBytes int64, structuredResult map[string]any) {
+func seedLocalJobRecord(t *testing.T, stateDir, ownerSessionID, jobID, outputPath, output string, retentionBytes int64, terminal bool, terminalOutputBytes int64, structuredResult map[string]any) {
 	t.Helper()
 	derivedOutputPath := filepath.Join(jobsDir(stateDir, ownerSessionID), "jobs", jobID+".log")
 	if err := os.MkdirAll(filepath.Dir(derivedOutputPath), 0o755); err != nil {
@@ -59,18 +59,12 @@ func seedLocalJobRecord(t *testing.T, stateDir, ownerSessionID, jobID, outputPat
 		Kind:             jobstore.EventJobStarted,
 		TS:               started,
 		JobID:            jobID,
-		Type:             jobType,
+		Type:             jobstore.JobShell,
 		OwnerSessionID:   ownerSessionID,
 		VisibleToSession: ownerSessionID,
 		StartedAt:        &started,
 		OutputPath:       outputPath,
 		Command:          "printf marker",
-	}
-	if jobType == jobstore.JobDelegate {
-		startedEvent.Command = ""
-		startedEvent.Task = "review the local job"
-		startedEvent.DelegateID = identifier.MustNewDelegateID()
-		startedEvent.TranscriptRef = encodeRef("", identifier.MustNewSessionID())
 	}
 	if err := store.Append(startedEvent); err != nil {
 		_ = store.Close()
@@ -289,7 +283,7 @@ func TestReadLocalJobSnapshotRejectsTerminalByteMismatch(t *testing.T) {
 	flat := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
-	seedLocalJobRecord(t, flat, owner, jobID, "/decoy", "bytes\n", maxJobOutputRetentionBytes, jobstore.JobShell, true, 99, nil)
+	seedLocalJobRecord(t, flat, owner, jobID, "/decoy", "bytes\n", maxJobOutputRetentionBytes, true, 99, nil)
 
 	_, err := readLocalJobSnapshot(flat, jobID, 1024)
 	if err == nil || !strings.Contains(err.Error(), "terminal output_bytes 99 does not match snapshot total_bytes 6") {
@@ -302,7 +296,7 @@ func TestReadLocalJobSnapshotReportsRetainedMetadata(t *testing.T) {
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
 	const output = "DROP_ME:RETAINED"
-	seedLocalJobRecord(t, flat, owner, jobID, "/decoy", output, int64(len("RETAINED")), jobstore.JobShell, true, int64(len(output)), nil)
+	seedLocalJobRecord(t, flat, owner, jobID, "/decoy", output, int64(len("RETAINED")), true, int64(len(output)), nil)
 
 	snapshot, err := readLocalJobSnapshot(flat, jobID, 1024)
 	if err != nil {

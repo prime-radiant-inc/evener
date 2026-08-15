@@ -35,6 +35,43 @@ func communicateResponse(endTurn bool, message string) llm.Response {
 	}
 }
 
+func communicateWithStructured(message string, output map[string]any) llm.Response {
+	args, _ := json.Marshal(map[string]any{
+		"message":  message,
+		"end_turn": true,
+		"output":   output,
+	})
+	return llm.Response{Message: llm.Message{
+		Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "communicate_test_call",
+				Name:      "communicate",
+				Arguments: args,
+				Type:      "function",
+			},
+		}},
+	}}
+}
+
+func communicateWithDefaultOutput(message string) llm.Response {
+	return communicateWithStructured(message, map[string]any{
+		"message":   message,
+		"data":      map[string]any{},
+		"artifacts": []string{},
+	})
+}
+
+func requestContainsText(req llm.Request, want string) bool {
+	for _, message := range req.Messages {
+		if strings.Contains(message.Text(), want) {
+			return true
+		}
+	}
+	return false
+}
+
 func finalResponse(message string) llm.Response {
 	return communicateResponse(true, message)
 }

@@ -4,13 +4,10 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/hooks"
-	"primeradiant.com/serf/agent/internal/worktree"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/schema"
 )
@@ -22,7 +19,6 @@ func FuzzInitWorktreeSeed100(f *testing.F) {
 	f.Add(byte(0))
 	f.Fuzz(func(t *testing.T, _ byte) {
 		fuzzInitWorktreePureEdges(t)
-		fuzzInitWorktreeCloseUnlockFailure(t)
 		fuzzInitW3RegressionPrograms(t)
 		fuzzWorktreeCloseResumeRegressionPrograms(t)
 		fuzzSubagentRegressionPrograms(t)
@@ -113,7 +109,6 @@ func fuzzWorktreeCloseResumeRegressionPrograms(t *testing.T) {
 		{"dispose-changed-foreign", TestDisposeOneDelegateLane_ChangedForeignLockDeclinedNotTouched},
 		{"dispose-unchanged-lock", TestDisposeOneDelegateLane_UnchangedUnlockFailsLeavesLocked},
 		{"dispose-race", TestDisposeRacingDirtyWrite_DowngradesToKeepUnlocked},
-		{"dispose-mark", TestDisposeOneDelegateLane_DisposedMarkAppendFailureWarnsButStillRemoves},
 		{"dispose-branch", TestDisposeOneDelegateLane_BranchDeleteFailureWarnsButLaneStillGone},
 		{"close-unlock-fails", TestUnlockOwnManagedWorktreeAtClose_LeaveFailsWarns},
 		{"close-unlock-nonlocal", TestUnlockOwnManagedWorktreeAtClose_NonLocalEnvNoOp},
@@ -176,12 +171,6 @@ func fuzzInitWorktreePureEdges(t *testing.T) {
 	if err := (*Session)(nil).trackAndLaunchPreparedSubagent(nil); err == nil {
 		t.Fatal("nil prepared run succeeded")
 	}
-	if _, err := (&Session{}).installParentSourceWatchForChild("", "", watchArgs{}); err == nil {
-		t.Fatal("empty parent-watch observer succeeded")
-	}
-	if _, err := (&Session{}).clearParentSourceWatchForChild("", "", ""); err == nil {
-		t.Fatal("empty parent-watch observer clear succeeded")
-	}
 	missingSub := &Session{subagents: newSubagentManager(func(events.EventKind, events.EventData) {}, 0)}
 	if _, err := missingSub.sendInput(context.Background(), "missing", "input"); err == nil {
 		t.Fatal("unknown subagent send succeeded")
@@ -213,32 +202,6 @@ func fuzzInitWorktreePureEdges(t *testing.T) {
 	s.resumeWorktreeReentry(schema.SessionMeta{WorktreePath: "/tmp/not-local"})
 	s.disposeDelegateLanesAtClose(context.Background())
 	s.unlockOwnManagedWorktreeAtClose()
-	if _, kept := s.disposeOneDelegateLane(context.Background(), &execenv.LocalExecutionEnvironment{}, isolationLane{delegateID: "gone", path: t.TempDir()}); kept {
-		t.Fatal("missing lane was kept")
-	}
 }
 
 func hooksRunResultZero() hooks.RunResult { return hooks.RunResult{} }
-
-func fuzzInitWorktreeCloseUnlockFailure(t *testing.T) {
-	t.Helper()
-	h, faults := newWorktreeFaultSession(t)
-	name := "dispose-unlock-failure"
-	path := scriptedCreate(t, h, name)
-	h.exitToRoot(t)
-	h.setLock(path, worktree.FormatDelegateMarker(name, h.s.id))
-	faults.unlockErr[path] = errors.New("scripted dispose unlock failure")
-	local := h.s.currentEnv().(*execenv.LocalExecutionEnvironment)
-	if _, kept := h.s.disposeOneDelegateLane(context.Background(), local, isolationLane{delegateID: name, path: path}); kept {
-		t.Fatal("unlock failure reported lane kept")
-	}
-
-	h2, _ := newWorktreeFaultSession(t)
-	foreignName := "dispose-unchanged-foreign"
-	foreignPath := scriptedCreate(t, h2, foreignName)
-	h2.exitToRoot(t)
-	h2.setLock(foreignPath, "serf:foreign")
-	if _, kept := h2.s.disposeOneDelegateLane(context.Background(), h2.s.currentEnv().(*execenv.LocalExecutionEnvironment), isolationLane{delegateID: foreignName, path: foreignPath}); kept {
-		t.Fatal("foreign unchanged lane reported kept")
-	}
-}

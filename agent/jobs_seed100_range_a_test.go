@@ -20,19 +20,17 @@ func seed100JobsRangeA(t *testing.T) {
 		t.Fatal("stampLastActivityLocked did not stamp a running job")
 	}
 
-	jm.running["delegate"] = &runningJob{rec: &jobstore.JobRecord{
-		JobID: "delegate",
-		Type:  jobstore.JobDelegate,
-		DelegateRestore: &jobstore.DelegateRestoreDescriptor{
-			WorkingDir: "/tmp/seed100-delegate",
-		},
+	jm.running["shell-worktree"] = &runningJob{rec: &jobstore.JobRecord{
+		JobID:      "shell-worktree",
+		Type:       jobstore.JobShell,
+		WorkingDir: "/tmp/seed100-shell",
 	}}
 	handles := jm.liveWorkHandles()
-	if len(handles) != 1 || handles[0].dir != "/tmp/seed100-delegate" {
-		t.Fatalf("live delegate handles = %#v", handles)
+	if len(handles) != 1 || handles[0].dir != "/tmp/seed100-shell" {
+		t.Fatalf("live shell handles = %#v", handles)
 	}
 	delete(jm.running, "stamp")
-	delete(jm.running, "delegate")
+	delete(jm.running, "shell-worktree")
 
 	closedDone := make(chan struct{})
 	close(closedDone)

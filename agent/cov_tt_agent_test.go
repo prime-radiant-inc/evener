@@ -57,24 +57,6 @@ func TestCtxHostForwardsToSession(t *testing.T) {
 	h.Emit(events.EventWarning, events.WarningData{Message: "cov-tt warning"})
 }
 
-// TestParseSpawnedAgentID covers the non-string, malformed-JSON, missing-ID, and
-// success arms of parseSpawnedAgentID.
-func TestParseSpawnedAgentID(t *testing.T) {
-	if _, err := parseSpawnedAgentID(42); err == nil {
-		t.Fatal("parseSpawnedAgentID(non-string) error = nil, want type failure")
-	}
-	if _, err := parseSpawnedAgentID("{not json"); err == nil {
-		t.Fatal("parseSpawnedAgentID(bad json) error = nil, want parse failure")
-	}
-	if _, err := parseSpawnedAgentID(`{"agent_id":"  "}`); err == nil {
-		t.Fatal("parseSpawnedAgentID(blank id) error = nil, want missing-id failure")
-	}
-	id, err := parseSpawnedAgentID(`{"agent_id":"child-1"}`)
-	if err != nil || id != "child-1" {
-		t.Fatalf("parseSpawnedAgentID(valid) = (%q, %v), want (child-1, nil)", id, err)
-	}
-}
-
 // TestIsResultToolDefinition covers the communicate-default, wire-name match,
 // and no-match arms.
 func TestIsResultToolDefinition(t *testing.T) {

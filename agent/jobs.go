@@ -280,43 +280,15 @@ type runningJob struct {
 	structured              any
 	structuredCaptureFailed bool
 	structuredCaptured      bool
-	// salvagedDraft is captured once from the child session's
-	// hasSalvageFromFinalRound latch in finalizeDelegateOnce's prepare(), the
-	// same "read once while the child is still live" shape structured uses —
-	// delegateTerminalResult reads it back to decide whether a failed
-	// delegate's result should point the parent at delegate_send instead of a
-	// fresh re-dispatch.
-	salvagedDraft                   bool
-	terminal                        *terminalJob
-	finalize                        *finalizeAttempt
-	delegateOutputAppended          bool
-	delegateOutputWritten           int
-	delegateResumeAssessed          bool
-	exhaustion                      *budgetExhaustionError
-	delegateExhaustionPersistFailed bool
-	afterDurableFinish              func()
-	fromWatch                       atomic.Bool
-	callerCallbackDelivered         atomic.Bool
-	forwardDisabled                 bool
-	// watchdogStop, when non-nil, stops the quiet-job watchdog goroutine for a
-	// running delegate. Closed once at finalize. quietNotified latches the
-	// quiet notification to once-per-quiet-stretch; it is read/written under
-	// jm.mu by the watchdog tick and cleared when activity resumes.
-	watchdogStop    chan struct{}
-	watchdogStopped sync.Once
-	quietNotified   bool
+	terminal                *terminalJob
+	finalize                *finalizeAttempt
+	forwardDisabled         bool
 	// completion distinguishes a durable terminal close of done from teardown
 	// abandonment. Stop receipts must not treat both channel closes as the same
 	// lifecycle proof.
 	completion atomic.Uint32
-	// treeSlot holds the tree-counter reservation for a running delegate turn
-	// (spec §4). Set when the spawn/resume path reserves a slot for this run;
-	// released exactly once when the run leaves jm.running (terminal finalize or
-	// the abandon path). treeReservation.release is idempotent so
-	// finalize-then-abandon (or a finalize retry) never double-releases.
-	treeSlot *treeReservation
 	// delegateShell is the exact process receipt for a shell owned by a stable
-	// delegate generation. It remains nil for root and legacy job ownership.
+	// delegate generation. It remains nil for root-owned shells.
 	delegateShell *stableDelegateShellReceipt
 }
 
@@ -373,17 +345,6 @@ func (run *runningJob) closeDoneWith(completion runningJobCompletion) {
 	})
 }
 
-// stopWatchdog stops the quiet-job watchdog goroutine (delegate jobs only).
-// Idempotent and safe on a runningJob that never armed a watchdog.
-func (run *runningJob) stopWatchdog() {
-	if run == nil || run.watchdogStop == nil {
-		return
-	}
-	run.watchdogStopped.Do(func() {
-		close(run.watchdogStop)
-	})
-}
-
 // stampLastActivityLocked records now() as the running job's most recent
 // parent-observable activity. Callers must hold jm.mu. A stamp replaces the
 // LastActivity pointer wholesale, so a record clone that shares the pointer is
@@ -422,12 +383,8 @@ type liveWorkHandle struct {
 	handle string
 }
 
-// liveWorkHandles returns the launch-time working directory of every job
-// still in jm.running — shell jobs via JobRecord.WorkingDir, delegate jobs
-// via DelegateRestore.WorkingDir — paired with a handle describing it. A job
-// with no recorded working dir (delegates predating this field, or a shell
-// job whose env was not a LocalExecutionEnvironment) is omitted; the guard is
-// best-effort, not a source of false refusals.
+// liveWorkHandles returns the launch-time working directory of every shell job
+// still in jm.running. Stable delegate lanes are enumerated by the controller.
 func (jm *jobManager) liveWorkHandles() []liveWorkHandle {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
@@ -436,15 +393,8 @@ func (jm *jobManager) liveWorkHandles() []liveWorkHandle {
 		if run == nil || run.rec == nil {
 			continue
 		}
-		switch run.rec.Type {
-		case jobstore.JobShell:
-			if wd := run.rec.WorkingDir; wd != "" {
-				out = append(out, liveWorkHandle{dir: wd, handle: run.rec.JobID + " (shell, running)"})
-			}
-		case jobstore.JobDelegate:
-			if run.rec.DelegateRestore != nil && run.rec.DelegateRestore.WorkingDir != "" {
-				out = append(out, liveWorkHandle{dir: run.rec.DelegateRestore.WorkingDir, handle: run.rec.JobID + " (delegate, running)"})
-			}
+		if run.rec.Type == jobstore.JobShell && run.rec.WorkingDir != "" {
+			out = append(out, liveWorkHandle{dir: run.rec.WorkingDir, handle: run.rec.JobID + " (shell, running)"})
 		}
 	}
 	return out
@@ -477,7 +427,6 @@ type terminalJob struct {
 	reason                       string
 	exhaustionBudget             string
 	exhaustionLimit              int
-	resumable                    *bool
 	exitCode                     *int
 	endedAt                      time.Time
 	outputBytes                  int64
@@ -485,7 +434,6 @@ type terminalJob struct {
 	finished                     jobstore.Event
 	finishedForwarded            bool
 	finishedEmitted              bool
-	afterDurableFinishCalled     bool
 	notificationPending          jobstore.Event
 	notificationPendingAppended  bool
 	notificationPendingForwarded bool
@@ -719,7 +667,6 @@ func (jm *jobManager) closeRuntimeState() error {
 	}
 	running := make([]jobRuntimeHandle, 0, len(jm.running))
 	for _, run := range jm.running {
-		run.stopWatchdog()
 		running = append(running, jobRuntimeHandle{
 			jobID:  run.rec.JobID,
 			signal: run.signal,
@@ -803,7 +750,6 @@ func (jm *jobManager) abandonRunningJobs() {
 	running := make([]jobRuntimeHandle, 0, len(jm.running))
 	var targets []watchConfigTerminalSnapshot
 	for _, run := range jm.running {
-		run.stopWatchdog()
 		running = append(running, jobRuntimeHandle{
 			jobID:     run.rec.JobID,
 			done:      run.done,
@@ -812,7 +758,6 @@ func (jm *jobManager) abandonRunningJobs() {
 			shell:     run.delegateShell,
 		})
 		delete(jm.running, run.rec.JobID)
-		run.treeSlot.release()
 		targets = append(targets, jm.pruneWatchedTargetWatchesLocked(run.rec.JobID, "watched target pruned", jm.now())...)
 	}
 	jm.mu.Unlock()
@@ -844,9 +789,7 @@ func (jm *jobManager) abandonRunningJob(jobID string) {
 	run := jm.running[jobID]
 	var targets []watchConfigTerminalSnapshot
 	if run != nil {
-		run.stopWatchdog()
 		delete(jm.running, jobID)
-		run.treeSlot.release()
 		targets = jm.pruneWatchedTargetWatchesLocked(jobID, "watched target pruned", jm.now())
 	}
 	jm.mu.Unlock()
@@ -1055,11 +998,8 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 	if jm == nil || jm.emit == nil {
 		return
 	}
-	fromWatch := false
 	jobType := string(e.Type)
-	delegateID := e.DelegateID
 	task := e.Task
-	transcriptRef := e.TranscriptRef
 	originTurnID := e.OriginTurnID
 	originToolCallID := e.OriginToolCallID
 	originItemID := e.OriginItemID
@@ -1067,7 +1007,6 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 	command := ""
 	parentDelegateID := e.ParentDelegateID
 	if run != nil {
-		fromWatch = run.fromWatch.Load()
 		if run.rec != nil {
 			if run.rec.Type != "" {
 				jobType = string(run.rec.Type)
@@ -1075,12 +1014,10 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 			background = run.rec.Background
 			command = run.rec.Command
 			parentDelegateID = firstNonEmptyJobString(run.rec.ParentDelegateID, parentDelegateID)
-			delegateID = firstNonEmptyJobString(run.rec.DelegateID, delegateID)
-			task = firstNonEmptyJobString(delegateRestoreTask(run.rec), run.rec.Task, task)
-			transcriptRef = firstNonEmptyJobString(run.rec.TranscriptRef, transcriptRef)
+			task = firstNonEmptyJobString(run.rec.Task, task)
 			originTurnID = firstNonEmptyJobString(run.rec.OriginTurnID, originTurnID)
-			originToolCallID = firstNonEmptyJobString(run.rec.OriginToolCallID, originToolCallID, delegateRestoreOriginToolCallID(run.rec))
-			originItemID = firstNonEmptyJobString(run.rec.OriginItemID, originItemID, delegateRestoreOriginItemID(run.rec))
+			originToolCallID = firstNonEmptyJobString(run.rec.OriginToolCallID, originToolCallID)
+			originItemID = firstNonEmptyJobString(run.rec.OriginItemID, originItemID)
 		}
 	}
 	if jobType != string(jobstore.JobShell) {
@@ -1090,13 +1027,11 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 		JobID:            e.JobID,
 		JobType:          jobType,
 		Status:           string(jobstore.StatusRunning),
-		FromWatch:        fromWatch,
 		Background:       background,
 		Command:          command,
 		ParentDelegateID: parentDelegateID,
-		DelegateID:       delegateID,
 		Task:             task,
-		TranscriptRef:    transcriptRef,
+		TranscriptRef:    shellTranscriptRef(e.JobID),
 		OriginTurnID:     originTurnID,
 		OriginToolCallID: originToolCallID,
 		OriginItemID:     originItemID,
@@ -1112,41 +1047,15 @@ func firstNonEmptyJobString(values ...string) string {
 	return ""
 }
 
-func delegateRestoreTask(rec *jobstore.JobRecord) string {
-	if rec == nil || rec.DelegateRestore == nil {
-		return ""
-	}
-	// Restored/resumed delegate jobs keep the original launch task for run linkage;
-	// run.rec.Task is the resume message for the concrete job activation.
-	return rec.DelegateRestore.Task
-}
-
-func delegateRestoreOriginToolCallID(rec *jobstore.JobRecord) string {
-	if rec == nil || rec.DelegateRestore == nil {
-		return ""
-	}
-	return rec.DelegateRestore.OriginToolCallID
-}
-
-func delegateRestoreOriginItemID(rec *jobstore.JobRecord) string {
-	if rec == nil || rec.DelegateRestore == nil {
-		return ""
-	}
-	return rec.DelegateRestore.OriginItemID
-}
-
 func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 	if jm == nil || jm.emit == nil {
 		return
 	}
 	jobType := string(e.Type)
-	transcriptRef := e.TranscriptRef
-	delegateID := e.DelegateID
 	task := e.Task
 	originTurnID := e.OriginTurnID
 	originToolCallID := e.OriginToolCallID
 	originItemID := e.OriginItemID
-	fromWatch := false
 	background := false
 	command := ""
 	parentDelegateID := e.ParentDelegateID
@@ -1157,13 +1066,10 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 		background = run.rec.Background
 		command = run.rec.Command
 		parentDelegateID = firstNonEmptyJobString(run.rec.ParentDelegateID, parentDelegateID)
-		transcriptRef = firstNonEmptyJobString(run.rec.TranscriptRef, transcriptRef)
-		delegateID = firstNonEmptyJobString(run.rec.DelegateID, delegateID)
-		task = firstNonEmptyJobString(delegateRestoreTask(run.rec), run.rec.Task, task)
+		task = firstNonEmptyJobString(run.rec.Task, task)
 		originTurnID = firstNonEmptyJobString(run.rec.OriginTurnID, originTurnID)
-		originToolCallID = firstNonEmptyJobString(run.rec.OriginToolCallID, originToolCallID, delegateRestoreOriginToolCallID(run.rec))
-		originItemID = firstNonEmptyJobString(run.rec.OriginItemID, originItemID, delegateRestoreOriginItemID(run.rec))
-		fromWatch = run.fromWatch.Load()
+		originToolCallID = firstNonEmptyJobString(run.rec.OriginToolCallID, originToolCallID)
+		originItemID = firstNonEmptyJobString(run.rec.OriginItemID, originItemID)
 	}
 	if jobType != string(jobstore.JobShell) {
 		return
@@ -1175,15 +1081,12 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 		Reason:           e.Reason,
 		ExhaustionBudget: e.ExhaustionBudget,
 		ExhaustionLimit:  e.ExhaustionLimit,
-		Resumable:        e.Resumable,
 		ExitCode:         e.ExitCode,
 		OutputBytes:      e.OutputBytes,
-		TranscriptRef:    transcriptRef,
-		FromWatch:        fromWatch,
+		TranscriptRef:    shellTranscriptRef(e.JobID),
 		Background:       background,
 		Command:          command,
 		ParentDelegateID: parentDelegateID,
-		DelegateID:       delegateID,
 		Task:             task,
 		OriginTurnID:     originTurnID,
 		OriginToolCallID: originToolCallID,
@@ -1437,7 +1340,6 @@ func (jm *jobManager) reconcileLostJobsWithLoad(loadJobs func() (map[string]*job
 				Reason:           finished.Reason,
 				ExhaustionBudget: finished.ExhaustionBudget,
 				ExhaustionLimit:  finished.ExhaustionLimit,
-				Resumable:        finished.Resumable,
 				TranscriptRef:    jobTranscriptRef(rec),
 				OutputBytes:      finished.OutputBytes,
 				ExitCode:         finished.ExitCode,
@@ -1561,9 +1463,6 @@ func (jm *jobManager) stopRunningJobLocked(jobID string, run *runningJob) (*jobs
 	if run.finalize != nil || run.terminal != nil || run.rec.Status.IsTerminal() {
 		return rec, receipt, nil, nil
 	}
-	if err := jm.appendDelegateStopGateForRecord(rec); err != nil {
-		return nil, nil, nil, err
-	}
 	run.stopStatus = jobstore.StatusCancelled
 	run.stopReason = "stopped_by_parent"
 	rec.Status = run.stopStatus
@@ -1637,21 +1536,6 @@ func (jm *jobManager) stopWithReceipt(jobID string) (*jobstore.JobRecord, *jobSt
 	return cloneJobRecord(rec), nil, nil
 }
 
-func (jm *jobManager) appendDelegateStopGateForRecord(rec *jobstore.JobRecord) error {
-	if rec == nil || rec.Type != jobstore.JobDelegate || rec.DelegateID == "" {
-		return nil
-	}
-	return jm.appendEvent(jobstore.Event{
-		Kind:       jobstore.EventDelegateStopGateClosed,
-		TS:         jm.now(),
-		DelegateID: rec.DelegateID,
-		Delegate: &jobstore.DelegateEvent{
-			Generation: jobstore.NewDelegateGeneration(),
-			StopJobID:  rec.JobID,
-		},
-	})
-}
-
 func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason string, exitCode *int) error {
 	return jm.finalizeWithRun(jobID, func(run *runningJob) (jobstore.Status, string, *int, error) {
 		return status, reason, exitCode, nil
@@ -1677,7 +1561,6 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 		return err
 	}
 	jm.emitFinishedJob(run, terminal)
-	jm.runAfterDurableFinish(run, terminal, run.afterDurableFinish)
 
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] != run || run.terminal != terminal {
@@ -1699,10 +1582,8 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] == run && run.terminal == terminal {
 		delete(jm.running, run.rec.JobID)
-		run.treeSlot.release()
 	}
 	jm.mu.Unlock()
-	run.stopWatchdog()
 	_ = run.output.Close()
 	run.delegateShell.finish()
 	run.closeDoneDurable()
@@ -1750,7 +1631,6 @@ func (jm *jobManager) finalizeWithRunMode(jobID string, prepare func(*runningJob
 			err = jm.forwardFinishedJob(run, terminal)
 			if err == nil {
 				jm.emitFinishedJob(run, terminal)
-				jm.runAfterDurableFinish(run, terminal, run.afterDurableFinish)
 				err = jm.armFinalizedJob(run, terminal)
 			}
 		} else {
@@ -1787,33 +1667,17 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 		outputBytes = total
 	}
 	jm.mu.Lock()
-	resultSchema := delegateResultSchema(run.rec)
-	structured, structuredValid, structuredReason := boundedStructuredResult(run.structured, resultSchema, run.structuredCaptureFailed)
-	afterDurableFinish := run.afterDurableFinish
-	exhaustionBudget := ""
-	exhaustionLimit := 0
-	if run.exhaustion != nil {
-		exhaustionBudget = string(run.exhaustion.Budget)
-		exhaustionLimit = run.exhaustion.Limit
-	}
-	var resumable *bool
-	if run.rec.Resumable != nil {
-		value := *run.rec.Resumable
-		resumable = &value
-	}
+	structured, structuredValid, structuredReason := boundedStructuredResult(run.structured, nil, run.structuredCaptureFailed)
 	jm.mu.Unlock()
 
 	endedAt := jm.now()
 	terminal := &terminalJob{
-		status:           status,
-		reason:           reason,
-		exhaustionBudget: exhaustionBudget,
-		exhaustionLimit:  exhaustionLimit,
-		resumable:        resumable,
-		exitCode:         exitCode,
-		endedAt:          endedAt,
-		outputBytes:      outputBytes,
-		generation:       jobstore.NewTerminalGeneration(),
+		status:      status,
+		reason:      reason,
+		exitCode:    exitCode,
+		endedAt:     endedAt,
+		outputBytes: outputBytes,
+		generation:  jobstore.NewTerminalGeneration(),
 	}
 	finished := jobstore.Event{
 		Kind:                   jobstore.EventJobFinished,
@@ -1823,7 +1687,6 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 		Reason:                 terminal.reason,
 		ExhaustionBudget:       terminal.exhaustionBudget,
 		ExhaustionLimit:        terminal.exhaustionLimit,
-		Resumable:              terminal.resumable,
 		ExitCode:               terminal.exitCode,
 		EndedAt:                &endedAt,
 		OutputBytes:            terminal.outputBytes,
@@ -1845,7 +1708,6 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 		run.rec.Reason = terminal.reason
 		run.rec.ExhaustionBudget = terminal.exhaustionBudget
 		run.rec.ExhaustionLimit = terminal.exhaustionLimit
-		run.rec.Resumable = terminal.resumable
 		run.rec.ExitCode = terminal.exitCode
 		run.rec.EndedAt = &terminal.endedAt
 		run.rec.OutputBytes = terminal.outputBytes
@@ -1860,7 +1722,6 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 		return nil, err
 	}
 	jm.emitFinishedJob(run, terminal)
-	jm.runAfterDurableFinish(run, terminal, afterDurableFinish)
 	return terminal, nil
 }
 
@@ -1890,26 +1751,6 @@ func (jm *jobManager) emitFinishedJob(run *runningJob, terminal *terminalJob) {
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] == run && run.terminal == terminal {
 		terminal.finishedEmitted = true
-	}
-	jm.mu.Unlock()
-}
-
-func (jm *jobManager) runAfterDurableFinish(run *runningJob, terminal *terminalJob, callback func()) {
-	if terminal == nil || terminal.afterDurableFinishCalled {
-		return
-	}
-	if callback == nil {
-		jm.mu.Lock()
-		if jm.running[run.rec.JobID] == run && run.terminal == terminal {
-			terminal.afterDurableFinishCalled = true
-		}
-		jm.mu.Unlock()
-		return
-	}
-	callback()
-	jm.mu.Lock()
-	if jm.running[run.rec.JobID] == run && run.terminal == terminal {
-		terminal.afterDurableFinishCalled = true
 	}
 	jm.mu.Unlock()
 }
@@ -2025,7 +1866,6 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		return nil
 	}
 	pendingAppended := terminal.notificationPendingAppended
-	suppressOwnerNotification := !pendingAppended && run.fromWatch.Load() && run.callerCallbackDelivered.Load()
 	var watchNotifications []jobNotification
 	var watchDeliveries []watchSendDelivery
 	var watchRegistryEvents []jobstore.Event
@@ -2066,7 +1906,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		jm.mu.Unlock()
 	}
 
-	if !pendingAppended && !suppressOwnerNotification {
+	if !pendingAppended {
 		pending := jobstore.Event{
 			Kind:        jobstore.EventJobNotificationPending,
 			TS:          terminal.endedAt,
@@ -2086,17 +1926,14 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		jm.mu.Unlock()
 	}
 
-	if !suppressOwnerNotification {
-		if err := jm.forwardPendingJobNotification(run, terminal); err != nil {
-			flushNotices()
-			return err
-		}
+	if err := jm.forwardPendingJobNotification(run, terminal); err != nil {
+		flushNotices()
+		return err
 	}
 
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] == run {
 		delete(jm.running, run.rec.JobID)
-		run.treeSlot.release()
 	} else {
 		jm.mu.Unlock()
 		flushNotices()
@@ -2104,7 +1941,6 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	}
 	jm.mu.Unlock()
 
-	run.stopWatchdog()
 	_ = run.output.Close()
 
 	// Enqueue the terminal owner notification BEFORE closing done: anything that
@@ -2113,37 +1949,22 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	// an empty queue and the delivery slips a boundary. The watch settlements
 	// collected above ride the same enqueue, in the documented order — watch
 	// notices first, then the terminal.
-	if !suppressOwnerNotification {
-		ownNotices = append(ownNotices, jobNotification{
-			JobID:            run.rec.JobID,
-			JobType:          string(run.rec.Type),
-			Status:           string(terminal.status),
-			Reason:           terminal.reason,
-			ExhaustionBudget: terminal.exhaustionBudget,
-			ExhaustionLimit:  terminal.exhaustionLimit,
-			Resumable:        terminal.resumable,
-			TranscriptRef:    jobTranscriptRef(run.rec),
-			OutputBytes:      terminal.outputBytes,
-			ExitCode:         terminal.exitCode,
-			Provenance:       provenance.Clone(run.rec.Provenance),
-		})
-	}
+	ownNotices = append(ownNotices, jobNotification{
+		JobID:            run.rec.JobID,
+		JobType:          string(run.rec.Type),
+		Status:           string(terminal.status),
+		Reason:           terminal.reason,
+		ExhaustionBudget: terminal.exhaustionBudget,
+		ExhaustionLimit:  terminal.exhaustionLimit,
+		TranscriptRef:    jobTranscriptRef(run.rec),
+		OutputBytes:      terminal.outputBytes,
+		ExitCode:         terminal.exitCode,
+		Provenance:       provenance.Clone(run.rec.Provenance),
+	})
 	flushNotices()
 	run.delegateShell.finish()
 	run.closeDoneDurable()
 	return nil
-}
-
-func (jm *jobManager) markWatchOriginCallerCallbackDelivered(jobID string) {
-	if jm == nil || jobID == "" {
-		return
-	}
-	jm.mu.Lock()
-	run := jm.running[jobID]
-	if run != nil && run.fromWatch.Load() {
-		run.callerCallbackDelivered.Store(true)
-	}
-	jm.mu.Unlock()
 }
 
 func (jm *jobManager) forwardPendingJobNotification(run *runningJob, terminal *terminalJob) error {
@@ -2234,7 +2055,6 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 				Reason:           rec.Reason,
 				ExhaustionBudget: rec.ExhaustionBudget,
 				ExhaustionLimit:  rec.ExhaustionLimit,
-				Resumable:        rec.Resumable,
 				TranscriptRef:    jobTranscriptRef(rec),
 				OutputBytes:      rec.OutputBytes,
 				ExitCode:         rec.ExitCode,

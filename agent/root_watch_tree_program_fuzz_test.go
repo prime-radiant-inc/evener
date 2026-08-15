@@ -11,13 +11,15 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/agenttest"
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	tooldefs "primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
-// FuzzRootWatchTreeProgram covers the durable observer-watch lifecycle that
-// sits between raw watch observation and a session's one-shot job-tree drain.
+// FuzzRootWatchTreeProgram covers the durable generic watch-journal lifecycle
+// between raw watch observation, progress delivery, and terminal catch-up.
 // It runs real job managers and sessions, but confines all effects to their
 // test-owned state directories, a fake clock, and the package's scripted LLM
 // adapter. In particular, createShell only builds durable job records here; it
@@ -25,15 +27,15 @@ import (
 //
 // The program covers four coupled transitions that need to agree on the same
 // durable ledger:
-//   - a child-visible parent watch is installed, framed from several event
-//     payloads, inspected/listed, and receiver-cleared;
+//   - generic self/caller journal watches are installed, framed from several
+//     event payloads, inspected/listed, and cleared;
 //   - a concrete output/progress watch records pending sends, then exercises
 //     delivered, deferred, and hard-failure delivery outcomes;
 //   - a terminal output-match request takes the retained-output catch-up path;
-//   - a completed delegate is drained through the real Session job-tree loop.
+//   - stable delivery and restore preserve pending journal state.
 //
 // The oracle checks ledger coherence rather than merely asserting no panic:
-// receiver-scoped views are deterministic, terminal catch-up never leaves a
+// manager views are deterministic, terminal catch-up never leaves a
 // live watch behind, pending states remain renderable, and each delivery id is
 // durably accepted at most once.
 
@@ -103,11 +105,6 @@ func rwlpRunManagerProgram(t *testing.T, r *rwlpReader) {
 	var notifications []jobNotification
 	jm.enqueue = func(n jobNotification) { notifications = append(notifications, n) }
 
-	// A seeded delegate makes a normal sidecar target valid. The parent-watch
-	// receiver below intentionally uses a distinct target, exercising the
-	// receiver-owned route where the observer's record is external to this
-	// manager.
-	seedWatchSendDelegateTarget(t, jm, "dlg_rwlp")
 	live, err := jm.createShell(createShellOpts{Command: "rwlp live"})
 	if err != nil {
 		t.Fatalf("create live shell: %v", err)
@@ -116,39 +113,28 @@ func rwlpRunManagerProgram(t *testing.T, r *rwlpReader) {
 	if err != nil {
 		t.Fatalf("create terminal shell: %v", err)
 	}
-	quiet, err := jm.createShell(createShellOpts{Command: "rwlp quiet delegate"})
-	if err != nil {
-		t.Fatalf("create quiet shell: %v", err)
-	}
-
 	liveRun := rwlpRunningJob(t, jm, live.JobID)
 	if _, err := jm.appendJobOutput(live.JobID, liveRun.output, []byte("booting\nready before install\n")); err != nil {
 		t.Fatalf("seed live output: %v", err)
 	}
 
-	receiverSessionID := "observer-session"
-	receiverDelegateID := "dlg_receiver"
 	receiver, err := jm.configureWatch(watchArgs{
-		Source:             "parent",
-		Target:             runtimeMessageAliasCaller,
-		ReceiverSessionID:  receiverSessionID,
-		ReceiverDelegateID: receiverDelegateID,
-		Events:             []string{"assistant.tool"},
-		EventFilter:        &watchEventFilter{ToolName: "read_file", Status: "ok"},
+		Source:      "self",
+		Target:      runtimeMessageAliasCaller,
+		Events:      []string{"assistant.tool"},
+		EventFilter: &watchEventFilter{ToolName: "read_file", Status: "ok"},
 	})
 	if err != nil || !receiver.Watching || receiver.WatchID == "" {
-		t.Fatalf("configure receiver watch = (%+v, %v), want live receiver watch", receiver, err)
+		t.Fatalf("configure generic journal watch = (%+v, %v), want live watch", receiver, err)
 	}
-	// A separate receiver key retains the broad event framing surface while the
-	// filtered receiver above remains a valid assistant.tool-only config.
+	// A separate generic journal retains the broad event framing surface while
+	// the filtered journal above remains an assistant.tool-only config.
 	if broad, err := jm.configureWatch(watchArgs{
-		Source:             "parent",
-		Target:             runtimeMessageAliasCaller,
-		ReceiverSessionID:  receiverSessionID + "-frames",
-		ReceiverDelegateID: receiverDelegateID + "-frames",
-		Events:             []string{"*"},
+		Source: "self",
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"*"},
 	}); err != nil || !broad.Watching {
-		t.Fatalf("configure broad receiver watch = (%+v, %v), want live watch", broad, err)
+		t.Fatalf("configure broad journal watch = (%+v, %v), want live watch", broad, err)
 	}
 
 	sidecar, err := jm.configureWatch(watchArgs{
@@ -156,7 +142,7 @@ func rwlpRunManagerProgram(t *testing.T, r *rwlpReader) {
 		OutputMatch:        "(?i)ready",
 		ProgressIntervalMS: minWatchProgressIntervalMS,
 		Send: &watchSendArgs{
-			To:             "dlg_rwlp",
+			To:             runtimeMessageAliasCaller,
 			Message:        rwlpTexts[r.intn(len(rwlpTexts))],
 			IncludeExcerpt: r.bool(),
 		},
@@ -208,9 +194,9 @@ func rwlpRunManagerProgram(t *testing.T, r *rwlpReader) {
 		t.Fatalf("append watched output: %v", err)
 	}
 
-	// Drive the progress and quiet-watchdog decisions synchronously. The fake
-	// clock leaves their background timers inert, while these calls cover the
-	// exact work the timer goroutines would do.
+	// Drive the progress decisions synchronously. The fake clock leaves their
+	// background timers inert, while these calls cover the exact work the timer
+	// goroutines would do.
 	progressCfg := rwlpWatchConfig(t, jm, sidecar.WatchID)
 	progressKey := rwlpWatchKey(t, jm, progressCfg)
 	if !jm.fireProgressTick(progressKey, progressCfg) {
@@ -234,36 +220,30 @@ func rwlpRunManagerProgram(t *testing.T, r *rwlpReader) {
 	if rwlpLiveWatchExists(jm, budget.WatchID) {
 		t.Fatalf("budget-exhausted watch %q remained live", budget.WatchID)
 	}
-	rwlpMakeQuietDelegate(t, jm, quiet.JobID)
-	if !jm.fireQuietWatchdogTick(quiet.JobID, time.Second) {
-		t.Fatal("quiet delegate watchdog returned false")
-	}
-
-	// Receiver views are a security boundary: they must expose only their own
-	// watch and have stable ordering across repeated reads.
-	firstView := jm.watchListToolResultForReceiver(receiverSessionID, receiverDelegateID)
-	secondView := jm.watchListToolResultForReceiver(receiverSessionID, receiverDelegateID)
+	// Generic manager views must have stable ordering across repeated reads.
+	firstView := jm.watchListToolResult()
+	secondView := jm.watchListToolResult()
 	if !reflect.DeepEqual(firstView, secondView) {
-		t.Fatalf("receiver list is non-deterministic: %+v vs %+v", firstView, secondView)
+		t.Fatalf("manager list is non-deterministic: %+v vs %+v", firstView, secondView)
 	}
 	if !rwlpHasWatch(firstView, receiver.WatchID) {
-		t.Fatalf("receiver list omitted installed watch %q: %+v", receiver.WatchID, firstView)
+		t.Fatalf("manager list omitted installed watch %q: %+v", receiver.WatchID, firstView)
 	}
-	if inspected, ok := jm.inspectReceiverWatchByID(receiver.WatchID, receiverSessionID, receiverDelegateID); !ok || inspected.WatchID != receiver.WatchID {
-		t.Fatalf("receiver inspect = (%+v, %v), want %q", inspected, ok, receiver.WatchID)
+	if inspected := jm.inspectWatchByID(receiver.WatchID); inspected.WatchID != receiver.WatchID {
+		t.Fatalf("manager inspect = %+v, want %q", inspected, receiver.WatchID)
 	}
 
 	// Settle the first batch using fuzz-selected delivery classifications. A
-	// busy result remains pending for the later receiver clear; delivered and
+	// pending results remain available for the later manager clear; delivered and
 	// hard-failure paths must retire their own delivery ids exactly once.
 	rwlpDeliverPending(t, jm, r)
 
 	if r.bool() {
-		if _, err := jm.clearReceiverWatchByID(receiver.WatchID, receiverSessionID, receiverDelegateID); err != nil {
-			t.Fatalf("receiver clear %q: %v", receiver.WatchID, err)
+		if _, err := jm.clearWatchByID(receiver.WatchID); err != nil {
+			t.Fatalf("manager clear %q: %v", receiver.WatchID, err)
 		}
-		if inspected, ok := jm.inspectReceiverWatchByID(receiver.WatchID, receiverSessionID, receiverDelegateID); !ok || inspected.Watching {
-			t.Fatalf("receiver clear inspection = (%+v, %v), want terminal history for %q", inspected, ok, receiver.WatchID)
+		if inspected := jm.inspectWatchByID(receiver.WatchID); inspected.WatchID != receiver.WatchID || inspected.Watching {
+			t.Fatalf("manager clear inspection = %+v, want terminal history for %q", inspected, receiver.WatchID)
 		}
 	}
 
@@ -281,7 +261,7 @@ func rwlpRunManagerProgram(t *testing.T, r *rwlpReader) {
 	catchupSend, err := jm.configureWatch(watchArgs{
 		Target:      terminal.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "dlg_rwlp", Message: "terminal observer"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "terminal observer"},
 	})
 	if err != nil || !catchupSend.TerminalCatchup || catchupSend.Watching || !catchupSend.Fired || catchupSend.WatchID == "" {
 		t.Fatalf("terminal send catch-up = (%+v, %v), want detached pending send", catchupSend, err)
@@ -406,7 +386,7 @@ func rwlpRunRestoreRetryProgram(t *testing.T, r *rwlpReader) {
 	// It is appended through the actual manager store, then reconstructed with
 	// the caller record on the next Session's restore path.
 	droppedState := callerState
-	droppedState.Key.ResolvedSendTo = "dlg_rwlp_missing"
+	droppedState.Key.ResolvedSendTo = runtimeMessageAliasCaller + "_missing"
 	droppedState.Key.WatchID += "_missing"
 	droppedState.DeliveryID += "_missing"
 	droppedState.UpdateSeq++
@@ -541,20 +521,6 @@ func rwlpRunningJob(t *testing.T, jm *jobManager, jobID string) *runningJob {
 	return run
 }
 
-func rwlpMakeQuietDelegate(t *testing.T, jm *jobManager, jobID string) {
-	t.Helper()
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	run := jm.running[jobID]
-	if run == nil || run.rec == nil {
-		t.Fatalf("quiet job %q is unavailable", jobID)
-	}
-	run.rec.Type = jobstore.JobDelegate
-	started := frozenTestTime.Add(-2 * time.Second)
-	run.rec.StartedAt = started
-	run.rec.LastActivity = nil
-}
-
 func rwlpWatchConfig(t *testing.T, jm *jobManager, watchID string) *watchConfig {
 	t.Helper()
 	jm.mu.Lock()
@@ -600,29 +566,15 @@ func rwlpHasWatch(view jobWatchListToolResult, watchID string) bool {
 func rwlpDeliverPending(t *testing.T, jm *jobManager, r *rwlpReader) {
 	t.Helper()
 	for _, delivery := range jm.pendingWatchSendDeliveries(nil) {
-		choice := r.intn(4)
-		_, err := jm.deliverPendingWatchSend(context.Background(), delivery.cfg, delivery.state, true,
-			func(context.Context, sendMessageArgs) sendMessageResult {
-				switch choice {
-				case 0:
-					return sendMessageResult{}
-				case 1:
-					return sendMessageResult{Err: fmt.Errorf("rwlp deferred")}
-				case 2:
-					return sendMessageResult{
-						WatchSendDeliveryClassSet: true,
-						WatchSendDeliveryClass:    watchSendHardFailure,
-						Err:                       fmt.Errorf("rwlp rejected"),
-					}
-				default:
-					return sendMessageResult{
-						WatchSendDeliveryClassSet: true,
-						WatchSendDeliveryClass:    watchSendBusy,
-					}
-				}
-			})
-		if err != nil {
-			t.Fatalf("deliver pending %q: %v", delivery.state.DeliveryID, err)
+		switch r.intn(4) {
+		case 0:
+			if err := jm.settleWatchSendDelivered(delivery.cfg, delivery.state); err != nil {
+				t.Fatalf("settle pending %q: %v", delivery.state.DeliveryID, err)
+			}
+		case 2:
+			if err := jm.dropWatchSend(delivery.state, delivery.cfg, "rwlp rejected"); err != nil {
+				t.Fatalf("drop pending %q: %v", delivery.state.DeliveryID, err)
+			}
 		}
 	}
 }
@@ -661,11 +613,9 @@ func rwlpAssertWatchLedger(t *testing.T, jm *jobManager, notifications []jobNoti
 }
 
 // FuzzRootParentObserverLifecycleProgram drives the public child-facing
-// job_watch API through its parent-owned receiver machinery. The parent and
-// child are real Sessions linked by createDelegate; the provider boundary is
-// the package's scripted adapter. This exercises install/list/inspect/clear
-// routing as well as the durable parent-to-child watch-send handoff, rather
-// than constructing receiver fields directly as the manager program does.
+// job_watch API through the stable controller's parent-source edge. A durable
+// descriptor grants the capability, the child's exact lease authorizes the
+// tool call, and the receiver transcript remains the delivery authority.
 func FuzzRootParentObserverLifecycleProgram(f *testing.F) {
 	for _, seed := range [][]byte{
 		{},
@@ -678,19 +628,66 @@ func FuzzRootParentObserverLifecycleProgram(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		r := &rwlpReader{data: data}
-		// The first delegate run completes so the parent-watch receiver is
-		// retained. Its watch delivery then resumes the same child and blocks in
-		// the second scripted call. Keeping that run live until this program
-		// explicitly stops it removes the scheduler race between parent delivery
-		// and the child's terminal-watch cleanup.
-		adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
-		client := llm.NewClient()
-		client.Register(adapter)
-		parent := newDelegateTestSession(t, client)
-		child, delegateID := createParentWatchChild(t, parent, "rwlp parent observer")
-		if child == nil || child.sess == nil || delegateID == "" {
-			t.Fatalf("parent observer child linkage = (%+v, %q)", child, delegateID)
+		controller, _ := newDelegateControllerTestHarness(t, 2, 1)
+		parentJM, err := newJobManager(controller.stateDir, "root-session", func(jobNotification) {})
+		if err != nil {
+			t.Fatalf("new parent observer manager: %v", err)
 		}
+		childID := "child-dlg_observer"
+		childJM, err := newJobManager(controller.stateDir, childID, func(jobNotification) {})
+		if err != nil {
+			_ = parentJM.closeStoreOnly()
+			t.Fatalf("new child observer manager: %v", err)
+		}
+		parent := &Session{
+			id: "root-session", stateDir: controller.stateDir,
+			delegateController: controller, delegateRootSessionID: "root-session",
+			jobManager: parentJM, state: SessionIdle,
+		}
+		child := &Session{
+			id: childID, stateDir: controller.stateDir, owningDelegateID: "dlg_observer",
+			delegateController: controller, delegateRootSessionID: "root-session",
+			jobManager: childJM, state: SessionIdle,
+		}
+		parentJM.delegateController = controller
+		childJM.delegateController = controller
+		descriptor := stableToolDescriptor(parent, "dlg_observer", "")
+		descriptor.ParentWatchGranted = true
+		lease := delegateLease{delegateID: "dlg_observer", generation: 1}
+		controller.mu.Lock()
+		_, err = controller.appendLocked(
+			delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: lease.delegateID, Created: &delegatestore.DelegateCreated{Descriptor: descriptor}},
+			delegateControllerRunStartedEvent(lease.delegateID, lease.generation, delegatestore.TriggerInitial, time.Unix(10, 0).UTC()),
+		)
+		if err == nil {
+			controller.rootRuntime = parent
+			controller.live[lease.delegateID] = &delegateLiveState{
+				runtime: child,
+				binding: &delegateRuntimeBinding{
+					lease: lease, cancel: func() {}, ready: true, runtime: child,
+				},
+			}
+		}
+		controller.mu.Unlock()
+		if err != nil {
+			_ = childJM.closeStoreOnly()
+			_ = parentJM.closeStoreOnly()
+			t.Fatalf("seed stable parent observer: %v", err)
+		}
+		childTranscriptPath := transcriptPath(controller.stateDir, childID)
+		writer, err := transcript.NewWriter(childTranscriptPath, transcript.Header{SessionID: childID})
+		if err != nil {
+			_ = childJM.closeStoreOnly()
+			_ = parentJM.closeStoreOnly()
+			t.Fatalf("new child observer transcript: %v", err)
+		}
+		child.attachTranscript(writer)
+		t.Cleanup(func() {
+			_ = child.closeAttachedTranscript()
+			_ = childJM.closeStoreOnly()
+			_ = parentJM.closeStoreOnly()
+		})
+		leaseContext := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
 
 		args := map[string]any{
 			"operation": "create",
@@ -701,7 +698,7 @@ func FuzzRootParentObserverLifecycleProgram(f *testing.F) {
 				"status":    "ok",
 			},
 		}
-		createdValue, err := jobWatchTool(child.sess, args, jobToolResultDefaultMaxChar)
+		createdValue, err := jobWatchToolWithContext(leaseContext, child, args, jobToolResultDefaultMaxChar)
 		if err != nil {
 			t.Fatalf("child parent-watch create: %v", err)
 		}
@@ -716,30 +713,31 @@ func FuzzRootParentObserverLifecycleProgram(f *testing.F) {
 
 		// First emit a non-match, then a matching event. The durable pending
 		// record is the oracle that observation and delivery remain separate.
-		parent.emit(events.EventToolCallEnd, events.ToolCallEndData{
+		onSessionEventKD(parentJM, events.EventToolCallEnd, events.ToolCallEndData{
 			ToolName: "shell", CallID: "rwlp-parent-miss", Error: "not watched",
 		})
-		parent.emit(events.EventToolCallEnd, events.ToolCallEndData{
+		onSessionEventKD(parentJM, events.EventToolCallEnd, events.ToolCallEndData{
 			ToolName:      "read_file",
 			CallID:        "rwlp-parent-read",
 			ArgumentsJSON: `{"file_path":"observer.txt"}`,
 			Output:        rwlpTexts[r.intn(len(rwlpTexts))],
 		})
-		pending := parent.jobManager.pendingWatchSendDeliveries(nil)
+		pending := parentJM.pendingWatchSendDeliveries(nil)
 		if len(pending) != 1 {
 			t.Fatalf("parent observer pending sends = %d, want one matching delivery", len(pending))
 		}
-		if pending[0].state.Key.ResolvedSendTo != delegateID || pending[0].state.Key.WatchID != state.WatchID {
-			t.Fatalf("parent observer pending route = %+v, want child delegate %q/watch %q", pending[0].state.Key, delegateID, state.WatchID)
+		pendingState := pending[0].state
+		if !pendingState.StableReceiver || pendingState.ReceiverSessionID != childID || pendingState.ReceiverDelegateID != lease.delegateID || pendingState.Key.WatchID != state.WatchID {
+			t.Fatalf("parent observer pending route = %+v, want stable child %q/%q watch %q", pendingState, childID, lease.delegateID, state.WatchID)
 		}
 
 		// The parent owns the receiver projection. It must show only this child's
 		// route, while the child deliberately owns no local copy of the watch.
-		listed := parent.jobManager.watchListToolResultForReceiver(child.sess.ID(), delegateID)
+		listed := parentJM.watchListToolResultForReceiver(child.ID(), lease.delegateID)
 		if !rwlpHasWatch(listed, state.WatchID) {
 			t.Fatalf("parent receiver list omitted %q: %+v", state.WatchID, listed)
 		}
-		inspected, ok := parent.jobManager.inspectReceiverWatchByID(state.WatchID, child.sess.ID(), delegateID)
+		inspected, ok := parentJM.inspectReceiverWatchByID(state.WatchID, child.ID(), lease.delegateID)
 		if !inspected.Watching || inspected.WatchID != state.WatchID || inspected.Source != "parent" {
 			t.Fatalf("parent receiver inspect = (%+v, %v)", inspected, ok)
 		}
@@ -747,24 +745,15 @@ func FuzzRootParentObserverLifecycleProgram(f *testing.F) {
 		if err := parent.drainPendingWatchSends(context.Background()); err != nil {
 			t.Fatalf("parent observer drain: %v", err)
 		}
-		if got := parent.jobManager.pendingWatchSendDeliveries(nil); len(got) != 0 {
+		if got := parentJM.pendingWatchSendDeliveries(nil); len(got) != 0 {
 			t.Fatalf("parent observer drain left pending sends: %+v", got)
 		}
-		// sendDelegateMessage returns after launching the background resume, not
-		// after its model turn begins. Synchronize on the scripted boundary so
-		// clearing/stopping below always observes the same live child state.
-		<-adapter.secondStarted
-		delegates, err := parent.jobManager.store.LoadDelegates()
-		if err != nil {
-			t.Fatalf("load resumed observer delegate: %v", err)
+		attentionID := stableWatchAttentionID(pendingState)
+		if got := countAttentionEntries(t, childTranscriptPath, attentionID); got != 1 {
+			t.Fatalf("parent observer attention count = %d, want 1", got)
 		}
-		resumed := delegates[delegateID]
-		if resumed == nil || resumed.CurrentJobID == "" {
-			t.Fatalf("resumed observer delegate record = %+v", resumed)
-		}
-		resumedJobID := resumed.CurrentJobID
 
-		clearedValue, err := jobWatchTool(child.sess, map[string]any{"operation": "clear", "watch_id": state.WatchID}, jobToolResultDefaultMaxChar)
+		clearedValue, err := jobWatchToolWithContext(leaseContext, child, map[string]any{"operation": "clear", "watch_id": state.WatchID}, jobToolResultDefaultMaxChar)
 		if err != nil {
 			t.Fatalf("child parent-watch clear: %v", err)
 		}
@@ -772,94 +761,8 @@ func FuzzRootParentObserverLifecycleProgram(f *testing.F) {
 		if cleared.Watching || cleared.WatchID != state.WatchID {
 			t.Fatalf("child parent-watch clear = %+v", cleared)
 		}
-		if check, ok := parent.jobManager.inspectReceiverWatchByID(state.WatchID, child.sess.ID(), delegateID); !ok || check.Watching {
+		if check, ok := parentJM.inspectReceiverWatchByID(state.WatchID, child.ID(), lease.delegateID); !ok || check.Watching {
 			t.Fatalf("parent receiver inspect after child clear = (%+v, %v)", check, ok)
-		}
-		if _, err := parent.jobManager.stop(resumedJobID); err != nil {
-			t.Fatalf("stop resumed observer delegate %q: %v", resumedJobID, err)
-		}
-		waitForShellDone(t, parent.jobManager, resumedJobID)
-	})
-}
-
-// FuzzRootDelegateResumeLifecycleProgram covers an idle delegate's real resume
-// path, the active-run steering path, and cancellation/finalization. The second
-// scripted provider call blocks on its context, which creates a deterministic
-// live child without shelling out or relying on wall-clock timing; job_stop
-// supplies the only release edge.
-func FuzzRootDelegateResumeLifecycleProgram(f *testing.F) {
-	for _, seed := range [][]byte{
-		{},
-		{0, 0, 0, 0},
-		{1, 2, 3, 4, 5},
-		{255, 254, 253, 252},
-	} {
-		f.Add(seed)
-	}
-
-	f.Fuzz(func(t *testing.T, data []byte) {
-		r := &rwlpReader{data: data}
-		adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
-		client := llm.NewClient()
-		client.Register(adapter)
-		sess := newDelegateTestSession(t, client)
-
-		first := sess.createDelegate(context.Background(), delegateArgs{
-			Task:           "rwlp first completed delegate",
-			Background:     false,
-			BlockTimeoutMS: 1000,
-			ResultSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"message": map[string]any{"type": "string"},
-				},
-				"required": []string{"message"},
-			},
-		})
-		if first.Err != nil || first.DelegateID == "" || first.JobID == "" || first.Status != jobstore.StatusCompleted {
-			t.Fatalf("first delegate = %+v, want completed retained delegate", first)
-		}
-
-		resumed := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-			Target:    first.DelegateID,
-			Message:   "rwlp resumed work " + rwlpTexts[r.intn(len(rwlpTexts))],
-			FromWatch: r.bool(),
-		})
-		if resumed.Err != nil || resumed.Action != "started" || resumed.JobID == "" || resumed.JobID == first.JobID || resumed.ResumedFromJobID != first.JobID || !resumed.RunningInBackground {
-			t.Fatalf("resumed delegate = %+v, want new live job from %q", resumed, first.JobID)
-		}
-		// launchSubagentRun is asynchronous. Waiting for the scripted provider
-		// boundary makes the subsequent steer and stop exercise a live run rather
-		// than a timing-dependent pre-start cancellation.
-		<-adapter.secondStarted
-
-		steered := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-			Target:  first.DelegateID,
-			Message: "rwlp steer active run",
-		})
-		if steered.Err != nil || steered.Action != "steered" || steered.JobID != resumed.JobID || !steered.RunningInBackground {
-			t.Fatalf("active delegate steer = %+v, want resumed job %q", steered, resumed.JobID)
-		}
-		_, childID, err := decodeRef(first.TranscriptRef)
-		if err != nil {
-			t.Fatalf("decode retained delegate ref %q: %v", first.TranscriptRef, err)
-		}
-		sub := sess.subagents.get(childID)
-		if sub == nil || sub.sess == nil {
-			t.Fatalf("resumed child %q is not tracked", childID)
-		}
-		queue := sub.sess.SteeringQueueSnapshot()
-		if len(queue) == 0 || queue[len(queue)-1].Text != "rwlp steer active run" {
-			t.Fatalf("resumed child steering queue = %+v", queue)
-		}
-
-		if _, err := sess.jobManager.stop(resumed.JobID); err != nil {
-			t.Fatalf("stop resumed delegate %q: %v", resumed.JobID, err)
-		}
-		waitForShellDone(t, sess.jobManager, resumed.JobID)
-		record := loadShellRecord(t, sess.jobManager, resumed.JobID)
-		if !record.Status.IsTerminal() || record.DelegateID != first.DelegateID || record.TranscriptRef != first.TranscriptRef {
-			t.Fatalf("resumed terminal record = %+v", record)
 		}
 	})
 }

@@ -16,10 +16,8 @@ import (
 )
 
 // This file fuzzes the watch/observer machinery in job_watch.go that the
-// existing job_watch_delegate lane leaves partly dark: the restore-time
-// watch-send target classifier
-// (classifyRestoredWatchSendTarget), the model-facing frame renderer
-// (buildWatchFrame), the durable pending-watch-send reconstructor
+// existing job_watch_delegate lane leaves partly dark: the model-facing frame
+// renderer (buildWatchFrame), the durable pending-watch-send reconstructor
 // (restoreWatchSendPending), the session-target/receiver remainder of
 // configureWatch. Each target is driven from a real *Session / *jobManager
 // built with the package's own newSession / newTestJM helpers, so
@@ -28,9 +26,6 @@ import (
 //
 // ORACLES (all real preserved-invariant / determinism oracles, not bare
 // never-panic):
-//   - classify: deterministic in (class, reason); and the class/reason are
-//     internally consistent — a hard failure ALWAYS carries a reason, and a
-//     delivered/busy classification NEVER does.
 //   - frame: deterministic; and the rendered frame is bounded to
 //     watchFrameMaxChars runes regardless of input.
 //   - restore: two managers fed identical durable events reconstruct the exact
@@ -88,164 +83,7 @@ func (r *wobs_reader) str() string {
 }
 
 // ==========================================================================
-// Target 1: classifyRestoredWatchSendTarget
-// ==========================================================================
-
-// wobs_classifyResult bundles the classifier's two outputs so the determinism
-// oracle can compare them in one shot.
-type wobs_classifyResult struct {
-	class  watchSendDeliveryClass
-	reason string
-}
-
-// wobs_seedClassifyDelegate installs one delegate (and, unless jobID is empty, a
-// matching started job) owned as specified, so a classify target of the given
-// delegate id reaches a chosen ownership/type/resumability branch instead of a
-// plain miss. A nil-owner ("") records the manager's own session.
-func wobs_seedClassifyDelegate(t *testing.T, jm *jobManager, delegateID, delegateOwner, jobID string, jobType jobstore.JobType, jobOwner string, resumable bool) {
-	t.Helper()
-	now := jm.now()
-	if delegateOwner == "" {
-		delegateOwner = jm.sessionID
-	}
-	if jobOwner == "" {
-		jobOwner = jm.sessionID
-	}
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:       jobstore.EventDelegateCreated,
-		TS:         now,
-		DelegateID: delegateID,
-		Delegate: &jobstore.DelegateEvent{
-			ChildSessionID:   "child_" + delegateID,
-			TranscriptRef:    encodeRef("", "child_"+delegateID),
-			OwnerSessionID:   delegateOwner,
-			VisibleSessionID: jm.sessionID,
-			Generation:       "dg_" + delegateID,
-			Resumable:        resumable,
-		},
-	}); err != nil {
-		t.Fatalf("seed delegate %s: %v", delegateID, err)
-	}
-	if jobID == "" {
-		return
-	}
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:             jobstore.EventJobStarted,
-		TS:               now,
-		JobID:            jobID,
-		Type:             jobType,
-		DelegateID:       delegateID,
-		OwnerSessionID:   jobOwner,
-		VisibleToSession: jm.sessionID,
-		TranscriptRef:    encodeRef("", "child_"+delegateID),
-		StartedAt:        &now,
-	}); err != nil {
-		t.Fatalf("seed delegate job %s: %v", jobID, err)
-	}
-}
-
-// wobs_finishDelegateJob marks a delegate job terminal (stopped, not
-// runtime_lost) and resumable, so the classifier's terminal-delegate path
-// reaches the resumability assessment rather than the running short-circuit.
-func wobs_finishDelegateJob(t *testing.T, jm *jobManager, jobID string) {
-	t.Helper()
-	now := jm.now()
-	resumable := true
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:    jobstore.EventJobFinished,
-		TS:      now,
-		JobID:   jobID,
-		Status:  jobstore.StatusStopped,
-		Reason:  "user_stopped",
-		EndedAt: &now,
-	}); err != nil {
-		t.Fatalf("finish delegate job %s: %v", jobID, err)
-	}
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:      jobstore.EventJobSessionAssigned,
-		TS:        now,
-		JobID:     jobID,
-		Resumable: &resumable,
-	}); err != nil {
-		t.Fatalf("mark delegate job %s resumable: %v", jobID, err)
-	}
-}
-
-// FuzzWobsClassifyRestoredTarget drives classifyRestoredWatchSendTarget against
-// a Session seeded with delegates and jobs in every ownership/status shape, over
-// a fuzzed target string. The classifier is what restore uses to decide whether
-// a pending watch-send frame is deliverable, busy (retryable), or a hard
-// failure, so its class/reason contract must hold for any target string.
-func FuzzWobsClassifyRestoredTarget(f *testing.F) {
-	// Byte 0 selects the target; one seed per target index locks in every
-	// classifier branch the seeded fixtures make reachable.
-	for i := byte(0); i < 21; i++ {
-		f.Add([]byte{i, 0})
-	}
-	f.Add([]byte{})
-	f.Add([]byte{7, 8, 9, 10})
-
-	f.Fuzz(func(t *testing.T, data []byte) {
-		r := &wobs_reader{data: data}
-		idx := r.intn(21)
-		s := newSession(t, withConfig(SessionConfig{
-			StateDir:         t.TempDir(),
-			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
-		}))
-		jm := s.jobManager
-
-		// Running resumable delegate owned by this session (dlg_obs / job_obs_delegate).
-		watchdel_seedObserverDelegate(t, jm)
-		// Delegate owned by a DIFFERENT session (not_controllable at the delegate).
-		wobs_seedClassifyDelegate(t, jm, "dlg_foreign", "OTHER-SESSION", "job_foreign_delegate", jobstore.JobDelegate, "OTHER-SESSION", true)
-		// Delegate whose job record is owned by a descendant session.
-		wobs_seedClassifyDelegate(t, jm, "dlg_descjob", "", "job_descjob", jobstore.JobDelegate, "DESCENDANT", true)
-		// Delegate whose job is a non-delegate (shell) type.
-		wobs_seedClassifyDelegate(t, jm, "dlg_shelljob", "", "job_shelljob", jobstore.JobShell, "", true)
-		// Delegate marked not-resumable.
-		wobs_seedClassifyDelegate(t, jm, "dlg_norsm", "", "job_norsm", jobstore.JobDelegate, "", false)
-		// Delegate with no job history at all.
-		wobs_seedClassifyDelegate(t, jm, "dlg_nojob", "", "", jobstore.JobDelegate, "", true)
-		// Delegate whose job finished terminal + resumable (not runtime_lost) — the
-		// dlg_ branch reaches the resumability assessment tail through it.
-		wobs_seedClassifyDelegate(t, jm, "dlg_term", "", "job_term", jobstore.JobDelegate, "", true)
-		wobs_finishDelegateJob(t, jm, "job_term")
-		// Plain running shell job (non-delegate).
-		shell, err := jm.createShell(createShellOpts{Command: "worker"})
-		if err != nil {
-			return
-		}
-		// Terminal, resumable stopped delegate (runtime_lost) — reaches the
-		// resumability-assessment tail on the job_ branch.
-		rec := seedStoppedDelegateRestoreRecord(t, s)
-		markStoredDelegateResumable(t, s, rec)
-
-		targets := []string{
-			"caller", "watched", "main", "",
-			"dlg_obs", "dlg_foreign", "dlg_missing", "dlg_descjob",
-			"dlg_shelljob", "dlg_norsm", "dlg_nojob", "dlg_term",
-			"job_obs_delegate", "job_foreign_delegate", shell.JobID, rec.JobID,
-			"job_missing", s.ID(),
-			"dlg_x", "job_x", "weird",
-		}
-		target := targets[idx%len(targets)]
-
-		classify := func(tgt string) wobs_classifyResult {
-			class, reason := s.classifyRestoredWatchSendTarget(tgt)
-			return wobs_classifyResult{class: class, reason: reason}
-		}
-		oracle.Deterministic(t, classify, target, oracle.DeepEqual[wobs_classifyResult])
-
-		got := classify(target)
-		if (got.class == watchSendHardFailure) != (got.reason != "") {
-			t.Fatalf("wobs: classify class/reason inconsistent for %q: class=%d reason=%q", target, got.class, got.reason)
-		}
-	})
-}
-
-// ==========================================================================
-// Target 2: buildWatchFrame
+// Target 1: buildWatchFrame
 // ==========================================================================
 
 // wobs_drawEvent synthesizes a SessionEvent whose Data is one of the payload
@@ -347,7 +185,7 @@ func FuzzWobsBuildWatchFrame(f *testing.F) {
 }
 
 // ==========================================================================
-// Target 3: restoreWatchSendPending
+// Target 2: restoreWatchSendPending
 // ==========================================================================
 
 // wobs_drawWatchSendKey draws a durable watch-send key. WatchTarget is drawn
@@ -471,7 +309,7 @@ func FuzzWobsRestoreWatchSendPending(f *testing.F) {
 }
 
 // ==========================================================================
-// Target 4: configureWatch (session-target / receiver remainder)
+// Target 3: configureWatch (session-target / receiver remainder)
 // ==========================================================================
 
 // FuzzWobsConfigureWatchSession drives configureWatch through its session-target
@@ -489,7 +327,6 @@ func FuzzWobsConfigureWatchSession(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		r := &wobs_reader{data: data}
 		jm := newTestJM(t)
-		watchdel_seedObserverDelegate(t, jm)
 
 		t.Cleanup(func() {
 			jm.mu.Lock()

@@ -109,19 +109,19 @@ func nbdExerciseOutstandingCounts(t *testing.T) {
 	jm.mu.Lock()
 	jm.running["nil-record"] = &runningJob{}
 	jm.running["shell"] = &runningJob{rec: &jobstore.JobRecord{JobID: "shell", Type: jobstore.JobShell}}
-	jm.running["delegate"] = &runningJob{rec: &jobstore.JobRecord{JobID: "delegate", Type: jobstore.JobDelegate}}
+	jm.running["delegate"] = &runningJob{rec: &jobstore.JobRecord{JobID: "delegate", Type: jobstore.JobShell}}
 	jm.mu.Unlock()
 
 	started := frozenTestTime.Add(-time.Second)
 	ended := frozenTestTime
 	for _, event := range []jobstore.Event{
-		{Kind: jobstore.EventJobStarted, TS: started, JobID: "delegate", Type: jobstore.JobDelegate, OwnerSessionID: sess.ID(), StartedAt: &started},
+		{Kind: jobstore.EventJobStarted, TS: started, JobID: "delegate", Type: jobstore.JobShell, OwnerSessionID: sess.ID(), StartedAt: &started},
 		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "delegate", Status: jobstore.StatusCompleted, EndedAt: &ended, TerminalGen: "gen-delegate"},
 		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "delegate", TerminalGen: "gen-delegate"},
-		{Kind: jobstore.EventJobStarted, TS: started, JobID: "pending", Type: jobstore.JobDelegate, OwnerSessionID: sess.ID(), StartedAt: &started},
+		{Kind: jobstore.EventJobStarted, TS: started, JobID: "pending", Type: jobstore.JobShell, OwnerSessionID: sess.ID(), StartedAt: &started},
 		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "pending", Status: jobstore.StatusCompleted, EndedAt: &ended, TerminalGen: "gen-pending"},
 		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "pending", TerminalGen: "gen-pending"},
-		{Kind: jobstore.EventJobStarted, TS: started, JobID: "forwarded", Type: jobstore.JobDelegate, OwnerSessionID: "child", StartedAt: &started},
+		{Kind: jobstore.EventJobStarted, TS: started, JobID: "forwarded", Type: jobstore.JobShell, OwnerSessionID: "child", StartedAt: &started},
 		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "forwarded", Status: jobstore.StatusCompleted, EndedAt: &ended, TerminalGen: "gen-forwarded"},
 		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "forwarded", TerminalGen: "gen-forwarded"},
 	} {
@@ -171,7 +171,7 @@ func nbdExerciseDrainWaitBranches(t *testing.T, mode uint8) {
 	stuck.jobManager.mu.Lock()
 	stuck.jobManager.running["stuck"] = &runningJob{rec: &jobstore.JobRecord{
 		JobID: "stuck",
-		Type:  jobstore.JobDelegate,
+		Type:  jobstore.JobShell,
 	}}
 	stuck.jobManager.mu.Unlock()
 	t.Cleanup(func() {

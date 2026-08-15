@@ -11,7 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/sandbox"
 )
 
@@ -207,12 +207,12 @@ func delegateSandboxSnapshotContract(t *testing.T, selector byte, path string) {
 	if _, ok := sandboxPolicyFromSnapshot(nil); ok {
 		t.Fatal("nil snapshot was accepted")
 	}
-	if _, ok := sandboxPolicyFromSnapshot(&jobstore.SandboxSnapshot{Mode: "not-a-mode"}); ok {
+	if _, ok := sandboxPolicyFromSnapshot(&delegatestore.SandboxSnapshot{Mode: "not-a-mode"}); ok {
 		t.Fatal("invalid snapshot mode was accepted")
 	}
 }
 
-func delegateSandboxSnapshotEqual(a, b *jobstore.SandboxSnapshot) bool {
+func delegateSandboxSnapshotEqual(a, b *delegatestore.SandboxSnapshot) bool {
 	if a == nil || b == nil {
 		return a == b
 	}

@@ -25,7 +25,7 @@ func tailWindowProjection(out string, total int64) JobOutputTail {
 func TestTailOutputFileAlignsMidRuneWindowStart(t *testing.T) {
 	t.Parallel()
 	// Two 4-byte emoji: a 6-byte window starts 2 bytes into the first one.
-	path := w2dlg_writeFile(t, "😀😀")
+	path := writeOutputFixture(t, "😀😀")
 
 	out, total, truncated, err := tailOutputFile(path, 6, 8)
 	if err != nil {
@@ -50,7 +50,7 @@ func TestTailOutputFileAlignsMidRuneWindowStart(t *testing.T) {
 // costs a window nothing when there is nothing to align.
 func TestTailOutputFileWindowOnRuneBoundaryUnchanged(t *testing.T) {
 	t.Parallel()
-	path := w2dlg_writeFile(t, "😀😀")
+	path := writeOutputFixture(t, "😀😀")
 
 	out, total, truncated, err := tailOutputFile(path, 4, 8)
 	if err != nil {
@@ -69,7 +69,7 @@ func TestTailOutputFileWindowOnRuneBoundaryUnchanged(t *testing.T) {
 func TestTailOutputFileASCIIWindowsByteIdentical(t *testing.T) {
 	t.Parallel()
 	const content = "abcdefghij"
-	path := w2dlg_writeFile(t, content)
+	path := writeOutputFixture(t, content)
 
 	for n := 0; n <= len(content)+2; n++ {
 		want := content
@@ -91,7 +91,7 @@ func TestTailOutputFileASCIIWindowsByteIdentical(t *testing.T) {
 // total, so the caption reads "0 of 4 bytes" and the content agrees.
 func TestTailOutputFileWindowNarrowerThanRuneIsEmpty(t *testing.T) {
 	t.Parallel()
-	path := w2dlg_writeFile(t, "😀")
+	path := writeOutputFixture(t, "😀")
 
 	out, total, truncated, err := tailOutputFile(path, 2, 4)
 	if err != nil {
@@ -142,7 +142,7 @@ func TestTailOutputFileKeepsInvalidUTF8(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			path := w2dlg_writeFile(t, string(tc.content))
+			path := writeOutputFixture(t, string(tc.content))
 			total := int64(len(tc.content))
 
 			out, gotTotal, _, err := tailOutputFile(path, tc.bytes, total)

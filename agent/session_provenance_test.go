@@ -193,7 +193,7 @@ func TestAcceptNotificationInputAdoptsNotificationProvenance(t *testing.T) {
 	appendPendingJobNotificationRecordWithProvenance(t, s.jobManager, s.ID(), "job_A", testProvenance("watch_A", "wg_1"))
 	s.enqueueJobNotification(jobNotification{
 		JobID:      "job_A",
-		JobType:    string(jobstore.JobDelegate),
+		JobType:    string(jobstore.JobShell),
 		Status:     string(jobstore.StatusCompleted),
 		Provenance: testProvenance("watch_A", "wg_1"),
 	})

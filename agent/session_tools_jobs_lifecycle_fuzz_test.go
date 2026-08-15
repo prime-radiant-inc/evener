@@ -5,9 +5,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"sync"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"primeradiant.com/serf/agent/execenv"
@@ -20,26 +18,21 @@ import (
 )
 
 // FuzzJobtoolsLifecycleProgram drives the job-tool lifecycle through a real
-// parent Session, a real durable shell job, and a live delegated child. The
-// child model is parked at the provider boundary so a delegate_send can always
-// steer a live turn without a host process, network call, or wall-clock race.
+// parent Session and a real durable shell job.
 //
-// The program verifies durable job identity across the tool results, stable list
-// rendering on unchanged state, the live-steer wait
-// contract, parent callback routing, and the watch create/list/inspect/clear
+// The program verifies durable job identity across the tool results, stable
+// list rendering on unchanged state, and the watch create/list/inspect/clear
 // lifecycle. The existing FuzzJobtoolsExec owns adversarial handler maps; this
-// target specifically covers the public wrapper and cross-session lifecycle.
+// target specifically covers the public wrapper and shell lifecycle.
 func FuzzJobtoolsLifecycleProgram(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{0, 0, 0, 0, 0, 0})
 	f.Add([]byte{1, 2, 3, 4, 5, 6, 7, 8})
 	f.Add([]byte{255, 254, 253, 252, 251, 250, 249, 248})
-	// The fixed replay drives all eleven controls consumed below: every invalid
-	// delegate mode, both nested-list states, every read-window mode, and each
-	// watch-message variant. Short corpus inputs still exercise defaulting.
+	// The fixed replay drives every shell, list, and watch-message control below.
+	// Short corpus inputs still exercise defaulting.
 	for readMode := byte(0); readMode < 6; readMode++ {
 		f.Add([]byte{
-			readMode % 5,        // invalid delegate shape
 			1, 2, 3, 4, 0, 1, 2, // message and shell controls
 			readMode & 1, // include_nested
 			readMode,     // read-window mode
@@ -52,100 +45,22 @@ func FuzzJobtoolsLifecycleProgram(f *testing.F) {
 		root := jtlpNewRootSession(t)
 		freezeClock(root.jobManager)
 
-		for _, name := range []string{"delegate", "delegate_send", "job_status", "job_list", "job_watch"} {
+		for _, name := range []string{"job_status", "job_list", "job_watch"} {
 			if registered := root.reg.Get(name); registered == nil || registered.Exec == nil {
 				t.Fatalf("jobtools lifecycle: %q is not executable", name)
 			}
 		}
 
-		// A malformed delegate request must fail before it mints a child or a job.
-		beforeChildren := len(root.subagents.sessions())
-		beforeJobs := len(root.jobManager.list(listFilter{}))
-		invalidDelegate, err := delegateTool(context.Background(), root, jtlpInvalidDelegateArgs(r), jobToolResultDefaultMaxChar)
-		if err == nil || invalidDelegate != "" {
-			t.Fatalf("invalid delegate = (%q, %v), want empty result plus error", invalidDelegate, err)
-		}
-		if got := len(root.subagents.sessions()); got != beforeChildren {
-			t.Fatalf("invalid delegate changed child count from %d to %d", beforeChildren, got)
-		}
-		if got := len(root.jobManager.list(listFilter{})); got != beforeJobs {
-			t.Fatalf("invalid delegate changed job count from %d to %d", beforeJobs, got)
-		}
-
-		createdCall := jtlpExecute(t, root, "delegate", map[string]any{
-			"task":                 jtlpMessage(r),
-			"delegation_allowance": float64(0),
-		})
-		if createdCall.IsError {
-			t.Fatalf("delegate tool failed: %s", createdCall.Output)
-		}
-		var created delegateToolResult
-		jtlpDecode(t, createdCall, &created)
-		if created.JobID == "" || created.DelegateID == "" || created.Status != string(jobstore.StatusRunning) || !created.RunningInBackground {
-			t.Fatalf("delegate result = %+v, want a live background delegate", created)
-		}
-		if _, rec, err := root.nestedOrLocalJobManager(created.JobID); err != nil || rec == nil || rec.DelegateID != created.DelegateID || rec.Type != jobstore.JobDelegate {
-			t.Fatalf("delegate durable record = (%+v, %v), want live delegate %q", rec, err, created.DelegateID)
-		}
-		_, childID, err := decodeRef(created.TranscriptRef)
-		if err != nil {
-			t.Fatalf("decode delegate transcript ref %q: %v", created.TranscriptRef, err)
-		}
-		child := root.subagents.get(childID)
-		if child == nil || child.sess == nil || child.sess.cfg.spawn.parentSessionID != root.ID() {
-			t.Fatalf("delegate child linkage missing for %q", childID)
-		}
-
-		// The child is deliberately still live, so a positive wait is ignored rather
-		// than blocking. That is the user-facing contract of a live steer.
-		steerCall := jtlpExecute(t, root, "delegate_send", map[string]any{
-			"to":          created.DelegateID,
-			"message":     jtlpMessage(r),
-			"max_wait_ms": float64(1 + r.intn(7)),
-		})
-		if steerCall.IsError {
-			t.Fatalf("delegate_send live steer failed: %s", steerCall.Output)
-		}
-		var steered delegateSendResult
-		jtlpDecode(t, steerCall, &steered)
-		if steered.Action != "steered" || steered.Status != string(jobstore.StatusRunning) || steered.WaitIgnoredReason == "" {
-			t.Fatalf("delegate_send live steer = %+v, want running steered result with wait note", steered)
-		}
-
-		// Public delegate_send refuses caller, while the child runtime route itself
-		// is allowed and must enqueue its callback on the real parent session.
-		if got, err := delegateSendTool(context.Background(), child.sess, map[string]any{
-			"to": "caller", "message": jtlpMessage(r),
-		}, jobToolResultDefaultMaxChar); err == nil || got != "" {
-			t.Fatalf("public caller delegate_send = (%#v, %v), want clean rejection", got, err)
-		}
-		callbackText := "callback " + jtlpMessage(r)
-		callback := child.sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-			Target: runtimeMessageAliasCaller, Message: callbackText,
-		})
-		if callback.Err != nil || !callback.Delivered || callback.MessageType != "runtime" {
-			t.Fatalf("child callback = %+v, want delivered runtime callback", callback)
-		}
-		queue := root.SteeringQueueSnapshot()
-		if len(queue) == 0 || queue[len(queue)-1].Text != callbackText {
-			t.Fatalf("parent steering queue = %+v, want callback %q", queue, callbackText)
-		}
-
 		shell := jtlpSeedTerminalShell(t, root, r)
 
-		for _, jobID := range []string{shell.JobID, created.JobID} {
-			statusCall := jtlpExecute(t, root, "job_status", map[string]any{"job_id": jobID})
-			if statusCall.IsError {
-				t.Fatalf("job_status(%q) failed: %s", jobID, statusCall.Output)
-			}
-			var status jobStatusResult
-			jtlpDecode(t, statusCall, &status)
-			if status.JobID != jobID || status.Status == "" || !utf8.ValidString(status.TranscriptRef) {
-				t.Fatalf("job_status(%q) = %+v", jobID, status)
-			}
+		statusCall := jtlpExecute(t, root, "job_status", map[string]any{"job_id": shell.JobID})
+		if statusCall.IsError {
+			t.Fatalf("job_status(%q) failed: %s", shell.JobID, statusCall.Output)
 		}
-		if rejected := jtlpExecute(t, root, "job_status", map[string]any{"job_id": created.DelegateID}); !rejected.IsError {
-			t.Fatal("job_status accepted a delegate_id")
+		var status jobStatusResult
+		jtlpDecode(t, statusCall, &status)
+		if status.JobID != shell.JobID || status.Status == "" || !utf8.ValidString(status.TranscriptRef) {
+			t.Fatalf("job_status(%q) = %+v", shell.JobID, status)
 		}
 
 		listArgs := map[string]any{"limit": float64(defaultJobListLimit), "include_nested": r.bool()}
@@ -160,16 +75,16 @@ func FuzzJobtoolsLifecycleProgram(f *testing.F) {
 		var list, secondList jobListResult
 		jtlpDecode(t, first, &list)
 		jtlpDecode(t, second, &secondList)
-		if list.Count != len(list.Jobs) || !jtlpContainsJob(list.Jobs, shell.JobID) || !jtlpContainsJob(list.Jobs, created.JobID) {
-			t.Fatalf("job_list state = %#v, want shell and delegate rows", list)
+		if list.Count != len(list.Jobs) || !jtlpContainsJob(list.Jobs, shell.JobID) {
+			t.Fatalf("job_list state = %#v, want shell row", list)
 		}
-		if secondList.Count != list.Count || !jtlpContainsJob(secondList.Jobs, shell.JobID) || !jtlpContainsJob(secondList.Jobs, created.JobID) {
-			t.Fatalf("second job_list state = %#v, want same stable job identities as %#v", secondList, list)
+		if secondList.Count != list.Count || !jtlpContainsJob(secondList.Jobs, shell.JobID) {
+			t.Fatalf("second job_list state = %#v, want same stable shell identity as %#v", secondList, list)
 		}
 
 		watchCall := jtlpExecute(t, root, "job_watch", map[string]any{
 			"operation":    "create",
-			"source":       created.JobID,
+			"source":       shell.JobID,
 			"output_match": "watch-" + jtlpMessage(r),
 		})
 		if watchCall.IsError {
@@ -260,30 +175,12 @@ func jtlpMessage(r *jtlpReader) string {
 	return []string{"alpha", "needle", "multi line", "unicode", "quoted value"}[r.intn(5)]
 }
 
-func jtlpInvalidDelegateArgs(r *jtlpReader) map[string]any {
-	switch r.intn(5) {
-	case 0:
-		return map[string]any{"task": "   "}
-	case 1:
-		return map[string]any{"task": "valid", "sandbox_net": "false"}
-	case 2:
-		return map[string]any{"task": "valid", "max_wait_ms": float64(-1)}
-	case 3:
-		return map[string]any{"task": "valid", "delegation_allowance": float64(-1)}
-	default:
-		return map[string]any{"task": "valid", "isolation": "unsupported"}
-	}
-}
-
 func jtlpNewRootSession(t *testing.T) *Session {
 	t.Helper()
-	gate := make(chan struct{})
-	var release sync.Once
 	cfg := SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 2,
 		NoProjectPrompts: true,
-		LLMSleep:         func(context.Context, time.Duration) error { return nil },
 		clock:            agenttest.NewFakeClock(),
 	}
 	cfg.testOnly = testConfig{
@@ -291,25 +188,8 @@ func jtlpNewRootSession(t *testing.T) *Session {
 		environmentInfo:     jtlpEnvironmentInfo,
 		minimalSystemPrompt: true,
 		noSyncJobStore:      true,
-		childClientFactory: func() *llm.Client {
-			client := llm.NewClient()
-			client.Register(&agenttest.ScriptedAdapter{
-				Provider: "openai",
-				Responder: func(llm.Request) llm.Response {
-					<-gate
-					return agenttest.FinalResponse("lifecycle child complete")
-				},
-			})
-			return client
-		},
 	}
 	root := newSession(t, withConfig(cfg))
-	t.Cleanup(func() {
-		release.Do(func() { close(gate) })
-		if root.jobManager != nil {
-			root.jobManager.abandonRunningJobs()
-		}
-	})
 	return root
 }
 

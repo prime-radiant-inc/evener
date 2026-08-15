@@ -92,7 +92,6 @@ func TestDrainStallWatchdogFiresOnGenuineStall(t *testing.T) {
 		jobID string
 		typ   jobstore.JobType
 	}{
-		{name: "delegate", jobID: "del-wedge", typ: jobstore.JobDelegate},
 		{name: "shell", jobID: "shell-wedge", typ: jobstore.JobShell},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -157,7 +156,6 @@ func TestDrainStallWatchdogSparesRunningDrainJob(t *testing.T) {
 		name string
 		typ  jobstore.JobType
 	}{
-		{name: "delegate", typ: jobstore.JobDelegate},
 		{name: "shell", typ: jobstore.JobShell},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -192,7 +190,7 @@ func TestDrainStallWatchdogSpareDrivingChild(t *testing.T) {
 
 	// The root owes work (a durable-only pending) AND has a driving child: the
 	// driving child is live, so the tree is not stalled.
-	seedOwnedDurablePending(t, root.jobManager, "del-root", jobstore.JobDelegate)
+	seedOwnedDurablePending(t, root.jobManager, "shell-root", jobstore.JobShell)
 	root.subagents.mu.Lock()
 	root.subagents.subs[childID] = &subagent{id: childID, sess: child, driving: true}
 	root.subagents.mu.Unlock()

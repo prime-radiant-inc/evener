@@ -106,13 +106,10 @@ func jcpStoreLifecycle(t *testing.T, root string, r *jcpReader) {
 	s.disableSync = true
 
 	started := jcpStarted("job-primary", r.next())
-	started.DelegateID = "dlg-primary"
 	finishedAt := jcpTime(r.next())
 	valid := true
 	events := []Event{
 		started,
-		{Kind: EventJobSessionAssigned, TS: jcpTime(r.next()), JobID: started.JobID, TranscriptRef: "local:job-primary", Resumable: &valid},
-		{Kind: EventDelegateCreated, TS: jcpTime(r.next()), JobID: started.JobID, DelegateID: "dlg-primary", Delegate: &DelegateEvent{ChildSessionID: "child", TranscriptRef: "local:child", OwnerSessionID: "owner", VisibleSessionID: "visible", Generation: "dg-primary", Resumable: true}},
 		{Kind: EventWatchRegistered, TS: jcpTime(r.next()), WatchID: "watch-primary", Watch: &WatchEvent{Generation: "wg-primary", OwnerSessionID: "owner", VisibleSessionID: "visible", Target: started.JobID, SendTo: "visible", ConfigHash: "cfg", Condition: "output", Deliveries: 1}},
 		{Kind: EventWatchSendPending, TS: jcpTime(r.next()), JobID: started.JobID, WatchSend: &WatchSendState{Key: WatchSendKey{VisibleSessionID: "visible", WatchID: "watch-primary", WatchTarget: started.JobID, ResolvedWatchedIdentity: started.JobID, ResolvedSendTo: "visible", WatchGeneration: "wg-primary"}, DeliveryID: "wd-primary", UpdateSeq: 1, Message: "ready", CreatedAt: jcpTime(r.next()), Provenance: provenance.WithWatch(nil, "watch-primary", "wg-primary", "wd-primary", "visible", started.JobID)}},
 		{Kind: EventJobFinished, TS: jcpTime(r.next()), JobID: started.JobID, Status: StatusCompleted, Reason: "done", EndedAt: &finishedAt, OutputBytes: 23, TerminalGen: "terminal-primary", StructuredResult: map[string]any{"byte": int(r.next())}, StructuredResultValid: &valid},
@@ -120,8 +117,6 @@ func jcpStoreLifecycle(t *testing.T, root string, r *jcpReader) {
 		{Kind: EventJobNotificationDelivered, TS: jcpTime(r.next()), JobID: started.JobID, TerminalGen: "terminal-primary"},
 		{Kind: EventWatchSendDelivered, TS: jcpTime(r.next()), JobID: started.JobID, WatchSend: &WatchSendState{Key: WatchSendKey{VisibleSessionID: "visible", WatchID: "watch-primary", WatchTarget: started.JobID, ResolvedWatchedIdentity: started.JobID, ResolvedSendTo: "visible", WatchGeneration: "wg-primary"}, DeliveryID: "wd-primary", UpdateSeq: 2}},
 		{Kind: EventWatchCleared, TS: jcpTime(r.next()), WatchID: "watch-primary", Watch: &WatchEvent{Generation: "wg-primary", EndReason: "done"}},
-		{Kind: EventDelegateStopGateClosed, TS: jcpTime(r.next()), DelegateID: "dlg-primary", Delegate: &DelegateEvent{Generation: "dg-primary", StopJobID: started.JobID}},
-		{Kind: EventDelegateDisposed, TS: jcpTime(r.next()), DelegateID: "dlg-primary", Delegate: &DelegateEvent{}},
 	}
 	if err := s.Append(events[0]); err != nil {
 		t.Fatalf("Append started: %v", err)
@@ -138,7 +133,7 @@ func jcpStoreLifecycle(t *testing.T, root string, r *jcpReader) {
 		t.Fatalf("Load: %v", err)
 	}
 	record := records[started.JobID]
-	if record == nil || record.Status != StatusCompleted || record.NotifyState != NotifyDelivered || !record.Disposed {
+	if record == nil || record.Status != StatusCompleted || record.NotifyState != NotifyDelivered {
 		t.Fatalf("folded record = %#v", record)
 	}
 	if key := record.DedupeKey(); key.JobID != started.JobID || key.VisibleSessionID != "visible" || key.TerminalGen != "terminal-primary" {
@@ -157,10 +152,6 @@ func jcpStoreLifecycle(t *testing.T, root string, r *jcpReader) {
 	ordered, err := s.LoadOrdered()
 	if err != nil || len(ordered) != 1 || ordered[0].JobID != started.JobID {
 		t.Fatalf("LoadOrdered = %#v, %v", ordered, err)
-	}
-	delegates, err := s.LoadDelegates()
-	if err != nil || delegates["dlg-primary"] == nil || !delegates["dlg-primary"].StopGateClosed {
-		t.Fatalf("LoadDelegates = %#v, %v", delegates, err)
 	}
 	watches, err := s.LoadWatches()
 	if err != nil || watches["watch-primary"] == nil || watches["watch-primary"].Active {
@@ -195,7 +186,6 @@ func jcpStoreLifecycle(t *testing.T, root string, r *jcpReader) {
 		func() error { return s.AppendBatch([]Event{{}}) },
 		func() error { _, err := s.Load(); return err },
 		func() error { _, err := s.LoadOrdered(); return err },
-		func() error { _, err := s.LoadDelegates(); return err },
 		func() error { _, err := s.LoadWatches(); return err },
 		func() error { _, err := s.LoadWatchSends(); return err },
 		func() error { _, err := s.LoadEvents(); return err },
@@ -391,8 +381,6 @@ func jcpWatchAndUtilityPaths(t *testing.T, r *jcpReader) {
 		value  string
 	}{
 		{"job_", NewJobID("02wMz5TxvEMoJEDTDGOTil")},
-		{"dlg_", NewDelegateID()},
-		{"dg_", NewDelegateGeneration()},
 		{"watch_", NewWatchID()},
 		{"wg_", NewWatchGeneration()},
 		{"wd_", NewWatchSendDeliveryID()},
@@ -410,29 +398,6 @@ func jcpWatchAndUtilityPaths(t *testing.T, r *jcpReader) {
 
 func jcpFoldEdgePaths(t *testing.T, r *jcpReader) {
 	t.Helper()
-	valid := true
-	started := jcpStarted("delegate-job", r.next())
-	started.DelegateID = "delegate-edge"
-	started.Seq = 1
-	finished := Event{Kind: EventJobFinished, Seq: 3, JobID: started.JobID, Status: StatusCompleted, TerminalGen: "terminal-edge", StructuredResultValid: &valid}
-	delegates := FoldDelegates([]Event{
-		{Kind: EventDelegateCreated, Seq: 0, DelegateID: "delegate-fresh", Delegate: &DelegateEvent{Generation: "fresh"}},
-		{Kind: EventDelegateCreated, Seq: 0},
-		{Kind: EventJobStarted, Seq: 0, JobID: "no-delegate"},
-		started,
-		{Kind: EventDelegateCreated, Seq: 2, DelegateID: "delegate-edge", Delegate: &DelegateEvent{Generation: "generation-edge", Resumable: false}},
-		{Kind: EventJobSessionAssigned, Seq: 2, JobID: "missing", Resumable: &valid},
-		{Kind: EventJobSessionAssigned, Seq: 2, JobID: started.JobID, Resumable: new(bool)},
-		{Kind: EventDelegateStopGateClosed, Seq: 2, DelegateID: ""},
-		{Kind: EventDelegateStopGateClosed, Seq: 2, DelegateID: "delegate-edge", Delegate: &DelegateEvent{StopJobID: "wrong-running"}},
-		finished,
-		{Kind: EventDelegateStopGateClosed, Seq: 4, DelegateID: "delegate-edge", Delegate: &DelegateEvent{StopJobID: "wrong-latest"}},
-		{Kind: EventDelegateStopGateClosed, Seq: 5, DelegateID: "delegate-edge", Delegate: &DelegateEvent{Generation: "generation-edge", StopJobID: started.JobID}},
-	})
-	if got := delegates["delegate-edge"]; got == nil || !got.StopGateClosed || got.Status != DelegateNotResumable {
-		t.Fatalf("FoldDelegates edge record = %#v", got)
-	}
-
 	watches := FoldWatches([]Event{
 		{Kind: EventWatchRegistered, WatchID: "invalid", Watch: &WatchEvent{Generation: "", OwnerSessionID: "owner"}},
 		{Kind: EventWatchCleared, WatchID: "missing", Watch: &WatchEvent{}},
@@ -908,7 +873,6 @@ func jcpStoreErrorPaths(t *testing.T, root string, r *jcpReader) {
 	}{
 		{"Load", func(s *Store) error { _, err := s.Load(); return err }},
 		{"LoadOrdered", func(s *Store) error { _, err := s.LoadOrdered(); return err }},
-		{"LoadDelegates", func(s *Store) error { _, err := s.LoadDelegates(); return err }},
 		{"LoadWatches", func(s *Store) error { _, err := s.LoadWatches(); return err }},
 		{"LoadWatchSends", func(s *Store) error { _, err := s.LoadWatchSends(); return err }},
 		{"readAll", func(s *Store) error { _, err := s.readAll(); return err }},

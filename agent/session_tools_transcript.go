@@ -816,7 +816,7 @@ func readJobTranscript(deps *toolDeps, ref, rangeArg, format string) (any, error
 // structured_result, so it gets its own heading; everything else is a shell
 // job's process log.
 func renderJobTranscript(rec *jobstore.JobRecord, output string, total, dropped int64) string {
-	if rec != nil && rec.Type == jobstore.JobDelegate {
+	if rec != nil && string(rec.Type) == "delegate" {
 		return renderDelegateJobTranscript(rec, output, total, dropped)
 	}
 	return renderShellJobTranscript(rec, output, total, dropped)

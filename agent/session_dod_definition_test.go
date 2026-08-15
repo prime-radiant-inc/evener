@@ -3487,59 +3487,6 @@ func TestSession_Subagent_SharedFilesystem(t *testing.T) {
 	t.Fatal("subagent did not receive parent-written file content via shared filesystem")
 }
 
-func TestSession_DelegateJobFinishedEvent_EmittedOnce(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("subagent done") },
-		},
-	}
-	c.Register(f)
-
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var evs []events.SessionEvent
-	evDone := make(chan struct{})
-	go func() {
-		defer close(evDone)
-		for ev := range sess.Events() {
-			evs = append(evs, ev)
-		}
-	}()
-
-	res := sess.createDelegate(context.Background(), delegateArgs{
-		Task:           "do something",
-		Background:     false,
-		BlockTimeoutMS: 5000,
-	})
-	if res.Err != nil {
-		t.Fatalf("delegate error: %v", res.Err)
-	}
-	if res.JobID == "" {
-		t.Fatal("delegate returned empty job_id")
-	}
-
-	sess.Close()
-	<-evDone
-
-	endCount := 0
-	for _, ev := range evs {
-		if data, ok := ev.Data.(events.JobFinishedData); ok && data.JobID == res.JobID {
-			endCount++
-		}
-	}
-	if endCount != 1 {
-		t.Fatalf("expected exactly 1 JOB_FINISHED event for job %q, got %d", res.JobID, endCount)
-	}
-}
-
 func TestSendInput_SteersRunningAgent(t *testing.T) {
 	t.Parallel()
 	// Create a minimal subagent entry with a running session to verify

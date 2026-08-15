@@ -79,7 +79,7 @@ func TestStableDelegateWatch_DelegateReceiverIsImplicit(t *testing.T) {
 func TestStableDelegateWatch_ParentRequiresLeaseEdgeAndPersistedGrant(t *testing.T) {
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	runtime := delegateRuntime{owner: root}
-	args := delegateArgs{Task: "persist parent watch grant", WatchParent: true, Background: true}
+	args := delegateArgs{Task: "persist parent watch grant", WatchParent: true}
 	selection, err := root.selectSubagentModel(context.Background(), args.Model, args.AgentType)
 	if err != nil {
 		t.Fatalf("select model: %v", err)
@@ -121,7 +121,7 @@ func TestStableDelegateWatch_ParentGrantIsNonTransitive(t *testing.T) {
 	runtime := delegateRuntime{owner: root}
 	describe := func(watchParent bool) map[string]any {
 		t.Helper()
-		args := delegateArgs{Task: "grant scope", WatchParent: watchParent, Background: true}
+		args := delegateArgs{Task: "grant scope", WatchParent: watchParent}
 		selection, err := root.selectSubagentModel(context.Background(), args.Model, args.AgentType)
 		if err != nil {
 			t.Fatalf("select model: %v", err)
@@ -204,7 +204,7 @@ func TestStableDelegateWatch_PreservesFiltersEveryCoalescingAndBudget(t *testing
 	}
 }
 
-func TestStableDelegateWatch_PreservesListInspectClearAndObservedBy(t *testing.T) {
+func TestStableDelegateWatch_PreservesListInspectAndClear(t *testing.T) {
 	_ = requireStableDelegateWatchArgs(t)
 	jm := newStableWatchTestJobManager(t)
 	result, err := jm.configureWatch(watchArgs{
@@ -227,17 +227,6 @@ func TestStableDelegateWatch_PreservesListInspectClearAndObservedBy(t *testing.T
 	cleared, err := jm.clearReceiverWatchByID(result.WatchID, "receiver-session", "")
 	if err != nil || cleared.Watching {
 		t.Fatalf("stable watch clear = %#v err=%v", cleared, err)
-	}
-	var observedWorker, observedReceiver string
-	jm.appendObservedBy = func(_ string, worker, receiver string) error {
-		observedWorker, observedReceiver = worker, receiver
-		return nil
-	}
-	if err := jm.stampObservedBy("source-session", "receiver-session"); err != nil {
-		t.Fatalf("stamp observed-by: %v", err)
-	}
-	if observedWorker != "source-session" || observedReceiver != "receiver-session" {
-		t.Fatalf("observed-by = %q/%q", observedWorker, observedReceiver)
 	}
 	fixture := newStableWatchRuntimeBase(t, nil)
 	result, err = fixture.sourceJM.configureWatch(watchArgs{
@@ -694,7 +683,7 @@ func TestStableDelegateWatch_RestartCancellationEmitsEndNotice(t *testing.T) {
 
 func TestStableDelegateWatch_LegacyDelegateJobRowFailsClosed(t *testing.T) {
 	events := []jobstore.Event{
-		{Kind: jobstore.EventJobStarted, JobID: "job_legacy", Type: jobstore.JobDelegate},
+		{Kind: jobstore.EventJobStarted, JobID: "job_legacy", Type: jobstore.JobType(delegateResourceType)},
 		{Kind: jobstore.EventWatchRegistered, WatchID: "watch_legacy", Watch: &jobstore.WatchEvent{Target: "job_legacy"}},
 	}
 	legacy := map[string]struct{}{"job_legacy": {}}

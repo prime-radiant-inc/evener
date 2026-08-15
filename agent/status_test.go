@@ -294,14 +294,6 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 		t.Fatalf("append started event: %v", err)
 	}
 	if err := sess.jobManager.store.Append(jobstore.Event{
-		Kind:          jobstore.EventJobSessionAssigned,
-		TS:            startedAt,
-		JobID:         jobID,
-		TranscriptRef: "local:child-status",
-	}); err != nil {
-		t.Fatalf("append session assignment event: %v", err)
-	}
-	if err := sess.jobManager.store.Append(jobstore.Event{
 		Kind:        jobstore.EventJobFinished,
 		TS:          endedAt,
 		JobID:       jobID,
@@ -321,53 +313,21 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 	}
 	job := ds.Jobs[0]
 	if job.JobID != jobID || job.JobType != string(jobstore.JobShell) || job.Status != string(jobstore.StatusFailed) ||
-		job.Reason != "exit_nonzero" || job.TranscriptRef != "local:child-status" ||
+		job.Reason != "exit_nonzero" || job.TranscriptRef != shellTranscriptRef(jobID) ||
 		job.OutputBytes != 128 || job.ExitCode == nil || *job.ExitCode != exitCode {
 		t.Fatalf("job status = %+v", job)
 	}
 }
 
-func TestSession_DetailedStatus_OmitsDelegateActivations(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	startedAt := time.Now().UTC()
-	endedAt := startedAt.Add(time.Second)
-	const jobID = "job_exhausted"
-	if err := sess.jobManager.store.AppendBatch([]jobstore.Event{
-		{
-			Kind:             jobstore.EventJobStarted,
-			TS:               startedAt,
-			JobID:            jobID,
-			Type:             jobstore.JobDelegate,
-			OwnerSessionID:   sess.ID(),
-			VisibleToSession: sess.ID(),
-			StartedAt:        &startedAt,
-		},
-		{
-			Kind:    jobstore.EventJobFinished,
-			TS:      endedAt,
-			JobID:   jobID,
-			Status:  jobstore.StatusExhausted,
-			Reason:  "tool_round_budget_exhausted",
-			EndedAt: &endedAt,
-		},
-	}); err != nil {
-		t.Fatalf("append job events: %v", err)
-	}
-
-	ds := sess.DetailedStatus()
-	if len(ds.Jobs) != 0 {
-		t.Fatalf("delegate activation leaked through DetailedStatus.Jobs: %+v", ds.Jobs)
+func TestDetailedStatusJobRecords_OmitsLegacyDelegateActivations(t *testing.T) {
+	records := detailedStatusJobRecords([]*jobstore.JobRecord{{
+		JobID:  "job_exhausted",
+		Type:   jobstore.JobType(delegateResourceType),
+		Status: jobstore.StatusExhausted,
+		Reason: "tool_round_budget_exhausted",
+	}})
+	if len(records) != 0 {
+		t.Fatalf("legacy delegate activation records = %+v, want none", records)
 	}
 }
 

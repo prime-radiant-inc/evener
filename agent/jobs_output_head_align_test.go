@@ -1,9 +1,20 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"unicode/utf8"
 )
+
+func writeOutputFixture(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "out.log")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write output fixture: %v", err)
+	}
+	return path
+}
 
 // A head window that ends mid-rune stops at the last whole rune instead of
 // trailing orphaned continuation bytes, so a digest built from the head never
@@ -11,7 +22,7 @@ import (
 func TestHeadOutputFileAlignsMidRuneWindowEnd(t *testing.T) {
 	t.Parallel()
 	// Two 4-byte emoji: a 6-byte window ends 2 bytes into the second one.
-	path := w2dlg_writeFile(t, "😀😀")
+	path := writeOutputFixture(t, "😀😀")
 
 	out, total, truncated, err := headOutputFile(path, 6, 8)
 	if err != nil {
@@ -30,7 +41,7 @@ func TestHeadOutputFileAlignsMidRuneWindowEnd(t *testing.T) {
 // rather than a lone replacement character.
 func TestHeadOutputFileWindowEdges(t *testing.T) {
 	t.Parallel()
-	path := w2dlg_writeFile(t, "😀😀")
+	path := writeOutputFixture(t, "😀😀")
 
 	out, total, truncated, err := headOutputFile(path, 4, 8)
 	if err != nil {
@@ -40,7 +51,7 @@ func TestHeadOutputFileWindowEdges(t *testing.T) {
 		t.Fatalf("aligned head = (%q, %d, %v), want (😀, 8, true)", out, total, truncated)
 	}
 
-	out, _, _, err = headOutputFile(w2dlg_writeFile(t, "😀"), 2, 4)
+	out, _, _, err = headOutputFile(writeOutputFixture(t, "😀"), 2, 4)
 	if err != nil {
 		t.Fatalf("headOutputFile: %v", err)
 	}
@@ -49,7 +60,7 @@ func TestHeadOutputFileWindowEdges(t *testing.T) {
 	}
 
 	const ascii = "abcdefghij"
-	asciiPath := w2dlg_writeFile(t, ascii)
+	asciiPath := writeOutputFixture(t, ascii)
 	for n := 0; n <= len(ascii)+2; n++ {
 		want := ascii
 		if n < len(ascii) {
@@ -71,7 +82,7 @@ func TestHeadOutputFileWindowEdges(t *testing.T) {
 func TestHeadOutputFileKeepsWholeFileIntact(t *testing.T) {
 	t.Parallel()
 	content := []byte{'a', 'b', 0xF0, 0x9F}
-	path := w2dlg_writeFile(t, string(content))
+	path := writeOutputFixture(t, string(content))
 
 	out, total, truncated, err := headOutputFile(path, 10, 4)
 	if err != nil {

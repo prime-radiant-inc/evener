@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -125,15 +126,21 @@ func sessionsFixture(t *testing.T) (base, root, child, oldSID string) {
 			}}),
 		},
 		schema.SessionMeta{Model: "anthropic/claude-a", TurnCount: 2, ObservedBy: []string{observer}},
-		[]jobstore.Event{
-			{Kind: jobstore.EventDelegateCreated, DelegateID: "del1", Delegate: &jobstore.DelegateEvent{
-				ChildSessionID: child,
-				TranscriptRef:  "proj:" + hash1 + ":" + child,
-				AgentType:      "explorer",
-			}},
-		},
+		nil,
 		recent,
 	)
+	writeDelegateEvents(t, filepath.Join(bucket, "sessions", root, "delegates.jsonl"), []delegatestore.Event{
+		{Kind: delegatestore.EventDelegateCreated, DelegateID: "del1", Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
+			ChildSessionID:   child,
+			TranscriptRef:    "proj:" + hash1 + ":" + child,
+			OwnerSessionID:   root,
+			VisibleSessionID: root,
+			Task:             "explore fixture",
+			AgentType:        "explorer",
+			ToolNameCeiling:  []string{"communicate"},
+			Resumable:        true,
+		}}},
+	})
 
 	// child: subagent spawned by root; last assistant turn has a plain text
 	// reply, no communicate call, so the outcome hint is "none".

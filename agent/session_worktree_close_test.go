@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,7 +11,6 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/worktree"
 )
 
@@ -21,59 +19,11 @@ import (
 // tools spec §9 steps 4-6, §5 close-unlock). They build on the wtRepo harness
 // from session_tools_worktree_create_test.go.
 
-// seedIsolationLane creates a real isolation delegate lane on disk (the
-// parent-side create plumbing, locked with the serf:dlg: marker + sidecar) and
-// records the delegate job (started + terminal) so the lane is enumerated as
-// one THIS session created. Returns the delegate id, lane path, and the base
-// SHA recorded in the sidecar.
+// seedIsolationLane seeds the stable delegate controller. Returns the delegate
+// id, lane path, and the base SHA recorded in the sidecar.
 func (r *wtRepo) seedIsolationLane(t *testing.T) (delegateID, lanePath, baseSHA string) {
 	t.Helper()
-	delegateID = jobstore.NewDelegateID()
-	path, _, base, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
-	if err != nil {
-		t.Fatalf("createDelegateWorktree: %v", err)
-	}
-	jobID := jobstore.NewJobID(r.s.ID())
-	now := time.Now().UTC()
-	ref := encodeRef("", "child-"+delegateID)
-	desc := &jobstore.DelegateRestoreDescriptor{
-		Version:          1,
-		ChildSessionID:   "child-" + delegateID,
-		TranscriptRef:    ref,
-		ParentSessionID:  r.s.ID(),
-		ParentJobID:      jobID,
-		OwnerSessionID:   r.s.ID(),
-		VisibleSessionID: r.s.ID(),
-		WorkingDir:       path,
-		LocalEnvPolicy:   "default",
-		Isolation:        "worktree",
-	}
-	if err := r.s.jobManager.appendEvent(jobstore.Event{
-		Kind:             jobstore.EventJobStarted,
-		TS:               now,
-		JobID:            jobID,
-		DelegateID:       delegateID,
-		Type:             jobstore.JobDelegate,
-		OwnerSessionID:   r.s.ID(),
-		VisibleToSession: r.s.ID(),
-		StartedAt:        &now,
-		TranscriptRef:    ref,
-		DelegateRestore:  desc,
-	}); err != nil {
-		t.Fatalf("append delegate start: %v", err)
-	}
-	if err := r.s.jobManager.appendEvent(jobstore.Event{
-		Kind:        jobstore.EventJobFinished,
-		TS:          now,
-		JobID:       jobID,
-		Status:      jobstore.StatusStopped,
-		Reason:      "runtime_lost",
-		EndedAt:     &now,
-		TerminalGen: jobstore.NewWatchGeneration(),
-	}); err != nil {
-		t.Fatalf("append delegate finished: %v", err)
-	}
-	return delegateID, path, base
+	return r.seedStableIsolationLane(t)
 }
 
 // laneLocked reports the porcelain lock state of the lane at path.
@@ -95,23 +45,10 @@ func (r *wtRepo) branchExists(t *testing.T, name string) bool {
 	return len(out) > 0
 }
 
-func (r *wtRepo) disposedEventPresent(t *testing.T, delegateID string) bool {
+func (r *wtRepo) stableDisposalClosurePresent(t *testing.T, delegateID string) bool {
 	t.Helper()
-	store, err := jobstore.OpenNoSync(filepath.Join(r.s.jobManager.dir, "jobs.jsonl"))
-	if err != nil {
-		t.Fatalf("reopen store: %v", err)
-	}
-	defer func() { _ = store.Close() }()
-	recs, err := store.Load()
-	if err != nil {
-		t.Fatalf("load store: %v", err)
-	}
-	for _, rec := range recs {
-		if rec.DelegateID == delegateID && rec.Disposed {
-			return true
-		}
-	}
-	return false
+	aggregate := delegateAggregateSnapshot(t, r.s.delegateController, delegateID)
+	return !aggregate.Resumable && aggregate.NotResumableReason == stableWorktreeDisposalReason
 }
 
 // worktreeInternalDir locates the .git/worktrees/<id> directory that
@@ -217,8 +154,8 @@ func hideGitInRepo(t *testing.T, repoRoot string) func() {
 // --- Step 4: disposal ---
 
 // TestDisposeUnchangedLane_RemovedAndMarked: an unchanged lane at close is
-// removed (worktree + branch + sidecar + lock all gone) and the descriptor is
-// marked disposed.
+// removed (worktree + branch + sidecar + lock all gone) and stable resumability
+// is closed.
 func TestDisposeUnchangedLane_RemovedAndMarked(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -239,27 +176,13 @@ func TestDisposeUnchangedLane_RemovedAndMarked(t *testing.T) {
 	if _, err := worktree.ReadSidecar(metaDir, delegateID); err == nil {
 		t.Error("sidecar still present after disposal")
 	}
-	// Reload and confirm the disposed mark folds onto the delegate's records.
-	recs, err := r.s.jobManager.store.Load()
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	found := false
-	for _, rec := range recs {
-		if rec.DelegateID == delegateID {
-			found = true
-			if !rec.Disposed {
-				t.Error("delegate record not marked Disposed after removal")
-			}
-		}
-	}
-	if !found {
-		t.Fatal("no job record for the disposed delegate")
+	if !r.stableDisposalClosurePresent(t, delegateID) {
+		t.Error("stable delegate resumability not closed after removal")
 	}
 }
 
 // TestDisposeChangedLane_UnlockedKept: a lane with commits beyond base is
-// unlocked, kept, and left resumable (descriptor untouched, no disposed mark);
+// unlocked, kept, and left resumable (stable closure absent);
 // the close output lists it, with the real commits-ahead count (not a
 // line-count over `rev-list --count`'s single-line integer output, which
 // always yields 1 for any positive count).
@@ -296,12 +219,8 @@ func TestDisposeChangedLane_UnlockedKept(t *testing.T) {
 	if !r.branchExists(t, delegateID) {
 		t.Error("changed lane branch deleted; must stay resumable")
 	}
-	// Not disposed: still resumable.
-	recs, _ := r.s.jobManager.store.Load()
-	for _, rec := range recs {
-		if rec.DelegateID == delegateID && rec.Disposed {
-			t.Error("changed lane wrongly marked disposed")
-		}
+	if r.stableDisposalClosurePresent(t, delegateID) {
+		t.Error("changed lane wrongly closed stable resumability")
 	}
 	msgs := warningMessages(r.s)
 	if !anyContainsAll(msgs, delegateID, "kept") {
@@ -426,7 +345,7 @@ func TestDisposeRacingDirtyWrite_DowngradesToKeepUnlocked(t *testing.T) {
 	if !r.branchExists(t, delegateID) {
 		t.Error("downgraded lane branch deleted; must stay resumable")
 	}
-	if r.disposedEventPresent(t, delegateID) {
+	if r.stableDisposalClosurePresent(t, delegateID) {
 		t.Error("downgraded lane wrongly marked disposed")
 	}
 }
@@ -463,14 +382,14 @@ func TestDisposeAncestryMergedLane_Collected(t *testing.T) {
 	if _, err := worktree.ReadSidecar(metaDir, mergedID); err == nil {
 		t.Error("ancestry-merged lane sidecar still present after disposal")
 	}
-	if !r.disposedEventPresent(t, mergedID) {
+	if !r.stableDisposalClosurePresent(t, mergedID) {
 		t.Error("ancestry-merged lane not marked disposed")
 	}
 	// Unchanged lane still collected in the same pass.
 	if _, err := os.Stat(filepath.Join(unchangedPath, ".git")); !os.IsNotExist(err) {
 		t.Errorf("unchanged lane still present after disposal: err=%v", err)
 	}
-	if !r.disposedEventPresent(t, unchangedID) {
+	if !r.stableDisposalClosurePresent(t, unchangedID) {
 		t.Error("unchanged lane not marked disposed")
 	}
 }
@@ -546,7 +465,7 @@ func TestDisposeCherryOnlyMergedLane_KeptNoCherry(t *testing.T) {
 	if !r.branchExists(t, delegateID) {
 		t.Error("cherry-only-merged lane branch deleted; must stay resumable")
 	}
-	if r.disposedEventPresent(t, delegateID) {
+	if r.stableDisposalClosurePresent(t, delegateID) {
 		t.Error("cherry-only-merged lane wrongly marked disposed")
 	}
 	assertNoGitCherry(t, logPath)
@@ -589,7 +508,7 @@ func TestDisposeRemoteTrackingOnlyMergeTarget_Kept(t *testing.T) {
 	if !r.branchExists(t, delegateID) {
 		t.Error("remote-tracking-only lane branch deleted; must stay resumable")
 	}
-	if r.disposedEventPresent(t, delegateID) {
+	if r.stableDisposalClosurePresent(t, delegateID) {
 		t.Error("remote-tracking-only lane wrongly marked disposed")
 	}
 	assertNoGitCherry(t, logPath)
@@ -650,44 +569,8 @@ func TestDisposeKeptLane_TouchesSidecarBeforeUnlock(t *testing.T) {
 	}
 }
 
-// TestResumeAfterP0Disposal_Refused: after P0 collects an ancestry-merged lane,
-// a later resume of that delegate hits the disposed refusal (spec §P0 → the
-// existing assessDelegateResumability path).
-func TestResumeAfterP0Disposal_Refused(t *testing.T) {
-	t.Parallel()
-	r := newWorktreeRepo(t)
-	delegateID, lanePath, _ := r.seedIsolationLane(t)
-
-	if err := os.WriteFile(filepath.Join(lanePath, "work.txt"), []byte("done\n"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	wtGit(t, lanePath, "add", "work.txt")
-	wtGit(t, lanePath, "commit", "-m", "merged lane work")
-	wtGit(t, r.mainRoot, "merge", "--ff-only", delegateID)
-
-	r.s.disposeDelegateLanesAtClose(context.Background())
-
-	recs, err := r.s.jobManager.store.Load()
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	var rec *jobstore.JobRecord
-	for _, candidate := range recs {
-		if candidate.DelegateID == delegateID {
-			rec = candidate
-		}
-	}
-	if rec == nil {
-		t.Fatal("no job record for the disposed delegate")
-	}
-	a := r.s.assessDelegateResumability(rec, delegateResumabilityProjection)
-	if a.Resumable || a.Reason != notResumableWorktreeDisposed {
-		t.Fatalf("assessment = %+v, want not-resumable with %s", a, notResumableWorktreeDisposed)
-	}
-}
-
 // laneDisposalRunner builds the git control runner and observed lock state for
-// a seeded lane, mirroring disposeOneDelegateLane's setup, so a test can drive
+// a seeded lane, mirroring disposeOneStableDelegateLane's setup, so a test can drive
 // disposeUnchangedLaneMechanics directly with either downgrade policy.
 func (r *wtRepo) laneDisposalRunner(t *testing.T, lane isolationLane) (worktree.GitRunner, worktree.LockState) {
 	t.Helper()
@@ -727,7 +610,7 @@ func TestDisposeUnchangedLaneMechanics_RelockPolicy(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(p, "raced.txt"), []byte("late\n"), 0o644)
 	}
 
-	outcome, note := r.s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeRelockKeep, false, false)
+	outcome, note := r.s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeRelockKeep, false)
 
 	if outcome != laneKeptDirty {
 		t.Fatal("relock policy: lane not kept after refused remove")
@@ -745,7 +628,7 @@ func TestDisposeUnchangedLaneMechanics_RelockPolicy(t *testing.T) {
 	if m, ok := worktree.ParseMarker(reason); !ok || m.DelegateID != delegateID {
 		t.Errorf("relock policy: reason = %q, want serf:dlg marker for %s", reason, delegateID)
 	}
-	if r.disposedEventPresent(t, delegateID) {
+	if r.stableDisposalClosurePresent(t, delegateID) {
 		t.Error("relock policy: lane wrongly marked disposed")
 	}
 }
@@ -764,7 +647,7 @@ func TestDisposeUnchangedLaneMechanics_UnlockPolicy(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(p, "raced.txt"), []byte("late\n"), 0o644)
 	}
 
-	outcome, note := r.s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, false, false)
+	outcome, note := r.s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, false)
 
 	if outcome != laneKeptDirty {
 		t.Fatal("unlock policy: lane not kept after refused remove")
@@ -782,7 +665,7 @@ func TestDisposeUnchangedLaneMechanics_UnlockPolicy(t *testing.T) {
 	if !r.branchExists(t, delegateID) {
 		t.Error("unlock policy: lane branch deleted; must stay resumable")
 	}
-	if r.disposedEventPresent(t, delegateID) {
+	if r.stableDisposalClosurePresent(t, delegateID) {
 		t.Error("unlock policy: lane wrongly marked disposed")
 	}
 }
@@ -809,8 +692,8 @@ func TestClose_UnlocksOwnManagedWorktree(t *testing.T) {
 }
 
 // TestClose_DisposalRunsBeforeStoreClose: a full Close disposes an unchanged
-// lane and the disposed mark is durably present in the store afterward, proving
-// disposal ran while the store was still open (before closeStoreOnly).
+// lane and its stable resumability closure is durably present afterward, proving
+// disposal ran before the stable controller/store closes.
 func TestClose_DisposalRunsBeforeStoreClose(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -821,96 +704,12 @@ func TestClose_DisposalRunsBeforeStoreClose(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); !os.IsNotExist(err) {
 		t.Errorf("lane not removed by Close: %v", err)
 	}
-	if !r.disposedEventPresent(t, delegateID) {
-		t.Error("disposed event not durably present after Close; disposal must run before store close")
+	if !r.stableDisposalClosurePresent(t, delegateID) {
+		t.Error("stable resumability closure not durably present after Close; disposal must run before the stable controller/store closes")
 	}
 }
 
-// --- Step 5: revival defenses ---
-
-// TestResumability_RefusesDisposedDelegate: the disposed flag makes
-// assessDelegateResumability refuse, and delegate_send surfaces a clear message.
-func TestResumability_RefusesDisposedDelegate(t *testing.T) {
-	t.Parallel()
-	s := newDelegateRestorePreflightSession(t, nil)
-	rec := seedStoppedDelegateRestoreRecord(t, s)
-	markStoredDelegateResumable(t, s, rec)
-	// Sanity: resumable before disposal.
-	if a := s.assessDelegateResumability(loadShellRecord(t, s.jobManager, rec.JobID), delegateResumabilityProjection); !a.Resumable {
-		t.Fatalf("delegate not resumable before disposal: %s", a.Reason)
-	}
-	// Mark the delegate disposed.
-	if err := s.jobManager.appendEvent(jobstore.Event{
-		Kind:       jobstore.EventDelegateDisposed,
-		TS:         time.Now().UTC(),
-		DelegateID: rec.DelegateID,
-	}); err != nil {
-		t.Fatalf("append disposed: %v", err)
-	}
-	disposedRec := loadShellRecord(t, s.jobManager, rec.JobID)
-	a := s.assessDelegateResumability(disposedRec, delegateResumabilityProjection)
-	if a.Resumable || a.Reason != notResumableWorktreeDisposed {
-		t.Fatalf("assessment = %+v, want not-resumable with %s", a, notResumableWorktreeDisposed)
-	}
-	// The delegate_send message is clear and actionable.
-	err := notResumableSendError(a.Reason)
-	if err == nil || !containsAll(err.Error(), "disposed", "start a new delegate") {
-		t.Errorf("send error = %v, want a clear disposed message", err)
-	}
-	// Mid-life dispose exists now, so the copy must not claim WHEN it happened.
-	if strings.Contains(err.Error(), "at session close") {
-		t.Errorf("send error = %q, must not claim disposal happened at session close", err.Error())
-	}
-}
-
-// TestResumability_RefusesMissingWorkingDir: the unconditional WorkingDir stat
-// (crash net) refuses restoration into a deleted directory, covering the crash
-// window between remove and mark.
-func TestResumability_RefusesMissingWorkingDir(t *testing.T) {
-	t.Parallel()
-	s := newDelegateRestorePreflightSession(t, nil)
-	rec := seedStoppedDelegateRestoreRecord(t, s)
-	markStoredDelegateResumable(t, s, rec)
-	reloaded := loadShellRecord(t, s.jobManager, rec.JobID)
-	if a := s.assessDelegateResumability(reloaded, delegateResumabilityProjection); !a.Resumable {
-		t.Fatalf("delegate not resumable before dir removal: %s", a.Reason)
-	}
-	// Simulate a crash between `git worktree remove` and the disposed mark:
-	// the working directory is gone but the descriptor is still live.
-	if err := os.RemoveAll(reloaded.DelegateRestore.WorkingDir); err != nil {
-		t.Fatalf("remove working dir: %v", err)
-	}
-	a := s.assessDelegateResumability(reloaded, delegateResumabilityProjection)
-	if a.Resumable || a.Reason != notResumableWorkingDirMissing {
-		t.Fatalf("assessment = %+v, want not-resumable with %s", a, notResumableWorkingDirMissing)
-	}
-}
-
-// --- ownedIsolationLanes: pure decision-core coverage ---
-
-// TestOwnedIsolationLanes_SkipsForeignParentSessionID: a delegate restore
-// descriptor whose ParentSessionID names a DIFFERENT session (a forwarded
-// copy of a descendant's own delegate, or simply another session's lane)
-// must never be enumerated as a lane this session created and may dispose.
-func TestOwnedIsolationLanes_SkipsForeignParentSessionID(t *testing.T) {
-	t.Parallel()
-	recs := map[string]*jobstore.JobRecord{
-		"job1": {
-			DelegateID: "dlg1",
-			DelegateRestore: &jobstore.DelegateRestoreDescriptor{
-				Isolation:       "worktree",
-				ParentSessionID: "some-other-session",
-				WorkingDir:      "/tmp/somewhere",
-			},
-		},
-	}
-	lanes := ownedIsolationLanes(recs, "this-session")
-	if len(lanes) != 0 {
-		t.Errorf("lanes = %+v, want none (ParentSessionID belongs to a different session)", lanes)
-	}
-}
-
-// --- disposeOneDelegateLane: gaps left by the happy-path tests above ---
+// --- disposeOneStableDelegateLane: gaps left by the happy-path tests above ---
 
 // TestDisposeOneDelegateLane_MissingSidecarLeavesLane: without a sidecar the
 // recorded base SHA is unknown, so the lane's provenance cannot be judged —
@@ -1040,7 +839,7 @@ func TestDisposeOneDelegateLane_ChangedForeignLockDeclinedNotTouched(t *testing.
 	if !r.branchExists(t, delegateID) {
 		t.Error("branch deleted despite a declined (foreign-locked) lane")
 	}
-	if r.disposedEventPresent(t, delegateID) {
+	if r.stableDisposalClosurePresent(t, delegateID) {
 		t.Error("foreign-locked lane wrongly marked disposed")
 	}
 }
@@ -1103,45 +902,8 @@ func TestDisposeOneDelegateLane_UnchangedUnlockFailsLeavesLocked(t *testing.T) {
 	if !r.branchExists(t, delegateID) {
 		t.Error("branch deleted despite a lock that could not be released")
 	}
-	if r.disposedEventPresent(t, delegateID) {
+	if r.stableDisposalClosurePresent(t, delegateID) {
 		t.Error("lane wrongly marked disposed when removal never happened")
-	}
-}
-
-// TestDisposeOneDelegateLane_DisposedMarkAppendFailureWarnsButStillRemoves:
-// the `git worktree remove` already succeeded — the lane is gone — before the
-// disposed-mark append is attempted; if that append itself fails, disposal
-// still proceeds with branch + sidecar cleanup (best-effort) and surfaces a
-// warning naming the failure.
-func TestDisposeOneDelegateLane_DisposedMarkAppendFailureWarnsButStillRemoves(t *testing.T) {
-	t.Parallel()
-	r := newWorktreeRepo(t)
-	delegateID, lanePath, _ := r.seedIsolationLane(t)
-	metaDir := r.metaDir(t, r.canonicalMain(t))
-	origAppend := r.s.jobManager.appendEvent
-	markErr := errors.New("disk full")
-	r.s.jobManager.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventDelegateDisposed {
-			return markErr
-		}
-		return origAppend(e)
-	}
-	defer func() { r.s.jobManager.appendEvent = origAppend }()
-
-	r.s.disposeDelegateLanesAtClose(context.Background())
-
-	if _, err := os.Stat(filepath.Join(lanePath, ".git")); !os.IsNotExist(err) {
-		t.Errorf("lane worktree still present after removal: err=%v", err)
-	}
-	if r.branchExists(t, delegateID) {
-		t.Error("branch should still be deleted even when the disposed mark failed to append")
-	}
-	if _, err := worktree.ReadSidecar(metaDir, delegateID); err == nil {
-		t.Error("sidecar should still be deleted even when the disposed mark failed to append")
-	}
-	msgs := warningMessages(r.s)
-	if !anyContainsAll(msgs, delegateID, "disposal mark failed") {
-		t.Errorf("no warning about the failed disposed mark: %v", msgs)
 	}
 }
 
@@ -1161,7 +923,7 @@ func TestDisposeOneDelegateLane_BranchDeleteFailureWarnsButLaneStillGone(t *test
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); !os.IsNotExist(err) {
 		t.Errorf("lane worktree still present after removal: err=%v", err)
 	}
-	if !r.disposedEventPresent(t, delegateID) {
+	if !r.stableDisposalClosurePresent(t, delegateID) {
 		t.Error("disposed mark must still be durable even when branch delete failed")
 	}
 	if !r.branchExists(t, delegateID) {
@@ -1294,7 +1056,7 @@ func TestCloseBudget_ExhaustedMidPass_LanesLeftSafe(t *testing.T) {
 		if _, locked, _ := r.laneLocked(t, path); locked {
 			t.Errorf("lane %s left LOCKED; budget expiry must never leave a lane locked", id)
 		}
-		if r.disposedEventPresent(t, id) {
+		if r.stableDisposalClosurePresent(t, id) {
 			t.Errorf("lane %s wrongly marked disposed under budget expiry", id)
 		}
 	}
@@ -1325,7 +1087,7 @@ func TestCloseBudget_AlreadyExpired_AllTailedNoDisposal(t *testing.T) {
 		if _, locked, _ := r.laneLocked(t, path); locked {
 			t.Errorf("lane %s left locked; the tail must unlock", id)
 		}
-		if r.disposedEventPresent(t, id) {
+		if r.stableDisposalClosurePresent(t, id) {
 			t.Errorf("lane %s wrongly disposed under an expired budget", id)
 		}
 	}

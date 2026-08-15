@@ -108,8 +108,8 @@ func TestStableDelegateTools_StatusRejectsActivationAlias(t *testing.T) {
 	s := newSession(t, withoutGitSnapshot())
 	started := time.Unix(10, 0).UTC()
 	if err := s.jobManager.appendEvent(jobstore.Event{
-		Kind: jobstore.EventJobStarted, JobID: "job_legacy_activation", Type: jobstore.JobDelegate,
-		DelegateID: "dlg_legacy", OwnerSessionID: s.ID(), VisibleToSession: s.ID(), StartedAt: &started,
+		Kind: jobstore.EventJobStarted, JobID: "job_legacy_activation", Type: jobstore.JobType(delegateResourceType),
+		OwnerSessionID: s.ID(), VisibleToSession: s.ID(), StartedAt: &started,
 	}); err != nil {
 		t.Fatal(err)
 	}

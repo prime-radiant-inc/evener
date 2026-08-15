@@ -38,7 +38,7 @@ func lx_buildDurableInputs(data []byte) ([]jobNotification, map[string]*jobstore
 			if b0&0x40 == 0 {
 				rec := &jobstore.JobRecord{
 					JobID:            jobID,
-					Type:             jobstore.JobDelegate,
+					Type:             jobstore.JobShell,
 					VisibleToSession: fmt.Sprintf("v%d", b1%2),
 					TerminalGen:      fmt.Sprintf("g%d", (b1>>1)%2),
 				}

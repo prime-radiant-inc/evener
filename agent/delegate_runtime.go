@@ -28,6 +28,17 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+const (
+	notResumableMissingDelegateResumeMetadata = "missing_delegate_resume_metadata"
+	notResumableParentLinkageUnavailable      = "parent_linkage_unavailable"
+	notResumableMissingChildSessionMeta       = "missing_child_session_meta"
+	notResumableCorruptChildSessionMeta       = "corrupt_child_session_meta"
+	notResumableMissingChildTranscript        = "missing_child_transcript"
+	notResumableCorruptChildTranscript        = "corrupt_child_transcript"
+	notResumableTranscriptSessionMismatch     = "transcript_session_mismatch"
+	notResumableWorkingDirMissing             = "working_dir_missing"
+)
+
 type delegateRuntime struct {
 	owner *Session
 }
@@ -270,7 +281,6 @@ func bindStableDelegateActivity(child *Session, controller *delegateTreeControll
 		forward = owner.jobManager.forwardEvent
 	}
 	child.mu.Lock()
-	child.cfg.spawn.parentJobID = ""
 	child.cfg.spawn.parentDelegateID = lease.delegateID
 	child.cfg.spawn.forwardJobEvent = forward
 	child.cfg.spawn.parentJobActivity = func(string, string) {
@@ -329,7 +339,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		return stableDelegateSendOutcome{result: sendMessageResult{
 			Target:              delegateID,
 			DelegateID:          delegateID,
-			Type:                string(jobstore.JobDelegate),
+			Type:                delegateResourceType,
 			Status:              jobstore.StatusRunning,
 			RunningInBackground: true,
 			Action:              "steered",
@@ -444,7 +454,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	result := sendMessageResult{
 		Target:              delegateID,
 		DelegateID:          delegateID,
-		Type:                string(jobstore.JobDelegate),
+		Type:                delegateResourceType,
 		Status:              jobstore.StatusRunning,
 		RunningInBackground: true,
 		Action:              "started",
@@ -576,7 +586,7 @@ func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateM
 	result := sendMessageResult{
 		Target:              started.lease.delegateID,
 		DelegateID:          started.lease.delegateID,
-		Type:                string(jobstore.JobDelegate),
+		Type:                delegateResourceType,
 		Status:              jobstore.StatusRunning,
 		Resumable:           &resumable,
 		RunningInBackground: false,
@@ -920,7 +930,6 @@ func (runtime delegateRuntime) construct(ctx context.Context, args delegateArgs,
 	if started.descriptor.OriginItemID != "" {
 		ctx = context.WithValue(ctx, ctxToolItemID, started.descriptor.OriginItemID)
 	}
-	ctx = context.WithValue(ctx, ctxParentJobID, "")
 	ctx = context.WithValue(ctx, ctxParentDelegateID, started.lease.delegateID)
 	ctx = context.WithValue(ctx, ctxDelegationAllowance, started.descriptor.DelegationAllowance)
 	ctx = context.WithValue(ctx, delegateChildSessionIDContextKey{}, started.descriptor.ChildSessionID)
@@ -1061,8 +1070,6 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			isolation:                     descriptor.Isolation,
 			communicateOutputSchema:       cloneMap(resultSchema),
 			parentWatchGranted:            descriptor.ParentWatchGranted,
-			parentInstallWatch:            s.installParentSourceWatchForChild,
-			parentClearWatch:              s.clearParentSourceWatchForChild,
 			jobActivityClock:              s.jobActivityClock,
 		},
 	}
@@ -1312,7 +1319,7 @@ func stableDelegateResult(descriptor delegatestore.Descriptor, delegateID string
 	result := delegateResult{
 		DelegateID:          delegateID,
 		ChildSessionID:      descriptor.ChildSessionID,
-		Type:                string(jobstore.JobDelegate),
+		Type:                delegateResourceType,
 		Status:              jobstore.StatusRunning,
 		Resumable:           &resumable,
 		RunningInBackground: true,

@@ -90,17 +90,6 @@ func seed100Jobs(t *testing.T, text string) {
 	_, _ = closed.stop("missing")
 	_ = closed.armPendingTerminalNotifications()
 
-	// A delegate stop gate append failure is surfaced without signalling.
-	rec := &jobstore.JobRecord{JobID: "delegate-stop", Type: jobstore.JobDelegate, DelegateID: "dlg_seed", Status: jobstore.StatusRunning}
-	run := &runningJob{rec: rec, done: make(chan struct{}), signal: func() { t.Fatal("signalled after gate failure") }}
-	jm.running[rec.JobID] = run
-	jm.appendEvent = func(jobstore.Event) error { return want }
-	if _, err := jm.stop(rec.JobID); !errors.Is(err, want) {
-		t.Fatalf("stop gate fault = %v", err)
-	}
-	delete(jm.running, rec.JobID)
-	jm.appendEvent = jm.store.Append
-
 	// Finalize guards and a prepare failure require no asynchronous runtime.
 	if err := jm.finalizeWithRunMode("missing", func(*runningJob) (jobstore.Status, string, *int, error) {
 		return "", "", nil, want
@@ -129,9 +118,6 @@ func seed100Jobs(t *testing.T, text string) {
 
 	// Mismatched terminal/run guards, nil callback guards, and forwarding faults.
 	jm.armFinalizedJob(&runningJob{rec: &jobstore.JobRecord{JobID: "absent"}}, &terminalJob{})
-	(*jobManager)(nil).markWatchOriginCallerCallbackDelivered("x")
-	jm.markWatchOriginCallerCallbackDelivered("")
-	jm.markWatchOriginCallerCallbackDelivered("missing")
 	_ = jm.forwardPendingJobNotification(nil, nil)
 	terminal := &terminalJob{notificationPendingAppended: true, notificationPending: jobstore.Event{}}
 	jm.forward = func(jobstore.Event) error { return want }
@@ -171,17 +157,13 @@ func seed100Nested(t *testing.T) {
 	_, _ = bare.stopNestedOrLocal("x")
 	_ = bare.notControllableDescendantError("x")
 	_, _ = bare.stopChildren("x")
-	_ = bare.delegateChildSessionToCascade("x")
-	_, _ = bare.stopDelegateSubtree(nil)
 	_ = (*Session)(nil).directChildOwningDescendant("x")
-	_ = bare.directDelegateJobForChild("x")
 
 	root := newSession(t)
 	closedChild := newSession(t)
 	sub := &subagent{id: closedChild.ID(), sess: closedChild, closed: true}
 	root.subagents.subs[sub.id] = sub
 	_, _ = root.ownerJobManagerFor("missing")
-	_ = root.delegateChildSessionToCascade("missing")
 
 	child := newSession(t)
 	live := &subagent{id: child.ID(), sess: child}
@@ -205,18 +187,6 @@ func seed100Nested(t *testing.T) {
 	_, _, _, _, _ = root.resolveDescendantJobOwner(forwarded.JobID)
 	_ = root.directChildOwningDescendant(forwarded.JobID)
 
-	delegateID := "job_delegate_seed"
-	if err := root.jobManager.appendEvent(jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: delegateID, Type: jobstore.JobDelegate, OwnerSessionID: root.ID(), VisibleToSession: root.ID(), TranscriptRef: encodeRef("", child.ID()), StartedAt: &started}); err != nil {
-		t.Fatal(err)
-	}
-	child.jobManager.setParentJobID(delegateID)
-	_ = root.delegateChildSessionToCascade(delegateID)
-	_ = root.directDelegateJobForChild(child.ID())
-	childRun := &runningJob{rec: &jobstore.JobRecord{JobID: "job_child_running", Type: jobstore.JobShell, Status: jobstore.StatusRunning}, done: make(chan struct{}), signal: func() {}}
-	child.jobManager.running[childRun.rec.JobID] = childRun
-	_, _ = root.stopDelegateSubtree(child)
-	delete(child.jobManager.running, childRun.rec.JobID)
-
 	jm := newTestJM(t)
 	jm.forward = func(jobstore.Event) error { return errors.New("forward") }
 	jm.parentJobID = "parent"
@@ -235,9 +205,9 @@ func seed100Drain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	s := newSession(t)
-	s.jobManager.running["delegate"] = &runningJob{rec: &jobstore.JobRecord{JobID: "delegate", Type: jobstore.JobDelegate}}
+	s.jobManager.running["shell"] = &runningJob{rec: &jobstore.JobRecord{JobID: "shell", Type: jobstore.JobShell}}
 	_, _ = s.drainJobTree(ctx, make(chan time.Time))
-	delete(s.jobManager.running, "delegate")
+	delete(s.jobManager.running, "shell")
 	_ = s.kickDriveTree(context.Background())
 }
 
@@ -279,17 +249,13 @@ func seed100JobTools(t *testing.T, text string) {
 	for _, args := range []map[string]any{{}, {"task": "x", "tasks": []any{"y"}}, {"tasks": "bad"}, {"tasks": []any{1}}} {
 		_, _ = decodeDelegateArgs(args)
 	}
-	_ = jobListDelegatesForJobs(&Session{}, nil, nil)
 
 	// Marshal failures and bounding fallbacks.
 	_, _ = marshalBoundedJSON(make(chan int), 1)
 	_, _, _ = marshalBoundedJSONWithFit(make(chan int), 1)
-	_, _, _ = marshalWithOutputLimit(1, 1, func(int) (string, error) { return "", errors.New("marshal") })
-	_, _ = marshalBoundedDelegateResult(delegateToolResult{Output: ptrString(text), StructuredResult: make(chan int)}, 1)
 	_, _ = marshalWatchResult(watchResult{EventFilter: &watchEventFilter{}, Send: &watchSendArgs{}}, 1)
 
 	_ = projectJobRecordForViewer(nil, nil, &jobstore.JobRecord{})
-	_ = projectDelegateRecord(nil)
 
 	reg := tool.NewRegistry()
 	_ = jobToolResultMaxChars(nil, "x")

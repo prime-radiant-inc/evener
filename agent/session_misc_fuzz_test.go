@@ -170,7 +170,7 @@ func FuzzSessionMetadataHelpers(f *testing.F) {
 		recs := make([]*jobstore.JobRecord, 0, detailedStatusTerminalJobsLimit+4)
 		recs = append(recs, &jobstore.JobRecord{JobID: "running", Type: jobstore.JobShell, Status: jobstore.StatusRunning})
 		for i := 0; i < detailedStatusTerminalJobsLimit+3; i++ {
-			recs = append(recs, &jobstore.JobRecord{JobID: string(rune(i + 1)), Type: jobstore.JobDelegate, Status: jobstore.StatusCompleted, Reason: text})
+			recs = append(recs, &jobstore.JobRecord{JobID: string(rune(i + 1)), Type: jobstore.JobShell, Status: jobstore.StatusCompleted, Reason: text})
 		}
 		kept := detailedStatusJobRecords(recs)
 		if len(kept) != detailedStatusTerminalJobsLimit+1 || kept[0].JobID != "running" {

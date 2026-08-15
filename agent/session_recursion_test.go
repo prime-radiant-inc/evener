@@ -8,60 +8,6 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// TestDelegationAllowancePersistsAcrossResume verifies that a delegate's
-// delegation_allowance survives the production restore-from-descriptor path:
-// a terminal delegate whose runtime was lost is reconstructed from its durable
-// DelegateRestoreDescriptor.
-//
-// The persistence path under test:
-// DelegateRestoreDescriptor.DelegationAllowance (durable on disk in jobs.jsonl)
-// → spawnConfig.delegationAllowance (job_delegate.go restoreTerminalDelegateChild)
-// → s.delegationAllowance (session_init.go).
-//
-// This drives the real reconstruction code, not a manual copy: it seeds a
-// stopped delegate record carrying allowance > 0, persists it to disk, reloads
-// it, then reconstructs the child via restoreTerminalDelegateChild and asserts
-// the resumed session received the granted allowance. The test fails if the
-// descriptor stops carrying allowance into the reconstructed session.
-func TestDelegationAllowancePersistsAcrossResume(t *testing.T) {
-	t.Parallel()
-	const grantedAllowance = 1
-
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-	s := newDelegateRestorePreflightSession(t, c)
-
-	// Seed a terminal (runtime-lost) delegate whose durable restore descriptor
-	// carries a non-zero allowance, then persist that descriptor to disk.
-	rec := seedStoppedDelegateRestoreRecord(t, s)
-	rec.DelegateRestore.DelegationAllowance = grantedAllowance
-	replaceStoredDelegateRecord(t, s, rec)
-	markStoredDelegateResumable(t, s, rec)
-
-	// Reload from disk and confirm the durable descriptor carries the allowance.
-	rec = loadShellRecord(t, s.jobManager, rec.JobID)
-	if got := rec.DelegateRestore.DelegationAllowance; got != grantedAllowance {
-		t.Fatalf("durable descriptor DelegationAllowance = %d, want %d", got, grantedAllowance)
-	}
-	childID := rec.DelegateRestore.ChildSessionID
-
-	// Reconstruct the child through the production restore path. This reads
-	// desc.DelegationAllowance into the child's spawnConfig and onto the
-	// reconstructed session.
-	preflight := requireDelegateRestorePreflight(t, s, rec)
-	sub, err := s.restoreTerminalDelegateChild(rec, childID, preflight)
-	if err != nil {
-		t.Fatalf("restoreTerminalDelegateChild: %v", err)
-	}
-	if sub == nil || sub.sess == nil {
-		t.Fatalf("reconstructed child = %+v, want retained runtime", sub)
-	}
-
-	if got, want := sub.sess.delegationAllowance, grantedAllowance; got != want {
-		t.Fatalf("reconstructed session delegationAllowance = %d, want %d", got, want)
-	}
-}
-
 // TestRootAllowanceFromConfig verifies that a root session derives its
 // delegationAllowance from MaxSubagentDepth (spec §1: "Root allowance = config").
 // Zero MaxSubagentDepth defaults to 1.

@@ -4,8 +4,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/schema"
 )
 
@@ -26,16 +27,17 @@ func treeFixture(t *testing.T) (base, rootSID string) {
 	writeSession(t, childBucket, childSID) // child lives in a DIFFERENT bucket
 	writeSession(t, rootBucket, obsSID)    // observer session
 
-	// Root's jobs: a delegate to the child + a job_started so status is running.
-	rootJobs := filepath.Join(rootBucket, "sessions", rootSID, "jobs.jsonl")
-	writeJobsEvents(t, rootJobs, []jobstore.Event{
-		{Kind: jobstore.EventDelegateCreated, DelegateID: "del1", Delegate: &jobstore.DelegateEvent{
-			ChildSessionID: childSID,
-			TranscriptRef:  "proj:" + hash2 + ":" + childSID,
-			AgentType:      "explorer",
-			Generation:     "g1",
+	// Root's stable delegate journal contains a running delegate to the child.
+	rootDelegates := filepath.Join(rootBucket, "sessions", rootSID, "delegates.jsonl")
+	writeDelegateEvents(t, rootDelegates, []delegatestore.Event{
+		{Kind: delegatestore.EventDelegateCreated, DelegateID: "del1", Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
+			ChildSessionID: childSID, TranscriptRef: "proj:" + hash2 + ":" + childSID,
+			OwnerSessionID: rootSID, VisibleSessionID: rootSID, Task: "inspect child",
+			AgentType: "explorer", ToolNameCeiling: []string{"communicate"}, Resumable: true,
+		}}},
+		{Kind: delegatestore.EventDelegateRunStarted, DelegateID: "del1", RunStarted: &delegatestore.RunStarted{
+			Generation: 1, Trigger: delegatestore.TriggerInitial, StartedAt: time.Unix(1, 0).UTC(),
 		}},
-		{Kind: jobstore.EventJobStarted, JobID: "j1", DelegateID: "del1"},
 	})
 
 	// Stamp the root's meta with the observer link.
@@ -69,7 +71,7 @@ func TestTree_DelegateEdgeCrossBucket(t *testing.T) {
 		t.Errorf("child ref = %q, want cross-bucket proj ref", c.TranscriptRef)
 	}
 	if c.Status != "running" {
-		t.Errorf("child status = %q, want %q (EventJobStarted → DelegateRunning)", c.Status, "running")
+		t.Errorf("child status = %q, want %q", c.Status, "running")
 	}
 }
 
@@ -101,13 +103,14 @@ func TestTree_DepthLimit(t *testing.T) {
 	// Give childSID a delegate child of its own so depthLimitNote has a real
 	// grandchild to report and the depth-1 suppression is observable in the note.
 	childBucket := stateHomeBucket(base, hash2)
-	childJobs := filepath.Join(childBucket, "sessions", childSID, "jobs.jsonl")
+	childDelegates := filepath.Join(childBucket, "sessions", childSID, "delegates.jsonl")
 	writeSession(t, childBucket, grandchildSID)
-	writeJobsEvents(t, childJobs, []jobstore.Event{
-		{Kind: jobstore.EventDelegateCreated, DelegateID: "del2", Delegate: &jobstore.DelegateEvent{
-			ChildSessionID: grandchildSID,
-			AgentType:      "leaf",
-		}},
+	writeDelegateEvents(t, childDelegates, []delegatestore.Event{
+		{Kind: delegatestore.EventDelegateCreated, DelegateID: "del2", Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
+			ChildSessionID: grandchildSID, TranscriptRef: "proj:" + hash2 + ":" + grandchildSID,
+			OwnerSessionID: childSID, VisibleSessionID: childSID, Task: "inspect grandchild",
+			AgentType: "leaf", ToolNameCeiling: []string{"communicate"}, Resumable: true,
+		}}},
 	})
 
 	root, _ := Tree(base, rootSID, TreeOpts{Depth: 1})
@@ -129,11 +132,11 @@ func TestTree_DepthLimit(t *testing.T) {
 func TestTree_DisposedDelegate(t *testing.T) {
 	base, rootSID := treeFixture(t)
 
-	// Append a mid-life disposal for the fixture's delegate.
+	// Append a mid-life resumability closure for the fixture's delegate.
 	rootBucket := stateHomeBucket(base, hash1)
-	rootJobs := filepath.Join(rootBucket, "sessions", rootSID, "jobs.jsonl")
-	writeJobsEvents(t, rootJobs, []jobstore.Event{
-		{Kind: jobstore.EventDelegateDisposed, DelegateID: "del1"},
+	rootDelegates := filepath.Join(rootBucket, "sessions", rootSID, "delegates.jsonl")
+	writeDelegateEvents(t, rootDelegates, []delegatestore.Event{
+		{Kind: delegatestore.EventDelegateResumabilityClosed, DelegateID: "del1", ResumabilityClosed: &delegatestore.ResumabilityClosed{Reason: "disposed"}},
 	})
 
 	root, err := Tree(base, rootSID, TreeOpts{})

@@ -13,7 +13,6 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/worktree"
 )
 
@@ -24,7 +23,7 @@ import (
 // This file is MIXED across the two lane harnesses; see docs/testing.md for the
 // rule. Most tests' subject is serf's own sweep DECISION — which skip rung fires
 // (locked, in-grace, not-a-delegate), which arm collects, what it wrote to its
-// own jobstore, how the budget and the open timer gate the pass — so they run on
+// stable controller, how the budget and the open timer gate the pass — so they run on
 // the scripted git boundary (scriptedLaneRepo), where a lane is collectible via
 // the Unchanged arm (tip == recorded base) and the per-lane git failures the
 // sweep reacts to are injected at the boundary. These four stay on real git
@@ -52,7 +51,7 @@ func (r *wtRepo) unlockLane(t *testing.T, path string) {
 // id, path, and recorded base SHA.
 func (r *wtRepo) seedForeignUnlockedLane(t *testing.T) (delegateID, lanePath, baseSHA string) {
 	t.Helper()
-	delegateID = jobstore.NewDelegateID()
+	delegateID = r.s.delegateController.newDelegateID()
 	path, _, base, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
 	if err != nil {
 		t.Fatalf("createDelegateWorktree: %v", err)
@@ -81,21 +80,6 @@ func (r *wtRepo) ageBeyondGrace(t *testing.T, delegateID string) {
 func (r *wtRepo) lanePresent(path string) bool {
 	_, err := os.Stat(filepath.Join(path, ".git"))
 	return err == nil
-}
-
-// rawStoreMentions reports whether the delegate id appears anywhere in sess's
-// durable jobs.jsonl — used to prove a foreign lane earned NO Disposed mark. The
-// jobstore is serf's own state and stays a real file under either harness.
-func rawStoreMentions(t *testing.T, sess *Session, delegateID string) bool {
-	t.Helper()
-	b, err := os.ReadFile(filepath.Join(sess.jobManager.dir, "jobs.jsonl"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false
-		}
-		t.Fatalf("read store: %v", err)
-	}
-	return strings.Contains(string(b), delegateID)
 }
 
 // TestP3Sweep_CollectsUnlockedMergedForeignLanePastGrace (spec test 21/22 core):
@@ -224,14 +208,14 @@ func TestP3Sweep_ManagedNonDelegateUntouched(t *testing.T) {
 	}
 }
 
-// TestP3Sweep_OwnRecordMarkedForeignNotMarked (spec test 25): a collected lane
-// whose record lives in THIS session's store earns a durable Disposed mark; a
-// foreign lane (no record) earns none.
-func TestP3Sweep_OwnRecordMarkedForeignNotMarked(t *testing.T) {
+// TestP3Sweep_OwnStableClosureForeignStateAbsent (spec test 25): a collected
+// lane owned by this stable controller closes resumability; a foreign lane has
+// no durable controller state.
+func TestP3Sweep_OwnStableClosureForeignStateAbsent(t *testing.T) {
 	t.Parallel()
 	r := newScriptedLaneRepo(t)
 
-	ownID, ownPath := r.seedIsolationLane(t) // records an owned delegate job
+	ownID, ownPath := r.seedIsolationLane(t) // records stable controller ownership
 	r.unlockLane(t, ownPath)
 	r.ageBeyondGrace(t, ownID, ownPath)
 
@@ -243,14 +227,17 @@ func TestP3Sweep_OwnRecordMarkedForeignNotMarked(t *testing.T) {
 	if r.lanePresent(ownPath) {
 		t.Error("own unlocked unchanged lane past grace not collected")
 	}
-	if !r.disposedEventPresent(t, ownID) {
-		t.Error("own-store record not marked Disposed after collection")
+	if !r.stableDisposalClosurePresent(t, ownID) {
+		t.Error("own stable resumability not closed after collection")
 	}
 	if r.lanePresent(foreignPath) {
 		t.Error("foreign lane not collected")
 	}
-	if rawStoreMentions(t, r.s, foreignID) {
-		t.Error("foreign lane earned a Disposed mark; P3 marks own-store records only")
+	r.s.delegateController.mu.Lock()
+	_, foreignKnown := r.s.delegateController.durable[foreignID]
+	r.s.delegateController.mu.Unlock()
+	if foreignKnown {
+		t.Error("foreign lane acquired durable stable-controller state")
 	}
 }
 

@@ -96,7 +96,6 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (acti
 		Revision:        activityRevisionFromMeta(meta),
 		Jobs:            jobstore.FoldOrdered(jobEvents),
 		LiveJobs:        map[string]*jobstore.JobRecord{},
-		Delegates:       jobstore.FoldDelegates(jobEvents),
 		StableDelegates: stable,
 		Usage:           historicalActivityUsage(stateDir, sessionID, meta),
 		Diagnostics:     diagnostics,
@@ -136,14 +135,6 @@ func activityRootIDFromMeta(sessionID string, meta schema.SessionMeta) string {
 
 func activityRevisionFromMeta(meta schema.SessionMeta) uint64 {
 	return meta.JobTreeRevision
-}
-
-func loadHistoricalActivityDelegates(path string) (map[string]*jobstore.DelegateRecord, error) {
-	events, err := jobstore.ReadEvents(path)
-	if err != nil {
-		return nil, err
-	}
-	return jobstore.FoldDelegates(events), nil
 }
 
 func activityLabelFromMeta(sessionID string, meta schema.SessionMeta, metaErr error) string {

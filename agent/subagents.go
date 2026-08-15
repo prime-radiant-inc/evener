@@ -15,7 +15,6 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provenance"
@@ -25,6 +24,8 @@ import (
 	"primeradiant.com/serf/agent/skill"
 	taskpkg "primeradiant.com/serf/agent/task"
 )
+
+const delegateSalvagedDraftNote = "partial draft salvaged in the child transcript — resume it with delegate_send rather than re-dispatching"
 
 // SubagentStatus tracks the lifecycle of a sub-agent.
 type SubagentStatus string
@@ -96,7 +97,6 @@ type subagent struct {
 	runProvenance         *provenance.Causal        // immutable causal provenance for the completed run result
 	runStructured         any                       // communicate structured result captured before this run releases its finalization gate
 	runStructuredCaptured bool                      // runStructured was captured, including an authoritative nil result
-	runFromWatch          bool                      // true for a run resumed by job_watch.send; suppresses observer feedback loops
 	nudgeEnabled          bool                      // true for default subagents that should be nudged to communicate
 	cancel                context.CancelFunc        // cancels the current run's context
 	cancelRequested       bool                      // set by parent stop so finalize maps a context.Canceled run to cancelled
@@ -132,7 +132,6 @@ type preparedSubagentRun struct {
 	runCtx             context.Context
 	runCancel          context.CancelFunc
 	parentSessionID    string
-	parentJobID        string
 	originToolCallID   string
 	originItemID       string
 	task               string
@@ -147,7 +146,7 @@ type preparedSubagentRun struct {
 	frozenSkillBodies  []string
 	workingDir         string
 	localEnvPolicy     string
-	sandboxSnapshot    *jobstore.SandboxSnapshot
+	sandboxSnapshot    *delegatestore.SandboxSnapshot
 	isolation          string
 	resultSchema       map[string]any
 	explicitToolGrants []string
@@ -595,7 +594,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.MCPConfigFiles = nil
 	subCfg.MCPInline = nil
 	subCfg.spawn.sessionID = ""
-	subCfg.spawn.parentJobID = ""
 	subCfg.spawn.parentJobActivity = nil
 	subCfg.spawn.parentDelegateID = ""
 	subCfg.spawn.delegateController = s.delegateController
@@ -604,8 +602,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.spawn.subscriberCount = subscriberCount
 	subCfg.spawn.forwardJobEvent = nil
 	subCfg.spawn.parentWatchGranted = false
-	subCfg.spawn.parentInstallWatch = nil
-	subCfg.spawn.parentClearWatch = nil
 	if frozen != nil {
 		subCfg.spawn.rolePromptOverride = ""
 		subCfg.spawn.activatedSkillBodies = nil
@@ -621,9 +617,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.spawn.parentSteer = s.SteerWithProvenance
 	subCfg.spawn.parentSteerDelivered = s.trySteerWithProvenanceAndNotify
 	subCfg.spawn.parentSystemNotification = s.routeSystemNotification
-	if s.jobManager != nil {
-		subCfg.spawn.parentMarkCallerCallbackDelivered = s.jobManager.markWatchOriginCallerCallbackDelivered
-	}
 	if subCfg.ShareTasksWithChildren {
 		ownerSessionID := parentCfg.spawn.sharedTaskStoreOwnerSessionID
 		sharedStore := s.getOrCreateTaskStore()
@@ -649,13 +642,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 	if itemID, ok := ctx.Value(ctxToolItemID).(string); ok {
 		subCfg.spawn.parentItemID = itemID
 	}
-	if parentJobID, ok := ctx.Value(ctxParentJobID).(string); ok && parentJobID != "" {
-		subCfg.spawn.parentJobID = parentJobID
-		if s.jobManager != nil {
-			subCfg.spawn.forwardJobEvent = s.jobManager.forwardEvent
-			subCfg.spawn.parentJobActivity = s.jobManager.noteJobActivity
-		}
-	}
 	if delegateID, ok := ctx.Value(ctxParentDelegateID).(string); ok {
 		subCfg.spawn.parentDelegateID = delegateID
 		subCfg.spawn.owningDelegateID = delegateID
@@ -678,8 +664,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	if watchParent, ok := ctx.Value(ctxWatchParent).(bool); ok && watchParent {
 		subCfg.spawn.parentWatchGranted = true
-		subCfg.spawn.parentInstallWatch = s.installParentSourceWatchForChild
-		subCfg.spawn.parentClearWatch = s.clearParentSourceWatchForChild
 	}
 	childCanDelegate := subCfg.spawn.delegationAllowance > 0
 	if schema, ok := ctx.Value(ctxCommunicateOutputSchema).(map[string]any); ok && len(schema) > 0 {
@@ -991,7 +975,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 		runCtx:             runCtx,
 		runCancel:          runCancel,
 		parentSessionID:    subCfg.spawn.parentSessionID,
-		parentJobID:        subCfg.spawn.parentJobID,
 		originToolCallID:   subCfg.spawn.parentToolCallID,
 		originItemID:       subCfg.spawn.parentItemID,
 		task:               task,
@@ -1033,37 +1016,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 	return prepared, nil
 }
 
-func (s *Session) installParentSourceWatchForChild(observerSessionID string, observerDelegateID string, args watchArgs) (watchResult, error) {
-	if strings.TrimSpace(observerSessionID) == "" {
-		return watchResult{}, errors.New("source_not_watchable: parent watch observer session is unknown")
-	}
-	defaultEvents := !watchArgsHasCondition(args)
-	a := args
-	a.Source = "parent"
-	a.Target = runtimeMessageAliasCaller
-	a.ReceiverSessionID = observerSessionID
-	a.ReceiverDelegateID = observerDelegateID
-	if defaultEvents {
-		a.Events = []string{"*"}
-	}
-	jm, err := sessionJobManager(s)
-	if err != nil {
-		return watchResult{}, err
-	}
-	return jm.configureWatch(a)
-}
-
-func (s *Session) clearParentSourceWatchForChild(observerSessionID string, observerDelegateID string, watchID string) (watchResult, error) {
-	if strings.TrimSpace(observerSessionID) == "" {
-		return watchResult{}, errors.New("source_not_watchable: parent watch observer session is unknown")
-	}
-	jm, err := sessionJobManager(s)
-	if err != nil {
-		return watchResult{}, err
-	}
-	return jm.clearReceiverWatchByID(watchID, observerSessionID, observerDelegateID)
-}
-
 func (s *Session) trackAndLaunchPreparedSubagent(prepared *preparedSubagentRun) error {
 	if prepared == nil || prepared.sub == nil {
 		return errors.New("subagent run is not prepared")
@@ -1086,10 +1038,7 @@ func (s *Session) noteParentJobActivity(phase string) {
 	if s == nil || s.cfg.spawn.parentJobActivity == nil {
 		return
 	}
-	parentID := s.cfg.spawn.parentJobID
-	if parentID == "" {
-		parentID = s.cfg.spawn.parentDelegateID
-	}
+	parentID := s.cfg.spawn.parentDelegateID
 	if parentID != "" {
 		s.cfg.spawn.parentJobActivity(parentID, phase)
 	}
@@ -1379,10 +1328,6 @@ func (s *Session) subagentPrepareFault(point string) error {
 }
 
 func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, startedAt time.Time) {
-	resetSubagentForRunLockedFromWatch(sub, cancel, startedAt, false)
-}
-
-func resetSubagentForRunLockedFromWatch(sub *subagent, cancel context.CancelFunc, startedAt time.Time, fromWatch bool) {
 	sub.done = make(chan struct{})
 	sub.running = true
 	sub.finalizing = false
@@ -1394,7 +1339,6 @@ func resetSubagentForRunLockedFromWatch(sub *subagent, cancel context.CancelFunc
 	sub.runProvenance = nil
 	sub.runStructured = nil
 	sub.runStructuredCaptured = false
-	sub.runFromWatch = fromWatch
 	sub.cancel = cancel
 	sub.cancelRequested = false
 	sub.settlementClaimed = false
@@ -1478,13 +1422,7 @@ func communicateNudge(toolName string) string {
 }
 
 func (a *subagent) run(ctx context.Context, input string, inputProvenance *provenance.Causal) {
-	a.mu.Lock()
-	runStartedFromWatch := a.runFromWatch
-	a.mu.Unlock()
 	kind := EntryUserInput
-	if runStartedFromWatch {
-		kind = EntryWatchDelivery
-	}
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
 	nudgeAvailable := true
 	hookAvailable := true
@@ -1513,7 +1451,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			case delegateSupervisionContinue:
 				input = "Continue with the newly received steering before settling."
 				kind = EntryContinuation
-				runStartedFromWatch = false
 				continue
 			case delegateSupervisionSuppress:
 				cancelRequested = true
@@ -1521,7 +1458,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		}
 		shouldNudge := nudgeAvailable && !cancelRequested &&
 			!budgetExhausted &&
-			!runStartedFromWatch &&
 			a.nudgeEnabled &&
 			!a.sess.Communicated() &&
 			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
@@ -1595,7 +1531,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			a.mu.Unlock()
 			input = "Continue with the newly received steering before settling."
 			kind = EntryContinuation
-			runStartedFromWatch = false
 			continue
 		}
 		<-settlementClaim.ready

@@ -286,10 +286,6 @@ type testConfig struct {
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)
 
-	// delegateSend holds delegate_send injection seams for this session only;
-	// see delegateSendTestSeams for why they must not be package globals.
-	delegateSend delegateSendTestSeams
-
 	// registerTool injects deterministic registration failures. Nil preserves
 	// direct Registry.Register calls.
 	registerTool func(*tool.Registry, tool.RegisteredTool) error
@@ -479,12 +475,9 @@ type spawnConfig struct {
 	// parentItemID is the provider/tool item ID that spawned this sub-agent session.
 	parentItemID string
 
-	// parentJobID is the delegate job ID that spawned this sub-agent session.
-	parentJobID string
-
-	// parentJobActivity reports parent-observable child progress for the
-	// delegate job that owns this session.
-	parentJobActivity func(jobID, phase string)
+	// parentJobActivity reports parent-observable child progress for the stable
+	// delegate that owns this session.
+	parentJobActivity func(delegateID, phase string)
 
 	// descendantEvent reports every event emitted by this session to the root
 	// daemon. It is inherited unchanged by descendants, so one callback observes
@@ -516,23 +509,9 @@ type spawnConfig struct {
 	// session tree to the callback receiver.
 	parentSystemNotification func(receiverSessionID, message string) bool
 
-	// parentMarkCallerCallbackDelivered records that the current parent delegate
-	// job has already delivered a caller callback. Watch-origin delegate jobs use
-	// this to avoid a duplicate terminal owner notification after the callback.
-	parentMarkCallerCallbackDelivered func(jobID string)
-
-	// parentWatchGranted allows this child to install watches on its immediate
-	// parent through parentInstallWatch. It is non-transitive and does not grant
-	// delegate.
+	// parentWatchGranted allows this child to watch its immediate parent through
+	// the stable controller. It is non-transitive and does not grant delegate.
 	parentWatchGranted bool
-
-	// parentInstallWatch installs a source:"parent" watch on the live parent,
-	// owned by this child as watcher/receiver.
-	parentInstallWatch func(observerSessionID string, observerDelegateID string, args watchArgs) (watchResult, error)
-
-	// parentClearWatch clears a source:"parent" watch owned by this child from
-	// the live parent.
-	parentClearWatch func(observerSessionID string, observerDelegateID string, watchID string) (watchResult, error)
 
 	// subagentTask is the task description passed to delegate.
 	subagentTask string

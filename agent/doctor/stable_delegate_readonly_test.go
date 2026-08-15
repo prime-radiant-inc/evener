@@ -60,7 +60,7 @@ func TestDoctorStableDelegateReportsLegacyStateAndWatchFailures(t *testing.T) {
 	startedAt := time.Unix(100, 0).UTC()
 	legacyID := "job_legacy_delegate"
 	writeJobsEvents(t, jobsPath, []jobstore.Event{
-		{Kind: jobstore.EventJobStarted, JobID: legacyID, Type: jobstore.JobDelegate, DelegateID: "dlg_legacy", OwnerSessionID: sidA, VisibleToSession: sidA, StartedAt: &startedAt},
+		{Kind: jobstore.EventJobStarted, JobID: legacyID, Type: jobstore.JobType("delegate"), OwnerSessionID: sidA, VisibleToSession: sidA, StartedAt: &startedAt},
 		{Kind: jobstore.EventWatchRegistered, WatchID: "watch_legacy_delegate", Watch: &jobstore.WatchEvent{
 			Generation: "wg_legacy", OwnerSessionID: sidA, VisibleSessionID: sidA,
 			Target: legacyID, ConfigHash: "legacy-config",

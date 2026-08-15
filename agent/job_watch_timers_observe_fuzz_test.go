@@ -4,21 +4,18 @@ package agent
 
 import (
 	"errors"
-	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
-// FuzzWatchTimersObserveProgram covers watchdog termination and the observation
-// helpers with real managers and stores. The byte selects an independently
+// FuzzWatchTimersObserveProgram covers observation helpers with real managers
+// and stores. The byte selects an independently
 // reproducible scenario; the seeds ensure every scenario runs under -run.
 func FuzzWatchTimersObserveProgram(f *testing.F) {
-	for scenario := byte(0); scenario < 17; scenario++ {
+	for scenario := byte(0); scenario < 10; scenario++ {
 		f.Add(scenario)
 	}
 	f.Fuzz(func(t *testing.T, scenario byte) {
@@ -28,38 +25,18 @@ func FuzzWatchTimersObserveProgram(f *testing.F) {
 		}
 		t.Cleanup(func() { _ = jm.closeStoreOnly() })
 
-		switch scenario % 17 {
+		switch scenario % 10 {
 		case 0:
 			n := jm.watchNotificationFromWatch(nil, "job_nil", "nil config", nil)
 			if n.JobID != "job_nil" || n.Reason != "nil config" || n.Provenance != nil {
 				t.Fatalf("nil-config notification = %+v", n)
 			}
 		case 1:
-			jm.startQuietWatchdog("unused", nil)
-		case 2:
-			clk := agenttest.NewFakeClock()
-			jm.clock, jm.now = clk, clk.Now
-			jm.quietCheckInterval = time.Second
-			stop := make(chan struct{})
-			jm.startQuietWatchdog("missing", stop)
-			clk.BlockUntil(1)
-			clk.Advance(time.Second)
-			for spins := 0; clk.BlockedCount() != 0 && spins < 10_000; spins++ {
-				runtime.Gosched()
-			}
-			if clk.BlockedCount() != 0 {
-				t.Fatal("quiet watchdog did not stop after missing-job tick")
-			}
-		case 3:
-			if jm.fireQuietWatchdogTick("missing", time.Minute) {
-				t.Fatal("missing job kept watchdog alive")
-			}
-		case 4:
 			d := watchSendDelivery{message: "unchanged"}
 			if got := jm.snapshotWatchSendFrame(d); got.message != d.message || got.frame != "" {
 				t.Fatalf("nil-send snapshot changed delivery: %+v", got)
 			}
-		case 5:
+		case 2:
 			cfg, err := newWatchConfig(watchArgs{Target: "job_target", Send: &watchSendArgs{To: runtimeMessageAliasWatched}}, jm.now())
 			if err != nil {
 				t.Fatalf("new watch config: %v", err)
@@ -74,13 +51,13 @@ func FuzzWatchTimersObserveProgram(f *testing.F) {
 			if ok || (err != nil && !strings.Contains(err.Error(), "watched_unresolved")) {
 				t.Fatalf("unresolved watched send = (ok=%v, err=%v)", ok, err)
 			}
-		case 6:
+		case 3:
 			cfg := &watchConfig{watchID: "watch", generation: "generation"}
 			state := jm.watchSendState(watchSendDelivery{cfg: cfg}, runtimeMessageAliasCaller)
 			if state.DeliveryID == "" {
 				t.Fatal("watch send state did not mint delivery id")
 			}
-		case 10:
+		case 4:
 			notified := false
 			cfg := &watchConfig{
 				watchID:           "watch_receiver",
@@ -96,31 +73,18 @@ func FuzzWatchTimersObserveProgram(f *testing.F) {
 			if !notified {
 				t.Fatal("receiver notification callback did not run")
 			}
-		case 11:
-			clk := agenttest.NewFakeClock()
-			jm.clock, jm.now = clk, clk.Now
-			last := clk.Now()
-			jm.running["dlg_activity"] = &runningJob{rec: &jobstore.JobRecord{
-				JobID: "dlg_activity", Type: jobstore.JobDelegate, StartedAt: last.Add(-time.Hour), LastActivity: &last,
-			}}
-			if !jm.fireQuietWatchdogTick("dlg_activity", time.Minute) {
-				t.Fatal("running delegate stopped watchdog")
-			}
-			if jm.running["dlg_activity"].quietNotified {
-				t.Fatal("fresh LastActivity was ignored")
-			}
-		case 12:
+		case 5:
 			got := jm.snapshotWatchSendFrame(watchSendDelivery{
 				send: &watchSendArgs{Message: "observe"}, selfInfluence: true, gradientDepth: 2,
 			})
 			if !strings.HasPrefix(got.frame, "<system-reminder>") {
 				t.Fatalf("self-influence notice missing from frame: %q", got.frame)
 			}
-		case 13:
+		case 6:
 			if _, _, ok, err := jm.recordWatchSend(watchSendDelivery{}); ok || err != nil {
 				t.Fatalf("invalid delivery = (ok=%v, err=%v)", ok, err)
 			}
-		case 14:
+		case 7:
 			cfg, err := newWatchConfig(watchArgs{Target: "job_terminal", Send: &watchSendArgs{To: runtimeMessageAliasCaller}}, jm.now())
 			if err != nil {
 				t.Fatalf("new terminal config: %v", err)
@@ -137,7 +101,7 @@ func FuzzWatchTimersObserveProgram(f *testing.F) {
 			if cfg.pending == nil || len(cfg.pending) != 1 {
 				t.Fatalf("unpersisted terminal pending not retained: %+v", cfg.pending)
 			}
-		case 15:
+		case 8:
 			cfg, err := newWatchConfig(watchArgs{Target: "job_settled", Send: &watchSendArgs{To: runtimeMessageAliasCaller}}, jm.now())
 			if err != nil {
 				t.Fatalf("new settled config: %v", err)
@@ -151,7 +115,7 @@ func FuzzWatchTimersObserveProgram(f *testing.F) {
 			if _, _, ok, err := jm.recordWatchSend(d); ok || err != nil {
 				t.Fatalf("settled delivery = (ok=%v, err=%v)", ok, err)
 			}
-		case 16:
+		case 9:
 			cfg, err := newWatchConfig(watchArgs{Target: "job_runaway", Send: &watchSendArgs{To: runtimeMessageAliasCaller}}, jm.now())
 			if err != nil {
 				t.Fatalf("new runaway config: %v", err)

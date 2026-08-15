@@ -37,7 +37,6 @@ func TestDelegateResourceBootstrap_ChildInheritsControllerAndStableOwnerID(t *te
 
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "report the result",
-		Background:          true,
 		DelegationAllowance: 0,
 	})
 	if result.Err != nil {
@@ -63,7 +62,7 @@ func TestDelegateResourceBootstrap_LegacyDelegateStateFailsClosed(t *testing.T) 
 	appendLegacyBootstrapEvents(t, jobPath, jobstore.Event{
 		Kind:           jobstore.EventJobStarted,
 		JobID:          "job_legacy_delegate",
-		Type:           jobstore.JobDelegate,
+		Type:           jobstore.JobType(delegateResourceType),
 		OwnerSessionID: meta.ID,
 	})
 	wantBytes, err := os.ReadFile(jobPath)
@@ -89,7 +88,7 @@ func TestDelegateResourceBootstrap_LegacyDelegateWatchStateFailsClosed(t *testin
 		jobstore.Event{
 			Kind:           jobstore.EventJobStarted,
 			JobID:          "job_legacy_delegate",
-			Type:           jobstore.JobDelegate,
+			Type:           jobstore.JobType(delegateResourceType),
 			OwnerSessionID: meta.ID,
 		},
 		jobstore.Event{

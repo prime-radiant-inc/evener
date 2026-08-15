@@ -166,7 +166,7 @@ func TestDelegateRuntimeReclaim_CreateAndColdRestoreTriggerReclamation(t *testin
 			return nil
 		}
 
-		result := root.createDelegate(context.Background(), delegateArgs{Task: "admission reclaims first", Background: true})
+		result := root.createDelegate(context.Background(), delegateArgs{Task: "admission reclaims first"})
 		if !errors.Is(result.Err, wantErr) {
 			t.Fatalf("createDelegate error = %v, want post-reclamation construction fault", result.Err)
 		}

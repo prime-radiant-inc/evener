@@ -133,9 +133,8 @@ func TestLiveWorkUnder_LabelsRetainedIdleVsRunning(t *testing.T) {
 	}
 }
 
-// TestLiveShellsUnderTree_FiltersByPathAndType confirms the walk excludes a
-// grandchild shell rooted OUTSIDE the target path and ignores delegate job
-// records (shell-only), so it neither over- nor under-reports.
+// TestLiveShellsUnderTree_FiltersByPath confirms the walk excludes a grandchild
+// shell rooted outside the target path.
 func TestLiveShellsUnderTree_FiltersByPathAndType(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
@@ -155,22 +154,6 @@ func TestLiveShellsUnderTree_FiltersByPathAndType(t *testing.T) {
 	inLane := injectRunningShell(t, child, "job_in_lane", lane)
 	injectRunningShell(t, child, "job_outside", outside)
 
-	// A delegate job record under the lane must NOT be picked up (shell-only).
-	jm := child.jobManager
-	jm.mu.Lock()
-	jm.running["job_dlg"] = &runningJob{rec: &jobstore.JobRecord{
-		JobID:           "job_dlg",
-		Type:            jobstore.JobDelegate,
-		Status:          jobstore.StatusRunning,
-		DelegateRestore: &jobstore.DelegateRestoreDescriptor{WorkingDir: lane},
-	}}
-	jm.mu.Unlock()
-	t.Cleanup(func() {
-		jm.mu.Lock()
-		delete(jm.running, "job_dlg")
-		jm.mu.Unlock()
-	})
-
 	live := parent.liveShellsUnderTree(lane)
 	joined := strings.Join(live, ", ")
 	if !strings.Contains(joined, inLane) {
@@ -178,8 +161,5 @@ func TestLiveShellsUnderTree_FiltersByPathAndType(t *testing.T) {
 	}
 	if strings.Contains(joined, "job_outside") {
 		t.Errorf("outside-lane shell should be filtered, got %v", live)
-	}
-	if strings.Contains(joined, "job_dlg") {
-		t.Errorf("delegate job record must not appear in a shell-only walk, got %v", live)
 	}
 }

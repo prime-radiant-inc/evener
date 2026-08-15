@@ -45,6 +45,19 @@ func task7LocalSession(t *testing.T) (*Session, string) {
 	return s, workspace
 }
 
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	unique := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		unique = append(unique, value)
+	}
+	return unique
+}
+
 func task7ExecTool(t *testing.T, s *Session, name string, args map[string]any) tool.ExecResult {
 	t.Helper()
 	raw, err := json.Marshal(args)
@@ -118,7 +131,7 @@ func TestRecoverableGrepReceiptReplayEndToEnd(t *testing.T) {
 	for _, match := range receiptPattern.FindAllStringSubmatch(grep.Output, -1) {
 		receiptOccurrences = append(receiptOccurrences, match[1])
 	}
-	receipts := compactToolNames(receiptOccurrences)
+	receipts := uniqueStrings(receiptOccurrences)
 	if len(receipts) != 1 {
 		t.Fatalf("grep unique receipt count = %d from %d occurrences, want exactly one; output tail=%q", len(receipts), len(receiptOccurrences), grep.Output[max(0, len(grep.Output)-500):])
 	}

@@ -412,8 +412,7 @@ func projectJobStatusInfos(records []*jobstore.JobRecord) []JobStatusInfo {
 			Reason:           rec.Reason,
 			ExhaustionBudget: rec.ExhaustionBudget,
 			ExhaustionLimit:  rec.ExhaustionLimit,
-			Resumable:        rec.Resumable,
-			TranscriptRef:    rec.TranscriptRef,
+			TranscriptRef:    jobTranscriptRef(rec),
 			OutputBytes:      rec.OutputBytes,
 			ExitCode:         rec.ExitCode,
 		})

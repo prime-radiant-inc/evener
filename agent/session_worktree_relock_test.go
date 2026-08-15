@@ -8,7 +8,6 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/worktree"
 )
 
@@ -21,17 +20,6 @@ import (
 // The subject throughout is serf's lock DECISION — re-lock, adopt, skip, leave
 // foreign alone, warn, retry — not git's behavior, so these run on the scripted
 // git boundary (scriptedLaneRepo). See docs/testing.md for the rule.
-
-func (r *wtRepo) appendDisposed(t *testing.T, delegateID string) {
-	t.Helper()
-	if err := r.s.jobManager.appendEvent(jobstore.Event{
-		Kind:       jobstore.EventDelegateDisposed,
-		TS:         time.Now().UTC(),
-		DelegateID: delegateID,
-	}); err != nil {
-		t.Fatalf("append disposed: %v", err)
-	}
-}
 
 func TestResumeReLock_UnlockedOwnLaneReLocked(t *testing.T) {
 	t.Parallel()
@@ -57,40 +45,22 @@ func TestResumeReLock_UnlockedOwnLaneReLocked(t *testing.T) {
 	}
 }
 
-// TestResumeReLock_RevivalAdoptsReLockedLane (spec test 30): after resume
-// re-locks its own lane, delegate revival classifies it OwnDelegate → adopt (a
-// no-op), never a foreign refusal. Verifies the existing lock core, unchanged.
-func TestResumeReLock_RevivalAdoptsReLockedLane(t *testing.T) {
+// TestResumeReLock_NonResumableLaneNotReLocked (spec test 30): a lane with
+// closed stable resumability is skipped by resume re-lock.
+func TestResumeReLock_NonResumableLaneNotReLocked(t *testing.T) {
 	t.Parallel()
 	r := newScriptedLaneRepo(t)
 	id, path := r.seedIsolationLane(t)
 	r.unlockLane(t, path)
-	r.s.resumeReLockOwnLanes()
-
-	if err := r.s.reacquireDelegateWorktreeLock(path, id); err != nil {
-		t.Fatalf("revival refused a resume-re-locked own lane: %v", err)
+	if err := r.s.prepareStableLaneDisposal(id); err != nil {
+		t.Fatalf("close stable resumability: %v", err)
 	}
-	_, locked, reason := r.laneLocked(t, path)
-	if !locked || reason != worktree.FormatDelegateMarker(id, r.s.ID()) {
-		t.Errorf("revival adopt changed the lock (locked=%t reason=%q)", locked, reason)
-	}
-}
-
-// TestResumeReLock_DisposedLaneNotReLocked (spec test 30): a Disposed record is
-// skipped — resume re-lock never touches a lane whose worktree was already
-// removed.
-func TestResumeReLock_DisposedLaneNotReLocked(t *testing.T) {
-	t.Parallel()
-	r := newScriptedLaneRepo(t)
-	id, path := r.seedIsolationLane(t)
-	r.unlockLane(t, path)
-	r.appendDisposed(t, id)
 
 	r.s.resumeReLockOwnLanes()
 
 	_, locked, _ := r.laneLocked(t, path)
 	if locked {
-		t.Error("resume re-locked a Disposed lane")
+		t.Error("resume re-locked a non-resumable lane")
 	}
 }
 

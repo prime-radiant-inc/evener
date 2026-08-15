@@ -47,49 +47,40 @@ func TestReadTranscriptLocalJobOwnerAndForeignSnapshots(t *testing.T) {
 		{name: "descendant", stateDir: current, owner: descendantSessionID},
 		{name: "foreign", stateDir: foreign, owner: foreignSessionID},
 	} {
-		for _, jobType := range []jobstore.JobType{jobstore.JobShell, jobstore.JobDelegate} {
-			for _, terminal := range []bool{false, true} {
-				name := fmt.Sprintf("%s/%s/terminal=%t", scope.name, jobType, terminal)
-				t.Run(name, func(t *testing.T) {
-					jobID := identifier.MustNewJobID(scope.owner)
-					marker := "MARKER " + name + "\n"
-					var structured map[string]any
-					if jobType == jobstore.JobDelegate && terminal {
-						structured = map[string]any{"verdict": "clean"}
-					}
-					seedLocalJobRecord(t, scope.stateDir, scope.owner, jobID, "/untrusted/decoy.log", marker, maxJobOutputRetentionBytes, jobType, terminal, int64(len(marker)), structured)
+		for _, terminal := range []bool{false, true} {
+			name := fmt.Sprintf("%s/terminal=%t", scope.name, terminal)
+			t.Run(name, func(t *testing.T) {
+				jobID := identifier.MustNewJobID(scope.owner)
+				marker := "MARKER " + name + "\n"
+				seedLocalJobRecord(t, scope.stateDir, scope.owner, jobID, "/untrusted/decoy.log", marker, maxJobOutputRetentionBytes, terminal, int64(len(marker)), nil)
 
-					envelope, err := readLocalJobTranscriptForTest(t, current, callerSessionID, jobID)
-					if err != nil {
-						t.Fatalf("read local job: %v", err)
+				envelope, err := readLocalJobTranscriptForTest(t, current, callerSessionID, jobID)
+				if err != nil {
+					t.Fatalf("read local job: %v", err)
+				}
+				for _, want := range []string{
+					jobID,
+					marker,
+					fmt.Sprintf("total_bytes: %d", len(marker)),
+				} {
+					if !strings.Contains(envelope.Content, want) {
+						t.Fatalf("content = %q, want %q", envelope.Content, want)
 					}
-					for _, want := range []string{
-						jobID,
-						marker,
-						fmt.Sprintf("total_bytes: %d", len(marker)),
-					} {
-						if !strings.Contains(envelope.Content, want) {
-							t.Fatalf("content = %q, want %q", envelope.Content, want)
-						}
+				}
+				wantStatus := "status: running"
+				if terminal {
+					wantStatus = "status: completed"
+					if !strings.Contains(envelope.Content, "reason: exit_zero") {
+						t.Fatalf("terminal content = %q, want durable reason", envelope.Content)
 					}
-					wantStatus := "status: running"
-					if terminal {
-						wantStatus = "status: completed"
-						if !strings.Contains(envelope.Content, "reason: exit_zero") {
-							t.Fatalf("terminal content = %q, want durable reason", envelope.Content)
-						}
-					}
-					if !strings.Contains(envelope.Content, wantStatus) {
-						t.Fatalf("content = %q, want %q", envelope.Content, wantStatus)
-					}
-					if jobType == jobstore.JobDelegate && terminal && !strings.Contains(envelope.Content, `structured_result (valid=true): {"verdict":"clean"}`) {
-						t.Fatalf("delegate content = %q, want structured result", envelope.Content)
-					}
-					if envelope.TranscriptRef != "job:"+jobID || envelope.Meta.Range != "shell-log" || envelope.Meta.Truncated {
-						t.Fatalf("envelope = %+v", envelope)
-					}
-				})
-			}
+				}
+				if !strings.Contains(envelope.Content, wantStatus) {
+					t.Fatalf("content = %q, want %q", envelope.Content, wantStatus)
+				}
+				if envelope.TranscriptRef != "job:"+jobID || envelope.Meta.Range != "shell-log" || envelope.Meta.Truncated {
+					t.Fatalf("envelope = %+v", envelope)
+				}
+			})
 		}
 	}
 }
@@ -128,13 +119,11 @@ func TestForeignTranscriptReadDoesNotBroadenJobTools(t *testing.T) {
 	caller := newSession(t, withConfig(SessionConfig{StateDir: current, MaxSubagentDepth: 1}))
 	foreignOwner := identifier.MustNewSessionID()
 	foreignJobID := identifier.MustNewJobID(foreignOwner)
-	seedLocalJobRecord(t, foreign, foreignOwner, foreignJobID, "/untrusted/decoy.log", "FOREIGN_MARKER\n", maxJobOutputRetentionBytes, jobstore.JobDelegate, false, 0, nil)
-	location, found, err := findLocalJobInProject(foreign, foreignOwner, foreignJobID)
+	seedLocalJobRecord(t, foreign, foreignOwner, foreignJobID, "/untrusted/decoy.log", "FOREIGN_MARKER\n", maxJobOutputRetentionBytes, false, 0, nil)
+	_, found, err := findLocalJobInProject(foreign, foreignOwner, foreignJobID)
 	if err != nil || !found {
 		t.Fatalf("load foreign fixture: found=%t err=%v", found, err)
 	}
-	foreignDelegateID := location.Record.DelegateID
-
 	value, err := execReadTranscript(&toolDeps{
 		stateDir:  current,
 		sessionID: caller.ID(),
@@ -152,15 +141,15 @@ func TestForeignTranscriptReadDoesNotBroadenJobTools(t *testing.T) {
 		t.Fatalf("job_list: %v", err)
 	}
 	listed := listedValue.(tool.StateResult).State.(jobListResult)
-	for _, job := range listed.Jobs {
+	for _, job := range listed.Items {
 		if job.JobID == foreignJobID {
 			t.Fatalf("job_list disclosed foreign job %q", foreignJobID)
 		}
 	}
-	if _, err := jobStatusTool(caller, map[string]any{"job_id": foreignJobID}, jobToolResultDefaultMaxChar); !isJobNotFoundErr(err) {
+	if _, err := jobStatusTool(caller, map[string]any{"target": foreignJobID}, jobToolResultDefaultMaxChar); !isJobNotFoundErr(err) {
 		t.Fatalf("job_status error = %v, want scoped not found", err)
 	}
-	if _, err := jobStopTool(context.Background(), caller, map[string]any{"job_id": foreignJobID}, jobToolResultDefaultMaxChar); !isJobNotFoundErr(err) {
+	if _, err := jobStopTool(context.Background(), caller, map[string]any{"target": foreignJobID}, jobToolResultDefaultMaxChar); !isJobNotFoundErr(err) {
 		t.Fatalf("job_stop error = %v, want scoped not found", err)
 	}
 	if _, err := jobWatchTool(caller, map[string]any{
@@ -168,11 +157,6 @@ func TestForeignTranscriptReadDoesNotBroadenJobTools(t *testing.T) {
 		"events": []any{"job.notification"},
 	}, jobToolResultDefaultMaxChar); err == nil {
 		t.Fatal("job_watch accepted foreign source")
-	}
-	if _, err := delegateSendTool(context.Background(), caller, map[string]any{
-		"to": foreignDelegateID, "message": "ping",
-	}, jobToolResultDefaultMaxChar); err == nil {
-		t.Fatal("delegate_send accepted foreign delegate")
 	}
 }
 
@@ -193,7 +177,7 @@ func TestReadTranscriptLocalJobOwnerAndForeignRetainedMetadata(t *testing.T) {
 		t.Run(scope.name, func(t *testing.T) {
 			const output = "DROP_ME:RETAINED"
 			jobID := identifier.MustNewJobID(scope.owner)
-			seedLocalJobRecord(t, scope.stateDir, scope.owner, jobID, "/untrusted/decoy.log", output, int64(len("RETAINED")), jobstore.JobShell, true, int64(len(output)), nil)
+			seedLocalJobRecord(t, scope.stateDir, scope.owner, jobID, "/untrusted/decoy.log", output, int64(len("RETAINED")), true, int64(len(output)), nil)
 
 			envelope, err := readLocalJobTranscriptForTest(t, current, callerSessionID, jobID)
 			if err != nil {
@@ -340,7 +324,7 @@ func TestReadTranscriptJobRawPageRunningAppendContinuation(t *testing.T) {
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
 	initial := strings.Repeat("x", retainedOutputPageBytes) + "before"
-	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", initial, maxJobOutputRetentionBytes, jobstore.JobShell, false, 0, nil)
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", initial, maxJobOutputRetentionBytes, false, 0, nil)
 	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
 
 	first := execRead(t, deps, map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": float64(0)})
@@ -374,7 +358,7 @@ func TestReadTranscriptJobContinuationOutrunByPruning(t *testing.T) {
 	jobID := identifier.MustNewJobID(owner)
 	const retention = int64(20 << 10)
 	initial := strings.Repeat("a", int(retention))
-	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", initial, retention, jobstore.JobShell, false, 0, nil)
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", initial, retention, false, 0, nil)
 	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
 	first := execRead(t, deps, map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": float64(0)})
 	continuation := first["continuation"].(map[string]any)["offset_bytes"]
@@ -391,7 +375,7 @@ func TestReadTranscriptJobSearchDefersRunningEOFThenMatchesAfterAppend(t *testin
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
 	const output = "head\nneedle"
-	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, maxJobOutputRetentionBytes, jobstore.JobShell, false, 0, nil)
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, maxJobOutputRetentionBytes, false, 0, nil)
 	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
 
 	deferred := execRead(t, deps, map[string]any{"transcript_ref": "job:" + jobID, "output_match": "needle"})
@@ -421,7 +405,7 @@ func TestReadTranscriptJobSearchEvaluatesTerminalUnterminatedEOF(t *testing.T) {
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
 	const output = "head\nneedle"
-	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, maxJobOutputRetentionBytes, jobstore.JobShell, true, int64(len(output)), nil)
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, maxJobOutputRetentionBytes, true, int64(len(output)), nil)
 	search := execRead(t, &toolDeps{stateDir: stateDir, sessionID: owner}, map[string]any{"transcript_ref": "job:" + jobID, "output_match": "needle"})
 	requireMatch(t, search, int64(len("head\n")), nil, "needle", nil)
 	if search["job_status"] != "terminal" || search["search_complete"] != true {
@@ -459,7 +443,7 @@ func TestReadTranscriptJobSearchPruneBoundaryHonesty(t *testing.T) {
 			stateDir := t.TempDir()
 			owner := identifier.MustNewSessionID()
 			jobID := identifier.MustNewJobID(owner)
-			seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", tc.output, tc.retention, jobstore.JobShell, true, int64(len(tc.output)), nil)
+			seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", tc.output, tc.retention, true, int64(len(tc.output)), nil)
 
 			search := execRead(t, &toolDeps{stateDir: stateDir, sessionID: owner}, map[string]any{
 				"transcript_ref": "job:" + jobID,
@@ -485,7 +469,7 @@ func TestReadTranscriptJobPageAndSearchRetainedFailuresArePathFree(t *testing.T)
 	stateDir := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
-	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, jobstore.JobShell, true, int64(len("ready\n")), nil)
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
 	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
 	outputPath := filepath.Join(jobsDir(stateDir, owner), "jobs", jobID+".log")
 
@@ -550,7 +534,7 @@ func TestReadTranscriptJobPageAndSearchValidation(t *testing.T) {
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
 	const output = "line\n"
-	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, maxJobOutputRetentionBytes, jobstore.JobShell, false, 0, nil)
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, maxJobOutputRetentionBytes, false, 0, nil)
 	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
 	tests := []struct {
 		name string
@@ -586,7 +570,7 @@ func TestReadTranscriptJobOffsetBeforeRetentionReportsFirstAvailable(t *testing.
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
 	const output = "DROP_ME:RETAINED"
-	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, int64(len("RETAINED")), jobstore.JobShell, true, int64(len(output)), nil)
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, int64(len("RETAINED")), true, int64(len(output)), nil)
 	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
 	_, err := execReadTranscript(deps, map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": float64(0)})
 	if err == nil || !strings.Contains(err.Error(), "output_unavailable") || !strings.Contains(err.Error(), "first available offset is 8") {
@@ -596,24 +580,5 @@ func TestReadTranscriptJobOffsetBeforeRetentionReportsFirstAvailable(t *testing.
 	requirePage(t, page, 8, "RETAINED")
 	if page["retained_start_bytes"] != float64(8) || page["job_status"] != "terminal" {
 		t.Fatalf("retained page = %#v", page)
-	}
-}
-
-func TestReadTranscriptDelegateMarkdownCompatibilityAndRawIsolation(t *testing.T) {
-	stateDir := t.TempDir()
-	owner := identifier.MustNewSessionID()
-	jobID := identifier.MustNewJobID(owner)
-	const report = "delegate report\n"
-	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", report, maxJobOutputRetentionBytes, jobstore.JobDelegate, true, int64(len(report)), map[string]any{"verdict": "clean"})
-	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
-
-	markdown, err := readLocalJobTranscriptForTest(t, stateDir, owner, jobID)
-	if err != nil || !strings.Contains(markdown.Content, report) || !strings.Contains(markdown.Content, `structured_result (valid=true): {"verdict":"clean"}`) {
-		t.Fatalf("delegate markdown compatibility: envelope=%#v err=%v", markdown, err)
-	}
-	raw := execRead(t, deps, map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": float64(0)})
-	requirePage(t, raw, 0, report)
-	if strings.Contains(raw["page"].(map[string]any)["data"].(string), "structured_result") {
-		t.Fatalf("raw delegate output synthesized structured result: %#v", raw)
 	}
 }

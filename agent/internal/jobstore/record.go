@@ -12,8 +12,7 @@ import (
 type JobType string
 
 const (
-	JobShell    JobType = "shell"
-	JobDelegate JobType = "delegate"
+	JobShell JobType = "shell"
 )
 
 // Status identifies the lifecycle state of a job.
@@ -52,104 +51,6 @@ const (
 	// serf-doctor keep saying which of the two actually happened.
 	NotifyConsumed NotifyState = "consumed"
 )
-
-// DelegateStatus identifies the lifecycle state of a durable delegate handle.
-type DelegateStatus string
-
-const (
-	DelegateRunning      DelegateStatus = "running"
-	DelegateDriving      DelegateStatus = "driving"
-	DelegateIdle         DelegateStatus = "idle"
-	DelegateStopped      DelegateStatus = "stopped"
-	DelegateNotResumable DelegateStatus = "not_resumable"
-)
-
-// DelegateRestoreDescriptor carries the durable state needed to restore a delegate job.
-type DelegateRestoreDescriptor struct {
-	Version             int      `json:"version"`
-	ChildSessionID      string   `json:"child_session_id"`
-	TranscriptRef       string   `json:"transcript_ref"`
-	ParentSessionID     string   `json:"parent_session_id,omitempty"`
-	ParentJobID         string   `json:"parent_job_id,omitempty"`
-	OwnerSessionID      string   `json:"owner_session_id,omitempty"`
-	VisibleSessionID    string   `json:"visible_session_id,omitempty"`
-	OriginTurnID        string   `json:"origin_turn_id,omitempty"`
-	OriginToolCallID    string   `json:"origin_tool_call_id,omitempty"`
-	OriginItemID        string   `json:"origin_item_id,omitempty"`
-	Task                string   `json:"task,omitempty"`
-	AgentType           string   `json:"agent_type,omitempty"`
-	RequestedModel      string   `json:"requested_model,omitempty"`
-	ResolvedProfileID   string   `json:"resolved_profile_id,omitempty"`
-	ResolvedModel       string   `json:"resolved_model,omitempty"`
-	ReasoningEffort     string   `json:"reasoning_effort,omitempty"`
-	AgentName           string   `json:"agent_name,omitempty"`
-	FrozenRolePrompt    string   `json:"frozen_role_prompt,omitempty"`
-	FrozenTaskPrompt    string   `json:"frozen_task_prompt,omitempty"`
-	FrozenToolNames     []string `json:"frozen_tool_names,omitempty"`
-	FrozenSkillNames    []string `json:"frozen_skill_names,omitempty"`
-	FrozenSkillBodies   []string `json:"frozen_skill_bodies,omitempty"`
-	WorkingDir          string   `json:"working_dir,omitempty"`
-	LocalEnvPolicy      string   `json:"local_env_policy,omitempty"`
-	ResultSchema        any      `json:"result_schema,omitempty"`
-	ExplicitToolGrants  []string `json:"explicit_tool_grants,omitempty"`
-	DelegationAllowance int      `json:"delegation_allowance,omitempty"`
-	ParentWatchGranted  bool     `json:"parent_watch_granted,omitempty"`
-	// Isolation is "worktree" when this delegate was spawned with
-	// delegate(isolation:"worktree") — WorkingDir then points at the
-	// delegate's own managed worktree lane rather than the parent's plain
-	// cwd (native worktree tools spec §9 lifecycle step 1). Both the spawn
-	// path and the restore path (session_init.go) key the unconditional
-	// manage_worktree deny off this field; empty for an ordinary delegate.
-	Isolation  string             `json:"isolation,omitempty"`
-	Provenance *provenance.Causal `json:"provenance,omitempty"`
-	// Sandbox is the delegate's sandbox policy INPUTS (mode/net/denylist-deltas/
-	// extra-roots), captured at spawn and persisted so a resumed delegate can
-	// RE-RESOLVE its confinement against its own worktree lane plus freshly-probed
-	// host facts on restore — never the worktree-anchored resolved roots (a config
-	// that loosened between serf runs must not widen a live delegate's box). nil for
-	// an unsandboxed (off) delegate, so its descriptor is byte-identical to today.
-	Sandbox *SandboxSnapshot `json:"sandbox,omitempty"`
-}
-
-// SandboxSnapshot is the durable, live-type-decoupled mirror of a delegate's
-// sandbox policy INPUTS (the WatchConfigSnapshot house pattern): the mode name,
-// the network tri-state, and the user denylist/root extensions. It carries
-// serializable inputs, NOT resolved roots — restore re-resolves it against the
-// delegate's lane and re-probed host facts, honoring the immutable-across-restart
-// guarantee. An off delegate persists no snapshot.
-type SandboxSnapshot struct {
-	Mode               string   `json:"mode"`
-	Network            *bool    `json:"network,omitempty"`
-	DenylistAdd        []string `json:"denylist_add,omitempty"`
-	DenylistRemove     []string `json:"denylist_remove,omitempty"`
-	ExtraWritableRoots []string `json:"extra_writable_roots,omitempty"`
-	ExtraReadRoots     []string `json:"extra_read_roots,omitempty"`
-}
-
-// DelegateRecord is the folded durable state for a delegate handle.
-type DelegateRecord struct {
-	DelegateID          string         `json:"delegate_id"`
-	ChildSessionID      string         `json:"child_session_id"`
-	TranscriptRef       string         `json:"transcript_ref"`
-	OwnerSessionID      string         `json:"owner_session_id,omitempty"`
-	VisibleSessionID    string         `json:"visible_session_id,omitempty"`
-	ParentDelegateID    string         `json:"parent_delegate_id,omitempty"`
-	AgentType           string         `json:"agent_type,omitempty"`
-	Status              DelegateStatus `json:"status"`
-	Resumable           bool           `json:"resumable"`
-	NotResumableWhy     string         `json:"not_resumable_reason,omitempty"`
-	CurrentJobID        string         `json:"current_job_id,omitempty"`
-	LatestJobID         string         `json:"latest_job_id,omitempty"`
-	Generation          string         `json:"generation,omitempty"`
-	StopGateClosed      bool           `json:"stop_gate_closed,omitempty"`
-	StopGateClosedJobID string         `json:"stop_gate_closed_job_id,omitempty"`
-	// Disposed is set when this delegate's isolation worktree lane was disposed
-	// mid-life or at its creator session's close (delegate-lane disposal spec §P1).
-	// It is additive and monotonic: folded from a delegate_disposed event keyed by
-	// delegate id, no event un-disposes a delegate. Consumers (doctor tree, job
-	// listing) treat a disposed delegate as non-resumable.
-	Disposed bool `json:"disposed,omitempty"`
-}
 
 type WatchRecord struct {
 	WatchID                  string `json:"watch_id"`
@@ -225,14 +126,12 @@ type WatchSendState struct {
 	TriggerIdentity          string             `json:"trigger_identity,omitempty"`
 	TriggerReason            string             `json:"trigger_reason,omitempty"`
 	CoalescedCount           int                `json:"coalesced_count,omitempty"`
-	DelegateGeneration       string             `json:"delegate_generation,omitempty"`
 	ReceiverSessionID        string             `json:"receiver_session_id,omitempty"`
 	ReceiverDelegateID       string             `json:"receiver_delegate_id,omitempty"`
 	SourceDelegateID         string             `json:"source_delegate_id,omitempty"`
 	SourceDelegateGeneration uint64             `json:"source_delegate_generation,omitempty"`
 	StableReceiver           bool               `json:"stable_receiver,omitempty"`
 	NotificationJobID        string             `json:"notification_job_id,omitempty"`
-	NotificationDelegateID   string             `json:"notification_delegate_id,omitempty"`
 	DiagnosticReason         string             `json:"diagnostic_reason,omitempty"`
 	SelfInfluenceDepth       int                `json:"self_influence_depth,omitempty"`
 	CreatedAt                time.Time          `json:"created_at"`
@@ -273,34 +172,20 @@ type JobRecord struct {
 	// tool call started it, but the shell tool's optional `cwd` argument lets
 	// the model choose a different (validated, sandbox-confined) starting
 	// directory instead — so this may be model-chosen, not just inherited.
-	// Empty for delegate jobs, which record their working dir in
-	// DelegateRestore.WorkingDir instead. Best-effort either way: a command
+	// Best-effort: a command
 	// that itself `cd`s elsewhere after launch (e.g. `cd elsewhere && foo`) is
 	// invisible to it — only the initial value is tracked.
-	WorkingDir       string                     `json:"working_dir,omitempty"`
-	Task             string                     `json:"task,omitempty"`
-	ParentSessionID  string                     `json:"parent_session_id,omitempty"`
-	OwnerSessionID   string                     `json:"owner_session_id"`
-	VisibleToSession string                     `json:"visible_to_session_id"`
-	ParentJobID      string                     `json:"parent_job_id,omitempty"`
-	ParentDelegateID string                     `json:"parent_delegate_id,omitempty"`
-	DelegateID       string                     `json:"delegate_id,omitempty"`
-	OriginTurnID     string                     `json:"origin_turn_id,omitempty"`
-	OriginToolCallID string                     `json:"origin_tool_call_id,omitempty"`
-	OriginItemID     string                     `json:"origin_item_id,omitempty"`
-	DelegateRestore  *DelegateRestoreDescriptor `json:"delegate_restore,omitempty"`
-	TranscriptRef    string                     `json:"transcript_ref,omitempty"`
-	Resumable        *bool                      `json:"resumable,omitempty"`
-	NotResumableWhy  string                     `json:"not_resumable_reason,omitempty"`
-	// Disposed is set when this delegate's isolation worktree lane was disposed
-	// at its creator session's close (native worktree tools spec §9 step 4-5).
-	// assessDelegateResumability treats a disposed delegate as not-resumable so
-	// delegate_send cannot revive the child into a removed lane. Folded from a
-	// delegate_disposed event keyed by delegate id, so every job record for the
-	// delegate — across resumes — carries it, independent of which job the
-	// resumability check happens to resolve.
-	Disposed  bool      `json:"disposed,omitempty"`
-	StartedAt time.Time `json:"started_at"`
+	WorkingDir       string    `json:"working_dir,omitempty"`
+	Task             string    `json:"task,omitempty"`
+	ParentSessionID  string    `json:"parent_session_id,omitempty"`
+	OwnerSessionID   string    `json:"owner_session_id"`
+	VisibleToSession string    `json:"visible_to_session_id"`
+	ParentJobID      string    `json:"parent_job_id,omitempty"`
+	ParentDelegateID string    `json:"parent_delegate_id,omitempty"`
+	OriginTurnID     string    `json:"origin_turn_id,omitempty"`
+	OriginToolCallID string    `json:"origin_tool_call_id,omitempty"`
+	OriginItemID     string    `json:"origin_item_id,omitempty"`
+	StartedAt        time.Time `json:"started_at"`
 	// Phase is the running job's finer-grained supervision state (starting,
 	// process_running, awaiting_model, model_streaming, tool_running),
 	// restamped as the runtime observes activity. No event carries it, so a
@@ -328,14 +213,6 @@ type JobRecord struct {
 
 func NewJobID(ownerSessionID string) string {
 	return identifier.MustNewJobID(ownerSessionID)
-}
-
-func NewDelegateID() string {
-	return identifier.MustNewDelegateID()
-}
-
-func NewDelegateGeneration() string {
-	return identifier.MustNewDelegateGeneration()
 }
 
 func NewWatchID() string {

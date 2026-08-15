@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provenance"
 )
@@ -279,14 +280,6 @@ type watchSendArgs struct {
 	IncludeExcerpt bool
 }
 
-type watchSendDeliveryClass int
-
-const (
-	watchSendDelivered watchSendDeliveryClass = iota
-	watchSendBusy
-	watchSendHardFailure
-)
-
 type watchResult struct {
 	WatchID            string
 	Source             string
@@ -330,7 +323,6 @@ type watchSendDelivery struct {
 	watchedIdentity          string
 	trigger                  string
 	triggerProvenance        *provenance.Causal
-	delegateGeneration       string
 	// provenance is the delivery's causal chain: the triggering event's
 	// provenance extended with this watch's own (watch_id, generation) key and a
 	// chain entry naming this delivery. Persisted onto the pending WatchSendState
@@ -549,7 +541,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	if err := normalizeWatchArgs(&a); err != nil {
 		return watchResult{}, err
 	}
-	applyReceiverWatchSend(&a)
+	applyStableReceiverWatchSend(&a)
 	sendTo := ""
 	if a.Send != nil && !a.ReceiverSendInternal {
 		a.Send.To = strings.TrimSpace(a.Send.To)
@@ -625,11 +617,6 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	if err != nil {
 		return watchResult{}, err
 	}
-	// Stamp the observer UI relationship when the watch is installed. It confers
-	// no read capability and must exist from the moment
-	// the sidecar is installed — a worker can run a long time before its first
-	// matching event, and the hub should show its observer for all of it.
-	jm.stampObserverLinkAtInstall(cfg)
 	jm.mu.Lock()
 	if !isWatchSessionTarget(key.Target) && !isWatchableConcreteJobLocked(jm.running[key.Target]) {
 		jm.mu.Unlock()
@@ -912,24 +899,10 @@ func (jm *jobManager) terminalWatchTargetStatus(target string) (status jobstore.
 }
 
 func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error {
-	r := watchSendTargetResolver{
-		sessionID:     jm.sessionID,
-		hasJobManager: true,
-		loadDelegates: jm.store.LoadDelegates,
-		findJobRecord: func(jobID string) (*jobstore.JobRecord, error) {
-			return findJobRecord(jm, jobID)
-		},
-	}
-	return validateWatchSendDeliveryTarget(target, a, r)
+	return validateWatchSendDeliveryTarget(target, a)
 }
 
-// validateWatchSendDeliveryTarget is the pure install-time validation decision
-// tree for an internal watch-send delivery target. It reads only its arguments
-// and the resolver's injected lookups; it touches no lock and no store directly.
-// It is the install-time twin of the restore-time classifyWatchSendDeliveryTarget
-// and shares its dlg_ branch shape. Every target yields nil or a non-empty typed
-// error.
-func validateWatchSendDeliveryTarget(target string, _ watchArgs, r watchSendTargetResolver) error {
+func validateWatchSendDeliveryTarget(target string, _ watchArgs) error {
 	if target == "" {
 		return errors.New("invalid_request: internal watch delivery target is required")
 	}
@@ -944,44 +917,7 @@ func validateWatchSendDeliveryTarget(target string, _ watchArgs, r watchSendTarg
 	if strings.HasPrefix(target, "job_") {
 		return errors.New("invalid_request: job_id is a job/turn handle; internal watch delivery targets delegate_id")
 	}
-	if !strings.HasPrefix(target, "dlg_") {
-		return watchTargetNotFoundError(target)
-	}
-	delegates, err := r.loadDelegates()
-	if err != nil {
-		return err
-	}
-	d := delegates[target]
-	if d == nil {
-		return fmt.Errorf("target_not_found: delegate %q not found", target)
-	}
-	if d.OwnerSessionID != "" && d.OwnerSessionID != r.sessionID {
-		return fmt.Errorf("not_controllable: delegate %q is not owned by this session", target)
-	}
-	jobID := d.CurrentJobID
-	if jobID == "" {
-		jobID = d.LatestJobID
-	}
-	if jobID == "" {
-		return fmt.Errorf("target_not_resumable: delegate %q has no job history", target)
-	}
-	rec, err := r.findJobRecord(jobID)
-	if err != nil {
-		return fmt.Errorf("target_not_found: %w", err)
-	}
-	if rec.OwnerSessionID != "" && rec.OwnerSessionID != r.sessionID {
-		return fmt.Errorf("not_controllable: delegate job %q is owned by descendant session %q; you may only message your own direct delegates", target, rec.OwnerSessionID)
-	}
-	if rec.Type != jobstore.JobDelegate {
-		return fmt.Errorf("target_not_messageable: job %q has type %q", target, rec.Type)
-	}
-	if d.Status == jobstore.DelegateNotResumable || !d.Resumable {
-		return fmt.Errorf("target_not_resumable: delegate %q is %s", target, d.Status)
-	}
-	if rec.Status.IsTerminal() && (rec.Resumable == nil || !*rec.Resumable) {
-		return fmt.Errorf("target_not_resumable: delegate job %q is %s", jobID, rec.Status)
-	}
-	return nil
+	return watchTargetNotFoundError(target)
 }
 
 func isWatchableConcreteJobLocked(run *runningJob) bool {
@@ -1012,7 +948,7 @@ func isWatchSessionTarget(target string) bool {
 }
 
 func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
-	applyReceiverWatchSend(&a)
+	applyStableReceiverWatchSend(&a)
 	sourceDelegateID := stableWatchSourceID(a)
 	eventKinds, wildcardEvents := resolveEventKinds(a.Events)
 	watchID := jobstore.NewWatchID()
@@ -1053,23 +989,18 @@ func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 	return cfg, nil
 }
 
-func applyReceiverWatchSend(a *watchArgs) {
+func applyStableReceiverWatchSend(a *watchArgs) {
 	if a == nil || a.Send != nil {
 		return
 	}
 	if a.StableReceiver {
 		a.Send = &watchSendArgs{To: stableWatchReceiverTarget}
 		a.ReceiverSendInternal = true
-		return
-	}
-	if receiverDelegateID := strings.TrimSpace(a.ReceiverDelegateID); receiverDelegateID != "" {
-		a.Send = &watchSendArgs{To: receiverDelegateID}
-		a.ReceiverSendInternal = true
 	}
 }
 
 func normalizedWatchConfigHash(a watchArgs) string {
-	applyReceiverWatchSend(&a)
+	applyStableReceiverWatchSend(&a)
 	snapshot := jobstore.WatchConfigSnapshot{
 		Target:                   a.Target,
 		OutputMatch:              a.OutputMatch,
@@ -1177,37 +1108,21 @@ func (jm *jobManager) watchSendSnapshot(cfg *watchConfig, jobID, trigger string,
 	cfg.nextUpdateSeq++
 	deliveryID := jobstore.NewWatchSendDeliveryID()
 	return watchSendDelivery{
-		cfg:                cfg,
-		key:                watchKey{VisibleSessionID: jm.sessionID, Target: cfg.target, SendTo: sendTo, ReceiverSessionID: cfg.receiverSessionID, ReceiverDelegateID: cfg.receiverDelegateID},
-		generation:         cfg.generation,
-		updateSeq:          cfg.nextUpdateSeq,
-		send:               cloneWatchSendArgs(cfg.send),
-		deliveryID:         deliveryID,
-		visibleSessionID:   jm.sessionID,
-		watchTarget:        cfg.target,
-		watchedIdentity:    jobID,
-		trigger:            trigger,
-		triggerProvenance:  provenance.Clone(root.Provenance),
-		delegateGeneration: jm.watchSendDelegateGeneration(sendTo, jobID),
-		provenance:         provenance.WithWatch(root.Provenance, cfg.watchID, cfg.generation, deliveryID, root.SessionID, jobID),
-		eventKind:          root.Kind,
-		eventData:          root.Data,
+		cfg:               cfg,
+		key:               watchKey{VisibleSessionID: jm.sessionID, Target: cfg.target, SendTo: sendTo, ReceiverSessionID: cfg.receiverSessionID, ReceiverDelegateID: cfg.receiverDelegateID},
+		generation:        cfg.generation,
+		updateSeq:         cfg.nextUpdateSeq,
+		send:              cloneWatchSendArgs(cfg.send),
+		deliveryID:        deliveryID,
+		visibleSessionID:  jm.sessionID,
+		watchTarget:       cfg.target,
+		watchedIdentity:   jobID,
+		trigger:           trigger,
+		triggerProvenance: provenance.Clone(root.Provenance),
+		provenance:        provenance.WithWatch(root.Provenance, cfg.watchID, cfg.generation, deliveryID, root.SessionID, jobID),
+		eventKind:         root.Kind,
+		eventData:         root.Data,
 	}
-}
-
-func (jm *jobManager) watchSendDelegateGeneration(sendTo, watchedIdentity string) string {
-	target, err := resolveWatchSendTarget(sendTo, watchedIdentity)
-	if err != nil || !strings.HasPrefix(target, "dlg_") {
-		return ""
-	}
-	delegates, err := jm.store.LoadDelegates()
-	if err != nil {
-		return ""
-	}
-	if delegate := delegates[target]; delegate != nil {
-		return delegate.Generation
-	}
-	return ""
 }
 
 // jobProvenanceForWatch returns a clone of the watched job's recorded causal
@@ -1725,7 +1640,7 @@ func closeWatchConfig(cfg *watchConfig) {
 
 func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult {
 	var send *watchSendArgs
-	if cfg.receiverDelegateID == "" && !cfg.stableReceiver {
+	if !cfg.stableReceiver {
 		send = cloneWatchSendArgs(cfg.send)
 	}
 	return watchResult{
@@ -3148,123 +3063,6 @@ func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason
 	return n
 }
 
-// startQuietWatchdog arms the quiet-job watchdog for a running delegate. The
-// goroutine ticks at delegateQuietCheckInterval and fires one owner
-// notification (enqueue + kick only, spec §3) when the delegate has emitted no
-// parent-observable activity for delegateQuietWindow, once per quiet stretch.
-// stop is closed at finalize. Modeled on startProgressTimer.
-func (jm *jobManager) startQuietWatchdog(jobID string, stop <-chan struct{}) {
-	if stop == nil {
-		return
-	}
-	// Snapshot the watchdog timing synchronously in the caller's goroutine so the
-	// spawned goroutine reads no field that could change under it. These are
-	// per-jobManager (seeded from the package defaults); tests scale them on
-	// their own manager before the watchdog starts. In production they are
-	// effectively constants.
-	window := jm.quietWindow
-	checkInterval := jm.quietCheckInterval
-	go func() {
-		ticker := jm.clock.NewTicker(checkInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C():
-				if !jm.fireQuietWatchdogTick(jobID, window) {
-					return
-				}
-			case <-stop:
-				return
-			}
-		}
-	}()
-}
-
-// fireQuietWatchdogTick evaluates one watchdog tick. It returns false (ending
-// the goroutine) when the manager is closing or the delegate is no longer a
-// running job. Otherwise it enqueues at most one quiet notification per quiet
-// stretch and kicks the drain loop. It performs no delivery and never touches
-// Session.emit or responseSideEffectsMu (spec §3), mirroring fireProgressTick.
-// quietTickSnapshot is the read-only view fireQuietWatchdogTick gathers under the
-// lock before consulting decideQuietWatchdogTick. isDelegate captures the running
-// & rec & delegate-type gate; last/now/window/alreadyNotified drive the quiet
-// accounting and the once-per-stretch latch.
-type quietTickSnapshot struct {
-	closing         bool
-	isDelegate      bool
-	last            time.Time
-	now             time.Time
-	window          time.Duration
-	alreadyNotified bool
-}
-
-// quietTickDecision is what decideQuietWatchdogTick returns for one tick: whether
-// the watchdog goroutine keeps running (keepAlive), whether this tick enqueues a
-// quiet notification (fire), and the new value of the once-per-stretch latch the
-// caller must store back (newNotifiedLatch).
-type quietTickDecision struct {
-	keepAlive        bool
-	fire             bool
-	newNotifiedLatch bool
-}
-
-// decideQuietWatchdogTick is the pure decision core lifted out of
-// fireQuietWatchdogTick. It ends the goroutine (keepAlive=false) when the manager
-// is closing or the delegate is no longer a running job. Otherwise it fires at
-// most one notification per quiet stretch: quiet>=window latches the notified
-// flag (firing only on the first such tick), while quiet<window clears it so the
-// next quiet stretch fires again. The window boundary is inclusive.
-func decideQuietWatchdogTick(snap quietTickSnapshot) quietTickDecision {
-	if snap.closing || !snap.isDelegate {
-		return quietTickDecision{}
-	}
-	dec := quietTickDecision{keepAlive: true}
-	if snap.now.Sub(snap.last) >= snap.window {
-		dec.newNotifiedLatch = true
-		if !snap.alreadyNotified {
-			dec.fire = true
-		}
-	}
-	return dec
-}
-
-func (jm *jobManager) fireQuietWatchdogTick(jobID string, window time.Duration) bool {
-	var notifications []jobNotification
-
-	jm.mu.Lock()
-	run := jm.running[jobID]
-	isDelegate := run != nil && run.rec != nil && run.rec.Type == jobstore.JobDelegate
-	snap := quietTickSnapshot{
-		closing:    jm.closing,
-		isDelegate: isDelegate,
-		window:     window,
-	}
-	if !snap.closing && isDelegate {
-		snap.last = run.rec.StartedAt
-		if run.rec.LastActivity != nil {
-			snap.last = *run.rec.LastActivity
-		}
-		snap.now = jm.now()
-		snap.alreadyNotified = run.quietNotified
-	}
-	dec := decideQuietWatchdogTick(snap)
-	if !dec.keepAlive {
-		jm.mu.Unlock()
-		return false
-	}
-	run.quietNotified = dec.newNotifiedLatch
-	if dec.fire {
-		notifications = append(notifications, watchNotification(jobID, quietWatchdogMessage(window, snap.last)))
-	}
-	jm.mu.Unlock()
-
-	if len(notifications) > 0 {
-		jm.enqueueWatchNotifications(notifications)
-		jm.kick()
-	}
-	return true
-}
-
 func (jm *jobManager) snapshotWatchSendFrames(deliveries []watchSendDelivery) []watchSendDelivery {
 	for i := range deliveries {
 		deliveries[i] = jm.snapshotWatchSendFrame(deliveries[i])
@@ -3307,14 +3105,14 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 		return jobstore.WatchSendState{}, nil, false, nil
 	}
 	target, terr := resolveWatchSendTarget(d.send.To, d.watchedIdentity)
-	notificationJobID, notificationDelegateID := "", ""
+	notificationJobID := ""
 	if jobID, delegateID, ok := watchFrameJob(d.eventData); ok {
 		d.frame = appendWatchFrameJobRead(d.frame, jobID)
-		notificationJobID, notificationDelegateID = jobID, delegateID
+		notificationJobID = jobID
+		_ = delegateID
 	}
 	state = jm.watchSendState(d, target)
 	state.NotificationJobID = notificationJobID
-	state.NotificationDelegateID = notificationDelegateID
 	// Coalescing (recordWatchSendPending) unions the superseded pending's
 	// provenance into the survivor and recomputes the self-influence depth on
 	// the union — two below-threshold branches with disjoint delivered priors
@@ -3398,7 +3196,6 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 		TriggerIdentity:          d.watchedIdentity,
 		TriggerReason:            d.trigger,
 		Provenance:               provenance.Clone(d.provenance),
-		DelegateGeneration:       d.delegateGeneration,
 		ReceiverSessionID:        d.cfg.receiverSessionID,
 		ReceiverDelegateID:       d.cfg.receiverDelegateID,
 		SourceDelegateID:         d.cfg.sourceDelegateID,
@@ -3410,86 +3207,6 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 }
 
 // watchTargetSessionID resolves a delegate target to its child session.
-func (jm *jobManager) watchTargetSessionID(sendTo string) (childSessionID string, ok bool, err error) {
-	if !strings.HasPrefix(sendTo, "dlg_") {
-		return "", false, nil
-	}
-	delegates, err := jm.store.LoadDelegates()
-	if err != nil {
-		return "", false, err
-	}
-	d := delegates[sendTo]
-	if d == nil || d.ChildSessionID == "" {
-		return "", false, nil
-	}
-	return d.ChildSessionID, true, nil
-}
-
-// watchedWorkerSessionID resolves a concrete watched job to the worker child
-// session id its transcript ref names. ok is
-// false when the job has no local worker session to stamp: not found, not a
-// delegate, a cross-project (proj:) transcript ref the hub cannot read meta for,
-// or an undecodable ref. There is no error return: this feeds a best-effort
-// stamp, so every "cannot resolve" reason collapses to ok=false.
-func (jm *jobManager) watchedWorkerSessionID(watchedJobID string) (workerSessionID string, ok bool) {
-	rec, err := findJobRecord(jm, watchedJobID)
-	if err != nil || rec.Type != jobstore.JobDelegate {
-		return "", false
-	}
-	projectID, childID, err := decodeRef(rec.TranscriptRef)
-	if err != nil || projectID != "" {
-		// Undecodable, or a cross-project worker whose meta the hub cannot read.
-		return "", false
-	}
-	return childID, true
-}
-
-// stampObservedBy records an append-only, deduplicated observer relationship on
-// the worker's metadata. It is best-effort because errors only cost the hub its
-// auto-open convenience.
-func (jm *jobManager) stampObservedBy(workerSessionID, observerSessionID string) error {
-	if jm.stateDir == "" || workerSessionID == "" || observerSessionID == "" {
-		return nil
-	}
-	return jm.appendObservedBy(jm.stateDir, workerSessionID, observerSessionID)
-}
-
-// stampObserverLinkAtInstall surfaces the observer link for a sidecar watch
-// (concrete job target, concrete delegate delivery) when the watch is
-// configured. Waiting for the first fire would leave a long-running worker
-// unlinked. Best-effort throughout: every failure only costs hub auto-open.
-func (jm *jobManager) stampObserverLinkAtInstall(cfg *watchConfig) {
-	if cfg == nil || cfg.send == nil || isWatchSessionTarget(cfg.target) {
-		return
-	}
-	switch cfg.send.To {
-	case runtimeMessageAliasCaller, runtimeMessageAliasWatched:
-		return
-	}
-	observerSessionID := strings.TrimSpace(cfg.receiverSessionID)
-	if observerSessionID == "" {
-		resolved, ok, err := jm.watchTargetSessionID(cfg.send.To)
-		if err != nil || !ok {
-			return
-		}
-		observerSessionID = resolved
-	}
-	jm.recordObserverLink(cfg.target, observerSessionID)
-}
-
-// recordObserverLink resolves the watched job to its worker session and stamps
-// the observer link on the worker's meta. Best-effort and never fails the watch:
-// an unresolvable worker or a write error only deprives the hub of auto-open.
-func (jm *jobManager) recordObserverLink(watchedJobID, observerSessionID string) {
-	workerSessionID, ok := jm.watchedWorkerSessionID(watchedJobID)
-	if !ok || workerSessionID == observerSessionID {
-		return
-	}
-	_ = jm.stampObservedBy(workerSessionID, observerSessionID)
-}
-
-// watchFrameJob returns the job and delegate structurally named by a finished
-// job event. Other event kinds never annotate a transcript read.
 func watchFrameJob(data events.EventData) (jobID, delegateID string, ok bool) {
 	switch d := data.(type) {
 	case events.JobFinishedData:
@@ -3518,13 +3235,7 @@ func jobFinishedEventData(data events.EventData) (events.JobFinishedData, bool) 
 	return events.JobFinishedData{}, false
 }
 
-// sendMessageFunc delivers a watch-send frame to its resolved target. The
-// loop-owned drain passes s.sendDelegateMessage; this is the only delivery path
-// for watch sends (observation never delivers, spec §3). A nil sender drops the
-// pending send as undeliverable.
-type sendMessageFunc func(context.Context, sendMessageArgs) sendMessageResult
-
-func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchConfig, state jobstore.WatchSendState, ensurePending bool, send sendMessageFunc) (bool, error) {
+func (jm *jobManager) deliverPendingWatchSend(cfg *watchConfig, state jobstore.WatchSendState, ensurePending bool) (bool, error) {
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
 		return false, nil
 	}
@@ -3539,203 +3250,7 @@ func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchCon
 	if state.StableReceiver {
 		return jm.deliverStableWatchSend(cfg, state)
 	}
-	if send == nil {
-		return false, jm.dropWatchSend(state, cfg, "delivery unavailable")
-	}
-	if stale, reason, err := jm.staleDelegateWatchSend(state); err != nil {
-		jm.enqueueWatchNotifications([]jobNotification{
-			watchNotification(state.Key.ResolvedWatchedIdentity, "watch send gate check failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
-		})
-		return false, err
-	} else if stale {
-		return false, jm.dropWatchSend(state, cfg, reason)
-	}
-	res := send(ctx, sendMessageArgs{
-		Target:        state.Key.ResolvedSendTo,
-		Message:       state.Frame,
-		Background:    true,
-		BackgroundSet: true,
-		FromWatch:     true,
-		Provenance:    provenance.Clone(state.Provenance),
-	})
-	switch classifyWatchSendDelivery(res) {
-	case watchSendDelivered:
-		if !jm.isCurrentPendingWatchSend(cfg, state) {
-			return false, nil
-		}
-		if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
-			jm.enqueueWatchNotifications([]jobNotification{
-				watchNotification(state.Key.ResolvedWatchedIdentity, "watch send delivered state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
-			})
-			return false, err
-		}
-		jm.scheduleDeliveredObserverLink(cfg, state)
-		return true, nil
-	case watchSendBusy:
-		return false, nil
-	case watchSendHardFailure:
-		reason := "delivery failed"
-		if res.Err != nil {
-			reason = res.Err.Error()
-		}
-		return false, jm.dropWatchSend(state, cfg, reason)
-	default:
-		return false, nil
-	}
-}
-
-func (jm *jobManager) scheduleDeliveredObserverLink(cfg *watchConfig, state jobstore.WatchSendState) {
-	if cfg == nil || !isWatchSessionTarget(cfg.target) || state.NotificationJobID == "" {
-		return
-	}
-	observerSessionID := strings.TrimSpace(cfg.receiverSessionID)
-	if observerSessionID == "" {
-		var ok bool
-		var err error
-		observerSessionID, ok, err = jm.watchTargetSessionID(state.Key.ResolvedSendTo)
-		if err != nil || !ok {
-			return
-		}
-	}
-	if observerSessionID == jm.sessionID {
-		return
-	}
-	jm.scheduleObserverLink(func() { jm.recordObserverLink(state.NotificationJobID, observerSessionID) })
-}
-
-func (jm *jobManager) staleDelegateWatchSend(state jobstore.WatchSendState) (bool, string, error) {
-	return staleDelegateWatchSendWithLoaders(state, jm.store.LoadDelegates, jm.store.LoadEvents)
-}
-
-func staleDelegateWatchSendWithLoaders(
-	state jobstore.WatchSendState,
-	loadDelegates func() (map[string]*jobstore.DelegateRecord, error),
-	loadEvents func() ([]jobstore.Event, error),
-) (bool, string, error) {
-	target := state.Key.ResolvedSendTo
-	if !strings.HasPrefix(target, "dlg_") {
-		return false, "", nil
-	}
-	delegates, err := loadDelegates()
-	if err != nil {
-		return false, "", err
-	}
-	delegate := delegates[target]
-	if delegate == nil {
-		return false, "", nil
-	}
-	if state.DelegateGeneration == "" {
-		if delegate.StopGateClosed {
-			return true, "delegate stopped before delivery", nil
-		}
-		stopped, err := delegateStoppedAfterWatchSendPendingWithLoader(target, state, loadEvents)
-		if err != nil {
-			return false, "", err
-		}
-		if stopped {
-			return true, "delegate stopped before delivery", nil
-		}
-		return false, "", nil
-	}
-	if delegate.StopGateClosed || delegate.Generation != state.DelegateGeneration {
-		return true, "delegate stopped before delivery", nil
-	}
-	return false, "", nil
-}
-
-func (jm *jobManager) delegateStoppedAfterWatchSendPending(delegateID string, state jobstore.WatchSendState) (bool, error) {
-	return delegateStoppedAfterWatchSendPendingWithLoader(delegateID, state, jm.store.LoadEvents)
-}
-
-func delegateStoppedAfterWatchSendPendingWithLoader(delegateID string, state jobstore.WatchSendState, loadEvents func() ([]jobstore.Event, error)) (bool, error) {
-	events, err := loadEvents()
-	if err != nil {
-		return false, err
-	}
-	pendingSeq := watchSendPendingCreationSeq(events, state)
-	if pendingSeq == 0 {
-		return false, nil
-	}
-	for _, event := range events {
-		if event.Kind != jobstore.EventDelegateStopGateClosed || event.DelegateID != delegateID {
-			continue
-		}
-		if event.Seq > pendingSeq {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func watchSendPendingCreationSeq(events []jobstore.Event, state jobstore.WatchSendState) int64 {
-	currentSeq := watchSendCurrentPendingSeq(events, state)
-	if currentSeq == 0 {
-		return 0
-	}
-	var settledSeq int64
-	for _, event := range events {
-		if event.Seq >= currentSeq {
-			break
-		}
-		if isWatchSendTerminalEvent(event.Kind) && watchSendEventMatchesKey(event.WatchSend, state.Key) {
-			settledSeq = event.Seq
-		}
-	}
-	for _, event := range events {
-		if event.Seq <= settledSeq {
-			continue
-		}
-		if event.Seq > currentSeq {
-			break
-		}
-		if event.Kind == jobstore.EventWatchSendPending && watchSendEventMatchesKey(event.WatchSend, state.Key) {
-			return event.Seq
-		}
-	}
-	return 0
-}
-
-func watchSendCurrentPendingSeq(events []jobstore.Event, state jobstore.WatchSendState) int64 {
-	var seq int64
-	for _, event := range events {
-		if event.Kind == jobstore.EventWatchSendPending && watchSendEventMatchesState(event.WatchSend, state) {
-			seq = event.Seq
-		}
-	}
-	return seq
-}
-
-func watchSendEventMatchesKey(eventState *jobstore.WatchSendState, key jobstore.WatchSendKey) bool {
-	return eventState != nil && eventState.Key == key
-}
-
-func isWatchSendTerminalEvent(kind jobstore.EventKind) bool {
-	return kind == jobstore.EventWatchSendDelivered ||
-		kind == jobstore.EventWatchSendDropped ||
-		kind == jobstore.EventWatchSendEvicted
-}
-
-func watchSendEventMatchesState(eventState *jobstore.WatchSendState, state jobstore.WatchSendState) bool {
-	if eventState == nil || eventState.Key != state.Key {
-		return false
-	}
-	if state.DeliveryID != "" && eventState.DeliveryID != state.DeliveryID {
-		return false
-	}
-	if state.UpdateSeq != 0 && eventState.UpdateSeq != state.UpdateSeq {
-		return false
-	}
-	return true
-}
-
-func classifyWatchSendDelivery(res sendMessageResult) watchSendDeliveryClass {
-	if res.WatchSendDeliveryClassSet {
-		return res.WatchSendDeliveryClass
-	}
-	if res.Err == nil {
-		return watchSendDelivered
-	}
-	return watchSendBusy
+	return false, jm.dropWatchSend(state, cfg, "retired loose watch receiver")
 }
 
 func (jm *jobManager) dropWatchSend(state jobstore.WatchSendState, cfg *watchConfig, reason string) error {
@@ -4728,62 +4243,34 @@ func (s *Session) renderUnreachableChildPendingsWithLoaders(
 	}
 }
 
-// childResumable reports whether the parent holds an OWN delegate record for
-// childSessionID that is currently resumable. A child with no parent delegate
-// record (descriptor-less) or whose record projects non-resumable is NOT
-// resumable — the fallback renders its pendings as "child unreachable:".
+// childResumable reports whether the stable controller holds a direct child
+// descriptor that is currently resumable.
 func (s *Session) childResumable(childSessionID string) bool {
-	if s == nil || s.jobManager == nil || childSessionID == "" {
-		return false
-	}
-	ordered, err := s.jobManager.store.LoadOrdered()
-	if err != nil {
-		return false
-	}
-	var latest *jobstore.JobRecord
-	for _, rec := range ordered {
-		if rec == nil || rec.Type != jobstore.JobDelegate {
-			continue
-		}
-		if _, child, err := decodeRef(rec.TranscriptRef); err != nil || child != childSessionID {
-			continue
-		}
-		latest = rec
-	}
-	if latest == nil {
-		return false
-	}
-	return s.assessDelegateResumability(latest, delegateResumabilityProjection).Resumable
+	row, ok := s.directStableDelegateForChildSession(childSessionID)
+	return ok && row.resumable
 }
 
-// childStopGated reports whether the LATEST delegate record (durable APPEND
-// ORDER, not wall-clock — resolved decision #3) the parent holds for
-// childSessionID terminated by deliberate stop (Cancelled/stopped_by_parent).
-// A stop-gated child is not driven for attention that predates the stop; new
-// work appends a newer record for the same child session and clears the gate
-// (spec §3 stop-gating, no resurrection).
+func (s *Session) directStableDelegateForChildSession(childSessionID string) (delegateSnapshot, bool) {
+	if s == nil || s.delegateController == nil || childSessionID == "" {
+		return delegateSnapshot{}, false
+	}
+	for _, visible := range stableDelegateRowsForSession(s, false) {
+		if visible.snapshot.descriptor.ChildSessionID == childSessionID {
+			return visible.snapshot, true
+		}
+	}
+	return delegateSnapshot{}, false
+}
+
+// childStopGated reports whether the direct stable delegate's latest settled
+// generation was deliberately stopped by its parent. A newer running
+// generation clears the gate.
 func (s *Session) childStopGated(childSessionID string) bool {
-	if s == nil || s.jobManager == nil || childSessionID == "" {
+	row, ok := s.directStableDelegateForChildSession(childSessionID)
+	if !ok || row.currentRunOpen || row.lastOutcome == nil {
 		return false
 	}
-	ordered, err := s.jobManager.store.LoadOrdered()
-	if err != nil {
-		return false
-	}
-	var latest *jobstore.JobRecord
-	for _, rec := range ordered {
-		if rec == nil || rec.Type != jobstore.JobDelegate {
-			continue
-		}
-		if _, child, err := decodeRef(rec.TranscriptRef); err != nil || child != childSessionID {
-			continue
-		}
-		latest = rec
-	}
-	if latest == nil {
-		return false
-	}
-	return latest.Status == jobstore.StatusCancelled && latest.Reason == "stopped_by_parent"
+	return row.lastOutcome.Status == delegatestore.OutcomeStopped && row.lastOutcome.Reason == "stopped_by_parent"
 }
 
 // settleDrivenChildForwardedPendings marks the parent's forwarded pending COPIES
@@ -4864,7 +4351,7 @@ func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager,
 			}
 			continue
 		}
-		delivered, err := jm.deliverPendingWatchSend(ctx, delivery.cfg, delivery.state, true, s.sendDelegateMessage)
+		delivered, err := jm.deliverPendingWatchSend(delivery.cfg, delivery.state, true)
 		result.observerHandoff = result.observerHandoff || delivered
 		if err != nil {
 			errs = append(errs, err)
@@ -4879,161 +4366,21 @@ func (s *Session) retryRestoredPendingWatchSends(_ context.Context) error {
 	}
 	deliveries := s.jobManager.pendingWatchSendDeliveries(nil)
 	for _, delivery := range deliveries {
-		class, reason := s.classifyRestoredWatchSendTarget(delivery.state.Key.ResolvedSendTo)
-		switch class {
-		case watchSendDelivered: // runtime alias (caller): token + kick
+		if delivery.state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
 			if s.jobManager != nil && s.jobManager.enqueue != nil {
 				s.jobManager.enqueue(watchSendTokenNotification("", delivery.state))
 			}
-		case watchSendBusy:
 			continue
-		case watchSendHardFailure:
-			if err := s.jobManager.dropWatchSend(delivery.state, delivery.cfg, reason); err != nil {
-				return err
-			}
+		}
+		if delivery.state.StableReceiver {
+			s.jobManager.kick()
+			continue
+		}
+		if err := s.jobManager.dropWatchSend(delivery.state, delivery.cfg, "retired loose watch receiver"); err != nil {
+			return err
 		}
 	}
 	return nil
-}
-
-// watchSendTargetResolver supplies the read-only lookups the pure classifier
-// needs. The live wrapper backs these with the real store / job-record /
-// resumability I/O; a fuzz harness backs them with an in-memory world. The
-// classifier itself (classifyWatchSendDeliveryTarget) locks nothing, mutates no
-// shared state, and does no direct I/O — every effect is one of these injected
-// reads, invoked lazily at exactly the point the original inline code reached
-// it, so the branch-by-branch call order is preserved.
-type watchSendTargetResolver struct {
-	sessionID       string
-	hasJobManager   bool
-	loadDelegates   func() (map[string]*jobstore.DelegateRecord, error)
-	findJobRecord   func(jobID string) (*jobstore.JobRecord, error)
-	assessResumable func(rec *jobstore.JobRecord) delegateResumability
-}
-
-func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliveryClass, string) {
-	return classifyWatchSendDeliveryTarget(target, s.watchSendTargetResolver())
-}
-
-// watchSendTargetResolver builds the read-only lookup bundle for this session's
-// live classifier pass. When there is no job manager the resolver's closures are
-// left nil; the classifier never calls them in that case because it short-circuits
-// to watchSendBusy first.
-func (s *Session) watchSendTargetResolver() watchSendTargetResolver {
-	if s == nil || s.jobManager == nil {
-		return watchSendTargetResolver{}
-	}
-	jm := s.jobManager
-	return watchSendTargetResolver{
-		sessionID:     s.id,
-		hasJobManager: true,
-		loadDelegates: jm.store.LoadDelegates,
-		findJobRecord: func(jobID string) (*jobstore.JobRecord, error) {
-			return findJobRecord(jm, jobID)
-		},
-		assessResumable: func(rec *jobstore.JobRecord) delegateResumability {
-			return s.assessDelegateResumability(rec, delegateResumabilityProjection)
-		},
-	}
-}
-
-// classifyWatchSendDeliveryTarget is the pure decision tree that maps a restored
-// watch-send target to a delivery class (delivered / busy / hard-failure) plus a
-// reason. It reads only its argument snapshot and the resolver's injected lookups;
-// it never touches jm.mu, a live watchConfig, or the store directly.
-func classifyWatchSendDeliveryTarget(target string, r watchSendTargetResolver) (watchSendDeliveryClass, string) {
-	target = strings.TrimSpace(target)
-	if isRuntimeMessageAlias(target) {
-		return watchSendDelivered, ""
-	}
-	if target == "" {
-		return watchSendHardFailure, "target is required"
-	}
-	if isUnsupportedRuntimeMessageAlias(target) {
-		return watchSendHardFailure, fmt.Sprintf("target_not_found: job %q not found", target)
-	}
-	if !r.hasJobManager {
-		return watchSendBusy, ""
-	}
-	if strings.HasPrefix(target, "job_") {
-		return watchSendHardFailure, "invalid_request: job_id is a job/turn handle; watch sends target delegate_id"
-	}
-	if strings.HasPrefix(target, "dlg_") {
-		delegates, err := r.loadDelegates()
-		if err != nil {
-			return watchSendBusy, ""
-		}
-		d := delegates[target]
-		if d == nil {
-			return watchSendHardFailure, fmt.Sprintf("target_not_found: delegate %q not found", target)
-		}
-		if d.OwnerSessionID != "" && d.OwnerSessionID != r.sessionID {
-			return watchSendHardFailure, fmt.Sprintf("not_controllable: delegate %q is not owned by this session", target)
-		}
-		jobID := d.CurrentJobID
-		if jobID == "" {
-			jobID = d.LatestJobID
-		}
-		if jobID == "" {
-			return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate %q has no job history", target)
-		}
-		rec, err := r.findJobRecord(jobID)
-		if err != nil {
-			return watchSendHardFailure, "target_not_found: " + err.Error()
-		}
-		if rec.OwnerSessionID != "" && rec.OwnerSessionID != r.sessionID {
-			return watchSendHardFailure, fmt.Sprintf("not_controllable: delegate job %q is owned by descendant session %q; you may only message your own direct delegates", target, rec.OwnerSessionID)
-		}
-		if rec.Type != jobstore.JobDelegate {
-			return watchSendHardFailure, fmt.Sprintf("target_not_messageable: job %q has type %q", target, rec.Type)
-		}
-		if d.Status == jobstore.DelegateNotResumable || !d.Resumable {
-			return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate %q is %s", target, d.Status)
-		}
-		if rec.Status == jobstore.StatusRunning {
-			return watchSendBusy, ""
-		}
-		if !rec.Status.IsTerminal() {
-			return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate job %q is %s", jobID, rec.Status)
-		}
-		if rec.Resumable == nil || !*rec.Resumable {
-			return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate job %q is %s", jobID, rec.Status)
-		}
-		assessment := r.assessResumable(rec)
-		if !assessment.Resumable {
-			return watchSendHardFailure, "target_not_resumable:" + assessment.Reason
-		}
-		return watchSendBusy, ""
-	}
-	rec, err := r.findJobRecord(target)
-	if err != nil {
-		return watchSendHardFailure, "target_not_found: " + err.Error()
-	}
-	if rec.Type != jobstore.JobDelegate {
-		return watchSendHardFailure, fmt.Sprintf("target_not_messageable: job %q has type %q", target, rec.Type)
-	}
-	if rec.Status == jobstore.StatusRunning {
-		return watchSendBusy, ""
-	}
-	if isRuntimeLostDelegate(rec) {
-		assessment := r.assessResumable(rec)
-		if !assessment.Resumable {
-			return watchSendHardFailure, "target_not_resumable:" + assessment.Reason
-		}
-		// Delivering to a terminal delegate resumes it; restore may only project
-		// resumability, so keep the frame pending for an explicit later send/retry.
-		return watchSendBusy, ""
-	}
-	if !rec.Status.IsTerminal() || rec.Resumable == nil || !*rec.Resumable {
-		return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate job %q is %s", target, rec.Status)
-	}
-	assessment := r.assessResumable(rec)
-	if !assessment.Resumable {
-		return watchSendHardFailure, "target_not_resumable:" + assessment.Reason
-	}
-	// Delivering to a terminal delegate resumes it; restore may only project
-	// resumability, so keep the frame pending for an explicit later send/retry.
-	return watchSendBusy, ""
 }
 
 func (jm *jobManager) pendingWatchSendDeliveries(include func(*jobstore.WatchSendState) bool) []pendingWatchSendDelivery {

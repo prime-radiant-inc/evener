@@ -14,7 +14,6 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/worktree"
 	"primeradiant.com/serf/agent/schema"
 )
@@ -178,25 +177,11 @@ func (r *scriptedLaneRepo) ageBeyondGrace(t *testing.T, delegateID, lanePath str
 	ageSidecar(t, metaDirForLane(lanePath), delegateID, laneGrace+time.Minute)
 }
 
-// appendDisposed records a Disposed event for delegateID in the session's own
-// jobstore.
-func (r *scriptedLaneRepo) appendDisposed(t *testing.T, delegateID string) {
+// stableDisposalClosurePresent reads the stable resumability closure for
+// delegateID under the scripted boundary.
+func (r *scriptedLaneRepo) stableDisposalClosurePresent(t *testing.T, delegateID string) bool {
 	t.Helper()
-	if err := r.s.jobManager.appendEvent(jobstore.Event{
-		Kind:       jobstore.EventDelegateDisposed,
-		TS:         time.Now().UTC(),
-		DelegateID: delegateID,
-	}); err != nil {
-		t.Fatalf("append disposed: %v", err)
-	}
-}
-
-// disposedEventPresent reads the durable Disposed mark for delegateID out of the
-// session's own jobstore, which stays real under the scripted boundary — so the
-// wtRepo reader serves unchanged.
-func (r *scriptedLaneRepo) disposedEventPresent(t *testing.T, delegateID string) bool {
-	t.Helper()
-	return r.wt().disposedEventPresent(t, delegateID)
+	return r.wt().stableDisposalClosurePresent(t, delegateID)
 }
 
 // wrapRunner interposes mw in front of the session's worktree git runner, so a
@@ -211,12 +196,12 @@ func (r *scriptedLaneRepo) wrapRunner(mw func(next worktree.GitRunner, args []st
 	}
 }
 
-// seedIsolationLane creates a delegate lane through the real production path
-// (createDelegateWorktree drives the scripted git boundary) and records the
-// job/delegate events a resumed session reads back.
+// seedIsolationLane creates a stable-controller lane descriptor and lifecycle
+// through the real production path under the scripted git boundary.
 func (r *scriptedLaneRepo) seedIsolationLane(t *testing.T) (delegateID, lanePath string) {
 	t.Helper()
-	return seedIsolationLaneOn(t, r.s)
+	delegateID, lanePath, _ = r.wt().seedStableIsolationLane(t)
+	return delegateID, lanePath
 }
 
 // wt exposes the scripted session through wtRepo, so the shared manage_worktree
@@ -307,7 +292,7 @@ func (r *scriptedLaneRepo) sawGitCommand(prefix ...string) bool {
 // P3 residue sweep.
 func (r *scriptedLaneRepo) seedForeignUnlockedLane(t *testing.T) (delegateID, lanePath string) {
 	t.Helper()
-	delegateID = jobstore.NewDelegateID()
+	delegateID = r.s.delegateController.newDelegateID()
 	path, _, _, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
 	if err != nil {
 		t.Fatalf("createDelegateWorktree: %v", err)

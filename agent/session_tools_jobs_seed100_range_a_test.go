@@ -21,16 +21,15 @@ func seed100ToolsRangeA(t *testing.T) {
 	for _, args := range []map[string]any{
 		{"sandbox_net": true},
 		{"sandbox_net": "true"},
-		{"max_wait_ms": -1},
 		{"delegation_allowance": -1},
 		{"delegation_allowance": 1, "result_schema": map[string]any{"type": "string"}},
 	} {
 		_, _ = decodeDelegateArgs(args)
 	}
 	bare := newSession(t)
-	_, _ = delegateSendTool(context.Background(), bare, map[string]any{"to": "caller"}, 100)
-	_, _ = delegateTool(context.Background(), bare, map[string]any{"sandbox_net": "bad"}, 100)
-	_, _ = delegateTool(context.Background(), &Session{}, map[string]any{"task": "x"}, 100)
+	_, _ = stableDelegateSendTool(context.Background(), bare, map[string]any{"to": "caller"}, 100)
+	_, _ = stableDelegateCreateTool(context.Background(), bare, map[string]any{"sandbox_net": "bad"}, 100)
+	_, _ = stableDelegateCreateTool(context.Background(), &Session{}, map[string]any{"task": "x"}, 100)
 	_, _ = jobWatchTool(bare, map[string]any{"operation": "create", "source": "bad-source"}, 100)
 	ended := frozenTestTime
 
@@ -60,14 +59,6 @@ func seed100ToolsRangeA(t *testing.T) {
 	_, _, _ = bare.clearDescendantReceiverWatchByID("missing")
 
 	for _, test := range []func(*testing.T){
-		TestDecodeDelegateArgs_Sandbox,
-		TestDecodeDelegateArgs_SandboxNetMalformed,
-		TestDelegateSendNegativeBlockTimeoutDoesNotStart,
-		TestDelegateSendMaxWaitMSDecodeTable,
-		TestMaxWaitMSDecoders,
-		TestJobWatchParentSourceRequiresGrant,
-		TestJobWatchParentSourceInstallsOnParentWithChildReceiver,
-		TestJobWatchParentSourcePublicClearRoutesToParent,
 		TestJobWatchAllowsDescendantConcreteJobSource,
 		TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt,
 	} {

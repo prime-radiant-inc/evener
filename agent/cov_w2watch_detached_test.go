@@ -91,11 +91,10 @@ func TestW2Watch_clearWatchByIDMatchingDetachedAppendError(t *testing.T) {
 func TestW2Watch_configureWatchNewWithDetachedAppendError(t *testing.T) {
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
-	seedCommonWatchSendTargets(t, jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "sleep 30"})
 	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
 
-	w2watch_seedDetachedPending(t, jm, "w_old", rec.JobID, "dlg_obs")
+	w2watch_seedDetachedPending(t, jm, "w_old", rec.JobID, runtimeMessageAliasCaller)
 
 	// The new-watch detached drain writes its dropped tombstones one at a time via
 	// appendEvent, so fault that seam rather than the batch seam.
@@ -104,12 +103,12 @@ func TestW2Watch_configureWatchNewWithDetachedAppendError(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
 	}); err == nil {
 		t.Fatal("install succeeded, want the detached snapshot append failure")
 	}
 
-	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "dlg_obs"}
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: runtimeMessageAliasCaller}
 	jm.mu.Lock()
 	_, installed := jm.watches[key]
 	jm.mu.Unlock()
@@ -124,14 +123,13 @@ func TestW2Watch_configureWatchNewWithDetachedAppendError(t *testing.T) {
 func TestW2Watch_configureWatchEqualWithDetachedAppendError(t *testing.T) {
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
-	seedCommonWatchSendTargets(t, jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "sleep 30"})
 	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
 
 	args := watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
 	}
 	res, err := jm.configureWatch(args)
 	if err != nil {
@@ -139,7 +137,7 @@ func TestW2Watch_configureWatchEqualWithDetachedAppendError(t *testing.T) {
 	}
 	firstID := res.WatchID
 
-	w2watch_seedDetachedPending(t, jm, "w_old", rec.JobID, "dlg_obs")
+	w2watch_seedDetachedPending(t, jm, "w_old", rec.JobID, runtimeMessageAliasCaller)
 
 	appendErr := errors.New("equal-path detached drain append failed")
 	w2watch_failAppendEventsOnKind(jm, jobstore.EventWatchSendDropped, appendErr)

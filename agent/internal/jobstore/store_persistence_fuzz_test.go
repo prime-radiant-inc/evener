@@ -212,14 +212,13 @@ func drawEvent(r *progReader, ec *int) Event {
 		e.OwnerSessionID = sess
 		e.VisibleToSession = sess
 	case 1:
-		did := "dlg_" + sess
-		e.Kind = EventDelegateCreated
-		e.DelegateID = did
-		e.Delegate = &DelegateEvent{ChildSessionID: "c_" + did, AgentType: "engineer", Generation: "g1", Resumable: true}
+		e.Kind = EventJobMessageSent
+		e.Target = sess
+		e.Action = "note"
 	case 2:
 		e.Kind = EventJobStarted
-		e.Type = JobDelegate
-		e.DelegateID = "dlg_" + sess
+		e.Type = JobShell
+		e.Command = "cmd-alt"
 		e.OwnerSessionID = sess
 		e.VisibleToSession = sess
 	case 3:

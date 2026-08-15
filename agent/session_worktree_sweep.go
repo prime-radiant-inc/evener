@@ -8,7 +8,6 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/worktree"
 )
 
@@ -176,49 +175,40 @@ func (s *Session) residueSweepPolicy() laneSweepPolicy {
 			}
 			return true, "auto-collectible", nil
 		},
-		markDisposed: func(delegateID string) {
+		prepareDispose: func(delegateID string) error {
 			if owned[delegateID] {
-				s.markLaneDisposed(delegateID)
+				return s.prepareStableLaneDisposal(delegateID)
 			}
+			return nil
 		},
 	}
 }
 
-// ownedDelegateIDSet returns the delegate ids of the isolation lanes THIS
-// session created (the same provenance ownedIsolationLanes uses at close). A
-// residue sweep marks Disposed only for these — a foreign session's record is
-// never in this store, so it is left for that session's own bookkeeping and the
-// stat crash net.
+// ownedDelegateIDSet returns the stable worktree delegate ids directly owned by
+// this session. Foreign descriptors are never mutated by this session.
 func (s *Session) ownedDelegateIDSet() map[string]bool {
 	owned := map[string]bool{}
-	if s.jobManager == nil || s.jobManager.store == nil {
+	if s == nil || s.delegateController == nil {
 		return owned
 	}
-	recs, err := s.jobManager.store.Load()
-	if err != nil {
-		return owned
-	}
-	for _, lane := range ownedIsolationLanes(recs, s.id) {
-		owned[lane.delegateID] = true
+	for _, delegate := range s.delegateController.ownedStableWorktreeSnapshots(s) {
+		owned[delegate.delegateID] = true
 	}
 	return owned
 }
 
-// markLaneDisposed appends the durable Disposed event for a lane the residue
-// sweep collected whose record this session owns. Best-effort: a failed append
-// warns but never blocks the collection (the stat crash net still refuses
-// revival into the removed lane).
-func (s *Session) markLaneDisposed(delegateID string) {
-	if s.jobManager == nil {
-		return
+// prepareStableLaneDisposal durably closes resumability before the residue
+// sweep performs its first destructive operation.
+func (s *Session) prepareStableLaneDisposal(delegateID string) error {
+	if s == nil || s.delegateController == nil {
+		return fmt.Errorf("stable delegate controller unavailable")
 	}
-	if err := s.jobManager.appendEvent(jobstore.Event{
-		Kind:       jobstore.EventDelegateDisposed,
-		TS:         s.jobManager.now(),
-		DelegateID: delegateID,
-	}); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane residue disposal mark failed for %s: %v", delegateID, err)})
+	_, _, plans, err := s.delegateController.closeStableWorktreeResumability(s, delegateID, stableWorktreeDisposalReason, true)
+	if err != nil {
+		return err
 	}
+	s.delegateController.emitDelegateUpdates(plans)
+	return nil
 }
 
 // laneAutoCollectibleBranch applies the D0-auto predicate to a branch with no

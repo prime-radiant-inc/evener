@@ -85,25 +85,15 @@ func (s *Session) resumeReLockOwnLanes() {
 // (their worktree already removed) are excluded: there is nothing to re-lock and
 // the stat crash net already refuses revival into them.
 func (s *Session) undisposedOwnedLanes() []isolationLane {
-	if s.jobManager == nil || s.jobManager.store == nil {
+	if s == nil || s.delegateController == nil {
 		return nil
-	}
-	recs, err := s.jobManager.store.Load()
-	if err != nil {
-		return nil
-	}
-	disposed := map[string]bool{}
-	for _, r := range recs {
-		if r.Disposed && r.DelegateID != "" {
-			disposed[r.DelegateID] = true
-		}
 	}
 	var lanes []isolationLane
-	for _, lane := range ownedIsolationLanes(recs, s.id) {
-		if disposed[lane.delegateID] {
+	for _, delegate := range s.delegateController.ownedStableWorktreeSnapshots(s) {
+		if !delegate.resumable || delegate.descriptor.WorkingDir == "" {
 			continue
 		}
-		lanes = append(lanes, lane)
+		lanes = append(lanes, isolationLane{delegateID: delegate.delegateID, path: delegate.descriptor.WorkingDir})
 	}
 	return lanes
 }

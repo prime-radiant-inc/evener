@@ -41,7 +41,6 @@ type activitySessionSnapshot struct {
 	Revision        uint64
 	Jobs            []*jobstore.JobRecord
 	LiveJobs        map[string]*jobstore.JobRecord
-	Delegates       map[string]*jobstore.DelegateRecord
 	StableDelegates map[string]delegateSnapshot
 	Usage           *appwire.SerfUsage // cumulative self-only tokens; nil = unknown
 	Diagnostics     []string
@@ -252,41 +251,6 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 		}
 		snapshot.Children[childID] = child
 	}
-	for _, delegateID := range sortedActivityDelegateIDs(snapshot.Delegates) {
-		if _, stable := snapshot.StableDelegates[delegateID]; stable {
-			continue
-		}
-		record := snapshot.Delegates[delegateID]
-		childID, err := activityChildSessionForRecord(record)
-		if err != nil {
-			key := delegateID
-			if record != nil && record.ChildSessionID != "" {
-				key = record.ChildSessionID
-			}
-			snapshot.Errors[key] = err
-			continue
-		}
-		if snapshot.Children[childID] != nil || snapshot.Errors[childID] != nil {
-			continue
-		}
-		if visited[childID] {
-			snapshot.Errors[childID] = errors.New("cycle detected")
-			continue
-		}
-		childLoc, err := resolveActivityChildLocator(loc, loaded, record)
-		if err != nil {
-			snapshot.Errors[childID] = err
-			continue
-		}
-		nextVisited := cloneActivityVisited(visited)
-		nextVisited[childID] = true
-		child, err := buildActivityFullSnapshot(childLoc, nextVisited, true)
-		if err != nil {
-			snapshot.Errors[childID] = err
-			continue
-		}
-		snapshot.Children[childID] = child
-	}
 	return &snapshot, nil
 }
 
@@ -333,29 +297,7 @@ func buildActivityContinuationAt(loc activitySessionLocator, cont activityContin
 		filtered := activityFilterSnapshotToDelegate(loaded.snapshot, delegateID, child)
 		return &filtered, nil
 	}
-	record := loaded.snapshot.Delegates[delegateID]
-	if record == nil {
-		return nil, fmt.Errorf("continuation path hop %q not found", delegateID)
-	}
-	childID, err := activityChildSessionForRecord(record)
-	if err != nil {
-		return nil, err
-	}
-	if visited[childID] {
-		return nil, errors.New("cycle detected")
-	}
-	childLoc, err := resolveActivityChildLocator(loc, loaded, record)
-	if err != nil {
-		return nil, err
-	}
-	nextVisited := cloneActivityVisited(visited)
-	nextVisited[childID] = true
-	child, err := buildActivityContinuationAt(childLoc, cont, hop+1, nextVisited, true)
-	if err != nil {
-		return nil, err
-	}
-	filtered := activityFilterSnapshotToDelegate(loaded.snapshot, delegateID, child)
-	return &filtered, nil
+	return nil, fmt.Errorf("continuation path hop %q not found", delegateID)
 }
 
 func loadActivityBase(loc activitySessionLocator, required bool) (activityLoadedBase, error) {
@@ -377,7 +319,6 @@ func loadLiveActivityBase(s *Session) (activityLoadedBase, error) {
 		Revision:        activityCurrentRootRevision(s.jobActivityClock),
 		Jobs:            []*jobstore.JobRecord{},
 		LiveJobs:        map[string]*jobstore.JobRecord{},
-		Delegates:       map[string]*jobstore.DelegateRecord{},
 		StableDelegates: map[string]delegateSnapshot{},
 	}
 	if s.delegateController != nil {
@@ -394,13 +335,8 @@ func loadLiveActivityBase(s *Session) (activityLoadedBase, error) {
 		if err != nil {
 			return activityLoadedBase{}, err
 		}
-		delegates, err := jm.store.LoadDelegates()
-		if err != nil {
-			return activityLoadedBase{}, err
-		}
 		snapshot.Jobs = ordered
 		snapshot.LiveJobs = jm.liveJobRecords()
-		snapshot.Delegates = delegates
 	}
 	children := make(map[string]*subagent)
 	if s.subagents != nil {
@@ -430,14 +366,6 @@ func liveActivitySessionLabel(s *Session) string {
 	}
 	s.mu.Unlock()
 	return activitySessionLabel(schema.SessionMeta{ID: id, Name: name, OriginalPrompt: prompt})
-}
-
-func resolveActivityChildLocator(parent activitySessionLocator, loaded activityLoadedBase, record *jobstore.DelegateRecord) (activitySessionLocator, error) {
-	childID, err := activityChildSessionForRecord(record)
-	if err != nil {
-		return activitySessionLocator{}, err
-	}
-	return resolveActivityChildByID(parent, loaded, childID)
 }
 
 func resolveActivityChildByID(parent activitySessionLocator, loaded activityLoadedBase, childID string) (activitySessionLocator, error) {
@@ -474,26 +402,6 @@ func activitySessionLabel(meta schema.SessionMeta) string {
 	return strings.TrimSpace(meta.ID)
 }
 
-func activityChildSessionForRecord(record *jobstore.DelegateRecord) (string, error) {
-	if record == nil {
-		return "", errors.New("delegate record unavailable")
-	}
-	if record.ChildSessionID == "" || record.TranscriptRef == "" {
-		return "", fmt.Errorf("delegate %q has an incomplete child link", record.DelegateID)
-	}
-	projectID, childID, err := decodeRef(record.TranscriptRef)
-	if err != nil {
-		return "", err
-	}
-	if projectID != "" {
-		return "", fmt.Errorf("transcript ref %q crosses state directory boundary", record.TranscriptRef)
-	}
-	if childID != record.ChildSessionID {
-		return "", fmt.Errorf("delegate %q child link does not match durable child session", record.DelegateID)
-	}
-	return childID, nil
-}
-
 func activityChildSessionForStable(row delegateSnapshot) (string, error) {
 	descriptor := row.descriptor
 	if descriptor.ChildSessionID == "" || descriptor.TranscriptRef == "" {
@@ -510,15 +418,6 @@ func activityChildSessionForStable(row delegateSnapshot) (string, error) {
 		return "", fmt.Errorf("delegate %q child link does not match durable child session", row.id)
 	}
 	return childID, nil
-}
-
-func sortedActivityDelegateIDs(records map[string]*jobstore.DelegateRecord) []string {
-	ids := make([]string, 0, len(records))
-	for id := range records {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
 }
 
 func sortedStableActivityDelegateIDs(records map[string]delegateSnapshot) []string {
@@ -543,44 +442,17 @@ func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID s
 		Label:           base.Label,
 		RootID:          base.RootID,
 		Revision:        base.Revision,
-		Jobs:            filterActivityRecordsByDelegate(base.Jobs, delegateID),
-		LiveJobs:        filterActivityLiveRecordsByDelegate(base.LiveJobs, delegateID),
-		Delegates:       make(map[string]*jobstore.DelegateRecord, 1),
+		Jobs:            []*jobstore.JobRecord{},
+		LiveJobs:        map[string]*jobstore.JobRecord{},
 		StableDelegates: make(map[string]delegateSnapshot, 1),
 		Diagnostics:     append([]string(nil), base.Diagnostics...),
 		Children:        make(map[string]*activitySessionSnapshot),
 		Errors:          make(map[string]error),
 	}
-	if record := base.Delegates[delegateID]; record != nil {
-		filtered.Delegates[delegateID] = record
-		if child != nil && record.ChildSessionID != "" {
-			filtered.Children[record.ChildSessionID] = child
-		}
-	}
 	if row, ok := base.StableDelegates[delegateID]; ok {
 		filtered.StableDelegates[delegateID] = row
 		if child != nil && row.descriptor.ChildSessionID != "" {
 			filtered.Children[row.descriptor.ChildSessionID] = child
-		}
-	}
-	return filtered
-}
-
-func filterActivityRecordsByDelegate(records []*jobstore.JobRecord, delegateID string) []*jobstore.JobRecord {
-	filtered := make([]*jobstore.JobRecord, 0, len(records))
-	for _, rec := range records {
-		if rec != nil && rec.Type == jobstore.JobDelegate && rec.DelegateID == delegateID {
-			filtered = append(filtered, rec)
-		}
-	}
-	return filtered
-}
-
-func filterActivityLiveRecordsByDelegate(records map[string]*jobstore.JobRecord, delegateID string) map[string]*jobstore.JobRecord {
-	filtered := make(map[string]*jobstore.JobRecord)
-	for jobID, rec := range records {
-		if rec != nil && rec.Type == jobstore.JobDelegate && rec.DelegateID == delegateID {
-			filtered[jobID] = rec
 		}
 	}
 	return filtered
@@ -720,22 +592,6 @@ func cloneActivityRecord(rec *jobstore.JobRecord) *jobstore.JobRecord {
 		last := *rec.LastActivity
 		clone.LastActivity = &last
 	}
-	if rec.Resumable != nil {
-		resumable := *rec.Resumable
-		clone.Resumable = &resumable
-	}
-	if rec.StructuredResultValid != nil {
-		valid := *rec.StructuredResultValid
-		clone.StructuredResultValid = &valid
-	}
-	if rec.DelegateRestore != nil {
-		restore := *rec.DelegateRestore
-		restore.FrozenToolNames = append([]string(nil), rec.DelegateRestore.FrozenToolNames...)
-		restore.FrozenSkillNames = append([]string(nil), rec.DelegateRestore.FrozenSkillNames...)
-		restore.FrozenSkillBodies = append([]string(nil), rec.DelegateRestore.FrozenSkillBodies...)
-		restore.ExplicitToolGrants = append([]string(nil), rec.DelegateRestore.ExplicitToolGrants...)
-		clone.DelegateRestore = &restore
-	}
 	return &clone
 }
 
@@ -775,7 +631,6 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 	defer delete(budget.visiting, cycleKey)
 
 	records := activityOwnedRecords(snapshot.SessionID, mergeActivityRecords(snapshot.Jobs, snapshot.LiveJobs))
-	delegateGroups := groupActivityDelegates(records)
 	for _, rec := range records {
 		if rec == nil {
 			continue
@@ -789,30 +644,6 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 			}
 			job := projectActivityJob(rec, snapshot.Ref)
 			projected.Entries = append(projected.Entries, appwire.JobActivityEntry{Kind: "shell", Job: &job})
-		case jobstore.JobDelegate:
-			if rec.DelegateID == "" {
-				if !activityConsumeWorkUnit(budget, 1) {
-					markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path)
-					projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
-					return projected
-				}
-				appendActivityBranchError(&projected.Branch, fmt.Sprintf("delegate job %q has no delegate id", rec.JobID))
-				continue
-			}
-			if _, stable := snapshot.StableDelegates[rec.DelegateID]; stable {
-				continue
-			}
-			group := delegateGroups[rec.DelegateID]
-			if group == nil || group.anchor.JobID != rec.JobID {
-				continue
-			}
-			if !activityConsumeWorkUnit(budget, len(group.turns)) {
-				markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path)
-				projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
-				return projected
-			}
-			delegate := projectActivityDelegate(snapshot, group, budget, depth, path)
-			projected.Entries = append(projected.Entries, appwire.JobActivityEntry{Kind: "delegate", Delegate: &delegate})
 		default:
 			appendActivityBranchError(&projected.Branch, fmt.Sprintf("job %q has unsupported type %q", rec.JobID, rec.Type))
 		}
@@ -959,33 +790,6 @@ func activityUsageFromCumulative(usage *schema.CumulativeUsage) *appwire.SerfUsa
 	}
 }
 
-type activityDelegateGroup struct {
-	anchor *jobstore.JobRecord
-	turns  []*jobstore.JobRecord
-}
-
-func groupActivityDelegates(records []*jobstore.JobRecord) map[string]*activityDelegateGroup {
-	groups := make(map[string]*activityDelegateGroup)
-	for _, rec := range records {
-		if rec == nil || rec.Type != jobstore.JobDelegate || rec.DelegateID == "" {
-			continue
-		}
-		group := groups[rec.DelegateID]
-		if group == nil {
-			group = &activityDelegateGroup{}
-			groups[rec.DelegateID] = group
-		}
-		group.turns = append(group.turns, rec)
-	}
-	for _, group := range groups {
-		sort.SliceStable(group.turns, func(i, j int) bool {
-			return activityRecordBefore(group.turns[i], group.turns[j])
-		})
-		group.anchor = group.turns[0]
-	}
-	return groups
-}
-
 func activityOwnedRecords(sessionID string, records []*jobstore.JobRecord) []*jobstore.JobRecord {
 	if sessionID == "" || len(records) == 0 {
 		return records
@@ -1001,62 +805,6 @@ func activityOwnedRecords(sessionID string, records []*jobstore.JobRecord) []*jo
 		owned = append(owned, rec)
 	}
 	return owned
-}
-
-func projectActivityDelegate(snapshot activitySessionSnapshot, group *activityDelegateGroup, budget *activityBudget, depth int, path []string) appwire.JobActivityDelegate {
-	anchor := group.anchor
-	delegate := appwire.JobActivityDelegate{
-		DelegateID: anchor.DelegateID,
-		Mandate:    activityMandate(anchor),
-		Turns:      make([]appwire.JobActivityJob, 0, len(group.turns)),
-	}
-	for _, turn := range group.turns {
-		delegate.Turns = append(delegate.Turns, projectActivityJob(turn, snapshot.Ref))
-		if delegate.Mandate == "" {
-			delegate.Mandate = activityMandate(turn)
-		}
-	}
-	record := snapshot.Delegates[anchor.DelegateID]
-	if record == nil {
-		delegate.Branch.Error = fmt.Sprintf("delegate %q record unavailable", anchor.DelegateID)
-		return delegate
-	}
-	if record.DelegateID != anchor.DelegateID {
-		delegate.Branch.Error = fmt.Sprintf("delegate %q record identifies %q", anchor.DelegateID, record.DelegateID)
-		return delegate
-	}
-	if record.ChildSessionID == "" || record.TranscriptRef == "" {
-		delegate.Branch.Error = fmt.Sprintf("delegate %q has an incomplete child link", anchor.DelegateID)
-		return delegate
-	}
-
-	delegate.ChildSessionID = record.ChildSessionID
-	delegate.ChildRef = record.TranscriptRef
-	if err := snapshot.Errors[record.ChildSessionID]; err != nil {
-		delegate.Branch.Error = err.Error()
-		return delegate
-	}
-	child := snapshot.Children[record.ChildSessionID]
-	if child == nil {
-		delegate.Branch.Error = fmt.Sprintf("child session %q unavailable", record.ChildSessionID)
-		return delegate
-	}
-	if child.SessionID != record.ChildSessionID || child.Ref != record.TranscriptRef {
-		delegate.Branch.Error = fmt.Sprintf("delegate %q child link does not match loaded session", anchor.DelegateID)
-		return delegate
-	}
-	if child.Usage != nil {
-		usage := *child.Usage
-		delegate.Usage = &usage
-	}
-	childPath := appendActivityPath(path, anchor.DelegateID)
-	if budget != nil && budget.bounded && depth >= budget.maxDepth {
-		markActivityDelegateTruncated(&delegate, budget, child.SessionID, childPath)
-		return delegate
-	}
-	projectedChild := projectActivitySessionAt(*child, budget, depth+1, childPath)
-	delegate.Child = &projectedChild
-	return delegate
 }
 
 func activityConsumeWorkUnit(budget *activityBudget, units int) bool {
@@ -1109,16 +857,6 @@ func appendActivityPath(path []string, delegateID string) []string {
 		next = append(next, delegateID)
 	}
 	return next
-}
-
-func activityMandate(rec *jobstore.JobRecord) string {
-	if rec == nil {
-		return ""
-	}
-	if rec.Task != "" {
-		return rec.Task
-	}
-	return rec.Description
 }
 
 func appendActivityBranchError(branch *appwire.JobActivityBranchState, message string) {

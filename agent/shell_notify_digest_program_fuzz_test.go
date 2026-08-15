@@ -21,20 +21,20 @@ import (
 // terminal excerpt resolution, and all three notification render shapes. The
 // job store and output log live below t.TempDir; no process or provider runs.
 func FuzzShellNotificationRenderProgram(f *testing.F) {
-	f.Add(uint8(0), "short output\n", "exit_zero", "")
-	f.Add(uint8(1), strings.Repeat("x", terminalExcerptBytes+20), "done", "job:custom")
-	f.Add(uint8(2), "frame", "output_match: ready", "")
-	f.Add(uint8(3), "watch body", "event: ASSISTANT_TEXT_END", "")
-	f.Add(uint8(4), "missing", "not_found", "")
-	f.Add(uint8(5), "running", "", "")
-	f.Add(uint8(6), strings.Repeat("delegate\n", 1200), "completed", "")
-	f.Add(uint8(7), "ignored", "watch", "")
-	f.Add(uint8(8), "", "empty_output", "")
-	f.Add(uint8(9), "default event", "", "")
-	f.Add(uint8(16), "lane output", "completed", "")
-	f.Add(uint8(22), "lane output", "completed", "")
+	f.Add(uint8(0), "short output\n", "exit_zero")
+	f.Add(uint8(1), strings.Repeat("x", terminalExcerptBytes+20), "done")
+	f.Add(uint8(2), "frame", "output_match: ready")
+	f.Add(uint8(3), "watch body", "event: ASSISTANT_TEXT_END")
+	f.Add(uint8(4), "missing", "not_found")
+	f.Add(uint8(5), "running", "")
+	f.Add(uint8(6), strings.Repeat("delegate\n", 1200), "completed")
+	f.Add(uint8(7), "ignored", "watch")
+	f.Add(uint8(8), "", "empty_output")
+	f.Add(uint8(9), "default event", "")
+	f.Add(uint8(16), "lane output", "completed")
+	f.Add(uint8(22), "lane output", "completed")
 
-	f.Fuzz(func(t *testing.T, mode uint8, content, reason, transcriptRef string) {
+	f.Fuzz(func(t *testing.T, mode uint8, content, reason string) {
 		if len(content) > terminalExcerptBytes*2 {
 			content = content[:terminalExcerptBytes*2]
 		}
@@ -47,7 +47,7 @@ func FuzzShellNotificationRenderProgram(f *testing.F) {
 		noteProv := provenance.WithWatch(nil, "watch-note", "gen", "delivery-note", jm.sessionID, "caller")
 		rec := &jobstore.JobRecord{
 			JobID: "job_render", Type: jobstore.JobShell, Status: jobstore.StatusCompleted,
-			Reason: reason, TranscriptRef: transcriptRef, OutputBytes: int64(len(content)),
+			Reason: reason, OutputBytes: int64(len(content)),
 			ExitCode: &code, Provenance: jobProv,
 		}
 		if mode&4 != 0 {
@@ -87,10 +87,6 @@ func FuzzShellNotificationRenderProgram(f *testing.F) {
 			n.Status = string(jobstore.StatusRunning)
 			excerpt = s.terminalNotificationExcerpt(n)
 		case 6:
-			n.JobType = string(jobstore.JobDelegate)
-			writeFinishedJobWithOutput(t, jm, rec.JobID, jobstore.JobDelegate, content)
-			terminalWithOutput = true
-			excerpt = s.terminalNotificationExcerpt(n)
 		case 7:
 			n.Status = jobNotificationEventWatch
 			excerpt = s.terminalNotificationExcerpt(n)
@@ -98,12 +94,6 @@ func FuzzShellNotificationRenderProgram(f *testing.F) {
 		if mode&8 != 0 {
 			n.Status = ""
 		}
-		if mode&16 != 0 && mode%8 == 6 {
-			excerpt.worktree = &delegateWorktreeReport{
-				Path: "/tmp/lane", Branch: "serf/lane", Ahead: 2, Dirty: true,
-			}
-		}
-
 		block := formatJobNotificationBlock(n, excerpt, true)
 		if !utf8.ValidString(block) || !strings.HasPrefix(block, "<job-notification ") || !strings.HasSuffix(block, "</job-notification>") {
 			t.Fatalf("malformed notification block: %q", block)
@@ -119,13 +109,6 @@ func FuzzShellNotificationRenderProgram(f *testing.F) {
 		}
 		if mode&8 != 0 && n.WatchSend == nil && !strings.Contains(block, `event="running"`) {
 			t.Fatalf("empty status did not render the default running event: %q", block)
-		}
-		if mode&16 != 0 && mode%8 == 6 {
-			for _, want := range []string{`worktree_path="/tmp/lane"`, `worktree_branch="serf/lane"`, `worktree_ahead="2"`, `worktree_dirty="true"`} {
-				if !strings.Contains(block, want) {
-					t.Fatalf("worktree notification missing %q: %q", want, block)
-				}
-			}
 		}
 	})
 }

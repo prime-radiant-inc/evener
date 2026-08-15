@@ -71,13 +71,6 @@ func TestSelfDeliveryWatchShapesInstall(t *testing.T) {
 			},
 		},
 		{
-			name: "sidecar_delivery_to_delegate",
-			build: func(t *testing.T, jm *jobManager) watchArgs {
-				seedCommonWatchSendTargets(t, jm)
-				return watchArgs{Target: "caller", Events: []string{"communicate"}, Send: &watchSendArgs{To: "dlg_obs"}}
-			},
-		},
-		{
 			name: "job_notification_self_watch",
 			build: func(*testing.T, *jobManager) watchArgs {
 				return watchArgs{Target: "caller", Events: []string{"job.notification"}}
@@ -159,14 +152,11 @@ func TestJobWatchSelfSourceSelfKindInstalls(t *testing.T) {
 func TestEventWatchDeliversWatchOriginatedSubagentEventsClassified(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	seedCommonWatchSendTargets(t, jm)
-	if _, err := jm.configureWatch(watchArgs{
+	installWatchBelowValidation(t, jm, watchArgs{
 		Target: "caller",
 		Events: []string{"job.notification"},
 		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
+	})
 	cfg := onlyWatchConfigForTest(t, jm)
 
 	ownEcho := events.SessionEvent{
@@ -243,14 +233,11 @@ func TestNoSendWatchNotificationCarriesProvenanceForEchoClassification(t *testin
 func TestWatchOriginDeliversDelegateLifecycleWatchSendsClassified(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	seedCommonWatchSendTargets(t, jm)
-	if _, err := jm.configureWatch(watchArgs{
+	installWatchBelowValidation(t, jm, watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
 		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
+	})
 	cfg := onlyWatchConfigForTest(t, jm)
 	own := provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_obs", jm.sessionID, "*")
 
@@ -359,16 +346,13 @@ func TestOutputMatchDeliversSameWatchProvenanceAcrossSplitLineClassified(t *test
 func TestOutputMatchDeliversSameWatchProvenanceOnTerminalFlushClassified(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	if _, err := jm.configureWatch(watchArgs{
+	installWatchBelowValidation(t, jm, watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
 		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
+	})
 	cfg := onlyWatchConfigForTest(t, jm)
 	p := provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", jm.sessionID, rec.JobID)
 
@@ -419,7 +403,10 @@ func TestProgressTickDeliversSameWatchProvenanceClassified(t *testing.T) {
 func TestWatchWatchedAliasSendRejectsConcreteTarget(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	target := createRunningDelegateWatchTarget(t, jm)
+	target, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create shell target: %v", err)
+	}
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      target.JobID,
 		OutputMatch: "ready",
@@ -688,7 +675,6 @@ func TestJobWatchAllowsDescendantConcreteJobSource(t *testing.T) {
 func TestJobWatchDeliversSameWatchProvenanceClassifiedSelfInfluenced(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	seedWatchSendDelegateTarget(t, jm, "dlg_1")
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
@@ -716,7 +702,6 @@ func TestJobWatchDeliversSameWatchProvenanceClassifiedSelfInfluenced(t *testing.
 func TestJobWatchDoesNotSuppressDifferentGeneration(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	seedWatchSendDelegateTarget(t, jm, "dlg_1")
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
@@ -740,7 +725,6 @@ func TestJobWatchDoesNotSuppressDifferentGeneration(t *testing.T) {
 func TestWatchSendFrameRendersTriggerProvenanceNotDeliveryProvenance(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	seedWatchSendDelegateTarget(t, jm, "dlg_1")
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},

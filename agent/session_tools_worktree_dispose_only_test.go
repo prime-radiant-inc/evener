@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -86,7 +87,7 @@ func TestWorktreeAvailability_NonIsolatedCoordinatorHasFullTool(t *testing.T) {
 	}
 	enum := manageWorktreeOpEnum(t, rt.Definition)
 	for _, want := range []string{"create", "list", "switch", "exit", "remove", "prune", "dispose"} {
-		if !containsString(enum, want) {
+		if !slices.Contains(enum, want) {
 			t.Errorf("full tool op enum %v missing %q", enum, want)
 		}
 	}

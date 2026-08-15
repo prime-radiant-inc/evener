@@ -13,6 +13,10 @@ import (
 	"primeradiant.com/serf/agent/provenance"
 )
 
+func isWatchSendTerminalEvent(kind jobstore.EventKind) bool {
+	return kind == jobstore.EventWatchSendDelivered || kind == jobstore.EventWatchSendDropped || kind == jobstore.EventWatchSendEvicted
+}
+
 // FuzzWatchPendingFrameProgram exercises two deterministic job-watch seams:
 // durable pending-send history selection and model-facing frame rendering. The
 // history oracle models a pending -> terminal -> pending lifecycle, while the
@@ -79,28 +83,23 @@ func wpfpPendingHistory(t *testing.T, r *wpfpReader) {
 		{Kind: jobstore.EventWatchSendPending, Seq: 2, WatchSend: &jobstore.WatchSendState{Key: other, DeliveryID: "other", UpdateSeq: 1}},
 		{Kind: jobstore.EventWatchSendDelivered, Seq: 3, WatchSend: &first},
 		{Kind: jobstore.EventWatchSendPending, Seq: 4, WatchSend: &current},
-		{Kind: jobstore.EventDelegateStopGateClosed, Seq: 5, DelegateID: "dlg_receiver"},
 	}
 	if r.next()&1 != 0 {
 		eventsLog[2].Kind = jobstore.EventWatchSendDropped
 	}
-	if got := watchSendCurrentPendingSeq(eventsLog, current); got != 4 {
-		t.Fatalf("current pending seq = %d, want 4", got)
+	folded := jobstore.FoldWatchSends(eventsLog)
+	got := folded.Pending[key]
+	if got == nil {
+		t.Fatal("current pending state missing")
 	}
-	if got := watchSendPendingCreationSeq(eventsLog, current); got != 4 {
-		t.Fatalf("pending creation seq = %d, want 4 after terminal boundary", got)
+	if got.DeliveryID != current.DeliveryID {
+		t.Fatalf("current delivery ID = %q, want %q", got.DeliveryID, current.DeliveryID)
 	}
-	legacy := current
-	legacy.DeliveryID = ""
-	legacy.UpdateSeq = 0
-	if got := watchSendCurrentPendingSeq(eventsLog, legacy); got != 4 {
-		t.Fatalf("legacy current pending seq = %d, want latest 4", got)
+	if got.UpdateSeq != current.UpdateSeq {
+		t.Fatalf("current update seq = %d, want %d", got.UpdateSeq, current.UpdateSeq)
 	}
-	if watchSendEventMatchesKey(nil, key) || watchSendEventMatchesState(nil, current) {
-		t.Fatal("nil durable state matched a watch-send key")
-	}
-	if watchSendEventMatchesState(&first, current) {
-		t.Fatal("different delivery/update state matched current delivery")
+	if len(folded.Pending) != 2 {
+		t.Fatalf("pending state count = %d, want 2", len(folded.Pending))
 	}
 	for _, kind := range []jobstore.EventKind{jobstore.EventWatchSendDelivered, jobstore.EventWatchSendDropped, jobstore.EventWatchSendEvicted} {
 		if !isWatchSendTerminalEvent(kind) {

@@ -16,7 +16,7 @@ import (
 // FuzzJobtoolsContractProgram covers the job-tool result and validation branches
 // that do not require a live provider. It uses a real durable job manager for
 // status, list, and idempotent terminal-stop behavior, then exercises the same
-// bounded result encoders used by delegate and delegate_send.
+// bounded result encoders used by stable delegate create/send tools.
 func FuzzJobtoolsContractProgram(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{1, 0, 1, 0, 1, 0, 1, 0})
@@ -87,25 +87,10 @@ func FuzzJobtoolsContractProgram(f *testing.F) {
 			}
 		}
 
-		// Runtime callbacks and ordinary delegate sends take different projection
-		// paths. Both must remain structured and deterministic for either delivery
-		// outcome and for bounded foreground output.
-		runtimeSend := sendMessageResult{
-			MessageType: "runtime",
-			Delivered:   r.booln(),
-			Action:      "callback",
-		}
-		jobtoolsAssertStableStateResult(t, func() (any, error) {
-			return marshalDelegateSendResult(runtimeSend, 1+r.intn(2048))
-		})
-
 		output := strings.Repeat(r.str()+"\n", 1+r.intn(16))
 		ordinarySend := sendMessageResult{
 			DelegateID:               "dlg_contract",
-			StartedJobID:             "job_started",
-			JobID:                    jobID,
-			LatestJobID:              jobID,
-			Type:                     string(jobstore.JobDelegate),
+			Type:                     delegateResourceType,
 			Status:                   jobstore.StatusCompleted,
 			Reason:                   "complete",
 			Action:                   "started",
@@ -119,22 +104,18 @@ func FuzzJobtoolsContractProgram(f *testing.F) {
 			return marshalDelegateSendResult(ordinarySend, 1+r.intn(2048))
 		})
 
-		delegate := delegateResult{
-			DelegateID:               "dlg_contract",
-			JobID:                    jobID,
-			Type:                     string(jobstore.JobDelegate),
-			Status:                   jobstore.StatusCompleted,
-			TranscriptRef:            "local:contract",
-			Output:                   output,
-			StructuredResult:         map[string]any{"value": r.str()},
-			StructuredResultValidSet: true,
-			StructuredResultValid:    r.booln(),
-			Worktree:                 &delegateWorktreeReport{Path: "/tmp/contract", Branch: "contract", Ahead: r.intn(4), Dirty: r.booln()},
-			Sandbox:                  &delegateSandboxReport{Mode: "workspace-write", Network: r.booln()},
+		delegate := stableDelegateCreateResult{
+			DelegateID:     "dlg_contract",
+			ChildSessionID: "child-dlg_contract",
+			Type:           delegateResourceType,
+			Status:         string(jobstore.StatusRunning),
+			TranscriptRef:  "local:child-dlg_contract",
+			Model:          r.str(),
+			Sandbox:        delegateSandboxToolResultFrom(&delegateSandboxReport{Mode: "workspace-write", Network: r.booln()}),
 		}
 		maxChars := 800 + r.intn(1200)
-		first, firstErr := marshalDelegateResult(delegate, maxChars)
-		second, secondErr := marshalDelegateResult(delegate, maxChars)
+		first, firstErr := marshalStableDelegateCreateResult(delegate, maxChars)
+		second, secondErr := marshalStableDelegateCreateResult(delegate, maxChars)
 		if (firstErr == nil) != (secondErr == nil) || first != second {
 			t.Fatalf("delegate result is non-deterministic: (%q, %v) != (%q, %v)", first, firstErr, second, secondErr)
 		}

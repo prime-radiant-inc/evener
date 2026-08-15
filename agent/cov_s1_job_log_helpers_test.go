@@ -53,16 +53,15 @@ func TestS1Cov_LoadSessionHistoricalJobRecords_FoldsRecords(t *testing.T) {
 	now := time.Now().UTC()
 	out := int64(4096)
 	s1cov_writeJobLog(t, stateDir, "SESS",
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: now, JobID: "job_d1", Type: jobstore.JobDelegate, OwnerSessionID: "SESS", StartedAt: &now, DelegateID: "dlg_1", Task: "do the thing", OriginTurnID: "turn_1", OriginToolCallID: "call_1", OriginItemID: "item_1"},
-		jobstore.Event{Kind: jobstore.EventJobSessionAssigned, TS: now, JobID: "job_d1", TranscriptRef: encodeRef("", "CHILD")},
-		jobstore.Event{Kind: jobstore.EventJobFinished, TS: now, JobID: "job_d1", Status: jobstore.StatusCompleted, Reason: "done", OutputBytes: out, EndedAt: &now},
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: now, JobID: "job_s1", Type: jobstore.JobShell, OwnerSessionID: "SESS", StartedAt: &now, Command: "do the thing", OriginTurnID: "turn_1", OriginToolCallID: "call_1", OriginItemID: "item_1"},
+		jobstore.Event{Kind: jobstore.EventJobFinished, TS: now, JobID: "job_s1", Status: jobstore.StatusCompleted, Reason: "done", OutputBytes: out, EndedAt: &now},
 	)
 	got, err := LoadSessionHistoricalJobRecords(stateDir, "SESS")
 	if err != nil {
 		t.Fatalf("LoadSessionHistoricalJobRecords: %v", err)
 	}
-	rec, ok := got["job_d1"]
-	if !ok || rec.Type != string(jobstore.JobDelegate) || rec.Status != string(jobstore.StatusCompleted) || rec.DelegateID != "dlg_1" || rec.Task != "do the thing" || rec.Reason != "done" || rec.OriginTurnID != "turn_1" || rec.OriginToolCallID != "call_1" || rec.OriginItemID != "item_1" || rec.TranscriptRef != encodeRef("", "CHILD") || rec.OutputBytes != out {
+	rec, ok := got["job_s1"]
+	if !ok || rec.Type != string(jobstore.JobShell) || rec.Status != string(jobstore.StatusCompleted) || rec.Reason != "done" || rec.OriginTurnID != "turn_1" || rec.OriginToolCallID != "call_1" || rec.OriginItemID != "item_1" || rec.OutputBytes != out {
 		t.Fatalf("historical record = %+v", rec)
 	}
 }

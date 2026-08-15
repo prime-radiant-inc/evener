@@ -118,7 +118,7 @@ var jobtools_strings = []string{
 }
 
 // jobtools_jobTypes / jobtools_statuses are the enum draws for seeded records.
-var jobtools_jobTypes = []jobstore.JobType{jobstore.JobShell, jobstore.JobDelegate, "bogus"}
+var jobtools_jobTypes = []jobstore.JobType{jobstore.JobShell, "bogus"}
 var jobtools_statuses = []jobstore.Status{
 	jobstore.StatusRunning,
 	jobstore.StatusCompleted,
@@ -186,9 +186,6 @@ func FuzzJobtoolsExec(f *testing.F) {
 				StartedAt:        &started,
 				Command:          r.str(),
 				Description:      r.str(),
-			}
-			if r.booln() {
-				startEv.DelegateID = "dlg_seed" + string(rune('a'+i))
 			}
 			if err := jm.appendEvent(startEv); err != nil {
 				continue // a marshal/write hiccup on seeding is not the target
@@ -458,7 +455,6 @@ func jobtools_buildListResult(r *jobtools_reader) jobListResult {
 	for i := 0; i < nJobs; i++ {
 		e := jobListEntry{
 			JobID:          r.str(),
-			DelegateID:     r.str(),
 			Kind:           r.str(),
 			Type:           r.str(),
 			Status:         r.str(),
@@ -481,19 +477,6 @@ func jobtools_buildListResult(r *jobtools_reader) jobListResult {
 		jobs = append(jobs, e)
 	}
 	res := jobListResult{Jobs: jobs, Count: len(jobs), DelegationAllowance: r.intn(6)}
-	nDel := r.intn(3)
-	for i := 0; i < nDel; i++ {
-		res.Delegates = append(res.Delegates, delegateListEntry{
-			DelegateID:       r.str(),
-			Status:           r.str(),
-			CurrentJobID:     r.str(),
-			LatestJobID:      r.str(),
-			TranscriptRef:    r.str(),
-			Resumable:        r.booln(),
-			NotResumableWhy:  r.str(),
-			ParentDelegateID: r.str(),
-		})
-	}
 	nW := r.intn(3)
 	for i := 0; i < nW; i++ {
 		res.Watches = append(res.Watches, watchListEntry{

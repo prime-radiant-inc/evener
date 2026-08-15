@@ -8,8 +8,8 @@ import "primeradiant.com/serf/agent/provenance"
 // The Store hands every loaded event out through this. Its tail cursor keeps
 // decoded events across loads, and a load's result must stay what it has always
 // been — a private snapshot. Callers do write into what a load returned (agent
-// tests plant bogus durable state by reaching into JobRecord.DelegateRestore,
-// which Fold copies straight off the event), and such a write must not reach
+// tests plant bogus durable state by reaching into folded records, and such a
+// write must not reach
 // back into the cursor and change what a later load reports.
 //
 // Every reference-carrying field of Event must be handled here.
@@ -20,14 +20,10 @@ func cloneEvent(e Event) Event {
 	out.StartedAt = clonePtr(e.StartedAt)
 	out.EndedAt = clonePtr(e.EndedAt)
 	out.ExitCode = clonePtr(e.ExitCode)
-	out.Resumable = clonePtr(e.Resumable)
 	out.StructuredResultValid = clonePtr(e.StructuredResultValid)
 	out.StructuredResult = cloneJSONValue(e.StructuredResult)
 	out.Provenance = cloneCausal(e.Provenance)
-	out.DelegateRestore = cloneDelegateRestore(e.DelegateRestore)
 	out.WatchSend = cloneWatchSend(e.WatchSend)
-	// DelegateEvent is strings and bools only, so a pointee copy is deep.
-	out.Delegate = clonePtr(e.Delegate)
 	out.Watch = cloneWatchEvent(e.Watch)
 	return out
 }
@@ -85,34 +81,6 @@ func cloneCausal(p *provenance.Causal) *provenance.Causal {
 	out := *p
 	out.WatchKeys = cloneSlice(p.WatchKeys)
 	out.Chain = cloneSlice(p.Chain)
-	return &out
-}
-
-func cloneDelegateRestore(d *DelegateRestoreDescriptor) *DelegateRestoreDescriptor {
-	if d == nil {
-		return nil
-	}
-	out := *d
-	out.FrozenToolNames = cloneSlice(d.FrozenToolNames)
-	out.FrozenSkillNames = cloneSlice(d.FrozenSkillNames)
-	out.FrozenSkillBodies = cloneSlice(d.FrozenSkillBodies)
-	out.ExplicitToolGrants = cloneSlice(d.ExplicitToolGrants)
-	out.ResultSchema = cloneJSONValue(d.ResultSchema)
-	out.Provenance = cloneCausal(d.Provenance)
-	out.Sandbox = cloneSandboxSnapshot(d.Sandbox)
-	return &out
-}
-
-func cloneSandboxSnapshot(sb *SandboxSnapshot) *SandboxSnapshot {
-	if sb == nil {
-		return nil
-	}
-	out := *sb
-	out.Network = clonePtr(sb.Network)
-	out.DenylistAdd = cloneSlice(sb.DenylistAdd)
-	out.DenylistRemove = cloneSlice(sb.DenylistRemove)
-	out.ExtraWritableRoots = cloneSlice(sb.ExtraWritableRoots)
-	out.ExtraReadRoots = cloneSlice(sb.ExtraReadRoots)
 	return &out
 }
 

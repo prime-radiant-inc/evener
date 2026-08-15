@@ -2589,9 +2589,9 @@ type laneSweepPolicy struct {
 	// returns the error and aborts (prune); false → the lane is reported skipped
 	// and the sweep continues (P3: refusal/ENOENT is a normal race loss).
 	abortOnError bool
-	// markDisposed, when non-nil, is invoked with a collected lane's delegate id
-	// just before its branch/sidecar are deleted (P3 own-store Disposed mark).
-	markDisposed func(delegateID string)
+	// prepareDispose, when non-nil, durably closes a stable delegate before the
+	// first destructive collection operation.
+	prepareDispose func(delegateID string) error
 }
 
 // ctxCancelled reports whether ctx's deadline/cancellation has fired. It exists
@@ -2731,6 +2731,11 @@ func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunne
 // lost race (P3). The mark is best-effort inside markDisposed itself, so it never
 // blocks the branch/sidecar cleanup.
 func (s *Session) collectLane(run worktree.GitRunner, metaDir, name, path string, hasWorktree bool, policy laneSweepPolicy) error {
+	if policy.prepareDispose != nil {
+		if err := policy.prepareDispose(name); err != nil {
+			return fmt.Errorf("preparing stable delegate %q for disposal: %w", name, err)
+		}
+	}
 	if hasWorktree {
 		if _, err := run("worktree", "remove", "--", path); err != nil {
 			// Another collector may have completed the same remove first. Continue
@@ -2739,9 +2744,6 @@ func (s *Session) collectLane(run worktree.GitRunner, metaDir, name, path string
 				return fmt.Errorf("removing %s: %w", path, err)
 			}
 		}
-	}
-	if policy.markDisposed != nil {
-		policy.markDisposed(name)
 	}
 	if _, err := run("branch", "-D", name); err != nil {
 		return fmt.Errorf("deleting branch %q: %w", name, err)
@@ -2873,6 +2875,12 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 		// -D. The branch delete is the destructive step here (no worktree remains
 		// to remove), so it can legitimately be refused (checked out elsewhere);
 		// the own-store Disposed mark is therefore appended only once it succeeds.
+		if policy.prepareDispose != nil {
+			if err := policy.prepareDispose(sc.Name); err != nil {
+				skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: "prepare disposal: " + err.Error()})
+				continue
+			}
+		}
 		if _, err := run("branch", "-D", sc.Name); err != nil {
 			reason := "checked out"
 			if loc, ok := checkoutLocationOf(run, sc.Name); ok {
@@ -2880,9 +2888,6 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 			}
 			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: reason})
 			continue
-		}
-		if policy.markDisposed != nil {
-			policy.markDisposed(sc.Name)
 		}
 		if err := s.deleteWorktreeSidecar(metaDir, sc.Name); err != nil && !os.IsNotExist(err) {
 			if policy.abortOnError {

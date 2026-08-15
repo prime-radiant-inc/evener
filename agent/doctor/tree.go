@@ -31,8 +31,8 @@ type TreeOpts struct {
 	Observers bool // include observer edges (worker -> observer), not just delegates
 }
 
-// Tree resolves the selector and walks the session tree: delegate edges (from
-// DelegateRecord, possibly crossing buckets via each child's transcript ref) and
+// Tree resolves the selector and walks the session tree: stable delegate edges,
+// possibly crossing buckets via each child's transcript ref, and
 // — with Observers — observer edges (from the worker's SessionMeta.ObservedBy).
 func Tree(stateBase, selector string, opts TreeOpts) (TreeNode, error) {
 	paths, err := Locate(stateBase, selector)
@@ -91,7 +91,7 @@ func stableDelegateChildren(stateBase, ownerSessionID string, state delegatestor
 		}
 		childPaths, err := Locate(stateBase, childSelector)
 		if err != nil {
-			child.Note = "transcript not found"
+			child.Note = withDelegateReason("transcript not found", row.NotResumableReason)
 			children = append(children, child)
 			continue
 		}
@@ -103,9 +103,20 @@ func stableDelegateChildren(stateBase, ownerSessionID string, state delegatestor
 		} else {
 			child.Note = stableDepthLimitNote(childPaths)
 		}
+		child.Note = withDelegateReason(child.Note, row.NotResumableReason)
 		children = append(children, child)
 	}
 	return children
+}
+
+func withDelegateReason(existing, reason string) string {
+	if reason == "" {
+		return existing
+	}
+	if existing == "" {
+		return reason
+	}
+	return reason + "; " + existing
 }
 
 func stableDepthLimitNote(paths Paths) string {
@@ -115,80 +126,6 @@ func stableDepthLimitNote(paths Paths) string {
 	}
 	if len(projectDoctorDelegates(paths.SessionID, state)) != 0 {
 		return "depth limit (children not expanded)"
-	}
-	return ""
-}
-
-func delegateChildren(stateBase string, events []jobstore.Event, opts TreeOpts, depthRemaining int, visited map[string]bool) []TreeNode {
-	delegates := jobstore.FoldDelegates(events)
-	ordered := make([]*jobstore.DelegateRecord, 0, len(delegates))
-	for _, d := range delegates {
-		if d.ChildSessionID == "" {
-			continue
-		}
-		ordered = append(ordered, d)
-	}
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ChildSessionID < ordered[j].ChildSessionID })
-
-	children := make([]TreeNode, 0, len(ordered))
-	for _, d := range ordered {
-		child := TreeNode{
-			SessionID:     d.ChildSessionID,
-			TranscriptRef: d.TranscriptRef,
-			AgentType:     d.AgentType,
-			Status:        string(d.Status),
-			Edge:          "delegate",
-		}
-		childSel := d.TranscriptRef
-		if childSel == "" {
-			childSel = d.ChildSessionID
-		}
-		childPaths, err := Locate(stateBase, childSel)
-		if err != nil {
-			child.Note = "transcript not found"
-			if d.Disposed {
-				child.Note = withDisposedNote(child.Note)
-			}
-			children = append(children, child)
-			continue
-		}
-		if child.TranscriptRef == "" {
-			child.TranscriptRef = childPaths.TranscriptRef
-		}
-		if depthRemaining > 1 {
-			child = expandNode(stateBase, child, childPaths, opts, depthRemaining-1, visited)
-		} else {
-			child.Note = depthLimitNote(childPaths)
-		}
-		if d.Disposed {
-			child.Note = withDisposedNote(child.Note)
-		}
-		children = append(children, child)
-	}
-	return children
-}
-
-// withDisposedNote prepends the disposed marker to a tree node's note so a
-// disposed delegate reads as non-resumable in the rendered tree, preserving any
-// existing note (depth limit, transcript not found).
-func withDisposedNote(existing string) string {
-	if existing == "" {
-		return "disposed"
-	}
-	return "disposed; " + existing
-}
-
-// depthLimitNote reports a "children not expanded" note when a node sits at the
-// depth limit but actually has delegate children, so the elision is visible.
-func depthLimitNote(childPaths Paths) string {
-	events, err := jobstore.ReadEvents(childPaths.JobsPath)
-	if err != nil {
-		return ""
-	}
-	for _, d := range jobstore.FoldDelegates(events) {
-		if d.ChildSessionID != "" {
-			return "depth limit (children not expanded)"
-		}
 	}
 	return ""
 }

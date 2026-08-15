@@ -1731,7 +1731,7 @@ func (s *Session) markJobNotificationsDelivered(notifs []deliverableJobNotificat
 		// this the parent's copy stays NotifyPending after the child self-delivers
 		// and is later falsely escalated as "child unreachable:". Best-effort and
 		// no-op for root sessions and non-forwarded terminals (forwardSnapshot
-		// guards on forward/parentJobID); the parent intake (forwardEvent) settles
+		// guards on the configured parent resource); the parent intake (forwardEvent) settles
 		// the copy without enqueueing, so no spurious render.
 		if ferr := s.jobManager.forwardSnapshot(jobstore.Event{
 			Kind:        jobstore.EventJobNotificationDelivered,

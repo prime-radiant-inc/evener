@@ -15,7 +15,6 @@ func TestGeneratedIDDomains(t *testing.T) {
 		{"session", "", NewSessionID, ValidateSessionID},
 		{"installation", "", NewInstallationID, ValidateInstallationID},
 		{"delegate", "dlg_", NewDelegateID, ValidateDelegateID},
-		{"delegate-generation", "dg_", NewDelegateGeneration, ValidateDelegateGeneration},
 		{"watch", "watch_", NewWatchID, ValidateWatchID},
 		{"watch-generation", "wg_", NewWatchGeneration, ValidateWatchGeneration},
 		{"watch-delivery", "wd_", NewWatchDeliveryID, ValidateWatchDeliveryID},
@@ -51,7 +50,6 @@ func TestGeneratedIDValidatorsRejectWrongDomain(t *testing.T) {
 		{"session", "", NewSessionID, ValidateSessionID},
 		{"installation", "", NewInstallationID, ValidateInstallationID},
 		{"delegate", "dlg_", NewDelegateID, ValidateDelegateID},
-		{"delegate-generation", "dg_", NewDelegateGeneration, ValidateDelegateGeneration},
 		{"watch", "watch_", NewWatchID, ValidateWatchID},
 		{"watch-generation", "wg_", NewWatchGeneration, ValidateWatchGeneration},
 		{"watch-delivery", "wd_", NewWatchDeliveryID, ValidateWatchDeliveryID},
@@ -103,8 +101,8 @@ func TestGeneratedIDValidatorsRejectCrossDomain(t *testing.T) {
 func TestMustGeneratedIDDomains(t *testing.T) {
 	for name, newID := range map[string]func() string{
 		"session": MustNewSessionID, "installation": MustNewInstallationID,
-		"delegate": MustNewDelegateID, "delegate generation": MustNewDelegateGeneration,
-		"watch": MustNewWatchID, "watch generation": MustNewWatchGeneration,
+		"delegate": MustNewDelegateID,
+		"watch":    MustNewWatchID, "watch generation": MustNewWatchGeneration,
 		"watch delivery": MustNewWatchDeliveryID, "agent call": MustNewAgentCallID,
 		"API attempt": MustNewAPIAttemptID, "synthetic call": MustNewSyntheticCallID,
 		"client mutation": MustNewClientMutationID, "terminal generation": MustNewTerminalGeneration,

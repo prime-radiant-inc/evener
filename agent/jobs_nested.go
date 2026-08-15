@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
@@ -399,18 +398,12 @@ func (s *Session) notControllableDescendantError(jobID string) error {
 	}
 	handle := child.owningDelegateID
 	if handle == "" {
-		handle = s.directDelegateJobForChild(child.id)
-	}
-	if handle == "" {
 		return fmt.Errorf("not_controllable: job %q is owned by descendant session %q, not your direct delegate; stop your direct delegate for session %q to cascade-stop its subtree", jobID, ownerID, child.id)
 	}
-	if strings.HasPrefix(handle, "dlg_") {
-		return fmt.Errorf("not_controllable: job %q is owned by descendant session %q; stop your direct delegate %q to cascade-stop its subtree", jobID, ownerID, handle)
-	}
-	return fmt.Errorf("not_controllable: job %q is owned by descendant session %q, not your direct delegate; stop your direct delegate job %q (which owns session %q) to cascade-stop its subtree", jobID, ownerID, handle, child.id)
+	return fmt.Errorf("not_controllable: job %q is owned by descendant session %q; stop your direct delegate %q to cascade-stop its subtree", jobID, ownerID, handle)
 }
 
-func (s *Session) stopChildren(delegateJobID string) ([]*jobstore.JobRecord, error) {
+func (s *Session) stopChildren(parentJobID string) ([]*jobstore.JobRecord, error) {
 	local, err := sessionJobManager(s)
 	if err != nil {
 		return nil, err
@@ -423,7 +416,7 @@ func (s *Session) stopChildren(delegateJobID string) ([]*jobstore.JobRecord, err
 	var stopped []*jobstore.JobRecord
 	var stopErr error
 	for jobID, rec := range recs {
-		if rec.ParentJobID != delegateJobID || rec.Status.IsTerminal() {
+		if rec.ParentJobID != parentJobID || rec.Status.IsTerminal() {
 			continue
 		}
 		stoppedRec, err := s.stopNestedOrLocal(jobID)
@@ -438,77 +431,9 @@ func (s *Session) stopChildren(delegateJobID string) ([]*jobstore.JobRecord, err
 	return stopped, stopErr
 }
 
-// delegateChildSessionToCascade resolves jobID to the live child session whose
-// subtree the job_stop cascade must stop (spec §2). It returns a session only
-// when jobID is the caller's OWN direct delegate job (a delegate record the
-// caller owns, whose transcript_ref names a live direct child). Shell jobs,
-// non-owned forwarded copies, and dead children resolve to nil — there is no
-// live subtree to cascade into.
-func (s *Session) delegateChildSessionToCascade(jobID string) *Session {
-	local, err := sessionJobManager(s)
-	if err != nil || local.store == nil {
-		return nil
-	}
-	recs, err := local.store.Load()
-	if err != nil {
-		return nil
-	}
-	rec := recs[jobID]
-	// No terminal-status gate: a fire-and-return coordinator's OWN delegate job is
-	// terminal (completed) while its live subtree keeps running, and job_stop must
-	// still cascade-stop that live subtree. The downstream stopDelegateSubtree only
-	// signals jm.runningJobIDs(), so already-terminal subtree jobs are skipped
-	// harmlessly; and liveSubagentSession (below) still returns nil for a genuinely
-	// closed/gone coordinator session, so a truly-gone subtree is a safe no-op.
-	if rec == nil || rec.Type != jobstore.JobDelegate || rec.OwnerSessionID != s.id {
-		return nil
-	}
-	_, childID, err := decodeRef(rec.TranscriptRef)
-	if err != nil || childID == "" {
-		return nil
-	}
-	childSession := liveSubagentSession(s.subagents, childID)
-	if childSession == nil || childSession.jobManager == nil {
-		return nil
-	}
-	// Only cascade when the stopped job is the child's CURRENT parent delegate.
-	// A stale, superseded delegate id (the child was resumed to a newer job J2,
-	// keeping the same childID) must NOT cascade-stop the child's current live
-	// work — job_stop targets the job you named, not whatever later work reused
-	// the session. The fire-and-return case is preserved: a live coordinator's
-	// own delegate job IS its child session's current parent, so stopping it
-	// still cascades into its workers.
-	if childSession.jobManager.currentParentJobID() != jobID {
-		return nil
-	}
-	return childSession
-}
-
-// stopDelegateSubtree implements the job_stop cascade (spec §2): stopping a
-// coordinator's delegate job also stops the coordinator's own running jobs (its
-// workers' delegate + shell jobs) and recurses into the live subtree, so the
-// §0.2 "stop the subtree = stop its direct child" guidance is true. It is the
-// fine-grained analogue of Session Close's recursive teardown: Close tears down
-// whole sessions, while this stops the running jobs inside the subtree without
-// closing the sessions (Session Close is unchanged).
-//
-// childSession is the delegate job's child session (resolved from the delegate
-// record's transcript_ref); stopping the delegate job itself is the caller's job
-// (stopNestedOrLocal). The traversal reuses the live-walk leaf-lock discipline:
-// each store enumerates its running jobs, captures exact receipts, and accepts
-// their stops under that store's own lock, then signals after unlock. Live direct
-// children are enumerated through liveSubagentSessions; NO job-manager or session
-// lock is held across recursion or receipt waits. A no-longer-live (closed) child
-// contributes nothing — its runtime is already gone.
-func (s *Session) stopDelegateSubtree(childSession *Session) ([]*jobstore.JobRecord, error) {
-	stopped, _, stopErr := s.stopDelegateSubtreeWithReceipts(childSession)
-	return stopped, stopErr
-}
-
-// stopDelegateSubtreeAndWait is reserved for delegate finalization after a
-// failed run. It signals the entire live subtree first, then joins the exact
-// running jobs observed by each stop without holding a manager or session lock.
-// Generic job_stop continues to use stopDelegateSubtree and remains nonblocking.
+// stopDelegateSubtreeAndWait stops every managed shell in a stable delegate's
+// live session subtree, then joins the exact runs observed by that stop. The
+// traversal holds no job-manager or session lock across recursion or waits.
 func (s *Session) stopDelegateSubtreeAndWait(childSession *Session) ([]*jobstore.JobRecord, error) {
 	stopped, receipts, stopErr := s.stopDelegateSubtreeWithReceipts(childSession)
 	for _, receipt := range receipts {
@@ -524,8 +449,6 @@ func (s *Session) stopDelegateSubtreeWithReceipts(childSession *Session) ([]*job
 	var stopped []*jobstore.JobRecord
 	var receipts []jobStopReceipt
 	var stopErr error
-	// Recurse into the live subtree first so a worker delegate's own children are
-	// stopped before the worker delegate's runtime is signalled.
 	for _, grandchild := range childSession.liveSubagentSessions() {
 		recs, childReceipts, err := s.stopDelegateSubtreeWithReceipts(grandchild)
 		stopped = append(stopped, recs...)
@@ -572,31 +495,6 @@ func (s *Session) directChildOwningDescendant(jobID string) *Session {
 		}
 	}
 	return nil
-}
-
-// directDelegateJobForChild finds the caller's own delegate job whose child
-// session is childID (its transcript_ref encodes childID). This is the
-// controllable handle the not_controllable guidance names: stopping it
-// cascade-stops the named descendant's subtree.
-func (s *Session) directDelegateJobForChild(childID string) string {
-	local, err := sessionJobManager(s)
-	if err != nil {
-		return ""
-	}
-	recs, err := local.store.Load()
-	if err != nil {
-		return ""
-	}
-	want := encodeRef("", childID)
-	for jobID, rec := range recs {
-		if rec.Type != jobstore.JobDelegate || rec.OwnerSessionID != s.id {
-			continue
-		}
-		if rec.TranscriptRef == want {
-			return jobID
-		}
-	}
-	return ""
 }
 
 func (jm *jobManager) forwardLocked(e jobstore.Event) error {
@@ -650,14 +548,11 @@ func (jm *jobManager) recoverForwardedTerminalEvents() error {
 			VisibleToSession: rec.VisibleToSession,
 			ParentJobID:      rec.ParentJobID,
 			ParentDelegateID: rec.ParentDelegateID,
-			DelegateID:       rec.DelegateID,
 			OriginTurnID:     rec.OriginTurnID,
 			OriginToolCallID: rec.OriginToolCallID,
 			OriginItemID:     rec.OriginItemID,
-			DelegateRestore:  rec.DelegateRestore,
 			StartedAt:        &startedAt,
 			OutputPath:       rec.OutputPath,
-			TranscriptRef:    rec.TranscriptRef,
 			Provenance:       provenance.Clone(rec.Provenance),
 		}); err != nil {
 			return err
@@ -671,7 +566,6 @@ func (jm *jobManager) recoverForwardedTerminalEvents() error {
 			Reason:                 rec.Reason,
 			ExhaustionBudget:       rec.ExhaustionBudget,
 			ExhaustionLimit:        rec.ExhaustionLimit,
-			Resumable:              rec.Resumable,
 			ExitCode:               rec.ExitCode,
 			EndedAt:                rec.EndedAt,
 			OutputBytes:            rec.OutputBytes,

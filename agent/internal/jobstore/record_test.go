@@ -18,8 +18,6 @@ func TestGeneratedJobstoreIDsUseIdentifierDomains(t *testing.T) {
 		prefix   string
 	}{
 		{"job", func() string { return NewJobID(owner) }, identifier.ValidateJobID, "job_"},
-		{"delegate", NewDelegateID, identifier.ValidateDelegateID, "dlg_"},
-		{"delegate generation", NewDelegateGeneration, identifier.ValidateDelegateGeneration, "dg_"},
 		{"watch", NewWatchID, identifier.ValidateWatchID, "watch_"},
 		{"watch generation", NewWatchGeneration, identifier.ValidateWatchGeneration, "wg_"},
 		{"watch delivery", NewWatchSendDeliveryID, identifier.ValidateWatchDeliveryID, "wd_"},
@@ -101,69 +99,6 @@ func TestJobRecord_BackgroundAndPhaseStayOffTheWire(t *testing.T) {
 	}
 	if !live.Background || live.Phase != "process_running" {
 		t.Errorf("live record lost its in-memory background/phase: %+v", live)
-	}
-}
-
-func TestJobRecordJSONRoundTripDelegateRestoreDescriptorAndStructuredReason(t *testing.T) {
-	valid := false
-	r := JobRecord{
-		JobID:  "job_X",
-		Type:   JobDelegate,
-		Status: StatusCompleted,
-		DelegateRestore: &DelegateRestoreDescriptor{
-			Version:           1,
-			ChildSessionID:    "child_1",
-			TranscriptRef:     "transcript_1",
-			FrozenSkillBodies: []string{"stored skill body"},
-			ResultSchema:      map[string]any{"type": "object"},
-		},
-		StructuredResultValid:  &valid,
-		StructuredResultReason: "schema_result_missing",
-	}
-
-	b, err := json.Marshal(r)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var wire map[string]any
-	if err := json.Unmarshal(b, &wire); err != nil {
-		t.Fatalf("unmarshal wire: %v", err)
-	}
-	restoreWire, ok := wire["delegate_restore"].(map[string]any)
-	if !ok {
-		t.Fatalf("delegate_restore missing from wire: %+v", wire)
-	}
-	if _, ok := restoreWire["result_schema"]; !ok {
-		t.Fatalf("result_schema missing from wire delegate_restore: %+v", restoreWire)
-	}
-	if bodies, ok := restoreWire["frozen_skill_bodies"].([]any); !ok || len(bodies) != 1 || bodies[0] != "stored skill body" {
-		t.Fatalf("frozen_skill_bodies = %#v, want stored body", restoreWire["frozen_skill_bodies"])
-	}
-	if wire["structured_result_reason"] != "schema_result_missing" {
-		t.Fatalf("wire structured_result_reason = %#v", wire["structured_result_reason"])
-	}
-
-	var got JobRecord
-	if err := json.Unmarshal(b, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	restore := got.DelegateRestore
-	if restore == nil {
-		t.Fatalf("delegate_restore missing after round trip: %+v", got)
-	}
-	if restore.Version != 1 || restore.ChildSessionID != "child_1" || restore.TranscriptRef != "transcript_1" {
-		t.Fatalf("delegate_restore mismatch: %+v", restore)
-	}
-	if len(restore.FrozenSkillBodies) != 1 || restore.FrozenSkillBodies[0] != "stored skill body" {
-		t.Fatalf("frozen_skill_bodies = %+v, want stored body", restore.FrozenSkillBodies)
-	}
-	schema, ok := restore.ResultSchema.(map[string]any)
-	if !ok || schema["type"] != "object" {
-		t.Fatalf("result_schema = %#v, want object schema", restore.ResultSchema)
-	}
-	if got.StructuredResultReason != "schema_result_missing" {
-		t.Fatalf("structured_result_reason = %q", got.StructuredResultReason)
 	}
 }
 

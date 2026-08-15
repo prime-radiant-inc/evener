@@ -3,9 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -33,43 +31,6 @@ func drainAndAccept(t *testing.T, s *Session) {
 		t.Fatalf("drain: %v", err)
 	}
 	s.acceptNotificationInput(context.Background()) // ok to no-op on empty queue
-}
-
-// drainWatchSendsVia delivers every pending non-caller watch send through the
-// drain's delivery primitive (deliverPendingWatchSend), capturing the delivery
-// args via the supplied sender — the way the live drain calls s.sendDelegateMessage.
-// Caller-targeted sends route to notification tokens, not this primitive, so they
-// are skipped (mirroring drainJobManagerWatchSends). Per-delivery errors are
-// returned joined (the live drain logs them at the boundary and continues), so
-// crash-recovery tests can assert the resulting state. Pure-jm tests use this to
-// observe a delegate-targeted delivery after recording pending intent.
-func drainWatchSendsVia(t *testing.T, jm *jobManager, send sendMessageFunc) error {
-	t.Helper()
-	var errs []error
-	for _, d := range jm.pendingWatchSendDeliveries(nil) {
-		if d.state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
-			continue
-		}
-		if _, err := jm.deliverPendingWatchSend(context.Background(), d.cfg, d.state, true, send); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// deliverWatchSendVia records a fired delivery as pending and delivers it through
-// the drain's primitive with the supplied sender. It mirrors the (now-deleted)
-// jobManager.deliverWatchSend, but takes the sender as a parameter — the structural
-// point of the mailbox design is that delivery is never reachable from a jobManager
-// field, only from explicit loop-owned (or, in tests, explicit) delivery.
-func deliverWatchSendVia(t *testing.T, jm *jobManager, d watchSendDelivery, send sendMessageFunc) error {
-	t.Helper()
-	state, cfg, ok, err := jm.recordWatchSend(d)
-	if err != nil || !ok {
-		return err
-	}
-	_, err = jm.deliverPendingWatchSend(context.Background(), cfg, state, false, send)
-	return err
 }
 
 // installWatchBelowValidation installs a watch directly into jm.watches the way
@@ -171,57 +132,9 @@ func waitForTestError(t *testing.T, ch <-chan error, label string) error {
 	}
 }
 
-func createRunningDelegateWatchTarget(t *testing.T, jm *jobManager) *jobstore.JobRecord {
-	t.Helper()
-	rec, err := jm.createShell(createShellOpts{Command: "delegate-output"})
-	if err != nil {
-		t.Fatalf("create watch target: %v", err)
-	}
-	jm.mu.Lock()
-	run := jm.running[rec.JobID]
-	run.rec.Type = jobstore.JobDelegate
-	run.rec.TranscriptRef = encodeRef("", "child-"+rec.JobID)
-	rec = cloneJobRecord(run.rec)
-	jm.mu.Unlock()
-	return rec
-}
-
 func loadWatchSendRecord(t *testing.T, jm *jobManager) jobstore.WatchSendRecord {
 	t.Helper()
 	return jobstore.FoldWatchSends(loadJobStoreEvents(t, jm))
-}
-
-func restoredWatchSendDelegateEvents(sessionID, jobID string, now time.Time, resumable *bool, sendTo string) []jobstore.Event {
-	endedAt := now.Add(time.Second)
-	events := []jobstore.Event{
-		{
-			Kind:             jobstore.EventJobStarted,
-			TS:               now,
-			JobID:            jobID,
-			Type:             jobstore.JobDelegate,
-			OwnerSessionID:   sessionID,
-			VisibleToSession: sessionID,
-			StartedAt:        &now,
-		},
-		{
-			Kind:          jobstore.EventJobSessionAssigned,
-			TS:            now,
-			JobID:         jobID,
-			TranscriptRef: encodeRef("", "child_"+jobID),
-			Resumable:     resumable,
-		},
-		{
-			Kind:        jobstore.EventJobFinished,
-			TS:          endedAt,
-			JobID:       jobID,
-			Status:      jobstore.StatusCompleted,
-			Reason:      "exit_zero",
-			Resumable:   resumable,
-			EndedAt:     &endedAt,
-			TerminalGen: "term_" + jobID,
-		},
-	}
-	return append(events, restoredWatchSendPendingEvents(sessionID, jobID, sendTo, endedAt)...)
 }
 
 func restoredWatchSendPendingEvents(sessionID, watchedJobID, sendTo string, now time.Time) []jobstore.Event {
@@ -268,17 +181,6 @@ func loadJobStoreEvents(t *testing.T, jm *jobManager) []jobstore.Event {
 	return events
 }
 
-func countDelegateStartedEvents(t *testing.T, jm *jobManager, delegateID string) int {
-	t.Helper()
-	var count int
-	for _, event := range loadJobStoreEvents(t, jm) {
-		if event.Kind == jobstore.EventJobStarted && event.DelegateID == delegateID {
-			count++
-		}
-	}
-	return count
-}
-
 func runtimeWatchSendPending(t *testing.T, jm *jobManager) map[jobstore.WatchSendKey]*jobstore.WatchSendState {
 	t.Helper()
 	out := make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
@@ -297,159 +199,6 @@ func runtimeWatchSendPending(t *testing.T, jm *jobManager) map[jobstore.WatchSen
 		}
 	}
 	return out
-}
-
-func seedCommonWatchSendTargets(t *testing.T, jm *jobManager) {
-	t.Helper()
-	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
-}
-
-func seedWatchSendDelegateTarget(t *testing.T, jm *jobManager, target string) {
-	t.Helper()
-	delegateID := target
-	jobID := target
-	if rest, ok := strings.CutPrefix(target, "job_"); ok {
-		delegateID = "dlg_" + rest
-	} else if rest, ok := strings.CutPrefix(target, "dlg_"); ok {
-		jobID = "job_" + rest
-	}
-	childID := "child_" + jobID
-	delegates, err := jm.store.LoadDelegates()
-	if err != nil {
-		t.Fatalf("load delegates before seeding watch-send target: %v", err)
-	}
-	now := jm.now()
-	if delegates[delegateID] == nil {
-		if err := jm.appendEvent(jobstore.Event{
-			Kind:       jobstore.EventDelegateCreated,
-			TS:         now,
-			DelegateID: delegateID,
-			Delegate: &jobstore.DelegateEvent{
-				ChildSessionID:   childID,
-				TranscriptRef:    encodeRef("", childID),
-				OwnerSessionID:   jm.sessionID,
-				VisibleSessionID: jm.sessionID,
-				Generation:       jobstore.NewDelegateGeneration(),
-				Resumable:        true,
-			},
-		}); err != nil {
-			t.Fatalf("seed watch-send delegate %q: %v", delegateID, err)
-		}
-	}
-	recs, err := jm.store.Load()
-	if err != nil {
-		t.Fatalf("load jobs before seeding watch-send target: %v", err)
-	}
-	if rec := recs[jobID]; rec != nil {
-		return
-	}
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:             jobstore.EventJobStarted,
-		TS:               now,
-		JobID:            jobID,
-		Type:             jobstore.JobDelegate,
-		Status:           jobstore.StatusRunning,
-		OwnerSessionID:   jm.sessionID,
-		VisibleToSession: jm.sessionID,
-		DelegateID:       delegateID,
-		// Production delegates carry their transcript ref in the job_started
-		// event (attachDelegateJobWithRestore); grant minting resolves the
-		// observer's child session id from it.
-		TranscriptRef: encodeRef("", childID),
-		StartedAt:     &now,
-	}); err != nil {
-		t.Fatalf("seed watch-send delegate target %q: %v", jobID, err)
-	}
-}
-
-func appendDelegateTargetEvents(t *testing.T, jm *jobManager, delegateID string, resumable *bool) {
-	t.Helper()
-	jobID := "job_" + strings.TrimPrefix(delegateID, "dlg_")
-	childID := "child_" + jobID
-	now := jm.now()
-	started := now.Add(time.Millisecond)
-	events := []jobstore.Event{
-		{
-			Kind:       jobstore.EventDelegateCreated,
-			TS:         now,
-			DelegateID: delegateID,
-			Delegate: &jobstore.DelegateEvent{
-				ChildSessionID:   childID,
-				TranscriptRef:    encodeRef("", childID),
-				OwnerSessionID:   jm.sessionID,
-				VisibleSessionID: jm.sessionID,
-				Generation:       jobstore.NewDelegateGeneration(),
-				Resumable:        true,
-			},
-		},
-		{
-			Kind:             jobstore.EventJobStarted,
-			TS:               started,
-			JobID:            jobID,
-			Type:             jobstore.JobDelegate,
-			DelegateID:       delegateID,
-			OwnerSessionID:   jm.sessionID,
-			VisibleToSession: jm.sessionID,
-			TranscriptRef:    encodeRef("", childID),
-			StartedAt:        &started,
-		},
-	}
-	if resumable != nil {
-		events = append(events, jobstore.Event{
-			Kind:          jobstore.EventJobSessionAssigned,
-			TS:            now.Add(2 * time.Millisecond),
-			JobID:         jobID,
-			TranscriptRef: encodeRef("", childID),
-			Resumable:     resumable,
-		})
-	}
-	ended := now.Add(3 * time.Millisecond)
-	events = append(events, jobstore.Event{
-		Kind:    jobstore.EventJobFinished,
-		TS:      ended,
-		JobID:   jobID,
-		Status:  jobstore.StatusCompleted,
-		EndedAt: &ended,
-	})
-	for _, event := range events {
-		if err := jm.appendEvent(event); err != nil {
-			t.Fatalf("append %s: %v", event.Kind, err)
-		}
-	}
-}
-
-func busyWatchSendResult() sendMessageResult {
-	return sendMessageResult{
-		WatchSendDeliveryClass:    watchSendBusy,
-		WatchSendDeliveryClassSet: true,
-		Err:                       errors.New("busy"),
-	}
-}
-
-func hardWatchSendResult(err error) sendMessageResult {
-	return sendMessageResult{
-		WatchSendDeliveryClass:    watchSendHardFailure,
-		WatchSendDeliveryClassSet: true,
-		Err:                       err,
-	}
-}
-
-func containsEventKind(kinds []jobstore.EventKind, want jobstore.EventKind) bool {
-	return slices.Contains(kinds, want)
-}
-
-func eventKindOrder(kinds []jobstore.EventKind, before, after jobstore.EventKind) bool {
-	beforeIndex := -1
-	afterIndex := -1
-	for i, kind := range kinds {
-		if kind == before && beforeIndex == -1 {
-			beforeIndex = i
-		}
-		if kind == after && afterIndex == -1 {
-			afterIndex = i
-		}
-	}
-	return beforeIndex >= 0 && afterIndex >= 0 && beforeIndex < afterIndex
 }
 
 func installCallerSendWatchWithPending(t *testing.T, jm *jobManager) *watchConfig {
@@ -503,22 +252,6 @@ func installCallerSendWatchWithCurrentFrame(t *testing.T, jm *jobManager, frame 
 	}
 	state.Frame = frame
 	return cfg, key, state.DeliveryID
-}
-
-func blankRuntimePendingDelegateGenerationForTest(t *testing.T, jm *jobManager) {
-	t.Helper()
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	for _, cfg := range jm.watches {
-		for _, state := range cfg.pending {
-			state.DelegateGeneration = ""
-		}
-	}
-	for cfg := range jm.terminalFlush {
-		for _, state := range cfg.pending {
-			state.DelegateGeneration = ""
-		}
-	}
 }
 
 // The v2 re-route this section once tested — the parent's drain re-tokening a

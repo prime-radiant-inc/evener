@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provenance"
 )
 
@@ -73,62 +72,6 @@ func FuzzWxEvaluateWatchEvent(f *testing.F) {
 		selfEv.Provenance = provenance.WithWatch(nil, snap.watchID, snap.generation, "wd_fuzz", "sess_fuzz", snap.target)
 		if selfDec := evaluateWatchEvent(snap, selfEv); selfDec != dec {
 			t.Fatalf("self-influenced provenance changed the decision: %+v vs %+v", selfDec, dec)
-		}
-	})
-}
-
-// FuzzWxClassifyWatchSendTarget drives classifyWatchSendDeliveryTarget — the
-// decision tree lifted out of classifyRestoredWatchSendTarget — through a fuzzed
-// resolver whose lookups return crafted (deterministic) records, so the pure
-// classification runs without touching a store. Oracles: determinism; the result
-// is always one of the three valid classes; the documented early returns hold
-// (empty target and a job_-prefixed target are hard failures).
-func FuzzWxClassifyWatchSendTarget(f *testing.F) {
-	f.Add("dlg_1", "sess_a", true, true, true, uint8(3), true)
-	f.Add("job_9", "sess_a", true, false, false, uint8(0), false)
-	f.Add("", "", false, false, false, uint8(0), false)
-	f.Add("bare-target", "sess_a", true, true, false, uint8(4), true)
-
-	f.Fuzz(func(t *testing.T, target, sessionID string, hasJM, delegateResumable, jobResumable bool,
-		statusSel uint8, assessResumable bool) {
-
-		statuses := []jobstore.Status{
-			jobstore.StatusRunning, jobstore.StatusCompleted, jobstore.StatusCancelled, jobstore.StatusStopped,
-		}
-		status := statuses[int(statusSel)%len(statuses)]
-		rec := &jobstore.JobRecord{
-			JobID: target, Type: jobstore.JobDelegate, Status: status,
-			OwnerSessionID: sessionID, DelegateID: "dlg_1",
-		}
-		if jobResumable {
-			r := true
-			rec.Resumable = &r
-		}
-		res := watchSendTargetResolver{sessionID: sessionID, hasJobManager: hasJM}
-		if hasJM {
-			res.loadDelegates = func() (map[string]*jobstore.DelegateRecord, error) {
-				return map[string]*jobstore.DelegateRecord{
-					"dlg_1": {DelegateID: "dlg_1", OwnerSessionID: sessionID, CurrentJobID: target, Resumable: delegateResumable},
-				}, nil
-			}
-			res.findJobRecord = func(string) (*jobstore.JobRecord, error) { return rec, nil }
-			res.assessResumable = func(*jobstore.JobRecord) delegateResumability {
-				return delegateResumability{Resumable: assessResumable}
-			}
-		}
-
-		class, _ := classifyWatchSendDeliveryTarget(target, res)
-		class2, _ := classifyWatchSendDeliveryTarget(target, res)
-		if class != class2 {
-			t.Fatalf("non-deterministic class: %v vs %v", class, class2)
-		}
-		switch class {
-		case watchSendDelivered, watchSendBusy, watchSendHardFailure:
-		default:
-			t.Fatalf("invalid class %v", class)
-		}
-		if target == "" && class != watchSendHardFailure {
-			t.Fatalf("empty target must be hard failure, got %v", class)
 		}
 	})
 }

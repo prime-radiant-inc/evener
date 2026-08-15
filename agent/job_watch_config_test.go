@@ -63,7 +63,7 @@ func TestConfigureWatchRejectsForwardedNestedTarget(t *testing.T) {
 		Status:           jobstore.StatusRunning,
 		OwnerSessionID:   "CHILD",
 		VisibleToSession: jm.sessionID,
-		ParentJobID:      "job_delegate",
+		ParentJobID:      "job_parent_shell",
 		StartedAt:        &startedAt,
 	}); err != nil {
 		t.Fatalf("append nested start: %v", err)
@@ -96,7 +96,7 @@ func TestTerminalCatchupRejectsForwardedNestedTarget(t *testing.T) {
 		Status:           jobstore.StatusRunning,
 		OwnerSessionID:   "CHILD",
 		VisibleToSession: jm.sessionID,
-		ParentJobID:      "job_delegate",
+		ParentJobID:      "job_parent_shell",
 		StartedAt:        &startedAt,
 	}); err != nil {
 		t.Fatalf("append nested start: %v", err)
@@ -145,57 +145,6 @@ func TestConfigureWatchSendToMissingDelegateFailsTargetNotFound(t *testing.T) {
 
 	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
 		t.Fatalf("error = %v, want target_not_found", err)
-	}
-	if jm.watchCount() != 0 {
-		t.Fatalf("watch count = %d, want 0", jm.watchCount())
-	}
-}
-
-func TestConfigureWatchSendToOtherSessionDelegateFailsNotControllable(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-	watched, err := jm.createShell(createShellOpts{Command: "watched"})
-	if err != nil {
-		t.Fatalf("create watched job: %v", err)
-	}
-	now := jm.now()
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:       jobstore.EventDelegateCreated,
-		TS:         now,
-		DelegateID: "dlg_other",
-		Delegate: &jobstore.DelegateEvent{
-			ChildSessionID:   "child_other",
-			TranscriptRef:    encodeRef("", "child_other"),
-			OwnerSessionID:   "OTHER",
-			VisibleSessionID: jm.sessionID,
-			Generation:       "dg_other",
-			Resumable:        true,
-		},
-	}); err != nil {
-		t.Fatalf("seed other delegate: %v", err)
-	}
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:             jobstore.EventJobStarted,
-		TS:               now,
-		JobID:            "job_other_delegate",
-		Type:             jobstore.JobDelegate,
-		DelegateID:       "dlg_other",
-		OwnerSessionID:   "OTHER",
-		VisibleToSession: jm.sessionID,
-		TranscriptRef:    encodeRef("", "child_other"),
-		StartedAt:        &now,
-	}); err != nil {
-		t.Fatalf("seed other delegate job: %v", err)
-	}
-
-	_, err = jm.configureWatch(watchArgs{
-		Target:      watched.JobID,
-		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "dlg_other", Message: "observe"},
-	})
-
-	if err == nil || !strings.Contains(err.Error(), "not_controllable") {
-		t.Fatalf("error = %v, want not_controllable", err)
 	}
 	if jm.watchCount() != 0 {
 		t.Fatalf("watch count = %d, want 0", jm.watchCount())
@@ -345,49 +294,6 @@ func TestJobWatchSendToWatchedFailsV1TargetValidation(t *testing.T) {
 	}
 	if jm.watchCount() != 0 {
 		t.Fatalf("watch count = %d, want 0", jm.watchCount())
-	}
-}
-
-func TestJobWatchSendToNonResumableDelegateFailsTargetNotResumable(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name string
-		seed func(*testing.T, *jobManager, string)
-	}{
-		{
-			name: "delegate_not_resumable",
-			seed: func(t *testing.T, jm *jobManager, delegateID string) {
-				t.Helper()
-				resumable := false
-				appendDelegateTargetEvents(t, jm, delegateID, &resumable)
-			},
-		},
-		{
-			name: "terminal_job_missing_resumable_marker",
-			seed: func(t *testing.T, jm *jobManager, delegateID string) {
-				t.Helper()
-				appendDelegateTargetEvents(t, jm, delegateID, nil)
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			jm := newTestJM(t)
-			watched, _ := jm.createShell(createShellOpts{Command: "watched"})
-			tc.seed(t, jm, "dlg_dead")
-
-			_, err := jm.configureWatch(watchArgs{
-				Target:      watched.JobID,
-				OutputMatch: "ready",
-				Send:        &watchSendArgs{To: "dlg_dead", Message: "observe"},
-			})
-
-			if err == nil || !strings.Contains(err.Error(), "target_not_resumable") {
-				t.Fatalf("error = %v, want target_not_resumable", err)
-			}
-			if jm.watchCount() != 0 {
-				t.Fatalf("watch count = %d, want 0", jm.watchCount())
-			}
-		})
 	}
 }
 
@@ -575,13 +481,11 @@ func TestConfigureWatchEveryOneReadsAsUnset(t *testing.T) {
 		t.Fatalf("create shell: %v", err)
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
-	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
-
 	res, err := jm.configureWatch(watchArgs{
 		Target: rec.JobID,
 		Events: []string{"communicate", "job.notification"},
 		Every:  1,
-		Send:   &watchSendArgs{To: "dlg_obs"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	if err != nil {
 		t.Fatalf("every:1 with multiple event kinds must be accepted as the default gate: %v", err)
@@ -590,7 +494,7 @@ func TestConfigureWatchEveryOneReadsAsUnset(t *testing.T) {
 		t.Fatalf("result = %+v, want watching", res)
 	}
 
-	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "dlg_obs"}
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: runtimeMessageAliasCaller}
 	jm.mu.Lock()
 	cfg := jm.watches[key]
 	jm.mu.Unlock()
@@ -610,13 +514,11 @@ func TestConfigureWatchEveryOneAllowsWildcardEvents(t *testing.T) {
 		t.Fatalf("create shell: %v", err)
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
-	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
-
 	_, err = jm.configureWatch(watchArgs{
 		Target: rec.JobID,
 		Events: []string{"*"},
 		Every:  1,
-		Send:   &watchSendArgs{To: "dlg_obs"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	if err != nil {
 		t.Fatalf("every:1 with wildcard events must be accepted as the default gate: %v", err)
@@ -772,14 +674,13 @@ func TestWatchIdempotentReconfigureWithDetachedPendingDoesNotRegisterNewWatch(t 
 	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
-	seedCommonWatchSendTargets(t, jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "sleep 30"})
 	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
 
 	args := watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
 	}
 	res, err := jm.configureWatch(args)
 	if err != nil {
@@ -787,7 +688,7 @@ func TestWatchIdempotentReconfigureWithDetachedPendingDoesNotRegisterNewWatch(t 
 	}
 	firstID := res.WatchID
 
-	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "dlg_obs"}
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: runtimeMessageAliasCaller}
 	jm.mu.Lock()
 	existing := jm.watches[key]
 	if existing == nil {
@@ -798,12 +699,12 @@ func TestWatchIdempotentReconfigureWithDetachedPendingDoesNotRegisterNewWatch(t 
 		VisibleSessionID:        jm.sessionID,
 		WatchTarget:             rec.JobID,
 		ResolvedWatchedIdentity: rec.JobID,
-		ResolvedSendTo:          "dlg_obs",
+		ResolvedSendTo:          runtimeMessageAliasCaller,
 		WatchGeneration:         jobstore.NewWatchGeneration(),
 	}
 	detached := &watchConfig{
 		target:     rec.JobID,
-		send:       &watchSendArgs{To: "dlg_obs", Message: "observe"},
+		send:       &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
 		generation: pendingKey.WatchGeneration,
 		pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{
 			pendingKey: {

@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/spf13/afero"
 	"primeradiant.com/serf/fuzz/fault"
@@ -47,9 +46,6 @@ func TestClosedStoreLoadOperationsReturnErrStoreClosed(t *testing.T) {
 	}
 	if _, err := s.LoadOrdered(); !errors.Is(err, ErrStoreClosed) {
 		t.Errorf("LoadOrdered after close = %v, want ErrStoreClosed", err)
-	}
-	if _, err := s.LoadDelegates(); !errors.Is(err, ErrStoreClosed) {
-		t.Errorf("LoadDelegates after close = %v, want ErrStoreClosed", err)
 	}
 	if _, err := s.LoadWatches(); !errors.Is(err, ErrStoreClosed) {
 		t.Errorf("LoadWatches after close = %v, want ErrStoreClosed", err)
@@ -160,90 +156,6 @@ func TestIsIncompleteTrailingJSON(t *testing.T) {
 				t.Fatalf("isIncompleteTrailingJSON(%q, %v) = %v, want %v", tc.line, err, got, tc.want)
 			}
 		})
-	}
-}
-
-// TestFoldDelegatesSkipsMalformedDelegateEvents pins the guards that drop a
-// delegate_created / delegate_stop_gate_closed event carrying no delegate id or
-// payload, so a torn event never fabricates a phantom delegate record.
-func TestFoldDelegatesSkipsMalformedDelegateEvents(t *testing.T) {
-	events := []Event{
-		{Kind: EventDelegateCreated, Seq: 1, DelegateID: "dlg_A"},                                 // Delegate nil
-		{Kind: EventDelegateCreated, Seq: 2, Delegate: &DelegateEvent{Generation: "dg_1"}},        // id ""
-		{Kind: EventDelegateStopGateClosed, Seq: 3, DelegateID: "dlg_B"},                          // Delegate nil
-		{Kind: EventDelegateStopGateClosed, Seq: 4, Delegate: &DelegateEvent{StopJobID: "job_1"}}, // id ""
-	}
-	if d := FoldDelegates(events); len(d) != 0 {
-		t.Fatalf("malformed delegate events folded into records: %+v", d)
-	}
-}
-
-// TestFoldDelegatesSessionAssignedKeepsIdleResumable pins the resumable->idle
-// transition inside job_session_assigned: when the delegate is already idle and
-// a session-assigned event reasserts resumability, the status stays idle.
-func TestFoldDelegatesSessionAssignedKeepsIdleResumable(t *testing.T) {
-	start := time.Unix(1, 0).UTC()
-	end := time.Unix(2, 0).UTC()
-	resumable := true
-	events := []Event{
-		ev(EventDelegateCreated, 1, "", func(e *Event) {
-			e.DelegateID = "dlg_A"
-			e.Delegate = &DelegateEvent{ChildSessionID: "child_A", TranscriptRef: "local:child_A", Generation: "dg_1", Resumable: true}
-		}),
-		ev(EventJobStarted, 2, "job_1", func(e *Event) {
-			e.Type = JobDelegate
-			e.DelegateID = "dlg_A"
-			e.StartedAt = &start
-		}),
-		ev(EventJobFinished, 3, "job_1", func(e *Event) {
-			e.Status = StatusCompleted
-			e.EndedAt = &end
-		}),
-		ev(EventJobSessionAssigned, 4, "job_1", func(e *Event) {
-			e.TranscriptRef = "local:child_A"
-			e.Resumable = &resumable
-		}),
-	}
-	d := FoldDelegates(events)["dlg_A"]
-	if d == nil {
-		t.Fatal("delegate dlg_A missing")
-	}
-	if !d.Resumable || d.Status != DelegateIdle {
-		t.Fatalf("delegate = %+v, want idle+resumable after session-assigned", d)
-	}
-}
-
-// TestFoldDelegatesStopGateIgnoresStaleFinishedJob pins the stop-gate guard for
-// a delegate with no current job: a stop-gate closure that names a job other
-// than the delegate's latest job is stale and must not close the gate.
-func TestFoldDelegatesStopGateIgnoresStaleFinishedJob(t *testing.T) {
-	start := time.Unix(1, 0).UTC()
-	end := time.Unix(2, 0).UTC()
-	events := []Event{
-		ev(EventDelegateCreated, 1, "", func(e *Event) {
-			e.DelegateID = "dlg_A"
-			e.Delegate = &DelegateEvent{ChildSessionID: "child_A", TranscriptRef: "local:child_A", Generation: "dg_1", Resumable: true}
-		}),
-		ev(EventJobStarted, 2, "job_1", func(e *Event) {
-			e.Type = JobDelegate
-			e.DelegateID = "dlg_A"
-			e.StartedAt = &start
-		}),
-		ev(EventJobFinished, 3, "job_1", func(e *Event) {
-			e.Status = StatusCompleted
-			e.EndedAt = &end
-		}),
-		ev(EventDelegateStopGateClosed, 4, "", func(e *Event) {
-			e.DelegateID = "dlg_A"
-			e.Delegate = &DelegateEvent{Generation: "dg_stale", StopJobID: "job_other"}
-		}),
-	}
-	d := FoldDelegates(events)["dlg_A"]
-	if d == nil {
-		t.Fatal("delegate dlg_A missing")
-	}
-	if d.StopGateClosed || d.Generation != "dg_1" || d.Status != DelegateIdle || d.LatestJobID != "job_1" {
-		t.Fatalf("delegate = %+v, want stale stop-gate ignored (idle, gate open, generation dg_1)", d)
 	}
 }
 
@@ -579,7 +491,6 @@ func TestStoreLoadReadFaultsPropagate(t *testing.T) {
 	}{
 		{name: "Load", read: func(s *Store) error { _, err := s.Load(); return err }},
 		{name: "LoadOrdered", read: func(s *Store) error { _, err := s.LoadOrdered(); return err }},
-		{name: "LoadDelegates", read: func(s *Store) error { _, err := s.LoadDelegates(); return err }},
 		{name: "LoadWatches", read: func(s *Store) error { _, err := s.LoadWatches(); return err }},
 		{name: "LoadWatchSends", read: func(s *Store) error { _, err := s.LoadWatchSends(); return err }},
 		{name: "LoadEvents", read: func(s *Store) error { _, err := s.LoadEvents(); return err }},

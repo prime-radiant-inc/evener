@@ -12,7 +12,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -154,12 +156,6 @@ func newDoctorFilesystemProgramFixture(t *testing.T, raw []byte) doctorFilesyste
 	watchKey := jobstore.WatchSendKey{WatchID: "watch_a", VisibleSessionID: fixture.rootSID}
 	watchDropKey := jobstore.WatchSendKey{WatchID: "watch_a", VisibleSessionID: fixture.rootSID, WatchTarget: "job:drop"}
 	writeJobsEvents(t, rootJobs, []jobstore.Event{
-		{Kind: jobstore.EventDelegateCreated, DelegateID: "child", Delegate: &jobstore.DelegateEvent{
-			ChildSessionID: fixture.childSID, TranscriptRef: "proj:" + hash2 + ":" + fixture.childSID, AgentType: "researcher", Generation: "g1",
-		}},
-		{Kind: jobstore.EventJobStarted, JobID: "job-child", DelegateID: "child"},
-		{Kind: jobstore.EventDelegateCreated, DelegateID: "missing", Delegate: &jobstore.DelegateEvent{ChildSessionID: doctorFilesystemAbsentSID, AgentType: "missing"}},
-		{Kind: jobstore.EventDelegateCreated, DelegateID: "empty", Delegate: &jobstore.DelegateEvent{}},
 		{Kind: jobstore.EventWatchRegistered, WatchID: "watch_a", Watch: &jobstore.WatchEvent{
 			Generation: "wg1", OwnerSessionID: fixture.observerSID, VisibleSessionID: fixture.rootSID,
 			Target: "job:root", SendTo: fixture.observerSID, Condition: "contains", ConfigHash: "fixture-config",
@@ -176,11 +172,55 @@ func newDoctorFilesystemProgramFixture(t *testing.T, raw []byte) doctorFilesyste
 			Key: jobstore.WatchSendKey{WatchID: "watch_orphan"}, DeliveryID: "delivery_evicted", UpdateSeq: 1,
 		}},
 	})
-	writeJobsEvents(t, childJobs, []jobstore.Event{
-		{Kind: jobstore.EventDelegateCreated, DelegateID: "cycle", Delegate: &jobstore.DelegateEvent{
-			ChildSessionID: fixture.rootSID, TranscriptRef: "proj:" + hash1 + ":" + fixture.rootSID, AgentType: "cycle",
+	writeDelegateEvents(t, filepath.Join(rootBucket, "sessions", fixture.rootSID, "delegates.jsonl"), []delegatestore.Event{
+		{Kind: delegatestore.EventDelegateCreated, DelegateID: "child", Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
+			ChildSessionID:   fixture.childSID,
+			TranscriptRef:    "proj:" + hash2 + ":" + fixture.childSID,
+			OwnerSessionID:   fixture.rootSID,
+			VisibleSessionID: fixture.rootSID,
+			Task:             "research fixture",
+			AgentType:        "researcher",
+			ToolNameCeiling:  []string{"communicate"},
+			Resumable:        true,
+		}}},
+		{Kind: delegatestore.EventDelegateRunStarted, DelegateID: "child", RunStarted: &delegatestore.RunStarted{
+			Generation: 1,
+			Trigger:    delegatestore.TriggerInitial,
+			StartedAt:  time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC),
 		}},
-		{Kind: jobstore.EventDelegateCreated, DelegateID: "grand", Delegate: &jobstore.DelegateEvent{ChildSessionID: fixture.grandSID, AgentType: "leaf"}},
+		{Kind: delegatestore.EventDelegateCreated, DelegateID: "missing", Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
+			ChildSessionID:   doctorFilesystemAbsentSID,
+			TranscriptRef:    "proj:" + hash1 + ":" + doctorFilesystemAbsentSID,
+			OwnerSessionID:   fixture.rootSID,
+			VisibleSessionID: fixture.rootSID,
+			Task:             "missing fixture",
+			AgentType:        "missing",
+			ToolNameCeiling:  []string{"communicate"},
+			Resumable:        true,
+		}}},
+	})
+	writeJobsEvents(t, childJobs, nil)
+	writeDelegateEvents(t, filepath.Join(childBucket, "sessions", fixture.childSID, "delegates.jsonl"), []delegatestore.Event{
+		{Kind: delegatestore.EventDelegateCreated, DelegateID: "cycle", Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
+			ChildSessionID:   fixture.rootSID,
+			TranscriptRef:    "proj:" + hash1 + ":" + fixture.rootSID,
+			OwnerSessionID:   fixture.childSID,
+			VisibleSessionID: fixture.childSID,
+			Task:             "cycle fixture",
+			AgentType:        "cycle",
+			ToolNameCeiling:  []string{"communicate"},
+			Resumable:        true,
+		}}},
+		{Kind: delegatestore.EventDelegateCreated, DelegateID: "grand", Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
+			ChildSessionID:   fixture.grandSID,
+			TranscriptRef:    "proj:" + hash2 + ":" + fixture.grandSID,
+			OwnerSessionID:   fixture.childSID,
+			VisibleSessionID: fixture.childSID,
+			Task:             "leaf fixture",
+			AgentType:        "leaf",
+			ToolNameCeiling:  []string{"communicate"},
+			Resumable:        true,
+		}}},
 	})
 	writeJobsEvents(t, grandJobs, nil)
 	if err := os.MkdirAll(filepath.Join(rootBucket, "sessions", fixture.noJobsSID, "jobs.jsonl"), 0o755); err != nil {
@@ -307,21 +347,6 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 		t.Fatal("Watches missing selector unexpectedly succeeded")
 	}
 	_ = RenderWatches(WatchReport{SessionID: "edge", Watches: []WatchView{{MaxSelfInfluenceDepth: 1}}})
-	unreadableJobs := "\x00"
-	if got := depthLimitNote(Paths{JobsPath: unreadableJobs}); got != "" {
-		t.Fatalf("missing depth-limit jobs note = %q", got)
-	}
-	emptyJobs := filepath.Join(fixture.base, "empty-jobs.jsonl")
-	writeJobsEvents(t, emptyJobs, nil)
-	if got := depthLimitNote(Paths{JobsPath: emptyJobs}); got != "" {
-		t.Fatalf("empty depth-limit jobs note = %q", got)
-	}
-	depthJobs := filepath.Join(fixture.base, "depth-jobs.jsonl")
-	writeJobsEvents(t, depthJobs, []jobstore.Event{{Kind: jobstore.EventDelegateCreated, DelegateID: "d", Delegate: &jobstore.DelegateEvent{ChildSessionID: "child"}}})
-	if got := depthLimitNote(Paths{JobsPath: depthJobs}); got == "" {
-		t.Fatal("depth-limit child note missing")
-	}
-
 	for _, tool := range []string{"read_file", "submit_answer", "delegate_send"} {
 		result, err := Count(fixture.base, fixture.rootSID, tool)
 		if err != nil || result.SessionID != fixture.rootSID || result.Tool != tool {

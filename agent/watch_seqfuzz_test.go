@@ -173,7 +173,7 @@ func ws_drawOp(rt *rapid.T, model *ws_model) ws_op {
 				Status:   rapid.SampledFrom(ws_filterStatus).Draw(rt, "filterStatus"),
 			}
 		}
-		op.sendSel = rapid.IntRange(0, 2).Draw(rt, "sendSel")
+		op.sendSel = rapid.IntRange(0, 1).Draw(rt, "sendSel")
 	case ws_opEmitEvent:
 		op.kindSel = rapid.IntRange(0, ws_numKinds-1).Draw(rt, "kindSel")
 		op.dataJobSel = rapid.IntRange(0, ws_numTargets-1).Draw(rt, "dataJobSel")
@@ -251,9 +251,6 @@ func ws_newHarness(t *testing.T, rt *rapid.T) *ws_harness {
 	freezeClock(jm)
 	h.clk = agenttest.NewFakeClock()
 	jm.clock = h.clk
-
-	// A seeded delegate target so send-to-delegate watches validate and install.
-	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 
 	for i := range ws_numJobs {
 		rec, err := jm.createShell(createShellOpts{Command: fmt.Sprintf("job %d", i), Description: "seqfuzz"})
@@ -362,8 +359,6 @@ func (h *ws_harness) applyConfigure(op ws_op) ws_opOutcome {
 	switch op.sendSel {
 	case 1:
 		a.Send = &watchSendArgs{To: runtimeMessageAliasCaller}
-	case 2:
-		a.Send = &watchSendArgs{To: "dlg_obs", Message: "observe"}
 	}
 	res, err := h.jm.configureWatch(a)
 	if err != nil || !res.Watching {

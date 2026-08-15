@@ -39,7 +39,7 @@ func requestsContain(reqs []llm.Request, wants ...string) bool {
 	return false
 }
 
-func enqueueCompletedDelegateNotification(t *testing.T, sess *Session, jobID string) {
+func enqueueCompletedJobNotification(t *testing.T, sess *Session, jobID string) {
 	t.Helper()
 	started := time.Now().Add(-time.Second).UTC()
 	ended := time.Now().UTC()
@@ -48,26 +48,25 @@ func enqueueCompletedDelegateNotification(t *testing.T, sess *Session, jobID str
 		Kind:             jobstore.EventJobStarted,
 		TS:               started,
 		JobID:            jobID,
-		Type:             jobstore.JobDelegate,
+		Type:             jobstore.JobShell,
 		OwnerSessionID:   sess.ID(),
 		VisibleToSession: sess.ID(),
 		StartedAt:        &started,
 	}); err != nil {
-		t.Fatalf("append delegate job start: %v", err)
+		t.Fatalf("append shell job start: %v", err)
 	}
 	if err := sess.jobManager.appendEvent(jobstore.Event{
-		Kind:          jobstore.EventJobFinished,
-		TS:            ended,
-		JobID:         jobID,
-		Status:        jobstore.StatusCompleted,
-		Reason:        "communicated",
-		ExitCode:      &code,
-		EndedAt:       &ended,
-		OutputBytes:   12,
-		TranscriptRef: encodeRef("", "child-"+jobID),
-		TerminalGen:   "gen-" + jobID,
+		Kind:        jobstore.EventJobFinished,
+		TS:          ended,
+		JobID:       jobID,
+		Status:      jobstore.StatusCompleted,
+		Reason:      "communicated",
+		ExitCode:    &code,
+		EndedAt:     &ended,
+		OutputBytes: 12,
+		TerminalGen: "gen-" + jobID,
 	}); err != nil {
-		t.Fatalf("append delegate job finish: %v", err)
+		t.Fatalf("append shell job finish: %v", err)
 	}
 	if err := sess.jobManager.appendEvent(jobstore.Event{
 		Kind:        jobstore.EventJobNotificationPending,
@@ -78,22 +77,6 @@ func enqueueCompletedDelegateNotification(t *testing.T, sess *Session, jobID str
 		t.Fatalf("append delegate notification pending: %v", err)
 	}
 	sess.enqueueJobNotification(jobNotification{JobID: jobID})
-}
-
-func completeBackgroundDelegateForNotification(t *testing.T, sess *Session) string {
-	t.Helper()
-	res := sess.createDelegate(context.Background(), delegateArgs{
-		Task:       "finish and notify",
-		Background: true,
-	})
-	if res.Err != nil {
-		t.Fatalf("createDelegate: %v", res.Err)
-	}
-	if res.JobID == "" {
-		t.Fatalf("delegate result missing job_id: %+v", res)
-	}
-	waitForShellDone(t, sess.jobManager, res.JobID)
-	return res.JobID
 }
 
 // TestNotificationTurn_DrivesModelRequestWithReminder proves that a notification
@@ -110,15 +93,7 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return communicateWithStructured("delegate complete", map[string]any{
-					"message": "delegate complete",
-				})
-			},
-			func(req llm.Request) llm.Response { return communicateWithDefaultOutput("delegate done") },
-			func(req llm.Request) llm.Response { return communicateWithDefaultOutput("ack") },
-			func(req llm.Request) llm.Response { return communicateWithDefaultOutput("ack") },
-			func(req llm.Request) llm.Response { return communicateWithDefaultOutput("ack") },
+			func(req llm.Request) llm.Response { return finalResponse("ack") },
 		},
 	}
 	c.Register(adapter)
@@ -131,7 +106,8 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	}
 	defer sess.Close()
 
-	jobID := completeBackgroundDelegateForNotification(t, sess)
+	jobID := "job_notification_turn"
+	enqueueCompletedJobNotification(t, sess, jobID)
 
 	sess.mu.Lock()
 	turnsBefore := sess.turns
@@ -148,9 +124,9 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 		t.Fatal("notification turn made no model request; the notification never reached the model (v4 regression)")
 	}
 	// (b) The recorded request's message history carries the notification block
-	// for the completed delegate job. (The block's prose varies with excerpt
+	// for the completed shell job. (The block's prose varies with excerpt
 	// completeness; the pin is block identity, not template wording.)
-	if !requestsContain(reqs, "<job-notification", fmt.Sprintf(`job_id=%q`, jobID), `job_type="delegate"`) {
+	if !requestsContain(reqs, "<job-notification", fmt.Sprintf(`job_id=%q`, jobID), `job_type="shell"`) {
 		t.Fatalf("model request history did not contain the <job-notification ...> block for %s", jobID)
 	}
 	// (c) A notification turn is NOT a user turn: s.turns must not increment.
@@ -202,7 +178,7 @@ func TestNotificationPendingAfterToolRunsBeforeAnotherNormalRound(t *testing.T) 
 		"test-only: finish a managed job while another tool round is running",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, any) (any, error) {
-			enqueueCompletedDelegateNotification(t, sess, jobID)
+			enqueueCompletedJobNotification(t, sess, jobID)
 			return "queued", nil
 		},
 	)
@@ -238,7 +214,7 @@ func TestAcceptNotificationInput_PersistsNotificationKind(t *testing.T) {
 	appendPendingJobNotificationRecordWithProvenance(t, s.jobManager, s.ID(), "job_A", nil)
 	s.enqueueJobNotification(jobNotification{
 		JobID:   "job_A",
-		JobType: string(jobstore.JobDelegate),
+		JobType: string(jobstore.JobShell),
 		Status:  string(jobstore.StatusCompleted),
 	})
 
@@ -451,7 +427,7 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 	// turn ahead of the deferred continuation #2.
 	base3 := adapter.steps[3]
 	adapter.steps[3] = func(req llm.Request) llm.Response {
-		enqueueCompletedDelegateNotification(t, sess, "job_interleave")
+		enqueueCompletedJobNotification(t, sess, "job_interleave")
 		return base3(req)
 	}
 	// Snapshot the goal counters from inside the notification turn (steps[4]):
@@ -482,7 +458,7 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 
 	// The notification request carries the reminder block — it reached the model,
 	// interleaved into the chain rather than waiting for the goal to finish.
-	if !requestsContain(adapter.Requests(), "<job-notification", `job_id="job_interleave"`, `job_type="delegate"`) {
+	if !requestsContain(adapter.Requests(), "<job-notification", `job_id="job_interleave"`, `job_type="shell"`) {
 		t.Fatal("model never saw the <job-notification ...> block; the notification did not interleave into the chain")
 	}
 	if !snapCaptured {
@@ -564,7 +540,7 @@ func (a *sustainedNotificationAdapter) Complete(ctx context.Context, req llm.Req
 	// continuation), but never on a notification turn — otherwise notification
 	// turns would chain endlessly and the deferred continuation would never run.
 	if a.sess != nil && !lastMessageIsNotification(req) {
-		enqueueCompletedDelegateNotification(a.t, a.sess, fmt.Sprintf("job_sustained_%d", n))
+		enqueueCompletedJobNotification(a.t, a.sess, fmt.Sprintf("job_sustained_%d", n))
 	}
 	resp := finalResponse("work turn (no progress)")
 	resp.Provider = a.name
@@ -727,7 +703,7 @@ func TestNotification_GoalContinuesInlineWithoutKickFunc(t *testing.T) {
 	// tail-drain peek preempts the next continuation.
 	base3 := adapter.steps[3]
 	adapter.steps[3] = func(req llm.Request) llm.Response {
-		enqueueCompletedDelegateNotification(t, sess, "job_inline")
+		enqueueCompletedJobNotification(t, sess, "job_inline")
 		return base3(req)
 	}
 
@@ -884,7 +860,7 @@ func TestNotification_GoalClearedDuringInterleaveStops(t *testing.T) {
 	// of the gate-time deferred continuation #2.
 	base3 := adapter.steps[3]
 	adapter.steps[3] = func(req llm.Request) llm.Response {
-		enqueueCompletedDelegateNotification(t, sess, "job_clear")
+		enqueueCompletedJobNotification(t, sess, "job_clear")
 		return base3(req)
 	}
 	// During the notification turn (steps[4]), clear the goal — modelling `/goal clear`
@@ -974,7 +950,7 @@ func TestNotification_GoalRetargetedDuringInterleaveUsesNewObjective(t *testing.
 	// Arm the notification as continuation #1 ends (steps[3]).
 	base3 := adapter.steps[3]
 	adapter.steps[3] = func(req llm.Request) llm.Response {
-		enqueueCompletedDelegateNotification(t, sess, "job_retarget")
+		enqueueCompletedJobNotification(t, sess, "job_retarget")
 		return base3(req)
 	}
 	// During the notification turn (steps[4]), retarget the goal to NEW — modelling

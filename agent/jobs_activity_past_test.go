@@ -8,12 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 )
 
-func TestLoadSessionJobActivityTree_FollowsOnlyDurableDelegateChildren(t *testing.T) {
+func TestLoadSessionJobActivityTree_FollowsOnlyStableDelegateChildren(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "rootpast"
 	childID := "childpast"
@@ -21,71 +22,58 @@ func TestLoadSessionJobActivityTree_FollowsOnlyDurableDelegateChildren(t *testin
 	started := time.Unix(100, 0).UTC()
 	ended := started.Add(time.Second)
 
+	writePastStableDelegates(t, stateDir, rootID,
+		pastStableDescriptor(rootID, childID, "child task"),
+		pastStableDescriptor(rootID, strayID, "stray task"),
+	)
 	s1cov_writeJobLog(t, stateDir, rootID,
-		jobstore.Event{Kind: jobstore.EventDelegateCreated, TS: started, DelegateID: "dlg_child", Delegate: &jobstore.DelegateEvent{ChildSessionID: childID, TranscriptRef: encodeRef("", childID), OwnerSessionID: rootID, VisibleSessionID: rootID, Generation: "gen_1", Resumable: true}},
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_delegate_child", Type: jobstore.JobDelegate, OwnerSessionID: rootID, VisibleToSession: rootID, DelegateID: "dlg_child", StartedAt: &started, Task: "child task", TranscriptRef: encodeRef("", childID)},
-		jobstore.Event{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_delegate_child", Status: jobstore.StatusCompleted, EndedAt: &ended},
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started.Add(2 * time.Second), JobID: "job_stray", Type: jobstore.JobDelegate, OwnerSessionID: rootID, VisibleToSession: rootID, DelegateID: "dlg_stray", StartedAt: &started, Task: "stray task", TranscriptRef: encodeRef("", strayID)},
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_shell", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started, Description: "root shell"},
 	)
 	s1cov_writeJobLog(t, stateDir, childID,
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child_shell", Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started, Description: "child shell"},
 		jobstore.Event{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_child_shell", Status: jobstore.StatusCompleted, EndedAt: &ended},
 	)
-	s1cov_writeJobLog(t, stateDir, strayID,
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_stray_shell", Type: jobstore.JobShell, OwnerSessionID: strayID, VisibleToSession: strayID, StartedAt: &started, Description: "stray shell"},
-	)
-
 	savePastActivityMeta(t, stateDir, rootID, "Root")
 	savePastActivityMeta(t, stateDir, childID, "Child")
-	savePastActivityMeta(t, stateDir, strayID, "Stray")
 
 	got, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Root.SessionID != rootID {
-		t.Fatalf("root=%q, want %q", got.Root.SessionID, rootID)
-	}
-	if len(got.Root.Entries) != 2 {
-		t.Fatalf("entries=%d, want 2 durable delegate rows", len(got.Root.Entries))
+	if got.Root.SessionID != rootID || len(got.Root.Entries) != 3 {
+		t.Fatalf("root activity = %+v", got.Root)
 	}
 	child := pastFindDelegate(t, got.Root, childID)
-	if child.Child == nil {
-		t.Fatalf("child delegate=%+v", child)
+	if child.Child == nil || len(child.Child.Entries) != 1 || child.Child.Entries[0].Job == nil || child.Child.Entries[0].Job.JobID != "job_child_shell" {
+		t.Fatalf("child subtree = %+v", child)
 	}
-	if len(child.Child.Entries) != 1 || child.Child.Entries[0].Job == nil || child.Child.Entries[0].Job.JobID != "job_child_shell" {
-		t.Fatalf("child subtree=%+v", child.Child)
-	}
-	stray := pastFindDelegateByID(t, got.Root, "dlg_stray")
-	if stray.DelegateID != "dlg_stray" {
-		t.Fatalf("stray delegate=%+v", stray)
-	}
+	stray := pastFindDelegate(t, got.Root, strayID)
 	if stray.Child != nil || stray.Branch.Error == "" {
-		t.Fatalf("stray delegate=%+v", stray)
+		t.Fatalf("missing child delegate = %+v", stray)
 	}
 }
 
 func TestLoadSessionJobActivityTree_RejectsOutOfStateDirChild(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "rootboundary"
-	outsideStateDir := t.TempDir()
 	childID := "childboundary"
+	outsideStateDir := t.TempDir()
 	started := time.Unix(200, 0).UTC()
 
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "outside"))
 	s1cov_writeJobLog(t, stateDir, rootID,
-		jobstore.Event{Kind: jobstore.EventDelegateCreated, TS: started, DelegateID: "dlg_outside", Delegate: &jobstore.DelegateEvent{ChildSessionID: childID, TranscriptRef: encodeRef("", childID), OwnerSessionID: rootID, VisibleSessionID: rootID, Generation: "gen_1", Resumable: true}},
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_outside", Type: jobstore.JobDelegate, OwnerSessionID: rootID, VisibleToSession: rootID, DelegateID: "dlg_outside", StartedAt: &started, TranscriptRef: encodeRef("", childID)},
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
 	)
 	savePastActivityMeta(t, stateDir, rootID, "Root")
-
-	outsideMetaPath := filepath.Join(stateDir, "sessions", childID+".meta.json")
-	writeRawSessionMeta(t, outsideMetaPath, schema.SessionMeta{ID: childID, Name: "Outside", WorktreePath: filepath.Join(outsideStateDir, "evil")})
+	writeRawSessionMeta(t, filepath.Join(stateDir, "sessions", childID+".meta.json"), schema.SessionMeta{
+		ID: childID, Name: "Outside", WorktreePath: filepath.Join(outsideStateDir, "evil"),
+	})
 	childJobsPath := s1cov_writeJobLog(t, outsideStateDir, childID,
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_outside_shell", Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started, Description: "outside shell"},
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_outside_shell", Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started},
 	)
 	before, err := os.Stat(childJobsPath)
 	if err != nil {
-		t.Fatalf("stat outside jobs: %v", err)
+		t.Fatal(err)
 	}
 
 	got, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{})
@@ -94,14 +82,11 @@ func TestLoadSessionJobActivityTree_RejectsOutOfStateDirChild(t *testing.T) {
 	}
 	delegate := pastFindDelegate(t, got.Root, childID)
 	if delegate.Child != nil || delegate.Branch.Error == "" {
-		t.Fatalf("delegate=%+v", delegate)
-	}
-	if delegate.Branch.Error == "" {
-		t.Fatalf("branch error=%q", delegate.Branch.Error)
+		t.Fatalf("delegate = %+v", delegate)
 	}
 	after, err := os.Stat(childJobsPath)
 	if err != nil {
-		t.Fatalf("restat outside jobs: %v", err)
+		t.Fatal(err)
 	}
 	if after.ModTime() != before.ModTime() || after.Size() != before.Size() {
 		t.Fatalf("outside job log changed: before=%v/%d after=%v/%d", before.ModTime(), before.Size(), after.ModTime(), after.Size())
@@ -113,16 +98,12 @@ func TestLoadSessionJobActivityTree_UsesMaxPersistedRootRevisionAcrossDescendant
 	rootID := "rootrevision"
 	childID := "childrevision"
 	started := time.Unix(250, 0).UTC()
-	ended := started.Add(time.Second)
-
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "revision"))
 	s1cov_writeJobLog(t, stateDir, rootID,
-		jobstore.Event{Kind: jobstore.EventDelegateCreated, TS: started, DelegateID: "dlg_revision", Delegate: &jobstore.DelegateEvent{ChildSessionID: childID, TranscriptRef: encodeRef("", childID), OwnerSessionID: rootID, VisibleSessionID: rootID, Generation: "gen_1", Resumable: true}},
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_delegate_revision", Type: jobstore.JobDelegate, OwnerSessionID: rootID, VisibleToSession: rootID, DelegateID: "dlg_revision", StartedAt: &started, TranscriptRef: encodeRef("", childID)},
-		jobstore.Event{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_delegate_revision", Status: jobstore.StatusCompleted, EndedAt: &ended},
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
 	)
 	s1cov_writeJobLog(t, stateDir, childID,
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child_revision", Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started, Description: "child shell"},
-		jobstore.Event{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_child_revision", Status: jobstore.StatusCompleted, EndedAt: &ended},
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child", Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started},
 	)
 	savePastActivityMetaWithTreeRevision(t, stateDir, rootID, "Root", "", 3)
 	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 7)
@@ -136,54 +117,43 @@ func TestLoadSessionJobActivityTree_UsesMaxPersistedRootRevisionAcrossDescendant
 	}
 }
 
-func TestLoadSessionJobActivityTree_ContinuationFollowsDurablePath(t *testing.T) {
-	stateDir := t.TempDir()
-	rootID := "rootcont"
-	childID := "childcont"
-	started := time.Unix(300, 0).UTC()
-	ended := started.Add(time.Second)
-	var events []jobstore.Event
-	events = append(events,
-		jobstore.Event{Kind: jobstore.EventDelegateCreated, TS: started, DelegateID: "dlg_cont", Delegate: &jobstore.DelegateEvent{ChildSessionID: childID, TranscriptRef: encodeRef("", childID), OwnerSessionID: rootID, VisibleSessionID: rootID, Generation: "gen_1", Resumable: true}},
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_delegate_cont", Type: jobstore.JobDelegate, OwnerSessionID: rootID, VisibleToSession: rootID, DelegateID: "dlg_cont", StartedAt: &started, TranscriptRef: encodeRef("", childID)},
-		jobstore.Event{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_delegate_cont", Status: jobstore.StatusCompleted, EndedAt: &ended},
-	)
-	s1cov_writeJobLog(t, stateDir, rootID, events...)
-	var childEvents []jobstore.Event
-	for i := range activityMaxWorkUnits + 2 {
-		ts := started.Add(time.Duration(i+1) * time.Second)
-		childEvents = append(childEvents, jobstore.Event{Kind: jobstore.EventJobStarted, TS: ts, JobID: "job_child_" + strings.Repeat("x", 0) + time.Unix(int64(i+1), 0).UTC().Format("150405") + string(rune('a'+(i%26))), Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &ts, Description: "child"})
+func pastStableDescriptor(ownerSessionID, childSessionID, task string) delegatestore.Descriptor {
+	return delegatestore.Descriptor{
+		ChildSessionID:   childSessionID,
+		TranscriptRef:    encodeRef("", childSessionID),
+		OwnerSessionID:   ownerSessionID,
+		VisibleSessionID: ownerSessionID,
+		Task:             task,
+		AgentType:        "general",
+		Resumable:        true,
 	}
-	s1cov_writeJobLog(t, stateDir, childID, childEvents...)
-	savePastActivityMetaWithTreeRevision(t, stateDir, rootID, "Root", "", 4)
-	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 9)
+}
 
-	first, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{})
+func writePastStableDelegates(t *testing.T, stateDir, rootSessionID string, descriptors ...delegatestore.Descriptor) {
+	t.Helper()
+	store, err := delegatestore.Open(filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Revision != 9 {
-		t.Fatalf("first revision=%d, want 9", first.Revision)
-	}
-	child := pastFindDelegate(t, first.Root, childID)
-	if child.Child == nil || !child.Child.Branch.Truncated || child.Child.Branch.Continuation == "" {
-		t.Fatalf("child branch=%+v child=%+v", child.Branch, child.Child)
-	}
-	cont, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{Continuation: child.Child.Branch.Continuation})
+	state, err := delegatestore.Fold(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cont.Root.SessionID != rootID || cont.Root.Ref != encodeRef("", rootID) {
-		t.Fatalf("continued root=%+v", cont.Root)
+	events := make([]delegatestore.Event, 0, len(descriptors))
+	for i, descriptor := range descriptors {
+		events = append(events, delegatestore.Event{
+			Kind:       delegatestore.EventDelegateCreated,
+			TS:         time.Unix(int64(i+1), 0).UTC(),
+			DelegateID: "dlg_" + strings.TrimPrefix(descriptor.ChildSessionID, "child"),
+			Created:    &delegatestore.DelegateCreated{Descriptor: descriptor},
+		})
 	}
-	if len(cont.Root.Entries) != 1 || cont.Root.Entries[0].Delegate == nil || cont.Root.Entries[0].Delegate.Child == nil {
-		t.Fatalf("continued envelope=%+v", cont.Root.Entries)
+	if _, _, err := store.AppendBatch(state, events); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
 	}
-	if cont.Root.Entries[0].Delegate.Child.SessionID != childID {
-		t.Fatalf("continued child=%+v", cont.Root.Entries[0].Delegate.Child)
-	}
-	if cont.Revision != 9 {
-		t.Fatalf("continued revision=%d, want 9", cont.Revision)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -206,25 +176,11 @@ func savePastActivityMetaWithTreeRevision(t *testing.T, stateDir, sessionID, nam
 func pastFindDelegate(t *testing.T, root appwire.JobActivitySession, childID string) appwire.JobActivityDelegate {
 	t.Helper()
 	for _, entry := range root.Entries {
-		if entry.Delegate == nil {
-			continue
-		}
-		if childID == "" || entry.Delegate.ChildSessionID == childID {
+		if entry.Delegate != nil && entry.Delegate.ChildSessionID == childID {
 			return *entry.Delegate
 		}
 	}
 	t.Fatalf("no delegate child=%q in %+v", childID, root.Entries)
-	return appwire.JobActivityDelegate{}
-}
-
-func pastFindDelegateByID(t *testing.T, root appwire.JobActivitySession, delegateID string) appwire.JobActivityDelegate {
-	t.Helper()
-	for _, entry := range root.Entries {
-		if entry.Delegate != nil && entry.Delegate.DelegateID == delegateID {
-			return *entry.Delegate
-		}
-	}
-	t.Fatalf("no delegate id=%q in %+v", delegateID, root.Entries)
 	return appwire.JobActivityDelegate{}
 }
 

@@ -13,7 +13,6 @@ import (
 const (
 	completedJobID = "job_02wMz5TxvEMoJEDTDGOTi1"
 	timeoutJobID   = "job_02wMz5TxvEMoJEDTDGOTi2"
-	delegateJobID  = "job_02wMz5TxvEMoJEDTDGOTi3"
 	absentJobID    = "job_02wMz5TxvEMoJEDTDGOTi9"
 )
 
@@ -22,13 +21,11 @@ var (
 	jobEndedAt   = time.Date(2026, 7, 31, 18, 2, 0, 0, time.UTC)
 )
 
-// jobsFixtureEvents records the three job shapes a diagnostician meets: a shell
+// jobsFixtureEvents records the two job shapes a diagnostician meets: a shell
 // job that completed, a shell job the run timeout stopped with no output at all
-// (the 2026-07-31 diagnosis shape) whose terminal notification never landed, and
-// a delegate job still running.
+// (the 2026-07-31 diagnosis shape) whose terminal notification never landed.
 func jobsFixtureEvents() []jobstore.Event {
 	exitOK, exitTimeout := 0, -1
-	resumable := true
 	// The timeout job is appended FIRST although its id sorts after the completed
 	// job's, so the expected order can only come from the log's append order — an
 	// id sort would produce a different list.
@@ -44,11 +41,6 @@ func jobsFixtureEvents() []jobstore.Event {
 			OutputPath: "/state/jobs/" + completedJobID + ".log"},
 		{Kind: jobstore.EventJobFinished, JobID: completedJobID, Status: jobstore.StatusCompleted,
 			ExitCode: &exitOK, EndedAt: &jobEndedAt, OutputBytes: 4096, TerminalGen: "tg1"},
-
-		{Kind: jobstore.EventJobStarted, JobID: delegateJobID, Type: jobstore.JobDelegate, Task: "review the diff",
-			DelegateID: "dlg_02wMz5TxvEMoJEDTDGOTi4", ParentJobID: completedJobID,
-			OwnerSessionID: sidA, VisibleToSession: sidA, StartedAt: &jobStartedAt},
-		{Kind: jobstore.EventJobSessionAssigned, JobID: delegateJobID, TranscriptRef: "local:" + sidB, Resumable: &resumable},
 	}
 }
 
@@ -86,7 +78,7 @@ func TestJobs_ListsFoldedRecordsInAppendOrder(t *testing.T) {
 	for _, j := range r.Jobs {
 		got = append(got, j.JobID)
 	}
-	want := []string{timeoutJobID, completedJobID, delegateJobID}
+	want := []string{timeoutJobID, completedJobID}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("job order = %v, want %v", got, want)
 	}
@@ -125,32 +117,6 @@ func TestJobs_TerminalStateOfOneJob(t *testing.T) {
 	// The caller was never told this job died: the notification is still pending.
 	if j.NotifyState != "pending" {
 		t.Errorf("NotifyState = %q, want pending", j.NotifyState)
-	}
-}
-
-// A delegate job carries the links a diagnostician pivots on: the child
-// transcript ref (serf-doctor transcript <ref>), its delegate id, and its parent job.
-func TestJobs_DelegateJobCarriesPivotLinks(t *testing.T) {
-	base, sid := jobsFixture(t)
-	r, _ := Jobs(base, sid, JobOpts{})
-	j := findJob(r, delegateJobID)
-	if j == nil {
-		t.Fatalf("%s missing from report", delegateJobID)
-	}
-	if j.Status != "running" {
-		t.Errorf("Status = %q, want running", j.Status)
-	}
-	if j.TranscriptRef != "local:"+sidB {
-		t.Errorf("TranscriptRef = %q, want local:%s", j.TranscriptRef, sidB)
-	}
-	if j.DelegateID != "dlg_02wMz5TxvEMoJEDTDGOTi4" {
-		t.Errorf("DelegateID = %q", j.DelegateID)
-	}
-	if j.ParentJobID != completedJobID {
-		t.Errorf("ParentJobID = %q, want %q", j.ParentJobID, completedJobID)
-	}
-	if j.Task != "review the diff" {
-		t.Errorf("Task = %q, want the delegate task", j.Task)
 	}
 }
 
@@ -258,7 +224,6 @@ func TestJobs_RenderTellsTheTerminalStory(t *testing.T) {
 		"ended=2026-07-31T18:02:00Z",
 		"command=npm run dev",
 		"notify=pending",
-		"transcript=local:" + sidB,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("render missing %q; got:\n%s", want, out)

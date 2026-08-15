@@ -253,43 +253,6 @@ func TestPreDurableJobStartFailureRemovesOutputArtifacts(t *testing.T) {
 		requireNoOutputArtifacts(t, filepath.Join(jm.dir, "jobs", jobID+".log"))
 	})
 
-	for _, test := range []struct {
-		name  string
-		setup func(*jobManager)
-		want  error
-	}{
-		{
-			name: "delegate manager closing",
-			setup: func(jm *jobManager) {
-				jm.mu.Lock()
-				jm.closing = true
-				jm.mu.Unlock()
-			},
-			want: errJobManagerClosing,
-		},
-		{
-			name: "delegate start append",
-			setup: func(jm *jobManager) {
-				jm.appendEvents = func([]jobstore.Event) error { return errors.New("append failed") }
-			},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			parent := newTestSession(t)
-			child := newTestSession(t)
-			jobID := jobstore.NewJobID(parent.ID())
-			test.setup(parent.jobManager)
-
-			run, err := parent.attachDelegateJobWithID(parent.jobManager, child.ID(), "task", w3dlg_attachSub(child), jobID, nil, false)
-			if run != nil || err == nil {
-				t.Fatalf("attachDelegateJobWithID = (%v, %v), want nil/error", run, err)
-			}
-			if test.want != nil && !errors.Is(err, test.want) {
-				t.Fatalf("attach error = %v, want %v", err, test.want)
-			}
-			requireNoOutputArtifacts(t, filepath.Join(parent.jobManager.dir, "jobs", jobID+".log"))
-		})
-	}
 }
 
 func TestShellDurableStartForwardFailureRetainsOutputArtifacts(t *testing.T) {
@@ -303,22 +266,6 @@ func TestShellDurableStartForwardFailureRetainsOutputArtifacts(t *testing.T) {
 		t.Fatal("createShell succeeded, want forward failure")
 	}
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
-	requireOutputEvidence(t, outputPath)
-	t.Cleanup(func() { _ = jobstore.RemoveOutputArtifacts(outputPath) })
-}
-
-func TestDelegateDurableStartForwardFailureRetainsOutputArtifacts(t *testing.T) {
-	parent := newTestSession(t)
-	child := newTestSession(t)
-	jobID := jobstore.NewJobID(parent.ID())
-	parent.jobManager.forward = func(jobstore.Event) error { return errors.New("forward failed") }
-	parent.jobManager.parentJobID = "job_parent"
-
-	run, err := parent.attachDelegateJobWithID(parent.jobManager, child.ID(), "task", w3dlg_attachSub(child), jobID, nil, false)
-	if run != nil || err == nil {
-		t.Fatalf("attachDelegateJobWithID = (%v, %v), want nil/error", run, err)
-	}
-	outputPath := filepath.Join(parent.jobManager.dir, "jobs", jobID+".log")
 	requireOutputEvidence(t, outputPath)
 	t.Cleanup(func() { _ = jobstore.RemoveOutputArtifacts(outputPath) })
 }
@@ -340,22 +287,6 @@ func TestCreateJobOutputForIDValidatesOwnerBeforeFilesystemAccess(t *testing.T) 
 	}
 	if filesystemAccessed {
 		t.Fatal("createJobOutputForID reached filesystem before rejecting the owner")
-	}
-}
-
-func TestDelegateJobGenerationErrorPropagatesBeforeOutputCreation(t *testing.T) {
-	parent := newTestSession(t)
-	child := newTestSession(t)
-	want := errors.New("random source failed")
-	parent.jobManager.newJobID = func(string) (string, error) { return "", want }
-	parent.jobManager.createOutput = func(string, int64) (*jobstore.OutputStore, error) {
-		t.Fatal("delegate job generation failure reached output creation")
-		return nil, nil
-	}
-
-	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "task", w3dlg_attachSub(child))
-	if run != nil || !errors.Is(err, want) {
-		t.Fatalf("attachDelegateJob = (%v, %v), want nil/%v", run, err, want)
 	}
 }
 
@@ -689,7 +620,7 @@ func TestJobManagerRunningRecordOutputUsesSidecarTotal(t *testing.T) {
 	if err := jm.store.Append(jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		JobID:            jobID,
-		Type:             jobstore.JobDelegate,
+		Type:             jobstore.JobShell,
 		Status:           jobstore.StatusRunning,
 		OwnerSessionID:   "child",
 		VisibleToSession: testOwnerSessionID,
@@ -725,26 +656,6 @@ func TestJobOutputShellStoreEnforcesRetentionCap(t *testing.T) {
 	}
 
 	assertJobOutputRetentionCap(t, jm.running[rec.JobID])
-}
-
-func TestJobOutputDelegateStoreEnforcesRetentionCap(t *testing.T) {
-	t.Parallel()
-	parent := newTestSession(t)
-	child := newTestSession(t)
-	sub := &subagent{
-		id:      child.ID(),
-		sess:    child,
-		running: true,
-		status:  SubagentRunning,
-		done:    make(chan struct{}),
-	}
-	parent.subagents.track(sub)
-	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "retain delegate output", sub)
-	if err != nil {
-		t.Fatalf("attachDelegateJob: %v", err)
-	}
-
-	assertJobOutputRetentionCap(t, run)
 }
 
 func assertJobOutputRetentionCap(t *testing.T, run *runningJob) {
@@ -840,7 +751,6 @@ func TestJobManagerCloseMarksRunningJobsCancelled(t *testing.T) {
 func TestJobManagerCloseContinuesAfterWatchSendCleanupFailure(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	seedCommonWatchSendTargets(t, jm)
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -848,7 +758,7 @@ func TestJobManagerCloseContinuesAfterWatchSendCleanupFailure(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure watch: %v", err)
 	}
@@ -856,7 +766,7 @@ func TestJobManagerCloseContinuesAfterWatchSendCleanupFailure(t *testing.T) {
 		VisibleSessionID:        jm.sessionID,
 		WatchTarget:             rec.JobID,
 		ResolvedWatchedIdentity: rec.JobID,
-		ResolvedSendTo:          "dlg_obs",
+		ResolvedSendTo:          runtimeMessageAliasCaller,
 	}
 	jm.mu.Lock()
 	var cfg *watchConfig

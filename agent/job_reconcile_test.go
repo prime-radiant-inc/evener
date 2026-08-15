@@ -137,7 +137,7 @@ func TestReconcileOnRestoreSkipsForwardedChildOwnedJob(t *testing.T) {
 		Type:             jobstore.JobShell,
 		OwnerSessionID:   "CHILD",
 		VisibleToSession: "PARENT",
-		ParentJobID:      "job_delegate",
+		ParentJobID:      "job_parent_shell",
 		StartedAt:        &start,
 	}); err != nil {
 		t.Fatal(err)

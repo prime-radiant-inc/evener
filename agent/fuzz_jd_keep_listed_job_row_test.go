@@ -31,7 +31,7 @@ func FuzzJdKeepListedJobRow(f *testing.F) {
 			jobstore.StatusRunning, jobstore.StatusCompleted, jobstore.StatusFailed,
 			jobstore.StatusCancelled, jobstore.StatusStopped, "",
 		}
-		types := []jobstore.JobType{jobstore.JobShell, jobstore.JobDelegate, ""}
+		types := []jobstore.JobType{jobstore.JobShell, ""}
 
 		recStatus := statuses[int(statusSel)%len(statuses)]
 		recType := types[int(typeSel)%len(types)]

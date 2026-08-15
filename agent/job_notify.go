@@ -58,7 +58,6 @@ func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 		Reason:           rec.Reason,
 		ExhaustionBudget: rec.ExhaustionBudget,
 		ExhaustionLimit:  rec.ExhaustionLimit,
-		Resumable:        rec.Resumable,
 		TranscriptRef:    jobTranscriptRef(rec),
 		OutputBytes:      rec.OutputBytes,
 		ExitCode:         rec.ExitCode,
@@ -94,15 +93,10 @@ func jobFinishedEventIdentity(n jobNotification, data events.JobFinishedData) jo
 
 // notificationExcerpt is a rendered terminal-result excerpt plus whether it
 // contains the job's complete output. Completeness drives the body wording:
-// a complete excerpt needs no transcript-read instruction. worktree carries
-// the isolation lane's path/branch/ahead/dirty state for a terminal isolated
-// delegate job (native worktree tools spec §9 lifecycle step 3), so the
-// background completion-notification path surfaces the same lane report the
-// inline-wait tool result carries; nil for every non-isolated job.
+// a complete excerpt needs no transcript-read instruction.
 type notificationExcerpt struct {
 	text     string
 	complete bool
-	worktree *delegateWorktreeReport
 }
 
 // terminalNotificationExcerpt resolves the bounded result excerpt for a finished
@@ -125,34 +119,19 @@ func (s *Session) terminalNotificationExcerpt(n jobNotification) notificationExc
 	if rec == nil || !rec.Status.IsTerminal() {
 		return notificationExcerpt{}
 	}
-	jobType := string(rec.Type)
-
-	// An isolated delegate's terminal notification carries its lane report
-	// (spec §9 step 3) whether or not the job produced any output — so it is
-	// computed before the empty-excerpt early return below. Empty for every
-	// non-isolated job (isolatedDelegateWorktreeReport returns nil).
-	var worktreeReport *delegateWorktreeReport
-	if jobType == string(jobstore.JobDelegate) {
-		worktreeReport = s.isolatedDelegateWorktreeReport(rec.DelegateRestore)
-	}
-
 	var (
 		excerpt   string
 		truncated bool
 	)
-	if jobType == string(jobstore.JobDelegate) {
-		excerpt, _, truncated, err = jm.readOutputHead(n.JobID, terminalExcerptBytes)
-	} else {
-		excerpt, _, truncated, err = jm.readOutput(n.JobID, terminalExcerptBytes)
-	}
+	excerpt, _, truncated, err = jm.readOutput(n.JobID, terminalExcerptBytes)
 	if err != nil || excerpt == "" {
-		return notificationExcerpt{worktree: worktreeReport}
+		return notificationExcerpt{}
 	}
 	rendered := limitWatchText(strings.ToValidUTF8(excerpt, "\uFFFD"), terminalExcerptMaxChars)
 	if truncated {
 		rendered += "\n[excerpt truncated]"
 	}
-	return notificationExcerpt{text: rendered, complete: !truncated, worktree: worktreeReport}
+	return notificationExcerpt{text: rendered, complete: !truncated}
 }
 
 func notificationTranscriptRef(n jobNotification) string {
@@ -259,20 +238,6 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, 
 	if n.TranscriptRef != "" {
 		attrs = append(attrs, notificationAttr("transcript_ref", n.TranscriptRef))
 	}
-	// An isolated delegate's terminal notification carries its lane report so
-	// the parent can merge the lane between jobs even in the default
-	// fire-and-forget mode, where the result never rides an inline tool
-	// response (native worktree tools spec §9 lifecycle step 3).
-	if wt := excerpt.worktree; wt != nil {
-		attrs = append(attrs,
-			notificationAttr("worktree_path", wt.Path),
-			notificationAttr("worktree_branch", wt.Branch),
-			notificationAttr("worktree_head_sha", wt.HeadSHA),
-			notificationAttr("worktree_ahead", strconv.Itoa(wt.Ahead)),
-			notificationAttr("worktree_dirty", strconv.FormatBool(wt.Dirty)),
-		)
-	}
-
 	if n.Status == jobNotificationEventWatch && n.JobID == "" {
 		return fmt.Sprintf(
 			"<job-notification %s>\n"+
@@ -308,12 +273,6 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, 
 	body := strings.TrimSpace(fmt.Sprintf("Job %s %s. %s", n.JobID, event, instruction))
 	if excerpt.text != "" {
 		body += "\nexcerpt:\n" + escapeNotificationBody(excerpt.text)
-	}
-	// The spec §P2 completion nudge rides the same lane report as the inline
-	// tool result, gated identically (has-op AND owns-delegate) — the report's
-	// DisposalHint is non-empty only when both gates hold.
-	if wt := excerpt.worktree; wt != nil && wt.DisposalHint != "" {
-		body += "\n" + escapeNotificationBody(wt.DisposalHint)
 	}
 	return fmt.Sprintf(
 		"<job-notification %s>\n%s\n</job-notification>",

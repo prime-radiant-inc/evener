@@ -10,45 +10,13 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/worktree"
 )
 
-// isolationLane names one isolation delegate lane a session created: its
-// delegate id (== the worktree name and branch, native worktree tools spec §9
-// lifecycle step 1) and the lane's on-disk path (DelegateRestore.WorkingDir).
+// isolationLane names one stable worktree-isolated delegate lane.
 type isolationLane struct {
 	delegateID string
 	path       string
-}
-
-// ownedIsolationLanes enumerates the isolation delegate lanes THIS session
-// created (native worktree tools spec §9 step 4), from the folded job records.
-// A lane qualifies when its delegate job carries an isolation="worktree"
-// restore descriptor whose ParentSessionID is this session — the field a
-// forwarded copy of a descendant's delegate preserves as the ORIGINAL creator,
-// so an ancestor never disposes a lane it did not create. Deduped by delegate
-// id, since a delegate resumed several times has several job records all
-// pointing at the same lane.
-func ownedIsolationLanes(recs map[string]*jobstore.JobRecord, sessionID string) []isolationLane {
-	seen := make(map[string]bool)
-	var lanes []isolationLane
-	for _, r := range recs {
-		d := r.DelegateRestore
-		if d == nil || d.Isolation != "worktree" {
-			continue
-		}
-		if d.ParentSessionID != sessionID {
-			continue
-		}
-		path := strings.TrimSpace(d.WorkingDir)
-		if path == "" || r.DelegateID == "" || seen[r.DelegateID] {
-			continue
-		}
-		seen[r.DelegateID] = true
-		lanes = append(lanes, isolationLane{delegateID: r.DelegateID, path: path})
-	}
-	return lanes
 }
 
 // disposeDelegateLanesAtClose disposes the isolation delegate lanes this
@@ -193,7 +161,7 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 		}
 		s.delegateController.emitDelegateUpdates(plans)
 	}
-	outcome, cleanupNote := s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, false, true)
+	outcome, cleanupNote := s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, false)
 	if outcome == laneKeptDirty {
 		return cleanupNote + " (resumability closed; retained residue)", true
 	}
@@ -254,94 +222,6 @@ func (s *Session) touchUnlockLaneTail(local *execenv.LocalExecutionEnvironment, 
 	}
 	s.unlockLaneIfOwn(run, worktree.EvDisposeChanged, st, lanePath, metaDir, lane.delegateID)
 	return lane.delegateID + " at " + lanePath
-}
-
-// disposeOneDelegateLane disposes a single isolation lane and reports whether
-// it was KEPT (unlocked, descriptor untouched, still resumable) along with a
-// human-readable note for the close-time listing. It returns kept=false for a
-// removed (unchanged) lane and for any lane it declines to touch (already gone,
-// no sidecar, or foreign/session-locked — not the disposer's serf:dlg: lock).
-func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.LocalExecutionEnvironment, lane isolationLane) (note string, kept bool) {
-	lanePath := filepath.Clean(lane.path)
-
-	// The lane directory must still exist and be a real linked worktree; a
-	// crash after remove (or a prior prune) leaves nothing to do — the crash
-	// net (step 5's WorkingDir stat) already refuses revival into it.
-	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
-		return "", false
-	}
-	rootedAtLane := local.WithWorkingDirectory(lanePath)
-	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
-	if mainRoot == "" {
-		return "", false
-	}
-	controlEnv := local.WithWorkingDirectory(mainRoot)
-	// Evaluation and disposal git ops run under the shared close budget, so a
-	// pass that blows the deadline is interrupted rather than blocking shutdown.
-	run := s.newWorktreeGitRunner(ctx, controlEnv)
-
-	// The sidecar carries the recorded base SHA the unchanged predicate needs.
-	// Without it (unknown provenance) the lane is not ours to judge — leave it.
-	metaDir := metaDirForLane(lanePath)
-	sc, scErr := worktree.ReadSidecar(metaDir, lane.delegateID)
-	if scErr != nil {
-		return "", false
-	}
-
-	locked, reason, lsErr := lockStateOf(run, lanePath)
-	if lsErr != nil {
-		return "", false
-	}
-	st := worktree.Unlocked
-	if locked {
-		st = worktree.ClassifyReason(reason, s.id, lane.delegateID)
-	}
-
-	// D0-auto predicate (spec §D0): a lane is auto-collectible when it is
-	// Unchanged (clean tree AND tip == recorded base SHA) OR clean and
-	// ancestry-merged into its LOCAL merge_target branch. Anything else (commits
-	// not reachable from a local branch, a cherry-only/remote-tracking merge, or
-	// a dirty tree) is a KEPT lane whose work must be preserved.
-	collectible, uErr := laneAutoCollectible(run, lanePath, sc.BaseSHA, sc.MergeTarget)
-	if uErr != nil {
-		// Cannot evaluate cleanly. Fail safe toward preservation: touch the
-		// sidecar, release our own lock (if any), and keep the lane resumable
-		// rather than risk removing unexamined work.
-		s.unlockLaneIfOwn(run, worktree.EvDisposeChanged, st, lanePath, metaDir, lane.delegateID)
-		return lane.delegateID + " at " + lanePath + " (state unverifiable)", true
-	}
-
-	if !collectible {
-		// KEPT → touch the sidecar, unlock, and keep; the descriptor is NEVER
-		// touched, so the lane stays resumable and `prune` collects it once its
-		// branch merges.
-		if !s.unlockLaneIfOwn(run, worktree.EvDisposeChanged, st, lanePath, metaDir, lane.delegateID) {
-			return "", false // foreign / session-locked — not the disposer's dlg lock
-		}
-		// These two reads describe how much work the kept lane holds, and
-		// their zero values ("0 ahead, dirty=false") describe a lane holding
-		// none — the reading that invites discarding it. A read that failed
-		// says so instead. The note itself is never withheld: it is the only
-		// announcement that this lane was kept, so a partial note beats none.
-		dirty := "dirty unknown"
-		if clean, _, cErr := worktree.CleanTree(run, lanePath); cErr == nil {
-			dirty = fmt.Sprintf("dirty=%t", !clean)
-		}
-		ahead := "ahead unknown"
-		if aheadOut, aErr := run("-C", lanePath, "rev-list", "--count", sc.BaseSHA+"..HEAD"); aErr == nil {
-			if n, convErr := strconv.Atoi(strings.TrimSpace(aheadOut)); convErr == nil {
-				ahead = fmt.Sprintf("%d ahead", n)
-			}
-		}
-		return fmt.Sprintf("%s at %s (branch %s, %s, %s)", lane.delegateID, lanePath, lane.delegateID, ahead, dirty), true
-	}
-
-	// COLLECTIBLE → unlock, then `git worktree remove` (non-force), then mark the
-	// descriptor disposed, then delete branch + sidecar. A late-dirty refusal
-	// downgrades back to KEEP; at close the dead owner's lock is left released
-	// (downgradeUnlockKeep) rather than re-locked.
-	outcome, note := s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, false, false)
-	return note, outcome == laneKeptDirty
 }
 
 // laneAutoCollectible applies the D0-auto disposal predicate (spec §D0): a lane
@@ -439,7 +319,7 @@ func (s *Session) statLaneGitDir(lanePath string) (os.FileInfo, error) {
 // unless dirty-forced"): the model-facing dispose op sets it when `force_dirty`
 // discards a dirty lane, which a non-force remove would refuse. The close path
 // never forces — a late dirty write there downgrades back to KEEP instead.
-func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st worktree.LockState, lane isolationLane, metaDir string, downgrade downgradePolicy, forceRemove, stableClosed bool) (outcome laneDisposalOutcome, note string) {
+func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st worktree.LockState, lane isolationLane, metaDir string, downgrade downgradePolicy, forceRemove bool) (outcome laneDisposalOutcome, note string) {
 	lanePath := filepath.Clean(lane.path)
 	switch worktree.Decide(worktree.EvDisposeUnchanged, st) {
 	case worktree.ActUnlock:
@@ -484,19 +364,6 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 			}
 		}
 		// Lane gone to a concurrent collector: fall through to mark + remnants.
-	}
-
-	// Stable disposal already fsynced its permanent closure before entering
-	// this destructive sequence. The legacy path retains its old post-remove
-	// marker until the obsolete delegate JobRecord implementation is deleted.
-	if !stableClosed {
-		if err := s.jobManager.appendEvent(jobstore.Event{
-			Kind:       jobstore.EventDelegateDisposed,
-			TS:         s.jobManager.now(),
-			DelegateID: lane.delegateID,
-		}); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane disposal mark failed for %s: %v", lane.delegateID, err)})
-		}
 	}
 
 	// Delete the branch (unchanged lane: tip == base, no work lost) and the

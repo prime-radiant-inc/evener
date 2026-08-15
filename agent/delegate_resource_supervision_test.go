@@ -308,10 +308,10 @@ func TestDelegateResourceSupervision_PendingSteerPrecedesAutoNudge(t *testing.T)
 	if len(requests) != 5 {
 		t.Fatalf("provider requests = %d, want four empty attempts plus steering continuation", len(requests))
 	}
-	if requestMessagesContain(requests[4], communicateNudge("communicate")) {
+	if requestMessagesContainText(requests[4].Messages, communicateNudge("communicate")) {
 		t.Fatalf("pending steer was delayed behind auto-nudge: %#v", requests[4].Messages)
 	}
-	if !requestMessagesContain(requests[4], "priority steering") {
+	if !requestMessagesContainText(requests[4].Messages, "priority steering") {
 		t.Fatalf("steering continuation omitted accepted steer: %#v", requests[4].Messages)
 	}
 }
@@ -416,7 +416,7 @@ func TestDelegateResourceSupervision_LateOrdinarySteerPreservesOwnedWorkForConti
 		t.Fatal("ordinary missing-terminal path stopped owned work before honoring late steering")
 	}
 	requests := fixture.adapter.Requests()
-	if len(requests) != 9 || !requestMessagesContain(requests[8], "late steering at ordinary settlement") {
+	if len(requests) != 9 || !requestMessagesContainText(requests[8].Messages, "late steering at ordinary settlement") {
 		t.Fatalf("late nudge continuation requests = %d, final history %#v", len(requests), requests[len(requests)-1].Messages)
 	}
 }
@@ -519,9 +519,7 @@ func (e *asynchronousCleanupStreamingExecutor) release() {
 }
 
 func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) {
-	worktreeClient := llm.NewClient()
-	worktreeClient.Register(&fakeAdapter{name: "openai"})
-	worktreeRepo := newWtDlgRepo(t, worktreeClient)
+	worktreeRepo := newWorktreeRepo(t)
 	lane, _, _, _, _, err := worktreeRepo.s.createDelegateWorktree(context.Background(), "dlg_01TASK7FATALPACKET000001")
 	if err != nil {
 		t.Fatalf("create fatal-evidence worktree: %v", err)
@@ -671,43 +669,33 @@ func TestDelegateResourceSupervision_FatalCleanupFailureIsObservable(t *testing.
 	if sub == nil || sub.sess == nil || sub.sess.jobManager == nil {
 		t.Fatalf("stable child %q has no managed-work runtime", fixture.childID)
 	}
-	cleanupErr := errors.New("persist owned cleanup stop gate")
-	ownedDelegate := &runningJob{
+	ownedShell := &runningJob{
 		rec: &jobstore.JobRecord{
 			JobID:          "job_owned_cleanup_failure",
-			Type:           jobstore.JobDelegate,
+			Type:           jobstore.JobShell,
 			Status:         jobstore.StatusRunning,
-			DelegateID:     "dlg_01TASK7CLEANUPFAILURE01",
 			OwnerSessionID: sub.sess.ID(),
 		},
-		signal:         func() {},
 		done:           make(chan struct{}),
 		durableStarted: true,
 	}
+	ownedShell.signal = func() { ownedShell.closeDoneAbandoned() }
+	cleanupErr := "owned job " + ownedShell.rec.JobID + " ended without durable completion"
 	jm := sub.sess.jobManager
-	originalAppend := jm.appendEvent
-	jm.appendEvent = func(event jobstore.Event) error {
-		if event.Kind == jobstore.EventDelegateStopGateClosed && event.DelegateID == ownedDelegate.rec.DelegateID {
-			return cleanupErr
-		}
-		return originalAppend(event)
-	}
 	jm.mu.Lock()
-	jm.running[ownedDelegate.rec.JobID] = ownedDelegate
+	jm.running[ownedShell.rec.JobID] = ownedShell
 	jm.mu.Unlock()
 	t.Cleanup(func() {
-		jm.appendEvent = originalAppend
 		jm.mu.Lock()
-		delete(jm.running, ownedDelegate.rec.JobID)
+		delete(jm.running, ownedShell.rec.JobID)
 		jm.mu.Unlock()
-		ownedDelegate.closeDone()
 	})
 	close(release)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	sub.mu.Lock()
 	runErr := sub.err
 	sub.mu.Unlock()
-	if !errors.Is(runErr, cleanupErr) {
+	if !strings.Contains(runErr.Error(), cleanupErr) {
 		t.Fatalf("retained fatal error = %v, want owned cleanup failure", runErr)
 	}
 	events, err := root.delegateController.store.Load()
@@ -721,7 +709,7 @@ func TestDelegateResourceSupervision_FatalCleanupFailureIsObservable(t *testing.
 			packet = &value
 		}
 	}
-	if packet == nil || !strings.Contains(string(packet.Message), cleanupErr.Error()) {
+	if packet == nil || !strings.Contains(string(packet.Message), cleanupErr) {
 		t.Fatalf("cleanup-failure terminal packet = %#v, want observable cleanup error", packet)
 	}
 }
@@ -850,36 +838,26 @@ func TestDelegateResourceSupervision_OrdinaryCleanupFailureIsObservable(t *testi
 	if sub == nil || sub.sess == nil || sub.sess.jobManager == nil {
 		t.Fatalf("stable child %q has no managed-work runtime", fixture.childID)
 	}
-	cleanupErr := errors.New("persist ordinary owned cleanup stop gate")
-	ownedDelegate := &runningJob{
+	ownedShell := &runningJob{
 		rec: &jobstore.JobRecord{
 			JobID:          "job_ordinary_cleanup_failure",
-			Type:           jobstore.JobDelegate,
+			Type:           jobstore.JobShell,
 			Status:         jobstore.StatusRunning,
-			DelegateID:     "dlg_01TASK7ORDCLEANFAILURE01",
 			OwnerSessionID: sub.sess.ID(),
 		},
-		signal:         func() {},
 		done:           make(chan struct{}),
 		durableStarted: true,
 	}
+	ownedShell.signal = func() { ownedShell.closeDoneAbandoned() }
+	cleanupErr := "owned job " + ownedShell.rec.JobID + " ended without durable completion"
 	jm := sub.sess.jobManager
-	originalAppend := jm.appendEvent
-	jm.appendEvent = func(event jobstore.Event) error {
-		if event.Kind == jobstore.EventDelegateStopGateClosed && event.DelegateID == ownedDelegate.rec.DelegateID {
-			return cleanupErr
-		}
-		return originalAppend(event)
-	}
 	jm.mu.Lock()
-	jm.running[ownedDelegate.rec.JobID] = ownedDelegate
+	jm.running[ownedShell.rec.JobID] = ownedShell
 	jm.mu.Unlock()
 	t.Cleanup(func() {
-		jm.appendEvent = originalAppend
 		jm.mu.Lock()
-		delete(jm.running, ownedDelegate.rec.JobID)
+		delete(jm.running, ownedShell.rec.JobID)
 		jm.mu.Unlock()
-		ownedDelegate.closeDone()
 	})
 	close(release)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -894,15 +872,13 @@ func TestDelegateResourceSupervision_OrdinaryCleanupFailureIsObservable(t *testi
 			packet = &value
 		}
 	}
-	if packet == nil || !strings.Contains(string(packet.Message), cleanupErr.Error()) {
+	if packet == nil || !strings.Contains(string(packet.Message), cleanupErr) {
 		t.Fatalf("ordinary cleanup-failure packet = %#v, want observable cleanup failure", packet)
 	}
 }
 
 func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacketEvidence(t *testing.T) {
-	worktreeClient := llm.NewClient()
-	worktreeClient.Register(&fakeAdapter{name: "openai"})
-	worktreeRepo := newWtDlgRepo(t, worktreeClient)
+	worktreeRepo := newWorktreeRepo(t)
 	lane, _, _, _, _, err := worktreeRepo.s.createDelegateWorktree(context.Background(), "dlg_01TASK7ORDINARYPACKET001")
 	if err != nil {
 		t.Fatalf("create ordinary-evidence worktree: %v", err)

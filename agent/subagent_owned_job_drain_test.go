@@ -161,8 +161,7 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 	t.Cleanup(env.releaseJob)
 
 	result := parent.createDelegate(context.Background(), delegateArgs{
-		Task:       "run an owned background shell",
-		Background: true,
+		Task: "run an owned background shell",
 	})
 	if result.Err != nil {
 		t.Fatalf("createDelegate: %v", result.Err)
@@ -260,7 +259,7 @@ func TestSubagentDrainRestoresParentDriveCallbackForFreshChildNotification(t *te
 	}
 	fixture.requireHandledResult(t)
 
-	enqueueCompletedDelegateNotification(t, fixture.child.sess, "fresh-child-job")
+	enqueueCompletedJobNotification(t, fixture.child.sess, "fresh-child-job")
 	fixture.child.sess.notify()
 	select {
 	case <-fixture.freshHandled:
@@ -279,7 +278,7 @@ func TestSubagentDrainRestoresParentDriveCallbackForFreshChildNotification(t *te
 func TestSubagentDrainRestoresParentDriveAfterTerminalStatePublication(t *testing.T) {
 	fixture := newOwnedJobDrainFixture(t)
 	fixture.drainClock.onDrainStop = func() {
-		enqueueCompletedDelegateNotification(t, fixture.child.sess, "restore-order-job")
+		enqueueCompletedJobNotification(t, fixture.child.sess, "restore-order-job")
 	}
 	fixture.env.releaseJob()
 	select {
@@ -447,7 +446,7 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 				if got != child {
 					t.Errorf("finalization hook child = %p, want %p", got, child)
 				}
-				enqueueCompletedDelegateNotification(t, got.sess, "late-structured-job")
+				enqueueCompletedJobNotification(t, got.sess, "late-structured-job")
 			},
 		},
 	})
@@ -457,8 +456,7 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 	t.Cleanup(func() { parent.Close() })
 
 	result := parent.createDelegate(context.Background(), delegateArgs{
-		Task:       "return structured output before a late notification",
-		Background: true,
+		Task: "return structured output before a late notification",
 		ResultSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -531,7 +529,7 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 				<-finalizationRelease
 			}
 			fixture.drainClock.onDrainStop = func() {
-				enqueueCompletedDelegateNotification(t, fixture.child.sess, "finalization-window-job")
+				enqueueCompletedJobNotification(t, fixture.child.sess, "finalization-window-job")
 			}
 			fixture.env.releaseJob()
 			select {
@@ -659,8 +657,7 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	t.Cleanup(env.releaseJob)
 
 	result := parent.createDelegate(context.Background(), delegateArgs{
-		Task:       "fail after launching an owned shell",
-		Background: true,
+		Task: "fail after launching an owned shell",
 	})
 	if result.Err != nil {
 		t.Fatalf("createDelegate: %v", result.Err)
@@ -790,8 +787,7 @@ func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 	t.Cleanup(func() { parent.Close() })
 
 	result := parent.createDelegate(context.Background(), delegateArgs{
-		Task:       "fail before a persisted watch send",
-		Background: true,
+		Task: "fail before a persisted watch send",
 	})
 	if result.Err != nil {
 		t.Fatalf("createDelegate: %v", result.Err)
@@ -940,8 +936,7 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	t.Cleanup(env.releaseJob)
 
 	result := parent.createDelegate(context.Background(), delegateArgs{
-		Task:       "idle before a fatal notification turn",
-		Background: true,
+		Task: "idle before a fatal notification turn",
 	})
 	if result.Err != nil {
 		t.Fatalf("createDelegate: %v", result.Err)
@@ -968,7 +963,7 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	errBeforeDrive := child.err
 	doneBeforeDrive := child.done
 	child.mu.Unlock()
-	enqueueCompletedDelegateNotification(t, child.sess, "fatal-drive-notification")
+	enqueueCompletedJobNotification(t, child.sess, "fatal-drive-notification")
 	child.sess.notify()
 	select {
 	case <-env.started:

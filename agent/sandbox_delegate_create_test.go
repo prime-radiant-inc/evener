@@ -15,6 +15,12 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+func delegateTestClient(step func(llm.Request) llm.Response) *llm.Client {
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{step}})
+	return client
+}
+
 // sandboxScratchDirs lists the per-session sandbox scratch dirs (serf-sandbox-*)
 // directly under base — the leak surface for a per-delegate sandbox whose spawn
 // fails after EnableSandbox provisioned one.
@@ -56,7 +62,6 @@ func sbxSetParentMode(t *testing.T, s *Session, facts sandbox.HostFacts, cwd str
 func prepareWithDelegateSandbox(t *testing.T, s *Session, lane string, pol *sandbox.SandboxPolicy) *preparedSubagentRun {
 	t.Helper()
 	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
-	ctx = context.WithValue(ctx, ctxParentJobID, "job_sbx")
 	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, pol)
 	prepared, err := s.prepareSubagentRun(ctx, "child task", "", lane, 0, "", "", nil, nil)
 	if err != nil {
@@ -69,10 +74,10 @@ func prepareWithDelegateSandbox(t *testing.T, s *Session, lane string, pol *sand
 	return prepared
 }
 
-// TestPrepareSubagentRun_PerDelegateSandboxEnforcedAndPersisted: a delegate under an
-// OFF parent that requests its own restricted box gets an env enforced at ITS lane,
-// and the persisted descriptor carries the REQUESTED box (not the parent's off).
-func TestPrepareSubagentRun_PerDelegateSandboxEnforcedAndPersisted(t *testing.T) {
+// TestPrepareSubagentRun_PerDelegateSandboxEnforced verifies that a delegate under
+// an OFF parent that requests its own restricted box gets an environment enforced
+// at its lane.
+func TestPrepareSubagentRun_PerDelegateSandboxEnforced(t *testing.T) {
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts) // parent env is off
@@ -102,11 +107,6 @@ func TestPrepareSubagentRun_PerDelegateSandboxEnforcedAndPersisted(t *testing.T)
 		t.Error("an enforced child box must provision a kernel wrapper")
 	}
 
-	// The persisted DelegateRestoreDescriptor carries the requested box.
-	desc := s.delegateRestoreDescriptor("job_sbx", prepared.sub.id, "child task", encodeRef("", prepared.sub.id), nil, prepared)
-	if desc.Sandbox == nil || desc.Sandbox.Mode != "restricted" {
-		t.Errorf("persisted descriptor must carry the requested restricted box, got %+v", desc.Sandbox)
-	}
 }
 
 // TestPrepareSubagentRun_PerDelegateSandboxOverridesSandboxedParent: a tighter
@@ -189,7 +189,6 @@ func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure(t *tes
 	}
 
 	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
-	ctx = context.WithValue(ctx, ctxParentJobID, "job_leak")
 	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(true)})
 
 	prepared, err := s.prepareSubagentRun(ctx, "child task", "", lane, 0, "", "", nil, nil)
@@ -278,10 +277,8 @@ func TestParentClose_RetainsPerDelegateSandboxScratch(t *testing.T) {
 	}))
 
 	res := s.createDelegate(context.Background(), delegateArgs{
-		Task:           "do sandboxed work",
-		Sandbox:        "restricted",
-		Background:     false,
-		BlockTimeoutMS: 5000,
+		Task:    "do sandboxed work",
+		Sandbox: "restricted",
 	})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v", res.Err)
@@ -401,6 +398,7 @@ func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 	var chosenPath string
 	var sawGuidance bool
 	var modelError string
+	childFinished := make(chan struct{}, 1)
 	childClient := llm.NewClient()
 	childAdapter := &fakeAdapter{
 		name: "openai",
@@ -449,6 +447,7 @@ func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 				})
 			},
 			func(req llm.Request) llm.Response {
+				childFinished <- struct{}{}
 				return communicateWithDefaultOutput("wrote the report")
 			},
 		},
@@ -485,15 +484,14 @@ func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	res := parent.createDelegate(ctx, delegateArgs{
-		Task:           "write a tiny report in the only writable location available to you",
-		Sandbox:        "read-only",
-		SandboxNet:     &net,
-		Background:     false,
-		BlockTimeoutMS: 5000,
+		Task:       "write a tiny report in the only writable location available to you",
+		Sandbox:    "read-only",
+		SandboxNet: &net,
 	})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v", res.Err)
 	}
+	waitForTestSignal(t, childFinished, "read-only delegate completion")
 	if !sawGuidance {
 		t.Fatal("the literal delegate did not find the read-only scratch write rule in its system prompt")
 	}
@@ -538,11 +536,9 @@ func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
 	}))
 
 	res := s.createDelegate(context.Background(), delegateArgs{
-		Task:           "do sandboxed work",
-		Sandbox:        "restricted",
-		SandboxNet:     boolPtr(false),
-		Background:     false,
-		BlockTimeoutMS: 5000,
+		Task:       "do sandboxed work",
+		Sandbox:    "restricted",
+		SandboxNet: boolPtr(false),
 	})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v", res.Err)
@@ -551,7 +547,16 @@ func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
 		t.Fatalf("result must echo the enforced box {restricted, net off}, got %+v", res.Sandbox)
 	}
 
-	out, err := marshalDelegateResult(res, 30000)
+	out, err := marshalStableDelegateCreateResult(stableDelegateCreateResult{
+		DelegateID:     res.DelegateID,
+		ChildSessionID: res.ChildSessionID,
+		Type:           res.Type,
+		Status:         string(res.Status),
+		Reason:         res.Reason,
+		Resumable:      res.Resumable,
+		TranscriptRef:  res.TranscriptRef,
+		Sandbox:        delegateSandboxToolResultFrom(res.Sandbox),
+	}, 30000)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -560,8 +565,15 @@ func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
 	}
 
 	// An unsandboxed result omits the key entirely.
-	res.Sandbox = nil
-	out, err = marshalDelegateResult(res, 30000)
+	out, err = marshalStableDelegateCreateResult(stableDelegateCreateResult{
+		DelegateID:     res.DelegateID,
+		ChildSessionID: res.ChildSessionID,
+		Type:           res.Type,
+		Status:         string(res.Status),
+		Reason:         res.Reason,
+		Resumable:      res.Resumable,
+		TranscriptRef:  res.TranscriptRef,
+	}, 30000)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -605,7 +617,6 @@ func TestPrepareSubagentRun_PerDelegateSandboxWithoutIsolationDoesNotMutateParen
 	}
 
 	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
-	ctx = context.WithValue(ctx, ctxParentJobID, "job_noiso")
 	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(true)})
 
 	// workingDir == "" : a per-delegate sandbox WITHOUT an isolation lane.
@@ -657,41 +668,5 @@ func TestCreateDelegate_SandboxNetWithoutModeRefusedEarly(t *testing.T) {
 	}
 	if res.DelegateID != "" {
 		t.Errorf("refusal must not mint a delegate id, got %q", res.DelegateID)
-	}
-}
-
-// TestPerDelegateSandbox_CreateResumeRoundTrip: a delegate created with its own
-// explicit box (restricted, net off) persists that box, and on RESTORE re-resolves
-// the SAME box against its lane — independent of the parent, which by resume time is
-// a DIFFERENT (workspace-write) sandbox. The parent's extra writable root never
-// leaks into the resumed delegate.
-func TestPerDelegateSandbox_CreateResumeRoundTrip(t *testing.T) {
-	lane, home := sbxLane(t)
-	facts := sbxBwrapFacts(home)
-	s := sbxDelegateSession(t, facts) // parent off at create time
-
-	prepared := prepareWithDelegateSandbox(t, s, lane, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(false)})
-	if prepared.sandboxSnapshot == nil || prepared.sandboxSnapshot.Mode != "restricted" ||
-		prepared.sandboxSnapshot.Network == nil || *prepared.sandboxSnapshot.Network {
-		t.Fatalf("create must persist restricted + net off, got %+v", prepared.sandboxSnapshot)
-	}
-	desc := s.delegateRestoreDescriptor("job_sbx", prepared.sub.id, "child task", encodeRef("", prepared.sub.id), nil, prepared)
-
-	// At resume time the parent is a DIFFERENT, looser sandbox.
-	parentExtra := sbxSandboxedParent(t, s, facts, lane)
-
-	childEnv, err := s.restoreDelegateChildEnvironment(desc, "dlg_rt")
-	if err != nil {
-		t.Fatalf("restore: %v", err)
-	}
-	le := childEnv.(*execenv.LocalExecutionEnvironment)
-	if le.Sandbox == nil || le.Sandbox.Mode != sandbox.ModeRestricted {
-		t.Fatalf("resumed delegate must keep its OWN restricted box, got %+v", le.Sandbox)
-	}
-	if le.Sandbox.Network {
-		t.Error("resumed delegate must keep its persisted net-off, got net on")
-	}
-	if slices.Contains(le.Sandbox.FileTool.WriteRoots, parentExtra) {
-		t.Errorf("the resume-time parent's extra writable root %q leaked into the resumed delegate: %v", parentExtra, le.Sandbox.FileTool.WriteRoots)
 	}
 }

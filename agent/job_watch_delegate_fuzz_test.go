@@ -479,7 +479,7 @@ func watchdel_checkNoLiveWatchForTerminal(t *testing.T, jm *jobManager, jobID st
 var (
 	watchdel_outputMatches = []string{"", "ready", "APPROVAL", ".*", "(", "a(b", "[0-9]+"}
 	watchdel_eventNames    = []string{"assistant.tool", "communicate", "job.notification", "*", "assistant.message", "bogus"}
-	watchdel_sendTargets   = []string{"caller", "dlg_obs", "dlg_missing", "watched", "main", "job_x", "*", ""}
+	watchdel_sendTargets   = []string{"caller", "dlg_missing", "watched", "main", "job_x", "*", ""}
 	watchdel_sources       = []string{"", "self", "parent", "job_missing"}
 	watchdel_progress      = []int{0, 0, 0, -1, 500, 1000, 5000, 3600001}
 	watchdel_toolNames     = []string{"", "read_file", "shell"}
@@ -583,43 +583,6 @@ func watchdel_driveClearByID(t *testing.T, r *watchdel_reader, jm *jobManager) {
 	_, _ = jm.clearWatchByIDMatching(wid, allow, r.boolean())
 }
 
-// watchdel_seedObserverDelegate installs a running, resumable delegate named
-// dlg_obs owned by the manager's session so a fuzzed watch send target of
-// "dlg_obs" passes validateWatchSendTarget (exercising the delegate-send install
-// path and observer-link stamping) rather than always erroring out early.
-func watchdel_seedObserverDelegate(t *testing.T, jm *jobManager) {
-	t.Helper()
-	now := jm.now()
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:       jobstore.EventDelegateCreated,
-		TS:         now,
-		DelegateID: "dlg_obs",
-		Delegate: &jobstore.DelegateEvent{
-			ChildSessionID:   "child_obs",
-			TranscriptRef:    encodeRef("", "child_obs"),
-			OwnerSessionID:   jm.sessionID,
-			VisibleSessionID: jm.sessionID,
-			Generation:       "dg_obs",
-			Resumable:        true,
-		},
-	}); err != nil {
-		t.Fatalf("seed observer delegate: %v", err)
-	}
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:             jobstore.EventJobStarted,
-		TS:               now,
-		JobID:            "job_obs_delegate",
-		Type:             jobstore.JobDelegate,
-		DelegateID:       "dlg_obs",
-		OwnerSessionID:   jm.sessionID,
-		VisibleToSession: jm.sessionID,
-		TranscriptRef:    encodeRef("", "child_obs"),
-		StartedAt:        &now,
-	}); err != nil {
-		t.Fatalf("seed observer delegate job: %v", err)
-	}
-}
-
 // FuzzWatchdelWatchOps drives configureWatch, recordWatchSendPending, and
 // clearWatchByIDMatching against one real jobManager, injecting persist faults
 // through the append seam, and asserts the watch-state invariant after each step.
@@ -647,8 +610,6 @@ func FuzzWatchdelWatchOps(f *testing.F) {
 		if err != nil {
 			return
 		}
-		watchdel_seedObserverDelegate(t, jm)
-
 		// Install one guaranteed-valid caller send-watch before the fault gate so
 		// recordWatchSendPending is always reachable regardless of the fuzzed op
 		// stream (a concrete output_match watch delivering to the caller passes
