@@ -126,13 +126,8 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 	if err := c.authorizeMutationLocked(actor, targetID); err != nil {
 		return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, err
 	}
-	previousLifecycle := delegateLifecycleIdle
-	outcome := "already_idle"
-	if aggregate := c.durable[targetID]; aggregate != nil && aggregate.CurrentRunOpen {
-		previousLifecycle = delegateLifecycleRunning
-		outcome = "cancelled_by_request"
-	}
 	members := c.subtreeMembersLocked(targetID)
+	previousLifecycle, outcome := classifyDelegateStopAdmission(c.durable, targetID, members)
 	appended, err := c.appendLocked(delegatestore.Event{
 		Kind:       delegatestore.EventDelegateSubtreeStopRequested,
 		DelegateID: targetID,
@@ -370,6 +365,19 @@ func (c *delegateTreeController) stopResultLocked(stop *delegateStopState) deleg
 		requestSeq:        stop.requestSeq,
 		done:              stop.done,
 	}
+}
+
+func classifyDelegateStopAdmission(state delegatestore.State, targetID string, members map[string]struct{}) (delegateLifecycle, string) {
+	previousLifecycle := delegateLifecycleIdle
+	if aggregate := state[targetID]; aggregate != nil && aggregate.CurrentRunOpen {
+		previousLifecycle = delegateLifecycleRunning
+	}
+	for id := range members {
+		if aggregate := state[id]; aggregate != nil && aggregate.CurrentRunOpen {
+			return previousLifecycle, "cancelled_by_request"
+		}
+	}
+	return previousLifecycle, "already_idle"
 }
 
 func (c *delegateTreeController) subtreeMembersLocked(targetID string) map[string]struct{} {

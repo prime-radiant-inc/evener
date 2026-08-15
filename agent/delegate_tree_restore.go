@@ -642,18 +642,13 @@ func (c *delegateTreeController) restorePendingStop(events []delegatestore.Event
 	if err != nil {
 		return fmt.Errorf("restore delegate stop %d admission: %w", requestSeq, err)
 	}
-	previousLifecycle := delegateLifecycleIdle
-	outcome := "already_idle"
-	if aggregate := stateAtAdmission[targetID]; aggregate != nil && aggregate.CurrentRunOpen {
-		previousLifecycle = delegateLifecycleRunning
-		outcome = "cancelled_by_request"
-	}
 	members := make(map[string]struct{})
 	for id, aggregate := range c.durable {
 		if aggregate != nil && aggregate.PendingStopSeq == requestSeq {
 			members[id] = struct{}{}
 		}
 	}
+	previousLifecycle, outcome := classifyDelegateStopAdmission(stateAtAdmission, targetID, members)
 	c.stop = &delegateStopState{
 		requestSeq:        requestSeq,
 		targetID:          targetID,

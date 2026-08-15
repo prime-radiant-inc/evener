@@ -533,6 +533,29 @@ func TestDelegateControllerRestartPreservesStopAdmissionClassificationAfterRunCl
 	}
 }
 
+func TestDelegateControllerRestartPreservesSubtreeStopAdmissionClassification(t *testing.T) {
+	c, path := newDelegateControllerTestHarness(t, 2, 1)
+	seedDelegateControllerIdle(t, c, "dlg_parent", "")
+	seedDelegateControllerRunning(t, c, "dlg_child", "dlg_parent")
+
+	first, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_parent")
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	if first.previousLifecycle != delegateLifecycleIdle || first.outcome != "cancelled_by_request" {
+		t.Fatalf("stop classification = %#v, want idle/cancelled_by_request", first)
+	}
+
+	restarted := reopenDelegateController(t, c, path)
+	second, _, _, err := restarted.StopSubtree(rootDelegateActor("root-session"), "dlg_parent")
+	if err != nil {
+		t.Fatalf("retry restored StopSubtree: %v", err)
+	}
+	if second.requestSeq != first.requestSeq || second.previousLifecycle != delegateLifecycleIdle || second.outcome != "cancelled_by_request" {
+		t.Fatalf("restored stop classification = %#v, want request %d idle/cancelled_by_request", second, first.requestSeq)
+	}
+}
+
 func TestDelegateControllerRestartCleansAttentionWithoutRuntime(t *testing.T) {
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
