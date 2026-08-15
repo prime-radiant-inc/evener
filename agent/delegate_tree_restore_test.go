@@ -513,6 +513,26 @@ func TestDelegateControllerRestartAfterStoppedFinishDoesNotFinishTwice(t *testin
 	}
 }
 
+func TestDelegateControllerRestartPreservesStopAdmissionClassificationAfterRunClosure(t *testing.T) {
+	c, path := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	first, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	if _, err := c.FinishGeneration(delegateLease{delegateID: "dlg_target", generation: 1}, delegateFinish{}); err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	restarted := reopenDelegateController(t, c, path)
+	second, _, _, err := restarted.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+	if err != nil {
+		t.Fatalf("retry restored StopSubtree: %v", err)
+	}
+	if second.requestSeq != first.requestSeq || second.previousLifecycle != delegateLifecycleRunning || second.outcome != "cancelled_by_request" {
+		t.Fatalf("restored stop classification = %#v, want request %d running/cancelled_by_request", second, first.requestSeq)
+	}
+}
+
 func TestDelegateControllerRestartCleansAttentionWithoutRuntime(t *testing.T) {
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")

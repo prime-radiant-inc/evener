@@ -920,18 +920,18 @@ func waitForDelegateStopDone(ctx context.Context, s *Session, done <-chan struct
 
 func stableDelegateStopResult(result delegateStopResult, completed bool) jobStopResult {
 	reason := "stop_pending"
-	status := jobstore.StatusRunning
+	status := string(jobstore.StatusRunning)
 	outcome := "stop_requested"
 	if completed {
 		reason = "stopped_by_parent"
-		status = jobstore.StatusStopped
-		outcome = "stopped"
+		status = string(result.lifecycle)
+		outcome = result.outcome
 	}
 	return jobStopResult{
 		ID:             result.id,
 		JobID:          result.id,
 		Type:           "delegate",
-		Status:         string(status),
+		Status:         status,
 		Reason:         &reason,
 		PreviousStatus: string(result.previousLifecycle),
 		Outcome:        outcome,

@@ -627,14 +627,26 @@ func (c *delegateTreeController) restorePendingStop(events []delegatestore.Event
 		return nil
 	}
 	targetID := ""
-	for _, event := range events {
+	requestIndex := -1
+	for i, event := range events {
 		if event.Seq == requestSeq && event.Kind == delegatestore.EventDelegateSubtreeStopRequested && event.SubtreeStopRequested != nil {
 			targetID = event.SubtreeStopRequested.TargetDelegateID
+			requestIndex = i
 			break
 		}
 	}
 	if targetID == "" {
 		return fmt.Errorf("restore delegate stop %d without request event", requestSeq)
+	}
+	stateAtAdmission, err := delegatestore.Fold(events[:requestIndex])
+	if err != nil {
+		return fmt.Errorf("restore delegate stop %d admission: %w", requestSeq, err)
+	}
+	previousLifecycle := delegateLifecycleIdle
+	outcome := "already_idle"
+	if aggregate := stateAtAdmission[targetID]; aggregate != nil && aggregate.CurrentRunOpen {
+		previousLifecycle = delegateLifecycleRunning
+		outcome = "cancelled_by_request"
 	}
 	members := make(map[string]struct{})
 	for id, aggregate := range c.durable {
@@ -643,21 +655,23 @@ func (c *delegateTreeController) restorePendingStop(events []delegatestore.Event
 		}
 	}
 	c.stop = &delegateStopState{
-		requestSeq:       requestSeq,
-		targetID:         targetID,
-		members:          members,
-		active:           make(map[delegateLease]struct{}),
-		starts:           make(map[uint64]struct{}),
-		work:             make(map[delegateWorkToken]string),
-		deliveries:       make(map[delegateDeliveryToken]struct{}),
-		quietClaims:      make(map[uint64]struct{}),
-		steeringClaims:   make(map[uint64]struct{}),
-		modelClaims:      make(map[uint64]struct{}),
-		settlementClaims: make(map[uint64]struct{}),
-		watchEnqueues:    make(map[uint64]struct{}),
-		watchDeliveries:  make(map[uint64]struct{}),
-		done:             make(chan struct{}),
-		progress:         make(chan struct{}, 1),
+		requestSeq:        requestSeq,
+		targetID:          targetID,
+		previousLifecycle: previousLifecycle,
+		outcome:           outcome,
+		members:           members,
+		active:            make(map[delegateLease]struct{}),
+		starts:            make(map[uint64]struct{}),
+		work:              make(map[delegateWorkToken]string),
+		deliveries:        make(map[delegateDeliveryToken]struct{}),
+		quietClaims:       make(map[uint64]struct{}),
+		steeringClaims:    make(map[uint64]struct{}),
+		modelClaims:       make(map[uint64]struct{}),
+		settlementClaims:  make(map[uint64]struct{}),
+		watchEnqueues:     make(map[uint64]struct{}),
+		watchDeliveries:   make(map[uint64]struct{}),
+		done:              make(chan struct{}),
+		progress:          make(chan struct{}, 1),
 	}
 	return nil
 }

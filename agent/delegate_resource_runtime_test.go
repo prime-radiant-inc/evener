@@ -877,7 +877,7 @@ func TestDelegateResourceRuntime_PositiveStopWaitKeepsReconciliationDriverAlive(
 	assertStableStopDurableCompletion(t, harness.root.delegateController, harness.fixture.delegateID)
 }
 
-func TestDelegateResourceRuntime_PositiveStopWaitReturnsAfterDurableCompletion(t *testing.T) {
+func TestDelegateResourceRuntime_StableStopActiveCompletionReportsCancelledByRequest(t *testing.T) {
 	harness := newStableStopRuntimeHarness(t)
 	finalStatePublished := make(chan struct{})
 	releaseFinalization := make(chan struct{})
@@ -917,7 +917,7 @@ func TestDelegateResourceRuntime_PositiveStopWaitReturnsAfterDurableCompletion(t
 	}
 	close(releaseFinalization)
 	invocation := <-result
-	assertStableStopCompleted(t, invocation, harness.fixture.delegateID)
+	assertStableStopCompleted(t, invocation, harness.fixture.delegateID, delegateLifecycleRunning, "cancelled_by_request")
 	assertStableStopDurableCompletion(t, harness.root.delegateController, harness.fixture.delegateID)
 	pending, err := readPendingDelegateAttention(transcriptPath(harness.fixture.stateDir, harness.fixture.childID), harness.fixture.childID)
 	if err != nil {
@@ -928,7 +928,19 @@ func TestDelegateResourceRuntime_PositiveStopWaitReturnsAfterDurableCompletion(t
 	}
 }
 
-func TestDelegateResourceRuntime_StopWaitTimeoutLeavesReconciliationRunning(t *testing.T) {
+func TestDelegateResourceRuntime_StableStopIdleCompletionReportsAlreadyIdle(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	root := restoreSupervisionRoot(t, fixture, nil)
+	value, err := jobStopTool(context.Background(), root, map[string]any{
+		"target":      fixture.delegateID,
+		"max_wait_ms": 60_000,
+	}, jobToolResultDefaultMaxChar)
+	invocation := stableJobStopInvocation{value: value, err: err}
+	assertStableStopCompleted(t, invocation, fixture.delegateID, delegateLifecycleIdle, "already_idle")
+	assertStableIdleStopDurableCompletion(t, root.delegateController, fixture.delegateID)
+}
+
+func TestDelegateResourceRuntime_StableStopTimeoutReportsStopRequested(t *testing.T) {
 	clock := agenttest.NewFakeClock()
 	harness := newStableStopRuntimeHarnessWithClock(t, clock)
 	waitCtx := newDelegateStopWaitBarrierContext()
@@ -954,6 +966,55 @@ func TestDelegateResourceRuntime_StopWaitTimeoutLeavesReconciliationRunning(t *t
 	waitForStableSupervisionRun(t, harness.root, harness.fixture.childID)
 	<-stop.done
 	assertStableStopDurableCompletion(t, harness.root.delegateController, harness.fixture.delegateID)
+}
+
+func TestDelegateResourceRuntime_StableStopRetryPreservesAdmissionClassification(t *testing.T) {
+	harness := newStableStopRuntimeHarness(t)
+	finalStatePublished := make(chan struct{})
+	releaseFinalization := make(chan struct{})
+	var releaseFinalizationOnce sync.Once
+	releaseFinalizationNow := func() { releaseFinalizationOnce.Do(func() { close(releaseFinalization) }) }
+	sub := harness.root.subagents.get(harness.fixture.childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatal("stable stop harness has no child Session")
+	}
+	controller := harness.root.delegateController
+	lease := delegateLease{delegateID: harness.fixture.delegateID, generation: 1}
+	work, err := controller.BeginShellWork(lease)
+	if err != nil {
+		t.Fatalf("hold admitted descendant work: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = controller.AbortShellWork(work)
+		releaseFinalizationNow()
+	})
+	sub.sess.cfg.testOnly.subagentAfterFinalStatePublish = func(*subagent) {
+		close(finalStatePublished)
+		<-releaseFinalization
+	}
+
+	first, err := jobStopTool(context.Background(), harness.root, map[string]any{
+		"target": harness.fixture.delegateID,
+	}, jobToolResultDefaultMaxChar)
+	assertStableStopPending(t, stableJobStopInvocation{value: first, err: err}, harness.fixture.delegateID)
+	stop := currentDelegateStop(t, controller)
+	harness.release()
+	<-finalStatePublished
+	if _, err := controller.FinishGeneration(lease, delegateFinish{}); err != nil {
+		t.Fatalf("finish exact stopped generation before retry: %v", err)
+	}
+
+	second, err := jobStopTool(context.Background(), harness.root, map[string]any{
+		"target": harness.fixture.delegateID,
+	}, jobToolResultDefaultMaxChar)
+	assertStableStopPending(t, stableJobStopInvocation{value: second, err: err}, harness.fixture.delegateID)
+	if err := controller.AbortShellWork(work); err != nil {
+		t.Fatalf("release admitted descendant work: %v", err)
+	}
+	releaseFinalizationNow()
+	waitForStableSupervisionRun(t, harness.root, harness.fixture.childID)
+	<-stop.done
+	assertStableStopDurableCompletion(t, controller, harness.fixture.delegateID)
 }
 
 func TestDelegateResourceRuntime_TransientDriverFailureCanBeRetried(t *testing.T) {
@@ -1157,26 +1218,40 @@ func stableJobStopState(t *testing.T, invocation stableJobStopInvocation) jobSto
 func assertStableStopPending(t *testing.T, invocation stableJobStopInvocation, delegateID string) {
 	t.Helper()
 	state := stableJobStopState(t, invocation)
-	if state.JobID != delegateID || state.Outcome != "stop_requested" || state.Status != string(jobstore.StatusRunning) {
+	if state.ID != delegateID || state.JobID != delegateID || state.Type != "delegate" || state.Outcome != "stop_requested" || state.Status != string(jobstore.StatusRunning) || state.PreviousStatus != string(delegateLifecycleRunning) {
 		t.Fatalf("pending stable stop = %#v", state)
 	}
 }
 
-func assertStableStopCompleted(t *testing.T, invocation stableJobStopInvocation, delegateID string) {
+func assertStableStopCompleted(t *testing.T, invocation stableJobStopInvocation, delegateID string, previous delegateLifecycle, outcome string) {
 	t.Helper()
 	state := stableJobStopState(t, invocation)
-	if state.JobID != delegateID || state.Outcome != "stopped" || state.Status != string(jobstore.StatusStopped) {
+	if state.ID != delegateID || state.JobID != delegateID || state.Type != "delegate" || state.Outcome != outcome || state.Status != string(delegateLifecycleIdle) || state.PreviousStatus != string(previous) {
 		t.Fatalf("completed stable stop = %#v", state)
 	}
 }
 
 func assertStableStopDurableCompletion(t *testing.T, controller *delegateTreeController, delegateID string) {
 	t.Helper()
+	assertStableStopDurableCompletionState(t, controller, delegateID, true)
+}
+
+func assertStableIdleStopDurableCompletion(t *testing.T, controller *delegateTreeController, delegateID string) {
+	t.Helper()
+	assertStableStopDurableCompletionState(t, controller, delegateID, false)
+}
+
+func assertStableStopDurableCompletionState(t *testing.T, controller *delegateTreeController, delegateID string, wantStoppedOutcome bool) {
+	t.Helper()
 	controller.mu.Lock()
 	aggregate := controller.durable[delegateID]
 	stop := controller.stop
 	controller.mu.Unlock()
-	if stop != nil || aggregate == nil || aggregate.PendingStopSeq != 0 || aggregate.CurrentRunOpen || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeStopped {
+	completed := stop == nil && aggregate != nil && aggregate.PendingStopSeq == 0 && !aggregate.CurrentRunOpen
+	if wantStoppedOutcome {
+		completed = completed && aggregate.LatestOutcome != nil && aggregate.LatestOutcome.Status == delegatestore.OutcomeStopped
+	}
+	if !completed {
 		t.Fatalf("durable stable stop completion = stop:%#v aggregate:%#v", stop, aggregate)
 	}
 	events, err := controller.store.Load()

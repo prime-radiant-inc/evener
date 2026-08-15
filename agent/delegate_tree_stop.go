@@ -10,23 +10,25 @@ import (
 )
 
 type delegateStopState struct {
-	requestSeq       uint64
-	targetID         string
-	members          map[string]struct{}
-	active           map[delegateLease]struct{}
-	starts           map[uint64]struct{}
-	work             map[delegateWorkToken]string
-	deliveries       map[delegateDeliveryToken]struct{}
-	quietClaims      map[uint64]struct{}
-	steeringClaims   map[uint64]struct{}
-	modelClaims      map[uint64]struct{}
-	settlementClaims map[uint64]struct{}
-	watchEnqueues    map[uint64]struct{}
-	watchDeliveries  map[uint64]struct{}
-	waiters          []*delegateInlineWaiter
-	done             chan struct{}
-	progress         chan struct{}
-	driver           *delegateStopDriver
+	requestSeq        uint64
+	targetID          string
+	previousLifecycle delegateLifecycle
+	outcome           string
+	members           map[string]struct{}
+	active            map[delegateLease]struct{}
+	starts            map[uint64]struct{}
+	work              map[delegateWorkToken]string
+	deliveries        map[delegateDeliveryToken]struct{}
+	quietClaims       map[uint64]struct{}
+	steeringClaims    map[uint64]struct{}
+	modelClaims       map[uint64]struct{}
+	settlementClaims  map[uint64]struct{}
+	watchEnqueues     map[uint64]struct{}
+	watchDeliveries   map[uint64]struct{}
+	waiters           []*delegateInlineWaiter
+	done              chan struct{}
+	progress          chan struct{}
+	driver            *delegateStopDriver
 }
 
 type delegateStopDriver struct {
@@ -124,6 +126,12 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 	if err := c.authorizeMutationLocked(actor, targetID); err != nil {
 		return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, err
 	}
+	previousLifecycle := delegateLifecycleIdle
+	outcome := "already_idle"
+	if aggregate := c.durable[targetID]; aggregate != nil && aggregate.CurrentRunOpen {
+		previousLifecycle = delegateLifecycleRunning
+		outcome = "cancelled_by_request"
+	}
 	members := c.subtreeMembersLocked(targetID)
 	appended, err := c.appendLocked(delegatestore.Event{
 		Kind:       delegatestore.EventDelegateSubtreeStopRequested,
@@ -136,21 +144,23 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 		return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, err
 	}
 	stop := &delegateStopState{
-		requestSeq:       appended[0].Seq,
-		targetID:         targetID,
-		members:          members,
-		active:           make(map[delegateLease]struct{}),
-		starts:           make(map[uint64]struct{}),
-		work:             make(map[delegateWorkToken]string),
-		deliveries:       make(map[delegateDeliveryToken]struct{}),
-		quietClaims:      make(map[uint64]struct{}),
-		steeringClaims:   make(map[uint64]struct{}),
-		modelClaims:      make(map[uint64]struct{}),
-		settlementClaims: make(map[uint64]struct{}),
-		watchEnqueues:    make(map[uint64]struct{}),
-		watchDeliveries:  make(map[uint64]struct{}),
-		done:             make(chan struct{}),
-		progress:         make(chan struct{}, 1),
+		requestSeq:        appended[0].Seq,
+		targetID:          targetID,
+		previousLifecycle: previousLifecycle,
+		outcome:           outcome,
+		members:           members,
+		active:            make(map[delegateLease]struct{}),
+		starts:            make(map[uint64]struct{}),
+		work:              make(map[delegateWorkToken]string),
+		deliveries:        make(map[delegateDeliveryToken]struct{}),
+		quietClaims:       make(map[uint64]struct{}),
+		steeringClaims:    make(map[uint64]struct{}),
+		modelClaims:       make(map[uint64]struct{}),
+		settlementClaims:  make(map[uint64]struct{}),
+		watchEnqueues:     make(map[uint64]struct{}),
+		watchDeliveries:   make(map[uint64]struct{}),
+		done:              make(chan struct{}),
+		progress:          make(chan struct{}, 1),
 	}
 	plan := delegateCancelPlan{requestSeq: stop.requestSeq, targetID: targetID}
 	memberIDs := c.memberIDsLeafFirstLocked(members)
@@ -352,15 +362,11 @@ func (c *delegateTreeController) delegateDepthLocked(delegateID string) int {
 }
 
 func (c *delegateTreeController) stopResultLocked(stop *delegateStopState) delegateStopResult {
-	previous := delegateLifecycleIdle
-	if aggregate := c.durable[stop.targetID]; aggregate != nil && aggregate.CurrentRunOpen {
-		previous = delegateLifecycleRunning
-	}
 	return delegateStopResult{
 		id:                stop.targetID,
-		previousLifecycle: previous,
+		previousLifecycle: stop.previousLifecycle,
 		lifecycle:         delegateLifecycleIdle,
-		outcome:           "stopped",
+		outcome:           stop.outcome,
 		requestSeq:        stop.requestSeq,
 		done:              stop.done,
 	}
