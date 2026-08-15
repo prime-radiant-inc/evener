@@ -2,6 +2,7 @@ package atif
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -350,6 +351,41 @@ func TestConvertToATIF_ToolUse(t *testing.T) {
 	}
 	if traj.FinalMetrics.TotalPromptTokens != 200 {
 		t.Errorf("FinalMetrics.TotalPromptTokens = %d, want 200", traj.FinalMetrics.TotalPromptTokens)
+	}
+}
+
+func TestConvertToATIF_AttentionResolutionIsTransparentToToolRound(t *testing.T) {
+	const (
+		callID      = "call-through-private-marker"
+		attentionID = "private-attention-id"
+	)
+	marker := schema.NewTurn(schema.TurnAttentionResolution, llm.System("Attention resolved."))
+	marker.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: attentionID, Disposition: "consumed"}
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+			Kind:     llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{ID: callID, Name: "probe", Arguments: json.RawMessage(`{"value":"visible"}`)},
+		}}})},
+		{Kind: "entry", Seq: 1, Turn: marker},
+		{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "probe", "visible result", false))},
+	}
+
+	traj := Convert(transcript.Header{SessionID: "session-private-marker"}, entries)
+	if len(traj.Steps) != 1 {
+		t.Fatalf("steps = %#v, want one assistant/tool-result step", traj.Steps)
+	}
+	step := traj.Steps[0]
+	if len(step.ToolCalls) != 1 || step.ToolCalls[0].ToolCallID != callID || step.Observation == nil || len(step.Observation.Results) != 1 || step.Observation.Results[0].Content != "visible result" {
+		t.Fatalf("projected tool round = %#v", step)
+	}
+	encoded, err := json.Marshal(traj)
+	if err != nil {
+		t.Fatalf("marshal trajectory: %v", err)
+	}
+	for _, private := range []string{attentionID, "Attention resolved.", "attention_resolution"} {
+		if strings.Contains(string(encoded), private) {
+			t.Fatalf("ATIF leaked private resolution metadata %q: %s", private, encoded)
+		}
 	}
 }
 

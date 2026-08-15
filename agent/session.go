@@ -639,6 +639,9 @@ type Session struct {
 	delegateDeliveryMu        sync.Mutex
 	delegateDeliveryCommits   map[string][]*delegateToolResultCommit
 	pendingDelegateDeliveries []delegateDeliveryPlan
+	delegateDeliveryWake      bool
+	delegateDeliveryPumping   bool
+	delegateDeliveryRetry     notificationRetry
 	// transcriptReady records that attachTranscript has run, i.e. that the
 	// session has finished deciding whether it has a transcript at all. Until
 	// then a turn has nowhere to go and is held in pendingTranscriptTurns; a
@@ -770,7 +773,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 	s.pendingJobNotifsMu.Lock()
 	pending := len(s.pendingJobNotifs) > 0
 	s.pendingJobNotifsMu.Unlock()
-	if pending {
+	if pending || s.hasPendingDelegateDeliveries() {
 		f()
 	}
 }
@@ -1373,24 +1376,39 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 // writeTranscript records a turn in the durable transcript, holding it if the
 // session has not yet decided whether it has one.
 func (s *Session) writeTranscript(t schema.Turn) error {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
 	if s.holdTurnUntilTranscriptReady(t) {
 		return nil
 	}
-	return s.transcript.Append(t)
+	return s.attachedTranscript().Append(t)
 }
 
 // writeTranscriptDurable is writeTranscript with an fsync before returning.
 func (s *Session) writeTranscriptDurable(t schema.Turn) error {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
 	if s.holdTurnUntilTranscriptReady(t) {
 		return nil
 	}
-	return s.transcript.AppendDurable(t)
+	return s.attachedTranscript().AppendDurable(t)
+}
+
+func (s *Session) attachedTranscript() *transcript.Writer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transcript
+}
+
+func (s *Session) closeAttachedTranscript() error {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	return s.attachedTranscript().Close()
 }
 
 // holdTurnUntilTranscriptReady queues t and reports true when the session has
-// not yet reached attachTranscript. Reading transcriptReady under the lock also
-// orders the caller's subsequent unlocked read of s.transcript against the
-// write attachTranscript makes under the same lock.
+// not yet reached attachTranscript. The caller snapshots the attached writer
+// under the same session lock after this readiness check.
 func (s *Session) holdTurnUntilTranscriptReady(t schema.Turn) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

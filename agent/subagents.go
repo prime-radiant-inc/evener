@@ -1589,8 +1589,22 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			continue
 		}
 		<-settlementClaim.ready
+		attentionPlans, attentionErr := a.sess.delegateController.AttentionResolutionsForFinalization(settlementClaim)
+		if executeErr := a.sess.executeDelegateMutationPlans(attentionPlans); attentionErr == nil {
+			attentionErr = executeErr
+		}
+		if attentionErr != nil {
+			err = errors.Join(err, attentionErr)
+		}
 		if settlementClaim.mode == delegateSettlementTerminal {
 			if stableDelegateFatalRun(err) {
+				err = a.gateFatalRunError(err)
+			}
+			finish = a.stableDelegateFinish(res, err)
+			break
+		}
+		if attentionErr != nil {
+			if err != nil {
 				err = a.gateFatalRunError(err)
 			}
 			finish = a.stableDelegateFinish(res, err)
@@ -1676,6 +1690,11 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 
 	if done != nil {
 		close(done)
+	}
+	if stableRun && a.sess.delegateController != nil {
+		if reportErr := a.sess.delegateController.ReportFinalizationQuiesced(lease, a.sess); reportErr != nil {
+			a.sess.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", reportErr))
+		}
 	}
 }
 

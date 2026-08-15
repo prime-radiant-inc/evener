@@ -93,6 +93,7 @@ func (s *MemoryCrystalsStrategy) AfterAction(ctx context.Context, history []sche
 	if client == nil || s.cm == nil {
 		return nil
 	}
+	history = attentionTransparentHistory(history)
 
 	turnCount := len(history)
 	// Only crystallize every 3rd action to reduce overhead.

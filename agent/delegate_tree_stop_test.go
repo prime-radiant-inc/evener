@@ -162,6 +162,9 @@ func TestDelegateControllerCloseDrainProgressCoversBothWaitOrders(t *testing.T) 
 				seedDelegateControllerIdle(t, c, "dlg_target", "")
 				seedDelegateControllerIdle(t, c, "dlg_first", "dlg_target")
 				seedDelegateControllerIdle(t, c, "dlg_second", "dlg_target")
+				c.mu.Lock()
+				c.live["dlg_target"] = &delegateLiveState{runtime: &Session{}}
+				c.mu.Unlock()
 				seedDelegateControllerDelivery(t, c, "dlg_first")
 				seedDelegateControllerDelivery(t, c, "dlg_second")
 				plans := c.ReplayDeliveries()
@@ -524,6 +527,11 @@ func TestDelegateControllerStopPreservesOwnerDeliveryOutsideSubtree(t *testing.T
 	seedDelegateControllerRunning(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
 	seedDelegateControllerDelivery(t, c, "dlg_child")
+	parentRuntime := &Session{}
+	c.mu.Lock()
+	c.live["dlg_parent"].runtime = parentRuntime
+	c.live["dlg_parent"].binding.runtime = parentRuntime
+	c.mu.Unlock()
 	parentLease := delegateLease{delegateID: "dlg_parent", generation: 1}
 	if _, _, _, err := c.StopSubtree(delegateActor{lease: &parentLease}, "dlg_child"); err != nil {
 		t.Fatalf("StopSubtree: %v", err)
@@ -532,7 +540,7 @@ func TestDelegateControllerStopPreservesOwnerDeliveryOutsideSubtree(t *testing.T
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if len(c.durable["dlg_child"].PendingDeliveries) != 1 || len(plans.deliveries) != 1 {
+	if len(c.durable["dlg_child"].PendingDeliveries) != 1 || len(plans.deliveries) != 1 || plans.deliveries[0].receiver != parentRuntime {
 		t.Fatalf("outside-owner delivery = pending:%#v plans:%#v", c.durable["dlg_child"].PendingDeliveries, plans.deliveries)
 	}
 }
@@ -702,6 +710,12 @@ func TestDelegateControllerStopReconcilesRecoveryRequiredSettlementFailure(t *te
 		t.Fatalf("StopSubtree: %v", err)
 	}
 	c.mu.Lock()
+	runtime := c.live[lease.delegateID].binding.runtime
+	c.mu.Unlock()
+	if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
+		t.Fatalf("ReportFinalizationQuiesced: %v", err)
+	}
+	c.mu.Lock()
 	claimRetained := c.hasSettlementClaimLocked(lease)
 	c.mu.Unlock()
 	if !claimRetained {
@@ -726,6 +740,52 @@ func TestDelegateControllerStopReconcilesRecoveryRequiredSettlementFailure(t *te
 	case <-result.done:
 	default:
 		t.Fatal("stop did not complete after settlement recovery")
+	}
+}
+
+func TestDelegateControllerRecoveryStabilizationWaitsForAdmittedSteer(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	runtime := attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+
+	steeringClaim, err := c.BeginSteerPersistence(rootDelegateActor("root-session"), lease.delegateID)
+	if err != nil {
+		t.Fatalf("BeginSteerPersistence: %v", err)
+	}
+	finalizationClaim, continueRun, err := c.BeginFinalization(lease, delegateSettlementTerminal)
+	if err != nil || continueRun || finalizationClaim == nil {
+		t.Fatalf("BeginFinalization = claim:%#v continue:%t err:%v", finalizationClaim, continueRun, err)
+	}
+	c.mu.Lock()
+	c.live[lease.delegateID].attentionIDs = []string{"attention-recovery"}
+	c.mu.Unlock()
+	if err := c.RequireFinalizationRecovery(finalizationClaim); err != nil {
+		t.Fatalf("RequireFinalizationRecovery: %v", err)
+	}
+	if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
+		t.Fatalf("ReportFinalizationQuiesced: %v", err)
+	}
+	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), lease.delegateID); err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+
+	plans, err := c.Reconcile(emptyDelegateReconcileEvidence(c))
+	if err != nil {
+		t.Fatalf("Reconcile with admitted steer: %v", err)
+	}
+	if len(plans.attention) != 0 {
+		t.Fatalf("recovery produced stabilization before admitted steer drained: %#v", plans.attention)
+	}
+	if err := c.AbortSteerPersistence(steeringClaim); err != nil {
+		t.Fatalf("AbortSteerPersistence: %v", err)
+	}
+	plans, err = c.Reconcile(emptyDelegateReconcileEvidence(c))
+	if err != nil {
+		t.Fatalf("Reconcile after steer drain: %v", err)
+	}
+	if len(plans.attention) != 1 || !plans.attention[0].stabilize || plans.attention[0].attentionID != "attention-recovery" {
+		t.Fatalf("recovery stabilization plans = %#v, want exact attention after steer drain", plans.attention)
 	}
 }
 

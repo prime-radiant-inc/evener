@@ -126,7 +126,7 @@ func aggressiveMaskObservations(history []schema.Turn, preserveRecent int) {
 		return
 	}
 
-	cutoff := len(history) - preserveRecent
+	cutoff := attentionTransparentRecentCutoff(history, preserveRecent)
 	if cutoff <= 0 {
 		return
 	}

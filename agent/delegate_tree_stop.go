@@ -545,7 +545,9 @@ func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateSt
 			}
 		}
 		if root != nil {
-			if err := root.executeDelegateMutationPlans(plans); err != nil {
+			rootPlans := plans
+			rootPlans.attention = nil
+			if err := root.executeDelegateMutationPlans(rootPlans); err != nil {
 				return err
 			}
 		}

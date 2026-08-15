@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
@@ -111,5 +112,41 @@ func TestSessionLogStrategy_OperatesWithFakeHost(t *testing.T) {
 	wantLog := filepath.Join(dir, "sessions", "FAKE-1.log.jsonl")
 	if _, err := os.Stat(wantLog); err != nil {
 		t.Errorf("expected log file at host-derived path %q: %v", wantLog, err)
+	}
+}
+
+func TestSessionLogStrategy_AttentionResolutionDoesNotDisplaceRecentContext(t *testing.T) {
+	entryJSON, _ := json.Marshal(sessionlog.SessionLogEntry{Action: "assistant", Summary: "ok", Outcome: "success"})
+	adapter := &stubSummarizeAdapter{
+		name: "openai",
+		respFn: func(_ llm.Request) (llm.Response, error) {
+			return llm.Response{Message: llm.Assistant(string(entryJSON))}, nil
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	profile := testOpenAIProfileWithContextWindow(1000)
+	host := &fakeStrategyHost{stateDir: t.TempDir(), id: "marker-window", profile: profile}
+	strategy, err := NewSessionLogStrategy(NewManager(profile, client), host)
+	if err != nil {
+		t.Fatalf("NewSessionLogStrategy: %v", err)
+	}
+	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("oldest visible recent evidence"))}
+	for range 9 {
+		history = append(history, schema.NewTurn(schema.TurnAssistant, llm.Assistant("visible action")))
+	}
+	marker := schema.NewTurn(schema.TurnAttentionResolution, llm.System("private marker"))
+	marker.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: "private", Disposition: "consumed"}
+	history = append(history, marker)
+
+	if err := strategy.AfterAction(context.Background(), history, client); err != nil {
+		t.Fatalf("AfterAction: %v", err)
+	}
+	prompt := adapter.lastReq.Messages[0].Text()
+	if !strings.Contains(prompt, "oldest visible recent evidence") {
+		t.Fatalf("private marker displaced visible recent evidence: %s", prompt)
+	}
+	if strings.Contains(prompt, "private marker") {
+		t.Fatalf("private marker reached side provider: %s", prompt)
 	}
 }

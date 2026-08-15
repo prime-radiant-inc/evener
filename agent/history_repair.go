@@ -64,11 +64,11 @@ func repairOrphanedToolResults(history []schema.Turn) ([]schema.Turn, int) {
 					removePending(part.ToolResult.ToolCallID)
 				}
 			}
-		case schema.TurnHookCompleted, schema.TurnSteering:
-			// Hook completion and client steering can legally be recorded while a
-			// tool is still running. Preserve their chronological order without
-			// treating the pending call as interrupted. expandHistory keeps
-			// model-visible steering after the matching result on the wire.
+		case schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnSteering:
+			// Presentational markers and client steering can legally be recorded
+			// while a tool is still running. Preserve their chronological order
+			// without treating the pending call as interrupted. expandHistory
+			// keeps model-visible steering after the matching result on the wire.
 			out = append(out, turn)
 		default:
 			flushPending()

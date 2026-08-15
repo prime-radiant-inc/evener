@@ -281,9 +281,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 			s.mcpMgr.Close()
 		}
 
-		if s.transcript != nil {
-			_ = s.transcript.Close()
-		}
+		_ = s.closeAttachedTranscript()
 
 		// Export ATIF trajectory if configured (root session only, after transcript flush).
 		if s.cfg.ExportATIFPath != "" && s.stateDir != "" && s.cfg.spawn.depth == 0 {
@@ -356,9 +354,7 @@ func (s *Session) discardRestoredCandidate() {
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}
-		if s.transcript != nil {
-			_ = s.transcript.Close()
-		}
+		_ = s.closeAttachedTranscript()
 		s.mu.Lock()
 		s.state = SessionClosed
 		s.mu.Unlock()

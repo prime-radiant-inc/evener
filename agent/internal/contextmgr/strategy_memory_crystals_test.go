@@ -56,6 +56,27 @@ func TestMemoryCrystalsStrategy_AfterAction_SkipsNonThirdTurn(t *testing.T) {
 	}
 }
 
+func TestMemoryCrystalsStrategy_AttentionResolutionDoesNotAdvanceCadence(t *testing.T) {
+	client := llm.NewClient()
+	spy := &fakeAdapter{name: "openai"}
+	client.Register(spy)
+	s := NewMemoryCrystalsStrategy(NewManager(NewOpenAIProfile("gpt-5.2"), client))
+	marker := schema.NewTurn(schema.TurnAttentionResolution, llm.System("private marker"))
+	marker.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: "private", Disposition: "consumed"}
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")),
+		marker,
+	}
+
+	if err := s.AfterAction(context.Background(), history, client); err != nil {
+		t.Fatalf("AfterAction: %v", err)
+	}
+	if got := len(spy.Requests()); got != 0 {
+		t.Fatalf("private marker advanced crystallization cadence: requests=%d", got)
+	}
+}
+
 func TestMemoryCrystalsStrategy_AfterAction_CrystallizesEveryThird(t *testing.T) {
 	client := llm.NewClient()
 	f := &fakeAdapter{

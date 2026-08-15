@@ -383,6 +383,12 @@ func TestDelegateControllerTerminalPreparedAppendFailureKeepsRunning(t *testing.
 		t.Fatalf("StopSubtree after failed settlement: %v", err)
 	}
 	c.mu.Lock()
+	runtime := c.live[lease.delegateID].binding.runtime
+	c.mu.Unlock()
+	if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
+		t.Fatalf("ReportFinalizationQuiesced: %v", err)
+	}
+	c.mu.Lock()
 	claimRetained = c.hasSettlementClaimLocked(lease)
 	c.mu.Unlock()
 	if !claimRetained {

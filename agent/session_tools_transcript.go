@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -903,6 +904,9 @@ func transcriptExpansionJSONL(data transcriptData, pin int) ([]byte, error) {
 	if pin < 0 || pin >= len(data.Entries) {
 		return nil, fmt.Errorf("invalid_request: expand_turn %d does not identify a transcript turn", pin)
 	}
+	if data.Entries[pin].Turn.Kind == schema.TurnAttentionResolution {
+		return nil, fmt.Errorf("invalid_request: expand_turn %d does not identify a public transcript turn", pin)
+	}
 	if len(data.EntryLines) != len(data.Entries) {
 		return nil, errors.New("transcript expansion unavailable: persisted entries are not retained")
 	}
@@ -911,16 +915,100 @@ func transcriptExpansionJSONL(data transcriptData, pin int) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("invalid_request: expand_turn %d does not identify a transcript turn", pin)
 	}
-	total := last - first + 1
-	for _, line := range data.EntryLines[first : last+1] {
-		total += len(line)
-	}
-	exact := make([]byte, 0, total)
+	exact := make([]byte, 0)
 	for _, line := range data.EntryLines[first : last+1] {
 		exact = append(exact, line...)
 		exact = append(exact, '\n')
 	}
 	return exact, nil
+}
+
+// publicTranscriptEntry strips correlation metadata that is durable only for
+// crash recovery. Resolution markers carry no model/public content and are
+// omitted entirely so interleaved tool calls and results remain adjacent.
+func publicTranscriptEntry(entry transcript.Entry) (transcript.Entry, bool) {
+	if entry.Turn.Kind == schema.TurnAttentionResolution {
+		return transcript.Entry{}, false
+	}
+	entry.Turn.AttentionID = ""
+	entry.Turn.AttentionResolution = nil
+	entry.Turn.DelegateDeliveryCommits = nil
+	return entry, true
+}
+
+func publicTranscriptEntries(entries []transcript.Entry) []transcript.Entry {
+	public := make([]transcript.Entry, 0, len(entries))
+	for _, entry := range entries {
+		entry, include := publicTranscriptEntry(entry)
+		if !include {
+			continue
+		}
+		entry.Seq = len(public)
+		public = append(public, entry)
+	}
+	return public
+}
+
+func publicTranscriptData(data transcriptData) transcriptData {
+	public := transcriptData{Header: data.Header, Skipped: data.Skipped}
+	retainLines := len(data.EntryLines) == len(data.Entries)
+	public.Entries = make([]transcript.Entry, 0, len(data.Entries))
+	if retainLines {
+		public.EntryLines = make([][]byte, 0, len(data.EntryLines))
+	}
+	for i, entry := range data.Entries {
+		entry, include := publicTranscriptEntry(entry)
+		if !include {
+			continue
+		}
+		entry.Seq = len(public.Entries)
+		public.Entries = append(public.Entries, entry)
+		if retainLines {
+			line, include, err := publicTranscriptLine(data.EntryLines[i], entry.Seq)
+			if err != nil || !include {
+				// The retained line was strictly decoded into entry above, and its
+				// kind already passed the same inclusion check.
+				panic("validated transcript entry could not be projected publicly")
+			}
+			public.EntryLines = append(public.EntryLines, line)
+		}
+	}
+	return public
+}
+
+func publicTranscriptLine(line []byte, seq int) ([]byte, bool, error) {
+	var entry map[string]json.RawMessage
+	if err := json.Unmarshal(line, &entry); err != nil {
+		return nil, false, fmt.Errorf("decode public transcript entry: %w", err)
+	}
+	var turn map[string]json.RawMessage
+	if err := json.Unmarshal(entry["turn"], &turn); err != nil {
+		return nil, false, fmt.Errorf("decode public transcript turn: %w", err)
+	}
+	var kind schema.TurnKind
+	if err := json.Unmarshal(turn["kind"], &kind); err != nil {
+		return nil, false, fmt.Errorf("decode public transcript turn kind: %w", err)
+	}
+	if kind == schema.TurnAttentionResolution {
+		return nil, false, nil
+	}
+	delete(turn, "attention_id")
+	delete(turn, "attention_resolution")
+	delete(turn, "delegate_delivery_commits")
+	encodedTurn, err := json.Marshal(turn)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode public transcript turn: %w", err)
+	}
+	entry["turn"] = encodedTurn
+	entry["seq"], err = json.Marshal(seq)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode public transcript sequence: %w", err)
+	}
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode public transcript entry: %w", err)
+	}
+	return encoded, true, nil
 }
 
 // readMarkdownPage builds the markdown envelope for the resolved transcript.
@@ -942,6 +1030,7 @@ func readMarkdownPage(path, ref string, meta schema.SessionMeta, rangeArg string
 	if err != nil {
 		return nil, err
 	}
+	data = publicTranscriptData(data)
 
 	// Try the strict parser; on a malformed spec, fall back to the default and
 	// record a warning. parseRangeErr never errors on "".
@@ -1238,6 +1327,7 @@ func readOutline(path, ref, rangeArg string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	data = publicTranscriptData(data)
 
 	n := len(data.Entries)
 	start, end := 0, n-1
@@ -1293,6 +1383,7 @@ func readRaw(path, ref, rangeArg string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	entries = publicTranscriptEntries(entries)
 
 	effectiveRange := rangeArg
 	var rangeWarning string
@@ -1306,7 +1397,6 @@ func readRaw(path, ref, rangeArg string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	return readRawEnvelope{
 		TranscriptRef: ref,
 		Format:        formatJSONL,

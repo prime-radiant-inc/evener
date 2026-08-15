@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1788,6 +1789,112 @@ func TestCheckpoint_PreservesToolCallAcrossHookCompleted(t *testing.T) {
 	}
 }
 
+func TestCheckpoint_PreservesToolCallAcrossAttentionResolution(t *testing.T) {
+	const callID = "call_with_attention_resolution"
+	for _, test := range []struct {
+		name           string
+		preserveRecent int
+	}{
+		{name: "cutoff on tool results", preserveRecent: 2},
+		{name: "cutoff on resolution marker", preserveRecent: 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resolution := schema.NewTurn(schema.TurnAttentionResolution, llm.System("private resolution marker"))
+			resolution.AttentionResolution = &schema.AttentionResolutionInfo{
+				AttentionID: "delegate:delivery-1",
+				Disposition: "consumed",
+			}
+			history := []schema.Turn{
+				{Kind: schema.TurnUserInput, Message: llm.User("task")},
+				{Kind: schema.TurnAssistant, Message: llm.Assistant("earlier answer")},
+				{Kind: schema.TurnAssistant, Message: assistantWithToolCall(callID, "probe", `{}`)},
+				resolution,
+				schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "probe", "ok", false)),
+				{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
+			}
+
+			result := checkpoint(history, test.preserveRecent, nil, "communicate")
+			gotKinds := make([]string, len(result))
+			for i, turn := range result {
+				gotKinds[i] = string(turn.Kind)
+			}
+			const want = "CHECKPOINT,ASSISTANT,ATTENTION_RESOLUTION,TOOL_RESULTS,ASSISTANT"
+			if got := strings.Join(gotKinds, ","); got != want {
+				t.Fatalf("checkpoint kinds = %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+func TestAttentionResolutionDoesNotConsumeContextBudgetOrRecentSlots(t *testing.T) {
+	visible := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("must stay")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent answer")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("latest")),
+	}
+	withMarkers := append([]schema.Turn(nil), visible[:2]...)
+	for i := range 6 {
+		marker := schema.NewTurn(schema.TurnAttentionResolution, llm.System(fmt.Sprintf("private marker %d", i)))
+		marker.AttentionResolution = &schema.AttentionResolutionInfo{
+			AttentionID: fmt.Sprintf("attention-%d", i),
+			Disposition: "consumed",
+		}
+		withMarkers = append(withMarkers, marker)
+	}
+	withMarkers = append(withMarkers, visible[2])
+
+	if got, want := estimateUsedTokens(0, 0, withMarkers, 0), estimateUsedTokens(0, 0, visible, 0); got != want {
+		t.Fatalf("resolution markers changed estimated provider tokens: got %d want %d", got, want)
+	}
+	compacted := checkpoint(withMarkers, 6, nil, "communicate")
+	if !reflect.DeepEqual(compacted, withMarkers) {
+		t.Fatalf("resolution markers consumed recent slots and triggered compaction:\n got %#v\nwant %#v", compacted, withMarkers)
+	}
+}
+
+func TestAttentionResolutionDoesNotConsumeCompactionLayerRecentSlots(t *testing.T) {
+	marker := schema.NewTurn(schema.TurnAttentionResolution, llm.System("private marker"))
+	marker.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: "private", Disposition: "consumed"}
+	const resultContent = "opaque tool output that must remain available in the recent provider-visible window"
+	toolHistory := func() []schema.Turn {
+		return []schema.Turn{
+			{Kind: schema.TurnAssistant, Message: assistantWithToolCall("call_recent", "probe", `{}`)},
+			schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_recent", "probe", resultContent, false)),
+			marker,
+			schema.NewTurn(schema.TurnUserInput, llm.User("latest")),
+		}
+	}
+
+	t.Run("readable observation mask", func(t *testing.T) {
+		history := toolHistory()
+		maskObservations(history, 2, "communicate")
+		if got := toolResultContent(history[1]); got != resultContent {
+			t.Fatalf("private marker displaced recent tool result: got %q", got)
+		}
+	})
+
+	t.Run("aggressive observation mask", func(t *testing.T) {
+		history := toolHistory()
+		aggressiveMaskObservations(history, 2)
+		if got := toolResultContent(history[1]); got != resultContent {
+			t.Fatalf("private marker displaced recent tool result: got %q", got)
+		}
+	})
+
+	t.Run("thinking clear", func(t *testing.T) {
+		const thinking = "provider-visible recent reasoning"
+		history := []schema.Turn{
+			{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: thinking}}}}},
+			marker,
+			schema.NewTurn(schema.TurnUserInput, llm.User("latest")),
+		}
+		clearThinking(history, 2)
+		if got := history[0].Message.Content[0].Thinking.Text; got != thinking {
+			t.Fatalf("private marker displaced recent thinking: got %q", got)
+		}
+	})
+}
+
 func TestCheckpoint_SafeCutoffNegative_ReturnsUnchanged(t *testing.T) {
 	// When safeCutoff returns -1, checkpoint should return history unchanged.
 	// Use preserveRecent=3 with 4 turns so cutoff=1, and history[1] is TurnTool
@@ -2246,10 +2353,11 @@ func TestForceCompact_ReportsGeneratedSummary(t *testing.T) {
 	// short input already begins with a summary turn.
 	short := []schema.Turn{
 		schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nprior\n[END SUMMARY]")),
+		{Kind: schema.TurnAttentionResolution, Message: llm.System("private marker"), AttentionResolution: &schema.AttentionResolutionInfo{AttentionID: "private", Disposition: "consumed"}},
 		schema.NewTurn(schema.TurnUserInput, llm.User("recent")),
 	}
 	shortCM := NewManager(profile, client)
-	shortCM.PreserveRecentTurns = len(short)
+	shortCM.PreserveRecentTurns = 2
 	if shortCM.ForceCompact(context.Background(), &short, "", func(events.EventKind, events.EventData) {}) {
 		t.Fatal("ForceCompact reported a pre-existing short summary as newly generated")
 	}

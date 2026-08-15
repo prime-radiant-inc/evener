@@ -34,10 +34,11 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 	// Elicit only over the prefix the compaction will fold into a lossy summary;
 	// the most-recent PreserveRecentTurns survive verbatim and need no rescuing.
 	preserve := s.contextMgr.PreserveRecentTurns
-	if len(history) <= preserve {
+	cutoff, foldableExists := attentionTransparentRecentCutoff(history, preserve)
+	if !foldableExists {
 		return // nothing will be folded yet — nothing to capture
 	}
-	foldable := history[:len(history)-preserve]
+	foldable := history[:cutoff]
 
 	fn := s.elicitNoteFn
 	if fn == nil {

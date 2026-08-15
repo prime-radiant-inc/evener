@@ -167,11 +167,11 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 // sessionLogCheckpoint replaces old history with a checkpoint built from the
 // session log. Returns a new history slice: [checkpoint_turn, ...preserved_recent].
 func (s *SessionLogStrategy) sessionLogCheckpoint(history []schema.Turn, preserveRecent int) []schema.Turn {
-	if len(history) <= preserveRecent {
+	if attentionTransparentTurnCount(history) <= preserveRecent {
 		return history
 	}
 
-	cutoff := safeCutoff(history, len(history)-preserveRecent)
+	cutoff := safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
 	if cutoff < 0 {
 		return history
 	}
@@ -246,6 +246,7 @@ func (s *SessionLogStrategy) AfterAction(ctx context.Context, history []schema.T
 	if s.session == nil || s.session.Profile() == nil {
 		return nil
 	}
+	history = attentionTransparentHistory(history)
 	// Pass only the last ~10 turns so the cheap model summarizes
 	// what just happened rather than processing the entire session.
 	recent := history

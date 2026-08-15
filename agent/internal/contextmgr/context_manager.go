@@ -282,9 +282,52 @@ func ApplyThresholdScale(cm *Manager, scale float64) {
 func estimateTokens(turns []schema.Turn) int {
 	messages := make([]llm.Message, 0, len(turns))
 	for _, t := range turns {
+		if t.Kind == schema.TurnAttentionResolution {
+			continue
+		}
 		messages = append(messages, t.Message)
 	}
 	return llm.EstimateMessagesInputTokens(messages).Tokens
+}
+
+func attentionTransparentTurnCount(history []schema.Turn) int {
+	count := 0
+	for _, turn := range history {
+		if turn.Kind != schema.TurnAttentionResolution {
+			count++
+		}
+	}
+	return count
+}
+
+func attentionTransparentHistory(history []schema.Turn) []schema.Turn {
+	if attentionTransparentTurnCount(history) == len(history) {
+		return history
+	}
+	visible := make([]schema.Turn, 0, len(history))
+	for _, turn := range history {
+		if turn.Kind != schema.TurnAttentionResolution {
+			visible = append(visible, turn)
+		}
+	}
+	return visible
+}
+
+func attentionTransparentRecentCutoff(history []schema.Turn, preserveRecent int) int {
+	if preserveRecent <= 0 {
+		return len(history)
+	}
+	seen := 0
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Kind == schema.TurnAttentionResolution {
+			continue
+		}
+		seen++
+		if seen == preserveRecent {
+			return i
+		}
+	}
+	return 0
 }
 
 // --- MaybeCompact orchestrator ---
@@ -415,7 +458,8 @@ func (cm *Manager) ForceCompact(
 		before = estimateTokens(*history)
 		// The summarizer returns the input unchanged for short or unsafe history,
 		// which must not count a pre-existing summary as a newly generated one.
-		canSummarize := len(*history) > cm.PreserveRecentTurns && safeCutoff(*history, len(*history)-cm.PreserveRecentTurns) >= 0
+		canSummarize := attentionTransparentTurnCount(*history) > cm.PreserveRecentTurns &&
+			safeCutoff(*history, attentionTransparentRecentCutoff(*history, cm.PreserveRecentTurns)) >= 0
 		result, err := cm.summarizeWithLLMSteered(ctx, *history, cm.PreserveRecentTurns, instructions)
 		if err != nil {
 			emitFn(events.EventWarning, events.WarningData{
@@ -456,7 +500,7 @@ func maskObservations(history []schema.Turn, preserveRecent int, resultToolName 
 		return
 	}
 
-	cutoff := len(history) - preserveRecent
+	cutoff := attentionTransparentRecentCutoff(history, preserveRecent)
 	if cutoff <= 0 {
 		return
 	}
@@ -648,7 +692,7 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 		return
 	}
 
-	cutoff := len(history) - preserveRecent
+	cutoff := attentionTransparentRecentCutoff(history, preserveRecent)
 	if cutoff <= 0 {
 		return
 	}
@@ -690,11 +734,11 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 // User messages and agent responses are stored as an interleaved Markdown
 // conversation for readable round-tripping across repeated compactions.
 func checkpoint(history []schema.Turn, preserveRecent int, meta *CompactionMeta, resultToolName string) []schema.Turn {
-	if len(history) <= preserveRecent {
+	if attentionTransparentTurnCount(history) <= preserveRecent {
 		return history
 	}
 
-	cutoff := safeCutoff(history, len(history)-preserveRecent)
+	cutoff := safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
 	if cutoff < 0 {
 		return history
 	}
@@ -1201,6 +1245,9 @@ func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 // arguments and tool-result content — the parts that carry the exact values the
 // elicitor must preserve. Returns "" for turns with no textual content.
 func renderTurnForElicit(t schema.Turn) string {
+	if t.Kind == schema.TurnAttentionResolution {
+		return ""
+	}
 	var b strings.Builder
 	for _, p := range t.Message.Content {
 		switch p.Kind {
@@ -1244,10 +1291,10 @@ func (cm *Manager) summarizeWithLLM(ctx context.Context, history []schema.Turn, 
 // summarizeWithLLMSteered is like summarizeWithLLM but accepts optional caller
 // instructions that replace the default mandatory-sections prompt when non-empty.
 func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema.Turn, preserveRecent int, instructions string) ([]schema.Turn, error) {
-	if len(history) <= preserveRecent {
+	if attentionTransparentTurnCount(history) <= preserveRecent {
 		return history, nil
 	}
-	cutoff := safeCutoff(history, len(history)-preserveRecent)
+	cutoff := safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
 	if cutoff < 0 {
 		return history, nil
 	}
@@ -1367,9 +1414,9 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 // safeCutoff adjusts a cutoff index so the preserved turns don't start with a
 // TurnTool or TurnSteering, which would produce invalid message ordering.
 // While tracing a tool result back to its assistant tool call, the scan crosses
-// hook markers and steering turns persisted inside that exchange; a standalone
-// hook marker remains a valid cutoff position unless the lookahead also crosses
-// steering. TurnTool without a preceding assistant tool_call is invalid.
+// presentational markers and steering turns persisted inside that exchange; a
+// standalone marker remains a valid cutoff position unless the lookahead also
+// crosses steering. TurnTool without a preceding assistant tool_call is invalid.
 // TurnSteering after a checkpoint/summary (both user-role) produces consecutive
 // user messages that some APIs reject.
 // Returns -1 if no safe position exists; callers should skip compaction.
@@ -1378,7 +1425,7 @@ func safeCutoff(history []schema.Turn, cutoff int) int {
 	crossedSteering := false
 	for i := cutoff; i < len(history); i++ {
 		k := history[i].Kind
-		if k == schema.TurnHookCompleted {
+		if k == schema.TurnHookCompleted || k == schema.TurnAttentionResolution {
 			continue
 		}
 		if k == schema.TurnSteering {
@@ -1396,7 +1443,7 @@ func safeCutoff(history []schema.Turn, cutoff int) int {
 			cutoff--
 			continue
 		}
-		if k == schema.TurnSteering || (k == schema.TurnHookCompleted && (tracingToolResult || crossedSteering)) {
+		if k == schema.TurnSteering || ((k == schema.TurnHookCompleted || k == schema.TurnAttentionResolution) && (tracingToolResult || crossedSteering)) {
 			cutoff--
 			continue
 		}

@@ -387,9 +387,16 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 		if _, err := transcript.DecodeEntry([]byte(rawLine)); err != nil {
 			return "", 0, skipped, false, fmt.Errorf("parse transcript entry: %w", err)
 		}
+		encoded, include, err := publicTranscriptLine([]byte(rawLine), entryPos+1)
+		if err != nil {
+			return "", 0, skipped, false, err
+		}
+		if !include {
+			continue
+		}
 		entryPos++
 		if entryPos >= startSeq && entryPos <= endSeq {
-			included = append(included, rawLine)
+			included = append(included, string(encoded))
 		}
 	}
 
@@ -800,6 +807,10 @@ func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool stri
 	case schema.TurnHookCompleted:
 		fmt.Fprintf(b, "\n## Turn %d — Hook\n", seq)
 		writeCompactNote(b, "Hook", e.Turn, wantFullTurn(opt, seq))
+
+	case schema.TurnAttentionResolution:
+		// Resolution markers are durable private correlation records. They are
+		// transparent to the public conversation and its tool-round structure.
 
 	case schema.TurnToolResults:
 		// TOOL_RESULTS do not get a standalone heading — they fold under the

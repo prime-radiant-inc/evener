@@ -260,6 +260,9 @@ type testConfig struct {
 	// delegateAttentionReadFold replaces only resident attention verification
 	// reads. Nil preserves the production transcript fold.
 	delegateAttentionReadFold func(string, string) (delegateAttentionFold, error)
+	// delegateAttentionOpenWriter replaces only transcript resume for attention
+	// repair. Nil preserves the production transcript opener.
+	delegateAttentionOpenWriter delegateAttentionWriterOpener
 	// delegateRestoreStat and delegateRestoreReadFile replace only restore-input
 	// filesystem reads for this session. Nil preserves the production paths.
 	delegateRestoreStat     func(string) (os.FileInfo, error)

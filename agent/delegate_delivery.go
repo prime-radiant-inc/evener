@@ -9,8 +9,10 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	"time"
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/serf/agent/transcript"
 )
 
 var errDelegateDeliveryReceiverUnavailable = errors.New("delegate delivery receiver is unavailable")
@@ -45,6 +47,7 @@ type delegateDeliveryAdmission struct {
 	token      delegateDeliveryToken
 	delegateID string
 	ownerID    string
+	cold       bool
 }
 
 type delegateDeliveryClaimToken struct {
@@ -57,6 +60,7 @@ type delegateDeliveryClaim struct {
 	delegateID string
 	ownerID    string
 	waiter     *delegateInlineWaiter
+	cold       bool
 }
 
 type delegateDeliveryPlan struct {
@@ -72,6 +76,35 @@ type delegateDeliveryPlan struct {
 
 type delegateDeliveryReceiver interface {
 	appendDelegateNotificationDurably(attentionID, content string) (bool, error)
+}
+
+type coldDelegateDeliveryReceiver struct {
+	stateDir      string
+	transcriptRef string
+	now           func() time.Time
+	open          delegateAttentionWriterOpener
+}
+
+func (receiver coldDelegateDeliveryReceiver) appendDelegateNotificationDurably(attentionID, content string) (bool, error) {
+	path, sessionID, err := delegateTranscriptPathFromRef(receiver.stateDir, receiver.transcriptRef)
+	if err != nil {
+		return false, err
+	}
+	now := time.Now().UTC()
+	if receiver.now != nil {
+		now = receiver.now()
+	}
+	open := receiver.open
+	if open == nil {
+		open = transcript.OpenWriterForSession
+	}
+	return appendColdDelegateNotificationDurablyWithOpen(path, sessionID, attentionID, content, now, open)
+}
+
+type committedCallerDeliveryReceiver struct{}
+
+func (committedCallerDeliveryReceiver) appendDelegateNotificationDurably(string, string) (bool, error) {
+	return false, nil
 }
 
 func (c *delegateTreeController) RegisterInlineWaiter(reservation *delegateStartReservation) (*delegateInlineWaiter, error) {
@@ -170,6 +203,7 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (deleg
 		token:      token,
 		delegateID: plan.delegateID,
 		ownerID:    plan.ownerDelegateID,
+		cold:       claim.cold,
 	}
 	c.evidenceVersion++
 	return token, true, nil
@@ -232,12 +266,7 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 	c.evidenceVersion++
 	plan := c.capturedPlanLocked(receipt.delegateID)
 	plans := delegateMutationPlans{updates: []delegateUpdatePlan{plan}}
-	aggregate = c.durable[receipt.delegateID]
-	if len(aggregate.PendingDeliveries) != 0 {
-		if delivery := c.newHeadDeliveryPlanLocked(receipt.delegateID, aggregate.PendingDeliveries[0].DeliveryID); delivery != nil {
-			plans.deliveries = append(plans.deliveries, *delivery)
-		}
-	}
+	plans.deliveries = append(plans.deliveries, c.replayDeliveriesForOwnerLocked(receipt.ownerID)...)
 	return plans, nil
 }
 
@@ -260,6 +289,94 @@ func (c *delegateTreeController) ReplayDeliveries() []delegateDeliveryPlan {
 		}
 	}
 	return plans
+}
+
+func prepareColdDelegateDeliveryReplay(c *delegateTreeController, plans []delegateDeliveryPlan) ([]delegateDeliveryPlan, error) {
+	pending := make([]delegateDeliveryPlan, 0, len(plans))
+	queue := append([]delegateDeliveryPlan(nil), plans...)
+	for len(queue) != 0 {
+		plan := queue[0]
+		queue = queue[1:]
+		committed, err := callerCommittedDelegateDelivery(c, plan)
+		if err != nil {
+			return nil, err
+		}
+		if !committed {
+			pending = append(pending, plan)
+			continue
+		}
+		next, err := deliverDelegatePacket(plan, committedCallerDeliveryReceiver{})
+		if err != nil {
+			return nil, err
+		}
+		queue = append(queue, next.deliveries...)
+	}
+	return pending, nil
+}
+
+func callerCommittedDelegateDelivery(c *delegateTreeController, plan delegateDeliveryPlan) (bool, error) {
+	path, sessionID, err := c.deliveryTranscriptIdentity(plan.ownerDelegateID)
+	if err != nil {
+		return false, err
+	}
+	fold, err := readDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		return false, err
+	}
+	if fold.deliveryCommits[plan.deliveryID] == "" {
+		return false, nil
+	}
+	open := c.attentionOpen
+	if open == nil {
+		open = transcript.OpenWriterForSession
+	}
+	writer, entries, err := open(path, sessionID)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = writer.Close() }()
+	verified, err := foldDelegateAttention(entries)
+	if err != nil {
+		return false, err
+	}
+	if verified.deliveryCommits[plan.deliveryID] == "" {
+		return false, nil
+	}
+	if err := writer.EstablishDurability(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func deliverColdDelegatePacket(plan delegateDeliveryPlan) (delegateMutationPlans, error) {
+	committed, err := callerCommittedDelegateDelivery(plan.controller, plan)
+	if err != nil {
+		return delegateMutationPlans{}, err
+	}
+	if committed {
+		return deliverDelegatePacket(plan, committedCallerDeliveryReceiver{})
+	}
+	return deliverDelegatePacket(plan, plan.receiver)
+}
+
+func (c *delegateTreeController) deliveryTranscriptIdentity(ownerDelegateID string) (string, string, error) {
+	c.mu.Lock()
+	stateDir := c.stateDir
+	rootSessionID := c.rootSessionID
+	transcriptRef := ""
+	if ownerDelegateID != "" {
+		if owner := c.durable[ownerDelegateID]; owner != nil {
+			transcriptRef = owner.Descriptor.TranscriptRef
+		}
+	}
+	c.mu.Unlock()
+	if ownerDelegateID == "" {
+		return transcriptPath(stateDir, rootSessionID), rootSessionID, nil
+	}
+	if transcriptRef == "" {
+		return "", "", errDelegateDeliveryReceiverUnavailable
+	}
+	return delegateTranscriptPathFromRef(stateDir, transcriptRef)
 }
 
 func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryReceiver) (delegateMutationPlans, error) {
@@ -334,7 +451,15 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 			return nil
 		}
 	}
-	if _, claimed := c.deliveryClaims[deliveryID]; claimed {
+	if _, claimed := c.deliveryClaims[deliveryID]; claimed || c.hasDeliveryReceiptLocked(deliveryID) {
+		return nil
+	}
+	receiver := c.deliveryReceiverLocked(head.OwnerDelegateID)
+	if head.OwnerDelegateID != "" && receiver == nil {
+		return nil
+	}
+	_, cold := receiver.(coldDelegateDeliveryReceiver)
+	if cold && c.hasColdDeliveryWorkForOwnerLocked(head.OwnerDelegateID) {
 		return nil
 	}
 	c.nextToken++
@@ -345,6 +470,7 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 		delegateID: delegateID,
 		ownerID:    head.OwnerDelegateID,
 		waiter:     waiter,
+		cold:       cold,
 	}
 	c.evidenceVersion++
 	return &delegateDeliveryPlan{
@@ -355,16 +481,66 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 		waiter:          waiter,
 		packet:          cloneDelegateTerminalPacket(head.Packet),
 		claim:           claimToken,
-		receiver:        c.deliveryReceiverLocked(head.OwnerDelegateID),
+		receiver:        receiver,
 	}
+}
+
+func (c *delegateTreeController) hasColdDeliveryWorkForOwnerLocked(ownerDelegateID string) bool {
+	for _, claim := range c.deliveryClaims {
+		if claim != nil && claim.cold && claim.ownerID == ownerDelegateID {
+			return true
+		}
+	}
+	for _, receipt := range c.deliveries {
+		if receipt != nil && receipt.cold && receipt.ownerID == ownerDelegateID {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *delegateTreeController) hasDeliveryReceiptLocked(deliveryID string) bool {
+	for _, receipt := range c.deliveries {
+		if receipt != nil && receipt.token.deliveryID == deliveryID {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *delegateTreeController) replayDeliveriesForOwnerLocked(ownerDelegateID string) []delegateDeliveryPlan {
+	ids := make([]string, 0, len(c.durable))
+	for id := range c.durable {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	plans := make([]delegateDeliveryPlan, 0)
+	for _, id := range ids {
+		aggregate := c.durable[id]
+		if aggregate == nil || len(aggregate.PendingDeliveries) == 0 || aggregate.PendingDeliveries[0].OwnerDelegateID != ownerDelegateID {
+			continue
+		}
+		if plan := c.newHeadDeliveryPlanLocked(id, aggregate.PendingDeliveries[0].DeliveryID); plan != nil {
+			plans = append(plans, *plan)
+		}
+	}
+	return plans
 }
 
 func (c *delegateTreeController) deliveryReceiverLocked(ownerDelegateID string) delegateDeliveryReceiver {
 	if ownerDelegateID == "" {
 		return c.rootRuntime
 	}
-	if live := c.live[ownerDelegateID]; live != nil {
+	if live := c.live[ownerDelegateID]; live != nil && live.runtime != nil {
 		return live.runtime
+	}
+	if owner := c.durable[ownerDelegateID]; owner != nil && owner.Phase == delegatestore.PhaseIdle && owner.Descriptor.TranscriptRef != "" {
+		return coldDelegateDeliveryReceiver{
+			stateDir:      c.stateDir,
+			transcriptRef: owner.Descriptor.TranscriptRef,
+			now:           c.now,
+			open:          c.attentionOpen,
+		}
 	}
 	return nil
 }
@@ -374,6 +550,14 @@ func (s *Session) executeDelegateMutationPlans(plans delegateMutationPlans) erro
 		return errDelegateDeliveryReceiverUnavailable
 	}
 	s.delegateController.emitDelegateUpdates(plans)
+	for _, attention := range plans.attention {
+		if err := s.delegateController.executeDelegateAttentionCleanup(attention); err != nil {
+			if plans.attentionFinalization != nil {
+				err = errors.Join(err, s.delegateController.RequireFinalizationRecovery(plans.attentionFinalization))
+			}
+			return err
+		}
+	}
 	queue := append([]delegateDeliveryPlan(nil), plans.deliveries...)
 	for len(queue) != 0 {
 		plan := queue[0]
@@ -386,10 +570,13 @@ func (s *Session) executeDelegateMutationPlans(plans delegateMutationPlans) erro
 			if deferred {
 				continue
 			}
+		} else if _, cold := plan.receiver.(coldDelegateDeliveryReceiver); cold {
+			next, err = deliverColdDelegatePacket(plan)
 		} else {
 			next, err = deliverDelegatePacket(plan, plan.receiver)
 		}
 		if err != nil {
+			s.requeueReplayableDelegateDeliveries(queue)
 			return err
 		}
 		s.delegateController.emitDelegateUpdates(next)
@@ -398,20 +585,111 @@ func (s *Session) executeDelegateMutationPlans(plans delegateMutationPlans) erro
 	return nil
 }
 
+func (s *Session) requeueReplayableDelegateDeliveries(unprocessed []delegateDeliveryPlan) {
+	if s == nil || s.delegateController == nil {
+		return
+	}
+	plans := s.delegateController.ReplayDeliveries()
+	if len(plans) == 0 && len(unprocessed) == 0 {
+		return
+	}
+	s.delegateController.mu.Lock()
+	pump := s.delegateController.rootRuntime
+	s.delegateController.mu.Unlock()
+	if pump == nil {
+		pump = s
+	}
+	pump.delegateDeliveryMu.Lock()
+	retry := make([]delegateDeliveryPlan, 0, len(plans)+len(unprocessed)+len(pump.pendingDelegateDeliveries))
+	retry = append(retry, plans...)
+	retry = append(retry, unprocessed...)
+	retry = append(retry, pump.pendingDelegateDeliveries...)
+	pump.pendingDelegateDeliveries = retry
+	shouldWake := false
+	if pump.delegateDeliveryPumping {
+		pump.scheduleDelegateDeliveryRetryLocked()
+	} else if !pump.delegateDeliveryWake && !pump.delegateDeliveryRetry.active {
+		pump.delegateDeliveryWake = true
+		shouldWake = true
+	}
+	pump.delegateDeliveryMu.Unlock()
+	if shouldWake {
+		pump.notify()
+	}
+}
+
+func (s *Session) scheduleDelegateDeliveryRetryLocked() {
+	if s.delegateDeliveryRetry.active || s.delegateDeliveryWake || len(s.pendingDelegateDeliveries) == 0 {
+		return
+	}
+	delay := s.delegateDeliveryRetry.delay
+	if delay <= 0 {
+		delay = jobNotificationRetryInitialDelay
+	}
+	s.delegateDeliveryRetry.active = true
+	s.delegateDeliveryRetry.generation++
+	generation := s.delegateDeliveryRetry.generation
+	s.sclock().AfterFunc(delay, func() {
+		s.delegateDeliveryMu.Lock()
+		if s.delegateDeliveryRetry.generation != generation {
+			s.delegateDeliveryMu.Unlock()
+			return
+		}
+		s.delegateDeliveryRetry.active = false
+		pending := len(s.pendingDelegateDeliveries) != 0
+		shouldWake := pending && !s.delegateDeliveryWake
+		if shouldWake {
+			s.delegateDeliveryWake = true
+		}
+		if pending {
+			s.delegateDeliveryRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
+		} else {
+			s.delegateDeliveryRetry.delay = jobNotificationRetryInitialDelay
+		}
+		s.delegateDeliveryMu.Unlock()
+		if shouldWake {
+			s.notify()
+		}
+	})
+}
+
+func (s *Session) resetDelegateDeliveryRetryLocked() {
+	s.delegateDeliveryRetry.generation++
+	s.delegateDeliveryRetry.active = false
+	s.delegateDeliveryRetry.delay = jobNotificationRetryInitialDelay
+}
+
+func (s *Session) hasPendingDelegateDeliveries() bool {
+	if s == nil {
+		return false
+	}
+	s.delegateDeliveryMu.Lock()
+	defer s.delegateDeliveryMu.Unlock()
+	return len(s.pendingDelegateDeliveries) != 0
+}
+
 func (s *Session) acceptDelegateDeliveryPlan(plan delegateDeliveryPlan) (delegateMutationPlans, bool, error) {
 	if s == nil {
 		return delegateMutationPlans{}, false, errDelegateDeliveryReceiverUnavailable
 	}
 	s.delegateDeliveryMu.Lock()
-	defer s.delegateDeliveryMu.Unlock()
 	s.mu.Lock()
 	processing := s.state == SessionProcessing
 	s.mu.Unlock()
 	if processing {
 		s.pendingDelegateDeliveries = append(s.pendingDelegateDeliveries, plan)
+		shouldWake := !s.delegateDeliveryWake && !s.delegateDeliveryRetry.active
+		if shouldWake {
+			s.delegateDeliveryWake = true
+		}
+		s.delegateDeliveryMu.Unlock()
+		if shouldWake {
+			s.notify()
+		}
 		return delegateMutationPlans{}, true, nil
 	}
 	plans, err := deliverDelegatePacket(plan, s)
+	s.delegateDeliveryMu.Unlock()
 	return plans, false, err
 }
 
@@ -419,9 +697,28 @@ func (s *Session) flushPendingDelegateDeliveries() error {
 	if s == nil {
 		return nil
 	}
+	s.delegateDeliveryMu.Lock()
+	if s.delegateDeliveryPumping {
+		s.delegateDeliveryMu.Unlock()
+		return nil
+	}
+	s.delegateDeliveryPumping = true
+	s.delegateDeliveryWake = false
+	if s.delegateDeliveryRetry.active {
+		s.delegateDeliveryRetry.generation++
+		s.delegateDeliveryRetry.active = false
+	}
+	s.delegateDeliveryMu.Unlock()
+	defer func() {
+		s.delegateDeliveryMu.Lock()
+		s.delegateDeliveryPumping = false
+		s.delegateDeliveryMu.Unlock()
+	}()
 	for {
 		s.delegateDeliveryMu.Lock()
 		if len(s.pendingDelegateDeliveries) == 0 {
+			s.delegateDeliveryWake = false
+			s.resetDelegateDeliveryRetryLocked()
 			s.delegateDeliveryMu.Unlock()
 			return nil
 		}
@@ -429,11 +726,18 @@ func (s *Session) flushPendingDelegateDeliveries() error {
 		s.pendingDelegateDeliveries = s.pendingDelegateDeliveries[1:]
 		s.delegateDeliveryMu.Unlock()
 
-		plans, err := deliverDelegatePacket(plan, s)
-		if err != nil {
-			return err
+		if receiver, ok := plan.receiver.(*Session); ok && receiver == s {
+			plans, err := deliverDelegatePacket(plan, s)
+			if err != nil {
+				s.requeueReplayableDelegateDeliveries(nil)
+				return err
+			}
+			if err := s.executeDelegateMutationPlans(plans); err != nil {
+				return err
+			}
+			continue
 		}
-		if err := s.executeDelegateMutationPlans(plans); err != nil {
+		if err := s.executeDelegateMutationPlans(delegateMutationPlans{deliveries: []delegateDeliveryPlan{plan}}); err != nil {
 			return err
 		}
 	}
@@ -467,9 +771,8 @@ func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
 		return "", fmt.Errorf("marshal delegate delivery packet: %w", err)
 	}
 	return fmt.Sprintf(
-		"<delegate-notification delegate_id=\"%s\" delivery_id=\"%s\">%s</delegate-notification>",
+		"<delegate-notification delegate_id=\"%s\">%s</delegate-notification>",
 		html.EscapeString(plan.delegateID),
-		html.EscapeString(plan.deliveryID),
 		packet,
 	), nil
 }

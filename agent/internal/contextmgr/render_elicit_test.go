@@ -63,3 +63,23 @@ func TestRenderHistoryForElicit_KeepsRecentOnOverflow(t *testing.T) {
 		t.Errorf("expected a truncation marker when history overflows the cap")
 	}
 }
+
+func TestRenderHistoryForElicit_ExcludesAttentionResolution(t *testing.T) {
+	resolution := schema.NewTurn(schema.TurnAttentionResolution, llm.System("PRIVATE_RESOLUTION_MARKER"))
+	resolution.AttentionResolution = &schema.AttentionResolutionInfo{
+		AttentionID: "delegate:private-delivery-id",
+		Disposition: "consumed",
+	}
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("legitimate before")),
+		resolution,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("legitimate after")),
+	}
+	got := renderHistoryForElicit(history, 80_000)
+	if strings.Contains(got, "PRIVATE_RESOLUTION_MARKER") || strings.Contains(got, "private-delivery-id") {
+		t.Fatalf("attention resolution reached note elicitation: %q", got)
+	}
+	if !strings.Contains(got, "legitimate before") || !strings.Contains(got, "legitimate after") {
+		t.Fatalf("ordinary history missing from note elicitation: %q", got)
+	}
+}

@@ -147,8 +147,9 @@ func toolResultStateOrContent(result *llm.ToolResultData) string {
 //
 // The result index is built over ALL entries so call→result pairing works for
 // lifecycle brackets even when the result turn is outside [start, end].
-// TOOL_RESULTS turns fold under their owning ASSISTANT turn (no standalone line),
-// exactly as the markdown renderer does. The result is bounded by convBudgetChars:
+// TOOL_RESULTS turns fold under their owning ASSISTANT turn, and private
+// attention-resolution markers have no standalone line, exactly as the markdown
+// renderer does. The result is bounded by convBudgetChars:
 // when the filtered lines exceed it, head + tail are kept and the middle is dropped
 // with an honest "… N turns elided …" marker, so the output is never an unbounded wall.
 func renderOutline(entries []transcript.Entry, start, end int) (content string, truncated bool, elidedTurns int) {
@@ -170,15 +171,14 @@ func renderOutline(entries []transcript.Entry, start, end int) (content string, 
 }
 
 // outlineLine builds the single outline line for entries[seq], or reports false
-// when the entry gets no standalone line (TOOL_RESULTS folds under its owning
-// ASSISTANT turn). The line is dot-separated:
+// when the entry gets no standalone line. The line is dot-separated:
 //
 //	<seq> · <Role> · <tool names in call order> · <purpose/first-line> · <status> · <result size> [truncated]
 //
 // Empty segments are dropped, so a plain user turn is just "<seq> · User · <text>".
 func outlineLine(entries []transcript.Entry, seq int, idx *resultIndex) (string, bool) {
 	t := entries[seq].Turn
-	if t.Kind == schema.TurnToolResults {
+	if t.Kind == schema.TurnToolResults || t.Kind == schema.TurnAttentionResolution {
 		return "", false
 	}
 

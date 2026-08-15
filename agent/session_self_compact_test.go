@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -510,6 +511,29 @@ func TestMaybeElicitNoteBeforeCompaction_NoopWhenLowPressure(t *testing.T) {
 	s.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s), 0)
 	if s.PinnedNote() != "" {
 		t.Fatal("low pressure: no compaction imminent, should not elicit")
+	}
+}
+
+func TestMaybeElicitNoteBeforeCompaction_AttentionResolutionDoesNotCreateFoldableHistory(t *testing.T) {
+	s := newTestSession(t)
+	called := false
+	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) {
+		called = true
+		return "should not be elicited", nil
+	}
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("must stay")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent answer")),
+	}
+	for i := range 6 {
+		marker := delegateAttentionResolutionTurn(fmt.Sprintf("private-%d", i), delegateAttentionConsumed)
+		history = append(history, marker)
+	}
+	history = append(history, schema.NewTurn(schema.TurnUserInput, llm.User("latest")))
+	s.contextMgr.RecordInputTokens(s.contextMgr.EstimateUsage(nil, 0).Window, len(history))
+	s.maybeElicitNoteBeforeCompaction(context.Background(), history, 0)
+	if called {
+		t.Fatal("private resolution markers created a lossy foldable prefix")
 	}
 }
 

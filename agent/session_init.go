@@ -410,6 +410,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 	}
 	s.attachTranscript(tw)
+	if err := s.flushPendingDelegateDeliveries(); err != nil {
+		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
+	}
 
 	contextmgr.ApplyThresholdScale(s.contextMgr, cfg.testOnly.compactionThresholdScale)
 	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
@@ -613,7 +616,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if meta.CheapModel != "" {
 		profile = provider.WithCheapModel(profile, meta.CheapModel)
 	}
-	profile = resolveLiveModelProfileWithTimeout(client, profile)
 
 	// Recover history from transcript JSONL. No snapshot fallback.
 	var resumeHistory []schema.Turn
@@ -722,6 +724,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
 	}
+	// Delegate reconciliation is durable, local startup work. Complete it before
+	// any provider metadata access so caller-delivery crash replay cannot depend
+	// on provider availability or latency.
+	profile = resolveLiveModelProfileWithTimeout(client, profile)
+	s.profile = profile
 	closeDelegateStoreOnError := true
 	defer func() {
 		if closeDelegateStoreOnError {
@@ -890,6 +897,22 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}
 	s.attachTranscript(tw)
+	s.delegateDeliveryMu.Lock()
+	hadPendingDelegateDeliveries := len(s.pendingDelegateDeliveries) != 0
+	s.delegateDeliveryMu.Unlock()
+	if err := s.flushPendingDelegateDeliveries(); err != nil {
+		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
+	}
+	if tw != nil && hadPendingDelegateDeliveries {
+		refreshed, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+		if err != nil {
+			return nil, fmt.Errorf("refresh transcript after delegate delivery replay: %w", err)
+		}
+		if refreshed.Header.SessionID != s.id {
+			return nil, fmt.Errorf("refresh transcript after delegate delivery replay: header session %q does not match %q", refreshed.Header.SessionID, s.id)
+		}
+		transcriptEntries = refreshed.Entries
+	}
 	if err := s.recoverClientMutationFailures(); err != nil {
 		return nil, fmt.Errorf("recover client mutation failures: %w", err)
 	}

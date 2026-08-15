@@ -57,6 +57,7 @@ TARGETS=(
 	"native:agent:.:FuzzDelegateControllerTransitions::delegate_tree_controller.go;delegate_tree_start.go"
 	"native:agent:.:FuzzDelegateConversationTransitions::delegate_tree_steer.go;delegate_tree_finish.go;delegate_delivery.go"
 	"native:agent:.:FuzzDelegateRestartEquivalence::delegate_tree_work.go;delegate_tree_stop.go;delegate_tree_restore.go;delegate_shell_repair.go"
+	"native:agent:.:FuzzDelegateAttentionFold::session_attention.go"
 	"native:agent:.:FuzzTranscriptReplay::transcript_read.go"
 	"native:agent:.:FuzzTranscriptReplayStructured::transcript_read.go"
 	"native:agent:.:FuzzTranscriptReadersAgree::transcript_read.go"

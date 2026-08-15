@@ -54,7 +54,7 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 		}
 	}
 
-	delta := append([]schema.Turn(nil), history[anchorIndex+1:]...)
+	delta := attentionTransparentTurns(history[anchorIndex+1:])
 	if len(delta) == 0 {
 		return responsesContinuationAnchorCandidate{}, llm.ResponsesContinuationDecision{
 			HistoryMode: llm.HistoryModeFullHistory,

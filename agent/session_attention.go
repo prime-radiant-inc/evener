@@ -1,14 +1,302 @@
 package agent
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
+	"strings"
+	"time"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
+
+type delegateAttentionWriterOpener func(string, string) (*transcript.Writer, []transcript.Entry, error)
+
+func delegateTranscriptPathFromRef(stateDir, ref string) (string, string, error) {
+	projectID, sessionID, err := decodeRef(ref)
+	if err != nil {
+		return "", "", err
+	}
+	if projectID != "" {
+		return "", "", fmt.Errorf("delegate transcript ref %q leaves controller state directory", ref)
+	}
+	return transcriptPath(stateDir, sessionID), sessionID, nil
+}
+
+func readPendingDelegateAttention(path, expectedSessionID string) ([]string, error) {
+	fold, err := readDelegateAttentionFold(path, expectedSessionID)
+	if err != nil {
+		return nil, err
+	}
+	return fold.pendingIDs(), nil
+}
+
+func readDelegateAttentionFold(path, expectedSessionID string) (delegateAttentionFold, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return newDelegateAttentionFold(), nil
+		}
+		return delegateAttentionFold{}, fmt.Errorf("open delegate attention transcript: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	reader := bufio.NewReaderSize(f, 64*1024)
+	headerRead := false
+	entries := make([]transcript.Entry, 0)
+	for {
+		line, complete, _, readErr := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
+		if readErr != nil {
+			return delegateAttentionFold{}, readErr
+		}
+		if !complete {
+			break
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		if !headerRead {
+			header, err := transcript.DecodeHeader(line)
+			if err != nil {
+				return delegateAttentionFold{}, err
+			}
+			if header.SessionID != expectedSessionID {
+				return delegateAttentionFold{}, fmt.Errorf("delegate attention transcript session %q, want %q", header.SessionID, expectedSessionID)
+			}
+			headerRead = true
+			continue
+		}
+		entry, err := transcript.DecodeEntry(line)
+		if err != nil {
+			return delegateAttentionFold{}, err
+		}
+		entries = append(entries, entry)
+	}
+	if !headerRead {
+		return delegateAttentionFold{}, errors.New("delegate attention transcript has no header")
+	}
+	return foldDelegateAttention(entries)
+}
+
+type delegateAttentionFold struct {
+	order           []string
+	content         map[string]llm.Message
+	turns           map[string]schema.Turn
+	resolutions     map[string]delegateAttentionResolution
+	deliveryCommits map[string]string
+}
+
+func foldDelegateAttention(entries []transcript.Entry) (delegateAttentionFold, error) {
+	fold := newDelegateAttentionFold()
+	for _, entry := range entries {
+		turn := entry.Turn
+		if err := foldDelegateDeliveryCommits(&fold, turn); err != nil {
+			return delegateAttentionFold{}, err
+		}
+		if turn.AttentionID != "" {
+			if turn.Kind != schema.TurnSteering || turn.AttentionResolution != nil {
+				return delegateAttentionFold{}, fmt.Errorf("attention %q is not a steering turn", turn.AttentionID)
+			}
+			if previous, exists := fold.content[turn.AttentionID]; exists {
+				if !reflect.DeepEqual(previous, turn.Message) {
+					return delegateAttentionFold{}, fmt.Errorf("attention %q has conflicting content", turn.AttentionID)
+				}
+			} else {
+				fold.content[turn.AttentionID] = turn.Message
+				fold.turns[turn.AttentionID] = turn
+				fold.order = append(fold.order, turn.AttentionID)
+			}
+		}
+		resolution := turn.AttentionResolution
+		if resolution == nil {
+			if turn.Kind == schema.TurnAttentionResolution {
+				return delegateAttentionFold{}, errors.New("attention resolution turn has no resolution")
+			}
+			continue
+		}
+		if turn.Kind != schema.TurnAttentionResolution || turn.AttentionID != "" || resolution.AttentionID == "" {
+			return delegateAttentionFold{}, errors.New("invalid attention resolution turn")
+		}
+		disposition := delegateAttentionResolution(resolution.Disposition)
+		if disposition != delegateAttentionConsumed && disposition != delegateAttentionDiscarded {
+			return delegateAttentionFold{}, fmt.Errorf("attention %q has invalid resolution %q", resolution.AttentionID, resolution.Disposition)
+		}
+		if _, exists := fold.content[resolution.AttentionID]; !exists {
+			return delegateAttentionFold{}, fmt.Errorf("attention %q resolved before it was appended", resolution.AttentionID)
+		}
+		if previous, exists := fold.resolutions[resolution.AttentionID]; exists && previous != disposition {
+			return delegateAttentionFold{}, fmt.Errorf("attention %q has conflicting resolutions", resolution.AttentionID)
+		}
+		fold.resolutions[resolution.AttentionID] = disposition
+	}
+	return fold, nil
+}
+
+func foldDelegateDeliveryCommits(fold *delegateAttentionFold, turn schema.Turn) error {
+	if len(turn.DelegateDeliveryCommits) == 0 {
+		return nil
+	}
+	if turn.Kind != schema.TurnToolResults {
+		return errors.New("delegate delivery commits require a tool-results turn")
+	}
+	resultIDs := make(map[string]struct{})
+	for _, part := range turn.Message.Content {
+		if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID != "" {
+			resultIDs[part.ToolResult.ToolCallID] = struct{}{}
+		}
+	}
+	for _, commit := range turn.DelegateDeliveryCommits {
+		if commit.ToolCallID == "" || commit.DeliveryID == "" {
+			return errors.New("delegate delivery commit identity is incomplete")
+		}
+		if _, exists := resultIDs[commit.ToolCallID]; !exists {
+			return fmt.Errorf("delegate delivery %q references absent tool call %q", commit.DeliveryID, commit.ToolCallID)
+		}
+		if previous, exists := fold.deliveryCommits[commit.DeliveryID]; exists && previous != commit.ToolCallID {
+			return fmt.Errorf("delegate delivery %q has conflicting tool calls", commit.DeliveryID)
+		}
+		for deliveryID, toolCallID := range fold.deliveryCommits {
+			if toolCallID == commit.ToolCallID && deliveryID != commit.DeliveryID {
+				return fmt.Errorf("delegate tool call %q has conflicting deliveries", commit.ToolCallID)
+			}
+		}
+		fold.deliveryCommits[commit.DeliveryID] = commit.ToolCallID
+	}
+	return nil
+}
+
+func newDelegateAttentionFold() delegateAttentionFold {
+	return delegateAttentionFold{
+		content:         make(map[string]llm.Message),
+		turns:           make(map[string]schema.Turn),
+		resolutions:     make(map[string]delegateAttentionResolution),
+		deliveryCommits: make(map[string]string),
+	}
+}
+
+func (f delegateAttentionFold) pendingIDs() []string {
+	pending := make([]string, 0, len(f.order))
+	for _, attentionID := range f.order {
+		if _, resolved := f.resolutions[attentionID]; !resolved {
+			pending = append(pending, attentionID)
+		}
+	}
+	return pending
+}
+
+func appendColdDelegateNotificationDurably(path, expectedSessionID, attentionID, content string, now time.Time) (appended bool, err error) {
+	return appendColdDelegateNotificationDurablyWithOpen(path, expectedSessionID, attentionID, content, now, transcript.OpenWriterForSession)
+}
+
+func appendColdDelegateNotificationDurablyWithOpen(path, expectedSessionID, attentionID, content string, now time.Time, open delegateAttentionWriterOpener) (appended bool, err error) {
+	if expectedSessionID == "" || attentionID == "" {
+		return false, errors.New("cold delegate attention identity is incomplete")
+	}
+	if open == nil {
+		return false, errors.New("cold delegate attention writer opener is nil")
+	}
+	message := llm.User(content)
+	preflight, err := readDelegateAttentionFold(path, expectedSessionID)
+	if err != nil {
+		return false, err
+	}
+	if previous, exists := preflight.content[attentionID]; exists {
+		if !reflect.DeepEqual(previous, message) {
+			return false, fmt.Errorf("attention %q has conflicting content", attentionID)
+		}
+	}
+	writer, entries, err := open(path, expectedSessionID)
+	if err != nil {
+		return false, err
+	}
+	defer func() { err = errors.Join(err, writer.Close()) }()
+	fold, err := foldDelegateAttention(entries)
+	if err != nil {
+		return false, err
+	}
+	if previous, exists := fold.content[attentionID]; exists {
+		if !reflect.DeepEqual(previous, message) {
+			return false, fmt.Errorf("attention %q has conflicting content", attentionID)
+		}
+		if err := writer.EstablishDurability(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	turn := schema.NewTurn(schema.TurnSteering, message)
+	turn.Timestamp = now.UTC()
+	turn.AttentionID = attentionID
+	turn.StableTurnID = newQueueEntryID()
+	if err := writer.AppendDurable(turn); err != nil {
+		return false, err
+	}
+	verified, err := readDelegateAttentionFold(path, expectedSessionID)
+	if err != nil {
+		return false, err
+	}
+	persisted, exists := verified.content[attentionID]
+	if !exists || !reflect.DeepEqual(persisted, message) {
+		return false, fmt.Errorf("attention %q was not durably appended", attentionID)
+	}
+	return true, nil
+}
+
+func appendColdAttentionResolution(path, expectedSessionID string, ids []string, disposition delegateAttentionResolution) (err error) {
+	return appendColdAttentionResolutionWithOpen(path, expectedSessionID, ids, disposition, transcript.OpenWriterForSession)
+}
+
+func appendColdAttentionResolutionWithOpen(path, expectedSessionID string, ids []string, disposition delegateAttentionResolution, open delegateAttentionWriterOpener) (err error) {
+	if expectedSessionID == "" {
+		return errors.New("cold attention resolution session ID is empty")
+	}
+	if open == nil {
+		return errors.New("cold attention resolution writer opener is nil")
+	}
+	preflight, err := readDelegateAttentionFold(path, expectedSessionID)
+	if err != nil {
+		return err
+	}
+	if err := validateDelegateAttentionResolutions(preflight, ids, disposition); err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	writer, entries, err := open(path, expectedSessionID)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, writer.Close()) }()
+	fold, err := foldDelegateAttention(entries)
+	if err != nil {
+		return err
+	}
+	allResolved := true
+	for _, attentionID := range ids {
+		if fold.resolutions[attentionID] != disposition {
+			allResolved = false
+			break
+		}
+	}
+	if allResolved {
+		return writer.EstablishDurability()
+	}
+	return appendDelegateAttentionResolutions(writer, fold, ids, disposition)
+}
+
+func delegateAttentionResolutionTurn(attentionID string, disposition delegateAttentionResolution) schema.Turn {
+	turn := schema.NewTurn(schema.TurnAttentionResolution, llm.System("Attention resolved."))
+	turn.AttentionResolution = &schema.AttentionResolutionInfo{
+		AttentionID: attentionID,
+		Disposition: string(disposition),
+	}
+	return turn
+}
 
 // appendDelegateNotificationDurably appends one private, model-bound attention
 // item. Replaying the same identity and content is a no-op; reusing an identity
@@ -38,11 +326,29 @@ func (s *Session) appendDelegateNotificationDurably(attentionID, content string)
 		return false, err
 	}
 	message := llm.User(content)
+	deliveryID := strings.TrimPrefix(attentionID, "delegate:")
+	if deliveryID != attentionID && fold.deliveryCommits[deliveryID] != "" {
+		_, durableFold, err := s.reopenAttentionTranscriptDurably(writer, path, sessionID)
+		if err != nil {
+			return false, err
+		}
+		if durableFold.deliveryCommits[deliveryID] == "" {
+			return false, fmt.Errorf("delegate delivery %q changed during durability recovery", deliveryID)
+		}
+		return false, nil
+	}
 	if previous, exists := fold.content[attentionID]; exists {
 		if !reflect.DeepEqual(previous, message) {
 			return false, fmt.Errorf("attention %q has conflicting content", attentionID)
 		}
-		if err := s.retainDelegateAttentionTurn(fold.turns[attentionID]); err != nil {
+		_, durableFold, err := s.reopenAttentionTranscriptDurably(writer, path, sessionID)
+		if err != nil {
+			return false, err
+		}
+		if previous := durableFold.content[attentionID]; !reflect.DeepEqual(previous, message) {
+			return false, fmt.Errorf("attention %q changed during durability recovery", attentionID)
+		}
+		if err := s.retainDelegateAttentionTurn(durableFold.turns[attentionID]); err != nil {
 			return false, err
 		}
 		return false, nil
@@ -136,6 +442,19 @@ func (s *Session) resolveAttentionDurably(ids []string, disposition delegateAtte
 	if err != nil {
 		return err
 	}
+	if err := validateDelegateAttentionResolutions(fold, ids, disposition); err != nil {
+		return err
+	}
+	for _, attentionID := range ids {
+		if fold.resolutions[attentionID] != disposition {
+			continue
+		}
+		writer, fold, err = s.reopenAttentionTranscriptDurably(writer, path, sessionID)
+		if err != nil {
+			return err
+		}
+		break
+	}
 	if err := appendDelegateAttentionResolutions(writer, fold, ids, disposition); err != nil {
 		return err
 	}
@@ -151,7 +470,141 @@ func (s *Session) resolveAttentionDurably(ids []string, disposition delegateAtte
 	return nil
 }
 
+// reopenAttentionTranscriptDurably rebuilds the writer sequence from complete
+// records, establishes a fresh filesystem barrier, and preserves the session's
+// live failure accounting before publishing the replacement handle. The caller
+// holds attentionMu, which serializes this lifecycle with every transcript use.
+func (s *Session) reopenAttentionTranscriptDurably(writer *transcript.Writer, path, sessionID string) (*transcript.Writer, delegateAttentionFold, error) {
+	open := s.cfg.testOnly.delegateAttentionOpenWriter
+	if open == nil {
+		open = transcript.OpenWriterForSession
+	}
+	reopened, entries, err := open(path, sessionID)
+	if err != nil {
+		return nil, delegateAttentionFold{}, err
+	}
+	adopted := false
+	defer func() {
+		if !adopted {
+			_ = reopened.Close()
+		}
+	}()
+	fold, err := foldDelegateAttention(entries)
+	if err != nil {
+		return nil, delegateAttentionFold{}, err
+	}
+	if err := reopened.EstablishDurability(); err != nil {
+		return nil, delegateAttentionFold{}, err
+	}
+	reopened.SyncInterval = writer.SyncInterval
+	reopened.TrackFailures(entries, s.fork.divergence)
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return nil, delegateAttentionFold{}, errors.New("attention transcript session is closed")
+	}
+	if s.transcript != writer {
+		s.mu.Unlock()
+		return nil, delegateAttentionFold{}, errors.New("attention transcript changed during durability recovery")
+	}
+	s.transcript = reopened
+	s.mu.Unlock()
+	adopted = true
+	if err := writer.Close(); err != nil {
+		return reopened, fold, err
+	}
+	return reopened, fold, nil
+}
+
+// stabilizeAttentionForStop repairs a writer whose failed durable append also
+// failed rollback. Closing and reopening establishes a durability boundary and
+// restores the writer's sequence from the transcript before stop can release
+// the generation. If rollback removed the marker, the stop records a discard.
+func (s *Session) stabilizeAttentionForStop(attentionID string) error {
+	if s == nil || attentionID == "" {
+		return errors.New("attention stabilization identity is incomplete")
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+
+	s.mu.Lock()
+	ready := s.transcriptReady
+	writer := s.transcript
+	sessionID := s.id
+	stateDir := s.stateDir
+	closed := s.closingOrClosedLocked()
+	s.mu.Unlock()
+	if closed || !ready || writer == nil || sessionID == "" || stateDir == "" {
+		return errors.New("attention stabilization requires an attached transcript writer")
+	}
+	path := transcriptPath(stateDir, sessionID)
+	open := s.cfg.testOnly.delegateAttentionOpenWriter
+	if open == nil {
+		open = transcript.OpenWriterForSession
+	}
+	reopened, entries, err := open(path, sessionID)
+	if err != nil {
+		return err
+	}
+	adopted := false
+	defer func() {
+		if !adopted {
+			_ = reopened.Close()
+		}
+	}()
+
+	fold, err := foldDelegateAttention(entries)
+	if err != nil {
+		return err
+	}
+	disposition, resolved := fold.resolutions[attentionID]
+	if !resolved {
+		disposition = delegateAttentionDiscarded
+	}
+	if !resolved {
+		if err := reopened.AppendDurable(delegateAttentionResolutionTurn(attentionID, disposition)); err != nil {
+			return err
+		}
+	} else if err := reopened.EstablishDurability(); err != nil {
+		return err
+	}
+	verified, err := readDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		return err
+	}
+	if verified.resolutions[attentionID] != disposition {
+		return fmt.Errorf("attention %q was not durably stabilized", attentionID)
+	}
+	reopened.SyncInterval = writer.SyncInterval
+	reopened.TrackFailures(entries, s.fork.divergence)
+	s.mu.Lock()
+	if s.closingOrClosedLocked() || s.transcript != writer {
+		s.mu.Unlock()
+		return errors.New("attention stabilization transcript changed")
+	}
+	s.transcript = reopened
+	s.mu.Unlock()
+	adopted = true
+	return writer.Close()
+}
+
 func appendDelegateAttentionResolutions(writer *transcript.Writer, fold delegateAttentionFold, ids []string, disposition delegateAttentionResolution) error {
+	if err := validateDelegateAttentionResolutions(fold, ids, disposition); err != nil {
+		return err
+	}
+	for _, attentionID := range ids {
+		if previous, resolved := fold.resolutions[attentionID]; resolved && previous == disposition {
+			continue
+		}
+		if err := writer.AppendDurable(delegateAttentionResolutionTurn(attentionID, disposition)); err != nil {
+			return err
+		}
+		fold.resolutions[attentionID] = disposition
+	}
+	return nil
+}
+
+func validateDelegateAttentionResolutions(fold delegateAttentionFold, ids []string, disposition delegateAttentionResolution) error {
 	if disposition != delegateAttentionConsumed && disposition != delegateAttentionDiscarded {
 		return fmt.Errorf("invalid attention resolution %q", disposition)
 	}
@@ -168,10 +621,47 @@ func appendDelegateAttentionResolutions(writer *transcript.Writer, fold delegate
 		if _, pending := fold.content[attentionID]; !pending {
 			return fmt.Errorf("attention %q is not pending", attentionID)
 		}
-		if err := writer.AppendDurable(delegateAttentionResolutionTurn(attentionID, disposition)); err != nil {
-			return err
-		}
-		fold.resolutions[attentionID] = disposition
 	}
 	return nil
+}
+
+func attentionTransparentTurns(history []schema.Turn) []schema.Turn {
+	visibleCount := 0
+	for _, turn := range history {
+		if turn.Kind != schema.TurnAttentionResolution {
+			visibleCount++
+		}
+	}
+	if visibleCount == len(history) {
+		return history
+	}
+	visible := make([]schema.Turn, 0, visibleCount)
+	for _, turn := range history {
+		if turn.Kind != schema.TurnAttentionResolution {
+			visible = append(visible, turn)
+		}
+	}
+	return visible
+}
+
+func attentionTransparentRecentCutoff(history []schema.Turn, preserveRecent int) (int, bool) {
+	if preserveRecent <= 0 {
+		return len(history), len(history) != 0
+	}
+	seen := 0
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Kind == schema.TurnAttentionResolution {
+			continue
+		}
+		seen++
+		if seen == preserveRecent {
+			for j := i - 1; j >= 0; j-- {
+				if history[j].Kind != schema.TurnAttentionResolution {
+					return i, true
+				}
+			}
+			return 0, false
+		}
+	}
+	return 0, false
 }

@@ -144,8 +144,12 @@ func (c *delegateTreeController) CompleteSettlement(claim *delegateSettlementCla
 	if err := c.finalizationReadyLocked(claim); err != nil {
 		return delegateMutationPlans{}, err
 	}
-	if _, _, err := c.admitLeaseLocked(claim.lease, delegatestore.PhaseRunning); err != nil {
+	aggregate, live, err := c.admitLeaseLocked(claim.lease, delegatestore.PhaseRunning)
+	if err != nil {
 		return delegateMutationPlans{}, err
+	}
+	if aggregate.Trigger == delegatestore.TriggerAttention && len(live.attentionIDs) != 0 {
+		return delegateMutationPlans{}, errDelegateTargetBusy
 	}
 	packet := delegateMissingTerminalPacket()
 	if supplied != nil {
@@ -161,6 +165,8 @@ func (c *delegateTreeController) CompleteSettlement(claim *delegateSettlementCla
 	}); err != nil {
 		if live := c.live[claim.lease.delegateID]; live != nil && live.binding != nil && live.binding.lease == claim.lease {
 			live.recoveryRequired = true
+			live.finalizationRecoveryRequired = true
+			live.recoveryRunnerPending = true
 		}
 		return delegateMutationPlans{}, err
 	}
@@ -168,6 +174,103 @@ func (c *delegateTreeController) CompleteSettlement(claim *delegateSettlementCla
 	c.evidenceVersion++
 	plan := c.capturedPlanLocked(claim.lease.delegateID)
 	return delegateMutationPlans{updates: []delegateUpdatePlan{plan}}, nil
+}
+
+func (c *delegateTreeController) AttentionResolutionsForFinalization(claim *delegateSettlementClaim) (delegateMutationPlans, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if claim == nil || c.settlementClaims[claim.token] != claim {
+		return delegateMutationPlans{}, errDelegateStaleLease
+	}
+	if err := c.finalizationReadyLocked(claim); err != nil {
+		return delegateMutationPlans{}, err
+	}
+	aggregate, live, err := c.exactLeaseLocked(claim.lease)
+	if err != nil {
+		return delegateMutationPlans{}, err
+	}
+	return delegateMutationPlans{
+		attention:             c.attentionResolutionPlansLocked(claim.lease, aggregate, live),
+		attentionFinalization: claim,
+	}, nil
+}
+
+// RequireFinalizationRecovery latches an exact finalization whose external
+// attention persistence failed. The claim remains fenced until a durable stop
+// can atomically close the open generation and then discard pending attention.
+func (c *delegateTreeController) RequireFinalizationRecovery(claim *delegateSettlementClaim) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if claim == nil || c.settlementClaims[claim.token] != claim {
+		return errDelegateStaleLease
+	}
+	_, live, err := c.exactLeaseLocked(claim.lease)
+	if err != nil {
+		return err
+	}
+	if !live.recoveryRequired {
+		live.recoveryRequired = true
+	}
+	live.finalizationRecoveryRequired = true
+	live.recoveryRunnerPending = true
+	c.evidenceVersion++
+	if c.stop != nil {
+		if _, active := c.stop.active[claim.lease]; active {
+			if _, covered := c.stop.members[claim.lease.delegateID]; covered {
+				c.signalStopProgressLocked()
+			}
+		}
+	}
+	return nil
+}
+
+// ReportFinalizationQuiesced releases only the process-local runner fence for
+// the exact generation and resident runtime. Durable recovery authority remains
+// latched until reconciliation closes or repairs that generation.
+func (c *delegateTreeController) ReportFinalizationQuiesced(lease delegateLease, runtime *Session) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, live, err := c.exactLeaseLocked(lease)
+	if err != nil {
+		if errors.Is(err, errDelegateStaleLease) {
+			return nil
+		}
+		return err
+	}
+	if live.binding == nil || live.binding.runtime != runtime {
+		return errDelegateStaleLease
+	}
+	if !live.recoveryRequired || !live.recoveryRunnerPending {
+		return nil
+	}
+	live.recoveryRunnerPending = false
+	c.evidenceVersion++
+	if c.stop != nil {
+		if _, active := c.stop.active[lease]; active {
+			if _, covered := c.stop.members[lease.delegateID]; covered {
+				c.signalStopProgressLocked()
+			}
+		}
+	}
+	return nil
+}
+
+func (c *delegateTreeController) attentionResolutionPlansLocked(lease delegateLease, aggregate *delegatestore.Aggregate, live *delegateLiveState) []delegateAttentionCleanupPlan {
+	if aggregate == nil || aggregate.Phase == delegatestore.PhaseStopping || aggregate.Trigger != delegatestore.TriggerAttention || live == nil || len(live.attentionIDs) == 0 {
+		return nil
+	}
+	plans := make([]delegateAttentionCleanupPlan, 0, len(live.attentionIDs))
+	for _, attentionID := range live.attentionIDs {
+		plans = append(plans, delegateAttentionCleanupPlan{
+			lease:         lease,
+			delegateID:    lease.delegateID,
+			transcriptRef: aggregate.Descriptor.TranscriptRef,
+			attentionID:   attentionID,
+			disposition:   delegateAttentionConsumed,
+			runtime:       live.runtime,
+		})
+	}
+	return plans
 }
 
 func (c *delegateTreeController) finalizationReadyLocked(claim *delegateSettlementClaim) error {
@@ -253,10 +356,16 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 		}
 		return delegateMutationPlans{}, err
 	}
+	if live.finalizationRecoveryRequired {
+		return delegateMutationPlans{}, errDelegateTargetBusy
+	}
 	if aggregate.Phase == delegatestore.PhaseRunning || aggregate.Phase == delegatestore.PhaseStopping {
 		if err := c.finalizationReadyForLeaseLocked(lease, live); err != nil {
 			return delegateMutationPlans{}, err
 		}
+	}
+	if aggregate.Phase != delegatestore.PhaseStopping && aggregate.Trigger == delegatestore.TriggerAttention && len(live.attentionIDs) != 0 {
+		return delegateMutationPlans{}, errDelegateTargetBusy
 	}
 
 	endedAt := finish.endedAt
@@ -338,6 +447,8 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 
 	if _, err := c.appendLocked(events...); err != nil {
 		live.recoveryRequired = true
+		live.finalizationRecoveryRequired = true
+		live.recoveryRunnerPending = true
 		return delegateMutationPlans{}, err
 	}
 	plans, generationCancel := c.generationFinishedPlansLocked(lease, deliveryID)
@@ -387,6 +498,7 @@ func (c *delegateTreeController) generationFinishedPlansLocked(lease delegateLea
 	if delivery := c.newHeadDeliveryPlanLocked(lease.delegateID, deliveryID); delivery != nil {
 		plans.deliveries = append(plans.deliveries, *delivery)
 	}
+	plans.deliveries = append(plans.deliveries, c.replayDeliveriesForOwnerLocked(lease.delegateID)...)
 	return plans, cancel
 }
 

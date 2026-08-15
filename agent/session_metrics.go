@@ -51,10 +51,11 @@ func (s *Session) ActiveTurnStartedAtMillis() int64 {
 //
 // Pull-callback-fed, like WorkMillisSnapshot: read on demand by the daemon's
 // status projection rather than pushed on every event.
-// The writer is set once during construction and read unlocked everywhere else
-// in the package (see appendTurn); its own mutex guards the count.
+// The session lock snapshots the current writer because attention recovery may
+// replace a resumed handle after re-establishing transcript durability. The
+// writer's own mutex guards the count.
 func (s *Session) FailedToolCallsSnapshot() (int, bool) {
-	return s.transcript.FailedToolCalls()
+	return s.attachedTranscript().FailedToolCalls()
 }
 
 // CumulativeUsageSnapshot returns the session's running self-only token

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/identifier"
 )
 
@@ -35,6 +36,7 @@ type delegateTreeControllerConfig struct {
 	driveLimit    int
 	now           func() time.Time
 	newDelegateID func() string
+	attentionOpen delegateAttentionWriterOpener
 }
 
 type delegateTreeController struct {
@@ -70,6 +72,7 @@ type delegateTreeController struct {
 	closing          bool
 	reconcileOrder   []delegateLease
 	emitUpdate       func(delegateUpdatePlan)
+	attentionOpen    delegateAttentionWriterOpener
 }
 
 type delegateActor struct {
@@ -97,10 +100,16 @@ type delegateLiveState struct {
 	attentionIDs     []string
 	waiters          map[uint64]*delegateInlineWaiter
 	recoveryRequired bool
-	activityAt       time.Time
-	quietSequence    uint64
-	quietNotified    bool
-	quietClaim       *delegateQuietAttentionClaim
+	// finalizationRecoveryRequired prevents a failed runner finalizer from
+	// retrying around the stop-only external-state recovery path.
+	finalizationRecoveryRequired bool
+	// recoveryRunnerPending fences stop recovery until the exact runner that
+	// encountered a finalization failure has completed all retained-runtime writes.
+	recoveryRunnerPending bool
+	activityAt            time.Time
+	quietSequence         uint64
+	quietNotified         bool
+	quietClaim            *delegateQuietAttentionClaim
 }
 
 type delegateSnapshot struct {
@@ -121,10 +130,11 @@ type delegateUpdatePlan struct {
 }
 
 type delegateMutationPlans struct {
-	updates      []delegateUpdatePlan
-	deliveries   []delegateDeliveryPlan
-	attention    []delegateAttentionCleanupPlan
-	shellRepairs []delegateShellRepairPlan
+	updates               []delegateUpdatePlan
+	deliveries            []delegateDeliveryPlan
+	attention             []delegateAttentionCleanupPlan
+	attentionFinalization *delegateSettlementClaim
+	shellRepairs          []delegateShellRepairPlan
 }
 
 func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTreeController, error) {
@@ -146,6 +156,9 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 	if cfg.newDelegateID == nil {
 		cfg.newDelegateID = identifier.MustNewDelegateID
 	}
+	if cfg.attentionOpen == nil {
+		cfg.attentionOpen = transcript.OpenWriterForSession
+	}
 	events, err := cfg.store.Load()
 	if err != nil {
 		return nil, err
@@ -166,6 +179,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		turnLimit:        cfg.turnLimit,
 		driveLimit:       cfg.driveLimit,
 		newDelegateID:    cfg.newDelegateID,
+		attentionOpen:    cfg.attentionOpen,
 		reservations:     make(map[uint64]*delegateStartRecord),
 		inputClaims:      make(map[uint64]delegateLease),
 		steeringClaims:   make(map[uint64]*delegateSteeringClaim),

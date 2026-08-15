@@ -369,6 +369,26 @@ func (w *Writer) AppendDurable(turn schema.Turn) error {
 	return w.append(turn, true)
 }
 
+// EstablishDurability fsyncs the transcript's current complete contents
+// without appending another entry. Recovery callers use it before treating a
+// readable record from an earlier ambiguous write as authoritative.
+func (w *Writer) EstablishDurability() error {
+	if w == nil || w.file == nil {
+		return errors.New("transcript writer is nil")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed.Load() {
+		return errors.New("transcript writer is closed")
+	}
+	if err := w.file.Sync(); err != nil {
+		return fmt.Errorf("sync transcript durability barrier: %w", err)
+	}
+	w.lastSync = time.Now()
+	w.dirty = false
+	return nil
+}
+
 func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	if w == nil || w.closed.Load() {
 		return nil
@@ -515,6 +535,18 @@ func OpenWriter(path string) (*Writer, error) {
 // belong to expectedSessionID and returning the validated semantic entries.
 func OpenWriterForSession(path, expectedSessionID string) (*Writer, []Entry, error) {
 	return openWriter(path, expectedSessionID)
+}
+
+// OpenWriterForSessionWithFS is the filesystem-injecting form of
+// OpenWriterForSession. It preserves the same identity validation and semantic
+// entry return while allowing a caller that already owns a filesystem boundary
+// to resume through it.
+func OpenWriterForSessionWithFS(fs afero.Fs, path, expectedSessionID string) (*Writer, []Entry, error) {
+	f, err := fs.OpenFile(path, os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open transcript for resume: %w", err)
+	}
+	return resumeWriter(fs, f, expectedSessionID)
 }
 
 func openWriter(path, expectedSessionID string) (*Writer, []Entry, error) {

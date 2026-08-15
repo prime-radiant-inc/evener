@@ -58,6 +58,27 @@ func TestRecursiveDistillStrategy_AfterAction_NoMicroBelowThreshold(t *testing.T
 	}
 }
 
+func TestRecursiveDistillStrategy_AttentionResolutionDoesNotAdvanceCadence(t *testing.T) {
+	client := llm.NewClient()
+	spy := &fakeAdapter{name: "openai"}
+	client.Register(spy)
+	s := NewRecursiveDistillStrategy(NewManager(NewOpenAIProfile("gpt-5.2"), client))
+	history := make([]schema.Turn, 9, 10)
+	for i := range history {
+		history[i] = schema.NewTurn(schema.TurnAssistant, llm.Assistant("visible action"))
+	}
+	marker := schema.NewTurn(schema.TurnAttentionResolution, llm.System("private marker"))
+	marker.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: "private", Disposition: "consumed"}
+	history = append(history, marker)
+
+	if err := s.AfterAction(context.Background(), history, client); err != nil {
+		t.Fatalf("AfterAction: %v", err)
+	}
+	if got := len(spy.Requests()); got != 0 {
+		t.Fatalf("private marker advanced distillation cadence: requests=%d", got)
+	}
+}
+
 func TestRecursiveDistillStrategy_AfterAction_MicroAt10Turns(t *testing.T) {
 	client := llm.NewClient()
 	f := &fakeAdapter{

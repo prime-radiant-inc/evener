@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -474,6 +475,20 @@ func TestSessionLogStrategy_SessionLogCheckpoint_TurnKind(t *testing.T) {
 	}
 	if result[0].Kind != schema.TurnCheckpoint {
 		t.Errorf("expected TurnCheckpoint for session log checkpoint, got %s", result[0].Kind)
+	}
+}
+
+func TestSessionLogCheckpoint_AttentionResolutionDoesNotConsumeRecentSlots(t *testing.T) {
+	marker := schema.NewTurn(schema.TurnAttentionResolution, llm.System("private marker"))
+	marker.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: "private", Disposition: "consumed"}
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent answer")),
+		marker,
+		schema.NewTurn(schema.TurnUserInput, llm.User("latest")),
+	}
+	sls := &SessionLogStrategy{log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "attention.log.jsonl"))}
+	if got := sls.sessionLogCheckpoint(history, 2); !reflect.DeepEqual(got, history) {
+		t.Fatalf("private marker triggered session-log checkpoint:\n got %#v\nwant %#v", got, history)
 	}
 }
 

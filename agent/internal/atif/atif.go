@@ -154,10 +154,15 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 		case schema.TurnAssistant:
 			step := convertAssistantTurn(turn, stepID, opts)
 
-			// Look ahead: if the next entry is TOOL_RESULTS, merge it as observation.
-			if i+1 < len(entries) && entries[i+1].Turn.Kind == schema.TurnToolResults {
-				i++
-				obs, errMap, durMap := convertToolResults(entries[i].Turn)
+			// Resolution markers are private and transparent to tool-round
+			// structure, so look through them for this assistant's observation.
+			resultIndex := i + 1
+			for resultIndex < len(entries) && entries[resultIndex].Turn.Kind == schema.TurnAttentionResolution {
+				resultIndex++
+			}
+			if resultIndex < len(entries) && entries[resultIndex].Turn.Kind == schema.TurnToolResults {
+				i = resultIndex
+				obs, errMap, durMap := convertToolResults(entries[resultIndex].Turn)
 				step.Observation = obs
 				if len(errMap) > 0 {
 					step.Extra["tool_errors"] = errMap
@@ -256,6 +261,9 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 			}
 			steps = append(steps, step)
 			stepID++
+
+		case schema.TurnAttentionResolution:
+			// Durable private correlation record; public export omits it.
 
 		default:
 			// A turn kind this exporter has not been taught. TurnKind is a

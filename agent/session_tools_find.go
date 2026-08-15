@@ -472,6 +472,7 @@ func contentSnippets(bucketDir, sessionID, query, needle string) (snips []snippe
 	if err != nil {
 		return nil, false
 	}
+	entries = publicTranscriptEntries(entries)
 	collector := newSnippetCollector(0)
 	for i := range entries {
 		text := rawEntryText(entries[i].Turn)
@@ -564,6 +565,9 @@ func turnRoleLabel(kind schema.TurnKind) string {
 // full tool-result bodies. Used by the cross-session content scan so a query
 // appearing only in a long command tail or a written file body IS found.
 func rawEntryText(t schema.Turn) string {
+	if t.Kind == schema.TurnAttentionResolution {
+		return ""
+	}
 	var parts []string
 	for i := range t.Message.Content {
 		p := &t.Message.Content[i]

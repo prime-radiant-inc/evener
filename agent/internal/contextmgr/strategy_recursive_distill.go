@@ -107,6 +107,7 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []sc
 	if client == nil || s.cm == nil {
 		return nil
 	}
+	history = attentionTransparentHistory(history)
 
 	turnCount := len(history)
 

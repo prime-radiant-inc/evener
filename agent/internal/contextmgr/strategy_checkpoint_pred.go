@@ -169,10 +169,10 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 // predictiveCheckpoint asks a cheap model to predict what information the agent
 // will need going forward, then creates a targeted checkpoint preserving that.
 func (s *CheckpointPredStrategy) predictiveCheckpoint(ctx context.Context, history []schema.Turn, preserveRecent int) ([]schema.Turn, error) {
-	if len(history) <= preserveRecent {
+	if attentionTransparentTurnCount(history) <= preserveRecent {
 		return history, nil
 	}
-	cutoff := safeCutoff(history, len(history)-preserveRecent)
+	cutoff := safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
 	if cutoff < 0 {
 		return history, nil
 	}

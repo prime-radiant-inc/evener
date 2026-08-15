@@ -2,6 +2,7 @@ package contextmgr
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -32,6 +33,28 @@ func TestCheckpointPredStrategy_AfterAction_Noop(t *testing.T) {
 	err := s.AfterAction(context.Background(), nil, nil)
 	if err != nil {
 		t.Errorf("AfterAction should be no-op, got error: %v", err)
+	}
+}
+
+func TestPredictiveCheckpoint_AttentionResolutionDoesNotConsumeRecentSlots(t *testing.T) {
+	marker := schema.NewTurn(schema.TurnAttentionResolution, llm.System("private marker"))
+	marker.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: "private", Disposition: "consumed"}
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent answer")),
+		marker,
+		schema.NewTurn(schema.TurnUserInput, llm.User("latest")),
+	}
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("unexpected checkpoint")} },
+	}})
+	cm := NewManager(testOpenAIProfileWithContextWindow(1000), client)
+	got, err := NewCheckpointPredStrategy(cm).predictiveCheckpoint(context.Background(), history, 2)
+	if err != nil {
+		t.Fatalf("predictiveCheckpoint: %v", err)
+	}
+	if !reflect.DeepEqual(got, history) {
+		t.Fatalf("private marker triggered predictive checkpoint:\n got %#v\nwant %#v", got, history)
 	}
 }
 

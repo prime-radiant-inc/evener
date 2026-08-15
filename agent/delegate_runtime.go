@@ -398,6 +398,9 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if err := s.executeDelegateMutationPlans(plans); err != nil {
 		s.sendersWG.Done()
 		failurePlans, finishErr := s.delegateController.FinishGeneration(started.lease, delegatePermanentStartFailure(err, "launch_failed"))
+		if finishErr != nil {
+			finishErr = errors.Join(finishErr, s.delegateController.ReportFinalizationQuiesced(started.lease, sub.sess))
+		}
 		return runtime.stableSendFailureOutcome(ctx, started, waiter, maxWaitMS, failurePlans, errors.Join(err, finishErr))
 	}
 	bindStableDelegateActivity(sub.sess, s.delegateController, started.lease)
@@ -1335,17 +1338,14 @@ func (s *Session) bootstrapDelegateResources() error {
 		turnLimit:     s.cfg.MaxConcurrentDelegateTurns,
 		driveLimit:    defaultMaxConcurrentDriveTurns,
 		now:           s.sclock().Now,
+		attentionOpen: s.cfg.testOnly.delegateAttentionOpenWriter,
 	})
 	if err != nil {
 		_ = store.Close()
 		return fmt.Errorf("open delegate controller: %w", err)
 	}
-	evidence, err := collectDelegateReconcileEvidence(s.stateDir, controller.ReconcileRequirements())
+	reconcileDeliveries, err := reconcileDelegateResourcesForBootstrap(controller)
 	if err != nil {
-		_ = store.Close()
-		return fmt.Errorf("collect delegate reconcile evidence: %w", err)
-	}
-	if _, err := controller.Reconcile(evidence); err != nil {
 		_ = store.Close()
 		return fmt.Errorf("reconcile delegate resources: %w", err)
 	}
@@ -1354,14 +1354,59 @@ func (s *Session) bootstrapDelegateResources() error {
 		_ = store.Close()
 		return fmt.Errorf("inspect delegate restore inputs: %w", err)
 	}
-	if _, err := controller.closeMissingRestoreInputs(missingInputs); err != nil {
+	missingPlans, err := controller.closeMissingRestoreInputs(missingInputs)
+	if err != nil {
 		_ = store.Close()
 		return fmt.Errorf("close delegates with missing restore inputs: %w", err)
+	}
+	deliveryPlans := append([]delegateDeliveryPlan(nil), reconcileDeliveries...)
+	deliveryPlans = append(deliveryPlans, missingPlans.deliveries...)
+	deliveryPlans = append(deliveryPlans, controller.ReplayDeliveries()...)
+	pendingDeliveries, err := prepareColdDelegateDeliveryReplay(controller, deliveryPlans)
+	if err != nil {
+		_ = store.Close()
+		return fmt.Errorf("replay committed delegate deliveries: %w", err)
 	}
 	s.delegateController = controller
 	s.delegateRootSessionID = s.id
 	s.ownsDelegateController = true
+	s.pendingDelegateDeliveries = append(s.pendingDelegateDeliveries, pendingDeliveries...)
 	return nil
+}
+
+func reconcileDelegateResourcesForBootstrap(controller *delegateTreeController) ([]delegateDeliveryPlan, error) {
+	var deliveries []delegateDeliveryPlan
+	for {
+		evidence, err := collectDelegateReconcileEvidence(controller.stateDir, controller.ReconcileRequirements())
+		if err != nil {
+			return nil, fmt.Errorf("collect evidence: %w", err)
+		}
+		plans, err := controller.Reconcile(evidence)
+		if err != nil {
+			return nil, err
+		}
+		deliveries = append(deliveries, plans.deliveries...)
+		for _, plan := range plans.shellRepairs {
+			if err := executeDelegateShellRepair(plan, controller.now()); err != nil {
+				return nil, err
+			}
+		}
+		for _, plan := range plans.attention {
+			if err := controller.executeDelegateAttentionCleanup(plan); err != nil {
+				return nil, err
+			}
+		}
+
+		controller.mu.Lock()
+		stopPending := controller.stop != nil
+		controller.mu.Unlock()
+		if !stopPending {
+			return deliveries, nil
+		}
+		if len(plans.updates) == 0 && len(plans.deliveries) == 0 && len(plans.shellRepairs) == 0 && len(plans.attention) == 0 {
+			return nil, errors.New("restored delegate stop made no reconciliation progress")
+		}
+	}
 }
 
 func missingDelegateRestoreInputs(

@@ -118,6 +118,24 @@ func TestResponsesContinuationAnchorCandidateRejectsUnsupportedDeltaTurnKind(t *
 	}
 }
 
+func TestResponsesContinuationAnchorCandidateIgnoresAttentionResolution(t *testing.T) {
+	marker := delegateAttentionResolutionTurn("private-attention", delegateAttentionConsumed)
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+		responsesContinuationEligibleAssistantTurn("resp_1"),
+		marker,
+		schema.NewTurn(schema.TurnUserInput, llm.User("next")),
+	}
+
+	candidate, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, history)
+	if decision.HistoryMode != llm.HistoryModeResponsesDelta || decision.Reason != "continuation_anchor_candidate" {
+		t.Fatalf("decision = %+v", decision)
+	}
+	if len(candidate.Delta) != 1 || candidate.Delta[0].Kind != schema.TurnUserInput {
+		t.Fatalf("provider delta retained private resolution marker: %+v", candidate.Delta)
+	}
+}
+
 func TestResponsesContinuationAnchorCandidateAllowsEnvironmentDelta(t *testing.T) {
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("first")),

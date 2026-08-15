@@ -326,7 +326,9 @@ func (c *delegateTreeController) CompleteStartInput(claim delegateInputClaim, co
 	live.binding.ready = true
 	live.activityAt = c.now()
 	c.evidenceVersion++
-	return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, nil
+	plans := delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}
+	plans.deliveries = append(plans.deliveries, c.replayDeliveriesForOwnerLocked(lease.delegateID)...)
+	return plans, nil
 }
 
 func (c *delegateTreeController) FailCommittedStart(lease delegateLease, failure delegateFinish, closeReason string, runtimeForClose *Session) (delegateMutationPlans, bool, error) {
@@ -562,6 +564,10 @@ func (c *delegateTreeController) CommitStart(reservation *delegateStartReservati
 		cancel = c.releaseReservationLocked(record)
 		return delegateStartCommit{}, errDelegateTargetBusy
 	}
+	if c.hasColdDeliveryWorkForOwnerLocked(record.delegateID) {
+		cancel = c.releaseReservationLocked(record)
+		return delegateStartCommit{}, errDelegateTargetBusy
+	}
 	if record.waiter != nil {
 		if live := c.live[record.delegateID]; live != nil && live.waiters != nil && live.waiters[record.generation] != nil {
 			cancel = c.releaseReservationLocked(record)
@@ -651,6 +657,8 @@ func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) co
 	live.pendingSteers = nil
 	live.attentionIDs = nil
 	live.recoveryRequired = false
+	live.finalizationRecoveryRequired = false
+	live.recoveryRunnerPending = false
 	live.quietSequence = 0
 	live.quietNotified = false
 	live.quietClaim = nil

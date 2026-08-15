@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/serf/agent/transcript"
 )
 
 type delegateAttentionResolution string
@@ -31,11 +32,13 @@ type shellRuntimeLossEvidence struct {
 type delegateAttentionCleanupPlan struct {
 	requestSeq      uint64
 	evidenceVersion uint64
+	lease           delegateLease
 	delegateID      string
 	transcriptRef   string
 	attentionID     string
 	disposition     delegateAttentionResolution
 	runtime         *Session
+	stabilize       bool
 }
 
 type delegateShellRepairPlan struct {
@@ -98,7 +101,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 	if generationCancel != nil {
 		cancel = generationCancel
 	}
-	if len(plans.updates) != 0 {
+	if len(plans.updates) != 0 || len(plans.attention) != 0 {
 		return plans, nil
 	}
 	plans, err = c.reconcileRuntimeLostFromEvidenceLocked()
@@ -205,6 +208,9 @@ func (c *delegateTreeController) reconcileRecoveryRequiredStopLocked() (delegate
 		return delegateMutationPlans{}, nil, nil
 	}
 	stop := c.stop
+	if len(stop.starts) != 0 || len(stop.work) != 0 || len(stop.deliveries) != 0 || len(stop.quietClaims) != 0 || len(stop.steeringClaims) != 0 || len(stop.modelClaims) != 0 {
+		return delegateMutationPlans{}, nil, nil
+	}
 	leases := make([]delegateLease, 0, len(stop.active))
 	for lease := range stop.active {
 		leases = append(leases, lease)
@@ -223,6 +229,19 @@ func (c *delegateTreeController) reconcileRecoveryRequiredStopLocked() (delegate
 		live := c.live[lease.delegateID]
 		if aggregate == nil || aggregate.Generation != lease.generation || !aggregate.CurrentRunOpen || aggregate.Phase != delegatestore.PhaseStopping || aggregate.PendingStopSeq != stop.requestSeq || live == nil || live.binding == nil || live.binding.lease != lease || !live.recoveryRequired {
 			continue
+		}
+		if live.recoveryRunnerPending {
+			continue
+		}
+		if len(live.attentionIDs) != 0 {
+			return delegateMutationPlans{attention: []delegateAttentionCleanupPlan{{
+				lease:         lease,
+				delegateID:    lease.delegateID,
+				transcriptRef: aggregate.Descriptor.TranscriptRef,
+				attentionID:   live.attentionIDs[0],
+				runtime:       live.runtime,
+				stabilize:     true,
+			}}}, nil, nil
 		}
 		packet := delegateStoppedTerminalPacket()
 		deliveryID := delegateDeliveryID(lease.delegateID, lease.generation)
@@ -340,7 +359,61 @@ func (c *delegateTreeController) ReportAttentionResolved(requestSeq, evidenceVer
 	return delegateMutationPlans{}, nil
 }
 
+func (c *delegateTreeController) ReportAttentionConsumed(lease delegateLease, attentionID string, runtime *Session) (delegateMutationPlans, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate, live, err := c.exactLeaseLocked(lease)
+	if err != nil || attentionID == "" || aggregate.Trigger != delegatestore.TriggerAttention || live.runtime != runtime {
+		return delegateMutationPlans{}, errDelegateStaleLease
+	}
+	index := -1
+	for i, id := range live.attentionIDs {
+		if id == attentionID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return delegateMutationPlans{}, errDelegateStaleLease
+	}
+	live.attentionIDs = append(live.attentionIDs[:index], live.attentionIDs[index+1:]...)
+	c.evidenceVersion++
+	return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, nil
+}
+
+func (c *delegateTreeController) ReportAttentionStabilized(lease delegateLease, attentionID string, runtime *Session) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate, live, err := c.exactLeaseLocked(lease)
+	if err != nil || attentionID == "" || aggregate.Phase != delegatestore.PhaseStopping || !live.recoveryRequired || live.runtime != runtime {
+		return errDelegateStaleLease
+	}
+	index := -1
+	for i, id := range live.attentionIDs {
+		if id == attentionID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return errDelegateStaleLease
+	}
+	live.attentionIDs = append(live.attentionIDs[:index], live.attentionIDs[index+1:]...)
+	c.evidenceVersion++
+	c.signalStopProgressLocked()
+	return nil
+}
+
 func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAttentionCleanupPlan) error {
+	if plan.stabilize {
+		if plan.runtime == nil {
+			return errDelegateDeliveryReceiverUnavailable
+		}
+		if err := plan.runtime.stabilizeAttentionForStop(plan.attentionID); err != nil {
+			return err
+		}
+		return c.ReportAttentionStabilized(plan.lease, plan.attentionID, plan.runtime)
+	}
 	if plan.runtime != nil {
 		if err := plan.runtime.resolveAttentionDurably([]string{plan.attentionID}, plan.disposition); err != nil {
 			return err
@@ -350,9 +423,17 @@ func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAt
 		if err != nil {
 			return err
 		}
-		if err := appendColdAttentionResolution(path, expectedSessionID, []string{plan.attentionID}, plan.disposition); err != nil {
+		open := c.attentionOpen
+		if open == nil {
+			open = transcript.OpenWriterForSession
+		}
+		if err := appendColdAttentionResolutionWithOpen(path, expectedSessionID, []string{plan.attentionID}, plan.disposition, open); err != nil {
 			return err
 		}
+	}
+	if plan.disposition == delegateAttentionConsumed {
+		_, err := c.ReportAttentionConsumed(plan.lease, plan.attentionID, plan.runtime)
+		return err
 	}
 	_, err := c.ReportAttentionResolved(plan.requestSeq, plan.evidenceVersion, plan.delegateID, plan.attentionID, plan.disposition, plan.runtime)
 	return err
@@ -420,6 +501,7 @@ func (c *delegateTreeController) reconcileRuntimeLostFromEvidenceLocked() (deleg
 		if delivery := c.newHeadDeliveryPlanLocked(lease.delegateID, delegateDeliveryID(lease.delegateID, lease.generation)); delivery != nil {
 			plans.deliveries = append(plans.deliveries, *delivery)
 		}
+		plans.deliveries = append(plans.deliveries, c.replayDeliveriesForOwnerLocked(lease.delegateID)...)
 	}
 	c.reconcileOrder = remaining
 	return plans, nil

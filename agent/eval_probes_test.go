@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -33,6 +34,20 @@ func (a *stubProbeAdapter) Complete(_ context.Context, req llm.Request) (llm.Res
 }
 func (a *stubProbeAdapter) Stream(_ context.Context, _ llm.Request) (llm.Stream, error) {
 	return nil, llm.ErrStreamUnsupported
+}
+
+func TestTurnsToMessages_AttentionResolutionIsTransparent(t *testing.T) {
+	const callID = "probe-call"
+	marker := delegateAttentionResolutionTurn("private-attention", delegateAttentionConsumed)
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, delegateAttentionToolCall(callID)),
+		marker,
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "probe", "visible result", false)),
+	}
+	want := turnsToMessages([]schema.Turn{turns[0], turns[2]})
+	if got := turnsToMessages(turns); !reflect.DeepEqual(got, want) {
+		t.Fatalf("retention-probe history changed across private marker:\n got %#v\nwant %#v", got, want)
+	}
 }
 
 func TestRunRetentionProbes_SingleQuestion_Correct(t *testing.T) {
