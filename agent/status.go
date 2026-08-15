@@ -283,7 +283,7 @@ func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSn
 		Type:                "delegate",
 		Lifecycle:           string(row.lifecycle),
 		Phase:               string(row.phase),
-		Status:              string(row.phase),
+		Status:              string(row.lifecycle),
 		Resumable:           row.resumable,
 		NotResumableReason:  row.notResumableReason,
 		ProjectionRevision:  row.revision,

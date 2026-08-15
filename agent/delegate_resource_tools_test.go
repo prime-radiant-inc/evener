@@ -141,6 +141,31 @@ func TestStableDelegateTools_StatusAndListProjectPublicLifecycle(t *testing.T) {
 		}
 	}
 
+	wantDetailed := map[string]struct {
+		lifecycle string
+		phase     string
+	}{
+		settlingID: {lifecycle: "running", phase: "settling"},
+		closedID:   {lifecycle: "idle", phase: "closed"},
+	}
+	for _, info := range s.DetailedStatus().Delegates {
+		want, ok := wantDetailed[info.DelegateID]
+		if !ok {
+			continue
+		}
+		if info.Lifecycle != want.lifecycle || info.Status != want.lifecycle || info.Phase != want.phase {
+			t.Errorf("DetailedStatus(%s) lifecycle/status/phase = %q/%q/%q, want %q/%q/%q", info.DelegateID, info.Lifecycle, info.Status, info.Phase, want.lifecycle, want.lifecycle, want.phase)
+		}
+		event := delegateUpdatedDataFromStatus(info)
+		if event.Lifecycle != want.lifecycle || event.Status != want.lifecycle || event.Phase != want.phase {
+			t.Errorf("DELEGATE_UPDATED(%s) lifecycle/status/phase = %q/%q/%q, want %q/%q/%q", info.DelegateID, event.Lifecycle, event.Status, event.Phase, want.lifecycle, want.lifecycle, want.phase)
+		}
+		delete(wantDetailed, info.DelegateID)
+	}
+	if len(wantDetailed) != 0 {
+		t.Fatalf("DetailedStatus omitted stable delegates: %v", wantDetailed)
+	}
+
 	listed := stableToolListResult(t, s, map[string]any{"type": []any{"delegate"}})
 	want := map[string]string{settlingID: "running", closedID: "idle"}
 	for _, item := range listed.Items {
