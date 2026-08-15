@@ -151,6 +151,10 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		if s.cancelFunc != nil {
 			s.cancelFunc()
 		}
+		// A delegate result is acknowledged only after its enclosing tool-result
+		// turn is durable. Closing refuses that turn, so release any receipts that
+		// can no longer reach their commit point before stopping the tree.
+		s.abortDelegateDeliveryCommits()
 		// A close that begins before the P3 open-pass delay elapses cancels the
 		// pass outright; stop the timer now that `closing` is set (a timer that
 		// already fired is joined below via sweepWG instead — spec §P3).

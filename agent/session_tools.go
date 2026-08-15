@@ -804,11 +804,36 @@ func (s *Session) queueDelegateDeliveryCommit(callID string, commit *delegateToo
 		return
 	}
 	s.delegateDeliveryMu.Lock()
+	s.mu.Lock()
+	closing := s.closingOrClosedLocked()
+	s.mu.Unlock()
+	if closing {
+		s.delegateDeliveryMu.Unlock()
+		_, _ = commit.Complete(false)
+		return
+	}
 	if s.delegateDeliveryCommits == nil {
 		s.delegateDeliveryCommits = make(map[string][]*delegateToolResultCommit)
 	}
 	s.delegateDeliveryCommits[callID] = append(s.delegateDeliveryCommits[callID], commit)
 	s.delegateDeliveryMu.Unlock()
+}
+
+func (s *Session) abortDelegateDeliveryCommits() {
+	if s == nil {
+		return
+	}
+	s.delegateDeliveryMu.Lock()
+	commits := s.delegateDeliveryCommits
+	s.delegateDeliveryCommits = nil
+	s.delegateDeliveryMu.Unlock()
+	for _, pending := range commits {
+		for _, commit := range pending {
+			if commit != nil {
+				_, _ = commit.Complete(false)
+			}
+		}
+	}
 }
 
 type delegateToolCallDeliveryCommit struct {

@@ -823,6 +823,7 @@ func TestDelegateResourceRuntime_GenericStopUsesCanonicalFinish(t *testing.T) {
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "run Stop hook", 60_000)
+	abortUnpersistedStableDelegateOutcome(t, outcome)
 	if outcome.result.Err != nil || outcome.result.Status != jobstore.StatusCompleted || !strings.Contains(outcome.result.Output, "before generic Stop continuation") {
 		t.Fatalf("stable generic Stop outcome = %#v", outcome.result)
 	}
@@ -854,7 +855,7 @@ func TestDelegateResourceRuntime_PositiveStopWaitKeepsReconciliationDriverAlive(
 	result := make(chan stableJobStopInvocation, 1)
 	go func() {
 		value, err := jobStopTool(waitCtx, harness.root, map[string]any{
-			"job_id":      harness.fixture.delegateID,
+			"target":      harness.fixture.delegateID,
 			"max_wait_ms": 60_000,
 		}, jobToolResultDefaultMaxChar)
 		result <- stableJobStopInvocation{value: value, err: err}
@@ -895,7 +896,7 @@ func TestDelegateResourceRuntime_PositiveStopWaitReturnsAfterDurableCompletion(t
 	result := make(chan stableJobStopInvocation, 1)
 	go func() {
 		value, err := jobStopTool(waitCtx, harness.root, map[string]any{
-			"job_id":      harness.fixture.delegateID,
+			"target":      harness.fixture.delegateID,
 			"max_wait_ms": 60_000,
 		}, jobToolResultDefaultMaxChar)
 		result <- stableJobStopInvocation{value: value, err: err}
@@ -934,7 +935,7 @@ func TestDelegateResourceRuntime_StopWaitTimeoutLeavesReconciliationRunning(t *t
 	result := make(chan stableJobStopInvocation, 1)
 	go func() {
 		value, err := jobStopTool(waitCtx, harness.root, map[string]any{
-			"job_id":      harness.fixture.delegateID,
+			"target":      harness.fixture.delegateID,
 			"max_wait_ms": minJobBlockTimeoutMS,
 		}, jobToolResultDefaultMaxChar)
 		result <- stableJobStopInvocation{value: value, err: err}
@@ -975,7 +976,7 @@ func TestDelegateResourceRuntime_TransientDriverFailureCanBeRetried(t *testing.T
 	t.Cleanup(restoreTranscript)
 
 	first, err := jobStopTool(context.Background(), harness.root, map[string]any{
-		"job_id": harness.fixture.delegateID,
+		"target": harness.fixture.delegateID,
 	}, jobToolResultDefaultMaxChar)
 	if err != nil {
 		restoreTranscript()
@@ -999,7 +1000,7 @@ func TestDelegateResourceRuntime_TransientDriverFailureCanBeRetried(t *testing.T
 	restoreTranscript()
 
 	second, err := jobStopTool(context.Background(), harness.root, map[string]any{
-		"job_id": harness.fixture.delegateID,
+		"target": harness.fixture.delegateID,
 	}, jobToolResultDefaultMaxChar)
 	if err != nil {
 		harness.release()
@@ -1052,7 +1053,7 @@ func TestDelegateResourceRuntime_RootStoreCloseJoinsReconciliationDriver(t *test
 func TestDelegateResourceRuntime_ZeroWaitReturnsAfterRequestFsync(t *testing.T) {
 	harness := newStableStopRuntimeHarness(t)
 	value, err := jobStopTool(context.Background(), harness.root, map[string]any{
-		"job_id":      harness.fixture.delegateID,
+		"target":      harness.fixture.delegateID,
 		"max_wait_ms": 0,
 	}, jobToolResultDefaultMaxChar)
 	if err != nil {
@@ -1245,7 +1246,18 @@ func runStableDelegateInlinePacket(t *testing.T, finish delegateFinish) sendMess
 	if outcome.result.Err != nil || outcome.commit == nil {
 		t.Fatalf("inline outcome = %#v", outcome)
 	}
+	abortUnpersistedStableDelegateOutcome(t, outcome)
 	return outcome.result
+}
+
+func abortUnpersistedStableDelegateOutcome(t *testing.T, outcome stableDelegateSendOutcome) {
+	t.Helper()
+	if outcome.commit == nil {
+		t.Fatal("terminal inline delegate outcome has no delivery commit")
+	}
+	if _, err := outcome.commit.Complete(false); err != nil {
+		t.Fatalf("abort unpersisted inline delegate outcome: %v", err)
+	}
 }
 
 func TestDelegateResourceRuntime_TerminalOutcomeSnapshotDoesNotAliasResumability(t *testing.T) {

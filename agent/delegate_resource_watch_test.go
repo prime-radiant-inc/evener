@@ -106,6 +106,14 @@ func TestStableDelegateWatch_ParentRequiresLeaseEdgeAndPersistedGrant(t *testing
 	if !strings.Contains(string(raw), `"parent_watch_granted":true`) {
 		t.Fatalf("committed descriptor omitted parent watch grant: %s", raw)
 	}
+	if _, _, err := root.delegateController.FailCommittedStart(
+		started.lease,
+		delegatePermanentStartFailure(errors.New("test complete"), "construction_failed"),
+		"construction_failed",
+		nil,
+	); err != nil {
+		t.Fatalf("finish descriptor-only start: %v", err)
+	}
 }
 
 func TestStableDelegateWatch_ParentGrantIsNonTransitive(t *testing.T) {

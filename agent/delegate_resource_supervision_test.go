@@ -32,6 +32,7 @@ func TestDelegateResourceSupervision_AutoNudgeOccursOnceForEligibleBuiltin(t *te
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "inspect", 60_000)
+	abortUnpersistedStableDelegateOutcome(t, outcome)
 	if outcome.result.Err != nil || outcome.result.Status != jobstore.StatusCompleted || !strings.Contains(outcome.result.Output, "recovered after the one nudge") {
 		t.Fatalf("nudged stable delegate = %#v", outcome.result)
 	}
@@ -113,6 +114,7 @@ func TestDelegateResourceSupervision_AutoNudgeSuppressedBySteerCancellationAndEx
 		}
 		root := restoreSupervisionRoot(t, fixture, nil)
 		outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "exhaust", 60_000)
+		abortUnpersistedStableDelegateOutcome(t, outcome)
 		if outcome.result.Err != nil || outcome.result.Status != jobstore.StatusExhausted {
 			t.Fatalf("exhausted stable delegate = %#v", outcome.result)
 		}
@@ -1700,6 +1702,7 @@ func runStableSubagentStopHook(t *testing.T, blocking bool) stableSubagentStopOb
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "inspect", 60_000)
+	abortUnpersistedStableDelegateOutcome(t, outcome)
 	if outcome.result.Err != nil {
 		t.Fatalf("stable hook run: %v", outcome.result.Err)
 	}

@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/llm"
 )
 
 func TestDelegateResourceStop_StableStopIsAlwaysRecursive(t *testing.T) {
@@ -47,7 +48,7 @@ func TestDelegateResourceStop_IncludeChildrenFalseIsIgnoredForDelegate(t *testin
 	seedDelegateControllerRunning(t, c, "dlg_child", "dlg_parent")
 
 	value, err := jobStopTool(context.Background(), root, map[string]any{
-		"job_id":           "dlg_parent",
+		"target":           "dlg_parent",
 		"include_children": false,
 	}, jobToolResultDefaultMaxChar)
 	if err != nil {
@@ -186,7 +187,7 @@ func TestDelegateResourceStop_PositiveWaitCannotOwnOrCancelDriver(t *testing.T) 
 	result := make(chan stableJobStopInvocation, 1)
 	go func() {
 		value, err := jobStopTool(waitCtx, harness.root, map[string]any{
-			"job_id":      harness.fixture.delegateID,
+			"target":      harness.fixture.delegateID,
 			"max_wait_ms": 60_000,
 		}, jobToolResultDefaultMaxChar)
 		result <- stableJobStopInvocation{value: value, err: err}
@@ -330,6 +331,34 @@ func TestDelegateResourceStop_RootCloseJoinsStopAndTeardownPostorder(t *testing.
 	root.delegateController.mu.Unlock()
 	if stop != nil || aggregate == nil || aggregate.PendingStopSeq != 0 || aggregate.CurrentRunOpen {
 		t.Fatalf("root close returned before stable stop join: stop=%#v aggregate=%#v", stop, aggregate)
+	}
+}
+
+func TestDelegateResourceStop_RootCloseAbortsUnpersistedInlineDeliveryCommit(t *testing.T) {
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.Config.MaxToolRoundsPerInput = 1
+	})
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return communicateResponse(false, "continue") },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "exhaust", 60_000)
+	if outcome.result.Err != nil || outcome.result.Status != jobstore.StatusExhausted || outcome.commit == nil {
+		t.Fatalf("exhausted stable delegate = %#v", outcome.result)
+	}
+	root.queueDelegateDeliveryCommit("delegate-send", outcome.commit)
+
+	c := root.delegateController
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	root.close(ctx, true)
+	c.mu.Lock()
+	stop := c.stop
+	aggregate := c.durable[fixture.delegateID]
+	deliveries := len(c.deliveries)
+	c.mu.Unlock()
+	if stop != nil || aggregate == nil || aggregate.PendingStopSeq != 0 || deliveries != 0 {
+		t.Fatalf("close with unpersisted inline result = stop:%#v aggregate:%#v deliveries:%d", stop, aggregate, deliveries)
 	}
 }
 
