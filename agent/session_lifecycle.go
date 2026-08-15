@@ -163,6 +163,14 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		s.disposeWG.Wait()
 		s.sweepWG.Wait()
 
+		// The root-owned stable controller is the shutdown authority for its
+		// delegate tree. Persist and join recursive stop before generic Session
+		// teardown can close a child out from under that durable operation. The
+		// store stays open until worktree disposal has recorded its evidence.
+		if err := s.closeOwnedDelegateRuntimeTree(budgetCtx); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate tree close incomplete: %v", err)})
+		}
+
 		// Step 4: reacquire the pair and drain the subagent map. Marking closing
 		// BEFORE draining means a spawn or namer launch racing teardown is either
 		// registered here (and cancelled below) or observes closing and refuses —

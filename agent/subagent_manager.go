@@ -213,6 +213,16 @@ func (m *subagentManager) remove(id string) {
 	delete(m.subs, id)
 }
 
+// removeSession removes only the exact resident child. A concurrently restored
+// successor for the same stable identity remains tracked.
+func (m *subagentManager) removeSession(id string, session *Session) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sub := m.subs[id]; sub != nil && sub.sess == session {
+		delete(m.subs, id)
+	}
+}
+
 func (m *subagentManager) sessions() []*Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()

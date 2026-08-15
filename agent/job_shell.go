@@ -86,6 +86,65 @@ type shellWaitResult struct {
 	err      error
 }
 
+type stableDelegateShellReceipt struct {
+	mu         sync.Mutex
+	controller *delegateTreeController
+	token      delegateWorkToken
+	jobID      string
+	committed  bool
+	resolved   bool
+}
+
+func (receipt *stableDelegateShellReceipt) commit(cancel context.CancelFunc) error {
+	if receipt == nil {
+		return nil
+	}
+	receipt.mu.Lock()
+	defer receipt.mu.Unlock()
+	if receipt.resolved || receipt.committed {
+		return nil
+	}
+	cancelNow, err := receipt.controller.CommitShellWork(receipt.token, receipt.jobID, cancel)
+	if err != nil {
+		return err
+	}
+	receipt.committed = true
+	if cancelNow {
+		cancel()
+	}
+	return nil
+}
+
+func (receipt *stableDelegateShellReceipt) abort() {
+	if receipt == nil {
+		return
+	}
+	receipt.mu.Lock()
+	defer receipt.mu.Unlock()
+	if receipt.resolved || receipt.committed {
+		return
+	}
+	_ = receipt.controller.AbortShellWork(receipt.token)
+	receipt.resolved = true
+}
+
+func (receipt *stableDelegateShellReceipt) finish() {
+	if receipt == nil {
+		return
+	}
+	receipt.mu.Lock()
+	defer receipt.mu.Unlock()
+	if receipt.resolved {
+		return
+	}
+	if receipt.committed {
+		_, _ = receipt.controller.ReportShellFinished(receipt.token, receipt.jobID)
+	} else {
+		_ = receipt.controller.AbortShellWork(receipt.token)
+	}
+	receipt.resolved = true
+}
+
 type shellOutputWriter struct {
 	jm     *jobManager
 	jobID  string
@@ -433,6 +492,12 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 		return nil, err
 	}
 	parentJobID, parentDelegateID := jm.currentJobParent()
+	receipt, err := jm.beginStableDelegateShellReceipt(jobID)
+	if err != nil {
+		_ = output.Close()
+		_ = jobstore.RemoveOutputArtifacts(outputPath)
+		return nil, err
+	}
 	run := &runningJob{
 		rec: &jobstore.JobRecord{
 			JobID:            jobID,
@@ -452,14 +517,16 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 			OutputPath:       outputPath,
 			Provenance:       jm.currentCausalProvenance(),
 		},
-		output: output,
-		signal: func() {},
-		done:   make(chan struct{}),
+		output:        output,
+		signal:        func() {},
+		done:          make(chan struct{}),
+		delegateShell: receipt,
 	}
 
 	jm.mu.Lock()
 	if jm.closing {
 		jm.mu.Unlock()
+		receipt.abort()
 		_ = output.Close()
 		_ = jobstore.RemoveOutputArtifacts(outputPath)
 		return nil, errJobManagerClosing
@@ -467,6 +534,21 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 	jm.running[jobID] = run
 	jm.mu.Unlock()
 	return run, nil
+}
+
+func (jm *jobManager) beginStableDelegateShellReceipt(jobID string) (*stableDelegateShellReceipt, error) {
+	jm.mu.Lock()
+	controller := jm.delegateController
+	lease := jm.delegateLease
+	jm.mu.Unlock()
+	if controller == nil || lease.delegateID == "" {
+		return nil, nil
+	}
+	token, err := controller.BeginShellWork(lease)
+	if err != nil {
+		return nil, err
+	}
+	return &stableDelegateShellReceipt{controller: controller, token: token, jobID: jobID}, nil
 }
 
 func (jm *jobManager) setShellSignal(run *runningJob, signal func()) {
@@ -537,6 +619,7 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 			delete(jm.running, run.rec.JobID)
 		}
 		jm.mu.Unlock()
+		run.delegateShell.abort()
 		run.closeDone()
 		return err
 	}
@@ -545,6 +628,9 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		run.durableStarted = true
 	}
 	jm.mu.Unlock()
+	if err := run.delegateShell.commit(run.signal); err != nil {
+		return err
+	}
 	jm.emitJobStarted(started, run)
 	return nil
 }
@@ -556,6 +642,7 @@ func (jm *jobManager) discardDelayedShell(run *runningJob) {
 	}
 	jm.mu.Unlock()
 
+	run.delegateShell.abort()
 	_ = run.output.Close()
 	_ = jobstore.RemoveOutputArtifacts(run.rec.OutputPath)
 	run.closeDone()

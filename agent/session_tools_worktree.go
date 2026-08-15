@@ -780,17 +780,14 @@ func (s *Session) exitWorktree() (string, bool) {
 
 // liveWorkUnder implements worktreeGuard.liveWorkUnder() (spec §7): live
 // child/delegate/shell working directories at or under path, for the remove
-// and prune guards (spec §5 remove step 4). It scans three sources: running
-// background shell jobs (JobRecord.WorkingDir) and running delegate jobs
-// (DelegateRestore.WorkingDir) via the job manager, plus every live subagent
-// session's current env — the last of which also covers delegates (delegates
-// are subagents with a job record layered on top) and, unlike a job record's
-// launch-time snapshot, tracks a child that has since switched worktrees
-// itself. It is best-effort and read-only: a shell command that `cd`s after
-// launch is invisible to it (spec §5 remove step 4). worktreeLiveWorkStub, a
-// test-only seam, takes precedence when set (see its doc comment on the
-// Session struct) so unit tests can exercise the guard call without spinning
-// up real jobs.
+// and prune guards (spec §5 remove step 4). Shell launch directories come from
+// shell JobRecords. Delegate lanes, lifecycle, and child identities come from
+// stable controller descriptors; a resident child's current env additionally
+// covers a delegate that switched worktrees after launch. It is best-effort
+// and read-only: a shell command that `cd`s after launch is invisible to it
+// (spec §5 remove step 4). worktreeLiveWorkStub, a test-only seam, takes
+// precedence when set (see its doc comment on the Session struct) so unit tests
+// can exercise the guard call without spinning up real jobs.
 func (s *Session) liveWorkUnder(path string) []string {
 	s.mu.Lock()
 	stub := s.worktreeLiveWorkStub
@@ -803,10 +800,32 @@ func (s *Session) liveWorkUnder(path string) []string {
 	var live []string
 
 	if s.jobManager != nil {
-		for _, h := range s.jobManager.liveWorkHandles() {
+		for _, h := range s.jobManager.liveShellHandles() {
 			if pathEqualOrUnder(canonicalOrClean(h.dir), target) {
 				live = append(live, h.handle)
 			}
+		}
+	}
+
+	stableByChild := make(map[string]stableDelegateWorktreeSnapshot)
+	stableDescriptorUnderTarget := make(map[string]bool)
+	if s.delegateController != nil {
+		for _, row := range s.delegateController.stableWorktreeSnapshots() {
+			childID := strings.TrimSpace(row.descriptor.ChildSessionID)
+			lanePath := strings.TrimSpace(row.descriptor.WorkingDir)
+			if childID == "" || lanePath == "" {
+				continue
+			}
+			stableByChild[childID] = row
+			if !pathEqualOrUnder(canonicalOrClean(lanePath), target) {
+				continue
+			}
+			label := subagentRetainedIdleLabel
+			if row.active {
+				label = subagentRunningLabel
+			}
+			live = append(live, childID+label)
+			stableDescriptorUnderTarget[childID] = true
 		}
 	}
 
@@ -829,6 +848,17 @@ func (s *Session) liveWorkUnder(path string) []string {
 				continue
 			}
 			if !pathEqualOrUnder(canonicalOrClean(wd), target) {
+				continue
+			}
+			if stable, ok := stableByChild[child.id]; ok {
+				if stableDescriptorUnderTarget[child.id] {
+					continue
+				}
+				label := subagentRetainedIdleLabel
+				if stable.active {
+					label = subagentRunningLabel
+				}
+				live = append(live, child.id+label)
 				continue
 			}
 			// Honest label (spec §P1 step 3): a retained child that is neither
@@ -872,7 +902,7 @@ const (
 // in lockstep: whatever the hint offers to dispose is exactly what force goes
 // on to dispose.
 func (s *Session) retainedIdleDelegateIDs(handles []string) ([]string, bool) {
-	if len(handles) == 0 || s.jobManager == nil {
+	if len(handles) == 0 || s.delegateController == nil {
 		return nil, false
 	}
 	childIDs := make([]string, 0, len(handles))
@@ -883,28 +913,17 @@ func (s *Session) retainedIdleDelegateIDs(handles []string) ([]string, bool) {
 		}
 		childIDs = append(childIDs, id)
 	}
-	delegates, err := s.jobManager.store.LoadDelegates()
-	if err != nil {
-		return nil, false
-	}
-	recs, err := s.jobManager.store.Load()
-	if err != nil {
-		return nil, false
-	}
-	childToDelegate := make(map[string]string, len(delegates))
-	for _, d := range delegates {
-		if d != nil && d.ChildSessionID != "" && d.DelegateID != "" {
-			childToDelegate[d.ChildSessionID] = d.DelegateID
+	owned := s.delegateController.ownedStableWorktreeSnapshots(s)
+	childToDelegate := make(map[string]string, len(owned))
+	for _, row := range owned {
+		if row.descriptor.ChildSessionID != "" && row.delegateID != "" {
+			childToDelegate[row.descriptor.ChildSessionID] = row.delegateID
 		}
 	}
 	dlgIDs := make([]string, 0, len(childIDs))
 	for _, cid := range childIDs {
 		dlg, ok := childToDelegate[cid]
 		if !ok {
-			return nil, false
-		}
-		_, desc := findDelegateLaneRecord(recs, dlg)
-		if desc == nil || desc.ParentSessionID != s.id {
 			return nil, false
 		}
 		dlgIDs = append(dlgIDs, dlg)

@@ -430,8 +430,23 @@ func (c *delegateTreeController) CloseResumability(actor delegateActor, delegate
 // never creates a second stop: each root subtree is drained through the same
 // durable stop operation, in stable order, before the next one can begin.
 func (c *delegateTreeController) Close(ctx context.Context) error {
+	if err := c.closeRuntimeTree(ctx, func(child *Session) { child.Close() }); err != nil {
+		return err
+	}
+	return c.store.Close()
+}
+
+// closeRuntimeTree fences admission, durably stops every stable root, joins the
+// exact stop reconciliation, and tears resident sessions down leaf-first. The
+// caller supplies the Session-close policy so root Session shutdown can keep a
+// shared environment alive until its own final cleanup. The delegate store
+// remains open for subsequent worktree disposal evidence.
+func (c *delegateTreeController) closeRuntimeTree(ctx context.Context, closeChild func(*Session)) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if closeChild == nil {
+		closeChild = func(child *Session) { child.Close() }
 	}
 	c.mu.Lock()
 	if !c.closing {
@@ -505,12 +520,12 @@ func (c *delegateTreeController) Close(ctx context.Context) error {
 			continue
 		}
 		closed[child] = struct{}{}
-		child.Close()
+		closeChild(child)
 	}
 	if _, err := c.joinStopReconcileDriver(ctx); err != nil {
 		return err
 	}
-	return c.store.Close()
+	return nil
 }
 
 func (c *delegateTreeController) stopSubtreeForClose(targetID string) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {

@@ -191,7 +191,7 @@ func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID 
 		return nil, errDelegateStaleLease
 	}
 	aggregate := c.durable[delegateID]
-	if attentionID == "" || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || live.binding != nil || live.recoveryRequired {
+	if attentionID == "" || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || live.binding != nil || live.recoveryRequired || c.reclamationCoversLocked(delegateID) {
 		return nil, errDelegateTargetBusy
 	}
 	for _, existing := range c.reservations {
@@ -457,7 +457,7 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 		}
 	}
 	aggregate := c.durable[delegateID]
-	if aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 {
+	if aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
 		return nil, errDelegateTargetBusy
 	}
 	for _, existing := range c.reservations {

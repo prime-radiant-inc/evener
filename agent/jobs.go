@@ -182,6 +182,7 @@ type jobManager struct {
 	quietWindow         time.Duration
 	quietCheckInterval  time.Duration
 	delegateController  *delegateTreeController
+	delegateLease       delegateLease
 	stableWatchReceipts map[string]*delegateWatchReceipt
 }
 
@@ -226,11 +227,13 @@ func (jm *jobManager) currentParentJobID() string {
 	return jm.parentJobID
 }
 
-func (jm *jobManager) bindStableDelegateParent(delegateID string, forward func(jobstore.Event) error) {
+func (jm *jobManager) bindStableDelegateParent(controller *delegateTreeController, lease delegateLease, forward func(jobstore.Event) error) {
 	jm.mu.Lock()
 	jm.parentJobID = ""
-	jm.parentDelegateID = delegateID
+	jm.parentDelegateID = lease.delegateID
 	jm.forward = forward
+	jm.delegateController = controller
+	jm.delegateLease = lease
 	jm.mu.Unlock()
 }
 
@@ -312,6 +315,9 @@ type runningJob struct {
 	// the abandon path). treeReservation.release is idempotent so
 	// finalize-then-abandon (or a finalize retry) never double-releases.
 	treeSlot *treeReservation
+	// delegateShell is the exact process receipt for a shell owned by a stable
+	// delegate generation. It remains nil for root and legacy job ownership.
+	delegateShell *stableDelegateShellReceipt
 }
 
 // treeReservation is a single tree-counter slot held by a running delegate turn.
@@ -491,6 +497,7 @@ type jobRuntimeHandle struct {
 	done      chan struct{}
 	closeDone func()
 	output    *jobstore.OutputStore
+	shell     *stableDelegateShellReceipt
 }
 
 type jobNotificationKind uint8
@@ -802,6 +809,7 @@ func (jm *jobManager) abandonRunningJobs() {
 			done:      run.done,
 			closeDone: run.closeDoneAbandoned,
 			output:    run.output,
+			shell:     run.delegateShell,
 		})
 		delete(jm.running, run.rec.JobID)
 		run.treeSlot.release()
@@ -824,6 +832,7 @@ func (jm *jobManager) abandonRunningJobs() {
 		if run.output != nil {
 			_ = run.output.Close()
 		}
+		run.shell.finish()
 		if run.closeDone != nil {
 			run.closeDone()
 		}
@@ -859,6 +868,7 @@ func (jm *jobManager) abandonRunningJob(jobID string) {
 	if run.output != nil {
 		_ = run.output.Close()
 	}
+	run.delegateShell.finish()
 	run.closeDoneAbandoned()
 }
 
@@ -1682,6 +1692,7 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 	jm.mu.Unlock()
 	run.stopWatchdog()
 	_ = run.output.Close()
+	run.delegateShell.finish()
 	run.closeDoneDurable()
 	return nil
 }
@@ -2106,6 +2117,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		})
 	}
 	flushNotices()
+	run.delegateShell.finish()
 	run.closeDoneDurable()
 	return nil
 }

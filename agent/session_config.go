@@ -263,6 +263,9 @@ type testConfig struct {
 	// delegateAttentionOpenWriter replaces only transcript resume for attention
 	// repair. Nil preserves the production transcript opener.
 	delegateAttentionOpenWriter delegateAttentionWriterOpener
+	// delegateRuntimeReclaimClose replaces only the external Session close
+	// boundary used by admission-triggered stable-runtime reclamation.
+	delegateRuntimeReclaimClose func(*Session)
 	// delegateRestoreStat and delegateRestoreReadFile replace only restore-input
 	// filesystem reads for this session. Nil preserves the production paths.
 	delegateRestoreStat     func(string) (os.FileInfo, error)

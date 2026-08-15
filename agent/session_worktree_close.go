@@ -65,19 +65,15 @@ func ownedIsolationLanes(recs map[string]*jobstore.JobRecord, sessionID string) 
 // dispose is left for `prune` / the crash net (step 5's WorkingDir stat), never
 // force-removed. The kept lanes are surfaced as a close-time notice.
 func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
-	if s.jobManager == nil || s.jobManager.store == nil {
+	if s.delegateController == nil {
 		return
 	}
 	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		return // env swapping / local git worktrees are a local-env-only feature
 	}
-	recs, err := s.jobManager.store.Load()
-	if err != nil {
-		return
-	}
-	lanes := ownedIsolationLanes(recs, s.id)
-	if len(lanes) == 0 {
+	delegates := s.delegateController.ownedStableWorktreeSnapshots(s)
+	if len(delegates) == 0 {
 		return
 	}
 
@@ -90,7 +86,8 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 
 	var kept []string
 	var tail []string
-	for _, lane := range lanes {
+	for _, delegate := range delegates {
+		lane := isolationLane{delegateID: delegate.delegateID, path: delegate.descriptor.WorkingDir}
 		// Budget check at the top of each iteration: once the deadline passes,
 		// every remaining lane gets ONLY the budget-exempt touch+unlock tail (no
 		// predicate evaluation, no remove/branch-D) so a pathological session
@@ -101,7 +98,7 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 			}
 			continue
 		}
-		note, wasKept := s.disposeOneDelegateLane(budgetCtx, local, lane)
+		note, wasKept := s.disposeOneStableDelegateLane(budgetCtx, local, delegate)
 		// The budget can expire inside a git operation after the top-of-loop
 		// check. Route that lane through the same non-expiring safety tail as all
 		// later lanes so an interrupted lock query or unlock never strands it
@@ -131,6 +128,76 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 			})
 		}
 	}
+}
+
+// disposeOneStableDelegateLane applies the existing close-time D0 and lock
+// rules, then fsyncs stable resumability closure before the first destructive
+// worktree operation. A closure failure leaves the lane intact.
+func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *execenv.LocalExecutionEnvironment, delegate stableDelegateWorktreeSnapshot) (note string, kept bool) {
+	lane := isolationLane{delegateID: delegate.delegateID, path: delegate.descriptor.WorkingDir}
+	lanePath := filepath.Clean(lane.path)
+	if lanePath == "" || lanePath == "." {
+		return "", false
+	}
+	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
+		return "", false
+	}
+	rootedAtLane := local.WithWorkingDirectory(lanePath)
+	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
+	if mainRoot == "" {
+		return "", false
+	}
+	controlEnv := local.WithWorkingDirectory(mainRoot)
+	run := s.newWorktreeGitRunner(ctx, controlEnv)
+	metaDir := metaDirForLane(lanePath)
+	sc, scErr := worktree.ReadSidecar(metaDir, lane.delegateID)
+	if scErr != nil {
+		return "", false
+	}
+
+	locked, reason, lockErr := lockStateOf(run, lanePath)
+	if lockErr != nil {
+		return "", false
+	}
+	st := worktree.Unlocked
+	if locked {
+		st = worktree.ClassifyReason(reason, s.id, lane.delegateID)
+	}
+	collectible, evalErr := laneAutoCollectible(run, lanePath, sc.BaseSHA, sc.MergeTarget)
+	if evalErr != nil || !collectible {
+		if !s.unlockLaneIfOwn(run, worktree.EvDisposeChanged, st, lanePath, metaDir, lane.delegateID) {
+			return "", false
+		}
+		if evalErr != nil {
+			return lane.delegateID + " at " + lanePath + " (state unverifiable)", true
+		}
+		dirty := "dirty unknown"
+		if clean, _, cleanErr := worktree.CleanTree(run, lanePath); cleanErr == nil {
+			dirty = fmt.Sprintf("dirty=%t", !clean)
+		}
+		ahead := "ahead unknown"
+		if aheadOut, aheadErr := run("-C", lanePath, "rev-list", "--count", sc.BaseSHA+"..HEAD"); aheadErr == nil {
+			if count, convErr := strconv.Atoi(strings.TrimSpace(aheadOut)); convErr == nil {
+				ahead = fmt.Sprintf("%d ahead", count)
+			}
+		}
+		return fmt.Sprintf("%s at %s (branch %s, %s, %s)", lane.delegateID, lanePath, lane.delegateID, ahead, dirty), true
+	}
+
+	alreadyClosed := !delegate.resumable && delegate.notResumableReason == stableWorktreeDisposalReason
+	if !alreadyClosed {
+		_, _, plans, closeErr := s.delegateController.closeStableWorktreeResumability(s, lane.delegateID, stableWorktreeDisposalReason, true)
+		if closeErr != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane resumability closure failed for %s: %v", lane.delegateID, closeErr)})
+			return lane.delegateID + " at " + lanePath + " (resumability closure failed; retained intact)", true
+		}
+		s.delegateController.emitDelegateUpdates(plans)
+	}
+	outcome, cleanupNote := s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, false, true)
+	if outcome == laneKeptDirty {
+		return cleanupNote + " (resumability closed; retained residue)", true
+	}
+	return cleanupNote, false
 }
 
 // closeBudgetMintHook is a test-only seam invoked exactly when ensureCloseBudget
@@ -273,7 +340,7 @@ func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.Loc
 	// descriptor disposed, then delete branch + sidecar. A late-dirty refusal
 	// downgrades back to KEEP; at close the dead owner's lock is left released
 	// (downgradeUnlockKeep) rather than re-locked.
-	outcome, note := s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, false)
+	outcome, note := s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, false, false)
 	return note, outcome == laneKeptDirty
 }
 
@@ -372,7 +439,7 @@ func (s *Session) statLaneGitDir(lanePath string) (os.FileInfo, error) {
 // unless dirty-forced"): the model-facing dispose op sets it when `force_dirty`
 // discards a dirty lane, which a non-force remove would refuse. The close path
 // never forces — a late dirty write there downgrades back to KEEP instead.
-func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st worktree.LockState, lane isolationLane, metaDir string, downgrade downgradePolicy, forceRemove bool) (outcome laneDisposalOutcome, note string) {
+func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st worktree.LockState, lane isolationLane, metaDir string, downgrade downgradePolicy, forceRemove, stableClosed bool) (outcome laneDisposalOutcome, note string) {
 	lanePath := filepath.Clean(lane.path)
 	switch worktree.Decide(worktree.EvDisposeUnchanged, st) {
 	case worktree.ActUnlock:
@@ -419,15 +486,17 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 		// Lane gone to a concurrent collector: fall through to mark + remnants.
 	}
 
-	// The worktree is gone. Mark the descriptor disposed BEFORE deleting the
-	// branch/sidecar. A crash between remove and this mark is covered by the
-	// stat crash net; the mark is the fast, explicit refusal.
-	if err := s.jobManager.appendEvent(jobstore.Event{
-		Kind:       jobstore.EventDelegateDisposed,
-		TS:         s.jobManager.now(),
-		DelegateID: lane.delegateID,
-	}); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane disposal mark failed for %s: %v", lane.delegateID, err)})
+	// Stable disposal already fsynced its permanent closure before entering
+	// this destructive sequence. The legacy path retains its old post-remove
+	// marker until the obsolete delegate JobRecord implementation is deleted.
+	if !stableClosed {
+		if err := s.jobManager.appendEvent(jobstore.Event{
+			Kind:       jobstore.EventDelegateDisposed,
+			TS:         s.jobManager.now(),
+			DelegateID: lane.delegateID,
+		}); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane disposal mark failed for %s: %v", lane.delegateID, err)})
+		}
 	}
 
 	// Delete the branch (unchanged lane: tip == base, no work lost) and the

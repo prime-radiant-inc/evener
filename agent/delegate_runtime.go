@@ -279,7 +279,7 @@ func bindStableDelegateActivity(child *Session, controller *delegateTreeControll
 	jm := child.jobManager
 	child.mu.Unlock()
 	if jm != nil {
-		jm.bindStableDelegateParent(lease.delegateID, forward)
+		jm.bindStableDelegateParent(controller, lease, forward)
 	}
 }
 
@@ -653,6 +653,9 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if err != nil {
 		return delegateStartFailed(err)
 	}
+	if err := s.reclaimDelegateRuntimeCapacity(1); err != nil {
+		return delegateStartFailed(err)
+	}
 	reservation, err := s.delegateController.ReserveCreate(actor, descriptor)
 	if err != nil {
 		return delegateStartFailed(err)
@@ -968,6 +971,9 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	descriptor := cloneDelegateStartDescriptor(started.descriptor)
 	if retained := s.subagents.get(descriptor.ChildSessionID); retained != nil && retained.sess != nil {
 		return retained, false, nil
+	}
+	if err := s.reclaimDelegateRuntimeCapacity(1); err != nil {
+		return nil, false, err
 	}
 	meta, err := schema.LoadSessionMeta(s.stateDir, descriptor.ChildSessionID)
 	if err != nil {
@@ -1363,15 +1369,16 @@ func (s *Session) bootstrapDelegateResources() error {
 		return fmt.Errorf("open delegate store: %w", err)
 	}
 	controller, err := openDelegateTreeController(delegateTreeControllerConfig{
-		store:         store,
-		rootRuntime:   s,
-		rootSessionID: s.id,
-		stateDir:      s.stateDir,
-		worktreeRoot:  filepath.Join(jobsDir(s.stateDir, s.id), "worktrees"),
-		turnLimit:     s.cfg.MaxConcurrentDelegateTurns,
-		driveLimit:    defaultMaxConcurrentDriveTurns,
-		now:           s.sclock().Now,
-		attentionOpen: s.cfg.testOnly.delegateAttentionOpenWriter,
+		store:               store,
+		rootRuntime:         s,
+		rootSessionID:       s.id,
+		stateDir:            s.stateDir,
+		worktreeRoot:        filepath.Join(jobsDir(s.stateDir, s.id), "worktrees"),
+		turnLimit:           s.cfg.MaxConcurrentDelegateTurns,
+		driveLimit:          defaultMaxConcurrentDriveTurns,
+		maxRetainedTerminal: s.cfg.MaxRetainedTerminal,
+		now:                 s.sclock().Now,
+		attentionOpen:       s.cfg.testOnly.delegateAttentionOpenWriter,
 	})
 	if err != nil {
 		_ = store.Close()
@@ -1582,4 +1589,13 @@ func (s *Session) closeOwnedDelegateStoreWithContext(ctx context.Context) error 
 		return nil
 	}
 	return s.delegateController.closeStoreAfterStopReconcileDriver(ctx)
+}
+
+func (s *Session) closeOwnedDelegateRuntimeTree(ctx context.Context) error {
+	if s == nil || !s.ownsDelegateController || s.delegateController == nil {
+		return nil
+	}
+	return s.delegateController.closeRuntimeTree(ctx, func(child *Session) {
+		child.close(ctx, false)
+	})
 }
