@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
@@ -52,7 +54,7 @@ func LoadSessionJobActivityTree(stateDir, sessionID string, params appwire.JobsL
 		}
 		revision = activitySnapshotPersistedRevision(full, rootRevisionID)
 	}
-	return projectBoundedActivityTree(*snapshot, sessionID, startDepth, revision)
+	return projectBoundedActivityTree(*snapshot, sessionID, startDepth, revision, time.Now().UTC())
 }
 
 func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (activityLoadedBase, error) {
@@ -65,50 +67,64 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (acti
 		return activityLoadedBase{}, err
 	}
 	meta, metaErr := schema.LoadSessionMeta(stateDir, sessionID)
+	rootID := activityRootIDFromMeta(sessionID, meta)
 	jobsPath := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
+	var jobEvents []jobstore.Event
 	if _, err := historicalJobsStat(jobsPath); err != nil {
-		if os.IsNotExist(err) {
-			if required {
-				return activityLoadedBase{}, fmt.Errorf("child session %q unavailable in state directory", sessionID)
-			}
-			return activityLoadedBase{snapshot: activitySessionSnapshot{
-				SessionID: sessionID,
-				Ref:       encodeRef("", sessionID),
-				Label:     activityLabelFromMeta(sessionID, meta, metaErr),
-				RootID:    activityRootIDFromMeta(sessionID, meta),
-				Revision:  activityRevisionFromMeta(meta),
-				Jobs:      []*jobstore.JobRecord{},
-				LiveJobs:  map[string]*jobstore.JobRecord{},
-				Delegates: map[string]*jobstore.DelegateRecord{},
-				Usage:     historicalActivityUsage(stateDir, sessionID, meta),
-			}}, nil
+		if !os.IsNotExist(err) {
+			return activityLoadedBase{}, err
 		}
-		return activityLoadedBase{}, err
+		if required {
+			return activityLoadedBase{}, fmt.Errorf("child session %q unavailable in state directory", sessionID)
+		}
+	} else {
+		var err error
+		jobEvents, err = jobstore.ReadEvents(jobsPath)
+		if err != nil {
+			return activityLoadedBase{}, err
+		}
 	}
-	store, err := historicalJobsOpen(jobsPath)
-	if err != nil {
-		return activityLoadedBase{}, err
-	}
-	defer func() { _ = store.Close() }()
-	ordered, err := store.LoadOrdered()
-	if err != nil {
-		return activityLoadedBase{}, err
-	}
-	delegates, err := loadHistoricalActivityDelegates(jobsPath)
+	stable, diagnostics, err := loadHistoricalStableActivity(stateDir, rootID, sessionID)
 	if err != nil {
 		return activityLoadedBase{}, err
 	}
 	return activityLoadedBase{snapshot: activitySessionSnapshot{
-		SessionID: sessionID,
-		Ref:       encodeRef("", sessionID),
-		Label:     activityLabelFromMeta(sessionID, meta, metaErr),
-		RootID:    activityRootIDFromMeta(sessionID, meta),
-		Revision:  activityRevisionFromMeta(meta),
-		Jobs:      ordered,
-		LiveJobs:  map[string]*jobstore.JobRecord{},
-		Delegates: delegates,
-		Usage:     historicalActivityUsage(stateDir, sessionID, meta),
+		SessionID:       sessionID,
+		Ref:             encodeRef("", sessionID),
+		Label:           activityLabelFromMeta(sessionID, meta, metaErr),
+		RootID:          rootID,
+		Revision:        activityRevisionFromMeta(meta),
+		Jobs:            jobstore.FoldOrdered(jobEvents),
+		LiveJobs:        map[string]*jobstore.JobRecord{},
+		Delegates:       jobstore.FoldDelegates(jobEvents),
+		StableDelegates: stable,
+		Usage:           historicalActivityUsage(stateDir, sessionID, meta),
+		Diagnostics:     diagnostics,
 	}}, nil
+}
+
+func loadHistoricalStableActivity(stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, []string, error) {
+	path := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
+	events, readDiagnostics, err := delegatestore.ReadEventsWithDiagnostics(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	state, err := delegatestore.Fold(events)
+	if err != nil {
+		return nil, nil, err
+	}
+	rows := make(map[string]delegateSnapshot)
+	for id, aggregate := range state {
+		if aggregate == nil || aggregate.Descriptor.OwnerSessionID != ownerSessionID {
+			continue
+		}
+		rows[id] = captureDelegateSnapshot(aggregate)
+	}
+	var diagnostics []string
+	if readDiagnostics.TornTail {
+		diagnostics = append(diagnostics, "delegate_journal_torn_tail: ignored unterminated trailing batch")
+	}
+	return rows, diagnostics, nil
 }
 
 func activityRootIDFromMeta(sessionID string, meta schema.SessionMeta) string {
@@ -123,28 +139,11 @@ func activityRevisionFromMeta(meta schema.SessionMeta) uint64 {
 }
 
 func loadHistoricalActivityDelegates(path string) (map[string]*jobstore.DelegateRecord, error) {
-	store, err := historicalJobsOpen(path)
+	events, err := jobstore.ReadEvents(path)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = store.Close() }()
-	loader, ok := store.(interface {
-		LoadDelegates() (map[string]*jobstore.DelegateRecord, error)
-	})
-	if !ok {
-		eventsLoader, ok := store.(interface {
-			LoadEvents() ([]jobstore.Event, error)
-		})
-		if !ok {
-			return nil, fmt.Errorf("jobstore at %s cannot load delegates", path)
-		}
-		events, err := eventsLoader.LoadEvents()
-		if err != nil {
-			return nil, err
-		}
-		return jobstore.FoldDelegates(events), nil
-	}
-	return loader.LoadDelegates()
+	return jobstore.FoldDelegates(events), nil
 }
 
 func activityLabelFromMeta(sessionID string, meta schema.SessionMeta, metaErr error) string {

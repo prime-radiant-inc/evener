@@ -243,22 +243,22 @@ func DefJobStatus() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "job_status",
-		Description: "Inspect one durable job by job_id. Use this for orientation: kind, lifecycle status, observable phase, running/quiet time, and transcript_ref. Completion is notification-driven; do not poll this waiting for completed. Read raw evidence with read_transcript(transcript_ref).",
+		Description: "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven; do not poll this waiting for completed. Read raw evidence with read_transcript(transcript_ref).",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"job_id": map[string]any{"type": "string"},
+				"target": map[string]any{"type": "string", "description": "A shell job_id (`job_...`) or stable delegate_id (`dlg_...`)."},
 			},
-			"required": []string{"job_id"},
+			"required": []string{"target"},
 		},
 	}
 }
 
 func DefJobList() llm.ToolDefinition {
 	strictFalse := false
-	statusEnum := []any{"running", "completed", "failed", "exhausted", "cancelled", "stopped"}
+	statusEnum := []any{"running", "idle", "settling", "stopping", "closed", "completed", "failed", "exhausted", "cancelled", "stopped"}
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
@@ -289,16 +289,16 @@ func DefJobList() llm.ToolDefinition {
 func DefJobStop() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "job_stop",
-		Description: "Request cancellation of a running job by `job_id`; stopping never deletes output or history. `max_wait_ms > 0` waits for the stop to finalize; `include_children=true` also stops the job's nested children. Stopped work normally lands as `status=cancelled`, `reason=stopped_by_parent`.",
+		Description: "Request cancellation of a shell job or stable delegate by `target`; stopping never deletes output or history. `max_wait_ms > 0` waits for the stop to finalize. A delegate target is always stopped recursively, so include_children cannot weaken it; for a shell target, include_children=true also stops nested children.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"job_id":           map[string]any{"type": "string"},
+				"target":           map[string]any{"type": "string", "description": "A shell job_id (`job_...`) or stable delegate_id (`dlg_...`)."},
 				"max_wait_ms":      map[string]any{"type": "integer", "description": "0 (default): request the stop and return. >0: wait up to this many ms for the job to reach terminal state."},
 				"include_children": map[string]any{"type": "boolean", "default": false},
 			},
-			"required": []string{"job_id"},
+			"required": []string{"target"},
 		},
 	}
 }

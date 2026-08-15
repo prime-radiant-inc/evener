@@ -119,6 +119,7 @@ type Aggregate struct {
 	RunStartedAt       time.Time         `json:"run_started_at,omitempty"`
 	LatestActivityAt   time.Time         `json:"latest_activity_at,omitempty"`
 	LatestOutcome      *Outcome          `json:"latest_outcome,omitempty"`
+	LatestPacket       *TerminalPacket   `json:"latest_packet,omitempty"`
 	PendingDeliveries  []PendingDelivery `json:"pending_deliveries,omitempty"`
 	PendingStopSeq     uint64            `json:"pending_stop_seq,omitempty"`
 	ProjectionRevision uint64            `json:"projection_revision"`

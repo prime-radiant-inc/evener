@@ -379,10 +379,10 @@ func requireAPILogTableColumn(t *testing.T, output, attemptID, column, want stri
 // second expansion hop.
 const treeGrandchildSID = "02wLIRxqmq3AUo6vl2OW38"
 
-// fixtureWithTreeData writes a session state tree with delegate_created events
-// in jobs.jsonl and observed_by in meta.json so cmdTree has edges to walk. The
-// tree is two delegate hops deep (root -> child -> grandchild) so depth limits
-// have a visible effect.
+// fixtureWithTreeData writes a session state tree with stable delegate events
+// in the root's delegates.jsonl and observed_by in meta.json so cmdTree has
+// edges to walk. The tree is two delegate hops deep (root -> child ->
+// grandchild) so depth limits have a visible effect.
 func fixtureWithTreeData(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
@@ -414,21 +414,16 @@ func fixtureWithTreeData(t *testing.T) (base, sid string) {
 	// Root meta with observed_by for observer edges.
 	mustWrite(t, filepath.Join(sess, sid+".meta.json"),
 		`{"id":"`+sid+`","observed_by":["`+observerSID+`"]}`)
-	// Child meta (minimal).
-	mustWrite(t, filepath.Join(sess, childSID+".meta.json"), `{"id":"`+childSID+`"}`)
-	// Grandchild meta (minimal).
-	mustWrite(t, filepath.Join(sess, grandchildSID+".meta.json"), `{"id":"`+grandchildSID+`"}`)
-	// Jobs with a delegate_created event linking root -> child.
-	jobs := strings.Join([]string{
-		`{"kind":"delegate_created","seq":1,"delegate_id":"d1","delegate":{"child_session_id":"` + childSID + `","transcript_ref":"` + childSID + `","agent_type":"test-agent","owner_session_id":"` + sid + `","resumable":true}}`,
+	// Child and grandchild meta point back to the root-session controller store.
+	mustWrite(t, filepath.Join(sess, childSID+".meta.json"), `{"id":"`+childSID+`","job_tree_root_session_id":"`+sid+`"}`)
+	mustWrite(t, filepath.Join(sess, grandchildSID+".meta.json"), `{"id":"`+grandchildSID+`","job_tree_root_session_id":"`+sid+`"}`)
+	// One root-owned stable journal carries both delegate descriptors. Nested
+	// ownership and parent_delegate_id provide the two tree hops.
+	delegates := strings.Join([]string{
+		`{"version":1}`,
+		`{"events":[{"kind":"delegate_created","seq":1,"delegate_id":"d1","created":{"descriptor":{"child_session_id":"` + childSID + `","transcript_ref":"proj:project-test-0123456789:` + childSID + `","owner_session_id":"` + sid + `","task":"child task","agent_type":"test-agent","tool_name_ceiling":["communicate"],"resumable":true}}},{"kind":"delegate_run_started","seq":2,"delegate_id":"d1","run_started":{"generation":1,"trigger":"initial","started_at":"2026-07-31T18:00:00Z"}},{"kind":"delegate_created","seq":3,"delegate_id":"d2","created":{"descriptor":{"child_session_id":"` + grandchildSID + `","transcript_ref":"proj:project-test-0123456789:` + grandchildSID + `","parent_delegate_id":"d1","owner_session_id":"` + childSID + `","task":"grandchild task","agent_type":"test-agent","tool_name_ceiling":["communicate"],"resumable":true}}},{"kind":"delegate_run_started","seq":4,"delegate_id":"d2","run_started":{"generation":1,"trigger":"initial","started_at":"2026-07-31T18:00:01Z"}}]}`,
 	}, "\n") + "\n"
-	mustWrite(t, filepath.Join(sess, sid, "jobs.jsonl"), jobs)
-	// Child jobs with a delegate_created event linking child -> grandchild, so
-	// the tree has a second hop that depth limits can elide.
-	childJobs := strings.Join([]string{
-		`{"kind":"delegate_created","seq":1,"delegate_id":"d2","delegate":{"child_session_id":"` + grandchildSID + `","transcript_ref":"` + grandchildSID + `","agent_type":"test-agent","owner_session_id":"` + childSID + `","resumable":true}}`,
-	}, "\n") + "\n"
-	mustWrite(t, filepath.Join(sess, childSID, "jobs.jsonl"), childJobs)
+	mustWrite(t, filepath.Join(sess, sid, "delegates.jsonl"), delegates)
 	return base, sid
 }
 

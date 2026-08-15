@@ -52,16 +52,11 @@ func LoadSessionHistoricalJobRecords(stateDir, sessionID string) (map[string]His
 		return nil, err
 	}
 
-	store, err := historicalJobsOpen(path)
+	events, err := jobstore.ReadEvents(path)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = store.Close() }()
-
-	records, err := store.Load()
-	if err != nil {
-		return nil, err
-	}
+	records := jobstore.Fold(events)
 	out := make(map[string]HistoricalJobRecord, len(records))
 	for jobID, rec := range records {
 		if rec == nil {

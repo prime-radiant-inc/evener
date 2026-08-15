@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
 )
@@ -14,13 +15,14 @@ const maxTreeDepth = 50
 // TreeNode is one session in the session tree. Edge records how this node is
 // linked to its parent ("delegate" or "observer"); it is empty for the root.
 type TreeNode struct {
-	SessionID     string     `json:"session_id"`
-	TranscriptRef string     `json:"transcript_ref,omitempty"`
-	AgentType     string     `json:"agent_type,omitempty"`
-	Status        string     `json:"status,omitempty"`
-	Edge          string     `json:"edge,omitempty"`
-	Note          string     `json:"note,omitempty"`
-	Children      []TreeNode `json:"children,omitempty"`
+	SessionID     string         `json:"session_id"`
+	TranscriptRef string         `json:"transcript_ref,omitempty"`
+	AgentType     string         `json:"agent_type,omitempty"`
+	Status        string         `json:"status,omitempty"`
+	Edge          string         `json:"edge,omitempty"`
+	Note          string         `json:"note,omitempty"`
+	Failures      []StateFailure `json:"failures,omitempty"`
+	Children      []TreeNode     `json:"children,omitempty"`
 }
 
 // TreeOpts narrows a session-tree walk.
@@ -58,12 +60,63 @@ func expandNode(stateBase string, node TreeNode, paths Paths, opts TreeOpts, dep
 		node.Note = "jobs unreadable: " + err.Error()
 		return node
 	}
+	node.Failures = legacyDelegateFailures(events)
+	_, stable, diagnostics, err := stableDoctorDelegates(paths)
+	if err != nil {
+		node.Note = "delegates unreadable: " + err.Error()
+		return node
+	}
+	if len(diagnostics) != 0 {
+		node.Note = strings.Join(diagnostics, "; ")
+	}
 
-	node.Children = append(node.Children, delegateChildren(stateBase, events, opts, depthRemaining, visited)...)
+	node.Children = append(node.Children, stableDelegateChildren(stateBase, paths.SessionID, stable, opts, depthRemaining, visited)...)
 	if opts.Observers {
 		node.Children = append(node.Children, observerChildren(stateBase, paths)...)
 	}
 	return node
+}
+
+func stableDelegateChildren(stateBase, ownerSessionID string, state delegatestore.State, opts TreeOpts, depthRemaining int, visited map[string]bool) []TreeNode {
+	rows := projectDoctorDelegates(ownerSessionID, state)
+	children := make([]TreeNode, 0, len(rows))
+	for _, row := range rows {
+		child := TreeNode{
+			SessionID: row.ChildSessionID, TranscriptRef: row.TranscriptRef,
+			AgentType: row.AgentType, Status: row.Phase, Edge: "delegate",
+		}
+		childSelector := row.TranscriptRef
+		if childSelector == "" {
+			childSelector = row.ChildSessionID
+		}
+		childPaths, err := Locate(stateBase, childSelector)
+		if err != nil {
+			child.Note = "transcript not found"
+			children = append(children, child)
+			continue
+		}
+		if child.TranscriptRef == "" {
+			child.TranscriptRef = childPaths.TranscriptRef
+		}
+		if depthRemaining > 1 {
+			child = expandNode(stateBase, child, childPaths, opts, depthRemaining-1, visited)
+		} else {
+			child.Note = stableDepthLimitNote(childPaths)
+		}
+		children = append(children, child)
+	}
+	return children
+}
+
+func stableDepthLimitNote(paths Paths) string {
+	_, state, _, err := stableDoctorDelegates(paths)
+	if err != nil {
+		return ""
+	}
+	if len(projectDoctorDelegates(paths.SessionID, state)) != 0 {
+		return "depth limit (children not expanded)"
+	}
+	return ""
 }
 
 func delegateChildren(stateBase string, events []jobstore.Event, opts TreeOpts, depthRemaining int, visited map[string]bool) []TreeNode {

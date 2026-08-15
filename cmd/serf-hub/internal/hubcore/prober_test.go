@@ -22,6 +22,28 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
+func TestHubProberStableDelegateUsesDescendantSessionsNotDetailedJobs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{
+			"session_id":"root","state":"idle",
+			"descendant_session_ids":["child_stable"],
+			"descendant_states":{"child_stable":"active"},
+			"detailed":{"jobs":[{"job_type":"delegate","status":"running","transcript_ref":"local:child_legacy"}]}
+		}`)
+	}))
+	defer srv.Close()
+	got := (&StatusProber{Timeout: time.Second}).Probe(rendezvous.Entry{Address: srv.Listener.Addr().String()})
+	if !got.OK {
+		t.Fatal("probe failed")
+	}
+	if !reflect.DeepEqual(got.RunningSubagentIDs, []string{"child_stable"}) {
+		t.Fatalf("descendants = %v, want stable status fields only", got.RunningSubagentIDs)
+	}
+	if !reflect.DeepEqual(got.RunningSubagentStates, map[string]string{"child_stable": "active"}) {
+		t.Fatalf("descendant states = %#v", got.RunningSubagentStates)
+	}
+}
+
 func fuzzScenarioStatusProber_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/status" {
@@ -146,7 +168,7 @@ func fuzzScenarioStatusProber_AbsentPendingAskDecodesFalse(t *testing.T) {
 }
 
 func fuzzScenarioStatusProber_DecodesRunningSubagentIDs(t *testing.T) {
-	payload := `{"session_id":"parent","state":"idle","detailed":{"jobs":[{"job_type":"delegate","status":"running","transcript_ref":"local:child-b"},{"job_type":"delegate","status":"completed","transcript_ref":"local:child-done"},{"job_type":"shell","status":"running","transcript_ref":"local:not-a-child"},{"job_type":"delegate","status":"running","transcript_ref":"remote:child-remote"},{"job_type":"delegate","status":"running","transcript_ref":"invalid"},{"job_type":"delegate","status":"running","transcript_ref":"local:child-a"},{"job_type":"delegate","status":"running","transcript_ref":"local:child-a"}]}}`
+	payload := `{"session_id":"parent","state":"idle","descendant_session_ids":["child-b","child-a","child-a",""]}`
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Header: make(http.Header)}, nil
 	})}
@@ -165,8 +187,7 @@ func TestProbeRunningSubagent(t *testing.T) { fuzzScenarioStatusProber_DecodesRu
 // The daemon's descendant_session_ids list is a liveness set (every non-closed
 // in-process descendant); descendant_states carries each one's own projected
 // status so the hub can render a settled, resumable delegate as idle instead
-// of working. IDs discovered through the legacy Detailed.Jobs fallback carry
-// no state (old daemons), so they simply have no map entry.
+// of working. Retired Detailed.Jobs delegate rows are ignored.
 func fuzzScenarioStatusProber_DecodesRunningSubagentStates(t *testing.T) {
 	payload := `{"session_id":"parent","state":"idle",` +
 		`"descendant_session_ids":["child-a","child-b"],` +
@@ -179,7 +200,7 @@ func fuzzScenarioStatusProber_DecodesRunningSubagentStates(t *testing.T) {
 	if !result.OK {
 		t.Fatal("expected successful status probe")
 	}
-	if want := []string{"child-a", "child-b", "child-c"}; !reflect.DeepEqual(result.RunningSubagentIDs, want) {
+	if want := []string{"child-a", "child-b"}; !reflect.DeepEqual(result.RunningSubagentIDs, want) {
 		t.Fatalf("running subagent IDs = %v, want %v", result.RunningSubagentIDs, want)
 	}
 	wantStates := map[string]string{"child-a": "idle", "child-b": "awaiting"}
@@ -202,13 +223,13 @@ func TestProbeRunningSubagentStates(t *testing.T) {
 	fuzzScenarioStatusProber_DecodesRunningSubagentStates(t)
 }
 
-func TestProbeSubagentTypeFallback(t *testing.T) {
+func TestProbeIgnoresRetiredDetailedJobType(t *testing.T) {
 	payload := `{"session_id":"parent","state":"idle","detailed":{"jobs":[{"type":"delegate","status":"running","transcript_ref":"local:child-type"}]}}`
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Header: make(http.Header)}, nil
 	})}
 	result := (&StatusProber{client: client}).Probe(rendezvous.Entry{Address: "status.test"})
-	if !reflect.DeepEqual(result.RunningSubagentIDs, []string{"child-type"}) {
-		t.Fatalf("type fallback running subagent IDs = %v, want [child-type]", result.RunningSubagentIDs)
+	if len(result.RunningSubagentIDs) != 0 {
+		t.Fatalf("retired detailed job inferred descendants: %v", result.RunningSubagentIDs)
 	}
 }

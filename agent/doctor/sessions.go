@@ -32,9 +32,10 @@ type SessionRow struct {
 	// only for spawned subagent transcripts). This is distinct from
 	// schema.SessionMeta.ParentSessionID, which records fork lineage, an
 	// unrelated concept — a forked session is not a subagent.
-	ParentSessionID string `json:"parent_session_id,omitempty"`
-	DelegateCount   int    `json:"delegate_count"`
-	ObserverCount   int    `json:"observer_count"`
+	ParentSessionID string         `json:"parent_session_id,omitempty"`
+	DelegateCount   int            `json:"delegate_count"`
+	ObserverCount   int            `json:"observer_count"`
+	Failures        []StateFailure `json:"failures,omitempty"`
 	// Outcome is the final communicate-family (result-tool) call's end_turn —
 	// plus output.decision, when the result tool's schema carries one (e.g.
 	// provider.WithAllowedDecisions) — read from the session's last ASSISTANT
@@ -140,12 +141,11 @@ func sessionRow(b bucket, paths Paths, meta schema.SessionMeta) (SessionRow, err
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}
 
-	delegateCount := 0
-	for _, d := range jobstore.FoldDelegates(events) {
-		if d.ChildSessionID != "" {
-			delegateCount++
-		}
+	_, stable, _, err := stableDoctorDelegates(paths)
+	if err != nil {
+		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}
+	delegateCount := len(projectDoctorDelegates(meta.ID, stable))
 
 	resultTool := "communicate"
 	if meta.Config.ResultToolName != "" {
@@ -165,6 +165,7 @@ func sessionRow(b bucket, paths Paths, meta schema.SessionMeta) (SessionRow, err
 		ParentSessionID: doc.Header.ParentSessionID,
 		DelegateCount:   delegateCount,
 		ObserverCount:   len(meta.ObservedBy),
+		Failures:        legacyDelegateFailures(events),
 		Outcome:         outcomeHint(doc, resultTool),
 	}, nil
 }

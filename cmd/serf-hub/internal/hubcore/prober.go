@@ -7,7 +7,6 @@ import (
 	"sort"
 	"time"
 
-	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -42,14 +41,6 @@ type statusInfo struct {
 	// DescendantStates is absent on old daemons; a listed descendant with no
 	// entry here has an UNKNOWN state, not an idle one.
 	DescendantStates map[string]string `json:"descendant_states"`
-	Detailed         *struct {
-		Jobs []struct {
-			JobType       string `json:"job_type"`
-			Type          string `json:"type"`
-			Status        string `json:"status"`
-			TranscriptRef string `json:"transcript_ref"`
-		} `json:"jobs"`
-	} `json:"detailed"`
 }
 
 // Probe implements Prober.
@@ -89,23 +80,6 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		}
 		seen[id] = true
 		runningSubagentIDs = append(runningSubagentIDs, id)
-	}
-	if s.Detailed != nil {
-		for _, job := range s.Detailed.Jobs {
-			jobType := job.JobType
-			if jobType == "" {
-				jobType = job.Type
-			}
-			if jobType != "delegate" || job.Status != "running" {
-				continue
-			}
-			ref, err := appwire.ParseRef(job.TranscriptRef)
-			if err != nil || ref.SourceID != "local" || ref.ThreadID == "" || seen[ref.ThreadID] {
-				continue
-			}
-			seen[ref.ThreadID] = true
-			runningSubagentIDs = append(runningSubagentIDs, ref.ThreadID)
-		}
 	}
 	sort.Strings(runningSubagentIDs)
 	var runningSubagentStates map[string]string

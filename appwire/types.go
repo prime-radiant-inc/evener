@@ -1238,16 +1238,59 @@ type JobActivityJob struct {
 }
 
 type JobActivityDelegate struct {
-	DelegateID     string                 `json:"delegateId"`
-	ChildSessionID string                 `json:"childSessionId"`
-	ChildRef       string                 `json:"childRef"`
-	Mandate        string                 `json:"mandate,omitempty"`
-	Turns          []JobActivityJob       `json:"turns"`
-	Child          *JobActivitySession    `json:"child,omitempty"`
-	Branch         JobActivityBranchState `json:"branch"`
+	DelegateID          string                 `json:"delegateId"`
+	ChildSessionID      string                 `json:"childSessionId"`
+	ChildRef            string                 `json:"childRef"`
+	ParentDelegateID    string                 `json:"parentDelegateId,omitempty"`
+	Type                string                 `json:"type,omitempty"`
+	Lifecycle           string                 `json:"lifecycle,omitempty"`
+	Phase               string                 `json:"phase,omitempty"`
+	Status              string                 `json:"status,omitempty"`
+	Outcome             string                 `json:"outcome,omitempty"`
+	Reason              string                 `json:"reason,omitempty"`
+	Terminal            bool                   `json:"terminal,omitempty"`
+	Resumable           bool                   `json:"resumable,omitempty"`
+	NotResumableReason  string                 `json:"notResumableReason,omitempty"`
+	Mandate             string                 `json:"mandate,omitempty"`
+	Task                string                 `json:"task,omitempty"`
+	Description         string                 `json:"description,omitempty"`
+	AgentType           string                 `json:"agentType,omitempty"`
+	RequestedModel      string                 `json:"requestedModel,omitempty"`
+	ResolvedProfileID   string                 `json:"resolvedProfileId,omitempty"`
+	ResolvedModel       string                 `json:"resolvedModel,omitempty"`
+	Model               string                 `json:"model,omitempty"`
+	ReasoningEffort     string                 `json:"reasoningEffort,omitempty"`
+	RunStartedAt        string                 `json:"runStartedAt,omitempty"`
+	RunEndedAt          string                 `json:"runEndedAt,omitempty"`
+	LatestActivityAt    string                 `json:"latestActivityAt,omitempty"`
+	RunningForMS        *int64                 `json:"runningForMs,omitempty"`
+	QuietForMS          *int64                 `json:"quietForMs,omitempty"`
+	DurationMS          *int64                 `json:"durationMs,omitempty"`
+	Message             json.RawMessage        `json:"message,omitempty"`
+	StructuredResult    json.RawMessage        `json:"structuredResult,omitempty"`
+	StructuredValid     *bool                  `json:"structuredResultValid,omitempty"`
+	StructuredReason    string                 `json:"structuredResultReason,omitempty"`
+	Warnings            []string               `json:"warnings,omitempty"`
+	ExhaustionBudget    string                 `json:"exhaustionBudget,omitempty"`
+	ExhaustionLimit     int                    `json:"exhaustionLimit,omitempty"`
+	ExhaustionResumable *bool                  `json:"exhaustionResumable,omitempty"`
+	DelegationAllowance int                    `json:"delegationAllowance,omitempty"`
+	ParentWatchGranted  bool                   `json:"parentWatchGranted,omitempty"`
+	Worktree            *JobActivityWorktree   `json:"worktree,omitempty"`
+	Turns               []JobActivityJob       `json:"turns"`
+	Child               *JobActivitySession    `json:"child,omitempty"`
+	Branch              JobActivityBranchState `json:"branch"`
 	// Usage is the child session's cumulative self-only token totals. Nil when
 	// the child has no token data (fresh session, old daemon, shell-only work).
 	Usage *SerfUsage `json:"usage,omitempty"`
+}
+
+type JobActivityWorktree struct {
+	Path    string `json:"path"`
+	Branch  string `json:"branch"`
+	HeadSHA string `json:"headSha"`
+	Ahead   int    `json:"ahead"`
+	Dirty   bool   `json:"dirty"`
 }
 
 type JobActivityEntry struct {
@@ -1257,13 +1300,14 @@ type JobActivityEntry struct {
 }
 
 type JobActivitySession struct {
-	SessionID string                 `json:"sessionId"`
-	Ref       string                 `json:"ref"`
-	Label     string                 `json:"label"`
-	Aggregate string                 `json:"aggregate"`
-	Counts    JobActivityCounts      `json:"counts"`
-	Entries   []JobActivityEntry     `json:"entries"`
-	Branch    JobActivityBranchState `json:"branch"`
+	SessionID   string                 `json:"sessionId"`
+	Ref         string                 `json:"ref"`
+	Label       string                 `json:"label"`
+	Aggregate   string                 `json:"aggregate"`
+	Counts      JobActivityCounts      `json:"counts"`
+	Entries     []JobActivityEntry     `json:"entries"`
+	Diagnostics []string               `json:"diagnostics,omitempty"`
+	Branch      JobActivityBranchState `json:"branch"`
 }
 
 type JobActivityTree struct {
@@ -1281,6 +1325,7 @@ var AllJobActivityTypes = []any{
 	JobActivityEntry{},
 	JobActivityJob{},
 	JobActivityDelegate{},
+	JobActivityWorktree{},
 	JobActivityCounts{},
 	JobActivityBranchState{},
 }

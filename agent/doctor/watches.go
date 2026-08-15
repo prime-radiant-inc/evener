@@ -11,10 +11,11 @@ import (
 
 // WatchReport is the forensic watch/delivery view of one session's jobs.jsonl.
 type WatchReport struct {
-	SessionID string      `json:"session_id"`
-	JobsPath  string      `json:"jobs_path"`
-	Filtered  string      `json:"filtered,omitempty"` // which filter narrowed the result: "self-loops" and/or "watch:<id>"
-	Watches   []WatchView `json:"watches"`
+	SessionID string         `json:"session_id"`
+	JobsPath  string         `json:"jobs_path"`
+	Filtered  string         `json:"filtered,omitempty"` // which filter narrowed the result: "self-loops" and/or "watch:<id>"
+	Watches   []WatchView    `json:"watches"`
+	Failures  []StateFailure `json:"failures,omitempty"`
 }
 
 // WatchView is one watch's registration, delivery accounting, and breaker
@@ -115,7 +116,9 @@ func Watches(stateBase, selector string, opts WatchOpts) (WatchReport, error) {
 	if err != nil {
 		return WatchReport{}, err
 	}
-	return buildWatchReport(paths, events, opts), nil
+	report := buildWatchReport(paths, events, opts)
+	report.Failures = legacyDelegateFailures(events)
+	return report, nil
 }
 
 func buildWatchReport(paths Paths, events []jobstore.Event, opts WatchOpts) WatchReport {

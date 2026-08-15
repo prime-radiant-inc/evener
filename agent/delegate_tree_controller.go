@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -122,14 +123,19 @@ type delegateLiveState struct {
 type delegateSnapshot struct {
 	id                 string
 	parentID           string
+	descriptor         delegatestore.Descriptor
+	generation         uint64
 	lifecycle          delegateLifecycle
 	phase              delegatestore.Phase
+	currentRunOpen     bool
+	runStartedAt       time.Time
 	resumable          bool
 	revision           uint64
 	transcriptRef      string
 	notResumableReason string
 	latestActivityAt   time.Time
 	lastOutcome        *delegatestore.Outcome
+	latestPacket       *delegatestore.TerminalPacket
 }
 
 // stableDelegateWorktreeSnapshot is the process-local read model used by
@@ -505,15 +511,36 @@ func captureDelegateSnapshot(aggregate *delegatestore.Aggregate) delegateSnapsho
 	return delegateSnapshot{
 		id:                 aggregate.DelegateID,
 		parentID:           aggregate.Descriptor.ParentDelegateID,
+		descriptor:         cloneDelegateStartDescriptor(aggregate.Descriptor),
+		generation:         aggregate.Generation,
 		lifecycle:          lifecycle,
 		phase:              aggregate.Phase,
+		currentRunOpen:     aggregate.CurrentRunOpen,
+		runStartedAt:       aggregate.RunStartedAt,
 		resumable:          aggregate.Resumable,
 		revision:           aggregate.ProjectionRevision,
 		transcriptRef:      aggregate.Descriptor.TranscriptRef,
 		notResumableReason: aggregate.NotResumableReason,
 		latestActivityAt:   aggregate.LatestActivityAt,
 		lastOutcome:        outcome,
+		latestPacket:       cloneStableTerminalPacket(aggregate.LatestPacket),
 	}
+}
+
+func cloneStableTerminalPacket(packet *delegatestore.TerminalPacket) *delegatestore.TerminalPacket {
+	if packet == nil {
+		return nil
+	}
+	clone := *packet
+	clone.Message = append(json.RawMessage(nil), packet.Message...)
+	clone.StructuredResult = append(json.RawMessage(nil), packet.StructuredResult...)
+	clone.Warnings = append([]string(nil), packet.Warnings...)
+	clone.Metadata = append(json.RawMessage(nil), packet.Metadata...)
+	if packet.StructuredResultValid != nil {
+		valid := *packet.StructuredResultValid
+		clone.StructuredResultValid = &valid
+	}
+	return &clone
 }
 
 func (c *delegateTreeController) capacityInUse() (int, int) {

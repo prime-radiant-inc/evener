@@ -2,20 +2,56 @@ package doctor
 
 import (
 	"fmt"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/schema"
 )
 
 // JobReport is the forensic job view of one session's jobs.jsonl: every job the
 // session ran, as the runtime's own fold reconstructs it from the event log.
 type JobReport struct {
-	SessionID string    `json:"session_id"`
-	JobsPath  string    `json:"jobs_path"`
-	Filtered  string    `json:"filtered,omitempty"` // which filter narrowed the result: "job:<id>"
-	Jobs      []JobView `json:"jobs"`
+	SessionID     string         `json:"session_id"`
+	JobsPath      string         `json:"jobs_path"`
+	DelegatesPath string         `json:"delegates_path,omitempty"`
+	Filtered      string         `json:"filtered,omitempty"` // which filter narrowed the result: "job:<id>"
+	Jobs          []JobView      `json:"jobs"`
+	Delegates     []DelegateView `json:"delegates,omitempty"`
+	Failures      []StateFailure `json:"failures,omitempty"`
+	Diagnostics   []string       `json:"diagnostics,omitempty"`
+}
+
+type StateFailure struct {
+	Code   string `json:"code"`
+	Detail string `json:"detail"`
+}
+
+type DelegateView struct {
+	DelegateID         string                        `json:"delegate_id"`
+	OwnerSessionID     string                        `json:"owner_session_id"`
+	VisibleSessionID   string                        `json:"visible_session_id,omitempty"`
+	ParentDelegateID   string                        `json:"parent_delegate_id,omitempty"`
+	ChildSessionID     string                        `json:"child_session_id"`
+	TranscriptRef      string                        `json:"transcript_ref"`
+	Task               string                        `json:"task"`
+	Description        string                        `json:"description,omitempty"`
+	AgentType          string                        `json:"agent_type"`
+	RequestedModel     string                        `json:"requested_model,omitempty"`
+	ResolvedProfileID  string                        `json:"resolved_profile_id,omitempty"`
+	ResolvedModel      string                        `json:"resolved_model,omitempty"`
+	ReasoningEffort    string                        `json:"reasoning_effort,omitempty"`
+	Phase              string                        `json:"phase"`
+	Resumable          bool                          `json:"resumable"`
+	NotResumableReason string                        `json:"not_resumable_reason,omitempty"`
+	RunStartedAt       time.Time                     `json:"run_started_at,omitempty"`
+	LatestActivityAt   time.Time                     `json:"latest_activity_at,omitempty"`
+	LatestOutcome      *delegatestore.Outcome        `json:"latest_outcome,omitempty"`
+	LatestPacket       *delegatestore.TerminalPacket `json:"latest_packet,omitempty"`
 }
 
 // JobView is one folded JobRecord: what the job was, what state it reached, and
@@ -79,7 +115,16 @@ func Jobs(stateBase, selector string, opts JobOpts) (JobReport, error) {
 	if err != nil {
 		return JobReport{}, err
 	}
-	return buildJobReport(paths, events, opts), nil
+	report := buildJobReport(paths, events, opts)
+	delegatesPath, delegates, diagnostics, err := stableDoctorDelegates(paths)
+	if err != nil {
+		return JobReport{}, err
+	}
+	report.DelegatesPath = delegatesPath
+	report.Delegates = projectDoctorDelegates(paths.SessionID, delegates)
+	report.Diagnostics = diagnostics
+	report.Failures = legacyDelegateFailures(events)
+	return report, nil
 }
 
 func buildJobReport(paths Paths, events []jobstore.Event, opts JobOpts) JobReport {
@@ -94,6 +139,86 @@ func buildJobReport(paths Paths, events []jobstore.Event, opts JobOpts) JobRepor
 		report.Jobs = append(report.Jobs, jobViewFrom(rec))
 	}
 	return report
+}
+
+func stableDoctorDelegates(paths Paths) (string, delegatestore.State, []string, error) {
+	rootSessionID := paths.SessionID
+	if meta, err := schema.LoadSessionMeta(paths.BucketDir, paths.SessionID); err == nil && strings.TrimSpace(meta.JobTreeRootSessionID) != "" {
+		rootSessionID = strings.TrimSpace(meta.JobTreeRootSessionID)
+	}
+	path := filepath.Join(paths.BucketDir, "sessions", rootSessionID, "delegates.jsonl")
+	events, readDiagnostics, err := delegatestore.ReadEventsWithDiagnostics(path)
+	if err != nil {
+		return path, nil, nil, err
+	}
+	state, err := delegatestore.Fold(events)
+	if err != nil {
+		return path, nil, nil, err
+	}
+	var diagnostics []string
+	if readDiagnostics.TornTail {
+		diagnostics = append(diagnostics, "delegate_journal_torn_tail: ignored unterminated trailing batch")
+	}
+	return path, state, diagnostics, nil
+}
+
+func projectDoctorDelegates(ownerSessionID string, state delegatestore.State) []DelegateView {
+	ids := make([]string, 0, len(state))
+	for id, aggregate := range state {
+		if aggregate != nil && aggregate.Descriptor.OwnerSessionID == ownerSessionID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	rows := make([]DelegateView, 0, len(ids))
+	for _, id := range ids {
+		aggregate := state[id]
+		descriptor := aggregate.Descriptor
+		rows = append(rows, DelegateView{
+			DelegateID: id, OwnerSessionID: descriptor.OwnerSessionID, VisibleSessionID: descriptor.VisibleSessionID,
+			ParentDelegateID: descriptor.ParentDelegateID, ChildSessionID: descriptor.ChildSessionID, TranscriptRef: descriptor.TranscriptRef,
+			Task: descriptor.Task, Description: descriptor.Description, AgentType: descriptor.AgentType,
+			RequestedModel: descriptor.RequestedModel, ResolvedProfileID: descriptor.ResolvedProfileID,
+			ResolvedModel: descriptor.ResolvedModel, ReasoningEffort: descriptor.Config.ReasoningEffort,
+			Phase: string(aggregate.Phase), Resumable: aggregate.Resumable, NotResumableReason: aggregate.NotResumableReason,
+			RunStartedAt: aggregate.RunStartedAt, LatestActivityAt: aggregate.LatestActivityAt,
+			LatestOutcome: aggregate.LatestOutcome, LatestPacket: aggregate.LatestPacket,
+		})
+	}
+	return rows
+}
+
+func legacyDelegateFailures(events []jobstore.Event) []StateFailure {
+	legacyIDs := make(map[string]bool)
+	for _, record := range jobstore.Fold(events) {
+		if record != nil && record.Type == jobstore.JobDelegate {
+			legacyIDs[record.JobID] = true
+		}
+	}
+	var failures []StateFailure
+	if len(legacyIDs) != 0 {
+		ids := make([]string, 0, len(legacyIDs))
+		for id := range legacyIDs {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		failures = append(failures, StateFailure{Code: "legacy_delegate_state", Detail: "retired delegate activation jobs: " + strings.Join(ids, ", ")})
+	}
+	var watchIDs []string
+	for id, watch := range jobstore.FoldWatches(events) {
+		if watch == nil {
+			continue
+		}
+		target := strings.TrimPrefix(strings.TrimSpace(watch.Target), "job:")
+		if legacyIDs[target] {
+			watchIDs = append(watchIDs, id)
+		}
+	}
+	if len(watchIDs) != 0 {
+		sort.Strings(watchIDs)
+		failures = append(failures, StateFailure{Code: "legacy_delegate_watch_state", Detail: "retired delegate activation watches: " + strings.Join(watchIDs, ", ")})
+	}
+	return failures
 }
 
 // jobViewFrom projects one folded JobRecord onto the forensic view. It is the
@@ -131,7 +256,7 @@ func jobViewFrom(rec *jobstore.JobRecord) JobView {
 func RenderJobs(r JobReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "session %s  (jobs: %s)\n", r.SessionID, r.JobsPath)
-	if len(r.Jobs) == 0 {
+	if len(r.Jobs) == 0 && len(r.Delegates) == 0 && len(r.Failures) == 0 {
 		b.WriteString(emptyJobsMessage(r.Filtered))
 		b.WriteString("\n")
 		return b.String()
@@ -170,6 +295,15 @@ func RenderJobs(r JobReport) string {
 			fmt.Fprintf(&b, "  resumable=%s  disposed=%t  not_resumable_reason=%s\n",
 				optionalBoolString(j.Resumable), j.Disposed, dash(j.NotResumableWhy))
 		}
+	}
+	for _, d := range r.Delegates {
+		b.WriteString("\n")
+		fmt.Fprintf(&b, "delegate %s  (%s)\n", d.DelegateID, d.Phase)
+		fmt.Fprintf(&b, "  owner=%s  child=%s  transcript=%s\n", d.OwnerSessionID, d.ChildSessionID, d.TranscriptRef)
+		fmt.Fprintf(&b, "  task=%s  agent_type=%s  model=%s  resumable=%t\n", d.Task, d.AgentType, d.ResolvedModel, d.Resumable)
+	}
+	for _, failure := range r.Failures {
+		fmt.Fprintf(&b, "\n%s: %s\n", failure.Code, failure.Detail)
 	}
 	return b.String()
 }

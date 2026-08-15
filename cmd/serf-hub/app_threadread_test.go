@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -19,6 +20,56 @@ import (
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
+
+func TestHubThreadReadStableDelegateDoesNotExtractActivationID(t *testing.T) {
+	raw := json.RawMessage(`{"job_id":"job_retired_activation","delegate_id":"dlg_stable","status":"running"}`)
+	item := appwire.ThreadItem{Type: "commandExecution", ToolName: "delegate", Raw: bytes.Clone(raw), Status: appwire.TurnStatusInProgress}
+	got := reconcileDelegateThreadItemForTest(item, agent.HistoricalJobRecord{
+		JobID: "job_retired_activation", DelegateID: "dlg_stable", Type: "delegate", Status: "completed", OutputBytes: 99,
+	})
+	if !bytes.Equal(got.Raw, raw) || got.Status != item.Status {
+		t.Fatalf("thread read extracted/reconciled retired activation id: got raw=%s status=%s", got.Raw, got.Status)
+	}
+}
+
+func TestHubThreadReadStableDelegateIsReadOnly(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	sessionID := strings.TrimPrefix(params.Ref, "local:")
+	entry, ok := cfg.Past.Find(sessionID)
+	if !ok {
+		t.Fatal("past entry missing")
+	}
+	jobsPath := filepath.Join(entry.StateDir, "sessions", sessionID, "jobs.jsonl")
+	if err := os.MkdirAll(filepath.Dir(jobsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(`{"kind":"job_started","job_id":"job_readonly","type":"shell","owner_session_id":"` + sessionID + `","started_at":"2026-08-15T00:00:00Z"}` + "\n")
+	if err := os.WriteFile(jobsPath, raw, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	fixed := time.Unix(1234, 0).UTC()
+	if err := os.Chtimes(jobsPath, fixed, fixed); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(jobsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := requirePastThreadForRead(t, cfg, params); !found {
+		t.Fatal("past thread not found")
+	}
+	afterRaw, err := os.ReadFile(jobsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(jobsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterRaw, raw) || before.Size() != after.Size() || before.Mode() != after.Mode() || !before.ModTime().Equal(after.ModTime()) {
+		t.Fatalf("thread read mutated jobs journal: before=%v/%v/%v after=%v/%v/%v", before.Size(), before.Mode(), before.ModTime(), after.Size(), after.Mode(), after.ModTime())
+	}
+}
 
 func requirePastThreadForRead(t testing.TB, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool) {
 	t.Helper()

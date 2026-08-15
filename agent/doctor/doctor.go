@@ -24,5 +24,6 @@ type Paths struct {
 	APILogPath     string `json:"api_log_path"`    // <bucket>/sessions/<sid>.api.jsonl
 	MetaPath       string `json:"meta_path"`       // <bucket>/sessions/<sid>.meta.json
 	JobsPath       string `json:"jobs_path"`       // <bucket>/sessions/<sid>/jobs.jsonl  (SUBDIR)
+	DelegatesPath  string `json:"delegates_path"`  // <bucket>/sessions/<root-sid>/delegates.jsonl
 	MutationsPath  string `json:"mutations_path"`  // <bucket>/mutations/<sid>.json  (SIBLING of sessions/)
 }

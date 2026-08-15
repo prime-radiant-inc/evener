@@ -127,7 +127,7 @@ func TestStatusProberAgreesWithServerStatusInfoAcrossTheWire(t *testing.T) {
 		t.Error("pending_escalation = false, want true: server.StatusInfo.PendingEscalation and the prober's pending_escalation tag no longer agree — the hub's needs-you badge would go dark")
 	}
 	if want := []string{"child-1", "child-2", "grandchild-1"}; !reflect.DeepEqual(got.RunningSubagentIDs, want) {
-		t.Errorf("running subagent ids = %v, want %v: the daemon must expose every projected descendant while retaining legacy Detailed.Jobs discovery", got.RunningSubagentIDs, want)
+		t.Errorf("running subagent ids = %v, want %v: the daemon must expose every projected descendant through descendant_session_ids", got.RunningSubagentIDs, want)
 	}
 	wantStates := map[string]string{"child-1": "active", "child-2": "idle", "grandchild-1": "active"}
 	if !reflect.DeepEqual(got.RunningSubagentStates, wantStates) {

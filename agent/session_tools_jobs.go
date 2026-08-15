@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
@@ -453,21 +454,48 @@ func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars
 }
 
 func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
-	jobID := strings.TrimSpace(stringArg(args, "job_id"))
-	if jobID == "" {
-		return "", errors.New("invalid_request: job_id is required")
+	target := strings.TrimSpace(stringArg(args, "target"))
+	if target == "" {
+		return "", errors.New("invalid_request: target is required")
 	}
-	if strings.HasPrefix(jobID, "dlg_") {
-		return "", errors.New("invalid_request: delegate_id is a conversation handle; inspect a concrete job_id")
+	if strings.HasPrefix(target, "dlg_") {
+		return stableDelegateStatusTool(s, target, maxChars)
 	}
-	jm, rec, err := s.nestedOrLocalJobManager(jobID)
+	jm, rec, err := s.nestedOrLocalJobManager(target)
 	if err != nil {
 		return "", err
 	}
-	if live, liveErr := findJobRecord(jm, jobID); liveErr == nil {
+	if rec.Type == jobstore.JobDelegate {
+		return "", fmt.Errorf("legacy_delegate_activation: %s is a retired delegate activation alias; use its stable delegate_id", target)
+	}
+	if live, liveErr := findJobRecord(jm, target); liveErr == nil {
 		rec = live
 	}
 	out := projectJobStatus(jm.now(), rec)
+	rendered, err := marshalBoundedJSON(out, maxChars)
+	if err != nil {
+		return "", err
+	}
+	return tool.StateResult{Output: rendered, State: out}, nil
+}
+
+func stableDelegateStatusTool(s *Session, delegateID string, maxChars int) (any, error) {
+	if s == nil || s.delegateController == nil {
+		return "", errors.New("delegate controller is unavailable")
+	}
+	rows := stableDelegateRowsForSession(s, true)
+	var row *stableDelegateVisibleRow
+	for i := range rows {
+		if rows[i].snapshot.id == delegateID {
+			row = &rows[i]
+			break
+		}
+	}
+	if row == nil {
+		return "", fmt.Errorf("not_controllable: stable delegate %s is not visible to this session", delegateID)
+	}
+	now := s.sclock().Now()
+	out := projectStableDelegateStatus(now, row.snapshot)
 	rendered, err := marshalBoundedJSON(out, maxChars)
 	if err != nil {
 		return "", err
@@ -532,40 +560,38 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	if err != nil {
 		return "", err
 	}
-	var jobs []jobListEntry
-	total := 0
-	if filter.IncludeDescendants {
-		descJobs, descTotal, listErr := s.walkDescendantJobs(filter)
-		if listErr != nil {
-			return "", listErr
-		}
-		jobs = descJobs
-		total = descTotal
-	} else {
-		recs, recTotal, listErr := jm.listWithError(filter)
-		if listErr != nil {
-			return "", listErr
-		}
-		total = recTotal
-		jobs = make([]jobListEntry, 0, len(recs))
-		for _, rec := range recs {
-			jobs = append(jobs, projectJobRecord(s, rec))
-		}
-	}
-	delegateRecords, err := loadDelegatesForJobList(jm)
+	now := s.sclock().Now()
+	items, err := stableJobListCandidates(s, jm, filter, now)
 	if err != nil {
 		return "", err
 	}
-	delegates := jobListDelegatesForJobs(s, delegateRecords, jobs)
+	sort.Slice(items, func(i, j int) bool {
+		left := jobListItemActivity(items[i])
+		right := jobListItemActivity(items[j])
+		if left.Equal(right) {
+			return items[i].ID < items[j].ID
+		}
+		return left.After(right)
+	})
+	total := len(items)
+	if filter.Offset > 0 {
+		if filter.Offset >= len(items) {
+			items = nil
+		} else {
+			items = items[filter.Offset:]
+		}
+	}
+	if filter.Limit > 0 && len(items) > filter.Limit {
+		items = items[:filter.Limit]
+	}
 	s.mu.Lock()
 	allowance := s.delegationAllowance
 	s.mu.Unlock()
 	result := jobListResult{
-		Jobs:          jobs,
-		Count:         len(jobs),
+		Items:         items,
+		Count:         len(items),
 		Offset:        filter.Offset,
 		Total:         total,
-		Delegates:     delegates,
 		TurnSlots:     turnSlotOccupancyOf(s),
 		Watches:       jm.liveWatchSummaries(),
 		RecentWatches: jm.recentWatchSummaries(),
@@ -577,6 +603,59 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	}
 	_ = maxChars
 	return tool.StateResult{Output: formatJobList(result), State: result}, nil
+}
+
+func stableJobListCandidates(s *Session, jm *jobManager, filter listFilter, now time.Time) ([]jobListEntry, error) {
+	shellFilter := filter
+	shellFilter.Status = ""
+	shellFilter.Statuses = nil
+	shellFilter.Type = ""
+	shellFilter.Types = nil
+	shellFilter.Offset = 0
+	shellFilter.Limit = 0
+
+	var shellItems []jobListEntry
+	if filter.IncludeDescendants {
+		rows, _, err := s.walkDescendantJobs(shellFilter)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if row.Type != string(jobstore.JobShell) {
+				continue
+			}
+			row.ID = row.JobID
+			shellItems = append(shellItems, row)
+		}
+	} else {
+		records, _, err := jm.listWithError(shellFilter)
+		if err != nil {
+			return nil, err
+		}
+		for _, record := range records {
+			if record.Type != jobstore.JobShell {
+				continue
+			}
+			row := projectJobRecordAt(s, s, record, now)
+			row.ID = row.JobID
+			shellItems = append(shellItems, row)
+		}
+	}
+
+	items := make([]jobListEntry, 0, len(shellItems))
+	for _, item := range shellItems {
+		if stableJobListItemMatches(item, filter) {
+			items = append(items, item)
+		}
+	}
+	includeStableDescendants := filter.IncludeNested || filter.IncludeDescendants
+	for _, visible := range stableDelegateRowsForSession(s, includeStableDescendants) {
+		item := projectStableDelegateListItem(now, visible)
+		if stableJobListItemMatches(item, filter) {
+			items = append(items, item)
+		}
+	}
+	return items, nil
 }
 
 // turnSlotOccupancyOf snapshots the session's tree-counter occupancy for the
@@ -597,6 +676,135 @@ func turnSlotOccupancyOf(s *Session) *turnSlotOccupancy {
 		return nil
 	}
 	return &turnSlotOccupancy{InUse: total, Cap: limit, Jobs: jobs, Drives: drives}
+}
+
+type stableDelegateVisibleRow struct {
+	snapshot delegateSnapshot
+	depth    int
+}
+
+func stableDelegateRowsForSession(s *Session, includeDescendants bool) []stableDelegateVisibleRow {
+	if s == nil || s.delegateController == nil {
+		return nil
+	}
+	snapshots := s.delegateController.Snapshot().rows
+	byID := make(map[string]delegateSnapshot, len(snapshots))
+	for _, snapshot := range snapshots {
+		byID[snapshot.id] = snapshot
+	}
+
+	baseParentID := s.owningDelegateID
+	depths := make(map[string]int)
+	for _, snapshot := range snapshots {
+		if snapshot.parentID != baseParentID {
+			continue
+		}
+		ownerID := snapshot.descriptor.OwnerSessionID
+		if ownerID != "" && ownerID != s.id {
+			continue
+		}
+		depths[snapshot.id] = 0
+	}
+	if includeDescendants {
+		for changed := true; changed; {
+			changed = false
+			for _, snapshot := range snapshots {
+				if _, known := depths[snapshot.id]; known {
+					continue
+				}
+				parentDepth, parentVisible := depths[snapshot.parentID]
+				if !parentVisible {
+					continue
+				}
+				if snapshot.descriptor.VisibleSessionID != "" && snapshot.descriptor.VisibleSessionID != s.id {
+					continue
+				}
+				depths[snapshot.id] = parentDepth + 1
+				changed = true
+			}
+		}
+	}
+
+	rows := make([]stableDelegateVisibleRow, 0, len(depths))
+	for id, depth := range depths {
+		rows = append(rows, stableDelegateVisibleRow{snapshot: byID[id], depth: depth})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].snapshot.id < rows[j].snapshot.id })
+	return rows
+}
+
+func projectStableDelegateListItem(now time.Time, visible stableDelegateVisibleRow) jobListEntry {
+	snapshot := visible.snapshot
+	status := projectStableDelegateStatus(now, snapshot)
+	resumable := snapshot.resumable
+	item := jobListEntry{
+		ID:                   snapshot.id,
+		Kind:                 "delegate",
+		Type:                 "delegate",
+		Status:               status.Status,
+		Description:          snapshot.descriptor.Description,
+		OwnerSessionID:       snapshot.descriptor.OwnerSessionID,
+		VisibleToSessionID:   snapshot.descriptor.VisibleSessionID,
+		TranscriptRef:        stringPtrOrNil(snapshot.transcriptRef),
+		Resumable:            &resumable,
+		NotResumableReason:   stringPtrOrNil(snapshot.notResumableReason),
+		StartedAt:            status.RunStartedAt,
+		RunningForMS:         status.RunningForMS,
+		DurationMS:           status.DurationMS,
+		QuietForMS:           status.QuietForMS,
+		LastActivity:         stringPtrOrNil(status.LatestActivityAt),
+		Depth:                visible.depth,
+		Task:                 snapshot.descriptor.Task,
+		AgentType:            snapshot.descriptor.AgentType,
+		Model:                snapshot.descriptor.ResolvedModel,
+		ReasoningEffort:      snapshot.descriptor.Config.ReasoningEffort,
+		ParentDelegateID:     stringPtrOrNil(snapshot.parentID),
+		LatestActivitySortAt: snapshot.latestActivityAt,
+	}
+	if snapshot.lastOutcome != nil {
+		item.Reason = stringPtrOrNil(snapshot.lastOutcome.Reason)
+		item.ExhaustionBudget = string(snapshot.lastOutcome.ExhaustionBudget)
+		item.ExhaustionLimit = snapshot.lastOutcome.ExhaustionLimit
+		endedAt := snapshot.lastOutcome.EndedAt
+		item.EndedAt = timePtrOrNil(&endedAt)
+	}
+	return item
+}
+
+func stableJobListItemMatches(item jobListEntry, filter listFilter) bool {
+	status := jobstore.Status(item.Status)
+	jobType := jobstore.JobType(item.Type)
+	if filter.Status != "" && status != filter.Status {
+		return false
+	}
+	if len(filter.Statuses) > 0 && !statusAllowed(status, filter.Statuses) {
+		return false
+	}
+	if filter.Type != "" && jobType != filter.Type {
+		return false
+	}
+	if len(filter.Types) > 0 && !typeAllowed(jobType, filter.Types) {
+		return false
+	}
+	return true
+}
+
+func jobListItemActivity(item jobListEntry) time.Time {
+	if !item.LatestActivitySortAt.IsZero() {
+		return item.LatestActivitySortAt
+	}
+	for _, raw := range []*string{item.LastActivity, item.EndedAt} {
+		if raw == nil || *raw == "" {
+			continue
+		}
+		if parsed, err := time.Parse(time.RFC3339Nano, *raw); err == nil {
+			return parsed
+		}
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, item.StartedAt); err == nil {
+		return parsed
+	}
+	return time.Time{}
 }
 
 var loadDelegatesForJobList = func(jm *jobManager) (map[string]*jobstore.DelegateRecord, error) {
@@ -650,11 +858,11 @@ func jobListDelegatesForJobs(s *Session, records map[string]*jobstore.DelegateRe
 // then a count footer with the delegation allowance and any active/recent watches.
 func formatJobList(out jobListResult) string {
 	var b strings.Builder
-	if len(out.Jobs) > 0 {
-		b.WriteString("# job_id  type  status  label  [started · reason · exit · bytes]\n")
+	if len(out.Items) > 0 {
+		b.WriteString("# id  type  status  label  [started · reason · exit · bytes]\n")
 	}
-	for _, j := range out.Jobs {
-		fmt.Fprintf(&b, "%s  %s  %s", j.JobID, j.Type, j.Status)
+	for _, j := range out.Items {
+		fmt.Fprintf(&b, "%s  %s  %s", j.ID, j.Type, j.Status)
 		if j.Depth > 0 {
 			fmt.Fprintf(&b, "  depth=%d", j.Depth)
 		}
@@ -686,51 +894,24 @@ func formatJobList(out jobListResult) string {
 		}
 		fmt.Fprintf(&b, "  [%s]\n", strings.Join(detail, " · "))
 	}
-	if len(out.Jobs) == 0 {
+	if len(out.Items) == 0 {
 		b.WriteString("No jobs.\n")
 	}
-	if out.Offset > 0 || out.Total > len(out.Jobs) {
-		if len(out.Jobs) == 0 {
+	if out.Offset > 0 || out.Total > len(out.Items) {
+		if len(out.Items) == 0 {
 			// Offset past the end: never print an inverted "showing 51-50".
 			fmt.Fprintf(&b, "\nshowing none of %d jobs (offset %d past end).", out.Total, out.Offset)
 		} else {
-			fmt.Fprintf(&b, "\nshowing %d-%d of %d jobs.", out.Offset+1, out.Offset+len(out.Jobs), out.Total)
+			fmt.Fprintf(&b, "\nshowing %d-%d of %d jobs.", out.Offset+1, out.Offset+len(out.Items), out.Total)
 		}
 	} else {
 		fmt.Fprintf(&b, "\n%d job(s).", out.Count)
-	}
-	if len(out.Delegates) > 0 {
-		fmt.Fprintf(&b, " %d delegate(s).", len(out.Delegates))
 	}
 	if ts := out.TurnSlots; ts != nil {
 		fmt.Fprintf(&b, " delegate turn slots: %d/%d in use (%d jobs, %d drive turns).", ts.InUse, ts.Cap, ts.Jobs, ts.Drives)
 	}
 	if out.DelegationAllowance > 0 {
 		fmt.Fprintf(&b, " delegation_allowance: %d.", out.DelegationAllowance)
-	}
-	for _, d := range out.Delegates {
-		var detail []string
-		if d.CurrentJobID != "" {
-			detail = append(detail, "current_job_id "+d.CurrentJobID)
-		}
-		if d.LatestJobID != "" && d.LatestJobID != d.CurrentJobID {
-			detail = append(detail, "latest_job_id "+d.LatestJobID)
-		}
-		if d.TranscriptRef != "" {
-			detail = append(detail, "transcript_ref "+d.TranscriptRef)
-		}
-		if d.Resumable {
-			detail = append(detail, "resumable")
-		} else if d.NotResumableWhy != "" {
-			detail = append(detail, d.NotResumableWhy)
-		}
-		if d.ParentDelegateID != "" {
-			detail = append(detail, "parent_delegate_id "+d.ParentDelegateID)
-		}
-		fmt.Fprintf(&b, "\ndelegate %s  %s", d.DelegateID, d.Status)
-		if len(detail) != 0 {
-			fmt.Fprintf(&b, "  [%s]", strings.Join(detail, " · "))
-		}
 	}
 	for _, w := range out.Watches {
 		fmt.Fprintf(&b, "\nwatch %s → %s (%s)", w.ID, w.Source, w.Condition)
@@ -755,9 +936,9 @@ func shortTimestamp(ts string) string {
 }
 
 func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
-	jobID := strings.TrimSpace(stringArg(args, "job_id"))
-	if jobID == "" {
-		return "", errors.New("invalid_request: job_id is required")
+	target := strings.TrimSpace(stringArg(args, "target"))
+	if target == "" {
+		return "", errors.New("invalid_request: target is required")
 	}
 	// max_wait_ms: 0/absent = request stop and return; positive = wait up to N;
 	// negative = invalid_request. Zero reads as unset (strict-provider safe).
@@ -768,8 +949,8 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 		}
 		maxWaitMS = n
 	}
-	if strings.HasPrefix(jobID, "dlg_") {
-		return stopStableDelegate(ctx, s, jobID, maxWaitMS)
+	if strings.HasPrefix(target, "dlg_") {
+		return stopStableDelegate(ctx, s, target, maxWaitMS)
 	}
 	jm, err := sessionJobManager(s)
 	if err != nil {
@@ -777,24 +958,27 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 	}
 
 	targetJM := jm
-	if routed, _, err := s.nestedOrLocalJobManager(jobID); err == nil {
+	if routed, rec, err := s.nestedOrLocalJobManager(target); err == nil {
+		if rec.Type == jobstore.JobDelegate {
+			return "", fmt.Errorf("legacy_delegate_activation: %s is a retired delegate activation alias; use its stable delegate_id", target)
+		}
 		targetJM = routed
 	}
 	var childStopErr error
 	if shellBoolArg(args, "include_children") {
-		_, childStopErr = s.stopChildren(jobID)
+		_, childStopErr = s.stopChildren(target)
 	}
 	// Stopping a delegate job cascades into its subtree (spec §2): resolve the
 	// delegate's live child session BEFORE the stop signals (and cancels) the
 	// coordinator's turn, then stop the coordinator's own running jobs (its
 	// workers' delegate + shell jobs) recursively, so they do not survive
 	// orphaned.
-	cascadeChild := s.delegateChildSessionToCascade(jobID)
+	cascadeChild := s.delegateChildSessionToCascade(target)
 	var previousStatus jobstore.Status
-	if _, pre, lookupErr := s.nestedOrLocalJobManager(jobID); lookupErr == nil && pre != nil {
+	if _, pre, lookupErr := s.nestedOrLocalJobManager(target); lookupErr == nil && pre != nil {
 		previousStatus = pre.Status
 	}
-	rec, err := stopNestedOrLocalForJobStop(s, jobID)
+	rec, err := stopNestedOrLocalForJobStop(s, target)
 	if err != nil {
 		return "", errors.Join(childStopErr, err)
 	}
@@ -804,8 +988,8 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 		}
 	}
 	if maxWaitMS > 0 {
-		done := waitForJobDone(ctx, targetJM, jobID, clampJobBlockTimeout(maxWaitMS))
-		if _, latest, err := s.nestedOrLocalJobManager(jobID); err == nil {
+		done := waitForJobDone(ctx, targetJM, target, clampJobBlockTimeout(maxWaitMS))
+		if _, latest, err := s.nestedOrLocalJobManager(target); err == nil {
 			rec = latest
 		}
 		if !done && rec != nil && !rec.Status.IsTerminal() {
@@ -819,7 +1003,9 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 	}
 	_ = maxChars
 	stop := jobStopResult{
+		ID:             rec.JobID,
 		JobID:          rec.JobID,
+		Type:           string(rec.Type),
 		Status:         string(rec.Status),
 		Reason:         stringPtrOrNil(rec.Reason),
 		PreviousStatus: string(previousStatus),
@@ -880,7 +1066,9 @@ func stableDelegateStopResult(result delegateStopResult, completed bool) jobStop
 		outcome = "stopped"
 	}
 	return jobStopResult{
+		ID:             result.id,
 		JobID:          result.id,
+		Type:           "delegate",
 		Status:         string(status),
 		Reason:         &reason,
 		PreviousStatus: string(result.previousLifecycle),
@@ -916,6 +1104,64 @@ type jobStatusResult struct {
 	ExitCode         *int    `json:"exit_code,omitempty"`
 }
 
+type stableDelegateStatusResult struct {
+	ID                 string                 `json:"id"`
+	Type               string                 `json:"type"`
+	Status             string                 `json:"status"`
+	Task               string                 `json:"task"`
+	Description        string                 `json:"description,omitempty"`
+	AgentType          string                 `json:"agent_type"`
+	Model              string                 `json:"model,omitempty"`
+	ReasoningEffort    string                 `json:"reasoning_effort,omitempty"`
+	Resumable          bool                   `json:"resumable"`
+	NotResumableReason string                 `json:"not_resumable_reason,omitempty"`
+	TranscriptRef      string                 `json:"transcript_ref"`
+	RunStartedAt       string                 `json:"run_started_at,omitempty"`
+	LatestActivityAt   string                 `json:"latest_activity_at,omitempty"`
+	RunningForMS       *int64                 `json:"running_for_ms,omitempty"`
+	QuietForMS         *int64                 `json:"quiet_for_ms,omitempty"`
+	DurationMS         *int64                 `json:"duration_ms,omitempty"`
+	LastOutcome        *delegatestore.Outcome `json:"last_outcome,omitempty"`
+}
+
+func projectStableDelegateStatus(now time.Time, snapshot delegateSnapshot) stableDelegateStatusResult {
+	descriptor := snapshot.descriptor
+	out := stableDelegateStatusResult{
+		ID:                 snapshot.id,
+		Type:               "delegate",
+		Status:             string(snapshot.phase),
+		Task:               descriptor.Task,
+		Description:        descriptor.Description,
+		AgentType:          descriptor.AgentType,
+		Model:              descriptor.ResolvedModel,
+		ReasoningEffort:    descriptor.Config.ReasoningEffort,
+		Resumable:          snapshot.resumable,
+		NotResumableReason: snapshot.notResumableReason,
+		TranscriptRef:      snapshot.transcriptRef,
+		LastOutcome:        snapshot.lastOutcome,
+	}
+	if !snapshot.runStartedAt.IsZero() {
+		out.RunStartedAt = snapshot.runStartedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !snapshot.latestActivityAt.IsZero() {
+		out.LatestActivityAt = snapshot.latestActivityAt.UTC().Format(time.RFC3339Nano)
+	}
+	if snapshot.currentRunOpen && !snapshot.runStartedAt.IsZero() {
+		running := max(now.Sub(snapshot.runStartedAt).Milliseconds(), int64(0))
+		out.RunningForMS = &running
+		quietSince := snapshot.latestActivityAt
+		if quietSince.IsZero() {
+			quietSince = snapshot.runStartedAt
+		}
+		quiet := max(now.Sub(quietSince).Milliseconds(), int64(0))
+		out.QuietForMS = &quiet
+	} else if snapshot.lastOutcome != nil && !snapshot.runStartedAt.IsZero() && !snapshot.lastOutcome.EndedAt.IsZero() {
+		duration := max(snapshot.lastOutcome.EndedAt.Sub(snapshot.runStartedAt).Milliseconds(), int64(0))
+		out.DurationMS = &duration
+	}
+	return out
+}
+
 // turnSlotOccupancy is the diagnostic tree-counter snapshot surfaced in
 // job_list while any delegate-turn slot is held: spawn-budget total in use,
 // cap, and jobs, plus drive turns in flight on the separate drive budget.
@@ -929,12 +1175,13 @@ type turnSlotOccupancy struct {
 }
 
 type jobListResult struct {
-	Jobs      []jobListEntry      `json:"jobs"`
+	Items     []jobListEntry      `json:"items"`
+	Jobs      []jobListEntry      `json:"-"`
 	Count     int                 `json:"count"`
 	Offset    int                 `json:"offset,omitempty"`
 	Total     int                 `json:"total"`
 	TurnSlots *turnSlotOccupancy  `json:"turn_slots,omitempty"`
-	Delegates []delegateListEntry `json:"delegates,omitempty"`
+	Delegates []delegateListEntry `json:"-"`
 	// Watches/RecentWatches/DelegationAllowance are supervision signal kept only
 	// when they carry information: no active watches, no recent watch history, and
 	// a no-op delegation allowance (≤ 1, which can only grant 0) are all omitted.
@@ -979,7 +1226,8 @@ type recentWatchEntry struct {
 }
 
 type jobListEntry struct {
-	JobID            string  `json:"job_id"`
+	ID               string  `json:"id"`
+	JobID            string  `json:"job_id,omitempty"`
 	DelegateID       string  `json:"delegate_id,omitempty"`
 	Kind             string  `json:"kind"`
 	Type             string  `json:"type"`
@@ -987,6 +1235,10 @@ type jobListEntry struct {
 	Phase            string  `json:"phase,omitempty"`
 	Reason           *string `json:"reason,omitempty"`
 	Description      string  `json:"description"`
+	Task             string  `json:"task,omitempty"`
+	AgentType        string  `json:"agent_type,omitempty"`
+	Model            string  `json:"model,omitempty"`
+	ReasoningEffort  string  `json:"reasoning_effort,omitempty"`
 	ParentJobID      *string `json:"parent_job_id,omitempty"`
 	ParentDelegateID *string `json:"parent_delegate_id,omitempty"`
 	OwnerSessionID   string  `json:"owner_session_id"`
@@ -1031,10 +1283,14 @@ type jobListEntry struct {
 	// in an ancestor store carries that ancestor's depth. Omitted when 0 for the
 	// default and include_nested listings, which do not walk the tree.
 	Depth int `json:"depth,omitempty"`
+
+	LatestActivitySortAt time.Time `json:"-"`
 }
 
 type jobStopResult struct {
-	JobID          string  `json:"job_id"`
+	ID             string  `json:"id"`
+	JobID          string  `json:"-"`
+	Type           string  `json:"type"`
 	Status         string  `json:"status"`
 	Reason         *string `json:"reason"`
 	PreviousStatus string  `json:"previous_status"`
@@ -1044,7 +1300,11 @@ type jobStopResult struct {
 // formatJobStop renders a job_stop result as a single plain-text line matching the
 // job-family footer style: [job <id> · <status> · <outcome> · <reason>].
 func formatJobStop(out jobStopResult) string {
-	parts := []string{"job " + out.JobID, out.Status, out.Outcome}
+	id := out.ID
+	if id == "" {
+		id = out.JobID
+	}
+	parts := []string{out.Type + " " + id, out.Status, out.Outcome}
 	if out.Reason != nil && *out.Reason != "" {
 		parts = append(parts, *out.Reason)
 	}
@@ -1653,7 +1913,9 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 	for _, value := range values {
 		status := jobstore.Status(fmt.Sprint(value))
 		switch status {
-		case jobstore.StatusRunning, jobstore.StatusCompleted, jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled, jobstore.StatusStopped:
+		case jobstore.StatusRunning,
+			jobstore.Status("idle"), jobstore.Status("settling"), jobstore.Status("stopping"), jobstore.Status("closed"),
+			jobstore.StatusCompleted, jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled, jobstore.StatusStopped:
 			statuses = append(statuses, status)
 		default:
 			return nil, fmt.Errorf("invalid job status %q", status)
@@ -1871,6 +2133,17 @@ func projectJobRecord(s *Session, rec *jobstore.JobRecord) jobListEntry {
 }
 
 func projectJobRecordForViewer(viewer *Session, assessor *Session, rec *jobstore.JobRecord) jobListEntry {
+	now := time.Now()
+	if viewer != nil && viewer.clock != nil {
+		now = viewer.clock.Now()
+	}
+	if assessor != nil && assessor.jobManager != nil {
+		now = assessor.jobManager.now()
+	}
+	return projectJobRecordAt(viewer, assessor, rec, now)
+}
+
+func projectJobRecordAt(viewer *Session, assessor *Session, rec *jobstore.JobRecord, now time.Time) jobListEntry {
 	resumable := rec.Resumable
 	notResumableReason := stringPtrOrNil(rec.NotResumableWhy)
 	delegateID := rec.DelegateID
@@ -1888,13 +2161,6 @@ func projectJobRecordForViewer(viewer *Session, assessor *Session, rec *jobstore
 	if assessor == nil {
 		assessor = viewer
 	}
-	now := time.Now()
-	if viewer != nil && viewer.clock != nil {
-		now = viewer.clock.Now()
-	}
-	if assessor != nil && assessor.jobManager != nil {
-		now = assessor.jobManager.now()
-	}
 	statusView := projectJobStatus(now, rec)
 	if assessor != nil && isRuntimeLostDelegate(rec) {
 		assessment := assessor.assessDelegateResumability(rec, delegateResumabilityProjection)
@@ -1907,6 +2173,7 @@ func projectJobRecordForViewer(viewer *Session, assessor *Session, rec *jobstore
 		}
 	}
 	return jobListEntry{
+		ID:                 rec.JobID,
 		JobID:              rec.JobID,
 		DelegateID:         delegateID,
 		Kind:               statusView.Kind,

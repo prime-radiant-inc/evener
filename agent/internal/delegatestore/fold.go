@@ -227,6 +227,7 @@ func applyRunFinished(state State, event Event) error {
 	}
 	aggregate.CurrentRunOpen = false
 	aggregate.LatestActivityAt = payload.Outcome.EndedAt
+	aggregate.LatestPacket = cloneTerminalPacket(packet)
 	return nil
 }
 
@@ -670,6 +671,7 @@ func cloneAggregate(aggregate *Aggregate) *Aggregate {
 	clone.Descriptor = cloneDescriptor(aggregate.Descriptor)
 	clone.PreparedTerminal = cloneTerminalPacket(aggregate.PreparedTerminal)
 	clone.LatestOutcome = cloneOutcome(aggregate.LatestOutcome)
+	clone.LatestPacket = cloneTerminalPacket(aggregate.LatestPacket)
 	clone.PendingDeliveries = make([]PendingDelivery, len(aggregate.PendingDeliveries))
 	for i := range aggregate.PendingDeliveries {
 		clone.PendingDeliveries[i] = aggregate.PendingDeliveries[i]
