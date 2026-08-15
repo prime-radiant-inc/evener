@@ -777,6 +777,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		Sandbox:                       sandboxSnapshot,
 		Config:                        childConfig,
 		SharedTaskStoreOwnerSessionID: sharedTaskStoreOwnerSessionID,
+		ParentWatchGranted:            args.WatchParent,
 		Provenance:                    s.activeCausalProvenance(),
 		Resumable:                     true,
 	}
@@ -903,10 +904,10 @@ func (runtime delegateRuntime) construct(ctx context.Context, args delegateArgs,
 	if started.descriptor.Isolation != "" {
 		ctx = context.WithValue(ctx, ctxIsolation, started.descriptor.Isolation)
 	}
-	if args.WatchParent {
+	if started.descriptor.ParentWatchGranted {
 		ctx = context.WithValue(ctx, ctxWatchParent, true)
 	}
-	prepared, err := s.prepareStableDelegateRun(ctx, started.descriptor, args.WatchParent, selection)
+	prepared, err := s.prepareStableDelegateRun(ctx, started.descriptor, started.descriptor.ParentWatchGranted, selection)
 	if err != nil {
 		return nil, err
 	}
@@ -1024,6 +1025,9 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			toolNameCeiling:               append([]string(nil), descriptor.ToolNameCeiling...),
 			isolation:                     descriptor.Isolation,
 			communicateOutputSchema:       cloneMap(resultSchema),
+			parentWatchGranted:            descriptor.ParentWatchGranted,
+			parentInstallWatch:            s.installParentSourceWatchForChild,
+			parentClearWatch:              s.clearParentSourceWatchForChild,
 		},
 	}
 	child, err := RestoreSessionFromMetaWithConfig(s.client, profile, childEnv, meta, restoreCfg)
@@ -1343,6 +1347,10 @@ func (s *Session) bootstrapDelegateResources() error {
 	if err != nil {
 		_ = store.Close()
 		return fmt.Errorf("open delegate controller: %w", err)
+	}
+	if err := repairStableWatchDeliveriesForBootstrap(controller); err != nil {
+		_ = store.Close()
+		return fmt.Errorf("repair stable watch deliveries: %w", err)
 	}
 	reconcileDeliveries, err := reconcileDelegateResourcesForBootstrap(controller)
 	if err != nil {

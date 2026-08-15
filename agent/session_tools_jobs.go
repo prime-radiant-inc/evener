@@ -118,7 +118,7 @@ func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistra
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env
-			return jobWatchTool(s, args, jobToolResultMaxChars(reg, "job_watch"))
+			return jobWatchToolWithContext(ctx, s, args, jobToolResultMaxChars(reg, "job_watch"))
 		},
 	}); err != nil {
 		return err
@@ -173,6 +173,10 @@ func liveSteerWaitIgnoredReason(blockTimeoutMS int, status jobstore.Status, acti
 }
 
 func jobWatchTool(s *Session, args map[string]any, maxChars int) (any, error) {
+	return jobWatchToolWithContext(context.Background(), s, args, maxChars)
+}
+
+func jobWatchToolWithContext(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
 	jm, err := sessionJobManager(s)
 	if err != nil {
 		return "", err
@@ -190,12 +194,39 @@ func jobWatchTool(s *Session, args map[string]any, maxChars int) (any, error) {
 			return "", err
 		}
 		if source.Kind == watchSourceParentSession {
+			if s.delegateController != nil {
+				actor, actorErr := s.delegateActor(ctx)
+				if actorErr != nil {
+					return "", actorErr
+				}
+				binding, bindErr := s.delegateController.ResolveParentWatchSource(actor)
+				if bindErr != nil {
+					return "", bindErr
+				}
+				res, err = s.configureStableWatchOnSource("parent", binding, a)
+				break
+			}
 			if !s.cfg.spawn.parentWatchGranted || s.cfg.spawn.parentInstallWatch == nil {
 				return "", errors.New("source_not_watchable: source parent requires delegate(watch_parent=true)")
 			}
 			a.Source = "parent"
 			a.Target = runtimeMessageAliasCaller
 			res, err = s.cfg.spawn.parentInstallWatch(s.ID(), s.cfg.spawn.parentDelegateID, a)
+			break
+		}
+		if source.Kind == watchSourceStableDelegate {
+			if s.delegateController == nil {
+				return "", errors.New("delegate controller is unavailable")
+			}
+			actor, actorErr := s.delegateActor(ctx)
+			if actorErr != nil {
+				return "", actorErr
+			}
+			binding, bindErr := s.delegateController.ResolveStableWatchSource(actor, source.Public)
+			if bindErr != nil {
+				return "", bindErr
+			}
+			res, err = s.configureStableWatchOnSource(source.Public, binding, a)
 			break
 		}
 		a.Source = source.Public
@@ -216,7 +247,7 @@ func jobWatchTool(s *Session, args map[string]any, maxChars int) (any, error) {
 			res, err = jm.clearWatchByID(a.WatchID)
 			break
 		}
-		if ownerRes, found, ownerErr := s.clearDescendantReceiverWatchByID(a.WatchID); found || ownerErr != nil {
+		if ownerRes, found, ownerErr := s.clearStableReceiverWatchByID(a.WatchID); found || ownerErr != nil {
 			res, err = ownerRes, ownerErr
 			break
 		}
@@ -243,6 +274,23 @@ func jobWatchTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	return marshalWatchResult(res, maxChars)
 }
 
+func (s *Session) configureStableWatchOnSource(sourcePublic string, binding delegateWatchSourceBinding, a watchArgs) (watchResult, error) {
+	if s == nil || binding.runtime == nil || binding.runtime.jobManager == nil || s.delegateController == nil {
+		return watchResult{}, errors.New("source_not_watchable: stable watch source is unavailable")
+	}
+	a.Source = sourcePublic
+	a.Target = runtimeMessageAliasCaller
+	a.ReceiverSessionID = s.ID()
+	a.ReceiverDelegateID = s.owningDelegateID
+	a.StableReceiver = true
+	a.ReceiverSendInternal = true
+	if binding.lease != nil {
+		a.SourceDelegateID = binding.lease.delegateID
+		a.SourceGeneration = binding.lease.generation
+	}
+	return binding.runtime.jobManager.configureWatch(a)
+}
+
 func (s *Session) configureDescendantReceiverWatch(a watchArgs) (watchResult, bool, error) {
 	if s == nil || !strings.HasPrefix(a.Target, "job_") {
 		return watchResult{}, false, nil
@@ -262,11 +310,12 @@ func (s *Session) configureDescendantReceiverWatch(a watchArgs) (watchResult, bo
 }
 
 func (s *Session) watchListToolResultWithDescendantReceivers(local jobWatchListToolResult) jobWatchListToolResult {
-	for _, child := range s.liveDescendantSessions() {
+	receiverDelegateID := s.owningDelegateID
+	for _, child := range s.stableWatchSourceSessions() {
 		if child == nil || child.jobManager == nil {
 			continue
 		}
-		descendant := child.jobManager.watchListToolResultForReceiver(s.ID(), "")
+		descendant := child.jobManager.watchListToolResultForReceiver(s.ID(), receiverDelegateID)
 		local.Watches = append(local.Watches, descendant.Watches...)
 		local.RecentWatches = append(local.RecentWatches, descendant.RecentWatches...)
 	}
@@ -281,11 +330,12 @@ func (s *Session) watchListToolResultWithDescendantReceivers(local jobWatchListT
 }
 
 func (s *Session) inspectDescendantReceiverWatchByID(watchID string) (jobWatchInspectToolResult, bool) {
-	for _, child := range s.liveDescendantSessions() {
+	receiverDelegateID := s.owningDelegateID
+	for _, child := range s.stableWatchSourceSessions() {
 		if child == nil || child.jobManager == nil {
 			continue
 		}
-		if inspect, ok := child.jobManager.inspectReceiverWatchByID(watchID, s.ID(), ""); ok {
+		if inspect, ok := child.jobManager.inspectReceiverWatchByID(watchID, s.ID(), receiverDelegateID); ok {
 			return inspect, true
 		}
 	}
@@ -293,17 +343,29 @@ func (s *Session) inspectDescendantReceiverWatchByID(watchID string) (jobWatchIn
 }
 
 func (s *Session) clearDescendantReceiverWatchByID(watchID string) (watchResult, bool, error) {
-	for _, child := range s.liveDescendantSessions() {
+	return s.clearStableReceiverWatchByID(watchID)
+}
+
+func (s *Session) clearStableReceiverWatchByID(watchID string) (watchResult, bool, error) {
+	receiverDelegateID := s.owningDelegateID
+	for _, child := range s.stableWatchSourceSessions() {
 		if child == nil || child.jobManager == nil {
 			continue
 		}
-		if _, ok := child.jobManager.inspectReceiverWatchByID(watchID, s.ID(), ""); !ok {
+		if _, ok := child.jobManager.inspectReceiverWatchByID(watchID, s.ID(), receiverDelegateID); !ok {
 			continue
 		}
-		res, err := child.jobManager.clearReceiverWatchByID(watchID, s.ID(), "")
+		res, err := child.jobManager.clearReceiverWatchByID(watchID, s.ID(), receiverDelegateID)
 		return res, true, err
 	}
 	return watchResult{}, false, nil
+}
+
+func (s *Session) stableWatchSourceSessions() []*Session {
+	if s == nil || s.delegateController == nil {
+		return s.liveDescendantSessions()
+	}
+	return s.delegateController.watchSourceSessions()
 }
 
 func (s *Session) liveDescendantSessions() []*Session {
@@ -1610,6 +1672,12 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	if _, ok := args["send"]; ok {
 		return watchArgs{}, errors.New("invalid_request: job_watch delivers to the watcher automatically; send is not a public argument")
 	}
+	if _, ok := args["receiver_session_id"]; ok {
+		return watchArgs{}, errors.New("invalid_request: job_watch derives its receiver from the watcher session")
+	}
+	if _, ok := args["receiver_delegate_id"]; ok {
+		return watchArgs{}, errors.New("invalid_request: job_watch derives its receiver from the watcher session")
+	}
 	a := watchArgs{
 		Operation:   operation,
 		WatchID:     strings.TrimSpace(stringArg(args, "watch_id")),
@@ -1636,9 +1704,6 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	case "create":
 		if a.Source == "" {
 			return watchArgs{}, errors.New("invalid_request: source is required")
-		}
-		if strings.HasPrefix(a.Source, "dlg_") {
-			return watchArgs{}, errors.New("invalid_request: delegate_id is a conversation handle; watch source self, parent, or a concrete job_id")
 		}
 	case "list":
 		if a.Source != "" || a.WatchID != "" {

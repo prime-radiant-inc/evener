@@ -253,6 +253,10 @@ func FoldWatches(events []Event) map[string]*WatchRecord {
 			if e.Watch.Config != nil {
 				rec.ReceiverSessionID = e.Watch.Config.ReceiverSessionID
 				rec.ReceiverDelegateID = e.Watch.Config.ReceiverDelegateID
+				rec.Source = e.Watch.Config.Source
+				rec.SourceDelegateID = e.Watch.Config.SourceDelegateID
+				rec.SourceDelegateGeneration = e.Watch.Config.SourceDelegateGeneration
+				rec.StableReceiver = e.Watch.Config.StableReceiver
 			}
 			watches[e.WatchID] = rec
 		case EventWatchCleared:

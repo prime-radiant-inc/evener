@@ -92,6 +92,7 @@ type Descriptor struct {
 	Sandbox                       *SandboxSnapshot      `json:"sandbox,omitempty"`
 	Config                        schema.ConfigSnapshot `json:"config"`
 	SharedTaskStoreOwnerSessionID string                `json:"shared_task_store_owner_session_id,omitempty"`
+	ParentWatchGranted            bool                  `json:"parent_watch_granted,omitempty"`
 	Provenance                    *provenance.Causal    `json:"provenance,omitempty"`
 	Resumable                     bool                  `json:"resumable"`
 }

@@ -55,6 +55,7 @@ const (
 	// watch send may descend from before the breaker drops it as a runaway. The
 	// existing watchDeliveryBudget is the coarser whole-watch volume floor.
 	runawaySelfInfluenceDepth = 8
+	stableWatchReceiverTarget = "stable_watch_receiver"
 )
 
 // delegateQuietWindow is how long a running delegate may emit no
@@ -125,6 +126,10 @@ func watchLostAtRestartSessionMessage() string {
 	return "watch ended: this session restarted and the watch did not survive it; the observed session is still running, so its condition may still occur with nothing watching — re-arm the watch if you still care"
 }
 
+func watchLostAtRestartStableDelegateMessage(source string) string {
+	return fmt.Sprintf("watch ended: this session restarted and the watch did not survive it; stable delegate %s may still emit matching events — re-arm the watch if you still care", source)
+}
+
 // watchBudgetClearedMessage is the single final notification text emitted when a
 // watch trips the delivery budget (spec §4 F1). The count is the budget itself.
 func watchBudgetClearedMessage(target string) string {
@@ -158,6 +163,9 @@ type watchConfig struct {
 	receiverSessionID  string
 	receiverDelegateID string
 	receiverNotify     func(jobNotification)
+	sourceDelegateID   string
+	sourceGeneration   uint64
+	stableReceiver     bool
 	target             string
 	outputMatch        string
 	outputMatcher      *jobstore.OutputMatcher
@@ -208,6 +216,9 @@ type watchArgs struct {
 	EventFilter          *watchEventFilter
 	Send                 *watchSendArgs
 	ReceiverSendInternal bool
+	SourceDelegateID     string
+	SourceGeneration     uint64
+	StableReceiver       bool
 	Clear                bool
 }
 
@@ -217,6 +228,7 @@ const (
 	watchSourceConcreteJob watchSourceKind = iota
 	watchSourceSelfSession
 	watchSourceParentSession
+	watchSourceStableDelegate
 )
 
 type watchSource struct {
@@ -238,7 +250,10 @@ func normalizeWatchSource(source string) (watchSource, error) {
 		if strings.HasPrefix(source, "job_") {
 			return watchSource{Kind: watchSourceConcreteJob, Public: source, Internal: source}, nil
 		}
-		return watchSource{}, fmt.Errorf("source_not_watchable: %q is not self, parent, or a concrete job_id", source)
+		if strings.HasPrefix(source, "dlg_") {
+			return watchSource{Kind: watchSourceStableDelegate, Public: source, Internal: runtimeMessageAliasCaller}, nil
+		}
+		return watchSource{}, fmt.Errorf("source_not_watchable: %q is not self, parent, a concrete job_id, or a stable delegate_id", source)
 	}
 }
 
@@ -348,6 +363,9 @@ type restoredWatchConfigKey struct {
 	receiverSessionID  string
 	receiverDelegateID string
 	generation         string
+	sourceDelegateID   string
+	sourceGeneration   uint64
+	stableReceiver     bool
 }
 
 // watchSendToken identifies a pending caller-targeted watch send. Tokens are
@@ -445,6 +463,7 @@ func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.
 		return err
 	}
 	jm.removePendingWatchSend(cfg, delivered.Key, delivered.UpdateSeq)
+	jm.releaseStableWatchReceipt(delivered.DeliveryID)
 	jm.mu.Lock()
 	if delivered.DeliveryID != "" {
 		jm.deliveredWatchSendIDs[delivered.DeliveryID] = struct{}{}
@@ -994,6 +1013,7 @@ func isWatchSessionTarget(target string) bool {
 
 func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 	applyReceiverWatchSend(&a)
+	sourceDelegateID := stableWatchSourceID(a)
 	eventKinds, wildcardEvents := resolveEventKinds(a.Events)
 	watchID := jobstore.NewWatchID()
 	cfg := &watchConfig{
@@ -1014,6 +1034,9 @@ func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 		send:               cloneWatchSendArgs(a.Send),
 		generation:         jobstore.NewWatchGeneration(),
 		createdAt:          createdAt,
+		sourceDelegateID:   sourceDelegateID,
+		sourceGeneration:   a.SourceGeneration,
+		stableReceiver:     a.StableReceiver,
 	}
 	// every is valid only with exactly one event kind (enforced by validation).
 	if a.Every > 0 && len(a.Events) == 1 {
@@ -1034,6 +1057,11 @@ func applyReceiverWatchSend(a *watchArgs) {
 	if a == nil || a.Send != nil {
 		return
 	}
+	if a.StableReceiver {
+		a.Send = &watchSendArgs{To: stableWatchReceiverTarget}
+		a.ReceiverSendInternal = true
+		return
+	}
 	if receiverDelegateID := strings.TrimSpace(a.ReceiverDelegateID); receiverDelegateID != "" {
 		a.Send = &watchSendArgs{To: receiverDelegateID}
 		a.ReceiverSendInternal = true
@@ -1043,14 +1071,18 @@ func applyReceiverWatchSend(a *watchArgs) {
 func normalizedWatchConfigHash(a watchArgs) string {
 	applyReceiverWatchSend(&a)
 	snapshot := jobstore.WatchConfigSnapshot{
-		Target:             a.Target,
-		OutputMatch:        a.OutputMatch,
-		ProgressIntervalMS: a.ProgressIntervalMS,
-		Events:             canonicalWatchEvents(a.Events),
-		Every:              a.Every,
-		EventFilter:        watchEventFilterSnapshot(a.EventFilter),
-		ReceiverSessionID:  strings.TrimSpace(a.ReceiverSessionID),
-		ReceiverDelegateID: strings.TrimSpace(a.ReceiverDelegateID),
+		Target:                   a.Target,
+		OutputMatch:              a.OutputMatch,
+		ProgressIntervalMS:       a.ProgressIntervalMS,
+		Events:                   canonicalWatchEvents(a.Events),
+		Every:                    a.Every,
+		EventFilter:              watchEventFilterSnapshot(a.EventFilter),
+		ReceiverSessionID:        strings.TrimSpace(a.ReceiverSessionID),
+		ReceiverDelegateID:       strings.TrimSpace(a.ReceiverDelegateID),
+		Source:                   stableWatchSourceSnapshot(a),
+		SourceDelegateID:         stableWatchSourceID(a),
+		SourceDelegateGeneration: a.SourceGeneration,
+		StableReceiver:           a.StableReceiver,
 	}
 	if a.Send != nil {
 		snapshot.SendTo = a.Send.To
@@ -1065,6 +1097,24 @@ func normalizedWatchConfigHash(a watchArgs) string {
 	b, _ := json.Marshal(snapshot)
 	sum := sha256.Sum256(b)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func stableWatchSourceSnapshot(a watchArgs) string {
+	if stableWatchSourceID(a) == "" && !a.StableReceiver {
+		return ""
+	}
+	return strings.TrimSpace(a.Source)
+}
+
+func stableWatchSourceID(a watchArgs) string {
+	if id := strings.TrimSpace(a.SourceDelegateID); id != "" {
+		return id
+	}
+	source := strings.TrimSpace(a.Source)
+	if strings.HasPrefix(source, "dlg_") {
+		return source
+	}
+	return ""
 }
 
 func resolveEventKinds(names []string) (map[events.EventKind]bool, bool) {
@@ -1225,11 +1275,14 @@ func (jm *jobManager) restoreWatchSendPendingFrom(load watchSendLoader) error {
 			receiverSessionID:  strings.TrimSpace(state.ReceiverSessionID),
 			receiverDelegateID: strings.TrimSpace(state.ReceiverDelegateID),
 			generation:         key.WatchGeneration,
+			sourceDelegateID:   strings.TrimSpace(state.SourceDelegateID),
+			sourceGeneration:   state.SourceDelegateGeneration,
+			stableReceiver:     state.StableReceiver,
 		}
 		cfg := cfgs[cfgKey]
 		if cfg == nil {
-			sourcePublic := watchPublicSource("", key.WatchTarget)
-			if cfgKey.receiverSessionID != "" && key.WatchTarget == runtimeMessageAliasCaller {
+			sourcePublic := watchPublicSource(state.SourceDelegateID, key.WatchTarget)
+			if cfgKey.sourceDelegateID == "" && cfgKey.receiverSessionID != "" && key.WatchTarget == runtimeMessageAliasCaller {
 				sourcePublic = "parent"
 			}
 			cfg = &watchConfig{
@@ -1242,6 +1295,9 @@ func (jm *jobManager) restoreWatchSendPendingFrom(load watchSendLoader) error {
 				send:               &watchSendArgs{To: key.ResolvedSendTo},
 				generation:         key.WatchGeneration,
 				pending:            make(map[jobstore.WatchSendKey]*jobstore.WatchSendState),
+				sourceDelegateID:   cfgKey.sourceDelegateID,
+				sourceGeneration:   cfgKey.sourceGeneration,
+				stableReceiver:     cfgKey.stableReceiver,
 			}
 			cfgs[cfgKey] = cfg
 		}
@@ -1669,7 +1725,7 @@ func closeWatchConfig(cfg *watchConfig) {
 
 func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult {
 	var send *watchSendArgs
-	if cfg.receiverDelegateID == "" {
+	if cfg.receiverDelegateID == "" && !cfg.stableReceiver {
 		send = cloneWatchSendArgs(cfg.send)
 	}
 	return watchResult{
@@ -1698,14 +1754,18 @@ func watchConfigSnapshot(cfg *watchConfig) *jobstore.WatchConfigSnapshot {
 		return nil
 	}
 	snapshot := &jobstore.WatchConfigSnapshot{
-		Target:             cfg.target,
-		OutputMatch:        cfg.outputMatch,
-		ProgressIntervalMS: cfg.progressIntervalMS,
-		Events:             append([]string(nil), cfg.events...),
-		Every:              cfg.triggerEvery,
-		EventFilter:        watchEventFilterSnapshot(cfg.eventFilter),
-		ReceiverSessionID:  cfg.receiverSessionID,
-		ReceiverDelegateID: cfg.receiverDelegateID,
+		Target:                   cfg.target,
+		OutputMatch:              cfg.outputMatch,
+		ProgressIntervalMS:       cfg.progressIntervalMS,
+		Events:                   append([]string(nil), cfg.events...),
+		Every:                    cfg.triggerEvery,
+		EventFilter:              watchEventFilterSnapshot(cfg.eventFilter),
+		ReceiverSessionID:        cfg.receiverSessionID,
+		ReceiverDelegateID:       cfg.receiverDelegateID,
+		Source:                   cfg.sourcePublic,
+		SourceDelegateID:         cfg.sourceDelegateID,
+		SourceDelegateGeneration: cfg.sourceGeneration,
+		StableReceiver:           cfg.stableReceiver,
 	}
 	if cfg.send != nil {
 		snapshot.SendTo = cfg.send.To
@@ -2823,7 +2883,9 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 			continue
 		}
 		var trigger string
-		if isWatchSessionTarget(watch.Target) {
+		if watch.SourceDelegateID != "" {
+			trigger = watchLostAtRestartStableDelegateMessage(watch.SourceDelegateID)
+		} else if isWatchSessionTarget(watch.Target) {
 			// A session-target watch (source "self" or "parent") has no job
 			// record: its target is this session's own live event stream, not a
 			// job with a terminal outcome. recs[watch.Target] would never match
@@ -2845,13 +2907,18 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 		// a pending frame: enough identity for the send rail to route and settle
 		// this one frame, and never registered in jm.watches.
 		cfg := &watchConfig{
-			id:           watch.WatchID,
-			watchID:      watch.WatchID,
-			sourcePublic: watchPublicSource("", watch.Target),
-			target:       watch.Target,
-			send:         &watchSendArgs{To: watch.SendTo},
-			generation:   watch.Generation,
-			pending:      make(map[jobstore.WatchSendKey]*jobstore.WatchSendState),
+			id:                 watch.WatchID,
+			watchID:            watch.WatchID,
+			sourcePublic:       watchPublicSource(watch.Source, watch.Target),
+			receiverSessionID:  watch.ReceiverSessionID,
+			receiverDelegateID: watch.ReceiverDelegateID,
+			target:             watch.Target,
+			send:               &watchSendArgs{To: watch.SendTo},
+			generation:         watch.Generation,
+			pending:            make(map[jobstore.WatchSendKey]*jobstore.WatchSendState),
+			sourceDelegateID:   watch.SourceDelegateID,
+			sourceGeneration:   watch.SourceDelegateGeneration,
+			stableReceiver:     watch.StableReceiver,
 		}
 		root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, watch.Target)}
 		jm.mu.Lock()
@@ -3324,18 +3391,21 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 			ResolvedSendTo:          resolvedSendTo,
 			WatchGeneration:         d.generation,
 		},
-		DeliveryID:         deliveryID,
-		UpdateSeq:          d.updateSeq,
-		Message:            d.message,
-		Frame:              d.frame,
-		TriggerIdentity:    d.watchedIdentity,
-		TriggerReason:      d.trigger,
-		Provenance:         provenance.Clone(d.provenance),
-		DelegateGeneration: d.delegateGeneration,
-		ReceiverSessionID:  d.cfg.receiverSessionID,
-		ReceiverDelegateID: d.cfg.receiverDelegateID,
-		SelfInfluenceDepth: d.fuseDepth,
-		EndNotice:          d.endNotice,
+		DeliveryID:               deliveryID,
+		UpdateSeq:                d.updateSeq,
+		Message:                  d.message,
+		Frame:                    d.frame,
+		TriggerIdentity:          d.watchedIdentity,
+		TriggerReason:            d.trigger,
+		Provenance:               provenance.Clone(d.provenance),
+		DelegateGeneration:       d.delegateGeneration,
+		ReceiverSessionID:        d.cfg.receiverSessionID,
+		ReceiverDelegateID:       d.cfg.receiverDelegateID,
+		SourceDelegateID:         d.cfg.sourceDelegateID,
+		SourceDelegateGeneration: d.cfg.sourceGeneration,
+		StableReceiver:           d.cfg.stableReceiver,
+		SelfInfluenceDepth:       d.fuseDepth,
+		EndNotice:                d.endNotice,
 	}
 }
 
@@ -3465,6 +3535,9 @@ func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchCon
 			})
 			return false, err
 		}
+	}
+	if state.StableReceiver {
+		return jm.deliverStableWatchSend(cfg, state)
 	}
 	if send == nil {
 		return false, jm.dropWatchSend(state, cfg, "delivery unavailable")
@@ -3682,10 +3755,72 @@ func (jm *jobManager) dropWatchSend(state jobstore.WatchSendState, cfg *watchCon
 		return err
 	}
 	jm.removePendingWatchSend(cfg, dropped.Key, dropped.UpdateSeq)
+	jm.releaseStableWatchReceipt(dropped.DeliveryID)
 	jm.enqueueWatchNotifications([]jobNotification{
 		watchNotification(state.Key.ResolvedWatchedIdentity, "watch send failed: delivery_id="+state.DeliveryID+": "+dropped.DiagnosticReason),
 	})
 	return nil
+}
+
+func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.WatchSendState) (bool, error) {
+	controller := jm.delegateController
+	if controller == nil {
+		return false, errors.New("stable watch controller is unavailable")
+	}
+	receipt := jm.stableWatchReceipt(state.DeliveryID)
+	if receipt == nil {
+		var err error
+		receipt, err = controller.AcquireWatchDelivery(
+			state.SourceDelegateID,
+			state.SourceDelegateGeneration,
+			state.ReceiverDelegateID,
+			state.DeliveryID,
+			state.UpdateSeq,
+			state.EndNotice,
+		)
+		if err != nil {
+			return false, err
+		}
+		jm.rememberStableWatchReceipt(receipt)
+	}
+	folded, err := jm.store.LoadWatchSends()
+	if err != nil {
+		return false, err
+	}
+	pending := folded.Pending[state.Key]
+	if pending == nil || pending.DeliveryID != state.DeliveryID || pending.UpdateSeq != state.UpdateSeq {
+		return false, errors.New("stable watch delivery is not the durable pending head")
+	}
+	receiver, err := controller.stableWatchReceiver(state.ReceiverSessionID, state.ReceiverDelegateID)
+	if err != nil {
+		return false, err
+	}
+	if _, err := receiver.appendDelegateNotificationDurably(stableWatchAttentionID(state), stableWatchNotificationContent(state)); err != nil {
+		return false, err
+	}
+	if !jm.isCurrentPendingWatchSend(cfg, state) {
+		return false, nil
+	}
+	if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func stableWatchAttentionID(state jobstore.WatchSendState) string {
+	return "watch:" + state.DeliveryID + ":" + strconv.FormatUint(state.UpdateSeq, 10)
+}
+
+func stableWatchNotificationContent(state jobstore.WatchSendState) string {
+	lines := strings.Split(state.Frame, "\n")
+	out := lines[:0]
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "delivery_id:") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
 }
 
 func (jm *jobManager) isCurrentPendingWatchSend(cfg *watchConfig, state jobstore.WatchSendState) bool {
@@ -3755,16 +3890,48 @@ func (jm *jobManager) isCurrentWatchSendDeliveryLocked(d watchSendDelivery) bool
 }
 
 func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d watchSendDelivery) (jobstore.WatchSendState, bool, error) {
-	record := jm.recordWatchSendPending(state, d)
+	jm.watchPersistMu.Lock()
+	defer jm.watchPersistMu.Unlock()
+
+	record := jm.planWatchSendPending(state, d)
 	if len(record.pendingEvents) == 0 {
 		return state, false, nil
 	}
+	enqueueReceipt, err := jm.beginStableWatchEnqueue(record.persisted)
+	if err != nil {
+		return state, false, err
+	}
+	enqueueCompleted := false
+	defer func() {
+		if enqueueReceipt != nil && !enqueueCompleted {
+			enqueueReceipt.controller.AbortWatchEnqueue(enqueueReceipt)
+		}
+	}()
 	if err := jm.appendWatchSendEvents(record.pendingEvents); err != nil {
-		jm.rollbackWatchSendPendingRecord(record)
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
 		return state, false, err
+	}
+	jm.commitWatchSendPendingRecord(record, d.allowAfterTerminalExpiry)
+	if enqueueReceipt != nil {
+		deliveryReceipt, err := enqueueReceipt.controller.CompleteWatchEnqueue(enqueueReceipt)
+		if err != nil {
+			return record.persisted, true, err
+		}
+		enqueueCompleted = true
+		jm.rememberStableWatchReceipt(deliveryReceipt)
+		folded, err := jm.store.LoadWatchSends()
+		if err != nil {
+			return record.persisted, true, err
+		}
+		pending := folded.Pending[record.persisted.Key]
+		if pending == nil || pending.DeliveryID != record.persisted.DeliveryID || pending.UpdateSeq != record.persisted.UpdateSeq {
+			return record.persisted, true, errors.New("stable watch pending frame did not survive durable refold")
+		}
+		if record.previous != nil && record.previous.DeliveryID != record.persisted.DeliveryID {
+			jm.releaseStableWatchReceipt(record.previous.DeliveryID)
+		}
 	}
 	var evictionDiagnostics []jobNotification
 	for _, eviction := range record.evictions {
@@ -3785,6 +3952,48 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 	return record.persisted, true, nil
 }
 
+func (jm *jobManager) beginStableWatchEnqueue(state jobstore.WatchSendState) (*delegateWatchReceipt, error) {
+	if !state.StableReceiver {
+		return nil, nil
+	}
+	if jm.delegateController == nil {
+		return nil, errors.New("stable watch controller is unavailable")
+	}
+	return jm.delegateController.BeginWatchEnqueue(
+		state.SourceDelegateID,
+		state.SourceDelegateGeneration,
+		state.ReceiverDelegateID,
+		state.DeliveryID,
+		state.UpdateSeq,
+		state.EndNotice,
+	)
+}
+
+func (jm *jobManager) rememberStableWatchReceipt(receipt *delegateWatchReceipt) {
+	if receipt == nil {
+		return
+	}
+	jm.mu.Lock()
+	jm.stableWatchReceipts[receipt.deliveryID] = receipt
+	jm.mu.Unlock()
+}
+
+func (jm *jobManager) stableWatchReceipt(deliveryID string) *delegateWatchReceipt {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.stableWatchReceipts[deliveryID]
+}
+
+func (jm *jobManager) releaseStableWatchReceipt(deliveryID string) {
+	jm.mu.Lock()
+	receipt := jm.stableWatchReceipts[deliveryID]
+	delete(jm.stableWatchReceipts, deliveryID)
+	jm.mu.Unlock()
+	if receipt != nil {
+		_ = receipt.controller.CompleteWatchDelivery(receipt)
+	}
+}
+
 type watchSendPendingRecord struct {
 	pendingEvents []jobstore.Event
 	evictions     []watchSendEviction
@@ -3801,7 +4010,7 @@ type watchSendEviction struct {
 	diagnostic jobNotification
 }
 
-func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d watchSendDelivery) watchSendPendingRecord {
+func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watchSendDelivery) watchSendPendingRecord {
 	now := jm.now()
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
@@ -3814,7 +4023,7 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 		return watchSendPendingRecord{}
 	}
 	if cfg.pending == nil {
-		cfg.pending = make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
+		// The map is created only after the pending event is durable.
 	}
 	record := watchSendPendingRecord{
 		cfg: cfg,
@@ -3837,8 +4046,6 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 		if ud := jm.fuseDepthLocked(cfg, state.Provenance); ud > state.SelfInfluenceDepth {
 			state.SelfInfluenceDepth = ud
 		}
-	} else {
-		cfg.pendingOrder = append(cfg.pendingOrder, state.Key)
 	}
 	if state.CreatedAt.IsZero() {
 		state.CreatedAt = now
@@ -3846,17 +4053,17 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 	state.UpdatedAt = now
 	pendingState := state
 	record.persisted = pendingState
-	cfg.pending[state.Key] = &pendingState
-	if d.allowAfterTerminalExpiry {
-		jm.rememberDetachedPendingLocked(cfg)
-	}
 
 	record.pendingEvents = []jobstore.Event{{
 		Kind:      jobstore.EventWatchSendPending,
 		TS:        now,
 		WatchSend: &pendingState,
 	}}
-	overflow := len(cfg.pending) - defaultWatchSendPendingCap
+	projectedPending := len(cfg.pending)
+	if cfg.pending[state.Key] == nil {
+		projectedPending++
+	}
+	overflow := projectedPending - defaultWatchSendPendingCap
 	for _, evictedKey := range cfg.pendingOrder {
 		if overflow <= 0 {
 			break
@@ -3877,8 +4084,40 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 		})
 		overflow--
 	}
-	jm.forgetTerminalFlushIfEmptyLocked(cfg)
 	return record
+}
+
+// recordWatchSendPending retains the pure runtime-state transition used by the
+// state-machine harnesses. Production persistence uses planWatchSendPending,
+// fsyncs its event, and calls commitWatchSendPendingRecord only afterward.
+func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d watchSendDelivery) watchSendPendingRecord {
+	record := jm.planWatchSendPending(state, d)
+	jm.commitWatchSendPendingRecord(record, d.allowAfterTerminalExpiry)
+	return record
+}
+
+func (jm *jobManager) commitWatchSendPendingRecord(record watchSendPendingRecord, detached bool) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if record.cfg == nil || len(record.pendingEvents) == 0 {
+		return
+	}
+	cfg := record.cfg
+	if cfg.pending == nil {
+		cfg.pending = make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
+	}
+	current := cfg.pending[record.key]
+	if current != nil && current.UpdateSeq > record.persisted.UpdateSeq {
+		return
+	}
+	if current == nil {
+		cfg.pendingOrder = append(cfg.pendingOrder, record.key)
+	}
+	persisted := record.persisted
+	cfg.pending[record.key] = &persisted
+	if detached || cfg.rejectingDelivery || jm.closing {
+		jm.rememberDetachedPendingLocked(cfg)
+	}
 }
 
 func (jm *jobManager) rollbackWatchSendPendingRecord(record watchSendPendingRecord) {
@@ -4243,15 +4482,20 @@ func (jm *jobManager) appendWatchSendTerminalSnapshots(snapshots []watchSendTerm
 
 func (jm *jobManager) removeWatchSendTerminalSnapshots(snapshots []watchSendTerminalSnapshot) {
 	jm.mu.Lock()
-	defer jm.mu.Unlock()
+	var receiptIDs []string
 	for _, snapshot := range snapshots {
 		for _, event := range snapshot.events {
 			if event.WatchSend == nil {
 				continue
 			}
+			receiptIDs = append(receiptIDs, event.WatchSend.DeliveryID)
 			removePendingWatchSendLocked(snapshot.cfg, event.WatchSend.Key, event.WatchSend.UpdateSeq)
 		}
 		jm.forgetTerminalFlushIfEmptyLocked(snapshot.cfg)
+	}
+	jm.mu.Unlock()
+	for _, deliveryID := range receiptIDs {
+		jm.releaseStableWatchReceipt(deliveryID)
 	}
 }
 

@@ -21,6 +21,8 @@ type delegateStopState struct {
 	steeringClaims   map[uint64]struct{}
 	modelClaims      map[uint64]struct{}
 	settlementClaims map[uint64]struct{}
+	watchEnqueues    map[uint64]struct{}
+	watchDeliveries  map[uint64]struct{}
 	waiters          []*delegateInlineWaiter
 	done             chan struct{}
 	progress         chan struct{}
@@ -145,6 +147,8 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 		steeringClaims:   make(map[uint64]struct{}),
 		modelClaims:      make(map[uint64]struct{}),
 		settlementClaims: make(map[uint64]struct{}),
+		watchEnqueues:    make(map[uint64]struct{}),
+		watchDeliveries:  make(map[uint64]struct{}),
 		done:             make(chan struct{}),
 		progress:         make(chan struct{}, 1),
 	}
@@ -223,6 +227,16 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 			}
 		}
 	}
+	for token, receipt := range c.watchEnqueues {
+		if receipt != nil && c.stopReceiptIntersectsMembersLocked(receipt, members) {
+			stop.watchEnqueues[token] = struct{}{}
+		}
+	}
+	for token, receipt := range c.watchDeliveries {
+		if receipt != nil && c.stopReceiptIntersectsMembersLocked(receipt, members) {
+			stop.watchDeliveries[token] = struct{}{}
+		}
+	}
 	c.stop = stop
 	claimIDs := make([]string, 0, len(c.deliveryClaims))
 	for deliveryID := range c.deliveryClaims {
@@ -254,6 +268,15 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 		updates.updates = append(updates.updates, c.capturedPlanLocked(id))
 	}
 	return c.stopResultLocked(stop), plan, updates, nil
+}
+
+func (c *delegateTreeController) stopReceiptIntersectsMembersLocked(receipt *delegateWatchReceipt, members map[string]struct{}) bool {
+	if receipt == nil {
+		return false
+	}
+	_, sourceCovered := members[receipt.sourceDelegateID]
+	_, receiverCovered := members[receipt.receiverDelegateID]
+	return sourceCovered || receiverCovered
 }
 
 func (c *delegateTreeController) cancelPlanForStopLocked(stop *delegateStopState) delegateCancelPlan {

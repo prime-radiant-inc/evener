@@ -137,7 +137,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		return plans, nil
 	}
 	stop := c.stop
-	if len(stop.active) != 0 || len(stop.starts) != 0 || len(stop.work) != 0 || len(stop.deliveries) != 0 || len(stop.quietClaims) != 0 || len(stop.steeringClaims) != 0 || len(stop.modelClaims) != 0 || len(stop.settlementClaims) != 0 {
+	if len(stop.active) != 0 || len(stop.starts) != 0 || len(stop.work) != 0 || len(stop.deliveries) != 0 || len(stop.quietClaims) != 0 || len(stop.steeringClaims) != 0 || len(stop.modelClaims) != 0 || len(stop.settlementClaims) != 0 || len(stop.watchEnqueues) != 0 || len(stop.watchDeliveries) != 0 {
 		return plans, nil
 	}
 	ids := make([]string, 0, len(stop.members))
@@ -208,7 +208,7 @@ func (c *delegateTreeController) reconcileRecoveryRequiredStopLocked() (delegate
 		return delegateMutationPlans{}, nil, nil
 	}
 	stop := c.stop
-	if len(stop.starts) != 0 || len(stop.work) != 0 || len(stop.deliveries) != 0 || len(stop.quietClaims) != 0 || len(stop.steeringClaims) != 0 || len(stop.modelClaims) != 0 {
+	if len(stop.starts) != 0 || len(stop.work) != 0 || len(stop.deliveries) != 0 || len(stop.quietClaims) != 0 || len(stop.steeringClaims) != 0 || len(stop.modelClaims) != 0 || len(stop.watchEnqueues) != 0 || len(stop.watchDeliveries) != 0 {
 		return delegateMutationPlans{}, nil, nil
 	}
 	leases := make([]delegateLease, 0, len(stop.active))
@@ -564,6 +564,8 @@ func (c *delegateTreeController) restorePendingStop(events []delegatestore.Event
 		steeringClaims:   make(map[uint64]struct{}),
 		modelClaims:      make(map[uint64]struct{}),
 		settlementClaims: make(map[uint64]struct{}),
+		watchEnqueues:    make(map[uint64]struct{}),
+		watchDeliveries:  make(map[uint64]struct{}),
 		done:             make(chan struct{}),
 		progress:         make(chan struct{}, 1),
 	}

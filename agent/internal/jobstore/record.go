@@ -152,17 +152,21 @@ type DelegateRecord struct {
 }
 
 type WatchRecord struct {
-	WatchID          string `json:"watch_id"`
-	Generation       string `json:"generation"`
-	OwnerSessionID   string `json:"owner_session_id"`
-	VisibleSessionID string `json:"visible_session_id"`
-	Target           string `json:"target"`
-	SendTo           string `json:"send_to,omitempty"`
-	ConfigHash       string `json:"config_hash"`
-	Condition        string `json:"condition,omitempty"`
-	Deliveries       int    `json:"deliveries,omitempty"`
-	Active           bool   `json:"active"`
-	EndReason        string `json:"end_reason,omitempty"`
+	WatchID                  string `json:"watch_id"`
+	Generation               string `json:"generation"`
+	OwnerSessionID           string `json:"owner_session_id"`
+	VisibleSessionID         string `json:"visible_session_id"`
+	Target                   string `json:"target"`
+	SendTo                   string `json:"send_to,omitempty"`
+	ConfigHash               string `json:"config_hash"`
+	Condition                string `json:"condition,omitempty"`
+	Deliveries               int    `json:"deliveries,omitempty"`
+	Active                   bool   `json:"active"`
+	EndReason                string `json:"end_reason,omitempty"`
+	Source                   string `json:"source,omitempty"`
+	SourceDelegateID         string `json:"source_delegate_id,omitempty"`
+	SourceDelegateGeneration uint64 `json:"source_delegate_generation,omitempty"`
+	StableReceiver           bool   `json:"stable_receiver,omitempty"`
 	// Receiver identity, folded out of the registration's config snapshot: WHO
 	// this watch reports to, which owner/visible cannot say because a receiver
 	// watch installs on the owner's manager and names the owner in both. Empty on
@@ -187,8 +191,12 @@ type WatchConfigSnapshot struct {
 	// config hash is the snapshot's JSON encoding: appending here reproduces the
 	// exact bytes the hash was computed over when they rode a wrapper struct, so
 	// every already-durable config hash keeps matching.
-	ReceiverSessionID  string `json:"receiver_session_id,omitempty"`
-	ReceiverDelegateID string `json:"receiver_delegate_id,omitempty"`
+	ReceiverSessionID        string `json:"receiver_session_id,omitempty"`
+	ReceiverDelegateID       string `json:"receiver_delegate_id,omitempty"`
+	Source                   string `json:"source,omitempty"`
+	SourceDelegateID         string `json:"source_delegate_id,omitempty"`
+	SourceDelegateGeneration uint64 `json:"source_delegate_generation,omitempty"`
+	StableReceiver           bool   `json:"stable_receiver,omitempty"`
 }
 
 type WatchEventFilterSnapshot struct {
@@ -209,24 +217,27 @@ type WatchSendKey struct {
 // WatchSendState is the durable payload for a pending or terminal watch-send
 // delivery state.
 type WatchSendState struct {
-	Key                    WatchSendKey       `json:"key"`
-	DeliveryID             string             `json:"delivery_id"`
-	UpdateSeq              uint64             `json:"update_seq,omitempty"`
-	Message                string             `json:"message,omitempty"`
-	Frame                  string             `json:"frame,omitempty"`
-	TriggerIdentity        string             `json:"trigger_identity,omitempty"`
-	TriggerReason          string             `json:"trigger_reason,omitempty"`
-	CoalescedCount         int                `json:"coalesced_count,omitempty"`
-	DelegateGeneration     string             `json:"delegate_generation,omitempty"`
-	ReceiverSessionID      string             `json:"receiver_session_id,omitempty"`
-	ReceiverDelegateID     string             `json:"receiver_delegate_id,omitempty"`
-	NotificationJobID      string             `json:"notification_job_id,omitempty"`
-	NotificationDelegateID string             `json:"notification_delegate_id,omitempty"`
-	DiagnosticReason       string             `json:"diagnostic_reason,omitempty"`
-	SelfInfluenceDepth     int                `json:"self_influence_depth,omitempty"`
-	CreatedAt              time.Time          `json:"created_at"`
-	UpdatedAt              time.Time          `json:"updated_at"`
-	Provenance             *provenance.Causal `json:"provenance,omitempty"`
+	Key                      WatchSendKey       `json:"key"`
+	DeliveryID               string             `json:"delivery_id"`
+	UpdateSeq                uint64             `json:"update_seq,omitempty"`
+	Message                  string             `json:"message,omitempty"`
+	Frame                    string             `json:"frame,omitempty"`
+	TriggerIdentity          string             `json:"trigger_identity,omitempty"`
+	TriggerReason            string             `json:"trigger_reason,omitempty"`
+	CoalescedCount           int                `json:"coalesced_count,omitempty"`
+	DelegateGeneration       string             `json:"delegate_generation,omitempty"`
+	ReceiverSessionID        string             `json:"receiver_session_id,omitempty"`
+	ReceiverDelegateID       string             `json:"receiver_delegate_id,omitempty"`
+	SourceDelegateID         string             `json:"source_delegate_id,omitempty"`
+	SourceDelegateGeneration uint64             `json:"source_delegate_generation,omitempty"`
+	StableReceiver           bool               `json:"stable_receiver,omitempty"`
+	NotificationJobID        string             `json:"notification_job_id,omitempty"`
+	NotificationDelegateID   string             `json:"notification_delegate_id,omitempty"`
+	DiagnosticReason         string             `json:"diagnostic_reason,omitempty"`
+	SelfInfluenceDepth       int                `json:"self_influence_depth,omitempty"`
+	CreatedAt                time.Time          `json:"created_at"`
+	UpdatedAt                time.Time          `json:"updated_at"`
+	Provenance               *provenance.Causal `json:"provenance,omitempty"`
 	// EndNotice marks the teardown frame a watch sends when it ends without ever
 	// having fired: the watch is telling its watcher the condition can no longer
 	// match. It is not a condition fire, and the runtime does not count it as a

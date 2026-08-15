@@ -62,9 +62,10 @@ func (e *terminalRecordPersistError) Unwrap() error {
 }
 
 type jobManager struct {
-	mu            sync.Mutex
-	watchNotifyMu sync.Mutex
-	dir           string
+	mu             sync.Mutex
+	watchNotifyMu  sync.Mutex
+	watchPersistMu sync.Mutex
+	dir            string
 	// stateDir is the project state dir (parent of sessions/), where session
 	// .meta.json files live. Empty for the temp/test fallback where no project
 	// state dir is configured; observer-link stamping is skipped in that case.
@@ -169,8 +170,10 @@ type jobManager struct {
 	// Seeded from the package defaults at construction; per-manager so tests can
 	// scale them on their own jobManager without mutating a shared global that
 	// concurrently-running watchdogs would race on.
-	quietWindow        time.Duration
-	quietCheckInterval time.Duration
+	quietWindow         time.Duration
+	quietCheckInterval  time.Duration
+	delegateController  *delegateTreeController
+	stableWatchReceipts map[string]*delegateWatchReceipt
 }
 
 // defaultCloseGrace is the graceful-shutdown window closeRuntimeState gives a
@@ -588,6 +591,7 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		closeGrace:            defaultCloseGrace,
 		quietWindow:           delegateQuietWindow,
 		quietCheckInterval:    delegateQuietCheckInterval,
+		stableWatchReceipts:   make(map[string]*delegateWatchReceipt),
 	}
 	jm.appendAbandonSnapshots = jm.appendWatchSendTerminalSnapshots
 	jm.appendTeardown = jm.appendWatchTeardownBatch
