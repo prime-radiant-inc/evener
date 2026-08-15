@@ -1865,6 +1865,77 @@ func TestDelegateAttention_LiveReplayHonorsDurableCallerCommit(t *testing.T) {
 	if remaining != 0 {
 		t.Fatalf("durably committed live delivery remained pending: %d", remaining)
 	}
+	root.attentionMu.Lock()
+	wakeIDs := len(root.rootAttentionWakeIDs)
+	wakeArmed := root.rootAttentionWake
+	root.attentionMu.Unlock()
+	if wakeIDs != 0 || wakeArmed {
+		t.Fatalf("durably committed live delivery armed phantom root attention: ids=%d armed=%t", wakeIDs, wakeArmed)
+	}
+}
+
+func TestDelegateAttention_SettledResidentChildStartsExactAttentionGeneration(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	attentionEntered := make(chan struct{})
+	releaseAttention := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseAttention) }) })
+	attentionContent := `<job-notification event="watch_send">drive exact attention</job-notification>`
+	attentionSeen := false
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return communicateResponse(true, "initial run complete") },
+		func(request llm.Request) llm.Response {
+			attentionSeen = requestContainsText(request, attentionContent)
+			close(attentionEntered)
+			<-releaseAttention
+			return communicateResponse(true, "attention handled")
+		},
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "warm retained runtime", 60_000)
+	if outcome.result.Err != nil || outcome.commit == nil {
+		t.Fatalf("initial stable run = %#v", outcome)
+	}
+	plans, err := outcome.commit.Complete(true)
+	if err != nil {
+		t.Fatalf("acknowledge initial stable result: %v", err)
+	}
+	if err := root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatalf("execute initial delivery acknowledgement: %v", err)
+	}
+	sub := root.subagents.get(fixture.childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatal("initial stable run retained no resident child")
+	}
+	const attentionID = "watch:resident-attention:1"
+	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, attentionContent); err != nil || !appended {
+		t.Fatalf("append resident attention = appended:%t err:%v", appended, err)
+	}
+	if err := sub.sess.armDelegateAttention(attentionID); err != nil {
+		t.Fatalf("arm resident attention: %v", err)
+	}
+	root.delegateController.mu.Lock()
+	aggregate := root.delegateController.durable[fixture.delegateID]
+	generation := aggregate.Generation
+	trigger := aggregate.Trigger
+	open := aggregate.CurrentRunOpen
+	root.delegateController.mu.Unlock()
+	if generation != 2 || trigger != delegatestore.TriggerAttention || !open {
+		t.Fatalf("attention wake durable generation = generation:%d trigger:%q open:%t, want 2/attention/open", generation, trigger, open)
+	}
+	<-attentionEntered
+	if !attentionSeen {
+		t.Fatal("attention generation provider request omitted the exact durable attention")
+	}
+	releaseOnce.Do(func() { close(releaseAttention) })
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	fold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.childID), fixture.childID)
+	if err != nil {
+		t.Fatalf("read settled child attention: %v", err)
+	}
+	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
+		t.Fatalf("settled child attention resolution = %q, want consumed", got)
+	}
 }
 
 func TestDelegateAttention_RestoreSessionStartCountsColdReplayAppend(t *testing.T) {
@@ -2331,7 +2402,7 @@ func TestDelegateAttention_DeliveryDeferredDuringProcessingArmsWake(t *testing.T
 	}
 }
 
-func TestRootDelegateAttention_DurableAppendArmsWake(t *testing.T) {
+func TestRootDelegateAttention_DurableAppendWaitsForSourceSettlementBeforeWake(t *testing.T) {
 	stateDir := t.TempDir()
 	root := newSession(t,
 		withDir(stateDir),
@@ -2346,8 +2417,16 @@ func TestRootDelegateAttention_DurableAppendArmsWake(t *testing.T) {
 	}
 	select {
 	case <-wakes:
+		t.Fatal("durable root attention woke before its source settled")
 	default:
-		t.Fatal("durable root attention emitted no autonomous wake")
+	}
+	if err := root.armDelegateAttention(attentionID); err != nil {
+		t.Fatalf("arm settled root attention: %v", err)
+	}
+	select {
+	case <-wakes:
+	default:
+		t.Fatal("settled root attention emitted no autonomous wake")
 	}
 	if !root.sessionWorkPending() {
 		t.Fatal("durable root attention is absent from root work-pending state")
@@ -2371,6 +2450,9 @@ func TestRootDelegateAttention_SuccessfulNotificationConsumesExactIDs(t *testing
 	)
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		t.Fatalf("append root attention: %v", err)
+	}
+	if err := root.armDelegateAttention(attentionID); err != nil {
+		t.Fatalf("arm root attention: %v", err)
 	}
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("process root attention: %v", err)
@@ -2412,6 +2494,9 @@ func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testi
 	const attentionID = "delegate:dlg_retry/delivery/1"
 	if _, err := root.appendDelegateNotificationDurably(attentionID, `<delegate-notification delegate_id="dlg_retry">retry me</delegate-notification>`); err != nil {
 		t.Fatalf("append root attention: %v", err)
+	}
+	if err := root.armDelegateAttention(attentionID); err != nil {
+		t.Fatalf("arm root attention: %v", err)
 	}
 	select {
 	case <-wakes:
@@ -2491,6 +2576,81 @@ func TestRootDelegateAttention_RestoreRearmsPendingIDsWithoutProviderCall(t *tes
 	}
 	if !restored.sessionWorkPending() {
 		t.Fatal("restored pending root attention is absent from autonomous work")
+	}
+}
+
+func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	const (
+		attentionID      = "watch:restart-attention:1"
+		attentionContent = `<job-notification event="watch_send">resume cold delegate attention</job-notification>`
+	)
+	if appended, err := appendColdDelegateNotificationDurablyWithOpen(
+		transcriptPath(fixture.stateDir, fixture.childID),
+		fixture.childID,
+		attentionID,
+		attentionContent,
+		time.Unix(1_700_000_300, 0).UTC(),
+		transcript.OpenWriterForSession,
+	); err != nil || !appended {
+		t.Fatalf("append cold delegate attention = appended:%t err:%v", appended, err)
+	}
+
+	attentionEntered := make(chan struct{})
+	attentionSeen := false
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(request llm.Request) llm.Response {
+			attentionSeen = requestContainsText(request, attentionContent)
+			close(attentionEntered)
+			return communicateResponse(true, "cold attention handled")
+		},
+		func(llm.Request) llm.Response {
+			return communicateResponse(true, "root drained delegate completion")
+		},
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	if got := len(fixture.adapter.Requests()); got != 0 {
+		t.Fatalf("provider requests during cold attention rearm = %d, want 0", got)
+	}
+	if !root.sessionWorkPending() {
+		t.Fatal("restored cold delegate attention is absent from root work-pending state")
+	}
+	wakes := make(chan struct{}, 1)
+	root.SetNotifyFunc(func() { wakes <- struct{}{} })
+	select {
+	case <-wakes:
+	default:
+		t.Fatal("restored cold delegate attention emitted no provider-free wake")
+	}
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("drive restored cold delegate attention: %v", err)
+	}
+	root.delegateController.mu.Lock()
+	aggregate := root.delegateController.durable[fixture.delegateID]
+	generation := aggregate.Generation
+	trigger := aggregate.Trigger
+	open := aggregate.CurrentRunOpen
+	root.delegateController.mu.Unlock()
+	if generation != 1 || trigger != delegatestore.TriggerAttention || !open {
+		t.Fatalf("cold attention generation = generation:%d trigger:%q open:%t, want 1/attention/open", generation, trigger, open)
+	}
+	<-attentionEntered
+	if !attentionSeen {
+		t.Fatal("cold attention generation provider request omitted the exact durable attention")
+	}
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	if _, err := root.DrainJobTree(context.Background()); err != nil {
+		t.Fatalf("drain cold delegate attention: %v", err)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.childID), fixture.childID)
+	if err != nil {
+		t.Fatalf("read drained cold attention: %v", err)
+	}
+	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
+		t.Fatalf("cold attention resolution = %q, want consumed", got)
+	}
+	if root.sessionWorkPending() {
+		t.Fatal("root work-pending remained set after cold delegate attention drained")
 	}
 }
 

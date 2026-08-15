@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/llm"
 )
 
 type stableDelegateShellTree struct {
@@ -44,21 +46,66 @@ func TestStableDelegateShell_CompletionAttentionReachesDirectOwner(t *testing.T)
 	rec := createStableDelegateShell(t, tree.childJM, "notify direct owner")
 	finishStableDelegateShell(t, tree.childJM, rec.JobID)
 
-	childNotices := stableShellNotifications(tree.child)
-	if len(childNotices) != 1 || childNotices[0].JobID != rec.JobID {
-		t.Fatalf("direct owner notifications = %+v, want exactly shell %q", childNotices, rec.JobID)
-	}
-	if rootNotices := stableShellNotifications(tree.root); len(rootNotices) != 0 {
-		t.Fatalf("ancestor notification rail = %+v, want no child-owned shell attention", rootNotices)
-	}
-	block := formatJobNotificationBlock(childNotices[0], notificationExcerpt{}, true)
-	if !strings.Contains(block, `<job-notification job_id="`+rec.JobID+`"`) ||
-		!strings.Contains(block, `job_type="shell"`) || strings.Contains(block, "delegate-notification") {
-		t.Fatalf("shell completion attention = %q", block)
-	}
 	stored := loadStableShellRecord(t, tree.childJM, rec.JobID)
-	if stored.TerminalGen == "" || stored.NotifyState != jobstore.NotifyPending {
-		t.Fatalf("terminal shell = %+v, want durable generation and pending direct-owner attention", stored)
+	attentionID := stableShellAttentionID(rec.JobID, stored.TerminalGen)
+	childFold, err := readDelegateAttentionFold(transcriptPath(tree.controller.stateDir, tree.child.ID()), tree.child.ID())
+	if err != nil {
+		t.Fatalf("read direct owner attention: %v", err)
+	}
+	message, pending := childFold.content[attentionID]
+	if !pending {
+		t.Fatalf("direct owner attention missing exact shell identity %q", attentionID)
+	}
+	rootFold, err := readDelegateAttentionFold(transcriptPath(tree.controller.stateDir, tree.root.ID()), tree.root.ID())
+	if err != nil {
+		t.Fatalf("read ancestor attention: %v", err)
+	}
+	if _, leaked := rootFold.content[attentionID]; leaked {
+		t.Fatalf("ancestor transcript received child-owned shell attention %q", attentionID)
+	}
+	if !strings.Contains(message.Text(), `<job-notification job_id="`+rec.JobID+`"`) ||
+		!strings.Contains(message.Text(), `job_type="shell"`) || strings.Contains(message.Text(), "delegate-notification") {
+		t.Fatalf("shell completion attention = %q", message.Text())
+	}
+	if stored.TerminalGen == "" || stored.NotifyState != jobstore.NotifyDelivered {
+		t.Fatalf("terminal shell = %+v, want durable generation and acknowledged direct-owner attention", stored)
+	}
+	if got := tree.child.peekNotifications(); got != 0 {
+		t.Fatalf("direct owner retained %d legacy shell notifications", got)
+	}
+}
+
+func TestStableDelegateShell_CompletionUsesExactDurableAttention(t *testing.T) {
+	tree := newStableDelegateShellTree(t)
+	path := transcriptPath(tree.controller.stateDir, tree.child.ID())
+	rec := createStableDelegateShell(t, tree.childJM, "exact durable attention")
+	lease := delegateLease{delegateID: "dlg_child", generation: 1}
+	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{result: "owner idle", communicated: true})
+	continued, _, err := tree.controller.prepareSettlementForTest(lease, finish.packet)
+	if err != nil || continued {
+		t.Fatalf("settle owning delegate generation = continued:%t err:%v", continued, err)
+	}
+	_, err = tree.controller.FinishGeneration(lease, finish)
+	if err != nil {
+		t.Fatalf("finish owning delegate generation: %v", err)
+	}
+	finishStableDelegateShell(t, tree.childJM, rec.JobID)
+
+	stored := loadStableShellRecord(t, tree.childJM, rec.JobID)
+	attentionID := "shell:" + rec.JobID + ":" + stored.TerminalGen
+	fold, err := readDelegateAttentionFold(path, tree.child.ID())
+	if err != nil {
+		t.Fatalf("read shell attention: %v", err)
+	}
+	message, pending := fold.content[attentionID]
+	if !pending || !strings.Contains(message.Text(), `<job-notification job_id="`+rec.JobID+`"`) {
+		t.Fatalf("shell attention %q = %#v, want exact durable terminal block", attentionID, message)
+	}
+	if stored.NotifyState != jobstore.NotifyDelivered {
+		t.Fatalf("terminal shell notify state = %q, want delivered after receiver fsync", stored.NotifyState)
+	}
+	if got := tree.child.peekNotifications(); got != 0 {
+		t.Fatalf("stable shell left %d legacy notification tokens", got)
 	}
 }
 
@@ -219,17 +266,89 @@ func TestStableDelegateShell_RestartRepairsCompletionAttentionOnce(t *testing.T)
 	if finished != 1 || pending != 1 {
 		t.Fatalf("repaired shell durable events = finished:%d pending:%d, want 1/1", finished, pending)
 	}
-	notices := stableShellNotifications(tree.child)
-	if len(notices) != 1 || notices[0].JobID != rec.JobID {
-		t.Fatalf("repaired direct-owner attention = %+v, want exactly one", notices)
+	attentionID := stableShellAttentionID(rec.JobID, loadStableShellRecord(t, restoredJM, rec.JobID).TerminalGen)
+	fold, err := readDelegateAttentionFold(transcriptPath(tree.controller.stateDir, tree.child.ID()), tree.child.ID())
+	if err != nil {
+		t.Fatalf("read repaired shell attention: %v", err)
 	}
-	block := formatJobNotificationBlock(notices[0], notificationExcerpt{}, true)
-	if !strings.Contains(block, `<job-notification job_id="`+rec.JobID+`"`) || !strings.Contains(block, `job_type="shell"`) {
-		t.Fatalf("repaired shell completion markup = %q", block)
+	message, pendingAttention := fold.content[attentionID]
+	if !pendingAttention || !strings.Contains(message.Text(), `<job-notification job_id="`+rec.JobID+`"`) || !strings.Contains(message.Text(), `job_type="shell"`) {
+		t.Fatalf("repaired shell completion attention %q = %#v", attentionID, message)
+	}
+	if got := tree.child.peekNotifications(); got != 0 {
+		t.Fatalf("repaired shell queued %d legacy notification tokens", got)
 	}
 	forwarded := loadStableShellRecord(t, tree.rootJM, rec.JobID)
 	if !forwarded.Status.IsTerminal() || forwarded.TerminalGen == "" {
 		t.Fatalf("ancestor repaired shell visibility = %+v, want terminal generation", forwarded)
+	}
+}
+
+func TestStableDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	childJM, err := newJobManagerNoSync(fixture.stateDir, fixture.childID, nil)
+	if err != nil {
+		t.Fatalf("open cold child job manager: %v", err)
+	}
+	childJM.parentDelegateID = fixture.delegateID
+	childJM.now = func() time.Time { return time.Unix(300, 0).UTC() }
+	rec, err := childJM.createShell(createShellOpts{Command: "true", Description: "cold shell attention"})
+	if err != nil {
+		_ = childJM.closeStoreOnly()
+		t.Fatalf("create cold stable shell: %v", err)
+	}
+	code := 0
+	if err := childJM.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		_ = childJM.closeStoreOnly()
+		t.Fatalf("finish cold stable shell: %v", err)
+	}
+	if err := childJM.closeStoreOnly(); err != nil {
+		t.Fatalf("close cold child job manager: %v", err)
+	}
+
+	attentionSeen := false
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(request llm.Request) llm.Response {
+			attentionSeen = requestContainsText(request, `<job-notification job_id="`+rec.JobID+`"`)
+			return communicateResponse(true, "cold shell completion handled")
+		},
+		func(llm.Request) llm.Response {
+			return communicateResponse(true, "root drained cold shell delegate completion")
+		},
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	if got := len(fixture.adapter.Requests()); got != 0 {
+		t.Fatalf("provider requests during cold shell repair = %d, want 0", got)
+	}
+	if !root.sessionWorkPending() {
+		t.Fatal("cold stable shell completion did not rearm root work-pending")
+	}
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("drive cold shell attention: %v", err)
+	}
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	if !attentionSeen {
+		t.Fatal("cold shell attention generation omitted the exact durable terminal block")
+	}
+	if _, err := root.DrainJobTree(context.Background()); err != nil {
+		t.Fatalf("drain cold shell attention: %v", err)
+	}
+	restoredJM, err := newJobManagerNoSync(fixture.stateDir, fixture.childID, nil)
+	if err != nil {
+		t.Fatalf("reopen cold child job manager: %v", err)
+	}
+	t.Cleanup(func() { _ = restoredJM.closeStoreOnly() })
+	stored := loadStableShellRecord(t, restoredJM, rec.JobID)
+	attentionID := stableShellAttentionID(rec.JobID, stored.TerminalGen)
+	fold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.childID), fixture.childID)
+	if err != nil {
+		t.Fatalf("read cold shell attention: %v", err)
+	}
+	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
+		t.Fatalf("cold shell attention resolution = %q, want consumed", got)
+	}
+	if stored.NotifyState != jobstore.NotifyDelivered {
+		t.Fatalf("cold shell notification state = %q, want delivered", stored.NotifyState)
 	}
 }
 
@@ -268,6 +387,14 @@ func newStableDelegateShellTree(t *testing.T) *stableDelegateShellTree {
 		id: "child-dlg_grandchild", stateDir: controller.stateDir, jobManager: grandJM,
 		delegateController: controller, delegateRootSessionID: "root-session", owningDelegateID: "dlg_grandchild",
 		subagents: newSubagentManager(nil, 0), state: SessionIdle,
+	}
+	for _, session := range []*Session{root, child, grandchild} {
+		writer, err := transcript.NewWriter(transcriptPath(controller.stateDir, session.ID()), transcript.Header{SessionID: session.ID()})
+		if err != nil {
+			t.Fatalf("create %s transcript: %v", session.ID(), err)
+		}
+		session.attachTranscript(writer)
+		t.Cleanup(func() { _ = session.closeAttachedTranscript() })
 	}
 	rootJM.enqueue = root.enqueueJobNotificationAndNotify
 	childJM.enqueue = child.enqueueJobNotificationAndNotify

@@ -588,6 +588,7 @@ type Session struct {
 	rootAttentionWakeIDs    map[string]struct{}
 	rootAttentionWake       bool
 	rootAttentionRetry      notificationRetry
+	stableAttentionRetry    notificationRetry
 	delegateDeliveryWake    bool
 	delegateDeliveryPumping bool
 	delegateDeliveryRetry   notificationRetry
@@ -722,7 +723,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 	s.pendingJobNotifsMu.Lock()
 	pending := len(s.pendingJobNotifs) > 0
 	s.pendingJobNotifsMu.Unlock()
-	if pending || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() {
+	if pending || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() {
 		f()
 	}
 }

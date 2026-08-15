@@ -151,6 +151,9 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 	if s.hasPendingRootDelegateAttention() {
 		return true, nil
 	}
+	if s.hasPendingStableDelegateAttention() {
+		return true, nil
+	}
 	for _, sub := range s.liveDirectSubagents() {
 		sub.mu.Lock()
 		active := sub.running || sub.finalizing || sub.driving
@@ -230,6 +233,9 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 		return true, nil
 	}
 	if s.hasPendingRootDelegateAttention() {
+		return true, nil
+	}
+	if s.hasPendingStableDelegateAttention() {
 		return true, nil
 	}
 	for _, sub := range s.liveDirectSubagents() {
@@ -479,6 +485,7 @@ func (s *Session) kickDriveTree(ctx context.Context) error {
 }
 
 func (s *Session) kickDriveTreeWith(ctx context.Context, drain func(*Session, context.Context) error) error {
+	s.drivePendingStableDelegateAttention()
 	if err := s.rematerializeDurablePendings(); err != nil {
 		return err
 	}

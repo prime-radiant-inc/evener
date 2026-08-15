@@ -183,6 +183,7 @@ type jobManager struct {
 	quietCheckInterval  time.Duration
 	delegateController  *delegateTreeController
 	delegateLease       delegateLease
+	stableOwner         *Session
 	stableWatchReceipts map[string]*delegateWatchReceipt
 }
 
@@ -227,13 +228,14 @@ func (jm *jobManager) currentParentJobID() string {
 	return jm.parentJobID
 }
 
-func (jm *jobManager) bindStableDelegateParent(controller *delegateTreeController, lease delegateLease, forward func(jobstore.Event) error) {
+func (jm *jobManager) bindStableDelegateParent(controller *delegateTreeController, lease delegateLease, forward func(jobstore.Event) error, owner *Session) {
 	jm.mu.Lock()
 	jm.parentJobID = ""
 	jm.parentDelegateID = lease.delegateID
 	jm.forward = forward
 	jm.delegateController = controller
 	jm.delegateLease = lease
+	jm.stableOwner = owner
 	jm.mu.Unlock()
 }
 
@@ -1930,6 +1932,11 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		flushNotices()
 		return err
 	}
+	stableAttentionID, stableOwner, err := jm.persistStableShellAttention(run.rec.JobID)
+	if err != nil {
+		flushNotices()
+		return err
+	}
 
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] == run {
@@ -1943,28 +1950,78 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 
 	_ = run.output.Close()
 
-	// Enqueue the terminal owner notification BEFORE closing done: anything that
-	// wakes on done (blocked reads, boundary checks) must find the notification
-	// already queued, or a notification turn driven right after the wake drains
-	// an empty queue and the delivery slips a boundary. The watch settlements
-	// collected above ride the same enqueue, in the documented order — watch
-	// notices first, then the terminal.
-	ownNotices = append(ownNotices, jobNotification{
-		JobID:            run.rec.JobID,
-		JobType:          string(run.rec.Type),
-		Status:           string(terminal.status),
-		Reason:           terminal.reason,
-		ExhaustionBudget: terminal.exhaustionBudget,
-		ExhaustionLimit:  terminal.exhaustionLimit,
-		TranscriptRef:    jobTranscriptRef(run.rec),
-		OutputBytes:      terminal.outputBytes,
-		ExitCode:         terminal.exitCode,
-		Provenance:       provenance.Clone(run.rec.Provenance),
-	})
+	if stableOwner == nil {
+		// Enqueue the terminal owner notification BEFORE closing done: anything that
+		// wakes on done (blocked reads, boundary checks) must find the notification
+		// already queued, or a notification turn driven right after the wake drains
+		// an empty queue and the delivery slips a boundary. The watch settlements
+		// collected above ride the same enqueue, in the documented order — watch
+		// notices first, then the terminal.
+		ownNotices = append(ownNotices, jobNotification{
+			JobID:            run.rec.JobID,
+			JobType:          string(run.rec.Type),
+			Status:           string(terminal.status),
+			Reason:           terminal.reason,
+			ExhaustionBudget: terminal.exhaustionBudget,
+			ExhaustionLimit:  terminal.exhaustionLimit,
+			TranscriptRef:    jobTranscriptRef(run.rec),
+			OutputBytes:      terminal.outputBytes,
+			ExitCode:         terminal.exitCode,
+			Provenance:       provenance.Clone(run.rec.Provenance),
+		})
+	}
 	flushNotices()
 	run.delegateShell.finish()
+	if stableOwner != nil {
+		if err := stableOwner.armDelegateAttention(stableAttentionID); err != nil {
+			stableOwner.emit(events.EventWarning, warningDataFromError("arm stable shell attention", err))
+		}
+	}
 	run.closeDoneDurable()
 	return nil
+}
+
+func stableShellAttentionID(jobID, terminalGeneration string) string {
+	return "shell:" + jobID + ":" + terminalGeneration
+}
+
+func (jm *jobManager) persistStableShellAttention(jobID string) (string, *Session, error) {
+	jm.mu.Lock()
+	owner := jm.stableOwner
+	parentDelegateID := jm.parentDelegateID
+	jm.mu.Unlock()
+	if owner == nil || parentDelegateID == "" {
+		return "", nil, nil
+	}
+	records, err := jm.store.Load()
+	if err != nil {
+		return "", owner, err
+	}
+	record := records[jobID]
+	if record == nil || record.Type != jobstore.JobShell || record.ParentDelegateID != parentDelegateID || record.TerminalGen == "" || !record.Status.IsTerminal() {
+		return "", owner, errors.New("stable shell attention source is incomplete")
+	}
+	attentionID := stableShellAttentionID(record.JobID, record.TerminalGen)
+	notification := jobNotificationFromRecord(record)
+	content := owner.formatJobNotificationReminder([]deliverableJobNotification{{notification: notification, terminalGen: record.TerminalGen}})
+	if _, err := owner.appendDelegateNotificationDurably(attentionID, content); err != nil {
+		return "", owner, err
+	}
+	if record.NotifyState != jobstore.NotifyDelivered {
+		delivered := jobstore.Event{
+			Kind:        jobstore.EventJobNotificationDelivered,
+			TS:          jm.now(),
+			JobID:       record.JobID,
+			TerminalGen: record.TerminalGen,
+		}
+		if err := jm.appendEvent(delivered); err != nil {
+			return "", owner, err
+		}
+		if err := jm.forwardSnapshot(delivered); err != nil {
+			owner.emit(events.EventWarning, warningDataFromError("forward stable shell attention acknowledgement", err))
+		}
+	}
+	return attentionID, owner, nil
 }
 
 func (jm *jobManager) forwardPendingJobNotification(run *runningJob, terminal *terminalJob) error {
@@ -2046,6 +2103,16 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 			if err := jm.appendEvent(pending); err != nil {
 				return err
 			}
+		}
+		attentionID, owner, err := jm.persistStableShellAttention(rec.JobID)
+		if err != nil {
+			return err
+		}
+		if owner != nil {
+			if err := owner.armDelegateAttention(attentionID); err != nil {
+				return err
+			}
+			continue
 		}
 		if jm.enqueue != nil {
 			jm.enqueue(jobNotification{

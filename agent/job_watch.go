@@ -3310,16 +3310,35 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 	if err != nil {
 		return false, err
 	}
-	if _, err := receiver.appendDelegateNotificationDurably(stableWatchAttentionID(state), stableWatchNotificationContent(state)); err != nil {
-		return false, err
-	}
+	attentionID := stableWatchAttentionID(state)
+	_, appendErr := receiver.appendDelegateNotificationDurably(attentionID, stableWatchNotificationContent(state))
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
-		return false, nil
+		jm.releaseStableWatchReceipt(state.DeliveryID)
+		if appendErr != nil {
+			return false, appendErr
+		}
+		return false, armStableWatchAttention(controller, receiver, state.ReceiverDelegateID, attentionID)
+	}
+	if appendErr != nil {
+		return false, appendErr
 	}
 	if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
 		return false, err
 	}
+	if err := armStableWatchAttention(controller, receiver, state.ReceiverDelegateID, attentionID); err != nil {
+		return false, err
+	}
 	return true, nil
+}
+
+func armStableWatchAttention(controller *delegateTreeController, receiver delegateDeliveryReceiver, receiverDelegateID, attentionID string) error {
+	switch receiver := receiver.(type) {
+	case *Session:
+		return receiver.armDelegateAttention(attentionID)
+	case coldDelegateDeliveryReceiver:
+		return controller.armColdDelegateAttention(receiverDelegateID, attentionID)
+	}
+	return nil
 }
 
 func stableWatchAttentionID(state jobstore.WatchSendState) string {
@@ -3445,9 +3464,6 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 		pending := folded.Pending[record.persisted.Key]
 		if pending == nil || pending.DeliveryID != record.persisted.DeliveryID || pending.UpdateSeq != record.persisted.UpdateSeq {
 			return record.persisted, true, errors.New("stable watch pending frame did not survive durable refold")
-		}
-		if record.previous != nil && record.previous.DeliveryID != record.persisted.DeliveryID {
-			jm.releaseStableWatchReceipt(record.previous.DeliveryID)
 		}
 	}
 	var evictionDiagnostics []jobNotification
@@ -4156,6 +4172,9 @@ func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 		return
 	}
 	if s.childStopGated(sub.sess.id) || s.childFatalRunGated(sub.sess.id) {
+		return
+	}
+	if s.driveStableDelegateAttention(sub) {
 		return
 	}
 	if s.driveSubagentNotificationTurn(sub) {

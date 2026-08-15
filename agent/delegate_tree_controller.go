@@ -70,6 +70,7 @@ type delegateTreeController struct {
 	deliveries          map[uint64]*delegateDeliveryAdmission
 	deliveryClaims      map[string]*delegateDeliveryClaim
 	quietClaims         map[uint64]*delegateQuietAttentionClaim
+	attentionWakeIDs    map[string]map[string]struct{}
 	watchEnqueues       map[uint64]*delegateWatchReceipt
 	watchDeliveries     map[uint64]*delegateWatchReceipt
 	reclamations        map[uint64]*delegateRuntimeReclamationClaim
@@ -221,6 +222,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		deliveries:          make(map[uint64]*delegateDeliveryAdmission),
 		deliveryClaims:      make(map[string]*delegateDeliveryClaim),
 		quietClaims:         make(map[uint64]*delegateQuietAttentionClaim),
+		attentionWakeIDs:    make(map[string]map[string]struct{}),
 		watchEnqueues:       make(map[uint64]*delegateWatchReceipt),
 		watchDeliveries:     make(map[uint64]*delegateWatchReceipt),
 		reclamations:        make(map[uint64]*delegateRuntimeReclamationClaim),

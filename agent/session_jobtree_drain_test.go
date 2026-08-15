@@ -564,6 +564,9 @@ func TestDrainJobTreeConsumesRootDelegateAttentionBeforeCompletion(t *testing.T)
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		t.Fatalf("append root attention: %v", err)
 	}
+	if err := root.armDelegateAttention(attentionID); err != nil {
+		t.Fatalf("arm root attention after source settlement: %v", err)
+	}
 
 	result, err := root.drainJobTreeWith(context.Background(), make(chan time.Time), root.kickDriveTree, root.ProcessInputKind)
 	if err != nil {
@@ -602,7 +605,9 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 	for i := range steps {
 		steps[i] = func(llm.Request) llm.Response { return finalResponse("done") }
 	}
-	sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{
+	stateDir := t.TempDir()
+	sess := newSession(t, withDir(stateDir), withSteps(steps...), withConfig(SessionConfig{
+		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
 		NoProjectPrompts: true,
 	}))

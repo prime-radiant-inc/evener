@@ -372,6 +372,50 @@ func TestStableDelegateWatch_ReceiverFsyncPrecedesDeliveredAck(t *testing.T) {
 	}
 }
 
+func TestStableDelegateWatch_RootWakeWaitsForSourceAcknowledgement(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "ordered receiver wake"})
+	ackEntered := make(chan struct{}, 1)
+	releaseAck := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(releaseAck)
+		}
+	}()
+	originalAppend := fixture.sourceJM.appendEvent
+	fixture.sourceJM.appendEvent = func(event jobstore.Event) error {
+		if event.Kind == jobstore.EventWatchSendDelivered {
+			ackEntered <- struct{}{}
+			<-releaseAck
+		}
+		return originalAppend(event)
+	}
+	wakes := make(chan struct{}, 1)
+	fixture.root.SetNotifyFunc(func() { wakes <- struct{}{} })
+	done := make(chan error, 1)
+	go func() {
+		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		done <- err
+	}()
+	<-ackEntered
+	select {
+	case <-wakes:
+		t.Fatal("root attention woke before the source acknowledgement and receipt release")
+	default:
+	}
+	close(releaseAck)
+	released = true
+	if err := <-done; err != nil {
+		t.Fatalf("deliver watch frame: %v", err)
+	}
+	select {
+	case <-wakes:
+	default:
+		t.Fatal("root attention did not wake after source acknowledgement and receipt release")
+	}
+}
+
 func TestStableDelegateWatch_LaterCoalescedUpdateSurvivesEarlierAck(t *testing.T) {
 	key := jobstore.WatchSendKey{
 		VisibleSessionID:        "source-session",
@@ -389,6 +433,61 @@ func TestStableDelegateWatch_LaterCoalescedUpdateSurvivesEarlierAck(t *testing.T
 	got := jobstore.FoldWatchSends(events).Pending[key]
 	if got == nil || got.DeliveryID != "wd_new" || got.UpdateSeq != 2 || got.Frame != "new" {
 		t.Fatalf("later coalesced update lost after earlier ack: %#v", got)
+	}
+}
+
+func TestStableDelegateWatch_CoalescingRetainsInflightReceiverReceipt(t *testing.T) {
+	fs := newAttentionSyncBarrierFS()
+	fixture := newStableWatchRuntimeFixture(t, fs)
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "old frame"})
+	old := fixture.requireOnePending(t).state
+	wakes := make(chan struct{}, 1)
+	fixture.root.SetNotifyFunc(func() { wakes <- struct{}{} })
+	fs.arm()
+	done := make(chan error, 1)
+	go func() {
+		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		done <- err
+	}()
+	<-fs.syncEntered
+	released := false
+	defer func() {
+		if !released {
+			fs.release()
+		}
+	}()
+
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "new frame"})
+	fixture.controller.mu.Lock()
+	liveReceipts := len(fixture.controller.watchDeliveries)
+	fixture.controller.mu.Unlock()
+	if liveReceipts != 2 {
+		t.Fatalf("controller delivery receipts during coalescing = %d, want old in-flight plus replacement", liveReceipts)
+	}
+	result, _, _, err := fixture.controller.StopSubtree(rootDelegateActor(fixture.root.ID()), "dlg_source")
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	stop := fixture.controller.stopForResult(result)
+	if got := len(stop.watchDeliveries); got != 2 {
+		t.Fatalf("stop captured watch delivery receipts = %d, want 2", got)
+	}
+
+	fs.release()
+	released = true
+	if err := <-done; err != nil {
+		t.Fatalf("release in-flight receiver append: %v", err)
+	}
+	select {
+	case <-wakes:
+	default:
+		t.Fatal("durable coalesced receiver attention was stranded after receipt release")
+	}
+	fixture.root.attentionMu.Lock()
+	_, armed := fixture.root.rootAttentionWakeIDs[stableWatchAttentionID(old)]
+	fixture.root.attentionMu.Unlock()
+	if !armed {
+		t.Fatalf("coalesced receiver attention %q was not armed", stableWatchAttentionID(old))
 	}
 }
 

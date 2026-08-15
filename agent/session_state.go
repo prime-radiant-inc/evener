@@ -63,7 +63,11 @@ func (s *Session) WireState() string {
 // without user input. Child activity is excluded because it is projected on
 // the child session, while its eventual notification is included once queued.
 func (s *Session) sessionWorkPending() bool {
-	return s.peekNotifications() > 0 || s.QueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention()
+	return s.peekNotifications() > 0 || s.QueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention()
+}
+
+func (s *Session) hasPendingStableDelegateAttention() bool {
+	return s != nil && s.isRootDelegateAttentionReceiver() && s.delegateController.hasPendingDelegateAttention()
 }
 
 // autonomyInFlight reports whether autonomous work will move this session

@@ -204,20 +204,32 @@ func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID 
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.nextToken++
+	descriptor := cloneDelegateStartDescriptor(aggregate.Descriptor)
+	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, descriptor.ChildSessionID+".transcript.jsonl")
+	worktreePath := ""
+	if descriptor.Isolation == "worktree" {
+		worktreePath = descriptor.WorkingDir
+	}
 	reservation := &delegateStartReservation{
-		delegateID: delegateID,
+		delegateID:     delegateID,
+		descriptor:     cloneDelegateStartDescriptor(descriptor),
+		transcriptPath: transcriptPath,
+		worktreePath:   worktreePath,
 	}
 	record := &delegateStartRecord{
-		receipt:      reservation,
-		token:        c.nextToken,
-		delegateID:   delegateID,
-		generation:   aggregate.Generation + 1,
-		trigger:      delegatestore.TriggerAttention,
-		capacityKind: delegateDriveCapacity,
-		ctx:          ctx,
-		cancel:       cancel,
-		runtime:      runtime,
-		attentionID:  attentionID,
+		receipt:        reservation,
+		token:          c.nextToken,
+		delegateID:     delegateID,
+		generation:     aggregate.Generation + 1,
+		trigger:        delegatestore.TriggerAttention,
+		capacityKind:   delegateDriveCapacity,
+		ctx:            ctx,
+		cancel:         cancel,
+		descriptor:     descriptor,
+		transcriptPath: transcriptPath,
+		worktreePath:   worktreePath,
+		runtime:        runtime,
+		attentionID:    attentionID,
 	}
 	c.reservations[record.token] = record
 	c.evidenceVersion++
@@ -615,6 +627,7 @@ func (c *delegateTreeController) CommitStart(reservation *delegateStartReservati
 	}
 	if record.trigger == delegatestore.TriggerAttention {
 		live.attentionIDs = []string{record.attentionID}
+		c.forgetDelegateAttentionLocked(record.delegateID, record.attentionID)
 	}
 	if record.runtime != nil {
 		live.runtime = record.runtime

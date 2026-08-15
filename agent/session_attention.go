@@ -316,12 +316,7 @@ func (s *Session) appendDelegateNotificationDurably(attentionID, content string)
 		return false, errors.New("delegate attention ID is empty")
 	}
 	s.attentionMu.Lock()
-	defer func() {
-		s.attentionMu.Unlock()
-		if err == nil {
-			s.armRootDelegateAttention(attentionID)
-		}
-	}()
+	defer s.attentionMu.Unlock()
 
 	s.mu.Lock()
 	ready := s.transcriptReady
@@ -388,6 +383,57 @@ func (s *Session) appendDelegateNotificationDurably(attentionID, content string)
 		return false, err
 	}
 	return true, nil
+}
+
+func (s *Session) armDelegateAttention(attentionID string) error {
+	if s == nil || attentionID == "" {
+		return errors.New("delegate attention wake identity is incomplete")
+	}
+	ids, err := s.pendingDelegateAttentionIDs()
+	if err != nil {
+		return err
+	}
+	pending := false
+	for _, id := range ids {
+		if id == attentionID {
+			pending = true
+			break
+		}
+	}
+	if !pending {
+		return nil
+	}
+	if s.isRootDelegateAttentionReceiver() {
+		s.armRootDelegateAttention(attentionID)
+		return nil
+	}
+	if s.delegateController == nil || s.owningDelegateID == "" {
+		return errors.New("delegate attention controller identity is incomplete")
+	}
+	s.delegateController.noteDelegateAttention(s.owningDelegateID, attentionID)
+	s.notify()
+	return nil
+}
+
+func (s *Session) pendingDelegateAttentionIDs() ([]string, error) {
+	if s == nil {
+		return nil, nil
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	s.mu.Lock()
+	ready := s.transcriptReady
+	sessionID := s.id
+	stateDir := s.stateDir
+	s.mu.Unlock()
+	if !ready || sessionID == "" || stateDir == "" {
+		return nil, nil
+	}
+	fold, err := s.readDelegateAttentionFold(transcriptPath(stateDir, sessionID), sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return fold.pendingIDs(), nil
 }
 
 // isRootDelegateAttentionReceiver reports whether this Session is the stable
@@ -529,6 +575,57 @@ func (s *Session) resetRootAttentionRetryLocked() {
 	s.rootAttentionRetry.generation++
 	s.rootAttentionRetry.active = false
 	s.rootAttentionRetry.delay = jobNotificationRetryInitialDelay
+}
+
+func (s *Session) scheduleStableDelegateAttentionRetry() {
+	if s == nil {
+		return
+	}
+	s.attentionMu.Lock()
+	if s.stableAttentionRetry.active {
+		s.attentionMu.Unlock()
+		return
+	}
+	delay := s.stableAttentionRetry.delay
+	if delay <= 0 {
+		delay = jobNotificationRetryInitialDelay
+	}
+	s.stableAttentionRetry.active = true
+	s.stableAttentionRetry.generation++
+	generation := s.stableAttentionRetry.generation
+	s.attentionMu.Unlock()
+	s.sclock().AfterFunc(delay, func() {
+		s.attentionMu.Lock()
+		if s.stableAttentionRetry.generation != generation {
+			s.attentionMu.Unlock()
+			return
+		}
+		s.stableAttentionRetry.active = false
+		s.attentionMu.Unlock()
+
+		pending := s.delegateController != nil && s.delegateController.hasPendingDelegateAttention()
+		s.attentionMu.Lock()
+		if pending {
+			s.stableAttentionRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
+		} else {
+			s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay
+		}
+		s.attentionMu.Unlock()
+		if pending {
+			s.notify()
+		}
+	})
+}
+
+func (s *Session) resetStableDelegateAttentionRetry() {
+	if s == nil {
+		return
+	}
+	s.attentionMu.Lock()
+	s.stableAttentionRetry.generation++
+	s.stableAttentionRetry.active = false
+	s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay
+	s.attentionMu.Unlock()
 }
 
 // rearmRootDelegateAttentionFromTranscript reconstructs the root wake cache

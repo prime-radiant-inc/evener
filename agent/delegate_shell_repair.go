@@ -6,11 +6,149 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
+	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/agent/transcript"
 )
+
+type stableShellAttentionBootstrapTarget struct {
+	delegateID string
+	descriptor delegatestore.Descriptor
+	storePath  string
+}
+
+// repairStableShellAttentionForBootstrap completes terminal shell handoffs
+// without constructing the owning delegate Session. Receiver transcript fsync
+// precedes the exact source acknowledgement, so a crash can only replay the
+// same attention ID.
+func repairStableShellAttentionForBootstrap(c *delegateTreeController) error {
+	if c == nil {
+		return errors.New("stable shell bootstrap controller is nil")
+	}
+	c.mu.Lock()
+	stateDir := c.stateDir
+	now := c.now
+	open := c.attentionOpen
+	targets := make([]stableShellAttentionBootstrapTarget, 0, len(c.durable))
+	for delegateID, aggregate := range c.durable {
+		if aggregate == nil || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || aggregate.Phase == delegatestore.PhaseClosed {
+			continue
+		}
+		descriptor := cloneDelegateStartDescriptor(aggregate.Descriptor)
+		targets = append(targets, stableShellAttentionBootstrapTarget{
+			delegateID: delegateID,
+			descriptor: descriptor,
+			storePath:  filepath.Join(jobsDir(stateDir, descriptor.ChildSessionID), "jobs.jsonl"),
+		})
+	}
+	c.mu.Unlock()
+	sort.Slice(targets, func(i, j int) bool { return targets[i].delegateID < targets[j].delegateID })
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	if open == nil {
+		open = transcript.OpenWriterForSession
+	}
+	for _, target := range targets {
+		info, err := os.Stat(target.storePath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("stat stable shell source journal: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("stable shell source journal %s is not a regular file", target.storePath)
+		}
+		if err := repairStableShellAttentionTarget(target, stateDir, now, open); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func repairStableShellAttentionTarget(target stableShellAttentionBootstrapTarget, stateDir string, now func() time.Time, open delegateAttentionWriterOpener) (err error) {
+	store, err := jobstore.Open(target.storePath)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, store.Close()) }()
+	records, err := store.Load()
+	if err != nil {
+		return err
+	}
+	jobIDs := make([]string, 0, len(records))
+	for jobID, record := range records {
+		if record != nil && record.Type == jobstore.JobShell && record.ParentDelegateID == target.delegateID && record.Status.IsTerminal() && record.TerminalGen != "" && record.NotifyState == jobstore.NotifyPending {
+			jobIDs = append(jobIDs, jobID)
+		}
+	}
+	sort.Strings(jobIDs)
+	path, sessionID, err := delegateTranscriptPathFromRef(stateDir, target.descriptor.TranscriptRef)
+	if err != nil {
+		return err
+	}
+	if sessionID != target.descriptor.ChildSessionID {
+		return fmt.Errorf("stable shell receiver transcript session %q does not match %q", sessionID, target.descriptor.ChildSessionID)
+	}
+	for _, jobID := range jobIDs {
+		records, err = store.Load()
+		if err != nil {
+			return err
+		}
+		record := records[jobID]
+		if record == nil || record.Type != jobstore.JobShell || record.ParentDelegateID != target.delegateID || !record.Status.IsTerminal() || record.TerminalGen == "" || record.NotifyState != jobstore.NotifyPending {
+			continue
+		}
+		attentionID := stableShellAttentionID(record.JobID, record.TerminalGen)
+		content := stableShellAttentionContent(target.storePath, target.descriptor, record)
+		if _, err := appendColdDelegateNotificationDurablyWithOpen(path, sessionID, attentionID, content, now(), open); err != nil {
+			return err
+		}
+		if err := store.Append(jobstore.Event{
+			Kind:        jobstore.EventJobNotificationDelivered,
+			TS:          now(),
+			JobID:       record.JobID,
+			TerminalGen: record.TerminalGen,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func stableShellAttentionContent(storePath string, descriptor delegatestore.Descriptor, record *jobstore.JobRecord) string {
+	notification := jobNotificationFromRecord(record)
+	excerpt := stableShellNotificationExcerpt(storePath, record)
+	return formatJobNotificationBlock(notification, excerpt, hasString(descriptor.ToolNameCeiling, "read_transcript"))
+}
+
+func stableShellNotificationExcerpt(storePath string, record *jobstore.JobRecord) notificationExcerpt {
+	if record == nil || !record.Status.IsTerminal() {
+		return notificationExcerpt{}
+	}
+	path := record.OutputPath
+	if path == "" {
+		path = filepath.Join(filepath.Dir(storePath), "jobs", record.JobID+".log")
+	}
+	validatedTotal, _, err := validatedOutputStatsForRecord(path, record)
+	if err != nil {
+		return notificationExcerpt{}
+	}
+	excerpt, _, truncated, err := tailOutputFile(path, terminalExcerptBytes, validatedTotal)
+	if err != nil || excerpt == "" {
+		return notificationExcerpt{}
+	}
+	rendered := limitWatchText(strings.ToValidUTF8(excerpt, "\uFFFD"), terminalExcerptMaxChars)
+	if truncated {
+		rendered += "\n[excerpt truncated]"
+	}
+	return notificationExcerpt{text: rendered, complete: !truncated}
+}
 
 func collectDelegateReconcileEvidence(stateDir string, requirements delegateReconcileRequirements) (delegateReconcileEvidence, error) {
 	evidence := delegateReconcileEvidence{

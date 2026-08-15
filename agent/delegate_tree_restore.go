@@ -445,6 +445,7 @@ func (c *delegateTreeController) ReportAttentionResolved(requestSeq, evidenceVer
 	if currentRuntime != runtime {
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
+	c.forgetDelegateAttentionLocked(delegateID, attentionID)
 	c.evidenceVersion++
 	return delegateMutationPlans{}, nil
 }
@@ -467,6 +468,7 @@ func (c *delegateTreeController) ReportAttentionConsumed(lease delegateLease, at
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
 	live.attentionIDs = append(live.attentionIDs[:index], live.attentionIDs[index+1:]...)
+	c.forgetDelegateAttentionLocked(lease.delegateID, attentionID)
 	c.evidenceVersion++
 	return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, nil
 }

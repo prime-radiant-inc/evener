@@ -410,11 +410,22 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 		_, completionErr := plan.controller.CompleteDelivery(token, false)
 		return delegateMutationPlans{}, errors.Join(err, completionErr)
 	}
-	if _, err := receiver.appendDelegateNotificationDurably(delegateAttentionID(plan.deliveryID), content); err != nil {
+	attentionID := delegateAttentionID(plan.deliveryID)
+	if _, err := receiver.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		_, completionErr := plan.controller.CompleteDelivery(token, false)
 		return delegateMutationPlans{}, errors.Join(err, completionErr)
 	}
-	return plan.controller.CompleteDelivery(token, true)
+	plans, err := plan.controller.CompleteDelivery(token, true)
+	if err != nil {
+		return plans, err
+	}
+	switch receiver := receiver.(type) {
+	case *Session:
+		err = receiver.armDelegateAttention(attentionID)
+	case coldDelegateDeliveryReceiver:
+		err = plan.controller.armColdDelegateAttention(plan.ownerDelegateID, attentionID)
+	}
+	return plans, err
 }
 
 func delegateAttentionID(deliveryID string) string { return "delegate:" + deliveryID }

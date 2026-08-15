@@ -402,6 +402,9 @@ const (
 	// the child transcript as an internal disposition and does not require
 	// communicate.
 	EntryWatchDelivery
+	// EntryDelegateAttention is a controller-owned stable delegate generation
+	// whose exact model-bound input is already durable in the receiver transcript.
+	EntryDelegateAttention
 )
 
 // roundContentClass classifies a model round's assistant content. NoContent marks
@@ -1029,6 +1032,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			return "", false, nil
 		}
 		rootAttentionAccepted = true
+	} else if kind == EntryDelegateAttention {
+		s.acceptDelegateAttentionInput()
 	} else if err := s.acceptUserInput(ctx, input, images, inputProvenance, kind == EntryUserInput); err != nil {
 		return "", false, err
 	}
@@ -1481,6 +1486,11 @@ func (s *Session) acceptContinuationInput(_ context.Context, input string) {
 	s.injectDrainedSteering()
 }
 
+func (s *Session) acceptDelegateAttentionInput() {
+	s.replaceActiveProvenance(nil)
+	s.repairOrphanedToolResults("before accepting delegate attention")
+}
+
 // acceptNotificationInput records a job-completion notification turn at the
 // start of an input turn. It mirrors acceptContinuationInput's framing — the
 // drained queue is delivered to the model as a schema.TurnSteering reminder (a
@@ -1494,6 +1504,7 @@ func (s *Session) acceptContinuationInput(_ context.Context, input string) {
 // the drain loop's idle tail suppresses the phantom SESSION_END{input_complete} —
 // an empty notification turn is a true no-op that makes no model request.
 func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
+	s.drivePendingStableDelegateAttention()
 	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
 	// watch sends may have no token queued yet (the drive was launched on the
 	// hasPendingWatchSends signal, not a token enqueue). Enqueue the OWN session's

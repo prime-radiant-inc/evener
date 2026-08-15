@@ -1423,6 +1423,9 @@ func communicateNudge(toolName string) string {
 
 func (a *subagent) run(ctx context.Context, input string, inputProvenance *provenance.Causal) {
 	kind := EntryUserInput
+	if _, attention := ctx.Value(delegateAttentionRunContextKey{}).(struct{}); attention {
+		kind = EntryDelegateAttention
+	}
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
 	nudgeAvailable := true
 	hookAvailable := true
@@ -1631,6 +1634,15 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	a.mu.Unlock()
 	if restoreParentDriveNotify != nil && a.sess.peekNotifications() > 0 {
 		a.sess.notify()
+	}
+	if stableRun {
+		if pending, pendingErr := a.sess.pendingDelegateAttentionIDs(); pendingErr != nil {
+			a.sess.emit(events.EventWarning, warningDataFromError("inspect remaining delegate attention", pendingErr))
+		} else if len(pending) != 0 {
+			if armErr := a.sess.armDelegateAttention(pending[0]); armErr != nil {
+				a.sess.emit(events.EventWarning, warningDataFromError("rearm remaining delegate attention", armErr))
+			}
+		}
 	}
 
 	if done != nil {
