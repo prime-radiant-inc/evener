@@ -152,18 +152,18 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 		return fmt.Sprintf("%s at %s (branch %s, %s, %s)", lane.delegateID, lanePath, lane.delegateID, ahead, dirty), true
 	}
 
-	alreadyClosed := !delegate.resumable && delegate.notResumableReason == stableWorktreeDisposalReason
-	if !alreadyClosed {
-		_, _, plans, closeErr := s.delegateController.closeStableWorktreeResumability(s, lane.delegateID, stableWorktreeDisposalReason, true)
-		if closeErr != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane resumability closure failed for %s: %v", lane.delegateID, closeErr)})
-			return lane.delegateID + " at " + lanePath + " (resumability closure failed; retained intact)", true
-		}
-		s.delegateController.emitDelegateUpdates(plans)
+	_, _, plans, closeErr := s.delegateController.closeStableWorktreeResumability(s, lane.delegateID, stableWorktreeDisposalReason, true)
+	if closeErr != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane resumability closure failed for %s: %v", lane.delegateID, closeErr)})
+		return lane.delegateID + " at " + lanePath + " (resumability closure failed; retained intact)", true
 	}
+	s.delegateController.emitDelegateUpdates(plans)
 	outcome, cleanupNote := s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, false)
 	if outcome == laneKeptDirty {
 		return cleanupNote + " (resumability closed; retained residue)", true
+	}
+	if outcome == laneDeclined {
+		return lane.delegateID + " at " + lanePath + " (resumability closed; retained residue because the cleanup lock could not be released or ownership changed)", true
 	}
 	return cleanupNote, false
 }

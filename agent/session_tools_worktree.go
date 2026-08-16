@@ -789,6 +789,14 @@ func (s *Session) exitWorktree() (string, bool) {
 // precedence when set (see its doc comment on the Session struct) so unit tests
 // can exercise the guard call without spinning up real jobs.
 func (s *Session) liveWorkUnder(path string) []string {
+	return s.liveWorkUnderExceptIdleDelegate(path, "")
+}
+
+// liveWorkUnderExceptIdleDelegate omits one exact stable descriptor only when
+// it is idle. The P3 collector uses this after resolving an owned lane's
+// sidecar so the lane does not block its own authorized disposal; active work,
+// descendants, shells, and every other retained descriptor still block it.
+func (s *Session) liveWorkUnderExceptIdleDelegate(path, ignoredDelegateID string) []string {
 	s.mu.Lock()
 	stub := s.worktreeLiveWorkStub
 	s.mu.Unlock()
@@ -818,6 +826,10 @@ func (s *Session) liveWorkUnder(path string) []string {
 			}
 			stableByChild[childID] = row
 			if !pathEqualOrUnder(canonicalOrClean(lanePath), target) {
+				continue
+			}
+			if row.delegateID == ignoredDelegateID && !row.active {
+				stableDescriptorUnderTarget[childID] = true
 				continue
 			}
 			label := subagentRetainedIdleLabel
@@ -2665,12 +2677,6 @@ func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunne
 			continue
 		}
 
-		// No live work under it (belt and braces alongside the lock).
-		if live := s.liveWorkUnder(e.Path); len(live) > 0 {
-			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "live work: " + strings.Join(live, ", ")})
-			continue
-		}
-
 		// Has a sidecar: provenance unknown otherwise, not ours to judge.
 		sc, scErr := worktree.ReadSidecar(metaDir, e.Name)
 		if scErr != nil {
@@ -2680,6 +2686,18 @@ func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunne
 
 		if policy.delegateOnly && sc.DelegateID == "" {
 			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "not a delegate lane"})
+			continue
+		}
+
+		ignoredIdleDelegateID := ""
+		if policy.prepareDispose != nil {
+			ignoredIdleDelegateID = sc.DelegateID
+		}
+		// No live work under it (belt and braces alongside the lock). P3 may
+		// omit only the exact idle descriptor whose lane it is preparing to
+		// close; ordinary prune and all other work remain strict blockers.
+		if live := s.liveWorkUnderExceptIdleDelegate(e.Path, ignoredIdleDelegateID); len(live) > 0 {
+			skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "live work: " + strings.Join(live, ", ")})
 			continue
 		}
 		if policy.grace > 0 {

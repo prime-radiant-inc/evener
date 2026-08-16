@@ -73,10 +73,8 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 		}
 		return WorktreeDisposeResult{}, fmt.Errorf("invalid_request: manage_worktree dispose: %w", err)
 	}
-	if !state.resumable && state.notResumableReason != stableWorktreeDisposalReason {
-		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s is already not resumable: %s", id, state.notResumableReason)
-	}
-	alreadyClosed := !state.resumable
+	resumabilityClosed := !state.resumable
+	alreadyDisposed := resumabilityClosed && state.notResumableReason == stableWorktreeDisposalReason
 	lanePath := filepath.Clean(strings.TrimSpace(state.descriptor.WorkingDir))
 	if lanePath == "" || lanePath == "." {
 		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s has no recorded lane path", id)
@@ -84,17 +82,22 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 
 	metaDir := metaDirForLane(lanePath)
 	sc, scErr := worktree.ReadSidecar(metaDir, id)
-	if scErr != nil && alreadyClosed {
+	if scErr != nil && resumabilityClosed {
 		if laneWorktreePresent(lanePath) {
 			return WorktreeDisposeResult{
 				DelegateID:      id,
 				LanePath:        lanePath,
 				Branch:          id,
-				AlreadyDisposed: true,
-				Message:         fmt.Sprintf("Delegate %s resumability was already closed; retained residue at %s because its sidecar is unreadable: %v", id, lanePath, scErr),
+				AlreadyDisposed: alreadyDisposed,
+				Message:         fmt.Sprintf("Delegate %s resumability was already closed for %s; retained residue at %s because its sidecar is unreadable: %v", id, state.notResumableReason, lanePath, scErr),
 			}, nil
 		}
-		return disposeAlreadyDisposedGone(id, lanePath, scErr), nil
+		result := disposeAlreadyDisposedGone(id, lanePath, scErr)
+		result.AlreadyDisposed = alreadyDisposed
+		if !alreadyDisposed {
+			result.Message = fmt.Sprintf("Disposed delegate %s after permanent closure %s; its lane and sidecar were already gone.", id, state.notResumableReason)
+		}
+		return result, nil
 	}
 	if scErr != nil {
 		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s sidecar unreadable; cannot resolve its git control environment: %w", id, scErr)
@@ -120,10 +123,10 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 			}
 		}
 	}
-	if alreadyClosed && !laneDirPresent {
+	if alreadyDisposed && !laneDirPresent {
 		return s.disposeAlreadyDisposedRemnants(run, id, lanePath, metaDir, sc), nil
 	}
-	if !alreadyClosed && (state.active || state.currentRunOpen || state.pendingStopSeq != 0) {
+	if state.active || state.currentRunOpen || state.pendingStopSeq != 0 {
 		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s still has running or unfinished work; wait for it to finish", id)
 	}
 	if s.subtreeWatchesTargeting(id) {
@@ -182,7 +185,7 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 		return WorktreeDisposeResult{}, err
 	}
 
-	if !alreadyClosed {
+	if !resumabilityClosed {
 		closedState, already, plans, closeErr := s.delegateController.closeStableWorktreeResumability(s, id, stableWorktreeDisposalReason, false)
 		if closeErr != nil {
 			if errors.Is(closeErr, errDelegateTargetBusy) {
@@ -192,10 +195,11 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 		}
 		s.delegateController.emitDelegateUpdates(plans)
 		state = closedState
-		alreadyClosed = already
+		resumabilityClosed = true
+		alreadyDisposed = already && state.notResumableReason == stableWorktreeDisposalReason
 	}
 	gateConsumed = true
-	return s.disposeStableExecute(budgetCtx, run, state, lanePath, metaDir, sub, laneDirPresent, st, forceDirty, alreadyClosed)
+	return s.disposeStableExecute(budgetCtx, run, state, lanePath, metaDir, sub, laneDirPresent, st, forceDirty, alreadyDisposed)
 }
 
 func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunner, state stableDelegateWorktreeSnapshot, lanePath, metaDir string, sub *subagent, lanePresent bool, st worktree.LockState, forceDirty, alreadyClosed bool) (WorktreeDisposeResult, error) {

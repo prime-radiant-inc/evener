@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -155,6 +156,78 @@ func TestStableDelegateWorktree_ClosureAppendFailureDestroysNothing(t *testing.T
 	assertStableWorktreeResumable(t, r.s.delegateController, id, true)
 	if !laneWorktreePresent(lanePath) || !r.branchExists(t, id) {
 		t.Fatal("append failure destroyed the lane or branch")
+	}
+}
+
+func TestStableDelegateWorktree_ClosureRejectsDurableRunningDescendantWithoutRuntimeClaims(t *testing.T) {
+	r := newWorktreeRepo(t)
+	parentID, lanePath, _ := r.seedStableIsolationLane(t)
+	childID := "dlg_running_descendant"
+	seedDelegateControllerRunning(t, r.s.delegateController, childID, parentID)
+	r.s.delegateController.mu.Lock()
+	delete(r.s.delegateController.live, childID)
+	r.s.delegateController.mu.Unlock()
+
+	before, err := r.s.delegateController.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err = r.s.delegateController.closeStableWorktreeResumability(r.s, parentID, stableWorktreeDisposalReason, false)
+	if !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("parent closure with durable running descendant = %v, want target busy", err)
+	}
+	after, loadErr := r.s.delegateController.store.Load()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("parent closure appended %d event(s) while descendant ran", len(after)-len(before))
+	}
+	assertStableWorktreeResumable(t, r.s.delegateController, parentID, true)
+	if !laneWorktreePresent(lanePath) {
+		t.Fatal("parent lane was destroyed while its durable descendant ran")
+	}
+}
+
+func TestStableDelegateWorktree_DisposeAlreadyClosedLanePreservesReason(t *testing.T) {
+	r := newWorktreeRepo(t)
+	id, lanePath, _ := r.seedStableIsolationLane(t)
+	const originalReason = "turn_budget_exhausted"
+	_, _, plans, err := r.s.delegateController.closeStableWorktreeResumability(r.s, id, originalReason, false)
+	if err != nil {
+		t.Fatalf("seed permanent resumability closure: %v", err)
+	}
+	r.s.delegateController.emitDelegateUpdates(plans)
+
+	result, err := r.s.worktreeDispose(context.Background(), id, false, false)
+	if err != nil {
+		t.Fatalf("dispose already-closed stable lane: %v", err)
+	}
+	if result.AlreadyDisposed {
+		t.Fatalf("first physical disposal reported already disposed: %#v", result)
+	}
+	if laneWorktreePresent(lanePath) {
+		t.Fatal("clean permanently closed lane was not removed")
+	}
+	aggregate := delegateAggregateSnapshot(t, r.s.delegateController, id)
+	if aggregate.Resumable || aggregate.NotResumableReason != originalReason {
+		t.Fatalf("physical disposal changed permanent closure = %#v, want %q", aggregate, originalReason)
+	}
+	eventsLog, err := r.s.delegateController.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	closures := 0
+	for _, event := range eventsLog {
+		if event.DelegateID == id && event.ResumabilityClosed != nil {
+			closures++
+			if event.ResumabilityClosed.Reason != originalReason {
+				t.Fatalf("replacement closure reason = %q, want %q", event.ResumabilityClosed.Reason, originalReason)
+			}
+		}
+	}
+	if closures != 1 {
+		t.Fatalf("resumability closure events = %d, want original event only", closures)
 	}
 }
 

@@ -343,10 +343,13 @@ func TestDisposeRacingDirtyWrite_DowngradesToKeepUnlocked(t *testing.T) {
 		t.Error("close-path downgrade must leave the lane UNLOCKED (dead owner), not re-locked")
 	}
 	if !r.branchExists(t, delegateID) {
-		t.Error("downgraded lane branch deleted; must stay resumable")
+		t.Error("downgraded lane branch deleted despite retained residue")
 	}
-	if r.stableDisposalClosurePresent(t, delegateID) {
-		t.Error("downgraded lane wrongly marked disposed")
+	if !r.stableDisposalClosurePresent(t, delegateID) {
+		t.Error("post-closure dirty race reopened stable resumability")
+	}
+	if msgs := warningMessages(r.s); !anyContainsAll(msgs, delegateID, "retained residue") {
+		t.Errorf("post-closure dirty residue warning missing lane evidence: %v", msgs)
 	}
 }
 
@@ -902,8 +905,11 @@ func TestDisposeOneDelegateLane_UnchangedUnlockFailsLeavesLocked(t *testing.T) {
 	if !r.branchExists(t, delegateID) {
 		t.Error("branch deleted despite a lock that could not be released")
 	}
-	if r.stableDisposalClosurePresent(t, delegateID) {
-		t.Error("lane wrongly marked disposed when removal never happened")
+	if !r.stableDisposalClosurePresent(t, delegateID) {
+		t.Error("post-closure unlock failure reopened stable resumability")
+	}
+	if msgs := warningMessages(r.s); !anyContainsAll(msgs, delegateID, "lock", "retained residue") {
+		t.Errorf("post-closure unlock residue warning missing lock and lane evidence: %v", msgs)
 	}
 }
 

@@ -351,8 +351,21 @@ func (c *delegateTreeController) stableWorktreeSnapshotLocked(delegateID string,
 		row.runtime = live.runtime
 	}
 	members := c.subtreeMembersLocked(delegateID)
-	row.active = aggregate.CurrentRunOpen || aggregate.Phase == delegatestore.PhaseRunning || aggregate.Phase == delegatestore.PhaseSettling || aggregate.Phase == delegatestore.PhaseStopping || c.runtimeReclamationIntersectsProcessWorkLocked(members)
+	row.active = c.stableWorktreeSubtreeActiveLocked(members) || c.runtimeReclamationIntersectsProcessWorkLocked(members)
 	return row
+}
+
+func (c *delegateTreeController) stableWorktreeSubtreeActiveLocked(members map[string]struct{}) bool {
+	for id := range members {
+		aggregate := c.durable[id]
+		if aggregate == nil {
+			continue
+		}
+		if aggregate.CurrentRunOpen || aggregate.PendingStopSeq != 0 || aggregate.Phase == delegatestore.PhaseRunning || aggregate.Phase == delegatestore.PhaseSettling || aggregate.Phase == delegatestore.PhaseStopping {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *delegateTreeController) stableDelegateOwnedBySessionLocked(owner *Session, aggregate *delegatestore.Aggregate) bool {
@@ -385,19 +398,15 @@ func (c *delegateTreeController) closeStableWorktreeResumability(owner *Session,
 	if aggregate.Descriptor.Isolation != "worktree" {
 		return stableDelegateWorktreeSnapshot{}, false, delegateMutationPlans{}, fmt.Errorf("delegate %s is not worktree-isolated", delegateID)
 	}
-	if !aggregate.Resumable {
-		row := c.stableWorktreeSnapshotLocked(delegateID, aggregate)
-		if aggregate.NotResumableReason == reason {
-			return row, true, delegateMutationPlans{}, nil
-		}
-		return row, false, delegateMutationPlans{}, fmt.Errorf("delegate %s is already not resumable: %s", delegateID, aggregate.NotResumableReason)
-	}
 	members := c.subtreeMembersLocked(delegateID)
-	if aggregate.CurrentRunOpen || aggregate.Phase != delegatestore.PhaseIdle || aggregate.PendingStopSeq != 0 || c.runtimeReclamationIntersectsProcessWorkLocked(members) {
+	if c.stableWorktreeSubtreeActiveLocked(members) || c.runtimeReclamationIntersectsProcessWorkLocked(members) {
 		return stableDelegateWorktreeSnapshot{}, false, delegateMutationPlans{}, errDelegateTargetBusy
 	}
 	if strings.TrimSpace(reason) == "" {
 		return stableDelegateWorktreeSnapshot{}, false, delegateMutationPlans{}, errDelegateTargetBusy
+	}
+	if !aggregate.Resumable {
+		return c.stableWorktreeSnapshotLocked(delegateID, aggregate), true, delegateMutationPlans{}, nil
 	}
 	if _, err := c.appendLocked(delegatestore.Event{
 		Kind:       delegatestore.EventDelegateResumabilityClosed,
