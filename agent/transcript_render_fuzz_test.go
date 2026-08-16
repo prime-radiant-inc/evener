@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,8 +65,7 @@ func trender_scanLines(content []byte) (lines []string, ok bool) {
 }
 
 // trender_isSubsequence reports whether want is a subsequence of have (same
-// order, gaps allowed). The semantic header may be rewritten to exclude its
-// system-prompt copy, while selected entry lines remain verbatim and ordered.
+// order, gaps allowed).
 func trender_isSubsequence(want, have []string) bool {
 	i := 0
 	for _, h := range have {
@@ -74,6 +74,160 @@ func trender_isSubsequence(want, have []string) bool {
 		}
 	}
 	return i == len(want)
+}
+
+// trender_entryLinesAreProjection reports whether renderedEntries is, in file
+// order, the public projection of a subset of fileLines.
+//
+// rawLinesForRange does not echo entry lines byte-for-byte. publicTranscriptLine
+// renumbers "seq" to the derived public position (so a file whose own seq values
+// disagree with their positions is renumbered on the way out) and redacts the
+// private turn keys. Both sides are therefore canonicalised down to the part the
+// render must reproduce exactly, and the comparison stays a real subsequence
+// check over that part - order, multiplicity, and content of every other field.
+//
+// The seq the oracle drops here is not unchecked: trender_assertDerivedSeq
+// asserts the renumbering exactly. Redaction is applied to the SOURCE side only,
+// so a render that RETAINED a private key cannot match its source line and the
+// subsequence check still fails on the leak.
+func trender_entryLinesAreProjection(renderedEntries, fileLines []string) bool {
+	want := make([]string, 0, len(renderedEntries))
+	for _, line := range renderedEntries {
+		want = append(want, trender_canonicalEntry(line, false))
+	}
+	have := make([]string, 0, len(fileLines))
+	for _, line := range fileLines {
+		have = append(have, trender_canonicalEntry(line, true))
+	}
+	return trender_isSubsequence(want, have)
+}
+
+// trender_canonicalEntry re-encodes one JSONL line into the form the projection
+// oracle compares: "seq" dropped (the renderer renumbers it), and - when
+// redactPrivate is set - the private turn keys removed. The shallow map
+// round-trip matches the renderer's own, so object key order and inter-token
+// whitespace agree on both sides without the oracle reaching into nested values.
+//
+// A line that is not a JSON object is returned unchanged; it can then never
+// equal a rendered entry line, which is the comparison outcome we want.
+func trender_canonicalEntry(line string, redactPrivate bool) string {
+	var entry map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		return line
+	}
+	delete(entry, "seq")
+	var turn map[string]json.RawMessage
+	if err := json.Unmarshal(entry["turn"], &turn); err == nil {
+		if redactPrivate {
+			delete(turn, "attention_id")
+			delete(turn, "attention_resolution")
+			delete(turn, "delegate_delivery_commits")
+		}
+		encodedTurn, err := json.Marshal(turn)
+		if err != nil {
+			return line
+		}
+		entry["turn"] = encodedTurn
+	}
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		return line
+	}
+	return string(encoded)
+}
+
+// trender_assertDerivedSeq asserts the numbering the projection oracle drops:
+// every returned entry carries its derived public position, so the first one is
+// max(startSeq, 0) and each later one adds exactly 1.
+func trender_assertDerivedSeq(t *testing.T, renderedEntries []string, startSeq int) {
+	t.Helper()
+	first := startSeq
+	if first < 0 {
+		first = 0
+	}
+	for i, line := range renderedEntries {
+		var entry struct {
+			Seq *int `json:"seq"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil || entry.Seq == nil {
+			t.Fatalf("returned entry %d carries no decodable seq: %q (err %v)", i, line, err)
+		}
+		if *entry.Seq != first+i {
+			t.Fatalf("returned entry %d carries seq %d, want derived seq %d", i, *entry.Seq, first+i)
+		}
+	}
+}
+
+// TestTrenderEntryLinesAreProjection pins the strictness of the oracle
+// FuzzRawLinesForRange leans on. rawLinesForRange does not echo entry lines
+// byte-for-byte: publicTranscriptLine renumbers "seq" to the derived public
+// position and redacts the private turn keys. The oracle must accept exactly
+// that projection and nothing looser - reordering, extra copies, invented
+// entries, and a retained private key all have to stay rejected.
+func TestTrenderEntryLinesAreProjection(t *testing.T) {
+	const trenderHeader = `{"kind":"header","format_version":2,"session_id":"p"}`
+	entryA := `{"kind":"entry","seq":%d,"turn":{"kind":"USER_INPUT","message":{"role":"user"}}}`
+	entryB := `{"kind":"entry","seq":%d,"turn":{"kind":"ASSISTANT","message":{"role":"assistant"}}}`
+	private := `{"kind":"entry","seq":%d,"turn":{"attention_id":"a1","kind":"USER_INPUT"}}`
+	redacted := `{"kind":"entry","seq":%d,"turn":{"kind":"USER_INPUT"}}`
+	at := func(tmpl string, seq int) string { return fmt.Sprintf(tmpl, seq) }
+
+	tests := []struct {
+		name     string
+		file     []string
+		rendered []string
+		want     bool
+	}{
+		{
+			name:     "renumbered repeats of one file seq",
+			file:     []string{trenderHeader, at(entryA, 0), at(entryA, 0), at(entryA, 0)},
+			rendered: []string{at(entryA, 0), at(entryA, 1), at(entryA, 2)},
+			want:     true,
+		},
+		{
+			name:     "gap in the middle of the file",
+			file:     []string{trenderHeader, at(entryA, 4), at(entryB, 5), at(entryA, 6)},
+			rendered: []string{at(entryA, 0), at(entryA, 1)},
+			want:     true,
+		},
+		{
+			name:     "private turn key redacted from the render",
+			file:     []string{trenderHeader, at(private, 9)},
+			rendered: []string{at(redacted, 0)},
+			want:     true,
+		},
+		{
+			name:     "private turn key retained by the render",
+			file:     []string{trenderHeader, at(private, 9)},
+			rendered: []string{at(private, 0)},
+			want:     false,
+		},
+		{
+			name:     "entries emitted out of file order",
+			file:     []string{trenderHeader, at(entryA, 0), at(entryB, 1)},
+			rendered: []string{at(entryB, 0), at(entryA, 1)},
+			want:     false,
+		},
+		{
+			name:     "more copies than the file holds",
+			file:     []string{trenderHeader, at(entryA, 0)},
+			rendered: []string{at(entryA, 0), at(entryA, 1)},
+			want:     false,
+		},
+		{
+			name:     "entry the file never held",
+			file:     []string{trenderHeader, at(entryA, 0)},
+			rendered: []string{at(entryB, 0)},
+			want:     false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := trender_entryLinesAreProjection(tc.rendered, tc.file); got != tc.want {
+				t.Fatalf("projection oracle = %v, want %v\n rendered=%#v\n file=%#v", got, tc.want, tc.rendered, tc.file)
+			}
+		})
+	}
 }
 
 // TestTrenderScanLines_ScanError verifies that trender_scanLines reports
@@ -91,10 +245,12 @@ func TestTrenderScanLines_ScanError(t *testing.T) {
 // FuzzRawLinesForRange drives rawLinesForRange over fuzzed transcript content and
 // a fuzzed seq range. Oracles:
 //   - never panics;
-//   - CONSISTENT SLICE: on success, every non-empty line of the returned content
-//     is a line of the input file, in file order (a subsequence of the input's
-//     scanned lines) — the render can only echo real transcript lines, never
-//     synthesize or reorder them.
+//   - CONSISTENT SLICE: on success, every non-empty entry line of the returned
+//     content is the public projection of a line of the input file, in file
+//     order (a subsequence of the input's projected scanned lines) — the render
+//     can only echo real transcript lines, never synthesize or reorder them. The
+//     projection renumbers "seq" and redacts private turn keys; nothing else may
+//     differ, and the renumbering itself is asserted exactly.
 func FuzzRawLinesForRange(f *testing.F) {
 	seeds := []struct {
 		content    string
@@ -172,8 +328,9 @@ not json
 		if _, leaked := header["system_prompt"]; leaked {
 			t.Fatalf("semantic header retained system_prompt: %q", nonEmpty[0])
 		}
-		if !trender_isSubsequence(nonEmpty[1:], haveNonEmpty) {
-			t.Fatalf("rendered entry lines are not a subsequence of the transcript\n range=[%d,%d] truncated=%v\n result lines=%#v\n file lines=%#v",
+		trender_assertDerivedSeq(t, nonEmpty[1:], startSeq)
+		if !trender_entryLinesAreProjection(nonEmpty[1:], haveNonEmpty) {
+			t.Fatalf("rendered entry lines are not a projected subsequence of the transcript\n range=[%d,%d] truncated=%v\n result lines=%#v\n file lines=%#v",
 				startSeq, endSeq, truncated, nonEmpty[1:], haveNonEmpty)
 		}
 	})
