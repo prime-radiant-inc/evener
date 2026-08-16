@@ -548,7 +548,40 @@ git commit -m "fix(agent): name goal and notification turns on the event that op
 
 ---
 
-### Task 2: The daemon stops minting turn ids for live turns
+### Task 2: NOT DONE — the daemon keeps minting for the pre-event window
+
+**Status: dropped during execution. Do not implement it without asking Jesse.**
+
+The task below would have deleted `setProcessingLocked`'s
+`ReserveTurnID()` branch (`server/server.go:713-716`) so that nothing but a
+turn's own opening event could publish an id. Reading kata `c2ty` first
+showed that branch is a deliberate fix, not an oversight:
+
+- `c2ty`'s 2026-07-26 comment records the constraint that makes a new mint
+  site dangerous — kata `eptj` was real data loss from two independent
+  minters sharing one `turn_N` namespace, so "a fix here must be shown not to
+  mint an id the reload path or the projector can also mint". Task 1 honours
+  that by going through `reserveClientMutationTurnID`.
+- The same comment weighs c2ty's own symptom — "a brief window of
+  wrong-but-recoverable controls" — against that risk and chooses to hold.
+  `TestServerAppWireSetProcessingPublishesActiveTurnID`
+  (`server/appwire_server_test.go:66`) pins the resulting behaviour, with a
+  message explaining that a `status=active` + empty `activeTurnId` pair makes
+  the composer offer idle controls for a working session.
+
+So deleting the branch would reverse a ruling Jesse made, trading a silent
+rejection for a missing control. Task 1 fixes the steady state — the case
+Jesse actually hit, where a notification turn published `turn_6` for its
+whole life. What remains is a sub-second window between `SetProcessing(true)`
+and the turn's first event, in which the wire can still carry a projector id.
+Closing it needs the single-lock-hold transition c2ty describes, which the
+in-band naming does not compose with for free. Recorded as a comment on
+`c2ty`; Jesse's call.
+
+<details>
+<summary>The dropped task, kept for the record</summary>
+
+#### Task 2 (not done): The daemon stops minting turn ids for live turns
 
 **Files:**
 - Modify: `server/server.go:701-718` (`setProcessingLocked`)
@@ -624,6 +657,8 @@ parks on `<-s.releaseProcessing`; nothing in this task moves that park point.
 git add server/server.go server/appwire_server_test.go
 git commit -m "fix(server): a processing flip no longer mints a turn id"
 ```
+
+</details>
 
 ---
 
