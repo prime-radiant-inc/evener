@@ -388,16 +388,15 @@ func (h *ws_harness) applyEmit(op ws_op) ws_opOutcome {
 
 	h.jm.onSessionEvent(ev)
 
-	// Isolate the no-send notification rail: its notifications carry reason
-	// "event: <kind>" and a nil WatchSend token. The budget-cleared circuit
-	// breaker carries reason "watch cleared: ...", and a caller-targeted SEND also
-	// enqueues an "event:"-reason notification but with a non-nil WatchSend token
-	// (it rides the watch-send rail, which evaluateWatchEvent routes as dec.send) —
-	// both are excluded here so the count matches the pure core's no-send decision.
+	// Isolate the no-send notification rail by shape. A job-finished notification
+	// replaces the generic event reason with the concrete terminal reason, so the
+	// reason prefix is not a stable delivery discriminator. The budget-cleared
+	// circuit breaker remains distinguishable by its "watch cleared:" reason, and
+	// a caller-targeted SEND carries a non-nil WatchSend token.
 	observed := 0
 	h.capMu.Lock()
 	for _, n := range h.captured[before:] {
-		if n.WatchSend == nil && strings.HasPrefix(n.Reason, "event:") {
+		if n.Kind == jobNotificationKindWatch && n.WatchSend == nil && !strings.HasPrefix(n.Reason, "watch cleared:") {
 			observed++
 		}
 	}
