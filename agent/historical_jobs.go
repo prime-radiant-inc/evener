@@ -8,16 +8,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 )
 
-type historicalJobStore interface {
-	Close() error
-	Load() (map[string]*jobstore.JobRecord, error)
-	LoadOrdered() ([]*jobstore.JobRecord, error)
-}
-
-var (
-	historicalJobsStat = os.Stat
-	historicalJobsOpen = func(path string) (historicalJobStore, error) { return jobstore.Open(path) }
-)
+var historicalJobsStat = os.Stat
 
 // HistoricalJobRecord is a flattened, read-only snapshot of one job as it was
 // persisted in a session's durable jobs.jsonl — the origin coordinates, the

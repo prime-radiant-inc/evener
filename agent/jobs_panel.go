@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 )
@@ -83,15 +84,11 @@ func LoadSessionJobOutputTail(stateDir, sessionID, jobID string, beforeBytes, ma
 		}
 		return JobOutputTail{}, false, err
 	}
-	store, err := historicalJobsOpen(path)
+	events, err := jobstore.ReadEvents(path)
 	if err != nil {
 		return JobOutputTail{}, false, err
 	}
-	defer func() { _ = store.Close() }()
-	recs, err := store.Load()
-	if err != nil {
-		return JobOutputTail{}, false, err
-	}
+	recs := jobstore.Fold(events)
 	rec := recs[jobID]
 	if rec == nil {
 		return JobOutputTail{}, false, nil

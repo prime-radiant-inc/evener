@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -329,13 +328,14 @@ func TestStableDelegateReadOnly_NoSessionProviderOrWritableOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldOpen := historicalJobsOpen
-	var opens atomic.Int32
-	historicalJobsOpen = func(string) (historicalJobStore, error) {
-		opens.Add(1)
-		return nil, errors.New("append-capable historical open invoked")
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { historicalJobsOpen = oldOpen })
+	fixed := time.Unix(12345, 0).UTC()
+	if err := os.Chtimes(path, fixed, fixed); err != nil {
+		t.Fatal(err)
+	}
+	want := mustReadonlyFileState(t, path)
 
 	if _, err := LoadSessionHistoricalJobRecords(stateDir, sessionID); err != nil {
 		t.Fatalf("historical record projection constructed writable state: %v", err)
@@ -343,8 +343,11 @@ func TestStableDelegateReadOnly_NoSessionProviderOrWritableOpen(t *testing.T) {
 	if _, err := LoadSessionJobActivityTree(stateDir, sessionID, appwire.JobsListParams{}); err != nil {
 		t.Fatalf("historical activity projection constructed writable state: %v", err)
 	}
-	if got := opens.Load(); got != 0 {
-		t.Fatalf("historical read invoked append-capable Open %d times", got)
+	if _, found, err := LoadSessionJobOutputTail(stateDir, sessionID, "job_readonly", 0, 1); err != nil || !found {
+		t.Fatalf("historical output-tail projection: found=%v err=%v", found, err)
+	}
+	if got := mustReadonlyFileState(t, path); !reflect.DeepEqual(got, want) {
+		t.Fatalf("historical reads changed journal bytes or metadata:\n got=%#v\nwant=%#v", got, want)
 	}
 }
 
