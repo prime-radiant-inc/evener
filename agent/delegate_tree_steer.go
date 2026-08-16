@@ -155,13 +155,28 @@ func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteerin
 	if claim == nil || c.steeringClaims[claim.token] != claim || entry.entryID == "" || entry.entryID != claim.entryID {
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
+	stopFenced := false
+	if c.stop != nil {
+		_, stopFenced = c.stop.steeringClaims[claim.token]
+	}
 	c.releaseSteeringClaimLocked(claim.token)
 	_, live, err := c.admitLeaseLocked(claim.lease, delegatestore.PhaseRunning)
-	if err != nil || live.binding.runtime != claim.runtime || claim.delegateID != claim.lease.delegateID {
-		c.evidenceVersion++
-		if err != nil {
-			return delegateMutationPlans{}, err
+	if err != nil {
+		// A covering stop owns the earlier admission. Transcript fsync remains
+		// its durable acceptance point even after the exact binding is released.
+		if stopFenced && claim.delegateID == claim.lease.delegateID {
+			live = c.live[claim.delegateID]
+			if live != nil && entry.timestamp.After(live.activityAt) {
+				live.activityAt = entry.timestamp
+			}
+			c.evidenceVersion++
+			return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(claim.delegateID)}}, nil
 		}
+		c.evidenceVersion++
+		return delegateMutationPlans{}, err
+	}
+	if live.binding.runtime != claim.runtime || claim.delegateID != claim.lease.delegateID {
+		c.evidenceVersion++
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
 	live.pendingSteers = append(live.pendingSteers, delegateSteeringAdmission{

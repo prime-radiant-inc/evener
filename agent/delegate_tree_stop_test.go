@@ -343,6 +343,9 @@ func TestDelegateControllerStopDrainsSteeringAndModelClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StopSubtree: %v", err)
 	}
+	if _, err := c.BeginSteerPersistence(rootDelegateActor("root-session"), lease.delegateID); !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("BeginSteerPersistence after stop error = %v, want target busy", err)
+	}
 	if _, err := c.FinishGeneration(lease, delegateFinish{}); err != nil {
 		t.Fatalf("FinishGeneration: %v", err)
 	}
@@ -354,8 +357,8 @@ func TestDelegateControllerStopDrainsSteeringAndModelClaims(t *testing.T) {
 		t.Fatal("stop completed before steering and model claims drained")
 	default:
 	}
-	if _, err := c.CompleteSteerPersistence(steeringClaim, steeringEntry); !errors.Is(err, errDelegateStaleLease) {
-		t.Fatalf("CompleteSteerPersistence after stop error = %v, want stale lease", err)
+	if _, err := c.CompleteSteerPersistence(steeringClaim, steeringEntry); err != nil {
+		t.Fatalf("CompleteSteerPersistence for fsynced pre-stop steer: %v", err)
 	}
 	if _, err := c.CompleteModelRequest(modelClaim, modelSnapshot, replayScope{}); !errors.Is(err, errDelegateStaleLease) {
 		t.Fatalf("CompleteModelRequest after stop error = %v, want stale lease", err)
@@ -367,6 +370,32 @@ func TestDelegateControllerStopDrainsSteeringAndModelClaims(t *testing.T) {
 	case <-result.done:
 	default:
 		t.Fatal("stop remained pending after steering and model claims drained")
+	}
+
+	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), lease.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart successor: %v", err)
+	}
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart successor: %v", err)
+	}
+	if err := c.AttachRuntime(started.lease, steeringClaim.runtime); err != nil {
+		t.Fatalf("AttachRuntime successor: %v", err)
+	}
+	inputClaim, err := c.BeginStartInput(started.lease)
+	if err != nil {
+		t.Fatalf("BeginStartInput successor: %v", err)
+	}
+	if _, err := c.CompleteStartInput(inputClaim, true, delegateFinish{}); err != nil {
+		t.Fatalf("CompleteStartInput successor: %v", err)
+	}
+	history, err := completeDelegateModelRequest(c, started.lease)
+	if err != nil {
+		t.Fatalf("successor model request: %v", err)
+	}
+	if got := countMessageText(history, "stop-racing steer"); got != 1 {
+		t.Fatalf("successor replay contains accepted pre-stop steer %d times, want once: %#v", got, history)
 	}
 }
 
