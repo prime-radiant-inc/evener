@@ -14,6 +14,9 @@ import (
 // served (session.go:109-123 makes that the only writer), so this is both the
 // collector and the thing that makes turns addressable.
 type boundaryRecorder struct {
+	session *Session
+	drained chan struct{}
+
 	mu     sync.Mutex
 	kinds  []events.EventKind
 	starts []events.TurnStartedData
@@ -21,7 +24,7 @@ type boundaryRecorder struct {
 
 func serveAndRecord(t *testing.T, s *Session) *boundaryRecorder {
 	t.Helper()
-	rec := &boundaryRecorder{}
+	rec := &boundaryRecorder{session: s, drained: make(chan struct{})}
 	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
 		rec.mu.Lock()
 		defer rec.mu.Unlock()
@@ -31,11 +34,23 @@ func serveAndRecord(t *testing.T, s *Session) *boundaryRecorder {
 				rec.starts = append(rec.starts, data)
 			}
 		}
-	}, func() {})
+	}, func() { close(rec.drained) })
 	return rec
 }
 
+// snapshot closes the session and waits for the consumer goroutine to finish
+// before reading, so every assertion sees the whole stream.
+//
+// ProcessInputKind returning does NOT mean the events it emitted have been
+// consumed: ConsumeEventsLossless drains on its own goroutine, so reading the
+// recorder directly after the call is a race. A positive assertion would flake,
+// and — worse — a negative one ("no boundary was announced") would pass simply
+// by reading before the event it is meant to catch arrived. Closing the session
+// closes the event channel, which ends the drain loop and fires onDrained; that
+// is the awaitable completion, not a sleep.
 func (r *boundaryRecorder) snapshot() ([]events.EventKind, []events.TurnStartedData) {
+	r.session.Close()
+	<-r.drained
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]events.EventKind(nil), r.kinds...), append([]events.TurnStartedData(nil), r.starts...)

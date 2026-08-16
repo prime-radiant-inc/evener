@@ -45,7 +45,7 @@ import (
 func main() {
 	hold := flag.Duration("hold", 15*time.Second, "how long to hold each model round before answering")
 	rounds := flag.Int("rounds", 20, "tool-call rounds per turn before ending it with communicate(end_turn=true)")
-	jobRelease := flag.String("background-job-until", "", "answer the first round with a background shell job that waits for this file, then end the turn; creating the file wakes the idle session with a job-completion notification")
+	jobRelease := flag.String("background-job-until", "", "answer the first round with a background shell job that waits for this file, then end the turn; creating the file wakes the idle session with a job-completion notification. Give a name relative to the session's working directory -- the shell runs there, so a bare name needs no quoting and cannot be broken by a path with a space in it")
 	flag.Usage = func() {
 		// Flags first: Go's flag package stops parsing at the first non-flag
 		// argument, so "fakellm 127.0.0.1:0 --hold 30s" silently runs with the
@@ -108,7 +108,7 @@ func run(addr string, hold time.Duration, rounds int, jobRelease string) error {
 			case 1:
 				log.Printf("round 1: launching a background job that waits for %s", jobRelease)
 				call.RespondToolCall("shell", map[string]any{
-					"command": "while [ ! -f '" + jobRelease + "' ]; do sleep 0.5; done",
+					"command": "while [ ! -f " + jobRelease + " ]; do sleep 0.5; done",
 					"mode":    "background",
 				})
 				continue

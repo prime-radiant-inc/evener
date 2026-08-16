@@ -324,7 +324,12 @@ func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
 	client := stack.dialRPC(ctx, t)
 
 	const steerText = "SERF-E2E-NOTIFICATION-STEER"
-	releasePath := filepath.Join(stack.workDir, "release-the-job")
+	// A bare name, not a path: the shell tool runs in the session's working
+	// directory, so nothing is interpolated into the command and a temp dir
+	// with a space in it cannot break the wait loop — which would exit
+	// immediately and silently test the interleave path instead.
+	const releaseName = "release-the-job"
+	releasePath := filepath.Join(stack.workDir, releaseName)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
 		Harness:         "serf",
@@ -353,7 +358,7 @@ func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
 	}
 	firstTurn := awaitActiveTurn(ctx, t, client, ref, "")
 	round1.RespondToolCall("shell", map[string]any{
-		"command": "while [ ! -f '" + releasePath + "' ]; do sleep 0.2; done",
+		"command": "while [ ! -f " + releaseName + " ]; do sleep 0.2; done",
 		"mode":    "background",
 	})
 	round2, err := provider.Next(ctx.Done())

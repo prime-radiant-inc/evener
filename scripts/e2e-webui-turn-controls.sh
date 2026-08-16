@@ -173,10 +173,12 @@ echo "==> starting fakellm (hold=${hold}s rounds=${rounds})" >&2
 # Flags BEFORE the positional address: Go's flag package stops parsing at the
 # first non-flag argument, so the other order silently ran with the defaults
 # while this script's banner reported the values it had asked for.
-job_release="$run/release-the-job"
+job_release="$workspace/release-the-job"
 fakellm_args=(--hold "${hold}s" --rounds "$rounds")
 if [ "$background_job" -eq 1 ]; then
-	fakellm_args+=(--background-job-until "$job_release")
+	# A bare name: the shell tool runs in the session's working directory,
+	# so nothing needs quoting and a run path with a space cannot break it.
+	fakellm_args+=(--background-job-until release-the-job)
 fi
 "$run/fakellm" "${fakellm_args[@]}" 127.0.0.1:0 >"$run/fakellm.log" 2>&1 &
 fakellm_pid=$!
@@ -243,7 +245,7 @@ if [ "$background_job" -eq 1 ]; then
 	mode_line="The first spawned session launches a background job and goes idle.
 Release it to wake the session with a job-completion notification turn:
 
-    touch $job_release
+    touch '$job_release'
 "
 else
 	mode_line="Every model round through this hub pauses ${hold}s; a turn runs
