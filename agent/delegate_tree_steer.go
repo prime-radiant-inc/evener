@@ -30,11 +30,12 @@ type delegateSteeringClaim struct {
 }
 
 type delegateModelRequestClaim struct {
-	token              uint64
-	lease              delegateLease
-	runtime            *Session
-	steeringIDs        []string
-	steeringProvenance map[string]*provenance.Causal
+	token                uint64
+	lease                delegateLease
+	runtime              *Session
+	steeringIDs          []string
+	steeringProvenance   map[string]*provenance.Causal
+	testBeforeProvenance func()
 }
 
 type delegateTranscriptEntry struct {
@@ -77,8 +78,8 @@ func (c *delegateTreeController) SteerCaller(ctx context.Context, actor delegate
 		return delegateMutationPlans{}, err
 	}
 	if root != nil {
-		if !root.trySteerWithProvenanceAndNotify(message, p, events.SteeringKindAgentMessage) {
-			return delegateMutationPlans{}, errors.New("caller unavailable")
+		if err := root.enqueueDelegateCallerSteeringDurably(message, p); err != nil {
+			return delegateMutationPlans{}, err
 		}
 		return delegateMutationPlans{}, nil
 	}
@@ -229,9 +230,9 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 		c.mu.Unlock()
 		return nil, errDelegateStaleLease
 	}
-	c.releaseModelClaimLocked(claim.token)
 	_, live, err := c.admitLeaseLocked(claim.lease, delegatestore.PhaseRunning)
 	if err != nil || live.binding.runtime != claim.runtime {
+		c.releaseModelClaimLocked(claim.token)
 		c.evidenceVersion++
 		c.mu.Unlock()
 		if err != nil {
@@ -277,7 +278,18 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 	expanded := expandHistory(history, scope)
 	runtime := claim.runtime
 	c.mu.Unlock()
+	if claim.testBeforeProvenance != nil {
+		claim.testBeforeProvenance()
+	}
 	runtime.unionActiveProvenance(consumedProvenance)
+	c.mu.Lock()
+	if c.modelClaims[claim.token] != claim {
+		c.mu.Unlock()
+		return nil, errDelegateStaleLease
+	}
+	c.releaseModelClaimLocked(claim.token)
+	c.evidenceVersion++
+	c.mu.Unlock()
 	return expanded, nil
 }
 

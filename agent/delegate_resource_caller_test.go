@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -75,6 +77,77 @@ func TestDelegateResourceCaller_RegisteredNestedParentPreservesWatchProvenance(t
 	}
 }
 
+func TestDelegateResourceCaller_RegisteredNestedParentProvenanceBindingBlocksStop(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 2, 2)
+	seedDelegateControllerRunning(t, c, "dlg_parent", "")
+	seedDelegateControllerRunning(t, c, "dlg_child", "dlg_parent")
+	parent := attachRegisteredCallerRuntime(t, c, "dlg_parent", afero.NewMemMapFs())
+	child := attachRegisteredCallerRuntime(t, c, "dlg_child", afero.NewMemMapFs())
+	child.replaceActiveProvenance(testProvenance("watch_stop", "wg_stop"))
+
+	call := executeRegisteredCallerSend(t, child, delegateLease{delegateID: "dlg_child", generation: 1}, "stop-racing report")
+	if call.IsError {
+		t.Fatalf("registered nested caller send: %s", call.Output)
+	}
+	parentLease := delegateLease{delegateID: "dlg_parent", generation: 1}
+	claim, err := c.BeginModelRequest(parentLease)
+	if err != nil {
+		t.Fatalf("begin parent model request: %v", err)
+	}
+	snapshot := parent.delegateModelHistorySnapshot()
+	beforeProvenance := make(chan struct{})
+	claim.testBeforeProvenance = func() { close(beforeProvenance) }
+	parent.mu.Lock()
+	parentLocked := true
+	defer func() {
+		if parentLocked {
+			parent.mu.Unlock()
+		}
+	}()
+	completeDone := make(chan error, 1)
+	go func() {
+		_, err := c.CompleteModelRequest(claim, snapshot, replayScope{})
+		completeDone <- err
+	}()
+	<-beforeProvenance
+
+	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), parentLease.delegateID)
+	if err != nil {
+		t.Fatalf("stop parent subtree: %v", err)
+	}
+	if _, err := c.FinishGeneration(delegateLease{delegateID: "dlg_child", generation: 1}, delegateFinish{}); err != nil {
+		t.Fatalf("finish stopped child: %v", err)
+	}
+	if _, err := c.FinishGeneration(parentLease, delegateFinish{}); err != nil {
+		t.Fatalf("finish stopped parent: %v", err)
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("reconcile while provenance binding is blocked: %v", err)
+	}
+	completedBeforeBinding := false
+	select {
+	case <-result.done:
+		completedBeforeBinding = true
+	default:
+	}
+	parent.mu.Unlock()
+	parentLocked = false
+	if err := <-completeDone; err != nil {
+		t.Fatalf("complete parent model request: %v", err)
+	}
+	if completedBeforeBinding {
+		t.Fatal("stop completed before parent provenance binding and model request claim finished")
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("reconcile after provenance binding: %v", err)
+	}
+	select {
+	case <-result.done:
+	default:
+		t.Fatal("stop remained pending after provenance binding and model request claim finished")
+	}
+}
+
 func TestDelegateResourceCaller_RegisteredRootParentUsesSafeSteeringAdmission(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	root := newRegisteredCallerRoot(t, c, afero.NewMemMapFs())
@@ -99,6 +172,24 @@ func TestDelegateResourceCaller_RegisteredRootParentUsesSafeSteeringAdmission(t 
 	}
 	if len(persisted) != 1 || persisted[0].Text != "root report" {
 		t.Fatalf("durable root steering queue = %#v, want admitted caller message", persisted)
+	}
+}
+
+func TestDelegateResourceCaller_RegisteredRootParentRejectsQueuePersistenceFailure(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	root := newRegisteredCallerRoot(t, c, afero.NewMemMapFs())
+	seedDelegateControllerRunning(t, c, "dlg_child", "")
+	child := attachRegisteredCallerRuntime(t, c, "dlg_child", afero.NewMemMapFs())
+	if err := os.WriteFile(filepath.Join(root.stateDir, queuePersistSubdir), []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("block root queue persistence: %v", err)
+	}
+
+	call := executeRegisteredCallerSend(t, child, delegateLease{delegateID: "dlg_child", generation: 1}, "must be durable")
+	if !call.IsError || !strings.Contains(call.Output, "persist") {
+		t.Fatalf("registered root caller persistence failure = error:%v output:%q, want persistence error", call.IsError, call.Output)
+	}
+	if queue := root.SteeringQueueSnapshot(); len(queue) != 0 {
+		t.Fatalf("root steering queue after rejected caller send = %#v, want empty", queue)
 	}
 }
 

@@ -131,6 +131,7 @@ func TestJobControlContractPreservesContextualCallerRoute(t *testing.T) {
 		t.Fatal("job-control contract is missing the public contextual caller route")
 	}
 	for _, stale := range []string{
+		"Use `delegate_send` only for follow-up on a durable child delegate conversation.",
 		"`caller` is not a public `delegate_send` target",
 		"Use `delegate_send(to=<delegate_id>)` only for parent-to-child follow-up.",
 	} {

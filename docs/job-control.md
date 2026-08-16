@@ -53,7 +53,11 @@ This reference contract is not itself the runtime system prompt, but the followi
   child/session transcript metadata, status, and resumability—never `job_...`.
 - Use `delegate_send` for follow-up: a running delegate is steered; an idle,
   resumable delegate starts its next private run through the same call.
-- Use `delegate_send` only for follow-up on a durable child delegate conversation. Observer sidecars report through `communicate(end_turn=true)`, not `delegate_send`. `delegate_send` rejects `job_id`, `transcript_ref`, and runtime aliases on the public tool surface; ordinary delegate follow-up targets a `delegate_id`.
+- Use `delegate_send(to=<delegate_id>)` for follow-up on a durable child
+  conversation. From within a delegate, `delegate_send(to="caller")` sends a
+  non-terminal update to its controlling caller. Observer completion and final
+  results still use `communicate(end_turn=true)`. `delegate_send` rejects
+  `job_id`, `transcript_ref`, and unsupported runtime aliases.
 - When an observer readiness delegate result includes `watching:true` and `watches`, the observer is watching. Continue with the planned watched action and use the later observer `communicate(end_turn=true)` as the callback.
 - After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_status`.
 - Serf injects typed terminal attention: `<job-notification>` for owner shell
