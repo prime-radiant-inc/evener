@@ -123,9 +123,7 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 			}
 		}
 	}
-	if alreadyDisposed && !laneDirPresent {
-		return s.disposeAlreadyDisposedRemnants(run, id, lanePath, metaDir, sc), nil
-	}
+	alreadyDisposedHalfRemoved := alreadyDisposed && !laneDirPresent
 	if state.active || state.currentRunOpen || state.pendingStopSeq != 0 {
 		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s still has running or unfinished work; wait for it to finish", id)
 	}
@@ -178,25 +176,25 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 
 	if laneDirPresent {
 		err = s.disposeEvaluateLane(run, id, lanePath, sc, force, forceDirty)
-	} else {
+	} else if !alreadyDisposedHalfRemoved {
 		err = s.disposeEvaluateHalfRemoved(run, id, sc, force)
 	}
 	if err != nil {
 		return WorktreeDisposeResult{}, err
 	}
 
-	if !resumabilityClosed {
-		closedState, already, plans, closeErr := s.delegateController.closeStableWorktreeResumability(s, id, stableWorktreeDisposalReason, false)
-		if closeErr != nil {
-			if errors.Is(closeErr, errDelegateTargetBusy) {
-				return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s became active while disposing; retry once it is idle", id)
-			}
-			return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: close resumability: %w", closeErr)
+	closedState, already, plans, closeErr := s.delegateController.closeStableWorktreeResumability(s, id, stableWorktreeDisposalReason, false)
+	if closeErr != nil {
+		if errors.Is(closeErr, errDelegateTargetBusy) {
+			return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s became active while disposing; retry once it is idle", id)
 		}
-		s.delegateController.emitDelegateUpdates(plans)
-		state = closedState
-		resumabilityClosed = true
-		alreadyDisposed = already && state.notResumableReason == stableWorktreeDisposalReason
+		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: close resumability: %w", closeErr)
+	}
+	s.delegateController.emitDelegateUpdates(plans)
+	state = closedState
+	alreadyDisposed = already && state.notResumableReason == stableWorktreeDisposalReason
+	if alreadyDisposedHalfRemoved {
+		return s.disposeAlreadyDisposedRemnants(run, id, lanePath, metaDir, sc), nil
 	}
 	gateConsumed = true
 	return s.disposeStableExecute(budgetCtx, run, state, lanePath, metaDir, sub, laneDirPresent, st, forceDirty, alreadyDisposed)

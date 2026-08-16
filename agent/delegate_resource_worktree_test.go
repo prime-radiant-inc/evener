@@ -193,11 +193,7 @@ func TestStableDelegateWorktree_DisposeAlreadyClosedLanePreservesReason(t *testi
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedStableIsolationLane(t)
 	const originalReason = "turn_budget_exhausted"
-	_, _, plans, err := r.s.delegateController.closeStableWorktreeResumability(r.s, id, originalReason, false)
-	if err != nil {
-		t.Fatalf("seed permanent resumability closure: %v", err)
-	}
-	r.s.delegateController.emitDelegateUpdates(plans)
+	closeStableWorktreeForTest(t, r.s, id, originalReason)
 
 	result, err := r.s.worktreeDispose(context.Background(), id, false, false)
 	if err != nil {
@@ -228,6 +224,65 @@ func TestStableDelegateWorktree_DisposeAlreadyClosedLanePreservesReason(t *testi
 	}
 	if closures != 1 {
 		t.Fatalf("resumability closure events = %d, want original event only", closures)
+	}
+}
+
+func TestStableDelegateWorktree_AlreadyClosedHalfRemovedCleanupRejectsDurableRunningDescendant(t *testing.T) {
+	r := newWorktreeRepo(t)
+	parentID, lanePath, _ := r.seedStableIsolationLane(t)
+	closeStableWorktreeForTest(t, r.s, parentID, stableWorktreeDisposalReason)
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+	wtGit(t, r.mainRoot, "worktree", "remove", lanePath)
+	if laneWorktreePresent(lanePath) {
+		t.Fatal("half-removed fixture retained its worktree")
+	}
+	childID := "dlg_half_removed_running_descendant"
+	seedDelegateControllerRunning(t, r.s.delegateController, childID, parentID)
+	r.s.delegateController.mu.Lock()
+	delete(r.s.delegateController.live, childID)
+	r.s.delegateController.mu.Unlock()
+
+	result, err := r.s.worktreeDispose(context.Background(), parentID, false, false)
+	if err == nil {
+		t.Errorf("already-closed half-removed cleanup with durable running descendant = %#v, want refusal", result)
+	}
+	if !r.branchExists(t, parentID) {
+		t.Error("already-closed half-removed cleanup deleted the branch while a durable descendant ran")
+	}
+	if _, sidecarErr := worktree.ReadSidecar(metaDirForLane(lanePath), parentID); sidecarErr != nil {
+		t.Errorf("already-closed half-removed cleanup deleted the sidecar while a durable descendant ran: %v", sidecarErr)
+	}
+}
+
+func TestStableDelegateWorktree_AlreadyClosedLaneRevalidatesLateDurableRunningDescendant(t *testing.T) {
+	r := newWorktreeRepo(t)
+	parentID, lanePath, _ := r.seedStableIsolationLane(t)
+	closeStableWorktreeForTest(t, r.s, parentID, stableWorktreeDisposalReason)
+	childID := "dlg_late_running_descendant"
+	injected := false
+	scriptedGitRunner(r.s, func(args []string) (string, error, bool) {
+		if !injected && scriptedArgs(args, statusArgv(lanePath)...) {
+			injected = true
+			seedDelegateControllerRunning(t, r.s.delegateController, childID, parentID)
+			r.s.delegateController.mu.Lock()
+			delete(r.s.delegateController.live, childID)
+			r.s.delegateController.mu.Unlock()
+		}
+		return "", nil, false
+	})
+
+	result, err := r.s.worktreeDispose(context.Background(), parentID, false, false)
+	if !injected {
+		t.Fatal("late descendant fixture did not reach the post-snapshot validation boundary")
+	}
+	if err == nil {
+		t.Errorf("already-closed cleanup after late durable admission = %#v, want refusal", result)
+	}
+	if !laneWorktreePresent(lanePath) {
+		t.Error("already-closed cleanup destroyed the lane after late durable admission")
+	}
+	if !r.branchExists(t, parentID) {
+		t.Error("already-closed cleanup deleted the branch after late durable admission")
 	}
 }
 
@@ -388,6 +443,15 @@ func (r *wtRepo) seedStableIsolationLane(t *testing.T) (delegateID, lanePath, ba
 		}
 	}
 	return delegateID, lanePath, baseSHA
+}
+
+func closeStableWorktreeForTest(t *testing.T, owner *Session, id, reason string) {
+	t.Helper()
+	_, _, plans, err := owner.delegateController.closeStableWorktreeResumability(owner, id, reason, false)
+	if err != nil {
+		t.Fatalf("seed permanent resumability closure: %v", err)
+	}
+	owner.delegateController.emitDelegateUpdates(plans)
 }
 
 func assertStableWorktreeResumable(t *testing.T, controller *delegateTreeController, id string, want bool) {
