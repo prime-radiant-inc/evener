@@ -1028,19 +1028,25 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// Name the turn before the event that opens it, so the AppWire projection
 	// adopts this id in stream order rather than minting a turn_<n> of its own
 	// that no mutation precondition accepts. User input arrives already named
-	// by its own durable reservation; these two kinds have nothing to name
-	// them. A refused wake releases the name below rather than leaving a turn
-	// that never ran holding the slot.
+	// by its own durable reservation; a goal continuation has nothing to name
+	// it, and EventGoalContinuation is unambiguously the event that opens its
+	// turn.
+	//
+	// Notification wakes are NOT named here, and the omission is deliberate:
+	// they have no event that reliably opens their turn (the reminder emit is
+	// conditional on there being job notifications at all, so an attention- or
+	// steering-driven wake emits nothing), and the one payload that reaches
+	// the projector already spends StableTurnID on the steering mutation's own
+	// reserved id. Naming them needs a carrier of their own -- kata 7vmd.
 	var runningTurnID string
-	if kind == EntryContinuation || kind == EntryNotification {
+	if kind == EntryContinuation {
 		runningTurnID = s.mintRunningTurnID()
 	}
 
 	if kind == EntryContinuation {
 		s.acceptContinuationInput(ctx, input, runningTurnID)
 	} else if kind == EntryNotification {
-		if !s.acceptNotificationInput(ctx, runningTurnID) {
-			s.releaseRunningTurnID(runningTurnID)
+		if !s.acceptNotificationInput(ctx) {
 			return "", false, nil
 		}
 		rootAttentionAccepted = true
@@ -1518,7 +1524,7 @@ func (s *Session) acceptDelegateAttentionInput() {
 // It returns proceed=false on an empty queue, having set s.sessionEndEmitted so
 // the drain loop's idle tail suppresses the phantom SESSION_END{input_complete} —
 // an empty notification turn is a true no-op that makes no model request.
-func (s *Session) acceptNotificationInput(ctx context.Context, stableTurnID string) (proceed bool) {
+func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 	s.drivePendingStableDelegateAttention()
 	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
 	// watch sends may have no token queued yet (the drive was launched on the
@@ -1566,7 +1572,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, stableTurnID stri
 			s.finishNotificationNoop()
 			return false
 		}
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification, StableTurnID: stableTurnID})
+		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
 	}
 	deliveredFailures := s.markJobNotificationsDelivered(jobNotifs)
 	s.requeueJobNotifications(deliveredFailures)

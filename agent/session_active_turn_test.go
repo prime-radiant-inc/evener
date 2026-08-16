@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -17,6 +19,45 @@ import (
 func serveSession(t *testing.T, s *Session) {
 	t.Helper()
 	s.ConsumeEventsLossless(func(events.SessionEvent) {}, func() {})
+}
+
+// TestGoalContinuationTurnCarriesItsNameOnTheOpeningEvent is the wiring test:
+// minting a name is useless unless the event that opens the turn carries it,
+// because that event is the only thing the AppWire projection reads. Without
+// this, replacing processOneInput's mint with "" leaves every other test green
+// while every mid-turn control silently breaks on goal turns.
+func TestGoalContinuationTurnCarriesItsNameOnTheOpeningEvent(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+
+	var mu sync.Mutex
+	var continuations []events.GoalContinuationData
+	drained := make(chan struct{})
+	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		if ev.Kind != events.EventGoalContinuation {
+			return
+		}
+		data, ok := ev.Data.(events.GoalContinuationData)
+		if !ok {
+			return
+		}
+		mu.Lock()
+		continuations = append(continuations, data)
+		mu.Unlock()
+	}, func() { close(drained) })
+
+	if _, err := s.ProcessInputKind(context.Background(), "keep going", nil, EntryContinuation); err != nil {
+		t.Fatalf("ProcessInputKind(EntryContinuation): %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(continuations) != 1 {
+		t.Fatalf("EventGoalContinuation count = %d, want 1", len(continuations))
+	}
+	if !strings.HasPrefix(continuations[0].StableTurnID, "turn_m") {
+		t.Fatalf("the goal continuation opened its turn with StableTurnID %q, want a turn_m<n> the daemon's preconditions accept",
+			continuations[0].StableTurnID)
+	}
 }
 
 // TestMintRunningTurnIDNamesAnAgentStartedTurn pins the contract every

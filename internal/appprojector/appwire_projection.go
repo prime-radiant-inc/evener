@@ -733,15 +733,13 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventSteeringInjected:
 		p.clearSkillCandidate()
 		data := eventData[events.SteeringInjectedData](event.Data)
-		// A notification wake's reminder is the first event of the turn it
-		// opens, and it carries the daemon's own name for that turn. Adopt it
-		// so the ensureTurn that follows uses it instead of minting a turn_<n>
-		// the daemon's mutation preconditions reject. Guarded on no turn being
-		// open: a steer injected INTO a running turn names nothing and must
-		// never re-point the reservation.
-		if data.StableTurnID != "" && p.activeTurnID == "" {
-			p.reservedTurnID = data.StableTurnID
-		}
+		// SteeringInjectedData.StableTurnID names the STEERING MUTATION's own
+		// durable record (clientMutationSteer reserves a fresh one per steer),
+		// not the turn the steer lands in. It must never be adopted as a turn
+		// reservation here: a steer drained across a turn boundary would then
+		// name the turn after itself, and every mid-turn control aimed at that
+		// turn would be rejected. Naming a notification turn needs a carrier
+		// of its own -- kata 7vmd.
 		images := projectUserInputImages(data.Images)
 		text := data.Text
 		if strings.TrimSpace(text) == "" {

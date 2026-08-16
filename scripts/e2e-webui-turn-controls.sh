@@ -92,6 +92,13 @@ if [ -n "$stop_dir" ]; then
 			echo "e2e-webui-turn-controls: stopped $(basename "$pidfile" .pid) (pid $pid)" >&2
 		fi
 	done
+	# Only ever delete a directory this script made. --stop takes a path from
+	# the caller, and the marker file is the one thing that distinguishes "a
+	# run of ours" from a typo pointing at something that matters.
+	if [ ! -f "$stop_dir/.e2e-webui-turn-controls" ]; then
+		echo "e2e-webui-turn-controls: $stop_dir is not one of this script's run directories (no .e2e-webui-turn-controls marker); not deleting it" >&2
+		exit 2
+	fi
 	rm -rf "$stop_dir"
 	echo "e2e-webui-turn-controls: removed $stop_dir" >&2
 	exit 0
@@ -105,6 +112,7 @@ for value in "$hold" "$rounds"; do
 done
 
 run="$(mktemp -d -t serf-e2e-webui.XXXXXX)"
+touch "$run/.e2e-webui-turn-controls" # the marker --stop refuses to delete without
 echo "e2e-webui-turn-controls: run directory $run" >&2
 
 if [ "$skip_web" -eq 0 ]; then
@@ -117,6 +125,10 @@ if [ "$skip_web" -eq 0 ]; then
 fi
 
 echo "==> building fakellm, serf, serf-hub" >&2
+# From the repo root: `go build` resolves the module (and go.work) from its own
+# working directory, so an absolute package path is not enough when the script
+# is invoked from outside the checkout.
+cd "$repo_root"
 go build -o "$run/fakellm" "$repo_root/test/e2e/fakellm/cmd" || {
 	echo "build fakellm failed" >&2
 	exit 1
@@ -135,14 +147,22 @@ go build -o "$run/serf-hub" "$repo_root/cmd/serf-hub" || {
 # ~/.local/state/serf entirely (kata av1j).
 export HOME="$run/home"
 mkdir -p "$HOME/.serf"
-unset XDG_STATE_HOME
+# Everything that can redirect serf away from the throwaway $HOME, not just
+# the state dir: an operator with any of these exported would otherwise have
+# this hub read or write their real config, cache, run dir or hub token while
+# the header above promises isolation.
+unset XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME
+unset SERF_STATE_DIR SERF_RUN_DIR SERF_HUB_TOKEN SERF_HUB_ADDR SERF_HUB_SPAWNED
 
 workspace="$run/workspace"
 mkdir -p "$workspace"
 echo "notes for the fake tool round" >"$workspace/NOTES.md"
 
 echo "==> starting fakellm (hold=${hold}s rounds=${rounds})" >&2
-"$run/fakellm" 127.0.0.1:0 --hold "${hold}s" --rounds "$rounds" >"$run/fakellm.log" 2>&1 &
+# Flags BEFORE the positional address: Go's flag package stops parsing at the
+# first non-flag argument, so the other order silently ran with the defaults
+# while this script's banner reported the values it had asked for.
+"$run/fakellm" --hold "${hold}s" --rounds "$rounds" 127.0.0.1:0 >"$run/fakellm.log" 2>&1 &
 fakellm_pid=$!
 echo "$fakellm_pid" >"$run/fakellm.pid"
 

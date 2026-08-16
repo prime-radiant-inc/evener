@@ -17,7 +17,7 @@
 //
 // Usage:
 //
-//	fakellm <listen-addr> [--hold seconds] [--rounds n]
+//	fakellm [--hold 15s] [--rounds 20] <listen-addr>
 //
 // <listen-addr> is host:port. Use 127.0.0.1:0 to let the kernel assign a free
 // port (kata 68fm) and read the real one back from the "fakellm listening on
@@ -46,12 +46,19 @@ func main() {
 	hold := flag.Duration("hold", 15*time.Second, "how long to hold each model round before answering")
 	rounds := flag.Int("rounds", 20, "tool-call rounds per turn before ending it with communicate(end_turn=true)")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: fakellm <listen-addr> [--hold 15s] [--rounds 20]")
+		// Flags first: Go's flag package stops parsing at the first non-flag
+		// argument, so "fakellm 127.0.0.1:0 --hold 30s" silently runs with the
+		// defaults. Say the working order here rather than the wrong one.
+		fmt.Fprintln(os.Stderr, "usage: fakellm [--hold 15s] [--rounds 20] <listen-addr>")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
-	if flag.NArg() < 1 {
+	if flag.NArg() != 1 {
 		flag.Usage()
+		os.Exit(2)
+	}
+	if *rounds < 1 {
+		fmt.Fprintf(os.Stderr, "fakellm: --rounds must be at least 1, got %d\n", *rounds)
 		os.Exit(2)
 	}
 	// run owns every defer; main only reports. log.Fatalf here would skip
