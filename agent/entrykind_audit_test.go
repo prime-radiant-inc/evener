@@ -46,7 +46,7 @@ var entryKindTurnOpening = map[EntryKind]turnOpening{
 }
 
 func TestEveryEntryKindDeclaresHowItsTurnOpens(t *testing.T) {
-	for kind := EntryUserInput; kind < entryKindCount; kind++ {
+	for kind := range entryKindCount {
 		if _, ok := entryKindTurnOpening[kind]; !ok {
 			t.Fatalf("EntryKind %d declares no turn opening: add it to entryKindTurnOpening. "+
 				"A turn nobody named opens under an id no client can address, and Steer, "+
