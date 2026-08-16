@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -454,10 +455,8 @@ func (c *delegateTreeController) admitLeaseLocked(lease delegateLease, phases ..
 		}
 		ancestorID = ancestor.Descriptor.ParentDelegateID
 	}
-	for _, phase := range phases {
-		if aggregate.Phase == phase {
-			return aggregate, live, nil
-		}
+	if slices.Contains(phases, aggregate.Phase) {
+		return aggregate, live, nil
 	}
 	return nil, nil, errDelegateTargetBusy
 }
