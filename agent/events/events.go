@@ -109,6 +109,14 @@ const (
 	// EventTurnEnded marks a single turn reaching its terminal boundary, carrying
 	// the turn's wall-clock duration.
 	EventTurnEnded EventKind = "TURN_ENDED"
+	// EventTurnStarted marks a turn beginning, carrying the identity the daemon
+	// reserved for it. It exists for turns that open with no content event of
+	// their own: a notification wake announces its turn through nothing else, so
+	// without it the turn's items join the turn before it and its id is one no
+	// mutation precondition accepts -- Steer, Send and Stop then all fail on it,
+	// silently (kata 7vmd). Turns whose first event already names them,
+	// EventUserInput and EventGoalContinuation, do not emit it.
+	EventTurnStarted EventKind = "TURN_STARTED"
 	// EventGoalContinuation marks a system-framed continuation turn injected by
 	// the goal engine.
 	EventGoalContinuation EventKind = "GOAL_CONTINUATION"

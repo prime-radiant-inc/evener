@@ -23,14 +23,26 @@ import (
 // durable authority, or returns "" when this turn must run unnamed. The
 // caller passes the result straight into the turn's opening event, where ""
 // means "unnamed" — which is what these turns already do today.
+// servedByDaemon reports whether a daemon is draining this session's events,
+// which is the same thing as "a client can address this session's turns".
+// ConsumeEventsLossless is the only writer of the flag and has only root-path
+// callers, so in-process subagents and one-shot CLI runs read false.
+//
+// It gates both halves of naming a turn: whether to reserve a durable id at
+// all, and whether to announce the turn on the wire. A session no client
+// watches needs neither, and paying for them would put a durable write on
+// every delegate wake.
+func (s *Session) servedByDaemon() bool {
+	s.eventsMu.RLock()
+	defer s.eventsMu.RUnlock()
+	return s.authoritativeConsumer
+}
+
 func (s *Session) mintRunningTurnID() string {
 	// A session nobody serves has no client to name a turn to. In-process
 	// subagents share the parent's StateDir (subagents.go), so this gate is
 	// the difference between a durable write per delegate wake and none.
-	s.eventsMu.RLock()
-	served := s.authoritativeConsumer
-	s.eventsMu.RUnlock()
-	if !served {
+	if !s.servedByDaemon() {
 		return ""
 	}
 	if err := s.ensureClientMutationStore(); err != nil {

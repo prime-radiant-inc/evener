@@ -1028,16 +1028,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// Name the turn before the event that opens it, so the AppWire projection
 	// adopts this id in stream order rather than minting a turn_<n> of its own
 	// that no mutation precondition accepts. User input arrives already named
-	// by its own durable reservation; a goal continuation has nothing to name
-	// it, and EventGoalContinuation is unambiguously the event that opens its
-	// turn.
+	// by its own durable reservation; a goal continuation and a notification
+	// wake have nothing to name them.
 	//
-	// Notification wakes are NOT named here, and the omission is deliberate:
-	// they have no event that reliably opens their turn (the reminder emit is
-	// conditional on there being job notifications at all, so an attention- or
-	// steering-driven wake emits nothing), and the one payload that reaches
-	// the projector already spends StableTurnID on the steering mutation's own
-	// reserved id. Naming them needs a carrier of their own -- kata 7vmd.
+	// A continuation can be named here because acceptContinuationInput cannot
+	// refuse. A notification wake can: its commonest outcome is an empty-queue
+	// no-op, and it can still refuse after a durable write fails. So it names
+	// itself once every refusal is behind it and hands the id back, rather
+	// than paying a durable reservation for every coalesced wake that turns
+	// out to have nothing to deliver.
 	var runningTurnID string
 	if kind == EntryContinuation {
 		runningTurnID = s.mintRunningTurnID()
@@ -1046,7 +1045,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	if kind == EntryContinuation {
 		s.acceptContinuationInput(ctx, input, runningTurnID)
 	} else if kind == EntryNotification {
-		if !s.acceptNotificationInput(ctx) {
+		proceed, notificationTurnID := s.acceptNotificationInput(ctx)
+		runningTurnID = notificationTurnID
+		if !proceed {
+			s.releaseRunningTurnID(runningTurnID)
 			return "", false, nil
 		}
 		rootAttentionAccepted = true
@@ -1524,7 +1526,7 @@ func (s *Session) acceptDelegateAttentionInput() {
 // It returns proceed=false on an empty queue, having set s.sessionEndEmitted so
 // the drain loop's idle tail suppresses the phantom SESSION_END{input_complete} —
 // an empty notification turn is a true no-op that makes no model request.
-func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
+func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool, turnID string) {
 	s.drivePendingStableDelegateAttention()
 	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
 	// watch sends may have no token queued yet (the drive was launched on the
@@ -1549,7 +1551,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 			s.resetJobNotificationRetry()
 		}
 		s.finishNotificationNoop()
-		return false
+		return false, ""
 	}
 
 	s.repairOrphanedToolResults("before accepting notification")
@@ -1565,15 +1567,36 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 	}
 	s.replaceActiveProvenance(notificationProvenance)
 
+	// Persist before announcing. appendSteeringTurnDurably is this turn's last
+	// refusal, and a turn announced before it can still be refused -- which
+	// would leave the projection holding an open, active turn that
+	// finishNotificationNoop's sessionEndEmitted then suppresses the close for.
+	var reminder string
 	if len(jobNotifs) > 0 {
-		reminder := s.formatJobNotificationReminder(jobNotifs)
+		reminder = s.formatJobNotificationReminder(jobNotifs)
 		if err := errors.Join(s.appendSteeringTurnDurably(reminder, events.SteeringKindNotification), sessionLifecycleFault(ctx, "append_notification")); err != nil {
 			s.requeueJobNotifications(jobNotifications(jobNotifs))
 			s.finishNotificationNoop()
-			return false
+			return false, ""
 		}
+	}
+
+	// Every refusal is behind us, so open the turn. This is the ONLY thing that
+	// gives a notification turn a turn of its own: its reminder rides
+	// EventSteeringInjected, which opens nothing, and the steering-only and
+	// attention-only wakes emit no reminder at all. Announcing outside the
+	// jobNotifs block is what covers all three shapes.
+	//
+	// The announce precedes every content event of the turn. A boundary that
+	// came after would leave that content attributed to the turn before it.
+	turnID = s.mintRunningTurnID()
+	if s.servedByDaemon() {
+		s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
+	}
+	if reminder != "" {
 		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
 	}
+
 	deliveredFailures := s.markJobNotificationsDelivered(jobNotifs)
 	s.requeueJobNotifications(deliveredFailures)
 	if len(deliveredFailures) == 0 {
@@ -1591,7 +1614,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	s.injectDrainedSteering()
-	return true
+	return true, turnID
 }
 
 func (s *Session) settleDeliveredWatchNotification(ctx context.Context, d deliverableJobNotification) {

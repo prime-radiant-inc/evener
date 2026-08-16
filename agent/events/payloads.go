@@ -687,3 +687,15 @@ type GoalEndedData struct {
 type TurnEndedData struct {
 	TurnDurationMS int64 `json:"turn_duration_ms"`
 }
+
+// TurnStartedData is the payload for an EventTurnStarted event.
+type TurnStartedData struct {
+	// TurnID is the identity the daemon's mutation preconditions accept for
+	// this turn. Empty when the daemon could not reserve one -- an interrupt is
+	// already pending, or another mutation still owns the slot -- in which case
+	// the AppWire projection mints its own id and the turn is visible and
+	// separate but not addressable. The event is still worth emitting then:
+	// closing the previous turn and publishing the thread active are the other
+	// two things a turn boundary owes its subscribers, and neither needs a name.
+	TurnID string `json:"turn_id,omitempty"`
+}

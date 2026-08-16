@@ -218,7 +218,7 @@ func TestAcceptNotificationInput_PersistsNotificationKind(t *testing.T) {
 		Status:  string(jobstore.StatusCompleted),
 	})
 
-	if !s.acceptNotificationInput(context.Background()) {
+	if proceed, _ := s.acceptNotificationInput(context.Background()); !proceed {
 		t.Fatal("notification input should proceed")
 	}
 

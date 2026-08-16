@@ -133,3 +133,13 @@ func TestSteeringInjectedDataCarriesKind(t *testing.T) {
 		t.Errorf("Kind = %q, want %q", d.Kind, "tasks-done")
 	}
 }
+
+// TestTurnStartedDataBindsItsKind pins the payload-to-kind binding that
+// events.New derives Kind from. A notification turn announces itself through
+// this event and nothing else, so a mismatched binding routes the one thing
+// that makes such a turn addressable as some other event entirely.
+func TestTurnStartedDataBindsItsKind(t *testing.T) {
+	if got := (TurnStartedData{}).eventKind(); got != EventTurnStarted {
+		t.Fatalf("TurnStartedData.eventKind() = %q, want %q", got, EventTurnStarted)
+	}
+}

@@ -103,7 +103,7 @@ func TestPersistedTerminalJobStatusReadConsumesPendingNotification(t *testing.T)
 
 	// The session goes idle and takes its notification turn: there must be
 	// nothing left to tell it about this job.
-	if s.acceptNotificationInput(context.Background()) {
+	if proceed, _ := s.acceptNotificationInput(context.Background()); proceed {
 		t.Fatal("a notification turn ran after the caller already read the terminal status")
 	}
 }
@@ -162,7 +162,7 @@ func TestPersistedTerminalJobStatusPreservesQueuedSelfWatchNotification(t *testi
 	}
 
 	historyLen := len(s.history)
-	if proceed := s.acceptNotificationInput(context.Background()); !proceed {
+	if proceed, _ := s.acceptNotificationInput(context.Background()); !proceed {
 		t.Error("self-watch notification was not accepted after terminal status consumption")
 	}
 	if got := len(s.history); got != historyLen+1 {

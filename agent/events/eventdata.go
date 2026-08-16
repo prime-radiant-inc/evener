@@ -77,6 +77,7 @@ func (ForkSummaryData) eventKind() EventKind       { return EventForkSummary }
 func (PromptLoadedData) eventKind() EventKind      { return EventPromptLoaded }
 func (RoundTimings) eventKind() EventKind          { return EventRoundTimings }
 func (TurnEndedData) eventKind() EventKind         { return EventTurnEnded }
+func (TurnStartedData) eventKind() EventKind       { return EventTurnStarted }
 func (GoalContinuationData) eventKind() EventKind  { return EventGoalContinuation }
 func (GoalEndedData) eventKind() EventKind         { return EventGoalEnded }
 func (SandboxEscalationRequestedData) eventKind() EventKind {
@@ -126,6 +127,7 @@ var (
 	_ EventData = PromptLoadedData{}
 	_ EventData = RoundTimings{}
 	_ EventData = TurnEndedData{}
+	_ EventData = TurnStartedData{}
 	_ EventData = GoalContinuationData{}
 	_ EventData = GoalEndedData{}
 	_ EventData = SandboxEscalationRequestedData{}
