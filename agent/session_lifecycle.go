@@ -1535,6 +1535,25 @@ func (s *Session) acceptDelegateAttentionInput() {
 // the drain loop's idle tail suppresses the phantom SESSION_END{input_complete} —
 // an empty notification turn is a true no-op that makes no model request.
 func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool, turnID string) {
+	// A wake runs only when it can be the named running turn. The name is
+	// already spoken for when a client's turn/start has been accepted and is
+	// waiting its turn in the serve loop, and that interleaving is ordinary
+	// rather than exotic: inputCh holds one slot, a wake that finds it full
+	// parks blocked on the send (server.go:768), and when the slot frees that
+	// parked send races the turn/start that just claimed the name.
+	//
+	// Standing down costs nothing. The user's turn is next and already named,
+	// and the drain loop's tail gate (peekNotifications, below) runs the
+	// notification turn inline the moment that turn ends -- by which point the
+	// name is free. Proceeding instead would run a turn that can last minutes
+	// with no Stop and no Steer, because every control is compared against a
+	// name this turn does not hold.
+	//
+	// Nothing is drained above this point, so there is nothing to put back.
+	if s.servedByDaemon() && s.runningTurnNameTaken() {
+		s.finishNotificationNoop()
+		return false, ""
+	}
 	s.drivePendingStableDelegateAttention()
 	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
 	// watch sends may have no token queued yet (the drive was launched on the

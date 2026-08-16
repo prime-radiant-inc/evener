@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/appwire"
 )
 
 // boundaryRecorder collects the events a served session emits. Registering a
@@ -238,6 +239,121 @@ func TestRefusedDurableAppendAnnouncesNoBoundary(t *testing.T) {
 	}
 	if got := s.clientMutations.snapshot().ActiveTurnID; got != "" {
 		t.Fatalf("ActiveTurnID = %q after a refused wake; the id was minted above the refusal and leaked", got)
+	}
+}
+
+// TestWakeStandsDownWhileAUserTurnIsClaimed is the ordinary-usage race, not an
+// exotic one: inputCh holds one slot, and a job-completion wake that finds it
+// full parks a goroutine blocked on the send (server.go:768). Finish a turn
+// while a job wake is parked, then send a message, and the two race for the
+// freed slot. When the parked wake wins, the serve loop runs it while
+// ActiveTurnID is already claimed by the user's turn/start -- so the wake
+// cannot name itself, and a notification turn that can run for minutes has no
+// Stop and no Steer for its whole life.
+//
+// Standing down is the fix rather than naming it anyway: the user's turn is
+// next and is already named, and the drain loop's tail gate
+// (session_lifecycle.go:816, peekNotifications) runs the notification turn
+// inline once that turn ends, by which point nothing is claimed and the wake
+// names itself. Nothing is lost, and no turn ever runs unnameable.
+func TestWakeStandsDownWhileAUserTurnIsClaimed(t *testing.T) {
+	dir := t.TempDir()
+	s := newTestSessionForEnvctx(t, withDir(dir))
+	rec := serveAndRecord(t, s)
+
+	jm, err := newJobManager(dir, s.ID(), s.enqueueJobNotification)
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	s.jobManager = jm
+	appendPendingJobNotificationRecord(t, jm, s.ID())
+	s.enqueueJobNotification(jobNotification{JobID: "job_X", JobType: "shell", Status: "completed", OutputBytes: 42})
+
+	// A turn/start the client has been told exists, accepted but not yet run.
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.NextTurnSequence++
+		turnID := appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
+		snapshot.ActiveTurnID = turnID
+		snapshot.PendingExecutions["cm-user"] = appwire.PendingMutation{
+			ClientMutationID: "cm-user",
+			Method:           clientMutationMethodStart,
+			ExecutionState:   "accepted",
+			TurnID:           turnID,
+			ProjectionState:  appwire.MutationProjectionPending,
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed a claimed user turn: %v", err)
+	}
+
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	if _, starts := rec.snapshot(); len(starts) != 0 {
+		t.Fatalf("the wake opened %d turns while a user turn was claimed; it cannot name one, so it must not run one", len(starts))
+	}
+	if got := s.peekNotifications(); got == 0 {
+		t.Fatal("the wake consumed its notifications while standing down; the user's turn tail has nothing left to deliver")
+	}
+}
+
+// TestWakeResumesOnceTheUserTurnReleasesTheName is the other half of standing
+// down, and the half that makes it safe: the wake must be DEFERRED, not
+// dropped. A finished job whose notification is silently discarded is never
+// heard again, which is strictly worse than an unstoppable turn.
+//
+// Once the user's turn ends and gives the name back, the same wake names itself
+// and runs -- which is what the serve loop's tail gate provokes for real.
+func TestWakeResumesOnceTheUserTurnReleasesTheName(t *testing.T) {
+	dir := t.TempDir()
+	s := newTestSessionForEnvctx(t, withDir(dir))
+	rec := serveAndRecord(t, s)
+
+	jm, err := newJobManager(dir, s.ID(), s.enqueueJobNotification)
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	s.jobManager = jm
+	appendPendingJobNotificationRecord(t, jm, s.ID())
+	s.enqueueJobNotification(jobNotification{JobID: "job_X", JobType: "shell", Status: "completed", OutputBytes: 42})
+
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.NextTurnSequence++
+		snapshot.ActiveTurnID = appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed a claimed user turn: %v", err)
+	}
+
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification) while claimed: %v", err)
+	}
+
+	// The user's turn ends and hands the name back.
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.ActiveTurnID = ""
+		return nil
+	}); err != nil {
+		t.Fatalf("release the user turn's name: %v", err)
+	}
+
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification) after release: %v", err)
+	}
+
+	_, starts := rec.snapshot()
+	if len(starts) != 1 {
+		t.Fatalf("boundary count = %d, want exactly 1 (none while claimed, one after)", len(starts))
+	}
+	if !strings.HasPrefix(starts[0].TurnID, "turn_m") {
+		t.Fatalf("the resumed wake opened turn %q, want a turn_m<n> its controls can address", starts[0].TurnID)
 	}
 }
 

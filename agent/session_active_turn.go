@@ -79,6 +79,22 @@ func (s *Session) mintRunningTurnID() string {
 	return turnID
 }
 
+// runningTurnNameTaken reports whether the durable running-turn name already
+// belongs to something else -- a turn/start the client has been told exists and
+// which the serve loop has not run yet, or a turn already in flight.
+//
+// It reads the same field mintRunningTurnID would refuse on, and exists so a
+// caller can decline to START work it could never name, rather than discovering
+// that only once the turn is underway and unstoppable.
+func (s *Session) runningTurnNameTaken() bool {
+	if err := s.ensureClientMutationStore(); err != nil {
+		// No store means no reservation to collide with. The mint reports this
+		// failure loudly on the path that actually needs a name.
+		return false
+	}
+	return s.clientMutations.snapshot().ActiveTurnID != ""
+}
+
 // releaseRunningTurnID clears an id minted by mintRunningTurnID. It is a
 // no-op for any other id, so a turn that ended after a client mutation took
 // the slot cannot clear that mutation's identity out from under its own
