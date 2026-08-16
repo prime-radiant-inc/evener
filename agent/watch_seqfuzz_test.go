@@ -356,8 +356,7 @@ func (h *ws_harness) applyConfigure(op ws_op) ws_opOutcome {
 		Every:              op.every,
 		EventFilter:        op.filter,
 	}
-	switch op.sendSel {
-	case 1:
+	if op.sendSel == 1 {
 		a.Send = &watchSendArgs{To: runtimeMessageAliasCaller}
 	}
 	res, err := h.jm.configureWatch(a)
