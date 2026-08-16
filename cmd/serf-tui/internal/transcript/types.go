@@ -6,6 +6,7 @@ package transcript
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"primeradiant.com/serf/appwire"
@@ -80,6 +81,20 @@ type SubagentRunInfo struct {
 	Usage               *appwire.SerfUsage
 	Worktree            *appwire.JobActivityWorktree
 	OutputBytes         int64
+}
+
+// SubagentDisplayStatus keeps the stable delegate resource lifecycle separate
+// from the last run outcome. A resumed delegate can retain an old outcome, so
+// only a terminal snapshot displays it. Shell rows continue to display their
+// status because they do not carry a separate terminal outcome.
+func SubagentDisplayStatus(run SubagentRunInfo) string {
+	status := strings.TrimSpace(run.Status)
+	if run.Terminal {
+		if outcome := strings.TrimSpace(run.Outcome); outcome != "" {
+			return outcome
+		}
+	}
+	return status
 }
 
 type ToolCallInfo struct {

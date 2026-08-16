@@ -73,7 +73,7 @@ function delegateRow(
     childRef: "ref_child",
     transcriptRef: "ref_child",
     type: "delegate",
-    lifecycle: "active",
+    lifecycle: "running",
     phase: "running",
     status: "running",
     projectionRevision: 1,
@@ -120,6 +120,20 @@ afterEach(() => {
 });
 
 describe("ActivityRowDetail", () => {
+  test("terminal delegate detail displays outcome instead of idle lifecycle status", () => {
+    render(
+      <ActivityRowDetail
+        row={delegateRow(
+          { lifecycle: "idle", phase: "idle", status: "idle", outcome: "failed", terminal: true },
+          { live: false },
+        )}
+        now={NOW}
+      />,
+    );
+
+    expect(screen.getByText(/failed · 0b/)).toBeTruthy();
+  });
+
   test("renders the command in mono for a shell job row, preferring command over task over description", () => {
     const { rerender } = render(
       <ActivityRowDetail row={jobRow({ command: "npm test", task: "ignored task" }, { live: true })} now={NOW} />,

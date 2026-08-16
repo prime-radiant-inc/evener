@@ -23,16 +23,16 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
 // kept only as a defensive alias for the parity checklist's legacy name and
 // for stored transcripts that still carry such calls.
 
-test("job_status: summary reads job_id and status from the parsed JSON output", () => {
+test("job_status: summary reads current target/id and lifecycle status", () => {
   const d = toolRendererFor("job_status");
-  const args = JSON.stringify({ job_id: "job_42" });
-  const output = JSON.stringify({ job_id: "job_42", status: "running", kind: "shell" });
-  expect(d.summary(item({ toolName: "job_status", argumentsJSON: args, output }))).toBe("Checked job_42 · running");
+  const args = JSON.stringify({ target: "dlg_42" });
+  const output = JSON.stringify({ id: "dlg_42", type: "delegate", status: "idle" });
+  expect(d.summary(item({ toolName: "job_status", argumentsJSON: args, output }))).toBe("Checked dlg_42 · idle");
 });
 
-test("job_status: falls back to the job_id arg with no status suffix when output isn't parseable yet (still running)", () => {
+test("job_status: falls back to the target arg with no status suffix when output isn't parseable yet", () => {
   const d = toolRendererFor("job_status");
-  const args = JSON.stringify({ job_id: "job_43" });
+  const args = JSON.stringify({ target: "job_43" });
   expect(d.summary(item({ toolName: "job_status", argumentsJSON: args, output: "" }))).toBe("Checked job_43");
 });
 
@@ -43,7 +43,7 @@ test("job controls keep same-owner job suffixes distinct in summaries", () => {
   for (const toolName of ["job_status", "job_stop"] as const) {
     const d = toolRendererFor(toolName);
     const summary = (jobID: string) =>
-      d.summary(item({ toolName, argumentsJSON: JSON.stringify({ job_id: jobID }), output: "" }));
+      d.summary(item({ toolName, argumentsJSON: JSON.stringify({ target: jobID }), output: "" }));
     expect(summary(first)).toContain("000000000001");
     expect(summary(second)).toContain("000000000002");
     expect(summary(first)).not.toBe(summary(second));
@@ -53,7 +53,7 @@ test("job controls keep same-owner job suffixes distinct in summaries", () => {
 test("job_status: body shows the raw JSON output text", () => {
   const d = toolRendererFor("job_status");
   const Body = d.body!;
-  const output = JSON.stringify({ job_id: "job_42", status: "completed" });
+  const output = JSON.stringify({ id: "dlg_42", type: "delegate", status: "idle" });
   render(<Body item={item({ toolName: "job_status", output })} live={false} />);
   expect(screen.getByText(output)).toBeTruthy();
 });
@@ -62,9 +62,9 @@ test("job_read_output aliases to the same descriptor as job_status", () => {
   expect(toolRendererFor("job_read_output")).toBe(toolRendererFor("job_status"));
 });
 
-test("job_status: job_id reads straight from a settled item's own argumentsJSON (the model preserves it through item/completed - see R2)", () => {
+test("job_status: target reads straight from a settled item's own argumentsJSON", () => {
   const d = toolRendererFor("job_status");
-  const settled = item({ toolName: "job_status", argumentsJSON: JSON.stringify({ job_id: "job_99" }), output: "" });
+  const settled = item({ toolName: "job_status", argumentsJSON: JSON.stringify({ target: "job_99" }), output: "" });
   expect(d.summary(settled)).toBe("Checked job_99");
 });
 
@@ -90,11 +90,31 @@ test("job_list: body shows the tool's own formatted listing text", () => {
   const Body = d.body!;
   render(
     <Body
-      item={item({ toolName: "job_list", output: "# job_id  type  status\njob_1  shell  running\n1 job(s)." })}
+      item={item({ toolName: "job_list", output: "# id  type  status\njob_1  shell  running\n1 job(s)." })}
       live={false}
     />,
   );
   expect(screen.getByText(/1 job\(s\)\./)).toBeTruthy();
+});
+
+test("stored job_list raw jobs/job_id state remains readable", () => {
+  const d = toolRendererFor("job_list");
+  const Body = d.body!;
+  render(
+    <Body
+      item={item({
+        toolName: "job_list",
+        output: "stored listing text",
+        raw: {
+          jobs: [{ job_id: "job_stored", type: "shell", status: "completed" }],
+          total: 1,
+        },
+      })}
+      live={false}
+    />,
+  );
+  expect(screen.getByText(/job_stored/)).toBeTruthy();
+  expect(screen.queryByText("stored listing text")).toBeNull();
 });
 
 test("job_list: body renders stable direct raw state when the producer supplies it", () => {
@@ -106,13 +126,13 @@ test("job_list: body renders stable direct raw state when the producer supplies 
         toolName: "job_list",
         output: "formatted listing text",
         raw: {
-          jobs: [
+          items: [
             {
-              job_id: "job_raw",
-              type: "shell",
-              status: "running",
-              phase: "compiling",
-              description: "build the frontend",
+              id: "dlg_raw",
+              type: "delegate",
+              status: "idle",
+              phase: "idle",
+              description: "inspect the frontend",
             },
           ],
           count: 1,
@@ -123,9 +143,9 @@ test("job_list: body renders stable direct raw state when the producer supplies 
     />,
   );
   expect(screen.getByTestId("job-list-structured")).toBeTruthy();
-  expect(screen.getByText(/job_raw/)).toBeTruthy();
-  expect(screen.getByText(/compiling/)).toBeTruthy();
-  expect(screen.getByText(/build the frontend/)).toBeTruthy();
+  expect(screen.getByText(/dlg_raw/)).toBeTruthy();
+  expect(screen.getByText(/idle/)).toBeTruthy();
+  expect(screen.getByText(/inspect the frontend/)).toBeTruthy();
   expect(screen.queryByText("formatted listing text")).toBeNull();
 });
 
@@ -133,7 +153,7 @@ test("job_list: body renders stable direct raw state when the producer supplies 
 
 test("job_stop: summary shows the target job and the tool's own outcome footer", () => {
   const d = toolRendererFor("job_stop");
-  const args = JSON.stringify({ job_id: "job_7" });
+  const args = JSON.stringify({ target: "job_7" });
   const output = "[job job_7 · cancelled · cancelled_by_request]";
   expect(d.summary(item({ toolName: "job_stop", argumentsJSON: args, output }))).toBe(
     "Stopped job_7 · job job_7 · cancelled · cancelled_by_request",
@@ -142,7 +162,7 @@ test("job_stop: summary shows the target job and the tool's own outcome footer",
 
 test("job_stop: no footer yet (request in flight) shows just the target", () => {
   const d = toolRendererFor("job_stop");
-  const args = JSON.stringify({ job_id: "job_8" });
+  const args = JSON.stringify({ target: "job_8" });
   expect(d.summary(item({ toolName: "job_stop", argumentsJSON: args, output: "" }))).toBe("Stopped job_8");
 });
 
@@ -426,7 +446,7 @@ function spawnRow(turnId: string, delegateId: string, transcriptRef: string) {
   );
 }
 
-test("job_status for an activation job never updates a stable delegate row", () => {
+test("stored job_status activation shape never updates a stable delegate row", () => {
   spawnRow("turn_wire_status", "job_wired", "ref_wired");
   expect(screen.getByTestId("subagent-row").dataset.kind).toBe("running");
 
@@ -450,7 +470,35 @@ test("job_status for an activation job never updates a stable delegate row", () 
   expect(screen.getByTestId("subagent-row").dataset.kind).toBe("running");
 });
 
-test("job_stop's activation footer never updates a stable delegate row", () => {
+test("job_status current delegate result updates the dlg-keyed stable row from last_outcome", () => {
+  spawnRow("turn_wire_stable_status", "dlg_wired", "ref_wired");
+
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const output = JSON.stringify({
+    id: "dlg_wired",
+    type: "delegate",
+    status: "idle",
+    last_outcome: { status: "failed", reason: "crashed" },
+  });
+  render(
+    <Body
+      item={item({
+        id: "check_stable",
+        turnId: "turn_wire_stable_status",
+        callId: "call_check_stable",
+        toolName: "job_status",
+        argumentsJSON: JSON.stringify({ target: "dlg_wired" }),
+        output,
+      })}
+      live={false}
+    />,
+  );
+
+  expect(screen.getByTestId("subagent-row").dataset.kind).toBe("failed");
+});
+
+test("stored job_stop activation shape never updates a stable delegate row", () => {
   spawnRow("turn_wire_stop", "job_stopme", "ref_stopme");
 
   const d = toolRendererFor("job_stop");
@@ -515,7 +563,7 @@ test("delegate_send checking on a delegate (by delegate_id) updates its existing
   expect(within(screen.getByTestId("delegate-send-response")).getByTestId("user-bubble").textContent).toBe("on it");
 });
 
-test("a follow-up call for a job_id that was never spawned this turn creates no row at all", () => {
+test("a stored follow-up call for a job_id that was never spawned this turn creates no row", () => {
   const d = toolRendererFor("job_status");
   const Body = d.body!;
   render(

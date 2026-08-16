@@ -40,8 +40,9 @@ func TestTUIStableDelegateReducerRejectsStaleRevision(t *testing.T) {
 	sendTUIStableDelegateNotification(t, &m, appwire.SerfDelegateInfo{
 		DelegateID:         "dlg_revision",
 		ProjectionRevision: 2,
-		Status:             "completed",
-		Outcome:            "done",
+		Lifecycle:          "idle",
+		Status:             "idle",
+		Outcome:            "completed",
 		Terminal:           true,
 		Task:               "finish once",
 		LatestActivityAt:   "2026-08-15T10:00:00Z",
@@ -55,8 +56,32 @@ func TestTUIStableDelegateReducerRejectsStaleRevision(t *testing.T) {
 	})
 
 	run := requireTUIStableDelegateRun(t, &m, "dlg_revision")
-	if run.Status != "completed" || run.Task != "finish once" || run.LatestActivityAt != "2026-08-15T10:01:00Z" {
+	if run.Status != "idle" || run.Outcome != "completed" || run.Task != "finish once" || run.LatestActivityAt != "2026-08-15T10:01:00Z" {
 		t.Fatalf("stale revision did not fence state and max-merge activity: %+v", run)
+	}
+}
+
+func TestTUIStableDelegateTerminalLifecycleDoesNotSubscribeChild(t *testing.T) {
+	client, cleanup := newTestHubClient(t, nil)
+	defer cleanup()
+
+	m := newTUIStableDelegateModel()
+	m.client = client
+	sendTUIStableDelegateNotification(t, &m, appwire.SerfDelegateInfo{
+		DelegateID:         "dlg_terminal",
+		Lifecycle:          "idle",
+		Status:             "idle",
+		Outcome:            "completed",
+		Terminal:           true,
+		ProjectionRevision: 1,
+		TranscriptRef:      "local:child-terminal",
+	})
+
+	if cmd := m.subscribeNewChildren(); cmd != nil {
+		t.Fatal("terminal stable delegate scheduled a child subscription")
+	}
+	if m.watchedChildRefs["local:child-terminal"] {
+		t.Fatal("terminal stable delegate was marked as watched")
 	}
 }
 

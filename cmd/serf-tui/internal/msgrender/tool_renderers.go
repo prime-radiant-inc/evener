@@ -471,11 +471,12 @@ func init() {
 		},
 	}
 
-	// job control
-	jobControl := func(verb string) ToolRenderer {
+	// Stored job_read_output calls use job_id. Registered status/stop calls use
+	// target; their job_id fallback keeps already-written transcript rows legible.
+	jobControl := func(verb string, target func(ToolArgs) string) ToolRenderer {
 		return ToolRenderer{
 			Verb:   func(_ ToolArgs) string { return verb },
-			Target: func(args ToolArgs) string { return identifier.AbbreviateJobID(args.Str("job_id"), 26) },
+			Target: func(args ToolArgs) string { return identifier.AbbreviateJobID(target(args), 26) },
 			Result: func(_ ToolArgs, _ string, errStr string, _ time.Duration) string {
 				if errStr != "" {
 					return "error"
@@ -484,16 +485,24 @@ func init() {
 			},
 		}
 	}
-	toolRenderers["job_send_message"] = jobControl("message")
+	legacyJobID := func(args ToolArgs) string { return args.Str("job_id") }
+	currentTarget := func(args ToolArgs) string {
+		if target := args.Str("target"); target != "" {
+			return target
+		}
+		return args.Str("job_id")
+	}
+	toolRenderers["job_send_message"] = jobControl("message", legacyJobID)
 	jobSendMessageR := toolRenderers["job_send_message"]
 	jobSendMessageR.Target = func(args ToolArgs) string { return args.Str("target") }
 	toolRenderers["job_send_message"] = jobSendMessageR
-	toolRenderers["delegate_send"] = jobControl("message")
+	toolRenderers["delegate_send"] = jobControl("message", legacyJobID)
 	delegateSendR := toolRenderers["delegate_send"]
 	delegateSendR.Target = func(args ToolArgs) string { return args.Str("to") }
 	toolRenderers["delegate_send"] = delegateSendR
-	toolRenderers["job_read_output"] = jobControl("read")
-	toolRenderers["job_stop"] = jobControl("stop")
+	toolRenderers["job_read_output"] = jobControl("read", legacyJobID)
+	toolRenderers["job_status"] = jobControl("status", currentTarget)
+	toolRenderers["job_stop"] = jobControl("stop", currentTarget)
 	toolRenderers["job_list"] = ToolRenderer{
 		Verb:   func(_ ToolArgs) string { return "jobs" },
 		Target: func(_ ToolArgs) string { return "" },

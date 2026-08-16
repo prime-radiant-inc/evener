@@ -262,7 +262,7 @@ func delegateBody(args ToolArgs, output string, width int) string {
 }
 
 func SubagentRunBody(run transcript.SubagentRunInfo, width int) string {
-	status := strings.TrimSpace(run.Status)
+	status := transcript.SubagentDisplayStatus(run)
 	if status == "" {
 		status = "running"
 	}
@@ -348,7 +348,7 @@ func RenderSubagentRail(runs []transcript.SubagentRunInfo, width int) string {
 	th := tuitheme.ActiveTheme()
 	var running, doneShown, doneFolded, failed []transcript.SubagentRunInfo
 	for _, r := range runs {
-		switch subagentRailClass(r.Status) {
+		switch subagentRailClass(transcript.SubagentDisplayStatus(r)) {
 		case "failed":
 			failed = append(failed, r)
 		case "done":
@@ -412,7 +412,7 @@ func subagentRailRow(r transcript.SubagentRunInfo, glyph string, glyphColor lipg
 	}
 	th := tuitheme.ActiveTheme()
 	row := lipgloss.NewStyle().Foreground(glyphColor).Render(glyph) + " " + name
-	switch subagentRailClass(r.Status) {
+	switch subagentRailClass(transcript.SubagentDisplayStatus(r)) {
 	case "running":
 		// The live activity line: the child's latest step + an honest step count
 		// (it freezes when the child stalls — no fake liveness).

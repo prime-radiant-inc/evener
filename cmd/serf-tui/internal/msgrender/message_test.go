@@ -225,7 +225,9 @@ func TestRenderToolCallUsesStructuredSubagentBody(t *testing.T) {
 		Expanded: true,
 		Subagent: &transcript.SubagentRunInfo{
 			DelegateID:    "dlg_ABCDEFGH1234",
-			Status:        "completed",
+			Status:        "idle",
+			Outcome:       "completed",
+			Terminal:      true,
 			Task:          "inspect billing",
 			TranscriptRef: "local:child",
 		},

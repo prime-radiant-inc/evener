@@ -189,7 +189,7 @@ describe("ActivityTree", () => {
               childRef: "local:sess_child",
               transcriptRef: "local:sess_child",
               type: "delegate",
-              lifecycle: "active",
+              lifecycle: "running",
               phase: "running",
               status: "running",
               projectionRevision: 5,
@@ -230,6 +230,52 @@ describe("ActivityTree", () => {
     expect(screen.getByText(/delegate dlg_stable/i)).toBeTruthy();
     expect(screen.getByText(/watch enabled/i)).toBeTruthy();
     expect(screen.getByText(/observer armed/i)).toBeTruthy();
+  });
+
+  test("terminal delegate rows display their outcome instead of idle lifecycle status", () => {
+    const terminalTree = {
+      revision: 9,
+      root: {
+        kind: "session",
+        sessionId: "sess_root",
+        ref: "ref_root",
+        label: "Root",
+        aggregate: "idle",
+        counts: { active: 0, failed: 1, completed: 0, complete: true },
+        entries: [
+          {
+            kind: "delegate",
+            delegate: {
+              delegateId: "dlg_exhausted",
+              ownerSessionId: "sess_root",
+              rootSessionId: "sess_root",
+              childSessionId: "sess_child",
+              childRef: "local:sess_child",
+              transcriptRef: "local:sess_child",
+              type: "delegate",
+              lifecycle: "idle",
+              phase: "idle",
+              status: "idle",
+              outcome: "exhausted",
+              terminal: true,
+              resumable: true,
+              projectionRevision: 6,
+              task: "Bounded audit",
+              branch: {},
+            },
+          },
+        ],
+        branch: {},
+      },
+    } as unknown as ActivityTreeData;
+
+    render(
+      <ActivityTree tree={terminalTree} expandedFoldIDs={["session:sess_root:inactive-fold"]} onToggleFold={vi.fn()} />,
+    );
+
+    const row = screen.getByRole("treeitem", { name: "Bounded audit" });
+    expect(row.textContent).toContain("exhausted");
+    expect(within(row).getByText("⌘").getAttribute("aria-label")).toBe("Failed");
   });
 
   test("renders one dense row per live entry with kind glyph and meta", () => {

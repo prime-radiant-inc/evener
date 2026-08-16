@@ -1,4 +1,4 @@
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel } from "../../../../protocol/model";
 import type { SerfDelegateInfo } from "../../../../protocol/types.gen";
@@ -240,7 +240,7 @@ function stableDelegate(overrides: Partial<SerfDelegateInfo> = {}): SerfDelegate
     childSessionId: "sess_child",
     transcriptRef: "local:sess_child",
     type: "delegate",
-    lifecycle: "active",
+    lifecycle: "running",
     phase: "running",
     status: "running",
     resumable: true,
@@ -284,7 +284,17 @@ test("applySerfDelegateUpdated creates a stable dlg-keyed row without call-scope
 });
 
 test("applySerfDelegateUpdated fences state by revision and max-merges latest activity", () => {
-  applySerfDelegateUpdated(stableDelegate({ projectionRevision: 3, status: "completed" }), SESS);
+  applySerfDelegateUpdated(
+    stableDelegate({
+      projectionRevision: 3,
+      lifecycle: "idle",
+      phase: "idle",
+      status: "idle",
+      outcome: "completed",
+      terminal: true,
+    }),
+    SESS,
+  );
   applySerfDelegateUpdated(
     stableDelegate({
       projectionRevision: 2,
@@ -297,10 +307,44 @@ test("applySerfDelegateUpdated fences state by revision and max-merges latest ac
   const { result } = renderHook(() => useSubagentRows(turnScopeKey(SESS, "turn_1")));
   expect(result.current[0]?.stable).toMatchObject({
     projectionRevision: 3,
-    status: "completed",
+    status: "idle",
+    outcome: "completed",
+    terminal: true,
     latestActivityAt: "2026-08-15T10:01:00Z",
   });
   expect(result.current[0]?.kind).toBe("done");
+});
+
+test("applySerfDelegateUpdated displays a terminal outcome but a resumed delegate's lifecycle", () => {
+  applySerfDelegateUpdated(
+    stableDelegate({
+      lifecycle: "idle",
+      phase: "idle",
+      status: "idle",
+      outcome: "failed",
+      terminal: true,
+    }),
+    SESS,
+  );
+
+  const { result } = renderHook(() => useSubagentRows(turnScopeKey(SESS, "turn_1")));
+  expect(result.current[0]?.kind).toBe("failed");
+
+  act(() => {
+    applySerfDelegateUpdated(
+      stableDelegate({
+        lifecycle: "running",
+        phase: "running",
+        status: "running",
+        outcome: "failed",
+        terminal: false,
+        projectionRevision: 2,
+      }),
+      SESS,
+    );
+  });
+
+  expect(result.current[0]?.kind).toBe("running");
 });
 
 // --- kata 8525: cross-session isolation ------------------------------------
@@ -320,7 +364,11 @@ test("applySerfDelegateUpdated scopes the same turn id to the notification's ses
       delegateId: "dlg_b",
       childSessionId: "sess_b",
       transcriptRef: "local:sess_b",
-      status: "completed",
+      lifecycle: "idle",
+      phase: "idle",
+      status: "idle",
+      outcome: "completed",
+      terminal: true,
     }),
     "session_b",
   );

@@ -536,7 +536,9 @@ func TestTranscriptReducerAppliesStableDelegateNotificationsToDelegateTool(t *te
 
 	reducer.ApplySerfDelegate(appwire.SerfDelegateInfo{
 		DelegateID:         "dlg_A",
-		Status:             "completed",
+		Lifecycle:          "idle",
+		Status:             "idle",
+		Outcome:            "completed",
 		Terminal:           true,
 		ProjectionRevision: 2,
 		TranscriptRef:      "local:child",
@@ -550,7 +552,7 @@ func TestTranscriptReducerAppliesStableDelegateNotificationsToDelegateTool(t *te
 		t.Fatalf("tools=%+v, want one delegate tool with Subagent metadata", tools)
 	}
 	got := tools[0].Subagent
-	if got.JobID != "" || got.DelegateID != "dlg_A" || got.Status != "completed" || got.Task != "inspect billing" || got.TranscriptRef != "local:child" || got.OriginToolCallID != "call_delegate" || got.ProjectionRevision != 2 {
+	if got.JobID != "" || got.DelegateID != "dlg_A" || got.Status != "idle" || got.Outcome != "completed" || got.Task != "inspect billing" || got.TranscriptRef != "local:child" || got.OriginToolCallID != "call_delegate" || got.ProjectionRevision != 2 {
 		t.Fatalf("Subagent = %+v", got)
 	}
 	if !tools[0].Done {
@@ -584,7 +586,9 @@ func TestMessagesFromThreadFoldsStableDelegateDiagnosticsAfterTranscript(t *test
 	thread := appwire.Thread{
 		Serf: appwire.SerfThread{Diagnostics: &appwire.SerfDiagnostics{Delegates: []appwire.SerfDelegateInfo{{
 			DelegateID:         "dlg_stable",
-			Status:             "completed",
+			Lifecycle:          "idle",
+			Status:             "idle",
+			Outcome:            "completed",
 			Terminal:           true,
 			ProjectionRevision: 4,
 			Task:               "inspect billing",
@@ -613,7 +617,7 @@ func TestMessagesFromThreadFoldsStableDelegateDiagnosticsAfterTranscript(t *test
 		t.Fatalf("tools=%+v, want one stable delegate row", tools)
 	}
 	run := tools[0].Subagent
-	if run.JobID != "" || run.Status != "completed" || run.ProjectionRevision != 4 || !tools[0].Done {
+	if run.JobID != "" || run.Status != "idle" || run.Outcome != "completed" || run.ProjectionRevision != 4 || !tools[0].Done {
 		t.Fatalf("cold thread fold did not make stable diagnostics authoritative: %+v", tools[0])
 	}
 }
@@ -626,7 +630,9 @@ func TestSubagentTerminalStatus_Exhausted(t *testing.T) {
 	reducer := NewTranscriptReducer(nil, nil, nil)
 	reducer.ApplySerfDelegate(appwire.SerfDelegateInfo{
 		DelegateID:         "dlg_exhausted",
-		Status:             "exhausted",
+		Lifecycle:          "idle",
+		Status:             "idle",
+		Outcome:            "exhausted",
 		Terminal:           true,
 		ProjectionRevision: 1,
 		Reason:             "tool_round_budget_exhausted",
@@ -636,7 +642,7 @@ func TestSubagentTerminalStatus_Exhausted(t *testing.T) {
 	if len(tools) != 1 || tools[0].Subagent == nil {
 		t.Fatalf("tools = %+v, want one exhausted subagent", tools)
 	}
-	if !tools[0].Done || tools[0].Subagent.Status != "exhausted" || tools[0].Subagent.Reason != "tool_round_budget_exhausted" {
+	if !tools[0].Done || tools[0].Subagent.Status != "idle" || tools[0].Subagent.Outcome != "exhausted" || tools[0].Subagent.Reason != "tool_round_budget_exhausted" {
 		t.Fatalf("exhausted subagent = %+v", tools[0])
 	}
 }
@@ -653,7 +659,8 @@ func TestTranscriptReducerResumedDelegateKeepsOneStableResourceRow(t *testing.T)
 		OriginItemID:       "item_delegate",
 	}
 	reducer.ApplySerfDelegate(first)
-	first.Status = "completed"
+	first.Status = "idle"
+	first.Outcome = "completed"
 	first.Terminal = true
 	first.ProjectionRevision = 2
 	reducer.ApplySerfDelegate(first)
@@ -825,7 +832,7 @@ func TestApplyChildActivityTracksRunningRunHonestly(t *testing.T) {
 		t.Fatalf("activity for an unknown ref must not apply")
 	}
 	// Once terminal, activity no longer applies.
-	reducer.ApplySerfDelegate(appwire.SerfDelegateInfo{DelegateID: "dlg_a", Status: "completed", Terminal: true, ProjectionRevision: 2, TranscriptRef: "local:c1"})
+	reducer.ApplySerfDelegate(appwire.SerfDelegateInfo{DelegateID: "dlg_a", Lifecycle: "idle", Status: "idle", Outcome: "completed", Terminal: true, ProjectionRevision: 2, TranscriptRef: "local:c1"})
 	if reducer.ApplyChildActivity("local:c1", "late frame") {
 		t.Fatalf("activity must not apply to a finished run")
 	}

@@ -187,6 +187,15 @@ func TestSummarizeTool_DelegateSend(t *testing.T) {
 	}
 }
 
+func TestSummarizeTool_CurrentJobControlTargets(t *testing.T) {
+	for _, tool := range []string{"job_status", "job_stop"} {
+		desc, detail := SummarizeTool(tool, `{"target":"dlg_01ABCD"}`)
+		if desc != "dlg_01ABCD" || detail != "" {
+			t.Fatalf("%s summary = %q, %q", tool, desc, detail)
+		}
+	}
+}
+
 func TestSummarizeTool_Communicate(t *testing.T) {
 	desc, _ := SummarizeTool("communicate", `{"message":"Building..."}`)
 	if !strings.Contains(desc, "Building") {

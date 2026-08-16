@@ -22,7 +22,8 @@ function shell(jobId: string, terminal: boolean, status = terminal ? "completed"
 }
 
 function delegate(delegateId: string, opts: { active?: boolean; failed?: boolean; child?: unknown } = {}) {
-  const status = opts.failed ? "failed" : opts.active ? "running" : "completed";
+  const status = opts.active ? "running" : "idle";
+  const outcome = opts.failed ? "failed" : opts.active ? undefined : "completed";
   return {
     kind: "delegate" as const,
     delegate: {
@@ -33,9 +34,10 @@ function delegate(delegateId: string, opts: { active?: boolean; failed?: boolean
       childRef: `ref_${delegateId}`,
       transcriptRef: `ref_${delegateId}`,
       type: "delegate",
-      lifecycle: opts.active ? "active" : "retained",
+      lifecycle: opts.active ? "running" : "idle",
       phase: opts.active ? "running" : "idle",
       status,
+      outcome,
       projectionRevision: 1,
       terminal: !opts.active,
       resumable: true,
@@ -144,6 +146,12 @@ test("live entries render in order; terminal entries fold behind one row", () =>
 test("fold row counts failures separately", () => {
   const rows = buildActivityRows(tree([shell("x", true, "failed"), shell("y", true)]), new Set());
   const fold = rows.find((r) => r.kind === "fold");
+  expect(fold?.kind === "fold" && fold.failedCount).toBe(1);
+});
+
+test("fold row counts a terminal delegate outcome when lifecycle status is idle", () => {
+  const rows = buildActivityRows(tree([delegate("dlg_failed", { failed: true })]), new Set());
+  const fold = rows.find((row) => row.kind === "fold");
   expect(fold?.kind === "fold" && fold.failedCount).toBe(1);
 });
 

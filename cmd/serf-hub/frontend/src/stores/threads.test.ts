@@ -4504,6 +4504,7 @@ describe("serf/job/started|finished stay out of stable delegate rows", () => {
 
 function responseWithStableDelegate(ref: string, revision: number, status: string, latestActivityAt: string) {
   const response = readResponse(ref);
+  const running = status === "running";
   (response.thread.serf as unknown as Record<string, unknown>).diagnostics = {
     delegates: [
       {
@@ -4513,10 +4514,11 @@ function responseWithStableDelegate(ref: string, revision: number, status: strin
         childSessionId: "sess_child",
         transcriptRef: "local:sess_child",
         type: "delegate",
-        lifecycle: "retained",
-        phase: status === "running" ? "running" : "idle",
-        status,
-        terminal: status !== "running",
+        lifecycle: running ? "running" : "idle",
+        phase: running ? "running" : "idle",
+        status: running ? "running" : "idle",
+        outcome: running ? undefined : status,
+        terminal: !running,
         resumable: true,
         projectionRevision: revision,
         latestActivityAt,
@@ -4560,7 +4562,7 @@ describe("stable delegate projection routing", () => {
           childSessionId: "sess_child",
           transcriptRef: "local:sess_child",
           type: "delegate",
-          lifecycle: "active",
+          lifecycle: "running",
           phase: "running",
           status: "running",
           terminal: false,
@@ -4577,7 +4579,8 @@ describe("stable delegate projection routing", () => {
     };
     expect(model.delegates?.[0]).toMatchObject({
       projectionRevision: 7,
-      status: "completed",
+      status: "idle",
+      outcome: "completed",
       latestActivityAt: "2026-08-15T10:01:00Z",
     });
   });

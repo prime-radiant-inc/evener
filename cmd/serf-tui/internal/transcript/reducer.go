@@ -452,7 +452,7 @@ func (r *TranscriptReducer) ApplyChildActivity(ref, activity string) bool {
 			continue
 		}
 		run := msg.Tool.Subagent
-		if run.TranscriptRef != ref || subagentTerminalStatus(run.Status) {
+		if run.TranscriptRef != ref || run.Terminal || subagentTerminalStatus(run.Status) {
 			continue
 		}
 		if run.Activity != activity {

@@ -195,8 +195,8 @@ func TestRenderSubagentRailConsolidates(t *testing.T) {
 	runs := []transcript.SubagentRunInfo{
 		{JobID: "j1", Task: "port webhook verification", Status: "running"},
 		{JobID: "j2", Task: "trace retry callers", Status: "running"},
-		{JobID: "j3", Task: "update docs", Status: "completed"},
-		{JobID: "j4", Task: "audit deps", Status: "failed", Reason: "2 high CVEs"},
+		{DelegateID: "dlg_3", Task: "update docs", Status: "idle", Outcome: "completed", Terminal: true},
+		{DelegateID: "dlg_4", Task: "audit deps", Status: "idle", Outcome: "failed", Terminal: true, Reason: "2 high CVEs"},
 	}
 	out := RenderSubagentRail(runs, 80)
 	// Header tallies the workers.
@@ -226,10 +226,12 @@ func TestSubagentRailClass_Exhausted(t *testing.T) {
 	}
 	withTestColorProfile(t)
 	run := transcript.SubagentRunInfo{
-		JobID:  "job_exhausted",
-		Task:   "bounded work",
-		Status: "exhausted",
-		Reason: "tool_round_budget_exhausted",
+		DelegateID: "dlg_exhausted",
+		Task:       "bounded work",
+		Status:     "idle",
+		Outcome:    "exhausted",
+		Terminal:   true,
+		Reason:     "tool_round_budget_exhausted",
 	}
 	body := SubagentRunBody(run, 80)
 	if !strings.Contains(body, "exhausted") {

@@ -123,28 +123,33 @@ function CopyTextButton({ text, label }: { text: string; label: string }) {
 }
 
 interface JobListState {
-  jobs: JsonObject[];
+  items: JsonObject[];
   total: number;
 }
 
-// jobListState validates the direct StateResult.State shape produced by
-// jobListTool: {jobs:[{job_id,...}], count, total, ...}. There is no `state` or
-// `job_list` wrapper key because ExecuteCall marshals State itself. A malformed
-// or older raw value falls back to the producer's formatted output below.
+// jobListState validates the current direct StateResult.State shape produced
+// by jobListTool: {items:[{id,...}], count, total, ...}. Stored transcripts
+// using the retired jobs/job_id shape remain readable through the separate
+// legacy branch. There is no wrapper key because ExecuteCall marshals State
+// itself.
 function jobListState(raw: unknown): JobListState | undefined {
   const state = asJsonObject(raw);
-  if (!state || !Array.isArray(state.jobs)) return undefined;
+  if (!state) return undefined;
 
-  const jobs: JsonObject[] = [];
-  for (const value of state.jobs) {
-    const job = asJsonObject(value);
-    if (!job || typeof job.job_id !== "string") return undefined;
-    jobs.push(job);
+  const values = Array.isArray(state.items) ? state.items : Array.isArray(state.jobs) ? state.jobs : undefined;
+  if (!values) return undefined;
+  const identityField = Array.isArray(state.items) ? "id" : "job_id";
+
+  const items: JsonObject[] = [];
+  for (const value of values) {
+    const item = asJsonObject(value);
+    if (!item || typeof item[identityField] !== "string") return undefined;
+    items.push(item);
   }
 
   const total =
-    typeof state.total === "number" ? state.total : typeof state.count === "number" ? state.count : jobs.length;
-  return { jobs, total };
+    typeof state.total === "number" ? state.total : typeof state.count === "number" ? state.count : items.length;
+  return { items, total };
 }
 
 function textField(object: JsonObject, key: string): string | undefined {
@@ -158,11 +163,11 @@ function JobListBody({ item, live }: ToolRenderProps) {
 
   return (
     <div data-testid="job-list-structured">
-      {state.jobs.length === 0 ? (
+      {state.items.length === 0 ? (
         <div>No jobs.</div>
       ) : (
-        state.jobs.map((job) => {
-          const identity = textField(job, "job_id");
+        state.items.map((job) => {
+          const identity = textField(job, "id") ?? textField(job, "job_id");
           if (identity === undefined) return null;
           const fields = [identity, textField(job, "type"), textField(job, "status"), textField(job, "phase")].filter(
             (field): field is string => field !== undefined,
@@ -177,19 +182,51 @@ function JobListBody({ item, live }: ToolRenderProps) {
         })
       )}
       <div data-testid="job-list-total">
-        {state.jobs.length} of {state.total} jobs
+        {state.items.length} of {state.total} jobs
       </div>
     </div>
   );
+}
+
+function jobControlTarget(item: ItemModel): string {
+  const args = parseArgs(item.argumentsJSON);
+  const parsedOutput = parseJSONObject(item.output);
+  return (
+    (parsedOutput && (str(parsedOutput, "id") ?? str(parsedOutput, "job_id"))) ??
+    str(args, "target") ??
+    str(args, "job_id") ??
+    ""
+  );
+}
+
+function resourceRowKey(target: string, fallback: string): string {
+  return target.startsWith("dlg_")
+    ? resolveRowKey(target, undefined, fallback)
+    : resolveRowKey(undefined, target, fallback);
+}
+
+function jobStatusKind(item: ItemModel): ReturnType<typeof classifyJobStatus> | undefined {
+  const parsed = parseJSONObject(item.output);
+  if (!parsed) return undefined;
+  const status = str(parsed, "status");
+  if (str(parsed, "type") !== "delegate" || status !== "idle") return classifyJobStatus(status);
+  const latest = asJsonObject(parsed.last_outcome);
+  return classifyJobStatus((latest && str(latest, "status")) ?? status);
+}
+
+function jobStatusReason(item: ItemModel): string {
+  const parsed = parseJSONObject(item.output);
+  if (!parsed) return "";
+  const latest = asJsonObject(parsed.last_outcome);
+  return str(parsed, "reason") ?? (latest && str(latest, "reason")) ?? "";
 }
 
 registerToolRenderer({
   match: (name) => name === "job_status" || name === "job_read_output",
   icon: "job",
   summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
     const parsedOutput = parseJSONObject(item.output);
-    const jobId = (parsedOutput && str(parsedOutput, "job_id")) ?? str(args, "job_id") ?? "";
+    const jobId = jobControlTarget(item);
     const status = parsedOutput ? str(parsedOutput, "status") : undefined;
     return status ? `Checked ${clipJobID(jobId)} · ${status}` : `Checked ${clipJobID(jobId)}`;
   },
@@ -197,20 +234,9 @@ registerToolRenderer({
     return (
       <CorrelatingBody
         {...props}
-        resolveKey={(item) => {
-          const args = parseArgs(item.argumentsJSON);
-          const parsedOutput = parseJSONObject(item.output);
-          const jobId = (parsedOutput && str(parsedOutput, "job_id")) ?? str(args, "job_id") ?? "";
-          return resolveRowKey(undefined, jobId, item.callId ?? item.id);
-        }}
-        resolveKind={(item) => {
-          const parsed = parseJSONObject(item.output);
-          return parsed ? classifyJobStatus(str(parsed, "status")) : undefined;
-        }}
-        resolvePreview={(item) => {
-          const parsed = parseJSONObject(item.output);
-          return (parsed && str(parsed, "reason")) ?? "";
-        }}
+        resolveKey={(item) => resourceRowKey(jobControlTarget(item), item.callId ?? item.id)}
+        resolveKind={jobStatusKind}
+        resolvePreview={jobStatusReason}
       />
     );
   },
@@ -233,7 +259,7 @@ registerToolRenderer({
   icon: "job",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
-    const jobId = str(args, "job_id") ?? "";
+    const jobId = str(args, "target") ?? str(args, "job_id") ?? "";
     const footer = trailingBracketFooter(item.output ?? "");
     return footer ? `Stopped ${clipJobID(jobId)} · ${footer}` : `Stopped ${clipJobID(jobId)}`;
   },
@@ -241,9 +267,7 @@ registerToolRenderer({
     return (
       <CorrelatingBody
         {...props}
-        resolveKey={(item) =>
-          resolveRowKey(undefined, str(parseArgs(item.argumentsJSON), "job_id") ?? "", item.callId ?? item.id)
-        }
+        resolveKey={(item) => resourceRowKey(jobControlTarget(item), item.callId ?? item.id)}
         resolveKind={(item) => {
           const footer = trailingBracketFooter(item.output ?? "");
           return footer ? classifyJobStatus(statusWordFromText(footer)) : undefined;

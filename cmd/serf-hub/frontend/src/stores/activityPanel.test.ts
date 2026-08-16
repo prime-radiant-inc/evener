@@ -23,8 +23,9 @@ function tree(revision = 1) {
 describe("activityPanelStore", () => {
   test("stable delegate selection survives reconnect and keeps the child transcript target", () => {
     resetActivityPanelStoreForTests();
-    const stableTree = (revision: number, status: string): ActivityTree =>
-      ({
+    const stableTree = (revision: number, status: string): ActivityTree => {
+      const running = status === "running";
+      return {
         revision,
         root: {
           kind: "session",
@@ -44,11 +45,12 @@ describe("activityPanelStore", () => {
                 childRef: "local:sess_child",
                 transcriptRef: "local:sess_child",
                 type: "delegate",
-                lifecycle: "retained",
-                phase: status === "running" ? "running" : "idle",
-                status,
+                lifecycle: running ? "running" : "idle",
+                phase: running ? "running" : "idle",
+                status: running ? "running" : "idle",
+                outcome: running ? undefined : status,
                 projectionRevision: revision,
-                terminal: status !== "running",
+                terminal: !running,
                 resumable: true,
                 originTurnId: "turn_1",
                 parentWatchGranted: true,
@@ -59,7 +61,8 @@ describe("activityPanelStore", () => {
           ],
           branch: {},
         },
-      }) as unknown as ActivityTree;
+      } as unknown as ActivityTree;
+    };
 
     const first = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", first, { kind: "ready", tree: stableTree(1, "running") });

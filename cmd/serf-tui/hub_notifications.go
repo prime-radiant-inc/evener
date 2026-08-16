@@ -505,7 +505,7 @@ func (m *hubModel) subscribeNewChildren() tea.Cmd {
 			continue
 		}
 		ref := strings.TrimSpace(msg.Tool.Subagent.TranscriptRef)
-		if ref == "" || !runStillRunning(msg.Tool.Subagent.Status) {
+		if ref == "" || msg.Tool.Subagent.Terminal || !runStillRunning(msg.Tool.Subagent.Status) {
 			continue
 		}
 		if m.watchedChildRefs == nil {

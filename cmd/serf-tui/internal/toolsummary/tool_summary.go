@@ -189,8 +189,15 @@ func SummarizeToolInDir(toolName, argsJSON, cwd string) (desc, detail string) {
 		desc = str("to")
 		return desc, detail
 
-	case "job_read_output", "job_stop":
+	case "job_read_output":
 		desc = str("job_id")
+		return desc, detail
+
+	case "job_status", "job_stop":
+		desc = str("target")
+		if desc == "" {
+			desc = str("job_id")
+		}
 		return desc, detail
 
 	case "use_skill":

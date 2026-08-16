@@ -4,6 +4,8 @@
 // parent session (revealed in original order when the fold is expanded).
 // Sessions never become rows — the panel header covers the root and a delegate
 // row stands in for its child session.
+
+import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 import {
   type ActivityDelegate,
   type ActivityEntry,
@@ -70,7 +72,7 @@ function entryIsActive(entry: ActivityEntry): boolean {
 function entryIsFailed(entry: ActivityEntry): boolean {
   if (entry.kind === "shell") return isFailedStatus(entry.job.status);
   const delegate: ActivityDelegate = entry.delegate;
-  return isFailedStatus(delegate.status ?? delegate.outcome ?? "") || (delegate.child?.counts.failed ?? 0) > 0;
+  return isFailedStatus(stableDelegateDisplayStatus(delegate) ?? "") || (delegate.child?.counts.failed ?? 0) > 0;
 }
 
 export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet<string>): ActivityRow[] {

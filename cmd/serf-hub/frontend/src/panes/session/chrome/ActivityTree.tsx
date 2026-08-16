@@ -11,6 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 import { Button, Chevron } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../transcript/openTranscript";
@@ -70,7 +71,7 @@ const CLASS = {
 };
 
 function delegateStatusText(delegate: ActivityDelegate): string {
-  return delegate.status ?? delegate.outcome ?? delegate.child?.aggregate ?? "unknown";
+  return stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown";
 }
 
 function delegateName(delegate: ActivityDelegate): string {

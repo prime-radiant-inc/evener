@@ -82,8 +82,8 @@ func TestJobControlTargetsKeepSameOwnerJobSuffixesDistinct(t *testing.T) {
 	if !ok {
 		t.Fatal("job_stop renderer missing")
 	}
-	first := r.Target(toolArgsFromJSON(`{"job_id":"job_` + owner + `_000000000001"}`))
-	second := r.Target(toolArgsFromJSON(`{"job_id":"job_` + owner + `_000000000002"}`))
+	first := r.Target(toolArgsFromJSON(`{"target":"job_` + owner + `_000000000001"}`))
+	second := r.Target(toolArgsFromJSON(`{"target":"job_` + owner + `_000000000002"}`))
 	if first == second || !strings.Contains(first, "000000000001") || !strings.Contains(second, "000000000002") {
 		t.Fatalf("job targets = %q, %q; want distinct complete suffixes", first, second)
 	}
@@ -308,8 +308,25 @@ func TestJobReadOutputRenderer(t *testing.T) {
 
 func TestJobStopRenderer(t *testing.T) {
 	r, _ := lookupToolRenderer("job_stop")
-	if r.Verb(toolArgsFromJSON(`{"job_id":"job_01ABCD"}`)) != "stop" {
+	args := toolArgsFromJSON(`{"target":"dlg_01ABCD"}`)
+	if r.Verb(args) != "stop" || r.Target(args) != "dlg_01ABCD" {
 		t.Errorf("job_stop verb wrong")
+	}
+}
+
+func TestStoredJobStopRendererUsesJobID(t *testing.T) {
+	r, _ := lookupToolRenderer("job_stop")
+	args := toolArgsFromJSON(`{"job_id":"job_01ABCD"}`)
+	if r.Target(args) != "job_01ABCD" {
+		t.Fatalf("stored job_stop target = %q", r.Target(args))
+	}
+}
+
+func TestJobStatusRendererUsesCurrentTarget(t *testing.T) {
+	r, _ := lookupToolRenderer("job_status")
+	args := toolArgsFromJSON(`{"target":"dlg_01ABCD"}`)
+	if r.Verb(args) != "status" || r.Target(args) != "dlg_01ABCD" {
+		t.Fatalf("job_status renderer = verb %q target %q", r.Verb(args), r.Target(args))
 	}
 }
 

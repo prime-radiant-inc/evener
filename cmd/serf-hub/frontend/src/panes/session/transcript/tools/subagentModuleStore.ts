@@ -19,6 +19,7 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { ItemModel } from "../../../../protocol/model";
+import { stableDelegateDisplayStatus } from "../../../../protocol/stableDelegate";
 import type { SerfDelegateInfo } from "../../../../protocol/types.gen";
 import { parseArgs, parseJSONObject, str } from "./helpers";
 
@@ -127,7 +128,7 @@ export function rowKeyForDelegateItem(item: ItemModel): string {
 // failed while still sorting by its stale, possibly-terminal-superseded,
 // frozen kind.
 export function effectiveRowKind(row: SubagentRow): SubagentRowKind {
-  if (row.stable) return classifyJobStatus(row.stable.status || row.stable.outcome);
+  if (row.stable) return classifyJobStatus(stableDelegateDisplayStatus(row.stable));
   return row.liveKind ?? row.kind;
 }
 
@@ -328,7 +329,7 @@ export function applySerfDelegateUpdated(delegate: SerfDelegateInfo, sessionRef:
   const resumable = stable.exhaustionResumable ?? stable.resumable;
   const input: SubagentRowInput = {
     rowKey,
-    kind: classifyJobStatus(stable.status || stable.outcome),
+    kind: classifyJobStatus(stableDelegateDisplayStatus(stable)),
     delegateId: stable.delegateId,
     stable,
     task: stable.task ?? stable.description ?? existing?.task ?? "",
