@@ -205,16 +205,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// the other two obligations still stand, so startTurn mints as usual.
 		p.clearSkillCandidate()
 		data := eventData[events.TurnStartedData](event.Data)
-		out := p.closeActiveTurn(appwire.TurnStatusCompleted)
-		if data.TurnID != "" {
-			p.reservedTurnID = data.TurnID
-		}
-		turnID := p.startTurn()
-		out = append(out, p.notification(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
-			ThreadID: p.threadID,
-			Ref:      p.ref,
-			Turn:     startedTurn(turnID, event.Timestamp),
-		}))
+		_, out := p.openTurn(data.TurnID, event.Timestamp)
 		// Publish active ONLY for a turn the daemon could name. Status and
 		// capabilities ride this one frame, so announcing it hands the composer
 		// steer:true/interrupt:true and renders Stop and Steer -- and every
@@ -228,12 +219,8 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		return append(out, p.threadStatus(appwire.ThreadStatusActive))
 	case events.EventUserInput:
-		out := p.closeActiveTurn(appwire.TurnStatusCompleted)
 		data := eventData[events.UserInputData](event.Data)
-		if data.StableTurnID != "" {
-			p.reservedTurnID = data.StableTurnID
-		}
-		turnID := p.startTurn()
+		turnID, out := p.openTurn(data.StableTurnID, event.Timestamp)
 		item := appwire.ThreadItem{
 			Type:                 "userMessage",
 			ID:                   p.nextItemID("user"),
@@ -245,11 +232,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			ClientMutationID:     data.ClientMutationID,
 		}
 		out = append(out,
-			p.notification(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
-				ThreadID: p.threadID,
-				Ref:      p.ref,
-				Turn:     startedTurn(turnID, event.Timestamp),
-			}),
 			p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
 				ThreadID: p.threadID,
 				Ref:      p.ref,
@@ -265,15 +247,8 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// (close the prior turn, start a new one), but renders its prompt as
 		// a systemMessage rather than a userMessage so continuations don't
 		// look like the user spoke.
-		out := p.closeActiveTurn(appwire.TurnStatusCompleted)
 		data := eventData[events.GoalContinuationData](event.Data)
-		// Adopt the daemon's own name for this turn, exactly as EventUserInput
-		// does. Without it startTurn mints a turn_<n> the daemon's mutation
-		// preconditions reject, and every mid-turn control dies on goal turns.
-		if data.StableTurnID != "" {
-			p.reservedTurnID = data.StableTurnID
-		}
-		turnID := p.startTurn()
+		turnID, out := p.openTurn(data.StableTurnID, event.Timestamp)
 		item := appwire.ThreadItem{
 			Type:        "systemMessage",
 			ID:          p.nextItemID("goal_continuation"),
@@ -283,11 +258,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Status:      appwire.TurnStatusCompleted,
 		}
 		out = append(out,
-			p.notification(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
-				ThreadID: p.threadID,
-				Ref:      p.ref,
-				Turn:     startedTurn(turnID, event.Timestamp),
-			}),
 			p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
 				ThreadID: p.threadID,
 				Ref:      p.ref,
@@ -1665,6 +1635,34 @@ func (p *AppEventProjector) closeActiveTurn(status string) []AppNotification {
 		"ref":      p.ref,
 		"turn":     turn,
 	})}
+}
+
+// openTurn closes the turn that was running and opens the one this event
+// names, returning the new turn's id and the frames announcing both. It is the
+// shared half of every turn boundary; the caller adds whatever opening item its
+// event carries and then publishes the thread active.
+//
+// stableID is the daemon's own name for the turn, the value its mutation
+// preconditions compare against. Empty means the daemon could not name this
+// turn and startTurn falls back to the turn_<n> bucket namespace, which no
+// control can address.
+//
+// Factored because the drift between two copies of this sequence IS the bug
+// this file was changed to fix: EventUserInput learned to adopt the daemon's
+// id and EventGoalContinuation, its identical twin, did not, so every mid-turn
+// control died on goal turns. A third copy arrived with EventTurnStarted. One
+// copy cannot drift from itself.
+func (p *AppEventProjector) openTurn(stableID string, at time.Time) (string, []AppNotification) {
+	out := p.closeActiveTurn(appwire.TurnStatusCompleted)
+	if stableID != "" {
+		p.reservedTurnID = stableID
+	}
+	turnID := p.startTurn()
+	return turnID, append(out, p.notification(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
+		ThreadID: p.threadID,
+		Ref:      p.ref,
+		Turn:     startedTurn(turnID, at),
+	}))
 }
 
 func (p *AppEventProjector) startTurn() string {
