@@ -24,6 +24,12 @@
 #   scripts/e2e-webui-turn-controls.sh                # start; print the auth URL
 #   scripts/e2e-webui-turn-controls.sh --hold 30      # seconds per model round
 #   scripts/e2e-webui-turn-controls.sh --rounds 40    # rounds before the turn ends
+#   scripts/e2e-webui-turn-controls.sh --background-job  # spawn a session that
+#                                                       # goes idle holding a
+#                                                       # background job; touch
+#                                                       # $run/release-the-job to
+#                                                       # wake it with a
+#                                                       # notification turn
 #   scripts/e2e-webui-turn-controls.sh --skip-web     # reuse an existing dist
 #   scripts/e2e-webui-turn-controls.sh --stop RUN_DIR # kill a prior run, remove RUN_DIR
 #
@@ -37,6 +43,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 hold=15
 rounds=20
+background_job=0
 skip_web=0
 stop_dir=""
 while [ $# -gt 0 ]; do
@@ -48,6 +55,10 @@ while [ $# -gt 0 ]; do
 	--rounds)
 		rounds="$2"
 		shift 2
+		;;
+	--background-job)
+		background_job=1
+		shift
 		;;
 	--skip-web)
 		skip_web=1
@@ -162,7 +173,12 @@ echo "==> starting fakellm (hold=${hold}s rounds=${rounds})" >&2
 # Flags BEFORE the positional address: Go's flag package stops parsing at the
 # first non-flag argument, so the other order silently ran with the defaults
 # while this script's banner reported the values it had asked for.
-"$run/fakellm" --hold "${hold}s" --rounds "$rounds" 127.0.0.1:0 >"$run/fakellm.log" 2>&1 &
+job_release="$run/release-the-job"
+fakellm_args=(--hold "${hold}s" --rounds "$rounds")
+if [ "$background_job" -eq 1 ]; then
+	fakellm_args+=(--background-job-until "$job_release")
+fi
+"$run/fakellm" "${fakellm_args[@]}" 127.0.0.1:0 >"$run/fakellm.log" 2>&1 &
 fakellm_pid=$!
 echo "$fakellm_pid" >"$run/fakellm.pid"
 

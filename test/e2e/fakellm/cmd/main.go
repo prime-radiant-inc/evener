@@ -45,6 +45,7 @@ import (
 func main() {
 	hold := flag.Duration("hold", 15*time.Second, "how long to hold each model round before answering")
 	rounds := flag.Int("rounds", 20, "tool-call rounds per turn before ending it with communicate(end_turn=true)")
+	jobRelease := flag.String("background-job-until", "", "answer the first round with a background shell job that waits for this file, then end the turn; creating the file wakes the idle session with a job-completion notification")
 	flag.Usage = func() {
 		// Flags first: Go's flag package stops parsing at the first non-flag
 		// argument, so "fakellm 127.0.0.1:0 --hold 30s" silently runs with the
@@ -63,13 +64,13 @@ func main() {
 	}
 	// run owns every defer; main only reports. log.Fatalf here would skip
 	// them (gocritic exitAfterDefer).
-	if err := run(flag.Arg(0), *hold, *rounds); err != nil {
+	if err := run(flag.Arg(0), *hold, *rounds, *jobRelease); err != nil {
 		log.Printf("fakellm: %v", err)
 		os.Exit(1)
 	}
 }
 
-func run(addr string, hold time.Duration, rounds int) error {
+func run(addr string, hold time.Duration, rounds int, jobRelease string) error {
 	srv, err := fakellm.NewOn(addr)
 	if err != nil {
 		return err
@@ -97,6 +98,30 @@ func run(addr string, hold time.Duration, rounds int) error {
 		}
 		round++
 		log.Printf("--- round %d: holding %s ---\n%s", round, hold, strings.Join(call.Texts(), "\n"))
+
+		// Round 1 launches a background job that blocks on a file, round 2 ends
+		// the turn. The session then sits idle until someone creates that file,
+		// and the job's completion wakes it with a notification -- the turn kind
+		// that has no input of its own.
+		if jobRelease != "" {
+			switch round {
+			case 1:
+				log.Printf("round 1: launching a background job that waits for %s", jobRelease)
+				call.RespondToolCall("shell", map[string]any{
+					"command": "while [ ! -f " + jobRelease + " ]; do sleep 0.5; done",
+					"mode":    "background",
+				})
+				continue
+			case 2:
+				log.Printf("round 2: ending the turn so the session goes idle")
+				call.RespondToolCall("communicate", map[string]any{
+					"message":  "background job launched; idle until it finishes",
+					"end_turn": true,
+					"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
+				})
+				continue
+			}
+		}
 
 		select {
 		case <-time.After(hold):
