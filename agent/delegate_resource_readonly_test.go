@@ -181,6 +181,76 @@ func TestStableDelegateReadOnly_ColdAndLiveProjectionMatch(t *testing.T) {
 	}
 }
 
+func TestStableDelegateReadOnly_ActivityProjectsPublicLifecycleAndInternalPhase(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
+		withoutGitSnapshot(),
+	)
+	settlingID := "dlg_activity_settling"
+	settlingDescriptor := stableReadonlyDescriptor(s, settlingID)
+	closedID := "dlg_activity_closed"
+	closedDescriptor := stableReadonlyDescriptor(s, closedID)
+	startedAt := time.Unix(100, 0).UTC()
+	packet := delegateControllerReportedPacket("settling")
+	s.delegateController.mu.Lock()
+	_, err := s.delegateController.appendLocked(
+		delegatestore.Event{
+			Kind:       delegatestore.EventDelegateCreated,
+			DelegateID: settlingID,
+			Created:    &delegatestore.DelegateCreated{Descriptor: settlingDescriptor},
+		},
+		delegateControllerRunStartedEvent(settlingID, 1, delegatestore.TriggerInitial, startedAt),
+		delegatestore.Event{
+			Kind:       delegatestore.EventDelegateTerminalPrepared,
+			DelegateID: settlingID,
+			TerminalPrepared: &delegatestore.TerminalPrepared{
+				Generation: 1,
+				Packet:     packet,
+			},
+		},
+		delegatestore.Event{
+			Kind:       delegatestore.EventDelegateCreated,
+			DelegateID: closedID,
+			Created:    &delegatestore.DelegateCreated{Descriptor: closedDescriptor},
+		},
+		delegatestore.Event{
+			Kind:               delegatestore.EventDelegateResumabilityClosed,
+			DelegateID:         closedID,
+			ResumabilityClosed: &delegatestore.ResumabilityClosed{Reason: "test closure"},
+		},
+	)
+	s.delegateController.mu.Unlock()
+	if err != nil {
+		t.Fatalf("seed stable activity phases: %v", err)
+	}
+
+	live, err := s.JobActivityTree(appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("live JobActivityTree: %v", err)
+	}
+	cold, err := LoadSessionJobActivityTree(stateDir, s.ID(), appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("cold LoadSessionJobActivityTree: %v", err)
+	}
+	for source, tree := range map[string]appwire.JobActivityTree{"live": live, "cold": cold} {
+		for _, tc := range []struct {
+			id        string
+			lifecycle string
+			phase     string
+		}{
+			{id: settlingID, lifecycle: "running", phase: "settling"},
+			{id: closedID, lifecycle: "idle", phase: "closed"},
+		} {
+			row := stableReadonlyActivityRow(t, tree, tc.id)
+			if row["lifecycle"] != tc.lifecycle || row["status"] != tc.lifecycle || row["phase"] != tc.phase {
+				t.Errorf("%s activity %s lifecycle/status/phase = %#v/%#v/%#v, want %q/%q/%q", source, tc.id, row["lifecycle"], row["status"], row["phase"], tc.lifecycle, tc.lifecycle, tc.phase)
+			}
+		}
+	}
+}
+
 func TestStableDelegateReadOnly_MissingFilesRemainMissing(t *testing.T) {
 	stateDir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()

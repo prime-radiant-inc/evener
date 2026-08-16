@@ -675,7 +675,7 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		Type:                "delegate",
 		Lifecycle:           string(row.lifecycle),
 		Phase:               string(row.phase),
-		Status:              string(row.phase),
+		Status:              string(row.lifecycle),
 		ProjectionRevision:  row.revision,
 		Resumable:           row.resumable,
 		NotResumableReason:  row.notResumableReason,
