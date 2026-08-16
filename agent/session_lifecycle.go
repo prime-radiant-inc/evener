@@ -405,6 +405,11 @@ const (
 	// EntryDelegateAttention is a controller-owned stable delegate generation
 	// whose exact model-bound input is already durable in the receiver transcript.
 	EntryDelegateAttention
+	// entryKindCount is the number of EntryKind values. Keep it last: the
+	// turn-opening audit (entrykind_audit_test.go) iterates up to it, so a kind
+	// added above this line must declare how its turn acquires an identity
+	// before the suite goes green.
+	entryKindCount
 )
 
 // roundContentClass classifies a model round's assistant content. NoContent marks
