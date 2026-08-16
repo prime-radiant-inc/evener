@@ -41,6 +41,9 @@ test("each variant renders a distinct class", () => {
   const { rerender } = render(<Button variant="primary">Go</Button>);
   const primaryClass = screen.getByRole("button").className;
 
+  rerender(<Button variant="secondary">Go</Button>);
+  const secondaryClass = screen.getByRole("button").className;
+
   rerender(<Button variant="quiet">Go</Button>);
   const quietClass = screen.getByRole("button").className;
 
@@ -50,7 +53,24 @@ test("each variant renders a distinct class", () => {
   rerender(<Button variant="dangerQuiet">Go</Button>);
   const dangerQuietClass = screen.getByRole("button").className;
 
-  expect(new Set([primaryClass, quietClass, dangerClass, dangerQuietClass]).size).toBe(4);
+  expect(new Set([primaryClass, secondaryClass, quietClass, dangerClass, dangerQuietClass]).size).toBe(5);
+});
+
+// secondary is the design language's bordered "common control" (2026-05-22
+// design language §3.1's .btn-secondary): a resting border and surface fill
+// are what make it read as a button where quiet reads as bare text. jsdom
+// applies no stylesheet, so the declaration is the checkable truth - comments
+// stripped first so a doc comment quoting a declaration cannot satisfy the
+// match (docs/testing.md).
+test("secondary declares visible button chrome (fill + border), unlike quiet", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "button.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const rule = /\.secondary\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("border-color: var(--edge-strong)");
+  expect(rule).toContain("background: var(--surface-1)");
+  expect(css).toMatch(/\.secondary:hover:not\(:disabled\)\s*\{[^}]*background: var\(--hover-1\)/);
 });
 
 // dangerQuiet exists for a destructive action that is not the primary one on
