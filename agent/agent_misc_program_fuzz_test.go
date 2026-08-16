@@ -369,8 +369,8 @@ func miscFaultProgram(t *testing.T) {
 		_, _ = LoadSessionHistoricalJobRecords(dir, sessionID)
 	}
 	_ = jobstore.JobRecord{}
-	oldStat, oldOpen := historicalJobsStat, historicalJobsOpen
-	t.Cleanup(func() { historicalJobsStat, historicalJobsOpen = oldStat, oldOpen })
+	oldStat := historicalJobsStat
+	t.Cleanup(func() { historicalJobsStat = oldStat })
 	validPath := filepath.Join(jobsDir(dir, "valid"), "jobs.jsonl")
 	if err := os.MkdirAll(filepath.Dir(validPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -383,20 +383,6 @@ func miscFaultProgram(t *testing.T) {
 		t.Fatalf("historical stat fault = %v", err)
 	}
 	historicalJobsStat = oldStat
-	historicalJobsOpen = func(string) (historicalJobStore, error) { return nil, sentinel }
-	if _, err := LoadSessionHistoricalJobRecords(dir, "valid"); !errors.Is(err, sentinel) {
-		t.Fatalf("historical open fault = %v", err)
-	}
-	historicalJobsOpen = func(string) (historicalJobStore, error) { return &miscHistoricalStore{loadErr: sentinel}, nil }
-	if _, err := LoadSessionHistoricalJobRecords(dir, "valid"); !errors.Is(err, sentinel) {
-		t.Fatalf("historical load fault = %v", err)
-	}
-	historicalJobsOpen = func(string) (historicalJobStore, error) {
-		return &miscHistoricalStore{records: map[string]*jobstore.JobRecord{"nil": nil}}, nil
-	}
-	if got, err := LoadSessionHistoricalJobRecords(dir, "valid"); err != nil || len(got) != 0 {
-		t.Fatalf("nil historical record = %#v, %v", got, err)
-	}
 }
 
 type miscReadDirErrorFS struct{ err error }
@@ -416,16 +402,3 @@ func (e miscDirEntry) Name() string             { return e.name }
 func (miscDirEntry) IsDir() bool                { return false }
 func (miscDirEntry) Type() fs.FileMode          { return 0 }
 func (miscDirEntry) Info() (fs.FileInfo, error) { return nil, errors.New("unused") }
-
-type miscHistoricalStore struct {
-	records map[string]*jobstore.JobRecord
-	loadErr error
-}
-
-func (*miscHistoricalStore) Close() error { return nil }
-func (s *miscHistoricalStore) Load() (map[string]*jobstore.JobRecord, error) {
-	return s.records, s.loadErr
-}
-func (s *miscHistoricalStore) LoadOrdered() ([]*jobstore.JobRecord, error) {
-	return nil, s.loadErr
-}

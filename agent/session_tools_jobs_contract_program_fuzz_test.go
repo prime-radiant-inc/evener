@@ -60,7 +60,7 @@ func FuzzJobtoolsContractProgram(f *testing.F) {
 
 		for name, call := range map[string]func() (any, error){
 			"status": func() (any, error) {
-				return jobStatusTool(s, map[string]any{"job_id": jobID}, jobToolResultDefaultMaxChar)
+				return jobStatusTool(s, map[string]any{"target": jobID}, jobToolResultDefaultMaxChar)
 			},
 			"list": func() (any, error) {
 				return jobListTool(s, map[string]any{
@@ -70,7 +70,7 @@ func FuzzJobtoolsContractProgram(f *testing.F) {
 			},
 			"stop": func() (any, error) {
 				return jobStopTool(context.Background(), s, map[string]any{
-					"job_id": jobID, "include_children": r.booln(),
+					"target": jobID, "include_children": r.booln(),
 				}, jobToolResultDefaultMaxChar)
 			},
 		} {

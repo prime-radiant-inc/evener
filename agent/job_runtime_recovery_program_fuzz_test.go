@@ -692,7 +692,7 @@ func jrrpAssertSessionOutputAndStop(t *testing.T, p jrrpProgram) {
 		t.Fatalf("append session job output = %d, %v", n, err)
 	}
 
-	statusValue, err := jobStatusTool(s, map[string]any{"job_id": rec.JobID}, jobToolResultDefaultMaxChar)
+	statusValue, err := jobStatusTool(s, map[string]any{"target": rec.JobID}, jobToolResultDefaultMaxChar)
 	if err != nil {
 		t.Fatalf("job_status: %v", err)
 	}
@@ -726,14 +726,14 @@ func jrrpAssertSessionOutputAndStop(t *testing.T, p jrrpProgram) {
 		})
 	}
 	stopValue, err := jobStopTool(context.Background(), s, map[string]any{
-		"job_id":      rec.JobID,
+		"target":      rec.JobID,
 		"max_wait_ms": 1000,
 	}, jobToolResultDefaultMaxChar)
 	if err != nil {
 		t.Fatalf("job_stop: %v", err)
 	}
 	stop := jrrpStopState(t, stopValue)
-	if stop.JobID != rec.JobID || stop.Status != string(jobstore.StatusCancelled) || stop.PreviousStatus != string(jobstore.StatusRunning) || stop.Outcome != "cancelled_by_request" {
+	if stop.ID != rec.JobID || stop.Status != string(jobstore.StatusCancelled) || stop.PreviousStatus != string(jobstore.StatusRunning) || stop.Outcome != "cancelled_by_request" {
 		t.Fatalf("job_stop result = %+v", stop)
 	}
 
