@@ -1008,8 +1008,9 @@ func recomputeActivitySession(session *appwire.JobActivitySession) {
 	session.Counts, session.Aggregate = aggregateActivity(session.Entries, session.Branch)
 }
 
-// projectActivityJob projects the shared job fields used by both the activity
-// tree and the temporary flat jobs-list compatibility path.
+// projectActivityJob projects one job record into the activity tree's job
+// shape. (The flat jobs-list compatibility path this once also served was
+// retired in 4993cdd53; the tree is its only consumer now.)
 func projectActivityJob(rec *jobstore.JobRecord, ownerRef string) appwire.JobActivityJob {
 	if rec == nil {
 		return appwire.JobActivityJob{}

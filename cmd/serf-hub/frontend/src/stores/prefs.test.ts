@@ -39,8 +39,8 @@ beforeAll(() => {
 // Every key this store reads/writes lives under this prefix - the plan's own
 // "serf.prefs.<name>" contract (docs/superpowers/plans/
 // 2026-07-21-webui-rewrite-wave7-settings.md). enterToSend/showCost are
-// PINNED exact names (a parallel wave's interim hook already reads them
-// directly), so those two get their own named contract test below rather
+// PINNED exact names (the composer and transcript read them through this
+// store), so those two get their own named contract test below rather
 // than relying only on the generic round-trip coverage every other field
 // gets.
 const KEY = (name: string) => `serf.prefs.${name}`;
