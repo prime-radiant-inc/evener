@@ -125,6 +125,7 @@ func pastStableDescriptor(ownerSessionID, childSessionID, task string) delegates
 		VisibleSessionID: ownerSessionID,
 		Task:             task,
 		AgentType:        "general",
+		ToolNameCeiling:  []string{"communicate"},
 		Resumable:        true,
 	}
 }

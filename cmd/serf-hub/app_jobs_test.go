@@ -180,41 +180,8 @@ func seedPastSessionWithActivity(t *testing.T, childJobs int) (hubcore.WebConfig
 			t.Fatal(err)
 		}
 	}
+	writePersistedDelegateCreated(t, stateDir, rootID, childID, now)
 	writePersistedActivityLog(t, stateDir, rootID, now, []map[string]any{
-		{
-			"kind":        "delegate_created",
-			"ts":          now.Format(time.RFC3339Nano),
-			"delegate_id": "dlg_child",
-			"delegate": map[string]any{
-				"child_session_id":   childID,
-				"transcript_ref":     "local:" + childID,
-				"owner_session_id":   rootID,
-				"visible_session_id": rootID,
-				"generation":         "gen_1",
-				"resumable":          true,
-			},
-		},
-		{
-			"kind":                  "job_started",
-			"ts":                    now.Add(time.Second).Format(time.RFC3339Nano),
-			"job_id":                "job_delegate_child",
-			"type":                  "delegate",
-			"status":                "running",
-			"task":                  "inspect child",
-			"owner_session_id":      rootID,
-			"visible_to_session_id": rootID,
-			"delegate_id":           "dlg_child",
-			"transcript_ref":        "local:" + childID,
-			"started_at":            now.Add(time.Second).Format(time.RFC3339Nano),
-		},
-		{
-			"kind":     "job_finished",
-			"ts":       now.Add(2 * time.Second).Format(time.RFC3339Nano),
-			"job_id":   "job_delegate_child",
-			"status":   "completed",
-			"reason":   "exit_zero",
-			"ended_at": now.Add(2 * time.Second).Format(time.RFC3339Nano),
-		},
 		{
 			"kind":                  "job_started",
 			"ts":                    now.Add(3 * time.Second).Format(time.RFC3339Nano),
@@ -272,6 +239,35 @@ func seedPastSessionWithActivity(t *testing.T, childJobs int) (hubcore.WebConfig
 		t.Fatal(err)
 	}
 	return hubcore.WebConfig{Past: idx}, rootID, childID, stateDir
+}
+
+func writePersistedDelegateCreated(t *testing.T, stateDir, rootID, childID string, now time.Time) {
+	t.Helper()
+	path := filepath.Join(stateDir, "sessions", rootID, "delegates.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := map[string]any{
+		"child_session_id":   childID,
+		"transcript_ref":     "local:" + childID,
+		"owner_session_id":   rootID,
+		"visible_session_id": rootID,
+		"task":               "inspect child",
+		"agent_type":         "general",
+		"tool_name_ceiling":  []string{"communicate"},
+		"resumable":          true,
+		"config":             map[string]any{},
+	}
+	batch, err := json.Marshal(map[string]any{"events": []any{map[string]any{
+		"kind": "delegate_created", "seq": 1, "ts": now, "delegate_id": "dlg_child", "created": map[string]any{"descriptor": descriptor},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawJournal := append([]byte("{\"version\":1}\n"), append(batch, '\n')...)
+	if err := os.WriteFile(path, rawJournal, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writePersistedActivityLog(t *testing.T, stateDir, sessionID string, _ time.Time, events []map[string]any) {
@@ -354,8 +350,8 @@ func TestHubJobsListLiveDaemon(t *testing.T) {
 
 // TestHubJobsListDeadSessionFallsBackToPast is the RED case: a session whose
 // daemon has exited (no live rendezvous entry) must still serve its recursive
-// persisted activity tree from jobs.jsonl, not the SessionUnavailable error
-// entryForRef raises for a live-only lookup.
+// persisted activity tree, not the SessionUnavailable error entryForRef raises
+// for a live-only lookup.
 func TestHubJobsListDeadSessionFallsBackToPast(t *testing.T) {
 	cfg, sessionID, childID, _ := seedPastSessionWithActivity(t, 1)
 	sources := newExitedLocalRegistry()

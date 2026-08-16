@@ -146,7 +146,7 @@ func TestW2Watch_configureWatchEqualWithDetachedAppendError(t *testing.T) {
 		t.Fatalf("idempotent reconfigure error = %v, want the drain append failure", err)
 	}
 
-	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "dlg_obs"}
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: runtimeMessageAliasCaller}
 	jm.mu.Lock()
 	cfg := jm.watches[key]
 	jm.mu.Unlock()

@@ -445,6 +445,8 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "delegate_tree_steer.go", function: "(*delegateTreeController).Steer", kind: "lifecycle method", symbol: "BeginSteerPersistence"}:                                       1,
 	{filename: "delegate_tree_steer.go", function: "(*delegateTreeController).Steer", kind: "lifecycle method", symbol: "CompleteSteerPersistence"}:                                    1,
 	{filename: "delegate_tree_steer.go", function: "(*delegateTreeController).Steer", kind: "lifecycle method", symbol: "AbortSteerPersistence"}:                                       1,
+	{filename: "delegate_tree_steer.go", function: "(*delegateTreeController).SteerCaller", kind: "lifecycle method", symbol: "AbortSteerPersistence"}:                                 1,
+	{filename: "delegate_tree_steer.go", function: "(*delegateTreeController).SteerCaller", kind: "lifecycle method", symbol: "CompleteSteerPersistence"}:                              1,
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "BeginModelRequest"}:                                    1,
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "CompleteModelRequest"}:                                 1,
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "AbortModelRequest"}:                                    1,

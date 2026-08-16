@@ -5,26 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/llm"
 )
-
-type mutableClock struct {
-	nanos atomic.Int64
-}
-
-func newMutableClock(start time.Time) *mutableClock {
-	c := &mutableClock{}
-	c.nanos.Store(start.UnixNano())
-	return c
-}
-
-func (c *mutableClock) now() time.Time { return time.Unix(0, c.nanos.Load()).UTC() }
-
-func (c *mutableClock) advance(d time.Duration) { c.nanos.Add(int64(d)) }
 
 func runningJobByID(t *testing.T, jm *jobManager, jobID string) *runningJob {
 	t.Helper()
@@ -63,7 +49,7 @@ func readJobStatus(t *testing.T, s *Session, jobID string) jobStatusToolOutput {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "status",
 		Name:      "job_status",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, jobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q}`, jobID)),
 	})
 	if res.IsError {
 		t.Fatalf("job_status returned error: %s", res.Output)
@@ -92,10 +78,9 @@ type jobStatusToolOutput struct {
 }
 
 func TestJobStatusRunningShellProjectsSupervisionFields(t *testing.T) {
-	s := newTestSession(t)
+	clk := agenttest.NewFakeClockAt(time.Unix(5000, 0).UTC())
+	s := newSession(t, withConfig(SessionConfig{clock: clk}))
 	jm := s.jobManager
-	clk := newMutableClock(time.Unix(5000, 0).UTC())
-	jm.now = clk.now
 
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
@@ -103,7 +88,7 @@ func TestJobStatusRunningShellProjectsSupervisionFields(t *testing.T) {
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
 
-	clk.advance(90 * time.Second)
+	clk.Advance(90 * time.Second)
 	out := readJobStatus(t, s, rec.JobID)
 	if out.JobID != rec.JobID {
 		t.Fatalf("job_id = %q, want %q", out.JobID, rec.JobID)
@@ -135,10 +120,9 @@ func TestJobStatusRunningShellProjectsSupervisionFields(t *testing.T) {
 }
 
 func TestJobListRowsIncludeStatusSupervisionFields(t *testing.T) {
-	s := newTestSession(t)
+	clk := agenttest.NewFakeClockAt(time.Unix(6000, 0).UTC())
+	s := newSession(t, withConfig(SessionConfig{clock: clk}))
 	jm := s.jobManager
-	clk := newMutableClock(time.Unix(6000, 0).UTC())
-	jm.now = clk.now
 
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
@@ -146,7 +130,7 @@ func TestJobListRowsIncludeStatusSupervisionFields(t *testing.T) {
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
 
-	clk.advance(3 * time.Second)
+	clk.Advance(3 * time.Second)
 	entry := readJobListEntry(t, s, rec.JobID)
 	if entry.Kind != "shell" {
 		t.Fatalf("kind = %q, want shell", entry.Kind)
@@ -167,10 +151,9 @@ func TestJobListRowsIncludeStatusSupervisionFields(t *testing.T) {
 
 func TestJobListLastActivityAdvancesWithShellOutput(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
+	clk := agenttest.NewFakeClockAt(time.Unix(1000, 0).UTC())
+	s := newSession(t, withConfig(SessionConfig{clock: clk}))
 	jm := s.jobManager
-	clk := newMutableClock(time.Unix(1000, 0).UTC())
-	jm.now = clk.now
 
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
@@ -183,7 +166,7 @@ func TestJobListLastActivityAdvancesWithShellOutput(t *testing.T) {
 		t.Fatalf("initial last_activity = %v, want StartedAt %q", start.LastActivity, start.StartedAt)
 	}
 
-	clk.advance(5 * time.Minute)
+	clk.Advance(5 * time.Minute)
 	run := runningJobByID(t, jm, rec.JobID)
 	if _, err := jm.appendJobOutput(rec.JobID, run.output, []byte("progress\n")); err != nil {
 		t.Fatalf("appendJobOutput: %v", err)
@@ -193,7 +176,7 @@ func TestJobListLastActivityAdvancesWithShellOutput(t *testing.T) {
 	if after.LastActivity == nil {
 		t.Fatal("after output, last_activity is nil")
 	}
-	want := clk.now().Format(time.RFC3339Nano)
+	want := clk.Now().Format(time.RFC3339Nano)
 	if *after.LastActivity != want {
 		t.Fatalf("last_activity after output = %q, want %q", *after.LastActivity, want)
 	}
@@ -204,16 +187,15 @@ func TestJobListLastActivityAdvancesWithShellOutput(t *testing.T) {
 
 func TestJobListTerminalLastActivityFallsBackToEndedAt(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
+	clk := agenttest.NewFakeClockAt(time.Unix(4000, 0).UTC())
+	s := newSession(t, withConfig(SessionConfig{clock: clk}))
 	jm := s.jobManager
-	clk := newMutableClock(time.Unix(4000, 0).UTC())
-	jm.now = clk.now
 
 	rec, err := jm.createShell(createShellOpts{Command: "true"})
 	if err != nil {
 		t.Fatalf("createShell: %v", err)
 	}
-	clk.advance(2 * time.Minute)
+	clk.Advance(2 * time.Minute)
 	finishRunningTestJob(t, jm, rec.JobID)
 
 	entry := readJobListEntry(t, s, rec.JobID)
