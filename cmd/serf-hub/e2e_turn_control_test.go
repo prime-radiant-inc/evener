@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -396,6 +397,43 @@ func (s hubStack) dialRPC(ctx context.Context, t *testing.T) *appwire.Client {
 	return client
 }
 
+// liveStackBinaries builds serf and serf-hub once per test binary and hands
+// every stack the same directory. Each `go build` is a heavy compile running
+// inside an already-parallel `go test ./...`; doing it per test spiked the
+// load enough to starve an unrelated package's FIFO handshake into its
+// 10-minute package timeout. The binaries are read-only to their users, so
+// sharing them is safe, and the directory outlives every test in the run.
+var liveStackBuild struct {
+	once sync.Once
+	dir  string
+	err  error
+}
+
+func liveStackBinaries(t *testing.T, repoRoot string) string {
+	t.Helper()
+	liveStackBuild.once.Do(func() {
+		// Under TestMain's root, so its RemoveAll is the only cleanup path.
+		dir := filepath.Join(testEnvRoot, "live-stack-bin")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			liveStackBuild.err = err
+			return
+		}
+		liveStackBuild.dir = dir
+		for _, target := range []string{"./cmd/serf", "./cmd/serf-hub"} {
+			build := exec.Command("go", "build", "-o", filepath.Join(dir, filepath.Base(target)), target)
+			build.Dir = repoRoot
+			if out, buildErr := build.CombinedOutput(); buildErr != nil {
+				liveStackBuild.err = fmt.Errorf("build %s: %w\n%s", target, buildErr, out)
+				return
+			}
+		}
+	})
+	if liveStackBuild.err != nil {
+		t.Fatalf("build live-stack binaries: %v", liveStackBuild.err)
+	}
+	return liveStackBuild.dir
+}
+
 func startHubStack(t *testing.T, provider *fakellm.Server) hubStack {
 	t.Helper()
 
@@ -405,14 +443,7 @@ func startHubStack(t *testing.T, provider *fakellm.Server) hubStack {
 		t.Fatalf("abs repo root: %v", err)
 	}
 
-	binDir := t.TempDir()
-	for _, target := range []string{"./cmd/serf", "./cmd/serf-hub"} {
-		build := exec.Command("go", "build", "-o", filepath.Join(binDir, filepath.Base(target)), target)
-		build.Dir = repoRoot
-		if out, buildErr := build.CombinedOutput(); buildErr != nil {
-			t.Fatalf("build %s: %v\n%s", target, buildErr, out)
-		}
-	}
+	binDir := liveStackBinaries(t, repoRoot)
 
 	serfDir := filepath.Join(home, ".serf")
 	if err := os.MkdirAll(serfDir, 0o700); err != nil {

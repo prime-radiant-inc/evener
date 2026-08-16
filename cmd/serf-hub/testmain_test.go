@@ -11,12 +11,19 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
+// testEnvRoot is the throwaway root TestMain builds and removes. Anything a
+// test needs for the whole run rather than for one case — the live-stack
+// binaries, for one — belongs under it, so the removal below is the only
+// cleanup path that has to exist.
+var testEnvRoot string
+
 func TestMain(m *testing.M) {
 	root, err := os.MkdirTemp("", "serf-hub-test-env-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serf-hub test env: %v\n", err)
 		os.Exit(1)
 	}
+	testEnvRoot = root
 	for _, dir := range []string{"home", "config", "state", "cache", "codex"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
 			fmt.Fprintf(os.Stderr, "serf-hub test env: %v\n", err)
