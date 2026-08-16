@@ -6,31 +6,43 @@
 `activeTurnId` the daemon publishes is always the one its mutation
 preconditions accept, and Steer / Send / Stop work on every turn.
 
-**Architecture:** The session becomes the sole minter and announcer of a
-turn's identity. At the one place a turn begins (`Session.processOneInput`)
-the session reserves a durable turn id if a client mutation has not already
-reserved one, announces it through a callback, and releases it at turn end if
-it was the reserver. `serve.go` publishes whatever the session announces; the
-`server` package stops minting turn ids for live turns entirely.
+**Architecture:** A turn is named **in band, on the event that opens it**.
+`EventUserInput` already carries `StableTurnID` and the projector adopts it
+immediately before `startTurn()`; this change gives the other turn-opening
+events the same field and populates it, and makes the durable authority
+record the running turn's id for turns no client mutation reserved one for.
+Nothing announces a turn id out of band, and the daemon stops minting turn
+ids for live turns.
 
 **Tech Stack:** Go 1.25 multi-module workspace (`agent`, root module's
 `server` / `internal/appprojector` / `cmd/serf`), `appwire` JSON-RPC.
 
 **Spec:** this document — the Diagnosis section below is the spec.
 
+**Revision:** v2. v1 named turns through an out-of-band callback from
+`processOneInput` to `Server.SetProcessingTurn`. Two independent adversarial
+reviews killed that mechanism; the Review Findings section at the end records
+each finding and what v2 does about it. Read it before changing this plan.
+
 ## Global Constraints
 
 - **No backward compatibility.** Jesse's call. Delete the superseded path;
   do not keep it behind a flag or a fallback.
-- Every turn id that reaches a client for a *live* turn is
-  `appwire.ClientMutationTurnID(n)` — `turn_m<n>`. The projector's own
-  `turn_<n>` family survives only for synthetic prelude/gap ids and for
-  transcript replay.
-- The client-mutation **journal** stays a record of client mutations. An
-  agent-started turn reserves an id and nothing else: no journal record, no
-  budget reservation, no `AcceptedTurns` bump.
+- **A turn is named by the event that opens it.** No side channel. The
+  session goroutine and the projector run on different goroutines
+  (`agent/session_events.go:95`), so anything that names a turn out of band
+  races the event stream.
+- **One mint site.** Turn ids come from `reserveClientMutationTurnID`
+  (`agent/session_client_mutation_queue.go:642-645`) and nowhere else.
+  `agent/session_client_mutation_turn_namespace_test.go:52-57` exists to
+  enforce exactly this.
+- **A running turn is not durable state.** `ActiveTurnID` describes a turn in
+  flight; a process that restarts has no turn in flight. It is reconciled at
+  load, never inherited.
 - Gates, in order, from the repo root: `make lint`, `make build`,
-  `go test ./...`, and the module suites (`cd agent && go test ./...`).
+  `go test ./...`, the module suites (`cd agent && go test ./...`, and the
+  same for `auth`, `envvars`, `fuzz`, `identifier`, `invariant`, `llm`), and
+  `make test-web`.
 - Never `git stash`; never `git checkout <file>` to undo.
 
 ---
@@ -44,39 +56,48 @@ The daemon keeps two "active turn id"s that answer different questions:
   (`agent/session_client_mutation.go:216,235`). Persisted to
   `<state-dir>/mutations/<SID>.json`. `clientMutationSnapshot.ActiveTurnID`
   is documented as "the sole durable authority used by retry-safe mutation
-  preconditions" (`agent/session_client_mutation.go:128-131`), and it is the
-  value every mid-turn mutation is compared against:
+  preconditions" (`agent/session_client_mutation.go:128-131`), and it is what
+  every mid-turn mutation is compared against:
   `session_client_mutation_queue.go:123,325,392,497` and
   `session_client_mutation.go:411`.
-- **`turn_<n>` — the projector's.** Minted in memory when the first event of
-  a round arrives (`internal/appprojector/appwire_projection.go:1652,1724`),
+- **`turn_<n>` — the projector's.** Minted in memory when a turn opens with
+  no reservation standing (`internal/appprojector/appwire_projection.go:1652`),
   re-derived from the persisted transcript entry count on resume
-  (`SeedPersistedTurns`). It is a stream-attachment label and must exist for
-  every round, including ones no client asked for.
+  (`SeedPersistedTurns`).
 
-`server.Server` publishes the projector's value on the wire —
-`thread.Serf.ActiveTurnID = projection.activeTurnID`
-(`server/appwire_runtime.go:551,652`).
+The daemon's own thread publishes `s.appActiveTurnID` from `appThread()`
+(`server/appwire_runtime.go:1198,1245`). That field is re-synced from the
+projector on **every** projected event (`server/appwire_runtime.go:212`), and
+otherwise only by `setProcessingLocked` (`server/server.go:713-716`) and
+`SetProcessingTurn` (`:691-699`).
 
-`954e5ff93` ("publish durable turn identity to session controls") collapsed
-the two **for client-started turns**: `Server.SetProcessingTurn` calls
-`AppEventProjector.ReserveStableTurnID`, so the projector adopts the durable
-id. Its own message records that it kept "generic SetProcessing behavior for
-non-mutation continuations".
+So the wire follows the projector, and the projector's id is right exactly
+when the turn-opening event named it. Which events name it:
 
-Those non-mutation turns are the bug. `cmd/serf/serve.go:990` `processMessage`
-forks on `msg.ClientMutationStart`; the `else` branch calls
-`srv.SetProcessing(true)`, which mints `turn_<n>` (`server/server.go:713-716`)
-and never touches the durable authority. The affected turn kinds are
-`EntryNotification` (job / watch / delegate-attention wakes),
-`EntryContinuation` (goal continuations), and the post-interrupt queue-drain
-re-arm at `serve.go:1001`.
+| Entry kind | Opening event | Carries `StableTurnID`? |
+| --- | --- | --- |
+| `EntryUserInput` (client `turn/start`, queued drain) | `EventUserInput`, `agent/session_lifecycle.go:1423-1429` | **yes**, populated from `queuedIdentity.StableTurnID` |
+| `EntryContinuation` (goal) | `EventGoalContinuation`, `:1482` | **no such field** on `GoalContinuationData` (`agent/events/payloads.go:668`) |
+| `EntryNotification` (job / watch / delegate wakes) | `EventSteeringInjected`, `:1553` | field exists (`agent/events/payloads.go:356`) but is **not populated**, and the projector's case ignores it (`appwire_projection.go:727-734`) |
 
-Result: the UI reads `turn_6` off the wire, sends it as `expectedTurnId`, the
-daemon compares it with `turn_m6`, and `turn/steer`, `turn/queue`,
-`turn/drainAsSteer`, `turn/promoteQueuedAsSteer` and `turn/interrupt` are all
-rejected with `Conflict("turn is not active")`. The composer surfaces no
-error; the draft just stays in the box.
+The projector adopts a named id at `appwire_projection.go:225-227` —
+`if data.StableTurnID != "" { p.reservedTurnID = data.StableTurnID }`,
+immediately before `startTurn()`. Unnamed turns fall through to
+`p.nextTurn++` and become `turn_<n>`.
+
+Meanwhile the durable side is written only by `AcceptClientMutationStart`
+(`:235`) and `popQueueHead` (`agent/session_queue.go:581`). Neither runs for
+a goal continuation or a notification wake, so for those turns the wire says
+`turn_<n>` and the precondition holds a stale `turn_m<n>` or `""`.
+
+Result: `turn/steer`, `turn/queue`, `turn/drainAsSteer`,
+`turn/promoteQueuedAsSteer` and `turn/interrupt` are all rejected with
+`Conflict("turn is not active")`. The composer surfaces no error; the draft
+just stays in the box (filed as kata `2f41`).
+
+**The queued-drain path is NOT broken.** v1 claimed it was. `popQueueHead`
+sets `ActiveTurnID` durably and hands its `StableTurnID` to the
+`EventUserInput` emit, so both sides already agree.
 
 **Evidence.** Jesse's live session `0348HuXSlWRtoLEoQ4EOE8`: its mutation
 journal holds 3× `turn/steer`, 1× `turn/queue`, 1× `turn/interrupt`, every one
@@ -86,15 +107,14 @@ on a disposable stack: `goal/set` on an idle session publishes
 `activeTurnId: turn_2`, and Steer and Stop from the real browser UI both land
 in the journal as `rejected | turn is not active`.
 
-**Decision.** `clientMutationSnapshot.ActiveTurnID` means *the turn that is
-running*, not *the turn a client mutation reserved*. The session mints and
-announces it for every turn; nothing else mints turn ids for live turns.
+**Decision (Jesse's, 2026-08-16).** `clientMutationSnapshot.ActiveTurnID`
+means *the turn that is running*, not *the turn a client mutation reserved*.
 
 ### Why not the alternatives
 
 - *Route agent-started turns through `AcceptClientMutationStart`.* Drags
   journal records, budget reservations and `MaxTurns` accounting onto turns
-  no client requested.
+  no client requested — and restore would try to re-run them.
 - *Accept either id family at the precondition.* Keeps two authorities alive
   forever, and on the interrupt path
   (`session_client_mutation.go:537`, `record.StableTurnID = fence.ExpectedTurnID`)
@@ -104,11 +124,15 @@ announces it for every turn; nothing else mints turn ids for live turns.
   the UI loses Steer and Stop during goal and notification turns — no way to
   stop a runaway delegate-notification turn from the web UI.
 
-### Known follow-up, deliberately out of scope
+### Out of scope, filed
 
-A `Conflict` on steer / queue / interrupt is invisible in the web composer —
-no toast, the draft simply stays put. That silence is why this bug went
-unnoticed. Worth its own change; not this one.
+- **kata `2f41`** — a `Conflict`-rejected steer/send/stop is completely
+  silent in the web composer. That silence is why this bug ran unnoticed.
+- **`EntryDelegateAttention`** — `acceptDelegateAttentionInput`
+  (`session_lifecycle.go:1489-1492`) emits no opening event at all, so its
+  turn is named by whatever event happens to arrive first. Task 1 Step 3
+  checks whether that kind can reach the serve input loop; if it can, file a
+  kata rather than widening this change.
 
 ---
 
@@ -116,217 +140,79 @@ unnoticed. Worth its own change; not this one.
 
 | File | Responsibility |
 | --- | --- |
-| `agent/session_active_turn.go` (create) | Reserve, announce and release the running turn's durable identity. One responsibility, so the client-mutation files stay about client mutations. |
-| `agent/session_active_turn_test.go` (create) | Unit coverage for reserve / adopt / release across turn kinds. |
-| `agent/session_lifecycle.go` (modify) | Call the reserve/announce at turn begin and the release at turn end, in `processOneInput`. |
-| `agent/session.go` (modify) | `SetTurnStartedFunc`, mirroring `SetNotifyFunc`. |
-| `cmd/serf/serve.go` (modify) | Wire the announcement to `srv.SetProcessingTurn`; delete the two `SetProcessing(true)` calls, the duplicated ask-gate guess, and the now-redundant publish inside the `ProcessClientMutationStart` callback. |
-| `server/server.go` (modify) | `SetProcessing(bool)` becomes `ClearProcessing()`; the id-minting branch goes. |
-| `internal/appprojector/appwire_projection.go` (modify) | Delete `ReserveTurnID` — nothing mints projector ids for live turns any more. |
-| `cmd/serf-hub/e2e_turn_control_test.go` (modify) | Live-stack regression: a goal-continuation turn accepts steer and interrupt. |
+| `agent/events/payloads.go` (modify) | `GoalContinuationData` gains `StableTurnID`, matching `UserInputData` and `SteeringInjectedData`. |
+| `internal/appprojector/appwire_projection.go` (modify) | The `EventGoalContinuation` and `EventSteeringInjected` cases adopt a named id, exactly as `EventUserInput` already does. |
+| `agent/session_active_turn.go` (create) | Mint / release the running turn's durable id under the guards this plan's review earned. One responsibility, so the client-mutation files stay about client mutations. |
+| `agent/session_active_turn_test.go` (create) | Unit coverage: mint, refuse-under-fence, refuse-when-owned, release, no-store-no-mint. |
+| `agent/session_client_mutation_persist.go` (modify) | Reconcile `ActiveTurnID` at load. |
+| `agent/session_lifecycle.go` (modify) | Mint after the accept block; pass the id into the two opening events. |
+| `server/server.go` (modify) | `SetProcessing` stops minting turn ids. |
+| `cmd/serf/serve.go` (modify) | Nothing announces turn ids; `holdServeStateForAwaitingWake` stays. |
+| `cmd/serf-hub/e2e_turn_control_test.go` (modify) | Live-stack regression on a goal-continuation turn. |
 
 ---
 
-### Task 1: The session owns the running turn's identity
+### Task 1: Name the turns that open unnamed
 
 **Files:**
+- Modify: `agent/events/payloads.go:668` (`GoalContinuationData`)
+- Modify: `internal/appprojector/appwire_projection.go` (`EventGoalContinuation` case at :258, `EventSteeringInjected` case at :727)
 - Create: `agent/session_active_turn.go`
 - Create: `agent/session_active_turn_test.go`
-- Modify: `agent/session.go` (add `SetTurnStartedFunc` beside `SetNotifyFunc` at :710)
-- Modify: `agent/session_lifecycle.go:995-1004` (`processOneInput`)
+- Modify: `agent/session_lifecycle.go:1029-1039` (mint point), `:1482` (continuation emit), `:1553` (notification emit)
+- Modify: `agent/session_client_mutation_persist.go:36` (load reconciliation)
 
 **Interfaces:**
-- Produces: `func (s *Session) SetTurnStartedFunc(f func(turnID string))` —
-  serve.go wires this in Task 2.
-- Produces: `func (s *Session) beginActiveTurn() (turnID string, reserved bool)` —
-  package-private; `reserved` is true only when this turn minted the id, so
-  the caller knows whether to release it.
-- Produces: `func (s *Session) releaseActiveTurn(turnID string)` — package-private.
+- Produces: `func (s *Session) mintRunningTurnID() string` — package-private.
+  Returns `""` when this turn must run unnamed; the caller passes whatever it
+  returns straight into the opening event's `StableTurnID`, and `""` there
+  means "unnamed", which is the existing behaviour.
+- Produces: `func (s *Session) releaseRunningTurnID(turnID string)` — package-private.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing unit test**
 
-Add to `agent/session_active_turn_test.go`. `newTestSessionForEnvctx`
-(`agent/session_envctx_test.go:38`) already builds a Session with a StateDir,
-which the client-mutation store needs.
+Create `agent/session_active_turn_test.go`:
 
 ```go
 package agent
 
 import (
-	"context"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/appwire"
 )
 
-// TestAgentStartedTurnReservesAndAnnouncesADurableID pins the contract every
-// mid-turn control depends on: a turn nobody requested through a client
-// mutation still owns a durable turn_m<n>, the session announces that exact
-// id, and the id is gone again once the turn ends. Without it the daemon
-// publishes a projector id the mutation preconditions reject, which is how
-// steer/send/stop silently died on goal and notification turns.
-func TestAgentStartedTurnReservesAndAnnouncesADurableID(t *testing.T) {
+// TestMintRunningTurnIDNamesAnAgentStartedTurn pins the contract every
+// mid-turn control depends on: a turn no client mutation reserved an id for
+// still gets one from the single mint site, and it is the durable value the
+// preconditions compare against.
+func TestMintRunningTurnIDNamesAnAgentStartedTurn(t *testing.T) {
 	s := newTestSessionForEnvctx(t)
+	s.markAuthoritativeConsumerForTest()
 
-	var announced []string
-	var duringTurn string
-	s.SetTurnStartedFunc(func(turnID string) {
-		announced = append(announced, turnID)
-		duringTurn = s.clientMutations.snapshot().ActiveTurnID
-	})
-
-	if _, err := s.ProcessInputKind(context.Background(), "keep going", nil, EntryContinuation); err != nil {
-		t.Fatalf("ProcessInputKind(EntryContinuation): %v", err)
+	turnID := s.mintRunningTurnID()
+	if !strings.HasPrefix(turnID, "turn_m") {
+		t.Fatalf("minted %q, want the turn_m<n> family", turnID)
+	}
+	if got := s.clientMutations.snapshot().ActiveTurnID; got != turnID {
+		t.Fatalf("durable ActiveTurnID = %q, want the minted %q", got, turnID)
 	}
 
-	if len(announced) != 1 {
-		t.Fatalf("announced turn ids = %v, want exactly one", announced)
-	}
-	if !strings.HasPrefix(announced[0], "turn_m") {
-		t.Fatalf("announced %q, want the durable turn_m<n> family", announced[0])
-	}
-	if duringTurn != announced[0] {
-		t.Fatalf("durable ActiveTurnID during the turn = %q, want the announced %q", duringTurn, announced[0])
-	}
-	if after := s.clientMutations.snapshot().ActiveTurnID; after != "" {
-		t.Fatalf("durable ActiveTurnID after the turn = %q, want it released", after)
+	s.releaseRunningTurnID(turnID)
+	if got := s.clientMutations.snapshot().ActiveTurnID; got != "" {
+		t.Fatalf("durable ActiveTurnID after release = %q, want empty", got)
 	}
 }
-```
 
-- [ ] **Step 2: Run it and watch it fail**
-
-Run: `cd agent && go test ./ -run TestAgentStartedTurnReservesAndAnnouncesADurableID -v`
-Expected: FAIL — `s.SetTurnStartedFunc undefined`.
-
-- [ ] **Step 3: Add the reserve / announce / release seam**
-
-Create `agent/session_active_turn.go`:
-
-```go
-package agent
-
-import "primeradiant.com/serf/appwire"
-
-// A turn's identity has one owner: this file. Whatever starts a turn — a
-// client's turn/start, a queued message claimed off the input queue, a job or
-// delegate notification wake, a goal continuation — the running turn carries
-// exactly one durable id, and that id is what the daemon publishes as
-// serf.activeTurnId. Mutation preconditions compare against the same value,
-// so an id a client can see is always an id a client can name.
-
-// SetTurnStartedFunc registers the callback the daemon uses to publish the
-// running turn's identity. It mirrors SetNotifyFunc: the agent module must
-// not import server, so serve.go wires this to Server.SetProcessingTurn.
-func (s *Session) SetTurnStartedFunc(f func(turnID string)) {
-	s.mu.Lock()
-	s.turnStartedFunc = f
-	s.mu.Unlock()
-}
-
-// beginActiveTurn settles the identity of the turn that is about to run and
-// reports whether this call is the one that minted it.
-//
-// A client mutation reserves its turn id before the serve loop ever wakes —
-// that is what makes turn/start retry-safe — so a non-empty ActiveTurnID here
-// means the turn is already named and this call adopts it. Everything else
-// mints now. reserved=false keeps the existing settle paths solely
-// responsible for clearing a mutation's own id, including the interrupt
-// fence they finalize.
-func (s *Session) beginActiveTurn() (turnID string, reserved bool) {
-	if err := s.ensureClientMutationStore(); err != nil {
-		// A session with no durable store (an in-process subagent, a
-		// one-shot CLI run) has no client to name a turn to. It runs
-		// unnamed rather than failing the turn.
-		return "", false
-	}
-	if existing := s.clientMutations.snapshot().ActiveTurnID; existing != "" {
-		return existing, false
-	}
-	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		if snapshot.ActiveTurnID != "" {
-			turnID = snapshot.ActiveTurnID
-			return nil
-		}
-		snapshot.NextTurnSequence++
-		snapshot.ActiveTurnID = appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
-		turnID = snapshot.ActiveTurnID
-		reserved = true
-		return nil
-	})
-	if err != nil {
-		return "", false
-	}
-	return turnID, reserved
-}
-
-// releaseActiveTurn clears an id minted by beginActiveTurn. It is a no-op for
-// any other id, so a turn that ended after a client mutation took ownership
-// cannot clear that mutation's identity out from under its settle path.
-func (s *Session) releaseActiveTurn(turnID string) {
-	if turnID == "" || s.clientMutations == nil {
-		return
-	}
-	_ = s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		if snapshot.ActiveTurnID == turnID {
-			snapshot.ActiveTurnID = ""
-		}
-		return nil
-	})
-}
-
-func (s *Session) announceTurnStarted(turnID string) {
-	if turnID == "" {
-		return
-	}
-	s.mu.Lock()
-	f := s.turnStartedFunc
-	s.mu.Unlock()
-	if f != nil {
-		f(turnID)
-	}
-}
-```
-
-Add the field to the `Session` struct in `agent/session.go`, beside
-`notifyFunc`:
-
-```go
-	turnStartedFunc func(turnID string)
-```
-
-- [ ] **Step 4: Call it from the one place a turn begins**
-
-In `agent/session_lifecycle.go`, `processOneInput` sets `s.turnStartedAt`
-under `s.mu` at :996 and unlocks at :1003. The store's `mutate` writes to
-disk, so it must run **after** that unlock. Insert immediately after
-`s.delegateDeliveryMu.Unlock()` (:1004):
-
-```go
-	// The turn's identity is settled before any event of it is emitted, so
-	// the projector adopts it rather than minting one of its own, and the
-	// id the daemon publishes is the id mutation preconditions accept.
-	activeTurnID, reservedActiveTurn := s.beginActiveTurn()
-	if reservedActiveTurn {
-		defer s.releaseActiveTurn(activeTurnID)
-	}
-	s.announceTurnStarted(activeTurnID)
-```
-
-- [ ] **Step 5: Run the test and watch it pass**
-
-Run: `cd agent && go test ./ -run TestAgentStartedTurnReservesAndAnnouncesADurableID -v`
-Expected: PASS
-
-- [ ] **Step 6: Add the adopt-don't-mint case**
-
-Append to `agent/session_active_turn_test.go`:
-
-```go
-// TestClientMutationTurnKeepsItsReservedID pins the other half: a turn a
-// client mutation already named keeps that name, and the settle path — not
-// the turn's own release — is what clears it.
-func TestClientMutationTurnKeepsItsReservedID(t *testing.T) {
+// TestMintRunningTurnIDRefusesWhenATurnIsAlreadyNamed pins the race the v1
+// review found: a client turn/start accepted between the serve loop dequeuing
+// an agent wake and this mint would otherwise have its identity adopted by
+// the agent turn — and a later Stop aimed at it would cancel the agent turn
+// while marking the user's never-run message "interrupted".
+func TestMintRunningTurnIDRefusesWhenATurnIsAlreadyNamed(t *testing.T) {
 	s := newTestSessionForEnvctx(t)
+	s.markAuthoritativeConsumerForTest()
 	if err := s.ensureClientMutationStore(); err != nil {
 		t.Fatalf("ensureClientMutationStore: %v", err)
 	}
@@ -335,170 +221,408 @@ func TestClientMutationTurnKeepsItsReservedID(t *testing.T) {
 		snapshot.ActiveTurnID = appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
 		return nil
 	}); err != nil {
-		t.Fatalf("seed an already-reserved turn: %v", err)
+		t.Fatalf("seed an already-named turn: %v", err)
 	}
-	reserved := s.clientMutations.snapshot().ActiveTurnID
+	owned := s.clientMutations.snapshot().ActiveTurnID
 
-	turnID, minted := s.beginActiveTurn()
-	if turnID != reserved {
-		t.Fatalf("beginActiveTurn adopted %q, want the already-reserved %q", turnID, reserved)
+	if got := s.mintRunningTurnID(); got != "" {
+		t.Fatalf("mintRunningTurnID = %q, want %q (refuse; the slot is owned)", got, "")
 	}
-	if minted {
-		t.Fatal("beginActiveTurn claimed to mint an id that a client mutation had already reserved")
+	if got := s.clientMutations.snapshot().ActiveTurnID; got != owned {
+		t.Fatalf("ActiveTurnID = %q, want the owner's %q left untouched", got, owned)
+	}
+}
+
+// TestMintRunningTurnIDRefusesUnderAnInterruptFence matches every other
+// durable entry point (session_client_mutation.go:198,407;
+// session_client_mutation_queue.go:119,322,389,494), which all refuse while
+// an interrupt is pending.
+func TestMintRunningTurnIDRefusesUnderAnInterruptFence(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	s.markAuthoritativeConsumerForTest()
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.InterruptFence = &clientMutationInterruptFence{
+			ClientMutationID: "cm-1", ExpectedTurnID: "turn_m1",
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed an interrupt fence: %v", err)
+	}
+	if got := s.mintRunningTurnID(); got != "" {
+		t.Fatalf("mintRunningTurnID = %q under a pending interrupt, want %q", got, "")
+	}
+}
+
+// TestMintRunningTurnIDSkipsUnservedSessions keeps in-process subagents off
+// the durable store entirely. They share the parent's StateDir
+// (subagents.go:581) and drive a turn per delegate wake; a turn no client can
+// address needs no name and must not cost two fsyncs.
+func TestMintRunningTurnIDSkipsUnservedSessions(t *testing.T) {
+	s := newTestSessionForEnvctx(t) // no authoritative consumer registered
+	if got := s.mintRunningTurnID(); got != "" {
+		t.Fatalf("mintRunningTurnID = %q for an unserved session, want %q", got, "")
 	}
 }
 ```
 
-Add `"primeradiant.com/serf/appwire"` to the test file's imports.
+- [ ] **Step 2: Run it and watch it fail**
 
-- [ ] **Step 7: Run both tests**
+Run: `cd agent && go test ./ -run TestMintRunningTurnID -v`
+Expected: FAIL — `s.mintRunningTurnID undefined`.
 
-Run: `cd agent && go test ./ -run 'TestAgentStartedTurn|TestClientMutationTurnKeepsItsReservedID' -v`
-Expected: PASS, both.
+- [ ] **Step 3: Add the mint / release seam**
 
-- [ ] **Step 8: Run the agent module suite**
+Create `agent/session_active_turn.go`:
 
-Run: `cd agent && go test ./...`
-Expected: PASS. `ActiveTurnID` is now set during agent-started turns, so
-`AcceptClientMutationStart`'s `Conflict("turn is already active")` guard
-(`session_client_mutation.go:206`) fires in cases where it previously did
-not. That is the intended meaning of the field; if a test asserted the old
-behaviour, update the test's expectation and say so in the commit.
+```go
+package agent
+
+import (
+	"fmt"
+
+	"primeradiant.com/serf/agent/events"
+)
+
+// A turn's identity has one owner: whatever opened it. A client's turn/start
+// and a queued message claimed off the input queue arrive already named — the
+// reservation is what makes them retry-safe across a crash. Everything else —
+// a goal continuation, a job or delegate notification wake — is named here,
+// so the id the daemon publishes is always an id the mutation preconditions
+// accept.
+//
+// The id is minted, never adopted. An ActiveTurnID this call did not write
+// belongs to a mutation that is about to run; taking it would let a Stop
+// aimed at that mutation cancel this turn instead and mark a message the user
+// sent, and the session never ran, "interrupted".
+
+// mintRunningTurnID names the turn that is about to run and records it as the
+// durable authority, or returns "" when this turn must run unnamed. The
+// caller passes the result into the turn's opening event; "" there means
+// "unnamed", which is what unnamed turns already do today.
+func (s *Session) mintRunningTurnID() string {
+	// A session nobody serves has no client to name a turn to. In-process
+	// subagents share the parent's StateDir (subagents.go:581), so this is
+	// the difference between a durable write per delegate wake and none.
+	s.eventsMu.Lock()
+	served := s.authoritativeConsumer
+	s.eventsMu.Unlock()
+	if !served {
+		return ""
+	}
+	if err := s.ensureClientMutationStore(); err != nil {
+		s.emit(events.EventWarning, events.WarningData{
+			Message: fmt.Sprintf("open client mutation store: %v", err),
+		})
+		return ""
+	}
+	var turnID string
+	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		if snapshot.InterruptFence != nil {
+			return nil
+		}
+		if snapshot.ActiveTurnID != "" {
+			return nil
+		}
+		record := clientMutationRecord{}
+		reserveClientMutationTurnID(snapshot, &record)
+		snapshot.ActiveTurnID = record.StableTurnID
+		turnID = record.StableTurnID
+		return nil
+	})
+	if err != nil {
+		s.emit(events.EventWarning, events.WarningData{
+			Message: fmt.Sprintf("name running turn failed: %v", err),
+		})
+		return ""
+	}
+	return turnID
+}
+
+// releaseRunningTurnID clears an id minted by mintRunningTurnID. It is a
+// no-op for any other id, so a turn that ended after a client mutation took
+// the slot cannot clear that mutation's identity out from under its own
+// settle path.
+func (s *Session) releaseRunningTurnID(turnID string) {
+	if turnID == "" || s.clientMutations == nil {
+		return
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		if snapshot.ActiveTurnID == turnID {
+			snapshot.ActiveTurnID = ""
+		}
+		return nil
+	}); err != nil {
+		s.emit(events.EventWarning, events.WarningData{
+			Message: fmt.Sprintf("release running turn failed: %v", err),
+		})
+	}
+}
+```
+
+Add the test-only helper to the same file's test companion — put it in
+`agent/session_active_turn_test.go`, not in production code:
+
+```go
+func (s *Session) markAuthoritativeConsumerForTest() {
+	s.eventsMu.Lock()
+	s.authoritativeConsumer = true
+	s.eventsMu.Unlock()
+}
+```
+
+- [ ] **Step 4: Run the unit tests and watch them pass**
+
+Run: `cd agent && go test ./ -run TestMintRunningTurnID -v`
+Expected: PASS, all four.
+
+- [ ] **Step 5: Reconcile the durable authority at load**
+
+A running turn cannot survive the process that ran it. Without this, an
+ungraceful exit mid-agent-turn leaves `active_turn_id` set with no pending
+execution to settle it, and every later `turn/start` is rejected by
+`AcceptClientMutationStart`'s guard (`session_client_mutation.go:206`) with
+`Conflict("turn is already active")` — forever, silently.
+
+Add a failing test to `agent/session_active_turn_test.go`:
+
+```go
+// TestLoadClearsARunningTurnNoPendingExecutionOwns is the crash guard: an
+// ungraceful exit mid-turn must not brick every future turn/start.
+func TestLoadClearsARunningTurnNoPendingExecutionOwns(t *testing.T) {
+	dir := t.TempDir()
+	seeded := newEmptyClientMutationSnapshot("sess-1")
+	seeded.NextTurnSequence = 7
+	seeded.ActiveTurnID = appwire.ClientMutationTurnID(7)
+	fs := afero.NewMemMapFs()
+	if _, err := saveClientMutationSnapshotFS(fs, dir, "sess-1", seeded, clientMutationWriteEffect, nil); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	loaded, err := loadClientMutationSnapshotFS(fs, dir, "sess-1")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.ActiveTurnID != "" {
+		t.Fatalf("ActiveTurnID survived a restart as %q; a running turn is not durable state", loaded.ActiveTurnID)
+	}
+	if loaded.NextTurnSequence != 7 {
+		t.Fatalf("NextTurnSequence = %d, want 7 — the counter must stay monotonic", loaded.NextTurnSequence)
+	}
+}
+```
+
+Add `"github.com/spf13/afero"` to the test imports. Run it
+(`cd agent && go test ./ -run TestLoadClearsARunningTurn -v`), watch it fail,
+then in `agent/session_client_mutation_persist.go`, after the snapshot
+decodes and before it is returned, add:
+
+```go
+	// A running turn does not survive the process that ran it. An id no
+	// pending execution owns is the residue of an ungraceful exit; inheriting
+	// it makes AcceptClientMutationStart's "turn is already active" guard
+	// reject every future turn/start with nothing left to settle it. The
+	// sequence counter is kept: ids must stay monotonic across restarts.
+	if snapshot.ActiveTurnID != "" {
+		owned := false
+		for _, pending := range snapshot.PendingExecutions {
+			if pending.TurnID == snapshot.ActiveTurnID {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			snapshot.ActiveTurnID = ""
+		}
+	}
+```
+
+Re-run the test; expect PASS.
+
+- [ ] **Step 6: Carry the id on the two opening events**
+
+In `agent/events/payloads.go`, add to `GoalContinuationData`:
+
+```go
+	// StableTurnID names the turn this continuation opens, so the projection
+	// adopts the daemon's own id rather than minting one the mutation
+	// preconditions will not accept. Matches UserInputData.
+	StableTurnID string `json:"stable_turn_id,omitempty"`
+```
+
+In `agent/session_lifecycle.go`, mint once, after the accept block that can
+refuse the wake — insert at `:1039`, immediately after the
+`if kind == EntryContinuation { ... } else if ...` chain, NOT at `:1004`.
+`processOneInput` returns early at `:1006-1012` (cancelled ctx) and
+`:1031-1033` (`acceptNotificationInput` refuses an empty queue), and a turn
+that never runs must not burn a sequence number or publish an id.
+
+Because the id has to reach `acceptContinuationInput` and
+`acceptNotificationInput`, which emit the opening events, mint *before* the
+chain and release on the refusing paths instead:
+
+```go
+	// Name the turn before the event that opens it, so the projection adopts
+	// this id in stream order rather than minting turn_<n> of its own. Only
+	// the kinds whose opening event carries the id are named here; user input
+	// arrives already named by its own reservation.
+	var runningTurnID string
+	if kind == EntryContinuation || kind == EntryNotification {
+		runningTurnID = s.mintRunningTurnID()
+	}
+
+	if kind == EntryContinuation {
+		s.acceptContinuationInput(ctx, input, runningTurnID)
+	} else if kind == EntryNotification {
+		if !s.acceptNotificationInput(ctx, runningTurnID) {
+			s.releaseRunningTurnID(runningTurnID)
+			return "", false, nil
+		}
+		rootAttentionAccepted = true
+	} else if kind == EntryDelegateAttention {
+		s.acceptDelegateAttentionInput()
+	} else if err := s.acceptUserInput(ctx, input, images, inputProvenance, kind == EntryUserInput); err != nil {
+		return "", false, err
+	}
+	if runningTurnID != "" {
+		defer s.releaseRunningTurnID(runningTurnID)
+	}
+```
+
+Thread the parameter through both accepts:
+
+- `acceptContinuationInput(_ context.Context, input string, stableTurnID string)`
+  — pass it on the emit at `:1482`:
+  `s.emit(events.EventGoalContinuation, events.GoalContinuationData{Text: marker, StableTurnID: stableTurnID})`
+- `acceptNotificationInput(ctx context.Context, stableTurnID string) (proceed bool)`
+  — pass it on the emit at `:1553`:
+  `s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification, StableTurnID: stableTurnID})`
+
+Check the other `acceptNotificationInput` call sites and update them; run
+`grep -rn "acceptNotificationInput\|acceptContinuationInput" --include="*.go" .`
+first.
+
+While threading, check whether `EntryDelegateAttention` can reach the serve
+input loop at all (`grep -rn "EntryDelegateAttention" --include="*.go" .`).
+If it can, file a kata — it emits no opening event and cannot be named this
+way; do not widen this change to cover it.
+
+- [ ] **Step 7: Make the projector adopt the named id**
+
+In `internal/appprojector/appwire_projection.go`, the `EventUserInput` case
+already does this at `:225-227`. Add the same two lines to the other two,
+immediately before each opens its turn:
+
+- `EventGoalContinuation` (case at `:258`), after the completion block and
+  before `startTurn()`:
+  ```go
+  		if data := eventData[events.GoalContinuationData](event.Data); data.StableTurnID != "" {
+  			p.reservedTurnID = data.StableTurnID
+  		}
+  ```
+  (fold into the existing `data :=` if the case already decodes the payload.)
+- `EventSteeringInjected` (case at `:727`), after `data` is decoded at `:729`:
+  ```go
+  		if data.StableTurnID != "" {
+  			p.reservedTurnID = data.StableTurnID
+  		}
+  ```
+
+- [ ] **Step 8: Run the agent and projector suites**
+
+Run: `cd agent && go test ./...` then `go test ./internal/appprojector/`
+Expected: PASS. `ActiveTurnID` is now set during goal and notification turns,
+so `AcceptClientMutationStart`'s `Conflict("turn is already active")` guard
+fires where it previously did not. That is the intended meaning of the field
+— the composer already routes Send to `turn/queue` while busy — but if a test
+asserted the old behaviour, update it and say so in the commit.
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add agent/session_active_turn.go agent/session_active_turn_test.go agent/session.go agent/session_lifecycle.go
-git commit -m "fix(agent): every turn owns a durable turn identity"
+git add agent/session_active_turn.go agent/session_active_turn_test.go agent/session_lifecycle.go agent/events/payloads.go agent/session_client_mutation_persist.go internal/appprojector/appwire_projection.go
+git commit -m "fix(agent): name goal and notification turns on the event that opens them"
 ```
 
 ---
 
-### Task 2: The daemon publishes what the session announces
+### Task 2: The daemon stops minting turn ids for live turns
 
 **Files:**
-- Modify: `cmd/serf/serve.go:97-98` (the `ServerLike` interface), `:990-1035`
-  (`processMessage`), `:1173-1175` (delete `holdServeStateForAwaitingWake`),
-  and the session wiring block near `:686`
-- Modify: `server/server.go:679-718`
-- Modify: `internal/appprojector/appwire_projection.go:1720-1727`
-- Test: `cmd/serf/serve_state_test.go`, `server/appwire_server_test.go`
+- Modify: `server/server.go:701-718` (`setProcessingLocked`)
+- Test: `server/appwire_server_test.go`
 
 **Interfaces:**
-- Consumes: `Session.SetTurnStartedFunc(func(turnID string))` from Task 1.
-- Produces: `Server.ClearProcessing()` replaces `Server.SetProcessing(bool)`.
+- Consumes: nothing from Task 1 — this is independent and could land first.
+- Produces: no signature changes. `SetProcessing(bool)`, `SetProcessingTurn`,
+  the `serveServer` interface (`cmd/serf/serve.go:65`) and both test doubles
+  (`cmd/serf/serve_state_test.go:75,154`) all keep their shapes.
+
+**Do not delete `AppEventProjector.ReserveTurnID`.** v1 said it had one
+caller; it has two. `server/appwire_runtime.go:1416`
+(`reserveAppTurnIDForStart`) still needs it, and deleting it takes out
+`server/appwire_mutation_test_helpers_test.go:28,36` — a helper shared across
+the retry-safe mutation test family.
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `cmd/serf/serve_state_test.go`:
+Add to `server/appwire_server_test.go`, matching that file's existing
+construction helpers:
 
 ```go
-// TestServeWiresTurnAnnouncementToTheProjector pins that the daemon publishes
-// the identity the session announces, rather than minting one of its own. A
-// server that still minted would answer with a turn_<n>, which no mutation
-// precondition accepts.
-func TestServeWiresTurnAnnouncementToTheProjector(t *testing.T) {
-	srv := server.New(server.Config{})
-	srv.SetProcessingTurn("turn_m7")
-	if got := srv.ActiveTurnID(); got != "turn_m7" {
-		t.Fatalf("ActiveTurnID = %q, want the announced turn_m7", got)
+// TestSetProcessingDoesNotMintATurnID pins that a generic processing flip
+// publishes no turn id. A minted turn_<n> here is one the daemon's own
+// mutation preconditions reject, which is how steer/send/stop died on goal
+// and notification turns; the turn's opening event names it instead.
+func TestSetProcessingDoesNotMintATurnID(t *testing.T) {
+	srv := newTestServer(t)
+	srv.SetProcessing(true)
+	if got := srv.AppActiveTurnIDForTest(); got != "" {
+		t.Fatalf("SetProcessing(true) published turn id %q, want none", got)
 	}
-	srv.ClearProcessing()
-	if got := srv.ActiveTurnID(); got != "" {
-		t.Fatalf("ActiveTurnID after ClearProcessing = %q, want empty", got)
+	srv.SetProcessingTurn("turn_m4")
+	if got := srv.AppActiveTurnIDForTest(); got != "turn_m4" {
+		t.Fatalf("published turn id = %q, want the announced turn_m4", got)
 	}
 }
 ```
 
-If `server.New`'s signature or an `ActiveTurnID()` accessor differs, match the
-existing helpers in `server/appwire_server_test.go` rather than inventing new
-ones; the assertion is what matters, not the constructor spelling.
+`appActiveTurnID` is unexported (`server/server.go:271`). Use whatever
+accessor `server/appwire_server_test.go` already uses to read it; if there is
+none, add `AppActiveTurnIDForTest()` in a `_test.go` file in package `server`,
+not in production code.
 
 - [ ] **Step 2: Run it and watch it fail**
 
-Run: `go test ./cmd/serf/ -run TestServeWiresTurnAnnouncementToTheProjector -v`
-Expected: FAIL — `srv.ClearProcessing undefined`.
+Run: `go test ./server/ -run TestSetProcessingDoesNotMintATurnID -v`
+Expected: FAIL — a `turn_<n>` is published.
 
-- [ ] **Step 3: Collapse the server's two processing entry points into one**
+- [ ] **Step 3: Drop the mint from the processing flip**
 
-In `server/server.go`, replace `SetProcessing` and `setProcessingLocked` with:
+In `server/server.go`, `setProcessingLocked`, delete the `if
+strings.TrimSpace(s.appActiveTurnID) == "" { ... ReserveTurnID() }` branch at
+`:713-716`, keeping the `s.appReservedTurnID = ""` line. Update
+`SetProcessing`'s doc comment: a processing flip publishes no turn id; the
+turn's opening event names it, and `SetProcessingTurn` publishes a durable
+identity the serve loop already holds.
 
-```go
-// ClearProcessing marks the session idle and releases an announced turn id
-// the projector never consumed. Turn identity comes from the session
-// (SetProcessingTurn); the server does not mint turn ids.
-func (s *Server) ClearProcessing() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.processing = false
-	if s.appProjector == nil || s.appReservedTurnID != "" {
-		return
-	}
-	reservedTurnID := s.appProjector.ReservedTurnID()
-	if reservedTurnID != "" && s.appActiveTurnID == reservedTurnID {
-		s.appProjector.ReleaseReservedTurnID(reservedTurnID)
-		s.appActiveTurnID = ""
-	}
-}
-```
+Drop the now-unused `strings` import only if nothing else in the file uses it.
 
-Leave `SetProcessingTurn` (`:691-699`) exactly as it is — it is now the only
-way a turn becomes active.
+- [ ] **Step 4: Run the tests**
 
-- [ ] **Step 4: Delete the projector's live-turn minter**
-
-In `internal/appprojector/appwire_projection.go`, delete `ReserveTurnID`
-(:1720-1727). `ReserveStableTurnID`, `ReservedTurnID` and
-`ReleaseReservedTurnID` all stay. Run `grep -rn "ReserveTurnID(" --include=
-"*.go" .` and remove the callers you find; there should be exactly one
-(`server/server.go`), plus any test that exercised it directly — delete those
-tests, they cover a path that no longer exists.
-
-- [ ] **Step 5: Rewire serve.go**
-
-Beside the other session callbacks (near `:686`, where
-`SetClientMutationStartWakeFunc` is wired), add:
-
-```go
-		// One announcement per turn, whatever started it. This is the only
-		// thing that makes a turn active on the wire.
-		s.SetTurnStartedFunc(func(turnID string) {
-			srv.SetProcessingTurn(turnID)
-			srv.SetState(string(agent.SessionProcessing))
-		})
-```
-
-In `processMessage` (`:990`):
-- Delete `srv.SetProcessing(true)` at `:1001` inside `nextTurnCtx`.
-- Delete the whole `if !holdServeStateForAwaitingWake(...) { ... }` block at
-  `:1013-1016`. The agent already refuses a wake while a question is pending
-  (`session_lifecycle.go:604`), and it now announces exactly the turns it
-  actually runs — so this branch was serve.go re-deriving the agent's own
-  rule and guessing.
-- In the `ProcessClientMutationStart` callback (`:1022-1027`), delete
-  `srv.SetProcessingTurn(turnID)` and `srv.SetState(...)`; keep
-  `srv.SetCancelFunc(cancelTurn)` and `setMutationRunner(cancelTurn, runnerDone)`.
-  The session announces the same id from `processOneInput`.
-- Change `srv.SetProcessing(false)` at `:1031` to `srv.ClearProcessing()`.
-
-In the `ServerLike` interface (`:97-98`), replace `SetProcessing(bool)` with
-`ClearProcessing()`.
-
-- [ ] **Step 6: Delete the duplicated ask gate**
-
-Delete `holdServeStateForAwaitingWake` (`:1173-1175`) and any test naming it.
-
-- [ ] **Step 7: Run the tests**
-
-Run: `go test ./cmd/serf/ ./server/ ./internal/appprojector/`
+Run: `go test ./server/ ./cmd/serf/ ./internal/appprojector/`
 Expected: PASS. A test asserting that a generic processing flip mints a
-`turn_<n>` is asserting the bug; delete it and note the deletion in the commit.
+`turn_<n>` is asserting the bug; delete it and note that in the commit.
+`cmd/serf/serve_state_test.go:139`'s `sessionControlIdentityServer.SetState`
+parks on `<-s.releaseProcessing`; nothing in this task moves that park point.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/serve.go server/server.go internal/appprojector/appwire_projection.go cmd/serf/serve_state_test.go server/appwire_server_test.go
-git commit -m "fix(daemon): publish the session's turn identity, stop minting a second one"
+git add server/server.go server/appwire_server_test.go
+git commit -m "fix(server): a processing flip no longer mints a turn id"
 ```
 
 ---
@@ -515,133 +639,39 @@ git commit -m "fix(daemon): publish the session's turn identity, stop minting a 
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `cmd/serf-hub/e2e_turn_control_test.go`:
+Append `TestE2E_TurnControlReachesAGoalContinuationTurn` to
+`cmd/serf-hub/e2e_turn_control_test.go`. It mirrors the existing
+`TestE2E_TurnControlReachesTheSession` exactly — same gating, same
+`startHubStack`, same `t.Cleanup` thread shutdown — and differs only in the
+middle:
 
-```go
-// TestE2E_TurnControlReachesAGoalContinuationTurn is the regression for the
-// bug this file's sibling test could not see: a turn the agent starts itself.
-// A goal continuation is the cheapest one to provoke, and it took the same
-// path as every job, watch and delegate-attention wake — the daemon published
-// a projector-minted turn_<n> while its mutation preconditions still held a
-// turn_m<n>, so steer and stop were rejected with "turn is not active" and
-// the composer showed nothing at all.
-func TestE2E_TurnControlReachesAGoalContinuationTurn(t *testing.T) {
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
+1. `thread/start` with `SERF-E2E-GOAL-OPENING`; capture `ref`.
+2. `provider.Next` for the opening round, `awaitActiveTurn(ctx, t, client, ref, "")`
+   to capture `firstTurn`, then answer with
+   `communicate` / `communicateArgs("opening turn done")` and
+   `awaitThread(... func(thread) bool { return thread.Serf.ActiveTurnID == "" })`
+   so the goal's idle kick is what starts the next turn.
+3. `clientRequest[appwire.GoalSetResponse](ctx, client, appwire.MethodGoalSet,
+   appwire.GoalSetParams{Ref: ref, Objective: "count to ten, one number per message"})`.
+4. `provider.Next` for the goal continuation's round; `goalTurn :=
+   awaitActiveTurn(ctx, t, client, ref, firstTurn)`.
+5. `turn/steer` with `ExpectedTurnID: goalTurn` — assert no error and
+   `Receipt.Disposition == appwire.MutationDispositionApplied`. Include
+   `goalTurn` in the failure message; it is the diagnostic.
+6. Answer the held round with `read_file` on `stack.readableFile`, take
+   `provider.Next`, and assert the next request `Contains` the steer text —
+   the model boundary, not the receipt.
+7. `turn/interrupt` with `ExpectedTurnID: goalTurn`; assert applied, then
+   `awaitThread` until `thread.Serf.ActiveTurnID != goalTurn`.
 
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
+- [ ] **Step 2: Run it against the unfixed daemon**
 
-	stack := startHubStack(t, provider)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-
-	client := stack.dialRPC(ctx, t)
-
-	const (
-		openingPrompt = "SERF-E2E-GOAL-OPENING"
-		steerText     = "SERF-E2E-GOAL-STEER"
-	)
-
-	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness:         "serf",
-		CWD:             stack.workDir,
-		Input:           []appwire.InputItem{{Type: "text", Text: openingPrompt}},
-		Model:           stack.model,
-		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
-	})
-	if err != nil {
-		t.Fatalf("thread/start: %v", err)
-	}
-	ref := started.Thread.Serf.Ref
-	t.Cleanup(func() {
-		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancelShutdown()
-		if _, err := clientRequest[appwire.EmptyResponse](shutdownCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
-			t.Errorf("thread/shutdown left the daemon running: %v", err)
-		}
-	})
-
-	// Settle the opening turn so the goal's idle kick is what starts the next
-	// one.
-	opening, err := provider.Next(ctx.Done())
-	if err != nil {
-		t.Fatalf("waiting for the opening model request: %v", err)
-	}
-	firstTurn := awaitActiveTurn(ctx, t, client, ref, "")
-	opening.RespondToolCall("communicate", communicateArgs("opening turn done"))
-	awaitThread(ctx, t, client, ref, "the opening turn to finish", func(thread appwire.Thread) bool {
-		return thread.Serf.ActiveTurnID == ""
-	})
-
-	if _, err := clientRequest[appwire.GoalSetResponse](ctx, client, appwire.MethodGoalSet, appwire.GoalSetParams{
-		Ref:       ref,
-		Objective: "count to ten, one number per message",
-	}); err != nil {
-		t.Fatalf("goal/set: %v", err)
-	}
-
-	// The goal continuation turn: nobody sent a turn/start for it.
-	goalRound, err := provider.Next(ctx.Done())
-	if err != nil {
-		t.Fatalf("waiting for the goal continuation's model request: %v", err)
-	}
-	goalTurn := awaitActiveTurn(ctx, t, client, ref, firstTurn)
-
-	steerReceipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		ExpectedTurnID:   goalTurn,
-		Input:            []appwire.InputItem{{Type: "text", Text: steerText}},
-	})
-	if err != nil {
-		t.Fatalf("turn/steer against the goal continuation turn %q: %v", goalTurn, err)
-	}
-	if steerReceipt.Receipt.Disposition != appwire.MutationDispositionApplied {
-		t.Fatalf("turn/steer disposition = %q, want %q", steerReceipt.Receipt.Disposition, appwire.MutationDispositionApplied)
-	}
-
-	goalRound.RespondToolCall("read_file", map[string]any{"file_path": stack.readableFile})
-	afterSteer, err := provider.Next(ctx.Done())
-	if err != nil {
-		t.Fatalf("waiting for the model request after the tool round: %v", err)
-	}
-	if !afterSteer.Contains(steerText) {
-		t.Fatalf("the steer never reached the goal continuation's loop; messages:\n%s",
-			strings.Join(afterSteer.Texts(), "\n"))
-	}
-
-	interruptReceipt, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		ExpectedTurnID:   goalTurn,
-	})
-	if err != nil {
-		t.Fatalf("turn/interrupt against the goal continuation turn %q: %v", goalTurn, err)
-	}
-	if interruptReceipt.Receipt.Disposition != appwire.MutationDispositionApplied {
-		t.Fatalf("turn/interrupt disposition = %q, want %q", interruptReceipt.Receipt.Disposition, appwire.MutationDispositionApplied)
-	}
-	awaitThread(ctx, t, client, ref, "the interrupted goal turn to stop", func(thread appwire.Thread) bool {
-		return thread.Serf.ActiveTurnID != goalTurn
-	})
-}
-```
-
-- [ ] **Step 2: Run it against the pre-fix daemon to confirm it catches the bug**
-
-If Tasks 1 and 2 are already committed, verify the test's teeth by stashing
-them into a temporary commit and checking out the parent — do **not** use
-`git stash`. Otherwise run it now:
+Check out the commit before Task 1 into a scratch worktree (never
+`git stash`), or simply run this step before implementing Tasks 1–2.
 
 Run: `go test ./cmd/serf-hub/ -run TestE2E_TurnControlReachesAGoalContinuationTurn -v`
-Expected before the fix: FAIL — `turn/steer against the goal continuation
-turn "turn_2": ... turn is not active`.
+Expected: FAIL — `turn/steer against the goal continuation turn "turn_2":
+... turn is not active`.
 
 - [ ] **Step 3: Run it against the fixed daemon**
 
@@ -661,61 +691,63 @@ git commit -m "test(e2e): pin steer and stop on an agent-started turn"
 
 **Files:** none — this task only runs gates and fixes what they catch.
 
-- [ ] **Step 1: Lint**
+- [ ] **Step 1: Lint** — `make lint`, clean.
+- [ ] **Step 2: Build** — `make build`, clean.
+- [ ] **Step 3: Root suite** — `go test ./...`, PASS.
+- [ ] **Step 4: Module suites** — `cd agent && go test ./...`, then `auth`,
+      `envvars`, `fuzz`, `identifier`, `invariant`, `llm`. PASS.
+- [ ] **Step 5: Frontend gate** — `make test-web`, PASS. Nothing here touches
+      the frontend; a failure means something was mis-scoped.
+- [ ] **Step 6: Verify against a real browser.** Run
+      `./scripts/e2e-webui-turn-controls.sh --hold 25 --rounds 60`, spawn the
+      session it prints, set a goal on it, then use Steer and Stop from the
+      UI. Confirm in the run directory's mutation journal
+      (`$run/home/.local/state/serf/projects/*/mutations/<SID>.json`) that both
+      mutations read `terminal`, not `rejected`. Stop the stack with `--stop`.
+- [ ] **Step 7: Commit any gate fixes.**
 
-Run: `make lint`
-Expected: clean.
+---
 
-- [ ] **Step 2: Build**
+## Review Findings (v1) and what v2 does
 
-Run: `make build`
-Expected: clean.
+Two independent adversarial reviews of v1. Every finding below was verified
+against the code before v2 was written.
 
-- [ ] **Step 3: Root suite**
-
-Run: `go test ./...`
-Expected: PASS.
-
-- [ ] **Step 4: Module suites**
-
-Run: `cd agent && go test ./...` then the same for `auth`, `envvars`, `fuzz`,
-`identifier`, `invariant`, `llm`.
-Expected: PASS.
-
-- [ ] **Step 5: Frontend gate**
-
-Run: `make test-web`
-Expected: PASS. Nothing in this change touches the frontend — it reads the
-same `serf.activeTurnId` field — so a failure here is a signal that something
-was mis-scoped.
-
-- [ ] **Step 6: Verify against a real browser**
-
-Run: `./scripts/e2e-webui-turn-controls.sh --hold 25 --rounds 60`, spawn the
-session it prints, set a goal on it, then use Steer and Stop from the UI.
-Confirm in the run directory's mutation journal
-(`$run/home/.local/state/serf/projects/*/mutations/<SID>.json`) that both
-mutations are `terminal`, not `rejected`. Stop the stack with `--stop`.
-
-- [ ] **Step 7: Commit any gate fixes**
-
-```bash
-git add -u
-git commit -m "fix: <what the gate caught>"
-```
+| # | Finding | v2 |
+| --- | --- | --- |
+| Both | v1's out-of-band announce raced the event stream, and `ReserveStableTurnID` blanks `p.activeTurnID` (`appwire_projection.go:1736`), so the previous turn would lose its `turn/completed` | **Mechanism replaced.** Naming rides the turn-opening event, in stream order. No side channel. |
+| Both | A crash mid-agent-turn left a record-less `ActiveTurnID` with no clear path, bricking every future `turn/start` | Task 1 Step 5 reconciles at load. A running turn is not durable state. |
+| A | An agent turn could adopt a concurrent `turn/start`'s reserved id; a later Stop would cancel the agent turn and mark the user's never-run message "interrupted" | `mintRunningTurnID` **mints, never adopts**, and returns `""` when the slot is owned. Pinned by `TestMintRunningTurnIDRefusesWhenATurnIsAlreadyNamed`. |
+| A | v1 ignored the interrupt fence, unlike every other durable entry point | Refuses under a fence. Pinned by `TestMintRunningTurnIDRefusesUnderAnInterruptFence`. |
+| Both | `ReserveTurnID` has two production callers, not one; deleting it breaks `reserveAppTurnIDForStart` and a shared test helper | Task 2 keeps it and says why. |
+| Both | Subagents share the parent's `StateDir` (`subagents.go:581`); v1 would write two snapshots per delegate wake, and its "no durable store" rationale was false | Gated on `authoritativeConsumer`. Pinned by `TestMintRunningTurnIDSkipsUnservedSessions`. |
+| Both | v1 announced before the early returns at `:1006-1012` and `:1031-1033`, naming turns that never run | Mint moved after the accept chain, with a release on the refusing path. |
+| Both | v1's Diagnosis cited `appwire_runtime.go:551,652` — the *descendant* paths, not the root thread | Corrected to `:1198,1245`, and `:212` is now named as the reason the wire follows the projector. |
+| Both | v1's Task 2 test did not compile: no `server.New`, no `server.Config`, no exported `ActiveTurnID()`, wrong package | Task 2's test lives in package `server` and says to reuse that file's existing helpers. |
+| A | v1 said the interface was `ServerLike`; it is `serveServer` (`serve.go:65`), and two test doubles override `SetProcessing` | Task 2 changes no signatures at all. |
+| A | v1 claimed the post-interrupt queue drain was broken; `popQueueHead` (`session_queue.go:581`) already names it | Diagnosis corrected. That path is out of scope because it works. |
+| A | v1 inlined the mint, defeating the single-mint-site kata (`session_client_mutation_turn_namespace_test.go:52-57`) | Uses `reserveClientMutationTurnID`. |
+| A | v1 swallowed every store error silently, unlike `popQueueHead` | Both functions emit `EventWarning`. |
+| A | v1 half-edited `nextTurnCtx`, leaving `SetState` without its `SetProcessing` | Task 2 leaves `serve.go` alone entirely. |
+| B | v1 deleted `holdServeStateForAwaitingWake` on a false premise | It stays. |
+| B | Descendant threads still mint `turn_<n>` and are untouched | True, and out of scope: a subagent session has no appwire server of its own, so no client names its turns. Recorded here so the next reader does not mistake it for an oversight. |
 
 ## Self-Review
 
-**Spec coverage.** Diagnosis names three broken turn kinds — notification
-wakes, goal continuations, and the post-interrupt queue-drain re-arm. Task 1
-covers all three at once, because all three reach `processOneInput` and none
-of them arrives with a reserved id. Task 2 removes the second minter so the
-divergence cannot come back by another route. Task 3 pins one of the three
-end-to-end; the other two share the same code path and the same unit test.
+**Spec coverage.** The Diagnosis table names two broken turn kinds —
+`EntryContinuation` and `EntryNotification` — and Task 1 names both. Task 2
+removes the second minter so the divergence cannot return by another route.
+Task 3 pins the continuation kind end-to-end; the notification kind shares
+the mint site and the unit tests, and `EntryDelegateAttention` is explicitly
+scoped out with a check to confirm it cannot reach the serve loop.
 
-**Placeholders.** None: every step names exact files, exact commands, exact
-expected output, and carries the real code.
+**Placeholders.** Task 3 Step 1 describes its test as a numbered diff against
+the sibling test in the same file rather than repeating 90 lines verbatim;
+every other step carries real code, exact paths, exact commands and exact
+expected output.
 
-**Type consistency.** `beginActiveTurn`, `releaseActiveTurn`,
-`announceTurnStarted`, `SetTurnStartedFunc`, `turnStartedFunc`,
-`ClearProcessing` are spelled identically everywhere they appear.
+**Type consistency.** `mintRunningTurnID`, `releaseRunningTurnID`,
+`runningTurnID`, `StableTurnID`, `markAuthoritativeConsumerForTest` are
+spelled identically everywhere they appear. `acceptContinuationInput` and
+`acceptNotificationInput` both gain exactly one trailing `stableTurnID string`
+parameter.
