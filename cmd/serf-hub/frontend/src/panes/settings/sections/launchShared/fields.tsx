@@ -4,11 +4,11 @@
 // fold 4 leaf wire fields into one control each. Collection kinds (pathList/
 // modelList/envMap/mcpServerList) live in collectionFields.tsx instead.
 //
-// modelPicker renders the rich searchable ModelCatalog widget (wave 8 restore
-// of the legacy settings-pickers.js Appendix A popup): the /api/models catalog
-// with display names, capability badges, cost, and a Recent section. Wave 7
-// shipped a plain free-text input as the interim; wave 8 swaps in the real
-// widget, value/onChange unchanged so the schema/collect path is untouched.
+// modelPicker renders the rich searchable ModelCatalog widget (restoring the
+// legacy settings-pickers.js Appendix A popup): the /api/models catalog with
+// display names, capability badges, cost, and a Recent section. Its
+// value/onChange contract matches the plain free-text input wave 7 shipped
+// with, so the schema/collect path is untouched.
 //
 // A browsable path kind (pathKind dir/file/outputFile) renders the PathField
 // picker, which lists a directory's real contents over serf/paths/complete.

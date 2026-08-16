@@ -8,7 +8,7 @@ import { ModelField } from "./ModelField";
 // ModelField now renders the rich ModelCatalog widget, enriching the injected
 // scoped model/list with the /api/models catalog. The wire loader is mocked so
 // these render tests stay hermetic; the default is an empty enrichment, so the
-// picker degrades to the label-only scoped list the interim tests expect.
+// picker degrades to the label-only scoped list these tests exercise.
 //
 // vi.spyOn, not vi.mock: LaunchConfigForm.test.tsx renders ScalarField/
 // ModelListField (fields.tsx/collectionFields.tsx) without ever mocking this
@@ -35,7 +35,7 @@ const MODELS: ModelDescriptor[] = [
   { provider: "openai", model: "gpt-5" },
 ];
 
-test("shows the interim default marker when no model is chosen", () => {
+test("shows the (default) marker when no model is chosen", () => {
   render(<ModelField value="" onChange={vi.fn()} loadModels={vi.fn().mockResolvedValue([])} />);
   expect(screen.getByText("(default)")).toBeTruthy();
 });
