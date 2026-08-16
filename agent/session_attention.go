@@ -389,6 +389,25 @@ func (s *Session) armDelegateAttention(attentionID string) error {
 	if s == nil || attentionID == "" {
 		return errors.New("delegate attention wake identity is incomplete")
 	}
+	err := s.armDelegateAttentionOnce(attentionID)
+	s.attentionMu.Lock()
+	if err != nil {
+		if s.delegateAttentionArmIDs == nil {
+			s.delegateAttentionArmIDs = make(map[string]struct{})
+		}
+		s.delegateAttentionArmIDs[attentionID] = struct{}{}
+		s.scheduleDelegateAttentionArmRetryLocked()
+	} else {
+		delete(s.delegateAttentionArmIDs, attentionID)
+		if len(s.delegateAttentionArmIDs) == 0 {
+			s.resetDelegateAttentionArmRetryLocked()
+		}
+	}
+	s.attentionMu.Unlock()
+	return err
+}
+
+func (s *Session) armDelegateAttentionOnce(attentionID string) error {
 	ids, err := s.pendingDelegateAttentionIDs()
 	if err != nil {
 		return err
@@ -413,6 +432,16 @@ func (s *Session) armDelegateAttention(attentionID string) error {
 	s.delegateController.noteDelegateAttention(s.owningDelegateID, attentionID)
 	s.notify()
 	return nil
+}
+
+func (s *Session) hasPendingDelegateAttentionArmRetry() bool {
+	if s == nil {
+		return false
+	}
+	s.attentionMu.Lock()
+	pending := len(s.delegateAttentionArmIDs) != 0
+	s.attentionMu.Unlock()
+	return pending
 }
 
 func (s *Session) pendingDelegateAttentionIDs() ([]string, error) {
@@ -577,6 +606,57 @@ func (s *Session) resetRootAttentionRetryLocked() {
 	s.rootAttentionRetry.delay = jobNotificationRetryInitialDelay
 }
 
+func (s *Session) scheduleDelegateAttentionArmRetryLocked() {
+	if s.delegateAttentionArmRetry.active || len(s.delegateAttentionArmIDs) == 0 {
+		return
+	}
+	delay := s.delegateAttentionArmRetry.delay
+	if delay <= 0 {
+		delay = jobNotificationRetryInitialDelay
+	}
+	s.delegateAttentionArmRetry.active = true
+	s.delegateAttentionArmRetry.generation++
+	generation := s.delegateAttentionArmRetry.generation
+	s.sclock().AfterFunc(delay, func() {
+		s.attentionMu.Lock()
+		if s.delegateAttentionArmRetry.generation != generation {
+			s.attentionMu.Unlock()
+			return
+		}
+		s.delegateAttentionArmRetry.active = false
+		ids := make([]string, 0, len(s.delegateAttentionArmIDs))
+		for id := range s.delegateAttentionArmIDs {
+			ids = append(ids, id)
+		}
+		s.attentionMu.Unlock()
+		sort.Strings(ids)
+
+		resolved := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if s.armDelegateAttentionOnce(id) == nil {
+				resolved = append(resolved, id)
+			}
+		}
+		s.attentionMu.Lock()
+		for _, id := range resolved {
+			delete(s.delegateAttentionArmIDs, id)
+		}
+		if len(s.delegateAttentionArmIDs) == 0 {
+			s.resetDelegateAttentionArmRetryLocked()
+		} else {
+			s.delegateAttentionArmRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
+			s.scheduleDelegateAttentionArmRetryLocked()
+		}
+		s.attentionMu.Unlock()
+	})
+}
+
+func (s *Session) resetDelegateAttentionArmRetryLocked() {
+	s.delegateAttentionArmRetry.generation++
+	s.delegateAttentionArmRetry.active = false
+	s.delegateAttentionArmRetry.delay = jobNotificationRetryInitialDelay
+}
+
 func (s *Session) scheduleStableDelegateAttentionRetry() {
 	if s == nil {
 		return
@@ -603,6 +683,13 @@ func (s *Session) scheduleStableDelegateAttentionRetry() {
 		s.stableAttentionRetry.active = false
 		s.attentionMu.Unlock()
 
+		if s.delegateController != nil {
+			s.delegateController.retryColdDelegateAttentionArms()
+		}
+		runnable := s.delegateController != nil && s.delegateController.hasRunnableDelegateAttention()
+		if runnable {
+			s.notify()
+		}
 		pending := s.delegateController != nil && s.delegateController.hasPendingDelegateAttention()
 		s.attentionMu.Lock()
 		if pending {
@@ -612,7 +699,7 @@ func (s *Session) scheduleStableDelegateAttentionRetry() {
 		}
 		s.attentionMu.Unlock()
 		if pending {
-			s.notify()
+			s.scheduleStableDelegateAttentionRetry()
 		}
 	})
 }

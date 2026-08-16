@@ -585,13 +585,15 @@ type Session struct {
 	// rootAttentionWakeIDs is a process-local wake cache keyed by unresolved
 	// attention IDs from the root transcript. The transcript fold remains the
 	// sole durable authority; restart rebuilds this map from that fold.
-	rootAttentionWakeIDs    map[string]struct{}
-	rootAttentionWake       bool
-	rootAttentionRetry      notificationRetry
-	stableAttentionRetry    notificationRetry
-	delegateDeliveryWake    bool
-	delegateDeliveryPumping bool
-	delegateDeliveryRetry   notificationRetry
+	rootAttentionWakeIDs      map[string]struct{}
+	rootAttentionWake         bool
+	rootAttentionRetry        notificationRetry
+	delegateAttentionArmIDs   map[string]struct{}
+	delegateAttentionArmRetry notificationRetry
+	stableAttentionRetry      notificationRetry
+	delegateDeliveryWake      bool
+	delegateDeliveryPumping   bool
+	delegateDeliveryRetry     notificationRetry
 	// transcriptReady records that attachTranscript has run, i.e. that the
 	// session has finished deciding whether it has a transcript at all. Until
 	// then a turn has nowhere to go and is held in pendingTranscriptTurns; a

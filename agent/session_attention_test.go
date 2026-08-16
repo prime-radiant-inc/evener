@@ -1874,6 +1874,132 @@ func TestDelegateAttention_LiveReplayHonorsDurableCallerCommit(t *testing.T) {
 	}
 }
 
+func TestDelegateAttention_PostAckArmReadFailureRetriesExactID(t *testing.T) {
+	stateDir := t.TempDir()
+	clock := agenttest.NewFakeClock()
+	root := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, clock: clock}),
+		withSteps(func(llm.Request) llm.Response {
+			return communicateResponse(true, "retried exact attention")
+		}),
+	)
+	c := root.delegateController
+	c.mu.Lock()
+	created := delegateControllerCreatedEvent("dlg_target", "")
+	created.Created.Descriptor.OwnerSessionID = root.ID()
+	_, err := c.appendLocked(created)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("seed target delegate: %v", err)
+	}
+	seedDelegateControllerDelivery(t, c, "dlg_target")
+	plans := c.ReplayDeliveries()
+	if len(plans) != 1 {
+		t.Fatalf("delivery plans = %#v, want one", plans)
+	}
+
+	readCalls := 0
+	injected := errors.New("injected post-ack attention fold failure")
+	root.cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+		readCalls++
+		if readCalls == 3 {
+			return delegateAttentionFold{}, injected
+		}
+		return readDelegateAttentionFold(path, sessionID)
+	}
+	wakes := make(chan struct{}, 2)
+	root.SetNotifyFunc(func() { wakes <- struct{}{} })
+	retryTimersBefore := clock.BlockedCount()
+	err = root.executeDelegateMutationPlans(delegateMutationPlans{deliveries: plans})
+	if !errors.Is(err, injected) {
+		t.Fatalf("delivery error = %v, want post-ack fold failure", err)
+	}
+	c.mu.Lock()
+	remaining := len(c.durable["dlg_target"].PendingDeliveries)
+	receipts := len(c.deliveries)
+	c.mu.Unlock()
+	if remaining != 0 || receipts != 0 {
+		t.Fatalf("source after injected arm failure = pending:%d receipts:%d, want acknowledged and released", remaining, receipts)
+	}
+	select {
+	case <-wakes:
+		t.Fatal("post-ack fold failure emitted an unverified wake")
+	default:
+	}
+	if got := clock.BlockedCount(); got != retryTimersBefore+1 {
+		t.Fatalf("post-ack fold failure retry timers = %d, want baseline %d plus one", got, retryTimersBefore)
+	}
+	root.cfg.testOnly.delegateAttentionReadFold = nil
+	clock.Advance(jobNotificationRetryInitialDelay)
+	<-wakes
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("consume retried exact attention: %v", err)
+	}
+	attentionID := delegateAttentionID(delegateDeliveryID("dlg_target", 1))
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read retried attention fold: %v", err)
+	}
+	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
+		t.Fatalf("retried attention resolution = %q, want consumed", got)
+	}
+}
+
+func TestDelegateAttention_ColdPostAckReadFailureRetriesExactID(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	const attentionID = "watch:cold-post-ack:1"
+	path := transcriptPath(c.stateDir, "child-dlg_target")
+	writeDelegateAttentionTranscript(t, path, "child-dlg_target", attentionID)
+
+	clock := agenttest.NewFakeClock()
+	root := &Session{
+		id:                     "root-session",
+		stateDir:               c.stateDir,
+		state:                  SessionIdle,
+		clock:                  clock,
+		delegateController:     c,
+		delegateRootSessionID:  "root-session",
+		ownsDelegateController: true,
+	}
+	c.rootRuntime = root
+	wakes := make(chan struct{}, 1)
+	root.SetNotifyFunc(func() { wakes <- struct{}{} })
+	retryTimersBefore := clock.BlockedCount()
+
+	backup := path + ".readable"
+	if err := os.Rename(path, backup); err != nil {
+		t.Fatalf("hide cold attention transcript: %v", err)
+	}
+	if err := os.Mkdir(path, 0o755); err != nil {
+		_ = os.Rename(backup, path)
+		t.Fatalf("install cold attention read fault: %v", err)
+	}
+	err := c.armColdDelegateAttention("dlg_target", attentionID)
+	if err == nil {
+		t.Fatal("cold post-ack attention fold unexpectedly succeeded")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove cold attention read fault: %v", err)
+	}
+	if err := os.Rename(backup, path); err != nil {
+		t.Fatalf("restore cold attention transcript: %v", err)
+	}
+	if got := clock.BlockedCount(); got != retryTimersBefore+1 {
+		t.Fatalf("cold post-ack fold failure retry timers = %d, want baseline %d plus one", got, retryTimersBefore)
+	}
+	if !root.sessionWorkPending() {
+		t.Fatal("cold post-ack fold failure disappeared from root work-pending")
+	}
+	clock.Advance(jobNotificationRetryInitialDelay)
+	<-wakes
+	delegateID, gotAttentionID, pending := c.nextIdleDelegateAttention()
+	if !pending || delegateID != "dlg_target" || gotAttentionID != attentionID {
+		t.Fatalf("retried cold attention = delegate:%q attention:%q pending:%t", delegateID, gotAttentionID, pending)
+	}
+}
+
 func TestDelegateAttention_SettledResidentChildStartsExactAttentionGeneration(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	attentionEntered := make(chan struct{})

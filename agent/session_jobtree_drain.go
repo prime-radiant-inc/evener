@@ -151,6 +151,9 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 	if s.hasPendingRootDelegateAttention() {
 		return true, nil
 	}
+	if s.hasPendingDelegateAttentionArmRetry() {
+		return true, nil
+	}
 	if s.hasPendingStableDelegateAttention() {
 		return true, nil
 	}
@@ -233,6 +236,9 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 		return true, nil
 	}
 	if s.hasPendingRootDelegateAttention() {
+		return true, nil
+	}
+	if s.hasPendingDelegateAttentionArmRetry() {
 		return true, nil
 	}
 	if s.hasPendingStableDelegateAttention() {

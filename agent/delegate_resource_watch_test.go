@@ -458,6 +458,7 @@ func TestStableDelegateWatch_CoalescingRetainsInflightReceiverReceipt(t *testing
 	}()
 
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "new frame"})
+	newer := fixture.requireOnePending(t).state
 	fixture.controller.mu.Lock()
 	liveReceipts := len(fixture.controller.watchDeliveries)
 	fixture.controller.mu.Unlock()
@@ -482,6 +483,24 @@ func TestStableDelegateWatch_CoalescingRetainsInflightReceiverReceipt(t *testing
 	case <-wakes:
 	default:
 		t.Fatal("durable coalesced receiver attention was stranded after receipt release")
+	}
+	eventsLog := loadJobStoreEvents(t, fixture.sourceJM)
+	delivered := 0
+	for _, event := range eventsLog {
+		if event.Kind == jobstore.EventWatchSendDelivered && event.WatchSend != nil && event.WatchSend.DeliveryID == old.DeliveryID && event.WatchSend.UpdateSeq == old.UpdateSeq {
+			delivered++
+		}
+	}
+	if delivered != 1 {
+		t.Fatalf("old source acknowledgements before receiver wake = %d, want exactly 1", delivered)
+	}
+	pending, err := fixture.sourceJM.store.LoadWatchSends()
+	if err != nil {
+		t.Fatalf("load watch sends after old acknowledgement: %v", err)
+	}
+	current := pending.Pending[newer.Key]
+	if current == nil || current.DeliveryID != newer.DeliveryID || current.UpdateSeq != newer.UpdateSeq {
+		t.Fatalf("newer coalesced cursor after old acknowledgement = %#v, want delivery %q seq %d", current, newer.DeliveryID, newer.UpdateSeq)
 	}
 	fixture.root.attentionMu.Lock()
 	_, armed := fixture.root.rootAttentionWakeIDs[stableWatchAttentionID(old)]

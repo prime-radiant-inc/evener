@@ -98,6 +98,27 @@ func (c *delegateTreeController) forgetDelegateAttentionLocked(delegateID, atten
 	if len(ids) == 0 {
 		delete(c.attentionWakeIDs, delegateID)
 	}
+	c.forgetColdDelegateAttentionArmLocked(delegateID, attentionID)
+}
+
+func (c *delegateTreeController) rememberColdDelegateAttentionArmLocked(delegateID, attentionID string) {
+	if delegateID == "" || attentionID == "" {
+		return
+	}
+	ids := c.coldAttentionArmIDs[delegateID]
+	if ids == nil {
+		ids = make(map[string]struct{})
+		c.coldAttentionArmIDs[delegateID] = ids
+	}
+	ids[attentionID] = struct{}{}
+}
+
+func (c *delegateTreeController) forgetColdDelegateAttentionArmLocked(delegateID, attentionID string) {
+	ids := c.coldAttentionArmIDs[delegateID]
+	delete(ids, attentionID)
+	if len(ids) == 0 {
+		delete(c.coldAttentionArmIDs, delegateID)
+	}
 }
 
 func (c *delegateTreeController) hasPendingDelegateAttention() bool {
@@ -109,6 +130,27 @@ func (c *delegateTreeController) hasPendingDelegateAttention() bool {
 	for delegateID, ids := range c.attentionWakeIDs {
 		aggregate := c.durable[delegateID]
 		if len(ids) != 0 && aggregate != nil && aggregate.Resumable && aggregate.PendingStopSeq == 0 && aggregate.Phase != delegatestore.PhaseClosed {
+			return true
+		}
+	}
+	for delegateID, ids := range c.coldAttentionArmIDs {
+		aggregate := c.durable[delegateID]
+		if len(ids) != 0 && aggregate != nil && aggregate.Resumable && aggregate.Phase != delegatestore.PhaseClosed {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *delegateTreeController) hasRunnableDelegateAttention() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for delegateID, ids := range c.attentionWakeIDs {
+		aggregate := c.durable[delegateID]
+		if len(ids) != 0 && aggregate != nil && aggregate.Phase == delegatestore.PhaseIdle && aggregate.Resumable && aggregate.PendingStopSeq == 0 {
 			return true
 		}
 	}
@@ -157,8 +199,26 @@ func (c *delegateTreeController) nextIdleDelegateAttention() (string, string, bo
 // receiver transcript. Callers invoke it after the matching source
 // acknowledgement is durable.
 func (c *delegateTreeController) armColdDelegateAttention(delegateID, attentionID string) error {
+	armed, err := c.armColdDelegateAttentionOnce(delegateID, attentionID)
+	c.mu.Lock()
+	root := c.rootRuntime
+	if err != nil {
+		c.rememberColdDelegateAttentionArmLocked(delegateID, attentionID)
+	} else {
+		c.forgetColdDelegateAttentionArmLocked(delegateID, attentionID)
+	}
+	c.mu.Unlock()
+	if err != nil && root != nil {
+		root.scheduleStableDelegateAttentionRetry()
+	} else if armed && root != nil {
+		root.notify()
+	}
+	return err
+}
+
+func (c *delegateTreeController) armColdDelegateAttentionOnce(delegateID, attentionID string) (bool, error) {
 	if c == nil || delegateID == "" || attentionID == "" {
-		return errors.New("cold delegate attention identity is incomplete")
+		return false, errors.New("cold delegate attention identity is incomplete")
 	}
 	c.mu.Lock()
 	aggregate := c.durable[delegateID]
@@ -167,18 +227,17 @@ func (c *delegateTreeController) armColdDelegateAttention(delegateID, attentionI
 	if aggregate != nil {
 		transcriptRef = aggregate.Descriptor.TranscriptRef
 	}
-	root := c.rootRuntime
 	c.mu.Unlock()
 	if transcriptRef == "" {
-		return errDelegateNotControllable
+		return false, errDelegateNotControllable
 	}
 	path, sessionID, err := delegateTranscriptPathFromRef(stateDir, transcriptRef)
 	if err != nil {
-		return err
+		return false, err
 	}
 	ids, err := readPendingDelegateAttention(path, sessionID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	found := false
 	for _, id := range ids {
@@ -188,12 +247,45 @@ func (c *delegateTreeController) armColdDelegateAttention(delegateID, attentionI
 		}
 	}
 	if !found {
-		return nil
+		return false, nil
 	}
-	if c.noteDelegateAttention(delegateID, attentionID) && root != nil {
-		root.notify()
+	return c.noteDelegateAttention(delegateID, attentionID), nil
+}
+
+func (c *delegateTreeController) retryColdDelegateAttentionArms() {
+	if c == nil {
+		return
 	}
-	return nil
+	type retryRef struct {
+		delegateID  string
+		attentionID string
+	}
+	c.mu.Lock()
+	refs := make([]retryRef, 0)
+	for delegateID, ids := range c.coldAttentionArmIDs {
+		for attentionID := range ids {
+			refs = append(refs, retryRef{delegateID: delegateID, attentionID: attentionID})
+		}
+	}
+	c.mu.Unlock()
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].delegateID != refs[j].delegateID {
+			return refs[i].delegateID < refs[j].delegateID
+		}
+		return refs[i].attentionID < refs[j].attentionID
+	})
+	resolved := make([]retryRef, 0, len(refs))
+	for _, ref := range refs {
+		_, err := c.armColdDelegateAttentionOnce(ref.delegateID, ref.attentionID)
+		if err == nil {
+			resolved = append(resolved, ref)
+		}
+	}
+	c.mu.Lock()
+	for _, ref := range resolved {
+		c.forgetColdDelegateAttentionArmLocked(ref.delegateID, ref.attentionID)
+	}
+	c.mu.Unlock()
 }
 
 func (c *delegateTreeController) idleDelegateRestoreCommit(delegateID string) (delegateStartCommit, string, error) {

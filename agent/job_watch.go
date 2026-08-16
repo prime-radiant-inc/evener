@@ -440,11 +440,12 @@ func (jm *jobManager) watchConfigForKeyLocked(key jobstore.WatchSendKey) *watchC
 }
 
 // settleWatchSendDelivered durably records delivery for a watch-send state and
-// removes its pending entry. The caller is responsible for the currency guard
-// (isCurrentPendingWatchSend) and for any error-notification behavior. This is
-// the model-facing completion for both watch-send rails (delegate sidecar sends
-// and caller frames), so it is where the send half of the delivery budget is
-// counted; observation/coalescing does not count (spec §4 F1).
+// removes its exact pending entry when it is still the current cursor. A newer
+// coalesced cursor is preserved while this delivered source is acknowledged.
+// The caller is responsible for any error-notification behavior. This is the
+// model-facing completion for both watch-send rails (delegate sidecar sends and
+// caller frames), so it is where the send half of the delivery budget is counted;
+// observation/coalescing does not count (spec §4 F1).
 func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.WatchSendState) error {
 	delivered := state
 	if err := jm.appendWatchSendEvents([]jobstore.Event{{
@@ -3313,9 +3314,12 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 	attentionID := stableWatchAttentionID(state)
 	_, appendErr := receiver.appendDelegateNotificationDurably(attentionID, stableWatchNotificationContent(state))
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
-		jm.releaseStableWatchReceipt(state.DeliveryID)
 		if appendErr != nil {
+			jm.releaseStableWatchReceipt(state.DeliveryID)
 			return false, appendErr
+		}
+		if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
+			return false, err
 		}
 		return false, armStableWatchAttention(controller, receiver, state.ReceiverDelegateID, attentionID)
 	}
