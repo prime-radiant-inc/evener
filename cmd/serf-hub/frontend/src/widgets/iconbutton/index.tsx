@@ -34,6 +34,7 @@ const BASE_CLASS = {
 
 const VARIANT_CLASS: Record<ButtonVariant, string> = {
   primary: requireClass(buttonStyles.primary, "button.module.css", "primary"),
+  secondary: requireClass(buttonStyles.secondary, "button.module.css", "secondary"),
   quiet: requireClass(buttonStyles.quiet, "button.module.css", "quiet"),
   danger: requireClass(buttonStyles.danger, "button.module.css", "danger"),
   dangerQuiet: requireClass(buttonStyles.dangerQuiet, "button.module.css", "dangerQuiet"),

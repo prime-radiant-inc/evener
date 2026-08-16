@@ -2,6 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test } from "vitest";
 import { resetTreeStoreForTests, type TreeNode, type TreeResponse, treeStore } from "../../stores/tree";
+import buttonStyles from "../../widgets/button/button.module.css";
 import Welcome from "./Welcome";
 
 afterEach(() => {
@@ -50,6 +51,18 @@ test('shows "No session open"', () => {
 test('offers a "New session" action', () => {
   render(<Welcome params={{}} paneId="welcome" focused={true} />);
   expect(screen.getByRole("button", { name: "New session" })).toBeTruthy();
+});
+
+// The pane's standing CTA must read as a button, not bare text: it carries
+// Button's bordered "secondary" variant (quiet renders chromeless). "Jump
+// back in" owns primary when a resume candidate exists, so New session takes
+// the design language's common-control look in both states.
+test('"New session" is styled as a button (secondary variant, not quiet)', () => {
+  render(<Welcome params={{}} paneId="welcome" focused={true} />);
+  const button = screen.getByRole("button", { name: "New session" });
+  expect(buttonStyles.secondary, "button.module.css must define a .secondary class").toBeTruthy();
+  expect(button.className).toContain(buttonStyles.secondary);
+  expect(button.className).not.toContain(buttonStyles.quiet);
 });
 
 test("orients a new person to what a session can do", () => {

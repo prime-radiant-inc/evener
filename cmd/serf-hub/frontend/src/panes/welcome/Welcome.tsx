@@ -81,7 +81,7 @@ export default function Welcome({ params }: PaneProps<WelcomePaneParams>) {
                 {candidate.age !== undefined && candidate.age !== "" ? ` · ${candidate.age}` : ""}
               </Button>
             )}
-            <Button variant="quiet" onClick={goToNewSession}>
+            <Button variant="secondary" onClick={goToNewSession}>
               New session
             </Button>
             <p className={styles.orientation}>
