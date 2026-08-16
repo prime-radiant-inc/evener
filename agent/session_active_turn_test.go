@@ -82,6 +82,60 @@ func TestMintRunningTurnIDNamesAnAgentStartedTurn(t *testing.T) {
 	}
 }
 
+// TestGoalContinuationTurnReleasesItsTurnID is the leak guard for the goal
+// path, the sibling of TestNotificationTurnReleasesItsTurnID. The minted id
+// gates every later turn: AcceptClientMutationStart refuses while ActiveTurnID
+// is set and mintRunningTurnID refuses to name the next agent turn, so an id
+// held past its turn wedges the session for the life of the process.
+func TestGoalContinuationTurnReleasesItsTurnID(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	serveSession(t, s)
+
+	if _, err := s.ProcessInputKind(context.Background(), "keep going", nil, EntryContinuation); err != nil {
+		t.Fatalf("ProcessInputKind(EntryContinuation): %v", err)
+	}
+
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if got := s.clientMutations.snapshot().ActiveTurnID; got != "" {
+		t.Fatalf("ActiveTurnID = %q after the goal turn ended, want it released", got)
+	}
+}
+
+// TestReleaseRunningTurnIDLeavesAnotherOwnersTurnAlone pins the identity guard,
+// which is load-bearing on a real interrupt path rather than defensive: an
+// interrupted agent turn has its slot cleared by finalizeClientMutationInterrupt
+// while the turn is still unwinding, and a turn/start accepted in that window
+// writes its own id. An unconditional release would then wipe that client
+// mutation's compare-and-commit target, and every control aimed at the user's
+// turn would die with Conflict("turn is not active") -- the exact bug class this
+// work exists to close.
+func TestReleaseRunningTurnIDLeavesAnotherOwnersTurnAlone(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	serveSession(t, s)
+
+	mine := s.mintRunningTurnID()
+	if mine == "" {
+		t.Fatal("mintRunningTurnID returned empty; the test needs a minted id to release")
+	}
+	// The interrupt clears the slot mid-unwind, and a client turn/start claims it.
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.NextTurnSequence++
+		snapshot.ActiveTurnID = appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
+		return nil
+	}); err != nil {
+		t.Fatalf("hand the slot to a client mutation: %v", err)
+	}
+	theirs := s.clientMutations.snapshot().ActiveTurnID
+
+	s.releaseRunningTurnID(mine)
+
+	if got := s.clientMutations.snapshot().ActiveTurnID; got != theirs {
+		t.Fatalf("releasing %q left ActiveTurnID = %q, want the client mutation's %q untouched", mine, got, theirs)
+	}
+}
+
 // TestMintRunningTurnIDRefusesWhenATurnIsAlreadyNamed pins the race an
 // adversarial review of this change's first draft found: a client turn/start
 // accepted between the serve loop dequeuing an agent wake and this mint would

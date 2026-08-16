@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -200,6 +201,43 @@ func TestRefusedNotificationWakeAnnouncesNoBoundary(t *testing.T) {
 	}
 	if got := s.clientMutations.snapshot().ActiveTurnID; got != "" {
 		t.Fatalf("ActiveTurnID = %q after a refused wake, want empty", got)
+	}
+}
+
+// TestRefusedDurableAppendAnnouncesNoBoundary pins the ordering
+// acceptNotificationInput's "persist before announcing" comment argues for.
+// appendSteeringTurnDurably is the turn's last refusal, and moving the mint and
+// the boundary above it costs twice: the refusal path returns no id, so the
+// deferred release in processOneInput never sees the one that was minted and it
+// leaks, and the projection is left holding an open active turn whose close
+// finishNotificationNoop's sessionEndEmitted then suppresses.
+func TestRefusedDurableAppendAnnouncesNoBoundary(t *testing.T) {
+	dir := t.TempDir()
+	s := newTestSessionForEnvctx(t, withDir(dir))
+	rec := serveAndRecord(t, s)
+
+	jm, err := newJobManager(dir, s.ID(), s.enqueueJobNotification)
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	s.jobManager = jm
+	appendPendingJobNotificationRecord(t, jm, s.ID())
+	s.enqueueJobNotification(jobNotification{JobID: "job_X", JobType: "shell", Status: "completed", OutputBytes: 42})
+
+	ctx := context.WithValue(context.Background(), sessionLifecycleFaultsKey{},
+		map[string]error{"append_notification": errors.New("append failed")})
+	if _, err := s.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	if _, starts := rec.snapshot(); len(starts) != 0 {
+		t.Fatalf("a wake refused at its durable append announced %d boundaries, want 0", len(starts))
+	}
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if got := s.clientMutations.snapshot().ActiveTurnID; got != "" {
+		t.Fatalf("ActiveTurnID = %q after a refused wake; the id was minted above the refusal and leaked", got)
 	}
 }
 
