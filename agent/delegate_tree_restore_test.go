@@ -60,7 +60,7 @@ func TestDelegateControllerCloseExecutesColdAttentionCleanup(t *testing.T) {
 func TestDelegateColdAttentionResolutionIsDurableAndIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "attention.transcript.jsonl")
 	writeDelegateAttentionTranscript(t, path, "child-attention", "attention-idempotent")
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if err := appendColdAttentionResolution(path, "child-attention", []string{"attention-idempotent"}, delegateAttentionDiscarded); err != nil {
 			t.Fatalf("append resolution %d: %v", i, err)
 		}
