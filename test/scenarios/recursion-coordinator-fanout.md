@@ -9,9 +9,11 @@ design spec §3/§9/§10). A root with a raised `MaxSubagentDepth` (=2, so
 the root's own allowance is 2 — "Delegation allowance" "A root
 session's allowance equals `MaxSubagentDepth`") spawns a COORDINATOR
 delegate with `delegation_allowance=1`; the coordinator fans out 2-3
-WORKER delegates (`max_wait_ms` unset = fire-and-return, "`delegate`"
-"means return the `job_id` immediately without waiting") and ends
-its turn. This card asserts, falsifiably: (a) the grant rule — a grant
+WORKER delegates (`delegate` always returns immediately after durable
+`delegate_id` admission and rejects `max_wait_ms` outright —
+"`delegate`" "Creation returns after the descriptor and initial input
+are durable. It does not wait for a model result and rejects
+`max_wait_ms`.") and ends its turn. This card asserts, falsifiably: (a) the grant rule — a grant
 `>=` the granter's own allowance is rejected verbatim ("Delegation
 allowance" "**The grant rule.**"), a
 grant of 1 succeeds; (b) the allowance gate — the coordinator (allowance
@@ -87,21 +89,24 @@ default).**"); this card only runs with the raised config below.
    >    `sh -c 'echo WORKER_B; sleep 8'`, worker-C runs
    >    `sh -c 'echo WORKER_C; sleep 8'`. After spawning all three,
    >    call communicate exactly 'COORDINATOR_SPAWNED <each worker
-   >    job_id>' and END YOUR TURN — do NOT wait for the workers."
-   >    Report the coordinator's job_id (call it COORD), then END
+   >    delegate_id>' and END YOUR TURN — do NOT wait for the workers."
+   >    Report the coordinator's delegate_id (call it COORD), then END
    >    your turn. Do NOT call job_list yet.
 3. Turn 2 — visibility while the tree is live (new user prompt, sent
    while the workers' 8s sleeps are still running):
 
    > Call job_list with `include_descendants` true. Report EVERY row's
-   > job_id, type, status, owner_session_id, depth, and parent_job_id.
+   > id, type, status, owner_session_id, depth, and parent_delegate_id.
    > Then end your turn.
 4. Turn 3 — wait for the COORDINATOR's own terminal, then inspect what
    the ROOT was actually told (new user prompt):
 
-   > Report verbatim the text of EVERY job-notification block that has
-   > rendered on YOUR rail so far this session (the
-   > `<job-notification ...>` frames you were woken with). Then call
+   > Report verbatim the text of EVERY job-notification and
+   > delegate-notification block that has rendered on YOUR rail so far
+   > this session (the `<job-notification ...>` and
+   > `<delegate-notification delegate_id="...">` frames you were woken
+   > with — a direct delegate's terminal renders as
+   > `<delegate-notification>`, never `<job-notification>`). Then call
    > job_status for COORD and report the full JSON, including its
    > transcript_ref. Then end your turn.
 5. Turn 4 — cascade stop (new user prompt; run a SECOND fan-out first
@@ -113,23 +118,28 @@ default).**"); this card only runs with the raised config below.
    >    1 and this exact task: "You are a COORDINATOR-2. Fan out TWO
    >    worker delegates, each max_wait_ms UNSET, delegation_allowance
    >    0, one task each: `sh -c 'echo LONG_A; sleep 300'` and
-   >    `sh -c 'echo LONG_B; sleep 300'`. Report each worker job_id via
-   >    communicate 'COORD2_WORKERS <ids>' and END YOUR TURN." Capture
-   >    its job_id (COORD2).
+   >    `sh -c 'echo LONG_B; sleep 300'`. Report each worker delegate_id
+   >    via communicate 'COORD2_WORKERS <ids>' and END YOUR TURN."
+   >    Capture its delegate_id (COORD2).
    > 2. Run the foreground shell command `sleep 12` so COORDINATOR-2
    >    has spawned its workers.
    > 3. Call job_list `include_descendants` true; report every row's
-   >    job_id, type, status, owner_session_id, depth.
+   >    id, type, status, owner_session_id, depth.
    > 4. Call job_stop with COORD2 and max_wait_ms 8000. Report the full
    >    result JSON.
    > 5. Call job_list `include_descendants` true again; report the same
    >    fields.
    > 6. End your turn.
 6. Read the durable logs and the transcripts:
-   - root: `find $HOME/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`.
+   - root: `find $HOME/.local/state/serf/projects -path "*sessions/$SID/delegates.jsonl"`
+     for delegate lifecycle — COORD/COORD2 and every worker live in
+     this single root-owned journal, never a per-descendant copy
+     (`agent/delegate_runtime.go#bootstrapDelegateResources`: a child
+     session inherits its root's delegate controller instead of
+     opening its own store). `jobs.jsonl` under `$SID` or a descendant
+     session dir is shell-job evidence only.
    - the coordinator's transcript via its `transcript_ref` (from the
-     turn-1 delegate result / the turn-3 `job_status` result) and the
-     descendant `jobs.jsonl` under each child session dir.
+     turn-1 delegate result / the turn-3 `job_status` result).
 
 ## Expected
 
@@ -164,7 +174,11 @@ default).**"); this card only runs with the raised config below.
   with `owner_session_id` = `$SID`, and the three worker delegates at
   `depth` 1 (their owner is the coordinator's child session — one live
   hop down) with `owner_session_id` = the coordinator's session id
-  (NOT `$SID`) and `parent_job_id` = COORD. Each worker appears EXACTLY
+  (NOT `$SID`) and `parent_delegate_id` = COORD — a delegate row's
+  parent lineage is `parent_delegate_id`, never `parent_job_id`
+  (`agent/session_tools_jobs.go#jobListEntry`; `parent_job_id` is
+  shell-to-shell lineage only — "Vocabulary" "`parent_job_id` never
+  encodes delegate lineage."). Each worker appears EXACTLY
   ONCE ("Nested jobs" "Dedupe rule: the owner session's durable record
   is authoritative for a forwarded job"). Falsification: a worker is
   missing entirely (the live walk didn't recurse into the live child),
@@ -184,25 +198,30 @@ default).**"); this card only runs with the raised config below.
   worker terminals appear as notification frames on the ROOT's rail
   (the next assertion).
 - **OWNER-SCOPED — the ROOT is told only about the COORDINATOR, never
-  about a worker (step 4, the key new assertion).** The set of
-  `<job-notification>` frames rendered on the ROOT's rail contains the
-  COORDINATOR's terminal (COORD finishing — that is the root's OWN
+  about a worker (step 4, the key new assertion).** COORD is a direct
+  delegate, so its terminal renders as `<delegate-notification
+  delegate_id="dlg_...">`, never `<job-notification>` — a
+  direct-delegate terminal ("Notifications" "It never carries `job_id`
+  or `job_type="delegate"`."). The set of
+  `<delegate-notification>` frames rendered on the ROOT's rail contains
+  the COORDINATOR's terminal (COORD finishing — that is the root's OWN
   direct delegate ending: "Nested jobs" "The parent is told only about
   its OWN jobs, including its direct delegates' terminals") and contains NONE of
-  the worker job_ids. Concretely: for every worker job_id the
+  the worker delegate_ids. Concretely: for every worker delegate_id the
   coordinator reported in `COORDINATOR_SPAWNED`, that id does NOT appear
   in any notification frame on the root's rail. Falsification (this is
-  the regression this card exists to catch): a worker's job_id appears
-  as the SUBJECT of a `<job-notification>` frame on the root's rail (the
-  frame's `job_id=` attribute), or a worker's completion text appears
-  INSIDE such a frame — the root was interrupted about a job a DESCENDANT
-  created, which the owner-scoped rule ("Nested jobs" owner-scoped
+  the regression this card exists to catch): a worker's delegate_id
+  appears as the SUBJECT of a `<delegate-notification>` frame on the
+  root's rail (the frame's `delegate_id=` attribute), or a worker's
+  completion text appears INSIDE such a frame — the root was
+  interrupted about a delegate a DESCENDANT created, which the
+  owner-scoped rule ("Nested jobs" owner-scoped
   bullet; "Rollout (live vs. dark)" quotes Jesse's ruling, "an agent is
   never interrupted about a *subagent's* children")
   forbids. Match on the frame SUBJECT, not a bare substring search: a
-  worker job_id and its `WORKER_x` payload legitimately appear in the
-  COORDINATOR's transcript and in the root's forwarded durable records
-  (`jobs.jsonl`) — that is visibility/drive substrate, not a root-rail
+  worker delegate_id and its `WORKER_x` payload legitimately appear in
+  the COORDINATOR's transcript and in the root's `delegates.jsonl` —
+  that is visibility/drive substrate, not a root-rail
   notification. (The root may still SEE the workers on demand via
   `include_descendants` — visibility ≠ a notification; do not count a
   `job_list` row as a notification.)
@@ -231,17 +250,24 @@ default).**"); this card only runs with the raised config below.
   coordinator tore down its owner runtime before the worker stop
   confirmed (record what you see); a worker left silently `running` is
   the failure.
-- **Durable substrate.** The root's `jobs.jsonl` contains forwarded
-  `job_started` (typed `delegate` — "Nested jobs" "delegate-job
-  creation forwards its `job_started` one hop to the parent's store,
-  carrying `parent_job_id` plus owner/type identity") and
-  `job_finished` events
-  for COORD/COORD2 and — as forwarded one-hop copies — for the workers,
-  each worker copy carrying `owner_session_id` = the coordinator's
-  session and `parent_job_id` = the coordinator. The presence of these
-  forwarded records is the visibility substrate; it is NOT a
-  notification ("Nested jobs" "the forwarded copy is a drive signal
-  for the parent", not a rail-rendered frame).
+- **Durable substrate.** Delegate generations never create job
+  records, so there is no forwarded `job_started`/`job_finished` copy
+  for a delegate at all ("Durable job records" "Delegate generations
+  never create job records."). The root's `delegates.jsonl` — one
+  journal for the whole tree, not a per-descendant forwarded copy,
+  because a child session shares its root's delegate controller
+  ("Durable reconstruction invariants" "Stable delegate lifecycle,
+  descriptor, lineage, resumability, transcript reference, last
+  outcome, and ordered owner delivery live in the root
+  `delegates.jsonl` journal.") — carries `delegate_created` and
+  `delegate_run_finished` events, keyed by `delegate_id`, for
+  COORD/COORD2 and for each worker, with each worker's descriptor
+  carrying `owner_session_id` = the coordinator's session and
+  `parent_delegate_id` = the coordinator's `delegate_id`
+  (`agent/internal/delegatestore/event.go#EventDelegateRunFinished`;
+  `agent/internal/delegatestore/record.go#Descriptor.ParentDelegateID`).
+  The presence of these durable records is the visibility substrate;
+  it is NOT a notification.
 
 ## Cleanup
 
@@ -259,7 +285,7 @@ default).**"); this card only runs with the raised config below.
   The `(2)` in the step-2.1 error is the proof the config landed; treat
   `(1)` as "config didn't reach the session," not a contract bug.
 - **Owner-scoped is asserted by ABSENCE on the root's rail.** The
-  falsifiable form is "no worker job_id appears in any root-rail
+  falsifiable form is "no worker delegate_id appears in any root-rail
   notification frame." Capture the root's rendered notifications
   explicitly (step 4 asks the model to echo them; cross-check against
   the root transcript's notification entries) — a vacuous "I didn't
