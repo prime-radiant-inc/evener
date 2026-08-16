@@ -8,13 +8,24 @@ function extractShellContract(resolvedCss) {
   return { baseShellRule, supportsBlock, supportsShellRule };
 }
 
-export default function assert(measurements) {
+export default async function assert(measurements) {
   const failures = [];
   const tolerance = 1;
   const expectedViewport = { width: 390, height: 844 };
 
   const resolvedCssHref = measurements[0]?.assets?.resolvedCssHref ?? null;
-  const resolvedCss = resolvedCssHref ? readFileSync(fileURLToPath(resolvedCssHref), "utf8") : "";
+  // The CSS-text contract needs the exact resolved.css bytes the page loaded.
+  // The guard used to serve cases over file:// (readFileSync); now that they
+  // are served over the guard's own HTTP dev server, fetch the same URL. The
+  // Accept header matters: the dev server answers with the raw stylesheet
+  // only for stylesheet-style requests (Accept: text/css) and would otherwise
+  // hand back its JS module transform of the file.
+  let resolvedCss = "";
+  if (resolvedCssHref) {
+    resolvedCss = resolvedCssHref.startsWith("file://")
+      ? readFileSync(fileURLToPath(resolvedCssHref), "utf8")
+      : await (await fetch(resolvedCssHref, { headers: { accept: "text/css" } })).text();
+  }
   const { baseShellRule, supportsBlock, supportsShellRule } = extractShellContract(resolvedCss);
   const fallbackIndex = baseShellRule.indexOf("height: 100vh");
   const misplacedDynamicIndex = baseShellRule.indexOf("height: 100dvh");

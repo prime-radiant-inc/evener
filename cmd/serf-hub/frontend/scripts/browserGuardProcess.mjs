@@ -475,7 +475,17 @@ export async function startBrowserGuard({
   try {
     vite = spawnProcess(
       "./node_modules/.bin/vite",
-      ["--port", String(vitePort), "--strictPort", "--host", "127.0.0.1", "--clearScreen", "false"],
+      [
+        "--config",
+        "scripts/browserguard.vite.config.mjs",
+        "--port",
+        String(vitePort),
+        "--strictPort",
+        "--host",
+        "127.0.0.1",
+        "--clearScreen",
+        "false",
+      ],
       { cwd: frontend, stdio: ["ignore", "ignore", "pipe"], detached: useProcessGroups },
     );
     lifecycle.addChild(vite, {

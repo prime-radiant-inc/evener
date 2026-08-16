@@ -8,6 +8,7 @@
 // and it has no dependency on provider credentials or the shared dev server.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { applyViewport, clearViewportOverride, connectPage, evaluate, navigateTo, waitForHttp } from "../browserGuardCdp.mjs";
 import { startBrowserGuard } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -17,93 +18,26 @@ const WIDTHS = [390, 899, 900];
 const STAGED_ATTACHMENTS = 8;
 const TILE_PX = 80;
 
-async function waitForHttp(url, label) {
-  for (let attempt = 0; attempt < 300; attempt++) {
-    try {
-      if ((await fetch(url)).ok) return;
-    } catch {
-      // The child process is still starting.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(`${label} never came up at ${url}`);
-}
-
-function connect(wsUrl) {
-  const ws = new WebSocket(wsUrl);
-  let id = 0;
-  const pending = new Map();
-  ws.addEventListener("message", (event) => {
-    const message = JSON.parse(event.data);
-    if (message.id !== undefined && pending.has(message.id)) {
-      pending.get(message.id)(message);
-      pending.delete(message.id);
-    }
-  });
-  const ready = new Promise((resolve, reject) => {
-    ws.addEventListener("open", resolve, { once: true });
-    ws.addEventListener("error", reject, { once: true });
-  });
-  const send = (method, params = {}) =>
-    new Promise((resolve, reject) => {
-      const requestId = ++id;
-      pending.set(requestId, (message) => {
-        if (message.error) reject(new Error(`${method}: ${JSON.stringify(message.error)}`));
-        else resolve(message);
-      });
-      ws.send(JSON.stringify({ id: requestId, method, params }));
-    });
-  return { ws, ready, send };
-}
-
 async function measureAt(cdpPort, vitePort, width) {
-  const targets = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
-  const target = targets.find((entry) => entry.type === "page");
-  if (!target) throw new Error("chrome exposed no page target");
-  const { ws, ready, send } = connect(target.webSocketDebuggerUrl);
-  await ready;
+  const page = await connectPage(cdpPort);
+  const { send } = page;
   try {
-    await send("Page.enable");
-    await send("Runtime.enable");
-    await send("Emulation.setDeviceMetricsOverride", {
-      width,
-      height: 900,
-      deviceScaleFactor: 1,
-      mobile: false,
-    });
-    const loaded = new Promise((resolve) => {
-      const handler = (event) => {
-        if (JSON.parse(event.data).method === "Page.loadEventFired") {
-          ws.removeEventListener("message", handler);
-          resolve();
-        }
-      };
-      ws.addEventListener("message", handler);
-    });
-    await send("Page.navigate", { url: `http://127.0.0.1:${vitePort}/spawnguard.html` });
-    await loaded;
-    await send("Runtime.evaluate", { expression: "window.settledSpawn", awaitPromise: true, returnByValue: true });
+    await applyViewport(send, { width, height: 900 });
+    await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`);
+    await evaluate(send, "window.settledSpawn");
     // Stage before measuring, at every width: the page is navigated fresh per
     // width, and the staged-attachment row exists only once something is in
     // it. A staging failure has to name itself here rather than surfacing
     // later as an empty row that reads like a layout regression.
-    const staged = await send("Runtime.evaluate", {
-      expression: `window.stageSpawnAttachments(${STAGED_ATTACHMENTS})`,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    if (staged.result.exceptionDetails) {
-      const detail = staged.result.exceptionDetails;
-      throw new Error(`staging attachments at ${width}px failed: ${detail.exception?.description ?? detail.text}`);
+    try {
+      await evaluate(send, `window.stageSpawnAttachments(${STAGED_ATTACHMENTS})`);
+    } catch (error) {
+      throw new Error(`staging attachments at ${width}px failed: ${error.message}`);
     }
-    const output = await send("Runtime.evaluate", {
-      expression: "JSON.stringify(window.measureSpawn())",
-      returnByValue: true,
-    });
-    return JSON.parse(output.result.result.value);
+    return JSON.parse(await evaluate(send, "JSON.stringify(window.measureSpawn())"));
   } finally {
-    await send("Emulation.clearDeviceMetricsOverride").catch(() => {});
-    ws.close();
+    await clearViewportOverride(send);
+    page.close();
   }
 }
 
