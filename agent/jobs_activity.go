@@ -1010,7 +1010,7 @@ func recomputeActivitySession(session *appwire.JobActivitySession) {
 
 // projectActivityJob projects one job record into the activity tree's job
 // shape. (The flat jobs-list compatibility path this once also served was
-// retired with the jobs sheet; the tree is its only consumer now.)
+// retired in 4993cdd53; the tree is its only consumer now.)
 func projectActivityJob(rec *jobstore.JobRecord, ownerRef string) appwire.JobActivityJob {
 	if rec == nil {
 		return appwire.JobActivityJob{}
