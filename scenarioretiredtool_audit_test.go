@@ -121,6 +121,25 @@ func TestScenarioRetiredToolAllowlistEntriesActuallyExist(t *testing.T) {
 // recording the removal.
 const jobControlContract = "docs/job-control.md"
 
+func TestJobControlContractPreservesContextualCallerRoute(t *testing.T) {
+	raw, err := os.ReadFile(jobControlContract)
+	if err != nil {
+		t.Fatalf("reading %s: %v", jobControlContract, err)
+	}
+	doc := string(raw)
+	if !strings.Contains(doc, "From inside a delegate, the contextual `caller` target sends a non-terminal update") {
+		t.Fatal("job-control contract is missing the public contextual caller route")
+	}
+	for _, stale := range []string{
+		"`caller` is not a public `delegate_send` target",
+		"Use `delegate_send(to=<delegate_id>)` only for parent-to-child follow-up.",
+	} {
+		if strings.Contains(doc, stale) {
+			t.Fatalf("job-control contract contradicts the public caller route: %q", stale)
+		}
+	}
+}
+
 // TestJobControlContractNamesARetiredToolOnlyAsRemoved is the doc half of kata
 // fd8n. docs/job-control.md described job_read_output as live contract for five
 // weeks after it was unregistered — a whole `### job_read_output` section, its

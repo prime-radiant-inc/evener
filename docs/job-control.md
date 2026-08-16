@@ -472,7 +472,7 @@ Semantics:
   is ignored explicitly through `wait_ignored_reason`.
 - `max_wait_ms` applies to concrete delegate targets.
 
-Watch-origin parent callbacks use `communicate(end_turn=true)` from the observer. Internal runtime plumbing may still steer a parent session, but `caller` is not a public `delegate_send` target.
+Watch-origin observer completion uses `communicate(end_turn=true)`. A delegate may use the contextual `caller` target for a non-terminal update without ending its turn; that route does not replace the observer callback or final result.
 
 ```mermaid
 stateDiagram-v2
@@ -614,7 +614,9 @@ Observer/sidecar pattern:
 ```
 
 Observer sidecars are composition, not a separate model-facing observer tool.
-Use `delegate_send(to=<delegate_id>)` only for parent-to-child follow-up.
+Use `delegate_send(to=<delegate_id>)` for parent-to-child follow-up and
+`delegate_send(to="caller")` for a non-terminal update to the controlling caller.
+Use `communicate(end_turn=true)` for observer completion and final results.
 
 Practical observer guidance for agents:
 

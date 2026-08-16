@@ -9,7 +9,9 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/serf/agent/events"
 	toolpkg "primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
@@ -47,6 +49,29 @@ func TestDelegateResourceCaller_RegisteredNestedParentUsesStableController(t *te
 	}
 	if !child.watchCallbackDeliveredForCurrentTurn() {
 		t.Fatal("successful watch-origin caller send did not suppress duplicate communicate callback")
+	}
+}
+
+func TestDelegateResourceCaller_RegisteredNestedParentPreservesWatchProvenance(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 2, 2)
+	seedDelegateControllerRunning(t, c, "dlg_parent", "")
+	seedDelegateControllerRunning(t, c, "dlg_child", "dlg_parent")
+	parent := attachRegisteredCallerRuntime(t, c, "dlg_parent", afero.NewMemMapFs())
+	child := attachRegisteredCallerRuntime(t, c, "dlg_child", afero.NewMemMapFs())
+	child.replaceActiveProvenance(testProvenance("watch_nested", "wg_nested"))
+
+	call := executeRegisteredCallerSend(t, child, delegateLease{delegateID: "dlg_child", generation: 1}, "nested watch report")
+	if call.IsError {
+		t.Fatalf("registered nested caller send: %s", call.Output)
+	}
+	if _, err := completeDelegateModelRequest(c, delegateLease{delegateID: "dlg_parent", generation: 1}); err != nil {
+		t.Fatalf("consume nested caller steer: %v", err)
+	}
+	parent.events = make(chan events.SessionEvent, 1)
+	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "parent consequence"})
+	event := <-parent.events
+	if !provenance.ContainsWatch(event.Provenance, "watch_nested", "wg_nested") {
+		t.Fatalf("parent event provenance = %+v, want watch_nested/wg_nested from nested caller", event.Provenance)
 	}
 }
 
