@@ -638,8 +638,12 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	waitCtx := ctx
 	if maxWaitMS > 0 {
 		var cancel context.CancelFunc
-		waitCtx, cancel = context.WithTimeout(ctx, time.Duration(maxWaitMS)*time.Millisecond)
+		waitDuration := time.Duration(maxWaitMS) * time.Millisecond
+		waitCtx, cancel = context.WithTimeout(ctx, waitDuration)
 		defer cancel()
+		if observe := s.cfg.testOnly.delegateInlineWaitReady; observe != nil {
+			observe(waitCtx, waitDuration)
+		}
 	}
 	resolution := s.delegateController.waitForDelegateInline(waitCtx, waiter)
 	if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
@@ -678,14 +682,31 @@ func populateStableDelegateSendResult(result *sendMessageResult, packet delegate
 		}
 		result.StructuredResultReason = packet.StructuredResultReason
 	}
+	result.Warnings = append([]string(nil), packet.Warnings...)
 	var metadata delegateTerminalPacketMetadata
-	if err := json.Unmarshal(packet.Metadata, &metadata); err == nil && metadata.Worktree != nil {
-		result.Worktree = &delegateWorktreeReport{
-			Path:    metadata.Worktree.Path,
-			Branch:  metadata.Worktree.Branch,
-			HeadSHA: metadata.Worktree.HeadSHA,
-			Ahead:   metadata.Worktree.Ahead,
-			Dirty:   metadata.Worktree.Dirty,
+	if err := json.Unmarshal(packet.Metadata, &metadata); err == nil {
+		result.Task = metadata.Task
+		result.Description = metadata.Description
+		result.AgentType = metadata.AgentType
+		result.RequestedModel = metadata.RequestedModel
+		result.ResolvedProfileID = metadata.ResolvedProfileID
+		result.ResolvedModel = metadata.ResolvedModel
+		result.ReasoningEffort = metadata.ReasoningEffort
+		result.RunStartedAt = metadata.RunStartedAt
+		result.RunEndedAt = metadata.RunEndedAt
+		result.LatestActivityAt = metadata.LatestActivityAt
+		if metadata.CumulativeUsage != nil {
+			usage := *metadata.CumulativeUsage
+			result.CumulativeUsage = &usage
+		}
+		if metadata.Worktree != nil {
+			result.Worktree = &delegateWorktreeReport{
+				Path:    metadata.Worktree.Path,
+				Branch:  metadata.Worktree.Branch,
+				HeadSHA: metadata.Worktree.HeadSHA,
+				Ahead:   metadata.Worktree.Ahead,
+				Dirty:   metadata.Worktree.Dirty,
+			}
 		}
 	}
 }
@@ -734,8 +755,12 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 	waitCtx := ctx
 	if maxWaitMS > 0 {
 		var cancel context.CancelFunc
-		waitCtx, cancel = context.WithTimeout(ctx, time.Duration(maxWaitMS)*time.Millisecond)
+		waitDuration := time.Duration(maxWaitMS) * time.Millisecond
+		waitCtx, cancel = context.WithTimeout(ctx, waitDuration)
 		defer cancel()
+		if observe := runtime.owner.cfg.testOnly.delegateInlineWaitReady; observe != nil {
+			observe(waitCtx, waitDuration)
+		}
 	}
 	resolution := runtime.owner.delegateController.waitForDelegateInline(waitCtx, waiter)
 	if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
@@ -853,20 +878,27 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		isolation.cleanup(s, reservation.delegateID)
 		return delegateStartFailed(err)
 	}
+	createResult := func(result delegateResult) delegateResult {
+		if selection.warning != nil {
+			result.Warnings = []string{selection.warning.Message}
+		}
+		result.Worktree = s.stableDelegateWorktreeReport(started.descriptor)
+		return result
+	}
 	s.delegateController.emitDelegateUpdate(started.plan)
 	prepared, err := runtime.construct(ctx, args, selection, started, isolation)
 	if err != nil {
-		return runtime.failCommittedStart(started, isolation, nil, false, err, "construction_failed")
+		return createResult(runtime.failCommittedStart(started, isolation, nil, false, err, "construction_failed"))
 	}
 	if err := s.delegateController.AttachRuntime(started.lease, prepared.sub.sess); err != nil {
-		return runtime.failCommittedStart(started, isolation, prepared, false, err, "construction_failed")
+		return createResult(runtime.failCommittedStart(started, isolation, prepared, false, err, "construction_failed"))
 	}
 	if err := runtime.adopt(prepared); err != nil {
-		return runtime.failCommittedStart(started, isolation, prepared, true, err, "construction_failed")
+		return createResult(runtime.failCommittedStart(started, isolation, prepared, true, err, "construction_failed"))
 	}
 	claim, err := s.delegateController.BeginStartInput(started.lease)
 	if err != nil {
-		return runtime.failAdoptedStart(started, isolation, prepared, err, "input_admission_failed")
+		return createResult(runtime.failAdoptedStart(started, isolation, prepared, err, "input_admission_failed"))
 	}
 	preseedErr := runtime.preseedInput(prepared.sub.sess, task, started.transcriptPath)
 	if preseedErr != nil {
@@ -875,21 +907,21 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		s.delegateController.emitDelegateUpdates(plans)
 		if completeErr != nil {
 			runtime.retainAdoptedWithoutLaunch(prepared)
-			return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, errors.Join(preseedErr, completeErr))
+			return createResult(stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, errors.Join(preseedErr, completeErr)))
 		}
 		runtime.retainAdoptedWithoutLaunch(prepared)
-		return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, preseedErr)
+		return createResult(stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, preseedErr))
 	}
 	plans, err := s.delegateController.CompleteStartInput(claim, true, delegateFinish{})
 	s.delegateController.emitDelegateUpdates(plans)
 	if err != nil {
 		runtime.retainAdoptedWithoutLaunch(prepared)
-		return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, err)
+		return createResult(stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, err))
 	}
 	bindStableDelegateActivity(prepared.sub.sess, s.delegateController, started.lease)
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)
 	s.launchSubagentRun(prepared.runCtx, prepared.sub, prepared.runCancel, prepared.input, started.descriptor.Provenance)
-	return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, nil)
+	return createResult(stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, nil))
 }
 
 func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
@@ -1488,11 +1520,15 @@ func delegatePermanentStartFailure(err error, reason string) delegateFinish {
 func stableDelegateResult(descriptor delegatestore.Descriptor, delegateID string, committed delegateUpdatePlan, plans delegateMutationPlans, err error) delegateResult {
 	snapshot := latestDelegateMutationSnapshot(delegateID, committed, plans)
 	resumable := snapshot.resumable
+	status := jobstore.Status(snapshot.lifecycle)
+	if status == "" {
+		status = jobstore.StatusRunning
+	}
 	result := delegateResult{
 		DelegateID:          delegateID,
 		ChildSessionID:      descriptor.ChildSessionID,
 		Type:                delegateResourceType,
-		Status:              jobstore.StatusRunning,
+		Status:              status,
 		Resumable:           &resumable,
 		RunningInBackground: true,
 		TranscriptRef:       descriptor.TranscriptRef,
@@ -1500,7 +1536,6 @@ func stableDelegateResult(descriptor delegatestore.Descriptor, delegateID string
 		Err:                 err,
 	}
 	if snapshot.lastOutcome != nil {
-		result.Status = jobstore.Status(snapshot.lastOutcome.Status)
 		result.Reason = snapshot.lastOutcome.Reason
 	}
 	if descriptor.Sandbox != nil {

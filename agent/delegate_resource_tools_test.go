@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/internal/delegatestore"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	toolpkg "primeradiant.com/serf/agent/internal/tool"
@@ -259,6 +261,44 @@ func TestStableDelegateTools_WaitIgnoredReasonIsOwnField(t *testing.T) {
 	state := stableToolStateMap(t, value)
 	if state["wait_ignored_reason"] != "live steer returns on delivery" {
 		t.Fatalf("delegate_send state = %#v", state)
+	}
+	if _, exists := state["warnings"]; exists {
+		t.Fatalf("call-scoped wait reason leaked into warnings: %#v", state)
+	}
+}
+
+func TestStableDelegateTools_LiveSteerReportsExactWaitIgnoredReason(t *testing.T) {
+	s := newSession(t, withoutGitSnapshot())
+	delegateID := "dlg_live_wait"
+	seedStableToolRunningDelegate(t, s, delegateID, "", time.Unix(10, 0).UTC())
+	runtime := attachDelegateSteerRuntime(t, s.delegateController, delegateID, afero.NewMemMapFs())
+	t.Cleanup(func() {
+		s.delegateController.mu.Lock()
+		live := s.delegateController.live[delegateID]
+		if live != nil && live.runtime == runtime {
+			live.runtime = nil
+			if live.binding != nil {
+				live.binding.runtime = nil
+			}
+		}
+		s.delegateController.mu.Unlock()
+	})
+
+	call := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "live-steer-wait",
+		Name:      "delegate_send",
+		Arguments: json.RawMessage(`{"to":"dlg_live_wait","message":"steer now","max_wait_ms":1000}`),
+	})
+	if call.IsError {
+		t.Fatalf("registered live steer: %s", call.Output)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(toolResultJSON(call), &state); err != nil {
+		t.Fatalf("decode live steer result: %v", err)
+	}
+	want := liveSteerWaitIgnoredReason(1000, jobstore.StatusRunning, "steered")
+	if got := state["wait_ignored_reason"]; got != want {
+		t.Fatalf("live steer wait_ignored_reason = %#v, want %q; state=%#v", got, want, state)
 	}
 	if _, exists := state["warnings"]; exists {
 		t.Fatalf("call-scoped wait reason leaked into warnings: %#v", state)

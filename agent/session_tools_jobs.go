@@ -1175,22 +1175,34 @@ func classifyStopOutcome(previous jobstore.Status, rec *jobstore.JobRecord) stri
 }
 
 type delegateSendResult struct {
-	DelegateID             string  `json:"delegate_id,omitempty"`
-	Type                   string  `json:"type,omitempty"`
-	Status                 string  `json:"status,omitempty"`
-	Reason                 *string `json:"reason,omitempty"`
-	ExhaustionBudget       string  `json:"exhaustion_budget,omitempty"`
-	ExhaustionLimit        int     `json:"exhaustion_limit,omitempty"`
-	Resumable              *bool   `json:"resumable,omitempty"`
-	RunningInBackground    bool    `json:"running_in_background"`
-	TimedOut               bool    `json:"timed_out,omitempty"`
-	Action                 string  `json:"action"`
-	TranscriptRef          string  `json:"transcript_ref,omitempty"`
-	Output                 *string `json:"output,omitempty"`
-	Truncated              *bool   `json:"truncated,omitempty"`
-	StructuredResult       any     `json:"structured_result,omitempty"`
-	StructuredResultValid  *bool   `json:"structured_result_valid,omitempty"`
-	StructuredResultReason string  `json:"structured_result_reason,omitempty"`
+	DelegateID             string                  `json:"delegate_id,omitempty"`
+	Type                   string                  `json:"type,omitempty"`
+	Status                 string                  `json:"status,omitempty"`
+	Reason                 *string                 `json:"reason,omitempty"`
+	ExhaustionBudget       string                  `json:"exhaustion_budget,omitempty"`
+	ExhaustionLimit        int                     `json:"exhaustion_limit,omitempty"`
+	Resumable              *bool                   `json:"resumable,omitempty"`
+	RunningInBackground    bool                    `json:"running_in_background"`
+	TimedOut               bool                    `json:"timed_out,omitempty"`
+	Action                 string                  `json:"action"`
+	TranscriptRef          string                  `json:"transcript_ref,omitempty"`
+	Output                 *string                 `json:"output,omitempty"`
+	Truncated              *bool                   `json:"truncated,omitempty"`
+	StructuredResult       any                     `json:"structured_result,omitempty"`
+	StructuredResultValid  *bool                   `json:"structured_result_valid,omitempty"`
+	StructuredResultReason string                  `json:"structured_result_reason,omitempty"`
+	Warnings               []string                `json:"warnings,omitempty"`
+	Task                   string                  `json:"task,omitempty"`
+	Description            string                  `json:"description,omitempty"`
+	AgentType              string                  `json:"agent_type,omitempty"`
+	RequestedModel         string                  `json:"requested_model,omitempty"`
+	ResolvedProfileID      string                  `json:"resolved_profile_id,omitempty"`
+	ResolvedModel          string                  `json:"resolved_model,omitempty"`
+	ReasoningEffort        string                  `json:"reasoning_effort,omitempty"`
+	RunStartedAt           string                  `json:"run_started_at,omitempty"`
+	RunEndedAt             string                  `json:"run_ended_at,omitempty"`
+	LatestActivityAt       string                  `json:"latest_activity_at,omitempty"`
+	CumulativeUsage        *schema.CumulativeUsage `json:"cumulative_usage,omitempty"`
 	// Worktree carries the isolation lane's path/branch/ahead/dirty state for
 	// an isolated delegate's terminal job (native worktree tools spec §9
 	// lifecycle step 3); nil for a non-isolated delegate.
@@ -1292,6 +1304,18 @@ func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error)
 		TimedOut:            res.TimedOut,
 		Action:              res.Action,
 		TranscriptRef:       res.TranscriptRef,
+		Warnings:            append([]string(nil), res.Warnings...),
+		Task:                res.Task,
+		Description:         res.Description,
+		AgentType:           res.AgentType,
+		RequestedModel:      res.RequestedModel,
+		ResolvedProfileID:   res.ResolvedProfileID,
+		ResolvedModel:       res.ResolvedModel,
+		ReasoningEffort:     res.ReasoningEffort,
+		RunStartedAt:        res.RunStartedAt,
+		RunEndedAt:          res.RunEndedAt,
+		LatestActivityAt:    res.LatestActivityAt,
+		CumulativeUsage:     res.CumulativeUsage,
 		Worktree:            delegateWorktreeToolResultFrom(res.Worktree),
 		WaitIgnoredReason:   res.WaitIgnoredReason,
 	}
@@ -1339,6 +1363,9 @@ func formatDelegateSend(out delegateSendResult) string {
 		fmt.Fprintf(&b, "\nworktree: path=%s, branch=%s, head=%s, %d commits ahead, dirty=%t",
 			out.Worktree.Path, out.Worktree.Branch, out.Worktree.HeadSHA,
 			out.Worktree.Ahead, out.Worktree.Dirty)
+	}
+	for _, warning := range out.Warnings {
+		fmt.Fprintf(&b, "\nwarning: %s", warning)
 	}
 	if out.StructuredResult != nil {
 		if sr, err := json.Marshal(out.StructuredResult); err == nil {

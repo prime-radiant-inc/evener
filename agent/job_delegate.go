@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/serf/agent/internal/worktree"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/serf/agent/schema"
 )
 
 const (
@@ -71,6 +72,7 @@ type delegateResult struct {
 	Worktree                 *delegateWorktreeReport
 	Sandbox                  *delegateSandboxReport
 	Model                    string
+	Warnings                 []string
 	Err                      error
 }
 
@@ -94,6 +96,18 @@ type sendMessageResult struct {
 	StructuredResultValidSet bool
 	StructuredResultReason   string
 	Worktree                 *delegateWorktreeReport
+	Warnings                 []string
+	Task                     string
+	Description              string
+	AgentType                string
+	RequestedModel           string
+	ResolvedProfileID        string
+	ResolvedModel            string
+	ReasoningEffort          string
+	RunStartedAt             string
+	RunEndedAt               string
+	LatestActivityAt         string
+	CumulativeUsage          *schema.CumulativeUsage
 	WaitIgnoredReason        string
 	Err                      error
 }

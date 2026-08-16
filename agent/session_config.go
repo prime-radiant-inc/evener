@@ -257,6 +257,9 @@ type testConfig struct {
 	// delegateInitialInputAppend observes the real stable-create boundary
 	// immediately before the child transcript receives its initial user input.
 	delegateInitialInputAppend func(*Session)
+	// delegateInlineWaitReady observes the exact context and duration supplied to
+	// a stable delegate inline wait. Nil preserves the production wait.
+	delegateInlineWaitReady func(context.Context, time.Duration)
 	// delegateAttentionReadFold replaces only resident attention verification
 	// reads. Nil preserves the production transcript fold.
 	delegateAttentionReadFold func(string, string) (delegateAttentionFold, error)

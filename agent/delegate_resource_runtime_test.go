@@ -172,6 +172,75 @@ func TestDelegateResourceRuntime_RegisteredIdleRestoreFailureReturnsStableResult
 	}
 }
 
+func TestDelegateResourceRuntime_RegisteredIdleSendClampsInlineWaitOnSuccessAndFailure(t *testing.T) {
+	for _, failure := range []bool{false, true} {
+		path := "success"
+		if failure {
+			path = "postcommit failure"
+		}
+		for _, tc := range []struct {
+			name      string
+			requested int
+			want      time.Duration
+		}{
+			{name: "minimum", requested: 1, want: time.Second},
+			{name: "maximum", requested: 60_001, want: 60 * time.Second},
+		} {
+			t.Run(path+"/"+tc.name, func(t *testing.T) {
+				fixture := newColdStableDelegateFixture(t, "")
+				root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+				if err != nil {
+					t.Fatalf("restore root: %v", err)
+				}
+				defer root.Close()
+				if failure {
+					root.cfg.testOnly.sessionInitFault = func(point string) error {
+						if point == "builtin_agents" {
+							return errors.New("injected clamp-path restore failure")
+						}
+						return nil
+					}
+				}
+
+				callCtx, cancelCall := context.WithCancel(context.Background())
+				defer cancelCall()
+				callCtx = context.WithValue(callCtx, ctxToolCallID, "registered-wait-clamp")
+				var observed bool
+				var observedDuration time.Duration
+				var observedDeadline bool
+				root.cfg.testOnly.delegateInlineWaitReady = func(waitCtx context.Context, duration time.Duration) {
+					observed = true
+					observedDuration = duration
+					_, observedDeadline = waitCtx.Deadline()
+					cancelCall()
+				}
+				arguments, err := json.Marshal(map[string]any{
+					"to":          fixture.delegateID,
+					"message":     "exercise registered wait clamp",
+					"max_wait_ms": tc.requested,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				call := root.reg.ExecuteCall(callCtx, root.env, llm.ToolCallData{
+					ID:        "registered-wait-clamp",
+					Name:      "delegate_send",
+					Arguments: arguments,
+				})
+				if call.IsError {
+					t.Fatalf("registered %s send: %s", path, call.Output)
+				}
+				if !observed || !observedDeadline {
+					t.Fatalf("registered %s wait was not observed with a deadline", path)
+				}
+				if observedDuration != tc.want {
+					t.Fatalf("registered %s max_wait_ms=%d applied %s, want %s", path, tc.requested, observedDuration, tc.want)
+				}
+			})
+		}
+	}
+}
+
 func TestDelegateResourceRuntime_PostCommitFailureWaitsForPriorDelivery(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "missing-owner")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
@@ -807,6 +876,76 @@ func TestDelegateResourceRuntime_CanonicalInlineDeliveryPreservesPacketSemantics
 		result := runStableDelegateInlinePacket(t, finish)
 		if !result.StructuredResultValidSet || result.StructuredResultValid || result.StructuredResultReason != structuredResultReasonSchemaResultMissing {
 			t.Fatalf("inline invalid structured result = %#v", result)
+		}
+	})
+
+	t.Run("operational metadata", func(t *testing.T) {
+		startedAt := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
+		endedAt := startedAt.Add(90 * time.Second)
+		activityAt := endedAt.Add(-2 * time.Second)
+		finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+			session:      &Session{comm: communicateResult{called: true}},
+			result:       "complete",
+			communicated: true,
+			descriptor: delegatestore.Descriptor{
+				Task:              "verify the runtime",
+				Description:       "runtime verifier",
+				AgentType:         "reviewer",
+				RequestedModel:    "fast",
+				ResolvedProfileID: "openai",
+				ResolvedModel:     "gpt-5.6",
+				Config:            schema.ConfigSnapshot{ReasoningEffort: "high"},
+			},
+			startedAt:        startedAt,
+			endedAt:          endedAt,
+			latestActivityAt: activityAt,
+			usage: schema.CumulativeUsage{
+				InputTokens:     101,
+				OutputTokens:    29,
+				CacheReadTokens: 7,
+				TotalTokens:     130,
+			},
+			warnings: []string{"worktree validation retained"},
+			worktree: &delegateWorktreeReport{
+				Path:    "/repo/.worktrees/dlg_target",
+				Branch:  "delegate/dlg_target",
+				HeadSHA: "abc123",
+				Ahead:   4,
+				Dirty:   true,
+			},
+		})
+		marshaled, err := marshalDelegateSendResult(runStableDelegateInlinePacket(t, finish), 64*1024)
+		if err != nil {
+			t.Fatalf("marshal inline operational metadata: %v", err)
+		}
+		state := stableToolStateMap(t, marshaled)
+		wantScalars := map[string]any{
+			"task":                "verify the runtime",
+			"description":         "runtime verifier",
+			"agent_type":          "reviewer",
+			"requested_model":     "fast",
+			"resolved_profile_id": "openai",
+			"resolved_model":      "gpt-5.6",
+			"reasoning_effort":    "high",
+			"run_started_at":      startedAt.Format(time.RFC3339Nano),
+			"run_ended_at":        endedAt.Format(time.RFC3339Nano),
+			"latest_activity_at":  activityAt.Format(time.RFC3339Nano),
+		}
+		for key, want := range wantScalars {
+			if got := state[key]; got != want {
+				t.Fatalf("inline metadata[%q] = %#v, want %#v; state=%#v", key, got, want, state)
+			}
+		}
+		if got := state["warnings"]; !reflect.DeepEqual(got, []any{"worktree validation retained"}) {
+			t.Fatalf("inline warnings = %#v", got)
+		}
+		usage, ok := state["cumulative_usage"].(map[string]any)
+		if !ok || usage["input_tokens"] != float64(101) || usage["output_tokens"] != float64(29) || usage["cache_read_tokens"] != float64(7) || usage["total_tokens"] != float64(130) {
+			t.Fatalf("inline cumulative usage = %#v", state["cumulative_usage"])
+		}
+		worktree, ok := state["worktree"].(map[string]any)
+		if !ok || worktree["path"] != "/repo/.worktrees/dlg_target" || worktree["branch"] != "delegate/dlg_target" || worktree["head_sha"] != "abc123" || worktree["ahead_commits"] != float64(4) || worktree["dirty"] != true {
+			t.Fatalf("inline worktree = %#v", state["worktree"])
 		}
 	})
 }

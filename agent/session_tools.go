@@ -83,16 +83,18 @@ var delegationPromptToolNames = []string{
 }
 
 type stableDelegateCreateResult struct {
-	DelegateID     string                     `json:"delegate_id"`
-	ChildSessionID string                     `json:"child_session_id"`
-	Type           string                     `json:"type"`
-	Status         string                     `json:"status"`
-	Reason         string                     `json:"reason,omitempty"`
-	Resumable      *bool                      `json:"resumable,omitempty"`
-	TranscriptRef  string                     `json:"transcript_ref"`
-	Model          string                     `json:"model,omitempty"`
-	Sandbox        *delegateSandboxToolResult `json:"sandbox,omitempty"`
-	StartError     string                     `json:"error,omitempty"`
+	DelegateID     string                      `json:"delegate_id"`
+	ChildSessionID string                      `json:"child_session_id"`
+	Type           string                      `json:"type"`
+	Status         string                      `json:"status"`
+	Reason         string                      `json:"reason,omitempty"`
+	Resumable      *bool                       `json:"resumable,omitempty"`
+	TranscriptRef  string                      `json:"transcript_ref"`
+	Model          string                      `json:"model,omitempty"`
+	Sandbox        *delegateSandboxToolResult  `json:"sandbox,omitempty"`
+	Worktree       *delegateWorktreeToolResult `json:"worktree,omitempty"`
+	Warnings       []string                    `json:"warnings,omitempty"`
+	StartError     string                      `json:"error,omitempty"`
 }
 
 func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
@@ -131,7 +133,12 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 		}
 		wait = n
 	}
+	requestedWait := wait
+	if wait > 0 {
+		wait = int(clampJobBlockTimeout(wait).Milliseconds())
+	}
 	outcome := (delegateRuntime{owner: s}).send(ctx, target, message, wait)
+	outcome.result.WaitIgnoredReason = liveSteerWaitIgnoredReason(requestedWait, outcome.result.Status, outcome.result.Action)
 	if outcome.result.Err != nil && outcome.result.DelegateID == "" {
 		return nil, outcome.result.Err
 	}
@@ -168,6 +175,8 @@ func stableDelegateCreateTool(ctx context.Context, s *Session, args map[string]a
 		TranscriptRef:  result.TranscriptRef,
 		Model:          result.Model,
 		Sandbox:        delegateSandboxToolResultFrom(result.Sandbox),
+		Worktree:       delegateWorktreeToolResultFrom(result.Worktree),
+		Warnings:       append([]string(nil), result.Warnings...),
 	}
 	if result.Err != nil {
 		out.StartError = result.Err.Error()
@@ -182,6 +191,14 @@ func marshalStableDelegateCreateResult(out stableDelegateCreateResult, maxChars 
 	// Preserve the durable identity and outcome by dropping optional diagnostics
 	// from least to most useful before falling back to the bounded core.
 	out.StartError = ""
+	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
+		return fit, err
+	}
+	out.Warnings = nil
+	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
+		return fit, err
+	}
+	out.Worktree = nil
 	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
 		return fit, err
 	}

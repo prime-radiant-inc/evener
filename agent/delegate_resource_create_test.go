@@ -253,8 +253,8 @@ func TestDelegateResourceCreate_RegisteredPostCommitFailureRetainsStableIdentity
 	if result.Type != delegateResourceType {
 		t.Fatalf("registered type = %q, want delegate", result.Type)
 	}
-	if result.Status != string(aggregate.LatestOutcome.Status) || result.Reason != aggregate.LatestOutcome.Reason {
-		t.Fatalf("registered outcome = %q/%q, durable outcome = %#v", result.Status, result.Reason, aggregate.LatestOutcome)
+	if result.Status != string(delegateLifecycleIdle) || result.Reason != aggregate.LatestOutcome.Reason {
+		t.Fatalf("registered lifecycle/reason = %q/%q, want idle with durable reason from %#v", result.Status, result.Reason, aggregate.LatestOutcome)
 	}
 	if result.Resumable == nil || *result.Resumable != aggregate.Resumable {
 		t.Fatalf("registered resumability = %#v, durable resumability = %t", result.Resumable, aggregate.Resumable)
@@ -265,6 +265,55 @@ func TestDelegateResourceCreate_RegisteredPostCommitFailureRetainsStableIdentity
 	wantModel := aggregate.Descriptor.ResolvedProfileID + "/" + aggregate.Descriptor.ResolvedModel
 	if result.Model != wantModel {
 		t.Fatalf("registered bounded model = %q, want retained diagnostic %q", result.Model, wantModel)
+	}
+}
+
+func TestDelegateResourceCreate_RegisteredResultPreservesWorktreeAndModelFallbackWarning(t *testing.T) {
+	cfg := worktreeTestSessionConfig()
+	cfg.testOnly.minimalWorktreeToolRegistry = false
+	r := newWorktreeRepoWithConfig(t, cfg)
+	r.s.pluginAgents = map[string]plugin.Agent{
+		"reviewer": {
+			Name:       "reviewer",
+			Model:      "gpt-4.1-nano",
+			PluginName: "test-plugin",
+		},
+	}
+	selection, err := r.s.selectSubagentModel(context.Background(), "", "reviewer")
+	if err != nil {
+		t.Fatalf("select fallback model: %v", err)
+	}
+	if selection.warning == nil {
+		t.Fatal("fixture did not produce a model fallback warning")
+	}
+
+	call := r.s.reg.ExecuteCall(context.Background(), r.s.currentEnv(), llm.ToolCallData{
+		ID:   "registered-create-metadata",
+		Name: "delegate",
+		Arguments: json.RawMessage(`{
+			"task":"preserve creation metadata",
+			"agent_type":"reviewer",
+			"isolation":"worktree"
+		}`),
+	})
+	if call.IsError {
+		t.Fatalf("registered worktree delegate create: %s", call.Output)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(toolResultJSON(call), &state); err != nil {
+		t.Fatalf("decode registered create metadata: %v", err)
+	}
+	delegateID, _ := state["delegate_id"].(string)
+	if delegateID == "" {
+		t.Fatalf("registered create omitted delegate_id: %#v", state)
+	}
+	aggregate := delegateAggregateSnapshot(t, r.s.delegateController, delegateID)
+	worktree, ok := state["worktree"].(map[string]any)
+	if !ok || worktree["path"] != aggregate.Descriptor.WorkingDir || worktree["branch"] != delegateID || worktree["head_sha"] != r.head || worktree["ahead_commits"] != float64(0) || worktree["dirty"] != false {
+		t.Fatalf("registered create worktree = %#v, descriptor=%#v base=%q", state["worktree"], aggregate.Descriptor, r.head)
+	}
+	if got := state["warnings"]; !reflect.DeepEqual(got, []any{selection.warning.Message}) {
+		t.Fatalf("registered create warnings = %#v, want [%q]", got, selection.warning.Message)
 	}
 }
 
@@ -292,8 +341,8 @@ func TestDelegateResourceCreate_ResultMatchesCommittedSnapshot(t *testing.T) {
 		if !errors.Is(result.Err, constructionErr) {
 			t.Fatalf("create error = %v, want construction diagnostic", result.Err)
 		}
-		if result.Status != jobstore.StatusStopped || result.Reason != "stopped_by_parent" || result.Resumable == nil || !*result.Resumable {
-			t.Fatalf("create result = %#v, want stopped/stopped_by_parent/resumable", result)
+		if result.Status != jobstore.Status(delegateLifecycleRunning) || result.Reason != "stopped_by_parent" || result.Resumable == nil || !*result.Resumable {
+			t.Fatalf("create result = %#v, want running/stopped_by_parent/resumable while the admitted subtree stop remains open", result)
 		}
 	})
 
@@ -311,8 +360,8 @@ func TestDelegateResourceCreate_ResultMatchesCommittedSnapshot(t *testing.T) {
 		if !errors.Is(result.Err, constructionErr) {
 			t.Fatalf("create error = %v, want construction diagnostic", result.Err)
 		}
-		if result.Status != jobstore.StatusFailed || result.Reason != "construction_failed" || result.Resumable == nil || *result.Resumable {
-			t.Fatalf("create result = %#v, want failed/construction_failed/not resumable", result)
+		if result.Status != jobstore.Status(delegateLifecycleIdle) || result.Reason != "construction_failed" || result.Resumable == nil || *result.Resumable {
+			t.Fatalf("create result = %#v, want idle/construction_failed/not resumable", result)
 		}
 	})
 
