@@ -176,6 +176,120 @@ func TestE2E_TurnControlReachesTheSession(t *testing.T) {
 	})
 }
 
+// TestE2E_TurnControlReachesAnAgentStartedTurn is the regression its sibling
+// above could not see: a turn the agent starts for itself. A goal
+// continuation is the cheapest one to provoke, and it took the same path as
+// every job, watch and delegate-attention wake — the daemon published a
+// projector-minted turn_<n> while its mutation preconditions still held a
+// turn_m<n>, so steer and stop came back Conflict("turn is not active") and
+// the composer showed nothing at all.
+func TestE2E_TurnControlReachesAnAgentStartedTurn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
+	}
+
+	provider, err := fakellm.New()
+	if err != nil {
+		t.Fatalf("start fake provider: %v", err)
+	}
+	t.Cleanup(provider.Close)
+
+	stack := startHubStack(t, provider)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	client := stack.dialRPC(ctx, t)
+
+	const (
+		openingPrompt = "SERF-E2E-GOAL-OPENING"
+		steerText     = "SERF-E2E-GOAL-STEER"
+	)
+
+	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
+		Harness:         "serf",
+		CWD:             stack.workDir,
+		Input:           []appwire.InputItem{{Type: "text", Text: openingPrompt}},
+		Model:           stack.model,
+		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
+	})
+	if err != nil {
+		t.Fatalf("thread/start: %v", err)
+	}
+	ref := started.Thread.Serf.Ref
+	t.Cleanup(func() {
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancelShutdown()
+		if _, err := clientRequest[appwire.EmptyResponse](shutdownCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
+			t.Errorf("thread/shutdown left the daemon running: %v", err)
+		}
+	})
+
+	// Settle the opening turn, so what starts the next one is the goal's own
+	// idle kick and not a client mutation.
+	opening, err := provider.Next(ctx.Done())
+	if err != nil {
+		t.Fatalf("waiting for the opening model request: %v", err)
+	}
+	firstTurn := awaitActiveTurn(ctx, t, client, ref, "")
+	opening.RespondToolCall("communicate", communicateArgs("opening turn done"))
+	awaitThread(ctx, t, client, ref, "the opening turn to finish", func(thread appwire.Thread) bool {
+		return thread.Serf.ActiveTurnID == ""
+	})
+
+	if _, err := clientRequest[appwire.GoalSetResponse](ctx, client, appwire.MethodGoalSet, appwire.GoalSetParams{
+		Ref:       ref,
+		Objective: "count to ten, one number per message",
+	}); err != nil {
+		t.Fatalf("goal/set: %v", err)
+	}
+
+	goalRound, err := provider.Next(ctx.Done())
+	if err != nil {
+		t.Fatalf("waiting for the goal continuation's model request: %v", err)
+	}
+	goalTurn := awaitActiveTurn(ctx, t, client, ref, firstTurn)
+	t.Logf("goal continuation turn in flight: %s", goalTurn)
+
+	steerReceipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
+		Ref:              ref,
+		ClientMutationID: newMutationID(t),
+		ExpectedTurnID:   goalTurn,
+		Input:            []appwire.InputItem{{Type: "text", Text: steerText}},
+	})
+	if err != nil {
+		t.Fatalf("turn/steer against goal continuation turn %q: %v", goalTurn, err)
+	}
+	if steerReceipt.Receipt.Disposition != appwire.MutationDispositionApplied {
+		t.Fatalf("turn/steer disposition = %q, want %q", steerReceipt.Receipt.Disposition, appwire.MutationDispositionApplied)
+	}
+
+	goalRound.RespondToolCall("read_file", map[string]any{"file_path": stack.readableFile})
+	afterSteer, err := provider.Next(ctx.Done())
+	if err != nil {
+		t.Fatalf("waiting for the model request after the tool round: %v", err)
+	}
+	if !afterSteer.Contains(steerText) {
+		t.Fatalf("the steer never reached the goal continuation's loop; messages:\n%s",
+			strings.Join(afterSteer.Texts(), "\n"))
+	}
+
+	interruptReceipt, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
+		Ref:              ref,
+		ClientMutationID: newMutationID(t),
+		ExpectedTurnID:   goalTurn,
+	})
+	if err != nil {
+		t.Fatalf("turn/interrupt against goal continuation turn %q: %v", goalTurn, err)
+	}
+	if interruptReceipt.Receipt.Disposition != appwire.MutationDispositionApplied {
+		t.Fatalf("turn/interrupt disposition = %q, want %q", interruptReceipt.Receipt.Disposition, appwire.MutationDispositionApplied)
+	}
+	awaitThread(ctx, t, client, ref, "the interrupted goal turn to stop", func(thread appwire.Thread) bool {
+		return thread.Serf.ActiveTurnID != goalTurn
+	})
+}
+
 // awaitActiveTurn waits for the thread to report an active turn whose id is
 // not `excluding`, and returns it. The status flip and the turn/started
 // notification that populates activeTurnId land separately, which is exactly
