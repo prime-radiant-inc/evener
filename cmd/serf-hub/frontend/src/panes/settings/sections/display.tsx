@@ -13,11 +13,10 @@ const CLASS = {
 /**
  * Settings -> Display (parity-m7-settings.md §5): 2 composer/cost-display
  * toggles on prefs.ts's SHARED keys (serf.prefs.enterToSend/showCost - the
- * exact names the composer and transcript read through the same store). Deliberately does NOT reach into the
- * composer/session pane to rewrite its kbd-hint glyphs
- * (applyComposerKeybindHints in the legacy) - panes/session/** and the
- * Textarea widget are W5-owned this cycle; the composer reads these same
- * prefs itself for that, on its own schedule.
+ * exact names the composer and transcript read through the same store).
+ * Deliberately does NOT reach into the composer/session pane to rewrite its
+ * kbd-hint glyphs (applyComposerKeybindHints in the legacy) - the composer
+ * reads these same prefs itself for that, on its own schedule.
  */
 export function DisplaySection() {
   const enterToSend = usePrefsStore((s) => s.enterToSend);
