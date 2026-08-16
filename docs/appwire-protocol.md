@@ -951,6 +951,59 @@ _(no fields)_
 | `activeSource` | `string` | yes |  |
 
 
+### `SerfDelegateInfo`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `delegateId` | `string` |  |  |
+| `ownerSessionId` | `string` |  |  |
+| `rootSessionId` | `string` |  |  |
+| `childSessionId` | `string` |  |  |
+| `transcriptRef` | `string` |  |  |
+| `parentDelegateId` | `string` | yes |  |
+| `type` | `string` |  |  |
+| `lifecycle` | `string` |  |  |
+| `phase` | `string` |  |  |
+| `status` | `string` |  |  |
+| `outcome` | `string` | yes |  |
+| `reason` | `string` | yes |  |
+| `terminal` | `bool` | yes |  |
+| `resumable` | `bool` |  |  |
+| `notResumableReason` | `string` | yes |  |
+| `projectionRevision` | `uint64` |  |  |
+| `task` | `string` | yes |  |
+| `description` | `string` | yes |  |
+| `agentType` | `string` | yes |  |
+| `requestedModel` | `string` | yes |  |
+| `resolvedProfileId` | `string` | yes |  |
+| `resolvedModel` | `string` | yes |  |
+| `model` | `string` | yes |  |
+| `reasoningEffort` | `string` | yes |  |
+| `originTurnId` | `string` | yes |  |
+| `originToolCallId` | `string` | yes |  |
+| `originItemId` | `string` | yes |  |
+| `runStartedAt` | `string` | yes |  |
+| `runEndedAt` | `string` | yes |  |
+| `latestActivityAt` | `string` | yes |  |
+| `runningForMs` | `*int64` | yes |  |
+| `quietForMs` | `*int64` | yes |  |
+| `durationMs` | `*int64` | yes |  |
+| `packetKind` | `string` | yes |  |
+| `message` | `json.RawMessage` | yes |  |
+| `structuredResult` | `json.RawMessage` | yes |  |
+| `structuredResultValid` | `*bool` | yes |  |
+| `structuredResultReason` | `string` | yes |  |
+| `warnings` | `[]string` | yes |  |
+| `diagnostics` | `[]string` | yes |  |
+| `exhaustionBudget` | `string` | yes |  |
+| `exhaustionLimit` | `int` | yes |  |
+| `exhaustionResumable` | `*bool` | yes |  |
+| `delegationAllowance` | `int` | yes |  |
+| `parentWatchGranted` | `bool` | yes |  |
+| `usage` | `*appwire.SerfUsage` | yes |  |
+| `worktree` | `*appwire.JobActivityWorktree` | yes |  |
+
+
 ### `SerfDelegateParams`
 
 | Field | Go type | Omitempty | Embedded |

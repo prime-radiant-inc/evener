@@ -522,14 +522,14 @@ func TestDefJobWatchRequiresOperationAndWatchIDForClear(t *testing.T) {
 
 func TestDefJobWatchDescriptionIncludesImplicitDeliveryContract(t *testing.T) {
 	def := DefJobWatch([]string{"communicate"})
-	for _, want := range []string{"source you can observe", "Delivery is implicit", "communicate(end_turn=true)"} {
+	for _, want := range []string{"source you can observe", "`dlg_...`", "Delivery is implicit", "communicate(end_turn=true)"} {
 		if !strings.Contains(def.Description, want) {
 			t.Fatalf("job_watch description = %q, want %q", def.Description, want)
 		}
 	}
 	props := def.Parameters["properties"].(map[string]any)
 	sourceDesc := props["source"].(map[string]any)["description"].(string)
-	for _, want := range []string{"self", "parent", "job_id"} {
+	for _, want := range []string{"self", "parent", "job_id", "dlg_..."} {
 		if !strings.Contains(sourceDesc, want) {
 			t.Fatalf("source description = %q, want %q", sourceDesc, want)
 		}

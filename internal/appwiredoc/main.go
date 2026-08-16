@@ -113,6 +113,7 @@ func build() docData {
 	for _, v := range appwire.AllJobActivityTypes {
 		register(v)
 	}
+	register(appwire.SerfDelegateInfo{})
 
 	for _, m := range appwire.Methods {
 		d.Methods = append(d.Methods, methodView{
