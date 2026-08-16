@@ -397,10 +397,16 @@ func TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects(t *te
 	}
 	restoreReady := make(chan struct{})
 	releaseRestore := make(chan struct{})
-	closeReachedReconstructionWait := make(chan struct{})
-	root.subagents.testBeforeReconstructionWait = func() {
-		close(closeReachedReconstructionWait)
+	closeEntered := make(chan struct{})
+	previousCloseBudgetMintHook := closeBudgetMintHook
+	var closeEnteredOnce sync.Once
+	closeBudgetMintHook = func() {
+		if previousCloseBudgetMintHook != nil {
+			previousCloseBudgetMintHook()
+		}
+		closeEnteredOnce.Do(func() { close(closeEntered) })
 	}
+	defer func() { closeBudgetMintHook = previousCloseBudgetMintHook }()
 	root.cfg.testOnly.sessionInitFault = func(point string) error {
 		if point == "reconcile_lost_jobs" {
 			close(restoreReady)
@@ -419,7 +425,7 @@ func TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects(t *te
 		root.Close()
 		close(closeDone)
 	}()
-	<-closeReachedReconstructionWait
+	<-closeEntered
 	select {
 	case <-closeDone:
 		close(releaseRestore)

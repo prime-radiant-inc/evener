@@ -1000,7 +1000,10 @@ func TestDelegateResourceCreate_MissingRestoreInputsCloseResumabilityBeforeClean
 	}
 	stateDir := root.stateDir
 	workspace := root.currentEnv().WorkingDirectory()
-	root.Close()
+	// This boundary models process loss, not a graceful shutdown. A graceful
+	// Close now durably stops committed generations and therefore waits for the
+	// construction owner that a crash fixture intentionally does not retain.
+	root.discardRestoredCandidate()
 
 	restored, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
 	if err != nil {
@@ -1118,6 +1121,11 @@ func TestDelegateResourceCreate_StopBeforeAttachDisposesUnadoptedSession(t *test
 	if err := root.delegateController.AttachRuntime(replacementStart.lease, replacement); err != nil {
 		t.Fatalf("AttachRuntime replacement after stopped-start cleanup: %v", err)
 	}
+	t.Cleanup(func() {
+		if _, err := root.delegateController.FailCommittedRestart(replacementStart.lease, delegatePermanentStartFailure(errors.New("test complete"), "test_cleanup")); err != nil {
+			t.Errorf("settle replacement start: %v", err)
+		}
+	})
 }
 
 func TestDelegateResourceCreate_StopSettlementTransfersRuntimeBeforeUpdateEmission(t *testing.T) {
@@ -1175,6 +1183,13 @@ func TestDelegateResourceCreate_StopSettlementTransfersRuntimeBeforeUpdateEmissi
 			if commitErr == nil {
 				replacement = newTestSession(t)
 				attachErr = root.delegateController.AttachRuntime(replacementStart.lease, replacement)
+				if attachErr == nil {
+					t.Cleanup(func() {
+						if _, err := root.delegateController.FailCommittedRestart(replacementStart.lease, delegatePermanentStartFailure(errors.New("test complete"), "test_cleanup")); err != nil {
+							t.Errorf("settle replacement start: %v", err)
+						}
+					})
+				}
 			}
 		}
 	}
