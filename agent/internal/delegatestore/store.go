@@ -29,7 +29,7 @@ type Store struct {
 
 func Open(path string) (*Store, error) {
 	if path == "" {
-		return nil, fmt.Errorf("delegatestore: path is empty")
+		return nil, errors.New("delegatestore: path is empty")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("delegatestore: create parent directory: %w", err)
@@ -167,7 +167,7 @@ func (s *Store) initializeOrRecover() error {
 	if raw[len(raw)-1] != '\n' {
 		lastNewline := bytes.LastIndexByte(raw, '\n')
 		if lastNewline < 0 {
-			return fmt.Errorf("delegatestore: unterminated version header")
+			return errors.New("delegatestore: unterminated version header")
 		}
 		committed = raw[:lastNewline+1]
 		recoverOffset = int64(lastNewline + 1)
@@ -220,13 +220,13 @@ func (s *Store) latchRollbackFailureLocked(operationErr, rollbackErr error) erro
 
 func (s *Store) ensureUsableLocked() error {
 	if s.closed {
-		return fmt.Errorf("delegatestore: store is closed")
+		return errors.New("delegatestore: store is closed")
 	}
 	if s.unusable != nil {
 		return fmt.Errorf("delegatestore: store is unusable after failed rollback: %w", s.unusable)
 	}
 	if s.f == nil {
-		return fmt.Errorf("delegatestore: store has no file")
+		return errors.New("delegatestore: store has no file")
 	}
 	return nil
 }
@@ -241,22 +241,22 @@ func defaultFileOps() fileOps {
 
 func decodeLog(raw []byte, tolerateUnterminatedTail bool) ([]Event, error) {
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("delegatestore: missing version header")
+		return nil, errors.New("delegatestore: missing version header")
 	}
 	if raw[len(raw)-1] != '\n' {
 		if !tolerateUnterminatedTail {
-			return nil, fmt.Errorf("delegatestore: unterminated trailing batch")
+			return nil, errors.New("delegatestore: unterminated trailing batch")
 		}
 		lastNewline := bytes.LastIndexByte(raw, '\n')
 		if lastNewline < 0 {
-			return nil, fmt.Errorf("delegatestore: unterminated version header")
+			return nil, errors.New("delegatestore: unterminated version header")
 		}
 		raw = raw[:lastNewline+1]
 	}
 	lines := bytes.Split(raw, []byte{'\n'})
 	lines = lines[:len(lines)-1]
 	if len(lines) == 0 {
-		return nil, fmt.Errorf("delegatestore: missing version header")
+		return nil, errors.New("delegatestore: missing version header")
 	}
 	var header versionRecord
 	if err := decodeJSONLine(lines[0], &header); err != nil {
@@ -288,7 +288,7 @@ func decodeJSONLine(line []byte, target any) error {
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		if err == nil {
-			return fmt.Errorf("multiple JSON values")
+			return errors.New("multiple JSON values")
 		}
 		return err
 	}
