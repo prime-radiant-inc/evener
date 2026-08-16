@@ -190,6 +190,10 @@ type jobManager struct {
 	// marker append failed. The watch journal and receiver transcript remain the
 	// durable authorities; restart reconstructs this handoff from their history.
 	stableWatchSettlementRetries map[string]pendingWatchSendDelivery
+	// stableWatchSettlementRetrying gives one drain exclusive ownership of the
+	// process-only settlement batch. Other drains must wait for that batch before
+	// visiting current cursors so one source acknowledgement is charged once.
+	stableWatchSettlementRetrying bool
 }
 
 // defaultCloseGrace is the graceful-shutdown window closeRuntimeState gives a

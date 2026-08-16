@@ -594,6 +594,85 @@ func TestStableDelegateWatch_SupersededAckFailureRetriesBeforeCurrentCursor(t *t
 	}
 }
 
+func TestStableDelegateWatch_ConcurrentRedrainsClaimSupersededAckOnce(t *testing.T) {
+	fs := newAttentionSyncBarrierFS()
+	fixture := newStableWatchRuntimeFixture(t, fs)
+	old, newer, originalAppend := seedSupersededStableWatchAckFailure(t, fixture, fs)
+	cfg := fixture.onlyWatchConfig(t)
+	fixture.sourceJM.mu.Lock()
+	deliveriesBefore := cfg.deliveries
+	fixture.sourceJM.mu.Unlock()
+
+	oldAckEntered := make(chan struct{}, 2)
+	releaseOldAck := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(releaseOldAck)
+		}
+		fixture.sourceJM.appendEvent = originalAppend
+	}()
+	stopAfterRetry := errors.New("stop after exact retry")
+	fixture.sourceJM.appendEvent = func(event jobstore.Event) error {
+		if exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, old) {
+			oldAckEntered <- struct{}{}
+			<-releaseOldAck
+			return originalAppend(event)
+		}
+		if exactWatchSendEvent(event, jobstore.EventWatchSendPending, newer) {
+			return stopAfterRetry
+		}
+		return originalAppend(event)
+	}
+	drain := func(done chan<- error) {
+		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		done <- err
+	}
+	firstDone := make(chan error, 1)
+	go drain(firstDone)
+	<-oldAckEntered
+	secondDone := make(chan error, 1)
+	go drain(secondDone)
+	secondFinished := false
+	var secondErr error
+	select {
+	case <-oldAckEntered:
+	case secondErr = <-secondDone:
+		secondFinished = true
+	}
+	close(releaseOldAck)
+	released = true
+	firstErr := <-firstDone
+	if !secondFinished {
+		secondErr = <-secondDone
+	}
+	if !errors.Is(firstErr, stopAfterRetry) || secondErr != nil {
+		t.Fatalf("concurrent redrain errors = first:%v second:%v, want first current delivery stopped and second claimed", firstErr, secondErr)
+	}
+
+	eventsLog := loadJobStoreEvents(t, fixture.sourceJM)
+	if got := countExactWatchSendEvents(eventsLog, jobstore.EventWatchSendDelivered, old); got != 1 {
+		t.Fatalf("concurrent old source acknowledgements = %d, want exactly 1", got)
+	}
+	fixture.sourceJM.mu.Lock()
+	deliveriesAfter := cfg.deliveries
+	fixture.sourceJM.mu.Unlock()
+	if deliveriesAfter != deliveriesBefore+1 {
+		t.Fatalf("concurrent old delivery budget = %d, want %d", deliveriesAfter, deliveriesBefore+1)
+	}
+	if receipt := fixture.sourceJM.stableWatchReceipt(old.DeliveryID); receipt != nil {
+		t.Fatal("old delivery receipt remained held after claimed acknowledgement")
+	}
+	folded, err := fixture.sourceJM.store.LoadWatchSends()
+	if err != nil {
+		t.Fatalf("load newer cursor after concurrent retry: %v", err)
+	}
+	current := folded.Pending[newer.Key]
+	if current == nil || current.DeliveryID != newer.DeliveryID || current.UpdateSeq != newer.UpdateSeq {
+		t.Fatalf("newer cursor after concurrent retry = %#v, want delivery %q seq %d", current, newer.DeliveryID, newer.UpdateSeq)
+	}
+}
+
 func TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked(t *testing.T) {
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "crash repair"})
