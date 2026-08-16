@@ -139,13 +139,14 @@ structured fields are how the parent judges outcome.
 - Arm (c) must wait for the arm-(a) job to be terminal (it is — the
   foreground call returned completed). Do **not** expect a
   `delegate_session_busy` failure if you race it: that error is
-  contract-legal (`docs/job-control.md` "Job status and reason model"
-  "Canonical synchronous errors include"; "`delegate_send`" "fails
-  synchronously with `delegate_session_busy`") but nothing in the Go
+  contract-legal (`docs/job-control.md` "Status and reason model"
+  "Canonical codes include"; "`delegate_send`" "injects the message
+  into that exact generation") but nothing in the Go
   source emits it. A `delegate_send` aimed at a delegate whose job is
   still running live-steers that job instead, returning
   `action:"steered"` on the running `job_id` — pinned by
-  `agent/job_delegate_send_test.go:889-899`, which fails outright if the
+  `agent/delegate_resource_tools_test.go#TestStableDelegateTools_LiveSteerReportsExactWaitIgnoredReason`,
+  which fails outright if the
   error string appears. Scoring a steer as a failure here would be
   scoring shipped behaviour as a bug.
 - `structured_result` larger than the persistence cap downgrades to

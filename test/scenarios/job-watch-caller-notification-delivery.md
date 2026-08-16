@@ -10,8 +10,9 @@ never one render per fire. Contract anchors: `docs/job-control.md`
 "`job_watch`" ("delivers a bounded notification/frame back to that
 watcher. There is no model-facing `send` object"; "coalescing is
 latest-frame-wins by durable key and must not turn a matched condition
-into silence") and "Notifications" ("If the parent is mid-turn,
-notifications queue for a safe turn boundary").
+into silence") and "Notifications" ("If the owner is mid-turn or
+awaiting an `ask_user` reply, attention waits for the next safe
+boundary").
 
 **Scope change (kata `f9gn`)**: this card used to install the same
 watch two ways — implicit notify, and an explicit `send:{to:"caller"}`

@@ -222,8 +222,8 @@ default).**"); this card only runs with the raised config below.
   the live subtree, NOT the coordinator's already-terminal own record —
   so do NOT require COORD2's own status to be `cancelled`. The cascade
   fires regardless of the coordinator's own terminal status (the
-  stop-cascade has no terminal gate; `delegateChildSessionToCascade`,
-  `agent/jobs_nested.go#delegateChildSessionToCascade`): a fire-and-return coordinator whose own job is
+  stop-cascade has no terminal gate; `subtreeMembersLocked`,
+  `agent/delegate_tree_stop.go#subtreeMembersLocked`): a fire-and-return coordinator whose own job is
   already `completed` STILL has its live workers stopped. Falsification
   (the cascade hole this guards): either worker is still `running` after
   the stop confirmed — `job_stop` on the coordinator failed to halt its

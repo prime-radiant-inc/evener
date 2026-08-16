@@ -40,10 +40,11 @@ at an unrelated line.
 
 - **Prose (`.md`)** — the doc path in backticks, followed immediately by
   the quoted section heading and/or the quoted phrase you are leaning
-  on: ``` `docs/job-control.md` "Nested jobs" ("the forwarded copy is a
-  drive signal") ```. Quotes may be separated by punctuation and the word
-  `and`; the run ends at the first other word, so ordinary prose quotes
-  later in the paragraph are not anchors.
+  on: ``` `docs/job-control.md` "Nested jobs" ("the shell owner's
+  durable record is authoritative over a forwarded copy") ```. Quotes
+  may be separated by punctuation and the word `and`; the run ends at
+  the first other word, so ordinary prose quotes later in the
+  paragraph are not anchors.
 - **Code (`.go`)** — the file path with the symbol appended after a
   `#`: `` `agent/tree_counter.go#defaultMaxConcurrentDelegateTurns` ``.
   That is the spelling `scripts/run-fuzz.sh` already uses for the same
