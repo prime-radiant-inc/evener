@@ -1013,12 +1013,26 @@ func TestDelegateResourceRuntime_PositiveStopWaitKeepsReconciliationDriverAlive(
 	case <-waitCtx.entered:
 	}
 	stop := currentDelegateStop(t, harness.root.delegateController)
+	harness.root.delegateController.mu.Lock()
+	driver := stop.driver
+	harness.root.delegateController.mu.Unlock()
+	if driver == nil {
+		t.Fatal("stable stop has no reconciliation driver")
+	}
 	waitCtx.cancel()
 	invocation := <-result
 	assertStableStopPending(t, invocation, harness.fixture.delegateID)
 	harness.release()
 	waitForStableSupervisionRun(t, harness.root, harness.fixture.childID)
-	<-stop.done
+	select {
+	case <-stop.done:
+	case <-driver.done:
+		select {
+		case <-stop.done:
+		default:
+			t.Fatal("request wait cancellation ended reconciliation before durable stop completion")
+		}
+	}
 	assertStableStopDurableCompletion(t, harness.root.delegateController, harness.fixture.delegateID)
 }
 
