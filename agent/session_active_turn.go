@@ -1,0 +1,86 @@
+package agent
+
+import (
+	"fmt"
+
+	"primeradiant.com/serf/agent/events"
+)
+
+// A turn's identity has one owner: whatever opened it. A client's turn/start
+// and a queued message claimed off the input queue arrive already named — the
+// reservation before the turn runs is what makes them retry-safe across a
+// crash. Everything else — a goal continuation, a job or delegate
+// notification wake — is named here, so the id the daemon publishes is always
+// an id the mutation preconditions accept, and Steer, Send and Stop work on
+// every turn rather than only on the ones a client started.
+//
+// The id is minted, never adopted. An ActiveTurnID this call did not write
+// belongs to a mutation that is about to run; taking it would let a Stop
+// aimed at that mutation cancel this turn instead, and mark a message the
+// user sent — and the session never ran — "interrupted".
+
+// mintRunningTurnID names the turn that is about to run and records it as the
+// durable authority, or returns "" when this turn must run unnamed. The
+// caller passes the result straight into the turn's opening event, where ""
+// means "unnamed" — which is what these turns already do today.
+func (s *Session) mintRunningTurnID() string {
+	// A session nobody serves has no client to name a turn to. In-process
+	// subagents share the parent's StateDir (subagents.go), so this gate is
+	// the difference between a durable write per delegate wake and none.
+	s.eventsMu.RLock()
+	served := s.authoritativeConsumer
+	s.eventsMu.RUnlock()
+	if !served {
+		return ""
+	}
+	if err := s.ensureClientMutationStore(); err != nil {
+		s.emit(events.EventWarning, events.WarningData{
+			Message: fmt.Sprintf("open client mutation store: %v", err),
+		})
+		return ""
+	}
+	var turnID string
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		// Both refusals mirror every other durable entry point: an interrupt
+		// is already ending a turn, or a mutation already owns the slot.
+		// Running unnamed is the pre-existing behaviour for this turn kind, so
+		// refusing costs nothing that was not already lost.
+		if snapshot.InterruptFence != nil {
+			return nil
+		}
+		if snapshot.ActiveTurnID != "" {
+			return nil
+		}
+		var record clientMutationRecord
+		reserveClientMutationTurnID(snapshot, &record)
+		snapshot.ActiveTurnID = record.StableTurnID
+		turnID = record.StableTurnID
+		return nil
+	}); err != nil {
+		s.emit(events.EventWarning, events.WarningData{
+			Message: fmt.Sprintf("name running turn failed: %v", err),
+		})
+		return ""
+	}
+	return turnID
+}
+
+// releaseRunningTurnID clears an id minted by mintRunningTurnID. It is a
+// no-op for any other id, so a turn that ended after a client mutation took
+// the slot cannot clear that mutation's identity out from under its own
+// settle path.
+func (s *Session) releaseRunningTurnID(turnID string) {
+	if turnID == "" || s.clientMutations == nil {
+		return
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		if snapshot.ActiveTurnID == turnID {
+			snapshot.ActiveTurnID = ""
+		}
+		return nil
+	}); err != nil {
+		s.emit(events.EventWarning, events.WarningData{
+			Message: fmt.Sprintf("release running turn failed: %v", err),
+		})
+	}
+}

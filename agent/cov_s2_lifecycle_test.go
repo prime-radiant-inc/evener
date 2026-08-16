@@ -78,7 +78,7 @@ func TestS2Cov_AcceptContinuationInput_AppendsSteeringAndMarker(t *testing.T) {
 		}
 	}()
 
-	sess.acceptContinuationInput(context.Background(), "keep going toward the objective")
+	sess.acceptContinuationInput(context.Background(), "keep going toward the objective", "")
 
 	if k := s2cov_lastTurnKind(sess); k != schema.TurnSteering {
 		t.Fatalf("last turn kind = %v, want TurnSteering", k)

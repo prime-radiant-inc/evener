@@ -346,7 +346,7 @@ func TestAcceptContinuationIsSteeringNotUser(t *testing.T) {
 	beforeTurns := sess.turns
 	sess.mu.Unlock()
 
-	sess.acceptContinuationInput(context.Background(), "CONTINUE")
+	sess.acceptContinuationInput(context.Background(), "CONTINUE", "")
 
 	sess.mu.Lock()
 	afterTurns := sess.turns
@@ -409,7 +409,7 @@ func TestContinuationEventOmitsFullPrompt(t *testing.T) {
 	stop := drainEvents(sess)
 
 	fullPrompt := "BEGIN " + strings.Repeat("scaffolding ", 300) + " END" // ~3.6KB
-	sess.acceptContinuationInput(context.Background(), fullPrompt)
+	sess.acceptContinuationInput(context.Background(), fullPrompt, "")
 
 	sess.mu.Lock()
 	last := sess.history[len(sess.history)-1]

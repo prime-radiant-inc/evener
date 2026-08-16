@@ -667,6 +667,11 @@ type PromptLoadedData struct {
 // to the model via the steering turn and is kept out of the UI projection.
 type GoalContinuationData struct {
 	Text string `json:"text"`
+	// StableTurnID names the turn this continuation opens, so the AppWire
+	// projection adopts the daemon's own id instead of minting one its
+	// mutation preconditions will not accept. Empty means unnamed, which is
+	// what a session nobody serves does. Mirrors UserInputData.
+	StableTurnID string `json:"stable_turn_id,omitempty"`
 }
 
 // GoalEndedData is the payload for an EventGoalEnded event. It reports the

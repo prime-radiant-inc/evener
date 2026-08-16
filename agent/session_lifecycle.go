@@ -1025,10 +1025,22 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}()
 	}
 
+	// Name the turn before the event that opens it, so the AppWire projection
+	// adopts this id in stream order rather than minting a turn_<n> of its own
+	// that no mutation precondition accepts. User input arrives already named
+	// by its own durable reservation; these two kinds have nothing to name
+	// them. A refused wake releases the name below rather than leaving a turn
+	// that never ran holding the slot.
+	var runningTurnID string
+	if kind == EntryContinuation || kind == EntryNotification {
+		runningTurnID = s.mintRunningTurnID()
+	}
+
 	if kind == EntryContinuation {
-		s.acceptContinuationInput(ctx, input)
+		s.acceptContinuationInput(ctx, input, runningTurnID)
 	} else if kind == EntryNotification {
-		if !s.acceptNotificationInput(ctx) {
+		if !s.acceptNotificationInput(ctx, runningTurnID) {
+			s.releaseRunningTurnID(runningTurnID)
 			return "", false, nil
 		}
 		rootAttentionAccepted = true
@@ -1037,6 +1049,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	} else if err := s.acceptUserInput(ctx, input, images, inputProvenance, kind == EntryUserInput); err != nil {
 		return "", false, err
 	}
+	// Held for the turn's whole life, then released. A name this turn did not
+	// mint is somebody else's and releaseRunningTurnID leaves it alone.
+	defer s.releaseRunningTurnID(runningTurnID)
 
 	var toolSigs []string
 	var toolSigFailed []bool
@@ -1465,7 +1480,7 @@ const goalContinuationMarker = "Continuing toward the goal."
 // MaxTurns check, and the s.turns++ accounting (goal turns are bounded by the
 // no-progress breaker, not the session's user-input ceiling; SESSION_END.Turns
 // reads the separate modelResponses counter, so skipping s.turns++ is safe).
-func (s *Session) acceptContinuationInput(_ context.Context, input string) {
+func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID string) {
 	// A goal continuation is a fresh top-level input: reset active provenance so
 	// the continuation turn's events do not inherit a prior watch origin.
 	s.replaceActiveProvenance(nil)
@@ -1479,7 +1494,7 @@ func (s *Session) acceptContinuationInput(_ context.Context, input string) {
 	if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok && snap.Objective != "" {
 		marker = "Continuing toward: " + snap.Objective
 	}
-	s.emit(events.EventGoalContinuation, events.GoalContinuationData{Text: marker})
+	s.emit(events.EventGoalContinuation, events.GoalContinuationData{Text: marker, StableTurnID: stableTurnID})
 	s.appendTurn(schema.TurnSteering, llm.User(input))
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
@@ -1503,7 +1518,7 @@ func (s *Session) acceptDelegateAttentionInput() {
 // It returns proceed=false on an empty queue, having set s.sessionEndEmitted so
 // the drain loop's idle tail suppresses the phantom SESSION_END{input_complete} —
 // an empty notification turn is a true no-op that makes no model request.
-func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
+func (s *Session) acceptNotificationInput(ctx context.Context, stableTurnID string) (proceed bool) {
 	s.drivePendingStableDelegateAttention()
 	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
 	// watch sends may have no token queued yet (the drive was launched on the
@@ -1551,7 +1566,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 			s.finishNotificationNoop()
 			return false
 		}
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
+		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification, StableTurnID: stableTurnID})
 	}
 	deliveredFailures := s.markJobNotificationsDelivered(jobNotifs)
 	s.requeueJobNotifications(deliveredFailures)

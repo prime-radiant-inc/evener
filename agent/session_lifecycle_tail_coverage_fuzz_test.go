@@ -135,7 +135,7 @@ func FuzzSessionLifecycleNotificationFaultCoverage(f *testing.F) {
 		appendSession := sltcNewSession(t, false, false)
 		appendSession.enqueueJobNotification(jobNotification{Kind: jobNotificationKindWatch, JobID: "watch", Status: jobNotificationEventWatch})
 		appendCtx := context.WithValue(context.Background(), sessionLifecycleFaultsKey{}, map[string]error{"append_notification": errors.New("append failed")})
-		if appendSession.acceptNotificationInput(appendCtx) {
+		if appendSession.acceptNotificationInput(appendCtx, "") {
 			t.Fatal("notification proceeded after durable append failure")
 		}
 		loopSession := sltcNewSession(t, false, false)
@@ -143,7 +143,7 @@ func FuzzSessionLifecycleNotificationFaultCoverage(f *testing.F) {
 			"inject_watch_notification": errors.New("inject"),
 			"settle_watch":              errors.New("settle"),
 		})
-		if !loopSession.acceptNotificationInput(loopCtx) {
+		if !loopSession.acceptNotificationInput(loopCtx, "") {
 			t.Fatal("injected watch notification did not proceed")
 		}
 		settleCtx := context.WithValue(context.Background(), sessionLifecycleFaultsKey{}, map[string]error{"settle_watch": errors.New("settle failed")})

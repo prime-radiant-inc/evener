@@ -58,7 +58,29 @@ func loadClientMutationSnapshotFS(fs afero.Fs, stateDir, sessionID string) (clie
 	if err := validateClientMutationSnapshot(snapshot, sessionID); err != nil {
 		return clientMutationSnapshot{}, fmt.Errorf("validate client mutation snapshot: %w", err)
 	}
+	forgetRunningTurnNoOneOwns(&snapshot)
 	return snapshot, nil
+}
+
+// forgetRunningTurnNoOneOwns drops an ActiveTurnID that no pending execution
+// names. A running turn does not survive the process that ran it: an id left
+// behind by an ungraceful exit has nothing that can ever settle it, and
+// AcceptClientMutationStart's "turn is already active" precondition would
+// then reject every later turn/start for the life of the session. An id a
+// pending execution still names is a different thing — that turn/start is
+// reclaimed and re-run by restore, and it needs its compare-and-commit
+// target intact. NextTurnSequence is deliberately untouched: ids stay
+// monotonic across restarts.
+func forgetRunningTurnNoOneOwns(snapshot *clientMutationSnapshot) {
+	if snapshot.ActiveTurnID == "" {
+		return
+	}
+	for _, pending := range snapshot.PendingExecutions {
+		if pending.TurnID == snapshot.ActiveTurnID {
+			return
+		}
+	}
+	snapshot.ActiveTurnID = ""
 }
 
 func saveClientMutationSnapshotFS(
