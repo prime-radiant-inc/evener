@@ -61,16 +61,20 @@
 <script>
 const fixtures = [
   { width: 320 },
-  // The composer's fixed controls consume 138.375px in this rendered
-  // hierarchy. Fractional outer widths are deliberate: they make StatusRow's
-  // actual query-container rect exactly 399/400, 479/480, and 559/560px rather
-  // than relying on integer clientWidth rounding around a fractional box.
-  { width: 537.375, expectedStatusWidth: 399 },
-  { width: 538.375, expectedStatusWidth: 400 },
-  { width: 617.375, expectedStatusWidth: 479 },
-  { width: 618.375, expectedStatusWidth: 480 },
-  { width: 697.375, expectedStatusWidth: 559 },
-  { width: 698.375, expectedStatusWidth: 560 },
+  // The composer's fixed controls consume 139.890625px in this rendered
+  // hierarchy (measured with the bundled Inter/JetBrains Mono fonts, which
+  // really load now that the guard is served over HTTP - the number was
+  // 138.375px in the file:// era, when the fonts 404'd and every host
+  // silently measured its own fallback font instead). Fractional outer
+  // widths are deliberate: they make StatusRow's actual query-container rect
+  // exactly 399/400, 479/480, and 559/560px rather than relying on integer
+  // clientWidth rounding around a fractional box.
+  { width: 538.890625, expectedStatusWidth: 399 },
+  { width: 539.890625, expectedStatusWidth: 400 },
+  { width: 618.890625, expectedStatusWidth: 479 },
+  { width: 619.890625, expectedStatusWidth: 480 },
+  { width: 698.890625, expectedStatusWidth: 559 },
+  { width: 699.890625, expectedStatusWidth: 560 },
   { width: 900 },
   { width: 900, shortModel: true },
 ];

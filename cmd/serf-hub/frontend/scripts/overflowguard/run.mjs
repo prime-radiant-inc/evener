@@ -38,6 +38,7 @@
 // launch (~10s).
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { connectPage, evaluate, navigateTo, waitForHttp } from "../browserGuardCdp.mjs";
 import { startBrowserGuard } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -48,78 +49,24 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // would have missed the original bug entirely.
 const DEFAULT_WIDTHS = [390, 700, 1024, 1400];
 
-async function waitForHttp(url, label) {
-  for (let i = 0; i < 300; i++) {
-    try {
-      if ((await fetch(url)).ok) return;
-    } catch {
-      // not listening yet
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error(`${label} never came up at ${url}`);
-}
-
-function connect(wsUrl) {
-  const ws = new WebSocket(wsUrl);
-  let id = 0;
-  const pending = new Map();
-  ws.addEventListener("message", (ev) => {
-    const msg = JSON.parse(ev.data);
-    if (msg.id !== undefined && pending.has(msg.id)) {
-      pending.get(msg.id)(msg);
-      pending.delete(msg.id);
-    }
-  });
-  const ready = new Promise((resolve, reject) => {
-    ws.addEventListener("open", resolve, { once: true });
-    ws.addEventListener("error", reject, { once: true });
-  });
-  const send = (method, params = {}) =>
-    new Promise((resolve) => {
-      const thisId = ++id;
-      pending.set(thisId, resolve);
-      ws.send(JSON.stringify({ id: thisId, method, params }));
-    });
-  return { ws, ready, send };
-}
-
 async function measureAt(cdpPort, url) {
-  const targets = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
-  const target = targets.find((t) => t.type === "page");
-  if (!target) throw new Error("chrome exposed no page target");
-  const { ws, ready, send } = connect(target.webSocketDebuggerUrl);
-  await ready;
+  const page = await connectPage(cdpPort);
+  const { send } = page;
   try {
-    await send("Page.enable");
-    const loaded = new Promise((resolve) => {
-      const handler = (ev) => {
-        if (JSON.parse(ev.data).method === "Page.loadEventFired") {
-          ws.removeEventListener("message", handler);
-          resolve();
-        }
-      };
-      ws.addEventListener("message", handler);
-    });
-    await send("Page.navigate", { url });
-    await loaded;
+    await navigateTo(page, url);
 
-    const host = (await send("Runtime.evaluate", { expression: "location.host", returnByValue: true })).result.result
-      .value;
+    const host = await evaluate(send, "location.host");
     if (String(host).includes("9180")) throw new Error("refusing: this eval landed on the shared serf-hub port");
 
     // The delegate module claims its turn's leadership in a layout effect and
     // the virtualizer measures rows post-mount, so the tree settles a frame or
     // two after load. Await that settling rather than measuring a tree that is
     // still assembling itself.
-    await send("Runtime.evaluate", {
-      expression: "window.settled",
-      awaitPromise: true,
-      returnByValue: true,
-    });
+    await evaluate(send, "window.settled");
 
-    const exceptionSafety = await send("Runtime.evaluate", {
-      expression: `(() => {
+    const exceptionSafety = await evaluate(
+      send,
+      `(() => {
         const systemPrompt = [...document.querySelectorAll('[data-testid="system-notice-scaffold"]')].find((details) =>
           details.querySelector(':scope > summary')?.textContent?.startsWith('System prompt'),
         );
@@ -143,21 +90,12 @@ async function measureAt(cdpPort, url) {
         }
         return { found: details.length, threw, originalOpen, restoredOpen: details.map((details) => details.open) };
       })()`,
-      returnByValue: true,
-    });
-    if (exceptionSafety.result.exceptionDetails) {
-      throw new Error(`exception-safety eval threw: ${JSON.stringify(exceptionSafety.result.exceptionDetails)}`);
-    }
+    );
 
-    const out = await send("Runtime.evaluate", {
-      expression: "JSON.stringify(window.measure())",
-      returnByValue: true,
-      awaitPromise: true,
-    });
-    if (out.result.exceptionDetails) throw new Error(`page eval threw: ${JSON.stringify(out.result.exceptionDetails)}`);
-    return { ...JSON.parse(out.result.result.value), exceptionSafety: exceptionSafety.result.result.value };
+    const measured = await evaluate(send, "JSON.stringify(window.measure())");
+    return { ...JSON.parse(measured), exceptionSafety };
   } finally {
-    ws.close();
+    page.close();
   }
 }
 
@@ -169,24 +107,10 @@ async function measureAt(cdpPort, url) {
 // composer's inline session chrome below 640px, then re-open the menu and
 // confirm "Tasks ✓".
 async function verifyPanelCollapse(cdpPort, url) {
-  const targets = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
-  const target = targets.find((t) => t.type === "page");
-  if (!target) throw new Error("chrome exposed no page target");
-  const { ws, ready, send } = connect(target.webSocketDebuggerUrl);
-  await ready;
+  const page = await connectPage(cdpPort);
+  const { send } = page;
   try {
-    await send("Page.enable");
-    const loaded = new Promise((resolve) => {
-      const handler = (ev) => {
-        if (JSON.parse(ev.data).method === "Page.loadEventFired") {
-          ws.removeEventListener("message", handler);
-          resolve();
-        }
-      };
-      ws.addEventListener("message", handler);
-    });
-    await send("Page.navigate", { url });
-    await loaded;
+    await navigateTo(page, url);
     const runtimeState = await send("Runtime.evaluate", {
       expression: `({ body: document.body.innerText, html: document.body.innerHTML.slice(0, 1000), errors: window.__panelGuardErrors ?? [] })`,
       returnByValue: true,
@@ -243,7 +167,7 @@ async function verifyPanelCollapse(cdpPort, url) {
     }
     return out.result.result.value;
   } finally {
-    ws.close();
+    page.close();
   }
 }
 

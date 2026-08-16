@@ -1,0 +1,182 @@
+// Shared CDP client plumbing for every browser guard (layoutguard,
+// overflowguard, spawnguard). browserGuardProcess.mjs owns the PROCESS
+// lifecycle (one Vite dev server + one headless Chrome with a private
+// profile); this module owns the WIRE: waiting for endpoints, one WebSocket
+// send/pending map, navigation, evaluation, viewport emulation, and pinned
+// pseudo-states.
+//
+// WHY ONE MODULE: all three guards grew private copies of the same
+// connect/send/navigate plumbing (layoutguard/cdp.mjs's withPage,
+// overflowguard's connect, spawnguard's connect - the latter two verbatim
+// twins). The guards stay separate ENTRYPOINTS on purpose - the Makefile
+// runs each with its own log and PASS/FAIL verdict so one guard's missing
+// browser cannot mask another's result - but there was never a reason for
+// three divergent wire implementations, and layoutguard's copy is where the
+// file:// font bug lived.
+//
+// Origin discipline (kata 8ecz): guards never touch the shared serf-hub dev
+// server on 9180 or the shared MCP Chrome. Every page load is pinned to the
+// guard's OWN loopback Vite origin by assertGuardOrigin.
+
+/** Poll a URL until it answers OK; the error names what never came up. */
+export async function waitForHttp(url, label) {
+  for (let attempt = 0; attempt < 300; attempt++) {
+    try {
+      if ((await fetch(url)).ok) return;
+    } catch {
+      // The child process is still starting.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`${label} never came up at ${url}`);
+}
+
+/**
+ * Find Chrome's page target over CDP and open a command channel to it.
+ * send() rejects on a CDP error response so a failing command can never read
+ * as a successful measurement. Callers close() in a finally.
+ */
+export async function connectPage(cdpPort) {
+  const targets = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
+  const target = targets.find((entry) => entry.type === "page");
+  if (!target) throw new Error("chrome exposed no page target");
+
+  const ws = new WebSocket(target.webSocketDebuggerUrl);
+  let id = 0;
+  const pending = new Map();
+  ws.addEventListener("message", (event) => {
+    const message = JSON.parse(event.data);
+    if (message.id !== undefined && pending.has(message.id)) {
+      pending.get(message.id)(message);
+      pending.delete(message.id);
+    }
+  });
+  await new Promise((resolve, reject) => {
+    ws.addEventListener("open", resolve, { once: true });
+    ws.addEventListener("error", reject, { once: true });
+  });
+
+  const send = (method, params = {}) =>
+    new Promise((resolve, reject) => {
+      const requestId = ++id;
+      pending.set(requestId, (message) => {
+        if (message.error) reject(new Error(`${method}: ${JSON.stringify(message.error)}`));
+        else resolve(message);
+      });
+      ws.send(JSON.stringify({ id: requestId, method, params }));
+    });
+
+  return { ws, send, close: () => ws.close() };
+}
+
+/** Page.enable, navigate, and await the load event - the triple every guard re-wrote. */
+export async function navigateTo({ ws, send }, url) {
+  await send("Page.enable");
+  const loaded = new Promise((resolve) => {
+    const handler = (event) => {
+      if (JSON.parse(event.data).method === "Page.loadEventFired") {
+        ws.removeEventListener("message", handler);
+        resolve();
+      }
+    };
+    ws.addEventListener("message", handler);
+  });
+  await send("Page.navigate", { url });
+  await loaded;
+}
+
+/**
+ * Evaluate an expression in the page (awaitPromise + returnByValue). A page
+ * exception is an error carrying the page's own details, never a silently
+ * undefined measurement.
+ */
+export async function evaluate(send, expression) {
+  const response = await send("Runtime.evaluate", {
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (response.result.exceptionDetails) {
+    throw new Error(`page eval threw: ${JSON.stringify(response.result.exceptionDetails)}`);
+  }
+  return response.result.result.value;
+}
+
+/** Pin exact browser metrics for a case that must not inherit Chrome's ambient window size. */
+export async function applyViewport(send, viewport) {
+  await send("Emulation.setDeviceMetricsOverride", {
+    width: viewport.width,
+    height: viewport.height,
+    deviceScaleFactor: viewport.deviceScaleFactor ?? 1,
+    mobile: viewport.mobile ?? false,
+    screenWidth: viewport.width,
+    screenHeight: viewport.height,
+  });
+}
+
+/** Metrics overrides persist per target; clear between cases sharing one page. */
+export async function clearViewportOverride(send) {
+  await send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+}
+
+/**
+ * Read the realized viewport out of the page - the input to layoutguard's
+ * diagnoseRealizedViewport, which turns "Chrome ignored the override" into a
+ * named failure instead of a geometry mystery.
+ */
+export async function realizedViewport(send) {
+  return evaluate(
+    send,
+    `JSON.stringify({
+      windowInnerWidth: window.innerWidth,
+      windowInnerHeight: window.innerHeight,
+      documentClientWidth: document.documentElement.clientWidth,
+      documentClientHeight: document.documentElement.clientHeight,
+      visualViewportWidth: window.visualViewport ? window.visualViewport.width : null,
+      visualViewportHeight: window.visualViewport ? window.visualViewport.height : null
+    })`,
+  ).then((json) => JSON.parse(json));
+}
+
+/**
+ * Pin pseudo-classes ON before evaluating, via CSS.forcePseudoState (the
+ * same mechanism DevTools' ":hov" toggle uses). Needed because some states
+ * cannot be reached from a page script at all: there is no way to synthesize
+ * a trusted hover, and a programmatic .focus() does NOT match :focus-visible
+ * (measured in Chrome - it stayed unmatched at opacity 0). This pins the
+ * SELECTOR match, so it proves the cascade applies the rule and nothing
+ * overrides it; whether Chrome's own heuristic calls a given focus "visible"
+ * is Chrome's contract, not ours. A selector that matches no element is an
+ * error, never a silent no-op.
+ */
+export async function forcePseudoStates(send, states) {
+  if (states.length === 0) return;
+  await send("DOM.enable");
+  await send("CSS.enable");
+  const doc = await send("DOM.getDocument", { depth: -1 });
+  const rootId = doc.result.root.nodeId;
+  for (const { selector, pseudoClasses } of states) {
+    const found = await send("DOM.querySelector", { nodeId: rootId, selector });
+    // DOM.querySelector answers with nodeId 0 for "no match" rather than
+    // failing - forcing nothing would leave the case measuring the resting
+    // state while reporting the forced one, so it stops here instead.
+    if (!found.result?.nodeId) throw new Error(`forcePseudoStates: no element matches ${selector}`);
+    await send("CSS.forcePseudoState", { nodeId: found.result.nodeId, forcedPseudoClasses: pseudoClasses });
+  }
+}
+
+/**
+ * Belt-and-suspenders guard rail: refuse to proceed if a measurement ever
+ * lands anywhere but the guard's own loopback Vite origin - above all the
+ * shared serf-hub dev server on 9180 (kata 8ecz's shared-instance class of
+ * bug).
+ */
+export async function assertGuardOrigin(send, expectedHost) {
+  const origin = await evaluate(send, "location.protocol + '//' + location.host");
+  if (origin.includes("9180")) {
+    throw new Error("refusing: this eval landed on port 9180 (the shared serf-hub dev server)");
+  }
+  if (origin !== `http://${expectedHost}`) {
+    throw new Error(`refusing: expected origin http://${expectedHost}, got ${origin}`);
+  }
+}
