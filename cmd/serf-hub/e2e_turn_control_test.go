@@ -291,6 +291,140 @@ func TestE2E_TurnControlReachesAnAgentStartedTurn(t *testing.T) {
 	})
 }
 
+// TestE2E_TurnControlReachesANotificationTurn is the regression for a turn the
+// agent starts for itself with no input of its own: a job the model launched in
+// the background finishes while the session is idle, and the completion
+// notification wakes it.
+//
+// The job blocks on a file this test creates only after the session has gone
+// idle. Without that barrier a short job finishes inside the same
+// ProcessInputKind and the drain loop takes the wake as an interleave, so the
+// test would silently exercise a different path than the one it names.
+//
+// It waits for a turn_m<n> rather than any active id: the daemon publishes a
+// projector-minted turn_<n> from the moment of the wake until the turn's own
+// boundary lands (kata c2ty keeps that window open deliberately), and steering
+// against that id is the bug, not the test.
+func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
+	}
+
+	provider, err := fakellm.New()
+	if err != nil {
+		t.Fatalf("start fake provider: %v", err)
+	}
+	t.Cleanup(provider.Close)
+
+	stack := startHubStack(t, provider)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	client := stack.dialRPC(ctx, t)
+
+	const steerText = "SERF-E2E-NOTIFICATION-STEER"
+	releasePath := filepath.Join(stack.workDir, "release-the-job")
+
+	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
+		Harness:         "serf",
+		CWD:             stack.workDir,
+		Input:           []appwire.InputItem{{Type: "text", Text: "SERF-E2E-NOTIFICATION-OPENING"}},
+		Model:           stack.model,
+		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
+	})
+	if err != nil {
+		t.Fatalf("thread/start: %v", err)
+	}
+	ref := started.Thread.Serf.Ref
+	t.Cleanup(func() {
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancelShutdown()
+		if _, err := clientRequest[appwire.EmptyResponse](shutdownCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
+			t.Errorf("thread/shutdown left the daemon running: %v", err)
+		}
+	})
+
+	// Round 1: launch a background job that waits on a file that does not exist
+	// yet. Round 2: end the turn, so the session is idle when the job finishes.
+	round1, err := provider.Next(ctx.Done())
+	if err != nil {
+		t.Fatalf("waiting for the opening model request: %v", err)
+	}
+	firstTurn := awaitActiveTurn(ctx, t, client, ref, "")
+	round1.RespondToolCall("shell", map[string]any{
+		"command": "while [ ! -f " + releasePath + " ]; do sleep 0.2; done",
+		"mode":    "background",
+	})
+	round2, err := provider.Next(ctx.Done())
+	if err != nil {
+		t.Fatalf("waiting for the round after the background job launched: %v", err)
+	}
+	round2.RespondToolCall("communicate", communicateArgs("job launched"))
+
+	awaitThread(ctx, t, client, ref, "the opening turn to finish", func(thread appwire.Thread) bool {
+		return thread.Serf.ActiveTurnID == ""
+	})
+
+	// Idle. Releasing the job now makes its completion an idle wake.
+	if err := os.WriteFile(releasePath, []byte("go\n"), 0o600); err != nil {
+		t.Fatalf("release the background job: %v", err)
+	}
+
+	notificationRound, err := provider.Next(ctx.Done())
+	if err != nil {
+		t.Fatalf("waiting for the notification turn's model request: %v", err)
+	}
+	var notificationTurn string
+	awaitThread(ctx, t, client, ref, "the notification turn to be named", func(thread appwire.Thread) bool {
+		id := thread.Serf.ActiveTurnID
+		if id == "" || id == firstTurn || !strings.HasPrefix(id, "turn_m") {
+			return false
+		}
+		notificationTurn = id
+		return true
+	})
+	t.Logf("notification turn in flight: %s", notificationTurn)
+
+	steerReceipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
+		Ref:              ref,
+		ClientMutationID: newMutationID(t),
+		ExpectedTurnID:   notificationTurn,
+		Input:            []appwire.InputItem{{Type: "text", Text: steerText}},
+	})
+	if err != nil {
+		t.Fatalf("turn/steer against notification turn %q: %v", notificationTurn, err)
+	}
+	if steerReceipt.Receipt.Disposition != appwire.MutationDispositionApplied {
+		t.Fatalf("turn/steer disposition = %q, want %q", steerReceipt.Receipt.Disposition, appwire.MutationDispositionApplied)
+	}
+
+	notificationRound.RespondToolCall("read_file", map[string]any{"file_path": stack.readableFile})
+	afterSteer, err := provider.Next(ctx.Done())
+	if err != nil {
+		t.Fatalf("waiting for the model request after the tool round: %v", err)
+	}
+	if !afterSteer.Contains(steerText) {
+		t.Fatalf("the steer never reached the notification turn's loop; messages:\n%s",
+			strings.Join(afterSteer.Texts(), "\n"))
+	}
+
+	interruptReceipt, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
+		Ref:              ref,
+		ClientMutationID: newMutationID(t),
+		ExpectedTurnID:   notificationTurn,
+	})
+	if err != nil {
+		t.Fatalf("turn/interrupt against notification turn %q: %v", notificationTurn, err)
+	}
+	if interruptReceipt.Receipt.Disposition != appwire.MutationDispositionApplied {
+		t.Fatalf("turn/interrupt disposition = %q, want %q", interruptReceipt.Receipt.Disposition, appwire.MutationDispositionApplied)
+	}
+	awaitThread(ctx, t, client, ref, "the interrupted notification turn to stop", func(thread appwire.Thread) bool {
+		return thread.Serf.ActiveTurnID != notificationTurn
+	})
+}
+
 // awaitActiveTurn waits for the thread to report an active turn whose id is
 // not `excluding`, and returns it. The status flip and the turn/started
 // notification that populates activeTurnId land separately, which is exactly
