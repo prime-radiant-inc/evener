@@ -138,7 +138,7 @@ func fuzzInitW3RegressionPrograms(t *testing.T) {
 		{"new-prompt", TestW3Init_NewSession_SystemPromptFileReadError},
 		{"new-strategy-tool", TestW3Init_NewSession_StrategyToolRegisterError},
 		{"restore-env", TestW3Init_Restore_EnvInitializeError},
-		{"restore-job-manager", TestW3Init_Restore_JobManagerError},
+		{"restore-legacy-scan-first", TestW3Init_Restore_LegacyScanErrorPrecedesJobManager},
 		{"restore-init", TestW3Init_Restore_InitSessionStateError},
 		{"restore-strategy", TestW3Init_Restore_SelectStrategyError},
 		{"pending-nil-receiver", TestW3Init_PendingSessionStart_NilReceiver},

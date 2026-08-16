@@ -73,7 +73,7 @@ func FuzzSessionInitSeed100Exact(f *testing.F) {
 			{"new-prompt-error", TestW3Init_NewSession_SystemPromptFileReadError},
 			{"new-strategy-tool-error", TestW3Init_NewSession_StrategyToolRegisterError},
 			{"restore-env-error", TestW3Init_Restore_EnvInitializeError},
-			{"restore-job-error", TestW3Init_Restore_JobManagerError},
+			{"restore-legacy-scan-first", TestW3Init_Restore_LegacyScanErrorPrecedesJobManager},
 			{"restore-init-error", TestW3Init_Restore_InitSessionStateError},
 			{"restore-strategy-error", TestW3Init_Restore_SelectStrategyError},
 			{"restore-sandbox", TestRestoreProvisionsPersistedSandbox},
