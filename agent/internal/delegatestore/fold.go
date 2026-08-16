@@ -2,7 +2,9 @@ package delegatestore
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 
 	"primeradiant.com/serf/agent/provenance"
@@ -24,7 +26,7 @@ func Fold(events []Event) (State, error) {
 
 func Apply(state State, event Event) error {
 	if state == nil {
-		return fmt.Errorf("delegate state is nil")
+		return errors.New("delegate state is nil")
 	}
 	if err := validateEventEnvelope(event); err != nil {
 		return err
@@ -59,9 +61,7 @@ func Apply(state State, event Event) error {
 	for id := range state {
 		delete(state, id)
 	}
-	for id, aggregate := range next {
-		state[id] = aggregate
-	}
+	maps.Copy(state, next)
 	return nil
 }
 
@@ -252,7 +252,7 @@ func applyResumabilityClosed(state State, event Event) error {
 
 func applySubtreeStopRequested(state State, event Event) error {
 	if event.Seq == 0 {
-		return fmt.Errorf("delegate subtree stop request sequence is zero")
+		return errors.New("delegate subtree stop request sequence is zero")
 	}
 	payload := event.SubtreeStopRequested
 	if payload.TargetDelegateID != event.DelegateID {
@@ -281,7 +281,7 @@ func applySubtreeStopRequested(state State, event Event) error {
 func applySubtreeStopCompleted(state State, event Event) error {
 	payload := event.SubtreeStopCompleted
 	if payload.RequestSeq == 0 {
-		return fmt.Errorf("delegate subtree stop completion request sequence is zero")
+		return errors.New("delegate subtree stop completion request sequence is zero")
 	}
 	target, err := requireAggregate(state, event.DelegateID)
 	if err != nil {
@@ -393,21 +393,21 @@ func validateEventEnvelope(event Event) error {
 func validateDescriptor(descriptor Descriptor) error {
 	switch {
 	case descriptor.ChildSessionID == "":
-		return fmt.Errorf("child session id is empty")
+		return errors.New("child session id is empty")
 	case descriptor.TranscriptRef == "":
-		return fmt.Errorf("transcript ref is empty")
+		return errors.New("transcript ref is empty")
 	case descriptor.OwnerSessionID == "":
-		return fmt.Errorf("owner session id is empty")
+		return errors.New("owner session id is empty")
 	case descriptor.Task == "":
-		return fmt.Errorf("task is empty")
+		return errors.New("task is empty")
 	case descriptor.AgentType == "":
-		return fmt.Errorf("agent type is empty")
+		return errors.New("agent type is empty")
 	case len(descriptor.ResultSchema) > 0 && !json.Valid(descriptor.ResultSchema):
-		return fmt.Errorf("result schema is not valid JSON")
+		return errors.New("result schema is not valid JSON")
 	case descriptor.Config.ShareTasksWithChildren && descriptor.SharedTaskStoreOwnerSessionID == "":
-		return fmt.Errorf("shared task store owner session id is empty")
+		return errors.New("shared task store owner session id is empty")
 	case !descriptor.Config.ShareTasksWithChildren && descriptor.SharedTaskStoreOwnerSessionID != "":
-		return fmt.Errorf("shared task store owner requires task sharing")
+		return errors.New("shared task store owner requires task sharing")
 	}
 	if err := validateSandboxConfigProjection(descriptor); err != nil {
 		return err
@@ -421,25 +421,25 @@ func validateSandboxConfigProjection(descriptor Descriptor) error {
 	network := descriptor.Config.SandboxNet
 	if snapshot == nil {
 		if mode != "" || network != nil {
-			return fmt.Errorf("sandbox snapshot is nil but config projection is nonempty")
+			return errors.New("sandbox snapshot is nil but config projection is nonempty")
 		}
 		return nil
 	}
 	if mode == "" && network == nil {
-		return fmt.Errorf("sandbox snapshot requires a config projection")
+		return errors.New("sandbox snapshot requires a config projection")
 	}
 	if snapshot.Mode != mode {
 		return fmt.Errorf("sandbox mode %q does not match config mode %q", snapshot.Mode, mode)
 	}
 	if (snapshot.Network == nil) != (network == nil) || snapshot.Network != nil && *snapshot.Network != *network {
-		return fmt.Errorf("sandbox network does not match config network")
+		return errors.New("sandbox network does not match config network")
 	}
 	return nil
 }
 
 func validateToolNameCeiling(descriptor Descriptor) error {
 	if len(descriptor.ToolNameCeiling) == 0 {
-		return fmt.Errorf("tool name ceiling is empty")
+		return errors.New("tool name ceiling is empty")
 	}
 	resultToolName := descriptor.Config.ResultToolName
 	if resultToolName == "" {
@@ -449,13 +449,13 @@ func validateToolNameCeiling(descriptor Descriptor) error {
 	for i, name := range descriptor.ToolNameCeiling {
 		switch {
 		case name == "":
-			return fmt.Errorf("tool name ceiling contains an empty name")
+			return errors.New("tool name ceiling contains an empty name")
 		case name == "*":
 			return fmt.Errorf("tool name ceiling contains wildcard %q", name)
 		case i > 0 && descriptor.ToolNameCeiling[i-1] == name:
 			return fmt.Errorf("tool name ceiling contains duplicate %q", name)
 		case i > 0 && descriptor.ToolNameCeiling[i-1] > name:
-			return fmt.Errorf("tool name ceiling is not sorted")
+			return errors.New("tool name ceiling is not sorted")
 		}
 		containsResultTool = containsResultTool || name == resultToolName
 	}
@@ -470,16 +470,16 @@ func validateTerminalPacket(packet TerminalPacket) error {
 		return fmt.Errorf("invalid kind %q", packet.Kind)
 	}
 	if len(packet.Message) == 0 || !json.Valid(packet.Message) {
-		return fmt.Errorf("message is not valid JSON")
+		return errors.New("message is not valid JSON")
 	}
 	if len(packet.StructuredResult) > 0 && !json.Valid(packet.StructuredResult) {
-		return fmt.Errorf("structured result is not valid JSON")
+		return errors.New("structured result is not valid JSON")
 	}
 	if len(packet.StructuredResult) > MaxTerminalStructuredResultBytes {
 		return fmt.Errorf("structured result exceeds %d bytes", MaxTerminalStructuredResultBytes)
 	}
 	if len(packet.Metadata) > 0 && !json.Valid(packet.Metadata) {
-		return fmt.Errorf("metadata is not valid JSON")
+		return errors.New("metadata is not valid JSON")
 	}
 	return nil
 }
@@ -600,15 +600,15 @@ func validOutcomeStatus(status OutcomeStatus) bool {
 func validateOutcome(outcome Outcome) error {
 	if outcome.Status != OutcomeExhausted {
 		if outcome.ExhaustionBudget != "" || outcome.ExhaustionLimit != 0 || outcome.Resumable != nil {
-			return fmt.Errorf("non-exhausted outcome carries exhaustion metadata")
+			return errors.New("non-exhausted outcome carries exhaustion metadata")
 		}
 		return nil
 	}
 	if outcome.ExhaustionLimit <= 0 {
-		return fmt.Errorf("exhaustion limit must be positive")
+		return errors.New("exhaustion limit must be positive")
 	}
 	if outcome.Resumable == nil {
-		return fmt.Errorf("exhausted outcome omits resumability")
+		return errors.New("exhausted outcome omits resumability")
 	}
 	switch outcome.ExhaustionBudget {
 	case ExhaustionBudgetToolRounds:
@@ -616,14 +616,14 @@ func validateOutcome(outcome Outcome) error {
 			return fmt.Errorf("tool-round exhaustion reason is %q", outcome.Reason)
 		}
 		if !*outcome.Resumable {
-			return fmt.Errorf("tool-round exhaustion is not resumable")
+			return errors.New("tool-round exhaustion is not resumable")
 		}
 	case ExhaustionBudgetTurns:
 		if outcome.Reason != "turn_budget_exhausted" {
 			return fmt.Errorf("turn exhaustion reason is %q", outcome.Reason)
 		}
 		if *outcome.Resumable {
-			return fmt.Errorf("turn exhaustion is resumable")
+			return errors.New("turn exhaustion is resumable")
 		}
 	default:
 		return fmt.Errorf("invalid exhaustion budget %q", outcome.ExhaustionBudget)
