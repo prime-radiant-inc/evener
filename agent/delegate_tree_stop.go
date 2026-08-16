@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 
@@ -175,7 +176,7 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 				reservationTokens = append(reservationTokens, token)
 			}
 		}
-		sort.Slice(reservationTokens, func(i, j int) bool { return reservationTokens[i] < reservationTokens[j] })
+		slices.Sort(reservationTokens)
 		for _, token := range reservationTokens {
 			reservation := c.reservations[token]
 			stop.starts[token] = struct{}{}
@@ -189,7 +190,7 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 				workTokens = append(workTokens, token)
 			}
 		}
-		sort.Slice(workTokens, func(i, j int) bool { return workTokens[i] < workTokens[j] })
+		slices.Sort(workTokens)
 		for _, token := range workTokens {
 			work := c.work[token]
 			stop.work[work.token] = work.jobID
@@ -302,7 +303,7 @@ func (c *delegateTreeController) cancelPlanForStopLocked(stop *delegateStopState
 				reservationTokens = append(reservationTokens, token)
 			}
 		}
-		sort.Slice(reservationTokens, func(i, j int) bool { return reservationTokens[i] < reservationTokens[j] })
+		slices.Sort(reservationTokens)
 		for _, token := range reservationTokens {
 			if cancel := c.reservations[token].cancel; cancel != nil {
 				plan.cancel = append(plan.cancel, cancel)
@@ -316,7 +317,7 @@ func (c *delegateTreeController) cancelPlanForStopLocked(stop *delegateStopState
 				}
 			}
 		}
-		sort.Slice(workTokens, func(i, j int) bool { return workTokens[i] < workTokens[j] })
+		slices.Sort(workTokens)
 		for _, token := range workTokens {
 			work := c.work[token]
 			if work.committed {
