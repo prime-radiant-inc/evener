@@ -20,16 +20,6 @@ func renderToolCardForResult(toolName, callID string, content any) string {
 	return renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
 }
 
-func renderToolCardForStateResult(toolName, callID string, content any, toolState []byte) string {
-	res := result(callID, toolName, content, false)
-	res.ToolState = toolState
-	entries := []transcript.Entry{
-		toolCallEntry(call(callID, toolName, `{}`)),
-		toolResultEntry(res),
-	}
-	return renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
-}
-
 // TestRenderMarkdown_JobDelegateResult is the headline lifecycle case: a
 // delegate result whose job body carries a multi-line output renders legibly: a
 // status line surfacing status and the transcript_ref before the output, then

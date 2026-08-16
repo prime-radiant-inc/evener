@@ -1,7 +1,6 @@
 package tool
 
 import (
-	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -417,30 +416,6 @@ func TestDefDelegateSendDescribesContextualCallerRoute(t *testing.T) {
 	to := props["to"].(map[string]any)["description"].(string)
 	if !strings.Contains(def.Description, "caller") || !strings.Contains(to, "caller") {
 		t.Fatalf("DefDelegateSend caller route missing: description=%q to=%q", def.Description, to)
-	}
-}
-
-func collectSchemaDescriptions(value any, descriptions *[]string) {
-	switch v := value.(type) {
-	case map[string]any:
-		if desc, ok := v["description"]; ok {
-			*descriptions = append(*descriptions, fmt.Sprint(desc))
-		}
-		for _, child := range v {
-			collectSchemaDescriptions(child, descriptions)
-		}
-	case []any:
-		for _, child := range v {
-			collectSchemaDescriptions(child, descriptions)
-		}
-	case []map[string]any:
-		for _, child := range v {
-			collectSchemaDescriptions(child, descriptions)
-		}
-	case []string:
-		for _, child := range v {
-			collectSchemaDescriptions(child, descriptions)
-		}
 	}
 }
 

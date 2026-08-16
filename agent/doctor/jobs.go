@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -48,8 +47,8 @@ type DelegateView struct {
 	Phase              string                        `json:"phase"`
 	Resumable          bool                          `json:"resumable"`
 	NotResumableReason string                        `json:"not_resumable_reason,omitempty"`
-	RunStartedAt       time.Time                     `json:"run_started_at,omitempty"`
-	LatestActivityAt   time.Time                     `json:"latest_activity_at,omitempty"`
+	RunStartedAt       time.Time                     `json:"run_started_at"`
+	LatestActivityAt   time.Time                     `json:"latest_activity_at"`
 	LatestOutcome      *delegatestore.Outcome        `json:"latest_outcome,omitempty"`
 	LatestPacket       *delegatestore.TerminalPacket `json:"latest_packet,omitempty"`
 }
@@ -314,13 +313,6 @@ func jobTimePtr(t *time.Time) string {
 		return "-"
 	}
 	return jobTime(*t)
-}
-
-func optionalBoolString(v *bool) string {
-	if v == nil {
-		return "-"
-	}
-	return strconv.FormatBool(*v)
 }
 
 // emptyJobsMessage renders the right "no rows" message for the active filter, so

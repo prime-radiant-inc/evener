@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"sort"
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
@@ -239,14 +240,7 @@ func (c *delegateTreeController) armColdDelegateAttentionOnce(delegateID, attent
 	if err != nil {
 		return false, err
 	}
-	found := false
-	for _, id := range ids {
-		if id == attentionID {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(ids, attentionID) {
 		return false, nil
 	}
 	return c.noteDelegateAttention(delegateID, attentionID), nil

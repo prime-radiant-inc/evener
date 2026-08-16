@@ -2033,6 +2033,7 @@ func (jm *jobManager) liveWatchSummaries() []watchListEntry {
 	return entries
 }
 
+//nolint:unused // retained for the serffuzz restore/clear-history state-machine owner.
 func (jm *jobManager) liveWatchSummariesForReceiver(receiverSessionID, receiverDelegateID string) []watchListEntry {
 	receiverSessionID = strings.TrimSpace(receiverSessionID)
 	receiverDelegateID = strings.TrimSpace(receiverDelegateID)
@@ -3704,9 +3705,7 @@ func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watc
 	if settled, ok := cfg.settledUpdateSeq[state.Key]; ok && state.UpdateSeq <= settled {
 		return watchSendPendingRecord{}
 	}
-	if cfg.pending == nil {
-		// The map is created only after the pending event is durable.
-	}
+	// The pending map is created only after the pending event is durable.
 	record := watchSendPendingRecord{
 		cfg: cfg,
 		key: state.Key,
@@ -3772,6 +3771,8 @@ func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watc
 // recordWatchSendPending retains the pure runtime-state transition used by the
 // state-machine harnesses. Production persistence uses planWatchSendPending,
 // fsyncs its event, and calls commitWatchSendPendingRecord only afterward.
+//
+//nolint:unused // retained for the serffuzz watch/delegate state-machine owner.
 func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d watchSendDelivery) watchSendPendingRecord {
 	record := jm.planWatchSendPending(state, d)
 	jm.commitWatchSendPendingRecord(record, d.allowAfterTerminalExpiry)
@@ -3800,27 +3801,6 @@ func (jm *jobManager) commitWatchSendPendingRecord(record watchSendPendingRecord
 	if detached || cfg.rejectingDelivery || jm.closing {
 		jm.rememberDetachedPendingLocked(cfg)
 	}
-}
-
-func (jm *jobManager) rollbackWatchSendPendingRecord(record watchSendPendingRecord) {
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	cfg := record.cfg
-	if cfg == nil || cfg.pending == nil || len(record.pendingEvents) == 0 || record.pendingEvents[0].WatchSend == nil {
-		return
-	}
-	persisted := record.pendingEvents[0].WatchSend
-	current := cfg.pending[record.key]
-	if current == nil || current.UpdateSeq != persisted.UpdateSeq {
-		return
-	}
-	if record.previous != nil {
-		previous := *record.previous
-		cfg.pending[record.key] = &previous
-	} else {
-		deletePendingWatchSendKeyLocked(cfg, record.key)
-	}
-	jm.forgetTerminalFlushIfEmptyLocked(cfg)
 }
 
 func (jm *jobManager) removePendingWatchSend(cfg *watchConfig, key jobstore.WatchSendKey, updateSeq uint64) {

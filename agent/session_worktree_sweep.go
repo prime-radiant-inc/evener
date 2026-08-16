@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"path/filepath"
 	"strings"
 
@@ -201,7 +201,7 @@ func (s *Session) ownedDelegateIDSet() map[string]bool {
 // sweep performs its first destructive operation.
 func (s *Session) prepareStableLaneDisposal(delegateID string) error {
 	if s == nil || s.delegateController == nil {
-		return fmt.Errorf("stable delegate controller unavailable")
+		return errors.New("stable delegate controller unavailable")
 	}
 	_, _, plans, err := s.delegateController.closeStableWorktreeResumability(s, delegateID, stableWorktreeDisposalReason, true)
 	if err != nil {

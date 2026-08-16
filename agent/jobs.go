@@ -231,12 +231,6 @@ func (jm *jobManager) setParentJobID(jobID string) {
 	jm.mu.Unlock()
 }
 
-func (jm *jobManager) currentParentJobID() string {
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	return jm.parentJobID
-}
-
 func (jm *jobManager) bindStableDelegateParent(controller *delegateTreeController, lease delegateLease, forward func(jobstore.Event) error, owner *Session) {
 	jm.mu.Lock()
 	jm.parentJobID = ""
@@ -290,7 +284,6 @@ type runningJob struct {
 	stopReason              string
 	structured              any
 	structuredCaptureFailed bool
-	structuredCaptured      bool
 	terminal                *terminalJob
 	finalize                *finalizeAttempt
 	forwardDisabled         bool
@@ -369,6 +362,7 @@ func (jm *jobManager) stampLastActivityLocked(jobID string) {
 	run.rec.LastActivity = &now
 }
 
+//nolint:unused // retained for the tagged job-manager fault/state-machine fuzz owners.
 func (jm *jobManager) noteJobActivity(jobID, phase string) {
 	if jm == nil || strings.TrimSpace(jobID) == "" {
 		return
@@ -795,6 +789,7 @@ func (jm *jobManager) abandonRunningJobs() {
 	}
 }
 
+//nolint:unused // retained for the tagged job-manager recovery fuzz owners.
 func (jm *jobManager) abandonRunningJob(jobID string) {
 	jm.mu.Lock()
 	run := jm.running[jobID]
@@ -1203,6 +1198,7 @@ func (jm *jobManager) readOutputWindow(jobID string, beforeBytes, maxBytes int64
 	return jobOutputWindow{content: content, start: start, end: end, total: total, earliest: earliest}, nil
 }
 
+//nolint:unused // retained for tagged job-runtime output recovery fuzz owners.
 func (jm *jobManager) readOutputHead(jobID string, headBytes int) (content string, total int64, truncated bool, err error) {
 	jm.mu.Lock()
 	run := jm.running[jobID]
@@ -1230,6 +1226,8 @@ func (jm *jobManager) readOutputHead(jobID string, headBytes int) (content strin
 // outputDropped returns the number of bytes permanently evicted off the head of
 // jobID's output by the retention cap (0 when nothing has been pruned), for both
 // the live store and the closed-file fallback.
+//
+//nolint:unused // retained for tagged job-runtime output recovery fuzz owners.
 func (jm *jobManager) outputDropped(jobID string) (int64, error) {
 	jm.mu.Lock()
 	run := jm.running[jobID]
@@ -1605,6 +1603,7 @@ func (jm *jobManager) finalizeWithRun(jobID string, prepare func(*runningJob) (j
 	return jm.finalizeWithRunMode(jobID, prepare, true)
 }
 
+//nolint:unused // retained for tagged job-manager finalization fuzz owners.
 func (jm *jobManager) finalizeWithRunNoNotification(jobID string, prepare func(*runningJob) (jobstore.Status, string, *int, error)) error {
 	return jm.finalizeWithRunMode(jobID, prepare, false)
 }
@@ -2146,6 +2145,7 @@ func tailOutput(output *jobstore.OutputStore, tailBytes int) (string, int64, boo
 	return stringOutputResult(b, total, truncated, err)
 }
 
+//nolint:unused // retained with readOutputHead for tagged output recovery fuzz owners.
 func headOutput(output *jobstore.OutputStore, headBytes int) (string, int64, bool, error) {
 	b, total, truncated, err := output.Head(headBytes)
 	return stringOutputResult(b, total, truncated, err)

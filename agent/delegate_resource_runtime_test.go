@@ -513,7 +513,6 @@ func TestDelegateResourceRuntime_ConcurrentIdleSendsStartOneGeneration(t *testin
 	start := make(chan struct{})
 	outcomes := make(chan stableDelegateSendOutcome, 2)
 	for _, message := range []string{"first", "second"} {
-		message := message
 		go func() {
 			<-start
 			outcomes <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, message, 0)

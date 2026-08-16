@@ -288,6 +288,7 @@ func (s *Session) inspectDescendantReceiverWatchByID(watchID string) (jobWatchIn
 	return jobWatchInspectToolResult{}, false
 }
 
+//nolint:unused // retained for tagged stable receiver-watch state-machine owners.
 func (s *Session) clearDescendantReceiverWatchByID(watchID string) (watchResult, bool, error) {
 	return s.clearStableReceiverWatchByID(watchID)
 }
@@ -1836,6 +1837,7 @@ func jobDone(jm *jobManager, jobID string) (<-chan struct{}, bool) {
 	return run.done, true
 }
 
+//nolint:unused // retained for tagged job projection state-machine owners.
 func projectJobRecord(s *Session, rec *jobstore.JobRecord) jobListEntry {
 	return projectJobRecordForViewer(s, s, rec)
 }

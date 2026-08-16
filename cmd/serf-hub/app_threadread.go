@@ -323,14 +323,14 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 func pastEntryDelegateStatus(entry hubcore.PastEntry) ([]agent.DelegateStatusInfo, []string, error) {
 	sessionID := strings.TrimSpace(entry.Meta.ID)
 	if schema.ValidateSessionID(sessionID) != nil {
-		return nil, nil, nil
+		return nil, nil, nil //nolint:nilerr // malformed stored metadata has no safe delegate projection; the thread itself remains readable
 	}
 	rootID := strings.TrimSpace(entry.Meta.JobTreeRootSessionID)
 	if rootID == "" {
 		rootID = sessionID
 	}
 	if schema.ValidateSessionID(rootID) != nil {
-		return nil, nil, nil
+		return nil, nil, nil //nolint:nilerr // malformed stored metadata has no safe delegate projection; the thread itself remains readable
 	}
 	path := filepath.Join(entry.StateDir, "sessions", rootID, "delegates.jsonl")
 	if _, err := os.Stat(path); err != nil {

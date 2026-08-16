@@ -19,7 +19,6 @@ func TestDelegateResourceStop_StableStopIsAlwaysRecursive(t *testing.T) {
 	seedDelegateControllerRunning(t, c, "dlg_grandchild", "dlg_child")
 	var order []string
 	for _, id := range []string{"dlg_parent", "dlg_child", "dlg_grandchild"} {
-		id := id
 		c.live[id].binding.cancel = func() { order = append(order, id) }
 	}
 

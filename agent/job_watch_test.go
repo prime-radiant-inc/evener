@@ -63,72 +63,12 @@ func installWatchBelowValidation(t *testing.T, jm *jobManager, a watchArgs) {
 	jm.startProgressTimer(key, cfg, stop)
 }
 
-func captureWatchSendDelivery(t *testing.T, jm *jobManager, jobID, trigger string) watchSendDelivery {
-	t.Helper()
-	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, jobID)}
-	jm.mu.Lock()
-	var delivery watchSendDelivery
-	for _, cfg := range jm.watches {
-		if cfg.target == jobID {
-			delivery = jm.watchSendSnapshot(cfg, jobID, trigger, root)
-			break
-		}
-	}
-	jm.mu.Unlock()
-	if delivery.cfg == nil {
-		t.Fatalf("watch for %s not found", jobID)
-	}
-	return jm.snapshotWatchSendFrame(delivery)
-}
-
-func captureWatchSendDeliveryForKey(t *testing.T, jm *jobManager, key watchKey, watchedIdentity, trigger string) watchSendDelivery {
-	t.Helper()
-	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, watchedIdentity)}
-	jm.mu.Lock()
-	cfg := jm.watches[key]
-	var delivery watchSendDelivery
-	if cfg != nil {
-		delivery = jm.watchSendSnapshot(cfg, watchedIdentity, trigger, root)
-	}
-	jm.mu.Unlock()
-	if delivery.cfg == nil {
-		t.Fatalf("watch for %+v not found", key)
-	}
-	return jm.snapshotWatchSendFrame(delivery)
-}
-
-func setupConcretePendingWatchSend(t *testing.T, jm *jobManager) (*jobstore.JobRecord, watchSendDelivery) {
-	t.Helper()
-	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	if _, err := jm.configureWatch(watchArgs{
-		Target:      rec.JobID,
-		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
-	feedJob(jm, rec.JobID, []byte("ready one\n"))
-	delivery := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: ready two")
-	return rec, delivery
-}
-
 func waitForTestSignal(t *testing.T, ch <-chan struct{}, label string) {
 	t.Helper()
 	select {
 	case <-ch:
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for %s", label)
-	}
-}
-
-func waitForTestError(t *testing.T, ch <-chan error, label string) error {
-	t.Helper()
-	select {
-	case err := <-ch:
-		return err
-	case <-time.After(time.Second):
-		t.Fatalf("timed out waiting for %s", label)
-		return nil
 	}
 }
 
@@ -179,26 +119,6 @@ func loadJobStoreEvents(t *testing.T, jm *jobManager) []jobstore.Event {
 		events = append(events, e)
 	}
 	return events
-}
-
-func runtimeWatchSendPending(t *testing.T, jm *jobManager) map[jobstore.WatchSendKey]*jobstore.WatchSendState {
-	t.Helper()
-	out := make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	for _, cfg := range jm.watches {
-		for key, state := range cfg.pending {
-			copied := *state
-			out[key] = &copied
-		}
-	}
-	for cfg := range jm.terminalFlush {
-		for key, state := range cfg.pending {
-			copied := *state
-			out[key] = &copied
-		}
-	}
-	return out
 }
 
 func installCallerSendWatchWithPending(t *testing.T, jm *jobManager) *watchConfig {

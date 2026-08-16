@@ -31,9 +31,9 @@ func TestStableDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
 		if registered == nil {
 			t.Fatalf("registered %s tool is absent", tc.name)
 		}
-		properties, ok := registered.Tool.Definition.Parameters["properties"].(map[string]any)
+		properties, ok := registered.Definition.Parameters["properties"].(map[string]any)
 		if !ok {
-			t.Fatalf("registered %s properties = %T", tc.name, registered.Tool.Definition.Parameters["properties"])
+			t.Fatalf("registered %s properties = %T", tc.name, registered.Definition.Parameters["properties"])
 		}
 		if _, ok := properties[tc.parameter]; !ok {
 			t.Errorf("registered %s omits stable identifier parameter %q: %#v", tc.name, tc.parameter, properties)
@@ -45,7 +45,7 @@ func TestStableDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
 		}
 	}
 	create := s.reg.Get("delegate")
-	properties := create.Tool.Definition.Parameters["properties"].(map[string]any)
+	properties := create.Definition.Parameters["properties"].(map[string]any)
 	if _, exists := properties["max_wait_ms"]; exists {
 		t.Fatal("delegate creation exposes max_wait_ms")
 	}

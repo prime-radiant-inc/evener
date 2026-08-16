@@ -223,7 +223,7 @@ func TestStableDelegateShell_RestartRepairsCompletionAttentionOnce(t *testing.T)
 		storePath:     filepath.Join(jobsDir(tree.controller.stateDir, tree.child.ID()), "jobs.jsonl"),
 		runningJobIDs: []string{rec.JobID},
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if err := executeDelegateShellRepair(plan, time.Unix(200+int64(i), 0).UTC()); err != nil {
 			t.Fatalf("restart shell repair %d: %v", i+1, err)
 		}
@@ -463,12 +463,6 @@ func stableShellRecordFields(t *testing.T, rec *jobstore.JobRecord) map[string]a
 		t.Fatalf("decode shell record: %v", err)
 	}
 	return fields
-}
-
-func stableShellNotifications(s *Session) []jobNotification {
-	s.pendingJobNotifsMu.Lock()
-	defer s.pendingJobNotifsMu.Unlock()
-	return append([]jobNotification(nil), s.pendingJobNotifs...)
 }
 
 func stableShellJobRow(rows []map[string]any, jobID string) map[string]any {

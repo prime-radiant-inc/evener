@@ -99,15 +99,9 @@ type Session struct {
 	// set a small value on their own session to exercise the oversized-line path
 	// without mutating a shared global.
 	strictTranscriptMaxLineBytes int
-	// delegateRestoreResumeHistory builds the resume history for a delegate
-	// restore preflight. Nil means the production default (ResumeHistory); tests
-	// set it on their own session to observe/shape the strict-preflight entries
-	// without mutating a shared global that concurrent restores would invoke.
-	delegateRestoreResumeHistory func([]transcript.Entry) []schema.Turn
-
-	events       chan events.SessionEvent
-	eventsMu     sync.RWMutex // guards send-vs-close on events; all sends go through emit()
-	eventsClosed bool         // set under eventsMu.Lock immediately before close(events)
+	events                       chan events.SessionEvent
+	eventsMu                     sync.RWMutex // guards send-vs-close on events; all sends go through emit()
+	eventsClosed                 bool         // set under eventsMu.Lock immediately before close(events)
 	// descendantEvent is inherited from the spawning root and remains immutable
 	// for this Session's lifetime. Children use it to expose their live event
 	// stream without acquiring an authoritative consumer for their own channel.
@@ -400,8 +394,6 @@ type Session struct {
 	treeCounter                      *treeCounter      // tree-wide running delegate-turn counter (spec §4)
 	driveCounter                     *treeCounter      // tree-wide drive-down turn counter, budgeted separately from spawns
 	subagents                        *subagentManager
-	delegateRestoreAfterClaim        func()
-	delegateRestoreBeforeTrack       func()
 	delegateRestoreBeforeSideEffects func(*Session)
 	// restoredMetaIsSubagent is set from the persisted meta.IsSubagent flag
 	// during RestoreSessionFromMetaWithConfig, before initSessionState runs. It

@@ -195,7 +195,7 @@ func TestDelegateResourceBootstrap_RestartIsProviderFreeAndLazy(t *testing.T) {
 	delegateID := identifier.MustNewDelegateID()
 	childID := identifier.MustNewSessionID()
 	now := time.Unix(1_700_000_000, 0).UTC()
-	_, state, err = store.AppendBatch(state, []delegatestore.Event{
+	_, _, err = store.AppendBatch(state, []delegatestore.Event{
 		{
 			Kind:       delegatestore.EventDelegateCreated,
 			TS:         now,

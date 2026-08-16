@@ -154,6 +154,7 @@ func (m *subagentManager) admitReconstructed(sub *subagent, bind func(*subagent)
 	return tracked, inserted, nil
 }
 
+//nolint:unused // retained for tagged restoration side-effect state-machine owners.
 func (m *subagentManager) beginReconstructionSideEffects(childID string, sub *subagent) (func(), error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

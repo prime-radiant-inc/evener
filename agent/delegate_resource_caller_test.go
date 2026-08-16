@@ -319,15 +319,15 @@ func attachRegisteredCallerRuntime(t *testing.T, c *delegateTreeController, dele
 func executeRegisteredCallerSend(t *testing.T, s *Session, lease delegateLease, message string) toolpkg.ExecResult {
 	t.Helper()
 	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
-	return executeRegisteredCallerSendContext(t, ctx, s, message)
+	return executeRegisteredCallerSendContext(ctx, t, s, message)
 }
 
 func executeRegisteredCallerSendWithoutLease(t *testing.T, s *Session, message string) toolpkg.ExecResult {
 	t.Helper()
-	return executeRegisteredCallerSendContext(t, context.Background(), s, message)
+	return executeRegisteredCallerSendContext(context.Background(), t, s, message)
 }
 
-func executeRegisteredCallerSendContext(t *testing.T, ctx context.Context, s *Session, message string) toolpkg.ExecResult {
+func executeRegisteredCallerSendContext(ctx context.Context, t *testing.T, s *Session, message string) toolpkg.ExecResult {
 	t.Helper()
 	args, err := json.Marshal(map[string]any{"to": runtimeMessageAliasCaller, "message": message})
 	if err != nil {

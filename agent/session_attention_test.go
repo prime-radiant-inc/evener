@@ -493,7 +493,7 @@ func TestDelegateAttention_RecoveryStopWaitsForOldRunnerBeforeReuse(t *testing.T
 	if err := root.executeDelegateMutationPlans(stopPlans); err != nil {
 		t.Fatalf("execute stop plans: %v", err)
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		evidence, err := collectDelegateReconcileEvidence(fixture.stateDir, controller.ReconcileRequirements())
 		if err != nil {
 			t.Fatalf("collect recovery evidence %d: %v", i, err)
@@ -536,7 +536,7 @@ progressDrained:
 	<-oldDone
 	<-stop.progress
 	child.sess.cfg.testOnly.subagentAfterFinalStatePublish = nil
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		evidence, err := collectDelegateReconcileEvidence(fixture.stateDir, controller.ReconcileRequirements())
 		if err != nil {
 			t.Fatalf("collect quiesced recovery evidence %d: %v", i, err)

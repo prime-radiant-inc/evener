@@ -128,14 +128,6 @@ func formatLineCount(n int) string {
 	return strconv.Itoa(n) + " lines"
 }
 
-// shortID returns the first 8 characters of an ID string.
-func shortID(id string) string {
-	if len(id) <= 8 {
-		return id
-	}
-	return id[:8]
-}
-
 // diffResultText counts +/- lines from a unified-diff output and returns a
 // compact summary such as "3 +/2 -", "4 added", "2 removed", or "ok".
 func diffResultText(_ ToolArgs, output, errStr string, _ time.Duration) string {

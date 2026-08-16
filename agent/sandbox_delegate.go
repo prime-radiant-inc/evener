@@ -254,6 +254,8 @@ func sandboxSnapshotFromInputs(in sandbox.SandboxPolicy) *delegatestore.SandboxS
 // cloneSandboxSnapshot deep-copies a persisted snapshot so a resumed-turn
 // descriptor does not alias the previous descriptor's slices (mirroring the other
 // resume-path clones in resumedDelegateRestoreDescriptor). nil stays nil.
+//
+//nolint:unused // retained for the tagged sandbox descriptor round-trip fuzz owner.
 func cloneSandboxSnapshot(in *delegatestore.SandboxSnapshot) *delegatestore.SandboxSnapshot {
 	if in == nil {
 		return nil
@@ -276,6 +278,8 @@ func cloneSandboxSnapshot(in *delegatestore.SandboxSnapshot) *delegatestore.Sand
 // persisted snapshot for re-resolution on restore. ok is false when the mode name
 // is unparseable (a corrupt/hand-edited descriptor), which the restore path treats
 // as not-resumable rather than resuming with a guessed policy.
+//
+//nolint:unused // retained for the tagged sandbox descriptor round-trip fuzz owner.
 func sandboxPolicyFromSnapshot(snap *delegatestore.SandboxSnapshot) (sandbox.SandboxPolicy, bool) {
 	if snap == nil {
 		return sandbox.SandboxPolicy{}, false

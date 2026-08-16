@@ -366,7 +366,7 @@ func (c *delegateTreeController) FailCommittedStart(lease delegateLease, failure
 		plans, generationCancel, finishErr := c.finishStoppedStartLocked(lease, live)
 		cancel = generationCancel
 		disposition := delegateCommittedStartFailureStopWon
-		if finishErr != errDelegateTargetBusy {
+		if !errors.Is(finishErr, errDelegateTargetBusy) {
 			disposition = delegateCommittedStartFailureAppendFailed
 		}
 		claimedForClose := false

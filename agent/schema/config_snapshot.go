@@ -1,5 +1,7 @@
 package schema
 
+import "maps"
+
 // ConfigSnapshot is the persisted, wire-serializable projection of an agent
 // session's configuration. It holds exactly the json-tagged fields of the
 // engine's SessionConfig — same names, same tags, same declaration order — so a
@@ -45,9 +47,7 @@ func (s ConfigSnapshot) Clone() ConfigSnapshot {
 	clone := s
 	if s.ToolOutputLimits != nil {
 		clone.ToolOutputLimits = make(map[string]ToolOutputLimit, len(s.ToolOutputLimits))
-		for name, limit := range s.ToolOutputLimits {
-			clone.ToolOutputLimits[name] = limit
-		}
+		maps.Copy(clone.ToolOutputLimits, s.ToolOutputLimits)
 	}
 	clone.SkillsDirs = append([]string(nil), s.SkillsDirs...)
 	clone.MCPConfigFiles = append([]string(nil), s.MCPConfigFiles...)

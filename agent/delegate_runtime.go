@@ -165,7 +165,7 @@ func delegateQuietAttentionIDForStretch(lease delegateLease, sequence uint64) st
 
 func delegateQuietAttentionContent(lease delegateLease, activityAt time.Time) string {
 	return fmt.Sprintf(
-		"<delegate-notification delegate_id=\"%s\">%s</delegate-notification>",
+		"<delegate-notification delegate_id=%q>%s</delegate-notification>",
 		html.EscapeString(lease.delegateID),
 		html.EscapeString(quietWatchdogMessage(delegateQuietWindow, activityAt)),
 	)
@@ -1122,9 +1122,9 @@ func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
 	}
 }
 
-func (runtime delegateRuntime) construct(ctx context.Context, args delegateArgs, selection subagentModelSelection, started delegateStartCommit, isolation delegateIsolation) (*preparedSubagentRun, error) {
+func (runtime delegateRuntime) construct(_ context.Context, args delegateArgs, selection subagentModelSelection, started delegateStartCommit, isolation delegateIsolation) (*preparedSubagentRun, error) {
 	s := runtime.owner
-	ctx = started.ctx
+	ctx := started.ctx
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -1766,7 +1766,7 @@ func missingDelegateRestoreInputReason(
 	}
 	_, transcriptChildID, err := decodeRef(descriptor.TranscriptRef)
 	if err != nil || transcriptChildID != childID {
-		return notResumableParentLinkageUnavailable, nil
+		return notResumableParentLinkageUnavailable, nil //nolint:nilerr // malformed durable linkage is a classified non-resumable state, not an operational failure
 	}
 	if strings.TrimSpace(stateDir) == "" {
 		return notResumableMissingChildSessionMeta, nil
@@ -1789,7 +1789,7 @@ func missingDelegateRestoreInputReason(
 	}
 	var meta schema.SessionMeta
 	if err := json.Unmarshal(metaBytes, &meta); err != nil {
-		return notResumableCorruptChildSessionMeta, nil
+		return notResumableCorruptChildSessionMeta, nil //nolint:nilerr // malformed durable metadata is a classified non-resumable state, not an operational failure
 	}
 	if strings.TrimSpace(meta.ID) != childID {
 		return notResumableCorruptChildSessionMeta, nil

@@ -1404,7 +1404,7 @@ func TestDelegateResourceCreate_InputTranscriptAppendRunsAfterControllerUnlock(t
 	}
 
 	const task = "registered input persists outside controller lock"
-	result := executeTask6RegisteredDelegate(t, context.Background(), root, task, 0)
+	result := executeTask6RegisteredDelegate(context.Background(), t, root, task, 0)
 	var providerChildID string
 	select {
 	case providerChildID = <-adapter.entered:
@@ -1439,7 +1439,7 @@ func TestDelegateResourceCreate_InputTranscriptAppendRunsAfterControllerUnlock(t
 
 func TestDelegateResourceCreate_RegisteredToolReturnsOnlyStableDelegateIdentity(t *testing.T) {
 	root, _, _ := newDelegateResourceBootstrapSession(t)
-	result := executeTask6RegisteredDelegate(t, context.Background(), root, "registered stable identity", 0)
+	result := executeTask6RegisteredDelegate(context.Background(), t, root, "registered stable identity", 0)
 
 	delegateID, _ := result["delegate_id"].(string)
 	if err := identifier.ValidateDelegateID(delegateID); err != nil {
@@ -1480,9 +1480,9 @@ func TestDelegateResourceCreate_RegisteredSchemaOmitsCreationMaxWait(t *testing.
 			if registered == nil {
 				t.Fatalf("registered %s tool is absent", tc.name)
 			}
-			properties, ok := registered.Tool.Definition.Parameters["properties"].(map[string]any)
+			properties, ok := registered.Definition.Parameters["properties"].(map[string]any)
 			if !ok {
-				t.Fatalf("registered %s properties = %T, want map[string]any", tc.name, registered.Tool.Definition.Parameters["properties"])
+				t.Fatalf("registered %s properties = %T, want map[string]any", tc.name, registered.Definition.Parameters["properties"])
 			}
 			_, gotMaxWait := properties["max_wait_ms"]
 			if gotMaxWait != tc.wantMaxWait {
@@ -1572,7 +1572,7 @@ func TestDelegateResourceCreate_RegisteredToolUsesRootController(t *testing.T) {
 	root.delegateController.newDelegateID = func() string { return wantID }
 	root.delegateController.mu.Unlock()
 
-	result := executeTask6RegisteredDelegate(t, context.Background(), root, "registered root controller", 0)
+	result := executeTask6RegisteredDelegate(context.Background(), t, root, "registered root controller", 0)
 	if got, _ := result["delegate_id"].(string); got != wantID {
 		t.Fatalf("registered delegate_id = %q, want controller-minted %q", got, wantID)
 	}
@@ -1589,7 +1589,7 @@ func TestDelegateResourceCreate_RegisteredToolUsesRootController(t *testing.T) {
 
 func TestDelegateResourceCreate_RegisteredNestedCreateUsesCurrentLease(t *testing.T) {
 	root, _, _ := newDelegateResourceBootstrapSession(t)
-	parentResult := executeTask6RegisteredDelegate(t, context.Background(), root, "registered parent", 1)
+	parentResult := executeTask6RegisteredDelegate(context.Background(), t, root, "registered parent", 1)
 	parentID, _ := parentResult["delegate_id"].(string)
 	parentChildID, _ := parentResult["child_session_id"].(string)
 
@@ -1606,7 +1606,7 @@ func TestDelegateResourceCreate_RegisteredNestedCreateUsesCurrentLease(t *testin
 		t.Fatalf("registered parent child session %q is not retained", parentChildID)
 	}
 	leaseContext := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, parentLease)
-	childResult := executeTask6RegisteredDelegate(t, leaseContext, parent.sess, "registered nested child", 0)
+	childResult := executeTask6RegisteredDelegate(leaseContext, t, parent.sess, "registered nested child", 0)
 	childID, _ := childResult["delegate_id"].(string)
 
 	aggregate := delegateAggregateSnapshot(t, root.delegateController, childID)
@@ -1618,7 +1618,7 @@ func TestDelegateResourceCreate_RegisteredNestedCreateUsesCurrentLease(t *testin
 	}
 }
 
-func executeTask6RegisteredDelegate(t *testing.T, ctx context.Context, session *Session, task string, allowance int) map[string]any {
+func executeTask6RegisteredDelegate(ctx context.Context, t *testing.T, session *Session, task string, allowance int) map[string]any {
 	t.Helper()
 	arguments := map[string]any{"task": task}
 	if allowance != 0 {

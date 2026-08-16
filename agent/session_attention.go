@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -188,10 +189,6 @@ func (f delegateAttentionFold) pendingIDs() []string {
 		}
 	}
 	return pending
-}
-
-func appendColdDelegateNotificationDurably(path, expectedSessionID, attentionID, content string, now time.Time) (appended bool, err error) {
-	return appendColdDelegateNotificationDurablyWithOpen(path, expectedSessionID, attentionID, content, now, transcript.OpenWriterForSession)
 }
 
 func appendColdDelegateNotificationDurablyWithOpen(path, expectedSessionID, attentionID, content string, now time.Time, open delegateAttentionWriterOpener) (appended bool, err error) {
@@ -412,14 +409,7 @@ func (s *Session) armDelegateAttentionOnce(attentionID string) error {
 	if err != nil {
 		return err
 	}
-	pending := false
-	for _, id := range ids {
-		if id == attentionID {
-			pending = true
-			break
-		}
-	}
-	if !pending {
+	if !slices.Contains(ids, attentionID) {
 		return nil
 	}
 	if s.isRootDelegateAttentionReceiver() {
@@ -544,7 +534,8 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 	}
 	var resolutionErr error
 	if turnErr == nil {
-		if err := s.resolveAttentionDurably(ids, delegateAttentionConsumed); err == nil {
+		err := s.resolveAttentionDurably(ids, delegateAttentionConsumed)
+		if err == nil {
 			s.attentionMu.Lock()
 			for _, id := range ids {
 				delete(s.rootAttentionWakeIDs, id)
@@ -555,9 +546,8 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 			}
 			s.attentionMu.Unlock()
 			return nil
-		} else {
-			resolutionErr = err
 		}
+		resolutionErr = err
 	}
 	s.attentionMu.Lock()
 	s.scheduleRootAttentionRetryLocked()
