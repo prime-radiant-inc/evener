@@ -146,7 +146,20 @@ Live session `0348HuXSlWRtoLEoQ4EOE8`: durable `ActiveTurnID` `turn_m6`, wire
 closes, `turn/started` for the one it opens, and `thread/statusChanged: active`.
 Defect 2 is why the third is not optional.
 
-**The id is minted in `processOneInput`, not in `acceptNotificationInput`.**
+**The id is minted inside `acceptNotificationInput`, after its last refusal,
+and handed back so `processOneInput`'s existing defer releases it.** (This
+reverses what an earlier draft of this plan said; the shipped code is what is
+described here.) Minting before the accept would pay a durable reservation for
+every coalesced wake that turns out to have nothing to deliver -- the
+commonest outcome -- and would hold the slot across
+`drivePendingStableDelegateAttention`, which can drive a whole child turn. The
+release plumbing is what makes minting late safe: a leaked id makes
+`AcceptClientMutationStart` refuse every later `turn/start` for the life of
+the process.
+
+<details><summary>The earlier reasoning, kept for the record</summary>
+
+**The id was to be minted in `processOneInput`, not in `acceptNotificationInput`.**
 Minting and announcing are separable. The mint sits beside the existing
 continuation mint so it reuses the existing `defer releaseRunningTurnID`, and
 the notification branch's refusal path releases explicitly — the same shape
@@ -154,8 +167,15 @@ that branch already has. Minting inside the accept function would leak the id
 on every proceeding turn, which wedges `turn/start` for the life of the
 process and makes the *next* notification turn refuse to mint.
 
-**The boundary is emitted only when the turn is named.** An unnamed boundary
-carries no information, and child sessions run `EntryNotification` too
+</details>
+
+**The boundary is emitted whenever the session is served, named or not — but
+an unnameable turn is never advertised as active.** Closing the previous turn
+and opening this one are worth doing regardless; publishing active is not,
+because status and capabilities ride one frame, so it would render Stop and
+Steer against an id the daemon does not hold and every control would be
+rejected with nothing shown. The gate is "is this session served", because
+child sessions run `EntryNotification` too
 (`agent/subagents.go:1251`, `childSess.ProcessInputKind(driveCtx, "", nil, EntryNotification)`).
 Gating on a non-empty id keeps every descendant projection
 (`server/appwire_runtime.go:246-291`) bit-identical to today.
@@ -264,8 +284,8 @@ satisfies the interface either way; the real binding is `events.New`
 
 **Files:** `agent/session_lifecycle.go`; create `agent/session_turn_boundary_test.go`.
 
-**Interfaces:** `acceptNotificationInput` gains a trailing
-`stableTurnID string` parameter. Update its ~12 test call sites
+**Interfaces:** `acceptNotificationInput` gains a second return value,
+becoming `(proceed bool, turnID string)`. Update its ~12 test call sites
 (`grep -rn "acceptNotificationInput" --include="*_test.go" agent/`).
 
 **Shape** — the mint moves nowhere new; it joins the existing one:
