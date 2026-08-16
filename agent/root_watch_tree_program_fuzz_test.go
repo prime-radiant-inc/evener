@@ -127,11 +127,11 @@ func rwlpRunManagerProgram(t *testing.T, r *rwlpReader) {
 	if err != nil || !receiver.Watching || receiver.WatchID == "" {
 		t.Fatalf("configure generic journal watch = (%+v, %v), want live watch", receiver, err)
 	}
-	// A separate generic journal retains the broad event framing surface while
-	// the filtered journal above remains an assistant.tool-only config.
+	// A distinct generic key retains the broad event framing surface while the
+	// filtered journal above remains an assistant.tool-only config.
 	if broad, err := jm.configureWatch(watchArgs{
 		Source: "self",
-		Target: runtimeMessageAliasCaller,
+		Target: "*",
 		Events: []string{"*"},
 	}); err != nil || !broad.Watching {
 		t.Fatalf("configure broad journal watch = (%+v, %v), want live watch", broad, err)

@@ -53,7 +53,7 @@ func FuzzJobtoolsLifecycleProgram(f *testing.F) {
 
 		shell := jtlpSeedTerminalShell(t, root, r)
 
-		statusCall := jtlpExecute(t, root, "job_status", map[string]any{"job_id": shell.JobID})
+		statusCall := jtlpExecute(t, root, "job_status", map[string]any{"target": shell.JobID})
 		if statusCall.IsError {
 			t.Fatalf("job_status(%q) failed: %s", shell.JobID, statusCall.Output)
 		}
@@ -75,17 +75,17 @@ func FuzzJobtoolsLifecycleProgram(f *testing.F) {
 		var list, secondList jobListResult
 		jtlpDecode(t, first, &list)
 		jtlpDecode(t, second, &secondList)
-		if list.Count != len(list.Jobs) || !jtlpContainsJob(list.Jobs, shell.JobID) {
+		if list.Count != len(list.Items) || !jtlpContainsJob(list.Items, shell.JobID) {
 			t.Fatalf("job_list state = %#v, want shell row", list)
 		}
-		if secondList.Count != list.Count || !jtlpContainsJob(secondList.Jobs, shell.JobID) {
+		if secondList.Count != list.Count || !jtlpContainsJob(secondList.Items, shell.JobID) {
 			t.Fatalf("second job_list state = %#v, want same stable shell identity as %#v", secondList, list)
 		}
 
 		watchCall := jtlpExecute(t, root, "job_watch", map[string]any{
-			"operation":    "create",
-			"source":       shell.JobID,
-			"output_match": "watch-" + jtlpMessage(r),
+			"operation": "create",
+			"source":    "self",
+			"events":    []string{"communicate"},
 		})
 		if watchCall.IsError {
 			t.Fatalf("job_watch create failed: %s", watchCall.Output)

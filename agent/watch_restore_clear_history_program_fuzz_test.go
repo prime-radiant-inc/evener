@@ -89,6 +89,7 @@ func wrcConfig(id, source, target, sendTo, receiverSessionID, receiverDelegateID
 	if sendTo != "" {
 		cfg.send = &watchSendArgs{To: sendTo, Message: "observe " + id, IncludeExcerpt: true}
 	}
+	cfg.stableReceiver = receiverSessionID != "" && receiverDelegateID != ""
 	return cfg
 }
 
