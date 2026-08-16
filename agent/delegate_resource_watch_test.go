@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -670,6 +671,89 @@ func TestStableDelegateWatch_ConcurrentRedrainsClaimSupersededAckOnce(t *testing
 	current := folded.Pending[newer.Key]
 	if current == nil || current.DeliveryID != newer.DeliveryID || current.UpdateSeq != newer.UpdateSeq {
 		t.Fatalf("newer cursor after concurrent retry = %#v, want delivery %q seq %d", current, newer.DeliveryID, newer.UpdateSeq)
+	}
+}
+
+func TestStableDelegateWatch_RetryAddedDuringClaimSettlesBeforeCurrentCursor(t *testing.T) {
+	fs := newAttentionSyncBarrierFS()
+	fixture := newStableWatchRuntimeFixture(t, fs)
+	retryA, staleB, originalAppend := seedSupersededStableWatchAckFailure(t, fixture, fs)
+	cfg := fixture.onlyWatchConfig(t)
+
+	retryAAckEntered := make(chan struct{}, 1)
+	releaseRetryAAck := make(chan struct{})
+	currentAckEntered := make(chan struct{}, 1)
+	releaseCurrentAck := make(chan struct{})
+	releasedRetryA := false
+	releasedCurrent := false
+	defer func() {
+		if !releasedRetryA {
+			close(releaseRetryAAck)
+		}
+		if !releasedCurrent {
+			close(releaseCurrentAck)
+		}
+		fixture.sourceJM.appendEvent = originalAppend
+	}()
+	staleBAckFailure := errors.New("second stale source acknowledgement failed")
+	var staleBAckFailed atomic.Bool
+	var current jobstore.WatchSendState
+	fixture.sourceJM.appendEvent = func(event jobstore.Event) error {
+		if exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, retryA) {
+			retryAAckEntered <- struct{}{}
+			<-releaseRetryAAck
+		}
+		if exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, staleB) && staleBAckFailed.CompareAndSwap(false, true) {
+			return staleBAckFailure
+		}
+		if exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, current) {
+			currentAckEntered <- struct{}{}
+			<-releaseCurrentAck
+		}
+		return originalAppend(event)
+	}
+
+	fs.rearm()
+	staleBDone := make(chan error, 1)
+	go func() {
+		_, err := fixture.sourceJM.deliverStableWatchSend(cfg, staleB)
+		staleBDone <- err
+	}()
+	<-fs.syncEntered
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "current frame"})
+	current = fixture.requireOnePending(t).state
+
+	drainDone := make(chan error, 1)
+	go func() {
+		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		drainDone <- err
+	}()
+	<-retryAAckEntered
+	fs.release()
+	if err := <-staleBDone; !errors.Is(err, staleBAckFailure) {
+		close(releaseRetryAAck)
+		releasedRetryA = true
+		<-drainDone
+		t.Fatalf("second stale delivery error = %v, want %v", err, staleBAckFailure)
+	}
+	close(releaseRetryAAck)
+	releasedRetryA = true
+	<-currentAckEntered
+
+	eventsAtCurrentAck := loadJobStoreEvents(t, fixture.sourceJM)
+	staleBAcknowledgements := countExactWatchSendEvents(eventsAtCurrentAck, jobstore.EventWatchSendDelivered, staleB)
+	staleBReceipt := fixture.sourceJM.stableWatchReceipt(staleB.DeliveryID)
+	close(releaseCurrentAck)
+	releasedCurrent = true
+	if err := <-drainDone; err != nil {
+		t.Fatalf("drain after retry added during claim: %v", err)
+	}
+
+	if staleBAcknowledgements != 1 {
+		t.Fatalf("second stale source acknowledgements before current cursor = %d, want exactly 1", staleBAcknowledgements)
+	}
+	if staleBReceipt != nil {
+		t.Fatal("second stale delivery receipt remained held at current cursor acknowledgement")
 	}
 }
 

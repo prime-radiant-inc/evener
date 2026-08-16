@@ -2951,6 +2951,16 @@ func (fs *attentionSyncBarrierFS) arm() {
 	fs.mu.Unlock()
 }
 
+func (fs *attentionSyncBarrierFS) rearm() {
+	fs.mu.Lock()
+	fs.armed = true
+	fs.syncEntered = make(chan struct{})
+	fs.allowSync = make(chan struct{})
+	fs.enterOnce = sync.Once{}
+	fs.releaseOnce = sync.Once{}
+	fs.mu.Unlock()
+}
+
 func (fs *attentionSyncBarrierFS) release() {
 	fs.releaseOnce.Do(func() { close(fs.allowSync) })
 }
