@@ -170,7 +170,16 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// to meta.OriginalPrompt, which is derived from the first user turn in
 	// history: without it a new thread lists as its raw session id for its whole
 	// first turn.
+	// TURN_STARTED is a turn-OPENING event, so it sits with the other two
+	// (USER_INPUT, GOAL_CONTINUATION) rather than with TURN_ENDED's facetAll.
+	// The checkpoint argument above is about a turn ending -- values that moved
+	// during it, and a failed turn that emits nothing else. Nothing has moved
+	// when a notification turn opens, and the job facets it does move are
+	// settled a few lines later in acceptNotificationInput, then restated at
+	// TURN_ENDED. It drains the job-notification queue and can resolve a
+	// pending ask, so those two are the ones worth re-reading here.
 	events.EventQueueChanged:     facetQueue,
+	events.EventTurnStarted:      facetQueue | facetAsk,
 	events.EventUserInput:        facetQueue | facetWork | facetContext | facetAsk | facetMeta,
 	events.EventSteeringInjected: facetQueue | facetAsk | facetContext,
 

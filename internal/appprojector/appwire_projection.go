@@ -192,36 +192,33 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			}),
 			p.threadStatus(status),
 		}
-	case events.EventUserInput:
-		out := []AppNotification{}
-		if p.activeTurnID != "" {
-			turnID := p.activeTurnID
-			p.activeTurnID = ""
-			p.assistantItem = ""
-			p.assistantText = ""
-			p.reasoningItem = ""
-			p.toolItemsByKey = map[string]string{}
-			p.toolArgsByKey = map[string]string{}
-			p.toolStartByKey = map[string]time.Time{}
-			p.suppressedTools = map[string]struct{}{}
-			turn := appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted}
-			p.applyPendingTiming(turnID, &turn)
-			p.stampTurnUsage(&turn)
-			// Deliberately still map[string]any, not appwire.TurnCompletedParams
-			// (kcb5): the declared type is {turnId,turn} but every producer here
-			// sends {threadId,ref,turn} with no turnId at all - the type doesn't
-			// describe what's actually on the wire. Converting to the CURRENT
-			// declaration would silently drop threadId/ref from every
-			// turn/completed frame (a real, if likely-harmless, wire change - no
-			// consumer reads them, per reducer.test.ts/hub_notifications.go);
-			// fixing the declaration to match reality is a coupled Go+TS+test
-			// change of its own, left to a separate decision.
-			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
-				"threadId": p.threadID,
-				"ref":      p.ref,
-				"turn":     turn,
-			}))
+	case events.EventTurnStarted:
+		// The one boundary for turns that carry no content event of their own.
+		// It owes its subscribers three things, and a notification turn needs
+		// all three: the previous turn closed (its items must not land in a
+		// turn that already ended), this turn opened under the daemon's own id
+		// (the one its mutation preconditions accept), and the thread
+		// published active (status and capabilities ride one frame, and the
+		// composer renders Stop and Steer only when it believes the thread is
+		// busy). An empty TurnID means the daemon could not name this turn;
+		// the other two obligations still stand, so startTurn mints as usual.
+		p.clearSkillCandidate()
+		data := eventData[events.TurnStartedData](event.Data)
+		out := p.closeActiveTurn(appwire.TurnStatusCompleted)
+		if data.TurnID != "" {
+			p.reservedTurnID = data.TurnID
 		}
+		turnID := p.startTurn()
+		return append(out,
+			p.notification(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
+				ThreadID: p.threadID,
+				Ref:      p.ref,
+				Turn:     startedTurn(turnID, event.Timestamp),
+			}),
+			p.threadStatus(appwire.ThreadStatusActive),
+		)
+	case events.EventUserInput:
+		out := p.closeActiveTurn(appwire.TurnStatusCompleted)
 		data := eventData[events.UserInputData](event.Data)
 		if data.StableTurnID != "" {
 			p.reservedTurnID = data.StableTurnID
@@ -258,27 +255,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// (close the prior turn, start a new one), but renders its prompt as
 		// a systemMessage rather than a userMessage so continuations don't
 		// look like the user spoke.
-		out := []AppNotification{}
-		if p.activeTurnID != "" {
-			turnID := p.activeTurnID
-			p.activeTurnID = ""
-			p.assistantItem = ""
-			p.assistantText = ""
-			p.reasoningItem = ""
-			p.toolItemsByKey = map[string]string{}
-			p.toolArgsByKey = map[string]string{}
-			p.toolStartByKey = map[string]time.Time{}
-			p.suppressedTools = map[string]struct{}{}
-			turn := appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted}
-			p.applyPendingTiming(turnID, &turn)
-			p.stampTurnUsage(&turn)
-			// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
-			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
-				"threadId": p.threadID,
-				"ref":      p.ref,
-				"turn":     turn,
-			}))
-		}
+		out := p.closeActiveTurn(appwire.TurnStatusCompleted)
 		data := eventData[events.GoalContinuationData](event.Data)
 		// Adopt the daemon's own name for this turn, exactly as EventUserInput
 		// does. Without it startTurn mints a turn_<n> the daemon's mutation
@@ -1055,31 +1032,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		case appwire.ThreadStatusClosed:
 			state = appwire.ThreadStatusClosed
 		}
-		out := []AppNotification{}
-		if p.activeTurnID != "" {
-			turnStatus := appwire.TurnStatusCompleted
-			if state == appwire.ThreadStatusClosed || data.Interrupted {
-				turnStatus = appwire.TurnStatusInterrupted
-			}
-			turnID := p.activeTurnID
-			p.activeTurnID = ""
-			p.assistantItem = ""
-			p.assistantText = ""
-			p.reasoningItem = ""
-			p.toolItemsByKey = map[string]string{}
-			p.toolArgsByKey = map[string]string{}
-			p.toolStartByKey = map[string]time.Time{}
-			p.suppressedTools = map[string]struct{}{}
-			turn := appwire.Turn{ID: turnID, Status: turnStatus}
-			p.applyPendingTiming(turnID, &turn)
-			p.stampTurnUsage(&turn)
-			// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
-			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
-				"threadId": p.threadID,
-				"ref":      p.ref,
-				"turn":     turn,
-			}))
+		turnStatus := appwire.TurnStatusCompleted
+		if state == appwire.ThreadStatusClosed || data.Interrupted {
+			turnStatus = appwire.TurnStatusInterrupted
 		}
+		out := p.closeActiveTurn(turnStatus)
 		out = append(out, p.threadStatus(state))
 		if state == appwire.ThreadStatusClosed {
 			// Still map[string]any, not appwire.ThreadClosedParams (kcb5):
@@ -1655,6 +1612,48 @@ func (p *AppEventProjector) holdUnfetchableToolResultImages(item *appwire.Thread
 		fetchable = nil
 	}
 	item.OutputImages = fetchable
+}
+
+// closeActiveTurn ends the open turn, if there is one, and returns the
+// turn/completed announcement for it. It is the shape three of the four
+// completion sites share verbatim -- EventUserInput, EventGoalContinuation and
+// EventSessionEnd -- differing only in the status they close with.
+//
+// The fourth, EventError, is deliberately not routed through here: it resets a
+// smaller field set, opens a turn first so there is always one to fail, and
+// carries an appwire.TurnError. Folding it in would silently change what a
+// failed turn clears.
+//
+// The turn/completed payload is deliberately still map[string]any, not
+// appwire.TurnCompletedParams (kcb5): the declared type is {turnId,turn} but
+// every producer here sends {threadId,ref,turn} with no turnId at all - the
+// type doesn't describe what's actually on the wire. Converting to the CURRENT
+// declaration would silently drop threadId/ref from every turn/completed frame
+// (a real, if likely-harmless, wire change - no consumer reads them, per
+// reducer.test.ts/hub_notifications.go); fixing the declaration to match
+// reality is a coupled Go+TS+test change of its own, left to a separate
+// decision.
+func (p *AppEventProjector) closeActiveTurn(status string) []AppNotification {
+	if p.activeTurnID == "" {
+		return nil
+	}
+	turnID := p.activeTurnID
+	p.activeTurnID = ""
+	p.assistantItem = ""
+	p.assistantText = ""
+	p.reasoningItem = ""
+	p.toolItemsByKey = map[string]string{}
+	p.toolArgsByKey = map[string]string{}
+	p.toolStartByKey = map[string]time.Time{}
+	p.suppressedTools = map[string]struct{}{}
+	turn := appwire.Turn{ID: turnID, Status: status}
+	p.applyPendingTiming(turnID, &turn)
+	p.stampTurnUsage(&turn)
+	return []AppNotification{p.notification(appwire.NotifyTurnCompleted, map[string]any{
+		"threadId": p.threadID,
+		"ref":      p.ref,
+		"turn":     turn,
+	})}
 }
 
 func (p *AppEventProjector) startTurn() string {
