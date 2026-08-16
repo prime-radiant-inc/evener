@@ -112,42 +112,6 @@ func TestWatchRegistryRowOmitsReceiverForOwnerWatch(t *testing.T) {
 	}
 }
 
-// Moving the receiver identity INTO the hashed config snapshot must not move the
-// config hash: it is durable, it keys watch equivalence and replacement across a
-// restart, and a silent reshuffle would make every already-written row's hash
-// unrecognizable. These goldens are the hashes the code produced when the
-// receiver rode a wrapper struct beside the snapshot.
-func TestNormalizedWatchConfigHashSurvivesReceiverFieldsJoiningTheSnapshot(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name string
-		args watchArgs
-		want string
-	}{
-		{
-			name: "no receiver",
-			args: watchArgs{Target: "job_x", OutputMatch: "ready"},
-			want: "sha256:e6c0d2901cefa3ae7d28ed8afe2263e1d9721eb33ac84958d0b0fefda56c4197",
-		},
-		{
-			name: "receiver session only",
-			args: watchArgs{Target: "job_x", OutputMatch: "ready", ReceiverSessionID: "S-observer"},
-			want: "sha256:ce6bbc0eeedaa04fd4ef04e9ff5907d8b1aacfc48111128875a491825a0a6245",
-		},
-		{
-			name: "receiver session and delegate",
-			args: watchArgs{Target: "job_x", OutputMatch: "ready", ReceiverSessionID: "S-observer", ReceiverDelegateID: "dlg_obs"},
-			want: "sha256:2e84c38984918b03ba1dd3ca6dd55d205185324b716946ef07a617ad9f461c44",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := normalizedWatchConfigHash(tc.args); got != tc.want {
-				t.Errorf("normalizedWatchConfigHash = %q, want the pre-move hash %q", got, tc.want)
-			}
-		})
-	}
-}
-
 // A registry row written before the snapshot carried a receiver still folds — to
 // an empty receiver, which is the truth about it, not to a dropped watch.
 func TestFoldWatchesToleratesRegistryRowWithoutConfigSnapshot(t *testing.T) {

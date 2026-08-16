@@ -152,7 +152,7 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 			func(_ llm.Request) llm.Response { return finalResponse("must not run") },
 		},
 	})
-	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, NoProjectPrompts: true}), withoutGitSnapshot())
+	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, NoProjectPrompts: true, StateDir: t.TempDir()}), withoutGitSnapshot())
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
 		Task: "coordinate",
@@ -387,7 +387,7 @@ func TestDriveTurnReservesFromDriveCounter(t *testing.T) {
 		},
 	})
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, NoProjectPrompts: true}), withoutGitSnapshot())
+	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, NoProjectPrompts: true, StateDir: t.TempDir()}), withoutGitSnapshot())
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
 		Task: "coordinate",
@@ -463,7 +463,7 @@ func TestDriveTurnTimeoutFreesSlot(t *testing.T) {
 
 	c := llm.NewClient()
 	c.Register(&firstCompleteThenBlockAdapter{})
-	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, NoProjectPrompts: true}), withoutGitSnapshot())
+	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, NoProjectPrompts: true, StateDir: t.TempDir()}), withoutGitSnapshot())
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
 		Task: "coordinate",
@@ -505,7 +505,7 @@ func TestDriveRedriveIsPaced(t *testing.T) {
 			func(_ llm.Request) llm.Response { return finalResponse("drive done") },
 		},
 	})
-	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, NoProjectPrompts: true}), withoutGitSnapshot())
+	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, NoProjectPrompts: true, StateDir: t.TempDir()}), withoutGitSnapshot())
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
 		Task: "coordinate",

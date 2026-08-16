@@ -81,6 +81,26 @@ class PausedCommitStorage extends MutationOutboxIndexedDB {
   }
 }
 
+class CommitObservedStorage extends MutationOutboxIndexedDB {
+  readonly committed: Promise<void>;
+  private markCommitted: (() => void) | undefined;
+
+  constructor() {
+    super();
+    this.committed = new Promise((resolve) => {
+      this.markCommitted = resolve;
+    });
+  }
+
+  override async enqueueIntent(
+    intent: Parameters<MutationOutboxIndexedDB["enqueueIntent"]>[0],
+  ): ReturnType<MutationOutboxIndexedDB["enqueueIntent"]> {
+    const record = await super.enqueueIntent(intent);
+    this.markCommitted?.();
+    return record;
+  }
+}
+
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
   globalThis.localStorage = new MemoryStorage();
@@ -515,6 +535,8 @@ test("while the composer's own classic drain is in flight, the strip's Steer-now
 // --- pending-tracking uniformity (send/steer/queue/drain all register) ------
 
 test("a plain send exposes its durable pending entry while the network remains unsettled", async () => {
+  const storage = new CommitObservedStorage();
+  setMutationStorageForTests(storage);
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "idle" },
@@ -525,6 +547,7 @@ test("a plain send exposes its durable pending entry while the network remains u
 
   await user.type(textarea() as HTMLTextAreaElement, "hello agent");
   await user.click(screen.getByRole("button", { name: /^send\b/i }));
+  await storage.committed;
   await settlePendingProjection();
 
   expect(result.current).toHaveLength(1);

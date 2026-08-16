@@ -63,9 +63,9 @@ func TestW3Init_Restore_EnvInitializeError(t *testing.T) {
 	}
 }
 
-// TestW3Init_Restore_JobManagerError covers the job-manager construction failure
-// arm: a corrupt jobs.jsonl makes newJobManager's pending-watch restore fail.
-func TestW3Init_Restore_JobManagerError(t *testing.T) {
+// TestW3Init_Restore_LegacyScanErrorPrecedesJobManager proves corrupt historical
+// state fails closed before either resource authority opens it.
+func TestW3Init_Restore_LegacyScanErrorPrecedesJobManager(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	id := "01W3RESTOREJOBMGR00000001"
@@ -77,8 +77,8 @@ func TestW3Init_Restore_JobManagerError(t *testing.T) {
 		execenv.NewLocalExecutionEnvironment(t.TempDir()), meta,
 		RestoreSessionConfig{StateDir: stateDir},
 	)
-	if err == nil || !strings.Contains(err.Error(), "job manager") {
-		t.Fatalf("err = %v, want job manager error", err)
+	if err == nil || !strings.Contains(err.Error(), "scan legacy delegate state") {
+		t.Fatalf("err = %v, want fail-closed legacy delegate scan error", err)
 	}
 }
 

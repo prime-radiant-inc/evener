@@ -383,7 +383,7 @@ func TestClassifySelfInfluenceCountsReplacedLineage(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "caller",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "dlg_obs", Message: "v1"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "v1"},
 	}); err != nil {
 		t.Fatalf("configure v1: %v", err)
 	}
@@ -394,7 +394,7 @@ func TestClassifySelfInfluenceCountsReplacedLineage(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "caller",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "dlg_obs", Message: "v2 changed"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "v2 changed"},
 	}); err != nil {
 		t.Fatalf("configure v2 (replace): %v", err)
 	}
@@ -435,7 +435,7 @@ func TestClassifySelfInfluenceCountsClearedLineage(t *testing.T) {
 	args := watchArgs{
 		Target: "caller",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
 	}
 	if _, err := jm.configureWatch(args); err != nil {
 		t.Fatalf("configure: %v", err)

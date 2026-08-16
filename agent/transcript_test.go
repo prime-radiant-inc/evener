@@ -1453,7 +1453,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 // --- Compaction turns flow through transcript ---
 
 // --- Sub-agent transcript persistence ---
-func TestSession_StateDirSessionsPathConflictFailsJobManager(t *testing.T) {
+func TestSession_StateDirSessionsPathConflictFailsClosedAtDelegateBootstrap(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 
@@ -1478,8 +1478,8 @@ func TestSession_StateDirSessionsPathConflictFailsJobManager(t *testing.T) {
 		sess.Close()
 		t.Fatal("NewSession succeeded with unusable state sessions path")
 	}
-	if !strings.Contains(err.Error(), "job manager:") || !strings.Contains(err.Error(), "not a directory") {
-		t.Fatalf("NewSession error = %v, want job manager state-dir failure", err)
+	if !strings.Contains(err.Error(), "scan legacy delegate state") || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("NewSession error = %v, want fail-closed delegate bootstrap state-dir failure", err)
 	}
 }
 

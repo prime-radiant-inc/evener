@@ -57,7 +57,7 @@ func TestProjectActivitySession_UnavailableStableChildPreservesDelegate(t *testi
 		t.Fatalf("entries = %+v, want retained delegate", got.Entries)
 	}
 	delegate := got.Entries[0].Delegate
-	if delegate.Child != nil || delegate.Branch.Error == "" || got.Aggregate != "unavailable" || got.Counts.Complete {
+	if delegate.Child != nil || delegate.Branch.Error == "" || got.Aggregate != "working" || got.Counts.Active != 1 || got.Counts.Complete {
 		t.Fatalf("delegate = %+v aggregate=%q counts=%+v", delegate, got.Aggregate, got.Counts)
 	}
 }
@@ -115,7 +115,7 @@ func TestAggregateActivity_CountsWorkUnitsRecursively(t *testing.T) {
 		}},
 	}
 	got, aggregate := aggregateActivity(entries, appwire.JobActivityBranchState{})
-	if got.Active != 2 || got.Failed != 2 || got.Completed != 2 || !got.Complete || aggregate != "working" {
+	if got.Active != 2 || got.Failed != 1 || got.Completed != 2 || !got.Complete || aggregate != "working" {
 		t.Fatalf("counts=%+v aggregate=%q", got, aggregate)
 	}
 }

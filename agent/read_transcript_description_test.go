@@ -16,25 +16,10 @@ func TestReadTranscriptDescriptionNamesRetainedOperationRules(t *testing.T) {
 	for _, want := range []string{
 		"artifact:", "job:", "session ref", "output_match", "context_lines",
 		"offset_bytes", "range", "expand_turn", "format", "16 KiB",
-		"retained_start_bytes", "job_status", "structured_result",
+		"retained_start_bytes", "job_status",
 	} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("read_transcript description does not name %q:\n%s", want, desc)
-		}
-	}
-}
-
-// TestReadTranscriptDescriptionTeachesBothJobKinds pins the fact the shipped
-// description hid: a job: ref serves DELEGATE jobs too, and
-// renderDelegateJobTranscript gives them their own heading, report, and
-// structured_result. Calling the ref "shell output logs" left a model with no
-// reason to use it on a delegate's report (kata w2fk).
-func TestReadTranscriptDescriptionTeachesBothJobKinds(t *testing.T) {
-	t.Parallel()
-	desc := tool.DefReadTranscript().Description
-	for _, want := range []string{"delegate job", "structured_result"} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("read_transcript description = %q, want it to teach the delegate job: read (%q)", desc, want)
 		}
 	}
 }

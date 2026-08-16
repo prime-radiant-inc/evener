@@ -255,8 +255,8 @@ func TestBuildSystemPrompt_IncludesBackgroundJobsSection(t *testing.T) {
 	if !strings.Contains(prompt, "## Background jobs") {
 		t.Fatalf("system prompt missing background-jobs section heading:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "Serf notifies you automatically when a") {
-		t.Fatalf("system prompt missing background-jobs section body (notification sentence):\n%s", prompt)
+	if !strings.Contains(prompt, "Delegates are durable resources identified by") {
+		t.Fatalf("system prompt missing background-jobs section body (stable delegate statement):\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "Pick the waiting primitive by how many answers you need:") {
 		t.Fatalf("system prompt missing background-jobs section body (waiting primitive sentence):\n%s", prompt)

@@ -64,7 +64,7 @@ func TestJobListRowIsLean(t *testing.T) {
 		t.Fatalf("job_list items = %#v, want one shell", result.Items)
 	}
 	item := result.Items[0]
-	if item.ID != record.JobID || item.Type != string(jobstore.JobShell) || item.TranscriptRef != nil || item.Resumable != nil {
+	if item.ID != record.JobID || item.Type != string(jobstore.JobShell) || item.TranscriptRef == nil || *item.TranscriptRef != shellTranscriptRef(record.JobID) || item.Resumable != nil {
 		t.Fatalf("lean shell row = %#v", item)
 	}
 	rendered := formatJobList(result)

@@ -7,6 +7,7 @@ import (
 	"maps"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -333,14 +334,67 @@ func TestCommunicate_FirstTerminalResultWins(t *testing.T) {
 	}
 }
 
+type communicateSessionRoutedAdapter struct {
+	mu sync.Mutex
+
+	rootSessionID string
+	requests      []llm.Request
+	rootRequests  int
+	childRequests int
+
+	delegate   llm.ToolCallData
+	status     llm.ToolCallData
+	childDone  llm.ToolCallData
+	parentDone llm.ToolCallData
+}
+
+func (*communicateSessionRoutedAdapter) Name() string { return "openai" }
+
+func (a *communicateSessionRoutedAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.requests = append(a.requests, req)
+
+	var response llm.Response
+	if req.SessionID == a.rootSessionID {
+		a.rootRequests++
+		if a.rootRequests == 1 {
+			response = toolCallResponse(a.delegate, a.status)
+		} else {
+			response = toolCallResponse(a.parentDone)
+		}
+	} else {
+		a.childRequests++
+		response = toolCallResponse(a.childDone)
+	}
+	response.Provider = a.Name()
+	response.Model = req.Model
+	return response, nil
+}
+
+func (*communicateSessionRoutedAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+
+func (a *communicateSessionRoutedAdapter) setRootSessionID(id string) {
+	a.mu.Lock()
+	a.rootSessionID = id
+	a.mu.Unlock()
+}
+
+func (a *communicateSessionRoutedAdapter) requestCounts() (total, root, child int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.requests), a.rootRequests, a.childRequests
+}
+
 func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
 	delegateArgs, _ := json.Marshal(map[string]any{
-		"task":        "Return CHILD_DONE.",
-		"max_wait_ms": 5000,
+		"task": "Return CHILD_DONE.",
 	})
 	delegate := llm.ToolCallData{
 		ID:        "delegate_1",
@@ -354,26 +408,19 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	})
 	childDone := communicateCall("child_done", "CHILD_DONE")
 	parentDone := communicateCall("parent_done", "Parent saw the delegate complete.")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return toolCallResponse(delegate, status)
-			},
-			func(req llm.Request) llm.Response {
-				return toolCallResponse(childDone)
-			},
-			func(req llm.Request) llm.Response {
-				return toolCallResponse(parentDone)
-			},
-		},
+	f := &communicateSessionRoutedAdapter{
+		delegate:   delegate,
+		status:     status,
+		childDone:  childDone,
+		parentDone: parentDone,
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	f.setRootSessionID(sess.ID())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "start the observer flow", nil)
@@ -385,8 +432,8 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	if strings.TrimSpace(out) != "Parent saw the delegate complete." {
 		t.Fatalf("ProcessInput returned %q, want parent final", out)
 	}
-	if got := len(f.Requests()); got != 3 {
-		t.Fatalf("requests: got %d want 3 (parent, child delegate, parent continuation)", got)
+	if total, root, child := f.requestCounts(); total != 3 || root != 2 || child != 1 {
+		t.Fatalf("requests: got total=%d root=%d child=%d, want two parent turns and one child delegate turn", total, root, child)
 	}
 }
 

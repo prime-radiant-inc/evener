@@ -73,7 +73,7 @@ func TestPersistedTerminalJobStatusReadConsumesPendingNotification(t *testing.T)
 	call := llm.ToolCallData{
 		ID:        "status",
 		Name:      "job_status",
-		Arguments: json.RawMessage(`{"job_id":` + mustJSONString(jobID) + `}`),
+		Arguments: json.RawMessage(`{"target":` + mustJSONString(jobID) + `}`),
 	}
 	result := s.reg.ExecuteCall(context.Background(), s.env, call)
 	if result.IsError {
@@ -142,7 +142,7 @@ func TestPersistedTerminalJobStatusPreservesQueuedSelfWatchNotification(t *testi
 	call := llm.ToolCallData{
 		ID:        "status",
 		Name:      "job_status",
-		Arguments: json.RawMessage(`{"job_id":` + mustJSONString(jobID) + `}`),
+		Arguments: json.RawMessage(`{"target":` + mustJSONString(jobID) + `}`),
 	}
 	result := s.reg.ExecuteCall(context.Background(), s.env, call)
 	if result.IsError {
@@ -192,7 +192,7 @@ func TestTerminalJobStatusTranscriptFailureLeavesNotificationPending(t *testing.
 	call := llm.ToolCallData{
 		ID:        "status",
 		Name:      "job_status",
-		Arguments: json.RawMessage(`{"job_id":` + mustJSONString(jobID) + `}`),
+		Arguments: json.RawMessage(`{"target":` + mustJSONString(jobID) + `}`),
 	}
 	result := s.reg.ExecuteCall(context.Background(), s.env, call)
 	if result.IsError {
@@ -237,7 +237,7 @@ func TestParentTerminalJobStatusReadLeavesChildNotificationPending(t *testing.T)
 	call := llm.ToolCallData{
 		ID:        "status",
 		Name:      "job_status",
-		Arguments: json.RawMessage(`{"job_id":` + mustJSONString(jobID) + `}`),
+		Arguments: json.RawMessage(`{"target":` + mustJSONString(jobID) + `}`),
 	}
 	result := parent.reg.ExecuteCall(context.Background(), parent.env, call)
 	if result.IsError {
@@ -295,7 +295,7 @@ func TestTerminalJobStatusReadContinuesCurrentTurn(t *testing.T) {
 					ToolCall: &llm.ToolCallData{
 						ID:        "status",
 						Name:      "job_status",
-						Arguments: json.RawMessage(`{"job_id":` + mustJSONString(jobID) + `}`),
+						Arguments: json.RawMessage(`{"target":` + mustJSONString(jobID) + `}`),
 						Type:      "function",
 					},
 				}},
@@ -327,7 +327,7 @@ func TestRunningJobStatusReadLeavesNotificationArmed(t *testing.T) {
 	jobID := startBackgroundShellJob(t, s, "sleep 30")
 	t.Cleanup(func() { _, _ = s.jobManager.stop(jobID) })
 
-	if _, err := jobStatusTool(s, map[string]any{"job_id": jobID}, 8000); err != nil {
+	if _, err := jobStatusTool(s, map[string]any{"target": jobID}, 8000); err != nil {
 		t.Fatalf("job_status: %v", err)
 	}
 

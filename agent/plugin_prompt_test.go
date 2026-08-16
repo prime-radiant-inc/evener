@@ -175,6 +175,7 @@ func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		MaxSubagentDepth: 3,
 		NoProjectPrompts: true,
+		StateDir:         t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
