@@ -252,18 +252,13 @@ func TestWaveCompletesDespiteBlockedLeakCheck(t *testing.T) {
 	// 3. Other suites still pass
 	// 4. The wave exits with failure code (one suite failed)
 
-	// Save production defaults and restore them after the test.
-	defer func() {
-		checkLeaksFn = checkLeaks
-		checkLeaksTimeout = 5 * time.Second
-	}()
-
-	// Inject a tiny timeout and a selective blocking leak check.
-	// Only the "wedged" suite's leak check blocks; the "normal" suite
-	// gets the real (fast) leak check so it can pass despite the other timing out.
-	checkLeaksTimeout = 50 * time.Millisecond
+	// Inject a tiny timeout and a selective blocking leak check, scoped to
+	// this test's own waveConfig. Only the "wedged" suite's leak check
+	// blocks; the "normal" suite gets the real (fast) leak check so it can
+	// pass despite the other timing out. Nothing to restore: the injection
+	// lives in a local cfg value, not package state.
 	blockForever := make(chan struct{})
-	checkLeaksFn = func(dir string) []string {
+	checkLeaksFn := func(dir string) []string {
 		if strings.Contains(dir, "wedged") {
 			<-blockForever // Block only the wedged suite
 			return nil
@@ -282,7 +277,14 @@ func TestWaveCompletesDespiteBlockedLeakCheck(t *testing.T) {
 	// suites are collected; no clock here beyond the injected timeout. That
 	// return (rather than a hang caught by the test binary's own timeout) is
 	// what proves the wave isn't wedged.
-	code := runWave(waveConfig{ScriptsDir: dir, Suites: []string{"wedged", "normal"}, KillGrace: time.Second, Out: &out})
+	code := runWave(waveConfig{
+		ScriptsDir:        dir,
+		Suites:            []string{"wedged", "normal"},
+		KillGrace:         time.Second,
+		Out:               &out,
+		checkLeaksFn:      checkLeaksFn,
+		checkLeaksTimeout: 50 * time.Millisecond,
+	})
 
 	outStr := out.String()
 

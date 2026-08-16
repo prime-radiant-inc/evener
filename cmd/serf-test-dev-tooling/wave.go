@@ -14,14 +14,10 @@ import (
 	"primeradiant.com/serf/envvars"
 )
 
-// checkLeaksFn is the function used to check for leaked temp files. It can be
-// overridden in tests to inject a slow/blocking leak check without changing
-// production code.
-var checkLeaksFn = checkLeaks
-
-// checkLeaksTimeout is how long the wave waits for a leak check to complete
-// before timing out. It can be overridden in tests.
-var checkLeaksTimeout = 5 * time.Second
+// defaultCheckLeaksTimeout is how long the wave waits for a leak check to
+// complete before timing out, used when a waveConfig leaves
+// checkLeaksTimeout at its zero value.
+const defaultCheckLeaksTimeout = 5 * time.Second
 
 // waveConfig describes one selftest wave: which suites to run, where their
 // scripts live, and how the wave reacts to signals. KillGrace is how long a
@@ -32,6 +28,17 @@ type waveConfig struct {
 	KillGrace  time.Duration
 	Out        io.Writer
 	Signals    <-chan os.Signal
+
+	// checkLeaksFn is the function used to check for leaked temp files. A
+	// nil value (the default for every caller that doesn't set it) means
+	// checkLeaks. Tests inject a slow/blocking leak check through this
+	// field, scoped to the one waveConfig they build, instead of through
+	// package state.
+	checkLeaksFn func(dir string) []string
+	// checkLeaksTimeout is how long the wave waits for a leak check to
+	// complete before timing out. A zero value means
+	// defaultCheckLeaksTimeout.
+	checkLeaksTimeout time.Duration
 }
 
 // suiteResult is one suite's outcome. failure is non-empty when the suite
@@ -212,10 +219,18 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 	// Leak check is post-reap bookkeeping that could block on a wedged
 	// filesystem. Run it with a timeout so it doesn't block the wave's
 	// ability to report this suite's result.
-	// Capture the function value here rather than inside the goroutine: the
-	// goroutine can outlive the wave when the check blocks past the timeout,
-	// and a late read of the package var would race with a test restoring it.
-	check := checkLeaksFn
+	// Resolve the function and timeout here, from cfg, rather than inside
+	// the goroutine: the goroutine can outlive the wave when the check
+	// blocks past the timeout, and cfg is this call's own copy, so nothing
+	// else can mutate it out from under a still-running goroutine.
+	check := cfg.checkLeaksFn
+	if check == nil {
+		check = checkLeaks
+	}
+	timeout := cfg.checkLeaksTimeout
+	if timeout == 0 {
+		timeout = defaultCheckLeaksTimeout
+	}
 	leakCheckDone := make(chan []string, 1)
 	go func() {
 		leakCheckDone <- check(tmp)
@@ -229,7 +244,7 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 				seconds: seconds,
 			}
 		}
-	case <-time.After(checkLeaksTimeout):
+	case <-time.After(timeout):
 		// Leak check timed out (e.g., wedged filesystem). Report as failure.
 		return suiteResult{
 			failure: fmt.Sprintf("serf-test-dev-tooling: %s passed but leak check timed out (possible wedged filesystem)",
