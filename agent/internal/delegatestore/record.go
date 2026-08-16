@@ -116,8 +116,8 @@ type Aggregate struct {
 	PreparedTerminal   *TerminalPacket   `json:"prepared_terminal,omitempty"`
 	Resumable          bool              `json:"resumable"`
 	NotResumableReason string            `json:"not_resumable_reason,omitempty"`
-	RunStartedAt       time.Time         `json:"run_started_at,omitempty"`
-	LatestActivityAt   time.Time         `json:"latest_activity_at,omitempty"`
+	RunStartedAt       time.Time         `json:"run_started_at,omitzero"`
+	LatestActivityAt   time.Time         `json:"latest_activity_at,omitzero"`
 	LatestOutcome      *Outcome          `json:"latest_outcome,omitempty"`
 	LatestPacket       *TerminalPacket   `json:"latest_packet,omitempty"`
 	PendingDeliveries  []PendingDelivery `json:"pending_deliveries,omitempty"`
