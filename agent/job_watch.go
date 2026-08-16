@@ -3319,6 +3319,7 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 			return false, appendErr
 		}
 		if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
+			jm.rememberStableWatchSettlementRetry(cfg, state)
 			return false, err
 		}
 		return false, armStableWatchAttention(controller, receiver, state.ReceiverDelegateID, attentionID)
@@ -3557,6 +3558,72 @@ func (jm *jobManager) releaseStableWatchReceipt(deliveryID string) {
 		jm.observeWatchReceiptBoundary()
 		_ = receipt.controller.CompleteWatchDelivery(receipt)
 	}
+}
+
+func (jm *jobManager) rememberStableWatchSettlementRetry(cfg *watchConfig, state jobstore.WatchSendState) {
+	if state.DeliveryID == "" {
+		return
+	}
+	jm.mu.Lock()
+	if jm.stableWatchSettlementRetries == nil {
+		jm.stableWatchSettlementRetries = make(map[string]pendingWatchSendDelivery)
+	}
+	jm.stableWatchSettlementRetries[state.DeliveryID] = pendingWatchSendDelivery{cfg: cfg, state: state}
+	jm.mu.Unlock()
+	jm.kick()
+}
+
+func (jm *jobManager) forgetStableWatchSettlementRetry(state jobstore.WatchSendState) {
+	jm.mu.Lock()
+	retry, ok := jm.stableWatchSettlementRetries[state.DeliveryID]
+	if ok && retry.state.UpdateSeq == state.UpdateSeq {
+		delete(jm.stableWatchSettlementRetries, state.DeliveryID)
+	}
+	jm.mu.Unlock()
+}
+
+func (jm *jobManager) pendingStableWatchSettlementRetries() []pendingWatchSendDelivery {
+	jm.mu.Lock()
+	retries := make([]pendingWatchSendDelivery, 0, len(jm.stableWatchSettlementRetries))
+	for _, retry := range jm.stableWatchSettlementRetries {
+		retries = append(retries, retry)
+	}
+	jm.mu.Unlock()
+	sort.Slice(retries, func(i, j int) bool {
+		return watchSendStateLess(&retries[i].state, &retries[j].state)
+	})
+	return retries
+}
+
+func (jm *jobManager) hasPendingStableWatchSettlementRetry() bool {
+	if jm == nil {
+		return false
+	}
+	jm.mu.Lock()
+	pending := len(jm.stableWatchSettlementRetries) != 0
+	jm.mu.Unlock()
+	return pending
+}
+
+func (jm *jobManager) retryStableWatchSettlements() error {
+	for _, retry := range jm.pendingStableWatchSettlementRetries() {
+		controller := jm.delegateController
+		if controller == nil {
+			return errors.New("stable watch controller is unavailable")
+		}
+		receiver, err := controller.stableWatchReceiver(retry.state.ReceiverSessionID, retry.state.ReceiverDelegateID)
+		if err != nil {
+			return err
+		}
+		if err := jm.settleWatchSendDelivered(retry.cfg, retry.state); err != nil {
+			return err
+		}
+		jm.forgetStableWatchSettlementRetry(retry.state)
+		if err := armStableWatchAttention(controller, receiver, retry.state.ReceiverDelegateID, stableWatchAttentionID(retry.state)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type watchSendPendingRecord struct {
@@ -4355,6 +4422,9 @@ func (s *Session) enqueueOwnCallerWatchSendTokens() {
 func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager, childSessionID string) (watchSendDrainResult, error) {
 	var result watchSendDrainResult
 	var errs []error
+	if err := jm.retryStableWatchSettlements(); err != nil {
+		return result, err
+	}
 	for _, delivery := range jm.pendingWatchSendDeliveries(nil) {
 		target := delivery.state.Key.ResolvedSendTo
 		if target == runtimeMessageAliasCaller {
@@ -4454,6 +4524,9 @@ func (jm *jobManager) kick() {
 func (jm *jobManager) hasPendingWatchSends() bool {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
+	if len(jm.stableWatchSettlementRetries) != 0 {
+		return true
+	}
 	for _, cfg := range jm.watches {
 		if len(cfg.pendingOrder) > 0 {
 			return true

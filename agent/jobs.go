@@ -185,6 +185,11 @@ type jobManager struct {
 	delegateLease       delegateLease
 	stableOwner         *Session
 	stableWatchReceipts map[string]*delegateWatchReceipt
+	// stableWatchSettlementRetries retains an exact process-only source
+	// settlement after its receiver attention is durable but the delivered
+	// marker append failed. The watch journal and receiver transcript remain the
+	// durable authorities; restart reconstructs this handoff from their history.
+	stableWatchSettlementRetries map[string]pendingWatchSendDelivery
 }
 
 // defaultCloseGrace is the graceful-shutdown window closeRuntimeState gives a

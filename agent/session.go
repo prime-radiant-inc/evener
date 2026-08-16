@@ -725,7 +725,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 	s.pendingJobNotifsMu.Lock()
 	pending := len(s.pendingJobNotifs) > 0
 	s.pendingJobNotifsMu.Unlock()
-	if pending || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() {
+	if pending || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
 		f()
 	}
 }

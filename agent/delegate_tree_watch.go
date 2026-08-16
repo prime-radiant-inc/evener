@@ -264,6 +264,54 @@ type stableWatchReceiverSnapshot struct {
 	transcriptRef string
 }
 
+type stableWatchDeliveryIdentity struct {
+	deliveryID string
+	updateSeq  uint64
+}
+
+// exactUnacknowledgedStableWatchSends reconstructs exact crash-repair
+// candidates from the existing source journal. A newer coalesced cursor does
+// not erase an older identity here: the receiver transcript separately proves
+// whether that older frame crossed its durability boundary.
+func exactUnacknowledgedStableWatchSends(events []jobstore.Event) []jobstore.WatchSendState {
+	terminal := make(map[stableWatchDeliveryIdentity]struct{})
+	pending := make(map[stableWatchDeliveryIdentity]jobstore.WatchSendState)
+	for _, event := range events {
+		state := event.WatchSend
+		if state == nil || state.DeliveryID == "" {
+			continue
+		}
+		identity := stableWatchDeliveryIdentity{deliveryID: state.DeliveryID, updateSeq: state.UpdateSeq}
+		switch event.Kind {
+		case jobstore.EventWatchSendPending:
+			if !state.StableReceiver {
+				continue
+			}
+			if _, settled := terminal[identity]; settled {
+				continue
+			}
+			pending[identity] = *state
+		case jobstore.EventWatchSendDelivered, jobstore.EventWatchSendDropped, jobstore.EventWatchSendEvicted:
+			terminal[identity] = struct{}{}
+			delete(pending, identity)
+		}
+	}
+	states := make([]jobstore.WatchSendState, 0, len(pending))
+	for _, state := range pending {
+		states = append(states, state)
+	}
+	sort.Slice(states, func(i, j int) bool {
+		if watchSendStateLess(&states[i], &states[j]) {
+			return true
+		}
+		if watchSendStateLess(&states[j], &states[i]) {
+			return false
+		}
+		return states[i].DeliveryID < states[j].DeliveryID
+	})
+	return states
+}
+
 // repairStableWatchDeliveriesForBootstrap completes source-journal handoffs
 // before the controller is published. Process receipts do not survive a crash,
 // so startup refolds each stable pending cursor, durably appends its exact
@@ -331,14 +379,17 @@ func repairStableWatchStoreForBootstrap(snapshot stableWatchBootstrapSnapshot, s
 		return err
 	}
 	defer func() { err = errors.Join(err, store.Close()) }()
-	folded, err := store.LoadWatchSends()
+	eventsLog, err := store.LoadEvents()
 	if err != nil {
 		return err
 	}
+	folded := jobstore.FoldWatchSends(eventsLog)
 	pending := make([]jobstore.WatchSendState, 0, len(folded.Pending))
+	current := make(map[stableWatchDeliveryIdentity]struct{}, len(folded.Pending))
 	for _, state := range folded.Pending {
 		if state != nil && state.StableReceiver {
 			pending = append(pending, *state)
+			current[stableWatchDeliveryIdentity{deliveryID: state.DeliveryID, updateSeq: state.UpdateSeq}] = struct{}{}
 		}
 	}
 	sort.Slice(pending, func(i, j int) bool {
@@ -347,6 +398,42 @@ func repairStableWatchStoreForBootstrap(snapshot stableWatchBootstrapSnapshot, s
 		}
 		return pending[i].UpdateSeq < pending[j].UpdateSeq
 	})
+	for _, state := range exactUnacknowledgedStableWatchSends(eventsLog) {
+		identity := stableWatchDeliveryIdentity{deliveryID: state.DeliveryID, updateSeq: state.UpdateSeq}
+		if _, isCurrent := current[identity]; isCurrent {
+			continue
+		}
+		receiver, ok := snapshot.receiverByID[state.ReceiverDelegateID]
+		if !ok || receiver.sessionID == "" || receiver.transcriptRef == "" || receiver.sessionID != state.ReceiverSessionID {
+			continue
+		}
+		path, sessionID, err := delegateTranscriptPathFromRef(snapshot.stateDir, receiver.transcriptRef)
+		if err != nil {
+			return err
+		}
+		if sessionID != receiver.sessionID {
+			return fmt.Errorf("stable watch receiver transcript session %q does not match %q", sessionID, receiver.sessionID)
+		}
+		fold, err := readDelegateAttentionFold(path, sessionID)
+		if err != nil {
+			return err
+		}
+		if _, exists := fold.content[stableWatchAttentionID(state)]; !exists {
+			continue
+		}
+		now := time.Now().UTC()
+		if snapshot.now != nil {
+			now = snapshot.now()
+		}
+		acknowledged := state
+		if err := store.Append(jobstore.Event{
+			Kind:      jobstore.EventWatchSendDelivered,
+			TS:        now,
+			WatchSend: &acknowledged,
+		}); err != nil {
+			return err
+		}
+	}
 	for _, state := range pending {
 		current, err := store.LoadWatchSends()
 		if err != nil {

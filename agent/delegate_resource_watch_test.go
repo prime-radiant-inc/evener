@@ -510,6 +510,90 @@ func TestStableDelegateWatch_CoalescingRetainsInflightReceiverReceipt(t *testing
 	}
 }
 
+func TestStableDelegateWatch_SupersededAckFailureRetriesBeforeCurrentCursor(t *testing.T) {
+	fs := newAttentionSyncBarrierFS()
+	fixture := newStableWatchRuntimeFixture(t, fs)
+	wakes := make(chan struct{}, 2)
+	fixture.root.SetNotifyFunc(func() { wakes <- struct{}{} })
+	old, newer, originalAppend := seedSupersededStableWatchAckFailure(t, fixture, fs)
+
+	select {
+	case <-wakes:
+		t.Fatal("failed old source acknowledgement armed receiver attention")
+	default:
+	}
+	if receipt := fixture.sourceJM.stableWatchReceipt(old.DeliveryID); receipt == nil {
+		t.Fatal("failed old source acknowledgement released its delivery receipt")
+	}
+	if !fixture.source.sessionWorkPending() {
+		t.Fatal("failed old source acknowledgement disappeared from session work-pending")
+	}
+
+	newAckEntered := make(chan struct{}, 1)
+	releaseNewAck := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(releaseNewAck)
+		}
+	}()
+	fixture.sourceJM.appendEvent = func(event jobstore.Event) error {
+		if exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, newer) {
+			newAckEntered <- struct{}{}
+			<-releaseNewAck
+		}
+		return originalAppend(event)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		done <- err
+	}()
+	<-newAckEntered
+
+	eventsAtNewAck := loadJobStoreEvents(t, fixture.sourceJM)
+	oldAcknowledgements := countExactWatchSendEvents(eventsAtNewAck, jobstore.EventWatchSendDelivered, old)
+	oldReceipt := fixture.sourceJM.stableWatchReceipt(old.DeliveryID)
+	newReceipt := fixture.sourceJM.stableWatchReceipt(newer.DeliveryID)
+	folded, err := fixture.sourceJM.store.LoadWatchSends()
+	if err != nil {
+		close(releaseNewAck)
+		released = true
+		<-done
+		t.Fatalf("load watch sends at newer acknowledgement: %v", err)
+	}
+	current := folded.Pending[newer.Key]
+	fixture.root.attentionMu.Lock()
+	_, oldArmed := fixture.root.rootAttentionWakeIDs[stableWatchAttentionID(old)]
+	fixture.root.attentionMu.Unlock()
+	close(releaseNewAck)
+	released = true
+	if err := <-done; err != nil {
+		t.Fatalf("redrain stable watch sends: %v", err)
+	}
+
+	if oldAcknowledgements != 1 {
+		t.Fatalf("old source acknowledgements before current cursor = %d, want exactly 1", oldAcknowledgements)
+	}
+	if oldReceipt != nil {
+		t.Fatal("old delivery receipt remained held after exact acknowledgement retry")
+	}
+	if newReceipt == nil {
+		t.Fatal("current delivery receipt released before its blocked acknowledgement")
+	}
+	if current == nil || current.DeliveryID != newer.DeliveryID || current.UpdateSeq != newer.UpdateSeq {
+		t.Fatalf("newer cursor during old acknowledgement retry = %#v, want delivery %q seq %d", current, newer.DeliveryID, newer.UpdateSeq)
+	}
+	if !oldArmed {
+		t.Fatalf("old attention %q was not armed after exact acknowledgement retry", stableWatchAttentionID(old))
+	}
+	select {
+	case <-wakes:
+	default:
+		t.Fatal("old attention did not wake after exact acknowledgement retry")
+	}
+}
+
 func TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked(t *testing.T) {
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "crash repair"})
@@ -569,6 +653,64 @@ func TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked(t *testi
 	}
 	if len(folded.Pending) != 0 {
 		t.Fatalf("source pending after restart repair = %#v", folded.Pending)
+	}
+}
+
+func TestStableDelegateWatch_RestartRepairsSupersededReceiverDurableSourceUnacked(t *testing.T) {
+	fs := newAttentionSyncBarrierFS()
+	fixture := newStableWatchRuntimeFixture(t, fs)
+	old, newer, _ := seedSupersededStableWatchAckFailure(t, fixture, fs)
+	if got := countAttentionEntries(t, fixture.rootTranscriptPath, stableWatchAttentionID(old)); got != 1 {
+		t.Fatalf("old receiver attention count after failed source ack = %d, want 1", got)
+	}
+	if got := countExactWatchSendEvents(loadJobStoreEvents(t, fixture.sourceJM), jobstore.EventWatchSendDelivered, old); got != 0 {
+		t.Fatalf("old source acknowledgements before restart = %d, want 0", got)
+	}
+	fixture.sourceJM.releaseStableWatchReceipt(old.DeliveryID)
+	fixture.sourceJM.releaseStableWatchReceipt(newer.DeliveryID)
+	if err := fixture.sourceJM.closeStoreOnly(); err != nil {
+		t.Fatalf("close source journal: %v", err)
+	}
+	fixture.sourceJM = nil
+	if err := fixture.root.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close receiver transcript: %v", err)
+	}
+	if err := fixture.controller.store.Close(); err != nil {
+		t.Fatalf("close delegate controller: %v", err)
+	}
+	seedBootstrapControllerJournal(t, fixture)
+	fresh := &Session{
+		id:       fixture.root.ID(),
+		stateDir: fixture.controller.stateDir,
+		cfg: SessionConfig{
+			MaxConcurrentDelegateTurns: 2,
+		},
+		state: SessionIdle,
+	}
+	if err := fresh.bootstrapDelegateResources(); err != nil {
+		t.Fatalf("bootstrap superseded stable watch repair: %v", err)
+	}
+	t.Cleanup(func() { _ = fresh.delegateController.store.Close() })
+	if got := countAttentionEntries(t, fixture.rootTranscriptPath, stableWatchAttentionID(old)); got != 1 {
+		t.Fatalf("old receiver attention count after restart repair = %d, want 1", got)
+	}
+	if got := countAttentionEntries(t, fixture.rootTranscriptPath, stableWatchAttentionID(newer)); got != 1 {
+		t.Fatalf("new receiver attention count after restart repair = %d, want 1", got)
+	}
+	restarted, err := jobstore.Open(filepath.Join(jobsDir(fixture.controller.stateDir, fixture.source.ID()), "jobs.jsonl"))
+	if err != nil {
+		t.Fatalf("open repaired source journal: %v", err)
+	}
+	defer restarted.Close()
+	eventsLog, err := restarted.LoadEvents()
+	if err != nil {
+		t.Fatalf("load repaired source journal: %v", err)
+	}
+	if got := countExactWatchSendEvents(eventsLog, jobstore.EventWatchSendDelivered, old); got != 1 {
+		t.Fatalf("old source acknowledgements after restart repair = %d, want exactly 1", got)
+	}
+	if got := countExactWatchSendEvents(eventsLog, jobstore.EventWatchSendDelivered, newer); got != 1 {
+		t.Fatalf("new source acknowledgements after restart repair = %d, want exactly 1", got)
 	}
 }
 
@@ -964,6 +1106,58 @@ func (f *stableWatchRuntimeFixture) requireOnePending(t *testing.T) pendingWatch
 		t.Fatalf("stable watch pending deliveries = %d, want 1", len(pending))
 	}
 	return pending[0]
+}
+
+func seedSupersededStableWatchAckFailure(t *testing.T, fixture *stableWatchRuntimeFixture, fs *attentionSyncBarrierFS) (jobstore.WatchSendState, jobstore.WatchSendState, func(jobstore.Event) error) {
+	t.Helper()
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "old frame"})
+	old := fixture.requireOnePending(t).state
+	sourceAckFailure := errors.New("old source delivered acknowledgement failed")
+	originalAppend := fixture.sourceJM.appendEvent
+	failed := false
+	fixture.sourceJM.appendEvent = func(event jobstore.Event) error {
+		if !failed && exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, old) {
+			failed = true
+			return sourceAckFailure
+		}
+		return originalAppend(event)
+	}
+	fs.arm()
+	done := make(chan error, 1)
+	go func() {
+		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		done <- err
+	}()
+	<-fs.syncEntered
+	released := false
+	defer func() {
+		if !released {
+			fs.release()
+		}
+	}()
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "new frame"})
+	newer := fixture.requireOnePending(t).state
+	fs.release()
+	released = true
+	if err := <-done; !errors.Is(err, sourceAckFailure) {
+		t.Fatalf("superseded delivery error = %v, want %v", err, sourceAckFailure)
+	}
+	fixture.sourceJM.appendEvent = originalAppend
+	return old, newer, originalAppend
+}
+
+func exactWatchSendEvent(event jobstore.Event, kind jobstore.EventKind, state jobstore.WatchSendState) bool {
+	return event.Kind == kind && event.WatchSend != nil && event.WatchSend.DeliveryID == state.DeliveryID && event.WatchSend.UpdateSeq == state.UpdateSeq
+}
+
+func countExactWatchSendEvents(events []jobstore.Event, kind jobstore.EventKind, state jobstore.WatchSendState) int {
+	count := 0
+	for _, event := range events {
+		if exactWatchSendEvent(event, kind, state) {
+			count++
+		}
+	}
+	return count
 }
 
 func countAttentionEntries(t *testing.T, path, attentionID string) int {
