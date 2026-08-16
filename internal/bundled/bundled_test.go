@@ -65,3 +65,20 @@ func TestBundledCoordinatorUsesStableDelegateAndShellIdentities(t *testing.T) {
 		}
 	}
 }
+
+func TestBundledSubagentPreservesCallerRouteAndCommunicateFinal(t *testing.T) {
+	body, err := fs.ReadFile(Agents(), "subagent.md")
+	if err != nil {
+		t.Fatalf("read bundled subagent: %v", err)
+	}
+	prompt := string(body)
+	for _, want := range []string{
+		"`delegate_send(to=\"caller\")`",
+		"non-terminal",
+		"`communicate(end_turn=true)`",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("bundled subagent missing caller/final contract %q", want)
+		}
+	}
+}

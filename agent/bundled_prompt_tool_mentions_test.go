@@ -112,6 +112,7 @@ func TestBundledDelegatePromptPreservesWatchSupervisionAndShellGuidance(t *testi
 	for _, want := range []string{
 		"Shell commands can run as durable background jobs identified by a `job_id` (`job_...`)",
 		"Stable delegates are watch sources identified by `dlg_...`",
+		"`delegate_send(to=\"caller\")` sends a non-terminal update to your controlling caller",
 		"`delegate(watch_parent:true)`",
 		"quiet watchdog",
 		"`max_retained_terminal`",

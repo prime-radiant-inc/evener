@@ -371,11 +371,12 @@ func TestDefDelegateSendShape(t *testing.T) {
 	}
 }
 
-func TestDefDelegateSendDescriptionWarnsNotCommunicate(t *testing.T) {
+func TestDefDelegateSendDescriptionDistinguishesCallerFromFinalReport(t *testing.T) {
 	def := DefDelegateSend()
-	want := "Sends a message to a child delegate you created — this is not how you deliver your own results; use communicate for that."
-	if !strings.HasPrefix(def.Description, want) {
-		t.Fatalf("DefDelegateSend description = %q, want prefix %q", def.Description, want)
+	for _, want := range []string{"controlling caller", "non-terminal", "communicate"} {
+		if !strings.Contains(def.Description, want) {
+			t.Fatalf("DefDelegateSend description = %q, want %q", def.Description, want)
+		}
 	}
 }
 
@@ -410,14 +411,12 @@ func TestDefUpdateGoalShape(t *testing.T) {
 	}
 }
 
-func TestDefDelegateSendNoCallerAlias(t *testing.T) {
+func TestDefDelegateSendDescribesContextualCallerRoute(t *testing.T) {
 	def := DefDelegateSend()
-	descriptions := []string{def.Description}
-	collectSchemaDescriptions(def.Parameters, &descriptions)
-	for _, desc := range descriptions {
-		if strings.Contains(desc, "caller") {
-			t.Fatalf("DefDelegateSend description must describe child delegate messaging only: %q", desc)
-		}
+	props := def.Parameters["properties"].(map[string]any)
+	to := props["to"].(map[string]any)["description"].(string)
+	if !strings.Contains(def.Description, "caller") || !strings.Contains(to, "caller") {
+		t.Fatalf("DefDelegateSend caller route missing: description=%q to=%q", def.Description, to)
 	}
 }
 
@@ -494,32 +493,13 @@ func TestOptionalJobInspectionToolsAreNonStrict(t *testing.T) {
 	}
 }
 
-func TestJobControlDescriptionsDoNotAdvertiseCallerDelegateSend(t *testing.T) {
-	defs := []llm.ToolDefinition{
-		DefJobWatch([]string{"communicate"}),
-		DefJobStatus(),
-		DefReadTranscript(),
-		DefJobList(),
-		DefJobStop(),
+func TestJobListDescriptionKeepsObserverCommunicateGuidance(t *testing.T) {
+	def := DefJobList()
+	if !strings.Contains(def.Description, "communicate(end_turn=true)") {
+		t.Fatalf("%s description = %q, want observer sidecar communicate report path", def.Name, def.Description)
 	}
-	for _, def := range defs {
-		t.Run(def.Name, func(t *testing.T) {
-			descriptions := []string{def.Description}
-			collectSchemaDescriptions(def.Parameters, &descriptions)
-			for _, desc := range descriptions {
-				if strings.Contains(desc, "delegate_send(to=\"caller\")") {
-					t.Fatalf("%s advertises legacy observer callback path: %q", def.Name, desc)
-				}
-			}
-			if def.Name == "job_list" {
-				if !strings.Contains(def.Description, "communicate(end_turn=true)") {
-					t.Fatalf("%s description = %q, want observer sidecar communicate report path", def.Name, def.Description)
-				}
-				if !strings.Contains(def.Description, "audit or diagnosis") {
-					t.Fatalf("%s description = %q, want audit/diagnosis guidance", def.Name, def.Description)
-				}
-			}
-		})
+	if !strings.Contains(def.Description, "audit or diagnosis") {
+		t.Fatalf("%s description = %q, want audit/diagnosis guidance", def.Name, def.Description)
 	}
 }
 

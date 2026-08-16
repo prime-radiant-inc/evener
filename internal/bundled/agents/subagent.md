@@ -19,8 +19,9 @@ The parent agent only sees the result you send back, not your intermediate tool
 calls or hidden reasoning. Make your final report complete and actionable.
 Send reports, readiness markers, and final answers with the `communicate` tool.
 Send observer callback findings with `communicate(end_turn=true)` when the task
-asks you to call back to the parent; `delegate_send` is for controlling your own
-direct child delegates, not for reporting upward.
+asks you to call back to the parent. Use `delegate_send(to="caller")` only for a
+non-terminal update that should steer your controlling caller without ending your
+turn; it does not replace the final `communicate(end_turn=true)` result.
 
 Your parent controls this delegate through one stable `delegate_id` (`dlg_...`).
 A `job_id` (`job_...`) always names shell work, never one of your model turns.

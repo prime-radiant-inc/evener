@@ -6,7 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -57,12 +59,68 @@ func (c *delegateTreeController) Steer(ctx context.Context, actor delegateActor,
 	return c.CompleteSteerPersistence(claim, entry)
 }
 
+// SteerCaller routes one delegate's explicit caller message through its
+// controlling runtime. A nested caller uses the stable parent's controller
+// admission; a top-level caller uses the root Session's turn-boundary queue.
+func (c *delegateTreeController) SteerCaller(ctx context.Context, actor delegateActor, message string, p *provenance.Causal) (delegateMutationPlans, error) {
+	if err := ctx.Err(); err != nil {
+		return delegateMutationPlans{}, err
+	}
+	if strings.TrimSpace(message) == "" {
+		return delegateMutationPlans{}, errors.New("invalid_request: message is required")
+	}
+	claim, root, err := c.beginCallerSteerPersistence(actor)
+	if err != nil {
+		return delegateMutationPlans{}, err
+	}
+	if root != nil {
+		if !root.trySteerWithProvenanceAndNotify(message, p, events.SteeringKindAgentMessage) {
+			return delegateMutationPlans{}, errors.New("caller unavailable")
+		}
+		return delegateMutationPlans{}, nil
+	}
+	entry, err := claim.runtime.appendDelegateCallerSteeringDurably(message, claim.entryID)
+	if err != nil {
+		_ = c.AbortSteerPersistence(claim)
+		return delegateMutationPlans{}, err
+	}
+	return c.CompleteSteerPersistence(claim, entry)
+}
+
 func (c *delegateTreeController) BeginSteerPersistence(actor delegateActor, delegateID string) (*delegateSteeringClaim, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.authorizeMutationLocked(actor, delegateID); err != nil {
 		return nil, err
 	}
+	return c.beginSteerPersistenceLocked(delegateID)
+}
+
+func (c *delegateTreeController) beginCallerSteerPersistence(actor delegateActor) (*delegateSteeringClaim, *Session, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if actor.lease == nil {
+		return nil, nil, errors.New("invalid_request: caller is only available from a delegate")
+	}
+	actorAggregate, _, err := c.admitLeaseLocked(*actor.lease, delegatestore.PhaseRunning)
+	if err != nil {
+		return nil, nil, err
+	}
+	if c.hasSettlementClaimLocked(*actor.lease) {
+		return nil, nil, errDelegateTargetBusy
+	}
+	parentID := actorAggregate.Descriptor.ParentDelegateID
+	if parentID == "" {
+		if actorAggregate.Descriptor.OwnerSessionID != c.rootSessionID || c.rootRuntime == nil {
+			return nil, nil, errDelegateNotControllable
+		}
+		return nil, c.rootRuntime, nil
+	}
+	claim, err := c.beginSteerPersistenceLocked(parentID)
+	return claim, nil, err
+}
+
+func (c *delegateTreeController) beginSteerPersistenceLocked(delegateID string) (*delegateSteeringClaim, error) {
 	live := c.live[delegateID]
 	if live == nil || live.binding == nil || live.binding.runtime == nil {
 		return nil, errDelegateTargetBusy
@@ -304,6 +362,14 @@ func (c *delegateTreeController) BeginTool(lease delegateLease) error {
 }
 
 func (s *Session) appendDelegateSteeringDurably(message, stableTurnID string) (delegateTranscriptEntry, error) {
+	return s.appendDelegateSteeringDurablyWithMetadata(message, stableTurnID, "user", "")
+}
+
+func (s *Session) appendDelegateCallerSteeringDurably(message, stableTurnID string) (delegateTranscriptEntry, error) {
+	return s.appendDelegateSteeringDurablyWithMetadata(message, stableTurnID, "", events.SteeringKindAgentMessage)
+}
+
+func (s *Session) appendDelegateSteeringDurablyWithMetadata(message, stableTurnID, source, kind string) (delegateTranscriptEntry, error) {
 	s.mu.Lock()
 	ready := s.transcriptReady && s.transcript != nil
 	s.mu.Unlock()
@@ -312,7 +378,8 @@ func (s *Session) appendDelegateSteeringDurably(message, stableTurnID string) (d
 	}
 	turn := schema.NewTurn(schema.TurnSteering, llm.User(message))
 	turn.Timestamp = s.sclock().Now().UTC()
-	turn.SteeringSource = "user"
+	turn.SteeringSource = source
+	turn.SteeringKind = kind
 	turn.StableTurnID = stableTurnID
 	if err := s.writeTranscriptDurable(turn); err != nil {
 		return delegateTranscriptEntry{}, err

@@ -426,7 +426,7 @@ creates a fallback activation JobRecord.
 
 ### `delegate_send`
 
-`delegate_send` sends a message to one of your durable child delegate conversations by `delegate_id`. It is the public follow-up surface for delegates. It is not the observer-to-parent callback surface; observers report through `communicate(end_turn=true)`.
+`delegate_send` sends a message to one of your durable child delegate conversations by `delegate_id`. From inside a delegate, the contextual `caller` target sends a non-terminal update to that delegate's controlling caller. Final results and observer completion still use `communicate(end_turn=true)`.
 
 Target shape:
 
@@ -443,10 +443,11 @@ Core target resolution:
 | Target | Meaning |
 | --- | --- |
 | `dlg_...` | A durable delegate conversation owned by this session. |
+| `caller` | The current delegate's controlling caller. This contextual target is unavailable at the root. |
 
 `delegate_send` rejects `job_id` handles because they identify shell work, not
-delegates. It also rejects `transcript_ref` handles and runtime/legacy aliases
-such as `caller`, `main`, or `watched`.
+delegates. It also rejects `transcript_ref` handles and unsupported runtime or
+legacy aliases such as `main` or `watched`.
 
 Semantics:
 
@@ -454,8 +455,13 @@ Semantics:
   message into that exact generation. The return `action` is `steered`.
 - If `to` identifies an idle/resumable delegate, Serf starts its next private
   generation in the same child conversation. The return `action` is `started`.
-- If `to` is `caller`, a `job_id`, `transcript_ref`, unknown/unauthorized
-  delegate, non-resumable delegate, or legacy alias, the call fails
+- If `to` is `caller`, a nested delegate steers its stable parent through the
+  parent's controller lifecycle admission; a top-level delegate uses the root
+  session's durable turn-boundary steering queue. The call returns
+  `action=delivered`, does not end the delegate's turn, and never writes into an
+  unfinished root tool round.
+- If `to` is a `job_id`, `transcript_ref`, unknown/unauthorized delegate,
+  non-resumable delegate, or unsupported legacy alias, the call fails
   synchronously without minting another identity or JobRecord.
 - One delegate has at most one open run. Admission, steering, stop, and terminal
   settlement are serialized by the stable controller aggregate.

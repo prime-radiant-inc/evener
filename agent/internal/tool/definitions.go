@@ -164,18 +164,18 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 func DefDelegateSend() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "delegate_send",
-		Description: "Sends a message to a child delegate you created — this is not how you deliver your own results; use communicate for that. " +
-			"Send a message to one of your durable delegates by delegate_id. " +
-			"`to` accepts a `dlg_...` delegate_id; it rejects job/turn handles and unrelated runtime aliases. " +
+		Description: "Sends a message to a child delegate you created or, from a delegate, to its controlling caller. " +
+			"Use the contextual `caller` route for a non-terminal update that should not end your turn; use communicate for your final result or observer completion. " +
+			"Send child follow-ups by durable delegate_id. `to` accepts a `dlg_...` delegate_id or contextual `caller`; it rejects job/turn handles and unrelated runtime aliases. " +
 			"If the delegate is running or being driven, the message is steered and returns on delivery. " +
 			"Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"to":          map[string]any{"type": "string", "description": "A delegate_id (`dlg_...`) owned by this session."},
+				"to":          map[string]any{"type": "string", "description": "A child delegate_id (`dlg_...`) owned by this session, or `caller` from within a delegate to steer its controlling caller."},
 				"message":     map[string]any{"type": "string"},
-				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a started job, wait inline up to this many ms for its result; delivery to a running delegate returns once delivered."},
+				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a newly started delegate generation, wait inline up to this many ms for its result; delivery to a running delegate or caller returns once delivered."},
 			},
 			"required": []string{"to", "message"},
 		},

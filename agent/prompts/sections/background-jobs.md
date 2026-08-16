@@ -42,6 +42,9 @@ Observer sidecars: start the observer with `delegate(watch_parent:true)`. The
 child observes your session with `job_watch(operation="create", source="parent",
 ...)` and reports findings with `communicate(end_turn:true)`. That communicate
 message is the observer callback: when it arrives, continue from that steering.
+`delegate_send(to="caller")` sends a non-terminal update to your controlling caller
+without ending your turn; keep `communicate(end_turn:true)` for observer completion
+and final results.
 
 You can also watch your own events (`source:"self"`, including
 assistant.tool/communicate) with delivery back to yourself. When an event is

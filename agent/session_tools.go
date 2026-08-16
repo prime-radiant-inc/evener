@@ -123,9 +123,6 @@ func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
 func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
 	target := strings.TrimSpace(stringArg(args, "to"))
 	message := strings.TrimSpace(stringArg(args, "message"))
-	if target == runtimeMessageAliasCaller {
-		return nil, errors.New("invalid_request: delegate_send sends to child delegate_id only")
-	}
 	wait := 0
 	if n, ok := shellIntArg(args, "max_wait_ms"); ok {
 		if n < 0 {
@@ -136,6 +133,28 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 	requestedWait := wait
 	if wait > 0 {
 		wait = int(clampJobBlockTimeout(wait).Milliseconds())
+	}
+	if target == runtimeMessageAliasCaller {
+		if s == nil || s.delegateController == nil {
+			return nil, errors.New("delegate controller is unavailable")
+		}
+		actor, err := s.delegateActor(ctx)
+		if err != nil {
+			return nil, err
+		}
+		plans, err := s.delegateController.SteerCaller(ctx, actor, message, s.activeCausalProvenance())
+		if err != nil {
+			return nil, err
+		}
+		if err := s.executeDelegateMutationPlans(plans); err != nil {
+			return nil, err
+		}
+		if s.currentEntryKind() == EntryWatchDelivery {
+			s.markWatchCallbackDeliveredForCurrentTurn()
+		}
+		result := sendMessageResult{Target: target, Action: "delivered"}
+		result.WaitIgnoredReason = liveSteerWaitIgnoredReason(requestedWait, result.Status, result.Action)
+		return marshalDelegateSendResult(result, maxChars)
 	}
 	outcome := (delegateRuntime{owner: s}).send(ctx, target, message, wait)
 	outcome.result.WaitIgnoredReason = liveSteerWaitIgnoredReason(requestedWait, outcome.result.Status, outcome.result.Action)

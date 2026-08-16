@@ -122,7 +122,7 @@ func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistra
 // delivery and cannot honor the wait. It returns "" when the wait was honored (a
 // resumed job) or not requested, so the field stays omitted in the common case.
 func liveSteerWaitIgnoredReason(blockTimeoutMS int, status jobstore.Status, action string) string {
-	if blockTimeoutMS > 0 && status == jobstore.StatusRunning && action == "steered" {
+	if blockTimeoutMS > 0 && (status == jobstore.StatusRunning && action == "steered" || action == "delivered") {
 		return "live steer returns on delivery; max_wait_ms applies only to started jobs"
 	}
 	return ""
