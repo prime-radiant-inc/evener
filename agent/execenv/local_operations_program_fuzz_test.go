@@ -20,9 +20,10 @@ import (
 // FuzzLocalFilesystemOperationProgram drives the public local filesystem tool
 // surface as one deterministic program: ReadFile, WriteFile, EditFile,
 // FileExists, ListDirectory, Glob, and Grep. Each run owns a fresh temp root.
-// Grep is forced through its native fallback at the existing lookup seam, so
-// this target never consults PATH or starts ripgrep, a shell, Git, or a network
-// client. A separate injected-afero lane reaches write failure handling without
+// Grep is forced through its native fallback via the run-local env's own
+// lookPath hook, so this target never consults PATH or starts ripgrep, a
+// shell, Git, or a network client - and never mutates a package global to do
+// it. A separate injected-afero lane reaches write failure handling without
 // touching the host filesystem.
 func FuzzLocalFilesystemOperationProgram(f *testing.F) {
 	for _, seed := range [][]byte{
@@ -254,12 +255,13 @@ func localFilesystemProgramRelativePaths(t *testing.T, root string, paths []stri
 
 func localFilesystemProgramGrep(t *testing.T, env *LocalExecutionEnvironment, token string, program []byte) []string {
 	t.Helper()
-	// This temporary lookup seam is intentionally scoped to one non-parallel fuzz
-	// case. It makes Grep take its native-Go implementation before any PATH lookup
-	// or command construction occurs.
-	original := execLookPath
-	execLookPath = func(string) (string, error) { return "", errors.New("local filesystem program disables ripgrep") }
-	defer func() { execLookPath = original }()
+	// Grep takes its native-Go implementation through this env's OWN lookPath
+	// hook (the per-instance injection point findExecutable consults first,
+	// local.go): the ripgrep-absent branch is forced before any PATH lookup or
+	// command construction, without touching the package-global execLookPath.
+	// The env is created fresh per program run, so no other test - parallel or
+	// not - can observe this stub.
+	env.lookPath = func(string) (string, error) { return "", errors.New("local filesystem program disables ripgrep") }
 
 	content, err := env.Grep("needle", "", "", false, 0, "")
 	if err != nil || !strings.Contains(content, "docs/readme.txt:2:needle "+token) || strings.Contains(content, ".hidden") || strings.Contains(content, "binary.bin") {

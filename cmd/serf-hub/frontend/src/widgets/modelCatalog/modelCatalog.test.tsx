@@ -65,7 +65,7 @@ async function openPicker(user: ReturnType<typeof userEvent.setup>): Promise<HTM
 
 // --- closed state (unchanged: the chip IS the trigger) ---------------------
 
-test("shows the interim default marker when no model is chosen", () => {
+test("shows the (default) marker when no model is chosen", () => {
   renderPicker();
   expect(screen.getByText("(default)")).toBeTruthy();
 });

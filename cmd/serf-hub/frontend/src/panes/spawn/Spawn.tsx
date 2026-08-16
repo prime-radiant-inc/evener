@@ -39,6 +39,7 @@ import {
 } from "../../widgets";
 import { CloseIcon } from "../../widgets/dialog/CloseIcon";
 import { requireClass } from "../../widgets/internal/requireClass";
+import type { ModelCatalog, ModelCatalogEntry } from "../../widgets/modelCatalog";
 import { fetchModelCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeScopedCatalog } from "../../widgets/modelCatalog/scopedCatalog";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
@@ -68,14 +69,31 @@ import { readUrlPrefill } from "./urlPrefill";
 // ?dir=/?prompt= prefill is read from window.location.search, not params.
 export type SpawnPaneParams = Record<string, never>;
 
-// Interim reasoning-effort ladder (floor §1.5, the rich per-model ladder is
-// Wave 8): "(default)" + the standard levels + an explicit "none".
-const REASONING_LEVELS = ["minimal", "low", "medium", "high"];
-const REASONING_OPTIONS = [
-  { value: "", label: "(default)" },
-  ...REASONING_LEVELS.map((level) => ({ value: level, label: level })),
-  { value: "none", label: "none" },
-];
+// Fallback effort ladder for a model whose own ladder the hub does not
+// enumerate - the same fallback the session status row uses (StatusRow.tsx's
+// DEFAULT_EFFORT_LEVELS), so both surfaces agree on the unknown case. The
+// select's real ladder comes from the selected model's catalog entry
+// (reasoningEffortLevels/supportsReasoning, served by /api/models -
+// web_spawn.go); "(default)" + an explicit "none" ride every ladder.
+const FALLBACK_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
+// Shared empty-ladder constant so the derived value keeps a stable identity
+// across renders (the stale-effort effect below keys off it).
+const NO_EFFORT_LEVELS: string[] = [];
+
+// The effort levels a catalog entry authorizes: the model's own named ladder
+// when it has one, an EMPTY list when the catalog says the model cannot
+// reason at all, and null when the hub can't say (enrichment failed, or the
+// entry names neither levels nor a reasoning capability). The caller
+// substitutes FALLBACK_EFFORT_LEVELS for null, so a missing catalog never
+// empties or disables the field.
+function catalogEffortLevels(entry: ModelCatalogEntry | undefined): string[] | null {
+  if (entry === undefined) return null;
+  if (entry.reasoningEffortLevels !== undefined && entry.reasoningEffortLevels.length > 0) {
+    return entry.reasoningEffortLevels;
+  }
+  if (entry.supportsReasoning === false) return NO_EFFORT_LEVELS;
+  return null;
+}
 
 const CLASS = {
   form: requireClass(styles.form, "spawn.module.css", "form"),
@@ -131,6 +149,14 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // unconfirmable state never blocks Start (same fail-open shape as
   // preflightDir).
   const [noDefaultModel, setNoDefaultModel] = useState(false);
+  // The merged launchable-model catalog (model/list + /api/models), loaded at
+  // pane level so the Effort select can read the selected model's own
+  // reasoningEffortLevels without waiting for a picker to open. null = not
+  // loaded or the load failed - the select stays on the fallback ladder.
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
+  // The hub's resolved default model for this cwd ("" until resolve confirms
+  // one): what the Effort ladder keys off while Model reads "(default)".
+  const [resolvedDefaultModel, setResolvedDefaultModel] = useState("");
 
   // Attachments reuse the composer's staged-image pipeline via a TextEditor
   // bridge over the prompt textarea (see Composer.tsx's own bridge for the
@@ -322,6 +348,26 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     return () => window.clearInterval(id);
   }, [busy]);
 
+  // Pane-level merged catalog for the Effort select's per-model ladder: the
+  // same composition the model pickers load on demand (model/list's
+  // launchable SET enriched with /api/models metadata, which is where
+  // reasoningEffortLevels/supportsReasoning live - model/list itself carries
+  // only provider/model pairs). Reloads with the harness/cwd scope, exactly
+  // like loadCatalog itself. Fail-open: a rejected load leaves modelCatalog
+  // null and the select on the fallback ladder.
+  useEffect(() => {
+    let active = true;
+    loadCatalog().then(
+      (catalog) => {
+        if (active) setModelCatalog(catalog);
+      },
+      () => {},
+    );
+    return () => {
+      active = false;
+    };
+  }, [loadCatalog]);
+
   // Branch HEAD resolution (floor §1.7): the readout is read-only, so HEAD is
   // its ONLY source - re-resolved on every working-dir change with no
   // user-edited escape hatch to respect. `active` still guards a late response
@@ -373,6 +419,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   useEffect(() => {
     if (cwd.trim() === "") {
       setNoDefaultModel(false);
+      setResolvedDefaultModel("");
       return undefined;
     }
     let active = true;
@@ -381,6 +428,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         if (!active) return;
         const defaultModel = (result.effective.model ?? "").trim();
         setNoDefaultModel(defaultModel === "");
+        setResolvedDefaultModel(defaultModel);
         if (defaultModel === "" || modelRef.current !== "" || !models || models.length === 0) return;
         const slash = defaultModel.indexOf("/");
         const defaultProvider = slash === -1 ? defaultModel : defaultModel.slice(0, slash);
@@ -391,13 +439,47 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         }
       },
       () => {
-        if (active) setNoDefaultModel(false);
+        if (active) {
+          setNoDefaultModel(false);
+          setResolvedDefaultModel("");
+        }
       },
     );
     return () => {
       active = false;
     };
   }, [cwd, advancedOverrides, resolveConfig, loadModels]);
+
+  // The Effort ladder belongs to the model that will actually launch, in the
+  // same precedence thread/start applies (floor §1.11, schema.ts's
+  // resolveScalars): an Advanced-options model override first, then the
+  // top-level chip, then the hub's resolved default for this cwd.
+  const advancedModel = typeof advancedOverrides.model === "string" ? advancedOverrides.model.trim() : "";
+  const effortModel = [advancedModel, model, resolvedDefaultModel].find((candidate) => candidate !== "") ?? "";
+  const knownEffortLevels = catalogEffortLevels(
+    effortModel === ""
+      ? undefined
+      : modelCatalog?.models.find((entry) => `${entry.provider}/${entry.model}` === effortModel),
+  );
+  const effortLevels = knownEffortLevels ?? FALLBACK_EFFORT_LEVELS;
+  const effortDisabled = !usesSerfModels || (knownEffortLevels !== null && knownEffortLevels.length === 0);
+  const effortOptions = [
+    { value: "", label: "(default)" },
+    ...effortLevels.filter((level) => level !== "none").map((level) => ({ value: level, label: level })),
+    { value: "none", label: "none" },
+  ];
+
+  // A chosen effort the (new) model's ladder doesn't name can't stay selected
+  // - the select must never display a value it doesn't offer, so the choice
+  // resets to "(default)". Only a KNOWN ladder resets: the fallback ladder is
+  // a guess, and clobbering a sticky default on a guess would lose the user's
+  // setting (the daemon clamps a level the model doesn't accept).
+  useEffect(() => {
+    if (knownEffortLevels === null) return;
+    if (reasoningEffort !== "" && reasoningEffort !== "none" && !knownEffortLevels.includes(reasoningEffort)) {
+      setReasoningEffort("");
+    }
+  }, [knownEffortLevels, reasoningEffort]);
 
   function handleHarnessChange(next: string): void {
     setHarness(next);
@@ -719,8 +801,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
               id="spawn-reasoning"
               value={reasoningEffort}
               onChange={(e) => setReasoningEffort(e.target.value)}
-              options={REASONING_OPTIONS}
-              disabled={!usesSerfModels}
+              options={effortOptions}
+              disabled={effortDisabled}
             />
           </FormRow>
         </div>
@@ -743,8 +825,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             onCwdPanelClose={setGlobalLastWorkingDir}
             branch={branch}
             reasoningEffort={reasoningEffort}
-            reasoningOptions={REASONING_OPTIONS}
-            reasoningDisabled={!usesSerfModels}
+            reasoningOptions={effortOptions}
+            reasoningDisabled={effortDisabled}
             onReasoningChange={setReasoningEffort}
             accessMode={accessMode}
             accessOptions={[{ value: "", label: "(default)" }, ...ACCESS_MODE_OPTIONS]}

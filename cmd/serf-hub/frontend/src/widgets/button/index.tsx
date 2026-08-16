@@ -2,10 +2,15 @@ import { type ButtonHTMLAttributes, forwardRef, type MouseEvent, type ReactNode 
 import { requireClass } from "../internal/requireClass";
 import styles from "./button.module.css";
 
-/** dangerQuiet is a destructive action that is not the primary one on its row
+/** secondary is the design language's bordered common control (2026-05-22
+ * design language §3.1's .btn-secondary): a resting border and surface fill,
+ * for a standing action that is not the surface's one primary - e.g. the
+ * welcome pane's "New session" beside a primary "Jump back in". quiet stays
+ * for chromeless text-level actions.
+ * dangerQuiet is a destructive action that is not the primary one on its row
  * (the composer's Stop beside Send): danger on the glyph/label, no filled
  * background. */
-export type ButtonVariant = "primary" | "quiet" | "danger" | "dangerQuiet";
+export type ButtonVariant = "primary" | "secondary" | "quiet" | "danger" | "dangerQuiet";
 /** xs is the density step for a control row INSIDE another control - the
  * prompt card's verb cluster, where the buttons annotate a text field rather
  * than standing alone as a form's action. */
@@ -29,6 +34,7 @@ const BASE_CLASS = {
 
 const VARIANT_CLASS: Record<ButtonVariant, string> = {
   primary: requireClass(styles.primary, "button.module.css", "primary"),
+  secondary: requireClass(styles.secondary, "button.module.css", "secondary"),
   quiet: requireClass(styles.quiet, "button.module.css", "quiet"),
   danger: requireClass(styles.danger, "button.module.css", "danger"),
   dangerQuiet: requireClass(styles.dangerQuiet, "button.module.css", "dangerQuiet"),

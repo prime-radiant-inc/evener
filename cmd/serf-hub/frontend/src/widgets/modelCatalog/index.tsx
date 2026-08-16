@@ -1,7 +1,7 @@
 // The rich model catalog picker. A search input over ONE always-expanded,
 // internally-scrolling list: Recent first, then the provider groups, then a
 // dim in-place line per provider the hub couldn't reach. value/onChange
-// MIRROR the interim ModelField contract (value is a qualified
+// MIRROR the ModelField contract (value is a qualified
 // "provider/model" or "" for the harness default); loadCatalog is injected
 // (harness-scoped at the spawn site, unscoped at the settings site), so the
 // widget itself is wire-free and both swap sites drop it in with a

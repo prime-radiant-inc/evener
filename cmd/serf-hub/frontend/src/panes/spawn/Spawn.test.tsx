@@ -969,6 +969,151 @@ test("surfaces the discard notice when a prefilled model is no longer offered (f
   await waitFor(() => expect(localStorage.getItem("serf-hub.spawn-defaults./p")).toBeNull());
 });
 
+// --- Effort: the ladder belongs to the selected model -----------------------
+//
+// The Effort select used to render one hardcoded ladder (minimal/low/medium/
+// high + none) for EVERY model. /api/models already serves each model's own
+// reasoning_effort_levels (web_spawn.go) and the merged catalog carries them,
+// so the select derives its options from the selected model's entry - or, with
+// Model left at "(default)", from the hub's resolved default model - falling
+// back to the classic ladder only when the hub can't enumerate levels.
+
+function stubModelsApi(models: Array<Record<string, unknown>>): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      if (url.startsWith("/api/git/head")) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ branch: "main" }) } as Response);
+      }
+      if (url.startsWith("/api/models")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ models, recent: [], diagnostics: [] }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
+    }),
+  );
+}
+
+function effortSelect(): HTMLSelectElement {
+  return screen.getByLabelText("Effort") as HTMLSelectElement;
+}
+
+function effortOptionLabels(): string[] {
+  return within(effortSelect())
+    .getAllByRole("option")
+    .map((option) => option.textContent ?? "");
+}
+
+async function pickModel(user: ReturnType<typeof userEvent.setup>, query: string, qualified: string): Promise<void> {
+  await user.click(modelTrigger());
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+  // The panel's input survives between opens with its last query, so a second
+  // pick must clear before typing or the new query appends to the old one.
+  await user.clear(combo);
+  await user.type(combo, query);
+  await user.click(await screen.findByText(qualified));
+}
+
+test("the Effort select offers the selected model's own ladder and re-derives it on a model switch", async () => {
+  const user = userEvent.setup();
+  stubModelsApi([
+    {
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      supports_reasoning: true,
+      reasoning_effort_levels: ["low", "medium", "high"],
+    },
+    {
+      provider: "openai",
+      model: "gpt-5",
+      supports_reasoning: true,
+      reasoning_effort_levels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+    },
+  ]);
+  renderSpawn(readyClient());
+  await settled();
+
+  await pickModel(user, "gpt-5", "openai/gpt-5");
+  await waitFor(() =>
+    expect(effortOptionLabels()).toEqual(["(default)", "minimal", "low", "medium", "high", "xhigh", "max", "none"]),
+  );
+
+  // A chosen level the next model's ladder doesn't name can't stay selected -
+  // the select must never display a value it doesn't offer.
+  await user.selectOptions(effortSelect(), "xhigh");
+  await pickModel(user, "sonnet", "anthropic/claude-sonnet-4-5");
+  await waitFor(() => expect(effortOptionLabels()).toEqual(["(default)", "low", "medium", "high", "none"]));
+  expect(effortSelect().value).toBe("");
+});
+
+test("a model the catalog says cannot reason disables the Effort select and clears a chosen effort", async () => {
+  const user = userEvent.setup();
+  stubModelsApi([
+    {
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      supports_reasoning: true,
+      reasoning_effort_levels: ["low", "medium", "high"],
+    },
+    { provider: "openai", model: "gpt-5", supports_reasoning: false, reasoning_effort_levels: [] },
+  ]);
+  renderSpawn(readyClient());
+  await settled();
+
+  await pickModel(user, "sonnet", "anthropic/claude-sonnet-4-5");
+  await waitFor(() => expect(effortOptionLabels()).toEqual(["(default)", "low", "medium", "high", "none"]));
+  await user.selectOptions(effortSelect(), "high");
+
+  await pickModel(user, "gpt-5", "openai/gpt-5");
+  await waitFor(() => expect(effortSelect().disabled).toBe(true));
+  expect(effortSelect().value).toBe("");
+});
+
+test("with Model left at '(default)', the Effort select follows the hub's resolved default model", async () => {
+  const user = userEvent.setup();
+  stubModelsApi([
+    {
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      supports_reasoning: true,
+      reasoning_effort_levels: ["low", "medium", "high"],
+    },
+    { provider: "openai", model: "gpt-5", supports_reasoning: true, reasoning_effort_levels: ["low", "high"] },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("serf/launch/resolve", () => ({
+      effective: { model: "openai/gpt-5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/launch/resolve")).toBe(true));
+
+  // gpt-5's provider IS in readyClient's model/list, so the uncredentialed
+  // fallback doesn't preselect it - Model stays "(default)" and the ladder
+  // still has to be gpt-5's own.
+  expect(modelTrigger().textContent).toContain("(default)");
+  await waitFor(() => expect(effortOptionLabels()).toEqual(["(default)", "low", "high", "none"]));
+});
+
+test("the classic ladder remains when the hub can't enumerate the model's own levels", async () => {
+  const user = userEvent.setup();
+  // The default fetch mock 404s /api/models, so the enrichment fails and the
+  // catalog degrades to label-only entries - the select must keep working.
+  renderSpawn(readyClient());
+  await settled();
+
+  await pickModel(user, "gpt-5", "openai/gpt-5");
+  await waitFor(() => expect(effortOptionLabels()).toEqual(["(default)", "minimal", "low", "medium", "high", "none"]));
+});
+
 // --- post-success reset (floor §1.14 L186, wave6-report.md gap) -----------
 //
 // The spawn pane is a dockview singleton (paneRegistry.ts: "focus existing

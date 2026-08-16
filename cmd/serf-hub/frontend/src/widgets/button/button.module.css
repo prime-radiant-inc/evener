@@ -70,6 +70,25 @@
   background: color-mix(in oklab, var(--accent) 78%, var(--ink-hi));
 }
 
+/* The design language's bordered common control (2026-05-22 design language
+ * §3.1's .btn-secondary, on the current token names): the resting border and
+ * surface fill are what make a standing action read as a button where quiet
+ * reads as bare text. Pressed drops the fill one step, matching the spec's
+ * surface-ladder rule. */
+.secondary {
+  background: var(--surface-1);
+  border-color: var(--edge-strong);
+  color: var(--ink-hi);
+}
+
+.secondary:hover:not(:disabled) {
+  background: var(--hover-1);
+}
+
+.secondary:active:not(:disabled) {
+  background: var(--hover-2);
+}
+
 .quiet {
   background: transparent;
   color: var(--ink-hi);

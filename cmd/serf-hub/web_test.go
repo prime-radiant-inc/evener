@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
@@ -3599,10 +3600,35 @@ func TestWeb_APIHealthExposesAssetIdentity(t *testing.T) {
 	if len(got.FrontendHash) != 12 {
 		t.Fatalf("FrontendHash wrong length: got %q (len=%d), want 12 chars", got.FrontendHash, len(got.FrontendHash))
 	}
-	// BackendGitSha should be present when set via buildinfo (may be empty in dev builds).
-	// We just check it's a valid field without enforcing non-empty for now, since
-	// dev builds won't have GitSHA set.
-	_ = got.BackendGitSha // Field is present in struct, which is the main assertion.
+	// BackendGitSha must mirror buildinfo.GitSHA exactly: empty under this
+	// unstamped test binary (dev build), and precisely the stamped value when
+	// the build has one. The handler reads the var at request time
+	// (web_api.go handleAPIHealth), so stamping it in-process proves the wiring
+	// end to end - the save/set/restore pattern buildinfo's own tests use.
+	if got.BackendGitSha != buildinfo.GitSHA {
+		t.Fatalf("BackendGitSha = %q, want buildinfo.GitSHA %q (unstamped test build)", got.BackendGitSha, buildinfo.GitSHA)
+	}
+	savedSHA := buildinfo.GitSHA
+	buildinfo.GitSHA = "0123456789abcdef"
+	t.Cleanup(func() { buildinfo.GitSHA = savedSHA })
+	rec2 := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("stamped: status=%d body=%q", rec2.Code, rec2.Body.String())
+	}
+	var stamped hubapi.HealthResponse
+	if err := json.Unmarshal(rec2.Body.Bytes(), &stamped); err != nil {
+		t.Fatalf("stamped: decode: %v", err)
+	}
+	if stamped.BackendGitSha != "0123456789abcdef" {
+		t.Fatalf("stamped: BackendGitSha = %q, want %q", stamped.BackendGitSha, "0123456789abcdef")
+	}
+	// Pin the raw wire key too: decoding through hubapi.HealthResponse alone
+	// would round-trip a renamed json tag invisibly (both reviewers of kata
+	// k22d flagged the unpinned key).
+	if !strings.Contains(rec2.Body.String(), `"backend_git_sha":"0123456789abcdef"`) {
+		t.Fatalf("stamped: body %q lacks the backend_git_sha wire key with the stamped value", rec2.Body.String())
+	}
 }
 
 func TestWeb_APIHealthReportsCodexLaunchSpawnCapability(t *testing.T) {
