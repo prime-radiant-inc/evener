@@ -353,7 +353,7 @@ func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
 	}
 	firstTurn := awaitActiveTurn(ctx, t, client, ref, "")
 	round1.RespondToolCall("shell", map[string]any{
-		"command": "while [ ! -f " + releasePath + " ]; do sleep 0.2; done",
+		"command": "while [ ! -f '" + releasePath + "' ]; do sleep 0.2; done",
 		"mode":    "background",
 	})
 	round2, err := provider.Next(ctx.Done())

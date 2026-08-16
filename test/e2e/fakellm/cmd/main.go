@@ -108,7 +108,7 @@ func run(addr string, hold time.Duration, rounds int, jobRelease string) error {
 			case 1:
 				log.Printf("round 1: launching a background job that waits for %s", jobRelease)
 				call.RespondToolCall("shell", map[string]any{
-					"command": "while [ ! -f " + jobRelease + " ]; do sleep 0.5; done",
+					"command": "while [ ! -f '" + jobRelease + "' ]; do sleep 0.5; done",
 					"mode":    "background",
 				})
 				continue

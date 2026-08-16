@@ -19,10 +19,6 @@ import (
 // aimed at that mutation cancel this turn instead, and mark a message the
 // user sent — and the session never ran — "interrupted".
 
-// mintRunningTurnID names the turn that is about to run and records it as the
-// durable authority, or returns "" when this turn must run unnamed. The
-// caller passes the result straight into the turn's opening event, where ""
-// means "unnamed" — which is what these turns already do today.
 // servedByDaemon reports whether a daemon is draining this session's events,
 // which is the same thing as "a client can address this session's turns".
 // ConsumeEventsLossless is the only writer of the flag and has only root-path
@@ -38,6 +34,12 @@ func (s *Session) servedByDaemon() bool {
 	return s.authoritativeConsumer
 }
 
+// mintRunningTurnID names the turn that is about to run and records it as the
+// durable authority, or returns "" when this turn must run unnamed. The caller
+// carries the result to the turn's opening event; "" there means the daemon
+// could not name this turn, and the projection must then publish no active
+// status for it — a control the composer offers against an id the daemon does
+// not hold is rejected with nothing shown.
 func (s *Session) mintRunningTurnID() string {
 	// A session nobody serves has no client to name a turn to. In-process
 	// subagents share the parent's StateDir (subagents.go), so this gate is

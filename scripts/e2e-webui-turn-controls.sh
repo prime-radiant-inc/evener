@@ -239,11 +239,22 @@ curl -s -o /dev/null "$hub_addr/" || {
 }
 token="$(cat "$HOME/.serf/auth-token")"
 
+if [ "$background_job" -eq 1 ]; then
+	mode_line="The first spawned session launches a background job and goes idle.
+Release it to wake the session with a job-completion notification turn:
+
+    touch $job_release
+"
+else
+	mode_line="Every model round through this hub pauses ${hold}s; a turn runs
+${rounds} rounds before it ends, so a session stays \"running\" for roughly
+$((hold * rounds))s.
+"
+fi
+
 cat >&2 <<EOF
 
-Ready. Every model round through this hub pauses ${hold}s; a turn runs
-${rounds} rounds before it ends, so a session stays "running" for roughly
-$((hold * rounds))s.
+Ready. $mode_line
 
   Open the UI (visit once per browser, then navigate freely):
     $hub_addr/auth?token=$token

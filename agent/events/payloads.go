@@ -693,9 +693,11 @@ type TurnStartedData struct {
 	// TurnID is the identity the daemon's mutation preconditions accept for
 	// this turn. Empty when the daemon could not reserve one -- an interrupt is
 	// already pending, or another mutation still owns the slot -- in which case
-	// the AppWire projection mints its own id and the turn is visible and
-	// separate but not addressable. The event is still worth emitting then:
-	// closing the previous turn and publishing the thread active are the other
-	// two things a turn boundary owes its subscribers, and neither needs a name.
+	// the AppWire projection mints its own id, closes and opens the turn as
+	// usual so its items stay separate, and publishes NO active status for it.
+	// Announcing active would render Stop and Steer against an id the daemon
+	// does not hold, and every control they offer would be rejected with
+	// nothing shown (kata 2f41): worse than the absent buttons an unnameable
+	// turn already gets.
 	TurnID string `json:"turn_id,omitempty"`
 }

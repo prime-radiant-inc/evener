@@ -1053,7 +1053,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		proceed, notificationTurnID := s.acceptNotificationInput(ctx)
 		runningTurnID = notificationTurnID
 		if !proceed {
-			s.releaseRunningTurnID(runningTurnID)
+			// Every refusal inside acceptNotificationInput happens before it
+			// mints, so notificationTurnID is empty here today and there is
+			// nothing to release. The release below covers the proceeding
+			// paths; a refusal added AFTER the mint would need one here too.
 			return "", false, nil
 		}
 		rootAttentionAccepted = true

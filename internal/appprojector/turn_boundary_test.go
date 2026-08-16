@@ -113,6 +113,27 @@ func TestTurnBoundaryWithoutAnIDStillOpensATurn(t *testing.T) {
 	}
 }
 
+// TestTurnBoundaryWithoutAnIDDoesNotPublishActive is the other half of the
+// same rule, and the more important one: status and capabilities ride a single
+// frame, so announcing active hands the composer steer:true/interrupt:true and
+// renders Stop and Steer. For a turn the daemon could not name, every control
+// they offer is compared against a durable id it does not hold and is rejected
+// with nothing shown (kata 2f41). Absent buttons are today's behaviour there;
+// lying buttons would be a regression.
+func TestTurnBoundaryWithoutAnIDDoesNotPublishActive(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventTurnStarted,
+		SessionID: "th_1",
+		Data:      events.TurnStartedData{},
+	})
+
+	if got := statusChangedType(out); got != "" {
+		t.Fatalf("an unnameable turn published status %q; it must publish none", got)
+	}
+}
+
 // TestTurnBoundaryCompletesThePreviousTurn pins that the boundary closes what
 // it replaces. EventTurnEnded only stashes timing, so without this the
 // previous turn stays open and collects the next turn's items.
@@ -167,22 +188,35 @@ func TestNotificationTurnDoesNotJoinThePreviousTurn(t *testing.T) {
 		SessionID: "th_1",
 		Data:      events.SteeringInjectedData{Text: "job done", Kind: events.SteeringKindNotification},
 	})
-	out := projector.Project(events.SessionEvent{
+	projector.Project(events.SessionEvent{
 		Kind:      events.EventAssistantTextStart,
 		SessionID: "th_1",
 		Data:      events.AssistantTextStartData{Model: "gpt-5"},
+	})
+	// The DELTA is what materializes the item and stamps a turn id on it.
+	// EventAssistantTextStart only calls ensureTurn, which returns nothing at
+	// all once a turn is open — asserting over its output proves nothing.
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventAssistantTextDelta,
+		SessionID: "th_1",
+		Data:      events.AssistantTextDeltaData{Delta: "working"},
 	})
 
 	if got := projector.ActiveTurnID(); got != "turn_m2" {
 		t.Fatalf("after the notification boundary ActiveTurnID = %q, want turn_m2", got)
 	}
+	var stamped int
 	for _, n := range out {
 		params, ok := n.Params.(appwire.ItemLifecycleParams)
 		if !ok {
 			continue
 		}
+		stamped++
 		if params.TurnID != "turn_m2" {
 			t.Fatalf("the notification turn's item carries turnId %q, want turn_m2 — it joined the previous turn", params.TurnID)
 		}
+	}
+	if stamped == 0 {
+		t.Fatalf("no item carried a turn id in %+v; the assertion above never ran", out)
 	}
 }

@@ -170,17 +170,22 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// to meta.OriginalPrompt, which is derived from the first user turn in
 	// history: without it a new thread lists as its raw session id for its whole
 	// first turn.
-	// TURN_STARTED is a turn-OPENING event, so it sits with the other two
-	// (USER_INPUT, GOAL_CONTINUATION) rather than with TURN_ENDED's facetAll.
-	// The checkpoint argument above is about a turn ending -- values that moved
-	// during it, and a failed turn that emits nothing else. Nothing has moved
-	// when a notification turn opens, and the job facets it does move are
-	// settled a few lines later in acceptNotificationInput, then restated at
-	// TURN_ENDED. It drains the job-notification queue and can resolve a
-	// pending ask, so those two are the ones worth re-reading here.
-	events.EventQueueChanged:     facetQueue,
-	events.EventTurnStarted:      facetQueue | facetAsk,
-	events.EventUserInput:        facetQueue | facetWork | facetContext | facetAsk | facetMeta,
+	events.EventQueueChanged: facetQueue,
+	events.EventUserInput:    facetQueue | facetWork | facetContext | facetAsk | facetMeta,
+	events.EventTurnStarted:  facetWork,
+	// TURN_STARTED is a turn-OPENING event, so it sits here rather than with
+	// TURN_ENDED's facetAll: the checkpoint argument above is about a turn
+	// ENDING -- values that drifted during it, and a failed turn that emits
+	// nothing else. What a turn opening actually moves is ActiveTurnStartedAt,
+	// which facetWork samples, and which is why USER_INPUT carries it too.
+	// Without this row thread/read reports an active thread whose turn started
+	// at zero for the whole first round of every notification turn.
+	//
+	// facetQueue is deliberately NOT here: it samples the client input queue
+	// and pending mutations, which a notification turn opening does not touch
+	// (the queue it drains is the job-notification rail). Nor facetAsk: a wake
+	// arriving while a question is pending is refused before it ever reaches
+	// the boundary.
 	events.EventSteeringInjected: facetQueue | facetAsk | facetContext,
 
 	// A completed tool call appends its result to history (context), can be the

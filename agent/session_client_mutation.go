@@ -129,10 +129,11 @@ type clientMutationSnapshot struct {
 	// preconditions, and it names the turn that is RUNNING — not merely one a
 	// client mutation reserved. Three sites write it, all while holding this
 	// store's serializer: AcceptClientMutationStart and popQueueHead for turns
-	// a client asked for, and mintRunningTurnID (session_active_turn.go) for a
-	// goal continuation, which has no mutation to name it and would otherwise
-	// publish an id these preconditions reject. Queue and steering transitions
-	// only compare it.
+	// a client asked for, and mintRunningTurnID (session_active_turn.go) for
+	// the turns the agent starts for itself — a goal continuation and a
+	// notification wake — which have no mutation to name them and would
+	// otherwise publish an id these preconditions reject. Queue and steering
+	// transitions only compare it.
 	//
 	// It does not survive the process: loadClientMutationSnapshotFS drops a
 	// value no pending execution owns, because a turn that was running when

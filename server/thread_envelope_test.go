@@ -61,7 +61,7 @@ func readThreadOverWire(t *testing.T, srv *Server, ref string) appwire.Thread {
 // absent from the wire, which is precisely the permanent staleness a pushed
 // envelope risks.
 func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
-	measured := 8
+	measured := 7
 	for _, tc := range []struct {
 		name  string
 		move  func(*stubThreadEnvelopeSource)
@@ -69,17 +69,18 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 		want  func(*testing.T, appwire.Thread)
 	}{
 		{
-			// A notification turn opens on TURN_STARTED and drains the
-			// job-notification queue as it does, so the queue it consumed from
-			// must not still be on the wire afterwards.
-			name: "queue on TURN_STARTED",
+			// A turn opening moves ActiveTurnStartedAt, and nothing else
+			// announces it: without this row thread/read reports an active
+			// thread whose turn started at zero for the notification turn's
+			// whole first round.
+			name: "work metrics on TURN_STARTED",
 			move: func(e *stubThreadEnvelopeSource) {
-				e.queue = appwire.QueueState{Depth: 3, Revision: 9, Preview: []string{"charlie"}}
+				e.workMillis = 4200
 			},
 			event: events.SessionEvent{Kind: events.EventTurnStarted, SessionID: "th_1", Data: events.TurnStartedData{TurnID: "turn_m4"}},
 			want: func(t *testing.T, thread appwire.Thread) {
-				if thread.Serf.Queue.Depth != 3 || thread.Serf.Queue.Revision != 9 {
-					t.Fatalf("queue = %+v, want the depth/revision the session moved to", thread.Serf.Queue)
+				if thread.Serf.WorkMillis != 4200 {
+					t.Fatalf("workMillis = %d, want the figure the session moved to", thread.Serf.WorkMillis)
 				}
 			},
 		},

@@ -108,6 +108,46 @@ func TestNotificationBoundaryPrecedesTheTurnsContent(t *testing.T) {
 	}
 }
 
+// TestNotificationBoundaryPrecedesItsJobReminder is the ordering test for the
+// shape that actually emits a reminder. It matters more than it looks: the web
+// reducer attaches a steering item to whatever activeTurnId it currently
+// holds, so a reminder arriving before turn/started is either filed under the
+// previous turn or dropped outright when there is no active turn at all.
+//
+// It needs the full job-notification setup (a job manager plus a durable
+// record) because acceptNotificationInput drops a hand-made in-memory
+// notification as undeliverable and refuses the wake.
+func TestNotificationBoundaryPrecedesItsJobReminder(t *testing.T) {
+	dir := t.TempDir()
+	s := newTestSessionForEnvctx(t, withDir(dir))
+	rec := serveAndRecord(t, s)
+
+	jm, err := newJobManager(dir, s.ID(), s.enqueueJobNotification)
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	s.jobManager = jm
+	appendPendingJobNotificationRecord(t, jm, s.ID())
+	s.enqueueJobNotification(jobNotification{JobID: "job_X", JobType: "shell", Status: "completed", OutputBytes: 42})
+
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	kinds, _ := rec.snapshot()
+	started := indexOf(kinds, events.EventTurnStarted)
+	injected := indexOf(kinds, events.EventSteeringInjected)
+	if started < 0 {
+		t.Fatalf("no EventTurnStarted in %v", kinds)
+	}
+	if injected < 0 {
+		t.Fatalf("no EventSteeringInjected in %v; this wake emitted no reminder, so it is not the shape under test", kinds)
+	}
+	if started > injected {
+		t.Fatalf("EventTurnStarted at %d came after the reminder at %d; the reminder would be filed under the previous turn, or dropped", started, injected)
+	}
+}
+
 // TestNotificationTurnReleasesItsTurnID is the leak guard. The minted id gates
 // every later turn: AcceptClientMutationStart refuses while ActiveTurnID is
 // set, and mintRunningTurnID refuses to name the next agent turn, so an id
@@ -160,5 +200,42 @@ func TestUnservedSessionNamesNoTurn(t *testing.T) {
 	}
 	if got := s.mintRunningTurnID(); got != "" {
 		t.Fatalf("mintRunningTurnID = %q for an unserved session, want empty", got)
+	}
+}
+
+// TestUnservedSessionAnnouncesNoBoundary pins the guard that keeps descendant
+// projections untouched — and it cannot be pinned through the events channel,
+// because an unserved session's events go nowhere a test can drain. It rides
+// the descendant hook instead, which is exactly the path that matters:
+// sendEvent forwards to descendantEvent regardless of authoritativeConsumer
+// (session_events.go), so an unguarded emit would push a boundary into every
+// in-process subagent's projection and close and reopen turns on a delegate
+// thread no client can address.
+func TestUnservedSessionAnnouncesNoBoundary(t *testing.T) {
+	s := newTestSessionForEnvctx(t) // no drain registered
+
+	var mu sync.Mutex
+	var forwarded []events.EventKind
+	// descendantEvent is what a real child inherits from its parent
+	// (cfg.spawn.descendantEvent, installed at spawn); setting it here reaches
+	// the same sendEvent branch without standing a subagent up.
+	s.descendantEvent = func(ev events.SessionEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		forwarded = append(forwarded, ev.Kind)
+	}
+	s.SteerKind("look at this", events.SteeringKindNotification)
+
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if i := indexOf(forwarded, events.EventTurnStarted); i >= 0 {
+		t.Fatalf("an unserved session forwarded a turn boundary to its descendants at %d: %v", i, forwarded)
+	}
+	if indexOf(forwarded, events.EventSteeringInjected) < 0 {
+		t.Fatalf("the descendant hook saw no events at all (%v); the test would pass for the wrong reason", forwarded)
 	}
 }

@@ -88,7 +88,8 @@ type AppEventProjector struct {
 
 	// pendingTurnID/pendingCompletedAtMillis/pendingDurationMS record the most
 	// recent EventTurnEnded's timing until the turn it names is actually
-	// completed by one of the existing completion sites (EventUserInput,
+	// completed by one of the existing completion sites (EventTurnStarted,
+	// EventUserInput,
 	// EventGoalContinuation, EventError, EventSessionEnd). EventTurnEnded fires
 	// before those sites on some paths (interrupt/close) and after on others
 	// (a failed turn), so this is a stash, not a completion — see
@@ -100,7 +101,7 @@ type AppEventProjector struct {
 	// activeTurnUsage/activeTurnModel accumulate the current turn's own
 	// (not cumulative-session) usage across every EventAssistantTextEnd
 	// since startTurn(), stamped onto the completing Turn at each of the
-	// four completion sites. Unlike pendingTurnID/pendingDurationMS, no
+	// five completion sites. Unlike pendingTurnID/pendingDurationMS, no
 	// stash-vs-completion-ordering race exists here: EventAssistantTextEnd
 	// always fires chronologically before the turn's own completion event.
 	activeTurnUsage llm.Usage
@@ -209,14 +210,23 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.reservedTurnID = data.TurnID
 		}
 		turnID := p.startTurn()
-		return append(out,
-			p.notification(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
-				ThreadID: p.threadID,
-				Ref:      p.ref,
-				Turn:     startedTurn(turnID, event.Timestamp),
-			}),
-			p.threadStatus(appwire.ThreadStatusActive),
-		)
+		out = append(out, p.notification(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			Turn:     startedTurn(turnID, event.Timestamp),
+		}))
+		// Publish active ONLY for a turn the daemon could name. Status and
+		// capabilities ride this one frame, so announcing it hands the composer
+		// steer:true/interrupt:true and renders Stop and Steer -- and every
+		// control it then offers is compared against the durable ActiveTurnID
+		// the daemon does NOT hold, so each is rejected with nothing shown
+		// (kata 2f41). A button that lies is worse than the absent button that
+		// is today's behaviour for an unnameable turn. Closing and opening the
+		// turn above still stand: turn separation costs a client nothing.
+		if data.TurnID == "" {
+			return out
+		}
+		return append(out, p.threadStatus(appwire.ThreadStatusActive))
 	case events.EventUserInput:
 		out := p.closeActiveTurn(appwire.TurnStatusCompleted)
 		data := eventData[events.UserInputData](event.Data)
@@ -696,7 +706,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// EventTurnEnded runs after EventError on the failure path (see
 		// handleModelError), so no pending timing has been recorded yet here;
 		// this call is a no-op today but keeps the timing path uniform across
-		// all four completion sites.
+		// all five completion sites.
 		p.applyPendingTiming(turnID, &turn)
 		p.stampTurnUsage(&turn)
 		return append(out,
@@ -715,8 +725,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// not the turn the steer lands in. It must never be adopted as a turn
 		// reservation here: a steer drained across a turn boundary would then
 		// name the turn after itself, and every mid-turn control aimed at that
-		// turn would be rejected. Naming a notification turn needs a carrier
-		// of its own -- kata 7vmd.
+		// turn would be rejected. A notification turn is named by
+		// EventTurnStarted, which exists as a carrier of its own precisely
+		// because this field is already spoken for.
 		images := projectUserInputImages(data.Images)
 		text := data.Text
 		if strings.TrimSpace(text) == "" {
@@ -1223,7 +1234,7 @@ func (p *AppEventProjector) applyPendingTiming(turnID string, turn *appwire.Turn
 // stampTurnUsage sets turn.Usage/Cost from the projector's per-turn
 // accumulator (see activeTurnUsage doc). No turnID match is needed — by
 // construction the accumulator always holds the completing turn's own
-// totals at the moment each of the four completion sites reads it (the
+// totals at the moment each of the five completion sites reads it (the
 // accumulator resets only in startTurn(), which the wrap-up sites call
 // AFTER building the completing Turn).
 func (p *AppEventProjector) stampTurnUsage(turn *appwire.Turn) {
