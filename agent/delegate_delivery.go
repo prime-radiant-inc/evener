@@ -782,7 +782,7 @@ func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
 		return "", fmt.Errorf("marshal delegate delivery packet: %w", err)
 	}
 	return fmt.Sprintf(
-		"<delegate-notification delegate_id=\"%s\">%s</delegate-notification>",
+		"<delegate-notification delegate_id=%q>%s</delegate-notification>",
 		html.EscapeString(plan.delegateID),
 		packet,
 	), nil
