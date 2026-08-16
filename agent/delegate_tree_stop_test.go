@@ -75,7 +75,8 @@ func TestDelegateControllerCloseDrainProgressCoversBothWaitOrders(t *testing.T) 
 						}
 					}
 				}
-				return c, c.stopForResult(result), finish("dlg_first"), finish("dlg_second")
+				stop := c.stopForResult(result)
+				return c, stop, finish("dlg_first"), finish("dlg_second")
 			},
 		},
 		{
@@ -112,7 +113,8 @@ func TestDelegateControllerCloseDrainProgressCoversBothWaitOrders(t *testing.T) 
 						}
 					}
 				}
-				return c, c.stopForResult(result), abort(first), abort(second)
+				stop := c.stopForResult(result)
+				return c, stop, abort(first), abort(second)
 			},
 		},
 		{
@@ -152,7 +154,8 @@ func TestDelegateControllerCloseDrainProgressCoversBothWaitOrders(t *testing.T) 
 						}
 					}
 				}
-				return c, c.stopForResult(result), finish(first, "job-first"), finish(second, "job-second")
+				stop := c.stopForResult(result)
+				return c, stop, finish(first, "job-first"), finish(second, "job-second")
 			},
 		},
 		{
@@ -190,7 +193,8 @@ func TestDelegateControllerCloseDrainProgressCoversBothWaitOrders(t *testing.T) 
 						}
 					}
 				}
-				return c, c.stopForResult(result), complete(first), complete(second)
+				stop := c.stopForResult(result)
+				return c, stop, complete(first), complete(second)
 			},
 		},
 	}
@@ -241,7 +245,7 @@ func TestDelegateControllerCloseDrainRetriesStaleEvidence(t *testing.T) {
 	releaseFirst := make(chan struct{})
 	writerDone := make(chan error, 1)
 	go func() {
-		for pass := 0; pass < 2; pass++ {
+		for pass := range 2 {
 			file, openErr := os.OpenFile(transcriptPath, os.O_WRONLY, 0)
 			if openErr != nil {
 				writerDone <- openErr
