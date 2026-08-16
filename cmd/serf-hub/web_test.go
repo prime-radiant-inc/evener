@@ -3623,6 +3623,12 @@ func TestWeb_APIHealthExposesAssetIdentity(t *testing.T) {
 	if stamped.BackendGitSha != "0123456789abcdef" {
 		t.Fatalf("stamped: BackendGitSha = %q, want %q", stamped.BackendGitSha, "0123456789abcdef")
 	}
+	// Pin the raw wire key too: decoding through hubapi.HealthResponse alone
+	// would round-trip a renamed json tag invisibly (both reviewers of kata
+	// k22d flagged the unpinned key).
+	if !strings.Contains(rec2.Body.String(), `"backend_git_sha":"0123456789abcdef"`) {
+		t.Fatalf("stamped: body %q lacks the backend_git_sha wire key with the stamped value", rec2.Body.String())
+	}
 }
 
 func TestWeb_APIHealthReportsCodexLaunchSpawnCapability(t *testing.T) {
