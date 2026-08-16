@@ -251,7 +251,7 @@ func FuzzRootTUIFactories(f *testing.F) {
 		TestHubModelTurnCompletedAppliesSnapshotItems,
 		TestMessagesFromThreadIncludesFailedTurnDiagnostic,
 		TestHubThreadFixtureKeepsSplitToolResultsGrouped,
-		TestHubModelAppliesSerfJobNotificationsToDelegateTool,
+		TestHubModelAppliesStableDelegateNotificationsToDelegateTool,
 		TestSessionRowAwaitingHasStateColor,
 		TestSessionRowsHaveNoTreeConnectors,
 		TestDashboardRowLess_AskPendingBandsAboveYourMove,
