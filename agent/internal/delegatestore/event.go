@@ -20,7 +20,7 @@ const (
 type Event struct {
 	Kind       EventKind `json:"kind"`
 	Seq        uint64    `json:"seq"`
-	TS         time.Time `json:"ts,omitempty"`
+	TS         time.Time `json:"ts,omitzero"`
 	DelegateID string    `json:"delegate_id"`
 
 	Created              *DelegateCreated      `json:"created,omitempty"`
