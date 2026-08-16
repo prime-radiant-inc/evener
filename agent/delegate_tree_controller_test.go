@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -99,13 +100,11 @@ func TestDelegateControllerConcurrentIdleReservationsChooseOne(t *testing.T) {
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
 	for range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			_, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
 			errs <- err
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()
@@ -821,9 +820,7 @@ func cloneDelegateControllerLive(live map[string]*delegateLiveState) map[string]
 		value.attentionIDs = append([]string(nil), state.attentionIDs...)
 		if state.waiters != nil {
 			value.waiters = make(map[uint64]*delegateInlineWaiter, len(state.waiters))
-			for generation, waiter := range state.waiters {
-				value.waiters[generation] = waiter
-			}
+			maps.Copy(value.waiters, state.waiters)
 		}
 		clone[id] = &value
 	}
