@@ -364,6 +364,45 @@ around the instruction — but only because they were told to push back.
 Naming a wrong mechanism is worse than naming none, because a named one
 stops the agent looking.
 
+**A brief that names the answer gets followed past the evidence, and the
+smaller the model the harder it holds.** One kata said a fuzz fixture
+labelled `base64("png")` as `pic.png`; the brief told the agent to
+generate a valid PNG and "put the verified constant in the fixture." The
+agent ran the reproduce command first, as instructed, and it PASSED — the
+fixture already built a real PNG through `image/png`. It said afterwards
+that it knew this at the time. It then replaced the live encoder with a
+hardcoded base64 blob anyway, because the brief had named a constant as
+the shape of the answer. Its mutation flipped a base64 padding character,
+got `illegal base64 data`, and it read that as proof the image path was
+covered; the PNG decoder never ran. The commit was rejected.
+
+Three katas that night went to the same small model. The two whose briefs
+named a stop condition and sent the agent to find the contract itself
+both stopped correctly on an already-fixed premise. The one whose brief
+named the answer did not. The rule is not "do not use small models for
+mechanical work" — it is that stating the solution converts a cheap
+agent's obedience into a liability, because it will follow a named shape
+straight through a contradicting measurement it has already taken.
+
+Give the evidence, name the stop condition, and let the agent find the
+mechanism.
+
+**"Verified at fixed base X" is worthless unless X is an ancestor of the
+branch you are on.** A batch of twelve katas each justified "pre-existing,
+out of scope" by citing a commit described as the immutable foundation.
+It was not a foundation: it was the tip of a divergent branch, sharing a
+merge-base a few days back, with 19 commits the work branch lacked and
+169 commits it lacked in return. Seven of the twelve katas were already
+fixed on the branch that mattered, and the fixing commits were named in
+its own log. The whole verification campaign had measured a tree nobody
+was working in.
+
+`git merge-base --is-ancestor <cited-base> HEAD` settles it in one
+command, costs nothing, and belongs in any kata that makes a provenance
+claim. Provenance reasoning is only as good as the topology under it, and
+"foundation", "base", and "immutable" are words about intent, not
+ancestry.
+
 ## Decision records are normative. Read them before speccing.
 
 Code exploration tells you what the code does, never why. In this repo

@@ -4,6 +4,17 @@ run:
   timeout: 5m
   tests: true
 
+# golangci truncates its own output by default — max-same-issues 3, and
+# max-issues-per-linter 50 — which makes the gate under-report what it
+# found. One run printed "22 issues" for a tree that held 55, because 34
+# perfsprint findings with identical message text collapsed to 3. A kata
+# was written from that count, and clearing all 22 would have left the
+# gate red with the hidden duplicates resurfacing three at a time. A gate
+# that hides its own findings costs more than a noisy one.
+issues:
+  max-same-issues: 0
+  max-issues-per-linter: 0
+
 linters:
   default: standard # errcheck, govet, ineffassign, staticcheck, unused
   enable:
