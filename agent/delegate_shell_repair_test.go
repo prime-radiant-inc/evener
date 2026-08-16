@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -248,7 +249,7 @@ func TestDelegateShellRepairIsIdempotentAfterReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile first: %v", err)
 	}
-	if string(first) == string(before) {
+	if bytes.Equal(first, before) {
 		t.Fatal("first repair appended no durable events")
 	}
 	if err := executeDelegateShellRepair(plan, time.Unix(21, 0).UTC()); err != nil {
@@ -258,7 +259,7 @@ func TestDelegateShellRepairIsIdempotentAfterReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile second: %v", err)
 	}
-	if string(second) != string(first) {
+	if !bytes.Equal(second, first) {
 		t.Fatalf("idempotent repair appended again:\nfirst=%s\nsecond=%s", first, second)
 	}
 }
