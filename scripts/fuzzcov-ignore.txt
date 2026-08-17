@@ -9,3 +9,4 @@ primeradiant.com/serf/cmd/serf-fuzz-harvest  # the corpus harvester that PRODUCE
 primeradiant.com/serf/tools/tool-fluency/cmd/serf-fluency  # dev/eval tool, not shipped runtime
 primeradiant.com/serf/cmd/serf-fuzzcov  # the fuzz coverage reporter itself; parses go coverage profiles (its own tooling), not a serf runtime/wire decode surface
 primeradiant.com/serf/fuzz/typegen  # fuzz test-helper: ValueFromBytes reflect-marshals then json.Unmarshals into a caller's type to GENERATE fuzz inputs, not a serf runtime decode surface
+primeradiant.com/serf/test/e2e/fakellm  # e2e test helper: a fake LLM HTTP server decoding the request bodies its own harness sends it, standing in for a provider so the stack tests stay offline; not a serf runtime/wire decode surface
