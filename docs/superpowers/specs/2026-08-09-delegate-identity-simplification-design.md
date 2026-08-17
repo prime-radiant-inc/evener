@@ -1,7 +1,15 @@
 # Delegate Identity Simplification Design
 
 Date: 2026-08-09
-Status: Draft for written review
+Status: **SUPERSEDED — abandoned architecture, not normative.** Replaced by the
+delegate-tree controller specified in
+`docs/subagent-management/11-delegate-resource-model.md` and delivered under
+kata `my73`. This document describes the epoch-vector approach (automatic
+runtime unload, minimum coordinator runtime, epoch-fenced activations); none of
+that shipped, and none of it exists on `main`. Its only surviving implementation
+is behind the `archive/delegate-identity-*` tags, whose branches were retired on
+2026-08-17 (kata `dvpn`). Kept for the design reasoning, not as a decision
+record.
 Scope: Delegate identity, job-control tools, notifications, runtime release, and projections
 
 ## Summary

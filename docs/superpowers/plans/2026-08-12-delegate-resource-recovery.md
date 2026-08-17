@@ -1,5 +1,22 @@
 # Delegate Resource Recovery Implementation Plan
 
+> **COMPLETE — do not execute this plan.** All fourteen tasks shipped and merged
+> to `main` (kata `my73`, merge `6af43a95a`). The executor instruction below is
+> retained for provenance only; running it would re-implement a subsystem that
+> already exists.
+>
+> **The checkboxes lie.** Only 7 of 76 are ticked. They were abandoned as a
+> tracking mechanism partway through and an unticked box here means nothing —
+> Task 14 was independently reviewed and accepted with most boxes still empty.
+> To check what actually landed, run the gates, not the boxes:
+>
+> ```bash
+> go test ./agent -run '^TestDelegateLegacyDormancy_' -count=1
+> go test ./agent -run '^(TestStableDelegateWatch_|TestDelegateResourceSupervision_|TestDelegateRuntimeReclaim_|TestStableDelegateShell_|TestStableDelegateReadOnly_)' -count=1
+> ```
+>
+> The shipped contract is `docs/subagent-management/11-delegate-resource-model.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace delegate activation jobs with one root-owned stable delegate controller and one durable delegate aggregate, making `dlg_...` the only delegate control identity while deleting more lifecycle machinery than the replacement adds.

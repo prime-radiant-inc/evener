@@ -2,6 +2,15 @@
 
 Date: 2026-08-14
 
+> **HISTORICAL — do not act on this checkpoint.** The work it hands off is
+> complete and merged (kata `my73`, merge `6af43a95a`). Every ref below is
+> stale: the `delegate-resource-task6-clean` branch and worktree no longer
+> exist, and `2da986339` is **not** an ancestor of `main` — citing it as a
+> "required merge base" is what caused a fourteen-kata misattribution, seven of
+> which were already fixed on the line nobody checked (kata `krgs`). Read
+> `docs/subagent-management/11-delegate-resource-model.md` for the shipped
+> contract instead.
+
 ## Checkpoint
 
 - Worktree: `/Users/jesse/prime-radiant/toil-suite/serf/.worktrees/delegate-resource-task6-clean`
