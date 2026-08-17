@@ -175,11 +175,29 @@ cases exist.
       preseed keys, so the field is `""`.
 
       **The primary delegate turn therefore stays unaddressable however the
-      boundary emit is gated.** Name a mechanism that reserves, emits and
-      releases an identity on every child entry path — initial, resumed,
-      owner-input, continuation and notification. **Acceptance:** one test per
-      path asserting the child's published `activeTurnId` is a `turn_m<n>` the
-      child's own mutation store holds, not a projector `turn_<n>`.
+      boundary emit is gated.**
+
+      **Do not reach this by marking a child served.** `servedByDaemon()` is
+      exactly `authoritativeConsumer` (`agent/session_active_turn.go:32-36`),
+      and its only writer anywhere is `ConsumeEventsLossless`
+      (`agent/session_events.go:78`, which sets it at `:92`). So the cheapest
+      mechanism available — register the child, let the existing gate open — is
+      precisely the one `TestPreparedSubagentGetsNoAuthoritativeConsumer`
+      (`agent/session_lossless_events_test.go:238`) exists to forbid, and that
+      test states the cost: nothing in this package receives on a child's event
+      channel, so a child marked served does not fail, it **wedges** the moment
+      its buffer fills. That is a hang under load sitting behind a green suite,
+      which is worse than the bug this task fixes. Deleting the test to get past
+      it removes the only warning that shape of mistake has. If you take this
+      route anyway, you owe the argument for why the wedge cannot happen — not a
+      deleted test.
+
+      Name a mechanism that reserves, emits and releases an identity on every
+      child entry path — initial, resumed, owner-input, continuation and
+      notification. **Acceptance:** one test per path asserting the child's
+      published `activeTurnId` is a `turn_m<n>` the child's own mutation store
+      holds, not a projector `turn_<n>`. See Task 9 for the audit label and the
+      pinned tests this task falsifies.
 
 - [ ] **Task 4: Route accepted mutations to the addressed child, and prove the
       child stops.** Expect `SessionUnavailable` first — that is the routing gate
@@ -228,7 +246,8 @@ cases exist.
       deliberately. Note this also makes unserved *root* sessions (one-shot
       `serf run`) emit the boundary; state it rather than discover it. This gets
       turn *separation* on notification-driven child turns; it does not name any
-      other child turn — that is Task 3.
+      other child turn — that is Task 3. See Task 9 for the EntryKind audit
+      label this also invalidates.
 
 - [ ] **Task 6: Measure the added durable-write cost.**
 
@@ -241,6 +260,52 @@ cases exist.
       that child's next model request exactly once, and reaches neither the root
       nor a sibling delegate.
 
+- [ ] **Task 9: Update the EntryKind turn-opening audit and the tests that pin
+      what this plan removes.**
+
+      **Sequencing: this closes with Task 4, not after Task 8.** Its constraint
+      on Task 3's mechanism is stated inside Task 3, because it has to be read
+      before that mechanism is chosen. This task sits last in the file only
+      because renumbering would break the task cross-references above.
+
+      Tasks 3 and 4 falsify a label that nothing in the suite can catch.
+      `agent/entrykind_audit_test.go:78` records
+      `EntryDelegateAttention: unservedSoUnaddressable`, and the label's own
+      definition (`:30-33`) justifies that as "the kind only ever runs on a
+      child session, which has no authoritative consumer and takes no client
+      mutations". Task 4 makes the second clause false.
+
+      **The audit cannot notice.** Its header says so outright (`:15-20`): it
+      checks that every kind carries a label, NOT that the label is true, so the
+      table stays green while becoming a lie. This is not a documentation nit —
+      that table is what the next person reads to decide how a newly added kind
+      gets named, and `entryKindTurnOpening` was built by
+      `2026-08-16-one-turn-boundary.md` Task 4 for exactly this purpose.
+
+      Three tests pin behaviour this plan removes. Task 5 names the first; the
+      other two went unmentioned until this task:
+
+      | test | where | what it pins |
+      | --- | --- | --- |
+      | `TestUnservedSessionAnnouncesNoBoundary` | `agent/session_turn_boundary_test.go:599` | the boundary emit — Task 5 inverts it |
+      | `TestUnservedSessionNamesNoTurn` | `agent/session_turn_boundary_test.go:576` | the mint gate at `agent/session_active_turn.go:76-78`, which Task 3 must get past. It already carries a note anticipating this plan |
+      | `TestPreparedSubagentGetsNoAuthoritativeConsumer` | `agent/session_lossless_events_test.go:238` | that a child is never registered as served. A **constraint on Task 3**, not a test to invert — see Task 3 |
+
+      **Acceptance:**
+
+      - `entryKindTurnOpening[EntryDelegateAttention]` no longer reads
+        `unservedSoUnaddressable`, and its replacement is derived from what the
+        shipped mechanism actually does. Re-derive it; do not pick whichever
+        label makes the table compile.
+      - The label's definition comment no longer claims child sessions take no
+        client mutations, and no longer cites a test that no longer pins it.
+      - Each of the three tests above is deliberately inverted, re-pointed, or
+        (the third) left intact with its constraint honoured — each carrying a
+        comment naming the task that changed it and why.
+      - Reverting Task 3's mechanism makes the changed tests fail again. A test
+        inverted into a tautology passes both ways and guards nothing, which is
+        the failure this whole task exists to prevent.
+
 ## Definition of done
 
 - [ ] `make lint` (nine targets), `make build`, root suite, all seven module
@@ -251,3 +316,6 @@ cases exist.
 - [ ] Stopping one delegate leaves the root and its siblings running.
 - [ ] No control is offered on any thread that cannot honour it — and every
       control that IS offered has been shown to take effect on that thread.
+- [ ] The EntryKind turn-opening table (`agent/entrykind_audit_test.go`)
+      describes what the code now does, and every test this plan inverted was
+      shown to fail again when its task's mechanism is reverted.
