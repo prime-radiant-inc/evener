@@ -224,13 +224,19 @@ func TestDetachCommandSurvivesCleanup(t *testing.T) {
 	}
 }
 
+// waitForTestFile polls until path holds a non-empty value, or timeout.
+//
+// Non-empty is the condition, not mere existence: every caller waits on a file
+// a shell writes with a truncate-then-write redirect (`printf ... > path`), so
+// the file is observable as zero bytes before the content lands. Returning on
+// existence alone hands that window back as a successful read.
 func waitForTestFile(path string, timeout time.Duration) ([]byte, bool) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if data, err := os.ReadFile(path); err == nil {
+		if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
 			return data, true
 		}
 		select {
@@ -284,3 +290,32 @@ func (c *detachedRecordingCommand) ExitCode(error) (int, bool) { return 0, false
 func (c *detachedRecordingCommand) Terminate() {}
 
 func (c *detachedRecordingCommand) Kill() {}
+
+// TestWaitForTestFileWaitsForContent pins the helper's real contract. Both call
+// sites want a value (a PID, then "done"), and the shell writes each with a
+// truncate-then-write redirect, so the file exists for a moment while still
+// empty. A helper that returns on mere existence hands that empty window back as
+// success, which surfaced as two different spurious failures under load:
+//
+//	parse launched PID "": strconv.Atoi: parsing "": invalid syntax
+//	completion file = "", want done
+//
+// Returning early on a zero-byte read fails this test.
+func TestWaitForTestFileWaitsForContent(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "value")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("seed empty file: %v", err)
+	}
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		_ = os.WriteFile(path, []byte("42"), 0o600)
+	}()
+	data, ok := waitForTestFile(path, 5*time.Second)
+	if !ok {
+		t.Fatalf("waitForTestFile timed out on a file that gained content")
+	}
+	if string(data) != "42" {
+		t.Fatalf("waitForTestFile returned %q, want %q — it returned before the write landed", data, "42")
+	}
+}
