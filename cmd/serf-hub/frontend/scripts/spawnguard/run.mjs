@@ -51,14 +51,30 @@ async function measureAt(cdpPort, vitePort, width) {
 function assertResult(result, expectedWidth) {
   const failures = [];
   const mobile = expectedWidth <= 899;
-  const visible = (value) => !("error" in value) && value.display !== "none" && value.visibility !== "hidden";
+  // The harness decides what "visible" means, in the page, where the geometry
+  // is (spawnguard-entry.tsx's readVisibility). This used to re-derive the
+  // verdict from the reported display/visibility and dropped the box-size
+  // clauses on the way, so an element under a display:none ANCESTOR - own
+  // display intact, box collapsed to zero - read as visible (kata bsq9).
+  const visible = (value) => !("error" in value) && value.visible === true;
+  // The title spans are a breakpoint SWAP, and the swap is all this can
+  // honestly claim about them here. On mobile, PaneScaffold's entire .header
+  // row is display:none - the pane title moves into StackHost's top bar, which
+  // this harness does not render - so NEITHER span has a box at 390 or 899px.
+  // The old ancestor-blind check read the mobile span's own `inline` and called
+  // it visible, which is precisely the false green bsq9 is about: it had been
+  // asserting a title was on screen inside a header that is switched off.
+  // Which span the media query turns on is a real contract; read exactly that.
+  const displayed = (value) => !("error" in value) && value.display !== "none";
   if (result.viewport.width !== expectedWidth)
     failures.push(`viewport is ${result.viewport.width}px, expected ${expectedWidth}px`);
   if (visible(result.mobileConfig) !== mobile) failures.push(`mobile config visibility is wrong at ${expectedWidth}px`);
   if (visible(result.desktopConfig) === mobile)
     failures.push(`desktop config visibility is wrong at ${expectedWidth}px`);
-  if (visible(result.mobileTitle) !== mobile) failures.push(`mobile title visibility is wrong at ${expectedWidth}px`);
-  if (visible(result.desktopTitle) === mobile) failures.push(`desktop title visibility is wrong at ${expectedWidth}px`);
+  if (displayed(result.mobileTitle) !== mobile)
+    failures.push(`mobile title is not the span the ${expectedWidth}px breakpoint selects`);
+  if (displayed(result.desktopTitle) === mobile)
+    failures.push(`desktop title is not the span the ${expectedWidth}px breakpoint selects`);
   if (visible(result.mobileIntro) !== mobile)
     failures.push(`prompt orientation visibility is wrong at ${expectedWidth}px`);
 

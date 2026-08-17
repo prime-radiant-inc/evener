@@ -99,6 +99,7 @@ interface Visibility {
   visibility: string;
   width: number;
   height: number;
+  visible: boolean;
 }
 
 function readVisibility(element: HTMLElement | null, label: string): Visibility | { error: string } {
@@ -110,6 +111,13 @@ function readVisibility(element: HTMLElement | null, label: string): Visibility 
     visibility: style.visibility,
     width: box.width,
     height: box.height,
+    // The verdict is computed HERE, once, and travels with the reading. The
+    // guard script used to re-derive it from display/visibility alone, and a
+    // reading is not the same thing as a rule: that copy silently dropped the
+    // geometry clauses, so a probed element under a `display: none` ANCESTOR -
+    // which keeps its own computed display, and only its BOX goes to zero -
+    // read as visible there while reading as hidden here (kata bsq9).
+    visible: style.display !== "none" && style.visibility !== "hidden" && box.width > 0 && box.height > 0,
   };
 }
 
@@ -118,13 +126,7 @@ function visibility(selector: string): Visibility | { error: string } {
 }
 
 function isVisible(value: Visibility | { error: string }): boolean {
-  return (
-    !("error" in value) &&
-    value.display !== "none" &&
-    value.visibility !== "hidden" &&
-    value.width > 0 &&
-    value.height > 0
-  );
+  return !("error" in value) && value.visible;
 }
 
 function scanHorizontalOverflow(): string[] {
