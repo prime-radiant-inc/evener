@@ -1041,6 +1041,38 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// strand the very attention it was woken for.
 		runningTurnID = s.mintRunningTurnID()
 		if s.servedByDaemon() && runningTurnID == "" {
+			// Settle the SessionProcessing transition this call already made
+			// (above), the way every other refusal on this path does. Without
+			// it the session reports itself busy with nothing running, and the
+			// serve loop republishes that from WireState.
+			s.finishNotificationNoop()
+			// Ask for another wake. Nothing else will: the EntryNotification
+			// that got us here is consumed, the drain loop's tail gate counts
+			// job notifications alone (peekNotifications reads pendingJobNotifs
+			// and nothing else), and for delegate attention the wake flag we
+			// deliberately did NOT consume is itself what suppresses a new one
+			// -- armRootDelegateAttention notifies only when the flag is clear,
+			// and the retry scheduler returns early while it is set.
+			//
+			// The kick is guaranteed rather than best-effort: a full input slot
+			// parks the send until the slot frees, and repeated kicks coalesce
+			// into that one parked send. So this lands after the user's turn,
+			// which is exactly when the name is free again.
+			//
+			// Only ask when the name has an owner that will hand it back.
+			// notify() pushes into a one-slot channel the serve loop is about
+			// to read, so asking against a name nobody owns -- one left behind
+			// by a crash between reserving and releasing, or by a failed
+			// release write -- is a hot loop: dequeue, stand down, notify,
+			// forever. Such a name is a fault to be healed, not waited on, so
+			// say so once and let the wake wait for a real one.
+			if s.runningTurnNameHasOwner() {
+				s.notify()
+			} else {
+				s.emit(events.EventWarning, events.WarningData{
+					Message: "a turn name is held with no pending mutation to release it; deferring this wake would never resume",
+				})
+			}
 			return "", false, nil
 		}
 		rootAttentionIDs = s.beginRootDelegateAttentionTurn()

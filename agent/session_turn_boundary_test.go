@@ -348,6 +348,145 @@ func TestStandDownConsumesNoWakeState(t *testing.T) {
 	}
 }
 
+// TestStandDownSettlesTheProcessingTransition covers the state flip the
+// stand-down inherits. processOneInput sets SessionProcessing at :1000, well
+// before the stand-down decision, so returning early without settling leaves
+// the session reporting itself busy with nothing running -- and the serve
+// loop's SetState(sess.WireState()) then publishes that. Every other refusal
+// on this path settles through finishNotificationNoop; this one must too.
+func TestStandDownSettlesTheProcessingTransition(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	serveSession(t, s)
+
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.NextTurnSequence++
+		snapshot.ActiveTurnID = appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed a claimed user turn: %v", err)
+	}
+
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	if got := s.State(); got == SessionProcessing {
+		t.Fatalf("session state = %q after standing down; nothing is running, so it must not report busy", got)
+	}
+}
+
+// TestStandDownReArmsTheWake is the delivery guarantee, and it is the assertion
+// that matters: preserving rootAttentionWake is NOT the same as the wake still
+// being deliverable, because the flag being set is exactly what suppresses a
+// new one. armRootDelegateAttention only notifies when !rootAttentionWake
+// (session_attention.go:485), scheduleRootAttentionRetryLocked returns early
+// while it is set (:559), and the drain loop's tail gate counts job
+// notifications alone -- peekNotifications reads s.pendingJobNotifs and nothing
+// else (session.go:700-704).
+//
+// So a stood-down wake whose EntryNotification the serve loop already consumed
+// has nothing left to raise it. It must ask for another one on its way out.
+func TestStandDownReArmsTheWake(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	serveSession(t, s)
+
+	var mu sync.Mutex
+	notifies := 0
+	s.SetNotifyFunc(func() {
+		mu.Lock()
+		notifies++
+		mu.Unlock()
+	})
+
+	s.attentionMu.Lock()
+	s.rootAttentionWakeIDs = map[string]struct{}{"att_1": {}}
+	s.rootAttentionWake = true
+	s.attentionMu.Unlock()
+
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.NextTurnSequence++
+		turnID := appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
+		snapshot.ActiveTurnID = turnID
+		// The pending execution is what makes this name temporary: the serve
+		// loop runs that turn next and releases it. Without it there would be
+		// nothing to wait for -- see TestStandDownDoesNotSpinOnAStaleName.
+		snapshot.PendingExecutions["cm-user"] = appwire.PendingMutation{
+			ClientMutationID: "cm-user",
+			Method:           clientMutationMethodStart,
+			ExecutionState:   "accepted",
+			TurnID:           turnID,
+			ProjectionState:  appwire.MutationProjectionPending,
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed a claimed user turn: %v", err)
+	}
+
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if notifies == 0 {
+		t.Fatal("standing down asked for no further wake; the consumed EntryNotification is gone, the attention flag suppresses a new one, and the tail gate does not count attention -- this delegate waits forever")
+	}
+}
+
+// TestStandDownDoesNotSpinOnAStaleName bounds the re-arm. notify() pushes into
+// a one-slot channel the serve loop is about to read, so a wake that stands
+// down and unconditionally asks for another is a livelock whenever the name
+// will never be released: dequeue, stand down, notify, dequeue, forever,
+// burning a core.
+//
+// A name a pending client mutation owns WILL be released -- the serve loop runs
+// that turn next -- so re-arming against it terminates. A name nobody owns is a
+// fault (a crash between reserving and releasing, or a failed release write),
+// and re-arming against it never terminates. That is the same ownership rule
+// forgetRunningTurnNoOneOwns applies at load; here it decides whether asking
+// again can ever help.
+func TestStandDownDoesNotSpinOnAStaleName(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	serveSession(t, s)
+
+	var mu sync.Mutex
+	notifies := 0
+	s.SetNotifyFunc(func() {
+		mu.Lock()
+		notifies++
+		mu.Unlock()
+	})
+
+	// A name left behind by a turn that died, with no pending execution to run
+	// and release it.
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.NextTurnSequence++
+		snapshot.ActiveTurnID = appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed a stale name: %v", err)
+	}
+
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if notifies != 0 {
+		t.Fatalf("stood down against a name nobody owns and asked for %d more wakes; nothing will ever release it, so this is a hot loop", notifies)
+	}
+}
+
 // TestWakeResumesOnceTheUserTurnReleasesTheName is the other half of standing
 // down, and the half that makes it safe: the wake must be DEFERRED, not
 // dropped. A finished job whose notification is silently discarded is never

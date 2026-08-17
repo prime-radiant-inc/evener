@@ -79,6 +79,30 @@ func (s *Session) mintRunningTurnID() string {
 	return turnID
 }
 
+// runningTurnNameHasOwner reports whether a pending client mutation owns the
+// name currently held -- which is the same thing as "somebody is going to run
+// that turn and then release it".
+//
+// It is the live reading of the rule forgetRunningTurnNoOneOwns applies at
+// load: a name no pending execution claims belongs to a turn that will never
+// finish, because there is nothing left to finish it. A caller that wants to
+// wait for the name must not wait on one of those.
+func (s *Session) runningTurnNameHasOwner() bool {
+	if s.clientMutations == nil {
+		return false
+	}
+	snapshot := s.clientMutations.snapshot()
+	if snapshot.ActiveTurnID == "" {
+		return false
+	}
+	for _, pending := range snapshot.PendingExecutions {
+		if pending.TurnID == snapshot.ActiveTurnID {
+			return true
+		}
+	}
+	return false
+}
+
 // releaseRunningTurnID clears an id minted by mintRunningTurnID. It is a
 // no-op for any other id, so a turn that ended after a client mutation took
 // the slot cannot clear that mutation's identity out from under its own
