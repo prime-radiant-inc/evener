@@ -99,9 +99,6 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 					}
 					deps.setCommunicateStructured(capturedOutput)
 				}
-				if deps.deliverWatchCallback != nil {
-					deps.deliverWatchCallback(watchCommunicateCallbackText(message, structuredText))
-				}
 			}
 
 			resp := map[string]any{
@@ -129,37 +126,6 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 func runningJobsEndTurnWarning(jobIDs []string) string {
 	return fmt.Sprintf("ending turn while %d job(s) are still running: %s. The call still succeeds; each job remains notification-armed and will report separately on completion.",
 		len(jobIDs), strings.Join(jobIDs, ", "))
-}
-
-func watchCommunicateCallbackText(message, output string) string {
-	message = strings.TrimSpace(message)
-	output = strings.TrimSpace(output)
-	if output == "" {
-		return "Observer callback:\nmessage: " + message
-	}
-	return "Observer callback:\nmessage: " + message + "\noutput: " + output
-}
-
-func (s *Session) deliverWatchCommunicateCallback(message string) {
-	if s == nil || s.currentEntryKind() != EntryWatchDelivery {
-		return
-	}
-	if s.watchCallbackDeliveredForCurrentTurn() {
-		return
-	}
-	steer := s.cfg.spawn.parentSteerDelivered
-	if steer == nil {
-		return
-	}
-	// The same kind session_lifecycle.go uses for job-notification reminders
-	// (acceptNotificationInput): both are the content that renders as a
-	// NotificationCard (contracts §17 - <job-notification> markup or this
-	// callback's fixed "Observer callback:\n" header), so both carry the same
-	// events.SteeringKind*.
-	if !steer(message, s.activeCausalProvenance(), events.SteeringKindNotification) {
-		return
-	}
-	s.markWatchCallbackDeliveredForCurrentTurn()
 }
 
 func registerSkillTool(reg *tool.Registry, deps *toolDeps) {

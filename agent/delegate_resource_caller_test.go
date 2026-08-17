@@ -26,7 +26,6 @@ func TestDelegateResourceCaller_RegisteredNestedParentUsesStableController(t *te
 	parentFS := afero.NewMemMapFs()
 	parent := attachRegisteredCallerRuntime(t, c, "dlg_parent", parentFS)
 	child := attachRegisteredCallerRuntime(t, c, "dlg_child", afero.NewMemMapFs())
-	child.setActiveEntryKind(EntryWatchDelivery)
 
 	call := executeRegisteredCallerSend(t, child, delegateLease{delegateID: "dlg_child", generation: 1}, "nested report")
 	if call.IsError {
@@ -48,9 +47,6 @@ func TestDelegateResourceCaller_RegisteredNestedParentUsesStableController(t *te
 	c.mu.Unlock()
 	if len(pending) != 1 || pending[0].entryID != entries[0].Turn.StableTurnID {
 		t.Fatalf("stable parent pending steers = %#v, want exact durable entry %q", pending, entries[0].Turn.StableTurnID)
-	}
-	if !child.watchCallbackDeliveredForCurrentTurn() {
-		t.Fatal("successful watch-origin caller send did not suppress duplicate communicate callback")
 	}
 }
 

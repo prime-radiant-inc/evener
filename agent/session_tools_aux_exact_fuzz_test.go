@@ -21,7 +21,6 @@ import (
 	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/internal/tool/repair"
-	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	taskpkg "primeradiant.com/serf/agent/task"
@@ -150,13 +149,6 @@ func auxAskExact(t *testing.T) {
 }
 
 func auxCommunicateExact(t *testing.T) {
-	var nilSession *Session
-	nilSession.deliverWatchCommunicateCallback("ignored")
-	s, _, _ := stmNewSession(t, []byte("callback-reject"))
-	s.setActiveEntryKind(EntryWatchDelivery)
-	s.deliverWatchCommunicateCallback("no route")
-	s.cfg.spawn.parentSteerDelivered = func(string, *provenance.Causal, string) bool { return false }
-	s.deliverWatchCommunicateCallback("rejected")
 	if usesDefaultCommunicateOutputEnvelope(llm.ToolDefinition{Parameters: map[string]any{"properties": map[string]any{
 		"output": map[string]any{"properties": map[string]any{"message": 1, "data": 1, "artifacts": 1}, "required": []any{"message", "data"}},
 	}}}) {

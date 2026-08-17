@@ -46,7 +46,6 @@ type stoolCommunicateTrace struct {
 	Inbox          string
 	Reply          string
 	Structured     string
-	Callback       string
 	Events         int
 	Deferred       int
 }
@@ -109,7 +108,6 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 
 	var resultMessage, resultReply, resultOutput string
 	var structured any
-	var callback string
 	var emitted int
 	var deferred []steeringMessage
 	deps.emit = func(kind events.EventKind, data events.EventData) {
@@ -129,7 +127,6 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 		resultMessage, resultReply, resultOutput = message, reply, output
 	}
 	deps.setCommunicateStructured = func(raw any) { structured = raw }
-	deps.deliverWatchCallback = func(message string) { callback = message }
 
 	args := map[string]any{
 		"message":  " done " + token + " ",
@@ -152,9 +149,6 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 	}
 	if structured == nil || emitted != 1 || len(deferred) != 1 || len(deferred[0].Images) != 1 {
 		t.Fatalf("terminal side effects: structured=%#v events=%d deferred=%#v", structured, emitted, deferred)
-	}
-	if !strings.Contains(callback, "Observer callback:") || !strings.Contains(callback, "done "+token) || !strings.Contains(callback, resultOutput) {
-		t.Fatalf("watch callback = %q", callback)
 	}
 	var response struct {
 		Inbox []string `json:"inbox"`
@@ -210,16 +204,12 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 	if got := communicateSchemaStringSlice(42); got != nil {
 		t.Fatalf("unexpected schema strings = %#v", got)
 	}
-	if got := watchCommunicateCallbackText(" "+token+" ", " "); got != "Observer callback:\nmessage: "+token {
-		t.Fatalf("empty-output callback = %q", got)
-	}
 
 	return stoolCommunicateTrace{
 		TerminalOutput: terminal.FullOutput,
 		Inbox:          strings.Join(response.Inbox, "|"),
 		Reply:          resultReply,
 		Structured:     resultOutput,
-		Callback:       callback,
 		Events:         emitted,
 		Deferred:       len(deferred),
 	}

@@ -397,11 +397,6 @@ const (
 	// notifications and surfaces them to the model as a steering reminder. An empty
 	// queue makes it a no-op (no model request).
 	EntryNotification
-	// EntryWatchDelivery is a watch-originated delegate turn. It may decide a
-	// delivered watch frame needs no action; non-empty bare text is retained in
-	// the child transcript as an internal disposition and does not require
-	// communicate.
-	EntryWatchDelivery
 	// EntryDelegateAttention is a controller-owned stable delegate generation
 	// whose exact model-bound input is already durable in the receiver transcript.
 	EntryDelegateAttention
@@ -450,8 +445,8 @@ type noCallsRoute int
 
 const (
 	// finishIdle ends the turn idle without a retry: a bare-text (non-empty)
-	// response to a watch-delivery or notification turn is an acknowledgement, not a
-	// glitch, and no user awaits a reply.
+	// response to a notification turn is an acknowledgement, not a glitch, and no
+	// user awaits a reply.
 	finishIdle noCallsRoute = iota
 	// runNoToolCalls routes through the empty/bare-text retry budget.
 	runNoToolCalls
@@ -459,10 +454,10 @@ const (
 
 // routeNoToolCalls decides the no-tool-calls route for a round from the input kind
 // and whether the round had no content. It is pure and total over EntryKind: only
-// a non-empty watch-delivery or notification turn finishes idle; everything else
-// (including any empty round) routes through the retry budget.
+// a non-empty notification turn finishes idle; everything else (including any
+// empty round) routes through the retry budget.
 func routeNoToolCalls(kind EntryKind, noContent bool) noCallsRoute {
-	if (kind == EntryWatchDelivery || kind == EntryNotification) && !noContent {
+	if kind == EntryNotification && !noContent {
 		return finishIdle
 	}
 	return runNoToolCalls
@@ -949,9 +944,6 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 }
 
 func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (out string, progressed bool, err error) {
-	s.setActiveEntryKind(kind)
-	defer s.setActiveEntryKind(EntryUserInput)
-
 	// Flush meta.json on every exit from this function — normal return, error
 	// return, ctx cancellation, retry-budget exhaustion, or panic. Without
 	// this, in-memory modelResponses bumps that happen between happy-path
@@ -1004,7 +996,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// beside comm's reset, under the lock already held (not via the
 	// clearAskPending helper, which takes s.mu itself and would deadlock).
 	s.askPending = nil
-	s.watchCallbackDelivered = false
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
 
@@ -1039,7 +1030,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// rootAttentionWake and cancels any scheduled retry, and only a wake
 		// that is ACCEPTED re-arms them. A stand-down decided after it would
 		// strand the very attention it was woken for.
-		runningTurnID = s.mintRunningTurnID()
+		var refusal turnNameRefusal
+		runningTurnID, refusal = s.mintRunningTurnID()
 		if s.servedByDaemon() && runningTurnID == "" {
 			// Settle the SessionProcessing transition this call already made
 			// (above), the way every other refusal on this path does. Without
@@ -1054,27 +1046,47 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// -- armRootDelegateAttention notifies only when the flag is clear,
 			// and the retry scheduler returns early while it is set.
 			//
-			// The kick is guaranteed rather than best-effort: a full input slot
-			// parks the send until the slot frees, and repeated kicks coalesce
-			// into that one parked send. So this lands after the user's turn,
-			// which is exactly when the name is free again.
+			// The wake is guaranteed rather than best-effort, but it is PACED
+			// rather than immediate (kata ajg5). An immediate notify() pushes
+			// into a one-slot channel the serve loop is about to read, so it is
+			// a hot loop for as long as its condition holds: dequeue, stand
+			// down, notify, dequeue. That was accepted because the condition
+			// was assumed brief -- a client turn/start about to hand the name
+			// back. A mutation store failing writes makes it permanent, since
+			// the turn holding the name can then neither be claimed nor
+			// released, and the owner check below reads it as owned throughout.
+			// scheduleRunningTurnNameRetry keeps the guarantee and backs off.
 			//
-			// Only ask when the name has an owner that will hand it back.
-			// notify() pushes into a one-slot channel the serve loop is about
-			// to read, so asking against a name nobody owns -- one left behind
-			// by a crash between reserving and releasing, or by a failed
-			// release write -- is a hot loop: dequeue, stand down, notify,
-			// forever. Such a name is a fault to be healed, not waited on, so
-			// say so once and let the wake wait for a real one.
-			if s.runningTurnNameHasOwner() {
-				s.notify()
-			} else {
+			// Which of the three refusals arrived decides between waiting and
+			// giving up:
+			//
+			// A store that would not take the write says NOTHING about the
+			// name -- it may be free. Reading that as a stale name is what left
+			// delegate attention stranded: the stand-down warned and did not
+			// re-arm, while rootAttentionWake stayed set and suppressed every
+			// other source of a wake. So retry, and let mintRunningTurnID's own
+			// warning be the diagnostic.
+			//
+			// A name a pending execution owns is coming back, whether promptly
+			// or once the disk recovers. Retry.
+			//
+			// A name NO pending execution owns is not coming back at all: it
+			// was left by a crash between reserving and releasing, or by a
+			// failed release write, and only forgetRunningTurnNoOneOwns at load
+			// clears it. Waiting on that is the hot loop with a timer in front
+			// of it, so say so once and let the wake wait for a real one.
+			switch {
+			case refusal == turnNameStoreFailed, s.runningTurnNameHasOwner():
+				s.scheduleRunningTurnNameRetry()
+			default:
 				s.emit(events.EventWarning, events.WarningData{
 					Message: "a turn name is held with no pending mutation to release it; deferring this wake would never resume",
 				})
 			}
 			return "", false, nil
 		}
+		// Named: drop any backoff this session accumulated standing down.
+		s.resetRunningTurnNameRetry()
 		rootAttentionIDs = s.beginRootDelegateAttentionTurn()
 		defer func() {
 			if !rootAttentionAccepted || len(rootAttentionIDs) == 0 {
@@ -1097,7 +1109,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// wake state, so that a wake it cannot name stands down while standing
 	// down is still free.
 	if kind == EntryContinuation {
-		runningTurnID = s.mintRunningTurnID()
+		runningTurnID, _ = s.mintRunningTurnID()
 	}
 
 	if kind == EntryContinuation {
@@ -1162,10 +1174,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if prepareErr != nil {
 			return "", progressed, prepareErr
 		}
-		if kind == EntryWatchDelivery {
-			req.ToolChoice = &llm.ToolChoice{Mode: "auto"}
-		}
-
 		// --- Phase: LLMCall ---
 		tPhaseStart := s.sclock().Now()
 

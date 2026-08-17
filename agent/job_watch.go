@@ -837,8 +837,21 @@ func (jm *jobManager) validateWatchTarget(target string) error {
 		return fmt.Errorf("target_not_watchable: job %q is owned by nested session %q; watches must be attached from the owning session", target, rec.OwnerSessionID)
 	}
 
-	// TODO(spec §5.9): enforce cross-session watch authorization when Phase 5
-	// extends nested-job visibility beyond root-caller-visible targets.
+	// Cross-session watch authorization (spec §5.9 target_not_watchable) is
+	// settled, in two places, and neither of them is here. Nested-job
+	// visibility landed: a forwarded record for a job a descendant owns is in
+	// this store, so it reaches the ownership rejection above and is refused.
+	// A caller entitled to that job never arrives here at all — the tool routes
+	// it first, installing the watch on the OWNER's manager with this session
+	// as receiver (session_tools_jobs.go's configureDescendantReceiverWatch),
+	// and the authorization is the reachability walk it depends on:
+	// resolveDescendantJobOwner (jobs_nested.go) descends only this session's
+	// OWN live subtree, so a job owned outside it is never resolved and falls
+	// through to the rejection above.
+	//
+	// So a target that reaches this line is either this manager's own or one
+	// already authorized upstream. Guards: TestConfigureWatchRejectsForwardedNestedTarget
+	// and TestTerminalCatchupRejectsForwardedNestedTarget.
 	return nil
 }
 

@@ -842,48 +842,6 @@ func TestAskUser_EntryGateRefusesContinuationWake(t *testing.T) {
 	}
 }
 
-// TestAskUser_EntryGateRefusesWatchDeliveryWake covers spec §5.3's entry gate for
-// EntryWatchDelivery: refused before any state transition, state unchanged
-// throughout, no model request made.
-func TestAskUser_EntryGateRefusesWatchDeliveryWake(t *testing.T) {
-	t.Parallel()
-	ask := askUserCall("ask1", askUserArgsValid())
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
-			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach a model call: the entry gate must refuse EntryWatchDelivery while awaiting")
-				return llm.Response{}
-			},
-		},
-	}
-	sess := newSession(t, withAdapter(f))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state before entry-gate probe = %q, want %q", got, SessionAwaiting)
-	}
-
-	out, err := sess.ProcessInputKind(ctx, "a delegate delivered a watch frame", nil, EntryWatchDelivery)
-	if err != nil {
-		t.Fatalf("ProcessInputKind(EntryWatchDelivery) while awaiting returned an error: %v", err)
-	}
-	if strings.TrimSpace(out) != "" {
-		t.Fatalf("ProcessInputKind(EntryWatchDelivery) while awaiting returned %q, want empty (no-op)", out)
-	}
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after refused watch-delivery wake = %q, want %q (must not flip)", got, SessionAwaiting)
-	}
-	if got := len(f.Requests()); got != 1 {
-		t.Fatalf("requests after refused watch-delivery wake = %d, want 1 (no model call)", got)
-	}
-}
-
 // TestAskUser_BoundaryDrainHoldsNotifications covers spec §5.3's drain-ladder
 // gate: a job notification arriving DURING the asking turn (not via a separate
 // entry-gate probe, but genuinely enqueued mid-round by a tool call sharing the
