@@ -274,7 +274,7 @@ beforeAll(async () => {
   // warmRoute above. Awaiting real completion, in a hook whose ceiling is a
   // tripwire, rather than spending it inside a test's assertion window.
   await warmRoute("/", (wait) => screen.findByText("No session open", undefined, wait));
-  await warmRoute("/new", (wait) => screen.findByRole("button", { name: "Spawn" }, wait));
+  await warmRoute("/new", (wait) => screen.findByRole("button", { name: "Start" }, wait));
   await warmRoute("/s/local:ref_warm", (wait) => screen.findByText(/loading transcript/i, undefined, wait));
   await warmRoute("/settings/general", (wait) => screen.findByRole("navigation", { name: "Settings sections" }, wait));
 });
@@ -429,11 +429,11 @@ test('clicking "New session" navigates to /new and opens the spawn pane', async 
 
   expect(window.location.pathname).toBe("/new");
   // /new now opens the real spawn pane (the old "not available yet" welcome
-  // fallback is gone) - its Spawn button proves the pane mounted.
-  // The spawn pane's own submit verb is "Spawn" - it lives in the prompt
+  // fallback is gone) - its Start button proves the pane mounted.
+  // The spawn pane's own submit verb is "Start" - it lives in the prompt
   // card's corner the way Send does in the composer, both surfaces being the
   // same shared card.
-  expect(await screen.findByRole("button", { name: "Spawn" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Start" })).toBeTruthy();
 });
 
 // --- command palette wiring (this task) -------------------------------
@@ -912,7 +912,7 @@ test("navigating from Settings to /new replaces Settings and clears secondary pa
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
 
-  expect(await screen.findByRole("button", { name: "Spawn" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Start" })).toBeTruthy();
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.type).toBe("spawn");
   });
@@ -967,7 +967,7 @@ test("a saved session layout is replaced by /new with Spawn as the only main pan
 
   window.history.pushState({}, "", "/new");
   render(<AppShell client={new FakeClient("ready")} />);
-  expect(await screen.findByRole("button", { name: "Spawn" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Start" })).toBeTruthy();
 
   await waitFor(() => {
     expect(workspaceStore.getState().panes).toEqual([
@@ -1206,7 +1206,7 @@ test("successful Spawn navigation replaces Spawn with the created session and cl
   fake.on("thread/start", () => threadStartResponse("local:created"));
   window.history.pushState({}, "", "/new");
   render(<AppShell client={fake} />);
-  expect(await screen.findByRole("button", { name: "Spawn" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Start" })).toBeTruthy();
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("spawn"));
 
   act(() => {

@@ -26,13 +26,13 @@ test("announces itself as loading by default, for assistive tech", () => {
 });
 
 test("uses the label as its accessible name when given", () => {
-  render(<Loader label="Spawning agent" />);
-  expect(screen.getByRole("status", { name: "Spawning agent" })).toBeTruthy();
+  render(<Loader label="Starting agent" />);
+  expect(screen.getByRole("status", { name: "Starting agent" })).toBeTruthy();
 });
 
 test("renders the label text visibly when given", () => {
-  render(<Loader label="Spawning agent" />);
-  expect(screen.getByText("Spawning agent")).toBeTruthy();
+  render(<Loader label="Starting agent" />);
+  expect(screen.getByText("Starting agent")).toBeTruthy();
 });
 
 test("renders no label text when not given", () => {

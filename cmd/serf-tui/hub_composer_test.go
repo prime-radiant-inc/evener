@@ -737,7 +737,7 @@ func TestHubModelSpawnModelPickerKeepsFormDraftVisible(t *testing.T) {
 	m.openSpawnModelPicker(m.spawnModels)
 
 	got := m.spawnView()
-	for _, want := range []string{"Select spawn model", "Prompt", "> spawn draft survives overlay"} {
+	for _, want := range []string{"Select model", "Prompt", "> spawn draft survives overlay"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("spawn model picker overlay missing %q:\n%s", want, got)
 		}

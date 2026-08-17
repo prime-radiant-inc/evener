@@ -1797,7 +1797,7 @@ func TestHubModelSpawnRejectsHubUnsupportedEmptyTaskBeforeStart(t *testing.T) {
 	if form.mode != hubModeSpawn || form.session.input.Value() != "" {
 		t.Fatalf("spawn form should stay open with draft preserved: mode=%v draft=%q", form.mode, form.session.input.Value())
 	}
-	if view := form.spawnView(); !strings.Contains(view, "Spawn unavailable") || !strings.Contains(view, "task text is required") || !strings.Contains(view, "enter a task before spawning") {
+	if view := form.spawnView(); !strings.Contains(view, "Start unavailable") || !strings.Contains(view, "task text is required") || !strings.Contains(view, "enter a task before spawning") {
 		t.Fatalf("spawn rejection was not structured:\n%s", view)
 	}
 }

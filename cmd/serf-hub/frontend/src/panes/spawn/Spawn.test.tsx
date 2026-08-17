@@ -260,17 +260,30 @@ test("harness moved into Advanced options, and still works there", async () => {
 });
 
 // The approved mobile Treatment A action band uses the direct user-facing
-// action "Spawn". The page title remains the existing React identity.
-test("the primary verb is Spawn, in the card's own corner, and the page is titled to match", async () => {
+// action "Start". The page title remains the existing React identity.
+test("the primary verb is Start, in the card's own corner, and the page is titled to match", async () => {
   renderSpawn(readyClient());
   await settled();
 
   const start = screen.getByTestId("spawn-submit");
-  expect(start.textContent).toBe("Spawn");
+  expect(start.textContent).toBe("Start");
   expect(screen.getByTestId("pane-title-desktop").textContent).toBe("Start an agent");
   // Inside the card, not in a detached actions strip below it.
   expect(screen.getByTestId("spawn-prompt-card").contains(start)).toBe(true);
-  expect(screen.getByRole("button", { name: "Spawn" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Start" })).toBeTruthy();
+});
+
+// The word beside the paper plane collapses by PANE width, not viewport
+// width: a docked pane squeezed narrow on a desktop display needs the same
+// icon-only button the phone gets, and a viewport media query cannot see that
+// (the overflowguard's 390px-pane-in-desktop-window measurement proved it).
+// The 559px boundary matches the composer cluster's own compact threshold
+// (SessionChrome's GoalControl chip swap).
+test("the Start button's word collapses to the glyph below the compact pane threshold", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "spawn.module.css"), "utf8");
+  expect(css).toMatch(/\.form\s*\{[^}]*container-type:\s*inline-size/);
+  expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.submitLabel\s*\{[^}]*display:\s*none/);
 });
 
 // The dormant-start rule rides in the placeholder rather than a separate
@@ -1207,7 +1220,7 @@ test("a failed spawn leaves the prompt and attachment staged (failure paths keep
 
   await user.click(screen.getByTestId("spawn-submit"));
 
-  await screen.findByText(/spawn failed/i);
+  await screen.findByText(/start failed/i);
   expect(prompt.value).toBe("do the thing[image 1]");
   expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
   // handleSpawn's catch already resets busy on a thrown startThread (same
@@ -1235,7 +1248,7 @@ test("a spawn that fails because no agent daemon could be reached shows actionab
   await user.click(screen.getByTestId("spawn-submit"));
 
   await screen.findByText(
-    "Spawn failed: No agent daemon responded for this project. Start one by running serf in the repo, then retry.",
+    "Start failed: No agent daemon responded for this project. Start one by running serf in the repo, then retry.",
   );
   expect(screen.queryByText(/launch-check timed out/i)).toBeNull();
 });
@@ -1256,7 +1269,7 @@ test("a spawn that fails because the hub connection is down keeps the hub-unreac
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
   await user.click(screen.getByTestId("spawn-submit"));
 
-  await screen.findByText("Spawn failed: Can't reach the hub right now.");
+  await screen.findByText("Start failed: Can't reach the hub right now.");
   expect(screen.queryByText(/AppwireClient/i)).toBeNull();
 });
 
@@ -1274,7 +1287,7 @@ test("re-enables the Spawn button after a successful start (post-success state h
   // Addressed by testid so a still-stuck "Starting…" fails on the label
   // assertion below with a clear message rather than on a failed query.
   const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
-  expect(button.textContent).toBe("Spawn");
+  expect(button.textContent).toBe("Start");
   expect(button.disabled).toBe(false);
 });
 
@@ -1505,8 +1518,8 @@ test("shows a Loader, not static text, while the spawn request is in flight", as
   await user.click(screen.getByTestId("spawn-submit"));
 
   const button = await screen.findByTestId("spawn-submit");
-  expect(within(button).getByRole("status", { name: "Spawning" })).toBeTruthy();
-  expect(within(button).queryByText("Spawning…")).toBeNull();
+  expect(within(button).getByRole("status", { name: "Starting" })).toBeTruthy();
+  expect(within(button).queryByText("Starting…")).toBeNull();
 
   release();
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));

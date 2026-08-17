@@ -894,7 +894,7 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	app.SendKeys("n")
 	app.WaitFor("serf / new session", "Prompt (optional):")
 	app.TypeLine("spawn should fail")
-	app.WaitFor("Hub spawn failed.", "cause appwire thread/start: spawn failed", "> spawn should fail")
+	app.WaitFor("Hub session start failed.", "cause appwire thread/start: spawn failed", "> spawn should fail")
 }
 
 // TestTUITmuxE2E_CaptureStableDuringStream exercises CaptureStable under the

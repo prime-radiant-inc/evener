@@ -256,16 +256,16 @@ test("selecting a free-arg APP-GLOBAL command enters args mode with a pill and p
   const user = userEvent.setup();
   render(<CommandPalette />);
   act(() => openPalette("/spawn"));
-  await user.click(screen.getByRole("option", { name: /Spawn with prompt/ }));
+  await user.click(screen.getByRole("option", { name: /Start with prompt/ }));
 
   // Args-mode pill shows the command, and the input placeholder changes.
-  expect(screen.getByText("Spawn with prompt")).toBeTruthy();
-  expect(screen.getByRole("combobox").getAttribute("placeholder")).toBe("prompt to spawn…");
+  expect(screen.getByText("Start with prompt")).toBeTruthy();
+  expect(screen.getByRole("combobox").getAttribute("placeholder")).toBe("prompt to start…");
 
   await user.keyboard("{Escape}");
   // Backed out to command-filter, dialog still open (Esc did not close it).
   expect(screen.getByRole("dialog")).toBeTruthy();
-  expect(screen.getByRole("option", { name: /Spawn with prompt/ })).toBeTruthy();
+  expect(screen.getByRole("option", { name: /Start with prompt/ })).toBeTruthy();
 });
 
 // --- execution & error surfacing ---

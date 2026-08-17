@@ -10,7 +10,7 @@ const STARTED_AT = 1_700_000_000_000;
 
 const SAMPLES: { label: string; loaderLabel?: string; startedAt?: number; now?: number }[] = [
   { label: "default", loaderLabel: undefined, startedAt: undefined, now: undefined },
-  { label: "custom label, no elapsed", loaderLabel: "Spawning agent" },
+  { label: "custom label, no elapsed", loaderLabel: "Starting agent" },
   { label: "elapsed only", startedAt: STARTED_AT, now: STARTED_AT + 5_000 },
   { label: "label + elapsed", loaderLabel: "Fetching diff", startedAt: STARTED_AT, now: STARTED_AT + 83_000 },
 ];

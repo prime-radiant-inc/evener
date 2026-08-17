@@ -33,6 +33,7 @@ import {
   PathField,
   PromptCard,
   Select,
+  SendIcon,
   Textarea,
   Tooltip,
   useToasts,
@@ -111,6 +112,7 @@ const CLASS = {
   mobilePromptSubtitle: requireClass(styles.mobilePromptSubtitle, "spawn.module.css", "mobilePromptSubtitle"),
   fieldLabel: requireClass(styles.fieldLabel, "spawn.module.css", "fieldLabel"),
   modelNote: requireClass(styles.modelNote, "spawn.module.css", "modelNote"),
+  submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
 };
 
 // kata xgk8: the empty-value label Model shows when the hub has confirmed it
@@ -549,7 +551,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     attachments.clearSubmitted(submittedMarkers);
     // Same defect class: both callers set busy=true before awaiting this
     // function but only their OWN catch blocks ever reset it back to false,
-    // so a success fell through with the button stuck disabled/"Spawning…"
+    // so a success fell through with the button stuck disabled/"Starting…"
     // forever on a pane that can outlive the navigation below.
     busyRef.current = false;
     setBusy(false);
@@ -603,7 +605,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       // hub answered but no agent daemon could be reached for cwd (the
       // first-run worst moment, T3), the launch-check's own raw text is
       // replaced with actionable copy instead.
-      toasts.push("error", `Spawn failed: ${friendlyLaunchErrorMessage(err)}`);
+      toasts.push("error", `Start failed: ${friendlyLaunchErrorMessage(err)}`);
       busyRef.current = false;
       setBusy(false);
       setBusyStartedAt(null);
@@ -628,7 +630,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       // hub answered but no agent daemon could be reached for cwd (the
       // first-run worst moment, T3), the launch-check's own raw text is
       // replaced with actionable copy instead.
-      toasts.push("error", `Spawn failed: ${friendlyLaunchErrorMessage(err)}`);
+      toasts.push("error", `Start failed: ${friendlyLaunchErrorMessage(err)}`);
       busyRef.current = false;
       setBusy(false);
       setBusyStartedAt(null);
@@ -707,15 +709,21 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
               />
             }
             actions={
-              <Tooltip label={`Spawn the agent · ${chordLabel(["Mod", "Enter"])}`}>
+              <Tooltip label={`Start the agent · ${chordLabel(["Mod", "Enter"])}`}>
                 <Button
                   variant="primary"
                   size="xs"
                   data-testid="spawn-submit"
+                  aria-label="Start"
+                  icon={busy ? undefined : <SendIcon />}
                   onClick={() => void handleSpawn()}
                   disabled={busy || modelRequired}
                 >
-                  {busy ? <Loader label="Spawning" startedAt={busyStartedAt ?? now} now={now} /> : "Spawn"}
+                  {busy ? (
+                    <Loader label="Starting" startedAt={busyStartedAt ?? now} now={now} />
+                  ) : (
+                    <span className={CLASS.submitLabel}>Start</span>
+                  )}
                 </Button>
               </Tooltip>
             }

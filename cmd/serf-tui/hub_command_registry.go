@@ -37,9 +37,9 @@ type hubCommandDefinition struct {
 var hubCommandRegistry = []hubCommandDefinition{
 	{
 		Name:          "new",
-		Summary:       "Open spawn form",
+		Summary:       "Start a new session",
 		PaletteLabel:  "/new",
-		PaletteDetail: "open spawn form",
+		PaletteDetail: "start a new session",
 		Scopes:        hubCommandDashboard,
 		Run: func(m *hubModel, _ string) tea.Cmd {
 			m.openSpawnForm()

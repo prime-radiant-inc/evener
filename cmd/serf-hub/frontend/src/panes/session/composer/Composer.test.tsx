@@ -341,6 +341,17 @@ test("the composer region fills pane height and bottom-anchors the replacement s
   expect(css).toContain("justify-content: flex-end");
 });
 
+// The word beside the paper plane collapses by PANE width, not viewport
+// width: a docked pane squeezed narrow on a desktop display needs the same
+// icon-only Send the phone gets, and a viewport media query cannot see that
+// (the overflowguard's 390px-pane-in-desktop-window measurement proved it).
+// The 559px boundary matches SessionChrome's own GoalControl chip swap.
+test("the Send button's word collapses to the glyph below the compact pane threshold", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8");
+  expect(css).toMatch(/\.composer\s*\{[^}]*container-type:\s*inline-size/);
+  expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.submitLabel\s*\{[^}]*display:\s*none/);
+});
+
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   localStorage.clear();
