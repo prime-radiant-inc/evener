@@ -1696,6 +1696,13 @@ func (s *Session) logPluginLoadDiag(p plugin.Instance) {
 // is the anomaly: on a true resume the kind is "resume", which startup-only
 // matchers (startup|clear|compact) must not match, so delivered should be 0.
 // The entry is tagged outcome=failure in that case so it greps out of the noise.
+//
+// The history it weighs is conversation, counted by conversationHistoryTurns,
+// never the raw length of s.history. A dispatch seeds a HOOK_COMPLETED turn per
+// hook it runs (the runner's HookEnd callback records them before
+// RunSessionStartFor returns), so a detector reading raw history would count its
+// own dispatch as prior history and flag every fresh session that runs a
+// SessionStart hook — the dilution kata 6p54 was filed for.
 func (s *Session) logSessionStartHookDispatch(kind plugin.SessionStartKind, delivered int) {
 	if s == nil || s.stateDir == "" {
 		return
@@ -1704,7 +1711,7 @@ func (s *Session) logSessionStartHookDispatch(kind plugin.SessionStartKind, deli
 	if k == "" {
 		k = string(plugin.SessionStartKindStartup)
 	}
-	historyTurns := len(s.history)
+	historyTurns := s.conversationHistoryTurns()
 	outcome := "success"
 	var failures []string
 	if delivered > 0 && (historyTurns > 0 || s.modelResponses > 0) {
@@ -1726,6 +1733,25 @@ func (s *Session) logSessionStartHookDispatch(kind plugin.SessionStartKind, deli
 		return
 	}
 	_ = log.Append(entry)
+}
+
+// conversationHistoryTurns counts the turns of actual conversation in history,
+// excluding the HOOK_COMPLETED records that only report that a hook ran. It
+// answers "does this session already carry a conversation?" — the question the
+// re-injection detector asks — with a number no hook dispatch can inflate.
+func (s *Session) conversationHistoryTurns() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, t := range s.history {
+		if t.Kind != schema.TurnHookCompleted {
+			n++
+		}
+	}
+	return n
 }
 
 func (s *Session) runDeferredRestoreSideEffects() error {
