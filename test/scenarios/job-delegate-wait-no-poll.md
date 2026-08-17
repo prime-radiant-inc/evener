@@ -76,5 +76,8 @@ untouched.
 - One orientation `job_status` is allowed by design; the failure is the *loop*,
   not the single check. Assert on the count, not on absence.
 - Notification excerpts carry small outputs in full, so a post-notification
-  `read_transcript(transcript_ref="job:<job_id>")` is acceptable but MUST NOT
-  be required.
+  `read_transcript` on the SHELL job's `job:<job_id>` ref is acceptable but MUST
+  NOT be required. If the thing being read is the delegate rather than its shell
+  job, the ref is the delegate's own session `transcript_ref`: `read_transcript`'s
+  contract is that "A stable delegate's session ref reads its conversation;
+  delegates never use job: refs", and a `job:` ref "reads shell output only".
