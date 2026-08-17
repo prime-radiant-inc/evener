@@ -25,16 +25,45 @@ import (
 // audits stay green throughout, because the citation is fine; it is the needle
 // that died (kata 8g3j).
 //
-// What this audit is, precisely: existence, not reachability. It answers one
-// question — does this literal appear anywhere in production source — and a
-// token that exists somewhere passes even if the subsystem the card is about
-// never emits it. That floor is deliberate and it is worth stating, because
-// 8g3j's own motivating example sits just outside it: recursion-coordinator-
-// fanout.md asserted on `<job-notification>` in a delegate rail, and
-// `<job-notification>` is a real tag — it belongs to the shell-job rail
-// (agent/session_lifecycle.go), so no existence check can see the mistake.
-// Deciding which rail may emit which tag needs a model of the rails, which is a
-// scenario-card DSL, which is not this.
+// READ THIS BEFORE TRUSTING A GREEN RUN. The claim this audit establishes is
+// narrow, and sitting green beside ten other scenario audits it will be read as
+// broader than it is. Stated exactly: NO CARD NAMES A snake_case TOKEN, IN A
+// CODE SPAN THIS EXTRACTOR RECOGNISES, THAT APPEARS NOWHERE IN SERF'S SOURCE.
+// That is not "the corpus is checked". Four gaps, all deliberate, all measured:
+//
+//  1. Existence, not reachability. A token that exists ANYWHERE passes, even if
+//     the subsystem the card is about never emits it. 8g3j's own motivating
+//     example sits outside this: recursion-coordinator-fanout.md asserted on
+//     `<job-notification>` in a delegate rail, and `<job-notification>` is a
+//     real tag — it belongs to the shell-job rail (agent/session_lifecycle.go),
+//     so no existence check can see the mistake. Deciding which rail may emit
+//     which tag needs a model of the rails, which is a card DSL, which is not
+//     this.
+//
+//  2. It has never produced an actionable finding. Every card repair on the
+//     branch that introduced it was found by hand; reverting those six cards to
+//     their pre-repair content and re-running this audit still PASSES. Raw
+//     absences before/after that work: 29 and 28, and all 29 are allowlisted
+//     tokens. The audit is a floor against future rot, not a tool that found
+//     the rot already here.
+//
+//  3. Tag coverage is 6 of the corpus's 23 frame-tag mentions. scenarioNeedleTag
+//     requires `</tag>` or `<tag attr=`, which is a reasoned choice — it keeps
+//     the metavariables the corpus writes in the same shape out
+//     (`<worktree-name>`, `<project-id>`, `<session-id>`) — but it means the
+//     bare opening form is invisible. A fabricated `<bogus-frame>` passes;
+//     `</bogus-frame>` fails.
+//
+//  4. 26 of the 135 files read yield ZERO needles, so they are entirely
+//     unchecked —
+//     including hooks-claude-compat-matcher.md, whose whole subject is
+//     PreToolUse / "Bash" / SerfToClaude, and state-stuck-processing-display.md,
+//     whose headline assertion is `state: "idle"`. The shapes the extractor does
+//     not read, all of which the corpus uses: quoted values inside a span, JSON
+//     fragments, a token with a trailing period, two tokens in one span,
+//     camelCase, dotted paths, kebab-case attributes, bold-not-code-span, and
+//     anything uppercase. Widening any of them means widening the allowlist;
+//     that trade was not taken.
 
 // scenarioNeedleSourceExtensions are the compiled surfaces production emits
 // from. A needle that survives here is a string some code path can put on the
@@ -52,13 +81,28 @@ var scenarioNeedleSourceExtensions = map[string]bool{
 // file names it at all.
 const scenarioNeedleBundledRoot = "internal/bundled"
 
-// scenarioNeedleSkipDirs are trees that are not production. test/ holds the
-// card corpus itself plus the fake LLM and fake-429 doubles; docs/ is prose, and
-// counting it would let a card assert on a contract nothing implements — which
-// is exactly the failure the audit exists to find.
-var scenarioNeedleSkipDirs = map[string]bool{
+// scenarioNeedleSkipRoots are trees that are not production, named by their
+// path from the repo root. test/ holds the card corpus itself plus the fake LLM
+// and fake-429 doubles; docs/ is prose, and counting it would let a card assert
+// on a contract nothing implements — which is exactly the failure the audit
+// exists to find.
+//
+// These are ROOT-RELATIVE on purpose. Matching them by base name at any depth
+// silently blanked cmd/serf-hub/frontend/src/panes/session/transcript/tools —
+// 20 files and ~3.7k lines of the transcript renderers for jobs, delegates and
+// subagents, which is precisely the subsystem this kata is about. Two live wire
+// tokens live only there (`not_delivered` in jobTools.tsx's delegate-send status
+// set, `auto_started` in taskCard.tsx's row keys), so a card quoting them
+// CORRECTLY failed the audit, and the failure message then steered the author
+// toward a false allowlist entry because requoting was impossible.
+var scenarioNeedleSkipRoots = []string{
+	"test", "docs", "scripts", "tools",
+}
+
+// scenarioNeedleSkipDirNames are build and dependency output, which may appear
+// at any depth and is never source anyone edits.
+var scenarioNeedleSkipDirNames = map[string]bool{
 	"node_modules": true, "dist": true, "coverage": true,
-	"test": true, "docs": true, "scripts": true, "tools": true,
 }
 
 // scenarioNeedleAllowed maps a needle the corpus asserts on, and which is
@@ -78,31 +122,87 @@ var scenarioNeedleSkipDirs = map[string]bool{
 // citing the contract correctly; whether the contract describes something
 // unimplemented is a separate question from whether the card can run, and it is
 // not this audit's to settle.
-var scenarioNeedleAllowed = map[string]string{
-	"use_browser":      "superpowers-chrome MCP tool, not serf's surface",
-	"set_profile":      "superpowers-chrome MCP tool, not serf's surface",
-	"new_tab":          "superpowers-chrome MCP tool, not serf's surface",
-	"switch_tab":       "superpowers-chrome MCP tool, not serf's surface",
-	"list_tabs":        "superpowers-chrome MCP tool, not serf's surface",
-	"await_element":    "superpowers-chrome MCP tool, not serf's surface",
-	"file_upload":      "Chrome DevTools Protocol command, not serf's surface",
-	"tabs_context_mcp": "claude-in-chrome extension tool, not serf's surface",
-	"tomli_w":          "the pip package a card's TOML-editing one-liner imports",
+//
+// Entries are keyed by CARD AND needle, not by needle alone. Every reason below
+// names a specific card, and a corpus-wide exemption would not honour that: with
+// a needle-only key, appending `structured_result_reason: create_file` to an
+// unrelated card passed both tests. The tokens that scoping protects hardest are
+// exactly the ones that sound real and are not — `self_loop`, `watch_self_loop`,
+// `create_file`, `auto_ssh` are allowlisted BECAUSE a card asserts they do not
+// exist, which is the sentence a future author is most likely to copy.
+var scenarioNeedleAllowed = map[scenarioNeedleException]string{
+	{"docs/agentic-testing.md", "use_browser"}: "superpowers-chrome MCP tool, not serf's surface",
+	{"docs/agentic-testing.md", "set_profile"}: "superpowers-chrome MCP tool, not serf's surface",
+	{"docs/agentic-testing.md", "new_tab"}:     "superpowers-chrome MCP tool, not serf's surface",
+	{"docs/agentic-testing.md", "switch_tab"}:  "superpowers-chrome MCP tool, not serf's surface",
+	{cardAskCrossSessionNotify, "use_browser"}: "superpowers-chrome MCP tool, not serf's surface",
+	{cardAskTwoClients, "use_browser"}:         "superpowers-chrome MCP tool, not serf's surface",
+	{cardAskTwoClients, "new_tab"}:             "superpowers-chrome MCP tool, not serf's surface",
+	{cardAskTwoClients, "switch_tab"}:          "superpowers-chrome MCP tool, not serf's surface",
+	{cardAskTwoClients, "list_tabs"}:           "superpowers-chrome MCP tool, not serf's surface",
+	{cardAskTwoClients, "await_element"}:       "superpowers-chrome MCP tool, not serf's surface",
+	{cardAskWebAnswer, "use_browser"}:          "superpowers-chrome MCP tool, not serf's surface",
+	{cardAttentionNeedsYou, "use_browser"}:     "superpowers-chrome MCP tool, not serf's surface",
+	{cardSpawnKeyboard, "use_browser"}:         "superpowers-chrome MCP tool, not serf's surface",
+	{cardWebDragDrop, "use_browser"}:           "superpowers-chrome MCP tool, not serf's surface",
+	{cardWebDragDrop, "set_profile"}:           "superpowers-chrome MCP tool, not serf's surface",
+	{cardWebFilePicker, "use_browser"}:         "superpowers-chrome MCP tool, not serf's surface",
+	{cardFontSizePresets, "set_profile"}:       "superpowers-chrome MCP tool, not serf's surface",
+	{cardWebModelSwitch, "new_tab"}:            "superpowers-chrome MCP tool, not serf's surface",
+	{cardWebFilePicker, "file_upload"}:         "a use_browser action driving CDP Input.setFileInputFiles, not serf's surface",
+	{cardIndex, "file_upload"}:                 "a use_browser action driving CDP Input.setFileInputFiles, not serf's surface",
+	{cardCostEstimate, "tabs_context_mcp"}:     "claude-in-chrome extension tool, not serf's surface",
+	{cardTurnMetaBadge, "tabs_context_mcp"}:    "claude-in-chrome extension tool, not serf's surface",
+	{cardCredentialsPage, "tomli_w"}:           "the pip package this card's TOML-editing one-liner imports",
 
-	"self_loop":       "doctor-forensics.md asserts the report carries NO such field",
-	"watch_self_loop": "doctor-forensics.md asserts there is no such Finding category",
-	"create_file":     "dev-hello-script.md names it as a tool a model might hallucinate",
-	"auto_ssh":        "auth-device-autodetect.md asserts no such value exists",
+	{cardDoctorForensics, "self_loop"}:       "this card asserts the report carries NO such field",
+	{cardDoctorForensics, "watch_self_loop"}: "this card asserts there is no such Finding category",
+	{cardDevHelloScript, "create_file"}:      "this card names it as a tool a model might hallucinate",
+	{cardAuthDeviceAutodetect, "auto_ssh"}:   "this card asserts no such value exists",
 
-	"wedge_probe":   "job-watch-caller-send-no-deadlock.md's own name for the probe call it makes",
-	"queue_cap":     "the label workspace-title-bar-actions.md's own python one-liner prints",
-	"seen_awaiting": "the shell variable attention-needs-you-end-to-end.md polls into",
+	{cardJobWatchCallerSend, "wedge_probe"}:  "this card's own name for the probe call it makes",
+	{cardWorkspaceTitleBar, "queue_cap"}:     "the label this card's own python one-liner prints",
+	{cardAttentionNeedsYou, "seen_awaiting"}: "the shell variable this card polls into",
+	{cardAuthDevicePollConcurrent, "elapsed_ms"}: "the shell variable this card computes at :108 and asserts at :126; " +
+		"it is not serf vocabulary and only ever resolved by riding inside group_elapsed_ms",
 
-	"delegate_session_busy": "canonical code at docs/job-control.md \"Status and reason model\"; " +
-		"job-delegate-result-schema.md quotes it precisely to say nothing in the Go source emits it here",
-	"stop_unconfirmed": "canonical stop reason in docs/job-control.md's reason table, quoted as " +
-		"contract by two cards; no Go emitter exists — the gap is in the contract, not the cards",
+	{cardJobDelegateResultSchema, "delegate_session_busy"}: "canonical code at docs/job-control.md " +
+		"\"Status and reason model\"; this card quotes it precisely to say nothing in the Go source emits it here",
+	{cardJobStopAndChildren, "stop_unconfirmed"}: "canonical stop reason in docs/job-control.md's reason " +
+		"table, quoted as contract; no Go emitter exists — the gap is in the contract, not the card",
 }
+
+// scenarioNeedleException is one card's exemption for one needle.
+type scenarioNeedleException struct {
+	card   string
+	needle string
+}
+
+// Card paths used by the allowlist, spelled once so a rename fails to compile
+// rather than silently widening an exemption to nothing.
+const (
+	cardIndex                    = "test/scenarios/INDEX.md"
+	cardAskCrossSessionNotify    = "test/scenarios/ask-cross-session-notify.md"
+	cardAskTwoClients            = "test/scenarios/ask-two-clients.md"
+	cardAskWebAnswer             = "test/scenarios/ask-web-answer.md"
+	cardAttentionNeedsYou        = "test/scenarios/attention-needs-you-end-to-end.md"
+	cardAuthDeviceAutodetect     = "test/scenarios/auth-device-autodetect.md"
+	cardAuthDevicePollConcurrent = "test/scenarios/auth-device-poll-concurrent.md"
+	cardCostEstimate             = "test/scenarios/cost-estimate-display-and-gating.md"
+	cardCredentialsPage          = "test/scenarios/credentials-page-displays-sources.md"
+	cardDevHelloScript           = "test/scenarios/dev-hello-script.md"
+	cardDoctorForensics          = "test/scenarios/doctor-forensics.md"
+	cardFontSizePresets          = "test/scenarios/font-size-presets-visible.md"
+	cardJobDelegateResultSchema  = "test/scenarios/job-delegate-result-schema.md"
+	cardJobStopAndChildren       = "test/scenarios/job-stop-and-children.md"
+	cardJobWatchCallerSend       = "test/scenarios/job-watch-caller-send-no-deadlock.md"
+	cardSpawnKeyboard            = "test/scenarios/spawn-keyboard-contract.md"
+	cardTurnMetaBadge            = "test/scenarios/turn-meta-badge-always-visible.md"
+	cardWebDragDrop              = "test/scenarios/web-drag-drop-image.md"
+	cardWebFilePicker            = "test/scenarios/web-file-picker-image.md"
+	cardWebModelSwitch           = "test/scenarios/web-model-switch-mid-session.md"
+	cardWorkspaceTitleBar        = "test/scenarios/workspace-title-bar-actions.md"
+)
 
 // TestScenarioAssertedNeedlesExistInProductionSource is the audit.
 func TestScenarioAssertedNeedlesExistInProductionSource(t *testing.T) {
@@ -116,10 +216,11 @@ func TestScenarioAssertedNeedlesExistInProductionSource(t *testing.T) {
 		}
 		for _, found := range scenarioAssertedNeedles(string(raw)) {
 			needles++
-			if strings.Contains(source, found.needle) {
+			if scenarioNeedleInSource(source, found.needle) {
 				continue
 			}
-			if _, ok := scenarioNeedleAllowed[found.needle]; ok {
+			key := scenarioNeedleException{card: filepath.ToSlash(path), needle: found.needle}
+			if _, ok := scenarioNeedleAllowed[key]; ok {
 				continue
 			}
 			findings = append(findings, path+":"+strconv.Itoa(found.line)+": "+found.needle)
@@ -150,14 +251,24 @@ type scenarioNeedleFinding struct {
 	line   int
 }
 
-// scenarioNeedleFence matches a fenced code block. Fences hold commands the
-// runner RUNS, not tokens it searches observed output for, and their shell
-// variables (`owned_sid`, `run_suffix`) look exactly like JSON keys. Blanking
-// them removed 35 false positives and cost no real finding.
-// The closing fence is matched as "\n```" rather than a second ^-anchored run:
-// the opening fence's line always ends in a newline, so the two are equivalent,
-// and gocritic reads a second ^ inside one pattern as a dangling anchor.
-var scenarioNeedleFence = regexp.MustCompile("(?sm)^```.*?\n```")
+// Fences hold commands the runner RUNS, not tokens it searches observed output
+// for, and their shell variables (`owned_sid`, `run_suffix`) look exactly like
+// JSON keys — so blanking them keeps a card's own scratch variables from
+// reading as production vocabulary.
+//
+// scenarioNeedleFence matches a fenced code block, INCLUDING one indented
+// inside a list item — which is how this corpus writes 760 of its 972 fence
+// lines. An anchor that only accepts a column-0 fence left 78% of fenced
+// content being scanned as prose, and was measurably inert: extracting with it
+// and without it both yielded 685 code-span needles. Indent-aware, the pass
+// removes 2. That is a small effect honestly stated, not the large one an
+// earlier version of this comment claimed.
+//
+// The closing fence is matched as a newline plus optional indent rather than a
+// second ^-anchored run: the opening fence's line always ends in a newline, so
+// the two are equivalent, and gocritic reads a second ^ inside one pattern as a
+// dangling anchor.
+var scenarioNeedleFence = regexp.MustCompile("(?sm)^[ \t]*```.*?\n[ \t]*```")
 
 // scenarioNeedleCodeSpan matches an inline `code span`, the corpus's marker for
 // "this is a literal, not prose".
@@ -263,9 +374,41 @@ func scenarioNeedleBlankLine(s string) string {
 	}, s)
 }
 
+// scenarioNeedleInSource reports whether the haystack contains needle as a whole
+// identifier. A plain substring test is not enough: `elapsed_ms` — a shell
+// variable auth-device-poll-concurrent.md computes for itself, and exactly the
+// kind of card-local label the allowlist exists to name — passed for a year by
+// riding inside `group_elapsed_ms` (agent/events/payloads.go). That made the
+// allowlist look like a complete census of the corpus's deliberate absences when
+// it was one short.
+func scenarioNeedleInSource(haystack, needle string) bool {
+	for offset := 0; ; {
+		i := strings.Index(haystack[offset:], needle)
+		if i < 0 {
+			return false
+		}
+		start := offset + i
+		end := start + len(needle)
+		if !scenarioNeedleIdentifierByte(haystack, start-1) && !scenarioNeedleIdentifierByte(haystack, end) {
+			return true
+		}
+		offset = start + 1
+	}
+}
+
+// scenarioNeedleIdentifierByte reports whether the byte at i would extend an
+// identifier. Out-of-range counts as a boundary.
+func scenarioNeedleIdentifierByte(s string, i int) bool {
+	if i < 0 || i >= len(s) {
+		return false
+	}
+	c := s[i]
+	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+}
+
 // scenarioNeedleProductionSource concatenates every production source file into
-// one haystack. Reading it once and asking strings.Contains 644 times is the
-// whole implementation; a needle is a literal, so nothing more is needed.
+// one haystack. Reading it once and scanning it per needle is the whole
+// implementation; a needle is a literal, so nothing more is needed.
 func scenarioNeedleProductionSource(t *testing.T) string {
 	t.Helper()
 	var b strings.Builder
@@ -277,7 +420,9 @@ func scenarioNeedleProductionSource(t *testing.T) string {
 		if entry.IsDir() {
 			// A dot directory is .git, .claude, or a sibling worktree holding a
 			// full copy of this tree; descending into one is both wrong and slow.
-			if path != "." && (strings.HasPrefix(entry.Name(), ".") || scenarioNeedleSkipDirs[entry.Name()]) {
+			if path != "." && (strings.HasPrefix(entry.Name(), ".") ||
+				scenarioNeedleSkipDirNames[entry.Name()] ||
+				slices.Contains(scenarioNeedleSkipRoots, filepath.ToSlash(path))) {
 				return fs.SkipDir
 			}
 			return nil
@@ -373,32 +518,93 @@ func TestScenarioNeedleExtractorReportsTheLineTheNeedleIsOn(t *testing.T) {
 	}
 }
 
+// TestScenarioNeedleHaystackReachesTheTranscriptRenderers pins the skip-root
+// fix. Matching skip directories by BASE NAME blanked
+// cmd/serf-hub/frontend/src/panes/session/transcript/tools — the renderers for
+// job, delegate and subagent tool calls — because its last path element is
+// "tools". `not_delivered` is the witness: it is a delegate-send status in that
+// tree's jobTools.tsx and appears in no other production file, so a card quoting
+// it correctly was told to requote it from code the audit had hidden.
+//
+// taskCard.tsx's `auto_started` is deliberately NOT a witness here. It only ever
+// appears as `auto_started_${id}`, so the whole-identifier rule rejects the bare
+// prefix — correctly: the bare token is not a string production emits.
+func TestScenarioNeedleHaystackReachesTheTranscriptRenderers(t *testing.T) {
+	source := scenarioNeedleProductionSource(t)
+	if !scenarioNeedleInSource(source, "not_delivered") {
+		t.Error("not_delivered is not in the production haystack: the skip list is blanking " +
+			"cmd/serf-hub/frontend/src/panes/session/transcript/tools again, and a " +
+			"card quoting it correctly would be reported as asserting on nothing")
+	}
+	// The roots that SHOULD be skipped still are, or the audit would count the
+	// card corpus and the docs as production and never fail at all.
+	for _, needle := range []string{"COORDINATOR_SPAWNED", "NEST_TOKEN_1"} {
+		if scenarioNeedleInSource(source, needle) {
+			t.Errorf("%q reached the haystack — test/ is no longer skipped, so the "+
+				"corpus is checking itself", needle)
+		}
+	}
+}
+
+// TestScenarioNeedleMatchesWholeIdentifiersOnly pins the boundary fix. The
+// corpus's `elapsed_ms` is a card's own shell variable and resolved for real
+// only by riding inside `group_elapsed_ms`.
+func TestScenarioNeedleMatchesWholeIdentifiersOnly(t *testing.T) {
+	haystack := "GroupElapsedMS int64 `json:\"group_elapsed_ms\"`\nconst ok = \"delegate_id\"\n"
+	if scenarioNeedleInSource(haystack, "elapsed_ms") {
+		t.Fatal("elapsed_ms matched inside group_elapsed_ms: a substring test lets a " +
+			"card-local label pass as production vocabulary")
+	}
+	if !scenarioNeedleInSource(haystack, "group_elapsed_ms") {
+		t.Fatal("the whole identifier did not match itself")
+	}
+	if !scenarioNeedleInSource(haystack, "delegate_id") {
+		t.Fatal("a quoted identifier did not match; punctuation must count as a boundary")
+	}
+}
+
+// TestScenarioNeedleExemptionsAreScopedToOneCard pins the allowlist-key fix.
+// Every reason string names a specific card; a needle-only key let any card
+// inherit any other card's exemption, and the tokens most exposed by that are
+// the ones allowlisted BECAUSE a card asserts they do not exist.
+func TestScenarioNeedleExemptionsAreScopedToOneCard(t *testing.T) {
+	owner := scenarioNeedleException{card: cardDoctorForensics, needle: "self_loop"}
+	if _, ok := scenarioNeedleAllowed[owner]; !ok {
+		t.Fatalf("%v is no longer the allowlisted pair this test is written against", owner)
+	}
+	borrower := scenarioNeedleException{card: cardJobStopAndChildren, needle: "self_loop"}
+	if _, ok := scenarioNeedleAllowed[borrower]; ok {
+		t.Fatalf("%v inherited another card's exemption: the allowlist is keyed too widely", borrower)
+	}
+}
+
 // TestScenarioNeedleAllowlistEntriesStillMatch keeps the carve-outs honest. An
 // entry whose needle has left the corpus, or which production has since started
 // emitting, silently widens the exemption to nothing and nobody notices until a
 // real vacuous assertion slips through the same hole.
 func TestScenarioNeedleAllowlistEntriesStillMatch(t *testing.T) {
 	source := scenarioNeedleProductionSource(t)
-	inCorpus := map[string]bool{}
+	inCorpus := map[scenarioNeedleException]bool{}
 	for _, path := range scenarioCardFiles(t) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("reading %s: %v", path, err)
 		}
 		for _, found := range scenarioAssertedNeedles(string(raw)) {
-			inCorpus[found.needle] = true
+			inCorpus[scenarioNeedleException{card: filepath.ToSlash(path), needle: found.needle}] = true
 		}
 	}
 	var stale []string
-	for needle, reason := range scenarioNeedleAllowed {
+	for key, reason := range scenarioNeedleAllowed {
+		where := key.card + " " + key.needle
 		if reason == "" {
-			stale = append(stale, needle+" (no reason recorded)")
+			stale = append(stale, where+" (no reason recorded)")
 		}
-		if !inCorpus[needle] {
-			stale = append(stale, needle+" (no card asserts on it any more)")
+		if !inCorpus[key] {
+			stale = append(stale, where+" (that card no longer asserts on it)")
 		}
-		if strings.Contains(source, needle) {
-			stale = append(stale, needle+" (production emits it now; the exemption is dead weight)")
+		if scenarioNeedleInSource(source, key.needle) {
+			stale = append(stale, where+" (production emits it now; the exemption is dead weight)")
 		}
 	}
 	if len(stale) > 0 {
