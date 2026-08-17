@@ -1647,11 +1647,10 @@ func (p *AppEventProjector) closeActiveTurn(status string) []AppNotification {
 // turn and startTurn falls back to the turn_<n> bucket namespace, which no
 // control can address.
 //
-// Factored because the drift between two copies of this sequence IS the bug
-// this file was changed to fix: EventUserInput learned to adopt the daemon's
-// id and EventGoalContinuation, its identical twin, did not, so every mid-turn
-// control died on goal turns. A third copy arrived with EventTurnStarted. One
-// copy cannot drift from itself.
+// Every event that opens a turn shares this sequence, so it lives in one place:
+// an event kind that adopts the daemon's id while its neighbour mints a
+// turn_<n> instead publishes a turn no mid-turn control can address, and the
+// two are indistinguishable from the call site.
 func (p *AppEventProjector) openTurn(stableID string, at time.Time) (string, []AppNotification) {
 	out := p.closeActiveTurn(appwire.TurnStatusCompleted)
 	if stableID != "" {
