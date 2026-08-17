@@ -68,7 +68,7 @@ import {
   waitForFonts,
   waitForHttp,
 } from "../browserGuardCdp.mjs";
-import { startBrowserGuard } from "../browserGuardProcess.mjs";
+import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
 import { resolveComposes } from "./resolve-composes.mjs";
 import { diagnoseRealizedViewport, normalizeViewportSpec } from "./viewport.mjs";
 
@@ -197,8 +197,13 @@ async function main() {
       await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
     } catch (err) {
       throw new Error(
-        `browser guard startup failed (environment problem, not a test case failure): ${err.message}\n` +
-          `vite stderr:\n${guard.getViteError()}`,
+        describeBrowserStartupFailure({
+          error: err,
+          chromeBinary: guard.chromeBinary,
+          chromeArgv: guard.getChromeArgv(),
+          chromeStderr: guard.getChromeError(),
+          viteStderr: guard.getViteError(),
+        }),
       );
     }
 

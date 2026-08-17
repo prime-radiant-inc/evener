@@ -9,7 +9,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyViewport, clearViewportOverride, connectPage, evaluate, navigateTo, waitForFonts, waitForHttp } from "../browserGuardCdp.mjs";
-import { startBrowserGuard } from "../browserGuardProcess.mjs";
+import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WIDTHS = [390, 899, 900];
@@ -144,7 +144,15 @@ async function main() {
     try {
       await waitForHttp(`http://127.0.0.1:${vitePort}/spawnguard.html`, "vite dev server");
     } catch (error) {
-      throw new Error(`${error.message}\nvite stderr:\n${guard.getViteError()}`);
+      throw new Error(
+        describeBrowserStartupFailure({
+          error: error,
+          chromeBinary: guard.chromeBinary,
+          chromeArgv: guard.getChromeArgv(),
+          chromeStderr: guard.getChromeError(),
+          viteStderr: guard.getViteError(),
+        }),
+      );
     }
     await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
     for (const width of WIDTHS) {

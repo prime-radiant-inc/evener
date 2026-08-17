@@ -562,3 +562,40 @@ for (const { signal, exitCode } of [
     assert.equal(processTarget.listenerCount("SIGTERM"), 0);
   });
 }
+
+// The diagnostic 45adecf57 retired with layoutguard/cdp.mjs's
+// probeBrowserCapability. Its claim was that "environment failure named as
+// such, with diagnostics" survived in run.mjs's startup error; what survived
+// was that phrase plus VITE's stderr. Chrome's own stderr was not available at
+// all -- it was spawned with stdio "ignore" -- so a Chrome that will not start
+// produced a 30-second waitForHttp timeout and an irrelevant Vite log (3htx).
+test("the browser startup diagnostic names the binary, the argv and Chrome's own stderr", () => {
+  const message = browserGuardProcess.describeBrowserStartupFailure({
+    error: new Error("chrome never came up at http://127.0.0.1:9222/json/version"),
+    chromeBinary: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    chromeArgv: ["--headless=new", "--remote-debugging-port=9222"],
+    chromeStderr: "dyld: Library not loaded: @rpath/libfoo.dylib",
+    viteStderr: "",
+  });
+
+  assert.match(message, /environment problem, not a test case failure/);
+  assert.match(message, /chrome never came up/);
+  assert.match(message, /Chrome binary: .*Google Chrome/);
+  assert.match(message, /--remote-debugging-port=9222/);
+  assert.match(message, /dyld: Library not loaded/);
+  assert.match(message, /1\./);
+  assert.match(message, /2\./);
+  assert.match(message, /3\./);
+});
+
+test("the startup diagnostic says so explicitly when Chrome produced no stderr", () => {
+  const message = browserGuardProcess.describeBrowserStartupFailure({
+    error: new Error("chrome never came up"),
+    chromeBinary: "/usr/bin/chromium",
+    chromeArgv: ["--headless=new"],
+    chromeStderr: "",
+    viteStderr: "",
+  });
+
+  assert.match(message, /chrome stderr: \(none\)/);
+});
