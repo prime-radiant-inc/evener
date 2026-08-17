@@ -44,7 +44,7 @@ cleanup() {
 		[ -f "$pidfile" ] || continue
 		kill "$(cat "$pidfile")" 2>/dev/null
 	done
-	selftest_rm_scratch "$work"
+	selftest_rm_scratch
 }
 trap cleanup EXIT
 

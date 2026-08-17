@@ -17,7 +17,7 @@ script="$(cd "$(dirname "$0")" && pwd)/web-preflight.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
 selftest_scratch work web-preflight-selftest
-trap 'selftest_rm_scratch "$work"' EXIT
+trap 'selftest_rm_scratch' EXIT
 
 stub_bin="$work/bin"
 mkdir -p "$stub_bin"

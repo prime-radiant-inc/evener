@@ -6,7 +6,7 @@ script="$(cd "$(dirname "$0")" && pwd)/reclaim-test-debris.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
 selftest_scratch work reclaim-test-debris-selftest
-trap 'selftest_rm_scratch "$work"' EXIT
+trap 'selftest_rm_scratch' EXIT
 
 tmpbase="$work/tmp"
 mkdir -p "$tmpbase"

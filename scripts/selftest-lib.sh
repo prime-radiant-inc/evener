@@ -152,43 +152,43 @@ selftest_scratch() {
 	printf -v "$_st_var" '%s' "$_st_dir"
 }
 
-# selftest_rm_scratch PATH — remove a directory selftest_scratch created, or
-# something inside one. Refuses everything else, so a caller whose variable was
-# emptied or clobbered cannot turn its EXIT trap into a delete of $PWD, $HOME,
-# or /. An empty path is nothing to do, not an error: a suite that died before
-# it had scratch still runs its trap. Returns non-zero on refusal rather than
-# exiting, because it is called from EXIT traps where the suite's own status is
-# already decided.
+# selftest_rm_scratch — remove every directory selftest_scratch created for this
+# suite.
+#
+# It takes no argument, and that is the whole point. A delete that accepts a
+# path can be handed $PWD, $HOME, or / by a variable that was emptied or
+# clobbered, and no amount of guarding inside the function makes the caller's
+# variable trustworthy. With no argument there is nothing to get wrong: the only
+# paths it can reach are ones selftest_scratch minted and validated.
+#
+# Safe to call with no scratch yet (a suite that died early still runs its
+# trap), and safe to call twice. Never exits: it is called from EXIT traps where
+# the suite's own status is already decided.
 selftest_rm_scratch() {
-	local _st_path="${1:-}" _st_me _st_known
-	[ -n "$_st_path" ] || return 0
-	# A path that walks upward can prefix-match an allowlisted root and still
-	# resolve outside it, so refuse it before the match rather than trusting
-	# the string comparison below.
-	case "$_st_path" in
-	*/../* | */.. | ../* | ..)
+	local _st_dir _st_root _st_me
+	if [ "$#" -ne 0 ]; then
 		_st_me="$(basename "$0" .sh)"
-		printf '%s: refusing to delete "%s": the path walks upward, so a prefix match would not prove where it lands\n' \
-			"$_st_me" "$_st_path" >&2
-		return 1
-		;;
-	esac
-	for _st_known in ${selftest_scratch_dirs[@]+"${selftest_scratch_dirs[@]}"}; do
-		if [ "$_st_path" = "$_st_known" ]; then
-			rm -rf "$_st_path"
-			return 0
-		fi
-		case "$_st_path" in
-		"$_st_known"/*)
-			rm -rf "$_st_path"
-			return 0
-			;;
+		printf '%s: selftest_rm_scratch takes no arguments; it removes what selftest_scratch created\n' \
+			"$_st_me" >&2
+		return 2
+	fi
+	_st_root="${TMPDIR:-/tmp}"
+	_st_root="$(cd "$_st_root" 2>/dev/null && pwd -P)" || return 1
+	for _st_dir in ${selftest_scratch_dirs[@]+"${selftest_scratch_dirs[@]}"}; do
+		# selftest_scratch already proved each of these is a directory it
+		# minted under TMPDIR. Re-checking costs nothing and means even a
+		# corrupted array cannot widen the delete.
+		[ -n "$_st_dir" ] || continue
+		case "$_st_dir" in
+		"$_st_root"/*) ;;
+		*) continue ;;
 		esac
+		case "$_st_dir" in
+		*/../* | */..) continue ;;
+		esac
+		rm -rf "$_st_dir"
 	done
-	_st_me="$(basename "$0" .sh)"
-	printf '%s: refusing to delete "%s": selftest_scratch never created it\n' \
-		"$_st_me" "$_st_path" >&2
-	return 1
+	selftest_scratch_dirs=()
 }
 
 # selftest_summary — print "<name>: N checks, M failed" and return the

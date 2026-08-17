@@ -15,7 +15,7 @@ set -uo pipefail
 . "$(dirname "$0")/selftest-lib.sh"
 scripts_dir="$(cd "$(dirname "$0")" && pwd -P)"
 selftest_scratch work selftest-lib-selftest
-trap 'selftest_rm_scratch "$work"' EXIT
+trap 'selftest_rm_scratch' EXIT
 
 # The suites converted to the guard. Their protection is behavioural, not
 # textual, so it is checked by running them rather than by grepping them.
@@ -169,45 +169,48 @@ case "$dir" in
 "$(cd "${TMPDIR:-/tmp}" && pwd -P)"/happy-fixture.*) ;;
 *) echo "created outside TMPDIR: $dir"; exit 1 ;;
 esac
-selftest_rm_scratch "$dir"
+selftest_rm_scratch
 [ -e "$dir" ] && { echo "not removed: $dir"; exit 1; }
 echo "happy path complete"
 exit 0'
 assert_eq "$fixture_status" 0 "the happy path creates a canonical scratch under TMPDIR and removes it"
 assert_has "$fixture_out" "happy path complete" "the happy path runs to the end"
 
-# selftest_rm_scratch must refuse anything outside the scratch root, which is
-# what makes it safe to call with a variable another hand may have clobbered.
-run_fixture refuse-outside '#!/usr/bin/env bash
+# The delete takes no path, so a clobbered caller variable has nothing to reach
+# it with. This fixture wrecks every variable a suite might hold — including the
+# one selftest_scratch assigned — and then runs the trap the way a dying suite
+# would. Nothing in the working directory may be touched, and the real scratch
+# must still be reclaimed.
+#
+# Note what this fixture does NOT do: it never names "/" or "$HOME". Testing a
+# delete by aiming it at the thing you are protecting means one typo, or one
+# mutation run, destroys the machine. That is not hypothetical here.
+run_fixture ignores-caller-paths '#!/usr/bin/env bash
 set -uo pipefail
 . "$1/selftest-lib.sh"
 selftest_scratch dir refuse-fixture
-# Every path this fires at is a decoy under the fixture'"'"'s own working
-# directory. Naming "/" or "$HOME" here would test the guard by aiming the real
-# weapon at the real target, so a single typo or a mutation run would delete the
-# machine. A decoy proves refusal just as well and costs nothing when it fails.
-mkdir -p "$PWD/decoy-root" "$PWD/decoy-home"
+mkdir -p "$PWD/decoy"
+printf keep > "$PWD/decoy/sentinel.txt"
+real="$dir"
+dir=""
+work="$PWD"
+selftest_rm_scratch
+echo "rm-scratch with clobbered vars returned $?"
+[ -d "$PWD/decoy" ] && [ -f "$PWD/decoy/sentinel.txt" ] && echo "decoy intact"
+[ -e "$real" ] || echo "real scratch reclaimed"
+selftest_rm_scratch
+echo "second call returned $?"
 selftest_rm_scratch "$PWD"
-echo "rm-scratch returned $?"
-selftest_rm_scratch "$PWD/decoy-root"
-echo "rm-scratch on decoy-root returned $?"
-selftest_rm_scratch "$PWD/decoy-home"
-echo "rm-scratch on decoy-home returned $?"
-selftest_rm_scratch "$dir/.."
-echo "rm-scratch on upward path returned $?"
-selftest_rm_scratch ""
-echo "rm-scratch on empty returned $?"
-[ -d "$PWD/decoy-root" ] && [ -d "$PWD/decoy-home" ] && echo "decoys intact"
-selftest_rm_scratch "$dir"
+echo "call with an argument returned $?"
+[ -d "$PWD/decoy" ] && echo "decoy still intact after argument call"
 exit 0'
 assert_victim_intact "$fixture_victim" "selftest_rm_scratch leaves the working directory alone"
-assert_has "$fixture_out" "rm-scratch returned 1" "selftest_rm_scratch refuses the working directory"
-assert_has "$fixture_out" "rm-scratch on decoy-root returned 1" "selftest_rm_scratch refuses a directory it did not create"
-assert_has "$fixture_out" "rm-scratch on decoy-home returned 1" "selftest_rm_scratch refuses a second one, so the first is not a fluke"
-assert_has "$fixture_out" "rm-scratch on upward path returned 1" "selftest_rm_scratch refuses a path that walks upward out of its own root"
-assert_has "$fixture_out" "decoys intact" "selftest_rm_scratch deleted neither decoy"
-assert_has "$fixture_out" "rm-scratch on empty returned 0" "selftest_rm_scratch treats an empty path as nothing to do"
-assert_has "$fixture_out" "refusing to delete" "selftest_rm_scratch says why it refused"
+assert_has "$fixture_out" "rm-scratch with clobbered vars returned 0" "selftest_rm_scratch does not depend on any caller variable"
+assert_has "$fixture_out" "decoy intact" "selftest_rm_scratch deletes nothing it did not create"
+assert_has "$fixture_out" "real scratch reclaimed" "selftest_rm_scratch still removes the scratch it minted"
+assert_has "$fixture_out" "second call returned 0" "selftest_rm_scratch is safe to call twice"
+assert_has "$fixture_out" "call with an argument returned 2" "selftest_rm_scratch rejects an argument rather than honouring it"
+assert_has "$fixture_out" "decoy still intact after argument call" "a path handed to selftest_rm_scratch is never deleted"
 
 # An mktemp that succeeds but hands back nothing must not become $PWD.
 run_fixture empty-result '#!/usr/bin/env bash

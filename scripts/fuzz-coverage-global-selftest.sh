@@ -13,7 +13,7 @@ makefile="$(cd "$(dirname "$runner")/.." && pwd)/Makefile"
 # dispatch never matches (macOS $TMPDIR lives behind the /var -> /private/var
 # symlink).
 selftest_scratch work fuzzcov-global-selftest
-trap 'selftest_rm_scratch "$work"' EXIT
+trap 'selftest_rm_scratch' EXIT
 
 has() {
 	local haystack="$1" needle="$2" label="$3"

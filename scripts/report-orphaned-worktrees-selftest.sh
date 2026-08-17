@@ -12,7 +12,7 @@ script="$(cd "$(dirname "$0")" && pwd)/report-orphaned-worktrees.sh"
 # git rev-parse, so an unresolved $work would make the string-equality path
 # comparisons below spuriously fail without there being any real bug.
 selftest_scratch work report-orphaned-worktrees-selftest
-trap 'selftest_rm_scratch "$work"' EXIT
+trap 'selftest_rm_scratch' EXIT
 
 repo="$work/repo"
 mkdir -p "$repo/.claude/worktrees"

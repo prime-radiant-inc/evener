@@ -16,7 +16,7 @@ script="$(cd "$(dirname "$0")" && pwd)/report-tmp-debris.sh"
 # /private/var/folders): the script prints the paths it was given, and
 # --paths-only is compared by string equality below.
 selftest_scratch work report-tmp-debris-selftest
-trap 'selftest_rm_scratch "$work"' EXIT
+trap 'selftest_rm_scratch' EXIT
 
 repo="$work/repo"
 mkdir -p "$repo"
