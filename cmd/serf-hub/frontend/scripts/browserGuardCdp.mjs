@@ -102,6 +102,52 @@ export async function evaluate(send, expression) {
   return response.result.result.value;
 }
 
+/**
+ * Block until the page's web fonts have settled, and fail if one the page
+ * actually asked for could not be fetched.
+ *
+ * Page.loadEventFired does not mean the text is in its final font. Both faces
+ * in global.css declare `font-display: swap`, so the document paints with the
+ * fallback and re-lays out when the woff2 arrives - and every text metric a
+ * guard measures (widths, wrap points, the 559/560 boundary) differs between
+ * the two. Measuring on load is a coin flip decided by whether the font was
+ * warm in Chrome's cache.
+ *
+ * COVERAGE LIMIT: a page that declares no @font-face at all has an empty
+ * document.fonts, so this check passes without asserting anything. Ten of
+ * layoutguard's fourteen cases omit styles/global.css from case.json and are in
+ * exactly that position -- they render text in a system font and this guard is
+ * silent about it. That is deterministic rather than racy, so it is not the bug
+ * this function exists for, but it does mean the check covers four cases today.
+ * See kata for adding global.css to the rest and re-baselining them.
+ *
+ * Deliberately NOT a hardcoded family list. A face loads only when some text
+ * actually uses it, so a case whose markup is all sans legitimately leaves the
+ * mono face "unloaded" forever - demanding both families failed two of
+ * layoutguard's fourteen honest cases. What must never pass is a face the page
+ * DID request failing to arrive: that is the 404 which would otherwise leave
+ * every guard green and permanently measuring the fallback, and it reports as
+ * status "error".
+ */
+export async function waitForFonts(send) {
+  const failed = await evaluate(
+    send,
+    `(async () => {
+       await document.fonts.ready;
+       const broken = [];
+       document.fonts.forEach((face) => { if (face.status === "error") broken.push(face.family); });
+       return broken;
+     })()`,
+  );
+  if (failed.length > 0) {
+    throw new Error(
+      `environment problem, not a test case failure: a web font this page requested failed to load (${failed.join(", ")}). ` +
+        `Every text measurement below would be taken in the fallback font. Check that Vite is serving ` +
+        `node_modules/@fontsource-variable/* and that global.css resolves its @font-face src.`,
+    );
+  }
+}
+
 /** Pin exact browser metrics for a case that must not inherit Chrome's ambient window size. */
 export async function applyViewport(send, viewport) {
   await send("Emulation.setDeviceMetricsOverride", {

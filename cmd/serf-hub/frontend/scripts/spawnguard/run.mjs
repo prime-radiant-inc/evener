@@ -8,8 +8,8 @@
 // and it has no dependency on provider credentials or the shared dev server.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { applyViewport, clearViewportOverride, connectPage, evaluate, navigateTo, waitForHttp } from "../browserGuardCdp.mjs";
-import { startBrowserGuard } from "../browserGuardProcess.mjs";
+import { applyViewport, clearViewportOverride, connectPage, evaluate, navigateTo, waitForFonts, waitForHttp } from "../browserGuardCdp.mjs";
+import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WIDTHS = [390, 899, 900];
@@ -34,6 +34,13 @@ async function measureAt(cdpPort, vitePort, width) {
     } catch (error) {
       throw new Error(`staging attachments at ${width}px failed: ${error.message}`);
     }
+    // AFTER staging, immediately before measuring. document.fonts.ready is a
+    // snapshot, not a standing guarantee: it re-arms whenever a new face starts
+    // loading, and a face only loads once something on the page uses it. The
+    // staged tiles are the first thing here to use the mono face, so awaiting
+    // before staging settles the fonts of a page that has not asked for them
+    // yet and measureSpawn still runs mid-swap.
+    await waitForFonts(send);
     return JSON.parse(await evaluate(send, "JSON.stringify(window.measureSpawn())"));
   } finally {
     await clearViewportOverride(send);
@@ -132,10 +139,18 @@ function assertResult(result, expectedWidth) {
 }
 
 async function main() {
-  const guard = await startBrowserGuard({
-    frontend: FRONTEND,
-    profilePrefix: "spawnguard-chrome-",
-  });
+  let guard;
+  try {
+    guard = await startBrowserGuard({
+      frontend: FRONTEND,
+      profilePrefix: "spawnguard-chrome-",
+    });
+  } catch (error) {
+    // findChrome() throws from the first statement of startBrowserGuard,
+    // before any of its state exists -- 'no Chrome installed' is the
+    // commonest environment failure there is and it reached here unframed.
+    throw new Error(describeBrowserStartupFailure({ error, subsystem: "launch" }));
+  }
   const { vitePort, cdpPort, cleanup } = guard;
 
   let failed = 0;
@@ -143,9 +158,24 @@ async function main() {
     try {
       await waitForHttp(`http://127.0.0.1:${vitePort}/spawnguard.html`, "vite dev server");
     } catch (error) {
-      throw new Error(`${error.message}\nvite stderr:\n${guard.getViteError()}`);
+      throw new Error(
+        describeBrowserStartupFailure({ error: error, subsystem: "vite", viteStderr: guard.getViteError() }),
+      );
     }
-    await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
+    try {
+      await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
+    } catch (error) {
+      throw new Error(
+        describeBrowserStartupFailure({
+          error: error,
+          subsystem: "chrome",
+          chromeBinary: guard.chromeBinary,
+          chromeArgv: guard.getChromeArgv(),
+          chromeStderr: guard.getChromeError(),
+          viteStderr: guard.getViteError(),
+        }),
+      );
+    }
     for (const width of WIDTHS) {
       const result = await measureAt(cdpPort, vitePort, width);
       const failures = assertResult(result, width);

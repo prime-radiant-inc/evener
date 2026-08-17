@@ -38,8 +38,8 @@
 // launch (~10s).
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { connectPage, evaluate, navigateTo, waitForHttp } from "../browserGuardCdp.mjs";
-import { startBrowserGuard } from "../browserGuardProcess.mjs";
+import { connectPage, evaluate, navigateTo, waitForFonts, waitForHttp } from "../browserGuardCdp.mjs";
+import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -63,6 +63,10 @@ async function measureAt(cdpPort, url) {
     // two after load. Await that settling rather than measuring a tree that is
     // still assembling itself.
     await evaluate(send, "window.settled");
+    // After the origin refusal above (it must precede every other eval) and
+    // after the tree settles, because document.fonts.ready re-arms for each new
+    // face and only a mounted tree has asked for the ones being measured.
+    await waitForFonts(send);
 
     const exceptionSafety = await evaluate(
       send,
@@ -111,6 +115,7 @@ async function verifyPanelCollapse(cdpPort, url) {
   const { send } = page;
   try {
     await navigateTo(page, url);
+    await waitForFonts(page.send);
     const runtimeState = await send("Runtime.evaluate", {
       expression: `({ body: document.body.innerText, html: document.body.innerHTML.slice(0, 1000), errors: window.__panelGuardErrors ?? [] })`,
       returnByValue: true,
@@ -175,11 +180,19 @@ async function main() {
   const widths = process.argv.slice(2).map(Number).filter(Boolean);
   const sweep = widths.length > 0 ? widths : DEFAULT_WIDTHS;
 
-  const guard = await startBrowserGuard({
-    frontend: FRONTEND,
-    profilePrefix: "overflowguard-chrome-",
-    chromeArgs: ["--window-size=1800,1000"],
-  });
+  let guard;
+  try {
+    guard = await startBrowserGuard({
+      frontend: FRONTEND,
+      profilePrefix: "overflowguard-chrome-",
+      chromeArgs: ["--window-size=1800,1000"],
+    });
+  } catch (error) {
+    // findChrome() throws from the first statement of startBrowserGuard,
+    // before any of its state exists -- 'no Chrome installed' is the
+    // commonest environment failure there is and it reached here unframed.
+    throw new Error(describeBrowserStartupFailure({ error, subsystem: "launch" }));
+  }
   const { vitePort, cdpPort, cleanup } = guard;
 
   let failed = 0;
@@ -187,9 +200,24 @@ async function main() {
     try {
       await waitForHttp(`http://127.0.0.1:${vitePort}/overflowharness.html`, "vite dev server");
     } catch (err) {
-      throw new Error(`${err.message}\nvite stderr:\n${guard.getViteError()}`);
+      throw new Error(
+        describeBrowserStartupFailure({ error: err, subsystem: "vite", viteStderr: guard.getViteError() }),
+      );
     }
-    await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
+    try {
+      await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
+    } catch (err) {
+      throw new Error(
+        describeBrowserStartupFailure({
+          error: err,
+          subsystem: "chrome",
+          chromeBinary: guard.chromeBinary,
+          chromeArgv: guard.getChromeArgv(),
+          chromeStderr: guard.getChromeError(),
+          viteStderr: guard.getViteError(),
+        }),
+      );
+    }
 
     const panelCollapse = await verifyPanelCollapse(
       cdpPort,

@@ -65,9 +65,10 @@ import {
   forcePseudoStates,
   navigateTo,
   realizedViewport,
+  waitForFonts,
   waitForHttp,
 } from "../browserGuardCdp.mjs";
-import { startBrowserGuard } from "../browserGuardProcess.mjs";
+import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
 import { resolveComposes } from "./resolve-composes.mjs";
 import { diagnoseRealizedViewport, normalizeViewportSpec } from "./viewport.mjs";
 
@@ -147,6 +148,7 @@ async function runCase(page, vitePort, caseDir, emulation) {
 
   await navigateTo(page, url);
   await assertGuardOrigin(page.send, `127.0.0.1:${vitePort}`);
+  await waitForFonts(page.send);
 
   if (viewport) {
     const realized = await realizedViewport(page.send);
@@ -181,10 +183,18 @@ async function main() {
   // file:// design launched a fresh Chrome PER CASE). Startup failures are
   // environment problems, not test case failures - say so, with the Vite
   // stderr attached, before any case runs.
-  const guard = await startBrowserGuard({
-    frontend: FRONTEND,
-    profilePrefix: "layoutguard-chrome-",
-  });
+  let guard;
+  try {
+    guard = await startBrowserGuard({
+      frontend: FRONTEND,
+      profilePrefix: "layoutguard-chrome-",
+    });
+  } catch (error) {
+    // findChrome() throws from the first statement of startBrowserGuard,
+    // before any of its state exists -- 'no Chrome installed' is the
+    // commonest environment failure there is and it reached here unframed.
+    throw new Error(describeBrowserStartupFailure({ error, subsystem: "launch" }));
+  }
   const { vitePort, cdpPort } = guard;
 
   let failed = 0;
@@ -192,11 +202,23 @@ async function main() {
   try {
     try {
       await waitForHttp(`http://127.0.0.1:${vitePort}/`, "vite dev server");
+    } catch (err) {
+      throw new Error(
+        describeBrowserStartupFailure({ error: err, subsystem: "vite", viteStderr: guard.getViteError() }),
+      );
+    }
+    try {
       await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
     } catch (err) {
       throw new Error(
-        `browser guard startup failed (environment problem, not a test case failure): ${err.message}\n` +
-          `vite stderr:\n${guard.getViteError()}`,
+        describeBrowserStartupFailure({
+          error: err,
+          subsystem: "chrome",
+          chromeBinary: guard.chromeBinary,
+          chromeArgv: guard.getChromeArgv(),
+          chromeStderr: guard.getChromeError(),
+          viteStderr: guard.getViteError(),
+        }),
       );
     }
 

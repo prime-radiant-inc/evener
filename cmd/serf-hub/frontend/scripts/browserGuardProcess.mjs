@@ -14,6 +14,74 @@ const CHROME_CANDIDATES = [
 const CHILD_EXIT_GRACE_MS = 2_000;
 const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 };
 
+/**
+ * Format the diagnostic a browser guard prints when the stack will not come up.
+ *
+ * This is the surviving half of layoutguard/cdp.mjs's retired
+ * probeBrowserCapability (kata 3htx). The claim when that went was that its
+ * pinned intent lived on in run.mjs's startup error; what lived on was the
+ * phrase "environment problem, not a test case failure" and VITE's stderr.
+ * Chrome's binary path, its argv, its own stderr and the remediation steps did
+ * not, so a Chrome that would not start surfaced as a 30-second waitForHttp
+ * timeout next to a Vite log that had nothing to do with it.
+ *
+ * Pure and exported so it can be tested without launching anything, which is
+ * the property the deleted probe's test had and its replacement did not.
+ */
+export function describeBrowserStartupFailure({
+  error,
+  subsystem = "chrome",
+  chromeBinary,
+  chromeArgv = [],
+  chromeStderr = "",
+  viteStderr = "",
+}) {
+  const message = error instanceof Error ? error.message : String(error);
+  const lines = [
+    `browser guard startup failed (environment problem, not a test case failure): ${message}`,
+    "",
+  ];
+  // Name the subsystem that actually failed. One try now covers the launch,
+  // Vite and Chrome, and remediation aimed at the wrong one is worse than none:
+  // a dead Vite told to "install Chrome" sends the reader looking in the wrong
+  // place with an authoritative-looking checklist.
+  if (subsystem === "vite") {
+    lines.push(
+      `vite stderr: ${viteStderr.trim() || "(none)"}`,
+      "",
+      "To fix:",
+      "  1. Read the vite stderr above - a port clash, a failed transform and a",
+      "     missing dependency all report there.",
+      "  2. Confirm the frontend installs cleanly: npm install",
+      "  3. Chrome is not implicated; it had not been reached yet.",
+    );
+    return lines.join("\n");
+  }
+  if (subsystem === "launch") {
+    lines.push(
+      "To fix:",
+      "  1. The browser binary could not be resolved at all - no candidate path",
+      "     existed, so nothing was spawned and there is no stderr to read.",
+      "  2. Install Chrome or Chromium at one of the candidate paths named above.",
+      "  3. Neither Vite nor the test cases were reached.",
+    );
+    return lines.join("\n");
+  }
+  lines.push(
+    `Chrome binary: ${chromeBinary || "(none found)"}`,
+    `Chrome argv: ${chromeArgv.join(" ")}`,
+    `chrome stderr: ${chromeStderr.trim() || "(none)"}`,
+    `vite stderr: ${viteStderr.trim() || "(none)"}`,
+    "",
+    "To fix:",
+    `  1. Confirm the binary above exists and runs: "${chromeBinary}" --version`,
+    "  2. If it is missing, install Chrome or point at one with chromeBinary.",
+    "  3. If it exists but will not start, read the chrome stderr above - a missing",
+    "     library, a sandbox denial and an unwritable profile all report there.",
+  );
+  return lines.join("\n");
+}
+
 export function chromeProfileIsolationArgs(platform = process.platform) {
   const args = ["--disable-crash-reporter"];
   if (platform === "darwin") args.push("--use-mock-keychain");
@@ -465,6 +533,8 @@ export async function startBrowserGuard({
   let vite = null;
   let chrome = null;
   let viteErr = "";
+  let chromeErr = "";
+  let chromeArgv = [];
   const lifecycle = createBrowserProcessCleanup({
     profileDir,
     processTarget,
@@ -494,25 +564,33 @@ export async function startBrowserGuard({
     vite.stderr?.on("data", (chunk) => {
       viteErr += chunk;
     });
+    chromeArgv = [
+      "--headless=new",
+      "--disable-gpu",
+      ...chromeProfileIsolationArgs(platform),
+      `--remote-debugging-port=${cdpPort}`,
+      `--user-data-dir=${profileDir}`,
+      "--no-first-run",
+      "--disable-extensions",
+      ...chromeArgs,
+      "about:blank",
+    ];
     chrome = spawnProcess(
       resolvedChrome,
-      [
-        "--headless=new",
-        "--disable-gpu",
-        ...chromeProfileIsolationArgs(platform),
-        `--remote-debugging-port=${cdpPort}`,
-        `--user-data-dir=${profileDir}`,
-        "--no-first-run",
-        "--disable-extensions",
-        ...chromeArgs,
-        "about:blank",
-      ],
+      chromeArgv,
       {
-        stdio: "ignore",
+        // Chrome's stderr is the only thing that says WHY it would not start (a
+        // missing dylib, a sandbox denial, a profile it cannot write).
+        // Discarding it left a failed launch looking like a bare 30s
+        // waitForHttp timeout beside an irrelevant Vite log (kata 3htx).
+        stdio: ["ignore", "ignore", "pipe"],
         env: chromeProfileEnvironment(profileDir),
         detached: useProcessGroups,
       },
     );
+    chrome.stderr?.on("data", (chunk) => {
+      chromeErr += chunk;
+    });
     lifecycle.addChild(chrome, {
       processGroupId: useProcessGroups && Number.isInteger(chrome.pid) ? chrome.pid : null,
       gracefulClose: () => closeBrowser(cdpPort),
@@ -527,6 +605,9 @@ export async function startBrowserGuard({
     cdpPort,
     profileDir,
     getViteError: () => viteErr,
+    getChromeError: () => chromeErr,
+    chromeBinary: resolvedChrome,
+    getChromeArgv: () => chromeArgv,
     cleanup: lifecycle.cleanup,
   };
 }
