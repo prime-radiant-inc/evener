@@ -77,7 +77,7 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send  # exp
   the callback to the parent").
 - The draft body is capped at 1000 characters inside the frame's
   `event: message:` field (`maxMessageChars` in
-  `writeCommunicateWatchEvent`, `agent/job_watch.go:4844`), with
+  `agent/job_watch.go#writeCommunicateWatchEvent`), with
   `truncated: true` when it is cut. Keep the draft short so the TODO
   stays inside the window.
 

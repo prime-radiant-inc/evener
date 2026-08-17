@@ -50,7 +50,7 @@ reference card `job-watch-observer-snide-thread.md`.
 - The missing `read_file` event delivers one frame, and that frame's
   `event:` block carries `kind: assistant.tool`, `tool_name:
   read_file`, `status: error`, and the `error:` text
-  (`writeAssistantToolWatchEvent`, `agent/job_watch.go:4874`) — the
+  (`agent/job_watch.go#writeAssistantToolWatchEvent`) — the
   observer decides from the frame, with no audit tools.
 - The observer emits one `STUCK_ALERT` carrying that frame's
   delivery_id, as its terminal `communicate(end_turn=true)`.

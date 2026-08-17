@@ -54,7 +54,7 @@ reference card `job-watch-observer-snide-thread.md`.
 - The parent clears the watch before finishing. The parent can clear it
   by id even though the observer created it: a parent-source watch is
   installed into the parent's own job manager
-  (`parentInstallWatch`, `agent/session_tools_jobs.go:218`).
+  (`agent/session_tools_jobs.go#Session.configureStableWatchOnSource`).
 
 ## Doctor audit
 

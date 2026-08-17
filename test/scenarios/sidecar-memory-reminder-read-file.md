@@ -62,7 +62,7 @@ reference card `job-watch-observer-snide-thread.md`.
   `status: ok`, the `arguments_json` naming `memory.md`, and the
   `output:` containing `PROJECT_RULE: no-force-push` — everything the
   observer needs without an audit tool
-  (`writeAssistantToolWatchEvent`, `agent/job_watch.go:4874`).
+  (`agent/job_watch.go#writeAssistantToolWatchEvent`).
 - The observer emits `MEMORY_REMINDER` as its terminal
   `communicate(end_turn=true)`, which reaches the parent as an
   `<delegate-notification>` block.

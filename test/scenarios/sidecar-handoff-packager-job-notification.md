@@ -150,4 +150,4 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count job_status
   reading a job id out of the frame's prose does not conjure access.
 - The parent can clear a watch the observer created: a parent-source
   watch is installed into the parent's own job manager
-  (`parentInstallWatch`, `agent/session_tools_jobs.go:218`).
+  (`agent/session_tools_jobs.go#Session.configureStableWatchOnSource`).
