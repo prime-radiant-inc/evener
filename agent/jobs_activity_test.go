@@ -109,8 +109,8 @@ func TestAggregateActivity_CountsWorkUnitsRecursively(t *testing.T) {
 	}
 	// Type, not Kind, is what aggregateActivity switches on to count a stable
 	// delegate as a work unit in its own right. Kind is the ENTRY discriminator;
-	// leaving Type unset sends the entry down the legacy-turn branch, which
-	// iterates an empty Turns slice and silently counts the delegate as nothing.
+	// an entry whose Type is unset takes the legacy-turn branch, which iterates
+	// Turns and counts the delegate itself as nothing.
 	entries := []appwire.JobActivityEntry{
 		{Kind: "shell", Job: ptrActivityJob(job("job_running", "running", "", false))},
 		{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{
@@ -119,8 +119,7 @@ func TestAggregateActivity_CountsWorkUnitsRecursively(t *testing.T) {
 		}},
 	}
 	// Failed is 2: the child's one failure, plus the failed stable delegate
-	// itself. Dropping Type makes this 1 -- which is how the stable-delegate
-	// contract stopped being tested.
+	// itself. Active outranks it in the aggregate, so the verdict is "working".
 	got, aggregate := aggregateActivity(entries, appwire.JobActivityBranchState{})
 	if got.Active != 2 || got.Failed != 2 || got.Completed != 2 || !got.Complete || aggregate != "working" {
 		t.Fatalf("counts=%+v aggregate=%q", got, aggregate)
