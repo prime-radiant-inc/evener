@@ -83,6 +83,14 @@ printf 'panes 99.0\n' >"$floors"
 run --bless >"$out" 2>&1
 assert_has "$floors" "panes 99.0" "bless keeps a higher existing floor"
 
+# A hand-written basis note explains why a floor was reset downward, exactly
+# like the two Go floor files. Rewriting a fixed header on every bless deleted
+# that reason the next time anyone raised a floor.
+printf '# why this basis changed: the denominator moved\npanes 25.0\n' >"$floors"
+run --bless >"$out" 2>&1
+assert_has "$floors" "why this basis changed" "bless preserves a hand-written header note"
+assert_has "$floors" "stores 90.0" "bless still records floors alongside the preserved note"
+
 # A missing report under --reuse is a clear failure, not a silent zero.
 rm -f "$frontend/coverage/coverage-summary.json"
 run >"$out" 2>&1

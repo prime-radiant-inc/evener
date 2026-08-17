@@ -146,9 +146,18 @@ fi
 if $bless; then
 	tmp="$(mktemp "${TMPDIR:-/tmp}/serf-floors.XXXXXX")"
 	{
-		echo "# Frontend (vitest) per-area LINE coverage floors."
-		echo "# Managed by scripts/web-coverage-floor.sh --bless. Raised upward only;"
-		echo "# a downward reset (denominator change, not a regression) is a hand edit."
+		# Carry the file's existing comment header through instead of restating a
+		# fixed one, exactly like the two Go floor scripts: a downward reset is a
+		# hand edit whose comment records WHY the basis changed, and rewriting the
+		# header on every bless deleted that reason the next time anyone raised a
+		# floor.
+		if grep -q '^#' "$floors_file" 2>/dev/null; then
+			awk '/^#/{print; next} {exit}' "$floors_file"
+		else
+			echo "# Frontend (vitest) per-area LINE coverage floors."
+			echo "# Managed by scripts/web-coverage-floor.sh --bless. Raised upward only;"
+			echo "# a downward reset (denominator change, not a regression) is a hand edit."
+		fi
 		while read -r area c t pct; do
 			old="$(floor_for "$area")"; keep="$pct"
 			[ -n "$old" ] && keep="$(awk -v a="$old" -v b="$pct" 'BEGIN{print (a>b)?a:b}')"
