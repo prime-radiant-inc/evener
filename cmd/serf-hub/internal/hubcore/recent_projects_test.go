@@ -86,6 +86,30 @@ func TestPastIndex_RecentProjectDirs_EmptyIndexOrNonPositiveLimitReturnsNil(t *t
 	}
 }
 
+// TestPastIndex_RecentProjectDirs_DeletedDirsDoNotConsumeLimitSlots pins the
+// limit/filter ordering when the distinct dirs outnumber the limit: the cap
+// applies after the existence filter, so a deleted dir in the most-recent
+// slots must not crowd out an existing dir further down the recency order.
+func TestPastIndex_RecentProjectDirs_DeletedDirsDoNotConsumeLimitSlots(t *testing.T) {
+	root := t.TempDir()
+	deleted := filepath.Join(root, "deleted-project") // never created
+	older := mkExistingDir(t, root, "older")
+	oldest := mkExistingDir(t, root, "oldest")
+
+	idx := NewPastIndex("")
+	now := time.Now().UTC()
+	idx.SeedForTest([]schema.SessionMeta{
+		{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: deleted}},
+		{ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: now.Add(-2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: older}},
+		{ID: "02wMz5Txv47YP64RR3B9YJ", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: oldest}},
+	})
+	got := idx.RecentProjectDirs(2)
+	want := []string{older, oldest}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("RecentProjectDirs(2) = %v, want %v (deleted dir %q must not consume a limit slot)", got, want, deleted)
+	}
+}
+
 // TestPastIndex_RecentProjectDirs_FiltersDeletedDirs covers issue #50: a
 // WorkingDir that no longer exists on disk (its project directory was
 // deleted) must be excluded from the recent-projects list, while a
