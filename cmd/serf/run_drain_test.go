@@ -21,11 +21,43 @@ import (
 
 // requestFullText concatenates every request message's text, tool-call
 // arguments, and tool-result content so a scripted step can route on any of
-// them (delegate task text lives in the assistant tool-call arguments; the
-// re-drive turn is marked by a <job-notification> user message).
+// them (delegate task text lives in the assistant tool-call arguments).
+//
+// It includes the system prompt, so it answers "does this text appear anywhere
+// in the request", never "was this delivered to me". Route the session's own
+// task text on it; ask about arriving notification frames with
+// requestDeliveredText instead.
 func requestFullText(req llm.Request) string {
+	return messagesText(req.Messages)
+}
+
+// requestDeliveredText concatenates everything the session delivered to the
+// model after the opening message — the view a scripted step needs to ask
+// whether a notification frame has arrived.
+//
+// The system prompt is text in the request like any other, so matching a wire
+// frame over the whole request cannot tell a delivered frame from a prompt
+// section that merely names one; that is kata zzpw, which cost two mystifying
+// end-to-end failures. The prompt cannot be excluded by role: under
+// SystemPromptAsUser buildModelRequest fuses it into the opening user turn,
+// where it looks like any other user message. What is true in every layout is
+// that buildModelRequest (agent/session_model_call.go) puts the prompt in
+// message 0 and nowhere else, and a notification is never the opening message.
+// So the boundary is positional, and because it is an invariant of the assembly
+// rather than a property of the request,
+// TestSystemPromptOccupiesOnlyTheOpeningMessage pins it: if it ever stops
+// holding, that test fails loudly instead of this helper quietly skipping a real
+// delivered frame.
+func requestDeliveredText(req llm.Request) string {
+	if len(req.Messages) == 0 {
+		return ""
+	}
+	return messagesText(req.Messages[1:])
+}
+
+func messagesText(messages []llm.Message) string {
 	var b strings.Builder
-	for _, m := range req.Messages {
+	for _, m := range messages {
 		b.WriteString(m.Text())
 		b.WriteByte('\n')
 		for _, p := range m.Content {
@@ -134,8 +166,9 @@ func TestRunDrainsDelegatedJobTreeBeforeExit(t *testing.T) {
 // delegate ran to completion and its notification produced the coordinator's
 // real final answer. tweak, when non-nil, adjusts the run config before the run
 // so a variant can change how the request is assembled without restating the
-// choreography.
-func delegateDrainScenario(t *testing.T, tweak func(*runConfig)) {
+// choreography. It returns the scripted provider so a variant can inspect the
+// requests the session actually built.
+func delegateDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedProvider {
 	t.Helper()
 	tmp := t.TempDir()
 	childArtifact := filepath.Join(tmp, "child-artifact.txt")
@@ -148,10 +181,11 @@ func delegateDrainScenario(t *testing.T, tweak func(*runConfig)) {
 
 	step := func(req llm.Request) llm.Response {
 		text := requestFullText(req)
+		delivered := requestDeliveredText(req)
 		isRoot := strings.Contains(text, rootPrompt)
 		if isRoot {
 			switch {
-			case strings.Contains(text, "<delegate-notification"):
+			case strings.Contains(delivered, "<delegate-notification"):
 				// The delegate finished and its completion was drained back to the
 				// coordinator: emit the real final answer.
 				return scriptedCommunicate(finalMsg)
@@ -177,7 +211,8 @@ func delegateDrainScenario(t *testing.T, tweak func(*runConfig)) {
 	for range 16 {
 		steps = append(steps, step)
 	}
-	installRunScriptedProvider(t, &scriptedProvider{name: "openai", steps: steps})
+	adapter := &scriptedProvider{name: "openai", steps: steps}
+	installRunScriptedProvider(t, adapter)
 
 	var stdout, stderr bytes.Buffer
 	cfg := runConfig{
@@ -205,6 +240,7 @@ func delegateDrainScenario(t *testing.T, tweak func(*runConfig)) {
 	if strings.Contains(stderr.String(), "stopped_by_parent") {
 		t.Fatalf("child was SIGKILLed by Close() (stopped_by_parent) instead of draining to completion; stderr=%s", stderr.String())
 	}
+	return adapter
 }
 
 func TestRunDrainsManagedShellBeforeExit(t *testing.T) {
@@ -226,8 +262,10 @@ func TestRunDrainsManagedShellBeforeExit(t *testing.T) {
 // managedShellDrainScenario drives the managed-shell drain and asserts the
 // terminal job notification reached the model on its own third round. tweak,
 // when non-nil, adjusts the run config before the run so a variant can change
-// how the request is assembled without restating the choreography.
-func managedShellDrainScenario(t *testing.T, command, wantStatus string, tweak func(*runConfig)) {
+// how the request is assembled without restating the choreography. It returns
+// the scripted provider so a variant can inspect the requests the session
+// actually built.
+func managedShellDrainScenario(t *testing.T, command, wantStatus string, tweak func(*runConfig)) *scriptedProvider {
 	t.Helper()
 	output := "shell-ok"
 	exit := 0
@@ -238,19 +276,19 @@ func managedShellDrainScenario(t *testing.T, command, wantStatus string, tweak f
 	installHeldRunShell(t, newHeldShellExecutor(command, output, exit))
 	adapter := &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
-			if strings.Contains(requestFullText(req), "<job-notification") {
+			if strings.Contains(requestDeliveredText(req), "<job-notification") {
 				t.Fatal("initial request unexpectedly contained a job notification")
 			}
 			return scriptedToolCalls(scriptedShellCall("shell_1", command, "background"))
 		},
 		func(req llm.Request) llm.Response {
-			if strings.Contains(requestFullText(req), "<job-notification") {
+			if strings.Contains(requestDeliveredText(req), "<job-notification") {
 				t.Fatal("tool-result request unexpectedly contained a job notification")
 			}
 			return scriptedCommunicate("waiting for shell")
 		},
 		func(req llm.Request) llm.Response {
-			text := requestFullText(req)
+			text := requestDeliveredText(req)
 			if !strings.Contains(text, "<job-notification") || !strings.Contains(text, `job_type="shell"`) || !strings.Contains(text, `status="`+wantStatus+`"`) {
 				t.Fatalf("notification request missing terminal shell status %q:\n%s", wantStatus, text)
 			}
@@ -279,6 +317,7 @@ func managedShellDrainScenario(t *testing.T, command, wantStatus string, tweak f
 	if got := len(adapter.Requests()); got != 3 {
 		t.Fatalf("model requests = %d, want exactly three", got)
 	}
+	return adapter
 }
 
 func TestRunDrainContinuesWhenNotificationTurnStartsAnotherShell(t *testing.T) {
@@ -298,31 +337,31 @@ func TestRunDrainContinuesWhenNotificationTurnStartsAnotherShell(t *testing.T) {
 	jobIDPattern := regexp.MustCompile(`job_id="([^"]+)"`)
 	adapter := &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
-			if got := strings.Count(requestFullText(req), "<job-notification"); got != 0 {
+			if got := strings.Count(requestDeliveredText(req), "<job-notification"); got != 0 {
 				t.Fatalf("initial request notification count = %d, want 0", got)
 			}
 			return scriptedToolCalls(scriptedShellCall("shell_a", shellACommand, "background"))
 		},
 		func(req llm.Request) llm.Response {
-			if got := strings.Count(requestFullText(req), "<job-notification"); got != 0 {
+			if got := strings.Count(requestDeliveredText(req), "<job-notification"); got != 0 {
 				t.Fatalf("shell A tool-result request notification count = %d, want 0", got)
 			}
 			return scriptedCommunicate("waiting for A")
 		},
 		func(req llm.Request) llm.Response {
-			if got := strings.Count(requestFullText(req), "<job-notification"); got != 1 {
+			if got := strings.Count(requestDeliveredText(req), "<job-notification"); got != 1 {
 				t.Fatalf("shell A notification request count = %d, want 1", got)
 			}
 			return scriptedToolCalls(scriptedShellCall("shell_b", "printf shell-b", "background"))
 		},
 		func(req llm.Request) llm.Response {
-			if got := strings.Count(requestFullText(req), "<job-notification"); got != 1 {
+			if got := strings.Count(requestDeliveredText(req), "<job-notification"); got != 1 {
 				t.Fatalf("shell B tool-result request notification count = %d, want only A's notification", got)
 			}
 			return scriptedCommunicate("waiting for B")
 		},
 		func(req llm.Request) llm.Response {
-			text := requestFullText(req)
+			text := requestDeliveredText(req)
 			if got := strings.Count(text, "<job-notification"); got != 2 {
 				t.Fatalf("shell B notification request count = %d, want A and B", got)
 			}
