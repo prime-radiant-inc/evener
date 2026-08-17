@@ -1,6 +1,45 @@
-# Notification Turns Get Their Own Turn Implementation Plan
+# Notification Turns Get Their Own Turn Implementation Plan — SHIPPED
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **SHIPPED. Do NOT execute this plan.**
+>
+> All six tasks landed and kata `7vmd` is closed. On `main`: `c24c283ce`
+> (`EventTurnStarted` and the mint/announce wiring), `74800be8e` (the projector
+> closes, opens and publishes active), `8d9767d9e` (an unnameable turn is
+> separated but *not* advertised as active), `3d4b5d444` (the `EntryKind` audit),
+> `f4582d3f7` (`TestE2E_TurnControlReachesANotificationTurn`).
+>
+> **The shipped design differs from the task list in four places**, corrected
+> inline below rather than left to be re-derived: the mint site, the shape of
+> `acceptNotificationInput`, the facet given to `EventTurnStarted`, and the guard
+> on the boundary emit (`servedByDaemon()`, not a non-empty id — which also makes
+> one of Task 2's required mutations a hunt for code that does not exist).
+> Everything below a *Correction* marker describes the code; everything a marker
+> strikes describes a draft that did not survive.
+>
+> Two prescribed tests landed under other names:
+> `TestNotificationBoundaryPrecedesItsReminder` shipped as the pair
+> `TestNotificationBoundaryPrecedesTheTurnsContent` and
+> `TestNotificationBoundaryPrecedesItsJobReminder`.
+>
+> The residue is kata `b19h` (open): the unnameable-turn status suppression
+> covers only the push path, so `thread/read` still offers Steer and Interrupt
+> against a `turn_<n>` — and since `c435bc579` deleted the `expectedTurnId`
+> precondition, the reasoning quoted in the projector comment no longer holds
+> either. Do not treat that comment as current.
+>
+> **What a checked box means here:** the tree contains the thing the step
+> produces — a named test, a type, a commit. Gate runs and live browser passes
+> produce no artifact, so they are left unchecked and labelled *not recorded*
+> rather than assumed. Same rule as `2026-08-16-stop-always-works.md`.
+>
+> Kept because its Diagnosis, its identity model and its rejected-options record
+> are still accurate and still the best description of why the code is shaped
+> this way. The task list is not safe to follow.
+>
+> **On the commit ids in this document.** They were written on
+> `wip/webui-steer-send-stop`, whose commits were rewritten on the way to `main`.
+> Every sha quoted in this banner is reachable from `main` today;
+> `git merge-base --is-ancestor <sha> main` succeeds for each.
 
 **Goal:** A turn opened by a notification wake becomes a real, named, *visibly
 active* turn — separate from the turn before it, and addressable by Steer,
@@ -12,6 +51,8 @@ client mutations and opens with no event of its own. It gets one:
 closes whatever turn is open, opens the named one, and publishes the thread as
 active — the three things a turn boundary owes its subscribers. An audit test
 forces every present and future `EntryKind` to declare how its turn opens.
+(As shipped, the third is conditional: a turn the daemon could not name is still
+closed and opened, but not advertised as active. See `8d9767d9e`.)
 
 **Tech Stack:** Go 1.25 multi-module workspace (`agent` module, root module's
 `internal/appprojector` / `server` / `cmd/serf-hub`), `appwire` JSON-RPC.
@@ -66,9 +107,16 @@ A client turn's pending execution is reclaimed and re-run on restart, so its
 id survives (`agent/session_client_mutation.go:235`, `agent/session_queue.go:581`).
 An agent turn has nothing to resume it, so `loadClientMutationSnapshotFS`
 drops an id no pending execution owns
-(`agent/session_client_mutation_persist.go:74-84`). Mid-turn mutations compare
+(`agent/session_client_mutation_persist.go:74-84`). ~~Mid-turn mutations compare
 `expectedTurnId` against this field (`session_client_mutation_queue.go:123,325,392,497`,
-`session_client_mutation.go:421`).
+`session_client_mutation.go:421`).~~
+
+> **Correction (`c435bc579`, after this plan shipped).** Control mutations no
+> longer name turns: `expectedTurnId` is gone from the wire types, the validator,
+> the durable preconditions and both clients. Steer, queue, stop, drain and
+> promote apply to whatever the session is running. The identity above still
+> matters — it is what the interrupt fence records and what turn separation is
+> built on — but it is no longer a precondition any client has to get right.
 
 ---
 
@@ -146,26 +194,55 @@ Live session `0348HuXSlWRtoLEoQ4EOE8`: durable `ActiveTurnID` `turn_m6`, wire
 closes, `turn/started` for the one it opens, and `thread/statusChanged: active`.
 Defect 2 is why the third is not optional.
 
-**The id is minted inside `acceptNotificationInput`, after its last refusal,
-and handed back so `processOneInput`'s existing defer releases it.** (This
-reverses what an earlier draft of this plan said; the shipped code is what is
-described here.) Minting before the accept would pay a durable reservation for
-every coalesced wake that turns out to have nothing to deliver -- the
-commonest outcome -- and would hold the slot across
-`drivePendingStableDelegateAttention`, which can drive a whole child turn. The
-release plumbing is what makes minting late safe: a leaked id makes
-`AcceptClientMutationStart` refuse every later `turn/start` for the life of
-the process.
+**Correction (the mint site moved twice; this is the shipped rule).** **The id
+is taken at the top of `processOneInput`, in the `EntryNotification` block,
+before any wake state is consumed. `acceptNotificationInput` receives it as a
+trailing parameter and spends it on the boundary event; it does not mint.** The
+release is one `defer` registered *before* the mint, so no path can return
+between taking the name and handing it back.
 
-<details><summary>The earlier reasoning, kept for the record</summary>
+Two things force the mint that early, both found by review after the first
+version shipped (`2bf03d10d`):
 
-**The id was to be minted in `processOneInput`, not in `acceptNotificationInput`.**
-Minting and announcing are separable. The mint sits beside the existing
-continuation mint so it reuses the existing `defer releaseRunningTurnID`, and
-the notification branch's refusal path releases explicitly — the same shape
-that branch already has. Minting inside the accept function would leak the id
-on every proceeding turn, which wedges `turn/start` for the life of the
-process and makes the *next* notification turn refuse to mint.
+- **Check-then-mint was a race.** Asking whether the name is free and taking it
+  are two operations with a gap, and a `turn/start` on an RPC goroutine can win
+  that gap — after which the wake proceeds unnamed, the exact failure this work
+  exists to prevent. `mintRunningTurnID` is already a single take-or-refuse
+  against the durable store, so calling it *is* the check.
+- **A late stand-down strands the wake.** `beginRootDelegateAttentionTurn` runs
+  ahead of `acceptNotificationInput` and consumes the process-local wake: it
+  clears `rootAttentionWake` and cancels any scheduled retry, and only an
+  *accepted* wake re-arms them. Standing down after that call strands the very
+  delegate attention the wake existed to deliver.
+
+A wake that is served but cannot be named now **stands down** rather than run
+unnamed (`5d8e7acf3`), settles its processing transition and asks for another
+wake (`f9e5abcd3`). `TestStandDownConsumesNoWakeState` fails if the mint and
+`beginRootDelegateAttentionTurn` are reordered.
+
+The announce still follows the durable append: reserving a name and opening a
+turn are different acts, and a turn announced before its last refusal would
+leave the projection holding an open turn nothing closes.
+
+<details><summary>The two earlier drafts, kept for the record</summary>
+
+**Draft 2 (`da1a488fa`), true when written and now superseded:** *The
+id is minted inside `acceptNotificationInput`, after its last refusal, and handed
+back so `processOneInput`'s existing defer releases it.* Minting before the
+accept would pay a durable reservation for every coalesced wake that turns out to
+have nothing to deliver — the commonest outcome — and would hold the slot across
+`drivePendingStableDelegateAttention`, which can drive a whole child turn.
+
+That reasoning was answered rather than refuted: the mint is cheap enough to pay
+on a coalesced wake, and paying it early is the only way to make the take atomic
+and the stand-down early enough to be recoverable.
+
+**Draft 1, which draft 2 reversed and the shipped code has now restored in
+substance:** *The id was to be minted in `processOneInput`, not in
+`acceptNotificationInput`.* Minting and announcing are separable. The mint sits
+beside the existing continuation mint so it reuses the existing
+`defer releaseRunningTurnID`, and the notification branch's refusal path releases
+explicitly.
 
 </details>
 
@@ -214,7 +291,7 @@ Task 5 must wait past it rather than pretend it is closed.
 | `agent/events/payloads.go` (modify) | `TurnStartedData{TurnID}`. |
 | `agent/events/eventdata.go` (modify) | `eventKind()` binding (`:79`) and the `var _ EventData` list (`:91-133`). |
 | `agent/events/payloads_test.go` (modify) | In-package binding test. |
-| `agent/session_lifecycle.go` (modify) | Mint beside the continuation mint; pass the id into `acceptNotificationInput`; release on its refusal; emit the boundary; `entryKindCount`; update the now-false comment at `:1035-1040`. |
+| `agent/session_lifecycle.go` (modify) | Mint at the top of `processOneInput`'s `EntryNotification` block, before any wake state is consumed; register the release `defer` before the mint; stand down when a served wake cannot be named; pass the id into `acceptNotificationInput`; emit the boundary there, after the last refusal; `entryKindCount`. |
 | `agent/session_turn_boundary_test.go` (create) | Wiring + release coverage. |
 | `agent/entrykind_audit_test.go` (create) | Every `EntryKind` declares how its turn opens. |
 | `agent/session_client_mutation.go` (modify) | The `ActiveTurnID` doc comment at `:128-135` names its writers; add this one. |
@@ -237,7 +314,7 @@ Task 5 must wait past it rather than pretend it is closed.
 cannot import `agent` (cycle), `EntryKind` has no `String()`, and no consumer
 here needs it.
 
-- [ ] **Step 1: failing test**
+- [x] **Step 1: failing test**
 
 ```go
 func TestTurnStartedDataBindsItsKind(t *testing.T) {
@@ -247,8 +324,8 @@ func TestTurnStartedDataBindsItsKind(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: watch it fail** — `go test primeradiant.com/serf/agent/events/ -run TestTurnStartedDataBindsItsKind -v`.
-- [ ] **Step 3: implement**
+- [x] **Step 2: watch it fail** — `go test primeradiant.com/serf/agent/events/ -run TestTurnStartedDataBindsItsKind -v`.
+- [x] **Step 3: implement**
 
 ```go
 	// EventTurnStarted marks a turn beginning, carrying the identity the daemon
@@ -270,13 +347,21 @@ type TurnStartedData struct {
 }
 ```
 
+> **Correction.** `8d9767d9e` reversed the "never empty" rule. The shipped
+> comment says the field is *empty when the daemon could not reserve an id*, and
+> the boundary is emitted anyway: the projection still closes the previous turn
+> and opens this one so their items stay separate, and withholds only the active
+> status. Turn separation costs a client nothing; a Stop rendered against an id
+> the daemon does not hold does. Read `agent/events/payloads.go` for the shipped
+> wording.
+
 Add the `eventKind()` binding and the `var _ EventData = TurnStartedData{}`
 line. (That list is documentation, not a gate — a payload with the method
 satisfies the interface either way; the real binding is `events.New`
 (`eventdata.go:25-31`), which the test above pins.)
 
-- [ ] **Step 4: watch it pass**, then `go test primeradiant.com/serf/agent/events/...`.
-- [ ] **Step 5: commit.**
+- [x] **Step 4: watch it pass**, then `go test primeradiant.com/serf/agent/events/...`.
+- [x] **Step 5: commit.**
 
 ---
 
@@ -284,11 +369,18 @@ satisfies the interface either way; the real binding is `events.New`
 
 **Files:** `agent/session_lifecycle.go`; create `agent/session_turn_boundary_test.go`.
 
-**Interfaces:** `acceptNotificationInput` gains a second return value,
-becoming `(proceed bool, turnID string)`. Update its ~12 test call sites
-(`grep -rn "acceptNotificationInput" --include="*_test.go" agent/`).
+**Interfaces:** `acceptNotificationInput` gains a trailing `turnID string`
+parameter, keeping its single `(proceed bool)` return. Update its ~12 test call
+sites (`grep -rn "acceptNotificationInput" --include="*_test.go" agent/`).
 
-**Shape** — the mint moves nowhere new; it joins the existing one:
+> **Correction.** An intermediate draft gave it a second return value,
+> `(proceed bool, turnID string)`, because the mint briefly lived inside the
+> function. `2bf03d10d` moved the mint back out; the parameter form is what
+> shipped. The `Shape` block below is the intermediate draft and is kept only to
+> show what moved — read `agent/session_lifecycle.go` for the live code.
+
+**Shape** — ~~the mint moves nowhere new; it joins the existing one~~ **(SHIPPED
+DIFFERENTLY — see the Correction above and the Design decisions section):**
 
 ```go
 	var runningTurnID string
@@ -307,19 +399,25 @@ becoming `(proceed bool, turnID string)`. Update its ~12 test call sites
 	} else if ...
 ```
 
-The existing `defer s.releaseRunningTurnID(runningTurnID)` below the chain
-then covers every proceeding path, exactly as it already does for
-continuations.
+What shipped instead: the release `defer` is registered first, then the
+`EntryNotification` mint runs at the top of `processOneInput` with a stand-down
+when a served session cannot be named, and the `EntryContinuation` mint stays
+where it was, below.
 
 Inside `acceptNotificationInput`, the announce goes after the last refusal
-(`appendSteeringTurnDurably`, `:1568-1574`) and before the first content event
-(the reminder emit at `:1575`), guarded on a non-empty id:
+(`appendSteeringTurnDurably`) and before the first content event (the reminder
+emit), guarded on **whether the session is served** — not on a non-empty id:
 
 ```go
-	if stableTurnID != "" {
-		s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: stableTurnID})
+	if s.servedByDaemon() {
+		s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
 	}
 ```
+
+The `turnID != ""` guard an earlier draft used moved down into the projector,
+which withholds the *active status* for an unnameable turn while still closing
+and opening it. Gating the emit on the id instead would have merged an unnameable
+turn's items into the turn before it.
 
 Everything after that refusal proceeds or warns
 (`markJobNotificationsDelivered`, `settleDeliveredWatchNotification`,
@@ -327,7 +425,7 @@ Everything after that refusal proceeds or warns
 `EventWarning`, which does not open a turn — so no content can precede the
 boundary.
 
-- [ ] **Step 1: failing tests** in `agent/session_turn_boundary_test.go`. Use
+- [x] **Step 1: failing tests** in `agent/session_turn_boundary_test.go`. Use
       `ConsumeEventsLossless` to collect — it is the only writer of
       `authoritativeConsumer` (`agent/session.go:109-123`), so a real drain is
       also what makes the session "served" for `mintRunningTurnID`.
@@ -348,18 +446,23 @@ boundary.
 5. `TestUnservedSessionAnnouncesNoBoundary` — no drain registered: zero
    `EventTurnStarted`, so descendant projections are untouched.
 
-- [ ] **Step 2: watch them fail.**
-- [ ] **Step 3: implement.**
-- [ ] **Step 4: watch them pass, then run each mutation:**
+- [x] **Step 2: watch them fail.**
+- [x] **Step 3: implement.**
+- [x] **Step 4: watch them pass, then run each mutation:**
       - mint → `""`: test 1 fails on the prefix, test 5 still passes.
       - announce moved below the reminder emit: test 2 fails.
       - drop the `defer`'s coverage (assign `runningTurnID` after the chain):
         test 3 fails.
       - announce moved above the `:1547` early return: test 4 fails.
-      - drop the `stableTurnID != ""` guard: test 5 fails.
+      - ~~drop the `stableTurnID != ""` guard: test 5 fails.~~ **Correction (the
+        fourth divergence): no such guard exists.** The emit is gated on
+        `s.servedByDaemon()` (`agent/session_lifecycle.go:1652`), so the mutation
+        that kills test 5 is dropping *that* gate. The id check moved down into
+        the projector, where it withholds the active status rather than the
+        event.
       A mutation that does not fail its test means the test is not pinning the
       line. Fix the test before continuing.
-- [ ] **Step 5:** `go test primeradiant.com/serf/agent/...`; update the stale
+- [x] **Step 5:** `go test primeradiant.com/serf/agent/...`; update the stale
       comment at `:1035-1040` and the `ActiveTurnID` doc at
       `session_client_mutation.go:128-135`; commit.
 
@@ -370,7 +473,7 @@ boundary.
 **Files:** `internal/appprojector/appwire_projection.go`; create
 `internal/appprojector/turn_boundary_test.go`.
 
-- [ ] **Step 1: failing tests**
+- [x] **Step 1: failing tests**
 
 1. `TestTurnBoundaryOpensTheNamedTurn` — `EventTurnStarted{TurnID:"turn_m9"}`
    emits `turn/started` for `turn_m9`; `ActiveTurnID() == "turn_m9"`.
@@ -387,30 +490,38 @@ boundary.
    notification** — `NotifySerfSteeringInjected`'s params
    (`appwire_projection.go:753-773`) carry no turn id.
 
-- [ ] **Step 2: watch them fail.**
-- [ ] **Step 3: implement.**
+- [x] **Step 2: watch them fail.**
+- [x] **Step 3: implement.**
       - Factor `closeActiveTurn(status appwire.TurnStatus) []AppNotification`
         from `:197-224`, `:262-281` and `:1059-1081`. Behaviour must be
         identical; the only variable is the status. Do not touch `:701-724`.
       - Add the `EventTurnStarted` case: `closeActiveTurn(Completed)`, adopt
         `data.TurnID` into `p.reservedTurnID`, `startTurn()`, then emit
         `turn/started` and `p.threadStatus(appwire.ThreadStatusActive)`.
+        **Correction (`8d9767d9e`): the active status is conditional.** An empty
+        `data.TurnID` still closes and opens the turn and still emits
+        `turn/started`; it returns before `threadStatus`. Kata `b19h` is the
+        remaining hole — only the push path suppresses, `thread/read` does not.
       - `startTurn` already handles `anyTurnStarted` and
         `midSessionAnnouncementTurnID` (`:1668-1672`); `clearSkillCandidate` is
         inert here because the candidate's `turnID` no longer matches.
-- [ ] **Step 4: watch them pass. Mutations:** drop the `reservedTurnID`
+- [x] **Step 4: watch them pass. Mutations:** drop the `reservedTurnID`
       assignment → test 1 fails; drop `threadStatus` → test 2 fails; drop
       `closeActiveTurn` → tests 3 and 4 fail.
-- [ ] **Step 5:** `go test ./internal/appprojector/ ./server/ ./cmd/serf/`.
+- [x] **Step 5:** `go test ./internal/appprojector/ ./server/ ./cmd/serf/`.
       The `closeActiveTurn` factoring must change no existing test; if one
       moves, the factoring changed behaviour — stop and say so.
-- [ ] **Step 6: facet row.** `server/thread_envelope.go:149-162` calls turn
+- [x] **Step 6: facet row.** `server/thread_envelope.go:149-162` calls turn
       boundaries one of "THE THREE CHECKPOINTS" and gives them `facetAll`
       (`EventTurnEnded: facetAll`, justified by "several values move DURING a
       turn with no event of their own"). Give `EventTurnStarted` the same, and
       add its case to `server/thread_envelope_test.go:53-63`, which asserts
       freshness one producer at a time.
-- [ ] **Step 7: commit.**
+      **Correction: it shipped as `facetWork`, not `facetAll`**, with the
+      reasoning recorded beside the row — a turn opening moves the work facet
+      (`ActiveTurnStartedAt`), but touches neither the client input queue nor a
+      pending ask, so `facetQueue` and `facetAsk` are deliberately excluded.
+- [x] **Step 7: commit.**
 
 ---
 
@@ -419,7 +530,7 @@ boundary.
 **Files:** `agent/session_lifecycle.go` (`EntryKind` block, `:388-408`);
 create `agent/entrykind_audit_test.go`.
 
-- [ ] **Step 1: failing test.** Classify all five kinds. `EntryWatchDelivery`
+- [x] **Step 1: failing test.** Classify all five kinds. `EntryWatchDelivery`
       has **no production producer** — whole-tree grep finds it only in reads
       (`session_tools.go:152`, `session_tools_communicate.go:144`,
       `subagents.go:1687,1734`, `session_lifecycle.go:460,1108`) and tests —
@@ -452,12 +563,12 @@ func TestEveryEntryKindDeclaresHowItsTurnOpens(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: watch it fail** (`entryKindCount` undefined).
-- [ ] **Step 3: add the sentinel** last in the iota block, with a comment
+- [x] **Step 2: watch it fail** (`entryKindCount` undefined).
+- [x] **Step 3: add the sentinel** last in the iota block, with a comment
       requiring it stay last.
-- [ ] **Step 4: watch it pass. Mutation:** delete one map entry → the test must
+- [x] **Step 4: watch it pass. Mutation:** delete one map entry → the test must
       name that kind.
-- [ ] **Step 5: commit.**
+- [x] **Step 5: commit.**
 
 ---
 
@@ -465,7 +576,7 @@ func TestEveryEntryKindDeclaresHowItsTurnOpens(t *testing.T) {
 
 **Files:** `cmd/serf-hub/e2e_turn_control_test.go`.
 
-- [ ] **Step 1: failing test**, `TestE2E_TurnControlReachesANotificationTurn`.
+- [x] **Step 1: failing test**, `TestE2E_TurnControlReachesANotificationTurn`.
 
       **Force the idle path deterministically.** A short background job
       finishing during the same `ProcessInputKind` is taken by the drain
@@ -490,27 +601,32 @@ func TestEveryEntryKindDeclaresHowItsTurnOpens(t *testing.T) {
       assert the steer text reaches the next model request, `turn/interrupt`
       (assert applied), `awaitThread` until the active turn changes.
 
-- [ ] **Step 2: prove it red.** `git worktree add <path> <sha-before-task-1>`
+- [x] **Step 2: prove it red.** `git worktree add <path> <sha-before-task-1>`
       (never `git stash`), copy the test file in, run it there. Expected:
       `turn/steer against ... : turn is not active`. Remove the worktree.
-- [ ] **Step 3: green here.** Run the whole `TestE2E_TurnControl` family.
-- [ ] **Step 4: commit.**
+- [x] **Step 3: green here.** Run the whole `TestE2E_TurnControl` family.
+- [x] **Step 4: commit.**
 
 ---
 
 ### Task 6: Gates, live verification, kata
 
-- [ ] **Step 1: gates** (the full list in Global Constraints).
-- [ ] **Step 2: live browser pass.** `./scripts/e2e-webui-turn-controls.sh`,
+- [ ] **Step 1: gates** (the full list in Global Constraints). **Not recorded.** A
+      gate run leaves no artifact in the tree, so this cannot be checked off from
+      evidence; treat it as unrun rather than assume it passed.
+- [ ] **Step 2: live browser pass.** **Not recorded**, same reason — and this is
+      the step that matters most, because defect 2 means a fix that names the turn
+      but leaves the thread idle passes every Go test and still fails here.
+      `./scripts/e2e-webui-turn-controls.sh`,
       spawn a session, provoke a notification turn, and confirm in the UI that
       **Stop and Steer actually render** — defect 2 means a fix that names the
       turn but leaves the thread idle would pass every Go test and still fail
       here. Drive both, then confirm the run's mutation journal
       (`$run/home/.local/state/serf/projects/*/mutations/<SID>.json`) records
       them `terminal`, not `rejected`. Stop the stack with `--stop`.
-- [ ] **Step 3: close kata `7vmd`** with typed evidence: the e2e test name and
+- [x] **Step 3: close kata `7vmd`** with typed evidence: the e2e test name and
       the journal result.
-- [ ] **Step 4: commit.**
+- [x] **Step 4: commit.**
 
 ## Self-Review
 
@@ -518,8 +634,8 @@ func TestEveryEntryKindDeclaresHowItsTurnOpens(t *testing.T) {
 6 Step 2. Defect 3 → Task 3 test 4. Defect 4 → Task 4.
 
 **Placeholders.** None. Task 3 Step 6's facet choice is now decided
-(`facetAll`, matching the file's own turn-boundary precedent) rather than left
-open.
+(~~`facetAll`, matching the file's own turn-boundary precedent~~ — it shipped as
+`facetWork`; see the correction on that step) rather than left open.
 
 **Type consistency.** `EventTurnStarted`, `TurnStartedData`, `TurnID`,
 `closeActiveTurn`, `entryKindCount`, `entryKindTurnOpening`, `turnOpening`,
