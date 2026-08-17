@@ -44,8 +44,7 @@ reports a concise intervention note. Driving mechanism:
 - The readiness delegate result reports `watching: true` and lists the
   observer's watch under `watches` — the OBSERVER owns the watch.
 - The registered watch is `events: [communicate]` on source `parent`.
-- The observer reports `LOOP_GOVERNOR_ALERT` once, as an `Observer
-  callback:` block from its terminal `communicate(end_turn=true)`.
+- The observer reports `LOOP_GOVERNOR_ALERT` once, as an `<delegate-notification>` block from its terminal `communicate(end_turn=true)`.
 - The observer does not start a debate with the parent; it reports and
   stops.
 

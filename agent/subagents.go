@@ -615,7 +615,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.spawn.subagentTask = task
 	subCfg.spawn.depth = depth + 1
 	subCfg.spawn.parentSteer = s.SteerWithProvenance
-	subCfg.spawn.parentSteerDelivered = s.trySteerWithProvenanceAndNotify
 	subCfg.spawn.parentSystemNotification = s.routeSystemNotification
 	if subCfg.ShareTasksWithChildren {
 		ownerSessionID := parentCfg.spawn.sharedTaskStoreOwnerSessionID

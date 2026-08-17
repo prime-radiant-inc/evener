@@ -120,8 +120,7 @@ terminal `communicate(end_turn:true)` callbacks.
   - `output:` carrying `PASSIVE_SUCCESS_SENTINEL`
 - The observer's filtered-frame turn is a single terminal
   `communicate(end_turn=true)` carrying `PASSIVE_READ_OK
-  delivery=<delivery_id>`, which the parent receives as an `Observer
-  callback:` block. It should not emit visible assistant text in that
+  delivery=<delivery_id>`, which the parent receives as an `<delegate-notification>` block. It should not emit visible assistant text in that
   turn. `delegate_send(to="caller")` is NOT the callback path any more
   and is a hard `invalid_request`
   (`agent/session_tools_jobs.go:163`).

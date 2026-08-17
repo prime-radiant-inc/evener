@@ -81,7 +81,7 @@ this rewrite exists to remove. Why it cannot:
   to one.
 - The observer returns exactly one `TRIAGE_NOTE` carrying that frame's
   `delivery_id`, through its terminal `communicate(end_turn=true)`; the
-  parent receives it as an `Observer callback:` block.
+  parent receives it as an `<delegate-notification>` block.
 - The observer does not attempt to edit files or rerun tests.
 - Falsification (boundary): the observer resolves the parent's job at
   all. From the observer, both `job_status(job_id=<a parent job>)` and

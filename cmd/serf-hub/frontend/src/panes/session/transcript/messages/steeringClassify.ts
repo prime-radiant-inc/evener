@@ -1,7 +1,14 @@
 // Structured steering-notification parsing: <job-notification …> blocks and
-// the fixed "Observer callback:\n" header a daemon tool result emits
-// (agent/session_tools_communicate.go) are markup, not prose, so reading them
-// is parsing rather than guessing. SteeringItem.tsx routes daemon steering on
+// the fixed "Observer callback:\n" header are markup, not prose, so reading
+// them is parsing rather than guessing.
+//
+// NOTHING EMITS THE "Observer callback:" HEADER ANY MORE. Its producer was
+// deleted with agent.EntryWatchDelivery (kata z5fm), and a watch-origin
+// observer's terminal communicate now reaches its parent as the ordinary
+// <delegate-notification> frame. parseObserverCallback stays because
+// transcripts are DURABLE: a thread recorded while the producer existed still
+// replays that steering turn through here, and a reader must render it the way
+// it was written. Treat it as a reader of history, not of anything live. SteeringItem.tsx routes daemon steering on
 // ItemModel.steeringKind (the wire's events.SteeringKind*, named at the
 // injection site) instead of inferring one from wording, so nothing here
 // decides a "kind" any more - this file only extracts notification cards,
@@ -276,9 +283,9 @@ function parseObserverCallback(stripped: string): ParsedNotification | null {
   // The observer's own `message:` prose is the real signal (floor parity-m4
   // §8:239 "body = observer-callback prose"). With an `output:` envelope the
   // communicate message/excerpt carries the body; with NO output (the daemon's
-  // `Observer callback:\nmessage: X` shape, session_tools_communicate.go:117)
+  // historic `Observer callback:\nmessage: X` shape)
   // the prose is the ONLY content, so surface it rather than dropping it to the
-  // raw disclosure alone.
+  // raw disclosure alone. (Historic shape only — see the file header.)
   const proseOnly = idx === -1 ? withoutHeader.replace(/^message: /, "").trim() : "";
   const communicate = parseCommunicateEnvelope(output);
   // Observer callbacks are coerced from success to warning - a callback firing
