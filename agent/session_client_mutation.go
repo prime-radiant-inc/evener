@@ -127,13 +127,24 @@ type clientMutationSnapshot struct {
 	SessionID string `json:"session_id"`
 	// ActiveTurnID is the sole durable authority used by retry-safe mutation
 	// preconditions, and it names the turn that is RUNNING — not merely one a
-	// client mutation reserved. Three sites write it, all while holding this
-	// store's serializer: AcceptClientMutationStart and popQueueHead for turns
-	// a client asked for, and mintRunningTurnID (session_active_turn.go) for
-	// the turns the agent starts for itself — a goal continuation and a
-	// notification wake — which have no mutation to name them and would
-	// otherwise publish an id these preconditions reject. Queue and steering
-	// transitions only compare it.
+	// client mutation reserved. Queue and steering transitions only compare it.
+	//
+	// Every site that writes it does so while holding this store's serializer.
+	// Four SET it: AcceptClientMutationStart and popQueueHead for turns a client
+	// asked for, and mintRunningTurnID (session_active_turn.go) for the turns
+	// the agent starts for itself — a goal continuation and a notification wake
+	// — which have no mutation to name them and would otherwise publish an id
+	// these preconditions reject.
+	//
+	// Four CLEAR it, and the list matters more than it looks, because
+	// releaseRunningTurnID's compare-and-clear exists to survive them:
+	// completeClientMutationTurnWithState and failClientMutationTurn clear the
+	// id of the turn they settle; releaseRunningTurnID clears only an id it
+	// wrote; and finalizeClientMutationInterrupt clears UNCONDITIONALLY. That
+	// last one is why an unconditional release would be wrong — an interrupt can
+	// free the slot while a turn is still unwinding, a turn/start can claim it,
+	// and the unwinding turn would then wipe that mutation's compare-and-commit
+	// target.
 	//
 	// It does not survive the process: loadClientMutationSnapshotFS drops a
 	// value no pending execution owns, because a turn that was running when

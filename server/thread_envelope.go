@@ -172,7 +172,6 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// first turn.
 	events.EventQueueChanged: facetQueue,
 	events.EventUserInput:    facetQueue | facetWork | facetContext | facetAsk | facetMeta,
-	events.EventTurnStarted:  facetWork,
 	// TURN_STARTED is a turn-OPENING event, so it sits here rather than with
 	// TURN_ENDED's facetAll: the checkpoint argument above is about a turn
 	// ENDING -- values that drifted during it, and a failed turn that emits
@@ -186,6 +185,7 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// (the queue it drains is the job-notification rail). Nor facetAsk: a wake
 	// arriving while a question is pending is refused before it ever reaches
 	// the boundary.
+	events.EventTurnStarted:      facetWork,
 	events.EventSteeringInjected: facetQueue | facetAsk | facetContext,
 
 	// A completed tool call appends its result to history (context), can be the

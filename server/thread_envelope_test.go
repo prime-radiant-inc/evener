@@ -76,9 +76,17 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 			name: "work metrics on TURN_STARTED",
 			move: func(e *stubThreadEnvelopeSource) {
 				e.workMillis = 4200
+				e.turnStartedAt = 1750000000
 			},
 			event: events.SessionEvent{Kind: events.EventTurnStarted, SessionID: "th_1", Data: events.TurnStartedData{TurnID: "turn_m4"}},
 			want: func(t *testing.T, thread appwire.Thread) {
+				// ActiveTurnStartedAt is the field the facetWork row exists for
+				// — it is what a turn OPENING moves, and nothing else announces
+				// it. Assert it directly rather than inferring it from a
+				// sibling in the same facet.
+				if thread.Serf.ActiveTurnStartedAt != 1750000000 {
+					t.Fatalf("activeTurnStartedAt = %d, want the moment the session recorded; an active thread whose turn started at zero is what this row prevents", thread.Serf.ActiveTurnStartedAt)
+				}
 				if thread.Serf.WorkMillis != 4200 {
 					t.Fatalf("workMillis = %d, want the figure the session moved to", thread.Serf.WorkMillis)
 				}
