@@ -67,6 +67,26 @@ const FULL_CAPABILITIES: ThreadCapabilities = {
   rename: true,
 };
 
+// What a real daemon publishes for an IDLE thread, read off
+// server/appwire_runtime.go's appCapabilities: `active` is false there, and
+// both Steer and Queue are gated on it, so an idle thread advertises
+// queue:false. Clear and ForkFromTurn are hardcoded false. This is the set the
+// client is actually holding in the window kata 8c65 describes, and it is not
+// FULL_CAPABILITIES.
+const DAEMON_IDLE_CAPABILITIES: ThreadCapabilities = {
+  send: true,
+  steer: false,
+  interrupt: true,
+  compact: true,
+  clear: false,
+  forkFromTurn: false,
+  shutdown: true,
+  changeModel: true,
+  queue: false,
+  goal: true,
+  rename: true,
+};
+
 function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
   return {
     id: `thr_${ref}`,
@@ -909,6 +929,68 @@ test("active session with queue capability: Send routes to turn/queue", async ()
   await user.click(submitButton());
 
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
+});
+
+// kata 8c65. Two messages sent quickly: the first turn/start is ACCEPTED (the
+// daemon answers every turn/start with projectionState "pending" -
+// agent/session_client_mutation_queue.go's acceptedClientMutationProjection)
+// but no thread/status/changed has arrived yet, so the thread still reads idle
+// and still carries the IDLE capability set. The second message used to be
+// built as another turn/start and refused with
+// Conflict("turn is already active").
+//
+// This has to be mounted rather than unit-tested on the routing table: the
+// table takes the capability set as an argument, so it cannot notice that the
+// set it was handed is one no daemon ever sends. The first attempt at this fix
+// was proved only against an all-true fixture, routed to BOTH_UNAVAILABLE
+// against the real idle set, and disabled Send outright.
+test("a second message composed before the first turn's status frame arrives queues instead of bouncing", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "idle" },
+    serf: { ref: "ref_a", capabilities: DAEMON_IDLE_CAPABILITIES, queue: { revision: 0 } },
+  });
+  // The response's own `turn` never reaches the model - MutationDispatcher
+  // reads the receipt and nothing else - and no thread/status/changed is
+  // pushed, so the thread stays idle with its idle capabilities throughout.
+  // That IS the window.
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "pending",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  fake.on("turn/queue", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "pending",
+    },
+  }));
+
+  await user.type(textarea(), "first message");
+  await user.click(submitButton());
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+
+  await user.type(textarea(), "second message");
+  // Still composable: an idle queue:false means "no turn to queue behind", and
+  // must never be read as "this session takes no input".
+  await waitFor(() => expect(submitButton().disabled).toBe(false));
+  await user.click(submitButton());
+
+  await waitFor(() => {
+    const queued = fake.calls.find((c) => c.method === "turn/queue");
+    expect(queued?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "second message" }] });
+  });
+  // turn/queue carries no expectedTurnId to be wrong about: appwire v3 dropped
+  // the field from the method outright (appwire/types.go's ProtocolVersion
+  // note), which is what lets the queue land before any turn id exists.
+  expect(fake.calls.find((c) => c.method === "turn/queue")?.params).not.toHaveProperty("expectedTurnId");
+  expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(1);
 });
 
 test("submitting an empty composer fires no request", async () => {

@@ -7,7 +7,12 @@
 //   2. [DROPPED - see below]
 //   3. active && capabilities.queue === false explicitly -> both false
 //   4. active                    -> send=false, queue=true (queue-mode default)
+//   6. hasPendingSend            -> send=false, queue=true (see tier 6 below)
 //   5. else (idle/awaiting/...)  -> send=true,  queue=false (plain-send default)
+//
+// Tier 6 is this codebase's own addition and sits BETWEEN 4 and 5 rather than
+// at the end of the list, which is why it is numbered out of order: the legacy
+// table it extends is quoted verbatim above.
 //
 // The legacy tier 2 ("the source already advertised live send/queue
 // capabilities for the CURRENT state, `liveCapabilitiesStatus === state`")
@@ -49,6 +54,10 @@ import type { ThreadCapabilities } from "./types.gen";
 export interface SendQueueAvailabilityInput {
   statusType: string;
   capabilities: ThreadCapabilities;
+  // Whether this client has a turn/start of its own still in flight or
+  // accepted-but-not-yet-reflected. What the CLIENT did, not a guess about
+  // what the daemon has got to yet - see tier 6 in the function below.
+  hasPendingSend?: boolean;
 }
 
 export interface SendQueueAvailability {
@@ -63,10 +72,46 @@ const PLAIN_SEND_MODE: SendQueueAvailability = { canSend: true, canQueue: false 
 export function deriveSendQueueAvailability({
   statusType,
   capabilities,
+  hasPendingSend,
 }: SendQueueAvailabilityInput): SendQueueAvailability {
   if (statusType === "ended" || statusType === "closed") return BOTH_UNAVAILABLE;
-  if (statusType !== "active") return PLAIN_SEND_MODE;
 
-  if (capabilities.queue === false) return BOTH_UNAVAILABLE;
-  return QUEUE_MODE;
+  if (statusType === "active") {
+    if (capabilities.queue === false) return BOTH_UNAVAILABLE;
+    return QUEUE_MODE;
+  }
+
+  // Tier 6: a turn this client already submitted counts as active even before
+  // the status says so. Send two messages quickly and the second is composed
+  // before any status frame for the first arrives; tier 5 below would route it
+  // to turn/start and the daemon would refuse it with
+  // Conflict("turn is already active").
+  //
+  // This is NOT the activeTurnId fold the header rejects. activeTurnId is the
+  // daemon's state arriving late; a pending send is this client's own record
+  // of what it just did, and cannot be stale relative to itself.
+  //
+  // It is a tier of its own, ABOVE the capability veto rather than inside the
+  // active branch, and that placement is the whole point. The capabilities in
+  // hand during this window are the IDLE ones, and an idle thread advertises
+  // queue:false (server/appwire_runtime.go's appCapabilities gates Queue on
+  // `active`, which is `processing || appReservedTurnID != ""`). Letting the
+  // veto see them turns this rule into BOTH_UNAVAILABLE and DISABLES the
+  // composer in exactly the window it exists to serve - worse than the bounce,
+  // which at least left a recovery row the user could resend from. An idle
+  // queue:false means "no turn to queue behind", not "this harness has no
+  // queue"; nothing in that snapshot distinguishes the two, so this tier does
+  // not consult it. A harness with no queue at all answers turn/queue with
+  // Unavailable, and the user sees that.
+  //
+  // The queue lands with no turn id because there is no turn id to send:
+  // appwire v3 dropped expectedTurnId from turn/queue outright (appwire/
+  // types.go's ProtocolVersion note), so neither handleAppTurnQueue nor the
+  // agent's own clientMutationQueue has a turn precondition left to fail.
+  // Pinned live by cmd/serf-hub/e2e_control_without_turn_ids_test.go's
+  // TestE2E_ASendThatRacedAStopStillRuns, which proves a queue accepted
+  // against a session with nothing running reaches a real model request.
+  if (hasPendingSend) return QUEUE_MODE;
+
+  return PLAIN_SEND_MODE;
 }
