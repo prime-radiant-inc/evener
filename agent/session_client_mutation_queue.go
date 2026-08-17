@@ -869,24 +869,9 @@ func (s *Session) restoreDurableClientMutationQueues() {
 				continue
 			}
 			if pending.Method == clientMutationMethodQueue {
-				if len(pending.QueueEntryIDs) != 1 {
-					return fmt.Errorf("claimed queue mutation %q has %d queue entry IDs", id, len(pending.QueueEntryIDs))
+				if err := returnClaimedQueuedMutation(snapshot, id, pending, &record); err != nil {
+					return err
 				}
-				snapshot.InputQueue = append([]clientMutationQueueEntry{{
-					ID:               pending.QueueEntryIDs[0],
-					ClientMutationID: id,
-					Input:            cloneClientMutationInput(pending.Input),
-				}}, snapshot.InputQueue...)
-				if snapshot.AcceptedTurns > 0 {
-					snapshot.AcceptedTurns--
-				}
-				snapshot.BudgetReservations[id] = clientMutationBudgetReservation{TurnID: pending.TurnID, Slots: 1}
-				delete(snapshot.PendingExecutions, id)
-				// This claim crashed before its transcript item landed, so
-				// restore reconstitutes it back onto the plain input queue --
-				// the same not-yet-visible state a fresh queue entry starts
-				// in, not the reflected state a genuine incorporation earns.
-				record.ProjectionState = acceptedClientMutationProjection(record.Method)
 			} else {
 				pending.ExecutionState = "accepted"
 				snapshot.PendingExecutions[id] = pending
@@ -1122,6 +1107,20 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 		if !ok {
 			return nil
 		}
+		// A queued turn that was claimed but never incorporated did not run, and
+		// settling it here would lose it: the entry is already out of the input
+		// queue and nothing else puts it back within this process. Return the
+		// claim instead. The ordinary way to reach this is a cancelled context,
+		// and a Stop is what cancels it (katas e519 + nss1).
+		if pending.ExecutionState == "claimed" && pending.Method == clientMutationMethodQueue {
+			record := snapshot.Journal[clientMutationID]
+			if err := returnClaimedQueuedMutation(snapshot, clientMutationID, pending, &record); err != nil {
+				return err
+			}
+			record.ExecutionState = "accepted"
+			snapshot.Journal[clientMutationID] = record
+			return nil
+		}
 		if pending.ExecutionState != "incorporated" {
 			return nil
 		}
@@ -1146,6 +1145,48 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 		}
 		return nil
 	})
+}
+
+// returnClaimedQueuedMutation puts a claimed queue entry back the way
+// popQueueHead found it: at the head of the input queue, holding the turn
+// budget the claim consumed, and no longer naming a running turn.
+//
+// It runs from two places and both are load-bearing. At startup it recovers a
+// claim whose process died. At turn completion it recovers a claim whose turn
+// returned before incorporating anything -- which is what a cancelled context
+// does, and a Stop is what cancels it. Without the second, the message leaves
+// the queue, never runs, and its turn id pins ActiveTurnID for the life of the
+// process, so every later turn/start is refused with "turn is already active"
+// (katas e519 + nss1).
+//
+// The record goes back to the not-yet-visible projection a fresh queue entry
+// starts in, not the reflected state a genuine incorporation earns: nothing was
+// written to the transcript, so a client told "reflected" would drop its
+// optimistic copy with nothing authoritative to replace it.
+func returnClaimedQueuedMutation(
+	snapshot *clientMutationSnapshot,
+	clientMutationID string,
+	pending appwire.PendingMutation,
+	record *clientMutationRecord,
+) error {
+	if len(pending.QueueEntryIDs) != 1 {
+		return fmt.Errorf("claimed queue mutation %q has %d queue entry IDs", clientMutationID, len(pending.QueueEntryIDs))
+	}
+	snapshot.InputQueue = append([]clientMutationQueueEntry{{
+		ID:               pending.QueueEntryIDs[0],
+		ClientMutationID: clientMutationID,
+		Input:            cloneClientMutationInput(pending.Input),
+	}}, snapshot.InputQueue...)
+	if snapshot.AcceptedTurns > 0 {
+		snapshot.AcceptedTurns--
+	}
+	snapshot.BudgetReservations[clientMutationID] = clientMutationBudgetReservation{TurnID: pending.TurnID, Slots: 1}
+	delete(snapshot.PendingExecutions, clientMutationID)
+	if snapshot.ActiveTurnID == pending.TurnID {
+		snapshot.ActiveTurnID = ""
+	}
+	record.ProjectionState = acceptedClientMutationProjection(record.Method)
+	return nil
 }
 
 func removeClientMutationSteeringOrder(snapshot *clientMutationSnapshot, clientMutationID string) {
