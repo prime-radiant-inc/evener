@@ -213,6 +213,24 @@ describe("ActivityRowDetail", () => {
     expect(screen.getByText(`running 12s · 0b · started ${localHHMM("2026-08-05T14:59:00Z")}`)).toBeTruthy();
   });
 
+  // quietForMs is frozen at snapshot time, and a quiet delegate emits no
+  // frames to refresh the snapshot: the displayed age must be re-derived
+  // from the quiet anchor and the ticking `now`, never the frozen number.
+  test("live delegate quiet age tracks the ticking clock, not the snapshot's quietForMs", () => {
+    render(
+      <ActivityRowDetail
+        row={delegateRow({
+          mandate: "Inspect the repo",
+          runStartedAt: "2026-08-05T14:59:00Z",
+          latestActivityAt: "2026-08-05T15:00:00Z",
+          quietForMs: 12_000,
+        })}
+        now={NOW + 30_000}
+      />,
+    );
+    expect(screen.getByText(`running 42s · 0b · started ${localHHMM("2026-08-05T14:59:00Z")}`)).toBeTruthy();
+  });
+
   test("terminal row meta drops the duplicated runtime and a successful exit code", () => {
     render(
       <ActivityRowDetail

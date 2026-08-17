@@ -157,9 +157,16 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
   if (row.live) {
     const segments: MetaSegment[] = [{ key: "tokens", text: tokens ?? "—" }];
     if (!tokens) segments.push({ key: "status", text: delegateStatusText(delegate) });
-    const quiet =
-      delegate.quietForMs ??
-      (delegate.latestActivityAt ? Math.max(0, now - (parseMillis(delegate.latestActivityAt) ?? now)) : undefined);
+    // quietForMs arrives frozen at snapshot time, and a quiet delegate emits
+    // no frames to refresh the snapshot: derive the displayed age from the
+    // server's own quiet anchor (latestActivityAt, else runStartedAt — the
+    // same fallback the server computes quietForMs from) and the ticking
+    // `now`. The frozen value itself is only a last resort for a snapshot
+    // with no parseable anchor.
+    const quietAnchorAt = parseMillis(
+      delegate.latestActivityAt ?? (delegate.quietForMs != null ? delegate.runStartedAt : undefined),
+    );
+    const quiet = quietAnchorAt !== undefined ? Math.max(0, now - quietAnchorAt) : (delegate.quietForMs ?? undefined);
     if (quiet !== undefined) segments.push({ key: "quiet", text: formatQuietAge(quiet), tone: "quiet" });
     return segments;
   }
