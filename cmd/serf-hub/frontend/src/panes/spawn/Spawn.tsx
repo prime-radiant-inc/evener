@@ -481,13 +481,15 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   );
   const effortLevels = knownEffortLevels ?? FALLBACK_EFFORT_LEVELS;
   const effortDisabled = !usesSerfModels || (knownEffortLevels !== null && knownEffortLevels.length === 0);
-  // An effort the ladder doesn't name but state still holds. It only happens on
-  // the FALLBACK ladder: the reset effect below deliberately skips when the
+  // An effort the ladder doesn't name but state still holds. Only the FALLBACK
+  // ladder produces one: the reset effect below deliberately skips when the
   // catalog knows nothing about the model, because clobbering a sticky default
-  // on a guessed ladder would lose the user's setting. Preserving the value
-  // while not offering it is the part that was wrong -- a native select given a
-  // value with no matching <option> renders its first one, so the field read
-  // "(default)" while thread/start still received xhigh.
+  // on a guessed ladder loses the user's setting.
+  //
+  // Such a value must still be OFFERED. A native select handed a value with no
+  // matching <option> renders its first one instead, so the field would read
+  // "(default)" while thread/start receives the preserved level -- the select
+  // must never show one effort and submit another.
   const preservedEffort =
     reasoningEffort !== "" && reasoningEffort !== "none" && !effortLevels.includes(reasoningEffort)
       ? reasoningEffort
