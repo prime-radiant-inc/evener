@@ -52,7 +52,7 @@ reference card `job-watch-observer-snide-thread.md`.
   `tool_name: read_file`, `status: ok`, and the read's `output:`
   including the fixture line — the frame is where the observer sees the
   secret, so no read grant or audit tool is involved
-  (`writeAssistantToolWatchEvent`, `agent/job_watch.go:4874`).
+  (`agent/job_watch.go#writeAssistantToolWatchEvent`).
 - The observer reports `SECRET_FINDING ... redacted=true
   source=sample.log` as its terminal `communicate(end_turn=true)`.
 - The observer's visible output does not repeat `sk-test-12345`.

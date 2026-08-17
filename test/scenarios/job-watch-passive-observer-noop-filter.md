@@ -121,9 +121,18 @@ terminal `communicate(end_turn:true)` callbacks.
 - The observer's filtered-frame turn is a single terminal
   `communicate(end_turn=true)` carrying `PASSIVE_READ_OK
   delivery=<delivery_id>`, which the parent receives as an `<delegate-notification>` block. It should not emit visible assistant text in that
-  turn. `delegate_send(to="caller")` is NOT the callback path any more
-  and is a hard `invalid_request`
-  (`agent/session_tools_jobs.go:163`).
+  turn. `delegate_send(to="caller")` is NOT the callback path — it is a
+  live steering route that returns `action: "delivered"` and injects a
+  NON-terminal update into the parent without ending the observer's turn
+  (`agent/session_tools.go#stableDelegateSendTool` routes the `caller`
+  alias through
+  `agent/delegate_tree_steer.go#delegateTreeController.SteerCaller`;
+  `docs/job-control.md` "From inside a delegate, the contextual `caller`
+  target sends a non-terminal update to that delegate's controlling
+  caller"). An observer that substitutes it for the terminal
+  `communicate` never delivers the callback packet; score that as
+  prompt noncompliance, not a watch-delivery failure — and never expect
+  an `invalid_request` rejection, which is pre-`78342bbd3` rot.
 - The parent may stop after consuming the `PASSIVE_READ_OK` callback
   instead of emitting `PASSIVE_PARENT_DONE`. Do not use that final
   marker as pass/fail evidence; use the durable `jobs.jsonl` and
@@ -152,8 +161,9 @@ The parent watch report should show the broad watch ended as
 where tool_name=read_file, status=ok`, no dropped sends, and no
 self-loop verdict. Both watches are listed on the PARENT's report even
 though the observer created them — a parent-source watch is installed
-into the parent's own job manager (`parentInstallWatch`,
-`agent/session_tools_jobs.go:218`). The observer outline should show
+into the parent's own job manager
+(`agent/session_tools_jobs.go#Session.configureStableWatchOnSource`).
+The observer outline should show
 ignored broad frames as bare assistant text with no tool calls, and the
 successful filtered `read_file` frame as a single `communicate`.
 
@@ -185,9 +195,9 @@ successful filtered `read_file` frame as a single `communicate`.
   jobs before emitting the final marker. That is acceptable; the
   fluency signal to watch is whether it finds the filtered observer job
   without human steering.
-- If the filtered observer emits explanatory assistant text before the
-  `delegate_send`/`communicate` tool calls, treat that as prompt
-  noncompliance, not a watch-delivery failure.
+- If the filtered observer emits explanatory assistant text before its
+  `communicate` tool call, treat that as prompt noncompliance, not a
+  watch-delivery failure.
 
 ## Recorded Run
 

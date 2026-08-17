@@ -3,9 +3,8 @@
 **What this covers**: recursive delegation behind the double opt-in
 (`docs/job-control.md` "Delegation allowance", "Nested jobs",
 "Capacity and discovery requirements") and the owner-scoped drive-down
-notification rule ("Nested jobs" "Terminal notifications for a
-parent-visible nested background job are **owner-scoped**"; recursion
-design spec §3/§9/§10). A root with a raised `MaxSubagentDepth` (=2, so
+notification rule ("Nested jobs" "Terminal attention is owner-scoped.";
+recursion design spec §3/§9/§10). A root with a raised `MaxSubagentDepth` (=2, so
 the root's own allowance is 2 — "Delegation allowance" "A root
 session's allowance equals `MaxSubagentDepth`") spawns a COORDINATOR
 delegate with `delegation_allowance=1`; the coordinator fans out 2-3
@@ -19,16 +18,16 @@ allowance" "**The grant rule.**"), a
 grant of 1 succeeds; (b) the allowance gate — the coordinator (allowance
 1 > 0) CAN delegate, a worker (allowance 0) CANNOT ("Delegation
 allowance" "**Availability matrix (allowance-gated).**"; "Nested jobs"
-"An observer sidecar started without an allowance (allowance 0, the
-default) is a leaf and cannot delegate");
+"allowance zero remains the default, so observer sidecars are leaves
+unless explicitly granted otherwise");
 (c) the COORDINATOR is driven to receive its workers' completions in
-its OWN turns (drive-down — "Notifications" "A parent **drives** a
-child for the child's own (delegate-owned) job notifications");
+its OWN turns (drive-down — "Notifications" "A parent drives an idle
+child so that child processes its own shell/watch attention");
 (d) **OWNER-SCOPED** — the
 ROOT's model is NEVER interrupted with a worker's terminal; the root is
 told ONLY when the COORDINATOR itself finishes ("Nested jobs"
-owner-scoped bullet; "Rollout (live vs. dark)" "**Live — nested-job
-terminal notifications are owner-scoped.**");
+owner-scoped bullet; "Shipped recursion and owner attention" "A session
+renders only attention for work it owns.");
 (e) visibility is preserved via `job_list(include_descendants=true)`,
 which surfaces the live tree with per-row `depth`
 ("Nested jobs" "walks the live descendant tree at read time");
@@ -39,7 +38,9 @@ resource `idle` with a last outcome of `stopped`/`stopped_by_parent`
 orphaned.
 
 This is the live-interface counterpart to the unit-level depth-N trees
-in `agent/job_delegate_test.go` / the §9 testing list. Recursion is
+in `agent/delegate_tree_stop_test.go` (e.g.
+`agent/delegate_tree_stop_test.go#TestDelegateControllerStopCancellationPlanIsLeafFirst`
+seeds a parent → child → grandchild tree) / the §9 testing list. Recursion is
 DARK by default ("Delegation allowance" "**Double opt-in (dark by
 default).**"); this card only runs with the raised config below.
 
@@ -56,7 +57,7 @@ default).**"); this card only runs with the raised config below.
   Raise `MaxSubagentDepth` to 2 on the spawn so the root's
   own allowance is 2 ("A root session's allowance equals
   `MaxSubagentDepth`"): pass it in `launch_overrides`. The
-  wire key is `maxSubagentDepth` (camelCase, `appwire/types.go:1708`):
+  wire key is `maxSubagentDepth` (camelCase, `appwire/types.go:2046`):
 
   ```json
   {"prompt":"...","model":"openai/gpt-5.5","working_dir":"$tmpdir",
@@ -175,7 +176,7 @@ default).**"); this card only runs with the raised config below.
   is REJECTED with the verbatim error
   `invalid_request: delegation_allowance must be less than your own allowance (2); valid grants: 0..1`
   ("Delegation allowance" "**The grant rule.**";
-  `agent/job_delegate.go:318`) — the `; valid grants: <range>`
+  `agent/delegate_runtime.go:836`) — the `; valid grants: <range>`
   suffix is part of the message, not an addition. The `(2)` proves the root's
   own allowance is 2 — i.e. `MaxSubagentDepth=2` took. Falsification:
   the call SUCCEEDS (the ceiling didn't apply — config not raised, or
@@ -204,8 +205,9 @@ default).**"); this card only runs with the raised config below.
   descendant tree at read time instead of one hop") — the root's OWN
   coordinator delegate carrying NO depth token (depth 0 is not printed),
   and the three worker delegates each carrying `depth=1`, each appearing
-  EXACTLY ONCE ("Nested jobs" "Dedupe rule: the owner session's durable
-  record is authoritative for a forwarded job"). Falsification: a worker
+  EXACTLY ONCE ("Nested jobs" "a forwarded copy of a `job_id` whose owner
+  is reached live during the walk is suppressed in favor of that owner's
+  record"). Falsification: a worker
   missing entirely (the live walk did not recurse into the live child), a
   worker line with no depth token (the walk mis-attributed the hop and
   scored it as the root's own), or a worker listed twice (a forwarded copy
@@ -232,8 +234,9 @@ default).**"); this card only runs with the raised config below.
   OWN turns (coordinator transcript).** After the coordinator ended its
   turn, the workers finish while it is idle; the coordinator's
   transcript shows a POST-IDLE notification turn (an `EntryNotification`
-  the parent drove — "Notifications" "is **driven** by its parent at
-  the parent's own loop boundaries", design §3) carrying the workers'
+  the parent drove — "Why drive-down, not a flat session scheduler"
+  "each parent starts one child's `EntryNotification` turn at a safe
+  loop boundary", design §3) carrying the workers'
   terminal completions. The coordinator's model — not the root's — is
   the one woken for them. Falsification: the coordinator's transcript
   has NO post-idle notification turn for the workers (the worker
@@ -248,8 +251,8 @@ default).**"); this card only runs with the raised config below.
   or `job_type="delegate"`."). The set of
   `<delegate-notification>` frames rendered on the ROOT's rail contains
   the COORDINATOR's terminal (COORD finishing — that is the root's OWN
-  direct delegate ending: "Nested jobs" "The parent is told only about
-  its OWN jobs, including its direct delegates' terminals").
+  direct delegate ending: "Notifications" "the parent renders only
+  its own shells and direct delegates").
 
   **The assertion is on the frame SUBJECT, and only the subject.** For
   every worker delegate_id the coordinator reported in
@@ -258,9 +261,8 @@ default).**"); this card only runs with the raised config below.
   card exists to catch): a worker's delegate_id IS the `delegate_id=` of
   a `<delegate-notification>` frame on the root's rail — the root was
   interrupted about a delegate a DESCENDANT created, which the
-  owner-scoped rule ("Nested jobs" owner-scoped bullet; "Rollout (live vs.
-  dark)" quotes Jesse's ruling, "an agent is never interrupted about a
-  *subagent's* children") forbids.
+  owner-scoped rule ("Nested jobs" "an ancestor is not interrupted
+  about a descendant's children") forbids.
 
   Do NOT run this as a substring search for a worker id across the root's
   rail, and do not fail the run on worker text appearing INSIDE a
@@ -410,16 +412,15 @@ default).**"); this card only runs with the raised config below.
   a short worker sleep (8s) keeps the window tight without racing the
   drive.
 - **Tree-wide cap is 50 ("Capacity and discovery requirements"
-  "**Tree-wide running-delegate cap.**"; "Rollout (live vs. dark)"
-  "**Live — the tree-wide running-delegate cap binds existing
-  fan-out.**"; `--max-concurrent-delegates`,
-  `defaultMaxConcurrentDelegateTurns`, `agent/tree_counter.go#defaultMaxConcurrentDelegateTurns`).** It was
+  "**Tree-wide running-delegate cap.**"; `--max-concurrent-delegates`,
+  `agent/tree_counter.go#defaultMaxConcurrentDelegateTurns`).** It was
   raised from the original hardcoded 16, and drive turns now budget
-  separately (`defaultMaxConcurrentDriveTurns` = 8, `:17`). This card's
+  separately (`agent/tree_counter.go#defaultMaxConcurrentDriveTurns` = 8).
+  This card's
   fan-out (1 coordinator + 3 workers = 4 running, then COORD2 + 2 = 3)
   stays well under the cap; a spawn/resume at the cap fails
   `tree_at_capacity: 50 delegate turn slots in use across this session tree (J delegate jobs, D drive turns). Wait for completions to free slots, job_stop work you no longer need, or narrow your fan-out and retry.`
-  (`agent/tree_counter.go:41-42`) — note "turn slots", not "jobs running",
+  (`agent/tree_counter.go:79-80`) — note "turn slots", not "jobs running",
   and the trailing jobs/drives split. Do not fan out wider here or the cap,
   not the owner-scoping, becomes the thing under test (the cap is
   exercised separately).

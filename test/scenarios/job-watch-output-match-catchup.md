@@ -128,7 +128,7 @@ Phase 5.2.
 - There is no `send` variant to cover: `job_watch` delivers to the
   session that created the watch and rejects a `send` argument with
   `additionalProperties 'send' not allowed`
-  (`agent/session_tools_jobs_watch_test.go:240`). The detached
+  (`agent/session_tools_jobs_watch_test.go:241`). The detached
   terminal-flush config the old card pointed at is internal-only now.
 - Sequential one-shots share the watch key
   `(watcher_session_id, source identity, receiver identity, condition

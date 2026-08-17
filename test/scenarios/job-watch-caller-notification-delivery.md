@@ -19,7 +19,7 @@ watch two ways — implicit notify, and an explicit `send:{to:"caller"}`
 — and assert they were distinct coexisting watch keys. `send` was
 removed from the public schema by commit `9d0d777c6` (2026-06-22); it
 is now rejected with `additionalProperties 'send' not allowed`
-(`agent/session_tools_jobs_watch_test.go:240`) and there is exactly one
+(`agent/session_tools_jobs_watch_test.go:241`) and there is exactly one
 delivery model. That arm is gone. The idle-wake and coalescing arms are
 untouched by the removal and are what this card now covers.
 
@@ -132,8 +132,9 @@ Run 2:
   well past that). No notification appears mid-stream (inside a
   streaming model response) — but one MAY surface between tool rounds:
   mid-turn notifications queue for a safe turn boundary
-  ("Notifications" "If the parent is mid-turn, notifications queue for
-  a safe turn boundary"), so a between-rounds delivery during the
+  ("Notifications" "If the owner is mid-turn or awaiting an `ask_user`
+  reply, attention waits for the next safe boundary"), so a
+  between-rounds delivery during the
   paced essay is contract-true, not a leak.
 - Each rendered notification's `reason` references the LATEST tick that
   had fired by its delivery time — latest-wins per watch key; a

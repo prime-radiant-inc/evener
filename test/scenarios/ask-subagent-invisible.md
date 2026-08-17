@@ -85,14 +85,15 @@ delegation-only tools for a coordinator.
    ships `Strict: &strictFalse`, so an unknown key is not rejected by schema validation —
    what actually fires for `max_wait_ms` is serf's own `invalid_request` check in
    `agent/session_tools.go#stableDelegateCreateTool`. There is no
-   `grant_tools` property, and `delegateTool`'s Go
-   handler (`agent/session_tools_jobs.go`) never reads one from `args`. The one live call
-   that could pass the `grantTools []string` parameter,
-   `prepareSubagentRunWithModelSelection` at `agent/job_delegate.go:362-365`, hard-codes
-   `nil` for it. The protected-grant rejection (`ask_user is root-only and cannot be granted
-   to subagents`, `agent/subagents.go:545`, off the `protectedGrantTools` gate list at
-   `:193-201`) is real and load-bearing, but today it is exercised only by
-   calling `Session.spawnAgent`/`prepareSubagentRun` (`agent/subagents.go:360,392` — neither
+   `grant_tools` property, and the delegate tool's Go handler
+   (`agent/session_tools.go#stableDelegateCreateTool`) never reads one from `args`. The one
+   live call that could pass the `grantTools []string` parameter,
+   `agent/subagents.go#Session.prepareStableDelegateRun`, hard-codes `nil` for it in its
+   `prepareSubagentRunFromSelection` call (`agent/subagents.go:548-550`). The
+   protected-grant rejection (`ask_user is root-only and cannot be granted
+   to subagents`, `agent/subagents.go:757`, off the `protectedGrantTools` gate list at
+   `:233-243`) is real and load-bearing, but today it is exercised only by
+   calling `Session.spawnAgent`/`prepareSubagentRun` (`agent/subagents.go:469,501` — neither
    has a non-test caller) directly at the Go level — which is
    exactly what `agent/subagents_test.go`'s `TestGrantToolsCannotRegrantAskUser` and
    `TestGrantToolsAskUserAliasNeverSilentlyGranted` do. Run those as the check for this part

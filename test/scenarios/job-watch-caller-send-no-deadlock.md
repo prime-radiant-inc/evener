@@ -115,8 +115,8 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
 - Follow-up prompt: call `job_watch(operation="clear", watch_id=...)`
   for BOTH the step-3 self-watch and the step-4 observer watch. The
   parent can clear the observer's watch by id: a parent-source watch is
-  installed into the parent's own job manager (`parentInstallWatch`,
-  `agent/session_tools_jobs.go:218`).
+  installed into the parent's own job manager
+  (`agent/session_tools_jobs.go#Session.configureStableWatchOnSource`).
 - `job_stop` any observer follow-up still running; shut the session down
   (`POST /api/sessions/local:$SID/shutdown`); `rm -rf "$tmpdir"`.
 
