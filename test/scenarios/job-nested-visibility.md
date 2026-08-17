@@ -13,7 +13,7 @@ identity and visibility"); (c) parent `job_stop` on the nested job
 routes to the live owner runtime and stops it — "Nested jobs" "Parent
 `job_stop` on a nested job routes to the owning session/runtime if
 live" specifies routing-if-live, so a live in-process owner yields a
-confirmed stop, NOT `not_controllable` (which "Job status and reason
+confirmed stop, NOT `not_controllable` (which "Status and reason
 model" reserves for a believed-live owner that cannot route/control,
 and restart loss is `stopped`/`runtime_lost`); (d) after the delegate
 is finished and the nested job is terminal, the forwarded job's
@@ -49,9 +49,9 @@ grant a `job.notification` delivery mints — is covered by
    > Do these steps in order. Report every tool result verbatim.
    > 1. Call job_list with NO include_nested and report every job_id
    >    and type.
-   > 2. Call job_list with include_nested true and report every
-   >    job_id, type, status, parent_delegate_id, parent_job_id, and
-   >    owner_session_id.
+   > 2. Call job_list with include_nested true and report EVERY row
+   >    exactly as the tool printed it, verbatim and unedited — do not
+   >    normalise, complete or reorder the fields.
    > 3. Call read_transcript with transcript_ref "job:<the NESTED
    >    shell job's job_id>" (from step 2 / the delegate's report).
    >    Report the full JSON.
@@ -70,18 +70,18 @@ grant a `job.notification` delivery mints — is covered by
   contains the DELEGATE row (a `dlg_...` id, `type` `delegate`, lifecycle
   `idle` once it has reported) and NOT the nested
   shell job. The step-2 listing adds exactly one more row: the nested
-  job with `type` `"shell"`, `status` `"running"`, `parent_delegate_id`
-  equal to the delegate's `delegate_id` and an EMPTY `parent_job_id` —
-  a delegate-owned shell is bound with `parentJobID` cleared and
-  `parentDelegateID` set to the delegate's lease
-  (`agent/jobs.go#jobManager.bindStableDelegateParent`), and
-  "`parent_job_id` never encodes delegate lineage" ("Vocabulary").
-  `parent_job_id` is shell-to-shell only. And `owner_session_id` NOT equal to
-  `$SID` (the child session owns the runtime — "Vocabulary" "For a
-  nested forwarded job, `owner_session_id` is the child/delegate
-  session that owns the runtime"). Do not ask for
-  `visible_to_session_id`: it is `json:"-"` on the row
-  (`agent/session_tools_jobs.go:1320-1322`, "kept for tooling but omitted
+  job with `type` `"shell"` and `status` `"running"` — that is ALL the
+  model-facing line carries. `job_list`'s text output is `formatJobList`
+  (`agent/session_tools_jobs.go#formatJobList`): one line per row of
+  `id  type  status`, a `depth=N` token only when non-zero, a label, and
+  a `[started · reason · exit · bytes]` tail. `parent_delegate_id`,
+  `parent_job_id` and `owner_session_id` live only on the structured
+  state (`agent/session_tools_jobs.go#jobListEntry`), which the model
+  never sees — asking the runner to report them from the listing invites
+  invented values, so the lineage/ownership assertions below are judged
+  from `jobs.jsonl` (step 4), never from the model's step-2 report. Do
+  not ask for `visible_to_session_id` either: it is `json:"-"` on the row
+  (`agent/session_tools_jobs.go:1093-1095`, "kept for tooling but omitted
   from the model wire"), so the model structurally cannot read it, and in
   a plain list it always equals the owner anyway. The visibility this arm
   is actually proving is that the row appears at all under
@@ -89,14 +89,13 @@ grant a `job.notification` delivery mints — is covered by
   the nested job leaks into the default listing, or appears with a
   different/namespaced id than the one the delegate reported — the
   parent-visible `job_id` must be the same opaque handle everywhere
-  ("Job identity and visibility" "the same opaque `job_id` in
-  notifications, `job_list`, `job_status`, `job_watch`, `job_stop`,
-  and the `job:<job_id>` transcript ref").
+  ("Job identity and visibility" "Each identity is used unchanged
+  across its typed list, status, watch, stop, notification, and
+  transcript surfaces").
 - The nested job OUTLIVES its creating delegate: the delegate is
   `completed` while the nested job still runs — background jobs are
-  not tied to the creating turn ("Summary" "durable enough to list,
-  inspect, notify about, and reconstruct after their creating turn
-  has ended").
+  owned by a session, not tied to the creating turn ("Summary" "A
+  **shell job** is asynchronous process work owned by a session").
 - Arm (b): the step-3 read returns a `# Shell Job job_...` envelope
   with `- status: running` and a fenced block containing
   `NEST_TOKEN_1` — the parent read its output through the
@@ -109,11 +108,11 @@ grant a `job.notification` delivery mints — is covered by
   runtime and confirmed ("Nested jobs" "routes to the owning
   session/runtime if live"). Falsification (the cited rule):
   a `not_controllable` error here, with the owner session live
-  in-process, is wrong — "Job status and reason model" and "Restart
+  in-process, is wrong — "Status and reason model" and "Restart
   behavior" reserve `not_controllable` for a believed-live owner that
   cannot route/control the job, and the shipped router routes any live
-  in-process owner directly (`agent/jobs_nested.go:342-356`,
-  `stopNestedOrLocal`, whose comment states exactly this — the cited
+  in-process owner directly (`agent/jobs_nested.go#stopNestedOrLocal`,
+  whose comment states exactly this — the cited
   `:76-78` is unrelated descendant-walk code).
 - Arm (d): the step-5 read — AFTER the delegate finished (long since
   terminal) and the nested job itself is now terminal — still returns
@@ -124,13 +123,20 @@ grant a `job.notification` delivery mints — is covered by
   read degrades to `not found` or an empty block once the jobs are
   terminal while retention obviously still holds (fresh session, tiny
   output).
-- Durable forwarding: the parent's `jobs.jsonl` contains forwarded
-  `job_started` and `job_finished` events for the nested job_id with
-  `parent_delegate_id` = the delegate's `delegate_id`, no
-  `parent_job_id`, and `owner_session_id` = the
-  child session — the durable substrate behind parent visibility
-  ("Nested jobs" "Shell jobs created by subagents are visible to the
-  parent through forwarded durable job events").
+- Durable forwarding — and the arm-(a) lineage/ownership evidence: the
+  parent's `jobs.jsonl` contains forwarded `job_started` and
+  `job_finished` events for the nested job_id with
+  `parent_delegate_id` = the delegate's `delegate_id`, an EMPTY
+  `parent_job_id` — a delegate-owned shell is bound with `parentJobID`
+  cleared and `parentDelegateID` set to the delegate's lease
+  (`agent/jobs.go#jobManager.bindStableDelegateParent`), and
+  "`parent_job_id` never encodes delegate lineage" ("Vocabulary");
+  `parent_job_id` is shell-to-shell only — and `owner_session_id` = the
+  child session, NOT `$SID` (the child session owns the runtime —
+  "Vocabulary" "For shell work, `owner_session_id` names the
+  process-owning session"). This journal is the durable substrate behind
+  parent visibility ("Nested jobs" "Shell jobs created by subagents are
+  visible to the parent through forwarded durable job events").
 - The nested job's own terminal (cancelled) notification is
   OWNER-SCOPED (spec §3/§10): it renders on the OWNER's (the child
   delegate's) rail, NOT on the parent's. The parent is told its
