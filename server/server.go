@@ -26,7 +26,12 @@ type InputMessage struct {
 	Images              []ImageAttachment
 	Kind                agent.EntryKind
 	ClientMutationStart bool
-	SessionID           string
+	// QueuedInput asks the loop to claim and run the named session's queue
+	// head as user input. It is distinct from Kind: a notification is
+	// autonomous work the entry gate refuses while a question is pending,
+	// whereas queued input is the user speaking and must run.
+	QueuedInput bool
+	SessionID   string
 }
 
 // RetrySafeTurnFunctions is the daemon's typed bridge to the authoritative
@@ -781,6 +786,17 @@ func (s *Server) SubmitNotification() {
 func (s *Server) SubmitClientMutationStart(sessionID string) {
 	select {
 	case s.inputCh <- InputMessage{ClientMutationStart: true, SessionID: sessionID}:
+	default:
+	}
+}
+
+// SubmitPendingUserInput wakes the serve loop to run a durably queued message. Like
+// SubmitClientMutationStart it names the session rather than carrying the
+// payload, so the loop reads whatever the journal actually owns at the moment
+// it claims.
+func (s *Server) SubmitPendingUserInput(sessionID string) {
+	select {
+	case s.inputCh <- InputMessage{QueuedInput: true, SessionID: sessionID}:
 	default:
 	}
 }

@@ -105,6 +105,7 @@ type serveServer interface {
 	SubmitContinuation(string)
 	SubmitNotification()
 	SubmitClientMutationStart(string)
+	SubmitPendingUserInput(string)
 }
 
 type serveDeps struct {
@@ -686,6 +687,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		s.SetClientMutationStartWakeFunc(func() {
 			srv.SubmitClientMutationStart(s.ID())
 		})
+		s.SetPendingUserInputWakeFunc(func() {
+			srv.SubmitPendingUserInput(s.ID())
+		})
 		// Descendants do not have their own daemon or authoritative event
 		// consumer. Forward their enriched events synchronously into this
 		// daemon's per-thread AppWire projections instead.
@@ -1007,7 +1011,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			turnCtx, cancelTurn := context.WithCancel(ctx)
 			currentCancel = cancelTurn
 			turnCtx = agent.WithQueuedInputDrainOnInterruptHandler(turnCtx, ctx, nextTurnCtx)
-			if !msg.ClientMutationStart {
+			if !msg.ClientMutationStart && !msg.QueuedInput {
 				srv.SetCancelFunc(cancelTurn)
 				setMutationRunner(cancelTurn, runnerDone)
 				if !holdServeStateForAwaitingWake(msg.Kind, sess.HasPendingAsk()) {
@@ -1020,6 +1024,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			processed := true
 			if msg.ClientMutationStart {
 				result, processed, processErr = sess.ProcessClientMutationStart(turnCtx, func(turnID string) {
+					srv.SetCancelFunc(cancelTurn)
+					setMutationRunner(cancelTurn, runnerDone)
+					srv.SetProcessingTurn(turnID)
+					srv.SetState(string(agent.SessionProcessing))
+				})
+			} else if msg.QueuedInput {
+				result, processed, processErr = sess.ProcessPendingUserInput(turnCtx, func(turnID string) {
 					srv.SetCancelFunc(cancelTurn)
 					setMutationRunner(cancelTurn, runnerDone)
 					srv.SetProcessingTurn(turnID)

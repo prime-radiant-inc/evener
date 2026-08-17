@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -167,6 +168,50 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 	s.reflectDurableInputQueue()
 	s.wakeForPendingQueuedInput()
 	return response, nil
+}
+
+// ProcessPendingUserInput runs input the user has already given but the session
+// has not delivered -- a queued message, or steering with no turn to land in --
+// as USER input, and reports whether it ran a turn.
+//
+// It is the counterpart to ProcessClientMutationStart, and exists for the same
+// reason: the entry gate refuses every non-user kind while a question is
+// pending, so this work delivered as a notification never reaches the drain
+// loop that would run it. The gate is right to refuse autonomous wakes, and
+// this is not one -- it is the user speaking.
+//
+// Entering as EntryUserInput is also what makes the user's message supersede an
+// unanswered question, which is the intended semantic: someone who types
+// instead of answering has moved past it. The drain loop already agrees --
+// selectDrainNextAction runs queued input ahead of everything else while
+// awaiting.
+//
+// A queued message runs as its own turn. Pending steering has no turn of its
+// own to run: it is drained into whatever turn is starting, so an empty user
+// turn is what carries it, exactly as the notification wake used to.
+//
+// onRunnable, when non-nil, is called with the turn id at the moment a claim
+// becomes real, so the daemon can publish the running turn and wire
+// cancellation to it before the turn starts producing. Steering has no such id
+// to report -- the turn it rides is one the session starts for itself.
+func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(string)) (string, bool, error) {
+	if err := s.ensureClientMutationStore(); err != nil {
+		return "", false, err
+	}
+	queued := s.popQueueHead()
+	if strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
+		if onRunnable != nil && queued.StableTurnID != "" {
+			onRunnable(queued.StableTurnID)
+		}
+		ctx = withQueuedClientMutation(ctx, queued)
+		result, err := s.ProcessInputKind(ctx, queued.Text, queued.Images, EntryUserInput)
+		return result, true, err
+	}
+	if !s.hasPendingSteering() {
+		return "", false, nil
+	}
+	result, err := s.ProcessInputKind(ctx, "", nil, EntryUserInput)
+	return result, true, err
 }
 
 // AcceptClientMutationQueue durably accepts or replays one client-authored
@@ -381,7 +426,7 @@ func (s *Session) wakeForPendingSteering() {
 	if !s.hasPendingSteering() {
 		return
 	}
-	s.notify()
+	s.wakePendingUserInput()
 }
 
 // wakeForPendingQueuedInput is wakeForPendingSteering's counterpart for
@@ -398,7 +443,7 @@ func (s *Session) wakeForPendingQueuedInput() {
 	if s.QueueDepth() == 0 {
 		return
 	}
-	s.notify()
+	s.wakePendingUserInput()
 }
 
 // AcceptClientMutationSteer durably accepts or replays one client-authored

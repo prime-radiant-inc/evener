@@ -662,6 +662,33 @@ func (s *Session) SetClientMutationStartWakeFunc(wake func()) {
 	}
 }
 
+// SetPendingUserInputWakeFunc installs the daemon's queued-input wake. Setting it
+// after restore immediately wakes a queue the journal already owns, which is
+// how a message that survived a crash gets run without waiting for the user to
+// do something unrelated.
+func (s *Session) SetPendingUserInputWakeFunc(wake func()) {
+	s.mu.Lock()
+	s.pendingUserInputWake = wake
+	s.mu.Unlock()
+	if wake != nil && (s.QueueDepth() > 0 || s.hasPendingSteering()) {
+		wake()
+	}
+}
+
+func (s *Session) wakePendingUserInput() {
+	s.mu.Lock()
+	wake := s.pendingUserInputWake
+	s.mu.Unlock()
+	if wake != nil {
+		wake()
+		return
+	}
+	// No daemon is driving this session (a bare ProcessInput caller, or a
+	// subagent). notify is the only wake such a session has, and it is what the
+	// queue relied on before this path existed.
+	s.notify()
+}
+
 func (s *Session) wakeClientMutationStart() {
 	s.mu.Lock()
 	wake := s.clientMutationStartWake

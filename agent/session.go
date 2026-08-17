@@ -346,6 +346,15 @@ type Session struct {
 	// journal. Guarded by mu.
 	clientMutationStartWake func()
 
+	// pendingUserInputWake is installed by the lifecycle runner, beside
+	// clientMutationStartWake and for the same reason: a durable mutation the
+	// journal already owns needs something to ask the session to run it. It
+	// exists separately from notifyFunc because the two carry different
+	// authority -- a notification is autonomous work, and the entry gate
+	// refuses those while a question is pending, whereas queued input is the
+	// user speaking and is entitled to run. Guarded by mu.
+	pendingUserInputWake func()
+
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
 	// watchCallbackDelivered is a per-processOneInput latch. A watch-origin turn
