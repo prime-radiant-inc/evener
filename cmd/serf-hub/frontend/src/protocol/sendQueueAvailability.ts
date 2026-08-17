@@ -49,10 +49,6 @@ import type { ThreadCapabilities } from "./types.gen";
 export interface SendQueueAvailabilityInput {
   statusType: string;
   capabilities: ThreadCapabilities;
-  // Whether this client has a turn/start of its own in flight. Distinct from
-  // anything the status says: it is what the CLIENT did, not a guess about what
-  // the daemon has got to yet. See the tier-6 note below.
-  hasPendingSend?: boolean;
 }
 
 export interface SendQueueAvailability {
@@ -67,21 +63,9 @@ const PLAIN_SEND_MODE: SendQueueAvailability = { canSend: true, canQueue: false 
 export function deriveSendQueueAvailability({
   statusType,
   capabilities,
-  hasPendingSend,
 }: SendQueueAvailabilityInput): SendQueueAvailability {
   if (statusType === "ended" || statusType === "closed") return BOTH_UNAVAILABLE;
-  // Tier 6: a turn this client already submitted counts as active even before
-  // the status says so. Two messages sent quickly compose the second before any
-  // status frame for the first arrives, so the table above would route it to
-  // turn/start and the daemon would refuse it with
-  // Conflict("turn is already active").
-  //
-  // This is NOT the activeTurnId fold the header rejects. activeTurnId is the
-  // daemon's state arriving late; a pending send is this client's own record of
-  // what it just did, and it cannot be stale relative to itself. turn/queue also
-  // tolerates an empty expectedTurnId, so the queue lands in the window before
-  // any turn id exists.
-  if (statusType !== "active" && !hasPendingSend) return PLAIN_SEND_MODE;
+  if (statusType !== "active") return PLAIN_SEND_MODE;
 
   if (capabilities.queue === false) return BOTH_UNAVAILABLE;
   return QUEUE_MODE;
