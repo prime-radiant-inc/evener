@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -77,9 +78,20 @@ func assertPromptLiteralReachedOpeningMessage(t *testing.T, adapter *scriptedPro
 		t.Fatal("first request had no messages")
 	}
 	if !strings.Contains(reqs[0].Messages[0].Text(), literal) {
-		t.Fatalf("wire literal %q never reached the system prompt in message 0, so this test proves nothing; message 0 = %q",
-			literal, reqs[0].Messages[0].Text())
+		t.Fatalf("wire literal %q never reached the system prompt in message 0, so this test proves nothing; message 0 (role %q) opens %s",
+			literal, reqs[0].Messages[0].Role, headString(reqs[0].Messages[0].Text(), 200))
 	}
+}
+
+// headString renders the opening of s for a failure message. The assembled
+// system prompt is tens of kilobytes; a failure that dumps it whole buries the
+// line that explains it.
+func headString(s string, n int) string {
+	if len(s) <= n {
+		return strconv.Quote(s)
+	}
+	return strconv.Quote(s[:n]) + "... (" + strconv.Itoa(len(s)) + " bytes)"
+
 }
 
 // TestRunDrainsDelegatedJobTreeWhenSystemPromptNamesTheFrame is the zzpw
@@ -152,8 +164,8 @@ func TestSystemPromptOccupiesOnlyTheOpeningMessage(t *testing.T) {
 					t.Fatalf("request %d had no messages", i)
 				}
 				if !strings.Contains(req.Messages[0].Text(), sentinel) {
-					t.Fatalf("request %d: system prompt is not in message 0 (role %q); requestDeliveredText would now skip a real message instead of the prompt. message 0 = %q",
-						i, req.Messages[0].Role, req.Messages[0].Text())
+					t.Fatalf("request %d: system prompt is not in message 0 (role %q); requestDeliveredText would now skip a real message instead of the prompt. message 0 opens %s",
+						i, req.Messages[0].Role, headString(req.Messages[0].Text(), 200))
 				}
 				for j, m := range req.Messages[1:] {
 					if strings.Contains(m.Text(), sentinel) {
