@@ -127,14 +127,22 @@ func TestTurnBoundaryWithoutAnIDStillOpensATurn(t *testing.T) {
 	}
 }
 
-// TestTurnBoundaryWithoutAnIDDoesNotPublishActive is the other half of the
-// same rule, and the more important one: status and capabilities ride a single
-// frame, so announcing active hands the composer steer:true/interrupt:true and
-// renders Stop and Steer. For a turn the daemon could not name, every control
-// they offer is compared against a durable id it does not hold and is rejected
-// with nothing shown (kata 2f41). Absent buttons are today's behaviour there;
-// lying buttons would be a regression.
-func TestTurnBoundaryWithoutAnIDDoesNotPublishActive(t *testing.T) {
+// TestTurnBoundaryWithoutAnIDStillPublishesActive is the other half of the same
+// rule, and it inverts what this file asserted while control mutations still
+// named the turn they acted on. They no longer do: appwire v3 dropped
+// expectedTurnId from steer, queue, interrupt, drain and promote
+// (appwire/types.go), and the daemon's own capability answer never consults a
+// turn id at all — server/appwire_runtime.go's appCapabilities computes
+// active from `processing || appReservedTurnID != ""`.
+//
+// So a client that hydrates through thread/read mid-turn is already told
+// active, with Steer, Interrupt and Queue true, whether or not the daemon could
+// name the turn — and every one of those controls WORKS, because none of them
+// carries an id to be compared. Withholding the push-path status therefore
+// cannot protect anyone from a lying button; it only hides a working Stop from
+// subscribers while thread/read offers it, leaving the two paths disagreeing
+// about the same turn.
+func TestTurnBoundaryWithoutAnIDStillPublishesActive(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 
 	out := projector.Project(events.SessionEvent{
@@ -143,8 +151,9 @@ func TestTurnBoundaryWithoutAnIDDoesNotPublishActive(t *testing.T) {
 		Data:      events.TurnStartedData{},
 	})
 
-	if got := statusChangedType(out); got != "" {
-		t.Fatalf("an unnameable turn published status %q; it must publish none", got)
+	if got := statusChangedType(out); got != appwire.ThreadStatusActive {
+		t.Fatalf("an unnameable turn published status %q, want %q: the pull path already reports active with working controls, and the two paths must agree",
+			got, appwire.ThreadStatusActive)
 	}
 }
 
