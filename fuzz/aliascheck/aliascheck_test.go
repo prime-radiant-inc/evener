@@ -103,9 +103,9 @@ func TestFindSharedStorageNamesEachKindOfSharing(t *testing.T) {
 	// Each case starts from a real deep copy and reintroduces exactly one
 	// shared reference, so the report can only come from that one field.
 	for _, tc := range []struct {
-		name  string
-		break_ func(src outer, dst *outer)
-		want  string
+		name    string
+		reshare func(src outer, dst *outer)
+		want    string
 	}{
 		{"shared pointer", func(src outer, dst *outer) { dst.Ptr = src.Ptr }, "outer.Ptr"},
 		{"shared slice backing array", func(src outer, dst *outer) { dst.Slice = src.Slice }, "outer.Slice"},
@@ -114,7 +114,7 @@ func TestFindSharedStorageNamesEachKindOfSharing(t *testing.T) {
 			// The map is rebuilt but its VALUES are carried across unchanged,
 			// which is what maps.Copy and a naive rebuild loop both do.
 			name: "shared pointer inside a rebuilt map",
-			break_: func(src outer, dst *outer) {
+			reshare: func(src outer, dst *outer) {
 				dst.Map = make(map[string]*inner, len(src.Map))
 				// Deliberately naive: this is the shape being detected.
 				maps.Copy(dst.Map, src.Map)
@@ -122,16 +122,16 @@ func TestFindSharedStorageNamesEachKindOfSharing(t *testing.T) {
 			want: "outer.Map[",
 		},
 		{
-			name:   "shared slice nested behind a pointer",
-			break_: func(src outer, dst *outer) { dst.Ptr.Names = src.Ptr.Names },
-			want:   "outer.Ptr.*.Names",
+			name:    "shared slice nested behind a pointer",
+			reshare: func(src outer, dst *outer) { dst.Ptr.Names = src.Ptr.Names },
+			want:    "outer.Ptr.*.Names",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var src outer
 			Populate(reflect.ValueOf(&src).Elem(), 4)
 			dst := deepCopy(t, src)
-			tc.break_(src, &dst)
+			tc.reshare(src, &dst)
 
 			shared := FindSharedStorage(reflect.ValueOf(src), reflect.ValueOf(dst), "outer")
 			if shared == "" {
