@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/serf/agent/provenance"
 )
 
 type delegateStopWaitBarrierContext struct {
@@ -1121,4 +1122,93 @@ func seedDelegateControllerDelivery(t *testing.T, c *delegateTreeController, del
 	if err != nil {
 		t.Fatalf("seed delivery: %v", err)
 	}
+}
+
+// TestDelegateControllerStopFencedSteerKeepsItsCausalProvenance pins the half of
+// the fsynced-pre-stop acceptance that 554221673 did not carry over.
+//
+// A caller-originated steer (SteerCaller) carries causal watch provenance. On the
+// ordinary path CompleteSteerPersistence records it as a pendingSteers admission,
+// BeginModelRequest lifts it into the model claim, and CompleteModelRequest unions
+// it into the successor runtime -- so every event that turn emits still names the
+// watch that drove it.
+//
+// The stop-fenced path returns before the admission is recorded. The steer's TEXT
+// survives (the transcript is the replay authority) but its causal origin does
+// not, and the loss is silent: the steer looks delivered.
+func TestDelegateControllerStopFencedSteerKeepsItsCausalProvenance(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+
+	origin := &provenance.Causal{
+		WatchKeys: []provenance.WatchKey{{WatchID: "wch_origin", WatchGeneration: "1"}},
+		Chain:     []provenance.Entry{{Kind: "watch_delivery", WatchID: "wch_origin", DeliveryID: "dlv_origin"}},
+	}
+	c.mu.Lock()
+	steeringClaim, err := c.beginSteerPersistenceLocked(lease.delegateID, origin)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("beginSteerPersistence with provenance: %v", err)
+	}
+	steeringEntry, err := steeringClaim.runtime.appendDelegateSteeringDurably("provenance-carrying steer", steeringClaim.entryID)
+	if err != nil {
+		t.Fatalf("append steering: %v", err)
+	}
+
+	// The covering stop releases the binding while the steer's transcript fsync
+	// has already landed, which is the accepted-under-a-stop case.
+	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), lease.delegateID)
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	if _, err := c.FinishGeneration(lease, delegateFinish{}); err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	if _, err := c.CompleteSteerPersistence(steeringClaim, steeringEntry); err != nil {
+		t.Fatalf("CompleteSteerPersistence for fsynced pre-stop steer: %v", err)
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	<-result.done
+
+	successor := startDelegateSuccessorGeneration(t, c, lease.delegateID, steeringClaim.runtime)
+	if _, err := completeDelegateModelRequest(c, successor); err != nil {
+		t.Fatalf("successor model request: %v", err)
+	}
+
+	got := steeringClaim.runtime.activeCausalProvenance()
+	if got == nil || len(got.WatchKeys) == 0 {
+		t.Fatalf("successor active provenance = %#v, want the steer's originating watch key", got)
+	}
+	if got.WatchKeys[0].WatchID != "wch_origin" {
+		t.Fatalf("successor active provenance watch = %q, want wch_origin", got.WatchKeys[0].WatchID)
+	}
+}
+
+// startDelegateSuccessorGeneration drives a fresh generation for delegateID onto
+// runtime and returns its lease.
+func startDelegateSuccessorGeneration(t *testing.T, c *delegateTreeController, delegateID string, runtime *Session) delegateLease {
+	t.Helper()
+	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart successor: %v", err)
+	}
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart successor: %v", err)
+	}
+	if err := c.AttachRuntime(started.lease, runtime); err != nil {
+		t.Fatalf("AttachRuntime successor: %v", err)
+	}
+	inputClaim, err := c.BeginStartInput(started.lease)
+	if err != nil {
+		t.Fatalf("BeginStartInput successor: %v", err)
+	}
+	if _, err := c.CompleteStartInput(inputClaim, true, delegateFinish{}); err != nil {
+		t.Fatalf("CompleteStartInput successor: %v", err)
+	}
+	return started.lease
 }

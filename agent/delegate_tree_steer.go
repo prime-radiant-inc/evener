@@ -164,10 +164,22 @@ func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteerin
 	if err != nil {
 		// A covering stop owns the earlier admission. Transcript fsync remains
 		// its durable acceptance point even after the exact binding is released.
+		//
+		// The admission is still recorded. The transcript replays the message,
+		// but only an admission carries the steer's causal provenance into the
+		// successor's model claim -- without one the successor runs the steer
+		// with no idea which watch drove it, and the loss is invisible because
+		// the text arrived.
 		if stopFenced && claim.delegateID == claim.lease.delegateID {
 			live = c.live[claim.delegateID]
-			if live != nil && entry.timestamp.After(live.activityAt) {
-				live.activityAt = entry.timestamp
+			if live != nil {
+				live.pendingSteers = append(live.pendingSteers, delegateSteeringAdmission{
+					entryID:    entry.entryID,
+					provenance: provenance.Clone(claim.provenance),
+				})
+				if entry.timestamp.After(live.activityAt) {
+					live.activityAt = entry.timestamp
+				}
 			}
 			c.evidenceVersion++
 			return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(claim.delegateID)}}, nil
