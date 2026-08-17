@@ -304,11 +304,71 @@ deleting. The fix belongs where the precondition reads. One line covers both
 windows, because a durable turn name is set in each, and the pinning tests
 report it when it is applied. Jesse's call, on live evidence.
 
+#### RESOLVED (kata `vewa`, 2026-08-17). The refusal is closed.
+
+Jesse's ruling, which is the general form of the rule the rest of this plan was
+groping toward: **Stop is available whenever the agent is not quiesced, and
+control mutations are session-scoped, not message-scoped** — everywhere, across
+every front end and every back end.
+
+`InterruptClientMutation`'s precondition now reads both facts rather than one,
+through a named predicate:
+
+```go
+func sessionIsQuiesced(running bool, claimedTurnID string) bool {
+	return !running && strings.TrimSpace(claimedTurnID) == ""
+}
+```
+
+Quiesced means the session is not running *and* no turn has been claimed for it
+to start running. A claimed-but-not-yet-processing turn is work in progress, and
+cancelling it is exactly what the user asked for. The two facts are sampled
+separately because `WireState` reaches for locks the mutation-store serializer
+may never wait on; that constraint is documented on the predicate rather than
+left implicit.
+
+The daemon had the same disagreement one layer up. `appStatus` read `state` and
+`processing` and never the turn reservation; `appCapabilities` read `processing`
+and the reservation and never `state`. Each had a window the other could not
+see, and a client could be handed one frame describing two threads —
+`status=active` beside `steer=false interrupt=false` (kata `06t8`'s report), or
+`status=idle` beside `steer=true interrupt=true`. `appStatus` now takes the
+reservation as an explicit third input, `appCapabilities` derives `active` and
+`closed` from its *result*, and closed wins over both so a lingering reservation
+cannot mask a shutdown. The daemon's REST `/status` was a fourth computation
+with three more variants; it reads the same answer now.
+
+`Interrupt` no longer reads the ambient `cancelFunc`, which the session loop
+arms and clears once per turn on a different clock — that let the set say "a
+turn is running and it cannot be stopped", and because the set is pushed and
+kept until the next status change, a frame stamped in that window took Stop away
+for the whole turn (kata `5gdv`). `interruptWired` latches once and keeps the
+honesty the old read carried. `serve.go`'s drain path also armed the cancel
+*after* publishing processing, unlike its two sibling sites; it now matches them.
+
+Three clients gated this session-scoped mutation on a turn id the request does
+not carry: the web composer's `showStop` (via `isTurnActive`), `serf-tui`'s
+`/interrupt`, and the command palette's `hasActiveTurn`. All three withheld Stop
+for the whole unnamed-but-working window. Steer keeps the turn gate in all
+three — it redirects a turn in flight and its handler needs the id.
+
+The two pinning tests fired on the fix, exactly as their comments instructed, and
+are now inverted: `pinStopRefusedDuringPreTurnWork` became
+`requireStopLandsDuringPreTurnWork`, which still refuses to score a run as a pass
+if the park closed before the Stop landed.
+
+**One consequence the refusal was hiding, now filed as kata `wms7`:** a Stop that
+lands at a turn boundary is Applied, and the queued message runs anyway —
+`agent/session_lifecycle.go` pops the queue head and continues after the
+cancellation. Measured on the live stack: the post-Stop model round carries the
+queued text. Whether a session-scoped Stop should leave that message queued is a
+product call, and the boundary e2e measures the behaviour without ruling on it.
+
 ### Consequences for the rest of this plan
 
 | Task | Status after the measurement |
 | --- | --- |
-| 2 (interrupt escape hatch) | **Premise withdrawn**, then the task itself **subsumed** by `c435bc579`. Still not to be executed -- and kata `gwxa` found a bug in what that commit SHIPPED: the session-scoped precondition refuses Stop throughout any turn's pre-turn work. That is a fix to the precondition, not a reason to run this task. |
+| 2 (interrupt escape hatch) | **Premise withdrawn**, then the task itself **subsumed** by `c435bc579`. Still not to be executed -- and kata `gwxa` found a bug in what that commit SHIPPED: the session-scoped precondition refused Stop throughout any turn's pre-turn work. That was a fix to the precondition, not a reason to run this task, and kata `vewa` made it (RESOLVED block above). |
 | 3 (steer always lands) | **Stands** — and has since shipped. |
 | 4 (`EventError` bucket ids) | **Stands.** Independent, verified by both reviews. Shipped as `0e467e098`. |
 | 5 (kata `2f41`) | **Stands, and is now the most valuable task here** — if the remaining windows are this hard to reach, the thing that matters is that any control which does fail says so. Shipped; `2f41` is closed. |

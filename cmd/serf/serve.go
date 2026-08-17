@@ -1002,10 +1002,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				drainCtx, cancelDrain := context.WithCancel(root)
 				drainCtx = agent.WithQueuedInputDrainOnInterruptHandler(drainCtx, root, nextTurnCtx)
 				currentCancel = cancelDrain
-				srv.SetProcessing(true)
-				srv.SetState(string(agent.SessionProcessing))
+				// Arm the cancel BEFORE publishing processing, matching the two
+				// other arming sites below. Published first, this turn is
+				// announced as running while nothing can stop it, and a
+				// capability set sampled in between says exactly that (5gdv).
 				srv.SetCancelFunc(cancelDrain)
 				setMutationRunner(cancelDrain, runnerDone)
+				srv.SetProcessing(true)
+				srv.SetState(string(agent.SessionProcessing))
 				return drainCtx, cancelDrain
 			}
 			turnCtx, cancelTurn := context.WithCancel(ctx)

@@ -579,18 +579,24 @@ export function Composer({ ref }: ComposerProps) {
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments;
 
-  // Stop and Steer both act on an IN-FLIGHT turn, so they are rendered only
-  // while one is running (`busy`) AND the harness advertises the matching
-  // capability. `busy` also subsumes the ended/closed statuses isTurnActive
-  // can never report as active.
+  // Stop is SESSION-scoped and Steer is not, so they do not share a gate.
   //
-  // The two have different reasons for hiding, and only one is a precondition.
-  // Stop genuinely requires a processing session: InterruptClientMutation
-  // refuses unless WireState reports active, because there is nothing to
-  // cancel. Steer has no such precondition -- it names no turn, so an idle
-  // session would accept it and land it in the next turn -- and is hidden as a
-  // presentation choice, because Send already covers "say something now".
-  const showStop = busy && model.capabilities.interrupt;
+  // Stop asks the session to stop working. turn/interrupt names no turn
+  // (appwire v3 dropped expectedTurnId from every control mutation) and the
+  // daemon answers on the session's own quiescence, so the only question the
+  // composer has to answer is "is this session working" -- which is the status
+  // alone. It deliberately does NOT use `busy`: isTurnActive additionally
+  // requires activeTurnId, and status and id arrive on separate frames. The
+  // daemon publishes active from the turn RESERVATION it takes at turn/start
+  // and the name only lands with turn/started behind pre-turn work, so gating
+  // Stop on the id took the button away for the whole of every window where
+  // the session is visibly working and unnamed (kata vewa/5gdv).
+  //
+  // Steer keeps `busy`. It redirects a turn in flight, and with none running
+  // Send already covers "say something now" -- a presentation choice rather
+  // than a precondition, since an idle session would accept a steer and land
+  // it in the next turn.
+  const showStop = model.status.type === "active" && model.capabilities.interrupt;
   const showSteer = busy && model.capabilities.steer;
   // Send keeps ONE label in every state. While a turn runs it queues rather
   // than sending now, but that is a change of TIMING, not of verb - a label

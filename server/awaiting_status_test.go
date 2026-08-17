@@ -26,7 +26,7 @@ func TestStatusReportsAwaitingAndSendCapability(t *testing.T) {
 	if !got.Capabilities.Send {
 		t.Fatal("Send capability must be true for an awaiting session")
 	}
-	if s := appStatus(got.State, false); s != appwire.ThreadStatusAwaiting {
+	if s := appStatus(got.State, false, false); s != appwire.ThreadStatusAwaiting {
 		t.Fatalf("appStatus(awaiting,false) = %q", s)
 	}
 }

@@ -311,6 +311,7 @@ type Server struct {
 	appDescendantTranscriptPathFunc func(threadID string) string
 	retrySafeTurns                  RetrySafeTurnFunctions
 	cancelFunc                      context.CancelFunc
+	interruptWired                  bool
 	steerFunc                       func(string)
 	steerWithImagesFunc             func(string, []ImageAttachment)
 	queueFunc                       func(string) error
@@ -474,9 +475,20 @@ func (s *Server) IncrementTurns() {
 }
 
 // SetCancelFunc sets the cancel function called by POST /interrupt.
+// The session loop arms it per turn and clears it between turns, so it answers
+// "is a cancel armed right now" and nothing more durable than that.
+//
+// interruptWired is the durable half: whether this harness does interrupts at
+// all. It latches on the first armed cancel and never clears, because a daemon
+// that stopped one turn can stop the next one. appCapabilities needs that
+// distinction -- reading the per-turn field there published "a turn is running
+// and cannot be stopped" in the gaps between arming and publishing (kata 5gdv).
 func (s *Server) SetCancelFunc(cancel context.CancelFunc) {
 	s.mu.Lock()
 	s.cancelFunc = cancel
+	if cancel != nil {
+		s.interruptWired = true
+	}
 	s.mu.Unlock()
 }
 

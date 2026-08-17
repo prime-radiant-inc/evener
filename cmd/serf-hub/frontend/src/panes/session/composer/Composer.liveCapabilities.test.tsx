@@ -238,6 +238,41 @@ test("a live idle session's controls follow the turn its own send starts", async
   expect(submitButton().disabled).toBe(false);
 });
 
+// Stop is SESSION-scoped, so its gate cannot be "a turn has told us its name".
+//
+// turn/interrupt carries no turn id (appwire v3 dropped expectedTurnId from
+// every control mutation) and the daemon decides on the session's own
+// quiescence. But the composer gated Stop on `busy`, which is isTurnActive:
+// `statusType === "active" && !!activeTurnId`. The status and the id arrive on
+// separate frames, and the daemon publishes active from a turn RESERVATION
+// well before turn/started names it -- so between the two the user is looking
+// at a working session with no way to stop it.
+//
+// The window is not a sliver. The reservation is taken at turn/start and the
+// name lands after pre-turn work, which is where a slash command runs its
+// inline shell span; and the same gap opens at every boundary between two
+// turns of one drain (kata vewa's live measurement holds it open for seconds).
+//
+// Steer stays behind `busy`: it needs a turn to redirect, and Send already
+// covers "say something now" for a session between turns.
+test("a working session offers Stop before its turn has announced a name", async () => {
+  const fake = await mountComposer("idle", daemonCapabilities(false));
+
+  act(() => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${REF}`, ref: REF, status: { type: "active" }, capabilities: daemonCapabilities(true) },
+    });
+  });
+
+  const model = threadsStore.getState().threads.get(REF);
+  expect({ status: model?.status.type, activeTurnId: model?.activeTurnId }).toEqual({
+    status: "active",
+    activeTurnId: undefined,
+  });
+  expect(screen.queryByTestId("composer-stop")).not.toBeNull();
+});
+
 // Both directions, or the fix is just a latch that turns everything on. The
 // set itself is what this asserts: with no turn in flight, `busy` alone
 // already hides Steer and Stop and the availability table already reports a

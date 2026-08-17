@@ -210,11 +210,13 @@ var hubCommandRegistry = []hubCommandDefinition{
 		UnavailableAction:  "interrupt",
 		UnavailableSummary: "Interrupt is not available for this session.",
 		Available:          capabilityAvailable(func(c hubSessionCapabilities) bool { return c.Interrupt }, "source does not advertise interrupt"),
+		// No ActiveTurnID gate here. turn/interrupt is session-scoped -- it
+		// names no turn (appwire v3) and the daemon decides on the session's own
+		// quiescence. A client-side "wait for an active turn id" refused exactly
+		// the windows Stop is for: the wire publishes an active status from the
+		// daemon's turn reservation, and the id only lands with the turn/started
+		// notification behind it (kata vewa).
 		Run: func(m *hubModel, _ string) tea.Cmd {
-			if strings.TrimSpace(m.detail.ActiveTurnID) == "" {
-				m.addSessionSystem("Interrupt is not available until an active turn starts.")
-				return nil
-			}
 			ref, ok := m.currentRef()
 			if !ok {
 				m.addSessionSystem("Session ref is invalid.")

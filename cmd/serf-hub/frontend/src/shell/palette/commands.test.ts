@@ -481,14 +481,39 @@ test("/steer sends turn/steer when a turn is active", async () => {
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "go left" }] });
 });
 
-test("/interrupt, /queue, /drain-as-steer each block with their own no-active-turn message", () => {
+test("/queue and /drain-as-steer each block with their own no-active-turn message", () => {
   focusSession("ref_a");
   seedModel("ref_a", { status: { type: "idle" }, activeTurnId: undefined });
   const q = cmd("queue");
   if (q.args?.kind !== "free") throw new Error("expected free args");
-  expect(blockedMessage(cmd("interrupt").run?.(runContext()))).toBe("interrupt failed: no active turn");
   expect(blockedMessage(q.args.run(runContext(), "later"))).toBe("queue failed: no active turn");
   expect(blockedMessage(cmd("drain-as-steer").run?.(runContext()))).toBe("drain failed: no active turn");
+});
+
+// /interrupt is not in that list, for the same reason /model is not: only the
+// daemon knows. turn/interrupt names no turn (appwire v3) and its precondition
+// is the session's own quiescence, so a palette that answers "is a turn in
+// flight" itself can only ever refuse a Stop the daemon would have accepted.
+// The window is real: the daemon publishes an active status from the turn
+// reservation it takes at turn/start, and activeTurnId only lands with the
+// turn/started notification behind pre-turn work (kata vewa/5gdv).
+test("/interrupt sends turn/interrupt for a working session whose turn has no name yet", async () => {
+  const fake = connectFake();
+  fake.on("turn/interrupt", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+  focusSession("ref_a");
+  seedModel("ref_a", { status: { type: "active" }, activeTurnId: undefined });
+
+  await cmd("interrupt").run?.(runContext());
+
+  await vi.waitFor(() => expect(fake.calls.some((call) => call.method === "turn/interrupt")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "turn/interrupt")?.params).toMatchObject({ ref: "ref_a" });
 });
 
 // --- /model: no client-side turn guess + provider/model split + toast ---
