@@ -181,9 +181,12 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 		t.Fatalf("AcceptClientMutationStart: %v", err)
 	}
 
-	// Both enqueues must be visible in the durable queue before the envelope is
+	// Both enqueues must be visible in the DURABLE queue before the envelope is
 	// published, or the ids the promote compares against come from a queue that
-	// was still filling. Poll for the condition rather than sleeping.
+	// was still filling. Poll for the condition rather than sleeping -- and poll
+	// the durable snapshot, since that is the object the promote reads; an
+	// earlier version of this barrier polled the mirror and so could not have
+	// established what it claimed.
 	waitForQueueDepth(t, sess, 2)
 
 	srv := NewServer(ServerConfig{})
@@ -282,19 +285,27 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 	}
 }
 
-// waitForQueueDepth blocks until the session's durable queue holds exactly want
+// waitForQueueDepth blocks until the session's DURABLE queue holds exactly want
 // entries. A poll, not a sleep: the condition is what the caller needs, and a
 // fixed delay is either too short under load or wasted when it is not.
+//
+// It reads ClientMutationProjection, not sess.QueueIDs(). QueueIDs reads the
+// mirror s.inputQueue (agent/session_queue.go), which reflectDurableInputQueue
+// rewrites after the store commit and under a different lock -- so a barrier
+// built on it can pass while the durable queue every mutation compares against
+// is in a different state, which is the whole failure mode the caller is
+// guarding against.
 func waitForQueueDepth(t *testing.T, sess *agent.Session, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		got := len(sess.QueueIDs())
+		durable, _ := sess.ClientMutationProjection()
+		got := len(durable.IDs)
 		if got == want {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("queue depth = %d, want %d", got, want)
+			t.Fatalf("durable queue depth = %d, want %d (mirror reads %#v)", got, want, sess.QueueIDs())
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
