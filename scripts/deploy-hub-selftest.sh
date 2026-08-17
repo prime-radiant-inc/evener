@@ -32,8 +32,8 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/deploy-hub.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d -t deploy-hub-selftest.XXXXXX)"
-trap 'rm -rf "$work"' EXIT
+selftest_scratch work deploy-hub-selftest
+trap 'selftest_rm_scratch' EXIT
 
 calls() { cat "$state/$1" 2>/dev/null || echo 0; } # $1 = counter file name
 
@@ -82,7 +82,7 @@ write_print_fixture() {
 new_case() {
 	FAKE_MAKE_FAIL=""
 	FAKE_LAUNCHCTL_KICKSTART_FAIL=""
-	case_dir="$(mktemp -d "$work/case.XXXXXX")"
+	case_dir="$(mktemp -d "$work/case.XXXXXX")" || { echo "deploy-hub-selftest: mktemp under \$work failed" >&2; exit 1; }
 	bin="$case_dir/bin"
 	state="$case_dir/state"
 	mkdir -p "$bin" "$state" "$case_dir/repo"

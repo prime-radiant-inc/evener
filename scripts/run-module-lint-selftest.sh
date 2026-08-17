@@ -7,8 +7,8 @@ runner="$script_dir/run-module-lint.sh"
 makefile="$(cd "$script_dir/.." && pwd)/Makefile"
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d -t serf-module-lint-selftest.XXXXXX)"
-trap 'rm -rf "$work"' EXIT
+selftest_scratch work serf-module-lint-selftest
+trap 'selftest_rm_scratch' EXIT
 
 assert_count() {
 	actual="$(grep -cF -- "$2" "$1" || :)"
@@ -84,7 +84,7 @@ FAKE_TMPDIR_MKTEMP
 }
 
 new_case() {
-	case_dir="$(mktemp -d "$work/case.XXXXXX")"
+	case_dir="$(mktemp -d "$work/case.XXXXXX")" || { echo "run-module-lint-selftest: mktemp under \$work failed" >&2; exit 1; }
 	repo="$case_dir/repo"
 	state="$case_dir/state"
 	bin="$case_dir/bin"
@@ -648,7 +648,7 @@ assert_one_summary "$out" "an unreadable result summarises exactly once"
 
 # Makefile integration: copy the real build entry point, fake only external
 # commands, and prove both quiet success and unchanged lint-family coverage.
-case_dir="$(mktemp -d "$work/make-case.XXXXXX")"
+case_dir="$(mktemp -d "$work/make-case.XXXXXX")" || { echo "run-module-lint-selftest: mktemp under \$work failed" >&2; exit 1; }
 repo="$case_dir/repo"
 state="$case_dir/state"
 bin="$case_dir/bin"
