@@ -14,6 +14,16 @@ while a delegate was still uncontrollable. Every claim below was re-checked in
 the tree before this revision; each correction is marked where it sits. Steer had
 no task at all and now has Task 8.
 
+**Revision:** re-resolved 2026-08-17 against `64a891865` (kata `nf4r`). The
+re-check claimed above was true when written and had since decayed: **45 of the
+85 `file:line` citations in this document pointed at something other than what
+the prose claimed**, and are corrected here. Task 9 was added, because Tasks 3
+and 4 falsify a label in the EntryKind turn-opening audit that nothing in the
+suite can catch, and Task 3 gained the constraint that keeps its cheapest
+mechanism from deadlocking a child. **Treat a citation here as only as fresh as
+the newest revision line above** — this document has now drifted twice under
+headers asserting it had been checked, so re-resolve before relying on one.
+
 **Goal:** A subagent (delegate) thread in the web UI renders separated turns,
 shows busy while working, and supports Stop and Steer.
 
@@ -113,13 +123,20 @@ cases exist.
 
   **Why this is hard, which is the part worth carrying forward.** There is no
   per-thread source of truth to compute a capability set *from*. `appCapabilities`
-  (`server/appwire_runtime.go:1353-1376`) derives every field from server-wide
+  (`server/appwire_runtime.go:1353-1401`) derives every field from server-wide
   state: the callback registrations `s.steerFunc` / `s.steerWithImagesFunc`,
-  `s.cancelFunc`, `s.compactFunc`, `s.shutdownFunc`, `s.modelFunc`, `s.nameFunc`,
-  `s.queueFunc`, `s.goalFunc`, plus `s.appReservedTurnID` and the `processing`
+  `s.compactFunc`, `s.shutdownFunc`, `s.modelFunc`, `s.nameFunc`,
+  `s.queueFunc`, `s.goalFunc`, plus the sticky `s.interruptWired`
+  (`server/server.go:314`), `s.appReservedTurnID` and the `processing`
   flag. Each is one value on the `Server`, wired to the root session. Ask it about
   a descendant and it can only answer about the root — which is why the honest
   thing it does today is not answer at all.
+
+  Note `Interrupt` reads the sticky `s.interruptWired` and **deliberately not**
+  the per-turn `s.cancelFunc` — that read is what kata `5gdv` removed, because
+  the two are armed on different goroutines and a set sampled between them
+  advertised a turn that was running and could not be stopped. Do not
+  re-introduce it when making the set per-thread.
 
   So Task 2 is not "pass a thread id to `appCapabilities`". It is: give a
   descendant thread a state the capability set can be computed from, then fill
@@ -210,8 +227,10 @@ cases exist.
       - the daemon's interrupt callback cancels the **root** runner
         (`cmd/serf/serve.go:832` → `cancelAndWaitMutationRunner`,
         `cmd/serf/serve.go:662-673`). It reads `mutationRunnerCancel`
-        (declared `:646`), whose **only** writer is `setMutationRunner`
-        (`:648-651`), called from four places in the root serve loop: `:1010`,
+        (declared `:646`), which has two writers: `setMutationRunner`
+        (`:648-651`) arms it, and `clearMutationRunner` (`:653-660`) disarms it
+        when the run it belongs to is the one still recorded. `setMutationRunner`
+        is called from four places in the root serve loop: `:1010`,
         `:1020`, `:1032`, `:1039`. Note `:1010` is the drain-loop re-arm inside
         `nextTurnCtx` — it re-points the seam at `cancelDrain` mid-drain, and it
         is the path most likely to break when `requireRootMutationTarget` comes
@@ -229,10 +248,12 @@ cases exist.
       So this task needs per-child current-turn cancellation and completion-wait
       plumbing for **both** run types. **Acceptance:** the addressed child stops
       while the root and its sibling delegates keep running — assert all three,
-      not just the first.
+      not just the first. This task is what makes the EntryKind audit's label
+      false; Task 9 closes with it and is where that is dealt with.
 
       **Watch the session-scoped interrupt.** `InterruptClientMutation` reads
-      `snapshot.ActiveTurnID` as its target (`agent/session_client_mutation.go:464`)
+      `snapshot.ActiveTurnID` as its target (`agent/session_client_mutation.go:497`,
+      in the function declared at `:464`)
       with the precondition "the session is processing". That is the shape most
       likely to cancel the root by accident once `requireRootMutationTarget` comes
       down. Note `TurnInterruptParams` already carries `threadId`
