@@ -44,19 +44,26 @@ done
 {
 	echo "mode: set"
 	if [ "$tagged" = 1 ]; then
-		# The fuzz track reaches block B only.
-		echo "fake/a.go:1.1,2.1 2 0"
+		# The fuzz track reaches blocks B and C only.
+		echo "fake/a.go:1.1,2.1 200 0"
 		if [ -n "${FAKE_GO_SHIFT_FUZZ_BLOCKS:-}" ]; then
-			# Same code, different block boundaries — the shape that makes a
-			# union denominator meaningless.
-			echo "fake/b.go:3.1,4.9 3 1"
+			# A large block split differently by the two builds — a different
+			# basis, whose union denominator would be meaningless.
+			echo "fake/b.go:3.1,4.9 298 1"
 		else
-			echo "fake/b.go:3.1,4.1 3 1"
+			echo "fake/b.go:3.1,4.1 298 1"
+		fi
+		if [ -n "${FAKE_GO_TINY_VARIANCE:-}" ]; then
+			# ONE re-split block, the scale the serffuzz tag genuinely produces.
+			echo "fake/c.go:9.1,9.9 2 1"
+		else
+			echo "fake/c.go:9.1,9.5 2 1"
 		fi
 	else
 		# The test track reaches block A only.
-		echo "fake/a.go:1.1,2.1 2 1"
-		echo "fake/b.go:3.1,4.1 3 0"
+		echo "fake/a.go:1.1,2.1 200 1"
+		echo "fake/b.go:3.1,4.1 298 0"
+		echo "fake/c.go:9.1,9.5 2 0"
 	fi
 } >"$prof"
 exit 0
@@ -72,8 +79,8 @@ out="$work/out.txt"
 run >"$out" 2>&1
 assert_eq "$?" "0" "measure-only run exits zero"
 
-# 5 of 5 statements, where neither track alone reaches more than 3.
-if grep -qE '^agent +5 +5 +100\.0% +40\.0% +60\.0%' "$out"; then
+# 500 of 500 statements, where neither track alone reaches more than 300.
+if grep -qE '^agent +500 +500 +100\.0% +40\.0% +60\.0%' "$out"; then
 	ok "union counts a block covered by EITHER track (100% from 40% and 60%)"
 else
 	bad "union row wrong"; sed 's/^/    | /' "$out"
@@ -100,6 +107,13 @@ assert_has "$out" "(no module)" "a missing module is reported"
 PATH="$fake_bin:$PATH" TMPDIR="$tmphome" FAKE_GO_SHIFT_FUZZ_BLOCKS=1 bash "$script" --modules "agent" >"$out" 2>&1
 assert_eq "$?" "1" "a boundary mismatch fails rather than reporting a nonsense percentage"
 assert_has "$out" "boundary mismatch" "the boundary mismatch is named"
+
+# A handful of re-split blocks is what the serffuzz tag genuinely produces
+# (invariant.Hold becomes a real call), so it is reported, not fatal — failing
+# there would discard a whole module's measurement over 0.02%.
+PATH="$fake_bin:$PATH" TMPDIR="$tmphome" FAKE_GO_TINY_VARIANCE=1 bash "$script" --modules "agent" >"$out" 2>&1
+assert_eq "$?" "0" "a negligible boundary variance still yields a measurement"
+assert_has "$out" "boundary-variant" "the variance is reported rather than hidden"
 
 help_out="$(bash "$script" --help 2>&1)"
 if echo "$help_out" | grep -q "^Usage:" && ! echo "$help_out" | grep -q "^set -uo pipefail"; then

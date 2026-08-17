@@ -107,18 +107,29 @@ for m in $modules; do
 	read -r uc ut < <(stmt_counts "$base.union.cov")
 	[ "${ut:-0}" -gt 0 ] || { printf '%-10s %s\n' "$m" "no statements"; continue; }
 
-	# A union whose denominator exceeds either track's means the two builds
-	# disagree about block boundaries, and the percentage would be meaningless.
-	if [ "$ut" -gt "$tt" ] && [ "$ut" -gt "$ft" ]; then
-		printf '%-10s %s\n' "$m" "boundary mismatch: union counts $ut statements vs $tt test / $ft fuzz"
-		fail=1; continue
+	# A union denominator above both tracks means some block was counted twice
+	# because the two builds split it differently. A handful is expected and
+	# harmless: under -tags serffuzz invariant.Hold becomes a real call, which
+	# re-splits the blocks around it (8 statements in 33141 for the root module).
+	# A MATERIAL divergence is a different basis, and its percentage would be
+	# meaningless, so that still fails rather than being quietly reported.
+	larger="$tt"
+	[ "$ft" -gt "$larger" ] && larger="$ft"
+	excess=$(( ut - larger ))
+	variance=""
+	if [ "$excess" -gt 0 ]; then
+		if [ "$excess" -gt $(( larger / 100 )) ]; then
+			printf '%-10s %s\n' "$m" "boundary mismatch: union counts $ut statements vs $tt test / $ft fuzz"
+			fail=1; continue
+		fi
+		variance="  (+$excess boundary-variant)"
 	fi
 
 	pct="$(pct_of "$uc" "$ut")"
 	echo "$m $pct" >>"$measured_file"
 	floor="$(floor_for "$m")"
-	printf '%-10s %10d %10d %7s%% %7s%% %7s%% %7s\n' \
-		"$m" "$uc" "$ut" "$pct" "$(pct_of "$tc" "$tt")" "$(pct_of "$fc" "$ft")" "${floor:-—}"
+	printf '%-10s %10d %10d %7s%% %7s%% %7s%% %7s%s\n' \
+		"$m" "$uc" "$ut" "$pct" "$(pct_of "$tc" "$tt")" "$(pct_of "$fc" "$ft")" "${floor:-—}" "$variance"
 
 	if $check && [ -n "$floor" ]; then
 		if [ "$(awk -v p="$pct" -v f="$floor" -v tol="$tolerance" 'BEGIN{print (p < f - tol) ? 1 : 0}')" = "1" ]; then
