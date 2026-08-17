@@ -153,6 +153,8 @@ TARGETS=(
 	"native:agent:./diagnostic:FuzzDiagnosticClassificationProgram::diagnostic.go"
 	"native:agent:./diagnostic:FuzzClassify::"
 	"native:agent:./diagnostic:FuzzPackageUnion::"
+	"native:agent:./envctx:FuzzEnvctxTrackerDiff::envctx.go"
+	"native:agent:./internal/artifactstore:FuzzArtifactStoreRefBoundary::store.go"
 	"native:agent:./internal/goal:FuzzGoalStoreTerminalPersistence::"
 	"native:agent:./internal/goal:FuzzGoalLifecycleProgram::goal.go;prompt.go"
 	"native:agent:./internal/installid:FuzzLoadOrCreateInstallationIDWithFS::"

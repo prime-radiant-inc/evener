@@ -35,6 +35,21 @@ capped="${SERF_FUZZ_CAPPED:-$repo_root/scripts/run-capped.sh}"
 registry_check="${SERF_FUZZ_REGISTRY_CHECK:-$repo_root/scripts/fuzz-registry-check.sh}"
 exclusions_file="$repo_root/scripts/fuzzcov-global-exclusions.txt"
 floors_file="$repo_root/scripts/fuzzcov-global-floors.txt"
+# The gap map's reasoned ignore-list, shared rather than duplicated: a package
+# declared out of fuzz scope for scripts/fuzz-gap-check.sh must not be mandatory
+# here. Entries are "<import-path>  # <reason>"; the reason is required there and
+# reviewed like code, so this consumer needs only the path.
+ignore_file="${SERF_FUZZCOV_IGNORE:-$repo_root/scripts/fuzzcov-ignore.txt}"
+
+in_ignore_list() {
+	[ -n "${1:-}" ] || return 1
+	[ -f "$ignore_file" ] || return 1
+	awk -v want="$1" '
+		/^[[:space:]]*#/ { next }
+		{ sub(/#.*/, ""); gsub(/[[:space:]]/, ""); if ($0 != "" && $0 == want) found = 1 }
+		END { exit found ? 0 : 1 }
+	' "$ignore_file"
+}
 
 # Workspace modules are discovered from go.work after argument parsing. An
 # explicit --modules selection is useful while a module is being raised, but the
@@ -335,10 +350,10 @@ for module in "${selected_modules[@]}"; do
 	module_dir="$(map_get "$module" "$workspace_module_dirs")" || module_dir=""
 	[ -n "$logical_module_dir" ] && [ -n "$module_dir" ] || die "missing module directory mapping: $module"
 	list_file="$work/packages-${module//\//_}.txt"
-	if ! (cd "$logical_module_dir" && "$go_bin" list -tags serffuzz -f '{{.Dir}}' ./...) >"$list_file"; then
+	if ! (cd "$logical_module_dir" && "$go_bin" list -tags serffuzz -f '{{.Dir}}'$'\t''{{.ImportPath}}' ./...) >"$list_file"; then
 		die "go list failed for module: $module"
 	fi
-	while IFS= read -r package_dir; do
+	while IFS="$tab" read -r package_dir import_path; do
 		[ -n "$package_dir" ] || continue
 		if ! resolved_package_dir="$(cd "$package_dir" 2>/dev/null && pwd -P)"; then
 			die "go list returned unreadable package directory for module $module: $package_dir"
@@ -353,7 +368,13 @@ for module in "${selected_modules[@]}"; do
 		if ! in_list "$module$tab$pkg" "$production_package_list"; then
 			production_package_list="$production_package_list$module$tab$pkg"$'\n'
 		fi
-		if ! in_list "$module$tab$pkg" "$surface_list"; then
+		# A package the gap map already reasons out of fuzz scope is not REQUIRED
+		# to carry a surface — by the same list scripts/fuzz-gap-check.sh reads,
+		# so a package cannot be out of scope for one gate and mandatory for the
+		# other. It stays a production package either way: several ignored
+		# packages do carry registered targets, and dropping them from the
+		# denominator would make their own plan rows look unsafe.
+		if ! in_list "$module$tab$pkg" "$surface_list" && ! in_ignore_list "$import_path"; then
 			echo "missing local fuzz surface: $module:$pkg" >&2
 			preflight_failed=true
 		fi
