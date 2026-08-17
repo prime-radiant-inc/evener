@@ -51,6 +51,7 @@ TARGETS=(
 	"native:agent:./schema:FuzzSessionDisplayName::snapshot.go#SessionDisplayName"
 	"native:agent:./schema:FuzzHookAnnouncement::turn.go#Announcement"
 	"native:agent:./internal/jobstore:FuzzJobEventLogReplay::fold.go"
+	"native:agent:./internal/jobstore:FuzzCloneEventSharesNoMutableState::event_clone.go"
 	"native:agent:./internal/jobstore:FuzzJobstoreLifecycleProgram::"
 	"native:agent:./internal/jobstore:FuzzJobstorePackageUnion::"
 	"native:agent:./internal/delegatestore:FuzzFold::fold.go"
