@@ -704,10 +704,20 @@ func (s *Session) queueChangedDataLocked() events.QueueChangedData {
 	}
 	return data
 }
-func queuedInputDrainContext(ctx context.Context, err error) (context.Context, bool) {
+// interruptDrainConfig reports whether an interrupted turn may consume the
+// queue head, and hands back the drain handler to run it under.
+//
+// It is a pure function of THIS turn's context and error: it reads no queue
+// state, and it commits nothing. That is what lets the interrupted-turn
+// recovery settle the question before it claims. Claiming first and asking
+// afterwards costs a durable commit to remove the head and a second to put it
+// back, and between them the durable queue is observably missing an entry that
+// is about to return -- which a turn/promoteQueuedAsSteer can sample and commit
+// against (kata 9f5x).
+func interruptDrainConfig(ctx context.Context, err error) (queuedInputDrainConfig, bool) {
 	cfg, ok := ctx.Value(queuedInputDrainContextKey{}).(queuedInputDrainConfig)
 	if !ok || cfg.rootCtx == nil {
-		return nil, false
+		return queuedInputDrainConfig{}, false
 	}
 	isAbort := isAbortError(err)
 	// A bare context.Canceled is this turn's own cancellation and always drains.
@@ -718,19 +728,34 @@ func queuedInputDrainContext(ctx context.Context, err error) (context.Context, b
 	bareCanceled := errors.Is(err, context.Canceled) && !isAbort
 	drainable := bareCanceled || (isAbort && errors.Is(ctx.Err(), context.Canceled))
 	if !drainable || errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return nil, false
+		return queuedInputDrainConfig{}, false
 	}
 	if cfg.rootCtx.Err() != nil {
-		return nil, false
+		return queuedInputDrainConfig{}, false
 	}
+	return cfg, true
+}
+
+// nextTurnContext returns the context the drained queue head runs under. It
+// carries the side effect of announcing the new turn to the host (cmd/serf's
+// handler publishes processing state and registers the turn's cancel), so it
+// runs only once the head is really claimed.
+//
+// It is total, and the totality is load-bearing: the head is already claimed
+// when this is called, so a failure here would have to put the entry back, and
+// that restore is the second durable commit this path exists to avoid. A
+// handler that installs no factory already drained under the root context
+// (WithQueuedInputDrainOnInterrupt); a factory that declines to build one now
+// does the same, which is the only answer that keeps the claim honest.
+func (cfg queuedInputDrainConfig) nextTurnContext() context.Context {
 	if cfg.nextCtx == nil {
-		return cfg.rootCtx, true
+		return cfg.rootCtx
 	}
-	nextCtx, _ := cfg.nextCtx(cfg.rootCtx)
-	if nextCtx == nil {
-		return nil, false
+	next, _ := cfg.nextCtx(cfg.rootCtx)
+	if next == nil {
+		return cfg.rootCtx
 	}
-	return nextCtx, true
+	return next
 }
 func (s *Session) drainSteering() []steeringMessage {
 	s.mu.Lock()

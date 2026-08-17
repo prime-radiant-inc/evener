@@ -249,6 +249,44 @@ func TestTerminateGoalOnErrorClassification(t *testing.T) {
 	}
 }
 
+// TestTerminateGoalOnErrorDoesNotAnnounceATurn pins the difference between
+// asking whether an interrupt is a user interrupt and acting on the answer.
+//
+// The host's next-turn factory is how a drained queue head announces itself:
+// cmd/serf serve publishes processing state and registers the new turn's cancel
+// from inside it. terminateGoalOnError only wants the classification, and no
+// turn is starting when a goal decides whether to stay active — invoking the
+// factory here tells the daemon a turn began that will never run, and nothing
+// downstream corrects it, because the interrupted SessionEnd has already fired.
+func TestTerminateGoalOnErrorDoesNotAnnounceATurn(t *testing.T) {
+	t.Parallel()
+	sess, stop := newGateSession(t)
+	defer stop()
+
+	root := context.Background()
+	turnCtx, cancel := context.WithCancel(root)
+	var factoryCalls int
+	marked := WithQueuedInputDrainOnInterruptHandler(turnCtx, root, func(parent context.Context) (context.Context, context.CancelFunc) {
+		factoryCalls++
+		next, cancelNext := context.WithCancel(parent)
+		return next, cancelNext
+	})
+	cancel()
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("some objective", time.Now())
+
+	sess.terminateGoalOnError(marked, context.Canceled)
+
+	if factoryCalls != 0 {
+		t.Fatalf("the goal decision built %d next-turn context(s); it must build none. Constructing one announces a turn to the host that will never run", factoryCalls)
+	}
+	snap, ok := store.Snapshot()
+	if !ok || snap.Status != goal.StatusActive {
+		t.Fatalf("goal snapshot = %+v ok=%v, want still active: the classification itself must be unchanged", snap, ok)
+	}
+}
+
 // TestRoundCapSelection verifies the per-goal-turn round-cap selection (C13):
 // continuation turns clamp an unbounded or >GoalTurnMaxRounds config down to
 // GoalTurnMaxRounds; a config already <= the cap is left untouched; user-input

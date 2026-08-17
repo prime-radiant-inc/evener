@@ -1360,12 +1360,12 @@ func TestQueuedInputDrainRootAcceptsAbortErrorForCanceledMarkedTurn(t *testing.T
 	markedCtx := WithQueuedInputDrainOnInterrupt(turnCtx, rootCtx)
 	cancelTurn()
 
-	got, ok := queuedInputDrainContext(markedCtx, llm.NewAbortError("user canceled", context.Canceled))
+	cfg, ok := interruptDrainConfig(markedCtx, llm.NewAbortError("user canceled", context.Canceled))
 	if !ok {
-		t.Fatal("queuedInputDrainContext rejected AbortError from canceled marked turn")
+		t.Fatal("interruptDrainConfig rejected AbortError from canceled marked turn")
 	}
-	if got != rootCtx {
-		t.Fatal("queuedInputDrainContext did not return the root context")
+	if got := cfg.nextTurnContext(); got != rootCtx {
+		t.Fatal("nextTurnContext did not return the root context")
 	}
 }
 
@@ -1381,7 +1381,7 @@ func TestQueuedInputDrainRejectsAbortErrorWhenTurnLive(t *testing.T) {
 	markedCtx := WithQueuedInputDrainOnInterrupt(turnCtx, rootCtx)
 	// Do NOT cancel the turn: markedCtx.Err() == nil.
 
-	if _, ok := queuedInputDrainContext(markedCtx, llm.NewAbortError("subop canceled", context.Canceled)); ok {
+	if _, ok := interruptDrainConfig(markedCtx, llm.NewAbortError("subop canceled", context.Canceled)); ok {
 		t.Fatal("drained on an AbortError while the turn ctx was still live; the raw-Canceled-vs-AbortError asymmetry collapsed")
 	}
 }
@@ -1417,12 +1417,13 @@ func TestQueuedInputDrainContextUsesFreshCancelableTurnContext(t *testing.T) {
 	})
 	cancelTurn()
 
-	got, ok := queuedInputDrainContext(markedCtx, context.Canceled)
+	cfg, ok := interruptDrainConfig(markedCtx, context.Canceled)
 	if !ok {
-		t.Fatal("queuedInputDrainContext rejected canceled marked turn")
+		t.Fatal("interruptDrainConfig rejected canceled marked turn")
 	}
+	got := cfg.nextTurnContext()
 	if got == rootCtx {
-		t.Fatal("queuedInputDrainContext returned root context, want fresh turn context")
+		t.Fatal("nextTurnContext returned root context, want fresh turn context")
 	}
 	if got.Err() != nil {
 		t.Fatalf("fresh drain context is already canceled: %v", got.Err())
