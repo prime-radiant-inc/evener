@@ -8,7 +8,7 @@
 // and it has no dependency on provider credentials or the shared dev server.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { applyViewport, clearViewportOverride, connectPage, evaluate, navigateTo, waitForHttp } from "../browserGuardCdp.mjs";
+import { applyViewport, clearViewportOverride, connectPage, evaluate, navigateTo, waitForFonts, waitForHttp } from "../browserGuardCdp.mjs";
 import { startBrowserGuard } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -24,6 +24,7 @@ async function measureAt(cdpPort, vitePort, width) {
   try {
     await applyViewport(send, { width, height: 900 });
     await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`);
+    await waitForFonts(page.send);
     await evaluate(send, "window.settledSpawn");
     // Stage before measuring, at every width: the page is navigated fresh per
     // width, and the staged-attachment row exists only once something is in

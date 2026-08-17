@@ -65,6 +65,7 @@ import {
   forcePseudoStates,
   navigateTo,
   realizedViewport,
+  waitForFonts,
   waitForHttp,
 } from "../browserGuardCdp.mjs";
 import { startBrowserGuard } from "../browserGuardProcess.mjs";
@@ -147,6 +148,7 @@ async function runCase(page, vitePort, caseDir, emulation) {
 
   await navigateTo(page, url);
   await assertGuardOrigin(page.send, `127.0.0.1:${vitePort}`);
+  await waitForFonts(page.send);
 
   if (viewport) {
     const realized = await realizedViewport(page.send);

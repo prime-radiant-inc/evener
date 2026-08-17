@@ -38,7 +38,7 @@
 // launch (~10s).
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { connectPage, evaluate, navigateTo, waitForHttp } from "../browserGuardCdp.mjs";
+import { connectPage, evaluate, navigateTo, waitForFonts, waitForHttp } from "../browserGuardCdp.mjs";
 import { startBrowserGuard } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -54,6 +54,7 @@ async function measureAt(cdpPort, url) {
   const { send } = page;
   try {
     await navigateTo(page, url);
+    await waitForFonts(page.send);
 
     const host = await evaluate(send, "location.host");
     if (String(host).includes("9180")) throw new Error("refusing: this eval landed on the shared serf-hub port");
@@ -111,6 +112,7 @@ async function verifyPanelCollapse(cdpPort, url) {
   const { send } = page;
   try {
     await navigateTo(page, url);
+    await waitForFonts(page.send);
     const runtimeState = await send("Runtime.evaluate", {
       expression: `({ body: document.body.innerText, html: document.body.innerHTML.slice(0, 1000), errors: window.__panelGuardErrors ?? [] })`,
       returnByValue: true,
