@@ -128,14 +128,14 @@ export class MutationDispatcher {
           error instanceof WireError &&
           (error.code === JSONRPC_INVALID_PARAMS || error.code === JSONRPC_INVALID_REQUEST)
         ) {
-          await this.#storage.transferToRecovery(record.clientMutationId, "rejected");
+          await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data));
           this.#onStorageChange([record.targetRef]);
           return "advance";
         }
         return "stop";
       }
       if (data?.mutationOutcome === "notAccepted") {
-        await this.#storage.transferToRecovery(record.clientMutationId, "rejected");
+        await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data));
         this.#onStorageChange([record.targetRef]);
         return "advance";
       }
@@ -175,6 +175,24 @@ const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
   "turn/promoteQueuedAsSteer",
   "turn/cancelQueued",
 ]);
+
+// rejectionReason extracts what to show a user whose control was refused.
+// Preference order: the daemon's own structured explanation, then the wire
+// error message, then nothing -- a row with no reason is still better than a
+// row that claims a reason it does not have.
+//
+// This is the storage side of kata 2f41. A refused Steer or Stop rendered as a
+// bare recovery row is indistinguishable from a queued one, which is how five
+// rejections in a mutation journal produced nothing on screen.
+function rejectionReason(error: unknown, data: ReturnType<typeof mutationErrorData>): string | undefined {
+  if (error instanceof WireError) {
+    const detail = error.serfErrorInfo?.trim();
+    if (detail) return detail;
+    const message = error.message.trim();
+    if (message) return message;
+  }
+  return data?.mutationOutcome;
+}
 
 function mutationMethod(method: string): MethodName {
   if (!RETRY_SAFE_MUTATION_METHODS.has(method)) throw new Error(`Unknown mutation method: ${method}`);

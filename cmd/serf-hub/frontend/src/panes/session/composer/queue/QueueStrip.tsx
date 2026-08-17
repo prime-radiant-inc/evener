@@ -34,6 +34,7 @@ const CLASS = {
   row: requireClass(styles.row, "queuestrip.module.css", "row"),
   rowPending: requireClass(styles.rowPending, "queuestrip.module.css", "rowPending"),
   rowText: requireClass(styles.rowText, "queuestrip.module.css", "rowText"),
+  rowReason: requireClass(styles.rowReason, "queuestrip.module.css", "rowReason"),
   rowActions: requireClass(styles.rowActions, "queuestrip.module.css", "rowActions"),
 };
 
@@ -376,20 +377,35 @@ export function QueueStrip({
               </li>
             );
           }
+          // A refused control has to say so. Without the reason this row is
+          // indistinguishable from a real queued message -- the header even
+          // counts it as queued -- which is how a rejected Steer or Stop left
+          // nothing on screen at all (kata 2f41).
+          //
+          // An interrupt is not a message: it carries no input, so its preview
+          // is empty and "Edit message" would offer to resend a Stop as
+          // whatever the user then types. Say what failed instead.
+          const isInterrupt = record.method === "turn/interrupt";
+          const reason = record.recoveryReason;
           return (
             <li key={record.clientMutationId} className={CLASS.row}>
-              <span className={CLASS.rowText}>{recordPreview(record)}</span>
+              <span className={CLASS.rowText}>
+                {isInterrupt ? "Stop didn't reach the session" : recordPreview(record)}
+                {reason ? <span className={CLASS.rowReason}> — {reason}</span> : null}
+              </span>
               <div className={CLASS.rowActions}>
-                <ActionButton
-                  label="Edit message"
-                  icon={<span aria-hidden="true">✎</span>}
-                  size="sm"
-                  disabled={rowBusy || onEditRecovery === undefined}
-                  disabledReason={
-                    onEditRecovery === undefined ? "Open the session Composer to edit this message" : undefined
-                  }
-                  onClick={() => onEditRecovery?.(record)}
-                />
+                {isInterrupt ? null : (
+                  <ActionButton
+                    label="Edit message"
+                    icon={<span aria-hidden="true">✎</span>}
+                    size="sm"
+                    disabled={rowBusy || onEditRecovery === undefined}
+                    disabledReason={
+                      onEditRecovery === undefined ? "Open the session Composer to edit this message" : undefined
+                    }
+                    onClick={() => onEditRecovery?.(record)}
+                  />
+                )}
               </div>
             </li>
           );

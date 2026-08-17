@@ -56,6 +56,12 @@ export interface MutationOptimisticRecord extends MutationRecord {
 
 export interface MutationRecoveryRecord extends MutationOutboxRecord {
   recoveryKind: MutationRecoveryKind;
+  // Why the daemon refused, in its own words. Without it a recovery row can
+  // only say that something did not happen, which is kata 2f41: a Steer or
+  // Stop refused with nothing on screen explaining why. Optional because
+  // records written before this existed carry no reason, and because some
+  // recovery kinds (orphaned) have no daemon message to carry.
+  recoveryReason?: string;
 }
 
 interface BroadcastChannelLike extends EventTarget {

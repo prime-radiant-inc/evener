@@ -163,6 +163,25 @@ describe("MutationOutboxIndexedDB", () => {
     expect(await store.getRecovery(recoveredFirst.clientMutationId)).toBeUndefined();
   });
 
+  // A rejected mutation is rendered to the user as a recovery row. Without the
+  // daemon's reason on the record, that row can say only "this did not happen"
+  // -- which is what kata 2f41 is about: a Steer or Stop that was refused, with
+  // nothing on screen explaining why. The reason has to survive the storage
+  // boundary or no amount of rendering can show it.
+  test("a rejection carries its reason into recovery", async () => {
+    const store = new MutationOutboxIndexedDB({
+      indexedDB,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    const rejected = await store.enqueueIntent(intent("steer that lost its turn"));
+
+    const recovery = await store.transferToRecovery(rejected.clientMutationId, "rejected", "turn is not active");
+
+    expect(recovery?.recoveryReason).toBe("turn is not active");
+    expect((await store.getRecovery(rejected.clientMutationId))?.recoveryReason).toBe("turn is not active");
+  });
+
   test("a pending receipt atomically hands input display from transport outbox to durable optimistic state", async () => {
     const store = new MutationOutboxIndexedDB({
       indexedDB,

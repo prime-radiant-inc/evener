@@ -92,18 +92,23 @@ function defaultProps(overrides: Partial<Parameters<typeof QueueStrip>[0]> = {})
   };
 }
 
-async function seedRecovery(recoveryKind: MutationRecoveryKind, text: string): Promise<MutationRecoveryRecord> {
+async function seedRecovery(
+  recoveryKind: MutationRecoveryKind,
+  text: string,
+  opts: { method?: string; reason?: string } = {},
+): Promise<MutationRecoveryRecord> {
   const storage = new MutationOutboxIndexedDB();
   const input = [{ type: "text", text }];
+  const method = opts.method ?? "turn/start";
   const outbox = await storage.enqueueIntent({
     targetRef: "ref_a",
     threadId: "thr_ref_a",
-    method: "turn/start",
+    method,
     payload: { ref: "ref_a", input },
     attachments: [],
-    optimisticDisplay: { method: "turn/start", input },
+    optimisticDisplay: { method, input },
   });
-  const recovery = await storage.transferToRecovery(outbox.clientMutationId, recoveryKind);
+  const recovery = await storage.transferToRecovery(outbox.clientMutationId, recoveryKind, opts.reason);
   storage.close();
   if (!recovery) throw new Error("failed to seed recovery");
   await refreshPendingTurnsProjection("ref_a");
@@ -231,6 +236,39 @@ describe("durable recovery rows", () => {
     expect(screen.getByText("Queued messages (1)")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
     expect(screen.queryByText("Recovery drafts")).toBeNull();
+  });
+
+  // Kata 2f41: a control the daemon refused used to render as a row
+  // indistinguishable from a real queued message -- the header even counts it
+  // as queued. The reason is the whole point of the row.
+  test("a rejected control shows the daemon's reason", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    await seedRecovery("rejected", "also check the tests", {
+      method: "turn/steer",
+      reason: "turn is not active",
+    });
+    renderStrip(defaultProps());
+
+    expect(await screen.findByText(/turn is not active/)).toBeTruthy();
+  });
+
+  // A Stop carries no input, so its preview is empty and "Edit message" would
+  // offer to resend it as whatever the user then types -- turning a Stop into a
+  // message. It is not a draft to recover.
+  test("a rejected Stop says what failed and offers no edit", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    await seedRecovery("rejected", "", {
+      method: "turn/interrupt",
+      reason: "turn is not active",
+    });
+    renderStrip(defaultProps({ onEditRecovery: vi.fn() }));
+
+    const text = await screen.findByText(/Stop didn't reach the session/);
+    const row = text.closest("li");
+    if (!row) throw new Error("missing rejected interrupt row");
+    expect(within(row).queryByRole("button", { name: "Edit message" })).toBeNull();
   });
 
   test("blocked unknown has Retry but no sendable action", async () => {

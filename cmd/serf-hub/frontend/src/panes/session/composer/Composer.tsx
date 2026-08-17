@@ -391,7 +391,13 @@ export function Composer({ ref }: ComposerProps) {
     ) {
       return;
     }
-    const record = recoveryEntries.find((entry) => entry.recoveryKind === "rejected");
+    // An interrupt is not a draft. It carries no input, so activating one
+    // loads an empty composer and then resends the user's next keystrokes as a
+    // turn/start -- a Stop becoming a message. QueueStrip renders it as a
+    // failure with its reason instead.
+    const record = recoveryEntries.find(
+      (entry) => entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt",
+    );
     if (!record) return;
     const recovered = recoveryComposerDraft(record);
     recoveryOwnsLocalDraftRef.current = false;

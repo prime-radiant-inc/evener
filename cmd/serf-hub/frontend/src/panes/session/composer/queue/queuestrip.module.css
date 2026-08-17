@@ -61,6 +61,13 @@
   color: var(--ink-hi);
 }
 
+/* The daemon's reason for refusing a control. Muted against the message text
+   it follows: the message is what the user wrote, the reason is why it did not
+   land. */
+.rowReason {
+  color: var(--ink-low);
+}
+
 .rowActions {
   display: flex;
   flex: 0 0 auto;

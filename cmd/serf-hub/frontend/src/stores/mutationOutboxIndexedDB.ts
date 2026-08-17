@@ -256,12 +256,13 @@ export class MutationOutboxIndexedDB {
   async transferToRecovery(
     clientMutationId: string,
     recoveryKind: MutationRecoveryKind,
+    recoveryReason?: string,
   ): Promise<MutationRecoveryRecord | undefined> {
     return this.#write([OUTBOX_STORE, RECOVERY_STORE], "transferToRecovery", async (transaction) => {
       const outbox = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId));
       if (!record) return undefined;
-      const recovery: MutationRecoveryRecord = { ...record, recoveryKind };
+      const recovery: MutationRecoveryRecord = { ...record, recoveryKind, recoveryReason };
       await requestResult(transaction.objectStore(RECOVERY_STORE).put(recovery));
       await requestResult(outbox.delete(clientMutationId));
       return recovery;
