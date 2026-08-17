@@ -55,8 +55,9 @@ type Call struct {
 	// Body is the decoded chat-completions request.
 	Body map[string]any
 
-	once  sync.Once
-	reply chan reply
+	toolCallID string
+	once       sync.Once
+	reply      chan reply
 }
 
 type reply struct {
@@ -72,6 +73,8 @@ type reply struct {
 // measuring that collision. It counts across servers: a session only needs
 // its own ids to be distinct, and one counter gives more than that.
 var toolCallSeq atomic.Uint64
+
+func mintToolCallID() string { return fmt.Sprintf("call_fakellm_%d", toolCallSeq.Add(1)) }
 
 // New starts a fake provider on a kernel-assigned loopback port.
 func New() (*Server, error) { return NewOn("127.0.0.1:0") }
@@ -142,12 +145,13 @@ func (c *Call) RespondText(text string) {
 // runs the tool and comes back for another round — the seam where queued
 // steering is injected (agent/session_tool_round.go).
 func (c *Call) RespondToolCall(name string, args map[string]any) {
-	c.respond(reply{
-		toolName: name,
-		toolArgs: args,
-		toolID:   fmt.Sprintf("call_fakellm_%d", toolCallSeq.Add(1)),
-	})
+	c.respond(reply{toolName: name, toolArgs: args, toolID: c.toolCallID})
 }
+
+// ToolCallID is the id a tool-call answer to this request will carry. It is
+// minted when the request arrives, so a caller can record it before it
+// answers.
+func (c *Call) ToolCallID() string { return c.toolCallID }
 
 func (c *Call) respond(r reply) {
 	c.once.Do(func() {
@@ -173,28 +177,45 @@ func (c *Call) Texts() []string {
 	return out
 }
 
-// Round is this request's 1-based position in its OWN session's loop: one
-// more than the number of assistant turns the request replays. Every answer
-// this fake gives is exactly one assistant message, and a session replays its
-// whole conversation on every request, so the count is the number of rounds
-// that session has already had.
+// PreviousToolCallID is the id of the last tool call the conversation in this
+// request replays — the id this fake gave the same session's previous round.
+// It is empty on a session's first round.
 //
-// Reading it out of the request rather than counting calls is what lets two
-// sessions share one fake: each carries its own history, so each gets its own
-// sequence, with no session bookkeeping here at all.
-func (c *Call) Round() int {
+// It is the one stable per-session handle a request carries. Two sessions can
+// be started from the same prompt, model and working directory, so nothing in
+// the messages tells them apart; the ids do, because every one is unique
+// (ToolCallID) and a session replays its own.
+//
+// Both forms of the id count: the assistant message that made the call, and
+// the tool message that answered it. A context compaction keeps the most
+// recent turns verbatim and folds the rest into a user-role checkpoint
+// (contextmgr.checkpoint, PreserveRecentTurns), and its cut can land between
+// an assistant call and its result — measured against a live hub, where the
+// newest assistant message was gone and its result, carrying the same id, was
+// not. Reading either keeps the handle across that.
+func (c *Call) PreviousToolCallID() string {
 	raw, _ := c.Body["messages"].([]any)
-	round := 1
+	previous := ""
 	for _, item := range raw {
 		msg, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		if role, _ := msg["role"].(string); role == "assistant" {
-			round++
+		if id, _ := msg["tool_call_id"].(string); id != "" {
+			previous = id
+		}
+		calls, _ := msg["tool_calls"].([]any)
+		for _, entry := range calls {
+			call, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			if id, _ := call["id"].(string); id != "" {
+				previous = id
+			}
 		}
 	}
-	return round
+	return previous
 }
 
 // Contains reports whether any message in the request carries the substring.
@@ -251,7 +272,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	call := &Call{Body: body, reply: make(chan reply, 1)}
+	call := &Call{Body: body, toolCallID: mintToolCallID(), reply: make(chan reply, 1)}
 	select {
 	case s.calls <- call:
 	case <-r.Context().Done():

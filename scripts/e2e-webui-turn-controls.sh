@@ -23,12 +23,12 @@
 # USAGE:
 #   scripts/e2e-webui-turn-controls.sh                # start; print the auth URL
 #   scripts/e2e-webui-turn-controls.sh --hold 30      # seconds per model round
-#   scripts/e2e-webui-turn-controls.sh --rounds 40    # rounds before the turn ends
-#   scripts/e2e-webui-turn-controls.sh --background-job  # spawn a session that
+#   scripts/e2e-webui-turn-controls.sh --rounds 40    # rounds per turn, per session
+#   scripts/e2e-webui-turn-controls.sh --background-job  # every session spawned
 #                                                       # goes idle holding a
 #                                                       # background job; touch
 #                                                       # $run/release-the-job to
-#                                                       # wake it with a
+#                                                       # wake them with a
 #                                                       # notification turn
 #   scripts/e2e-webui-turn-controls.sh --skip-web     # reuse an existing dist
 #   scripts/e2e-webui-turn-controls.sh --stop RUN_DIR # kill a prior run, remove RUN_DIR
@@ -335,15 +335,17 @@ started_ready=1
 trap - EXIT INT TERM
 
 if [ "$background_job" -eq 1 ]; then
-	mode_line="The first spawned session launches a background job and goes idle.
-Release it to wake the session with a job-completion notification turn:
+	mode_line="Every session you spawn launches a background job on its first
+round and goes idle holding it. Release the jobs to wake each session with a
+job-completion notification turn, which ends after one ${hold}s round:
 
     touch '$job_release'
 "
 else
-	mode_line="Every model round through this hub pauses ${hold}s; a turn runs
-${rounds} rounds before it ends, so a session stays \"running\" for roughly
-$((hold * rounds))s.
+	mode_line="Every model round through this hub pauses ${hold}s, and every
+turn of every session ends after ${rounds} of its own rounds — so each session
+you spawn stays \"running\" for roughly $((hold * rounds))s per turn, however
+many of them there are.
 "
 fi
 

@@ -152,6 +152,49 @@ func (s *session) try(ctx context.Context) (toolCall, error) {
 	return toolCall{name: raw.Function.Name, args: args, id: raw.ID}, nil
 }
 
+// newTurn is what the operator does from the browser: send a message to a
+// session whose previous turn has ended. The conversation carries on; only
+// the turn is new.
+func (s *session) newTurn(text string) {
+	s.messages = append(s.messages, map[string]any{"role": "user", "content": text})
+}
+
+// stopInFlightRound is what Stop does to the fake: the operator cancels the
+// model request the driver is holding, so the driver answers a round whose
+// answer never reaches the transcript. The session's next request replays the
+// last round that WAS recorded.
+//
+// Measured against a live hub and daemon: a turn stopped during round 2 comes
+// back replaying round 1's tool-call id, and the id the fake minted for round
+// 2 is never seen again. Discarding the answer here reproduces exactly that —
+// from the driver's side an answer nobody records and an answer nobody reads
+// are the same event.
+func (s *session) stopInFlightRound(ctx context.Context) {
+	s.t.Helper()
+	recorded := append([]map[string]any(nil), s.messages...)
+	s.round(ctx)
+	s.messages = recorded
+}
+
+// compact rewrites this session's conversation the way serf's context
+// compaction does: the older turns are folded into a user-role checkpoint and
+// the most recent messages are kept verbatim
+// (agent/internal/contextmgr/context_manager.go, PreserveRecentTurns).
+//
+// It keeps the exact shape measured against a live hub + daemon after a
+// thread/compact/start: system prompt, a "[CONTEXT SUMMARY]" user message,
+// and a preserved tail whose FIRST message is an orphaned tool result -- the
+// cut landed between the newest assistant tool call and its result, so the
+// assistant message that made the call is gone and the result that carries
+// its id is not.
+func (s *session) compact() {
+	tail := s.messages[len(s.messages)-1:]
+	s.messages = append([]map[string]any{
+		s.messages[0],
+		{"role": "user", "content": "[CONTEXT SUMMARY]\nthe session did some things\n[END SUMMARY]"},
+	}, tail...)
+}
+
 // TestRoundsAreCountedPerSession: --rounds N ends EACH session's Nth round,
 // not the Nth round the fake has served across all of them.
 func TestRoundsAreCountedPerSession(t *testing.T) {
@@ -208,6 +251,95 @@ func TestBackgroundJobModeAppliesToEverySession(t *testing.T) {
 		} else if endTurn, _ := idle.args["end_turn"].(bool); !endTurn {
 			t.Errorf("%s session round 2: end_turn %v, want true", name, endTurn)
 		}
+	}
+}
+
+// TestTurnsAreCountedFromTheirOwnStart: --rounds N is a promise about a TURN,
+// which is what the flag help, the package doc and the script's banner all
+// say. The turn under test here is the one that follows a Stop -- the very
+// control this harness exists to exercise -- so the second turn does not
+// begin on a multiple of N and a count that only ever grows cannot pass by
+// coincidence.
+func TestTurnsAreCountedFromTheirOwnStart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	baseURL := startDriver(t, 0, 3, "")
+
+	s := newSession(t, baseURL, "stopped")
+	if got := s.round(ctx).name; got != "read_file" {
+		t.Fatalf("turn 1 round 1: tool %q, want read_file", got)
+	}
+	// The operator hits Stop during round 2 and sends something else. The turn
+	// that follows is a turn of its own.
+	s.stopInFlightRound(ctx)
+	s.newTurn("stop that and do this instead")
+
+	for round := 1; round <= 2; round++ {
+		if got := s.round(ctx).name; got != "read_file" {
+			t.Errorf("turn 2 round %d: tool %q, want read_file", round, got)
+		}
+	}
+	if got := s.round(ctx).name; got != "communicate" {
+		t.Errorf("turn 2 round 3: tool %q, want communicate (--rounds 3 ends every turn on its own third round)", got)
+	}
+}
+
+// TestARoundCountSurvivesCompaction: an operator compacting the very browser
+// session this fixture exists to drive must not silently get a turn that runs
+// past --rounds. Counting the assistant turns a request replays cannot do
+// this -- compaction folds them into a user-role checkpoint, and the count
+// rewinds (measured against a live hub: 15 before, 4 after).
+func TestARoundCountSurvivesCompaction(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	baseURL := startDriver(t, 0, 5, "")
+
+	s := newSession(t, baseURL, "compacted")
+	for round := 1; round <= 2; round++ {
+		if got := s.round(ctx).name; got != "read_file" {
+			t.Fatalf("round %d before compaction: tool %q, want read_file", round, got)
+		}
+	}
+	s.compact()
+	for round := 3; round <= 4; round++ {
+		if got := s.round(ctx).name; got != "read_file" {
+			t.Errorf("round %d after compaction: tool %q, want read_file", round, got)
+		}
+	}
+	if got := s.round(ctx).name; got != "communicate" {
+		t.Errorf("round 5 after compaction: tool %q, want communicate (the turn still ends on its own fifth round)", got)
+	}
+}
+
+// TestTheNotificationTurnEndsWithoutANewJob: --background-job-until exists to
+// produce a job-completion notification turn, and the script tells the
+// operator exactly that. That turn must be brief and must not launch a second
+// background job -- the release file is already there, so a second job would
+// complete at once and wake the session again, forever.
+func TestTheNotificationTurnEndsWithoutANewJob(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	baseURL := startDriver(t, 0, 20, "release-the-job")
+
+	s := newSession(t, baseURL, "waker")
+	if got := s.round(ctx).name; got != "shell" {
+		t.Fatalf("turn 1 round 1: tool %q, want shell", got)
+	}
+	if got := s.round(ctx).name; got != "communicate" {
+		t.Fatalf("turn 1 round 2: tool %q, want communicate", got)
+	}
+
+	// The job completes and wakes the session: a turn with no input of its own.
+	s.newTurn("<job-completion notification>")
+	notification := s.round(ctx)
+	if notification.name != "communicate" {
+		t.Errorf("notification turn round 1: tool %q, want communicate (a brief turn, then idle again)", notification.name)
+	}
+	if endTurn, _ := notification.args["end_turn"].(bool); !endTurn {
+		t.Errorf("notification turn round 1: end_turn %v, want true", endTurn)
+	}
+	if notification.name == "shell" {
+		t.Errorf("notification turn round 1 launched a second background job")
 	}
 }
 
