@@ -6,8 +6,9 @@
 reports `structured_result` with `structured_result_valid: true` — in
 the terminal notification frame the parent is woken with, and durably in
 the root's `delegates.jsonl`; (b) a deliberately schema-violating result
-is reported honestly: no structured result, and a machine-readable
-`structured_result_reason` in its place; (c) a follow-up turn in the same
+is reported honestly: the invalid payload is retained as sent, flagged
+`structured_result_valid: false` with a machine-readable
+`structured_result_reason` alongside it; (c) a follow-up turn in the same
 delegate conversation inherits the ORIGINAL `result_schema` although
 `delegate_send` has no schema argument. Delegate `status="completed"`
 never asserts task success — the structured fields are how the parent
@@ -104,12 +105,17 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
   packet's `"kind"` is `"reported"`, not `"terminal_error"`, and the
   delegate's outcome is `completed`
   (`agent/internal/delegatestore/record.go#PacketKind` has exactly those
-  two values) — while the structured fields report the violation: NO
-  `"structured_result"` key at all, `"structured_result_valid":false`,
-  and `"structured_result_reason":"schema_validation_failed"` in its
-  place (`agent/subagents.go#captureDelegateStructuredResult`). The prose
+  two values) — while the structured fields report the violation:
+  `"structured_result"` RETAINED with the invalid payload exactly as the
+  child sent it (`count` still the string `"banana"`),
+  `"structured_result_valid":false`, and
+  `"structured_result_reason":"schema_validation_failed"` alongside it
+  (`agent/subagents.go#captureDelegateStructuredResult` captures the
+  payload first and only then downgrades `valid` on the schema check;
+  retention of the invalid payload is pinned by
+  `agent/delegate_resource_runtime_test.go#TestDelegateResourceRuntime_InvalidStructuredResultIsBoundedAndExplained`). The prose
   report is still there as the packet's `message`. `delegates.jsonl` carries
-  the same durable valid/reason pair for DLG2 on its
+  the same retained payload and durable valid/reason pair for DLG2 on its
   `delegate_terminal_prepared` event, for the reason given under arm (a) —
   `delegate_run_finished` carries no packet on this path.
   <!-- pin: the reason vocabulary is implementation-defined
@@ -121,8 +127,12 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
        valid:false + populated reason is the normative assertion,
        the specific reason names the failure mode. -->
 - Falsification (silent coercion): `structured_result_valid` `true` with
-  `count` coerced to a number, or a structured result reported at all
-  despite the type violation — validation is decorative.
+  `count` coerced to a number, or `true` over the unmodified string
+  payload — validation is decorative. Also falsifying (silent drop): the
+  `structured_result` key ABSENT even though the child's invalid payload
+  reached capture — honest reporting retains the payload and marks it
+  invalid; only the missing/oversized/marshal-failure reasons
+  legitimately omit it.
 - Falsification (catastrophic honesty failure): the violating delegate's
   outcome is `failed` solely because the schema failed — schema
   validation describes the RESULT, not the lifecycle.
@@ -193,7 +203,8 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
   the call at all; final reason `schema_result_missing`) — record
   that as the provider-enforcement variant. The capture-time triplet
   remains normative for any payload that reaches capture invalid; that
-  path is unit-covered (`agent/job_delegate_test.go`).
+  path is unit-covered
+  (`agent/delegate_resource_runtime_test.go#TestDelegateResourceRuntime_InvalidStructuredResultIsBoundedAndExplained`).
 - Arm (c) must wait for the arm-(a) run to be terminal. Creation is
   asynchronous, so nothing about turn 1 proves it: DLG1 is terminal once
   its notification frame has rendered, which is what turn 2 establishes.
