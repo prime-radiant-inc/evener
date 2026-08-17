@@ -186,6 +186,20 @@ func armTestInterruptFence(t *testing.T, sess *Session, clientMutationID string)
 	}
 }
 
+// disarmTestInterruptFence clears the fence armed by armTestInterruptFence, so a
+// replay assertion can tell a stored rejection from a live one: with the fence
+// still armed the precondition would refuse the retry too, and the test would
+// pass whether the record replayed or was re-evaluated.
+func disarmTestInterruptFence(t *testing.T, sess *Session) {
+	t.Helper()
+	if err := sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.InterruptFence = nil
+		return nil
+	}); err != nil {
+		t.Fatalf("disarm interrupt fence: %v", err)
+	}
+}
+
 // TestClientMutation_QueueRejectionIsRecordedDurably pins what a refused queue
 // must do regardless of WHICH precondition refused it: record the rejection in
 // the journal, leave the queue untouched, and replay the same rejection rather
@@ -213,6 +227,9 @@ func TestClientMutation_QueueRejectionIsRecordedDurably(t *testing.T) {
 		t.Fatalf("stale rejection changed queue: depth=%d revision=%d", len(snapshot.InputQueue), snapshot.QueueRevision)
 	}
 
+	// Clear the fence first: the retry must return the STORED rejection, and
+	// with the precondition still live it would be refused again either way.
+	disarmTestInterruptFence(t, sess)
 	_, replayErr := sess.clientMutationQueue(params)
 	assertClientMutationConflict(t, replayErr)
 	if got := sess.clientMutations.snapshot(); len(got.InputQueue) != 0 || got.QueueRevision != 0 {
@@ -238,6 +255,7 @@ func TestClientMutation_QueueRejectedImagePayloadIsCompactedAndReplayable(t *tes
 	if len(record.Payload) != 0 || record.PayloadHash == "" || record.Rejection == nil {
 		t.Fatalf("rejected compacted record payload=%d hash=%q rejection=%#v", len(record.Payload), record.PayloadHash, record.Rejection)
 	}
+	disarmTestInterruptFence(t, sess)
 	if _, err := sess.clientMutationQueue(params); err == nil {
 		t.Fatal("identical rejected replay unexpectedly succeeded")
 	}

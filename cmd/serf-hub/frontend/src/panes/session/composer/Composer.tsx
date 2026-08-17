@@ -541,11 +541,12 @@ export function Composer({ ref }: ComposerProps) {
   // capability. `busy` also subsumes the ended/closed statuses isTurnActive
   // can never report as active.
   //
-  // This is a presentation choice, not a precondition: neither request names a
-  // turn any more, so both would be accepted on an idle session -- a steer
-  // would simply land in the next turn. They stay hidden because an idle
-  // session gives the user nothing to stop or steer, and Send already covers
-  // "say something now".
+  // The two have different reasons for hiding, and only one is a precondition.
+  // Stop genuinely requires a processing session: InterruptClientMutation
+  // refuses unless WireState reports active, because there is nothing to
+  // cancel. Steer has no such precondition -- it names no turn, so an idle
+  // session would accept it and land it in the next turn -- and is hidden as a
+  // presentation choice, because Send already covers "say something now".
   const showStop = busy && model.capabilities.interrupt;
   const showSteer = busy && model.capabilities.steer;
   // Send keeps ONE label in every state. While a turn runs it queues rather
