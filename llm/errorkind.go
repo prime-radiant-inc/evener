@@ -114,3 +114,49 @@ func errorIs[T error](err error) bool {
 	var t T
 	return errors.As(err, &t)
 }
+
+// kindBearer is implemented by this package's own provider-error types, each
+// reporting the category its doc comment names.
+//
+// The method is unexported, so only types declared in this package can satisfy
+// the interface. That is the point: a type assertion to kindBearer can never
+// dispatch into caller-supplied code, which is what makes [DeclaredKind] safe
+// to call on an error of unverified provenance.
+type kindBearer interface{ declaredKind() ErrorKind }
+
+func (*invalidRequestError) declaredKind() ErrorKind        { return KindInvalidRequest }
+func (*authenticationError) declaredKind() ErrorKind        { return KindAuthentication }
+func (*accessDeniedError) declaredKind() ErrorKind          { return KindAccessDenied }
+func (*notFoundError) declaredKind() ErrorKind              { return KindNotFound }
+func (*requestTimeoutError) declaredKind() ErrorKind        { return KindTimeout }
+func (*responseHeaderTimeoutError) declaredKind() ErrorKind { return KindTimeout }
+func (*contextLengthError) declaredKind() ErrorKind         { return KindContextLength }
+func (*contentFilterError) declaredKind() ErrorKind         { return KindContentFilter }
+func (*quotaExceededError) declaredKind() ErrorKind         { return KindQuotaExceeded }
+func (*rateLimitError) declaredKind() ErrorKind             { return KindRateLimit }
+func (*serverError) declaredKind() ErrorKind                { return KindServer }
+func (*unknownHTTPError) declaredKind() ErrorKind           { return KindUnknown }
+
+// DeclaredKind reports the category err itself declares, without unwrapping.
+//
+// It differs from [Kind] only in reach: Kind walks the error chain to find a
+// category anywhere inside it, while DeclaredKind asks the value in hand and
+// stops. Both report the category the error was constructed with, never one
+// re-derived from a status code.
+//
+// Use DeclaredKind where the error's provenance is not guaranteed. Walking an
+// arbitrary error graph calls Unwrap/Is/As on values the caller supplied, which
+// may panic, loop, or carry side effects — a hazard the API-log capture path is
+// required to avoid (see docs/superpowers/plans/2026-07-17-project-2-yagni-landing.md:
+// "Do not walk arbitrary error graphs"). DeclaredKind invokes no caller code at
+// all, because kindBearer cannot be implemented outside this package.
+//
+// A wrapped error therefore reports KindUnknown here even when Kind would find
+// a category inside it. Callers that hold an error they constructed themselves,
+// or that accept the traversal cost, should use Kind.
+func DeclaredKind(err error) ErrorKind {
+	if bearer, ok := err.(kindBearer); ok {
+		return bearer.declaredKind()
+	}
+	return KindUnknown
+}
