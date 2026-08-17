@@ -116,11 +116,7 @@ func serve(ctx context.Context, srv *fakellm.Server, hold time.Duration, rounds 
 			log.Printf("fakellm: %v", err)
 			return nil
 		}
-		answering.Add(1)
-		go func() {
-			defer answering.Done()
-			answer(ctx, call, hold, rounds, jobRelease, notesDir)
-		}()
+		answering.Go(func() { answer(ctx, call, hold, rounds, jobRelease, notesDir) })
 	}
 }
 

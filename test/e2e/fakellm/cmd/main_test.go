@@ -278,14 +278,12 @@ func TestASessionsHoldDoesNotBlockAnother(t *testing.T) {
 	defer cancelRequests()
 	var wg sync.WaitGroup
 	for _, name := range []string{"first", "second"} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			s := newSession(t, baseURL, name)
 			// These requests never come back: the driver is still holding
 			// them when the test cancels them.
 			_, _ = s.try(requestCtx)
-		}()
+		})
 	}
 
 	deadline := time.Now().Add(5 * time.Second)
