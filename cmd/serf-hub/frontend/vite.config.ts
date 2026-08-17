@@ -94,9 +94,14 @@ export default defineConfig({
       exclude: [
         "src/**/*.test.{ts,tsx}",
         "src/**/*.d.ts",
-        // Fixture modules exist to feed tests, and scoring them measures the
-        // fixtures rather than the app.
+        // Fixture and harness modules exist to feed tests, and scoring them
+        // measures the test rig rather than the app. src/protocol/testing holds
+        // the fake client, fake socket and stream harnesses the suites drive.
         "src/protocol/fixtures/**",
+        "src/protocol/testing/**",
+        // A benchmark is not run by `vitest run`, so counting it only ever
+        // reports 0% for code no test was ever meant to execute.
+        "src/**/*.bench.ts",
         // The dev harness, gallery, and their standalone entry points back
         // the layout/overflow/spawn guard pages, not shipped runtime - the
         // same carve-out scripts/fuzzcov-ignore.txt grants dev-only tooling.
