@@ -51,7 +51,19 @@ func FuzzSessionLifecycleTailCoverage(f *testing.F) {
 			s.steeringQueue = append(s.steeringQueue, steeringMessage{Text: "queued steering"})
 			s.mu.Unlock()
 		case 4:
-			kind = EntryDelegateAttention
+			// The finishIdle lane, and the only one: routeNoToolCalls sends a
+			// NON-EMPTY no-tool-calls round to finishIdle for EntryNotification
+			// alone, so this mode has to be a notification wake that actually
+			// reaches the model and answers with bare text. Steering is what
+			// gives the wake something to deliver -- acceptNotificationInput
+			// returns false on an empty queue and never calls the model, which
+			// would leave this mode green and hollow. Mode 5 is the same kind
+			// with the same steering but NOT bare: agenttest.FinalResponse is a
+			// communicate tool call, so it never reaches routeNoToolCalls at all.
+			kind = EntryNotification
+			s.mu.Lock()
+			s.steeringQueue = append(s.steeringQueue, steeringMessage{Text: "bare-text steering"})
+			s.mu.Unlock()
 		case 5:
 			kind = EntryNotification
 			s.mu.Lock()
@@ -77,6 +89,21 @@ func FuzzSessionLifecycleTailCoverage(f *testing.F) {
 			be, exhausted := budgetExhaustionFromError(err)
 			if !exhausted || be.Budget != exhaustedBudgetTurns {
 				t.Fatalf("mode 2 input error = %v, want max_turns budget exhaustion", err)
+			}
+		case 4:
+			if err != nil {
+				t.Fatalf("mode 4 input error = %v", err)
+			}
+			// err == nil alone does NOT prove this lane still reaches finishIdle:
+			// a notification wake with nothing to deliver settles clean without
+			// ever calling the model, and a bare round routed to runNoToolCalls
+			// instead would burn the retry budget first. One model response is
+			// what separates them -- the retry path makes four.
+			s.mu.Lock()
+			responses := s.modelResponses
+			s.mu.Unlock()
+			if responses != 1 {
+				t.Fatalf("mode 4 model responses = %d, want 1: bare text on a notification turn must end idle without spending the retry budget (routeNoToolCalls -> finishIdle)", responses)
 			}
 		default:
 			if err != nil {
@@ -277,7 +304,7 @@ func sltcNewSession(t *testing.T, bare, maxTurns bool) *Session {
 		Provider: "openai",
 		Responder: func(llm.Request) llm.Response {
 			if bare {
-				return llm.Response{Message: llm.Assistant("watch acknowledged")}
+				return llm.Response{Message: llm.Assistant("acknowledged")}
 			}
 			return agenttest.FinalResponse("done")
 		},

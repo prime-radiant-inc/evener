@@ -232,3 +232,94 @@ func TestNotificationStandDownStillRefusesToWaitOnAnOwnerlessName(t *testing.T) 
 		t.Fatalf("stale-name warnings = %d, want exactly 1", got)
 	}
 }
+
+// TestNotificationStandDownRetriesUnderAnInterruptFence closes the third door
+// into kata ajg5's strand. mintRunningTurnID refuses under an interrupt fence
+// and under an occupied name, and the first taxonomy spelled both turnNameHeld
+// — but the stand-down decides with runningTurnNameHasOwner, which asks about
+// ActiveTurnID alone.
+//
+// A Stop pressed on a turn the daemon never named writes a fence whose
+// ExpectedTurnID is the empty name that turn had (session_client_mutation.go's
+// "the empty name when that turn had none"). That is a fence with NO active
+// name, so the owner check answers false, and the wake fell into the
+// stale-name arm: a warning about a name that is not held, and no re-arm. The
+// fence clears two durable writes later — the name is coming back.
+func TestNotificationStandDownRetriesUnderAnInterruptFence(t *testing.T) {
+	h := newStandDownHarness(t)
+	if err := h.sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.InterruptFence = &clientMutationInterruptFence{
+			ClientMutationID: "cm-stop",
+			// Empty: the interrupted turn had no durable name.
+			ExpectedTurnID: "",
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed an interrupt fence over an unnamed turn: %v", err)
+	}
+	if got := h.sess.clientMutations.snapshot().ActiveTurnID; got != "" {
+		t.Fatalf("ActiveTurnID = %q, want empty: this path is a fence with no name behind it", got)
+	}
+	if h.sess.runningTurnNameHasOwner() {
+		t.Fatal("fenced-but-unnamed slot reports an owner; the test needs none")
+	}
+
+	timersBefore := h.clock.BlockedCount()
+	h.standDown(t)
+
+	if got := h.warningsMatching("a turn name is held"); got != 0 {
+		t.Fatalf("fenced stand-down emitted the stale-name warning %d times, want 0: no name is held under this fence", got)
+	}
+	if got := h.clock.BlockedCount(); got != timersBefore+1 {
+		t.Fatalf("armed retry timers = %d, want baseline %d plus one: the fence clears in two durable writes, so this wake must wait for it",
+			got, timersBefore)
+	}
+
+	h.clock.Advance(jobNotificationRetryInitialDelay)
+	<-h.woken
+	if got := h.wakeCount(); got != 1 {
+		t.Fatalf("wakes after the retry delay = %d, want exactly 1", got)
+	}
+}
+
+// TestNotificationStandDownWarnsOncePerStorageEpisode bounds what the paced
+// retry costs when the store is not transiently but PERMANENTLY unwritable —
+// a read-only mount, a full disk, a deleted state dir.
+//
+// Every retry re-runs mintRunningTurnID, and its failure warning goes out
+// through s.emit, which fires the user's Notification hook unconditionally
+// (unlike emitDiagnosticWarning). Warning per retry forever means a
+// user-visible warning and a hook SUBPROCESS every few seconds for the life of
+// the daemon. The diagnostic is worth saying; it is worth saying once.
+func TestNotificationStandDownWarnsOncePerStorageEpisode(t *testing.T) {
+	h := newStandDownHarness(t)
+	h.failWrites(t)
+
+	const retries = 6
+	for range retries {
+		h.standDown(t)
+		// Advance past the ceiling: the store-failure retry backs off toward
+		// turnNameStoreRetryMaxDelay, so a fixed seconds-scale advance stops
+		// firing the timer after a few doublings.
+		h.clock.Advance(turnNameStoreRetryMaxDelay)
+		<-h.woken
+	}
+	if got := h.warningsMatching("name running turn failed"); got != 1 {
+		t.Fatalf("store-failure warnings across %d retries = %d, want 1: one unhealthy episode is one diagnostic, not one per retry",
+			retries, got)
+	}
+
+	// A new episode still speaks. The latch tracks the condition, not the
+	// process: once the store takes a write again, the next failure is news.
+	h.sess.clientMutations.faults.BeforeEffectSnapshotRename = nil
+	turnID, refusal := h.sess.mintRunningTurnID()
+	if refusal != turnNameMinted || turnID == "" {
+		t.Fatalf("recovered mint = (%q, %v), want a name", turnID, refusal)
+	}
+	h.sess.releaseRunningTurnID(turnID)
+	h.failWrites(t)
+	h.standDown(t)
+	if got := h.warningsMatching("name running turn failed"); got != 2 {
+		t.Fatalf("store-failure warnings after recovery and a fresh failure = %d, want 2", got)
+	}
+}

@@ -850,8 +850,14 @@ func (jm *jobManager) validateWatchTarget(target string) error {
 	// through to the rejection above.
 	//
 	// So a target that reaches this line is either this manager's own or one
-	// already authorized upstream. Guards: TestConfigureWatchRejectsForwardedNestedTarget
-	// and TestTerminalCatchupRejectsForwardedNestedTarget.
+	// already authorized upstream.
+	//
+	// The guard on the rejection above is TestConfigureWatchRejectsForwardedNestedTarget,
+	// and it is the ONLY one: terminalWatchTargetStatus carries its own
+	// independent copy of the same ownership check, so
+	// TestTerminalCatchupRejectsForwardedNestedTarget stays green if this one is
+	// deleted. Two checks, two tests, one each -- do not read either test as
+	// cover for the other rule.
 	return nil
 }
 

@@ -197,8 +197,11 @@ func TestMintRunningTurnIDRefusesUnderAnInterruptFence(t *testing.T) {
 	if got != "" {
 		t.Fatalf("mintRunningTurnID = %q under a pending interrupt, want empty", got)
 	}
-	if refusal != turnNameHeld {
-		t.Fatalf("refusal = %v under a pending interrupt, want turnNameHeld", refusal)
+	// Its OWN refusal, not turnNameHeld: a fence over a turn the daemon never
+	// named carries the empty name, and runningTurnNameHasOwner answers false
+	// for that, so the stand-down needs to tell the two apart (kata ajg5).
+	if refusal != turnNameFenced {
+		t.Fatalf("refusal = %v under a pending interrupt, want turnNameFenced", refusal)
 	}
 }
 

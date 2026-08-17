@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"time"
 
 	"primeradiant.com/serf/agent/events"
 )
@@ -48,10 +49,17 @@ const (
 	// turnNameUnserved: no daemon drains this session, so no client can address
 	// its turns and none needs a durable name. Not a failure.
 	turnNameUnserved
-	// turnNameHeld: an interrupt fence is ending a turn, or another mutation
-	// owns the slot. Whether THIS name comes back is a separate question
-	// (runningTurnNameHasOwner); that it is held is what this reports.
+	// turnNameHeld: another mutation owns the slot. Whether THIS name comes
+	// back is a separate question (runningTurnNameHasOwner); that it is held
+	// is what this reports.
 	turnNameHeld
+	// turnNameFenced: an accepted interrupt is already ending a turn. Distinct
+	// from turnNameHeld because a fence over a turn the daemon never named
+	// carries the EMPTY name that turn had, so runningTurnNameHasOwner -- which
+	// asks about ActiveTurnID alone -- answers false for it. Collapsing the two
+	// sent a Stop pressed on an unnamed turn into the stale-name arm, which
+	// warns and does not re-arm; the fence clears two durable writes later.
+	turnNameFenced
 	// turnNameStoreFailed: the durable store could not be opened or written.
 	// The name may be perfectly free; nobody can tell from here.
 	turnNameStoreFailed
@@ -69,38 +77,67 @@ func (s *Session) mintRunningTurnID() (string, turnNameRefusal) {
 		return "", turnNameUnserved
 	}
 	if err := s.ensureClientMutationStore(); err != nil {
-		s.emit(events.EventWarning, events.WarningData{
-			Message: fmt.Sprintf("open client mutation store: %v", err),
-		})
+		s.warnStoreUnhealthyOnce(fmt.Sprintf("open client mutation store: %v", err))
 		return "", turnNameStoreFailed
 	}
 	var turnID string
+	refusal := turnNameMinted
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		// Both refusals mirror every other durable entry point: an interrupt
 		// is already ending a turn, or a mutation already owns the slot.
 		// Running unnamed is the pre-existing behaviour for this turn kind, so
-		// refusing costs nothing that was not already lost.
+		// refusing costs nothing that was not already lost. Which one it was is
+		// carried out because the caller waits differently for each.
 		if snapshot.InterruptFence != nil {
+			refusal = turnNameFenced
 			return nil
 		}
 		if snapshot.ActiveTurnID != "" {
+			refusal = turnNameHeld
 			return nil
 		}
 		var record clientMutationRecord
 		reserveClientMutationTurnID(snapshot, &record)
 		snapshot.ActiveTurnID = record.StableTurnID
 		turnID = record.StableTurnID
+		refusal = turnNameMinted
 		return nil
 	}); err != nil {
-		s.emit(events.EventWarning, events.WarningData{
-			Message: fmt.Sprintf("name running turn failed: %v", err),
-		})
+		s.warnStoreUnhealthyOnce(fmt.Sprintf("name running turn failed: %v", err))
 		return "", turnNameStoreFailed
 	}
-	if turnID == "" {
-		return "", turnNameHeld
+	// The store took a write, so the next failure is news again.
+	s.clearStoreUnhealthyWarning()
+	return turnID, refusal
+}
+
+// warnStoreUnhealthyOnce reports a client-mutation-store failure at most once
+// per unhealthy episode, and clearStoreUnhealthyWarning ends the episode on the
+// next write the store accepts.
+//
+// The latch exists because this warning is on a retry loop. s.emit for
+// EventWarning fires the user's Notification hook unconditionally
+// (session_events.go's emitWithProvenance), unlike emitDiagnosticWarning, so a
+// store that is permanently unwritable -- a read-only mount, a full disk, a
+// deleted state dir -- otherwise costs a thread-visible warning AND a hook
+// subprocess on every retry for the life of the daemon. The diagnostic is worth
+// saying; it is worth saying once, and the hook is what makes repeating it
+// expensive rather than merely noisy.
+func (s *Session) warnStoreUnhealthyOnce(message string) {
+	s.turnNameRetryMu.Lock()
+	alreadyWarned := s.turnNameStoreUnhealthy
+	s.turnNameStoreUnhealthy = true
+	s.turnNameRetryMu.Unlock()
+	if alreadyWarned {
+		return
 	}
-	return turnID, turnNameMinted
+	s.emit(events.EventWarning, events.WarningData{Message: message})
+}
+
+func (s *Session) clearStoreUnhealthyWarning() {
+	s.turnNameRetryMu.Lock()
+	s.turnNameStoreUnhealthy = false
+	s.turnNameRetryMu.Unlock()
 }
 
 // scheduleRunningTurnNameRetry arms ONE paced wake for a notification that
@@ -120,7 +157,7 @@ func (s *Session) mintRunningTurnID() (string, turnNameRefusal) {
 // clear the condition doubles the delay to the same ceiling job notifications
 // use, so a persistently unhappy disk costs a wake every few seconds instead of
 // a full core.
-func (s *Session) scheduleRunningTurnNameRetry() {
+func (s *Session) scheduleRunningTurnNameRetry(ceiling time.Duration) {
 	s.turnNameRetryMu.Lock()
 	if s.turnNameRetry.active {
 		s.turnNameRetryMu.Unlock()
@@ -141,7 +178,7 @@ func (s *Session) scheduleRunningTurnNameRetry() {
 			return
 		}
 		s.turnNameRetry.active = false
-		s.turnNameRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
+		s.turnNameRetry.delay = min(delay*2, ceiling)
 		s.turnNameRetryMu.Unlock()
 		s.notify()
 	})
