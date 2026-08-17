@@ -92,7 +92,7 @@ also caught a leftover no compiler could see -- the browser still sending
 
 | Task | State |
 | --- | --- |
-| 1 measure the invariant | **Done, and the gate fired** (RESULT block below). A later review then showed the harness asserts less than it claims -- it interrupts only AFTER the boundary -- so "the gap is unreachable" is NOT established. |
+| 1 measure the invariant | **Re-measured, and the gate did not hold** (kata `gwxa`; CORRECTION under the RESULT block). The original harness sampled only before the boundary and interrupted only after it. The rewritten pair parks the session inside its pre-turn work: the wire shows a working session and the daemon refuses the Stop -- on the first turn as well as at a boundary. |
 | 2 Stop escape hatch | **SUBSUMED and not to be executed** -- `c435bc579` deleted the precondition the task existed to work around, and the `interruptRunningTurn` opt-in the task prescribes. `TurnInterruptParams` now carries only `ref`, `threadId` and `clientMutationId` (`appwire/types.go:1052-1056`) -- no turn id of any kind. |
 | 3 steer always lands | **Done** -- `3393e7905`, `5fdb23fd6`, `daa3eab1b`. Not to be re-executed. |
 | 4 EventError turn-scoped state | **Done** -- `0e467e098`. |
@@ -261,11 +261,54 @@ The question stopped mattering for a different reason: `c435bc579` deleted
 `expectedTurnId` entirely, so a Stop no longer names a turn and no longer has a
 stale id to be rejected for. The gap is closed by removal, not by measurement.
 
+### CORRECTION (kata `gwxa`): the STALE-ID gap is closed. The refusal is not.
+
+`c435bc579` removed the stale-id refusal. It did not remove the refusal. What
+shipped in its place is the precondition Task 2's own Step 4 describes -- "the
+precondition becomes 'the session is processing' rather than an id match" -- and
+it reads the wrong object.
+
+The daemon publishes `status=active` from `srv.processing` (`appStatus()`,
+`server/appwire_runtime.go`), which is set for the whole of `ProcessInputKind`
+and cleared only after the entire drain returns (`cmd/serf/serve.go`).
+`InterruptClientMutation` samples `Session.WireState()`, which reads the
+SESSION. Through a turn's PRE-TURN WORK -- everything `processOneInput` does
+before `s.setStateIfOpenLocked(SessionProcessing)` at
+`agent/session_lifecycle.go:1000`, including the slash-command expansion 23
+lines earlier at :977 -- the session is idle and every disjunct of
+`sessionWorkPending()` is false. Wire says working, session says idle,
+`turn/interrupt` answers `session is not processing`. The composer is showing
+Stop the whole time: `isTurnActive` needs only `status === "active"` and a
+non-empty id, and both are published.
+
+**This is not a turn-boundary defect**, which is how it was first filed and how
+the first version of this correction described it. Pre-turn work runs on every
+turn, the first included: a thread whose OPENING prompt is a slash command has
+no queue and no boundary and still refuses Stop. Both windows are pinned --
+`TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn` and
+`...AtATurnBoundary` -- because a fix covering only the drain-loop window would
+leave the other standing.
+
+How wide the window is depends entirely on the input, and the honest range spans
+both extremes: measured in review at 32-64 microseconds for a plain queued
+message, and seconds when the input is a slash command whose body shells out
+through an inline `` !`cmd` `` span. That is production machinery, not a test
+seam -- `LaunchConfigLayer.PluginDirs` is a real launch layer with a settings UI
+-- so both tests park the window deliberately and the measurement is
+deterministic rather than a race the sampler might lose.
+
+**Task 2 must still not be executed.** This is a bug in what `c435bc579`
+shipped, not a reason to rebuild the turn-scoped mechanism Task 2 prescribed;
+running the task as written would restore the machinery that commit spent itself
+deleting. The fix belongs where the precondition reads. One line covers both
+windows, because a durable turn name is set in each, and the pinning tests
+report it when it is applied. Jesse's call, on live evidence.
+
 ### Consequences for the rest of this plan
 
 | Task | Status after the measurement |
 | --- | --- |
-| 2 (interrupt escape hatch) | **Premise withdrawn**, then the task itself was **subsumed** by `c435bc579`. Not to be executed. |
+| 2 (interrupt escape hatch) | **Premise withdrawn**, then the task itself **subsumed** by `c435bc579`. Still not to be executed -- and kata `gwxa` found a bug in what that commit SHIPPED: the session-scoped precondition refuses Stop throughout any turn's pre-turn work. That is a fix to the precondition, not a reason to run this task. |
 | 3 (steer always lands) | **Stands** — and has since shipped. |
 | 4 (`EventError` bucket ids) | **Stands.** Independent, verified by both reviews. Shipped as `0e467e098`. |
 | 5 (kata `2f41`) | **Stands, and is now the most valuable task here** — if the remaining windows are this hard to reach, the thing that matters is that any control which does fail says so. Shipped; `2f41` is closed. |
