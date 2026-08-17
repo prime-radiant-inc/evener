@@ -271,15 +271,24 @@ async function main() {
       // is worth, so the predicate is exercised against its own fixture first
       // (kata bsq9). A fact under a display:none ancestor must read as missing;
       // an intentionally visually-hidden one must not.
+      // One expectation per clause of the shared predicate
+      // (src/dev/guardVisibility.ts). spawnguard uses the same function and has
+      // no fixture of its own, so this is the only place either guard proves
+      // what "visible" means.
       const probe = result.visibility;
-      if (!probe.rendered || probe.ancestorHidden || !probe.visuallyHidden) {
+      const expected = {
+        rendered: true,
+        ancestorHidden: false,
+        visuallyHidden: true,
+        visibilityHiddenAncestor: false,
+        zeroArea: false,
+      };
+      const wrong = Object.entries(expected).filter(([name, want]) => probe[name] !== want);
+      if (wrong.length > 0) {
         widthFailed = true;
         console.log(
-          `${width}px ... FAIL - the visible() predicate behind the footer checks is broken: ` +
-            `rendered=${probe.rendered} (expected true), ` +
-            `ancestorHidden=${probe.ancestorHidden} (expected false - an element under a display:none ` +
-            `ancestor is not visible), visuallyHidden=${probe.visuallyHidden} (expected true - the sr-only ` +
-            `recipe is present, not missing)`,
+          `${width}px ... FAIL - the shared visible() predicate behind the footer checks is broken: ` +
+            wrong.map(([name, want]) => `${name}=${probe[name]} (expected ${want})`).join(", "),
         );
       }
       if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {

@@ -14,6 +14,7 @@
 // far its content escapes its own content box, plus the deepest elements
 // responsible - which is the answer the fix has to be aimed at.
 import { createRoot } from "react-dom/client";
+import { isElementVisible } from "./guardVisibility";
 import "../panes/session";
 import Session from "../panes/session/Session";
 import "../panes/sessionPanels";
@@ -325,30 +326,19 @@ interface FooterContract {
   modelClientWidth: number;
 }
 
-// Whether a required footer fact (effort, context, queue) is actually on the
-// screen. The whole weight of footer.*Visible rests on this one predicate, so
-// it gets its own live fixture below rather than a line in MUTATIONS.md.
-//
-// RENDERED GEOMETRY, NOT THE ELEMENT'S OWN `display` (kata bsq9). Asking an
-// element for its computed display answers a question about that element
-// alone: an ancestor's `display: none` never changes it, so a fact inside a
-// collapsed subtree still computes `flex`/`inline` and reported visible while
-// nothing was on the screen. Box generation, unlike the display property, IS
-// inherited down the tree - an element inside a `display: none` subtree
-// generates no box at any depth, so it has no client rects.
-//
-// Deliberately client rects and not "a box bigger than n pixels": the standard
-// visually-hidden recipe (position:absolute, 1x1, clip: rect(0,0,0,0)) is what
-// statusrow.module.css itself uses for the effort label, and it is present for
-// the reader it is written for, not missing. It has a client rect, so it stays
-// on the visible side of this line on purpose. visibilityProbe() pins both
-// halves, every run.
-const visible = (el: HTMLElement | null) => el !== null && el.getClientRects().length > 0;
+// Whether a required footer fact (effort, context, queue) is on the screen.
+// The definition, and why each clause is there, lives in guardVisibility.ts -
+// shared with spawnguard so one word cannot mean two things. The whole weight
+// of footer.*Visible rests on it, so it also gets the live fixture below rather
+// than a line in MUTATIONS.md.
+const visible = isElementVisible;
 
 interface VisibilityProbe {
   rendered: boolean;
   ancestorHidden: boolean;
   visuallyHidden: boolean;
+  visibilityHiddenAncestor: boolean;
+  zeroArea: boolean;
 }
 
 function probeSpan(cssText: string): HTMLSpanElement {
@@ -359,16 +349,30 @@ function probeSpan(cssText: string): HTMLSpanElement {
 }
 
 /**
- * A mutation test for `visible`, run every sweep instead of recorded once.
+ * A mutation test for the shared visibility predicate, run every sweep instead
+ * of recorded once - and the only fixture either guard has for it, since
+ * spawnguard uses the same function.
  *
- * Three probes, and all three are load-bearing. `ancestorHidden` is the
- * regression (kata bsq9): a span whose OWN computed display is `flex` sitting
- * inside a `display: none` div, which is the exact shape a footer fact takes
- * when its subtree collapses. `visuallyHidden` is statusrow.module.css's own
- * `.srOnly` recipe verbatim - a 1x1 clipped box that is legitimately present
- * for the reader it is written for, and must not be mistaken for a missing
- * fact. `rendered` is the positive control: without it, a predicate that
- * answered "not visible" to everything would satisfy the other two.
+ * One probe per clause, and every one is load-bearing:
+ *
+ *   rendered                  the positive control. Without it, a predicate
+ *                             that answered "not visible" to everything would
+ *                             satisfy every other probe here.
+ *   ancestorHidden            the bsq9 regression: a span whose OWN computed
+ *                             display is `flex`, inside a `display: none` div -
+ *                             the exact shape a footer fact takes when its
+ *                             subtree collapses.
+ *   visuallyHidden            statusrow.module.css's `.srOnly` recipe verbatim.
+ *                             Measured exactly 1x1, so it satisfies the area
+ *                             clause: present for the reader it is written for,
+ *                             not missing.
+ *   visibilityHiddenAncestor  a plain span under a `visibility: hidden` div.
+ *                             Geometry alone cannot see this one - the span
+ *                             keeps its full box - so it is what pins the
+ *                             inherited-visibility clause.
+ *   zeroArea                  `transform: scale(0)`: one client rect enclosing
+ *                             nothing. Pins the area clause, which the rects
+ *                             clause alone does not cover.
  *
  * Mounted outside #oh-pane and position:fixed, so it is invisible to the
  * horizontal-overflow scan and adds nothing to the document's scroll size.
@@ -376,6 +380,7 @@ function probeSpan(cssText: string): HTMLSpanElement {
 function visibilityProbe(): VisibilityProbe {
   const host = document.createElement("div");
   host.style.cssText = "position:fixed;top:0;left:0";
+
   const rendered = probeSpan("");
   const hiddenAncestor = document.createElement("div");
   hiddenAncestor.style.cssText = "display:none";
@@ -384,13 +389,21 @@ function visibilityProbe(): VisibilityProbe {
   const visuallyHidden = probeSpan(
     "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0",
   );
-  host.append(rendered, hiddenAncestor, visuallyHidden);
+  const invisibleAncestor = document.createElement("div");
+  invisibleAncestor.style.cssText = "visibility:hidden";
+  const underInvisibleAncestor = probeSpan("");
+  invisibleAncestor.appendChild(underInvisibleAncestor);
+  const zeroArea = probeSpan("display:inline-block;transform:scale(0)");
+
+  host.append(rendered, hiddenAncestor, visuallyHidden, invisibleAncestor, zeroArea);
   document.body.appendChild(host);
   try {
     return {
       rendered: visible(rendered),
       ancestorHidden: visible(underHiddenAncestor),
       visuallyHidden: visible(visuallyHidden),
+      visibilityHiddenAncestor: visible(underInvisibleAncestor),
+      zeroArea: visible(zeroArea),
     };
   } finally {
     host.remove();
