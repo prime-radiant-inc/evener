@@ -136,19 +136,28 @@ structured fields are how the parent judges outcome.
   that as the provider-enforcement variant. The capture-time triplet
   remains normative for any payload that reaches capture invalid; that
   path is unit-covered (`agent/job_delegate_test.go`).
-- Arm (c) must wait for the arm-(a) job to be terminal (it is — the
+- Arm (c) must wait for the arm-(a) run to be terminal (it is — the
   foreground call returned completed). Do **not** expect a
-  `delegate_session_busy` failure if you race it: that error is
-  contract-legal (`docs/job-control.md` "Status and reason model"
-  "Canonical codes include"; "`delegate_send`" "injects the message
-  into that exact generation") but nothing in the Go
-  source emits it. A `delegate_send` aimed at a delegate whose job is
-  still running live-steers that job instead, returning
-  `action:"steered"` on the running `job_id` — pinned by
+  `delegate_session_busy` failure if you race it. `delegate_session_busy`
+  stays in the general canonical-code vocabulary
+  (`docs/job-control.md` "Status and reason model" "Canonical codes
+  include"), but it does not describe this case and nothing in the Go
+  source emits it here: a `delegate_send` aimed at a delegate that is
+  still running live-steers it instead.
+  That result is addressed by `delegate_id`, not `job_id` — the wire
+  result carries `delegate_id`, `type`, `status` and `action:"steered"`
+  and exposes no job identity at all
+  (`agent/session_tools_jobs.go#marshalDelegateSendResult`, which is
+  also where `sendMessageResult.Target` is dropped: the delegate you
+  addressed is the `to` you sent, not a field that comes back). Expect
+  `action:"steered"` against the same `delegate_id` you sent to, and no
+  successor generation.
+  The behaviour is pinned by
   `agent/delegate_resource_tools_test.go#TestStableDelegateTools_LiveSteerReportsExactWaitIgnoredReason`,
-  which fails outright if the
-  error string appears. Scoring a steer as a failure here would be
-  scoring shipped behaviour as a bug.
+  which asserts the `wait_ignored_reason` a live steer reports; note it
+  does NOT assert `action` or the delegate identity, so do not read it as
+  a pin on the whole result shape. Scoring a steer as a failure here
+  would be scoring shipped behaviour as a bug.
 - `structured_result` larger than the persistence cap downgrades to
   valid:false + `schema_result_too_large`; keep test payloads tiny so
   the size path never triggers here.
