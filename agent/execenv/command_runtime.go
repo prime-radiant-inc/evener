@@ -138,6 +138,7 @@ func (c *systemCommandRuntime) Start() error {
 	c.outputReader = reader
 	c.outputDone = make(chan error, 1)
 	go func() {
+		streamOutputCopyStart()
 		_, copyErr := io.Copy(commandOutputWriter{destination: c.combinedOutput}, reader)
 		c.outputDone <- copyErr
 	}()
@@ -157,32 +158,53 @@ func (c *systemCommandRuntime) Wait() error {
 	}
 
 	pipeClosed, canSignalGroup, pipeErr := waitForStreamPipeClose(c.outputReader, 0)
-	if pipeErr != nil {
-		_ = c.outputReader.Close()
-		if !outputDone {
-			outputErr = <-c.outputDone
-		}
-		return commandWaitError(processErr, outputErr, pipeErr)
-	}
-	if pipeClosed {
-		if !outputDone {
-			outputErr = <-c.outputDone
-		}
-		_ = c.outputReader.Close()
-		return commandWaitError(processErr, outputErr, nil)
+	if pipeErr != nil || pipeClosed {
+		return c.drainClosedPipe(processErr, outputDone, outputErr, pipeErr)
 	}
 	if !canSignalGroup {
-		_ = c.outputReader.Close()
-		if !outputDone {
-			outputErr = <-c.outputDone
-		}
-		return commandWaitError(processErr, c.forcedCloseOutputError(outputErr), nil)
+		return c.forceCloseOutput(processErr, outputDone, outputErr)
 	}
 
 	// Background commands remain owned by Serf. A live pipe writer after the
 	// leader exits is a managed descendant; only DetachCommand disowns one.
 	c.Terminate()
 	pipeClosed, _, pipeErr = waitForStreamPipeClose(c.outputReader, c.terminationGrace)
+	if pipeErr != nil || pipeClosed {
+		return c.drainClosedPipe(processErr, outputDone, outputErr, pipeErr)
+	}
+	c.Kill()
+	// A SIGKILL'd group releases the pipe as the kernel reaps it, which runs
+	// the copier to EOF; wait for it so output the leader wrote before exiting
+	// is delivered. Closing the reader first would truncate whatever the copier
+	// had not read yet. The window is bounded so an unkillable writer cannot
+	// hang Wait.
+	if !outputDone {
+		drainTimer := time.NewTimer(killedWriterDrainWindow)
+		defer drainTimer.Stop()
+		select {
+		case outputErr = <-c.outputDone:
+			outputDone = true
+		case <-drainTimer.C:
+		}
+	}
+	if outputDone {
+		_ = c.outputReader.Close()
+		return commandWaitError(processErr, outputErr, nil)
+	}
+	return c.forceCloseOutput(processErr, outputDone, outputErr)
+}
+
+// killedWriterDrainWindow bounds how long Wait allows a SIGKILL'd process group
+// to release the output pipe before force-closing the reader. Kernel teardown
+// normally closes the pipe within milliseconds; the bound only matters for a
+// writer stuck beyond SIGKILL (for example uninterruptible sleep).
+const killedWriterDrainWindow = 2 * time.Second
+
+// drainClosedPipe finishes Wait once the output pipe closed (or polling it
+// failed): join the copier before closing the reader so buffered output is
+// delivered, except after a poll failure, where closing first unblocks the
+// copier.
+func (c *systemCommandRuntime) drainClosedPipe(processErr error, outputDone bool, outputErr, pipeErr error) error {
 	if pipeErr != nil {
 		_ = c.outputReader.Close()
 		if !outputDone {
@@ -190,14 +212,16 @@ func (c *systemCommandRuntime) Wait() error {
 		}
 		return commandWaitError(processErr, outputErr, pipeErr)
 	}
-	if pipeClosed {
-		if !outputDone {
-			outputErr = <-c.outputDone
-		}
-		_ = c.outputReader.Close()
-		return commandWaitError(processErr, outputErr, nil)
+	if !outputDone {
+		outputErr = <-c.outputDone
 	}
-	c.Kill()
+	_ = c.outputReader.Close()
+	return commandWaitError(processErr, outputErr, nil)
+}
+
+// forceCloseOutput abandons a still-open pipe writer: close the reader to end
+// the copier, then suppress the local-close error it reports.
+func (c *systemCommandRuntime) forceCloseOutput(processErr error, outputDone bool, outputErr error) error {
 	_ = c.outputReader.Close()
 	if !outputDone {
 		outputErr = <-c.outputDone

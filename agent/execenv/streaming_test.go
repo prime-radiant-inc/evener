@@ -132,6 +132,81 @@ func TestStreamCommandWaitStopsDescendantsAfterLeaderExit(t *testing.T) {
 	}
 }
 
+// TestStreamCommandWaitDeliversLeaderOutputThroughForcedCleanup pins that
+// output the leader wrote before exiting reaches the stream writer even when
+// Wait's descendant cleanup escalates to SIGKILL (zero grace) before the
+// output copier has read the pipe. A CI run on 2026-08-17 lost the leader's
+// READY line exactly this way: the copier goroutine had not been scheduled
+// when the kill path closed the reader, silently truncating buffered output.
+// The hook holds the copier until the process group is provably dead, so the
+// copier reads only after forced cleanup already ran.
+func TestStreamCommandWaitDeliversLeaderOutputThroughForcedCleanup(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCopier := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseCopier)
+	orig := streamOutputCopyStart
+	streamOutputCopyStart = func() { <-release }
+	t.Cleanup(func() { streamOutputCopyStart = orig })
+
+	grace := time.Duration(0)
+	env := &LocalExecutionEnvironment{RootDir: t.TempDir(), terminationGrace: &grace}
+	if err := env.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var buf bytes.Buffer
+	// The background child ignores SIGTERM and keeps respawning, so the output
+	// pipe provably stays open until the SIGKILL escalation tears the group
+	// down. That forces Wait through the forced-cleanup path every run.
+	command := `sh -c 'trap "" TERM; while :; do sleep 1; done' & printf 'MARKER\n'; exit 0`
+	h, err := env.StreamCommand(context.Background(), command, "", nil, &lockedWriter{&mu, &buf})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	type waitResult struct {
+		code int
+		err  error
+	}
+	waitDone := make(chan waitResult, 1)
+	go func() {
+		code, waitErr := h.Wait()
+		waitDone <- waitResult{code: code, err: waitErr}
+	}()
+
+	// Group death proves Wait already ran Terminate and Kill; only then may the
+	// copier run, recreating the starved-copier schedule deterministically.
+	deadline := time.Now().Add(5 * time.Second)
+	for syscall.Kill(-h.Pid, 0) != syscall.ESRCH {
+		if time.Now().After(deadline) {
+			releaseCopier()
+			h.Signal()
+			<-waitDone
+			t.Fatalf("process group %d survived forced cleanup", h.Pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	releaseCopier()
+
+	select {
+	case result := <-waitDone:
+		if result.err != nil || result.code != 0 {
+			t.Fatalf("wait = (%d, %v), want (0, nil)", result.code, result.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait did not return after the copier was released")
+	}
+
+	mu.Lock()
+	got := buf.String()
+	mu.Unlock()
+	if !strings.Contains(got, "MARKER") {
+		t.Fatalf("leader output truncated by forced cleanup: %q", got)
+	}
+}
+
 func TestStreamCommandSignalStops(t *testing.T) {
 	env := &LocalExecutionEnvironment{RootDir: t.TempDir()}
 	_ = env.Initialize()
