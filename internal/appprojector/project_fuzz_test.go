@@ -85,6 +85,11 @@ var projectorCases = []struct {
 	{events.EventForkSummary, func(b []byte) events.EventData { var d events.ForkSummaryData; _ = json.Unmarshal(b, &d); return d }},
 	{events.EventPromptLoaded, func(b []byte) events.EventData { var d events.PromptLoadedData; _ = json.Unmarshal(b, &d); return d }},
 	{events.EventRoundTimings, func(b []byte) events.EventData { var d events.RoundTimings; _ = json.Unmarshal(b, &d); return d }},
+	{events.EventTurnStarted, func(b []byte) events.EventData {
+		var d events.TurnStartedData
+		_ = json.Unmarshal(b, &d)
+		return d
+	}},
 	{events.EventGoalContinuation, func(b []byte) events.EventData {
 		var d events.GoalContinuationData
 		_ = json.Unmarshal(b, &d)
