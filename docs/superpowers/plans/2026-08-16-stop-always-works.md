@@ -1,6 +1,9 @@
-# Stop Always Works Implementation Plan
+# Stop Always Works Implementation Plan — MOSTLY LANDED
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Do NOT execute this plan task-by-task.** Tasks 1, 3, 4, 5 and 9 are done,
+> Task 2 was subsumed, Task 6 was reverted, and Task 7 moved to its own document.
+> What is genuinely open is two bullets of Task 8 and the pre-landing checks
+> below. Read the STATUS block next, then take only the boxes still unchecked.
 
 **Supersedes** `2026-08-16-busy-means-named.md` and `2026-08-16-one-running-turn.md`.
 Both were written for a problem that the two landed plans had already fixed. See
@@ -27,9 +30,22 @@ two minters).
 
 ---
 
-## STATUS at 2026-08-17 (read this first)
+## STATUS (read this first)
 
-Branch is 69 commits ahead of `6af43a95a`. Nothing merged, nothing pushed.
+**Merged to local `main`, not pushed.** The work was rewritten on the way in, so
+every sha this document quotes is the one reachable from `main`, not the
+`wip/webui-steer-send-stop` sha it was written with. Check any of them with
+`git merge-base --is-ancestor <sha> main`.
+
+No commit count is recorded here on purpose. It went stale twice — once at 64
+against 65, once at 69 against 71, each time inside the very commit that updated
+it. "Merged locally, not pushed" is the part that carries information and does
+not decay.
+
+**Tasks 2, 3 and 6 must not be executed.** Each carries its own REJECTED or
+SUBSUMED marker below. A worker running this plan task-by-task would rebuild the
+turn-scoped machinery `c435bc579` spent a commit deleting, and re-land a client
+fix `ed6db108a` reverted.
 
 ### The plan was superseded by a simpler rule
 
@@ -47,35 +63,36 @@ saw", which is not what any of these buttons means. It could only ever turn a
 success into a refusal, and refusals in exactly the windows that matter are the
 bug this whole branch was chasing.
 
-`b2a2f1c8c` removes it: five wire types, the validator's required list, eleven
+`c435bc579` removes it: five wire types, the validator's required list, eleven
 wire-layer checks, five durable preconditions, `Preconditions.ExpectedTurnID`,
 `EffectiveTurnID`, the `interruptRunningTurn` opt-in built earlier the same
 night, and the client-side guards in the TUI and web composer. Net -393 lines.
-Tasks 2 and 3 below are subsumed by it.
+Tasks 2 and 3 below are subsumed by it, and are marked so at their headings.
 
 **Live-verified** against a real daemon and browser (2026-08-17): `turn/start`,
 `turn/steer` and `turn/interrupt` each carry only `ref`, `clientMutationId` and
 (where it applies) `input`. Stop ended a running turn, the transcript showed
 "System steered: Interrupted", and the steer reached the model. The live pass
 also caught a leftover no compiler could see -- the browser still sending
-`interruptRunningTurn` after the Go field was deleted (`306a309ef`).
+`interruptRunningTurn` after the Go field was deleted (`09ca9beae`).
 
 | Task | State |
 | --- | --- |
 | 1 measure the invariant | **Done, and the gate fired** (RESULT block below). A later review then showed the harness asserts less than it claims -- it interrupts only AFTER the boundary -- so "the gap is unreachable" is NOT established. |
-| 2 Stop escape hatch | **Uncommitted work in the worktree** from a subagent. Review before committing. |
-| 3 steer always lands | **Done** -- `ddc68ae68`, `d131a80fc`, `e9ce2994b`. |
-| 4 EventError turn-scoped state | **Done** -- `7ff6d0128`. |
-| 5 kata 2f41 | **Done** -- `af56bffe7`, `402d6c8e7`. |
-| 6 client double-send | **REVERTED** -- `8218cefd6`. It disabled Send in the window it targeted; kata `8c65` records what a correct fix needs. |
-| 7 subagents | Split to `2026-08-16-controllable-subagents.md`. Kata `tb2k` records two false premises in it. |
-| 8, 9 coverage and docs | Mostly done (`77fded8`, `f98ef83`, `b9b9f06`, `85bdecc`, `7807c6f`). |
+| 2 Stop escape hatch | **SUBSUMED and not to be executed** -- `c435bc579` deleted the precondition the task existed to work around, and the `interruptRunningTurn` opt-in the task prescribes. `turn/interrupt` now carries only `ref` and `clientMutationId`. |
+| 3 steer always lands | **Done** -- `3393e7905`, `5fdb23fd6`, `daa3eab1b`. Not to be re-executed. |
+| 4 EventError turn-scoped state | **Done** -- `0e467e098`. |
+| 5 kata 2f41 | **Done** -- `7d4f51141`, `19c4deba4`. Kata `2f41` is closed. |
+| 6 client double-send | **REVERTED and not to be executed** -- `ed6db108a`. It disabled Send in the window it targeted; kata `8c65` (open) records what a correct fix needs. |
+| 7 subagents | Split to `2026-08-16-controllable-subagents.md`. Kata `tb2k` recorded five statements needing correction there; they have been corrected in that document. |
+| 8, 9 coverage and docs | Mostly done (`905e653d2`, `08d511ded`, `647043055`, `e06ecbc98`, `68f5f75b3`). Task 9 is done -- see its section. |
 
-**Before landing:** a live browser pass. Nothing after the first half has been
+**Before landing** (written while this was still a branch; it has since merged
+to local `main`): a live browser pass. Nothing after the first half had been
 verified in a browser, and the original bug existed while the suite was green.
 Then e2e coverage for the newer behaviours, then the gates (`make lint` runs
-NINE targets), then merge -- kata `tx4q` (P0) means main refills the disk on
-every full-suite run until this lands.
+NINE targets), then merge. Kata `tx4q`, the disk leak that made this urgent, is
+closed.
 
 **The failure mode this branch kept hitting:** three fixes were wrong in ways
 their own tests missed, each because the test asserted something easier than the
@@ -136,17 +153,17 @@ Nothing else in this plan may start until Step 4 produces a red test.
 
 **Files:** create `server/control_invariant_test.go`
 
-- [ ] **Step 1: Write the harness.** A helper that returns
+- [x] **Step 1: Write the harness.** A helper that returns
       `(statusType, activeTurnID)` from `thread/read`, and one that asserts the
       control invariant: *if the wire says a turn is running, a `turn/interrupt`
       aimed at the id the wire just published is accepted.* Prefer reusing
       `awaitActiveTurn`/`awaitThread` (`cmd/serf-hub/e2e_turn_control_test.go:437-451`)
       over re-implementing them.
-- [ ] **Step 2: Run it against a goal-continuation turn and a notification
+- [x] **Step 2: Run it against a goal-continuation turn and a notification
       turn.** Both must PASS. If either fails, stop — a landed plan regressed and
       that is a different bug.
-- [ ] **Step 3: Commit the harness green.**
-- [ ] **Step 4: Drive the between-turn gap and watch it FAIL.** A queued message
+- [x] **Step 3: Commit the harness green.**
+- [x] **Step 4: Drive the between-turn gap and watch it FAIL.** A queued message
       drains, its turn ends, and the next turn has not begun.
       `completeClientMutationTurnWithState` clears the durable name
       (`agent/session_client_mutation_queue.go:1135-1137`) from the drain loop at
@@ -171,35 +188,60 @@ consecutive runs:
 - The published id tracks the boundary correctly (`turn_m1` → `turn_m2`), and
   `turn/interrupt` against the published id returns `Applied`.
 
-**So the between-turn gap is real in the code and NOT observable by a client.**
+**What was measured.** An interrupt aimed *after* the boundary, at the id the
+wire published for turn 2 while turn 2 was demonstrably running, was `Applied`
+in five consecutive runs. The wire never published `active` with an empty id, so
+the composer never hid Stop and Steer on a working session.
+
+**What was NOT measured — and the earlier wording claimed it was.** The harness
+never interrupts *inside* the gap. Every interrupt it issues lands after the
+boundary, so it cannot distinguish "the gap is unreachable" from "this sampler
+did not reach it". The first version of this block concluded "the between-turn
+gap is real in the code and NOT observable by a client"; that universal claim is
+not supported by the measurement it summarises, and is withdrawn.
+
 Both reviews were right that `completeClientMutationTurnWithState` clears the
 durable name while `processing` is still true. What neither of us checked is
 that `s.appActiveTurnID` is only updated by events
 (`server/appwire_runtime.go:212`), so during that window the wire keeps
 publishing the *previous* id rather than an empty one — and by the time it
-publishes a new id, that id is valid.
+publishes a new id, that id is valid. That explains why the sampler saw what it
+saw. It does not establish that no client can land in the gap.
 
-What this does NOT prove: that the window is unreachable. It proves an
-aggressive sampler could not reach it in five runs. A Stop aimed at `turn_m1`
-after turn 1 completed and before turn 2 opened would still be rejected; nothing
-here demonstrates a user can land in that microsecond.
+The question stopped mattering for a different reason: `c435bc579` deleted
+`expectedTurnId` entirely, so a Stop no longer names a turn and no longer has a
+stale id to be rejected for. The gap is closed by removal, not by measurement.
 
 ### Consequences for the rest of this plan
 
 | Task | Status after the measurement |
 | --- | --- |
-| 2 (interrupt escape hatch) | **Premise withdrawn.** Its justification was this gap. It remains the only way to make the guarantee structural rather than empirical, but it is now a design choice, not a bug fix. **Jesse's call.** |
-| 3 (steer always lands) | **Stands.** Decided on its own merits: a steer typed between turns should land, and today it is rejected. |
-| 4 (`EventError` bucket ids) | **Stands.** Independent, verified by both reviews. |
-| 5 (kata `2f41`) | **Stands, and is now the most valuable task here** — if the remaining windows are this hard to reach, the thing that matters is that any control which does fail says so. |
-| 6 (client double-send) | **Stands.** Independent and client-side. |
-| 8, 9 (coverage, docs) | **Stand.** |
+| 2 (interrupt escape hatch) | **Premise withdrawn**, then the task itself was **subsumed** by `c435bc579`. Not to be executed. |
+| 3 (steer always lands) | **Stands** — and has since shipped. |
+| 4 (`EventError` bucket ids) | **Stands.** Independent, verified by both reviews. Shipped as `0e467e098`. |
+| 5 (kata `2f41`) | **Stands, and is now the most valuable task here** — if the remaining windows are this hard to reach, the thing that matters is that any control which does fail says so. Shipped; `2f41` is closed. |
+| 6 (client double-send) | ~~**Stands.** Independent and client-side.~~ **Implemented and reverted** (`ed6db108a`). Kata `8c65`. |
+| 8, 9 (coverage, docs) | **Stand.** Task 9 is done. |
 
-**The headline: Steer, Send and Stop appear to work today.** The bug Jesse
-reported is fixed by the two landed plans. What remains is a projection
-corruption, invisible failures, a client-side double-send window, and cleanup.
+**The headline: Steer and Stop work today; Send has one open window.** The bug
+Jesse reported is fixed by the two landed plans. What remains is the
+fast-second-message case (kata `8c65`) and the cleanup list in Task 8.
 
-## Task 2: Stop can always stop, even with no addressable turn
+## Task 2: Stop can always stop, even with no addressable turn — SUBSUMED
+
+> **SUBSUMED by `c435bc579`. Do NOT execute this task.**
+>
+> The task's whole justification was working *around* the exact-match
+> precondition. `c435bc579` deleted the precondition instead, along with the
+> `interruptRunningTurn` opt-in this task prescribes building. `turn/interrupt`
+> now carries only `ref` and `clientMutationId`, and its precondition is "the
+> session is processing", sampled from `WireState()`. Executing the steps below
+> would rebuild the turn-scoped machinery that commit removed.
+>
+> The reasoning is kept because it records why *making `expectedTurnId`
+> optional* was rejected — a durable retry-safe mutation with no target cannot be
+> made idempotent across a retry. The answer that shipped was neither of the two
+> options weighed here: no client names a turn at all.
 
 `InterruptClientMutation` requires a non-empty `expectedTurnId` exactly equal to
 `ActiveTurnID` (`agent/session_client_mutation.go:414-425`). There is no
@@ -231,7 +273,19 @@ target cannot be made idempotent across a retry.
       the rejected alternative could not hold.
 - [ ] **Step 6:** Mutation-check, run `./agent/ ./server/`, commit.
 
-## Task 3: A steer with no active turn is queued, not rejected
+## Task 3: A steer with no active turn is queued, not rejected — DONE
+
+> **DONE (`3393e7905`, `5fdb23fd6`, `daa3eab1b`) and subsumed in part by
+> `c435bc579`. Do NOT execute this task.**
+>
+> The steer always lands: it is accepted into the steering queue and injected
+> into the next turn, and it provokes a turn of its own if the session settles
+> idle instead. The rejection this task existed to remove is gone twice over —
+> once because the steer is queued rather than refused, and once because
+> `c435bc579` deleted the `expectedTurnId` the refusal was computed from.
+>
+> Kept for its rejected-options record and its "do not build a second delivery
+> path" ruling, both still binding.
 
 Steer needs somewhere to land. During the gap there is no turn to steer, but
 there is an obvious correct semantic: inject it before the next turn — which is
@@ -257,21 +311,21 @@ is: enqueue steering, then arm the same wake a completing job arms
 (`s.notify()`). The stand-down and re-arm rules landed in `f40904960` then apply
 unchanged, including the hot-loop guard.
 
-- [ ] **Step 1:** Failing test — `turn/steer` during the Task 1 gap is accepted,
+- [x] **Step 1:** Failing test — `turn/steer` during the Task 1 gap is accepted,
       and its text appears in the next turn's model request.
-- [ ] **Step 2:** Implement via the existing steering queue.
-- [ ] **Step 3:** Second failing test — a `turn/steer` accepted when the session
+- [x] **Step 2:** Implement via the existing steering queue.
+- [x] **Step 3:** Second failing test — a `turn/steer` accepted when the session
       then goes idle **starts its own turn** and is delivered. This is the half
       that makes the guarantee unconditional, and it is the half most likely to
       be skipped.
-- [ ] **Step 4:** Third failing test — the steer is never delivered twice. The
+- [x] **Step 4:** Third failing test — the steer is never delivered twice. The
       next-turn path and the idle-wake path must not both fire for one steer;
       the steering queue drain is the single consumer.
-- [ ] **Step 5:** Confirm this cannot livelock: a steer that arms a wake, whose
+- [x] **Step 5:** Confirm this cannot livelock: a steer that arms a wake, whose
       wake stands down, must not re-arm forever. `runningTurnNameHasOwner`
       (`agent/session_active_turn.go`) is the existing guard; assert it covers
       this producer too.
-- [ ] **Step 6:** Mutation-check each, run `./agent/ ./server/`, commit.
+- [x] **Step 6:** Mutation-check each, run `./agent/ ./server/`, commit.
 
 ## Task 4: `EventError` stops re-opening a real turn under a bucket id
 
@@ -295,17 +349,17 @@ set, and `startTurn` does not clear `reasoningItem` either — so
 `ensureReasoningItem` (`:1817-1824`) reuses a stale item id in the next turn with
 no `item/started`.
 
-- [ ] **Step 1:** Failing test: after `EventError` mid-turn, a following
+- [x] **Step 1:** Failing test: after `EventError` mid-turn, a following
       `EventAssistantTextDelta` does not publish an active thread carrying a
       `turn_<n>`.
-- [ ] **Step 2:** Second failing test: after `EventError`, the next turn's
+- [x] **Step 2:** Second failing test: after `EventError`, the next turn's
       reasoning delta emits its own `item/started` rather than reusing the failed
       turn's item id.
-- [ ] **Step 3:** Introduce one `resetTurnScopedState()` with an explicit field
+- [x] **Step 3:** Introduce one `resetTurnScopedState()` with an explicit field
       list, and use it from `closeActiveTurn`, `startTurn` and the `EventError`
       path. `closeActiveTurn` clears seven fields, `startTurn` six, `EventError`
       five — the divergence is undocumented and must end deliberate or gone.
-- [ ] **Step 4:** Mutation-check each, run `./internal/appprojector/ ./server/`,
+- [x] **Step 4:** Mutation-check each, run `./internal/appprojector/ ./server/`,
       commit.
 
 ## Task 5: A rejected control says why (kata `2f41`)
@@ -317,18 +371,18 @@ stamps `MutationOutcome = notAccepted`
 (`cmd/serf-hub/frontend/src/stores/mutationDispatcher.ts:137-141`), and
 `QueueStrip` renders a row. The defects are narrower and worse:
 
-- [ ] **Step 1: The reason is never persisted.** `MutationRecoveryRecord`
+- [x] **Step 1: The reason is never persisted.** `MutationRecoveryRecord`
       (`stores/mutationOutbox.ts:57-59`) carries only `recoveryKind`, and
       `mutationOutboxIndexedDB.ts:264` builds it with
       `{ ...record, recoveryKind }` — the wire error's code and message are
       dropped at the storage boundary. Failing test first: a rejected mutation's
       reason survives a round-trip through the outbox. This is a schema change,
       not a rendering change.
-- [ ] **Step 2: The row does not say it failed.** It is *not* indistinguishable
+- [x] **Step 2: The row does not say it failed.** It is *not* indistinguishable
       from a pending row (pending carries `CLASS.rowPending`, opacity 0.6, and no
       buttons) — it is indistinguishable from a real daemon **queue** row, and
       the header counts it as queued. Failing test, then render the reason.
-- [ ] **Step 3: A Stop must not become a message.** A rejected `turn/interrupt`
+- [x] **Step 3: A Stop must not become a message.** A rejected `turn/interrupt`
       lands in a text-recovery store; `activateRecovery` (`Composer.tsx:663-688`)
       loads it into the composer draft and `resendRecoveryMutation`
       (`stores/threads.ts:547-563`) re-mints it through `composerMutationIntent`,
@@ -336,21 +390,32 @@ stamps `MutationOutcome = notAccepted`
       typed. Worse, `Composer.tsx:374-390` auto-activates the first rejected
       entry into an empty composer. Failing test, then keep interrupts out of the
       text-recovery path entirely.
-- [ ] **Step 4: The second rejection path.** `mutationDispatcher.ts:126-134`
+- [x] **Step 4: The second rejection path.** `mutationDispatcher.ts:126-134`
       handles a `WireError` with no `clientMutationId` — which is what a Stop
       with an empty `expectedTurnId` takes, since
       `server/appwire_runtime.go:828-830` returns `InvalidParams` naming no
       mutation. Cover it, or Step 2's reason is still blank on that path.
-- [ ] **Step 5:** Any test here must drive `MutationDispatcher`. A test against
+- [x] **Step 5:** Any test here must drive `MutationDispatcher`. A test against
       `threadsStore.steer` cannot observe a server rejection and would be
       tautological — the promise resolves at the local IndexedDB commit.
-- [ ] **Step 6:** `handleInterruptClick`'s catch (`Composer.tsx:875-885`) is
+- [x] **Step 6:** `handleInterruptClick`'s catch (`Composer.tsx:875-885`) is
       **not** dead — `requireClient()`, the not-ready throw
       (`stores/threads.ts:821`) and `requireMutationRuntime` all reach it. Keep
       it; do not "wire or delete" as an earlier draft said.
-- [ ] **Step 7:** Close kata `2f41` citing test names. Commit.
+- [x] **Step 7:** Close kata `2f41` citing test names. Commit.
 
-## Task 6: The client stops bouncing its own second message
+## Task 6: The client stops bouncing its own second message — REJECTED
+
+> **REJECTED. It was implemented and reverted by `ed6db108a`. Do NOT execute
+> this task.**
+>
+> Routing from the client's own optimistic state disabled Send in the very
+> window it targeted. Kata `8c65` (open) records what a correct fix needs, and
+> names the two things this version got wrong: real idle capabilities block the
+> queue path, and `turn/queue` rejected an empty `expectedTurnId`.
+>
+> The diagnosis below is still the right description of the window. The Step 2
+> instruction is the part that failed; do not re-derive it from here.
 
 The last user-visible window, and the only one that is client-side. Send-vs-Queue
 is decided when the message is composed, from `statusType` alone
@@ -377,23 +442,28 @@ new class of session into the client-mutation store.
 See `docs/superpowers/plans/2026-08-16-controllable-subagents.md`. Jesse's
 decision (delegates become watchable AND controllable) and the four blockers are
 recorded there, along with the design question that must be answered first: what
-the parent sees when you stop a delegate running inside its tool call.
+the parent sees when you stop a delegate. **A delegate does not run inside the
+parent's tool call** — an earlier wording here and in that plan said so, and it
+is wrong. Delegate runs are rooted in `context.WithCancel(context.Background())`
+specifically to outlive the parent tool-call context, and creation returns
+`RunningInBackground: true` before the child finishes. The corrected framing is
+in that document.
 
 ## Task 8: Coverage and hygiene
 
 Each bullet is its own red-green-commit.
 
-- [ ] `EventTurnStarted` is in neither fuzz corpus:
+- [x] `EventTurnStarted` is in neither fuzz corpus:
       `internal/appprojector/project_fuzz_test.go`'s `projectorCases` and
       `agent/events/eventdata_program_fuzz_test.go`, whose doc claims
       completeness while omitting `TurnStartedData` and `ModelRetryData`. Derive
       the case set from something that changes when the sealed set changes; a
       literal length assertion cannot catch the next omission.
-- [ ] `agent/session_client_mutation.go:128-141` says three sites write
+- [x] `agent/session_client_mutation.go:128-141` says three sites write
       `ActiveTurnID`. There are eight, and the omitted
       `finalizeClientMutationInterrupt` (`:566`) is the unconditional clearer the
       identity guard exists to survive.
-- [ ] Duplicate helpers in `internal/appprojector`: `startedTurnID`
+- [x] Duplicate helpers in `internal/appprojector`: `startedTurnID`
       (`goal_turn_identity_test.go:12`) and `turnStartedID`
       (`turn_boundary_test.go:10`) are the same function, and `completedTurnID`
       is re-implemented inline at `goal_turn_identity_test.go:90-104`. Separately
@@ -401,45 +471,64 @@ Each bullet is its own red-green-commit.
       (`session_turn_boundary_test.go:550`) and
       `TestMintRunningTurnIDSkipsUnservedSessions`
       (`session_active_turn_test.go:195`) assert the same thing.
-- [ ] `server/thread_envelope.go:174-190`: the justification for
+- [x] `server/thread_envelope.go:174-190`: the justification for
       `EventTurnStarted: facetWork` sits after that row and before
       `EventSteeringInjected`, reading as documentation of the wrong entry; and
       `thread_envelope_test.go:71-85` asserts `WorkMillis` while the comment
       argues `ActiveTurnStartedAt`.
-- [ ] Dedupe `cmd/serf-hub/e2e_turn_control_test.go` (700 lines): the
-      `thread/start` + cleanup block appears three times, steer-and-prove twice,
-      interrupt-and-prove three times. Makes visible that only one test covers
-      Send-while-busy.
-- [ ] `agent/entrykind_audit_test.go` is weak — a kind added after
-      `entryKindCount` leaves both assertions green. Strengthen it, or record why
-      not. Do **not** replace it with a `switch` + `invariant.Hold` default: that
-      is a production no-op and its test cannot fail.
+- [ ] **Still open.** Dedupe `cmd/serf-hub/e2e_turn_control_test.go` (700 lines):
+      the `thread/start` + cleanup block appears three times, steer-and-prove
+      twice, interrupt-and-prove three times. Makes visible that only one test
+      covers Send-while-busy. (The file is still 700 lines.)
+- [ ] **Partly done.** `agent/entrykind_audit_test.go` is weak — a kind added
+      after `entryKindCount` leaves both assertions green. Strengthen it, or
+      record why not. Do **not** replace it with a `switch` + `invariant.Hold`
+      default: that is a production no-op and its test cannot fail. (The "record
+      why not" half landed: the test's doc comment now states plainly what the
+      audit catches and that it cannot verify a classification is true. The
+      after-the-sentinel gap is still open.)
 
-## Task 9: Retire the superseded plans
+## Task 9: Retire the superseded plans — DONE
 
-- [ ] `2026-08-16-one-active-turn-identity.md` still instructs the
+- [x] `2026-08-16-one-active-turn-identity.md` still instructed the
       `SteeringInjectedData.StableTurnID` emit that `b5ce354a5` reverted and that
-      `internal/appprojector/appwire_projection.go:693-699` says "must never be
-      adopted" — at `:144`, `:501`, `:526-529`, with stale claims at `:12-15` and
-      `:149`. Its header tells an agent to execute it task-by-task, so it is a
-      live trap. Mark the superseded approach historical and point here.
-- [ ] `2026-08-16-one-running-turn.md`: mark superseded by this document, keeping
-      its diagnosis and rejected-options record.
-      (`2026-08-16-busy-means-named.md` is already marked.)
+      the projector's `EventSteeringInjected` case says "must never be adopted".
+      Its header told an agent to execute it task-by-task, so it was a live trap.
+      Now banners as LANDED IN PART, with the reverted instructions marked inline
+      at Steps 6 and 7 rather than deleted. Kata `dn16`.
+- [x] `2026-08-16-one-running-turn.md`: marked superseded by this document,
+      keeping its diagnosis and rejected-options record.
+      (`2026-08-16-busy-means-named.md` was already marked.)
+- [x] `2026-08-16-one-turn-boundary.md` had the same problem and was not on the
+      original list: shipped in full, still reading as unstarted, and its Design
+      decisions section stale for a second time after `2bf03d10d` moved the mint
+      again. Now banners as SHIPPED with the three divergences corrected inline.
+      Kata `tqhg`.
+- [x] This document: the volatile commit count is gone, Tasks 2, 3 and 6 carry
+      markers, the Task 1 RESULT separates what was measured from what was not,
+      and the endgame no longer claims Send is finished. Kata `tqhg`.
+- [x] `2026-08-16-controllable-subagents.md` was corrected rather than retired —
+      it is the one plan here that has not started. Kata `tb2k`.
 
 ---
 
 ## Definition of done
 
 - [ ] Task 1's harness passes for every turn kind **and** in the between-turn
-      gap, on the push path and the read path.
+      gap, on the push path and the read path. **Not met.** The harness only ever
+      interrupts after the boundary — see the RESULT block's correction.
 - [ ] `make lint` (nine targets), `make build`, root suite, all seven module
-      suites, `make test-web`, all live-stack e2e tests.
+      suites, `make test-web`, all live-stack e2e tests. **Not recorded.** Gate
+      runs leave no artifact, so nobody can check this off from the tree; treat
+      it as unrun.
 - [ ] Live browser check: Stop works at every moment of a multi-turn drain,
       including between turns; Steer during a gap lands in the next turn; two
       fast messages both arrive. Zero rejections in the mutation journal — and
-      any rejection that does occur is legible on screen.
-- [ ] Katas `c2ty`, `7vmd` and `2f41` closed, each citing a test name.
+      any rejection that does occur is legible on screen. **Partly met** — the
+      2026-08-17 pass covered Stop and Steer. The two-fast-messages half is the
+      case Task 6 failed to fix; kata `8c65`.
+- [x] Katas `c2ty`, `7vmd` and `2f41` closed, each citing a test name. All three
+      are closed.
 
 ---
 
@@ -448,18 +537,23 @@ Each bullet is its own red-green-commit.
 Stated plainly, because this plan follows two that promised more than they could
 deliver.
 
-**Yes for Stop.** Task 2 removes the only reason a Stop can fail on a running
-session: the exact-match precondition. After it, Stop does not depend on the
-client holding a current turn id, so it survives every window — the ones found
-here and any not yet found.
-
-**Yes for Send.** It already works, and Task 6 closes the fast-second-message
-case.
+**Yes for Stop** — but not by Task 2. `c435bc579` removed the exact-match
+precondition rather than adding a way around it, so Stop does not depend on the
+client holding a current turn id and survives every window, found or not. Live
+browser pass 2026-08-17: Stop ended a running turn and the transcript showed
+"System steered: Interrupted".
 
 **Yes for Steer.** Jesse's 2026-08-16 call makes the steer always land: into the
 next turn if there is one, and otherwise into a turn of its own. So Steer, like
 Stop, stops depending on whether a turn happens to be addressable at the instant
-the button is pressed.
+the button is pressed. Shipped as `3393e7905`, `5fdb23fd6`, `daa3eab1b`.
+
+**NOT YET for Send.** The earlier version of this section said "Yes for Send. It
+already works, and Task 6 closes the fast-second-message case." Task 6 closes
+nothing — it was implemented and reverted by `ed6db108a` because it disabled Send
+in the window it targeted. Send works for every case *except* a second message
+composed before the UI learns the session went busy. That case is open, and kata
+`8c65` records what a fix has to handle. Do not treat Send as finished.
 
 **What this does not promise.** It does not promise there are no windows left.
 This is a durable store, three goroutines and a browser; new windows will be
@@ -474,6 +568,8 @@ unanswered design question (what the parent sees when you stop its delegate).
 Treat its "yes" as conditional on that answer, not on the tasks above.
 
 **The honest residue.** The projection corruption in Task 4 predates all this
-work and may have symptoms not yet found. And `main` still carries the e2e disk
-leak without its fix — kata `tx4q`, unrelated to all of the above and worth
-cherry-picking regardless.
+work and may have symptoms not yet found. ~~And `main` still carries the e2e disk
+leak without its fix — kata `tx4q`.~~ `tx4q` is closed. The open katas from this
+branch are `8c65` (the fast-second-message window), `b19h` (the unnameable-turn
+suppression covers only the push path) and `ajg5` (the notification stand-down
+under a failing mutation store).
