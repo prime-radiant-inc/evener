@@ -283,6 +283,50 @@ func TestTranscript_TextMaxHonoursAnExplicitCap(t *testing.T) {
 	}
 }
 
+// A tool result's ContentPreview reports the result's bytes, not a tidied
+// version of them: trimming edge whitespace made --full-text (which promises
+// the result whole) lie about leading/trailing newlines, and made a
+// whitespace-only result vanish entirely (omitempty). Turn text keeps its
+// trim — that happens at summarizeTurn's call site, not inside truncate.
+func TestTranscript_ToolResultPreviewKeepsEdgeWhitespace(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidB
+	resultText := "\n\nleading newlines kept\n"
+	whitespaceOnly := "\n\t "
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			toolResult("read_file", resultText, false),
+			toolResult("shell", whitespaceOnly, false),
+		}}),
+	}
+	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
+
+	// --full-text: byte-exact, whole.
+	full, err := Transcript(base, sid, TranscriptOpts{TextMax: TextMaxFull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := full.Turns[0].ToolResults[0].ContentPreview; got != resultText {
+		t.Errorf("full-text preview = %q, want the result byte-exact %q", got, resultText)
+	}
+	if got := full.Turns[0].ToolResults[1].ContentPreview; got != whitespaceOnly {
+		t.Errorf("full-text whitespace-only preview = %q, want %q (must not vanish)", got, whitespaceOnly)
+	}
+
+	// Default cap: same fidelity — the cap elides the tail, it does not tidy.
+	capped, err := Transcript(base, sid, TranscriptOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := capped.Turns[0].ToolResults[0].ContentPreview; got != resultText {
+		t.Errorf("default preview = %q, want %q", got, resultText)
+	}
+	if got := capped.Turns[0].ToolResults[1].ContentPreview; got != whitespaceOnly {
+		t.Errorf("default whitespace-only preview = %q, want %q", got, whitespaceOnly)
+	}
+}
+
 // truncate's cap is a byte budget, but the cut must land on a rune boundary:
 // slicing mid-rune emits invalid UTF-8, which --json then rewrites to U+FFFD.
 func TestTruncate_NeverCutsMidRune(t *testing.T) {
