@@ -1030,7 +1030,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					srv.SetState(string(agent.SessionProcessing))
 				})
 			} else if msg.QueuedInput {
-				_ = sess
+				result, processed, processErr = sess.ProcessPendingUserInput(turnCtx, func(turnID string) {
+					srv.SetCancelFunc(cancelTurn)
+					setMutationRunner(cancelTurn, runnerDone)
+					srv.SetProcessingTurn(turnID)
+					srv.SetState(string(agent.SessionProcessing))
+				})
 			} else {
 				result, processErr = sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
 			}
