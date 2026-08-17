@@ -1,11 +1,13 @@
 import { useId, useState } from "react";
-import { Input } from "../../widgets";
+import { Chevron, Input } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { SETTINGS_CLUSTERS, SETTINGS_SECTIONS, type SettingsSection } from "./sections";
 import styles from "./settings.module.css";
 
 export interface SettingsNavProps {
-  activeId: string;
+  /** null on the mobile list view - no row is "current" when no content
+   * sits beside the list for a highlight to refer to. */
+  activeId: string | null;
   onNavigate: (sectionId: string) => void;
 }
 
@@ -16,6 +18,7 @@ const CLASS = {
   clusterHeader: requireClass(styles.clusterHeader, "settings.module.css", "clusterHeader"),
   link: requireClass(styles.link, "settings.module.css", "link"),
   linkActive: requireClass(styles.linkActive, "settings.module.css", "linkActive"),
+  linkChevron: requireClass(styles.linkChevron, "settings.module.css", "linkChevron"),
 };
 
 function matchesFilter(label: string, filter: string): boolean {
@@ -38,7 +41,10 @@ function NavLink({
       aria-current={active ? "page" : undefined}
       onClick={() => onNavigate(section.id)}
     >
-      {section.label}
+      <span>{section.label}</span>
+      <span className={CLASS.linkChevron} aria-hidden="true" data-testid="settings-nav-chevron">
+        <Chevron direction="right" size={16} />
+      </span>
     </button>
   );
 }

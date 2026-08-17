@@ -515,6 +515,65 @@ test("back skips a stale MIDDLE stack entry and lands on the next valid one behi
   expect(await screen.findByText(/doc pane: ref_a \(focused=true\)/)).toBeTruthy();
 });
 
+// --- paneBack channel: a pane's own "up" target takes over the top bar ----
+//
+// The chrome store's second channel (2026-08-16 settings mobile-nav design):
+// a pane whose internal drill-down the workspace cannot see (settings is a
+// SINGLETON pane - section switches update its params in place, so its pane
+// id never changes and this component's focus-keyed back-stack never
+// observes them) publishes its own "up" handler, and the top-bar Back button
+// invokes it instead of walking the pane stack. Published host-agnostically,
+// exactly like paneTitle (chromeStore.ts's own channel comment): DockHost
+// never reads it, so the publishing pane never asks "am I mobile?".
+
+test("a published paneBack handler takes over the top-bar Back button instead of walking the stack", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: ref_a/);
+  workspaceStore.getState().openPane("doc", { ref: "ref_b" }); // stacks ref_a
+  await screen.findByText(/doc pane: ref_b/);
+
+  const paneBack = vi.fn();
+  act(() => {
+    chromeStore.getState().setPaneBack(paneBack);
+  });
+
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+
+  expect(paneBack).toHaveBeenCalledTimes(1);
+  // The pane stack was NOT walked: ref_b is still the focused pane.
+  expect(screen.getByText(/doc pane: ref_b \(focused=true\)/)).toBeTruthy();
+});
+
+test("clearing paneBack hands the Back button back to the ordinary stack walk", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: ref_a/);
+  workspaceStore.getState().openPane("doc", { ref: "ref_b" }); // stacks ref_a
+  await screen.findByText(/doc pane: ref_b/);
+
+  act(() => {
+    chromeStore.getState().setPaneBack(() => {});
+  });
+  act(() => {
+    chromeStore.getState().setPaneBack(null);
+  });
+
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+
+  expect(await screen.findByText(/doc pane: ref_a \(focused=true\)/)).toBeTruthy();
+});
+
+test("resetChromeStoreForTests clears a published paneBack handler", () => {
+  chromeStore.getState().setPaneBack(() => {});
+
+  resetChromeStoreForTests();
+
+  expect(chromeStore.getState().paneBack).toBeNull();
+});
+
 // --- URL sync: the address bar always reflects the focused pane -----------
 //
 // Unlike DockHost, StackHost has no per-pane "tab" carrying its own text -

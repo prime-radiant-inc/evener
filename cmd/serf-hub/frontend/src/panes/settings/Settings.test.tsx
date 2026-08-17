@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
+import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../stores/credentials";
@@ -27,6 +28,7 @@ afterEach(() => {
   // @ts-expect-error restores jsdom's own honest default between tests.
   delete window.matchMedia;
   resetWorkspaceStoreForTests();
+  resetChromeStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
 });
@@ -155,38 +157,84 @@ test("desktop: clicking a nav link requests navigation to that section's URL", a
   expect(window.location.pathname).toBe("/settings/storage");
 });
 
-test("mobile: initial render shows the content view with a visible back button, not the nav list", () => {
+// --- mobile (<900px): URL-derived master-detail (2026-08-16 design) --------
+//
+// On mobile the settings pane is two full-screen levels derived from the URL,
+// not from component state: bare /settings is the section LIST (the root),
+// /settings/{section} is that section's DETAIL. Back lives in the shell's
+// top bar via the chrome store's paneBack channel (StackHost reads it) -
+// there is no in-content back button. The list stays MOUNTED while a detail
+// shows (CSS-hidden, never unmounted), so its filter text and scroll
+// position survive the round trip.
+
+test("mobile: bare params show the section list as the root view, not a section's content", () => {
   stubMatchMedia(true);
-  render(<Settings params={{ section: "hub" }} paneId="settings-1" focused={true} />);
-  expect(screen.getByRole("button", { name: "Back to settings" })).toBeTruthy();
-  expect(screen.getByRole("heading", { name: "Hub" })).toBeTruthy();
-  expect(screen.queryByRole("navigation", { name: "Settings sections" })).toBeNull();
-});
-
-test("mobile: clicking the back button shows the nav list and hides the content/back button", async () => {
-  stubMatchMedia(true);
-  const user = userEvent.setup();
-  render(<Settings params={{ section: "hub" }} paneId="settings-1" focused={true} />);
-
-  await user.click(screen.getByRole("button", { name: "Back to settings" }));
-
+  render(<Settings params={{}} paneId="settings-1" focused={true} />);
   expect(screen.getByRole("navigation", { name: "Settings sections" })).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Back to settings" })).toBeNull();
-  expect(screen.queryByText("This section hasn't been built yet.")).toBeNull();
+  expect(screen.queryByTestId("settings-content")).toBeNull();
 });
 
-test("mobile: choosing a link from the nav list returns to the content view", async () => {
+test("mobile: a section param shows that section's content", () => {
+  stubMatchMedia(true);
+  render(<Settings params={{ section: "bogus" }} paneId="settings-1" focused={true} />);
+  expect(screen.getByTestId("settings-content")).toBeTruthy();
+  expect(screen.getByText("This section hasn't been built yet.")).toBeTruthy();
+});
+
+test("mobile: the section detail has no in-content back button - back lives in the shell top bar", () => {
+  stubMatchMedia(true);
+  render(<Settings params={{ section: "hub" }} paneId="settings-1" focused={true} />);
+  expect(screen.queryByRole("button", { name: "Back to settings" })).toBeNull();
+});
+
+test("mobile: a focused section publishes a paneBack to the section list; the list publishes none", () => {
+  stubMatchMedia(true);
+  const { rerender } = render(<Settings params={{ section: "hub" }} paneId="settings-1" focused={true} />);
+
+  const paneBack = chromeStore.getState().paneBack;
+  expect(paneBack).toBeTypeOf("function");
+  act(() => paneBack?.());
+  expect(window.location.pathname).toBe("/settings");
+
+  // The list is the drill-down's ROOT: nothing further up to publish, so the
+  // shell's Back keeps its ordinary meaning (exit settings) there.
+  rerender(<Settings params={{}} paneId="settings-1" focused={true} />);
+  expect(chromeStore.getState().paneBack).toBeNull();
+});
+
+test("mobile: the section list publishes 'Settings' as the pane title; a focused section publishes its label", () => {
+  stubMatchMedia(true);
+  const { rerender } = render(<Settings params={{}} paneId="settings-1" focused={true} />);
+  expect(chromeStore.getState().paneTitle).toBe("Settings");
+
+  rerender(<Settings params={{ section: "hub" }} paneId="settings-1" focused={true} />);
+  expect(chromeStore.getState().paneTitle).toBe("Hub");
+});
+
+test("mobile: the list stays mounted across a drill-down round trip - its filter text survives", async () => {
   stubMatchMedia(true);
   const user = userEvent.setup();
-  render(<Settings params={{ section: "hub" }} paneId="settings-1" focused={true} />);
-  await user.click(screen.getByRole("button", { name: "Back to settings" }));
-  await screen.findByRole("navigation", { name: "Settings sections" });
+  const { rerender } = render(<Settings params={{}} paneId="settings-1" focused={true} />);
+  await user.type(screen.getByRole("searchbox", { name: "Filter settings" }), "stor");
 
+  // Drill in: the link requests the URL; AppShell's routing glue owns the
+  // params update that follows (replacePrimary on popstate) - in this
+  // isolated render that step is done by hand, the same idiom the desktop
+  // navigation test above documents.
   await user.click(screen.getByRole("button", { name: "Storage" }));
-
-  expect(screen.getByRole("button", { name: "Back to settings" })).toBeTruthy();
-  expect(screen.queryByRole("navigation", { name: "Settings sections" })).toBeNull();
   expect(window.location.pathname).toBe("/settings/storage");
+  rerender(<Settings params={{ section: "storage" }} paneId="settings-1" focused={true} />);
+
+  expect(screen.getByRole("searchbox", { name: "Filter settings" })).toHaveProperty("value", "stor");
+  expect(screen.getByTestId("settings-content")).toBeTruthy();
+
+  // Back out the way the shell's top bar takes us: the published paneBack.
+  act(() => chromeStore.getState().paneBack?.());
+  expect(window.location.pathname).toBe("/settings");
+  rerender(<Settings params={{}} paneId="settings-1" focused={true} />);
+
+  expect(screen.getByRole("searchbox", { name: "Filter settings" })).toHaveProperty("value", "stor");
+  expect(screen.queryByTestId("settings-content")).toBeNull();
 });
 
 test("the pane title reflects the focused section", () => {

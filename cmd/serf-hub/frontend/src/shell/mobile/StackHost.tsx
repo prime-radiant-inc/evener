@@ -165,6 +165,12 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
   // the span empty, exactly the empty bar this component drew before the
   // channel existed.
   const paneTitle = useChromeStore((s) => s.paneTitle);
+  // The focused pane's own "up" target, published host-agnostically through
+  // the same channel (chromeStore.ts's paneBack comment): settings' section
+  // drill-down is invisible to this component's focus-keyed back-stack (the
+  // singleton pane's id never changes across sections), so while a pane
+  // publishes one, the top-bar Back invokes IT instead of the stack walk.
+  const paneBack = useChromeStore((s) => s.paneBack);
   const focusedPane = panes.find((p) => p.id === focusedPaneId) ?? null;
 
   // This component's OWN back-stack: ids previously focused, most-recent-
@@ -320,7 +326,7 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
               label="Back"
               icon={<Chevron direction="left" size={16} />}
               variant="quiet"
-              onClick={isPanelPane ? handlePanelBack : handleBack}
+              onClick={isPanelPane ? handlePanelBack : (paneBack ?? handleBack)}
             />
           )}
         </div>

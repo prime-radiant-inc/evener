@@ -1,5 +1,6 @@
 import type { ComponentType } from "react";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
+import { chromeStore } from "../../shell/chromeStore";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useIsMobile } from "../../shell/useIsMobile";
@@ -45,8 +46,8 @@ export interface SettingsPaneParams {
 
 const CLASS = {
   shell: requireClass(styles.shell, "settings.module.css", "shell"),
+  shellDetail: requireClass(styles.shellDetail, "settings.module.css", "shellDetail"),
   content: requireClass(styles.content, "settings.module.css", "content"),
-  back: requireClass(styles.back, "settings.module.css", "back"),
 };
 
 // SECTION_COMPONENTS: the per-section dispatch seam T1b's own placeholder
@@ -80,43 +81,72 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   about: AboutSection,
 };
 
+// The "up" target a focused section publishes to the chrome store's paneBack
+// channel - the section list, i.e. bare /settings. Module-level because it
+// closes over nothing: publishing the SAME function identity across param
+// changes keeps StackHost's subscription from re-rendering on every section
+// switch.
+function showSettingsList(): void {
+  const url = paneToURL("settings", {});
+  if (url !== null) navigate(url);
+}
+
 /**
- * The settings pane shell: left nav + section content, mobile nav-as-page
- * (test-settings-shell.js) - below the shared shell's own <900px mobile
- * breakpoint (useIsMobile), the nav and the focused section's content are
- * two full-width views instead of a side-by-side split, toggled by a back
- * button rather than kept both mounted with CSS hiding (the legacy's own
- * `body[data-settings-pane]` needed explicit JS attribute toggling only
- * because HTML's native `hidden` attribute loses to a `display` override -
- * a CSS/HTML specificity conflict that plain React conditional rendering,
- * used here, cannot hit at all). A resolved section is always showing on
- * mount (bare /settings defaults to DEFAULT_SECTION_ID, mirroring the
- * legacy sidebar's own global Settings entry point landing on "general"),
- * so mobile's initial view is always the content view with its back
- * button visible - "nav" is reached only via that button's own click,
- * matching test-settings-shell.js's "back-button visible whenever an
- * Active section title is present" (always true here) and matching the
- * legacy's client-only URL reset on back (no refetch - the nav here was
- * never unmounted... except see below), respectively.
+ * The settings pane shell: left nav + section content on desktop; on mobile
+ * (<900px, useIsMobile) a URL-derived master-detail pair (2026-08-16
+ * settings mobile-nav design).
  *
- * The mobile nav view intentionally does NOT preserve SettingsNav's own
- * filter text across a round trip through the content view - it fully
- * unmounts (conditional rendering, not hidden) whenever the content view
- * is showing, so returning via Back always starts from a clear filter.
- * Desktop never unmounts it at all (both views always render), so filter
- * persistence there is automatic without any extra state here.
+ * The URL owns the mobile view, not component state: bare /settings (no
+ * section param) IS the section list - the drill-down's root - and
+ * /settings/{section} is that section's detail. Reload, share, deep link,
+ * and the browser's own back/forward all land on an honest view because
+ * each level is addressable (routing.ts already resolves both forms;
+ * AppShell's replacePrimary glue updates this singleton pane's params in
+ * place on every popstate). Desktop is unchanged: nav and content sit side
+ * by side, and a bare /settings still resolves its content to
+ * DEFAULT_SECTION_ID.
+ *
+ * Back on mobile lives in the shell's top bar, not in the content: a
+ * focused section publishes showSettingsList to the chrome store's paneBack
+ * channel (the workspace can't see section switches - a singleton pane's id
+ * never changes - so StackHost's pane-stack back could never walk them;
+ * chromeStore.ts's own comment documents the channel). The list publishes
+ * nothing: it IS the root, so the top-bar Back there keeps its ordinary
+ * meaning (exit settings). Host-agnostic, like the title channel - DockHost
+ * never reads paneBack.
+ *
+ * The nav is NEVER unmounted, in either host or view: while a mobile detail
+ * shows, the .shellDetail marker class CSS-hides it (a compound selector -
+ * `.shellDetail .nav` beats `.nav`'s own display:flex on specificity, the
+ * trap the legacy's `hidden`-attribute toggling fell into), so its filter
+ * text and scroll position survive the drill-down round trip.
  */
 export default function Settings({ params, paneId }: PaneProps<SettingsPaneParams>) {
   const activeId = params.section ?? DEFAULT_SECTION_ID;
   const isMobile = useIsMobile();
-  const [mobileShowingNav, setMobileShowingNav] = useState(false);
   const SectionComponent = SECTION_COMPONENTS[activeId] ?? PlaceholderSection;
+  // Mobile list view: bare /settings on a phone. No row is "active" - there
+  // is no content beside the list for a highlight to refer to.
+  const showingList = isMobile && params.section === undefined;
+  const showContent = !isMobile || params.section !== undefined;
 
   function handleNavigate(sectionId: string) {
-    setMobileShowingNav(false);
     const url = paneToURL("settings", { section: sectionId });
     if (url !== null) navigate(url);
   }
+
+  // paneBack is published whenever a section is focused, in EITHER host -
+  // host-agnostic like the title channel. The effect (not render) owns the
+  // store write so unmount always clears it, never leaving a stale handler
+  // for the next pane StackHost mounts.
+  useEffect(() => {
+    if (params.section === undefined) {
+      chromeStore.getState().setPaneBack(null);
+      return undefined;
+    }
+    chromeStore.getState().setPaneBack(showSettingsList);
+    return () => chromeStore.getState().setPaneBack(null);
+  }, [params.section]);
 
   // Settings has no other way out: opened via the rail gear, it took over
   // the main slot (workspace.ts's own "primary" rule) whose tab bar/close
@@ -160,30 +190,18 @@ export default function Settings({ params, paneId }: PaneProps<SettingsPaneParam
     return () => document.removeEventListener("keydown", onDocumentKeyDown);
   });
 
-  const showNav = !isMobile || mobileShowingNav;
-  const showContent = !isMobile || !mobileShowingNav;
-
   return (
     <PaneScaffold
       title={settingsSectionLabel(activeId)}
+      mobileTitle={showingList ? "Settings" : undefined}
       actions={
         <IconButton label="Close settings" icon={<CloseIcon />} variant="quiet" size="sm" onClick={handleClose} />
       }
     >
-      <div className={CLASS.shell}>
-        {showNav && <SettingsNav activeId={activeId} onNavigate={handleNavigate} />}
+      <div className={params.section !== undefined ? `${CLASS.shell} ${CLASS.shellDetail}` : CLASS.shell}>
+        <SettingsNav activeId={showingList ? null : activeId} onNavigate={handleNavigate} />
         {showContent && (
-          <div className={CLASS.content}>
-            {isMobile && (
-              <button
-                type="button"
-                className={CLASS.back}
-                aria-label="Back to settings"
-                onClick={() => setMobileShowingNav(true)}
-              >
-                ‹ Settings
-              </button>
-            )}
+          <div className={CLASS.content} data-testid="settings-content">
             <SectionComponent sectionId={activeId} />
           </div>
         )}

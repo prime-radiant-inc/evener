@@ -75,28 +75,6 @@
   overflow-y: auto;
 }
 
-.back {
-  align-self: flex-start;
-  padding: var(--space-1) var(--space-2);
-  border: none;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--ink-hi);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  cursor: pointer;
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
-}
-
-.back:hover {
-  background: var(--hover-1);
-}
-
-.back:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
-}
-
 /* Standard clip-to-1px visually-hidden technique (same as
  * collectioneditor.module.css's own .visuallyHidden) - hides the filter
  * input's accessible-name text visually (the placeholder already conveys
@@ -112,4 +90,52 @@
   padding: 0;
   white-space: nowrap;
   border: 0;
+}
+
+/* The drill-in chevron each nav row carries on mobile (decorative - the
+ * row's button already names itself). Desktop hides it: the rail's rows
+ * switch content beside them, they don't drill anywhere. */
+.linkChevron {
+  display: none;
+}
+
+/* Mobile (<900px, matching useIsMobile's query): the nav is a full-screen
+ * master list, not a 200px rail - full width, honest 44px rows (--tap-min,
+ * tokens.css's phone block, per 2026-07-30-mobile-session-layout-design.md
+ * decision 4), a visible drill-in chevron per row, and the filter pinned to
+ * the top of the list's own scroll. While a section detail shows
+ * (.shellDetail - Settings.tsx's marker for "a section is focused"), the
+ * list hides but stays mounted: the compound `.shellDetail .nav` selector
+ * out-specifies .nav's own display:flex above, which is what lets the nav
+ * keep its filter text and scroll position instead of being conditionally
+ * rendered. .shellDetail is declared ONLY inside this media query (it means
+ * nothing on desktop) - CSS modules exports media-nested locals the same as
+ * top-level ones, so requireClass still sees it. */
+@media (max-width: 899px) {
+  .nav {
+    width: 100%;
+  }
+
+  .shellDetail .nav {
+    display: none;
+  }
+
+  .link {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: var(--tap-min);
+  }
+
+  .linkChevron {
+    display: inline-flex;
+    color: var(--ink-mid);
+  }
+
+  .filterRow {
+    position: sticky;
+    top: 0;
+    z-index: var(--z-sticky-bar);
+    background: var(--surface-1);
+  }
 }
