@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -226,7 +227,7 @@ func summarizeTurn(index int, e transcript.Entry, resultTool string, textMax int
 			}
 			ts.ToolCalls = append(ts.ToolCalls, ToolCallSummary{
 				Name:       part.ToolCall.Name,
-				ArgPreview: truncate(string(part.ToolCall.Arguments), argPreviewMax),
+				ArgPreview: truncate(strings.TrimSpace(string(part.ToolCall.Arguments)), argPreviewMax),
 				IsResult:   part.ToolCall.Name == resultTool,
 			})
 		case llm.ContentToolResult:
@@ -387,12 +388,20 @@ func atoi(s string) int {
 	return n
 }
 
+// truncate caps s at maxLen bytes plus an ellipsis. The cap is a byte budget,
+// but the cut backs off to the previous rune boundary so a valid input never
+// yields invalid UTF-8: the kept prefix is at most maxLen bytes, never more.
+// It never trims: a caller that wants tidy edges trims before calling, so the
+// full-text tool-result path can report the result's bytes exactly.
 func truncate(s string, maxLen int) string {
-	s = strings.TrimSpace(s)
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "…"
+	cut := maxLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 func oneLine(s string) string {

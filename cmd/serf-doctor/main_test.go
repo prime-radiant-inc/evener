@@ -1250,3 +1250,39 @@ func TestRun_TranscriptRejectsNonPositiveTextMax(t *testing.T) {
 		}
 	}
 }
+
+// --full-text is documented to take precedence over --text-max, so giving both
+// must never be an error — even when the --text-max value alone would be
+// refused. Refusing `--text-max 0 --full-text` with "use --full-text" tells the
+// user to pass the flag they already passed.
+func TestRun_TranscriptFullTextOverridesNonPositiveTextMax(t *testing.T) {
+	base, sid, turnText := fixtureWithSalvagedLoop(t)
+
+	for _, arg := range []string{"0", "-1"} {
+		var out, errb bytes.Buffer
+		if code := run([]string{"transcript", sid, "--state-dir", base, "--text-max", arg, "--full-text"}, &out, &errb); code != 0 {
+			t.Fatalf("--text-max %s --full-text: exit %d, want 0; stderr=%s", arg, code, errb.String())
+		}
+		if !strings.Contains(out.String(), turnText) {
+			t.Errorf("--text-max %s --full-text did not render the whole turn text:\n%s", arg, out.String())
+		}
+	}
+}
+
+// --count and --health never consume --text-max, so a non-positive value must
+// not refuse them: the validation guards only the transcript render that will
+// actually apply the cap.
+func TestRun_TranscriptCountAndHealthIgnoreTextMax(t *testing.T) {
+	base, sid, _ := fixtureWithSalvagedLoop(t)
+
+	for _, extra := range [][]string{
+		{"--count", "manage_worktree"},
+		{"--health"},
+	} {
+		var out, errb bytes.Buffer
+		args := append([]string{"transcript", sid, "--state-dir", base, "--text-max", "0"}, extra...)
+		if code := run(args, &out, &errb); code != 0 {
+			t.Errorf("%v with --text-max 0: exit %d, want 0; stderr=%s", extra, code, errb.String())
+		}
+	}
+}

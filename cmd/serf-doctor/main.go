@@ -223,13 +223,6 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 	}
 	base := doctor.ResolveStateBase(*stateDir)
 
-	// A non-positive cap reads as "no cap" by the usual CLI convention, but the
-	// library spells unbounded as --full-text; silently applying the 200-byte
-	// default instead would hide the very loop this flag exists to expose.
-	if *textMax <= 0 {
-		return fail(stderr, "transcript", errors.New("--text-max must be positive; use --full-text to render turns with no cap"))
-	}
-
 	if *count != "" {
 		res, err := doctor.Count(base, sel, *count)
 		if err != nil {
@@ -250,6 +243,15 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 			return emitJSON(stdout, res)
 		}
 		return writeText(stdout, doctor.RenderHealth(res))
+	}
+
+	// A non-positive cap reads as "no cap" by the usual CLI convention, but the
+	// library spells unbounded as --full-text; silently applying the 200-byte
+	// default instead would hide the very loop this flag exists to expose. The
+	// check guards only this render: --full-text takes precedence over
+	// --text-max, and --count/--health never consume the cap at all.
+	if !*fullText && *textMax <= 0 {
+		return fail(stderr, "transcript", errors.New("--text-max must be positive; use --full-text to render turns with no cap"))
 	}
 
 	opts := doctor.TranscriptOpts{Format: *format, Range: *rangeArg, TextMax: *textMax}
