@@ -658,10 +658,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		out := p.ensureTurn(event.Timestamp)
 		turnID := p.activeTurnID
 		p.activeTurnID = ""
-		p.assistantItem = ""
-		p.assistantText = ""
-		p.toolItemsByKey = map[string]string{}
-		p.suppressedTools = map[string]struct{}{}
+		// A failed turn ends as thoroughly as a completed one. Clearing a
+		// smaller set here let reasoningItem, toolArgsByKey and toolStartByKey
+		// survive into the next turn, and ensureReasoningItem then reused the
+		// failed turn's item id without announcing it.
+		p.resetTurnScopedState()
 		turn := appwire.Turn{
 			ID:     turnID,
 			Status: appwire.TurnStatusFailed,
@@ -1620,13 +1621,7 @@ func (p *AppEventProjector) closeActiveTurn(status string) []AppNotification {
 	}
 	turnID := p.activeTurnID
 	p.activeTurnID = ""
-	p.assistantItem = ""
-	p.assistantText = ""
-	p.reasoningItem = ""
-	p.toolItemsByKey = map[string]string{}
-	p.toolArgsByKey = map[string]string{}
-	p.toolStartByKey = map[string]time.Time{}
-	p.suppressedTools = map[string]struct{}{}
+	p.resetTurnScopedState()
 	turn := appwire.Turn{ID: turnID, Status: status}
 	p.applyPendingTiming(turnID, &turn)
 	p.stampTurnUsage(&turn)
@@ -1662,6 +1657,26 @@ func (p *AppEventProjector) openTurn(stableID string, at time.Time) (string, []A
 		Ref:      p.ref,
 		Turn:     startedTurn(turnID, at),
 	}))
+}
+
+// resetTurnScopedState clears everything that belongs to one turn and must not
+// be visible to the next. Every field here names an item, a tool call in
+// flight, or text accumulated for an item -- so a value that survives a turn
+// boundary is re-used under the next turn's id without an item/started, and a
+// client that materializes items from item/started receives deltas for an item
+// it never saw open.
+//
+// One reset rather than one per ending: the close path, the failed-turn path
+// and the open path each used to clear a different subset, and nothing recorded
+// why they differed.
+func (p *AppEventProjector) resetTurnScopedState() {
+	p.assistantItem = ""
+	p.assistantText = ""
+	p.reasoningItem = ""
+	p.toolItemsByKey = map[string]string{}
+	p.toolArgsByKey = map[string]string{}
+	p.toolStartByKey = map[string]time.Time{}
+	p.suppressedTools = map[string]struct{}{}
 }
 
 func (p *AppEventProjector) startTurn() string {
