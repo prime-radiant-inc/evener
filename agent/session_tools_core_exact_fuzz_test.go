@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -73,10 +74,15 @@ func stceFileTools(t *testing.T) {
 	// Image reads must carry decodable raster bytes: dispatchedResult fully
 	// decodes ImageResult data before it reaches the model (commit 1f85c01d3,
 	// "Reject malformed raster tool results before model calls"). PDF payloads
-	// are exempt from raster decoding.
+	// are exempt from raster decoding, so the document case below is pinning
+	// the byte-transparent pass-through, NOT PDF validity -- the fixture is a
+	// real PDF so the case is honest about what it carries, but nothing on this
+	// path would notice if it were not. The exemption itself is asserted
+	// separately, and read_file's byte-sensitive handling of a real PDF is
+	// covered end to end by TestReadFile_RealPDF_DetectedByItsBytes.
 	for _, tc := range []struct{ path, output string }{
 		{"pic.png", "[image: pic.png]\n" + base64.StdEncoding.EncodeToString(validPNGFixture(t))},
-		{"doc.pdf", "[document: doc.pdf]\n" + base64.StdEncoding.EncodeToString([]byte("pdf"))},
+		{"doc.pdf", "[document: doc.pdf]\n" + base64.StdEncoding.EncodeToString(validPDFFixture(t))},
 		{"plain.txt", "plain"},
 	} {
 		res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, readOutput: tc.output}, "read", "read_file", map[string]any{"file_path": tc.path, "offset": 1.0, "limit": 2.0, "purpose": "inspect"})
@@ -84,9 +90,27 @@ func stceFileTools(t *testing.T) {
 			t.Fatalf("read %s = %#v tracked=%q", tc.path, res, tracked)
 		}
 	}
-	badRaster := "[image: bad.png]\n" + base64.StdEncoding.EncodeToString([]byte("png"))
+	notRaster := []byte("png")
+	badRaster := "[image: bad.png]\n" + base64.StdEncoding.EncodeToString(notRaster)
 	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, readOutput: badRaster}, "read-bad-image", "read_file", map[string]any{"file_path": "bad.png"}); !res.IsError || !strings.Contains(res.Output, "invalid image data") || len(res.ImageData) != 0 {
 		t.Fatalf("malformed raster read = %#v", res)
+	}
+	// The exemption, stated as a contract: the SAME bytes that are rejected as
+	// a raster above ride through untouched under a document header. The
+	// document path hands the model whatever the environment read, because a
+	// PDF is not something llm.RasterMediaType can decode.
+	//
+	// This states the rule; it does not hold it alone. Blanking ImageMediaType
+	// for application/pdf reddens this, and also
+	// TestW3Sub_RegisterFileTools_DocumentResult,
+	// TestADocumentResultIsNotAnnouncedAsAnImage and
+	// TestReadFile_RealPDF_DetectedByItsBytes. Its job is to say the quiet part
+	// at the exact fixture that implied it for years without ever asserting it
+	// -- and note this file is //go:build serffuzz, outside `make test`, so the
+	// contract is only read in the fuzz lane (`-tags serffuzz`).
+	exemptDoc := "[document: bad.pdf]\n" + base64.StdEncoding.EncodeToString(notRaster)
+	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, readOutput: exemptDoc}, "read-exempt-doc", "read_file", map[string]any{"file_path": "bad.pdf"}); res.IsError || res.ImageMediaType != "application/pdf" || !bytes.Equal(res.ImageData, notRaster) {
+		t.Fatalf("document payloads are exempt from raster decoding, but the exempt read = %#v", res)
 	}
 	readErr := errors.New("read failure")
 	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, readErr: readErr}, "read-error", "read_file", map[string]any{"file_path": "bad"}); !res.IsError {

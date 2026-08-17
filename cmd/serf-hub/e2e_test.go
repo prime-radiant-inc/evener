@@ -1,123 +1,121 @@
 package main
 
 import (
-	"net"
-	"net/http"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
+	"primeradiant.com/serf/test/e2e/fakellm"
 )
 
-// TestE2E_HubAndDaemon brings up a real serf daemon plus the hub and
-// verifies the landing page lists the daemon. Skip-by-default; runs only
-// when SERF_LIVE_TESTS=1, SERF_TEST_PROVIDER, SERF_TEST_MODEL, and an API key
-// are set.
+// TestE2E_HubAndDaemon pins the discovery half of the hub: a daemon the hub did
+// NOT spawn, started by hand the way a user starts one, must appear in the
+// roster. That is the only coverage of the rendezvous path
+// (<HOME>/.serf/run/<pid>.json -> hubcore.Roster.Refresh -> the "local"
+// LocalDaemonSource), and every other e2e in this package goes the other way,
+// asking the hub to spawn the daemon itself.
+//
+// It used to poll `GET /live` with no credential and assert on the HTML. Both
+// halves had rotted: /live is not a route any more (the roster moved to the
+// AppWire thread list when the frontend was rewritten), and the hub's AuthGuard
+// answers every unauthenticated request "unauthorized", so the poll read an
+// auth failure and the assertion "the roster picked up the daemon" could not
+// come true. It was invisible because the test also required live credentials
+// to run at all -- for a readiness check that never calls a model.
+//
+// So it now reads the roster the way the rest of the file does: over the
+// authenticated AppWire socket, against a scripted provider. It needs no API
+// key and runs in the ordinary suite, which is the point -- a test only this
+// package's e2e set can reach is a test nobody runs.
 func TestE2E_HubAndDaemon(t *testing.T) {
 	if testing.Short() {
-		t.Skip("integration test")
-	}
-	if os.Getenv("SERF_LIVE_TESTS") != "1" {
-		t.Skip("set SERF_LIVE_TESTS=1 to run live hub/daemon e2e test")
-	}
-	provider := os.Getenv("SERF_TEST_PROVIDER")
-	model := os.Getenv("SERF_TEST_MODEL")
-	if provider == "" || model == "" {
-		t.Skip("SERF_TEST_PROVIDER and SERF_TEST_MODEL required")
-	}
-	if os.Getenv("OPENAI_API_KEY") == "" && os.Getenv("ANTHROPIC_API_KEY") == "" {
-		t.Skip("no LLM API key in env")
+		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
 	}
 
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-
-	repoRoot, err := filepath.Abs("../..")
+	provider, err := fakellm.New()
 	if err != nil {
-		t.Fatalf("abs: %v", err)
+		t.Fatalf("start fake provider: %v", err)
 	}
+	t.Cleanup(provider.Close)
 
-	// Build serf and serf-hub.
-	for _, target := range []string{"./cmd/serf", "./cmd/serf-hub"} {
-		cmd := exec.Command("go", "build", "-o", filepath.Join(tmpHome, filepath.Base(target)), target)
-		cmd.Dir = repoRoot
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("build %s: %v\n%s", target, err, out)
-		}
-	}
-	serfBin := filepath.Join(tmpHome, "serf")
-	hubBin := filepath.Join(tmpHome, "serf-hub")
+	stack := startHubStack(t, provider)
 
-	// Launch a serf serve daemon.
-	dCmd := exec.Command(serfBin, "serve",
-		"--model", provider+"/"+model,
+	// A daemon of our own, on the hub's HOME so they share
+	// <HOME>/.serf/run, started exactly as a user would. The hub knows
+	// nothing about it beyond what the daemon writes there.
+	daemonDir := t.TempDir()
+	daemon := exec.Command(filepath.Join(stack.binDir, "serf"), "serve",
+		"--model", stack.model,
 		"--addr", "127.0.0.1:0",
-		"--dir", t.TempDir(),
+		"--dir", daemonDir,
 	)
-	dCmd.Env = append(os.Environ(), "HOME="+tmpHome)
-	dCmd.Stderr = os.Stderr
-	if err := dCmd.Start(); err != nil {
+	// XDG_* still point into the package's shared throwaway root, which a
+	// hand-started daemon treats as its own config: it syncs plugin
+	// marketplaces there, and a clone interrupted by this test's cleanup
+	// leaves a .git TestMain's RemoveAll then refuses to delete, which prints
+	// a leak line on an otherwise passing run. Point them at the stack's HOME
+	// so the daemon writes only inside its own tree.
+	daemon.Env = append(os.Environ(),
+		"HOME="+stack.home,
+		"XDG_CONFIG_HOME="+filepath.Join(stack.home, "config"),
+		"XDG_STATE_HOME="+filepath.Join(stack.home, "state"),
+		"XDG_CACHE_HOME="+filepath.Join(stack.home, "cache"),
+	)
+	daemonLog, err := os.Create(filepath.Join(stack.home, "daemon.log"))
+	if err != nil {
+		t.Fatalf("create daemon log: %v", err)
+	}
+	daemon.Stdout = daemonLog
+	daemon.Stderr = daemonLog
+	if err := daemon.Start(); err != nil {
 		t.Fatalf("start daemon: %v", err)
 	}
-	defer func() {
-		_ = dCmd.Process.Kill()
-	}()
-
-	// Pick a free port for the hub. We bind, read the address, then close
-	// immediately so the hub process can bind to it. The TOCTOU window is tiny
-	// and far smaller than the collision risk of a hard-coded port.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("allocate hub port: %v", err)
-	}
-	hubAddr := ln.Addr().String()
-	ln.Close()
-
-	hCmd := exec.Command(hubBin, "--addr", hubAddr, "--serf", serfBin)
-	hCmd.Env = append(os.Environ(), "HOME="+tmpHome)
-	hCmd.Stderr = os.Stderr
-	if err := hCmd.Start(); err != nil {
-		t.Fatalf("start hub: %v", err)
-	}
-	defer func() {
-		_ = hCmd.Process.Kill()
-	}()
-
-	// Wait for hub to be reachable.
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := http.Get("http://" + hubAddr + "/"); err == nil {
-			break
+	t.Cleanup(func() {
+		_ = daemon.Process.Kill()
+		_ = daemon.Wait()
+		_ = daemonLog.Close()
+		if t.Failed() {
+			if body, readErr := os.ReadFile(filepath.Join(stack.home, "daemon.log")); readErr == nil {
+				t.Logf("daemon log:\n%s", body)
+			}
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	})
 
-	// Wait up to 5s for the roster to find the daemon.
-	deadline = time.Now().Add(5 * time.Second)
-	var body string
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	client := stack.dialRPC(ctx, t)
+
+	// The daemon's own working directory is what identifies it: the hub
+	// spawned nothing here, so a thread carrying that CWD can only have come
+	// from the rendezvous entry the daemon wrote.
+	deadline := time.Now().Add(30 * time.Second)
+	var listed []appwire.Thread
 	for time.Now().Before(deadline) {
-		resp, err := http.Get("http://" + hubAddr + "/live")
-		if err == nil {
-			b := make([]byte, 16384)
-			n, _ := resp.Body.Read(b)
-			body = string(b[:n])
-			resp.Body.Close()
-			if strings.Contains(body, "no live daemons") {
-				time.Sleep(200 * time.Millisecond)
+		list, err := clientRequest[appwire.ThreadListResponse](ctx, client, appwire.MethodThreadList, appwire.ThreadListParams{})
+		if err != nil {
+			t.Fatalf("thread/list: %v", err)
+		}
+		listed = list.Data
+		for _, thread := range listed {
+			if thread.CWD != daemonDir {
 				continue
 			}
-			if strings.Contains(body, "row") {
-				return
+			if thread.Source != "local" {
+				t.Fatalf("the daemon was listed under source %q, want the local rendezvous source", thread.Source)
 			}
+			if thread.Serf.Ref == "" {
+				t.Fatalf("the roster listed the daemon with no ref, so nothing can address it: %#v", thread)
+			}
+			return
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Fatalf("hub roster did not pick up the daemon. last body: %q", body)
+	t.Fatalf("the hub roster never listed the hand-started daemon at %s. thread/list last returned %d threads: %#v", daemonDir, len(listed), listed)
 }
 
 func TestE2E_LayeredLaunchConfig(t *testing.T) {

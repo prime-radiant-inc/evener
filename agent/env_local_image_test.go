@@ -2,7 +2,9 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/llm"
 )
 
 func TestParseImageResult_ExtractsImageData(t *testing.T) {
@@ -139,5 +142,81 @@ func TestReadFile_PDF_EndToEnd_ToolExecResult(t *testing.T) {
 	}
 	if doc.MediaType != "application/pdf" {
 		t.Fatalf("MediaType = %q, want application/pdf", doc.MediaType)
+	}
+}
+
+// TestReadFile_RealPDF_DetectedByItsBytes is the only test that read_file's
+// document handling could not pass with a placeholder payload.
+//
+// Every other PDF case names the file `.pdf`, and the extension alone decides
+// (execenv.detectDocumentFormat) -- so `[]byte("pdf")` passes them all, and for
+// years the fixture that looked like PDF coverage was three ASCII characters.
+// Downstream is worse: document payloads are exempt from raster decoding
+// (tool.dispatchedResult), so nothing past the environment examines the bytes
+// at all.
+//
+// The one place the CONTENT decides is the magic-byte branch, reached when the
+// extension does not claim a PDF. Reading the same path with the same tool,
+// twice, differing only in the bytes on disk, is therefore the whole oracle: a
+// real PDF must come back as a document carrying application/pdf, and a
+// non-PDF must not. It runs through the production read_file tool -- the
+// registered executor, not ReadFile directly -- so the environment, the
+// document parse and the exemption are all in the path.
+func TestReadFile_RealPDF_DetectedByItsBytes(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	tracked := ""
+	reg := tool.NewRegistry()
+	if err := registerFileTools(reg, &toolDeps{readGuard: readGuard{
+		trackRead:              func(path string) { tracked = path },
+		readBeforeWriteWarning: func(string) string { return "" },
+	}}); err != nil {
+		t.Fatalf("registerFileTools: %v", err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(dir)
+	readFile := func(name string, content []byte) tool.ExecResult {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), content, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		args, err := json.Marshal(map[string]any{"file_path": name, "purpose": "inspect"})
+		if err != nil {
+			t.Fatalf("marshal args: %v", err)
+		}
+		return reg.ExecuteCall(context.Background(), env, llm.ToolCallData{ID: "read", Name: "read_file", Arguments: args})
+	}
+
+	pdf := validPDFFixture(t)
+	res := readFile("mystery.dat", pdf)
+	if res.IsError {
+		t.Fatalf("read_file rejected a real PDF: %#v", res)
+	}
+	if !strings.HasPrefix(res.Output, "[document: pdf,") {
+		t.Fatalf("read_file did not classify a real PDF as a document: output = %q", res.Output[:min(len(res.Output), 60)])
+	}
+	if res.ImageMediaType != "application/pdf" {
+		t.Fatalf("media type = %q, want application/pdf", res.ImageMediaType)
+	}
+	if !bytes.Equal(res.ImageData, pdf) {
+		t.Fatalf("the model would receive %d bytes, want the file's %d", len(res.ImageData), len(pdf))
+	}
+	if tracked != "mystery.dat" {
+		t.Fatalf("read guard tracked %q", tracked)
+	}
+
+	// The control: same tool, same path, bytes that are not a PDF. Without
+	// this, "is a document" is satisfied by any file at all and the assertion
+	// above measures nothing about the bytes.
+	if res := readFile("mystery.dat", []byte("plain text, no header\n")); res.IsError ||
+		strings.HasPrefix(res.Output, "[document:") || len(res.ImageData) != 0 {
+		t.Fatalf("a non-PDF read through the same path came back as a document: %#v", res)
+	}
+
+	// A truncated header is the near miss: it shares a prefix with the real
+	// thing and must still be read as text.
+	if res := readFile("mystery.dat", []byte("%PDF")); res.IsError ||
+		strings.HasPrefix(res.Output, "[document:") || len(res.ImageData) != 0 {
+		t.Fatalf("an incomplete PDF signature was accepted as a document: %#v", res)
 	}
 }
