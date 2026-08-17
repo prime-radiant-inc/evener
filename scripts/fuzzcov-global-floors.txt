@@ -54,5 +54,5 @@ llm 80.8
 auth 100.0
 envvars 96.0
 fuzz 100.0
-identifier 21.8
+identifier 49.3
 invariant 100.0
