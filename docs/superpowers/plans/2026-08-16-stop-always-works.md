@@ -45,10 +45,11 @@ every sha this document quotes is the one reachable from `main`, not the
 `wip/webui-steer-send-stop` sha it was written with. Check any of them with
 `git merge-base --is-ancestor <sha> main`.
 
-**One deliberate exception**, so a sweep does not read as a defect: `24111733f`,
-in Global Constraints, is quoted *because* it resolves to nothing. It was the
-citation baseline, and the point of the paragraph is that the baseline is
-unreachable. It is the only sha here that fails the check.
+**One deliberate exception**, so a sweep does not read as a defect: `24111733f`
+is quoted *because* it resolves to nothing. It was the citation baseline, and the
+point of the paragraph in Global Constraints is that the baseline is unreachable.
+It is the only such sha, and a sweep will report it **twice** — once there and
+once in this sentence. Every other sha in this document passes.
 
 No commit count is recorded here on purpose. It went stale twice — once at 64
 against 65, once at 69 against 71, each time inside the very commit that updated
