@@ -53,6 +53,14 @@ func WithQueuedInputDrainOnInterrupt(ctx context.Context, rootCtx context.Contex
 // WithQueuedInputDrainOnInterruptHandler marks ctx like
 // WithQueuedInputDrainOnInterrupt and lets callers install a fresh cancelable
 // context when queued input is drained after an interrupt.
+//
+// A nil nextCtx, or one that returns a nil context, means the drained turn runs
+// under rootCtx — the same as installing no handler at all. It does NOT mean
+// "do not drain": the recovery classifies the interrupt before it claims the
+// queue head, so by the time this factory is consulted the entry is already
+// claimed and refusing would strand it. A host that needs its own cancelation
+// registered for the drained turn must return a context here; under rootCtx no
+// per-turn cancel is registered, so an out-of-band interrupt will not reach it.
 func WithQueuedInputDrainOnInterruptHandler(ctx context.Context, rootCtx context.Context, nextCtx func(context.Context) (context.Context, context.CancelFunc)) context.Context {
 	if rootCtx == nil {
 		rootCtx = context.Background()

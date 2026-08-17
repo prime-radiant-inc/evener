@@ -73,7 +73,7 @@ func interruptClaimSession(t *testing.T) (*Session, func() [][]string) {
 // interruptedTurnContext returns the context an interrupted turn runs under,
 // wired the way cmd/serf serve wires it (a marked turn context with a
 // next-turn factory). rootLive=false cancels the root as well, which is what
-// makes the drain unavailable: queuedInputDrainContext refuses a root that is
+// makes the drain unavailable: interruptDrainConfig refuses a root that is
 // already done, and that refusal is the branch that used to restore the head.
 func interruptedTurnContext(t *testing.T, rootLive bool) context.Context {
 	t.Helper()

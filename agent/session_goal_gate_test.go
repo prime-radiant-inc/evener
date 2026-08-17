@@ -183,13 +183,13 @@ func TestArmGoalContinuationNoIterationCap(t *testing.T) {
 
 // TestTerminateGoalOnErrorClassification: a plain error and a DeadlineExceeded
 // transition an active goal to blocked and emit EventGoalEnded; a context that
-// queuedInputDrainContext classifies as a genuine user interrupt leaves the goal
+// interruptDrainConfig classifies as a genuine user interrupt leaves the goal
 // active and emits no EventGoalEnded.
 func TestTerminateGoalOnErrorClassification(t *testing.T) {
 	t.Parallel()
 	// userInterruptCtx constructs a context exactly as production does for a
 	// genuine user /interrupt: a marked, cancelled turn context. Paired with a
-	// bare context.Canceled error, queuedInputDrainContext reports ok=true.
+	// bare context.Canceled error, interruptDrainConfig reports ok=true.
 	userInterruptCtx := func() context.Context {
 		root := context.Background()
 		turnCtx, cancel := context.WithCancel(root)
