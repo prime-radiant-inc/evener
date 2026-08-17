@@ -101,7 +101,48 @@ Nothing else in this plan may start until Step 4 produces a red test.
       returns `active` plus a stale id, and `turn/interrupt` against it is
       rejected `Conflict("turn is not active")`
       (`agent/session_client_mutation.go:422-424`).
-- [ ] **Step 5:** If Step 4 passes, STOP and report. This plan has no premise.
+- [x] **Step 5:** If Step 4 passes, STOP and report. This plan has no premise.
+
+### RESULT (2026-08-16): Step 4 came up GREEN. The gate fired.
+
+`TestE2E_ControlInvariantAcrossATurnBoundary`
+(`cmd/serf-hub/e2e_control_invariant_test.go`) samples `thread/read` as hard as
+it can across a queued-message turn boundary, then aims a real `turn/interrupt`
+at whatever id the wire publishes while turn 2 is demonstrably running. Five
+consecutive runs:
+
+- `activeWithNoID = 0`. The wire never reports a turn running without an id, so
+  the composer never hides Stop and Steer on a working session.
+- The published id tracks the boundary correctly (`turn_m1` → `turn_m2`), and
+  `turn/interrupt` against the published id returns `Applied`.
+
+**So the between-turn gap is real in the code and NOT observable by a client.**
+Both reviews were right that `completeClientMutationTurnWithState` clears the
+durable name while `processing` is still true. What neither of us checked is
+that `s.appActiveTurnID` is only updated by events
+(`server/appwire_runtime.go:212`), so during that window the wire keeps
+publishing the *previous* id rather than an empty one — and by the time it
+publishes a new id, that id is valid.
+
+What this does NOT prove: that the window is unreachable. It proves an
+aggressive sampler could not reach it in five runs. A Stop aimed at `turn_m1`
+after turn 1 completed and before turn 2 opened would still be rejected; nothing
+here demonstrates a user can land in that microsecond.
+
+### Consequences for the rest of this plan
+
+| Task | Status after the measurement |
+| --- | --- |
+| 2 (interrupt escape hatch) | **Premise withdrawn.** Its justification was this gap. It remains the only way to make the guarantee structural rather than empirical, but it is now a design choice, not a bug fix. **Jesse's call.** |
+| 3 (steer always lands) | **Stands.** Decided on its own merits: a steer typed between turns should land, and today it is rejected. |
+| 4 (`EventError` bucket ids) | **Stands.** Independent, verified by both reviews. |
+| 5 (kata `2f41`) | **Stands, and is now the most valuable task here** — if the remaining windows are this hard to reach, the thing that matters is that any control which does fail says so. |
+| 6 (client double-send) | **Stands.** Independent and client-side. |
+| 8, 9 (coverage, docs) | **Stand.** |
+
+**The headline: Steer, Send and Stop appear to work today.** The bug Jesse
+reported is fixed by the two landed plans. What remains is a projection
+corruption, invisible failures, a client-side double-send window, and cleanup.
 
 ## Task 2: Stop can always stop, even with no addressable turn
 
