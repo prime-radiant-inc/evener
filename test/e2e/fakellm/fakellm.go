@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -62,7 +63,15 @@ type reply struct {
 	text     string
 	toolName string
 	toolArgs map[string]any
+	toolID   string
 }
+
+// toolCallSeq mints tool-call ids. The id is the key a transcript pairs a
+// result to its call by (internal/appprojector), so reusing one drops or
+// misattributes later results and any assertion about tool rows would be
+// measuring that collision. It counts across servers: a session only needs
+// its own ids to be distinct, and one counter gives more than that.
+var toolCallSeq atomic.Uint64
 
 // New starts a fake provider on a kernel-assigned loopback port.
 func New() (*Server, error) { return NewOn("127.0.0.1:0") }
@@ -133,7 +142,11 @@ func (c *Call) RespondText(text string) {
 // runs the tool and comes back for another round — the seam where queued
 // steering is injected (agent/session_tool_round.go).
 func (c *Call) RespondToolCall(name string, args map[string]any) {
-	c.respond(reply{toolName: name, toolArgs: args})
+	c.respond(reply{
+		toolName: name,
+		toolArgs: args,
+		toolID:   fmt.Sprintf("call_fakellm_%d", toolCallSeq.Add(1)),
+	})
 }
 
 func (c *Call) respond(r reply) {
@@ -158,6 +171,30 @@ func (c *Call) Texts() []string {
 		out = append(out, role+": "+contentText(msg["content"]))
 	}
 	return out
+}
+
+// Round is this request's 1-based position in its OWN session's loop: one
+// more than the number of assistant turns the request replays. Every answer
+// this fake gives is exactly one assistant message, and a session replays its
+// whole conversation on every request, so the count is the number of rounds
+// that session has already had.
+//
+// Reading it out of the request rather than counting calls is what lets two
+// sessions share one fake: each carries its own history, so each gets its own
+// sequence, with no session bookkeeping here at all.
+func (c *Call) Round() int {
+	raw, _ := c.Body["messages"].([]any)
+	round := 1
+	for _, item := range raw {
+		msg, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if role, _ := msg["role"].(string); role == "assistant" {
+			round++
+		}
+	}
+	return round
 }
 
 // Contains reports whether any message in the request carries the substring.
@@ -311,7 +348,7 @@ func toolCallJSON(rep reply) map[string]any {
 	}
 	return map[string]any{
 		"index":    0,
-		"id":       "call_fakellm_1",
+		"id":       rep.toolID,
 		"type":     "function",
 		"function": map[string]any{"name": rep.toolName, "arguments": string(args)},
 	}

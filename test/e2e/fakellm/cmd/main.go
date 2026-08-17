@@ -36,6 +36,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -89,6 +91,13 @@ func run(addr string, hold time.Duration, rounds int, jobRelease string) error {
 // serve answers every round the fake receives until ctx is cancelled or the
 // server closes. It is separate from run so a test can drive it on a server
 // it holds itself.
+//
+// Each round is answered on its own goroutine. A round is HELD before it is
+// answered, so a loop that held them one at a time would leave every other
+// session's request unread — not merely unanswered — for the whole of the
+// current hold, and --hold is measured in tens of seconds. Buffering the
+// server's call channel would not help: the wait is the driver's, not the
+// channel's.
 func serve(ctx context.Context, srv *fakellm.Server, hold time.Duration, rounds int, jobRelease string) error {
 	notesDir, err := os.MkdirTemp("", "fakellm-notes-")
 	if err != nil {
@@ -96,68 +105,95 @@ func serve(ctx context.Context, srv *fakellm.Server, hold time.Duration, rounds 
 	}
 	defer os.RemoveAll(notesDir) //nolint:errcheck // throwaway fixture directory
 
-	round := 0
+	// Declared after the RemoveAll so it runs BEFORE it: no round may still be
+	// staging a note in a directory that is being deleted.
+	var answering sync.WaitGroup
+	defer answering.Wait()
+
 	for {
 		call, err := srv.Next(ctx.Done())
 		if err != nil {
 			log.Printf("fakellm: %v", err)
 			return nil
 		}
-		round++
-		log.Printf("--- round %d: holding %s ---\n%s", round, hold, strings.Join(call.Texts(), "\n"))
-
-		// Round 1 launches a background job that blocks on a file, round 2 ends
-		// the turn. The session then sits idle until someone creates that file,
-		// and the job's completion wakes it with a notification -- the turn kind
-		// that has no input of its own.
-		if jobRelease != "" {
-			switch round {
-			case 1:
-				log.Printf("round 1: launching a background job that waits for %s", jobRelease)
-				call.RespondToolCall("shell", map[string]any{
-					"command": "while [ ! -f " + jobRelease + " ]; do sleep 0.5; done",
-					"mode":    "background",
-				})
-				continue
-			case 2:
-				log.Printf("round 2: ending the turn so the session goes idle")
-				call.RespondToolCall("communicate", map[string]any{
-					"message":  "background job launched; idle until it finishes",
-					"end_turn": true,
-					"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
-				})
-				continue
-			}
-		}
-
-		select {
-		case <-time.After(hold):
-		case <-ctx.Done():
-			return nil
-		}
-
-		if round%rounds == 0 {
-			log.Printf("round %d: ending the turn", round)
-			call.RespondToolCall("communicate", map[string]any{
-				"message":  fmt.Sprintf("fake provider ended the turn after %d rounds", round),
-				"end_turn": true,
-				"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
-			})
-			continue
-		}
-		// Keep the loop going with a harmless read. The path varies per round
-		// so serf's repeated-identical-failure breaker never trips and the
-		// transcript stays readable.
-		path, err := stageNote(notesDir, round)
-		if err != nil {
-			return fmt.Errorf("stage note for round %d: %w", round, err)
-		}
-		call.RespondToolCall("read_file", map[string]any{"file_path": path})
+		answering.Add(1)
+		go func() {
+			defer answering.Done()
+			answer(ctx, call, hold, rounds, jobRelease, notesDir)
+		}()
 	}
 }
 
+// answer holds one round for --hold and then replies to it. The round number
+// is the session's own (fakellm.Call.Round), never a count of everything this
+// process has served: --rounds is a promise about how long ONE session stays
+// in a turn, and --background-job-until a promise about what EACH session's
+// first two rounds do.
+func answer(ctx context.Context, call *fakellm.Call, hold time.Duration, rounds int, jobRelease, notesDir string) {
+	round := call.Round()
+	log.Printf("--- round %d: holding %s ---\n%s", round, hold, strings.Join(call.Texts(), "\n"))
+
+	// Round 1 launches a background job that blocks on a file, round 2 ends
+	// the turn. The session then sits idle until someone creates that file,
+	// and the job's completion wakes it with a notification -- the turn kind
+	// that has no input of its own.
+	if jobRelease != "" {
+		switch round {
+		case 1:
+			log.Printf("round 1: launching a background job that waits for %s", jobRelease)
+			call.RespondToolCall("shell", map[string]any{
+				"command": "while [ ! -f " + jobRelease + " ]; do sleep 0.5; done",
+				"mode":    "background",
+			})
+			return
+		case 2:
+			log.Printf("round 2: ending the turn so the session goes idle")
+			call.RespondToolCall("communicate", map[string]any{
+				"message":  "background job launched; idle until it finishes",
+				"end_turn": true,
+				"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
+			})
+			return
+		}
+	}
+
+	select {
+	case <-time.After(hold):
+	case <-ctx.Done():
+		return
+	}
+
+	if round%rounds == 0 {
+		log.Printf("round %d: ending the turn", round)
+		call.RespondToolCall("communicate", map[string]any{
+			"message":  fmt.Sprintf("fake provider ended the turn after %d rounds", round),
+			"end_turn": true,
+			"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
+		})
+		return
+	}
+	// Keep the loop going with a harmless read. The path varies per round so
+	// serf's repeated-identical-failure breaker never trips and the transcript
+	// stays readable.
+	path, err := stageNote(notesDir)
+	if err != nil {
+		// Answering with text ends this session's turn. Leaving the round
+		// unanswered would hang it instead, with the reason only in this log.
+		log.Printf("round %d: stage note: %v", round, err)
+		call.RespondText(fmt.Sprintf("fake provider could not stage a note for round %d: %v", round, err))
+		return
+	}
+	call.RespondToolCall("read_file", map[string]any{"file_path": path})
+}
+
+// noteSeq numbers the staged notes. Two sessions can be on the same round at
+// the same time, so the round number alone would have them writing one file
+// from two goroutines.
+var noteSeq atomic.Int64
+
 // stageNote writes the small text file this round's read_file call will read.
-func stageNote(dir string, round int) (string, error) {
-	path := filepath.Join(dir, fmt.Sprintf("round-%d.txt", round))
-	return path, os.WriteFile(path, fmt.Appendf(nil, "round %d notes\n", round), 0o600)
+func stageNote(dir string) (string, error) {
+	note := noteSeq.Add(1)
+	path := filepath.Join(dir, fmt.Sprintf("note-%d.txt", note))
+	return path, os.WriteFile(path, fmt.Appendf(nil, "note %d\n", note), 0o600)
 }
