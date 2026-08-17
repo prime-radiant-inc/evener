@@ -54,6 +54,7 @@ TARGETS=(
 	"native:agent:./internal/jobstore:FuzzJobstoreLifecycleProgram::"
 	"native:agent:./internal/jobstore:FuzzJobstorePackageUnion::"
 	"native:agent:./internal/delegatestore:FuzzFold::fold.go"
+	"native:agent:./internal/delegatestore:FuzzDelegateEventEnvelope::fold.go#validateEventEnvelope"
 	"native:agent:./internal/delegatestore:FuzzStoreReplay::store.go"
 	"native:agent:./internal/delegatestore:FuzzReadEvents::read_events.go"
 	"native:agent:.:FuzzDelegateControllerTransitions::delegate_tree_controller.go;delegate_tree_start.go"
