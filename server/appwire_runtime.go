@@ -1005,7 +1005,7 @@ func (s *Server) handleAppThreadShutdown(_ context.Context, params appwire.Threa
 // Cleanup() never runs (kata mz2f). The gate lives in handleClear rather than
 // around clearFunc because POST /clear is currently its only caller.
 func (s *Server) handleAppThreadClear(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-	return appwire.ThreadClearResponse{}, appwire.Unavailable("thread/clear is unavailable in serf-appwire-v2")
+	return appwire.ThreadClearResponse{}, appwire.Unavailable("thread/clear is unavailable in " + appwire.ProtocolVersion)
 }
 
 func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {

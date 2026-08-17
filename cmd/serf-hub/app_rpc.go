@@ -492,7 +492,7 @@ func registerThreadHandlers(
 		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-		return appwire.ThreadClearResponse{}, appwire.Unavailable("thread/clear is unavailable in serf-appwire-v2")
+		return appwire.ThreadClearResponse{}, appwire.Unavailable("thread/clear is unavailable in " + appwire.ProtocolVersion)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadCompactStart, func(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, compactThreadWithResume(ctx, cfg, sources, params)

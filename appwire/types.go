@@ -5,7 +5,19 @@ import (
 	"fmt"
 )
 
-const ProtocolVersion = "serf-appwire-v2"
+// ProtocolVersion is compared exactly at the handshake
+// (internal/appserver/server.go), so bumping it makes a mixed pair of binaries
+// fail once, loudly, at initialize -- rather than agreeing there and then
+// disagreeing on every request.
+//
+// v3 dropped expectedTurnId from turn/steer, turn/queue, turn/interrupt,
+// turn/drainAsSteer and turn/promoteQueuedAsSteer: control is session-scoped and
+// names no turn. A v2 daemon still requires that field, so a v3 client talking
+// to one would get a Conflict per button press and the user would read it as
+// "Steer and Stop are broken again" instead of as a version skew. The pair is
+// reachable in ordinary operation because daemons outlive the hub that spawned
+// them, so an operator who rebuilds and restarts the hub has one.
+const ProtocolVersion = "serf-appwire-v3"
 
 const (
 	MethodInitialize                = "initialize"

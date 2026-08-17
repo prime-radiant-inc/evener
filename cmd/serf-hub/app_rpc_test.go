@@ -6387,7 +6387,7 @@ func TestHubRPCModelListReportsSerfLaunchDiagnostics(t *testing.T) {
 	bin := filepath.Join(dir, "fake-serf")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"serf-appwire-v2","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
+  printf '{"protocol":"serf-appwire-v3","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
   exit 0
 fi
 exit 2

@@ -86,7 +86,7 @@ describe("AppwireClient", () => {
       id: 1,
       method: "initialize",
       params: {
-        protocolVersion: "serf-appwire-v2",
+        protocolVersion: "serf-appwire-v3",
         clientInfo: DEFAULT_CLIENT_INFO,
         capabilities: DEFAULT_CAPABILITIES,
       },

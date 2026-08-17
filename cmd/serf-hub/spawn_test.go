@@ -153,7 +153,7 @@ func TestHubSpawnerResumeLaunchCheckOmitsAmbientModel(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
   printf '%s\n' "$@" > "$ARGS_OUT"
-  printf '{"protocol":"serf-appwire-v2"}\n'
+  printf '{"protocol":"serf-appwire-v3"}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -661,7 +661,7 @@ func TestHubSpawnerSpawnPassesHubTokenToDaemon(t *testing.T) {
 	bin := filepath.Join(dir, "fake-serf")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"serf-appwire-v2"}\n'
+  printf '{"protocol":"serf-appwire-v3"}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -716,7 +716,7 @@ func TestHubSpawnerSpawnUsesConfiguredXDGStateHomeForStateDir(t *testing.T) {
 	bin := filepath.Join(dir, "fake-serf")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"serf-appwire-v2"}\n'
+  printf '{"protocol":"serf-appwire-v3"}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -786,7 +786,7 @@ func TestHubSpawnerListsModelsFromSerfLaunchContract(t *testing.T) {
 	bin := filepath.Join(dir, "fake-serf")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"serf-appwire-v2","models":[{"provider":"openai","model":"gpt-5.5"}]}\n'
+  printf '{"protocol":"serf-appwire-v3","models":[{"provider":"openai","model":"gpt-5.5"}]}\n'
   exit 0
 fi
 exit 2
@@ -1594,7 +1594,7 @@ func TestHubSpawnerResumeAcceptsMaterializedOllamaConfig(t *testing.T) {
 	bin := filepath.Join(dir, "fake-serf")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"serf-appwire-v2"}\n'
+  printf '{"protocol":"serf-appwire-v3"}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then

@@ -42,8 +42,8 @@ func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
 		t.Fatalf("launch check output=%+v", out)
 	}
 	// Literal check: catches a change to the ProtocolVersion constant value.
-	if out.Protocol != "serf-appwire-v2" {
-		t.Fatalf("out.Protocol=%q, want \"serf-appwire-v2\"", out.Protocol)
+	if out.Protocol != "serf-appwire-v3" {
+		t.Fatalf("out.Protocol=%q, want \"serf-appwire-v3\"", out.Protocol)
 	}
 }
 
