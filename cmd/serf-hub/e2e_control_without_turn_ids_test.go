@@ -628,9 +628,14 @@ func awaitTurnStatus(ctx context.Context, t *testing.T, client *appwire.Client, 
 // awaitModelOutput waits for the named turn to carry model-produced output, so
 // a caller can act on a turn the provider has demonstrably started rather than
 // one that has only been announced.
+//
+// The budget is generous because the wait is on a real provider: under the load
+// of the whole e2e set a live model can take well over a minute to produce, and
+// a deadline tuned to an idle machine turns that into a spurious failure. The
+// caller's context still bounds the test as a whole.
 func awaitModelOutput(ctx context.Context, t *testing.T, client *appwire.Client, ref, turnID string) {
 	t.Helper()
-	deadline := time.Now().Add(90 * time.Second)
+	deadline := time.Now().Add(3 * time.Minute)
 	for time.Now().Before(deadline) {
 		turns, err := clientRequest[appwire.ThreadTurnsListResponse](ctx, client, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: ref, ItemsView: "full"})
 		if err == nil {
@@ -659,7 +664,7 @@ func awaitModelOutput(ctx context.Context, t *testing.T, client *appwire.Client,
 // appear if the steer reached the model and the model answered it.
 func awaitModelEcho(ctx context.Context, t *testing.T, client *appwire.Client, ref, text string) {
 	t.Helper()
-	deadline := time.Now().Add(90 * time.Second)
+	deadline := time.Now().Add(3 * time.Minute)
 	for time.Now().Before(deadline) {
 		turns, err := clientRequest[appwire.ThreadTurnsListResponse](ctx, client, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: ref, ItemsView: "full"})
 		if err == nil {
