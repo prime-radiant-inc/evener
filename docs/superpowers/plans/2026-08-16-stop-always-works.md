@@ -313,63 +313,16 @@ message composed before the UI learns the session went busy is built as
 - [ ] **Step 3:** Assert the composer still queues correctly on a cold hydrate,
       where there is no optimistic state. Commit.
 
-## Task 7: Subagent threads become watchable AND controllable
+## Task 7: Subagent threads — moved out
 
-**Decided by Jesse, 2026-08-16:** a delegate thread renders separated turns,
-shows busy while working, and supports Stop and Steer — accepting the durable
-write per delegate wake that the current design deliberately avoids.
+Split into its own plan at Jesse's request: it is larger than everything else
+here combined and sits nearest the `eptj` data-loss precedent, because it puts a
+new class of session into the client-mutation store.
 
-**This is now the largest item in this plan, and it is the one nearest the
-`eptj` data-loss precedent**, because it puts a new class of session into the
-client-mutation store. Split it out and review it on its own before
-implementing if it grows past the sketch below. Do not fold it into another
-task's commit.
-
-### What blocks it today
-
-| Blocker | Where |
-| --- | --- |
-| Every mutation handler rejects non-root threads: `SessionUnavailable("thread is not served by this daemon")` | `server/appwire_runtime.go:1102-1119` (`requireRootMutationTarget`), called first by `handleAppTurnStart`, `handleAppTurnSteer`, and every sibling |
-| Nothing routes an accepted mutation to a child session | the mutation path is wired to the root session only |
-| Capabilities come from the ROOT session's setters, not per thread | `appCapabilities` (`:1367`) reads `s.steerFunc`/`s.cancelFunc`; the descendant list at `:551-552` stamps only `ActiveTurnID` |
-| Child sessions never mint a name | `servedByDaemon()` gates the mint (`agent/session_active_turn.go:47-49`) and the boundary emit (`agent/session_lifecycle.go:1652`) |
-
-### Open question this decision creates — answer before Step 1
-
-**What does the parent see when you stop a subagent?** A delegate runs inside the
-parent's tool call. Cancelling the child mid-flight has to return something
-coherent to that call — an error the parent's model can act on, a partial
-result, or a synthesised "the user stopped this delegate" message. Getting this
-wrong corrupts the parent's transcript, which is worse than not having the
-button. `agent/subagents.go` owns the drive loop; decide there.
-
-### Steps
-
-- [ ] **Step 1:** Answer the question above and write it into this task.
-- [ ] **Step 2:** Failing test — a `turn/interrupt` aimed at a subagent thread is
-      accepted. Expect `SessionUnavailable` first; that is the routing gate.
-- [ ] **Step 3:** Per-thread capabilities. Failing test: a subagent thread
-      advertises its own capability set. **This must land before any control is
-      offered** — today a descendant status frame can be stamped with the root's
-      capabilities (`stampCapabilitiesOnStatusChange`, `:399-422`), which would
-      render Stop on a thread that cannot honour it. That is the lying button
-      this whole effort exists to remove.
-- [ ] **Step 4:** Child sessions take durable names. Confirm each child gets its
-      OWN mutation file — they share the parent's `StateDir` but have distinct
-      session IDs — and that `reserveClientMutationTurnID` stays the only minter.
-      A collision here is the `eptj` failure exactly.
-- [ ] **Step 5:** Route accepted mutations to the addressed child.
-- [ ] **Step 6:** Turn separation and status. Drop the `servedByDaemon()` gate on
-      the boundary emit (`agent/session_lifecycle.go:1652`) and invert
-      `TestUnservedSessionAnnouncesNoBoundary`
-      (`agent/session_turn_boundary_test.go:569`), which pins today's behaviour
-      deliberately. Note this also makes unserved *root* sessions (one-shot
-      `serf run`) emit the boundary; state that rather than discover it.
-- [ ] **Step 7:** Measure the added cost — a durable write per delegate wake, on
-      a path that fires per delegate event. If it is worse than expected, say so
-      rather than absorbing it.
-- [ ] **Step 8:** Live browser check on a real delegate: separated turns, busy
-      status, Stop works, and the parent behaves sanely afterwards.
+See `docs/superpowers/plans/2026-08-16-controllable-subagents.md`. Jesse's
+decision (delegates become watchable AND controllable) and the four blockers are
+recorded there, along with the design question that must be answered first: what
+the parent sees when you stop a delegate running inside its tool call.
 
 ## Task 8: Coverage and hygiene
 
