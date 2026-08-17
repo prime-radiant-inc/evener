@@ -189,8 +189,8 @@ class PausedRecoveryReadStorage extends MutationOutboxIndexedDB {
 // the way a loaded machine makes the real work land: mount-to-activation
 // latency on this path measured 124-1246ms across 12 runs (kata 3c7t) while a
 // React flush is single-digit ms. Nothing waits on the delay - the tests await
-// the operation's own completion through settleRecoveryProjection - so the
-// number only has to be long enough that an unawaited path cannot have
+// the operation's own completion through flushPendingTurnsProjectionForTests -
+// so the number only has to be long enough that an unawaited path cannot have
 // finished yet.
 const SLOW_RECOVERY_WORK_MS = 150;
 
