@@ -28,11 +28,46 @@ const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 };
  * Pure and exported so it can be tested without launching anything, which is
  * the property the deleted probe's test had and its replacement did not.
  */
-export function describeBrowserStartupFailure({ error, chromeBinary, chromeArgv = [], chromeStderr = "", viteStderr = "" }) {
+export function describeBrowserStartupFailure({
+  error,
+  subsystem = "chrome",
+  chromeBinary,
+  chromeArgv = [],
+  chromeStderr = "",
+  viteStderr = "",
+}) {
   const message = error instanceof Error ? error.message : String(error);
-  return [
+  const lines = [
     `browser guard startup failed (environment problem, not a test case failure): ${message}`,
     "",
+  ];
+  // Name the subsystem that actually failed. One try now covers the launch,
+  // Vite and Chrome, and remediation aimed at the wrong one is worse than none:
+  // a dead Vite told to "install Chrome" sends the reader looking in the wrong
+  // place with an authoritative-looking checklist.
+  if (subsystem === "vite") {
+    lines.push(
+      `vite stderr: ${viteStderr.trim() || "(none)"}`,
+      "",
+      "To fix:",
+      "  1. Read the vite stderr above - a port clash, a failed transform and a",
+      "     missing dependency all report there.",
+      "  2. Confirm the frontend installs cleanly: npm install",
+      "  3. Chrome is not implicated; it had not been reached yet.",
+    );
+    return lines.join("\n");
+  }
+  if (subsystem === "launch") {
+    lines.push(
+      "To fix:",
+      "  1. The browser binary could not be resolved at all - no candidate path",
+      "     existed, so nothing was spawned and there is no stderr to read.",
+      "  2. Install Chrome or Chromium at one of the candidate paths named above.",
+      "  3. Neither Vite nor the test cases were reached.",
+    );
+    return lines.join("\n");
+  }
+  lines.push(
     `Chrome binary: ${chromeBinary || "(none found)"}`,
     `Chrome argv: ${chromeArgv.join(" ")}`,
     `chrome stderr: ${chromeStderr.trim() || "(none)"}`,
@@ -43,7 +78,8 @@ export function describeBrowserStartupFailure({ error, chromeBinary, chromeArgv 
     "  2. If it is missing, install Chrome or point at one with chromeBinary.",
     "  3. If it exists but will not start, read the chrome stderr above - a missing",
     "     library, a sandbox denial and an unwritable profile all report there.",
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 export function chromeProfileIsolationArgs(platform = process.platform) {

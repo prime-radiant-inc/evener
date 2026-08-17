@@ -599,3 +599,46 @@ test("the startup diagnostic says so explicitly when Chrome produced no stderr",
 
   assert.match(message, /chrome stderr: \(none\)/);
 });
+
+// The behaviour the diagnostic commit actually changed was Chrome's stderr going
+// from discarded to captured. That is the regression net; the formatter tests
+// above only cover a pure function written in the same commit. FakeChild already
+// exposes a stderr EventEmitter and startBrowserGuard already takes a
+// spawnProcess injection, so this needs no browser.
+test("chrome is spawned with a piped stderr and the guard surfaces what it wrote", async () => {
+  const { guard, children } = await startFakeGuard();
+  const chrome = children[1];
+
+  assert.deepEqual(chrome.options.stdio, ["ignore", "ignore", "pipe"]);
+  assert.equal(guard.chromeBinary, "/fake/chrome");
+  assert.ok(guard.getChromeArgv().includes("--headless=new"));
+
+  chrome.stderr.emit("data", "dyld: Library not loaded: @rpath/libfoo.dylib");
+  assert.match(guard.getChromeError(), /dyld: Library not loaded/);
+
+  const cleanup = guard.cleanup();
+  for (const child of children) child.exit();
+  await cleanup;
+});
+
+test("the diagnostic blames vite for a vite failure and does not send the reader after Chrome", () => {
+  const message = browserGuardProcess.describeBrowserStartupFailure({
+    error: new Error("vite dev server never came up"),
+    subsystem: "vite",
+    viteStderr: "Error: Port 5173 is already in use",
+  });
+
+  assert.match(message, /Port 5173 is already in use/);
+  assert.match(message, /Chrome is not implicated/);
+  assert.doesNotMatch(message, /install Chrome/);
+});
+
+test("a browser binary that could not be resolved says nothing was spawned", () => {
+  const message = browserGuardProcess.describeBrowserStartupFailure({
+    error: new Error("no Chrome/Chromium found (looked at: /a, /b)"),
+    subsystem: "launch",
+  });
+
+  assert.match(message, /no Chrome\/Chromium found/);
+  assert.match(message, /nothing was spawned and there is no stderr to read/);
+});

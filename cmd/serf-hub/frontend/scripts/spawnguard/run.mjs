@@ -24,7 +24,6 @@ async function measureAt(cdpPort, vitePort, width) {
   try {
     await applyViewport(send, { width, height: 900 });
     await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`);
-    await waitForFonts(page.send);
     await evaluate(send, "window.settledSpawn");
     // Stage before measuring, at every width: the page is navigated fresh per
     // width, and the staged-attachment row exists only once something is in
@@ -35,6 +34,13 @@ async function measureAt(cdpPort, vitePort, width) {
     } catch (error) {
       throw new Error(`staging attachments at ${width}px failed: ${error.message}`);
     }
+    // AFTER staging, immediately before measuring. document.fonts.ready is a
+    // snapshot, not a standing guarantee: it re-arms whenever a new face starts
+    // loading, and a face only loads once something on the page uses it. The
+    // staged tiles are the first thing here to use the mono face, so awaiting
+    // before staging settles the fonts of a page that has not asked for them
+    // yet and measureSpawn still runs mid-swap.
+    await waitForFonts(send);
     return JSON.parse(await evaluate(send, "JSON.stringify(window.measureSpawn())"));
   } finally {
     await clearViewportOverride(send);
@@ -133,24 +139,36 @@ function assertResult(result, expectedWidth) {
 }
 
 async function main() {
-  const guard = await startBrowserGuard({
-    frontend: FRONTEND,
-    profilePrefix: "spawnguard-chrome-",
-  });
+  let guard;
+  try {
+    guard = await startBrowserGuard({
+      frontend: FRONTEND,
+      profilePrefix: "spawnguard-chrome-",
+    });
+  } catch (error) {
+    // findChrome() throws from the first statement of startBrowserGuard,
+    // before any of its state exists -- 'no Chrome installed' is the
+    // commonest environment failure there is and it reached here unframed.
+    throw new Error(describeBrowserStartupFailure({ error, subsystem: "launch" }));
+  }
   const { vitePort, cdpPort, cleanup } = guard;
 
   let failed = 0;
   try {
     try {
       await waitForHttp(`http://127.0.0.1:${vitePort}/spawnguard.html`, "vite dev server");
-      // Chrome readiness belongs in the SAME try as Vite: a Chrome that will
-      // not start is the failure the diagnostic exists for, and leaving this
-      // call outside meant that exact case still surfaced as a bare timeout.
+    } catch (error) {
+      throw new Error(
+        describeBrowserStartupFailure({ error: error, subsystem: "vite", viteStderr: guard.getViteError() }),
+      );
+    }
+    try {
       await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
     } catch (error) {
       throw new Error(
         describeBrowserStartupFailure({
           error: error,
+          subsystem: "chrome",
           chromeBinary: guard.chromeBinary,
           chromeArgv: guard.getChromeArgv(),
           chromeStderr: guard.getChromeError(),
