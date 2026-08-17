@@ -27,11 +27,17 @@
 // several of them running is still readable one session at a time: grep it for
 // the name. The name is the tool-call id of the session's first round — a
 // token that session replays on every later request and that appears nowhere
-// else, so it also cross-references to the session's own api.jsonl. Nothing in
-// a chat-completions request supplies a session identity to use instead: there
-// is no user field, affinity headers are off for this instance type, and the
-// script hands the operator ONE spawn call to paste repeatedly, so prompt,
-// model and working directory are routinely identical.
+// else, so it also cross-references to the session's own api.jsonl.
+//
+// Nothing in the request BODY supplies a session identity to use instead:
+// there is no user field, and the script hands the operator ONE spawn call to
+// paste repeatedly, so prompt, model and working directory are routinely
+// identical. The daemon does know its session id and sends it as the
+// session-affinity headers (session_id, x-client-request-id,
+// x-session-affinity), but only on an instance that sets
+// send_session_affinity_headers — a per-instance quirk the fixture's
+// providers.toml does not set. The tool-call id needs no provider
+// configuration to be true.
 //
 // Usage:
 //
@@ -205,11 +211,12 @@ const keysKept = 3
 // race with the next round's begin.
 //
 // A session this driver has not served takes its name from the id minted for
-// this round. Nothing in a first request can supply one — no user field, and
-// prompt, model and working directory are identical across the sessions the
-// script's one spawn call produces — so the first round is the earliest point
-// a session can be named at all. From its second request on, the name is a
-// value the session itself sends back.
+// this round. Nothing in a first request's BODY can supply one — no user
+// field, and prompt, model and working directory are identical across the
+// sessions the script's one spawn call produces — so with the request body as
+// the only channel, the first round is the earliest point a session can be
+// named at all. From its second request on, the name is a value the session
+// itself sends back.
 //
 // Two boundaries are read out of the request rather than assumed:
 //
