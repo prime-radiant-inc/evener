@@ -4,8 +4,42 @@ import (
 	"sync"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/appwire"
 )
+
+// TestRestoredSteeringWakesWhenTheDaemonAttaches closes the crash case the
+// retry path cannot reach on its own.
+//
+// If the process dies after a steer's durable commit and the client never
+// retries, restoreDurableClientMutationQueues rebuilds the steering queue at
+// startup -- and then nothing asks the session to run. The steer waits for
+// whatever the user happens to do next.
+//
+// SetNotifyFunc is the right hook rather than the restore path itself: it is
+// the moment the wake callback provably exists, and it already fires for every
+// other kind of pending work (job notifications, delegate deliveries, root and
+// stable attention, watch settlement retries). Steering was simply missing from
+// that list.
+func TestRestoredSteeringWakesWhenTheDaemonAttaches(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	serveSession(t, s)
+	s.SteerKind("restored steer", events.SteeringKindNotification)
+
+	var mu sync.Mutex
+	notifies := 0
+	s.SetNotifyFunc(func() {
+		mu.Lock()
+		notifies++
+		mu.Unlock()
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if notifies == 0 {
+		t.Fatal("a session with steering already queued did not wake when the daemon attached; a steer that survived a crash waits for unrelated input")
+	}
+}
 
 // TestSteerLandsWhenItsTurnAlreadyEnded is Jesse's 2026-08-16 ruling: a steer
 // always lands.
