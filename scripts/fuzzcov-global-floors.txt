@@ -30,6 +30,29 @@
 # were already covered by the per-core fuzzers so only the orchestration GLUE is
 # net-new, and (2) the module denominator is diluted by subpackages. go-fuzz
 # mutates whole sequences from the seed corpus for deeper bug-finding reach.
-. 17.4
-agent 54.2
-llm 77.9
+#
+# 2026-08-17 FIRST FULL MEASUREMENT SINCE THE GATE STOPPED RUNNING. The preflight
+# had been aborting before any replay — it demanded a local fuzz surface for
+# nine packages that had none (test helpers, the appwirets generator, and
+# llm/providers, which holds no production file at all), so no number below this
+# line could be refreshed and only three modules ever had floors.
+#
+# These rows are hand-written from that measurement rather than blessed, because
+# -bless is gated behind the raw >95% threshold that . / agent / llm / identifier
+# do not yet clear. That gate is untouched and still fails CHECK=1; recording the
+# measured values here only ADDS regression protection. Leaving the July numbers
+# in place would have meant the ratchet protected nothing: the root module's real
+# fuzz-reachable coverage is 84.1%, so a collapse to 20% would have passed a 17.4
+# floor without comment.
+#
+# identifier at 21.8% is the honest outlier and the obvious next piece of work,
+# not a measurement artifact: the module registers only two fuzz targets
+# (project, uuid) against 363 statements.
+. 84.1
+agent 72.6
+llm 80.8
+auth 100.0
+envvars 96.0
+fuzz 100.0
+identifier 21.8
+invariant 100.0
