@@ -23,12 +23,12 @@
 # USAGE:
 #   scripts/e2e-webui-turn-controls.sh                # start; print the auth URL
 #   scripts/e2e-webui-turn-controls.sh --hold 30      # seconds per model round
-#   scripts/e2e-webui-turn-controls.sh --rounds 40    # rounds before the turn ends
-#   scripts/e2e-webui-turn-controls.sh --background-job  # spawn a session that
+#   scripts/e2e-webui-turn-controls.sh --rounds 40    # rounds per turn, per session
+#   scripts/e2e-webui-turn-controls.sh --background-job  # every session spawned
 #                                                       # goes idle holding a
 #                                                       # background job; touch
 #                                                       # $run/release-the-job to
-#                                                       # wake it with a
+#                                                       # wake them with a
 #                                                       # notification turn
 #   scripts/e2e-webui-turn-controls.sh --skip-web     # reuse an existing dist
 #   scripts/e2e-webui-turn-controls.sh --stop RUN_DIR # kill a prior run, remove RUN_DIR
@@ -37,6 +37,7 @@
 # script exits — that is the point, so a browser or a follow-up REST call has
 # something to attach to. Nothing here needs, reads, or sets a real provider
 # credential.
+# END-USAGE (--help prints everything above this line)
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -46,13 +47,55 @@ rounds=20
 background_job=0
 skip_web=0
 stop_dir=""
+
+# need_value FLAG REMAINING — a flag that takes one must have one. Without
+# this, `set -u` aborts on "$2" with a raw "line NN: $2: unbound variable",
+# which tells the operator nothing about which flag they left dangling.
+need_value() {
+	if [ "$2" -lt 2 ]; then
+		echo "e2e-webui-turn-controls: $1 needs a value" >&2
+		exit 2
+	fi
+}
+
+# stop_owned_pid PID LABEL RUN_TAG — signal PID, but only while it is still
+# one of this run's own processes.
+#
+# `kill -0` answers "is anything alive at this pid", which is the wrong
+# question by the time --stop is typed. hub.log accumulates one
+# `daemon session=<id> pid=<n>` line per session for the whole life of a run
+# this script advertises as lasting tens of minutes, and a pid belonging to a
+# session that finished an hour ago may since have been recycled by anything
+# on the machine. Same for fakellm.pid and hub.pid after a crash.
+#
+# The run directory's name is the ownership proof: mktemp made it unique, and
+# every process this script starts carries it in argv — fakellm and the hub
+# because they are exec'd from it, and each daemon because the hub execs the
+# `-serf` binary out of it. Matching the basename rather than the path keeps
+# it working where the two differ (macOS hands out /var/... and reports
+# /private/var/...).
+stop_owned_pid() {
+	pid="$1"
+	label="$2"
+	tag="$3"
+	kill -0 "$pid" 2>/dev/null || return 0
+	if ! ps -o args= -p "$pid" 2>/dev/null | grep -qF -- "$tag"; then
+		echo "e2e-webui-turn-controls: pid $pid is alive but is not this run's $label (recycled pid); leaving it alone" >&2
+		return 0
+	fi
+	kill "$pid"
+	echo "e2e-webui-turn-controls: stopped $label (pid $pid)" >&2
+}
+
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--hold)
+		need_value --hold $#
 		hold="$2"
 		shift 2
 		;;
 	--rounds)
+		need_value --rounds $#
 		rounds="$2"
 		shift 2
 		;;
@@ -65,11 +108,24 @@ while [ $# -gt 0 ]; do
 		shift
 		;;
 	--stop)
+		need_value --stop $#
 		stop_dir="$2"
+		# An empty path is how `--stop "$dir"` fails when $dir was never set.
+		# Falling through to the start path would have a teardown command
+		# build binaries and stand up a stack, which is the opposite of the
+		# one thing it was asked to do.
+		if [ -z "$stop_dir" ]; then
+			echo "e2e-webui-turn-controls: --stop needs a run directory, got an empty path" >&2
+			exit 2
+		fi
 		shift 2
 		;;
 	-h | --help)
-		sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+		# Print the header comment up to its sentinel, never a line count: a
+		# range ending at a fixed number silently drops whatever the header
+		# grows past it, which is how --stop — the only documented teardown —
+		# went unprinted.
+		sed -n '2,/^# END-USAGE/p' "${BASH_SOURCE[0]}" | grep -v '^# END-USAGE' | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*)
@@ -83,33 +139,29 @@ done
 # directory. PIDs are read from files this script wrote at start time, so
 # --stop works from a fresh invocation with no shared shell state.
 if [ -n "$stop_dir" ]; then
+	# The marker is checked FIRST, before a single file is read or a single
+	# signal is sent. --stop takes a path from the caller, and the marker is
+	# the one thing that distinguishes "a run of ours" from a typo pointing at
+	# something that matters — so a mistyped path that happens to hold a
+	# hub.pid, a fakellm.pid or a hub.log must lose nothing at all, not just
+	# escape the deletion at the end.
+	if [ ! -f "$stop_dir/.e2e-webui-turn-controls" ]; then
+		echo "e2e-webui-turn-controls: $stop_dir is not one of this script's run directories (no .e2e-webui-turn-controls marker); not touching it" >&2
+		exit 2
+	fi
 	# Daemons are grandchildren the hub deliberately outlives, so killing the
 	# hub alone leaves one serf process per spawned session behind. The hub
 	# announces each one's pid in its log; reap those too.
 	if [ -f "$stop_dir/hub.log" ]; then
 		while read -r pid; do
 			[ -n "$pid" ] || continue
-			if kill -0 "$pid" 2>/dev/null; then
-				kill "$pid"
-				echo "e2e-webui-turn-controls: stopped daemon (pid $pid)" >&2
-			fi
+			stop_owned_pid "$pid" daemon "$(basename "$stop_dir")"
 		done < <(grep -oE 'daemon session=[^ ]+ pid=[0-9]+' "$stop_dir/hub.log" | grep -oE '[0-9]+$')
 	fi
 	for pidfile in "$stop_dir/fakellm.pid" "$stop_dir/hub.pid"; do
 		[ -f "$pidfile" ] || continue
-		pid="$(cat "$pidfile")"
-		if kill -0 "$pid" 2>/dev/null; then
-			kill "$pid"
-			echo "e2e-webui-turn-controls: stopped $(basename "$pidfile" .pid) (pid $pid)" >&2
-		fi
+		stop_owned_pid "$(cat "$pidfile")" "$(basename "$pidfile" .pid)" "$(basename "$stop_dir")"
 	done
-	# Only ever delete a directory this script made. --stop takes a path from
-	# the caller, and the marker file is the one thing that distinguishes "a
-	# run of ours" from a typo pointing at something that matters.
-	if [ ! -f "$stop_dir/.e2e-webui-turn-controls" ]; then
-		echo "e2e-webui-turn-controls: $stop_dir is not one of this script's run directories (no .e2e-webui-turn-controls marker); not deleting it" >&2
-		exit 2
-	fi
 	rm -rf "$stop_dir"
 	echo "e2e-webui-turn-controls: removed $stop_dir" >&2
 	exit 0
@@ -125,6 +177,30 @@ done
 run="$(mktemp -d -t serf-e2e-webui.XXXXXX)"
 touch "$run/.e2e-webui-turn-controls" # the marker --stop refuses to delete without
 echo "e2e-webui-turn-controls: run directory $run" >&2
+
+# Nothing below here may leave a half-built stack behind. Every failure
+# between this line and the "Ready" banner is a bare exit, and the operator
+# who just read "build serf-hub failed" is the least likely person to go
+# looking for a fakellm still running or a run directory still on disk. The
+# directory itself is deliberately NOT removed — its logs are the only record
+# of what failed — so the reaper prints the one command that removes it.
+# Armed here rather than at the first background process so a failed build,
+# which starts nothing but still leaves a directory, says the same thing.
+# Disarmed at Ready, the state this script's contract says the processes are
+# deliberately left alive in.
+started_ready=0
+on_failed_start() {
+	[ "$started_ready" -eq 1 ] && return 0
+	started_ready=1 # never run twice: INT runs this, then so does EXIT
+	for pidfile in "$run/fakellm.pid" "$run/hub.pid"; do
+		[ -f "$pidfile" ] || continue
+		stop_owned_pid "$(cat "$pidfile")" "$(basename "$pidfile" .pid)" "$(basename "$run")"
+	done
+	echo "e2e-webui-turn-controls: startup failed; its logs are in $run. Remove it with" >&2
+	echo "    $repo_root/scripts/e2e-webui-turn-controls.sh --stop \"$run\"" >&2
+}
+trap on_failed_start EXIT
+trap 'on_failed_start; exit 130' INT TERM
 
 if [ "$skip_web" -eq 0 ]; then
 	echo "==> building the SPA (make build-web)" >&2
@@ -161,9 +237,14 @@ mkdir -p "$HOME/.serf"
 # Everything that can redirect serf away from the throwaway $HOME, not just
 # the state dir: an operator with any of these exported would otherwise have
 # this hub read or write their real config, cache, run dir or hub token while
-# the header above promises isolation.
+# the header above promises isolation. SERF_PROVIDERS_CONFIG belongs in this
+# list above all: it outranks $HOME/.serf/providers.toml (cmd/serf-hub/main.go,
+# cmd/serf-hub/internal/launchconfig/env.go), so leaving it set would load the
+# operator's real providers instead of fakellm — a network call and a paid
+# request out of a fixture whose whole point is that neither happens.
 unset XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME
 unset SERF_STATE_DIR SERF_RUN_DIR SERF_HUB_TOKEN SERF_HUB_ADDR SERF_HUB_SPAWNED
+unset SERF_PROVIDERS_CONFIG
 
 workspace="$run/workspace"
 mkdir -p "$workspace"
@@ -186,6 +267,14 @@ echo "$fakellm_pid" >"$run/fakellm.pid"
 
 # Read the real port back from fakellm's own startup log line — never a fixed
 # port (kata 68fm). Poll rather than sleep a guessed interval.
+#
+# The ceiling is a guess: 50 x 0.1s is about six seconds of wall clock, and a
+# process that binds slower than that is declared dead. That was merely noisy
+# when a timed-out start left everything running; now the reaper takes the
+# stack down with it, so a healthy-but-slow hub on a loaded machine loses its
+# fakellm too. Six seconds to bind a loopback port is a long time for these
+# three binaries, but if this ever fires on a machine that was simply busy,
+# raise the count — do not remove the reaper.
 fakellm_port=""
 for _ in $(seq 1 50); do
 	fakellm_port="$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/fakellm.log" 2>/dev/null | grep -oE '[0-9]+$')" || true
@@ -241,16 +330,22 @@ curl -s -o /dev/null "$hub_addr/" || {
 }
 token="$(cat "$HOME/.serf/auth-token")"
 
+# Ready: the stack is up, so the processes stay up too. Disarm the reaper.
+started_ready=1
+trap - EXIT INT TERM
+
 if [ "$background_job" -eq 1 ]; then
-	mode_line="The first spawned session launches a background job and goes idle.
-Release it to wake the session with a job-completion notification turn:
+	mode_line="Every session you spawn launches a background job on its first
+round and goes idle holding it. Release the jobs to wake each session with a
+job-completion notification turn, which ends after one ${hold}s round:
 
     touch '$job_release'
 "
 else
-	mode_line="Every model round through this hub pauses ${hold}s; a turn runs
-${rounds} rounds before it ends, so a session stays \"running\" for roughly
-$((hold * rounds))s.
+	mode_line="Every model round through this hub pauses ${hold}s, and every
+turn of every session ends after ${rounds} of its own rounds — so each session
+you spawn stays \"running\" for roughly $((hold * rounds))s per turn, however
+many of them there are.
 "
 fi
 
