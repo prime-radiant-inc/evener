@@ -18,9 +18,22 @@
 // server on 9180 or the shared MCP Chrome. Every page load is pinned to the
 // guard's OWN loopback Vite origin by assertGuardOrigin.
 
-/** Poll a URL until it answers OK; the error names what never came up. */
-export async function waitForHttp(url, label) {
+/**
+ * Poll a URL until it answers OK; the error names what never came up.
+ *
+ * launchFailed reports the LAUNCH error of the subsystem this endpoint belongs
+ * to, if spawn() never got it running at all (browserGuardProcess.mjs's
+ * getViteLaunchError / getChromeLaunchError - kata ssca). A subsystem that was
+ * never running has nothing to poll for, so the wait stops with the launch
+ * error itself rather than spending 30 seconds arriving at a timeout that names
+ * the endpoint instead of the reason. It is deliberately per-subsystem: a
+ * Chrome that could not launch must not abort - or be blamed for - the wait on
+ * a Vite that is coming up fine.
+ */
+export async function waitForHttp(url, label, launchFailed = () => null) {
   for (let attempt = 0; attempt < 300; attempt++) {
+    const launchError = launchFailed();
+    if (launchError) throw launchError;
     try {
       if ((await fetch(url)).ok) return;
     } catch {

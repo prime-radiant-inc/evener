@@ -534,6 +534,8 @@ export async function startBrowserGuard({
   let chrome = null;
   let viteErr = "";
   let chromeErr = "";
+  let viteLaunchError = null;
+  let chromeLaunchError = null;
   let chromeArgv = [];
   const lifecycle = createBrowserProcessCleanup({
     profileDir,
@@ -560,6 +562,20 @@ export async function startBrowserGuard({
     );
     lifecycle.addChild(vite, {
       processGroupId: useProcessGroups && Number.isInteger(vite.pid) ? vite.pid : null,
+    });
+    // A spawn() that never launches reports ASYNCHRONOUSLY on the child's
+    // "error" event (EACCES on a binary that is not executable, ENOENT on one
+    // that vanished between findChrome() and here) and returns a ChildProcess
+    // regardless, so the try around these spawns cannot see it. Unhandled, an
+    // "error" event on an EventEmitter throws - out past
+    // describeBrowserStartupFailure and through lifecycle.cleanup(), which is
+    // what reaps the Vite server and the private profile, so the guard died
+    // noisily and left a dev server behind (kata ssca). Recorded per subsystem
+    // so the readiness wait aborts naming the launch error instead of timing
+    // out for 30 seconds against something that was never running, and so a
+    // dead Chrome is never blamed on a healthy Vite.
+    vite.on("error", (error) => {
+      viteLaunchError ??= error;
     });
     vite.stderr?.on("data", (chunk) => {
       viteErr += chunk;
@@ -588,6 +604,9 @@ export async function startBrowserGuard({
         detached: useProcessGroups,
       },
     );
+    chrome.on("error", (error) => {
+      chromeLaunchError ??= error;
+    });
     chrome.stderr?.on("data", (chunk) => {
       chromeErr += chunk;
     });
@@ -606,6 +625,8 @@ export async function startBrowserGuard({
     profileDir,
     getViteError: () => viteErr,
     getChromeError: () => chromeErr,
+    getViteLaunchError: () => viteLaunchError,
+    getChromeLaunchError: () => chromeLaunchError,
     chromeBinary: resolvedChrome,
     getChromeArgv: () => chromeArgv,
     cleanup: lifecycle.cleanup,

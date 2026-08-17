@@ -198,14 +198,22 @@ async function main() {
   let failed = 0;
   try {
     try {
-      await waitForHttp(`http://127.0.0.1:${vitePort}/overflowharness.html`, "vite dev server");
+      await waitForHttp(
+        `http://127.0.0.1:${vitePort}/overflowharness.html`,
+        "vite dev server",
+        guard.getViteLaunchError,
+      );
     } catch (err) {
       throw new Error(
         describeBrowserStartupFailure({ error: err, subsystem: "vite", viteStderr: guard.getViteError() }),
       );
     }
     try {
-      await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
+      await waitForHttp(
+        `http://127.0.0.1:${cdpPort}/json/version`,
+        "chrome devtools endpoint",
+        guard.getChromeLaunchError,
+      );
     } catch (err) {
       throw new Error(
         describeBrowserStartupFailure({

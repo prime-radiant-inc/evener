@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
+import { waitForHttp } from "./browserGuardCdp.mjs";
 import * as browserGuardProcess from "./browserGuardProcess.mjs";
 
 const { createBrowserProcessCleanup, findAvailablePort, startBrowserGuard } = browserGuardProcess;
@@ -23,13 +25,28 @@ class FakeChild extends EventEmitter {
 
   kill(signal) {
     this.signals.push(signal);
-    return true;
+    return this.launchFailed !== true;
   }
 
   exit(signal = "SIGTERM") {
     this.signalCode = signal;
     this.emit("exit", null, signal);
   }
+
+  // Model what Node does when spawn() itself fails, measured against a real
+  // non-executable binary on this platform: the ChildProcess is returned with
+  // no pid, then asynchronously sets exitCode to the negative errno, emits
+  // "error" (which THROWS if nothing is listening), never emits "exit", and
+  // answers false from kill() forever after.
+  failLaunch(error) {
+    this.launchFailed = true;
+    this.exitCode = -(error.errno ?? 13);
+    this.emit("error", error);
+  }
+}
+
+function launchError(code, message) {
+  return Object.assign(new Error(message), { code, errno: code === "ENOENT" ? 2 : 13, syscall: "spawn" });
 }
 
 async function startFakeGuard(options = {}) {
@@ -641,4 +658,145 @@ test("a browser binary that could not be resolved says nothing was spawned", () 
 
   assert.match(message, /no Chrome\/Chromium found/);
   assert.match(message, /nothing was spawned and there is no stderr to read/);
+});
+
+// kata ssca. spawn() reports a failed LAUNCH asynchronously on the child's
+// "error" event - EACCES for a Chrome that is not executable, ENOENT for one
+// that vanished between findChrome() and the spawn - and returns a ChildProcess
+// either way, so the try/catch around startBrowserGuard's spawns can never see
+// it. Unhandled, that event throws out of the event loop: past
+// describeBrowserStartupFailure and through lifecycle.cleanup(), which is what
+// reaps the Vite server and the private profile. These three cases pin the
+// listener, the attribution, and that cleanup still finishes.
+//
+// "The readiness wait" is waitForHttp, which polls for 30 seconds. A launch
+// that already failed has nothing to poll FOR, so the wait aborts with the
+// launch error itself rather than reporting a timeout against a subsystem that
+// was never running.
+const UNREACHABLE = "http://127.0.0.1:1/json/version";
+
+test("a Chrome that never launched aborts the readiness wait naming the launch error", async () => {
+  const { guard, children } = await startFakeGuard();
+  const failure = launchError("EACCES", "spawn /fake/chrome EACCES");
+
+  children[1].failLaunch(failure);
+
+  await assert.rejects(
+    waitForHttp(UNREACHABLE, "chrome devtools endpoint", guard.getChromeLaunchError),
+    /spawn \/fake\/chrome EACCES/,
+  );
+  const message = browserGuardProcess.describeBrowserStartupFailure({
+    error: guard.getChromeLaunchError(),
+    subsystem: "chrome",
+    chromeBinary: guard.chromeBinary,
+    chromeArgv: guard.getChromeArgv(),
+    chromeStderr: guard.getChromeError(),
+    viteStderr: guard.getViteError(),
+  });
+  assert.match(message, /environment problem, not a test case failure/);
+  assert.match(message, /spawn \/fake\/chrome EACCES/);
+
+  // The failed child never exits on its own; cleanup has to finish anyway.
+  const cleanup = guard.cleanup();
+  children[0].exit();
+  await cleanup;
+  assert.equal(existsSync(guard.profileDir), false);
+});
+
+test("a Vite that never launched aborts its own wait and is not blamed on Chrome", async () => {
+  const { guard, children } = await startFakeGuard();
+  const failure = launchError("ENOENT", "spawn ./node_modules/.bin/vite ENOENT");
+
+  children[0].failLaunch(failure);
+
+  await assert.rejects(
+    waitForHttp(UNREACHABLE, "vite dev server", guard.getViteLaunchError),
+    /spawn \.\/node_modules\/\.bin\/vite ENOENT/,
+  );
+  assert.equal(guard.getChromeLaunchError(), null);
+  const message = browserGuardProcess.describeBrowserStartupFailure({
+    error: guard.getViteLaunchError(),
+    subsystem: "vite",
+    viteStderr: guard.getViteError(),
+  });
+  assert.match(message, /spawn \.\/node_modules\/\.bin\/vite ENOENT/);
+  assert.match(message, /Chrome is not implicated/);
+
+  const cleanup = guard.cleanup();
+  children[1].exit();
+  await cleanup;
+  assert.equal(existsSync(guard.profileDir), false);
+});
+
+// FakeChild.failLaunch above is a MODEL of Node's failed-spawn behaviour, and a
+// model that cannot happen in production is a green test that guards nothing.
+// This runs the real thing: real spawn(), a real non-executable file for Chrome
+// (the EACCES case the kata names), a real child process standing in for Vite,
+// and real cleanup. No Vite boot and no browser, so it stays cheap.
+test("a real non-executable Chrome is named by the diagnostic and still gets cleaned up", async (context) => {
+  const binDir = mkdtempSync(path.join(tmpdir(), "browser-guard-noexec-"));
+  context.after(() => rmSync(binDir, { recursive: true, force: true }));
+  const notExecutable = path.join(binDir, "chrome");
+  writeFileSync(notExecutable, "#!/bin/sh\nexit 0\n", { mode: 0o644 });
+
+  let calls = 0;
+  const viteStandIn = [];
+  const { guard } = await startFakeGuard({
+    chromeBinary: notExecutable,
+    spawnProcess(command, args, options) {
+      calls++;
+      // Vite is stood in for by a real, harmless long-lived process: this test
+      // is about Chrome's launch, and booting a dev server to prove it would
+      // cost seconds and prove nothing extra.
+      if (calls === 1) {
+        const child = spawn("/bin/sleep", ["30"], options);
+        viteStandIn.push(child);
+        return child;
+      }
+      return spawn(command, args, options);
+    },
+  });
+
+  // The 'error' event is asynchronous, so the wait is what observes it - and it
+  // must observe it in well under the 30 seconds the poll would otherwise take.
+  const started = Date.now();
+  await assert.rejects(
+    waitForHttp(
+      `http://127.0.0.1:${guard.cdpPort}/json/version`,
+      "chrome devtools endpoint",
+      guard.getChromeLaunchError,
+    ),
+    /EACCES/,
+  );
+  assert.ok(Date.now() - started < 5_000, "the wait must abort on the launch error, not poll to its timeout");
+
+  const message = browserGuardProcess.describeBrowserStartupFailure({
+    error: guard.getChromeLaunchError(),
+    subsystem: "chrome",
+    chromeBinary: guard.chromeBinary,
+    chromeArgv: guard.getChromeArgv(),
+    chromeStderr: guard.getChromeError(),
+    viteStderr: guard.getViteError(),
+  });
+  assert.match(message, /environment problem, not a test case failure/);
+  assert.match(message, /EACCES/);
+  assert.match(message, /Chrome binary: .*chrome/);
+
+  await guard.cleanup();
+  assert.equal(existsSync(guard.profileDir), false);
+  assert.equal(viteStandIn[0].killed || viteStandIn[0].exitCode !== null || viteStandIn[0].signalCode !== null, true);
+});
+
+test("a Chrome launch failure does not abort the wait for a Vite that is still coming up", async () => {
+  const { guard, children } = await startFakeGuard();
+  children[1].failLaunch(launchError("EACCES", "spawn /fake/chrome EACCES"));
+
+  // The vite wait polls its own subsystem only; blaming a live Vite for
+  // Chrome's failure would send the reader after the wrong remediation.
+  assert.equal(guard.getViteLaunchError(), null);
+
+  const cleanup = guard.cleanup();
+  children[0].exit();
+  await cleanup;
+  assert.equal(existsSync(guard.profileDir), false);
 });
