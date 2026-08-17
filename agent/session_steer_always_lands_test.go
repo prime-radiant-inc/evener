@@ -33,11 +33,15 @@ func TestRestoredSteeringWakesWhenTheDaemonAttaches(t *testing.T) {
 	crashed := newQueuePersistTestSession(t, dir)
 	id := crashed.ID()
 	serveSession(t, crashed)
+	// The user's own steer, through the path a client takes. The kind matters:
+	// only user steering is work the session owes someone, so only it wakes on
+	// attach. Daemon-authored steering is context for the next turn and must
+	// not start one -- see TestNoTurnRunsBeforeTheUsersFirstPrompt.
 	if err := crashed.ensureClientMutationStore(); err != nil {
 		t.Fatalf("ensureClientMutationStore: %v", err)
 	}
 	if _, err := crashed.AcceptClientMutationSteer(appwire.TurnSteerParams{
-		ClientMutationID: "cm-steer-crashed",
+		ClientMutationID: "cm-restored-steer",
 		Input:            []appwire.InputItem{{Type: "text", Text: "restored steer"}},
 	}); err != nil {
 		t.Fatalf("AcceptClientMutationSteer: %v", err)
@@ -50,7 +54,9 @@ func TestRestoredSteeringWakesWhenTheDaemonAttaches(t *testing.T) {
 	defer restored.Close()
 	serveSession(t, restored)
 
-	if !restored.hasPendingSteering() {
+	// hasPendingUserSteering, not hasPendingSteering: the wake below consults
+	// the user-scoped term, so that is the one restore has to have refilled.
+	if !restored.hasPendingUserSteering() {
 		t.Fatal("restore did not put the durably-committed steer back in the runtime steering queue; nothing downstream can deliver a steer the queue does not hold")
 	}
 
