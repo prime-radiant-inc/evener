@@ -49,6 +49,30 @@ function launchError(code, message) {
   return Object.assign(new Error(message), { code, errno: code === "ENOENT" ? 2 : 13, syscall: "spawn" });
 }
 
+/**
+ * Register a guard's cleanup as TEARDOWN rather than leaving it as trailing
+ * code at the end of a test body.
+ *
+ * A failing assertion skips everything after it, so a body-tail cleanup leaks
+ * exactly what these tests exist to prove gets reaped: a detached process group
+ * and a private profile directory. Leaking that from the launch-failure tests
+ * would be its own joke. (Measured: forcing one assertion in the real-spawn
+ * test to fail took the tmp profile count from 8 to 9, and a run of stale
+ * browser-guard-test-* directories is what put this here.)
+ *
+ * FakeChild never exits on its own, so teardown has to release the children the
+ * same way each success path does. Both halves are safe to repeat: cleanup()
+ * memoizes its promise, and a second exit() emits to listeners that have already
+ * been removed - so this is a no-op after a body that cleaned up for itself.
+ */
+function reapOnTeardown(context, guard, children = []) {
+  context.after(async () => {
+    const cleanup = guard.cleanup();
+    for (const child of children) child.exit();
+    await cleanup;
+  });
+}
+
 async function startFakeGuard(options = {}) {
   const children = [];
   const guard = await startBrowserGuard({
@@ -675,8 +699,9 @@ test("a browser binary that could not be resolved says nothing was spawned", () 
 // was never running.
 const UNREACHABLE = "http://127.0.0.1:1/json/version";
 
-test("a Chrome that never launched aborts the readiness wait naming the launch error", async () => {
+test("a Chrome that never launched aborts the readiness wait naming the launch error", async (context) => {
   const { guard, children } = await startFakeGuard();
+  reapOnTeardown(context, guard, children);
   const failure = launchError("EACCES", "spawn /fake/chrome EACCES");
 
   children[1].failLaunch(failure);
@@ -703,8 +728,9 @@ test("a Chrome that never launched aborts the readiness wait naming the launch e
   assert.equal(existsSync(guard.profileDir), false);
 });
 
-test("a Vite that never launched aborts its own wait and is not blamed on Chrome", async () => {
+test("a Vite that never launched aborts its own wait and is not blamed on Chrome", async (context) => {
   const { guard, children } = await startFakeGuard();
+  reapOnTeardown(context, guard, children);
   const failure = launchError("ENOENT", "spawn ./node_modules/.bin/vite ENOENT");
 
   children[0].failLaunch(failure);
@@ -756,6 +782,9 @@ test("a real non-executable Chrome is named by the diagnostic and still gets cle
       return spawn(command, args, options);
     },
   });
+  // The children here are REAL - a detached `sleep` and a Chrome that never
+  // launched - so a skipped cleanup leaks an actual process group, not a fake.
+  reapOnTeardown(context, guard);
 
   // The 'error' event is asynchronous, so the wait is what observes it - and it
   // must observe it in well under the 30 seconds the poll would otherwise take.
@@ -787,8 +816,9 @@ test("a real non-executable Chrome is named by the diagnostic and still gets cle
   assert.equal(viteStandIn[0].killed || viteStandIn[0].exitCode !== null || viteStandIn[0].signalCode !== null, true);
 });
 
-test("a Chrome launch failure does not abort the wait for a Vite that is still coming up", async () => {
+test("a Chrome launch failure does not abort the wait for a Vite that is still coming up", async (context) => {
   const { guard, children } = await startFakeGuard();
+  reapOnTeardown(context, guard, children);
   children[1].failLaunch(launchError("EACCES", "spawn /fake/chrome EACCES"));
 
   // The vite wait polls its own subsystem only; blaming a live Vite for
