@@ -85,6 +85,13 @@ profiles_dir="$(mktemp -d -t serf-testcov.XXXXXX)"
 measured_file="$profiles_dir/measured.txt"
 : >"$measured_file"
 fail=0
+# A clean run leaves nothing behind; a failed one keeps the profiles and the
+# per-module go test logs, because the failure line just printed their path and
+# they are the only record of why. Without this the directory leaked on every
+# invocation — including every selftest run, which the dev-tooling wave fails a
+# suite for.
+cleanup_profiles() { [ "$fail" -eq 0 ] && rm -rf "$profiles_dir"; }
+trap cleanup_profiles EXIT
 printf '%-10s %12s %12s %8s %8s\n' "module" "covered" "total" "cov%" "floor"
 for m in $modules; do
 	[ -f "$repo_root/$m/go.mod" ] || { printf '%-10s %s\n' "$m" "(no module)"; continue; }

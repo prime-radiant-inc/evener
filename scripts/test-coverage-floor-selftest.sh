@@ -61,7 +61,12 @@ FAKEGO
 chmod +x "$fake_bin/go"
 
 go_log="$work/go-invocations.txt"
-run() { PATH="$fake_bin:$PATH" FAKE_GO_LOG="$go_log" bash "$script" --modules ". agent" "$@"; }
+# A private TMPDIR makes the script's own scratch observable: the wave runner
+# fails a suite that leaves anything behind, and the profiles directory used to
+# leak once per invocation.
+tmphome="$work/tmp"
+mkdir -p "$tmphome"
+run() { PATH="$fake_bin:$PATH" FAKE_GO_LOG="$go_log" TMPDIR="$tmphome" bash "$script" --modules ". agent" "$@"; }
 
 out="$work/out.txt"
 : >"$floors"
@@ -105,6 +110,8 @@ fi
 
 # --bless must carry the MEASURED percentages through; the associative-array bug
 # silently wrote back stale floors here even when the rows above looked right.
+assert_eq "$(ls -A "$tmphome")" "" "a clean run leaves no scratch directory behind"
+
 run --bless >"$out" 2>&1
 assert_has "$floors" ". 25.0" "bless records the measured \".\" floor"
 assert_has "$floors" "agent 75.0" "bless records the measured agent floor"
