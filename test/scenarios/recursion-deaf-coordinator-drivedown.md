@@ -45,7 +45,7 @@ IS the test, asserted on the coordinator's own transcript.
   per-spawn grant.** Raise `MaxSubagentDepth` to 2 via
   `launch_overrides` so the root's own allowance is 2 and a grant of 1
   is legal. The wire key is `maxSubagentDepth` (camelCase,
-  `appwire/types.go:1708`):
+  `appwire/types.go:2046`):
 
   ```json
   {"prompt":"...","model":"openai/gpt-5.5","working_dir":"$tmpdir",
@@ -119,9 +119,8 @@ IS the test, asserted on the coordinator's own transcript.
   worker job_id appears as the SUBJECT of a `<job-notification>` frame on
   the ROOT's rail, or a worker's completion text appears INSIDE one —
   the root was interrupted about a job its DESCENDANT created, which the
-  owner-scoped rule forbids ("Rollout (live vs. dark)" quotes Jesse's
-  ruling, "an agent is never interrupted about a *subagent's*
-  children"). Match on the frame
+  owner-scoped rule forbids ("Nested jobs" "an ancestor is not
+  interrupted about a descendant's children"). Match on the frame
   SUBJECT, not a bare substring: the worker ids and their
   `W1_DONE`/`W2_DONE` payloads legitimately appear in the COORDINATOR's
   transcript and in the root's forwarded durable records — that
