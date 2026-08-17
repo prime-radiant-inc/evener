@@ -54,7 +54,12 @@ func TestRestoredSteeringWakesWhenTheDaemonAttaches(t *testing.T) {
 	defer restored.Close()
 	serveSession(t, restored)
 
-	// hasPendingUserSteering, not hasPendingSteering: the wake below consults
+	// A diagnostic, not this test's coverage. Five cases in
+	// session_queue_persist_test.go already fail if restore stops
+	// reconstituting steering, so deleting that line reddens the package with
+	// or without this line -- it is here to say WHICH half broke when this test
+	// fails, not to hold the half. The wake below is what this test uniquely
+	// holds. hasPendingUserSteering, not hasPendingSteering: the wake consults
 	// the user-scoped term, so that is the one restore has to have refilled.
 	if !restored.hasPendingUserSteering() {
 		t.Fatal("restore did not put the durably-committed steer back in the runtime steering queue; nothing downstream can deliver a steer the queue does not hold")
