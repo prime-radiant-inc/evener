@@ -130,6 +130,22 @@ assert_has "$floors" "agent 75.0" "bless records the measured agent floor"
 run --check >"$out" 2>&1
 assert_eq "$?" "0" "check passes at the blessed floors"
 
+# A hand-written basis note explains why a floor was reset downward. Blessing
+# raises other floors later, and rewriting the header would delete that reason.
+printf '# why this basis changed: measured surface moved\n. 25.0\nagent 75.0\n' >"$floors"
+run --bless >"$out" 2>&1
+assert_has "$floors" "why this basis changed" "bless preserves a hand-written header note"
+assert_has "$floors" "agent 75.0" "bless still records floors alongside the preserved note"
+
+# Improving one module at a time is the normal way coverage work happens, so a
+# partial bless must not delete the floors it did not measure.
+printf '. 10.0\nagent 10.0\nllm 91.4\nauth 95.7\n' >"$floors"
+PATH="$fake_bin:$PATH" FAKE_GO_LOG="$go_log" TMPDIR="$tmphome" bash "$script" --modules "agent" --bless >"$out" 2>&1
+assert_has "$floors" "agent 75.0" "a partial bless raises the module it measured"
+assert_has "$floors" "llm 91.4" "a partial bless keeps an unmeasured module's floor"
+assert_has "$floors" "auth 95.7" "a partial bless keeps every other unmeasured floor"
+assert_has "$floors" ". 10.0" "a partial bless keeps the root floor it did not measure"
+
 printf '. 90.0\nagent 75.0\n' >"$floors"
 run --check >"$out" 2>&1
 assert_eq "$?" "1" "check fails when a module drops below its floor"

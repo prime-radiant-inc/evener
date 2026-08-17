@@ -146,10 +146,24 @@ done
 if $bless; then
 	tmp="$(mktemp)"
 	{
-		echo "# Full-suite (unit+integration) whole-module statement-coverage floors."
-		echo "# Managed by scripts/test-coverage-floor.sh --bless. Raised upward only;"
-		echo "# a downward reset (denominator change, not a regression) is a hand edit."
-		for m in $modules; do
+		# Carry the file's existing comment header through instead of restating a
+		# fixed one. A downward reset is a hand edit whose comment records WHY the
+		# basis changed, and rewriting the header on every bless deleted that
+		# reason the next time anyone raised a floor.
+		if grep -q '^#' "$floors_file" 2>/dev/null; then
+			awk '/^#/{print; next} {exit}' "$floors_file"
+		else
+			echo "# Full-suite (unit+integration) whole-module statement-coverage floors."
+			echo "# Managed by scripts/test-coverage-floor.sh --bless. Raised upward only;"
+			echo "# a downward reset (denominator change, not a regression) is a hand edit."
+		fi
+		# Bless the union of what was measured and what the file already holds, so
+		# `--bless --modules agent` raises agent and LEAVES every other module's
+		# floor intact. Restricting this loop to $modules silently deleted the
+		# unmeasured floors, which made improving one module at a time — the normal
+		# way coverage work happens — quietly drop the ratchet everywhere else.
+		{ printf '%s\n' $modules; awk '!/^#/ && NF {print $1}' "$floors_file" 2>/dev/null; } | sort -u | while read -r m; do
+			[ -n "$m" ] || continue
 			cur="$(measured_for "$m")"; old="$(floor_for "$m")"; keep="$cur"
 			[ -n "$old" ] && keep="$(awk -v a="$old" -v b="${cur:-0}" 'BEGIN{print (a>b)?a:b}')"
 			[ -n "$keep" ] && echo "$m $keep"
