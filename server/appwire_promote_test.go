@@ -212,21 +212,46 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 		t.Fatalf("thread queue IDs = %#v, want two non-empty ids", ids)
 	}
 
-	// The promote below is a compare-and-commit against the queue as it is when
-	// the request lands, so the ids it names must come from that same moment.
-	// This test drives a LIVE session whose own drain loop shares that queue, so
-	// an id read earlier can describe a queue that has moved -- re-read here, and
-	// say so loudly if it is not the two entries this case is about.
-	live := sess.QueueIDs()
-	if len(live) != 2 || live[0] != ids[0] || live[1] != ids[1] {
-		t.Fatalf("queue changed between the read and the promote: live=%#v, published=%#v", live, ids)
+	// Everything below assumes the turn is still parked in the adapter, and
+	// nothing used to check it. That assumption is the whole test: promote has
+	// no session-state precondition of its own (unlike PromoteQueuedAsSteer,
+	// agent/session_queue.go), so a turn that ended early leaves every
+	// assertion here passing or failing for reasons that have nothing to do
+	// with promote. And the drain loop that runs when a turn ends is the ONLY
+	// place in the codebase that takes the queue head away and puts it back:
+	// the interrupted-turn recovery in agent/session_lifecycle.go pops, and
+	// pushes back when it cannot run what it popped. adapter.done is buffered,
+	// so the wait at the end of this test cannot tell an early end from a
+	// cancelled-at-the-end one. This can.
+	select {
+	case err := <-adapter.done:
+		t.Fatalf("the turn ended before the promote (%v): the drain loop is now free to claim queue entries, and nothing below measures what it names", err)
+	default:
+	}
+
+	// The promote is a compare-and-commit against the DURABLE queue as it is
+	// when the request lands, so the ids it names must come from that same
+	// queue. sess.QueueIDs() is not it: that reads the mirror s.inputQueue,
+	// which reflectDurableInputQueue rewrites after the store commit, under a
+	// different lock, and skips entirely when the revision has not advanced. So
+	// the mirror can still read [alpha bravo] while the durable queue the
+	// promote will compare against is already [bravo] -- which is precisely how
+	// this test used to report "expected error, got 3" with every other
+	// assertion looking intact (kata n1zs). ClientMutationProjection reads the
+	// snapshot promote reads.
+	durable, _ := sess.ClientMutationProjection()
+	if len(durable.IDs) != 2 || durable.IDs[0] != ids[0] || durable.IDs[1] != ids[1] {
+		t.Fatalf("the durable queue moved between the read and the promote: durable=%#v published=%#v mirror=%#v; the promote below would compare against a queue this case never described",
+			durable.IDs, ids, sess.QueueIDs())
 	}
 
 	// Review F1: a promote naming the WRONG entry id (a stale snapshot) is a
 	// Conflict and leaves the queue fully intact — nothing is steered.
-	mismatch := promoteRPC(conn, 3, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "promote-mismatch", Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: live[1]})
+	mismatch := promoteRPC(conn, 3, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "promote-mismatch", Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: durable.IDs[1]})
 	if mismatch.Kind() != appwire.MessageError {
-		t.Fatalf("mismatch promote: expected error, got %v", mismatch.Kind())
+		after, _ := sess.ClientMutationProjection()
+		t.Fatalf("mismatch promote: expected error, got %v. The promote named index 0 with %q, which is entry 1 of %#v -- for that to be accepted the durable queue had to move under it, and it now reads %#v (mirror %#v)",
+			mismatch.Kind(), durable.IDs[1], ids, after.IDs, sess.QueueIDs())
 	}
 	if mismatch.Error.Error.Code != appwire.CodeConflict {
 		t.Fatalf("mismatch error=%+v, want Conflict", mismatch.Error.Error)
@@ -238,7 +263,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 		t.Fatalf("steering queue after mismatch: got %+v, want empty", steering)
 	}
 
-	resp := promoteRPC(conn, 2, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "promote-alpha", Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: ids[0]})
+	resp := promoteRPC(conn, 2, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "promote-alpha", Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: durable.IDs[0]})
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
 	}
