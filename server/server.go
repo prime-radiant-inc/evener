@@ -350,8 +350,8 @@ type Server struct {
 	// the very drop both are here to prevent. See SubmitPendingUserInput.
 	pendingUserInputWakeRearmed bool
 	inputCh                     chan InputMessage
-	hubToken          string
-	sameOrigin        httpguard.SameOriginPolicy
+	hubToken                    string
+	sameOrigin                  httpguard.SameOriginPolicy
 }
 
 // SetRetrySafeTurnFunctions installs the authoritative retry-safe mutation
