@@ -760,6 +760,7 @@ var (
 	listReadDir            = os.ReadDir
 	streamBeforeSignalOnce = func(func()) {}
 	streamAfterTimer       = func(func()) {}
+	streamOutputCopyStart  = func() {}
 	wrapperWithPolicy      = func(w *sandbox.Wrapper, p sandbox.ResolvedPolicy) (*sandbox.Wrapper, error) { return w.WithPolicy(p) }
 	splitEditLines         = strings.Split
 	venvCandidateDirs      = func(root, binDir string) []string {
