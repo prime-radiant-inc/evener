@@ -13,6 +13,10 @@
 # when it moves, and bare `go test ./...` here also ran every native Fuzz seed
 # corpus and the rapid/seqfuzz family, which are make fuzz's job.
 #
+# Each module is measured against ITS OWN packages (`go list ./...`), not against
+# the `./...` filesystem pattern, which under go.work also matches every nested
+# module beneath the root and made the root row a whole-repo number.
+#
 # The -count=1 is REQUIRED — cached coverage profiles report stale numbers. It
 # dedups the -coverpkg duplicate blocks by position (a block is covered if ANY
 # test hit it) before computing the percentage, the same way
@@ -95,8 +99,22 @@ trap cleanup_profiles EXIT
 printf '%-10s %12s %12s %8s %8s\n' "module" "covered" "total" "cov%" "floor"
 for m in $modules; do
 	[ -f "$repo_root/$m/go.mod" ] || { printf '%-10s %s\n' "$m" "(no module)"; continue; }
-	prof="$profiles_dir/${m//\//_}.cov"
-	log="$profiles_dir/${m//\//_}.log"
+	name="$m"
+	[ "$name" = "." ] && name="root"   # or the profile and log land as dotfiles
+	prof="$profiles_dir/$(printf '%s' "$name" | tr / _).cov"
+	log="$profiles_dir/$(printf '%s' "$name" | tr / _).log"
+	# -coverpkg takes FILESYSTEM patterns, and under go.work `./...` matches every
+	# package in the tree below the module — which for the root module means
+	# agent/, llm/, auth/ and every other nested module too. The root row was
+	# therefore a whole-repo figure diluted by code the root module's own tests
+	# never run (50.9% against a 82603-statement denominator, versus 79.7% of the
+	# 33141 statements it actually owns). `go list ./...` resolves within the
+	# module, so it names this module's packages and nothing else.
+	pkgs="$( cd "$repo_root/$m" && go list ./... 2>/dev/null | paste -sd, - )"
+	if [ -z "$pkgs" ]; then
+		printf '%-10s %s\n' "$m" "cannot list packages (see: cd $m && go list ./...)"
+		fail=1; continue
+	fi
 	# -short everywhere except the root module, mirroring run-module-tests.sh's
 	# module_test_flags under ROOT_FULL=1 — the surface make merge-approval-gate
 	# proves. Bare `go test ./...` would additionally run every native Fuzz
@@ -105,7 +123,7 @@ for m in $modules; do
 	# gate reproduces, and on this repo it simply failed.
 	short="-short"
 	[ "$m" = "." ] && short=""
-	if ! ( cd "$repo_root/$m" && go test -count=1 $short -coverpkg=./... -coverprofile="$prof" \
+	if ! ( cd "$repo_root/$m" && go test -count=1 $short -coverpkg="$pkgs" -coverprofile="$prof" \
 		-run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" ./... ) >"$log" 2>&1; then
 		printf '%-10s %s\n' "$m" "TEST FAILED (log: $log)"
 		fail=1; continue

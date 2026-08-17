@@ -41,6 +41,12 @@ mkdir -p "$fake_bin"
 cat >"$fake_bin/go" <<'FAKEGO'
 #!/bin/sh
 [ -n "${FAKE_GO_LOG:-}" ] && echo "$(basename "$PWD") $*" >>"$FAKE_GO_LOG"
+# `go list ./...` is how the script scopes -coverpkg to the module under test.
+if [ "$1" = list ]; then
+	echo "fake/$(basename "$PWD")/alpha"
+	echo "fake/$(basename "$PWD")/beta"
+	exit 0
+fi
 prof=""
 for a in "$@"; do
 	case "$a" in -coverprofile=*) prof="${a#-coverprofile=}" ;; esac
@@ -96,6 +102,11 @@ fi
 . "$(dirname "$0")/gate-surface-lib.sh"
 assert_has "$go_log" "-run ^(Test|Example)" "the coverage run uses the gate's Test/Example filter"
 assert_has "$go_log" "-skip $GATE_FUZZ_TEST_SKIP" "the coverage run skips the fuzz-owned names"
+# -coverpkg must name the module's OWN packages. `./...` is a filesystem pattern
+# that under go.work also matches every nested module, which turned the root row
+# into a whole-repo number diluted by code its tests never run.
+assert_has "$go_log" "-coverpkg=fake/repo/alpha,fake/repo/beta" "-coverpkg is scoped to the module's own packages"
+assert_not_has "$go_log" "-coverpkg=./..." "-coverpkg is never the tree-wide pattern"
 if grep -q '^agent .*-short' "$go_log"; then
 	ok "non-root modules are measured in -short mode"
 else

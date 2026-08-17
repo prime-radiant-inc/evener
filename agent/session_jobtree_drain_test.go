@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,55 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
+
+// outstandingWorkReasons names every signal treeHasOutstandingWork consults that
+// is currently true, in the same order that function checks them.
+//
+// treeHasOutstandingWork answers a bare yes/no over eight independent signals,
+// so a drain that returns clean and a tree that is outstanding a moment later
+// produce a failure message naming none of them. That is precisely the case
+// worth diagnosing, and it reproduces only under heavy parallel load, where a
+// re-run to add prints is expensive and may not fail again.
+func outstandingWorkReasons(s *Session) []string {
+	var reasons []string
+	if s.jobManager != nil {
+		if n, err := s.jobManager.outstandingDrainJobCount(); err != nil {
+			reasons = append(reasons, "outstandingDrainJobCount error: "+err.Error())
+		} else if n > 0 {
+			reasons = append(reasons, fmt.Sprintf("outstandingDrainJobCount=%d", n))
+		}
+		if s.jobManager.hasPendingWatchSends() {
+			reasons = append(reasons, "hasPendingWatchSends")
+		}
+	}
+	if n := s.peekNotifications(); n > 0 {
+		reasons = append(reasons, fmt.Sprintf("peekNotifications=%d", n))
+	}
+	if s.hasPendingRootDelegateAttention() {
+		reasons = append(reasons, "hasPendingRootDelegateAttention")
+	}
+	if s.hasPendingDelegateAttentionArmRetry() {
+		reasons = append(reasons, "hasPendingDelegateAttentionArmRetry")
+	}
+	if s.hasPendingStableDelegateAttention() {
+		reasons = append(reasons, "hasPendingStableDelegateAttention")
+	}
+	for _, sub := range s.liveDirectSubagents() {
+		sub.mu.Lock()
+		running, finalizing, driving := sub.running, sub.finalizing, sub.driving
+		child := sub.sess
+		sub.mu.Unlock()
+		if running || finalizing || driving {
+			reasons = append(reasons, fmt.Sprintf("subagent active(running=%v finalizing=%v driving=%v)", running, finalizing, driving))
+		}
+		if child != nil {
+			for _, r := range outstandingWorkReasons(child) {
+				reasons = append(reasons, "child "+child.id+": "+r)
+			}
+		}
+	}
+	return reasons
+}
 
 // seedOwnedDurablePending writes an owned terminal job whose notification
 // survives only in the durable ledger, with nothing queued in memory.
@@ -633,7 +683,8 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 		t.Fatalf("delegate %s still has an open run after drain: %#v", res.DelegateID, aggregate)
 	}
 	if outstanding, err := sess.treeHasOutstandingWork(); err != nil || outstanding {
-		t.Fatalf("tree remains outstanding after delegate drain: outstanding=%v err=%v", outstanding, err)
+		t.Fatalf("tree remains outstanding after delegate drain: outstanding=%v err=%v reasons=%v",
+			outstanding, err, outstandingWorkReasons(sess))
 	}
 	if p := sess.peekNotifications(); p != 0 {
 		t.Fatalf("expected 0 pending notifications after drain, got %d", p)
