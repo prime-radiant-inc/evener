@@ -166,9 +166,10 @@ func (s *session) newTurn(text string) {
 //
 // Measured against a live hub and daemon: a turn stopped during round 2 comes
 // back replaying round 1's tool-call id, and the id the fake minted for round
-// 2 is never seen again. Discarding the answer here reproduces exactly that —
-// from the driver's side an answer nobody records and an answer nobody reads
-// are the same event.
+// 2 is never seen again. Discarding the answer here reproduces the transcript
+// half of that event; the other half — the request aborted while the driver is
+// still holding the round — is exercised for real by
+// TestACancelledRoundLeavesTheNextTurnItsOwnCount.
 func (s *session) stopInFlightRound(ctx context.Context) {
 	s.t.Helper()
 	recorded := append([]map[string]any(nil), s.messages...)
@@ -282,6 +283,78 @@ func TestTurnsAreCountedFromTheirOwnStart(t *testing.T) {
 	if got := s.round(ctx).name; got != "communicate" {
 		t.Errorf("turn 2 round 3: tool %q, want communicate (--rounds 3 ends every turn on its own third round)", got)
 	}
+}
+
+// TestACancelledRoundLeavesTheNextTurnItsOwnCount: what Stop actually does to
+// the driver is cancel the model request MID-HOLD -- the daemon aborts the
+// HTTP request while the answer goroutine is still waiting out --hold. That
+// goroutine must not go on to mutate the session's shared state: by the time
+// its hold expires the session's next turn has already begun, and an endTurn
+// side effect landing then zeroes the new turn's count, handing it extra
+// rounds (measured against HEAD: --rounds 3, cancel round 3 mid-hold, next
+// turn runs 4). stopInFlightRound cannot see this -- it waits for the answer
+// and only discards the transcript -- so this test cancels for real, with a
+// real hold.
+func TestACancelledRoundLeavesTheNextTurnItsOwnCount(t *testing.T) {
+	var logged syncBuffer
+	previous := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	const hold = 300 * time.Millisecond
+	baseURL := startDriver(t, hold, 3, "")
+
+	s := newSession(t, baseURL, "stopped")
+	for round := 1; round <= 2; round++ {
+		if got := s.round(ctx).name; got != "read_file" {
+			t.Fatalf("turn 1 round %d: tool %q, want read_file", round, got)
+		}
+	}
+
+	// Round 3 -- the round that would end the turn -- is cancelled while the
+	// driver holds it, exactly as Stop cancels an in-flight model request.
+	// Nothing of it reaches the transcript.
+	recorded := append([]map[string]any(nil), s.messages...)
+	requestCtx, cancelRequest := context.WithCancel(ctx)
+	defer cancelRequest()
+	requestDone := make(chan struct{})
+	go func() {
+		defer close(requestDone)
+		_, _ = s.try(requestCtx)
+	}()
+	waitForLog(t, &logged, "--- round 3: holding")
+	cancelRequest()
+	<-requestDone
+	s.messages = recorded
+
+	// The operator sends something else. The turn that follows must get its
+	// full --rounds of its own, even while the cancelled round's hold is
+	// still running out.
+	s.newTurn("stop that and do this instead")
+	for round := 1; round <= 2; round++ {
+		if got := s.round(ctx).name; got != "read_file" {
+			t.Errorf("turn 2 round %d: tool %q, want read_file", round, got)
+		}
+	}
+	if got := s.round(ctx).name; got != "communicate" {
+		t.Errorf("turn 2 round 3: tool %q, want communicate (the cancelled round must not touch the new turn's count)", got)
+	}
+}
+
+// waitForLog blocks until the driver has logged substr, so a test can cancel
+// a round only once the driver is genuinely holding it.
+func waitForLog(t *testing.T, logged *syncBuffer, substr string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(logged.String(), substr) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("driver never logged %q", substr)
 }
 
 // TestARoundCountSurvivesCompaction: an operator compacting the very browser
