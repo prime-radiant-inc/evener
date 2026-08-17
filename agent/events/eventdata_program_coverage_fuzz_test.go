@@ -14,16 +14,23 @@ import (
 // next, so it deliberately stops at the signature.
 var eventKindMethodRE = regexp.MustCompile(`func \((\w+)\) eventKind\(\) EventKind`)
 
-// TestEventDataProgramCasesCoverEverySealedPayload is the completeness guard
-// for FuzzEventDataProgram, whose doc claims it "runs every member of the
-// sealed event payload set" -- a claim nothing enforced. TurnStartedData and
+// assertEverySealedPayloadHasACase is the completeness guard for
+// FuzzEventDataProgram, whose doc claims it "runs every member of the sealed
+// event payload set" -- a claim nothing enforced. TurnStartedData and
 // ModelRetryData were both absent while that sentence stood.
 //
 // A literal length assertion cannot catch the next omission: adding a payload
 // without adding a row leaves the row count unchanged, so the assertion passes.
 // This derives the expected set from the marker methods themselves, so the set
 // grows exactly when the sealed set grows.
-func TestEventDataProgramCasesCoverEverySealedPayload(t *testing.T) {
+//
+// It is called FROM the fuzz target rather than standing as its own Test.
+// This file is behind the serffuzz tag, and the gate that builds with that tag
+// runs `go test -run '^Fuzz'` (Makefile FUZZ_SEED_REPLAY) -- which selects no
+// Test function at all. As a standalone test it could never fail, which is the
+// same defect it exists to prevent.
+func assertEverySealedPayloadHasACase(t testing.TB) {
+	t.Helper()
 	src, err := os.ReadFile("eventdata.go")
 	if err != nil {
 		t.Fatalf("read the payload marker declarations: %v", err)

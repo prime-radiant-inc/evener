@@ -16,6 +16,8 @@ import (
 // fields non-constant while the table ensures a seed exercises every payload
 // marker, including agent-only event kinds.
 func FuzzEventDataProgram(f *testing.F) {
+	// Before any seed runs, prove the table really is every sealed payload.
+	assertEverySealedPayloadHasACase(f)
 	f.Add("event text", "session-1", 7, true)
 	f.Add("", "", 0, false)
 

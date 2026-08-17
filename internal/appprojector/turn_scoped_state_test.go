@@ -28,12 +28,14 @@ func reasoningItemStarted(out []AppNotification) []string {
 // TestFailedTurnDoesNotLeakItsReasoningItem pins the turn-scoped state reset
 // across a failed turn.
 //
-// EventError ends a turn by clearing activeTurnID, assistantItem, assistantText,
-// toolItemsByKey and suppressedTools -- but NOT reasoningItem, toolArgsByKey or
-// toolStartByKey. startTurn does not clear reasoningItem either. So the first
-// reasoning delta of the NEXT turn finds a non-empty reasoningItem, takes
-// ensureReasoningItem's "already exists" branch, and emits its deltas against
-// the failed turn's item id with no item/started ever announced for it.
+// EventError used to end a turn by clearing a smaller field set than the normal
+// close path: it left reasoningItem, toolArgsByKey and toolStartByKey set, and
+// startTurn does not clear reasoningItem either. The first reasoning delta of
+// the NEXT turn then found a non-empty reasoningItem, took ensureReasoningItem's
+// "already exists" branch, and emitted its deltas against the failed turn's item
+// id with no item/started ever announced for it. Both endings now share
+// resetTurnScopedState; EventError stays a separate case only for its error
+// payload and its ensureTurn call.
 //
 // A client that materializes items from item/started then has deltas addressed
 // to an item it never saw open, in a turn that item does not belong to.
