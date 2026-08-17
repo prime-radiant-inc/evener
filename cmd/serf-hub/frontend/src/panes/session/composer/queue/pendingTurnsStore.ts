@@ -100,12 +100,19 @@ export async function settlePendingTurnsProjectionForTests(): Promise<number> {
 // starting in that window declared the projection settled with a send still in
 // flight (kata 3p22).
 //
-// That is a claim about this file, not about every caller. A path that starts
-// durable work and only registers it a microtask later is invisible to a round
-// that snapshots first - Composer's queueRecoveryPersistence chains that way
-// (kata 5meh). Adding one reopens the hole as a load-sensitive false green
-// rather than a failure. pendingTurnsStore's "a flush cannot settle while a
-// submit is still in flight" pins the property for the paths here.
+// That is a claim about this file, not about every caller. The round below
+// snapshots synchronously, in the same tick as the call, so a caller that
+// starts durable work which only registers a microtask later is invisible to
+// it - but only if that same caller flushes without yielding first. Composer's
+// queueRecoveryPersistence chains that way and every one of its call sites
+// yields, which is why it was measured unreachable rather than fixed: zero
+// occurrences in 1422 test executions under load (kata 5meh, closed as an
+// audit).
+//
+// So the hazard is the pattern, not that instance. A new path that registers
+// late reopens it as a load-sensitive false green rather than a failure.
+// pendingTurnsStore's "a flush cannot settle while a submit is still in
+// flight" pins the property for the paths here.
 export async function flushPendingTurnsProjectionForTests(): Promise<void> {
   for (let round = 0; round < 10; round += 1) {
     let awaited = 0;
