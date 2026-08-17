@@ -7,13 +7,12 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/report-orphaned-worktrees.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d -t report-orphaned-worktrees-selftest.XXXXXX)"
-# Resolve symlinks now (macOS's /var/folders is a symlink to /private/var/folders):
-# the script under test reports fully-resolved paths via git rev-parse, so an
-# unresolved $work would make string-equality path comparisons below spuriously
-# fail without there being any real bug.
-work="$(cd "$work" && pwd -P)"
-trap 'rm -rf "$work"' EXIT
+# selftest_scratch resolves symlinks (macOS's /var/folders is a symlink to
+# /private/var/folders): the script under test reports fully-resolved paths via
+# git rev-parse, so an unresolved $work would make the string-equality path
+# comparisons below spuriously fail without there being any real bug.
+selftest_scratch work report-orphaned-worktrees-selftest
+trap 'selftest_rm_scratch' EXIT
 
 repo="$work/repo"
 mkdir -p "$repo/.claude/worktrees"

@@ -21,8 +21,7 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/e2e-webui-turn-controls.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d -t e2e-webui-turn-controls-selftest.XXXXXX)"
-work="$(cd "$work" && pwd -P)"
+selftest_scratch work e2e-webui-turn-controls-selftest
 
 # Where the fixture binaries record what they saw, including the pid of the
 # stand-in daemon the fake hub spawns. Defined before cleanup, which sweeps it.
@@ -45,7 +44,7 @@ cleanup() {
 		[ -f "$pidfile" ] || continue
 		kill "$(cat "$pidfile")" 2>/dev/null
 	done
-	rm -rf "$work"
+	selftest_rm_scratch
 }
 trap cleanup EXIT
 

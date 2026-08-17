@@ -3,11 +3,10 @@
 set -uo pipefail
 
 script="$(cd "$(dirname "$0")" && pwd)/reclaim-test-debris.sh"
-work="$(mktemp -d -t reclaim-test-debris-selftest.XXXXXX)"
-work="$(cd "$work" && pwd -P)"
-trap 'rm -rf "$work"' EXIT
-
 . "$(dirname "$0")/selftest-lib.sh"
+
+selftest_scratch work reclaim-test-debris-selftest
+trap 'selftest_rm_scratch' EXIT
 
 tmpbase="$work/tmp"
 mkdir -p "$tmpbase"

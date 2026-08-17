@@ -60,7 +60,15 @@ shards=${AGENT_SHARD_COUNT:-4}
 par=${AGENT_SHARD_PARALLEL:-3}
 skip=${AGENT_SHARD_SKIP:-}
 noSurvey=${AGENT_SHARD_NO_SURVEY:-0}
-logdir="$(mktemp -d "${TMPDIR:-/tmp}/agent-test-shards.XXXXXX")"
+# This script has already cd'd into the agent module, and the cleanup below
+# does `rm -rf "$logdir"`. An unchecked mktemp would leave $logdir empty, and
+# `cd "" && pwd -P` resolves to the current directory, which would aim that
+# delete at the agent module itself. Refuse instead of running without scratch.
+if ! logdir="$(mktemp -d "${TMPDIR:-/tmp}/agent-test-shards.XXXXXX")" ||
+	[ -z "$logdir" ] || [ ! -d "$logdir" ]; then
+	echo "agent-test-shards: could not create a scratch directory under ${TMPDIR:-/tmp}" >&2
+	exit 2
+fi
 logdir="$(cd "$logdir" && pwd -P)"
 
 # The reclaimer cannot use the shard directory mtime as a liveness signal:
