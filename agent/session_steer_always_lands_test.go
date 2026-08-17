@@ -4,7 +4,6 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/appwire"
 )
 
@@ -16,19 +15,48 @@ import (
 // startup -- and then nothing asks the session to run. The steer waits for
 // whatever the user happens to do next.
 //
-// SetNotifyFunc is the right hook rather than the restore path itself: it is
-// the moment the wake callback provably exists, and it already fires for every
-// other kind of pending work (job notifications, delegate deliveries, root and
-// stable attention, watch settlement retries). Steering was simply missing from
-// that list.
+// The case has two halves and this test covers both, because either one alone
+// strands the steer: restore must reconstitute the durable steering into the
+// runtime queue, and registering the wake callback must then fire on it.
+// SetNotifyFunc is the hook for the second half -- it is the moment the wake
+// callback provably exists, and it already fires for every other kind of
+// pending work (job notifications, delegate deliveries, root and stable
+// attention, watch settlement retries). Steering was simply missing from that
+// list.
+//
+// The crash is real, not simulated: the steer is committed through the
+// production durable path, the session is closed, and a fresh one is rebuilt
+// from the same state dir through RestoreSessionFromMetaWithConfig -- the same
+// function `serf serve --resume` calls.
 func TestRestoredSteeringWakesWhenTheDaemonAttaches(t *testing.T) {
-	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	s.SteerKind("restored steer", events.SteeringKindNotification)
+	dir := t.TempDir()
+	crashed := newQueuePersistTestSession(t, dir)
+	id := crashed.ID()
+	serveSession(t, crashed)
+	if err := crashed.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := crashed.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "cm-steer-crashed",
+		Input:            []appwire.InputItem{{Type: "text", Text: "restored steer"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	// The process dies here. The steer is durably committed, no turn ever ran
+	// it, and the client never retries.
+	crashed.Close()
+
+	restored := restoreQueuePersistTestSession(t, dir, id)
+	defer restored.Close()
+	serveSession(t, restored)
+
+	if !restored.hasPendingSteering() {
+		t.Fatal("restore did not put the durably-committed steer back in the runtime steering queue; nothing downstream can deliver a steer the queue does not hold")
+	}
 
 	var mu sync.Mutex
 	notifies := 0
-	s.SetNotifyFunc(func() {
+	restored.SetNotifyFunc(func() {
 		mu.Lock()
 		notifies++
 		mu.Unlock()
@@ -37,7 +65,7 @@ func TestRestoredSteeringWakesWhenTheDaemonAttaches(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if notifies == 0 {
-		t.Fatal("a session with steering already queued did not wake when the daemon attached; a steer that survived a crash waits for unrelated input")
+		t.Fatal("a restored session with steering already queued did not wake when the daemon attached; a steer that survived a crash waits for unrelated input")
 	}
 }
 
