@@ -54,9 +54,17 @@ done
 summary="$frontend/coverage/coverage-summary.json"
 floor_for() { awk -v a="$1" '$1==a {print $2}' "$floors_file" 2>/dev/null; }
 
+suite_failed=false
 if ! $reuse; then
+	# Delete the previous run's report before measuring. vitest writes a fresh
+	# one on green and (via reportOnFailure) on red, so any summary present
+	# after the run is this run's; without this, a run that died before
+	# reporting — or reported somewhere else — was silently measured against
+	# the previous run's numbers.
+	rm -f "$summary"
 	if ! ( cd "$frontend" && npm run test:coverage ) >/dev/null 2>&1; then
 		echo "web coverage: SUITE FAILED (see: cd $frontend && npm run test:coverage)" >&2
+		suite_failed=true
 		# reportOnFailure keeps a usable report on a red suite, so fall through and
 		# still report the numbers rather than losing the whole measurement.
 		[ -f "$summary" ] || exit 1
@@ -121,12 +129,35 @@ while read -r area c t pct; do
 	fi
 done <"$rollup_file"
 
+# A red suite's numbers are reported above for the eyeball, but they are not a
+# pass and they are not a basis: floors it clears prove nothing about the
+# tests, and floors blessed from it would ratchet onto unverified numbers.
+if $suite_failed; then
+	if $check; then
+		echo "    the suite is red, so this measurement cannot pass --check" >&2
+		fail=1
+	fi
+	if $bless; then
+		echo "refusing to --bless floors from a red suite" >&2
+		exit 1
+	fi
+fi
+
 if $bless; then
 	tmp="$(mktemp "${TMPDIR:-/tmp}/serf-floors.XXXXXX")"
 	{
-		echo "# Frontend (vitest) per-area LINE coverage floors."
-		echo "# Managed by scripts/web-coverage-floor.sh --bless. Raised upward only;"
-		echo "# a downward reset (denominator change, not a regression) is a hand edit."
+		# Carry the file's existing comment header through instead of restating a
+		# fixed one, exactly like the two Go floor scripts: a downward reset is a
+		# hand edit whose comment records WHY the basis changed, and rewriting the
+		# header on every bless deleted that reason the next time anyone raised a
+		# floor.
+		if grep -q '^#' "$floors_file" 2>/dev/null; then
+			awk '/^#/{print; next} {exit}' "$floors_file"
+		else
+			echo "# Frontend (vitest) per-area LINE coverage floors."
+			echo "# Managed by scripts/web-coverage-floor.sh --bless. Raised upward only;"
+			echo "# a downward reset (denominator change, not a regression) is a hand edit."
+		fi
 		while read -r area c t pct; do
 			old="$(floor_for "$area")"; keep="$pct"
 			[ -n "$old" ] && keep="$(awk -v a="$old" -v b="$pct" 'BEGIN{print (a>b)?a:b}')"

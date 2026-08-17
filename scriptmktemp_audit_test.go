@@ -60,7 +60,6 @@ var mktempAllowedScripts = map[string]bool{
 	"deploy-hub-selftest.sh":           true,
 	"e2e-cover.sh":                     true,
 	"e2e-ratelimited-provider.sh":      true,
-	"e2e-webui-turn-controls.sh":       true,
 	"fuzz-bisect-selftest.sh":          true,
 	"fuzz-bisect.sh":                   true,
 	"fuzz-continuous-selftest.sh":      true,

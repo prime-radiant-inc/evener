@@ -268,13 +268,19 @@ case "$go_arch" in
 		;;
 esac
 
-# An explicit template, not `mktemp -t`: macOS's mktemp ignores TMPDIR for -t and
-# uses the Darwin per-user temp directory instead, which puts the scratch outside
-# the dev-tooling wave's per-suite isolation — and so outside the leftover check
-# that is supposed to catch exactly this.
+# An explicit path under TMPDIR, not `mktemp -t`: macOS's mktemp ignores TMPDIR
+# for -t and uses the Darwin per-user temp directory instead, which puts the
+# scratch outside the dev-tooling wave's per-suite isolation — and so outside
+# the leftover check that is supposed to catch exactly this.
 tmpbase=${TMPDIR:-/tmp}
-work="$(mktemp -d "${tmpbase%/}/serf-fuzzcov-global.XXXXXX")"
+# The name is chosen and the trap armed BEFORE the directory exists; see
+# test-coverage-floor.sh for the signal window this closes. $$ is unique among
+# live processes, so concurrent runs cannot collide. A failed mkdir means a
+# stale same-pid leftover this run does not own, so the trap is disarmed
+# before exiting rather than deleting it.
+work="${tmpbase%/}/serf-fuzzcov-global.$$"
 trap 'rm -rf "$work"' EXIT
+mkdir "$work" || { trap - EXIT; die "cannot create scratch directory $work"; }
 plan="$work/targets.tsv"
 groups="$work/groups.tsv"
 global_manifest="$work/global-profiles.tsv"

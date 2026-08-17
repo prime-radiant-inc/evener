@@ -121,6 +121,19 @@ printf 'agent 100.0\n' >"$floors"
 PATH="$fake_bin:$PATH" TMPDIR="$tmphome" FAKE_GO_FAIL_ALL=1 bash "$script" --modules "nosuch" >"$out" 2>&1
 assert_has "$out" "(no module)" "a missing module is reported"
 
+# A FLOORED module that cannot be measured is an unenforced ratchet, not a
+# skippable row: under --check it must fail loudly. Without this, renaming or
+# deleting a floored module quietly disabled its floor while check stayed green.
+printf 'nosuch 50.0\n' >"$floors"
+run --modules "nosuch" --check >"$out" 2>&1
+assert_eq "$?" "1" "check fails when a floored module cannot be measured"
+assert_has "$out" "UNMEASURED: nosuch" "the unmeasurable floored module is named"
+
+# ...while a module nobody floored keeps its advisory skip.
+: >"$floors"
+run --modules "nosuch" --check >"$out" 2>&1
+assert_eq "$?" "0" "an unmeasurable module without a floor stays a reported skip"
+
 # A union denominator larger than both tracks means the tagged and untagged
 # builds disagree about block boundaries; the percentage would be nonsense.
 PATH="$fake_bin:$PATH" TMPDIR="$tmphome" FAKE_GO_SHIFT_FUZZ_BLOCKS=1 bash "$script" --modules "agent" >"$out" 2>&1

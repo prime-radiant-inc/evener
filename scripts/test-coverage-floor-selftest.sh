@@ -56,6 +56,12 @@ done
 # signalled while its scratch directory exists.
 [ -n "${FAKE_GO_SLEEP:-}" ] && sleep "$FAKE_GO_SLEEP"
 [ -n "$prof" ] || { echo "fake go: no -coverprofile in: $*" >&2; exit 2; }
+# FAKE_GO_EMPTY_PROF simulates a run whose profile counts nothing — the shape
+# every module takes when stmt_counts itself breaks (e.g. no python3).
+if [ -n "${FAKE_GO_EMPTY_PROF:-}" ]; then
+	echo "mode: set" >"$prof"
+	exit 0
+fi
 case "$(basename "$PWD")" in
 	repo)  cov=1 ;;   # the "." module: 1 of 4 statements -> 25.0%
 	agent) cov=3 ;;   # 3 of 4 statements -> 75.0%
@@ -183,6 +189,27 @@ assert_has "$floors" ". 99.0" "bless keeps a higher existing floor"
 # A module directory with no go.mod is reported, not silently skipped.
 run --modules "nosuch" >"$out" 2>&1
 assert_has "$out" "(no module)" "a missing module is reported"
+
+# A FLOORED module that cannot be measured is an unenforced ratchet, not a
+# skippable row: under --check it must fail loudly. Without this, renaming or
+# deleting a floored module quietly disabled its floor while check stayed green.
+printf 'nosuch 50.0\n' >"$floors"
+run --modules "nosuch" --check >"$out" 2>&1
+assert_eq "$?" "1" "check fails when a floored module cannot be measured"
+assert_has "$out" "UNMEASURED: nosuch" "the unmeasurable floored module is named"
+
+# ...while a module nobody floored keeps its advisory skip.
+: >"$floors"
+run --modules "nosuch" --check >"$out" 2>&1
+assert_eq "$?" "0" "an unmeasurable module without a floor stays a reported skip"
+
+# The same enforcement covers the profile-counts-nothing shape, which is what
+# EVERY floored module degrades to when stmt_counts itself breaks.
+printf '. 25.0\nagent 75.0\n' >"$floors"
+FAKE_GO_EMPTY_PROF=1 run --check >"$out" 2>&1
+assert_eq "$?" "1" "check fails when a floored module's profile counts no statements"
+assert_has "$out" "no statements" "the empty measurement is reported"
+assert_has "$out" "UNMEASURED: agent" "the floored module with an empty measurement is named"
 
 help_out="$(bash "$script" --help 2>&1)"
 if echo "$help_out" | grep -q "^Usage:" && ! echo "$help_out" | grep -q "^set -uo pipefail"; then

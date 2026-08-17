@@ -17,14 +17,20 @@
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-# An explicit template, not `mktemp -t`: macOS's mktemp ignores TMPDIR for -t and
-# uses the Darwin per-user temp directory instead, which puts the scratch outside
-# the dev-tooling wave's per-suite isolation — and so outside the leftover check
-# the trap below is written to satisfy.
+# An explicit path under TMPDIR, not `mktemp -t`: macOS's mktemp ignores TMPDIR
+# for -t and uses the Darwin per-user temp directory instead, which puts the
+# scratch outside the dev-tooling wave's per-suite isolation — and so outside
+# the leftover check the trap below is written to satisfy.
 tmpbase=${TMPDIR:-/tmp}
-profiles_dir="$(mktemp -d "${tmpbase%/}/serf-fuzzcov.XXXXXX")"
-manifest="$profiles_dir/manifest.tsv"
+# The name is chosen and the trap armed BEFORE the directory exists; see
+# test-coverage-floor.sh for the signal window this closes. $$ is unique among
+# live processes, so concurrent runs cannot collide. A failed mkdir means a
+# stale same-pid leftover this run does not own, so the trap is disarmed
+# before exiting rather than deleting it.
+profiles_dir="${tmpbase%/}/serf-fuzzcov.$$"
 trap 'rm -rf "$profiles_dir"' EXIT
+mkdir "$profiles_dir" || { trap - EXIT; echo "fuzz-coverage: cannot create scratch directory $profiles_dir" >&2; exit 1; }
+manifest="$profiles_dir/manifest.tsv"
 
 fail=0
 while IFS=: read -r tag module pkg name cover focus; do
