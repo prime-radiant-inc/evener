@@ -900,3 +900,49 @@ func assertDelegateControllerPathAbsent(t *testing.T, path string) {
 		t.Fatalf("path %s exists or has unexpected error: %v", path, err)
 	}
 }
+
+// TestDelegateControllerCommittedStartFailureAppendFailureIsNotAStopWin pins the
+// distinction FailCommittedStart exists to make. A pre-attach stop race has two
+// outcomes, and they are not interchangeable: the stop WON (the stopped-finish
+// landed durably, the generation is closed, and the caller may dispose the
+// unadopted child), or the stopped-finish APPEND FAILED (the generation is still
+// durably open, recovery is fenced, and the child must be retained).
+//
+// Both exits of finishStoppedStartLocked are errDelegateTargetBusy-shaped -- the
+// failure path returns errors.Join(errDelegateTargetBusy, appendErr) -- so
+// classifying them with errors.Is matches the joined error too and reports a
+// failed durable write as a won race.
+func TestDelegateControllerCommittedStartFailureAppendFailureIsNotAStopWin(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+	_, cancelPlan, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	executeDelegateCancelPlan(cancelPlan)
+
+	// The generation is durably open and the store now refuses every write, so
+	// the stopped-finish append cannot land. A closed store is the real failure
+	// this path must survive, not an injected one.
+	if err := c.store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	_, claimedForClose, failErr := c.FailCommittedStart(
+		started.lease,
+		delegatePermanentStartFailure(errors.New("construction failed"), "construction_failed"),
+		"construction_failed",
+		nil,
+	)
+	if got := committedStartFailureDisposition(failErr); got != delegateCommittedStartFailureAppendFailed {
+		t.Fatalf("disposition = %d, want %d (append failed); err = %v",
+			got, delegateCommittedStartFailureAppendFailed, failErr)
+	}
+	if claimedForClose {
+		t.Fatal("a failed durable append claimed the runtime for close")
+	}
+	if live := c.live["dlg_target"]; live == nil || !live.recoveryRequired {
+		t.Fatalf("live state = %#v, want recoveryRequired after a failed append", live)
+	}
+}

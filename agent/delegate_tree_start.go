@@ -319,7 +319,7 @@ func (c *delegateTreeController) CompleteStartInput(claim delegateInputClaim, co
 	delete(c.inputClaims, claim.token)
 	live.binding.inputClaim = 0
 	if aggregate.Phase == delegatestore.PhaseStopping {
-		plans, generationCancel, finishErr := c.finishStoppedStartLocked(lease, live)
+		plans, generationCancel, _, finishErr := c.finishStoppedStartLocked(lease, live)
 		cancel = generationCancel
 		return plans, finishErr
 	}
@@ -363,12 +363,8 @@ func (c *delegateTreeController) FailCommittedStart(lease delegateLease, failure
 			ownerID, owner, ownerErr := c.runtimeOwnerLocked(runtimeForClose)
 			claimable = ownerErr == nil && ownerID == lease.delegateID && owner == live && live.runtime == runtimeForClose && live.binding.runtime == runtimeForClose
 		}
-		plans, generationCancel, finishErr := c.finishStoppedStartLocked(lease, live)
+		plans, generationCancel, disposition, finishErr := c.finishStoppedStartLocked(lease, live)
 		cancel = generationCancel
-		disposition := delegateCommittedStartFailureStopWon
-		if !errors.Is(finishErr, errDelegateTargetBusy) {
-			disposition = delegateCommittedStartFailureAppendFailed
-		}
 		claimedForClose := false
 		if disposition == delegateCommittedStartFailureStopWon && claimable {
 			settled := c.live[lease.delegateID]
@@ -416,7 +412,7 @@ func (c *delegateTreeController) FailCommittedRestart(lease delegateLease, failu
 		return delegateMutationPlans{}, err
 	}
 	if aggregate.Phase == delegatestore.PhaseStopping {
-		plans, generationCancel, finishErr := c.finishStoppedStartLocked(lease, live)
+		plans, generationCancel, _, finishErr := c.finishStoppedStartLocked(lease, live)
 		cancel = generationCancel
 		return plans, finishErr
 	}
@@ -433,7 +429,13 @@ func (c *delegateTreeController) FailCommittedRestart(lease delegateLease, failu
 	return plans, nil
 }
 
-func (c *delegateTreeController) finishStoppedStartLocked(lease delegateLease, live *delegateLiveState) (delegateMutationPlans, context.CancelFunc, error) {
+// finishStoppedStartLocked closes the generation a covering stop is ending, and
+// reports which of its two outcomes happened. Both return
+// errDelegateTargetBusy -- the caller's contract for "this lease is no longer
+// yours" -- so the disposition is returned alongside rather than re-derived from
+// the error: the failure path joins the append error onto that sentinel, and
+// errors.Is walks a join, so no inspection of the error can tell them apart.
+func (c *delegateTreeController) finishStoppedStartLocked(lease delegateLease, live *delegateLiveState) (delegateMutationPlans, context.CancelFunc, delegateCommittedStartFailureDisposition, error) {
 	packet := delegateStoppedTerminalPacket()
 	deliveryID := delegateDeliveryID(lease.delegateID, lease.generation)
 	finish := delegateRunFinishedEvent(
@@ -448,10 +450,10 @@ func (c *delegateTreeController) finishStoppedStartLocked(lease delegateLease, l
 	if _, finishErr := c.appendLocked(finish); finishErr != nil {
 		live.recoveryRequired = true
 		plans := delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}
-		return plans, nil, errors.Join(errDelegateTargetBusy, finishErr)
+		return plans, nil, delegateCommittedStartFailureAppendFailed, errors.Join(errDelegateTargetBusy, finishErr)
 	}
 	plans, cancel := c.generationFinishedPlansLocked(lease, deliveryID)
-	return plans, cancel, errDelegateTargetBusy
+	return plans, cancel, delegateCommittedStartFailureStopWon, errDelegateTargetBusy
 }
 
 func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID string) (*delegateStartReservation, error) {
