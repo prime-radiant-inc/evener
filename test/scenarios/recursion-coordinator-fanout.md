@@ -95,18 +95,21 @@ default).**"); this card only runs with the raised config below.
 3. Turn 2 — visibility while the tree is live (new user prompt, sent
    while the workers' 8s sleeps are still running):
 
-   > Call job_list with `include_descendants` true. Report EVERY row's
-   > id, type, status, and depth, exactly as the tool printed them.
+   > Call job_list with `include_descendants` true. Report EVERY row
+   > exactly as the tool printed it, verbatim and unedited — do not
+   > normalise, complete or reorder the fields.
    > Then end your turn.
 
-   Ask only for what the tool prints. `job_list`'s model-facing output is
+   Ask for the line, not for fields. `job_list`'s model-facing output is
    `formatJobList` (`agent/session_tools_jobs.go#formatJobList`): one line
-   per row of `id  type  status`, plus `depth=N` when non-zero, a label,
-   and a `[started · reason · exit · bytes]` tail. `owner_session_id` and
-   `parent_delegate_id` exist only on the structured state
-   (`agent/session_tools_jobs.go#jobListEntry`), which the model never
-   sees — asking for them invites the runner to invent them, and the
-   ownership assertion below reads them from the durable journal instead.
+   per row of `id  type  status`, plus `depth=N` ONLY when non-zero, a
+   label, and a `[started · reason · exit · bytes]` tail. Naming fields in
+   the prompt invites the runner to supply the ones the tool omits:
+   `owner_session_id` and `parent_delegate_id` live only on the structured
+   state (`agent/session_tools_jobs.go#jobListEntry`), which the model never
+   sees, and a depth-0 row prints no depth token at all. Asking for the raw
+   line makes an absent token observable as an absence instead of something
+   the runner has to invent or explain away.
 4. Turn 3 — wait for the COORDINATOR's own terminal, then inspect what
    the ROOT was actually told (new user prompt):
 
@@ -132,8 +135,8 @@ default).**"); this card only runs with the raised config below.
    >    Capture its delegate_id (COORD2).
    > 2. Run the foreground shell command `sleep 12` so COORDINATOR-2
    >    has spawned its workers.
-   > 3. Call job_list `include_descendants` true; report every row's
-   >    id, type, status, depth — exactly as the tool printed them.
+   > 3. Call job_list `include_descendants` true; report every row
+   >    verbatim, exactly as the tool printed it.
    > 4. Call job_stop with COORD2 and max_wait_ms 8000. Report the full
    >    result JSON.
    > 5. Call job_list `include_descendants` true again; report the same
@@ -183,12 +186,13 @@ default).**"); this card only runs with the raised config below.
   From the reported listing: the `include_descendants=true` walk
   surfaces the live tree at read time ("Nested jobs" "walks the live
   descendant tree at read time instead of one hop") — the root's OWN
-  coordinator delegate at `depth` 0, and the three worker delegates at
-  `depth` 1, each appearing EXACTLY ONCE ("Nested jobs" "Dedupe rule:
-  the owner session's durable record is authoritative for a forwarded
-  job"). Falsification: a worker missing entirely (the live walk did not
-  recurse into the live child), a worker at `depth` 0 (the walk
-  mis-attributed the hop), or a worker listed twice (a forwarded copy
+  coordinator delegate carrying NO depth token (depth 0 is not printed),
+  and the three worker delegates each carrying `depth=1`, each appearing
+  EXACTLY ONCE ("Nested jobs" "Dedupe rule: the owner session's durable
+  record is authoritative for a forwarded job"). Falsification: a worker
+  missing entirely (the live walk did not recurse into the live child), a
+  worker line with no depth token (the walk mis-attributed the hop and
+  scored it as the root's own), or a worker listed twice (a forwarded copy
   was not suppressed in favour of the owner record).
 
   From the durable journals read in step 6 — NOT from the model's
