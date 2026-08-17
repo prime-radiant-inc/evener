@@ -33,10 +33,10 @@ terminal notifications are owner-scoped.**");
 which surfaces the live tree with per-row `depth`
 ("Nested jobs" "walks the live descendant tree at read time");
 (f) `job_stop` on the coordinator's delegate CASCADES into
-the subtree — the workers actually stop as `cancelled`/
-`stopped_by_parent` ("`job_stop`" "cascades into the subtree";
-"Nested jobs" "each cascade-stopped job finalizes as
-`cancelled/stopped_by_parent`"), not orphaned.
+the subtree — the workers actually stop, leaving the reusable delegate
+resource `idle` with a last outcome of `stopped`/`stopped_by_parent`
+("`job_stop`" "always cascades into the stable delegate subtree"), not
+orphaned.
 
 This is the live-interface counterpart to the unit-level depth-N trees
 in `agent/job_delegate_test.go` / the §9 testing list. Recursion is
@@ -139,9 +139,14 @@ default).**"); this card only runs with the raised config below.
    >    verbatim, exactly as the tool printed it.
    > 4. Call job_stop with COORD2 and max_wait_ms 8000. Report the full
    >    result JSON.
-   > 5. Call job_list `include_descendants` true again; report the same
-   >    fields.
-   > 6. End your turn.
+   > 5. Call job_list `include_descendants` true again; report every row
+   >    verbatim, exactly as the tool printed it.
+   > 6. Call job_status once for EACH of COORDINATOR-2's two worker
+   >    delegate_ids (from its COORD2_WORKERS message) and report each
+   >    full JSON, including `last_outcome`. This is the only place the
+   >    stopped RUN's outcome is observable — the listing shows the
+   >    reusable resource's lifecycle instead.
+   > 7. End your turn.
 6. Read the durable logs and the transcripts:
    - root: `find $HOME/.local/state/serf/projects -path "*sessions/$SID/delegates.jsonl"`
      for delegate lifecycle — COORD/COORD2 and every worker live in
@@ -150,6 +155,17 @@ default).**"); this card only runs with the raised config below.
      session inherits its root's delegate controller instead of
      opening its own store). `jobs.jsonl` under `$SID` or a descendant
      session dir is shell-job evidence only.
+
+     **The journal and `job_status` can disagree about a stopped run's
+     outcome, and both are right.** `delegate_run_finished` records the
+     outcome as SUBMITTED (`agent/internal/delegatestore/event.go#RunFinished.Outcome`),
+     so a worker whose run died of context cancellation is written to disk
+     as `cancelled`. The stopping-phase override to
+     `stopped`/`stopped_by_parent` happens in the in-memory fold
+     (`agent/internal/delegatestore/fold.go#applyRunFinished`) and reaches
+     `LatestOutcome`, which is what `job_status` projects. Assert the
+     stopped pair against `job_status`; read the journal for lineage and
+     ordering, and do not score an on-disk `cancelled` as a contradiction.
    - the coordinator's transcript via its `transcript_ref` (from the
      turn-1 delegate result / the turn-3 `job_status` result).
 
@@ -233,50 +249,109 @@ default).**"); this card only runs with the raised config below.
   `<delegate-notification>` frames rendered on the ROOT's rail contains
   the COORDINATOR's terminal (COORD finishing — that is the root's OWN
   direct delegate ending: "Nested jobs" "The parent is told only about
-  its OWN jobs, including its direct delegates' terminals") and contains NONE of
-  the worker delegate_ids. Concretely: for every worker delegate_id the
-  coordinator reported in `COORDINATOR_SPAWNED`, that id does NOT appear
-  in any notification frame on the root's rail. Falsification (this is
-  the regression this card exists to catch): a worker's delegate_id
-  appears as the SUBJECT of a `<delegate-notification>` frame on the
-  root's rail (the frame's `delegate_id=` attribute), or a worker's
-  completion text appears INSIDE such a frame — the root was
+  its OWN jobs, including its direct delegates' terminals").
+
+  **The assertion is on the frame SUBJECT, and only the subject.** For
+  every worker delegate_id the coordinator reported in
+  `COORDINATOR_SPAWNED`, no root-rail frame carries that id in its
+  `delegate_id=` attribute. Falsification (this is the regression this
+  card exists to catch): a worker's delegate_id IS the `delegate_id=` of
+  a `<delegate-notification>` frame on the root's rail — the root was
   interrupted about a delegate a DESCENDANT created, which the
-  owner-scoped rule ("Nested jobs" owner-scoped
-  bullet; "Rollout (live vs. dark)" quotes Jesse's ruling, "an agent is
-  never interrupted about a *subagent's* children")
-  forbids. Match on the frame SUBJECT, not a bare substring search: a
-  worker delegate_id and its `WORKER_x` payload legitimately appear in
-  the COORDINATOR's transcript and in the root's `delegates.jsonl` —
-  that is visibility/drive substrate, not a root-rail
-  notification. (The root may still SEE the workers on demand via
-  `include_descendants` — visibility ≠ a notification; do not count a
-  `job_list` row as a notification.)
+  owner-scoped rule ("Nested jobs" owner-scoped bullet; "Rollout (live vs.
+  dark)" quotes Jesse's ruling, "an agent is never interrupted about a
+  *subagent's* children") forbids.
+
+  Do NOT run this as a substring search for a worker id across the root's
+  rail, and do not fail the run on worker text appearing INSIDE a
+  COORD-subject frame. Step 2 instructs the coordinator to `communicate`
+  exactly `COORDINATOR_SPAWNED <each worker delegate_id>`, and a
+  delegate's communicate output becomes its terminal packet's `message`
+  (`agent/subagents.go#stableDelegateFinishFromRun`), which is marshalled
+  whole into the frame body
+  (`agent/delegate_delivery.go#delegateNotificationContent` renders
+  `<delegate-notification delegate_id="COORD">{...packet...}</delegate-notification>`).
+  Every worker id is therefore GUARANTEED to appear inside COORD's own
+  frame, by this card's own instruction. That is a direct delegate
+  reporting to its owner — correct owner scoping, and the drive substrate
+  the card asks for in the first place. A blanket-absence check would
+  fail every healthy run.
+
+  The same goes for the rest of the substrate: a worker delegate_id and
+  its `WORKER_x` payload legitimately appear in the COORDINATOR's
+  transcript and in the root's `delegates.jsonl`. (The root may also SEE
+  the workers on demand via `include_descendants` — visibility ≠ a
+  notification; do not count a `job_list` row as a notification.)
 - **Cascade stop (step 5).** Before the stop (step 5.3), the
-  `include_descendants` listing shows COORD2 (`depth` 0,
-  `owner_session_id` = `$SID`) and its TWO workers `running` at
-  `depth` 1. The step-5.4 `job_stop(COORD2, max_wait_ms 8000)` HALTS the
-  live subtree: the step-5.5 re-list shows BOTH workers terminal —
-  `cancelled` with reason `stopped_by_parent` (the cascade reached into
-  the subtree without a flag — "Nested jobs" "`job_stop` on a delegate
-  job **cascades into its subtree** (no flag needed)"), NOT still
-  `running`. This is
-  the DECISIVE assertion — a `job_stop` on the coordinator MUST stop its
-  running workers. COORD2's OWN record may read `completed` rather than
-  `cancelled`: a fire-and-return coordinator finishes its own turn and
-  goes terminal while its workers keep running, and the cascade targets
-  the live subtree, NOT the coordinator's already-terminal own record —
-  so do NOT require COORD2's own status to be `cancelled`. The cascade
-  fires regardless of the coordinator's own terminal status (the
-  stop-cascade has no terminal gate; `subtreeMembersLocked`,
-  `agent/delegate_tree_stop.go#subtreeMembersLocked`): a fire-and-return coordinator whose own job is
-  already `completed` STILL has its live workers stopped. Falsification
-  (the cascade hole this guards): either worker is still `running` after
-  the stop confirmed — `job_stop` on the coordinator failed to halt its
-  work. Accept `stopped`/`runtime_lost` for a worker ONLY if stopping the
-  coordinator tore down its owner runtime before the worker stop
-  confirmed (record what you see); a worker left silently `running` is
-  the failure.
+  `include_descendants` listing shows COORD2 with no depth token and its
+  TWO workers `running` at `depth=1`. The step-5.4
+  `job_stop(COORD2, max_wait_ms 8000)` HALTS the live subtree: the
+  step-5.5 re-list shows BOTH workers no longer `running` (the cascade
+  reached into the subtree without a flag — "`job_stop`"
+  "`job_stop(target=dlg_...)` always cascades into the stable delegate
+  subtree" and "`include_children` has no effect"). This is the DECISIVE
+  assertion — a `job_stop` on the coordinator MUST stop its running
+  workers.
+
+  **Read the stopped state in the two places that carry it, not from the
+  status column.** A delegate is a reusable resource, and its `status` is
+  a two-valued lifecycle — `running` or `idle`, nothing else
+  (`agent/delegate_tree_controller.go#captureDelegateSnapshot`, which
+  maps both the idle and the closed phase to `idle`;
+  `agent/session_tools_jobs.go#projectStableDelegateStatus` is what puts
+  that string in the listing's status column). So a stopped worker reads
+  `idle` there, and NO delegate row ever reads `cancelled`, `stopped` or
+  `completed` — those words belong to the latest RUN's outcome:
+
+  - in the step-5.5 listing, the run's reason rides the bracket tail
+    (`formatJobList` prints `[started · reason · exit · bytes]` from
+    `jobListEntry.Reason`, which is copied from the delegate's last
+    outcome): expect `stopped_by_parent` there;
+  - the outcome STATUS needs `job_status` with the worker's
+    `delegate_id`, whose `last_outcome` carries
+    `{"status":"stopped","reason":"stopped_by_parent"}`. `stopped`, not
+    `cancelled`: the fold forces both fields for any finish that lands
+    while the delegate is in the stopping phase
+    (`agent/internal/delegatestore/fold.go#applyRunFinished`;
+    `agent/delegate_tree_finish.go#delegateTreeController.FinishGeneration`),
+    so no other pair is reachable through a parent stop.
+
+  The step-5.4 stop RESULT is a third shape again and is the one place
+  the word cancel appears: `status` `idle`, `reason` `stopped_by_parent`,
+  and `outcome` `cancelled_by_request` — meaning the request cancelled
+  live runs in the subtree, versus `already_idle` when it found none
+  (`agent/session_tools_jobs.go#stableDelegateStopResult`). Expect
+  `previous_status` `idle`, NOT `running`: it is computed from the
+  TARGET's own open run, while the outcome is computed from the whole
+  subtree's (`agent/delegate_tree_stop.go#classifyDelegateStopAdmission`).
+  COORD2 is fire-and-return — step 5.1 has it communicate and end its
+  turn, and step 5.2 sleeps 12s — so its own run is closed well before
+  5.4 even though its workers are still live. That asymmetry is the
+  point: `already_idle` would mean the cascade found nothing to stop.
+  (Contrast `subagent-cancel-runaway.md`, where the same triple reads
+  `previous_status` `running` because that delegate is stopped mid-sleep.)
+  If the stop
+  does not confirm inside `max_wait_ms` the result reads `status`
+  `running` / `reason` `stop_pending` / `outcome` `stop_requested`
+  instead; that is an unfinished stop, so poll before judging rather than
+  recording it as the cascade failing.
+
+  COORD2's own last outcome may read `completed` rather than `stopped`: a
+  fire-and-return coordinator finishes its own turn and goes terminal
+  while its workers keep running, and the cascade targets the live
+  subtree, NOT the coordinator's already-terminal own record — so do NOT
+  require COORD2's own outcome to be a stop. The cascade fires regardless
+  of the coordinator's own terminal status (the stop-cascade has no
+  terminal gate, `agent/delegate_tree_stop.go#subtreeMembersLocked`): a
+  fire-and-return coordinator that has already reported STILL has its
+  live workers stopped.
+
+  Falsification (the cascade hole this guards): either worker still reads
+  `running` in the step-5.5 listing after the stop confirmed — `job_stop`
+  on the coordinator failed to halt its work. A worker that went `idle`
+  with a `runtime_lost` reason instead is the owner-runtime-teardown
+  variant: record what you see, it is not the hole. A worker left
+  silently `running` is the failure.
 - **Durable substrate.** Delegate generations never create job
   records, so there is no forwarded `job_started`/`job_finished` copy
   for a delegate at all ("Durable job records" "Delegate generations
@@ -312,15 +387,20 @@ default).**"); this card only runs with the raised config below.
   ALSO rejected (1 is not strictly less than 1) — the card cannot arm.
   The `(2)` in the step-2.1 error is the proof the config landed; treat
   `(1)` as "config didn't reach the session," not a contract bug.
-- **Owner-scoped is asserted by ABSENCE on the root's rail.** The
-  falsifiable form is "no worker delegate_id appears in any root-rail
-  notification frame." Capture the root's rendered notifications
-  explicitly (step 4 asks the model to echo them; cross-check against
-  the root transcript's notification entries) — a vacuous "I didn't
-  see any" is not enough. The worker ids to exclude are the ones the
-  coordinator reported in `COORDINATOR_SPAWNED`; if the coordinator
-  failed to report them, re-run rather than asserting absence against
-  an unknown set.
+- **Owner-scoped is asserted by ABSENCE of a SUBJECT on the root's
+  rail.** The falsifiable form is "no root-rail notification frame has a
+  worker delegate_id as its `delegate_id=` attribute." Parse the
+  attribute; do not grep the rail for the id. The looser form — "no
+  worker delegate_id appears in any root-rail frame" — reads stronger and
+  is worth less than nothing here: the coordinator is told to
+  `communicate` those very ids, so they ride inside its own terminal
+  frame on every healthy run, and a card that fails a healthy run gets
+  its guard deleted. Capture the root's rendered notifications explicitly
+  (step 4 asks the model to echo them; cross-check against the root
+  transcript's notification entries) — a vacuous "I didn't see any" is
+  not enough. The worker ids to exclude are the ones the coordinator
+  reported in `COORDINATOR_SPAWNED`; if the coordinator failed to report
+  them, re-run rather than asserting absence against an unknown set.
 - **Drive-down is parent-cadence (design §3 / `docs/architecture.md`
   "Drive-down").** The coordinator's notification turn fires at the
   ROOT's loop boundary (the root drives its direct child), so the
