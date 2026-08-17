@@ -284,10 +284,6 @@ type Session struct {
 	// recent processing boundary. Subagent follow-up turns use it to preserve
 	// watch keys accumulated during the just-finished run.
 	completedInputProvenance provenance.Causal
-	// activeEntryKind names the entry currently being processed. It lets tools
-	// distinguish ordinary user turns from watch-delivery callbacks without
-	// duplicating provenance state.
-	activeEntryKind EntryKind
 
 	// inputQueue holds messages submitted via Enqueue while a turn is in
 	// flight. Kata 111a: text typed during a running turn returns to the
@@ -357,10 +353,6 @@ type Session struct {
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
-	// watchCallbackDelivered is a per-processOneInput latch. A watch-origin turn
-	// may callback via delegate_send(to=caller) or terminal communicate; once one
-	// route succeeds, the other must not duplicate the parent steer.
-	watchCallbackDelivered bool
 
 	// askPending is the per-turn pending set of questions posted by ask_user
 	// calls this turn (spec §5.1): its length lets a round-boundary check tell
@@ -586,9 +578,21 @@ type Session struct {
 	// rootAttentionWakeIDs is a process-local wake cache keyed by unresolved
 	// attention IDs from the root transcript. The transcript fold remains the
 	// sole durable authority; restart rebuilds this map from that fold.
-	rootAttentionWakeIDs      map[string]struct{}
-	rootAttentionWake         bool
-	rootAttentionRetry        notificationRetry
+	rootAttentionWakeIDs map[string]struct{}
+	rootAttentionWake    bool
+	rootAttentionRetry   notificationRetry
+
+	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
+	// runs while the session goroutine is mid-stand-down, so it must not queue
+	// behind s.mu -- and notify() takes s.mu, which this must never be held
+	// across.
+	turnNameRetryMu sync.Mutex
+	// turnNameRetry paces the re-wake for a notification that stood down
+	// unnamed. See scheduleRunningTurnNameRetry (session_active_turn.go).
+	turnNameRetry notificationRetry
+	// turnNameStoreUnhealthy latches the client-mutation-store failure warning
+	// to once per unhealthy episode. See warnStoreUnhealthyOnce.
+	turnNameStoreUnhealthy    bool
 	delegateAttentionArmIDs   map[string]struct{}
 	delegateAttentionArmRetry notificationRetry
 	stableAttentionRetry      notificationRetry
@@ -620,6 +624,16 @@ type notificationRetry struct {
 const (
 	jobNotificationRetryInitialDelay = 250 * time.Millisecond
 	jobNotificationRetryMaxDelay     = 5 * time.Second
+	// turnNameStoreRetryMaxDelay is the ceiling for the stand-down's re-wake
+	// when the client mutation STORE is what refused, rather than a name
+	// somebody holds. The two resolve on different timescales: a held name comes
+	// back when the turn holding it ends, so seconds is right, while an
+	// unwritable state dir is fixed by a human and may never be. Every re-wake
+	// costs a failed MkdirAll+TempFile+Write+Sync+Rename cycle, so polling a
+	// broken mount at the seconds ceiling is unbounded churn for an answer that
+	// is not coming. Backing off further bounds that cost without reintroducing
+	// the stranded wake that giving up entirely would (kata ajg5).
+	turnNameStoreRetryMaxDelay = 5 * time.Minute
 )
 
 func (s *Session) enqueueJobNotification(n jobNotification) {

@@ -2,12 +2,14 @@
   "name": "491q-dockoverlay-escape",
   "description": "session dock: a long tab title's overflow popover must stay inside the dock panel, not bleed into the middle 'Start an agent' panel (kata 491q)",
   "cssFiles": [
+    "styles/global.css",
     "styles/tokens.css",
     "shell/dockview-theme.css"
   ],
   "mutation": {
     "declaration": "shell/dockview-theme.css: .dv-tabs-overflow-container { max-width: 380px }",
-    "verified": "2026-08-07",
-    "expect": "fail"
+    "verified": "2026-08-16",
+    "expect": "fail",
+    "note": "Re-verified under styles/global.css (kata e4sh): still fails, popover overlaps the middle panel by 211.8px."
   }
 }

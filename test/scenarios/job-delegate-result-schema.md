@@ -3,15 +3,28 @@
 **What this covers**: `delegate.result_schema` end to end
 (`docs/job-control.md` § `delegate` `result_schema` rule and
 § "Reading job output"). (a) A schema-backed delegate that complies
-returns `structured_result` with `structured_result_valid: true` —
-inline on a foreground delegate and again on a later
-`read_transcript(transcript_ref="job:<job_id>")`; (b) a deliberately
-schema-violating result is reported honestly: no structured result,
-and a machine-readable `structured_result_reason` in its place; (c) a
-resumed turn in the same delegate conversation inherits the ORIGINAL
-`result_schema` although `delegate_send` has no schema argument.
-Delegate `status="completed"` never asserts task success — the
-structured fields are how the parent judges outcome.
+reports `structured_result` with `structured_result_valid: true` — in
+the terminal notification frame the parent is woken with, and durably in
+the root's `delegates.jsonl`; (b) a deliberately schema-violating result
+is reported honestly: no structured result, and a machine-readable
+`structured_result_reason` in its place; (c) a follow-up turn in the same
+delegate conversation inherits the ORIGINAL `result_schema` although
+`delegate_send` has no schema argument. Delegate `status="completed"`
+never asserts task success — the structured fields are how the parent
+judges outcome.
+
+**Identity and transport.** Stable `delegate` creation is asynchronous
+and returns `delegate_id` / `child_session_id` / `transcript_ref` and no
+`job_id` at all (`agent/session_tools.go#stableDelegateCreateResult`);
+passing `max_wait_ms` is rejected outright with
+`invalid_request: delegate creation does not accept max_wait_ms`
+(`agent/session_tools.go#stableDelegateCreateTool`), so there is no
+foreground delegate creation to read a result from. Delegate generations
+create no job records ("Durable job records" "Delegate generations never
+create job records."), so `read_transcript(transcript_ref="job:<id>")`
+addresses nothing here and `jobs.jsonl` holds no evidence for this card.
+Every observation below comes from the notification frame, the child's
+own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
 
 ## Pre-state
 
@@ -26,55 +39,79 @@ structured fields are how the parent judges outcome.
 
 1. Spawn a session via `/api/spawn` with `working_dir=$tmpdir`.
    Capture `SID`.
-2. Turn 1 — arm (a), compliant foreground delegate:
+2. Turn 1 — arm (a), compliant delegate:
 
-   > Call delegate with max_wait_ms 120000,
-   > result_schema
+   > Call delegate with NO max_wait_ms, result_schema
    > `{"type":"object","properties":{"verdict":{"type":"string"},"count":{"type":"integer"}},"required":["verdict","count"]}`,
    > and this task: "Report a structured result with verdict ok and
-   > count 7, with a one-line summary message." Report the full result
-   > JSON verbatim. Then call read_transcript with transcript_ref
-   > "job:<the returned job_id>" and report that full JSON verbatim too.
-3. Turn 2 — arm (b), deliberate violation (new user prompt):
+   > count 7, with a one-line summary message." Report the full creation
+   > result JSON verbatim — note its delegate_id (call it DLG1) and its
+   > transcript_ref. Then END YOUR TURN without waiting.
+3. Turn 2 — arm (a) observation, after DLG1's terminal notification has
+   rendered (new user prompt):
 
-   > Call delegate (background default) with the SAME result_schema
-   > and this exact task: "This is a schema-violation test. In your
-   > final structured output, set verdict to the string bad and set
-   > count to the STRING value banana — a string, deliberately NOT a
-   > number. Do not correct the type; the test needs the invalid
-   > payload." Report the job_id, then end your turn; when its
-   > completion notification arrives, call read_transcript with
-   > transcript_ref "job:<that job_id>" and report the full JSON verbatim.
-4. Turn 3 — arm (c), schema inheritance on explicit follow-up (new user prompt):
+   > Report verbatim the full text of every `<delegate-notification
+   > delegate_id="...">` frame that has rendered on your rail so far,
+   > including the JSON inside each one. Then call read_transcript with
+   > the transcript_ref DLG1's creation returned, and report what the
+   > child actually sent. Then end your turn.
+4. Turn 3 — arm (b), deliberate violation (new user prompt):
 
-   > Call delegate_send with `to` set to the turn-1 delegate_id,
-   > and this message: "Follow-up: report a
-   > structured result with verdict resumed and count 21." Report the
-   > full result JSON verbatim, then end your turn; when the started
-   > job's completion notification arrives, call read_transcript with
-   > transcript_ref "job:<the returned current_job_id>" and report the
-   > full JSON verbatim.
-5. Read the transcript and the durable log
-   (`find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`).
+   > Call delegate with NO max_wait_ms, the SAME result_schema, and this
+   > exact task: "This is a schema-violation test. In your final
+   > structured output, set verdict to the string bad and set count to
+   > the STRING value banana — a string, deliberately NOT a number. Do
+   > not correct the type; the test needs the invalid payload." Report
+   > the delegate_id (call it DLG2) and its transcript_ref, then end
+   > your turn; when its terminal notification arrives, report that
+   > frame's full text including the JSON inside it.
+5. Turn 4 — arm (c), schema inheritance on explicit follow-up (new user
+   prompt):
+
+   > Call delegate_send with `to` set to DLG1, max_wait_ms 60000, and
+   > this message: "Follow-up: report a structured result with verdict
+   > resumed and count 21." Report the full result verbatim — both the
+   > text the tool printed and, if your client exposes it, the
+   > structured tool state. Then end your turn.
+6. Read the child transcripts and the durable delegate journal — NOT
+   `jobs.jsonl`, which carries no delegate generation:
+   `find ~/.local/state/serf/projects -path "*sessions/$SID/delegates.jsonl"`.
 
 ## Expected
 
-- Arm (a) inline: the delegate result has `status` `"completed"`,
-  `structured_result` equal to `{"verdict":"ok","count":7}`, and
-  `structured_result_valid` `true`. The follow-up `job:` read exposes
-  the SAME three facts in its `content` — `- status: completed` and a
-  trailing `structured_result (valid=true):
-  {"verdict":"ok","count":7}` line — plus the prose report in the
-  fenced block. Falsification: the `structured_result` line absent, or
-  carrying the default communicate envelope keys (`message`/`data`/
-  `artifacts`) instead of the schema's own fields.
-- Arm (b): the read of the violating job shows `- status: completed`
-  (the delegate TURN ended normally) while the structured fields
-  report the violation: NO `structured_result (valid=...)` line at all,
-  and a `structured_result_reason: schema_validation_failed` line in
-  its place. The prose report is still readable in the fenced block.
-  `jobs.jsonl`'s `job_finished` for that job carries the durable
-  valid/reason pair (durable, not recomputed per read).
+- Arm (a): DLG1's terminal frame on the parent's rail is
+  `<delegate-notification delegate_id="<DLG1>">{...}</delegate-notification>`
+  — the tag carries the DELEGATE id and no job identity, and its body is
+  the terminal packet marshalled whole
+  (`agent/delegate_delivery.go#delegateNotificationContent`). That JSON
+  has `"structured_result":{"verdict":"ok","count":7}` and
+  `"structured_result_valid":true`, and no `structured_result_reason`.
+  The root's `delegates.jsonl` carries the same pair durably — on the
+  `delegate_terminal_prepared` event for DLG1's generation, under
+  `terminal_prepared.packet`. **Not** on `delegate_run_finished`: a
+  normally-reported delegate finishes through the settling branch, which
+  passes a nil packet, so its `run_finished.packet` is absent entirely
+  (`agent/delegate_tree_finish.go#delegateTreeController.FinishGeneration`
+  — only the stopping branch attaches one, and that packet is the
+  stopped-by-parent boilerplate with no structured result). Match on the
+  prepared event, or accept either event within the generation; asserting
+  the pair on `run_finished` alone fails a healthy run. The child's
+  own transcript, read through the `transcript_ref` creation returned,
+  shows the `communicate` call it made. Falsification: `structured_result`
+  absent from the frame, or carrying the default communicate envelope
+  keys (`message`/`data`/`artifacts`) instead of the schema's own fields.
+- Arm (b): DLG2's frame shows the delegate TURN ended normally — the
+  packet's `"kind"` is `"reported"`, not `"terminal_error"`, and the
+  delegate's outcome is `completed`
+  (`agent/internal/delegatestore/record.go#PacketKind` has exactly those
+  two values) — while the structured fields report the violation: NO
+  `"structured_result"` key at all, `"structured_result_valid":false`,
+  and `"structured_result_reason":"schema_validation_failed"` in its
+  place (`agent/subagents.go#captureDelegateStructuredResult`). The prose
+  report is still there as the packet's `message`. `delegates.jsonl` carries
+  the same durable valid/reason pair for DLG2 on its
+  `delegate_terminal_prepared` event, for the reason given under arm (a) —
+  `delegate_run_finished` carries no packet on this path.
   <!-- pin: the reason vocabulary is implementation-defined
        machine-readable text; shipped values today are
        schema_validation_failed / schema_result_missing /
@@ -83,33 +120,54 @@ structured fields are how the parent judges outcome.
        schema_result_missing is the honest report for THAT run —
        valid:false + populated reason is the normative assertion,
        the specific reason names the failure mode. -->
-- Falsification (silent coercion): `structured_result (valid=true)`
-  with `count` coerced to a number, or a structured result rendered at
-  all despite the type violation — validation is decorative.
-- Falsification (catastrophic honesty failure): the violating job
-  reports `status` `"failed"` solely because the schema failed —
-  schema validation describes the RESULT, not the lifecycle.
-- Arm (c): the `delegate_send` result has `action` `"started"`, a NEW
-  `started_job_id`/`current_job_id`, and the same delegate_id as the
-  turn-1 result.
-  The read of the new job shows `structured_result (valid=true):
-  {"verdict":"resumed","count":21}` — the schema's own top-level keys,
-  which can only appear if the resumed turn inherited the original
-  conversation's `result_schema` (no schema was passed on follow-up).
-  Falsification: the resumed result reverts to the default
-  `message`/`data`/`artifacts` envelope, or the structured result is
-  entirely absent from the started follow-up job — inheritance dropped.
-- Both background jobs (arms b, c) deliver exactly one terminal
-  notification each (format asserted in job-notification-semantics.md,
-  not here).
+- Falsification (silent coercion): `structured_result_valid` `true` with
+  `count` coerced to a number, or a structured result reported at all
+  despite the type violation — validation is decorative.
+- Falsification (catastrophic honesty failure): the violating delegate's
+  outcome is `failed` solely because the schema failed — schema
+  validation describes the RESULT, not the lifecycle.
+- Arm (c): the `delegate_send` result names the SAME `delegate_id` as
+  turn 1 and carries no job identity of any kind — the stable result has
+  no `job_id`, `started_job_id` or `current_job_id` field to carry one
+  (`agent/session_tools_jobs.go#marshalDelegateSendResult`). Ask for at
+  most 60000 ms: `clampJobBlockTimeout` caps any inline wait at
+  `maxJobBlockTimeoutMS` (`agent/session_tools_jobs.go#clampJobBlockTimeout`),
+  so a larger number silently buys nothing. With the wait satisfied in
+  time it reads `action` `"completed"`
+  and `running_in_background` false, and the text the tool printed ends
+  with a `[delegate_id <DLG1> · completed · completed]` footer and a
+  trailing `structured_result (valid=true): {"verdict":"resumed","count":21}`
+  line (`agent/session_tools_jobs.go#formatDelegateSend`). Those are the
+  schema's own top-level keys, which can only appear if the follow-up
+  turn inherited the original conversation's `result_schema` — no schema
+  was passed on the send.
+  If the wait expires first the result reads `action` `"started"` /
+  `status` `running` / `running_in_background` true and prints no
+  structured result at all; that is an unfinished wait, so read the
+  terminal frame when it arrives rather than scoring inheritance as
+  dropped.
+  Falsification: the follow-up result reverts to the default
+  `message`/`data`/`artifacts` envelope, or `structured_result` is
+  entirely absent from a follow-up that DID complete — inheritance
+  dropped.
+- Arms (a) and (b) deliver exactly one terminal notification each
+  (format asserted in job-notification-semantics.md, not here).
 
 ## Cleanup
 
-- All delegate jobs are terminal by design. Shut down the session
+- All delegate generations are terminal by design. Shut down the session
   (`POST /s/$SID/shutdown`); `rm -rf "$tmpdir"`.
 
 ## Sharp edges
 
+- **`structured_result_reason` is not in the text a `delegate_send`
+  result prints.** `formatDelegateSend` renders the report, a bracket
+  footer, warnings and a `structured_result (valid=<bool>)` line — and
+  stops; the reason rides only the structured tool state alongside it
+  (`agent/session_tools_jobs.go#delegateSendResult`). So arm (b)'s reason
+  assertion must be read from the terminal notification frame's JSON or
+  from `delegates.jsonl`, never from what a send printed. Asking a runner
+  for a field the formatter omits is how a card gets an invented answer.
 - Arm (b) asks a model to misbehave on purpose; strong models
   sometimes "helpfully" comply with the schema anyway. If the read
   shows valid:true with count 7-style coercion BY THE CHILD (it sent a
@@ -136,8 +194,14 @@ structured fields are how the parent judges outcome.
   that as the provider-enforcement variant. The capture-time triplet
   remains normative for any payload that reaches capture invalid; that
   path is unit-covered (`agent/job_delegate_test.go`).
-- Arm (c) must wait for the arm-(a) run to be terminal (it is — the
-  foreground call returned completed). Do **not** expect a
+- Arm (c) must wait for the arm-(a) run to be terminal. Creation is
+  asynchronous, so nothing about turn 1 proves it: DLG1 is terminal once
+  its notification frame has rendered, which is what turn 2 establishes.
+  `job_status(target=<DLG1>)` orients you (`type`, lifecycle `status`,
+  `transcript_ref`) but is NOT the way to learn a result — its own
+  description says delegate status "never returns terminal packet
+  contents" and "Completion is notification-driven; do not poll this
+  waiting for completed". Do **not** expect a
   `delegate_session_busy` failure if you race it. `delegate_session_busy`
   stays in the general canonical-code vocabulary
   (`docs/job-control.md` "Status and reason model" "Canonical codes

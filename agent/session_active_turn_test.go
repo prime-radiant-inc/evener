@@ -68,9 +68,12 @@ func TestMintRunningTurnIDNamesAnAgentStartedTurn(t *testing.T) {
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 
-	turnID := s.mintRunningTurnID()
+	turnID, refusal := s.mintRunningTurnID()
 	if !strings.HasPrefix(turnID, "turn_m") {
 		t.Fatalf("minted %q, want the turn_m<n> family", turnID)
+	}
+	if refusal != turnNameMinted {
+		t.Fatalf("refusal = %v for a successful mint, want turnNameMinted", refusal)
 	}
 	if got := s.clientMutations.snapshot().ActiveTurnID; got != turnID {
 		t.Fatalf("durable ActiveTurnID = %q, want the minted %q", got, turnID)
@@ -115,7 +118,7 @@ func TestReleaseRunningTurnIDLeavesAnotherOwnersTurnAlone(t *testing.T) {
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 
-	mine := s.mintRunningTurnID()
+	mine, _ := s.mintRunningTurnID()
 	if mine == "" {
 		t.Fatal("mintRunningTurnID returned empty; the test needs a minted id to release")
 	}
@@ -157,8 +160,15 @@ func TestMintRunningTurnIDRefusesWhenATurnIsAlreadyNamed(t *testing.T) {
 	}
 	owned := s.clientMutations.snapshot().ActiveTurnID
 
-	if got := s.mintRunningTurnID(); got != "" {
+	got, refusal := s.mintRunningTurnID()
+	if got != "" {
 		t.Fatalf("mintRunningTurnID = %q, want empty (refuse; the slot is owned)", got)
+	}
+	// The reason matters as much as the refusal: the notification stand-down
+	// tells "someone holds the name" from "the store would not write" and waits
+	// differently for each (kata ajg5).
+	if refusal != turnNameHeld {
+		t.Fatalf("refusal = %v for an owned slot, want turnNameHeld", refusal)
 	}
 	if got := s.clientMutations.snapshot().ActiveTurnID; got != owned {
 		t.Fatalf("ActiveTurnID = %q, want the owner's %q left untouched", got, owned)
@@ -183,8 +193,15 @@ func TestMintRunningTurnIDRefusesUnderAnInterruptFence(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed an interrupt fence: %v", err)
 	}
-	if got := s.mintRunningTurnID(); got != "" {
+	got, refusal := s.mintRunningTurnID()
+	if got != "" {
 		t.Fatalf("mintRunningTurnID = %q under a pending interrupt, want empty", got)
+	}
+	// Its OWN refusal, not turnNameHeld: a fence over a turn the daemon never
+	// named carries the empty name, and runningTurnNameHasOwner answers false
+	// for that, so the stand-down needs to tell the two apart (kata ajg5).
+	if refusal != turnNameFenced {
+		t.Fatalf("refusal = %v under a pending interrupt, want turnNameFenced", refusal)
 	}
 }
 

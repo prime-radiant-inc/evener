@@ -65,7 +65,7 @@ reference card `job-watch-observer-snide-thread.md`.
   (`writeAssistantToolWatchEvent`, `agent/job_watch.go:4874`).
 - The observer emits `MEMORY_REMINDER` as its terminal
   `communicate(end_turn=true)`, which reaches the parent as an
-  `Observer callback:` block.
+  `<delegate-notification>` block.
 - The parent does not emit `SCENARIO_DONE` before the reminder exists.
 - The parent does not use `job_list` or `job_status` as a waiting
   mechanism before the callback.

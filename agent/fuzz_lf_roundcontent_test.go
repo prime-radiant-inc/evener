@@ -20,7 +20,7 @@ import (
 // The lf_ prefix marks helpers owned by this refactor/fuzz lane.
 
 var lf_entryKinds = []EntryKind{
-	EntryUserInput, EntryContinuation, EntryNotification, EntryWatchDelivery,
+	EntryUserInput, EntryContinuation, EntryNotification, EntryDelegateAttention,
 }
 
 // lf_buildContent turns a byte mask into content parts, setting a non-empty Phase
@@ -78,7 +78,7 @@ func FuzzLfClassifyRoundContent(f *testing.F) {
 
 func FuzzLfRouteNoToolCalls(f *testing.F) {
 	f.Add(uint8(0), false) // EntryUserInput, empty => runNoToolCalls
-	f.Add(uint8(3), true)  // EntryWatchDelivery, non-empty => finishIdle
+	f.Add(uint8(3), true)  // EntryDelegateAttention, non-empty => runNoToolCalls
 	f.Add(uint8(2), true)  // EntryNotification, non-empty => finishIdle
 	f.Add(uint8(2), false) // EntryNotification, empty => runNoToolCalls
 	f.Add(uint8(1), true)  // EntryContinuation, non-empty => runNoToolCalls
@@ -98,9 +98,9 @@ func FuzzLfRouteNoToolCalls(f *testing.F) {
 		default:
 			t.Fatalf("invalid route %v", route)
 		}
-		// finishIdle is chosen ONLY for a non-empty watch-delivery or notification
-		// turn; every other combination routes through the retry budget.
-		wantFinish := (kind == EntryWatchDelivery || kind == EntryNotification) && !noContent
+		// finishIdle is chosen ONLY for a non-empty notification turn; every other
+		// combination routes through the retry budget.
+		wantFinish := kind == EntryNotification && !noContent
 		if (route == finishIdle) != wantFinish {
 			t.Fatalf("route=%v wantFinish=%v (kind=%v noContent=%v)", route, wantFinish, kind, noContent)
 		}

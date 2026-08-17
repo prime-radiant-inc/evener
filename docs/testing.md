@@ -556,6 +556,36 @@ been tested. Two corollaries, both from real incidents here:
   An "onAdd called once" assertion passed with validation entirely removed,
   because committing the add unmounted the panel either way. Asserting the
   validate call itself distinguishes them.
+
+**A fixture whose content nothing reads.** `read_file`'s PDF fixture was
+`[]byte("pdf")` for years and every assertion around it passed, because the
+document path examines its payload in exactly one place and it is not where
+anyone looks. `execenv.detectDocumentFormat` decides on the FILENAME first
+(`.pdf` wins outright) and only sniffs the five-byte `%PDF-` signature when the
+extension does not claim a PDF; downstream, `tool.dispatchedResult` exempts
+`application/pdf` from raster decoding entirely, so nothing past the environment
+ever looks at the bytes again. That exemption is deliberate — a PDF is not
+something `llm.RasterMediaType` can decode — and it is now pinned as a stated
+contract rather than left to be rediscovered.
+
+The consequence for anyone writing a case here: a document test named `*.pdf`
+cannot be byte-sensitive, whatever you put in it. The only oracle that reads the
+content is the same path with an extension that does NOT claim a PDF, run twice
+against different bytes (`TestReadFile_RealPDF_DetectedByItsBytes`). The
+exemption is also stated as a contract next to the fixture that used to imply
+it, in `session_tools_core_exact_fuzz_test.go` — but that file is
+`//go:build serffuzz`, so it is read by `make fuzz-seeds`, not `make test`.
+Several untagged tests hold the same rule, so nothing is lost by the tag;
+the statement is there for the reader, not for the gate. And beware
+the size of the claim a passing case licenses: five bytes are checked, so
+"handles a real PDF" means "accepts the signature", and a fixture is only
+honestly a PDF if something proved it parses — `validPDFFixture` computes its
+cross-reference offsets from the bytes as they are written and
+`TestValidPDFFixtureCrossReferencesResolve` resolves them back. A previous
+attempt pasted an opaque blob whose comment claimed validity while three of its
+four offsets pointed at nothing; every `%PDF`/`xref`/`trailer`/`startxref`
+marker was present, which is why grepping for markers is not validation.
+
 ## Real `git` in Worktree Tests
 
 `git` is an external dependency like the LLM provider, and the same boundary rule

@@ -2,6 +2,7 @@
   "name": "askdock-mobile-tall-crush",
   "description": "ask dock on a phone: option label chips must render on one line (not crushed into a narrow column by the detail text), and a tall batch must stay inside the pane (capped + internally scrollable) instead of squeezing the transcript to zero and clipping under the pane's overflow:hidden",
   "cssFiles": [
+    "styles/global.css",
     "styles/tokens.css",
     "widgets/chip/chip.module.css",
     "panes/session/composer/askDock/askquestioncard.module.css",
@@ -9,7 +10,8 @@
   ],
   "mutation": {
     "declaration": "askquestioncard.module.css: .optionChip > span { white-space: nowrap } (chip one-line contract - NOT the .option flex-wrap/.optionChip flex:none pair the origin commit credits, which is decorative for this fixture); askdock.module.css: .dock { max-height: 100%; overflow-y: auto } (containment/scroll contract)",
-    "verified": "2026-08-07",
-    "expect": "fail"
+    "verified": "2026-08-16",
+    "expect": "fail",
+    "note": "Re-verified under styles/global.css (kata e4sh): still fails, the long option label wraps onto 3 line boxes."
   }
 }

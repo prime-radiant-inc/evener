@@ -198,14 +198,22 @@ async function main() {
   let failed = 0;
   try {
     try {
-      await waitForHttp(`http://127.0.0.1:${vitePort}/overflowharness.html`, "vite dev server");
+      await waitForHttp(
+        `http://127.0.0.1:${vitePort}/overflowharness.html`,
+        "vite dev server",
+        guard.getViteLaunchError,
+      );
     } catch (err) {
       throw new Error(
         describeBrowserStartupFailure({ error: err, subsystem: "vite", viteStderr: guard.getViteError() }),
       );
     }
     try {
-      await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
+      await waitForHttp(
+        `http://127.0.0.1:${cdpPort}/json/version`,
+        "chrome devtools endpoint",
+        guard.getChromeLaunchError,
+      );
     } catch (err) {
       throw new Error(
         describeBrowserStartupFailure({
@@ -257,6 +265,30 @@ async function main() {
         widthFailed = true;
         console.log(
           `${width}px ... FAIL - disclosure browser contract found ${result.disclosures.length} of 2 fixtures`,
+        );
+      }
+      // The footer checks below are only worth what the predicate behind them
+      // is worth, so the predicate is exercised against its own fixture first
+      // (kata bsq9). A fact under a display:none ancestor must read as missing;
+      // an intentionally visually-hidden one must not.
+      // One expectation per clause of the shared predicate
+      // (src/dev/guardVisibility.ts). spawnguard uses the same function and has
+      // no fixture of its own, so this is the only place either guard proves
+      // what "visible" means.
+      const probe = result.visibility;
+      const expected = {
+        rendered: true,
+        ancestorHidden: false,
+        visuallyHidden: true,
+        visibilityHiddenAncestor: false,
+        zeroArea: false,
+      };
+      const wrong = Object.entries(expected).filter(([name, want]) => probe[name] !== want);
+      if (wrong.length > 0) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - the shared visible() predicate behind the footer checks is broken: ` +
+            wrong.map(([name, want]) => `${name}=${probe[name]} (expected ${want})`).join(", "),
         );
       }
       if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {

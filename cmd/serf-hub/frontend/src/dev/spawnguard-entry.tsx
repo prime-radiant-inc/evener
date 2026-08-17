@@ -10,6 +10,7 @@ import Spawn from "../panes/spawn/Spawn";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import { ClientProvider } from "../shell/clientContext";
 import { Toast } from "../widgets";
+import { isElementVisible } from "./guardVisibility";
 import "../styles/tokens.css";
 import "../styles/global.css";
 
@@ -99,6 +100,7 @@ interface Visibility {
   visibility: string;
   width: number;
   height: number;
+  visible: boolean;
 }
 
 function readVisibility(element: HTMLElement | null, label: string): Visibility | { error: string } {
@@ -110,6 +112,16 @@ function readVisibility(element: HTMLElement | null, label: string): Visibility 
     visibility: style.visibility,
     width: box.width,
     height: box.height,
+    // The verdict is computed HERE, once, by the definition shared with
+    // overflowguard (guardVisibility.ts), and travels with the reading. The
+    // guard script used to re-derive it from the reported display/visibility
+    // pair, and a reading is not the same thing as a rule: that copy silently
+    // dropped the geometry clauses, so a probed element under a `display: none`
+    // ANCESTOR - which keeps its own computed display, and only its BOX goes to
+    // zero - read as visible there while reading as hidden here (kata bsq9).
+    // The fixture proving this predicate lives in overflowharness-entry.tsx's
+    // visibilityProbe(), which exercises the same function every sweep.
+    visible: isElementVisible(element),
   };
 }
 
@@ -118,13 +130,7 @@ function visibility(selector: string): Visibility | { error: string } {
 }
 
 function isVisible(value: Visibility | { error: string }): boolean {
-  return (
-    !("error" in value) &&
-    value.display !== "none" &&
-    value.visibility !== "hidden" &&
-    value.width > 0 &&
-    value.height > 0
-  );
+  return !("error" in value) && value.visible;
 }
 
 function scanHorizontalOverflow(): string[] {

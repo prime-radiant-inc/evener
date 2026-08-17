@@ -47,7 +47,7 @@ reference card `job-watch-observer-snide-thread.md`.
 - The registered watch condition is `events: [communicate]` on source
   `parent`.
 - The observer emits exactly one `DRIFT_ALERT`, and it arrives at the
-  parent as an `Observer callback:` block (the observer's terminal
+  parent as an `<delegate-notification>` block (the observer's terminal
   `communicate(end_turn=true)`), not as a steering message.
 - The observer does not call `job_list` or inspect transcripts to
   decide whether the frame is relevant.

@@ -12,8 +12,9 @@ function notif(notifications: ParsedNotification[], i: number): ParsedNotificati
 }
 
 // steeringClassify.ts now parses only STRUCTURED notification payloads -
-// <job-notification> markup and the fixed "Observer callback:\n" header
-// (agent/session_tools_communicate.go). The prose classifier that used to
+// <job-notification> markup and the historic "Observer callback:\n" header
+// (no longer emitted -- see the steeringClassify.ts header; these cases pin
+// how a transcript recorded while it WAS emitted must still replay). The prose classifier that used to
 // guess a steering "kind" from wording is gone (SteeringItem.tsx routes on
 // ItemModel.steeringKind instead); this pins that its exports stay gone.
 
@@ -157,8 +158,9 @@ test("an Observer callback parses as a notification", () => {
 });
 
 test("an Observer callback with no output surfaces its message prose (not just the raw disclosure)", () => {
-  // The daemon emits `Observer callback:\nmessage: X` with no `\noutput:` when
-  // the callback carries no tool output (agent/session_tools_communicate.go:117).
+  // The daemon USED TO emit `Observer callback:\nmessage: X` with no `\noutput:`
+  // when the callback carried no tool output. Durable transcripts still hold
+  // that shape, so it must still render.
   // The prose is then the ONLY content, so it must reach the card body (floor
   // parity-m4 §8:239 "body = observer-callback prose"), not be dropped to the
   // raw disclosure alone.

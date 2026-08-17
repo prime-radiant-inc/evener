@@ -2,6 +2,7 @@
   "name": "rail-row-text-align",
   "description": "rail: every row's text starts at the same x at a given nesting depth - the signal dot hangs OUTDENTED in the row's leading padding (never moving the title), the inactive-fold's label lines up with its sibling session rows, and a branch row's chevron trails the label text",
   "cssFiles": [
+    "styles/global.css",
     "styles/tokens.css",
     "widgets/tree/tree.module.css",
     "shell/rail/Rail.module.css",
@@ -9,7 +10,8 @@
   ],
   "mutation": {
     "declaration": "RailRow.module.css: .signal { margin-left: -10px } (reverted to 0 - the dotted row's title shifts one dot-column right) and .railRow { padding-left: 14px } (reverted to 0 - the dot escapes the row's left edge)",
-    "verified": "2026-08-14",
-    "expect": "fail"
+    "verified": "2026-08-16",
+    "expect": "fail",
+    "note": "Re-verified under styles/global.css (kata e4sh): still fails, dotted title sits 10.0px off its quiet sibling."
   }
 }

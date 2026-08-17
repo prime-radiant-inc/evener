@@ -2,6 +2,7 @@
   "name": "hk8v-remove-button-focus-visible",
   "description": "composer attachment tile: the remove button hides at rest and reveals on hover, so keyboard focus must reveal it too - a focused opacity:0 control is one you cannot see you are standing on (kata hk8v)",
   "cssFiles": [
+    "styles/global.css",
     "styles/tokens.css",
     "panes/session/composer/composer.module.css"
   ],
@@ -11,7 +12,8 @@
   ],
   "mutation": {
     "declaration": "composer.module.css: .removeImageButton:focus-visible { opacity: 1; outline: ... } (rule deleted entirely)",
-    "verified": "2026-08-07",
-    "expect": "fail"
+    "verified": "2026-08-17",
+    "expect": "fail",
+    "note": "Re-verified after the case picked up styles/global.css (kata e4sh) - its measurement came back byte-identical, but the field attests to a rendering configuration, and that configuration changed. Still fails: the remove button under :focus-visible is opacity 0, not 1."
   }
 }

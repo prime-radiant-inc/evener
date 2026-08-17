@@ -69,11 +69,7 @@ For watch-driven tasks, complete this sequence:
 
 The observer callback is completion evidence for the observer's task; after it
 arrives, one final result message is enough unless the user asked for audit
-details. Watch-origin callbacks are delivered as an "Observer callback"
-block with the observer's message and output envelope. Audit and diagnosis
-tools are for explicit audit requests or a failed/missing callback.
-
-When a watch-origin observer sends its terminal `communicate(end_turn:true)`,
-Serf records that stable delegate generation's terminal outcome without adding
-another owner notification for the same generation. The observer callback
-carrying the packet is the actionable signal.
+details. It reaches you as that observer delegate's ordinary terminal
+delegate-notification frame carrying its result packet, and it wakes you on its
+own, so ending your turn is how you wait for it. Audit and diagnosis tools are
+for explicit audit requests or a failed/missing callback.
