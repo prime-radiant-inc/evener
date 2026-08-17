@@ -59,7 +59,7 @@ import { type BuiltinMatch, matchBuiltinInvocation, runBuiltinCommand } from "./
 import styles from "./composer.module.css";
 import { consumeComposerFocus, useComposerFocusRequest } from "./composerFocus";
 import { clearDraft, readDraft, writeDraft } from "./draft";
-import { QueueStrip, submitWithPendingTracking } from "./queue";
+import { QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
   discardRecoveryPendingTurn,
   refreshPendingTurnsProjection,
@@ -147,6 +147,7 @@ const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoad
 
 export function Composer({ ref }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
+  const pendingSendEntries = usePendingTurnEntries(ref, "send");
   const toasts = useToasts();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -529,7 +530,16 @@ export function Composer({ ref }: ComposerProps) {
   // hydrated), so every handler below reads these already-narrowed values
   // instead of `model.<field>` directly.
   const activeTurnId = model.activeTurnId;
-  const availability = deriveSendQueueAvailability({ statusType: model.status.type, capabilities: model.capabilities });
+  // A turn/start this composer already submitted, before any status frame for
+  // it has come back. Without it a fast second message is composed while the
+  // thread still reads idle, routed to turn/start, and refused by the daemon
+  // with Conflict("turn is already active").
+  const hasPendingSend = pendingSendEntries.length > 0;
+  const availability = deriveSendQueueAvailability({
+    statusType: model.status.type,
+    capabilities: model.capabilities,
+    hasPendingSend,
+  });
   const busy = isTurnActive(model.status.type, activeTurnId);
   const queueDepth = model.queue?.depth ?? 0;
   const hasText = text.trim() !== "";

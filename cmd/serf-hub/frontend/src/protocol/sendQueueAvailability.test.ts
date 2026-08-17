@@ -100,4 +100,30 @@ describe("deriveSendQueueAvailability", () => {
       canQueue: true,
     });
   });
+
+  // The mirror image of the race above, and the one a user actually hits: send
+  // two messages quickly and the second is composed BEFORE any status frame for
+  // the first has arrived. statusType is still idle, so the table routes it to
+  // turn/start, which the daemon refuses with
+  // Conflict("turn is already active").
+  //
+  // The client knows something the status does not: it just submitted a turn
+  // itself. That is its OWN state, not a guess about the server's, so folding it
+  // in does not reintroduce the activeTurnId race the header warns about. And
+  // turn/queue tolerates an empty expectedTurnId
+  // (agent/session_client_mutation_queue.go:123), so the queue lands even
+  // before a turn id exists.
+  test("a turn this client already submitted routes the next message to the queue", () => {
+    expect(deriveSendQueueAvailability({ statusType: "idle", capabilities: caps(), hasPendingSend: true })).toEqual({
+      canSend: false,
+      canQueue: true,
+    });
+  });
+
+  test("a pending send does not override ended or closed", () => {
+    expect(deriveSendQueueAvailability({ statusType: "closed", capabilities: caps(), hasPendingSend: true })).toEqual({
+      canSend: false,
+      canQueue: false,
+    });
+  });
 });
