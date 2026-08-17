@@ -8,7 +8,8 @@
   ],
   "mutation": {
     "declaration": "styles/tokens.css: :root, [data-theme=\"dark\"] { ... } (reverted the selector to :root only, dropping nested-dark-pane scoping from 8b06eb411)",
-    "verified": "2026-08-07",
-    "expect": "fail"
+    "verified": "2026-08-17",
+    "expect": "fail",
+    "note": "Re-verified after the case picked up styles/global.css (kata e4sh) - its measurement came back byte-identical, but the field attests to a rendering configuration, and that configuration changed. Still fails: the dark pane's --surface-1 resolves to #FFFFFF instead of #232427."
   }
 }

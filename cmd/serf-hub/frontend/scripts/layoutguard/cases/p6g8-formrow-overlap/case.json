@@ -17,8 +17,8 @@
   },
   "mutation": {
     "declaration": "widgets/formrow/formrow.module.css: .root { min-width: 0 } (deleted)",
-    "verified": "2026-08-16",
+    "verified": "2026-08-17",
     "expect": "fail",
-    "note": "Re-verified after the case picked up styles/global.css (kata e4sh). The reset global.css brings widened .cfgDir 370 -> 383px, and the old repo-root cwd string then fit inside it with 3.6px to spare - the mutation had stopped failing. The fixture now carries a worktree path, an ordinary cwd here, and the mutation overflows by 253.8px."
+    "note": "Re-verified after the case picked up styles/global.css (kata e4sh). The reset global.css brings widened .cfgDir 370 -> 383px, and the old repo-root cwd string then fit inside it with 3.6px to spare - the mutation had stopped failing. The fixture now carries a longer cwd and the mutation overflows by 324.0px. That path deliberately points at this case's own checked-in directory: an earlier draft used the worktree the fix was written in, which would have left the fixture's load-bearing characters made of a branch name that stops existing. Measured slope is 6-8px per character against a threshold near 42, so the fixture has ~33 characters of headroom rather than sitting on the edge."
   }
 }

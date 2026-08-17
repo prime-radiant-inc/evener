@@ -48,12 +48,22 @@
           <button id="spawn-cwd" class="trigger" type="button">
             <!-- The LENGTH of this path is load-bearing, not decoration: it is
                  what makes the row's content wider than its column, which is
-                 the only condition under which min-width:0 does anything. A
-                 worktree path is an ordinary cwd in this project, and the
-                 shorter repo root that used to sit here stopped reproducing
-                 the overflow once the case picked up global.css (kata e4sh) -
-                 the mutation passed with 3.6px to spare. Do not shorten it. -->
-            <span class="triggerValue" id="cwd-value">/Users/jesse/prime-radiant/toil-suite/serf/.worktrees/kata-guard-visibility</span>
+                 the only condition under which min-width:0 does anything. The
+                 shorter repo root that used to sit here stopped reproducing the
+                 overflow once the case picked up global.css (kata e4sh) - the
+                 mutation passed with 3.6px to spare. Measured slope is 6-8px per
+                 character against a threshold near 42 characters, so this has
+                 ~33 characters of headroom rather than sitting on the edge.
+                 Do not shorten it.
+
+                 It deliberately points at a directory that is checked in and
+                 permanent - this case's own home - rather than at anything
+                 machine- or branch-specific. An earlier draft used the worktree
+                 the fix was written in, which reads as an ordinary cwd but stops
+                 existing the moment that worktree is removed, leaving the
+                 fixture's load-bearing 34 characters made of a dead branch
+                 name. -->
+            <span class="triggerValue" id="cwd-value">/Users/jesse/prime-radiant/toil-suite/serf/cmd/serf-hub/frontend/scripts/layoutguard</span>
             <span class="chevron" aria-hidden="true">&#9662;</span>
           </button>
         </div>
