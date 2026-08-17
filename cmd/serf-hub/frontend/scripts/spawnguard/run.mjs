@@ -143,6 +143,10 @@ async function main() {
   try {
     try {
       await waitForHttp(`http://127.0.0.1:${vitePort}/spawnguard.html`, "vite dev server");
+      // Chrome readiness belongs in the SAME try as Vite: a Chrome that will
+      // not start is the failure the diagnostic exists for, and leaving this
+      // call outside meant that exact case still surfaced as a bare timeout.
+      await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
     } catch (error) {
       throw new Error(
         describeBrowserStartupFailure({
@@ -154,7 +158,6 @@ async function main() {
         }),
       );
     }
-    await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
     for (const width of WIDTHS) {
       const result = await measureAt(cdpPort, vitePort, width);
       const failures = assertResult(result, width);

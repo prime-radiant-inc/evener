@@ -188,6 +188,10 @@ async function main() {
   try {
     try {
       await waitForHttp(`http://127.0.0.1:${vitePort}/overflowharness.html`, "vite dev server");
+      // Chrome readiness belongs in the SAME try as Vite: a Chrome that will
+      // not start is the failure the diagnostic exists for, and leaving this
+      // call outside meant that exact case still surfaced as a bare timeout.
+      await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
     } catch (err) {
       throw new Error(
         describeBrowserStartupFailure({
@@ -199,7 +203,6 @@ async function main() {
         }),
       );
     }
-    await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
 
     const panelCollapse = await verifyPanelCollapse(
       cdpPort,

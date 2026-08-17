@@ -113,6 +113,14 @@ export async function evaluate(send, expression) {
  * the two. Measuring on load is a coin flip decided by whether the font was
  * warm in Chrome's cache.
  *
+ * COVERAGE LIMIT: a page that declares no @font-face at all has an empty
+ * document.fonts, so this check passes without asserting anything. Ten of
+ * layoutguard's fourteen cases omit styles/global.css from case.json and are in
+ * exactly that position -- they render text in a system font and this guard is
+ * silent about it. That is deterministic rather than racy, so it is not the bug
+ * this function exists for, but it does mean the check covers four cases today.
+ * See kata for adding global.css to the rest and re-baselining them.
+ *
  * Deliberately NOT a hardcoded family list. A face loads only when some text
  * actually uses it, so a case whose markup is all sans legitimately leaves the
  * mono face "unloaded" forever - demanding both families failed two of
