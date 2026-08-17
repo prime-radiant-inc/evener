@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -279,6 +280,38 @@ func TestTranscript_TextMaxHonoursAnExplicitCap(t *testing.T) {
 	if got, want := r.Turns[0].Text, turnText[:textMax]+"…"; got != want {
 		t.Errorf("TextMax=%d turn text = %d bytes (%q), want the first %d bytes plus an ellipsis",
 			textMax, len(got), got, textMax)
+	}
+}
+
+// truncate's cap is a byte budget, but the cut must land on a rune boundary:
+// slicing mid-rune emits invalid UTF-8, which --json then rewrites to U+FFFD.
+func TestTruncate_NeverCutsMidRune(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		max  int
+		want string
+	}{
+		{"ascii cut", "abcdef", 4, "abcd…"},
+		{"cjk cut mid-rune backs off", "日本語", 4, "日…"},
+		{"cjk cut on boundary", "日本語", 6, "日本…"},
+		{"emoji cut mid-rune backs off", "a👍b", 3, "a…"},
+		{"emoji fits whole", "👍", 4, "👍"},
+		{"cut inside first rune backs off to empty", "👍👍", 3, "…"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncate(tc.in, tc.max)
+			if got != tc.want {
+				t.Errorf("truncate(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("truncate(%q, %d) = %q is not valid UTF-8", tc.in, tc.max, got)
+			}
+			if kept := strings.TrimSuffix(got, "…"); len(kept) > tc.max {
+				t.Errorf("truncate(%q, %d) kept %d bytes before the ellipsis, over the byte budget", tc.in, tc.max, len(kept))
+			}
+		})
 	}
 }
 
