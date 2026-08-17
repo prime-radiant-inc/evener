@@ -14,6 +14,7 @@
 // far its content escapes its own content box, plus the deepest elements
 // responsible - which is the answer the fix has to be aimed at.
 import { createRoot } from "react-dom/client";
+import { isElementVisible } from "./guardVisibility";
 import "../panes/session";
 import Session from "../panes/session/Session";
 import "../panes/sessionPanels";
@@ -325,12 +326,97 @@ interface FooterContract {
   modelClientWidth: number;
 }
 
+// Whether a required footer fact (effort, context, queue) is on the screen.
+// The definition, and why each clause is there, lives in guardVisibility.ts -
+// shared with spawnguard so one word cannot mean two things. The whole weight
+// of footer.*Visible rests on it, so it also gets the live fixture below rather
+// than a line in MUTATIONS.md.
+const visible = isElementVisible;
+
+interface VisibilityProbe {
+  rendered: boolean;
+  ancestorHidden: boolean;
+  visuallyHidden: boolean;
+  visibilityHiddenAncestor: boolean;
+  zeroArea: boolean;
+}
+
+function probeSpan(cssText: string): HTMLSpanElement {
+  const el = document.createElement("span");
+  el.style.cssText = cssText;
+  el.textContent = "probe";
+  return el;
+}
+
+/**
+ * A mutation test for the shared visibility predicate, run every sweep instead
+ * of recorded once - and the only fixture either guard has for it, since
+ * spawnguard uses the same function.
+ *
+ * One probe per clause, and every one is load-bearing:
+ *
+ *   rendered                  the positive control. Without it, a predicate
+ *                             that answered "not visible" to everything would
+ *                             satisfy every other probe here.
+ *   ancestorHidden            the bsq9 regression: a span whose OWN computed
+ *                             display is `flex`, inside a `display: none` div -
+ *                             the exact shape a footer fact takes when its
+ *                             subtree collapses.
+ *   visuallyHidden            statusrow.module.css's `.srOnly` recipe verbatim.
+ *                             Measured exactly 1x1, so it satisfies the area
+ *                             clause: present for the reader it is written for,
+ *                             not missing.
+ *   visibilityHiddenAncestor  a plain span under a `visibility: hidden` div.
+ *                             Geometry alone cannot see this one - the span
+ *                             keeps its full box - so it is what pins the
+ *                             inherited-visibility clause.
+ *   zeroArea                  `transform: scale(0)`: one client rect enclosing
+ *                             nothing. Pins the area clause, which the rects
+ *                             clause alone does not cover.
+ *
+ * Mounted outside #oh-pane and position:fixed, so it is invisible to the
+ * horizontal-overflow scan and adds nothing to the document's scroll size.
+ */
+function visibilityProbe(): VisibilityProbe {
+  const host = document.createElement("div");
+  host.style.cssText = "position:fixed;top:0;left:0";
+
+  const rendered = probeSpan("");
+  const hiddenAncestor = document.createElement("div");
+  hiddenAncestor.style.cssText = "display:none";
+  const underHiddenAncestor = probeSpan("display:flex");
+  hiddenAncestor.appendChild(underHiddenAncestor);
+  const visuallyHidden = probeSpan(
+    "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0",
+  );
+  const invisibleAncestor = document.createElement("div");
+  invisibleAncestor.style.cssText = "visibility:hidden";
+  const underInvisibleAncestor = probeSpan("");
+  invisibleAncestor.appendChild(underInvisibleAncestor);
+  const zeroArea = probeSpan("display:inline-block;transform:scale(0)");
+
+  host.append(rendered, hiddenAncestor, visuallyHidden, invisibleAncestor, zeroArea);
+  document.body.appendChild(host);
+  try {
+    return {
+      rendered: visible(rendered),
+      ancestorHidden: visible(underHiddenAncestor),
+      visuallyHidden: visible(visuallyHidden),
+      visibilityHiddenAncestor: visible(underInvisibleAncestor),
+      zeroArea: visible(zeroArea),
+    };
+  } finally {
+    host.remove();
+  }
+}
+
 function measure(): {
   width: number;
   scrollers: Scroller[];
   ignored: string[];
   disclosures: DisclosureContract[];
   footer: FooterContract;
+  visibility: VisibilityProbe;
 } {
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("harness pane never mounted");
@@ -419,12 +505,12 @@ function measure(): {
   const context = pane.querySelector<HTMLElement>('[data-testid="status-row-context"]');
   const queue = pane.querySelector<HTMLElement>('[data-testid="status-row-queue"]');
   const model = pane.querySelector<HTMLElement>('[data-testid="model-switch-value"]');
-  const visible = (el: HTMLElement | null) => el !== null && getComputedStyle(el).display !== "none";
   return {
     width,
     scrollers,
     ignored,
     disclosures,
+    visibility: visibilityProbe(),
     footer: {
       effortVisible: visible(effort),
       contextVisible: visible(context),

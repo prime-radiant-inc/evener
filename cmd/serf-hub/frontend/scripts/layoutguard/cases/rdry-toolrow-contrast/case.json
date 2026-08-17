@@ -2,12 +2,14 @@
   "name": "rdry-toolrow-contrast",
   "description": "a purpose-bearing tool row's demoted result line (e.g. \"Wrote fizzbuzz.py\") must clear WCAG AA (4.5:1) against its pane background, in both themes (kata rdry)",
   "cssFiles": [
+    "styles/global.css",
     "styles/tokens.css",
     "panes/session/transcript/toolcallitem.module.css"
   ],
   "mutation": {
     "declaration": "toolcallitem.module.css: .demoted { color: var(--ink-mid) } (reverted to var(--ink-low))",
-    "verified": "2026-08-07",
-    "expect": "fail"
+    "verified": "2026-08-17",
+    "expect": "fail",
+    "note": "Re-verified after the case picked up styles/global.css (kata e4sh) - its measurement came back byte-identical, but the field attests to a rendering configuration, and that configuration changed. Still fails: dark 3.08:1 and light 3.51:1, both below the 4.5:1 AA floor."
   }
 }
