@@ -11,6 +11,7 @@
 #   scripts/coverage-gaps.sh PROFILE --by file        # ...by file
 #   scripts/coverage-gaps.sh PROFILE --top 40
 #   scripts/coverage-gaps.sh PROFILE --by file --zero # only wholly-uncovered units
+#   scripts/coverage-gaps.sh PROFILE --in session.go  # uncovered blocks IN a file
 #
 # PROFILE is a `go test -coverprofile` file. Generate one with, e.g.
 #   prof="$(mktemp -t serf-cov.XXXXXX)"
@@ -29,11 +30,13 @@ profile=""
 by="package"
 top="25"
 zero_only=false
+in_pattern=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--by) by="$2"; shift 2 ;;
 		--top) top="$2"; shift 2 ;;
 		--zero) zero_only=true; shift ;;
+		--in) in_pattern="$2"; shift 2 ;;
 		-h|--help) awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
 		-*) echo "unknown flag: $1" >&2; exit 2 ;;
 		*) profile="$1"; shift ;;
@@ -44,9 +47,10 @@ done
 [ -f "$profile" ] || { echo "no such profile: $profile" >&2; exit 1; }
 case "$by" in package|file) ;; *) echo "--by must be package or file (got $by)" >&2; exit 2 ;; esac
 
-python3 - "$profile" "$by" "$top" "$zero_only" <<'PY'
+python3 - "$profile" "$by" "$top" "$zero_only" "$in_pattern" <<'PY'
 import re, sys
 profile, by, top, zero_only = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4] == "true"
+in_pattern = sys.argv[5]
 
 # key -> (numstmts, covered) per unique block position, so -coverpkg duplicates
 # collapse the same way the floor scripts collapse them.
@@ -60,6 +64,27 @@ for line in open(profile):
     key = (f, sl, sc, el, ec)
     prev = blocks.get(key, (0, False))
     blocks[key] = (int(ns), prev[1] or int(cnt) > 0)
+
+# --in lists the uncovered BLOCKS inside matching files, biggest first, so a
+# file with a known gap turns straight into a list of line ranges to go read.
+# Aggregates say which file to work on; this says where in it.
+if in_pattern:
+    rows = []
+    for (f, sl, sc, el, ec), (ns, covered) in blocks.items():
+        if covered or in_pattern not in f:
+            continue
+        rows.append((ns, f, int(sl), int(el)))
+    rows.sort(reverse=True)
+    if not rows:
+        print("no uncovered blocks in files matching %r" % in_pattern)
+        sys.exit(0)
+    print("%8s  %s" % ("STMTS", "location"))
+    for ns, f, sl, el in rows[:top]:
+        print("%8d  %s:%d-%d" % (ns, f, sl, el))
+    print()
+    print("showing %d of %d uncovered blocks (%d statements) in files matching %r"
+          % (min(len(rows), top), len(rows), sum(r[0] for r in rows), in_pattern))
+    sys.exit(0)
 
 units = {}
 for (f, *_), (ns, covered) in blocks.items():

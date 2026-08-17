@@ -66,6 +66,14 @@ assert_not_has "$out" "pkg/d/i1.go" "--by file omits a file with no gap"
 bash "$script" "$profile" --top 1 >"$out" 2>&1
 assert_has "$out" "showing 1 of 3 packages" "--top limits the rows and says so"
 
+# --in turns a known-bad file into the line ranges to go read.
+bash "$script" "$profile" --in "pkg/d" >"$out" 2>&1
+assert_has "$out" "pkg/d/i2.go:5-6" "--in reports an uncovered block's line range"
+assert_not_has "$out" "i1.go" "--in omits covered blocks"
+assert_has "$out" "100 statements" "--in totals the uncovered statements it found"
+bash "$script" "$profile" --in "pkg/b" >"$out" 2>&1
+assert_has "$out" "no uncovered blocks" "--in says so when a file has no gap"
+
 bash "$script" "$work/nope.cov" >"$out" 2>&1
 assert_eq "$?" "1" "a missing profile exits non-zero"
 assert_has "$out" "no such profile" "the missing profile is named"
