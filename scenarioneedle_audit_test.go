@@ -154,7 +154,10 @@ type scenarioNeedleFinding struct {
 // runner RUNS, not tokens it searches observed output for, and their shell
 // variables (`owned_sid`, `run_suffix`) look exactly like JSON keys. Blanking
 // them removed 35 false positives and cost no real finding.
-var scenarioNeedleFence = regexp.MustCompile("(?sm)^```.*?^```")
+// The closing fence is matched as "\n```" rather than a second ^-anchored run:
+// the opening fence's line always ends in a newline, so the two are equivalent,
+// and gocritic reads a second ^ inside one pattern as a dangling anchor.
+var scenarioNeedleFence = regexp.MustCompile("(?sm)^```.*?\n```")
 
 // scenarioNeedleCodeSpan matches an inline `code span`, the corpus's marker for
 // "this is a literal, not prose".
