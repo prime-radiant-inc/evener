@@ -288,6 +288,20 @@ target loop is `[ "$tag" = native ] || continue`, so it replays only native
 a default-gate coverage number as "whole-repo coverage including fuzz" — it
 never was, and now it's explicit.
 
+The corollary runs the other way too, and it is the one that misleads: a
+default-gate number is not "how much of this package is tested". Several
+packages keep whole families of behavioural checks in `check*` functions that
+only a serffuzz-tagged *program* fuzz target calls — `FuzzLaunchConfigBehaviorProgram`
+invokes about thirty. `-run '^(Test|Example)'` never matches those names, so the
+test track cannot see that work at all: `cmd/serf-hub/internal/appsource` reads
+66.4% there and 83.1% under its own program target, and four modules that look
+incomplete on both tracks separately are in fact fully covered.
+
+So before concluding a package is under-tested — and certainly before writing a
+test to raise its number — read `make coverage-union`, which unions the two
+tracks. The test you were about to write may already exist under the other build
+tag.
+
 ## Proving a Type Survives a Round Trip
 
 When two code paths must agree about a struct — a decoder and a
