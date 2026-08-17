@@ -171,6 +171,13 @@ it proceeds is the cheaper mistake.
 
 ---
 
+## Recommended order
+
+**Task 8 first.** It is the instrument the rest of this work is verified with:
+until a rejected control says so, every other task is checked by reading
+mutation journals instead of by using the app. Then Tasks 1→5 in order (each
+depends on its predecessor), with 6, 7 and 9–11 anywhere.
+
 ## Task 1: Reserve the user's turn name before the busy flip
 
 **Why only user input.** This is the one kind where a human is mid-compose, so
@@ -403,6 +410,115 @@ silently treats an unknown kind as user input.
   `entryKindCount` production const.
 - [ ] **Step 4:** Test that an unhandled kind trips the invariant. Commit.
 
+## Task 8: A rejected control tells the user (kata `2f41`)
+
+**Do this first.** This is why the bug survived weeks instead of a day: every
+Steer, Send and Stop the user pressed was rejected with
+`Conflict("turn is not active")` and the composer showed nothing at all. The
+daemon's mutation journal recorded five rejections on the session that started
+this investigation; the UI recorded none of them.
+
+Every other task in this plan is currently verified by reading a durable
+journal after the fact. With this landed they are verified by using the app,
+which is also how a user would report the next instance of this class.
+
+**Files:**
+- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.tsx`
+  (the `busyAction` dispatchers at `:814`, `:854`, `:876`)
+- Modify: the mutation dispatcher's settle path, so a rejected durable
+  intent surfaces rather than settling silently
+- Test: `Composer.test.tsx`, plus a live-stack assertion
+
+**Design constraint.** A rejection is not always the user's problem: a Stop that
+loses a race with the turn's own completion is benign. Distinguish "the turn you
+aimed at is gone" (say nothing, or say it quietly) from "the daemon refused and
+nothing happened" (say it). Getting this wrong in the noisy direction trains
+people to ignore it, which is the same failure as silence.
+
+- [ ] **Step 1:** Write a failing test: a `turn/steer` that resolves to a
+      `ConflictError` leaves user-visible evidence.
+- [ ] **Step 2:** Decide and write down the taxonomy above before implementing.
+- [ ] **Step 3:** Implement, covering steer, queue, drain, interrupt and start.
+- [ ] **Step 4:** Extend one live-stack e2e test to assert the surfaced state,
+      so this cannot regress to silence.
+- [ ] **Step 5:** Close kata `2f41` citing the test name. Commit.
+
+## Task 9: Fix the plan that reintroduces a reverted bug
+
+`docs/superpowers/plans/2026-08-16-one-active-turn-identity.md:501` still
+instructs an implementer to emit
+`events.SteeringInjectedData{... StableTurnID: stableTurnID}`, and `:143`
+describes the same field as part of the design. That change was reverted in
+`b5ce354a5` as actively wrong: `internal/appprojector/appwire_projection.go:693-695`
+now carries a comment saying that field names the steering mutation's own
+record, "not the turn the steer lands in", and "must never be adopted".
+
+The plan's header tells an agent to execute it task-by-task, so re-running it
+reintroduces the bug this branch exists to fix.
+
+- [ ] Correct both sites, keeping the superseded reasoning in a `<details>`
+      block rather than deleting it (the sibling plan's `ac0560303` is the
+      pattern).
+- [ ] Add a pointer from that plan to this one as its successor.
+- [ ] Re-check the same document for the two other stale claims a review found:
+      `:12-15` and `:150` still say `SetProcessing` stops minting turn ids,
+      which was dropped from that plan's scope (`:551`) and is Task 2 here.
+
+## Task 10: Turn-identity coverage the fuzzers and helpers miss
+
+- [ ] `EventTurnStarted` is in neither fuzz corpus. Add it to
+      `internal/appprojector/project_fuzz_test.go`'s `projectorCases`
+      (`:18-94`) so `FuzzProject` can reach the new case and its empty-id
+      path, and to `agent/events/eventdata_program_fuzz_test.go` (`:14-17`),
+      whose doc claims it "runs every member of the sealed event payload set"
+      and now omits both `TurnStartedData` and `ModelRetryData`. Add a length
+      assertion so the next omission fails instead of passing quietly.
+- [ ] Register the turn-boundary tests in `projectCoverageSweep`'s registry
+      (`:142-198`). The existing `turn_started_at` row is about
+      `Turn.StartedAt` and reads like coverage it is not.
+- [ ] `agent/session_client_mutation.go:128-141` says three sites write
+      `ActiveTurnID`. There are seven, and the omitted one
+      (`finalizeClientMutationInterrupt`, `:566`) is the *unconditional
+      clearer* that `releaseRunningTurnID`'s identity guard exists to survive.
+      A reader auditing "who can clear this" from that comment misses exactly
+      the one that matters.
+- [ ] Collapse the duplicate helpers: `startedTurnID`
+      (`goal_turn_identity_test.go:12-32`) and `turnStartedID`
+      (`turn_boundary_test.go:10-30`) are the same function under two names,
+      and `completedTurnID` is re-implemented inline at
+      `goal_turn_identity_test.go:90-104`. Likewise
+      `TestUnservedSessionNamesNoTurn` and
+      `TestMintRunningTurnIDSkipsUnservedSessions` assert the same thing about
+      the same call; keep one.
+
+## Task 11: Turn-scoped state and the boundary's own bookkeeping
+
+- [ ] **One reset for per-turn projector state.** Three places clear
+      overlapping subsets of the same fields: `closeActiveTurn` clears seven,
+      `startTurn` clears four *different* ones, and `EventError`
+      (`appwire_projection.go:688-694`) clears a third four. `closeActiveTurn`'s
+      comment notices the `EventError` divergence and declines to touch it
+      without asking whether the smaller set is right. It probably is not:
+      after a failed turn `reasoningItem`, `toolArgsByKey` and `toolStartByKey`
+      survive into the next turn and `startTurn` does not clear them either, so
+      a reasoning delta arriving before the next round's `ASSISTANT_TEXT_START`
+      reuses the failed turn's item id with no `item/started`. Give it one
+      `resetTurnScopedState()` with an explicit list, making the divergence
+      either deliberate and documented or gone.
+- [ ] **Move the misplaced justification.** `server/thread_envelope.go:176-188`
+      puts the 13-line argument for `events.EventTurnStarted: facetWork` *after*
+      that row and immediately before `events.EventSteeringInjected:`, so it
+      reads as documentation of the wrong entry. The test pinning it
+      (`thread_envelope_test.go:71-83`) asserts `WorkMillis` while the comment's
+      whole argument is about `ActiveTurnStartedAt`; assert what the comment
+      argues.
+- [ ] **Dedupe the e2e scaffolding.** `cmd/serf-hub/e2e_turn_control_test.go`
+      (695 lines) repeats the `thread/start` + cleanup block three times, and
+      the steer-and-prove and interrupt-and-prove blocks twice each. Two
+      helpers cut ~140 lines and make the three tests read as the three turn
+      kinds they are — which also makes visible that only one of them covers
+      Send-while-busy.
+
 ---
 
 ## Definition of done
@@ -418,8 +534,25 @@ silently treats an unknown kind as user input.
       turn, a goal turn and a user turn, with zero rejections in the session's
       mutation journal.
 - [ ] Kata `c2ty` closed with the ruling above and the commit that implements
-      it. Kata `7vmd` closed. Kata `2f41` referenced from both.
+      it. Kata `7vmd` closed. Kata `2f41` closed by Task 8.
+- [ ] Every control verified from the browser rather than from a journal —
+      which Task 8 is what makes possible.
 - [ ] `docs/web-ui/decisions.md` updated if any decision it records changed.
+
+## Filed elsewhere
+
+Found by the same reviews but not about turn identity, so they are katas rather
+than tasks here:
+
+| Kata | What |
+| --- | --- |
+| `tx4q` | **Urgent.** `main` carries the leaking e2e tests without their cache fix, so every `go test ./...` on main refills the disk. Fixed at `457369f11` on this branch; cherry-pick or merge. |
+| `3htx` | The browser-guard consolidation deleted the only CDP unit test and the Chrome startup diagnostic, and claimed the intent was preserved. |
+| `afpk` | `fakellm`'s standalone driver counts model rounds globally, so both documented modes break with a second session. |
+| `cvsk` | `e2e-webui-turn-controls.sh --help` hides `--stop`, its only documented teardown. |
+| `cg10` | `fakellm`'s package-doc example does not compile. |
+| `8bh1` | `Spawn.tsx` reloads the model catalog on every keystroke in the working-directory field. |
+| `z5fm` | `EntryWatchDelivery` has no production producer, leaving six dead branches. |
 
 ## Known limits, stated rather than hidden
 
