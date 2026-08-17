@@ -266,16 +266,20 @@ func (s *Session) settleGoalOnIdle() bool {
 // terminal report when a turn ends in a system cancellation or error. It is a
 // no-op when there is no active goal, and — critically — when err is a genuine
 // user /interrupt: the goal stays active and resumes after the next completed
-// turn (spec §6). The discriminator is the queuedInputDrainContext bool, not the
+// turn (spec §6). The discriminator is the interruptDrainConfig bool, not the
 // WithQueuedInputDrainOnInterrupt marker (which is installed on every turn ctx and
 // so discriminates nothing); a DeadlineExceeded or provider error routes the goal
 // to blocked while the session remains available for later input.
+//
+// Classifying is all this wants, so it asks the classifier. Building the drain
+// context is what announces a new turn to the host, and no turn is starting
+// here — a goal decision must not tell the daemon a turn began.
 func (s *Session) terminateGoalOnError(ctx context.Context, err error) {
 	store := s.getOrCreateGoalStore()
 	if snap, ok := store.Snapshot(); !ok || snap.Status != goal.StatusActive {
 		return
 	}
-	if _, isUserInterrupt := queuedInputDrainContext(ctx, err); isUserInterrupt {
+	if _, isUserInterrupt := interruptDrainConfig(ctx, err); isUserInterrupt {
 		return // genuine user interrupt: leave the goal active
 	}
 	if goalRootShutdown(ctx, err) {

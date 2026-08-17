@@ -183,13 +183,13 @@ func TestArmGoalContinuationNoIterationCap(t *testing.T) {
 
 // TestTerminateGoalOnErrorClassification: a plain error and a DeadlineExceeded
 // transition an active goal to blocked and emit EventGoalEnded; a context that
-// queuedInputDrainContext classifies as a genuine user interrupt leaves the goal
+// interruptDrainConfig classifies as a genuine user interrupt leaves the goal
 // active and emits no EventGoalEnded.
 func TestTerminateGoalOnErrorClassification(t *testing.T) {
 	t.Parallel()
 	// userInterruptCtx constructs a context exactly as production does for a
 	// genuine user /interrupt: a marked, cancelled turn context. Paired with a
-	// bare context.Canceled error, queuedInputDrainContext reports ok=true.
+	// bare context.Canceled error, interruptDrainConfig reports ok=true.
 	userInterruptCtx := func() context.Context {
 		root := context.Background()
 		turnCtx, cancel := context.WithCancel(root)
@@ -246,6 +246,44 @@ func TestTerminateGoalOnErrorClassification(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestTerminateGoalOnErrorDoesNotAnnounceATurn pins the difference between
+// asking whether an interrupt is a user interrupt and acting on the answer.
+//
+// The host's next-turn factory is how a drained queue head announces itself:
+// cmd/serf serve publishes processing state and registers the new turn's cancel
+// from inside it. terminateGoalOnError only wants the classification, and no
+// turn is starting when a goal decides whether to stay active — invoking the
+// factory here tells the daemon a turn began that will never run, and nothing
+// downstream corrects it, because the interrupted SessionEnd has already fired.
+func TestTerminateGoalOnErrorDoesNotAnnounceATurn(t *testing.T) {
+	t.Parallel()
+	sess, stop := newGateSession(t)
+	defer stop()
+
+	root := context.Background()
+	turnCtx, cancel := context.WithCancel(root)
+	var factoryCalls int
+	marked := WithQueuedInputDrainOnInterruptHandler(turnCtx, root, func(parent context.Context) (context.Context, context.CancelFunc) {
+		factoryCalls++
+		next, cancelNext := context.WithCancel(parent)
+		return next, cancelNext
+	})
+	cancel()
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("some objective", time.Now())
+
+	sess.terminateGoalOnError(marked, context.Canceled)
+
+	if factoryCalls != 0 {
+		t.Fatalf("the goal decision built %d next-turn context(s); it must build none. Constructing one announces a turn to the host that will never run", factoryCalls)
+	}
+	snap, ok := store.Snapshot()
+	if !ok || snap.Status != goal.StatusActive {
+		t.Fatalf("goal snapshot = %+v ok=%v, want still active: the classification itself must be unchanged", snap, ok)
 	}
 }
 
