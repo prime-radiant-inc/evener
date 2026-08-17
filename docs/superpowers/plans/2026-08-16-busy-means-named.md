@@ -1,6 +1,19 @@
-# Busy Means Named Implementation Plan
+# Busy Means Named Implementation Plan — SUPERSEDED
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **SUPERSEDED by `2026-08-16-one-running-turn.md`. Do NOT execute this plan.**
+>
+> Two independent reviews found that most of its tasks existed only to keep four
+> representations of "the running turn" in step, and that two of its central
+> premises were false: `SetProcessingTurn` publishes nothing (only the projector
+> produces `thread/status/changed`), and `POST /input` — the path Task 1
+> changes — has no production client. Task 1 as written also applies its
+> reservation to every non-mutation kind, which would permanently disable every
+> notification wake and un-name every goal continuation, reverting two shipped
+> fixes.
+>
+> Kept for its rejected-options record and its diagnosis of the c2ty window, both
+> carried forward into the successor. Everything below the header is retained
+> as written; its task list is not safe to follow.
 
 **Goal:** It is always possible to steer or stop a session that is running.
 The daemon reports a thread busy exactly when it holds a turn name every
