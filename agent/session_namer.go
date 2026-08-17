@@ -95,6 +95,23 @@ func sessionNamerEnabled(profile *provider.Profile) bool {
 	return configuredSessionNamerModel(profile) != ""
 }
 
+// sessionNamerUsable reports whether a naming call is worth making at all: the
+// profile must configure a cheap model, and this session must not already have
+// learned that the model's allowance is spent.
+//
+// Every launch path asks this one question, which is why the question has one
+// name. sessionNamerEnabled answers only the configuration half and cannot see
+// session state; a quota exhaustion is the same category of fact ("the namer
+// cannot run") but is learned at runtime rather than read from config.
+func (s *Session) sessionNamerUsable() bool {
+	if !sessionNamerEnabled(s.currentProfile()) {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.naming.quotaExhausted
+}
+
 func sessionNamerModel(profile *provider.Profile) string {
 	if profile == nil {
 		return ""
@@ -196,7 +213,7 @@ func (s *Session) launchInitialPromptNamer(ctx context.Context, input string) {
 	if s.stateDir == "" && !s.cfg.testOnly.forceSessionNamer {
 		return
 	}
-	if !sessionNamerEnabled(s.currentProfile()) {
+	if !s.sessionNamerUsable() {
 		return
 	}
 	if strings.TrimSpace(input) == "" {
@@ -217,6 +234,32 @@ func (s *Session) launchInitialPromptNamer(ctx context.Context, input string) {
 	}()
 }
 
+// suppressSessionNamerIfQuotaExhausted disables naming for the rest of this
+// session when err says the cheap model's allowance is spent, and reports
+// whether it did.
+//
+// Only a quota exhaustion earns this. An ordinary rate limit shares its HTTP
+// status but clears in seconds, so retrying it on a later turn is exactly
+// right; a spent allowance can be days from returning, and re-dispatching it
+// every turn buys nothing but a wasted round trip and a duplicate advisory.
+//
+// The error arrives wrapped (nameSession adds "session namer: %w"), so this
+// reads it with llm.Kind, which walks the chain, rather than llm.DeclaredKind.
+// That is safe here and not in the API-log capture path: this error came from
+// this process's own llm client, not from an adapter of unverified provenance.
+func (s *Session) suppressSessionNamerIfQuotaExhausted(err error) bool {
+	if llm.Kind(err) != llm.KindQuotaExceeded {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.naming.quotaExhausted {
+		return false
+	}
+	s.naming.quotaExhausted = true
+	return true
+}
+
 func (s *Session) clearPromptNamePendingAfterAttempt(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -229,7 +272,7 @@ func (s *Session) launchCompactionNamer(ctx context.Context, turn schema.Turn) {
 	if s.stateDir == "" {
 		return
 	}
-	if !sessionNamerEnabled(s.currentProfile()) {
+	if !s.sessionNamerUsable() {
 		return
 	}
 	if !isSessionNameCompactionTurn(turn) || strings.TrimSpace(turn.Message.Text()) == "" {
@@ -324,10 +367,18 @@ func (s *Session) nameSessionFromText(ctx context.Context, source, text string) 
 	}
 	result, err := nameSession(ctx, namerClient, s.currentProfile(), source, text, s.cfg.LLMSleep)
 	if err != nil {
+		// Record the suppression before writing the advisory: the advisory is
+		// the only externally observable marker that this attempt finished, so
+		// anything that waits on it must find the decision already made.
+		suppressed := s.suppressSessionNamerIfQuotaExhausted(err)
+		summary := fmt.Sprintf("Failed to generate %s-derived session name", sessionNameSourceLabel(source))
+		if suppressed {
+			summary += "; session naming disabled for this session (provider allowance spent)"
+		}
 		s.appendSessionNamerLog(sessionlog.SessionLogEntry{
 			Kind:     "advisory",
 			Action:   "session_namer",
-			Summary:  fmt.Sprintf("Failed to generate %s-derived session name", sessionNameSourceLabel(source)),
+			Summary:  summary,
 			Outcome:  "failure",
 			Failures: []string{err.Error()},
 		})

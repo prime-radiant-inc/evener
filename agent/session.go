@@ -826,11 +826,12 @@ type communicateResult struct {
 // provenance. The namer goroutine (session_namer.go) assigns it; Meta and
 // Snapshot read it. Guarded by s.mu.
 type sessionName struct {
-	value         string    // display name ("" until assigned)
-	source        string    // provenance tag (sessionNameSource*)
-	updated       time.Time // when value last changed
-	set           bool      // a name has been assigned
-	promptPending bool      // a naming LLM call is in flight
+	value          string    // display name ("" until assigned)
+	source         string    // provenance tag (sessionNameSource*)
+	updated        time.Time // when value last changed
+	set            bool      // a name has been assigned
+	promptPending  bool      // a naming LLM call is in flight
+	quotaExhausted bool      // the cheap model's allowance is spent; stop naming
 }
 
 // forkInfo records a session's fork lineage — where it diverged from a parent
