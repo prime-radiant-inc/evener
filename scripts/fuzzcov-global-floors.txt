@@ -49,7 +49,7 @@
 # not a measurement artifact: the module registers only two fuzz targets
 # (project, uuid) against 363 statements.
 . 84.1
-agent 72.6
+agent 72.8
 llm 81.5
 auth 100.0
 envvars 96.0
