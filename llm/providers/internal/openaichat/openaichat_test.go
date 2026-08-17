@@ -7,6 +7,69 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+func TestParseChatUsageSubtractsCachedTokensFromPrompt(t *testing.T) {
+	// prompt_tokens is total-including-cached on these endpoints, while
+	// llm.Usage.InputTokens means NEW uncached input. Skipping the subtraction
+	// double-counts every cached token and inflates spend accounting.
+	usage := ParseChatUsage(map[string]any{
+		"prompt_tokens":         float64(1000),
+		"completion_tokens":     float64(50),
+		"prompt_tokens_details": map[string]any{"cached_tokens": float64(900)},
+	})
+	if usage.InputTokens != 100 {
+		t.Errorf("InputTokens = %d, want 100 (1000 prompt - 900 cached)", usage.InputTokens)
+	}
+	if usage.OutputTokens != 50 {
+		t.Errorf("OutputTokens = %d, want 50", usage.OutputTokens)
+	}
+	// The total stays the provider's own total, cached tokens included.
+	if usage.TotalTokens != 1050 {
+		t.Errorf("TotalTokens = %d, want 1050", usage.TotalTokens)
+	}
+
+	// A payload reporting more cached than prompt tokens must clamp at zero
+	// rather than report a negative input count.
+	clamped := ParseChatUsage(map[string]any{
+		"prompt_tokens":         float64(10),
+		"prompt_tokens_details": map[string]any{"cached_tokens": float64(99)},
+	})
+	if clamped.InputTokens != 0 {
+		t.Errorf("InputTokens = %d, want 0 when cached exceeds prompt", clamped.InputTokens)
+	}
+
+	if empty := ParseChatUsage(nil); empty.InputTokens != 0 || empty.OutputTokens != 0 {
+		t.Errorf("ParseChatUsage(nil) = %+v, want zeroed counts", empty)
+	}
+}
+
+func TestInbandErrorStatusCodeAcceptsOnlyHTTPRange(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code string
+		want int
+	}{
+		{"bare integer", `503`, 503},
+		{"digit string", `"429"`, 429},
+		{"below HTTP range", `200`, 0},
+		{"above HTTP range", `600`, 0},
+		{"non-numeric string", `"rate_limit_exceeded"`, 0},
+		{"absent", ``, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &InbandError{}
+			if tc.code != "" {
+				e.Code = json.RawMessage(tc.code)
+			}
+			// Anything outside 400..599 must read as 0 so it classifies as
+			// retryable-unknown with the code preserved, rather than being
+			// mistaken for a real HTTP status the transport would act on.
+			if got := e.StatusCode(); got != tc.want {
+				t.Fatalf("StatusCode() for code %s = %d, want %d", tc.code, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestToolArgumentsString(t *testing.T) {
 	for _, tc := range []struct {
 		name string
