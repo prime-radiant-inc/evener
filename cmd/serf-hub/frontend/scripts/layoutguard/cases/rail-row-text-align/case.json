@@ -10,7 +10,8 @@
   ],
   "mutation": {
     "declaration": "RailRow.module.css: .signal { margin-left: -10px } (reverted to 0 - the dotted row's title shifts one dot-column right) and .railRow { padding-left: 14px } (reverted to 0 - the dot escapes the row's left edge)",
-    "verified": "2026-08-14",
-    "expect": "fail"
+    "verified": "2026-08-16",
+    "expect": "fail",
+    "note": "Re-verified under styles/global.css (kata e4sh): still fails, dotted title sits 10.0px off its quiet sibling."
   }
 }
