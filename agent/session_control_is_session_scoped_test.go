@@ -7,15 +7,13 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
-// Control is session-scoped (Jesse, 2026-08-16): steer, queue and stop apply to
-// whatever the session is running, not to a turn the client names. By the time
-// a user's intent reaches the daemon the session may well be on a later turn,
-// and that is fine -- the intent should apply as soon as possible rather than
-// bounce.
+// Control is session-scoped: steer, queue and stop apply to whatever the
+// session is running, not to a turn the client names. By the time a user's
+// intent reaches the daemon the session may well be on a later turn, and that
+// is fine -- the intent should apply as soon as possible rather than bounce.
 //
 // Each test here seeds a running turn the client never saw and issues control
-// against a turn id that is not it. Every one of these was a rejection before
-// the rule changed.
+// that does not name it.
 
 func seedRunningTurn(t *testing.T, s *Session) string {
 	t.Helper()

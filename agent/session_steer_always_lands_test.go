@@ -41,8 +41,8 @@ func TestRestoredSteeringWakesWhenTheDaemonAttaches(t *testing.T) {
 	}
 }
 
-// TestSteerLandsWhenItsTurnAlreadyEnded is Jesse's 2026-08-16 ruling: a steer
-// always lands.
+// TestSteerLandsWhenItsTurnAlreadyEnded pins the rule that a steer always
+// lands.
 //
 // The reachable case is a race, not an exotic one. You press Steer while the
 // agent is working; between the click and the request arriving, the turn ends.

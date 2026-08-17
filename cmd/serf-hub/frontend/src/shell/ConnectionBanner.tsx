@@ -26,6 +26,10 @@ const CLASS = {
 
 const RECONNECTING_MESSAGE = "Reconnecting to the server…";
 const CLOSED_MESSAGE = "Connection closed.";
+// A protocol close cannot be retried away: Retry builds a fresh client from
+// THIS page's bundle, which is the thing the server rejected. Reloading is what
+// fetches a client the server will talk to.
+const PROTOCOL_MESSAGE = "This page is out of date with the server. Reload to continue.";
 
 function defaultCreateClient(): AppwireClientLike {
   return new AppwireClient({ url: rpcURLFromLocation(window.location) });
@@ -47,7 +51,7 @@ function defaultCreateClient(): AppwireClientLike {
 // stays offered in every case, since reconnecting the /rpc socket can help
 // regardless (an auth cookie set in another tab, or a hub that's back up
 // with nothing actually wrong).
-type ClosedReason = "auth" | "not-built" | null;
+type ClosedReason = "auth" | "not-built" | "protocol" | null;
 
 /**
  * A quiet inline strip reporting the connection state when it needs a
@@ -82,6 +86,14 @@ export function ConnectionBanner({ state, createClient = defaultCreateClient }: 
   useEffect(() => {
     if (state !== "closed") {
       setClosedReason(null);
+      return;
+    }
+    // The client already knows when the close was a protocol rejection, and it
+    // knows it exactly -- no probe can tell that apart from an ordinary drop.
+    // The client already knows when the close was a protocol rejection, and it
+    // knows it exactly -- no probe can tell that apart from an ordinary drop.
+    if (connectionStore.getState().client?.terminalReason === "protocol") {
+      setClosedReason("protocol");
       return;
     }
     let cancelled = false;
@@ -162,7 +174,20 @@ export function ConnectionBanner({ state, createClient = defaultCreateClient }: 
       ? SIGN_IN_PROMPT_MESSAGE
       : closedReason === "not-built"
         ? NOT_BUILT_MESSAGE
-        : CLOSED_MESSAGE;
+        : closedReason === "protocol"
+          ? PROTOCOL_MESSAGE
+          : CLOSED_MESSAGE;
+
+  if (closedReason === "protocol") {
+    return (
+      <div className={CLASS.banner}>
+        <span>{message}</span>
+        <Button variant="quiet" size="sm" onClick={() => window.location.reload()}>
+          Reload
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className={CLASS.banner}>

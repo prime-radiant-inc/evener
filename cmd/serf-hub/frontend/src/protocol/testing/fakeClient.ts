@@ -5,7 +5,7 @@
 // the stores (src/stores/*) depend on, per AppwireClientLike below — with
 // scripted per-method request handlers and manual notification/ready/
 // state-change injection. No sockets, no timers.
-import type { AppwireClient, ConnectionState } from "../client";
+import type { AppwireClient, ConnectionState, TerminalReason } from "../client";
 import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "../types.gen";
 import { METHOD_NAMES, NOTIFICATION_NAMES } from "../types.gen";
 
@@ -45,6 +45,7 @@ export interface AppwireClientLike {
   onStateChange: AppwireClient["onStateChange"];
   retryNow: AppwireClient["retryNow"];
   get state(): ConnectionState;
+  get terminalReason(): TerminalReason;
 }
 
 export type RequestHandler<M extends MethodName> = (
@@ -84,6 +85,9 @@ export interface RecordedCall {
 
 export class FakeClient implements AppwireClientLike {
   state: ConnectionState;
+  // Mirrors the real client's terminal-reason surface so a banner test can
+  // stage a protocol close, which is the one close a retry cannot resolve.
+  terminalReason: TerminalReason = null;
   readonly calls: RecordedCall[] = [];
 
   // Keyed by method name and erased to a common handler shape here — `on`

@@ -9,10 +9,9 @@ import (
 
 // TestServerAppWireControlNeedsNoTurnID walks the whole daemon request path —
 // the flag-day validator on the router, then each handler's own preconditions —
-// for every control mutation. Control is session-scoped (Jesse, 2026-08-16): it
-// applies to whatever the session is running, so naming a turn is not something
-// a client has to do, and refusing one that cannot is how Stop and Steer used to
-// fail in the windows they mattered most.
+// for every control mutation. Control is session-scoped: it applies to whatever
+// the session is running, so naming a turn is not something a client has to do,
+// and a client that cannot name one is entitled to the same answer.
 //
 // The preconditions that name a real object stay required and are asserted here
 // too, because dropping the turn id must not drop them: drainAsSteer still needs

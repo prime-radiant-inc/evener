@@ -8,18 +8,17 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
-// A Stop and a queued message can collide, and the collision used to eat the
-// message (katas e519 + nss1).
+// A Stop and a message queued behind it collide in an ordinary way, and the
+// message has to survive it.
 //
-// The setup is ordinary: a message is queued behind a turn, and the user
-// presses Stop. WireState reports processing for an idle session whenever work
-// is pending -- a non-empty input queue counts -- so the interrupt is accepted
-// with no turn running, writes a fence naming the empty turn, and cancels
-// nothing. popQueueHead then claimed the queued mutation regardless of the
-// fence, and completeClientMutationTurnWithState silently no-ops on a record
-// that never reached "incorporated", so the message left the queue, never ran,
-// and its turn id pinned ActiveTurnID for the life of the process -- which
-// makes every later turn/start fail with "turn is already active".
+// WireState reports processing for an idle session whenever work is pending --
+// a non-empty input queue counts -- so a Stop is accepted with no turn running,
+// writes a fence naming the empty turn, and cancels nothing. Three things have
+// to hold through that: the queue head is not claimed into a turn that is
+// already dying, a claim that never incorporated its input is returned rather
+// than settled, and ActiveTurnID is left empty. A turn id stranded there makes
+// every later turn/start fail with "turn is already active" for the life of the
+// process.
 
 // queueOneMutation durably queues a client mutation, the way a client's
 // turn/queue does, and returns its id.
@@ -33,14 +32,12 @@ func queueOneMutation(t *testing.T, sess *Session, clientMutationID, text string
 	}
 }
 
-// TestClaimedQueuedTurnIsReturnedWhenItNeverRan is the loss itself, at the seam
-// where it happens. The drain loop claims the queue head, then processOneInput
-// returns before incorporating anything -- a cancelled context is the ordinary
-// way, and a Stop is what cancels it -- and the completion call that follows
-// used to no-op on a record that never reached "incorporated".
-//
-// Recovery for exactly this state already existed, but only at startup: nothing
-// put the claim back within the life of the process.
+// TestClaimedQueuedTurnIsReturnedWhenItNeverRan covers the seam where a queued
+// message can be lost. The drain loop claims the queue head, then
+// processOneInput returns before incorporating anything -- a cancelled context
+// is the ordinary way, and a Stop is what cancels it. The completion call that
+// follows must return the claim, because the entry is already out of the input
+// queue and the only other recovery for this state runs at startup.
 func TestClaimedQueuedTurnIsReturnedWhenItNeverRan(t *testing.T) {
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()

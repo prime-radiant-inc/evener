@@ -1033,12 +1033,12 @@ type TurnStartResponse struct {
 }
 
 // Control mutations are session-scoped: they apply to whatever the session is
-// running rather than to a turn the client names (Jesse, 2026-08-16). By the
-// time a user's intent reaches the daemon the session may already be on a later
-// turn, and that is fine — the intent should apply as soon as possible instead
-// of bouncing. So none of the types below carries an expected turn id, and the
-// preconditions that survive are the ones naming a real object: the queue
-// revision drainAsSteer swaps against, and the entry promoteQueuedAsSteer moves.
+// running rather than to a turn the client names. By the time a user's intent
+// reaches the daemon the session may already be on a later turn, and that is
+// fine — the intent should apply as soon as possible instead of bouncing. So
+// none of the types below carries an expected turn id, and the preconditions
+// that remain are the ones naming a real object: the queue revision
+// drainAsSteer swaps against, and the entry promoteQueuedAsSteer moves.
 type TurnSteerParams struct {
 	Ref              string      `json:"ref,omitempty"`
 	ThreadID         string      `json:"threadId,omitempty"`

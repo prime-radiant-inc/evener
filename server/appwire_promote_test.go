@@ -214,11 +214,9 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 
 	// The promote below is a compare-and-commit against the queue as it is when
 	// the request lands, so the ids it names must come from that same moment.
-	// Reading them once above and reusing them makes the assertion depend on
-	// nothing having touched the queue in between -- and this test drives a LIVE
-	// session whose own drain loop shares that queue, which is how it went flaky
-	// under full-suite load (kata n1zs). Re-read here instead, and say so loudly
-	// if the queue is not the two entries this case is about.
+	// This test drives a LIVE session whose own drain loop shares that queue, so
+	// an id read earlier can describe a queue that has moved -- re-read here, and
+	// say so loudly if it is not the two entries this case is about.
 	live := sess.QueueIDs()
 	if len(live) != 2 || live[0] != ids[0] || live[1] != ids[1] {
 		t.Fatalf("queue changed between the read and the promote: live=%#v, published=%#v", live, ids)

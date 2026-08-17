@@ -156,6 +156,27 @@ describe('state "closed" - generic (neither probe matches)', () => {
   });
 });
 
+describe('state "closed" - protocol skew', () => {
+  // Retry builds a fresh client from THIS page's bundle, and the bundle is what
+  // the server rejected, so retrying reproduces the rejection exactly. Only a
+  // reload can fetch a client the server will talk to -- so the banner has to
+  // say so, and offer the action that can actually work.
+  test("tells the user to reload and offers Reload instead of Retry", async () => {
+    const client = new FakeClient("closed");
+    client.terminalReason = "protocol";
+    connectionStore.getState().connect(client);
+
+    render(<ConnectionBanner state="closed" />);
+
+    await waitFor(() => expect(screen.getByText(/Reload to continue/)).toBeTruthy());
+    expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    // The probes tell an ordinary drop apart from auth or an unbuilt frontend.
+    // The client already knows this one exactly, so neither should run.
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe('state "closed" - unauthenticated (401)', () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 401 })));

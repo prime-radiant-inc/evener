@@ -238,9 +238,9 @@ describe("durable recovery rows", () => {
     expect(screen.queryByText("Recovery drafts")).toBeNull();
   });
 
-  // Kata 2f41: a control the daemon refused used to render as a row
-  // indistinguishable from a real queued message -- the header even counts it
-  // as queued. The reason is the whole point of the row.
+  // Kata 2f41: a control the daemon refused must not render as a row
+  // indistinguishable from a real queued message -- the header counts those as
+  // queued. The reason is the whole point of the row.
   test("a rejected control shows the daemon's reason", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a");

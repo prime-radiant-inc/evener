@@ -13,13 +13,13 @@ import (
 // they just accepted. The receipt says Applied and the message sits there
 // (kata r6sk).
 //
-// Steer already learned this the hard way. Its wake is deliberately
-// unconditional rather than gated on "is a turn running", because that gate
-// loses a race it cannot win: a turn can pass its final drain and still own the
-// turn id, so a mutation arriving in that window would be skipped and never
-// looked at again. These follow the same shape, including the replay branch --
-// a retry of something accepted but never delivered has to provoke delivery
-// too, because replay is idempotent in the store and useless to the user.
+// Every one of these wakes is unconditional on turn state rather than gated on
+// "is a turn running", because that gate loses a race it cannot win: a turn can
+// pass its final drain and still own the turn id, so a mutation arriving in that
+// window would be skipped and never looked at again. The replay branch wakes for
+// the same reason -- a retry of something accepted but never delivered has to
+// provoke delivery, because replay is idempotent in the store and useless to the
+// user without it.
 
 // countingWake installs a notify func and returns a reader for its count.
 func countingWake(t *testing.T, s *Session) func() int {

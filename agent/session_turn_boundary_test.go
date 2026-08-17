@@ -549,8 +549,8 @@ func TestWakeResumesOnceTheUserTurnReleasesTheName(t *testing.T) {
 // write per wake and publish turn frames on a thread no client can address.
 //
 // It asserts the gate (servedByDaemon) and its consequence (no name) together,
-// because the second is only correct while the first holds. That pairing is why
-// this is the surviving test of what used to be two.
+// because the second is only correct while the first holds; split apart, either
+// half would keep passing after the other stopped being true.
 //
 // NOTE: `docs/superpowers/plans/2026-08-16-controllable-subagents.md` proposes
 // reversing this deliberately — delegates would take durable names so they can

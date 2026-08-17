@@ -14,14 +14,13 @@ import (
 	"primeradiant.com/serf/test/e2e/fakellm"
 )
 
-// The rule under test (Jesse, 2026-08-16): control mutations do not name turns.
-// Steer, queue, stop, drain and promote carry no expectedTurnId at any layer,
-// because what that field asserted -- "the session is still in the state I saw"
-// -- is not what any of those buttons means, and asserting it could only ever
-// turn a success into a refusal. The preconditions that survive are the ones
-// that name a real object: clientMutationId everywhere, expectedQueueRevision
-// on drain, expectedEntryId on promote and cancel. Stop's precondition is the
-// session's wire state.
+// The rule under test: control mutations do not name turns. Steer, queue, stop,
+// drain and promote carry no expectedTurnId at any layer, because what such a
+// field asserts -- "the session is still in the state I saw" -- is not what any
+// of those buttons means, and asserting it can only ever turn a success into a
+// refusal. The preconditions that remain are the ones that name a real object:
+// clientMutationId everywhere, expectedQueueRevision on drain, expectedEntryId
+// on promote and cancel. Stop's precondition is the session's wire state.
 //
 // Everything here runs against a real serf-hub process, the real serf daemon it
 // spawns, and the real AppWire socket, because that is the only place the rule
@@ -199,8 +198,8 @@ func TestE2E_ASendThatRacedAStopStillRuns(t *testing.T) {
 // half of a steer that names no turn. A receipt says the daemon accepted the
 // mutation; the next model request is what proves the running loop consumed it,
 // and the durable transcript is what proves a user reading the session back
-// sees it. The branch has already shipped a green test that asserted only the
-// receipt.
+// sees it. A test that stops at the receipt asserts only that the daemon said
+// yes.
 func TestE2E_SteerWithNoTurnIDReachesTheModelAndTheTranscript(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")

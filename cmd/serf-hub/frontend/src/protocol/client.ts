@@ -47,6 +47,10 @@ class HandshakeRejectedError extends Error {
 
 const CODE_INVALID_REQUEST = -32600;
 
+// TerminalReason names a close a human has to resolve, as opposed to an
+// ordinary drop the client retries on its own.
+export type TerminalReason = "protocol" | null;
+
 // Same values as legacy appwire.js. Browsers can't send WebSocket ping
 // frames from JS, so a silently-dropped connection leaves readyState OPEN
 // forever with no notifications flowing; the heartbeat sends a cheap app-level
@@ -141,6 +145,13 @@ export class AppwireClient {
   // finish.
   private reconnectInFlight = false;
 
+  // Why this client stopped for good, when the reason is one a human has to
+  // act on. "protocol" means the server refused our handshake or answered with
+  // a version we do not speak: this bundle can never satisfy that server, so
+  // dialling again -- with this client or a fresh one -- reproduces it exactly.
+  // Only a reload can pick up a matching client.
+  private terminalReasonValue: TerminalReason = null;
+
   constructor(opts: AppwireClientOptions) {
     this.url = opts.url;
     this.socketFactory = opts.socketFactory ?? defaultSocketFactory;
@@ -150,6 +161,10 @@ export class AppwireClient {
 
   get state(): ConnectionState {
     return this.connectionState;
+  }
+
+  get terminalReason(): TerminalReason {
+    return this.terminalReasonValue;
   }
 
   // connect is idempotent: concurrent/repeated calls share the single
@@ -387,6 +402,7 @@ export class AppwireClient {
       if (this.isClosed()) return;
       this.teardownFailedSocket();
       if (error instanceof ProtocolVersionMismatchError || error instanceof HandshakeRejectedError) {
+        this.terminalReasonValue = "protocol";
         this.setState("closed");
         return;
       }
