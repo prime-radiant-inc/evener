@@ -1,6 +1,35 @@
-# One Active Turn Identity Implementation Plan
+# One Active Turn Identity Implementation Plan — LANDED IN PART
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **LANDED IN PART, and its other half was REVERTED. Do NOT execute this plan.**
+>
+> Task 1's **goal-continuation** half shipped as `c751369d7` and is live:
+> `GoalContinuationData` carries a `StableTurnID` minted through
+> `reserveClientMutationTurnID`, and the projector adopts it before the turn
+> opens. Task 2 was dropped during execution (its own section says so). Task 3
+> shipped as `ce229b9de`, as `TestE2E_TurnControlReachesAnAgentStartedTurn`.
+>
+> Task 1's **notification** half was reverted the same night by `b5ce354a5` as
+> unsound. `SteeringInjectedData.StableTurnID` names the *steering mutation's
+> own* durable record — `clientMutationSteer` reserves a fresh one per steer —
+> not the turn the steer lands in, so adopting it lets a steer drained across a
+> turn boundary name the turn after itself, and every control aimed at that turn
+> is then rejected. `TestSteeringInjectedNeverNamesATurn`
+> (`internal/appprojector/goal_turn_identity_test.go`) exists to pin that the
+> projector must never adopt it. Steps 6 and 7 below still prescribe exactly
+> that adoption; both are marked REVERTED inline rather than deleted.
+>
+> The notification turn was refiled as kata `7vmd` and fixed separately by
+> `2026-08-16-one-turn-boundary.md`, which gave it `EventTurnStarted` as a
+> carrier of its own precisely because this field was already spoken for. That
+> work shipped and `7vmd` is closed.
+>
+> Kept for its diagnosis of the two id namespaces and its v1 review record, both
+> still accurate. The task list is not safe to follow.
+>
+> **On the commit ids in this document.** They were written on
+> `wip/webui-steer-send-stop`, whose commits were rewritten on the way to `main`.
+> Every sha quoted in this banner is the one that is reachable from `main` today;
+> `git merge-base --is-ancestor <sha> main` succeeds for each.
 
 **Goal:** Give every turn — however it started — exactly one identity, so the
 `activeTurnId` the daemon publishes is always the one its mutation
@@ -12,7 +41,9 @@ immediately before `startTurn()`; this change gives the other turn-opening
 events the same field and populates it, and makes the durable authority
 record the running turn's id for turns no client mutation reserved one for.
 Nothing announces a turn id out of band, and the daemon stops minting turn
-ids for live turns.
+ids for live turns. (That last clause was Task 2, which was **dropped**:
+`setProcessingLocked` still mints for the pre-event window, deliberately, per
+kata `c2ty`.)
 
 **Tech Stack:** Go 1.25 multi-module workspace (`agent`, root module's
 `server` / `internal/appprojector` / `cmd/serf`), `appwire` JSON-RPC.
@@ -78,7 +109,7 @@ when the turn-opening event named it. Which events name it:
 | --- | --- | --- |
 | `EntryUserInput` (client `turn/start`, queued drain) | `EventUserInput`, `agent/session_lifecycle.go:1423-1429` | **yes**, populated from `queuedIdentity.StableTurnID` |
 | `EntryContinuation` (goal) | `EventGoalContinuation`, `:1482` | **no such field** on `GoalContinuationData` (`agent/events/payloads.go:668`) |
-| `EntryNotification` (job / watch / delegate wakes) | `EventSteeringInjected`, `:1553` | field exists (`agent/events/payloads.go:356`) but is **not populated**, and the projector's case ignores it (`appwire_projection.go:727-734`) |
+| `EntryNotification` (job / watch / delegate wakes) | `EventSteeringInjected`, `:1553` | field exists (`agent/events/payloads.go:356`) but is **not populated**, and the projector's case ignores it (`appwire_projection.go:727-734`) — and **must keep ignoring it**; this row is the trap, see the banner |
 
 The projector adopts a named id at `appwire_projection.go:225-227` —
 `if data.StableTurnID != "" { p.reservedTurnID = data.StableTurnID }`,
@@ -141,18 +172,23 @@ means *the turn that is running*, not *the turn a client mutation reserved*.
 | File | Responsibility |
 | --- | --- |
 | `agent/events/payloads.go` (modify) | `GoalContinuationData` gains `StableTurnID`, matching `UserInputData` and `SteeringInjectedData`. |
-| `internal/appprojector/appwire_projection.go` (modify) | The `EventGoalContinuation` and `EventSteeringInjected` cases adopt a named id, exactly as `EventUserInput` already does. |
+| `internal/appprojector/appwire_projection.go` (modify) | The `EventGoalContinuation` case adopts a named id, exactly as `EventUserInput` already does. (**`EventSteeringInjected` was in this row and is REVERTED** — it must never adopt; see Step 7.) |
 | `agent/session_active_turn.go` (create) | Mint / release the running turn's durable id under the guards this plan's review earned. One responsibility, so the client-mutation files stay about client mutations. |
 | `agent/session_active_turn_test.go` (create) | Unit coverage: mint, refuse-under-fence, refuse-when-owned, release, no-store-no-mint. |
 | `agent/session_client_mutation_persist.go` (modify) | Reconcile `ActiveTurnID` at load. |
 | `agent/session_lifecycle.go` (modify) | Mint after the accept block; pass the id into the two opening events. |
-| `server/server.go` (modify) | `SetProcessing` stops minting turn ids. |
-| `cmd/serf/serve.go` (modify) | Nothing announces turn ids; `holdServeStateForAwaitingWake` stays. |
+| `server/server.go` (modify) | `SetProcessing` stops minting turn ids. (**Not done** — Task 2 was dropped; `setProcessingLocked` still mints.) |
+| `cmd/serf/serve.go` (modify) | Nothing announces turn ids; `holdServeStateForAwaitingWake` stays. (Task 2 left this file untouched.) |
 | `cmd/serf-hub/e2e_turn_control_test.go` (modify) | Live-stack regression on a goal-continuation turn. |
 
 ---
 
 ### Task 1: Name the turns that open unnamed
+
+**Status: shipped for goal continuations (`c751369d7`); the notification half
+was reverted by `b5ce354a5`.** Steps 1–5, 8 and 9 are done. Step 6's
+notification emit and Step 7's `EventSteeringInjected` adoption are the reverted
+part — see the REVERTED markers on each.
 
 **Files:**
 - Modify: `agent/events/payloads.go:668` (`GoalContinuationData`)
@@ -169,7 +205,7 @@ means *the turn that is running*, not *the turn a client mutation reserved*.
   means "unnamed", which is the existing behaviour.
 - Produces: `func (s *Session) releaseRunningTurnID(turnID string)` — package-private.
 
-- [ ] **Step 1: Write the failing unit test**
+- [x] **Step 1: Write the failing unit test**
 
 Create `agent/session_active_turn_test.go`:
 
@@ -268,12 +304,12 @@ func TestMintRunningTurnIDSkipsUnservedSessions(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `cd agent && go test ./ -run TestMintRunningTurnID -v`
 Expected: FAIL — `s.mintRunningTurnID undefined`.
 
-- [ ] **Step 3: Add the mint / release seam**
+- [x] **Step 3: Add the mint / release seam**
 
 Create `agent/session_active_turn.go`:
 
@@ -373,12 +409,12 @@ func (s *Session) markAuthoritativeConsumerForTest() {
 }
 ```
 
-- [ ] **Step 4: Run the unit tests and watch them pass**
+- [x] **Step 4: Run the unit tests and watch them pass**
 
 Run: `cd agent && go test ./ -run TestMintRunningTurnID -v`
 Expected: PASS, all four.
 
-- [ ] **Step 5: Reconcile the durable authority at load**
+- [x] **Step 5: Reconcile the durable authority at load**
 
 A running turn cannot survive the process that ran it. Without this, an
 ungraceful exit mid-agent-turn leaves `active_turn_id` set with no pending
@@ -441,7 +477,29 @@ decodes and before it is returned, add:
 
 Re-run the test; expect PASS.
 
-- [ ] **Step 6: Carry the id on the two opening events**
+- [~] **Step 6: Carry the id on the two opening events** — **the goal-continuation
+  half shipped; the notification half is REVERTED (`b5ce354a5`).**
+
+> **REVERTED.** The `acceptNotificationInput` half of this step is not live and
+> must not be re-implemented as written. Two problems, both found by adversarial
+> review after it shipped:
+>
+> 1. `acceptNotificationInput` proceeds on job notifications **or** pending
+>    steering **or** root delegate attention, but the only emit carrying the name
+>    was guarded by `len(jobNotifs) > 0`. An attention-driven wake therefore minted
+>    a durable `ActiveTurnID` that no event ever published — leaving the original
+>    bug in place **and** newly rejecting `turn/start` with "turn is already
+>    active", where before it was accepted and ran next.
+> 2. `SteeringInjectedData.StableTurnID` names the steering mutation's own record,
+>    not the turn (see Step 7's marker).
+>
+> The mint shape below is also stale twice over. `c24c283ce` moved the
+> notification mint, and `2bf03d10d` then moved it again: the name is now taken at
+> the top of `processOneInput`, before any wake state is consumed, because
+> `beginRootDelegateAttentionTurn` consumes the process-local wake and a
+> stand-down decided after it strands the attention the wake existed to deliver.
+> The release is a single `defer` registered *before* the mint. Read
+> `agent/session_lifecycle.go` for the shipped shape; do not copy the block below.
 
 In `agent/events/payloads.go`, add to `GoalContinuationData`:
 
@@ -496,9 +554,13 @@ Thread the parameter through both accepts:
 - `acceptContinuationInput(_ context.Context, input string, stableTurnID string)`
   — pass it on the emit at `:1482`:
   `s.emit(events.EventGoalContinuation, events.GoalContinuationData{Text: marker, StableTurnID: stableTurnID})`
-- `acceptNotificationInput(ctx context.Context, stableTurnID string) (proceed bool)`
+- ~~`acceptNotificationInput(ctx context.Context, stableTurnID string) (proceed bool)`
   — pass it on the emit at `:1553`:
-  `s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification, StableTurnID: stableTurnID})`
+  `s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification, StableTurnID: stableTurnID})`~~
+  **REVERTED.** The shipped emit carries no `StableTurnID`; the notification turn
+  is named by `EventTurnStarted` instead. `acceptNotificationInput` does take a
+  trailing `turnID string` today, but it spends it on the boundary event, not on
+  the steering payload.
 
 Check the other `acceptNotificationInput` call sites and update them; run
 `grep -rn "acceptNotificationInput\|acceptContinuationInput" --include="*.go" .`
@@ -509,7 +571,22 @@ input loop at all (`grep -rn "EntryDelegateAttention" --include="*.go" .`).
 If it can, file a kata — it emits no opening event and cannot be named this
 way; do not widen this change to cover it.
 
-- [ ] **Step 7: Make the projector adopt the named id**
+- [~] **Step 7: Make the projector adopt the named id** — **the
+  `EventGoalContinuation` half shipped; the `EventSteeringInjected` half is
+  REVERTED (`b5ce354a5`).**
+
+> **REVERTED.** The projector must **never** adopt
+> `SteeringInjectedData.StableTurnID`. That field names the steering mutation's
+> own durable record — `clientMutationSteer` reserves a fresh one per steer — so
+> adopting it names the turn after a steer that merely landed in it, and every
+> mid-turn control aimed at that turn is then rejected. A `p.activeTurnID == ""`
+> guard does not rescue it: it makes the adoption inert for the interleaved case,
+> which is the common one.
+>
+> `TestSteeringInjectedNeverNamesATurn`
+> (`internal/appprojector/goal_turn_identity_test.go`) fails if this comes back,
+> and `internal/appprojector/appwire_projection.go`'s `EventSteeringInjected`
+> case carries the same reasoning as a comment.
 
 In `internal/appprojector/appwire_projection.go`, the `EventUserInput` case
 already does this at `:225-227`. Add the same two lines to the other two,
@@ -523,14 +600,16 @@ immediately before each opens its turn:
   		}
   ```
   (fold into the existing `data :=` if the case already decodes the payload.)
-- `EventSteeringInjected` (case at `:727`), after `data` is decoded at `:729`:
+- ~~`EventSteeringInjected` (case at `:727`), after `data` is decoded at `:729`:~~
+  **REVERTED — do not add this.** See the marker above.
   ```go
+  		// NOT LIVE. Adding this back breaks TestSteeringInjectedNeverNamesATurn.
   		if data.StableTurnID != "" {
   			p.reservedTurnID = data.StableTurnID
   		}
   ```
 
-- [ ] **Step 8: Run the agent and projector suites**
+- [x] **Step 8: Run the agent and projector suites**
 
 Run: `cd agent && go test ./...` then `go test ./internal/appprojector/`
 Expected: PASS. `ActiveTurnID` is now set during goal and notification turns,
@@ -539,7 +618,7 @@ fires where it previously did not. That is the intended meaning of the field
 — the composer already routes Send to `turn/queue` while busy — but if a test
 asserted the old behaviour, update it and say so in the commit.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add agent/session_active_turn.go agent/session_active_turn_test.go agent/session_lifecycle.go agent/events/payloads.go agent/session_client_mutation_persist.go internal/appprojector/appwire_projection.go
@@ -664,6 +743,10 @@ git commit -m "fix(server): a processing flip no longer mints a turn id"
 
 ### Task 3: Live-stack regression — a goal turn takes steer and stop
 
+**Status: shipped as `ce229b9de`.** It landed under the name
+`TestE2E_TurnControlReachesAnAgentStartedTurn`, not the
+`TestE2E_TurnControlReachesAGoalContinuationTurn` this task asked for.
+
 **Files:**
 - Modify: `cmd/serf-hub/e2e_turn_control_test.go`
 
@@ -672,7 +755,7 @@ git commit -m "fix(server): a processing flip no longer mints a turn id"
   `awaitThread`, `clientRequest`, `newMutationID`, `communicateArgs` — all
   already in that file.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append `TestE2E_TurnControlReachesAGoalContinuationTurn` to
 `cmd/serf-hub/e2e_turn_control_test.go`. It mirrors the existing
@@ -699,7 +782,7 @@ middle:
 7. `turn/interrupt` with `ExpectedTurnID: goalTurn`; assert applied, then
    `awaitThread` until `thread.Serf.ActiveTurnID != goalTurn`.
 
-- [ ] **Step 2: Run it against the unfixed daemon**
+- [x] **Step 2: Run it against the unfixed daemon**
 
 Check out the commit before Task 1 into a scratch worktree (never
 `git stash`), or simply run this step before implementing Tasks 1–2.
@@ -708,12 +791,12 @@ Run: `go test ./cmd/serf-hub/ -run TestE2E_TurnControlReachesAGoalContinuationTu
 Expected: FAIL — `turn/steer against the goal continuation turn "turn_2":
 ... turn is not active`.
 
-- [ ] **Step 3: Run it against the fixed daemon**
+- [x] **Step 3: Run it against the fixed daemon**
 
 Run: `go test ./cmd/serf-hub/ -run TestE2E_TurnControl -v`
 Expected: PASS, both tests in the family.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add cmd/serf-hub/e2e_turn_control_test.go
@@ -723,6 +806,11 @@ git commit -m "test(e2e): pin steer and stop on an agent-started turn"
 ---
 
 ### Task 4: Full gates
+
+**Status: unverifiable from the tree.** A gate run leaves no artifact behind, so
+nothing here can be checked off from evidence the way Tasks 1 and 3 can. The
+boxes below are left as written and carry no claim either way. The plan is not
+to be executed, so do not run this list as if it were live.
 
 **Files:** none — this task only runs gates and fixes what they catch.
 
