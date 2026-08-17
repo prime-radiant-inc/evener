@@ -11,7 +11,7 @@ set -uo pipefail
 real_script="$(cd "$(dirname "$0")" && pwd)/coverage-union.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d -t serf-covunion-selftest.XXXXXX)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/serf-covunion-selftest.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
 repo="$work/repo"
@@ -41,6 +41,9 @@ for a in "$@"; do
 	esac
 done
 [ -n "$prof" ] || { echo "fake go: no -coverprofile in: $*" >&2; exit 2; }
+# FAKE_GO_SLEEP holds a measurement open so the run can be observed and
+# signalled while its scratch directory exists.
+[ -n "${FAKE_GO_SLEEP:-}" ] && sleep "$FAKE_GO_SLEEP"
 {
 	echo "mode: set"
 	if [ "$tagged" = 1 ]; then
@@ -86,6 +89,22 @@ else
 	bad "union row wrong"; sed 's/^/    | /' "$out"
 fi
 assert_eq "$(ls -A "$tmphome")" "" "a clean run leaves no scratch directory behind"
+
+# ...which only means something if the scratch would have landed in $tmphome at
+# all. See scratch-selftest-lib.sh: it did not, and the line above passed for as
+# long as the bug existed.
+. "$(dirname "$0")/scratch-selftest-lib.sh"
+start_scratch_run() {
+	set -m   # give the run its own process group, so a signal reaches the group
+	PATH="$fake_bin:$PATH" FAKE_GO_SLEEP=30 TMPDIR="$tmphome" \
+		bash "$script" --modules "agent" >"$out" 2>&1 &
+	run_pid=$!
+	set +m
+}
+assert_scratch_inside_tmpdir
+assert_killed_run_cleans_up TERM
+assert_killed_run_cleans_up INT
+assert_killed_run_cleans_up HUP
 
 run --bless >"$out" 2>&1
 assert_has "$floors" "agent 100.0" "bless records the measured union floor"

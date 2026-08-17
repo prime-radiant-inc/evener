@@ -63,6 +63,41 @@ else
 fi
 [ ! -e "$expired_shard" ] && ok "reclaim removes an expired heartbeat shard" || bad "reclaim keeps an expired heartbeat shard"
 
+# The coverage runners drop their profiles in per-run scratch directories and
+# remove them on every exit path a shell can see. SIGKILL is not one of those: a
+# `kill -9`, an OOM kill, or a power cut leaves the directory with nobody left to
+# run a trap, and each holds a full set of profiles. That is what a reclaimer is
+# for, and until these prefixes were listed nothing swept them — 61 directories
+# holding 1.5GB had accumulated in one developer's temp directory.
+#
+# No heartbeat here on purpose: a coverage run writes profiles continuously, so
+# the directory's own mtime is an honest liveness signal, and inventing a marker
+# would be a second mechanism saying the same thing.
+for prefix in serf-testcov serf-covunion serf-fuzzcov serf-fuzzcov-global; do
+	stale_cov="$tmpbase/$prefix.stale"
+	live_cov="$tmpbase/$prefix.live"
+	mkdir -p "$stale_cov" "$live_cov"
+	printf 'mode: set\n' >"$stale_cov/root.cov"
+	printf 'mode: set\n' >"$live_cov/root.cov"
+	touch -t 202001010000 "$stale_cov"
+
+	out="$work/$prefix-dry-run.out"
+	run_reclaim --dry-run >"$out" 2>&1
+	assert_has "$out" "would remove: $stale_cov" "an abandoned $prefix scratch is eligible"
+	if grep -qF "would remove: $live_cov" "$out"; then
+		bad "an in-flight $prefix scratch is eligible"
+	else
+		ok "an in-flight $prefix scratch is protected by its fresh mtime"
+	fi
+
+	run_reclaim --yes >"$work/$prefix-reclaim.out" 2>&1
+	[ ! -e "$stale_cov" ] && ok "reclaim removes the abandoned $prefix scratch" ||
+		bad "reclaim kept the abandoned $prefix scratch"
+	[ -d "$live_cov" ] && ok "reclaim leaves the in-flight $prefix scratch" ||
+		bad "reclaim removed the in-flight $prefix scratch"
+	rm -rf "$live_cov"
+done
+
 # Fake only the go boundary and point the debris path at throwaway fixtures.
 # The real reclaimer still performs its canonical directory resolution and
 # deletion decisions; no user GOCACHE or fixed /tmp debris path is touched.

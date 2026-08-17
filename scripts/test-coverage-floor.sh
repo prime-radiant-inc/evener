@@ -71,7 +71,12 @@ floor_for() { awk -v m="$1" '$1==m {print $2}' "$floors_file" 2>/dev/null; }
 measured_for() { awk -v m="$1" '$1==m {print $2}' "$measured_file" 2>/dev/null; }
 
 
-profiles_dir="$(mktemp -d -t serf-testcov.XXXXXX)"
+# An explicit template, not `mktemp -t`: macOS's mktemp ignores TMPDIR for -t and
+# uses the Darwin per-user temp directory instead, which put every run's scratch
+# outside the dev-tooling wave's per-suite isolation — and so outside the leftover
+# check that is supposed to catch exactly this.
+tmpbase=${TMPDIR:-/tmp}
+profiles_dir="$(mktemp -d "${tmpbase%/}/serf-testcov.XXXXXX")"
 measured_file="$profiles_dir/measured.txt"
 : >"$measured_file"
 fail=0
@@ -130,7 +135,7 @@ for m in $modules; do
 done
 
 if $bless; then
-	tmp="$(mktemp)"
+	tmp="$(mktemp "${TMPDIR:-/tmp}/serf-floors.XXXXXX")"
 	{
 		# Carry the file's existing comment header through instead of restating a
 		# fixed one. A downward reset is a hand edit whose comment records WHY the

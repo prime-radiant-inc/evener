@@ -5,7 +5,12 @@
 #   1) $TMPDIR/agent-test-shards.*  — stale directories from failed or
 #      interrupted historical sharded `make test` runs; current green runs
 #      remove their directories (measured 103 dirs / ~4.2GB on 2026-07-31).
-#   2) /tmp/serf-gocache-k3         — a one-off GOCACHE a session created to
+#   2) $TMPDIR/serf-testcov.*, serf-covunion.*, serf-fuzzcov.*,
+#      serf-fuzzcov-global.* — per-run coverage scratch. Those runners remove
+#      their own scratch on every exit path a shell can observe, which SIGKILL,
+#      an OOM kill and a power cut are not; each abandoned directory holds a
+#      full set of profiles (measured 61 dirs / ~1.5GB on 2026-08-17).
+#   3) /tmp/serf-gocache-k3         — a one-off GOCACHE a session created to
 #      route around the external-volume stall and flagged for cleanup
 #      (recorded in kata r07s's filing).
 #
@@ -15,14 +20,16 @@
 #
 # Safety, in order of importance:
 #   - Deletes only DIRECTORIES sitting directly under $TMPDIR whose names
-#     start with the exact shard prefix. Symlinks never match (-type d under
-#     find's default -P), and nothing is ever followed out of $TMPDIR.
+#     start with one of the exact prefixes above. Symlinks never match (-type d
+#     under find's default -P), and nothing is ever followed out of $TMPDIR.
 #   - A directory modified in the last SERF_DEBRIS_MIN_AGE_MINUTES minutes
 #     (default 30) is KEPT: an in-flight `make test` writes into its shard
-#     dir continuously, so freshness is the "is anyone using this" signal.
+#     dir continuously, and so does a coverage run into its profiles, so
+#     freshness is the "is anyone using this" signal.
 #     Active shard runs also own a `.heartbeat` file and refresh it while they
 #     run; that marker is authoritative because appending an existing nested
-#     log does not update the shard directory itself.
+#     log does not update the shard directory itself. Coverage scratch has no
+#     marker and needs none — its profiles are written throughout the run.
 #   - The gocache path is refused outright if `go env GOCACHE` points at it:
 #     canonical filesystem identity, rather than spelling, decides whether it
 #     stopped being debris and became the machine's live build cache.
@@ -43,7 +50,19 @@ esac
 age_minutes=${SERF_DEBRIS_MIN_AGE_MINUTES:-30}
 tmpbase=${TMPDIR:-/tmp}
 tmpbase=${tmpbase%/}
-shard_prefix='agent-test-shards.'
+# Every per-run scratch prefix this reclaimer sweeps. The shard dirs come from
+# interrupted sharded `make test` runs; the four coverage prefixes come from the
+# coverage runners, which remove their scratch on every exit path a shell can
+# observe — but SIGKILL, an OOM kill and a power cut are not among those, and
+# each abandoned directory holds a full set of profiles (61 of them, 1.5GB, had
+# accumulated before these were listed).
+scratch_prefixes=(
+	'agent-test-shards.'
+	'serf-testcov.'
+	'serf-covunion.'
+	'serf-fuzzcov.'
+	'serf-fuzzcov-global.'
+)
 gocache_debris='/tmp/serf-gocache-k3'
 # The selftest may replace only the parent root; the fixed basename keeps this
 # cleanup target from becoming an arbitrary rm -rf input.
@@ -75,22 +94,28 @@ directory_is_fresh() {
 # link out of TMPDIR. A fresh directory or heartbeat keeps the entry;
 # everything else is old enough to reclaim, including legacy shard dirs with no
 # marker.
+# Only the shard dirs carry a heartbeat; a coverage scratch has no marker, so
+# heartbeat_status returns "absent" for it and freshness alone decides. That is
+# the right signal there: a coverage run writes profiles continuously, so an old
+# mtime means nobody is writing.
 shard_dirs=()
 kept=0
-for d in "$tmpbase"/"${shard_prefix}"*; do
-	[ -d "$d" ] || continue
-	[ -L "$d" ] && continue
-	heartbeat_state=3
-	if heartbeat_status "$d"; then
-		heartbeat_state=0
-	else
-		heartbeat_state=$?
-	fi
-	if directory_is_fresh "$d" || [ "$heartbeat_state" -eq 0 ] || [ "$heartbeat_state" -eq 2 ]; then
-		kept=$((kept + 1))
-	else
-		shard_dirs+=("$d")
-	fi
+for prefix in "${scratch_prefixes[@]}"; do
+	for d in "$tmpbase"/"${prefix}"*; do
+		[ -d "$d" ] || continue
+		[ -L "$d" ] && continue
+		heartbeat_state=3
+		if heartbeat_status "$d"; then
+			heartbeat_state=0
+		else
+			heartbeat_state=$?
+		fi
+		if directory_is_fresh "$d" || [ "$heartbeat_state" -eq 0 ] || [ "$heartbeat_state" -eq 2 ]; then
+			kept=$((kept + 1))
+		else
+			shard_dirs+=("$d")
+		fi
+	done
 done
 
 total_kb=0
@@ -100,7 +125,7 @@ if [ "${#shard_dirs[@]}" -gt 0 ]; then
 	done < <(du -sk "${shard_dirs[@]}" 2>/dev/null | awk '{print $1}')
 fi
 
-echo "shard dirs under $tmpbase older than ${age_minutes}m: ${#shard_dirs[@]} ($((total_kb / 1024))MB); kept as possibly-live: $kept"
+echo "scratch dirs under $tmpbase older than ${age_minutes}m: ${#shard_dirs[@]} ($((total_kb / 1024))MB); kept as possibly-live: $kept"
 
 filesystem_identity() {
 	local path="$1" identity

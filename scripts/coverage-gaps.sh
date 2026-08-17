@@ -14,7 +14,7 @@
 #   scripts/coverage-gaps.sh PROFILE --in session.go  # uncovered blocks IN a file
 #
 # PROFILE is a `go test -coverprofile` file. Generate one with, e.g.
-#   prof="$(mktemp -t serf-cov.XXXXXX)"
+#   prof="$(mktemp "${TMPDIR:-/tmp}/serf-cov.XXXXXX")"
 #   go test -count=1 -short -coverpkg="$(go list ./... | paste -sd, -)" \
 #     -coverprofile="$prof" -run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" ./...
 #   scripts/coverage-gaps.sh "$prof"

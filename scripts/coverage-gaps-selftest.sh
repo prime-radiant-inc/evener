@@ -7,7 +7,7 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/coverage-gaps.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d -t serf-covgaps-selftest.XXXXXX)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/serf-covgaps-selftest.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
 profile="$work/p.cov"
