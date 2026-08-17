@@ -60,11 +60,11 @@ func TestSessionStartDispatchOnFreshSessionIsNotFlaggedAsReinjection(t *testing.
 	entry := sessionStartHookDispatchEntry(t, dir, sess.ID())
 	// Guard against a vacuous pass: a dispatch that delivered nothing could
 	// never trip the detector, so the silence would prove nothing.
-	if !strings.Contains(entry.Summary, "delivered=1") {
-		t.Fatalf("summary = %q, want delivered=1 — the hook must actually deliver context for this test to mean anything", entry.Summary)
+	if !strings.Contains(entry.Summary, "delivered=1 ") {
+		t.Fatalf("summary = %q, want delivered=1 followed by a delimiter — the hook must actually deliver context for this test to mean anything", entry.Summary)
 	}
-	if !strings.Contains(entry.Summary, "historyTurns=0") {
-		t.Errorf("summary = %q, want historyTurns=0 — the dispatch's own HOOK_COMPLETED turns are not prior history", entry.Summary)
+	if !strings.Contains(entry.Summary, "historyTurns=0 ") {
+		t.Errorf("summary = %q, want historyTurns=0 followed by a delimiter — the dispatch's own HOOK_COMPLETED turns are not prior history", entry.Summary)
 	}
 	if entry.Outcome != "success" {
 		t.Errorf("outcome = %q, want success on a fresh session; failures = %v", entry.Outcome, entry.Failures)
@@ -125,8 +125,8 @@ func TestSessionStartDispatchIntoRestoredHistoryIsFlaggedAsReinjection(t *testin
 	if entry.Outcome != "failure" {
 		t.Fatalf("outcome = %q, want failure — context delivered into a session with prior history is the anomaly; summary = %q", entry.Outcome, entry.Summary)
 	}
-	if !strings.Contains(entry.Summary, "historyTurns=2") {
-		t.Errorf("summary = %q, want historyTurns=2 — the two restored conversation turns", entry.Summary)
+	if !strings.Contains(entry.Summary, "historyTurns=2 ") {
+		t.Errorf("summary = %q, want historyTurns=2 followed by a delimiter — the two restored conversation turns", entry.Summary)
 	}
 	if len(entry.Failures) != 1 || !strings.Contains(entry.Failures[0], "re-injected") {
 		t.Errorf("failures = %v, want one re-injection diagnostic", entry.Failures)
