@@ -1390,7 +1390,7 @@ export interface TurnInterruptParams {
   ref?: string;
   threadId?: string;
   clientMutationId: string;
-  expectedTurnId: string;
+  expectedTurnId?: string;
   interruptRunningTurn?: boolean;
 }
 

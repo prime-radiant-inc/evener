@@ -3342,6 +3342,32 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     });
   });
 
+  // The gap Task 1 measured: the session is working, so Stop is on screen,
+  // but no turn id has reached this client — a turn the session started for
+  // itself, a boundary between two turns of one drain, or a cold client. The
+  // targeted form cannot be sent there (every layer requires a non-empty
+  // expectedTurnId), so a Stop that named the empty string bounced as
+  // InvalidParams and the user could see work they could not stop.
+  test("interrupt with no turn id asks the daemon to stop whatever is running", async () => {
+    const fake = connectMutationClient();
+    fake.on("thread/read", (params) =>
+      readResponse((params as { ref: string }).ref, { status: { type: "active" } }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId ?? "").toBe("");
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    await threadsStore.getState().interrupt("ref_a");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/interrupt"));
+
+    const call = fake.calls.find((c) => c.method === "turn/interrupt");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      interruptRunningTurn: true,
+    });
+  });
+
   test("queue sends turn/queue with the current expectedTurnId", async () => {
     const fake = connectMutationClient();
     await ensureActiveMutationTarget(fake, "ref_a");

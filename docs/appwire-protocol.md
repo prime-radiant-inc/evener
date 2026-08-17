@@ -1466,7 +1466,7 @@ _(no fields)_
 | `ref` | `string` | yes |  |
 | `threadId` | `string` | yes |  |
 | `clientMutationId` | `string` |  |  |
-| `expectedTurnId` | `string` |  |  |
+| `expectedTurnId` | `string` | yes |  |
 | `interruptRunningTurn` | `bool` | yes |  |
 
 

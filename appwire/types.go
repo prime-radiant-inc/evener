@@ -1047,8 +1047,11 @@ type TurnInterruptParams struct {
 	ClientMutationID string `json:"clientMutationId"`
 	// ExpectedTurnID is required unless InterruptRunningTurn is set, and is
 	// ignored when it is: the two forms differ precisely in whether the client
-	// gets to choose the target.
-	ExpectedTurnID       string `json:"expectedTurnId"`
+	// gets to choose the target. It is omitempty so the session-scoped form can
+	// leave it out rather than send an empty string every layer rejects;
+	// ValidateMutationParams still requires it of the targeted form, from its
+	// own list, so this tag cannot weaken that.
+	ExpectedTurnID       string `json:"expectedTurnId,omitempty"`
 	InterruptRunningTurn bool   `json:"interruptRunningTurn,omitempty"`
 }
 
