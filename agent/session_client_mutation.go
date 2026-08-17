@@ -670,7 +670,7 @@ func (s *Session) SetPendingUserInputWakeFunc(wake func()) {
 	s.mu.Lock()
 	s.pendingUserInputWake = wake
 	s.mu.Unlock()
-	if wake != nil && (s.QueueDepth() > 0 || s.hasPendingSteering()) {
+	if wake != nil && (s.QueueDepth() > 0 || s.hasPendingUserSteering()) {
 		wake()
 	}
 }

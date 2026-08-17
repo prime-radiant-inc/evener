@@ -207,7 +207,7 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		result, err := s.ProcessInputKind(ctx, queued.Text, queued.Images, EntryUserInput)
 		return result, true, err
 	}
-	if !s.hasPendingSteering() {
+	if !s.hasPendingUserSteering() {
 		return "", false, nil
 	}
 	result, err := s.ProcessInputKind(ctx, "", nil, EntryUserInput)
@@ -426,7 +426,13 @@ func (s *Session) wakeForPendingSteering() {
 	if !s.hasPendingSteering() {
 		return
 	}
-	s.wakePendingUserInput()
+	// Only the user's own steering can provoke a turn; daemon-authored steering
+	// rides the next one and must not be given an entry point of its own.
+	if s.hasPendingUserSteering() {
+		s.wakePendingUserInput()
+		return
+	}
+	s.notify()
 }
 
 // wakeForPendingQueuedInput is wakeForPendingSteering's counterpart for
