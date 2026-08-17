@@ -91,15 +91,43 @@ func trender_isSubsequence(want, have []string) bool {
 // so a render that RETAINED a private key cannot match its source line and the
 // subsequence check still fails on the leak.
 func trender_entryLinesAreProjection(renderedEntries, fileLines []string) bool {
+	// An ATTENTION_RESOLUTION entry is not redacted by publicTranscriptLine, it
+	// is OMITTED (include=false, session_tools_transcript.go). Leaving those
+	// lines among the source candidates lets a render that emitted one find a
+	// matching source line and satisfy the subsequence check, so the oracle
+	// would accept the exact leak it exists to catch. A rendered entry of that
+	// kind must match nothing.
 	want := make([]string, 0, len(renderedEntries))
 	for _, line := range renderedEntries {
 		want = append(want, trender_canonicalEntry(line, false))
 	}
 	have := make([]string, 0, len(fileLines))
 	for _, line := range fileLines {
+		if trender_isAttentionResolution(line) {
+			continue
+		}
 		have = append(have, trender_canonicalEntry(line, true))
 	}
 	return trender_isSubsequence(want, have)
+}
+
+// trender_isAttentionResolution reports whether a JSONL entry line carries the
+// private turn kind publicTranscriptLine refuses to render. A line that is not a
+// decodable entry is not one, which leaves it to the ordinary comparison.
+func trender_isAttentionResolution(line string) bool {
+	var entry map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		return false
+	}
+	var turn map[string]json.RawMessage
+	if err := json.Unmarshal(entry["turn"], &turn); err != nil {
+		return false
+	}
+	var kind schema.TurnKind
+	if err := json.Unmarshal(turn["kind"], &kind); err != nil {
+		return false
+	}
+	return kind == schema.TurnAttentionResolution
 }
 
 // trender_canonicalEntry re-encodes one JSONL line into the form the projection
@@ -170,6 +198,16 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 	entryB := `{"kind":"entry","seq":%d,"turn":{"kind":"ASSISTANT","message":{"role":"assistant"}}}`
 	private := `{"kind":"entry","seq":%d,"turn":{"attention_id":"a1","kind":"USER_INPUT"}}`
 	redacted := `{"kind":"entry","seq":%d,"turn":{"kind":"USER_INPUT"}}`
+	// publicTranscriptLine OMITS this kind rather than redacting it, so it must
+	// never appear on the rendered side no matter what the source holds.
+	//
+	// Deliberately carries NO private turn keys. A resolution entry that still
+	// held attention_resolution would be caught by redaction alone -- the
+	// source side strips the key, the rendered side keeps it, and the lines no
+	// longer match. The bare form is the one that slips through: redaction
+	// changes nothing, so the rendered copy matches its source and the
+	// subsequence check accepts a record the projection must never emit.
+	resolution := `{"kind":"entry","seq":%d,"turn":{"kind":"ATTENTION_RESOLUTION"}}`
 	at := func(tmpl string, seq int) string { return fmt.Sprintf(tmpl, seq) }
 
 	tests := []struct {
@@ -201,6 +239,21 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 			file:     []string{trenderHeader, at(private, 9)},
 			rendered: []string{at(private, 0)},
 			want:     false,
+		},
+		{
+			// The leak this oracle could not see: the source really does hold
+			// the record, so before excluding it from the candidates the
+			// rendered copy matched and the subsequence check passed.
+			name:     "attention resolution emitted by the render",
+			file:     []string{trenderHeader, at(entryA, 0), at(resolution, 1)},
+			rendered: []string{at(entryA, 0), at(resolution, 1)},
+			want:     false,
+		},
+		{
+			name:     "attention resolution omitted by the render",
+			file:     []string{trenderHeader, at(entryA, 0), at(resolution, 1), at(entryB, 2)},
+			rendered: []string{at(entryA, 0), at(entryB, 1)},
+			want:     true,
 		},
 		{
 			name:     "entries emitted out of file order",
