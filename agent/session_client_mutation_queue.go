@@ -1179,16 +1179,24 @@ func (s *Session) finalizeIncorporatedSteering(clientMutationID string) error {
 // Queue transcript incorporation retains the payload and stable turn identity;
 // only durable terminal completion may remove the runnable execution.
 func (s *Session) completeClientMutationTurn(clientMutationID string) error {
-	return s.completeClientMutationTurnWithState(clientMutationID, "terminal")
+	_, err := s.completeClientMutationTurnWithState(clientMutationID, "terminal")
+	return err
 }
 
 func (s *Session) completeClientMutationInterruptedTurn(clientMutationID string) error {
-	return s.completeClientMutationTurnWithState(clientMutationID, "interrupted")
+	_, err := s.completeClientMutationTurnWithState(clientMutationID, "interrupted")
+	return err
 }
 
-func (s *Session) completeClientMutationTurnWithState(clientMutationID, executionState string) error {
+// completeClientMutationTurnWithState settles one client-mutation turn and
+// reports whether doing so finalized an interrupt fence naming that turn --
+// i.e. whether a Stop is what ended it. The drain loop needs that fact: a turn
+// ended by a Stop must leave the queue head parked (wms7's ruling), while a
+// turn ended by a bare host cancellation may still drain it, and by the time
+// the drain loop asks, the fence this call just finalized is already gone.
+func (s *Session) completeClientMutationTurnWithState(clientMutationID, executionState string) (stopFinalized bool, err error) {
 	returned := false
-	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+	err = s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		pending, ok := snapshot.PendingExecutions[clientMutationID]
 		if !ok {
 			return nil
@@ -1229,12 +1237,13 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 			snapshot.ActiveTurnID = ""
 		}
 		if snapshot.InterruptFence != nil && snapshot.InterruptFence.ExpectedTurnID == pending.TurnID {
+			stopFinalized = true
 			return finalizeClientMutationInterrupt(snapshot, s.ID())
 		}
 		return nil
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	if returned {
 		// The durable queue grew a message back. QueueDepth, QueuePreview,
@@ -1244,7 +1253,7 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 		s.reflectDurableInputQueue()
 		s.wakeForPendingQueuedInput()
 	}
-	return nil
+	return stopFinalized, nil
 }
 
 // returnClaimedQueuedMutation puts a claimed queue entry back the way

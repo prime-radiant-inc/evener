@@ -643,17 +643,24 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		ranKind := nextKind
 		ranClientMutation := queuedClientMutationFromContext(processCtx)
 		out, progressed, err := s.processOneInput(processCtx, next, nextImages, nextKind, nextProvenance)
+		// True when the completion below finalized an interrupt fence naming
+		// this turn: a Stop is what ended it, and the drain branch further down
+		// must leave the queue head parked (wms7's ruling) rather than run the
+		// very message the user just stopped.
+		stopSettledThisTurn := false
 		if ranClientMutation.ClientMutationID != "" {
 			terminalState := "terminal"
 			if err != nil {
 				terminalState = "failed"
 			}
-			if completeErr := s.completeClientMutationTurnWithState(
+			stopFinalized, completeErr := s.completeClientMutationTurnWithState(
 				ranClientMutation.ClientMutationID,
 				terminalState,
-			); completeErr != nil {
+			)
+			if completeErr != nil {
 				err = errors.Join(err, fmt.Errorf("complete client mutation turn: %w", completeErr))
 			}
+			stopSettledThisTurn = stopFinalized
 		}
 		processCtx = context.WithValue(processCtx, queuedClientMutationContextKey{}, queuedClientMutationIdentity{})
 		// Follow-up turns (after the first) carry no attachments and are
@@ -703,7 +710,16 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 						Interrupted: true,
 					})
 				}
-				if !closed {
+				// A turn ended by a Stop parks the queue head instead of running
+				// it (wms7's ruling): the user stopped this session's work, so
+				// nothing auto-starts, and the message waits for one of the
+				// ordinary wake paths. interruptDrainConfig cannot make that
+				// call -- it is a pure function of this turn's context and
+				// error, and a Stop's cancellation is indistinguishable there
+				// from a bare host cancellation -- and the fence that would
+				// mark the Stop was already finalized by the completion above,
+				// which is why the completion reports it here.
+				if !closed && !stopSettledThisTurn {
 					// Decide, then claim. popQueueHead is a durable commit, and
 					// whether this interrupt may drain depends only on the turn's
 					// context and error -- never on the queue -- so there is
