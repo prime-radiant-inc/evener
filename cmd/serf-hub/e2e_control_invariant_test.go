@@ -676,12 +676,19 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 	// claimed turn is cancelled and its message goes back on the queue, so
 	// nothing is lost and nothing auto-starts.
 	//
-	// Half of that ruling is already built. A turn claimed out of the queue that
+	// Most of that ruling is now built. A turn claimed out of the queue that
 	// never incorporates its input IS returned to the queue -- see
 	// agent/session_stop_and_queued_work_test.go's
-	// TestClaimedQueuedTurnIsReturnedWhenItNeverRan. What is missing is the
-	// cancellation ever reaching this turn, and three measurements narrow where
-	// it goes wrong:
+	// TestClaimedQueuedTurnIsReturnedWhenItNeverRan. And the MID-TURN half is
+	// fixed: a Stop that cancels a turn already producing, with a message
+	// queued behind it, settles the turn and parks the message -- the drain
+	// loop skips the queue head when the turn's completion finalized the Stop's
+	// interrupt fence, instead of running the very message the user stopped
+	// under the Stop's own chain (same file's
+	// TestStopOnMidTurnMutationParksTheQueuedMessage). What is missing is the
+	// cancellation ever reaching THIS turn -- one claimed at the boundary and
+	// still in its pre-turn work -- and three measurements narrow where it goes
+	// wrong:
 	//
 	//   - the mutation runner is armed when the Stop lands (cancel and done both
 	//     non-nil), so this is NOT a Stop firing into an empty slot;

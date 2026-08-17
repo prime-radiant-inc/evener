@@ -2,10 +2,13 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/llm"
 )
 
 // A Stop and a message queued behind it collide in an ordinary way, and the
@@ -53,9 +56,14 @@ func TestClaimedQueuedTurnIsReturnedWhenItNeverRan(t *testing.T) {
 	}
 
 	// The turn never incorporated its input. This is the call the drain loop
-	// makes next, unconditionally, at session_lifecycle.go:653.
-	if err := sess.completeClientMutationTurnWithState("queue-behind-stop", "terminal"); err != nil {
+	// makes next, unconditionally, at session_lifecycle.go:653. Returning the
+	// claim finalizes no fence, so it must not report a Stop settling the turn.
+	stopFinalized, err := sess.completeClientMutationTurnWithState("queue-behind-stop", "terminal")
+	if err != nil {
 		t.Fatalf("completeClientMutationTurnWithState: %v", err)
+	}
+	if stopFinalized {
+		t.Fatal("returning a claimed queued turn reported a Stop-finalized fence; there was no fence to finalize")
 	}
 
 	snapshot := sess.clientMutations.snapshot()
@@ -153,6 +161,220 @@ func TestStopIsHonestAboutAQueuedMessage(t *testing.T) {
 	snapshot := sess.clientMutations.snapshot()
 	if len(snapshot.InputQueue) != 1 {
 		t.Fatalf("the stop consumed the queued message: queue=%#v", snapshot.InputQueue)
+	}
+	if snapshot.InterruptFence != nil {
+		t.Fatalf("the stop left a fence behind: %#v", snapshot.InterruptFence)
+	}
+	if snapshot.ActiveTurnID != "" {
+		t.Fatalf("ActiveTurnID after the stop = %q, want empty", snapshot.ActiveTurnID)
+	}
+}
+
+// stopHoldAdapter is the model seam for the mid-turn Stop tests. Its first
+// call blocks until its context is cancelled, which is how a turn is held
+// mid-model-round for a Stop to land on. Any later call is a follow-on turn
+// the Stop should have prevented; it parks on releaseFollowOn so the test can
+// observe the Stop RPC blocked behind it rather than racing its completion.
+type stopHoldAdapter struct {
+	mu               sync.Mutex
+	calls            int
+	firstCallRunning chan struct{}
+	releaseFollowOn  chan struct{}
+}
+
+func newStopHoldAdapter() *stopHoldAdapter {
+	return &stopHoldAdapter{
+		firstCallRunning: make(chan struct{}),
+		releaseFollowOn:  make(chan struct{}),
+	}
+}
+
+func (a *stopHoldAdapter) Name() string { return "openai" }
+
+func (a *stopHoldAdapter) Calls() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.calls
+}
+
+func (a *stopHoldAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	a.mu.Lock()
+	a.calls++
+	n := a.calls
+	a.mu.Unlock()
+	if n == 1 {
+		close(a.firstCallRunning)
+		<-ctx.Done()
+		return llm.Response{}, ctx.Err()
+	}
+	select {
+	case <-a.releaseFollowOn:
+	case <-ctx.Done():
+		return llm.Response{}, ctx.Err()
+	}
+	return llm.Response{Provider: "openai", Model: req.Model, Message: llm.Assistant("done")}, nil
+}
+
+func (a *stopHoldAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	_ = ctx
+	_ = req
+	return nil, llm.ErrStreamUnsupported
+}
+
+// TestStopOnMidTurnMutationParksTheQueuedMessage is the wms7 ruling for a Stop
+// that cancels a running client-mutation turn with another message queued
+// behind it: the interrupted turn settles, the queued message stays on the
+// queue, nothing auto-starts, and the Stop RPC returns as soon as the
+// interrupted turn is settled.
+//
+// The wiring mirrors cmd/serf/serve.go's processMessage: a per-turn context
+// marked WithQueuedInputDrainOnInterruptHandler, a mutation runner whose
+// cancel+done pair backs the Stop's cancelAndWait, and a nextTurnCtx factory
+// that re-arms the runner for a drained turn. Before the fix, the drain loop
+// completed the cancelled turn (finalizing the interrupt fence) and then
+// drained the queue head anyway: the queued message ran as a follow-on turn
+// under the Stop's own chain, and the Stop RPC blocked until that whole turn
+// finished.
+func TestStopOnMidTurnMutationParksTheQueuedMessage(t *testing.T) {
+	dir := t.TempDir()
+	adapter := newStopHoldAdapter()
+	sess := newSession(t,
+		withAdapter(adapter),
+		withDir(dir),
+		withConfig(SessionConfig{
+			MaxSubagentDepth: 1,
+			NoProjectPrompts: true,
+			StateDir:         dir,
+			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		}),
+	)
+
+	// The daemon's queued-input wake, installed before anything is queued so the
+	// installation itself does not fire it. The accept-time wake below counts
+	// once; the Stop must not add to it ("nothing auto-starts").
+	var wakeMu sync.Mutex
+	wakes := 0
+	sess.SetPendingUserInputWakeFunc(func() {
+		wakeMu.Lock()
+		wakes++
+		wakeMu.Unlock()
+	})
+	countWakes := func() int {
+		wakeMu.Lock()
+		defer wakeMu.Unlock()
+		return wakes
+	}
+
+	// serve.go:662-673's mutation-runner wiring, verbatim in shape. The root
+	// context stands in for the daemon's serve context: alive for the whole
+	// test, which is what makes the interrupt drainable at all.
+	root := t.Context()
+	runnerDone := make(chan struct{})
+	var runnerMu sync.Mutex
+	var runnerCancel context.CancelFunc
+	setRunner := func(cancel context.CancelFunc) {
+		runnerMu.Lock()
+		runnerCancel = cancel
+		runnerMu.Unlock()
+	}
+	cancelAndWaitMutationRunner := func() {
+		runnerMu.Lock()
+		cancel := runnerCancel
+		runnerMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		<-runnerDone
+	}
+	var nextTurnCtx func(context.Context) (context.Context, context.CancelFunc)
+	nextTurnCtx = func(rootCtx context.Context) (context.Context, context.CancelFunc) {
+		drainCtx, cancelDrain := context.WithCancel(rootCtx)
+		drainCtx = WithQueuedInputDrainOnInterruptHandler(drainCtx, rootCtx, nextTurnCtx)
+		setRunner(cancelDrain)
+		return drainCtx, cancelDrain
+	}
+	turnCtx, cancelTurn := context.WithCancel(root)
+	defer cancelTurn()
+	turnCtx = WithQueuedInputDrainOnInterruptHandler(turnCtx, root, nextTurnCtx)
+	setRunner(cancelTurn)
+
+	started, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "turn-one",
+		Input:            []appwire.InputItem{{Type: "text", Text: "first message"}},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	runnerErr := make(chan error, 1)
+	go func() {
+		defer close(runnerDone)
+		_, _, err := sess.ProcessClientMutationStart(turnCtx, nil)
+		runnerErr <- err
+	}()
+	<-adapter.firstCallRunning
+
+	// The collision: a second message queued while turn one is mid-model-call.
+	queueOneMutation(t, sess, "queued-behind-stop", "run me later")
+	wakesBeforeStop := countWakes()
+
+	stopDone := make(chan struct{})
+	var stopResponse appwire.TurnInterruptResponse
+	var stopErr error
+	go func() {
+		defer close(stopDone)
+		stopResponse, stopErr = sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+			ClientMutationID: "stop-mid-turn",
+		}, cancelAndWaitMutationRunner)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(10 * time.Second):
+		// The Stop is stuck behind a follow-on turn. Unstick it so the runner
+		// and the RPC can finish; the failure is already proven.
+		close(adapter.releaseFollowOn)
+		<-stopDone
+		t.Fatal("Stop did not return once the interrupted turn settled; it waited out a follow-on turn run from the drain loop")
+	}
+	if stopErr != nil {
+		t.Fatalf("InterruptClientMutation: %v", stopErr)
+	}
+	if stopResponse.Receipt.Disposition != appwire.MutationDispositionApplied ||
+		stopResponse.Receipt.TurnID != started.Turn.ID {
+		t.Fatalf("stop receipt = %#v, want applied against turn %q", stopResponse.Receipt, started.Turn.ID)
+	}
+	<-runnerDone
+	if err := <-runnerErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("interrupted turn returned %v, want its own cancellation", err)
+	}
+
+	// No second model call: the queued message did not run under the Stop's
+	// chain, and nothing auto-started it afterwards.
+	if got := adapter.Calls(); got != 1 {
+		t.Fatalf("model calls after the stop = %d, want 1; the drain loop ran the queued message the user just stopped", got)
+	}
+	if got := countWakes(); got != wakesBeforeStop {
+		t.Fatalf("queued-input wakes across the stop went %d -> %d; the stop armed an auto-start for the parked message", wakesBeforeStop, got)
+	}
+
+	// The queued message is still on the queue, durably and process-locally,
+	// with its accepted (not settled, not claimed) state intact.
+	snapshot := sess.clientMutations.snapshot()
+	if len(snapshot.InputQueue) != 1 || snapshot.InputQueue[0].ClientMutationID != "queued-behind-stop" {
+		t.Fatalf("durable queue after the stop = %#v, want the queued message parked", snapshot.InputQueue)
+	}
+	queuedRecord := snapshot.Journal["queued-behind-stop"]
+	if queuedRecord.OperationState == clientMutationOperationTerminal || queuedRecord.ExecutionState != "accepted" {
+		t.Fatalf("queued message record after the stop = %#v, want accepted and not terminal", queuedRecord)
+	}
+	if got := sess.QueueDepth(); got != 1 {
+		t.Fatalf("QueueDepth after the stop = %d, want 1", got)
+	}
+
+	// The interrupted turn settled, and settled clean: fence finalized, no
+	// stranded turn id.
+	turnOne := snapshot.Journal["turn-one"]
+	if turnOne.OperationState != clientMutationOperationTerminal || turnOne.ExecutionState != "interrupted" {
+		t.Fatalf("interrupted turn record = %#v, want terminal interrupted", turnOne)
 	}
 	if snapshot.InterruptFence != nil {
 		t.Fatalf("the stop left a fence behind: %#v", snapshot.InterruptFence)
