@@ -207,7 +207,7 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		result, err := s.ProcessInputKind(ctx, queued.Text, queued.Images, EntryUserInput)
 		return result, true, err
 	}
-	if !s.hasPendingSteering() {
+	if !s.hasPendingUserSteering() {
 		return "", false, nil
 	}
 	result, err := s.ProcessInputKind(ctx, "", nil, EntryUserInput)
@@ -423,7 +423,13 @@ func (s *Session) clientMutationSteer(params appwire.TurnSteerParams) (appwire.T
 // no-ops, repeated kicks coalesce into one parked send, and a wake that cannot
 // name its turn stands down rather than running unaddressable.
 func (s *Session) wakeForPendingSteering() {
-	if !s.hasPendingSteering() {
+	// Only the user's own steering provokes a turn. Daemon-authored steering --
+	// the current-task reminder, hook context, a transcript pointer -- is
+	// context for whatever turn runs next, and the round loop drains it into
+	// that turn. Waking for it would start a turn before the user has said
+	// anything, which is both a turn nobody asked for and a turn that can hold
+	// the session's turn identity when the opening turn/start arrives.
+	if !s.hasPendingUserSteering() {
 		return
 	}
 	s.wakePendingUserInput()

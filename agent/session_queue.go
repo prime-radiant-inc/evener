@@ -916,6 +916,23 @@ func (s *Session) hasPendingSteering() bool {
 	return len(s.steeringQueue) > 0
 }
 
+// hasPendingUserSteering reports whether any queued steering came from the
+// human rather than the daemon. Only that kind justifies starting a turn to
+// carry it: daemon-authored steering -- the current-task reminder, hook
+// context, a transcript pointer -- is context for whatever turn happens next,
+// and a turn started to deliver it would take the session's turn identity and
+// refuse the user's own first message with "turn is already active".
+func (s *Session) hasPendingUserSteering() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, msg := range s.steeringQueue {
+		if msg.Source == events.SteeringSourceUser {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Session) prependSteering(entries []steeringMessage) {
 	if len(entries) == 0 {
 		return
