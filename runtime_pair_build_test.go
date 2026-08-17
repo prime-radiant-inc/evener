@@ -680,19 +680,22 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 	if err := command.Start(); err != nil {
 		t.Fatalf("start make test-web: %v", err)
 	}
+	// One waiter, started with the child: waitForPathOrExit races readiness
+	// against it, and the interrupt assertion below reads the same result.
+	run := startChild(command)
 	t.Cleanup(func() {
 		if command.ProcessState == nil {
 			_ = command.Process.Kill()
-			_ = command.Wait()
+			<-run.done
 		}
 	})
-	if !waitForPath(readyPath, 5*time.Second) {
-		t.Fatalf("held npm check did not become ready; output = %s", output.String())
+	if err := waitForPathOrExit(readyPath, run, readinessTripwire); err != nil {
+		t.Fatalf("held npm check did not become ready: %v; output = %s", err, output.String())
 	}
 	if err := exec.Command("kill", "-TERM", strconv.Itoa(command.Process.Pid)).Run(); err != nil {
 		t.Fatalf("signal make test-web: %v", err)
 	}
-	if err := command.Wait(); err == nil {
+	if err := run.wait(); err == nil {
 		t.Fatalf("interrupted make test-web exited zero; output = %s", output.String())
 	}
 
@@ -765,22 +768,25 @@ exec /bin/sh "$@"
 	if err := command.Start(); err != nil {
 		t.Fatalf("start make test-web: %v", err)
 	}
+	// One waiter, started with the child: both readiness waits race against it,
+	// and the interrupt assertion below reads the same result.
+	run := startChild(command)
 	t.Cleanup(func() {
 		if command.ProcessState == nil {
 			_ = command.Process.Kill()
-			_ = command.Wait()
+			<-run.done
 		}
 	})
-	if !waitForPath(heldReady, 5*time.Second) {
-		t.Fatalf("held npm check did not become ready; output = %s", output.String())
+	if err := waitForPathOrExit(heldReady, run, readinessTripwire); err != nil {
+		t.Fatalf("held npm check did not become ready: %v; output = %s", err, output.String())
 	}
-	if !waitForPath(waitedReaped, 5*time.Second) {
-		t.Fatalf("Make did not reap the completed typecheck before waiting on the held check; output = %s", output.String())
+	if err := waitForPathOrExit(waitedReaped, run, readinessTripwire); err != nil {
+		t.Fatalf("Make did not reap the completed typecheck before waiting on the held check: %v; output = %s", err, output.String())
 	}
 	if err := exec.Command("kill", "-TERM", strconv.Itoa(command.Process.Pid)).Run(); err != nil {
 		t.Fatalf("signal make test-web: %v", err)
 	}
-	if err := command.Wait(); err == nil {
+	if err := run.wait(); err == nil {
 		t.Fatalf("interrupted make test-web exited zero; output = %s", output.String())
 	}
 	if _, err := os.Stat(killedReaped); !os.IsNotExist(err) {
@@ -984,6 +990,132 @@ func waitForPath(path string, timeout time.Duration) bool {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return false
+}
+
+// readinessTripwire bounds a wait for a child's readiness file. It is a
+// tripwire, never the synchronisation mechanism: the child's own exit is what
+// says the file is never coming (see waitForPathOrExit). Generous on purpose so
+// a loaded machine never trips it before the child gets going — a five-second
+// ceiling doing the real work is what made these tests flake.
+const readinessTripwire = 90 * time.Second
+
+// exitGrace bounds how long a readiness file may still land after the child
+// exits, for a grandchild that outlived it.
+const exitGrace = 2 * time.Second
+
+// waitForPathOrExit polls for path until it appears, the child exits, or the
+// tripwire fires. It returns nil once the path exists.
+//
+// The child's exit is the awaitable completion a bare waitForPath ignores: a
+// `make` that dies on startup will never create the file, and waiting out a
+// fixed deadline turns that into "did not become ready; output = " with an
+// empty output instead of naming the real failure. Exit demotes the poll to a
+// short grace rather than ending it, so a file written by a descendant that
+// outlived the child is still seen.
+// childRun is a started child process whose exit any number of waiters can
+// observe. A bare exit channel can be received only once, so the first readiness
+// wait that consulted it would steal the result a later wait (or the interrupt
+// assertion) still needs.
+type childRun struct {
+	done chan struct{}
+	err  error
+}
+
+// startChild begins reaping command in the background.
+func startChild(command *exec.Cmd) *childRun {
+	run := &childRun{done: make(chan struct{})}
+	go func() {
+		run.err = command.Wait()
+		close(run.done)
+	}()
+	return run
+}
+
+// wait blocks until the child exits and returns its exit error.
+func (c *childRun) wait() error {
+	<-c.done
+	return c.err
+}
+
+func waitForPathOrExit(path string, run *childRun, tripwire time.Duration) error {
+	found := make(chan struct{})
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			if _, err := os.Stat(path); err == nil {
+				close(found)
+				return
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}()
+
+	select {
+	case <-found:
+		return nil
+	case <-run.done:
+		select {
+		case <-found:
+			return nil
+		case <-time.After(exitGrace):
+			return fmt.Errorf("child exited (%v) and %s never appeared within %s of its exit",
+				run.err, filepath.Base(path), exitGrace)
+		}
+	case <-time.After(tripwire):
+		return fmt.Errorf("%s did not appear within %s and the child is still running",
+			filepath.Base(path), tripwire)
+	}
+}
+
+// TestWaitForPathOrExitReportsChildExit pins the mechanism behind two flakes in
+// this file. A fixed five-second waitForPath ignored the child entirely, so a
+// `make` that never got going produced "held npm check did not become ready;
+// output = " with an empty output — a timeout mystery rather than a diagnosis.
+//
+// Dropping the child-exit arm, or restoring a bare deadline poll, fails this.
+func TestWaitForPathOrExitReportsChildExit(t *testing.T) {
+	t.Parallel()
+	missing := filepath.Join(t.TempDir(), "never-created")
+	dead := &childRun{done: make(chan struct{}), err: fmt.Errorf("exit status 2")}
+	close(dead.done)
+
+	start := time.Now()
+	err := waitForPathOrExit(missing, dead, time.Minute)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatalf("expected an error when the child exited without creating the file")
+	}
+	if !strings.Contains(err.Error(), "exit status 2") {
+		t.Errorf("error must carry the child's exit so the failure is diagnosable, got: %v", err)
+	}
+	if elapsed > 30*time.Second {
+		t.Errorf("took %v: fell through to the tripwire instead of noticing the child had exited", elapsed)
+	}
+}
+
+// TestWaitForPathOrExitAcceptsFileWrittenAfterExit guards the other half: a
+// descendant that outlives the child may still create the file, so exit demotes
+// the poll to a grace rather than ending it.
+func TestWaitForPathOrExitAcceptsFileWrittenAfterExit(t *testing.T) {
+	t.Parallel()
+	late := filepath.Join(t.TempDir(), "late")
+	dead := &childRun{done: make(chan struct{})}
+	close(dead.done)
+
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		_ = os.WriteFile(late, []byte("ready"), 0o600)
+	}()
+
+	if err := waitForPathOrExit(late, dead, time.Minute); err != nil {
+		t.Fatalf("file written after the child exited should still count: %v", err)
+	}
 }
 
 func observeHeldBrowserFixtureLifecycle(reader *os.File) (<-chan error, <-chan error) {
