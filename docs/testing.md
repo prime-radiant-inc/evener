@@ -554,7 +554,12 @@ contract rather than left to be rediscovered.
 The consequence for anyone writing a case here: a document test named `*.pdf`
 cannot be byte-sensitive, whatever you put in it. The only oracle that reads the
 content is the same path with an extension that does NOT claim a PDF, run twice
-against different bytes (`TestReadFile_RealPDF_DetectedByItsBytes`). And beware
+against different bytes (`TestReadFile_RealPDF_DetectedByItsBytes`). The
+exemption is also stated as a contract next to the fixture that used to imply
+it, in `session_tools_core_exact_fuzz_test.go` — but that file is
+`//go:build serffuzz`, so it is read by `make fuzz-seeds`, not `make test`.
+Several untagged tests hold the same rule, so nothing is lost by the tag;
+the statement is there for the reader, not for the gate. And beware
 the size of the claim a passing case licenses: five bytes are checked, so
 "handles a real PDF" means "accepts the signature", and a fixture is only
 honestly a PDF if something proved it parses — `validPDFFixture` computes its
