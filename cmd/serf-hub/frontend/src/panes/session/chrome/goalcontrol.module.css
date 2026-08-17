@@ -146,7 +146,12 @@
 /* The swap point: below 560px the full text chip can't fit the row (see this
  * file's sibling GoalControl.tsx header comment for the compression this
  * row's .body container performs), so the compact glyph trigger takes over
- * instead of the whole anchor vanishing. Never both at once. */
+ * instead of the whole anchor vanishing. Never both at once.
+ *
+ * The anchor drops its 30% share here too: that basis exists so the TEXT
+ * chip claims room to ellipsize in, but the glyph is fixed-size, and a
+ * shrinkable anchor narrower than its own trigger paints the glyph outside
+ * the box (a horizontal escape the transcript pane then scrolls for). */
 @container (max-width: 559px) {
   .chipButton {
     display: none;
@@ -154,5 +159,22 @@
 
   .compactTrigger {
     display: inline-flex;
+  }
+
+  .anchor {
+    flex: none;
+  }
+}
+
+/* The floor of the ladder: with the composer's Stop button on the row, a
+ * 390px phone leaves .body around 153px, and the goal glyph's non-negotiable
+ * 28px would come straight out of the model label - StatusRow's required
+ * facts (model, effort, context, queue) are the higher priority (statusrow.
+ * module.css's own reserve comment), so below this width the goal yields
+ * the line entirely. The popover stays reachable the moment the row widens
+ * again - typically when the turn ends and Stop leaves. */
+@container (max-width: 199px) {
+  .anchor {
+    display: none;
   }
 }
