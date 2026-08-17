@@ -45,6 +45,11 @@ every sha this document quotes is the one reachable from `main`, not the
 `wip/webui-steer-send-stop` sha it was written with. Check any of them with
 `git merge-base --is-ancestor <sha> main`.
 
+**One deliberate exception**, so a sweep does not read as a defect: `24111733f`,
+in Global Constraints, is quoted *because* it resolves to nothing. It was the
+citation baseline, and the point of the paragraph is that the baseline is
+unreachable. It is the only sha here that fails the check.
+
 No commit count is recorded here on purpose. It went stale twice — once at 64
 against 65, once at 69 against 71, each time inside the very commit that updated
 it. "Merged locally, not pushed" is the part that carries information and does
@@ -441,7 +446,8 @@ stamps `MutationOutcome = notAccepted`
 - [x] **Step 5:** Any test here must drive `MutationDispatcher`. A test against
       `threadsStore.steer` cannot observe a server rejection and would be
       tautological — the promise resolves at the local IndexedDB commit.
-- [x] **Step 6:** `handleInterruptClick`'s catch (`Composer.tsx:875-885`) is
+- [x] **Step 6:** `handleInterruptClick`'s catch (`Composer.tsx:894` today; the
+      `:875-885` this step was written against has drifted) is
       **not** dead — `requireClient()`, the not-ready throw
       (`stores/threads.ts:821`) and `requireMutationRuntime` all reach it. Keep
       it; do not "wire or delete" as an earlier draft said.
@@ -518,7 +524,10 @@ Each bullet is its own red-green-commit.
       `EventTurnStarted: facetWork` sits after that row and before
       `EventSteeringInjected`, reading as documentation of the wrong entry; and
       `thread_envelope_test.go:71-85` asserts `WorkMillis` while the comment
-      argues `ActiveTurnStartedAt`.
+      argues `ActiveTurnStartedAt`. **Both fixed by `08d511ded`** — the
+      description above is of the pre-fix state. Today the comment precedes its
+      row (`server/thread_envelope.go:175`) and the test asserts
+      `ActiveTurnStartedAt` directly.
 - [ ] **Still open.** Dedupe `cmd/serf-hub/e2e_turn_control_test.go` (700 lines):
       the `thread/start` + cleanup block appears three times, steer-and-prove
       twice, interrupt-and-prove three times. Makes visible that only one test
