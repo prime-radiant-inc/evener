@@ -5,6 +5,10 @@
 // tool call, up to --rounds rounds, then ends the turn with
 // communicate(end_turn=true).
 //
+// Rounds are counted per session and held concurrently, so any number of
+// sessions can share one fake and each gets the same behaviour: its own
+// --rounds long turn, not a share of one.
+//
 // WHY: the mid-turn controls (Steer, Send-while-busy, Stop) can only be
 // exercised while a turn is genuinely in flight. Against a real provider that
 // window is a few seconds and needs an AGENTS.md pacing prompt to widen (see
@@ -46,8 +50,8 @@ import (
 
 func main() {
 	hold := flag.Duration("hold", 15*time.Second, "how long to hold each model round before answering")
-	rounds := flag.Int("rounds", 20, "tool-call rounds per turn before ending it with communicate(end_turn=true)")
-	jobRelease := flag.String("background-job-until", "", "answer the first round with a background shell job that waits for this file, then end the turn; creating the file wakes the idle session with a job-completion notification. Give a name relative to the session's working directory -- the shell runs there, so a bare name needs no quoting and cannot be broken by a path with a space in it")
+	rounds := flag.Int("rounds", 20, "tool-call rounds in each session's turn before ending it with communicate(end_turn=true)")
+	jobRelease := flag.String("background-job-until", "", "answer each session's first round with a background shell job that waits for this file, then end the turn; creating the file wakes the idle session with a job-completion notification. Give a name relative to the session's working directory -- the shell runs there, so a bare name needs no quoting and cannot be broken by a path with a space in it")
 	flag.Usage = func() {
 		// Flags first: Go's flag package stops parsing at the first non-flag
 		// argument, so "fakellm 127.0.0.1:0 --hold 30s" silently runs with the
