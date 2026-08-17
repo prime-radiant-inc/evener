@@ -197,26 +197,3 @@ func TestInterruptRetryStopsNothingTwice(t *testing.T) {
 		t.Fatalf("retry terminalized the second turn: %#v", survivor)
 	}
 }
-
-// TestTargetedInterruptKeepsItsExactMatchPrecondition guards the path a client
-// takes when it does hold a turn id: without the session-scoped opt-in, a
-// missing or stale expectedTurnId is still refused.
-func TestTargetedInterruptKeepsItsExactMatchPrecondition(t *testing.T) {
-	sess := newQueuePersistTestSession(t, t.TempDir())
-	defer sess.Close()
-
-	runningStartTurn(t, sess, "start-targeted-guard", "running message")
-
-	if _, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
-		ClientMutationID: "interrupt-targeted-empty",
-	}, func() { t.Error("interrupt with no target cancelled the session") }); err == nil ||
-		!strings.Contains(err.Error(), "expectedTurnId is required") {
-		t.Fatalf("targeted interrupt with no expectedTurnId = %v, want expectedTurnId is required", err)
-	}
-	if _, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
-		ClientMutationID: "interrupt-targeted-stale",
-	}, func() { t.Error("interrupt against a stale turn cancelled the session") }); err == nil ||
-		!strings.Contains(err.Error(), "turn is not active") {
-		t.Fatalf("targeted interrupt against a stale id = %v, want turn is not active", err)
-	}
-}

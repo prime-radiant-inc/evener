@@ -169,9 +169,30 @@ func TestClientMutation_QueuePublicationRejectsOlderRevision(t *testing.T) {
 	}
 }
 
-func TestClientMutation_QueueRejectsStaleTurnDurably(t *testing.T) {
+// armTestInterruptFence puts the session in the state a Stop leaves behind
+// between acceptance and cancellation. It is the queue's surviving rejection
+// now that control mutations name no turn, and it is reachable: the user
+// presses Stop and sends the next message before the cancel lands.
+func armTestInterruptFence(t *testing.T, sess *Session, clientMutationID string) {
+	t.Helper()
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if err := sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.InterruptFence = &clientMutationInterruptFence{ClientMutationID: clientMutationID}
+		return nil
+	}); err != nil {
+		t.Fatalf("arm interrupt fence: %v", err)
+	}
+}
+
+// TestClientMutation_QueueRejectionIsRecordedDurably pins what a refused queue
+// must do regardless of WHICH precondition refused it: record the rejection in
+// the journal, leave the queue untouched, and replay the same rejection rather
+// than applying on the second attempt.
+func TestClientMutation_QueueRejectionIsRecordedDurably(t *testing.T) {
 	sess := newTestSession(t)
-	setTestClientMutationActiveTurn(t, sess, "turn-current")
+	armTestInterruptFence(t, sess, "interrupt-in-flight")
 	params := appwire.TurnQueueParams{
 		ClientMutationID: "mutation-stale",
 		Input:            []appwire.InputItem{{Type: "text", Text: "must not queue"}},
@@ -183,7 +204,7 @@ func TestClientMutation_QueueRejectsStaleTurnDurably(t *testing.T) {
 	snapshot := sess.clientMutations.snapshot()
 	record, ok := snapshot.Journal[params.ClientMutationID]
 	if !ok {
-		t.Fatal("stale rejection was not recorded durably")
+		t.Fatal("rejection was not recorded durably")
 	}
 	if record.OperationState != clientMutationOperationRejected {
 		t.Fatalf("operation state = %q, want rejected", record.OperationState)
@@ -201,7 +222,7 @@ func TestClientMutation_QueueRejectsStaleTurnDurably(t *testing.T) {
 
 func TestClientMutation_QueueRejectedImagePayloadIsCompactedAndReplayable(t *testing.T) {
 	sess := newTestSession(t)
-	setTestClientMutationActiveTurn(t, sess, "turn-current")
+	armTestInterruptFence(t, sess, "interrupt-in-flight")
 	params := appwire.TurnQueueParams{
 		ClientMutationID: "rejected-image",
 		Input: []appwire.InputItem{{
@@ -211,7 +232,7 @@ func TestClientMutation_QueueRejectedImagePayloadIsCompactedAndReplayable(t *tes
 		}},
 	}
 	if _, err := sess.clientMutationQueue(params); err == nil {
-		t.Fatal("stale image queue unexpectedly succeeded")
+		t.Fatal("refused image queue unexpectedly succeeded")
 	}
 	record := sess.clientMutations.snapshot().Journal[params.ClientMutationID]
 	if len(record.Payload) != 0 || record.PayloadHash == "" || record.Rejection == nil {
