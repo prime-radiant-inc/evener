@@ -1212,3 +1212,57 @@ func startDelegateSuccessorGeneration(t *testing.T, c *delegateTreeController, d
 	}
 	return started.lease
 }
+
+// The sibling of the test above, for the other legal ordering. A steer's
+// transcript fsync and the covering stop's FinishGeneration are separate
+// operations on separate goroutines, so CompleteSteerPersistence can land
+// either after the generation is released or before it. Provenance must
+// survive both; releaseGenerationLocked clears live.pendingSteers, so an
+// admission recorded before it would otherwise be erased on the way out.
+func TestDelegateControllerStopFencedSteerKeepsProvenanceWhenItLandsBeforeFinish(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+
+	origin := &provenance.Causal{
+		WatchKeys: []provenance.WatchKey{{WatchID: "wch_early", WatchGeneration: "1"}},
+		Chain:     []provenance.Entry{{Kind: "watch_delivery", WatchID: "wch_early", DeliveryID: "dlv_early"}},
+	}
+	c.mu.Lock()
+	steeringClaim, err := c.beginSteerPersistenceLocked(lease.delegateID, origin)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("beginSteerPersistence with provenance: %v", err)
+	}
+	steeringEntry, err := steeringClaim.runtime.appendDelegateSteeringDurably("early-landing steer", steeringClaim.entryID)
+	if err != nil {
+		t.Fatalf("append steering: %v", err)
+	}
+
+	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), lease.delegateID)
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	// Completion lands BEFORE the generation is released, unlike its sibling.
+	if _, err := c.CompleteSteerPersistence(steeringClaim, steeringEntry); err != nil {
+		t.Fatalf("CompleteSteerPersistence for fsynced pre-stop steer: %v", err)
+	}
+	if _, err := c.FinishGeneration(lease, delegateFinish{}); err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	<-result.done
+
+	successor := startDelegateSuccessorGeneration(t, c, lease.delegateID, steeringClaim.runtime)
+	if _, err := completeDelegateModelRequest(c, successor); err != nil {
+		t.Fatalf("successor model request: %v", err)
+	}
+
+	got := steeringClaim.runtime.activeCausalProvenance()
+	if got == nil || len(got.WatchKeys) == 0 || got.WatchKeys[0].WatchID != "wch_early" {
+		t.Fatalf("successor active provenance = %#v, want the steer's originating watch key", got)
+	}
+}

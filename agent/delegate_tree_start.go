@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -670,7 +671,13 @@ func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) co
 		live.runtime = live.binding.runtime
 	}
 	live.binding = nil
-	live.pendingSteers = nil
+	// A steer accepted under the covering stop outlives the generation it was
+	// aimed at: that generation is over, and the successor is the only turn left
+	// that can consume it. Everything else belongs to the generation being
+	// released and goes with it.
+	live.pendingSteers = slices.DeleteFunc(live.pendingSteers, func(admission delegateSteeringAdmission) bool {
+		return !admission.carriesAcrossGeneration
+	})
 	live.attentionIDs = nil
 	live.recoveryRequired = false
 	live.finalizationRecoveryRequired = false

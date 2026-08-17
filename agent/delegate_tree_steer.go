@@ -18,6 +18,11 @@ var errDelegateTranscriptUnavailable = errors.New("delegate transcript is unavai
 type delegateSteeringAdmission struct {
 	entryID    string
 	provenance *provenance.Causal
+	// carriesAcrossGeneration marks an admission accepted under a covering stop.
+	// Ordinary admissions belong to the generation that took them and are
+	// dropped when it is released; this one's generation is already ending, and
+	// the successor is the only turn that can ever consume it.
+	carriesAcrossGeneration bool
 }
 
 type delegateSteeringClaim struct {
@@ -174,8 +179,9 @@ func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteerin
 			live = c.live[claim.delegateID]
 			if live != nil {
 				live.pendingSteers = append(live.pendingSteers, delegateSteeringAdmission{
-					entryID:    entry.entryID,
-					provenance: provenance.Clone(claim.provenance),
+					entryID:                 entry.entryID,
+					provenance:              provenance.Clone(claim.provenance),
+					carriesAcrossGeneration: true,
 				})
 				if entry.timestamp.After(live.activityAt) {
 					live.activityAt = entry.timestamp
