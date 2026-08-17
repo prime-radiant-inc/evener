@@ -13,7 +13,7 @@ import type { InputItem } from "../../../../protocol/types.gen";
 import { copyToClipboard } from "../../../../shell/palette/commands";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
-import { threadsStore, useThreadsStore } from "../../../../stores/threads";
+import { discardRecoveryMutation, threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, IconButton, type IconButtonProps, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
@@ -394,7 +394,21 @@ export function QueueStrip({
                 {reason ? <span className={CLASS.rowReason}> — {reason}</span> : null}
               </span>
               <div className={CLASS.rowActions}>
-                {isInterrupt ? null : (
+                {isInterrupt ? (
+                  // A Stop has nothing to edit and nothing to resend, but it
+                  // still needs a way off the strip. Without one its recovery
+                  // record is permanent and keeps being counted as queued, so
+                  // every failed Stop leaves a scar the user cannot clear.
+                  <ActionButton
+                    label="Dismiss"
+                    icon={<span aria-hidden="true">✕</span>}
+                    size="sm"
+                    disabled={rowBusy}
+                    onClick={() => {
+                      void discardRecoveryMutation(record.clientMutationId, sessionRef);
+                    }}
+                  />
+                ) : (
                   <ActionButton
                     label="Edit message"
                     icon={<span aria-hidden="true">✎</span>}

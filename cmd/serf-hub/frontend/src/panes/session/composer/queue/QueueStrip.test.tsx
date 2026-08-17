@@ -269,6 +269,9 @@ describe("durable recovery rows", () => {
     const row = text.closest("li");
     if (!row) throw new Error("missing rejected interrupt row");
     expect(within(row).queryByRole("button", { name: "Edit message" })).toBeNull();
+    // It still needs a way off the strip: with no action at all its recovery
+    // record is permanent and keeps being counted as queued.
+    expect(within(row).getByRole("button", { name: "Dismiss" })).toBeTruthy();
   });
 
   test("blocked unknown has Retry but no sendable action", async () => {

@@ -408,6 +408,31 @@ describe("MutationDispatcher", () => {
     expect(await outbox.getOutbox(second.clientMutationId)).toBeUndefined();
   });
 
+  // Kata 2f41. The daemon sends BOTH a category (serfErrorInfo: "conflict") and
+  // its own sentence ("turn is not active"). Showing the category tells the
+  // user the class of failure instead of the failure, so the message wins.
+  test("a rejection records the daemon's message, not its error category", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "reason", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "steer that lost its turn"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      throw new WireError("turn is not active", -32013, {
+        serfErrorInfo: "conflict",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+      });
+    });
+
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.getRecovery(record.clientMutationId)).toMatchObject({
+      recoveryKind: "rejected",
+      recoveryReason: "turn is not active",
+    });
+  });
+
   test("does not settle from a malformed outcome that omits the matching clientMutationId", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "unidentified-error", ["mutation-a"]);

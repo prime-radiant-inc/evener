@@ -186,10 +186,14 @@ const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
 // rejections in a mutation journal produced nothing on screen.
 function rejectionReason(error: unknown, data: ReturnType<typeof mutationErrorData>): string | undefined {
   if (error instanceof WireError) {
-    const detail = error.serfErrorInfo?.trim();
-    if (detail) return detail;
+    // The message is the daemon's own sentence -- "turn is not active". Prefer
+    // it over serfErrorInfo, which is a CATEGORY (appwire.ErrorInfo:
+    // "sessionUnavailable", "conflict"); showing the category tells the user
+    // the class of failure instead of the failure.
     const message = error.message.trim();
     if (message) return message;
+    const category = error.serfErrorInfo?.trim();
+    if (category) return category;
   }
   return data?.mutationOutcome;
 }
